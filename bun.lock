@@ -9,6 +9,17 @@
         "typescript": "^5.9.0",
       },
     },
+    "packages/cli": {
+      "name": "@dbzz/cli",
+      "version": "0.1.0",
+      "bin": {
+        "dbz": "./src/main.ts",
+      },
+      "dependencies": {
+        "@dbzz/core": "workspace:*",
+        "@dbzz/server": "workspace:*",
+      },
+    },
     "packages/client": {
       "name": "@dbzz/client",
       "version": "0.1.0",
@@ -29,6 +40,8 @@
     },
   },
   "packages": {
+    "@dbzz/cli": ["@dbzz/cli@workspace:packages/cli"],
+
     "@dbzz/client": ["@dbzz/client@workspace:packages/client"],
 
     "@dbzz/core": ["@dbzz/core@workspace:packages/core"],

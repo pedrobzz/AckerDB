@@ -1,0 +1,15 @@
+{
+  "name": "@dbzz/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "dbz": "./src/main.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@dbzz/core": "workspace:*",
+    "@dbzz/server": "workspace:*"
+  }
+}
