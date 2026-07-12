@@ -7,6 +7,7 @@ import type { FunctionReference, RegisteredFunction } from "@dbzz/core";
 import {
   ValidationError,
   type Descriptor,
+  type Expand,
   type InferValidator,
   type ObjectShape,
   type Validator,
@@ -316,7 +317,7 @@ export type TableKind<TD> = TD extends TableDef<ObjectShape, Record<string, Inde
   : never;
 export type { IndexMeta };
 
-export type RowShape<C extends ObjectShape> = { [K in keyof C]: InferValidator<C[K]> };
+export type RowShape<C extends ObjectShape> = Expand<{ [K in keyof C]: InferValidator<C[K]> }>;
 
 type PkKeys<C extends ObjectShape> = {
   [K in keyof C]: C[K] extends Validator<unknown, "pk"> ? K : never;
@@ -326,16 +327,18 @@ type NullableKeys<C extends ObjectShape> = {
 }[keyof C];
 
 /** Insert shape: primary key omitted, nullable columns optional. */
-export type InsertShape<C extends ObjectShape> = {
-  [K in Exclude<keyof C, PkKeys<C> | NullableKeys<C>>]: InferValidator<C[K]>;
-} & {
-  [K in Extract<NullableKeys<C>, keyof C>]?: InferValidator<C[K]> | null;
-};
+export type InsertShape<C extends ObjectShape> = Expand<
+  {
+    [K in Exclude<keyof C, PkKeys<C> | NullableKeys<C>>]: InferValidator<C[K]>;
+  } & {
+    [K in Extract<NullableKeys<C>, keyof C>]?: InferValidator<C[K]> | null;
+  }
+>;
 
 /** Patch shape: every non-pk column optional; `undefined` means untouched. */
-export type PatchShape<C extends ObjectShape> = {
+export type PatchShape<C extends ObjectShape> = Expand<{
   [K in Exclude<keyof C, PkKeys<C>>]?: InferValidator<C[K]>;
-};
+}>;
 
 export type SchemaTables<S> = S extends Schema<infer T> ? T : never;
 

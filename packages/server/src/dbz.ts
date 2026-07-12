@@ -28,6 +28,21 @@ export interface Validator<T = unknown, K extends string = string> {
 
 export type InferValidator<V> = V extends Validator<infer T, string> ? T : never;
 
+/**
+ * Force TypeScript to *evaluate* computed types instead of displaying the
+ * recipe (`RowShape<{...validators...}>`, `Omit<...> & {...}`). Every public
+ * boundary (rows, inserts, patches, args, narrowed rows) goes through this,
+ * so hovers read like hand-written object types. Scalars, bigints (incl.
+ * the branded Identity) and bytes pass through untouched.
+ */
+export type Expand<T> = T extends bigint | string | number | boolean | null | undefined | Uint8Array
+  ? T
+  : T extends readonly (infer E)[]
+    ? Expand<E>[]
+    : T extends object
+      ? { [K in keyof T]: Expand<T[K]> }
+      : T;
+
 function describe(value: unknown): string {
   if (value === null) return "null";
   if (Array.isArray(value)) return "array";

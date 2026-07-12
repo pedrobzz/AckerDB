@@ -6,7 +6,7 @@
  * handlers get fully-typed `ctx` and validated `args` without annotations.
  */
 import type { FunctionReference, MutationRef, QueryRef } from "@dbzz/core";
-import type { Identity, InferShape, ObjectShape } from "./dbz.ts";
+import type { Expand, Identity, InferShape, ObjectShape } from "./dbz.ts";
 import type { DbReader, DbWriter } from "./dbtypes.ts";
 import type { InsertShape, Schema } from "./schema.ts";
 
@@ -99,22 +99,22 @@ export const sseProcedure = register("sse");
 // Schema-bound builder types for the generated server.ts.
 export type QueryBuilder<S extends Schema> = <A extends ObjectShape, R>(def: {
   args: A;
-  handler: (ctx: QueryCtx<S>, args: InferShape<A>) => R;
+  handler: (ctx: QueryCtx<S>, args: Expand<InferShape<A>>) => R;
 }) => RegisteredQuery<A, Awaited<R>>;
 
 export type MutationBuilder<S extends Schema> = <A extends ObjectShape, R>(def: {
   args: A;
-  handler: (ctx: MutationCtx<S>, args: InferShape<A>) => R;
+  handler: (ctx: MutationCtx<S>, args: Expand<InferShape<A>>) => R;
 }) => RegisteredMutation<A, Awaited<R>>;
 
 export type ProcedureBuilder<S extends Schema> = <A extends ObjectShape, R>(def: {
   args: A;
-  handler: (ctx: ProcedureCtx<S>, args: InferShape<A>) => R;
+  handler: (ctx: ProcedureCtx<S>, args: Expand<InferShape<A>>) => R;
 }) => RegisteredProcedure<A, Awaited<R>>;
 
 export type SseBuilder<S extends Schema> = <A extends ObjectShape, R>(def: {
   args: A;
-  handler: (ctx: SseCtx<S>, args: InferShape<A>) => R;
+  handler: (ctx: SseCtx<S>, args: Expand<InferShape<A>>) => R;
 }) => RegisteredSse<A, Awaited<R>>;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

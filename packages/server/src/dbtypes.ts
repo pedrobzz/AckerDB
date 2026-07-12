@@ -9,6 +9,7 @@
  */
 import type {
   EnumValidator,
+  Expand,
   InferValidator,
   NullableValidator,
   ObjectShape,
@@ -62,7 +63,7 @@ export type RangeValue<C extends ObjectShape, K extends keyof C> =
 /** After eq("union", "variant"), the row type narrows to that variant. */
 type NarrowOnEq<C extends ObjectShape, K extends keyof C & string, V, Row> = V extends string
   ? BaseValidator<C[K]> extends UnionValidator<infer _M>
-    ? Omit<Row, K> & { [P in K]: Extract<Row[P & keyof Row], { tag: V }> }
+    ? Expand<{ [P in keyof Row]: P extends K ? Extract<Row[P], { tag: V }> : Row[P] }>
     : Row
   : Row;
 

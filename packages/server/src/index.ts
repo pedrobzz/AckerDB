@@ -3,6 +3,7 @@ export {
   ValidationError,
   checkShape,
   type Descriptor,
+  type Expand,
   type Identity,
   type InferValidator,
   type ObjectShape,
