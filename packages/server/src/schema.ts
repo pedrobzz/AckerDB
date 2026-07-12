@@ -57,13 +57,14 @@ export class TableDef<
   Cols extends ObjectShape = ObjectShape,
   // eslint-disable-next-line @typescript-eslint/ban-types
   Ixs extends Record<string, IndexMeta> = {},
+  Kind extends "table" | "event" = "table" | "event",
 > {
   readonly columns: Cols;
-  readonly kind: "table" | "event";
+  readonly kind: Kind;
   readonly indexes: IndexDef[] = [];
   scheduledHandler: ScheduledHandler | null = null;
 
-  constructor(columns: Cols, kind: "table" | "event") {
+  constructor(columns: Cols, kind: Kind) {
     this.columns = columns;
     this.kind = kind;
     let pkCount = 0;
@@ -105,7 +106,7 @@ export class TableDef<
     name: N,
     columns: C,
     opts?: O,
-  ): TableDef<Cols, Ixs & Record<N, { columns: C; unique: O["unique"] extends true ? true : false }>> {
+  ): TableDef<Cols, Ixs & Record<N, { columns: C; unique: O["unique"] extends true ? true : false }>, Kind> {
     checkName(name, "index");
     if (this.kind === "event") {
       throw new ValidationError(
@@ -149,7 +150,8 @@ export class TableDef<
     this.indexes.push({ name, columns, unique: opts?.unique ?? false, algorithm });
     return this as unknown as TableDef<
       Cols,
-      Ixs & Record<N, { columns: C; unique: O["unique"] extends true ? true : false }>
+      Ixs & Record<N, { columns: C; unique: O["unique"] extends true ? true : false }>,
+      Kind
     >;
   }
 
@@ -168,11 +170,15 @@ export class TableDef<
   }
 }
 
-export function defineTable<Cols extends ObjectShape>(columns: Cols): TableDef<Cols> {
+export function defineTable<Cols extends ObjectShape>(
+  columns: Cols,
+): TableDef<Cols, Record<never, never>, "table"> {
   return new TableDef(columns, "table");
 }
 
-export function defineEventTable<Cols extends ObjectShape>(columns: Cols): TableDef<Cols> {
+export function defineEventTable<Cols extends ObjectShape>(
+  columns: Cols,
+): TableDef<Cols, Record<never, never>, "event"> {
   return new TableDef(columns, "event");
 }
 
@@ -301,8 +307,14 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
 // ---------------------------------------------------------------------------
 // Type utilities shared by ctx.db typing and codegen.
 
-export type TableColumns<TD> = TD extends TableDef<infer C, Record<string, IndexMeta>> ? C : never;
-export type TableIndexes<TD> = TD extends TableDef<ObjectShape, infer I> ? I : never;
+export type TableColumns<TD> = TD extends TableDef<infer C, Record<string, IndexMeta>, "table" | "event">
+  ? C
+  : never;
+export type TableIndexes<TD> = TD extends TableDef<ObjectShape, infer I, "table" | "event"> ? I : never;
+export type TableKind<TD> = TD extends TableDef<ObjectShape, Record<string, IndexMeta>, infer K>
+  ? K
+  : never;
+export type { IndexMeta };
 
 export type RowShape<C extends ObjectShape> = { [K in keyof C]: InferValidator<C[K]> };
 

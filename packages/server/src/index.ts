@@ -16,6 +16,31 @@ export {
   type UnionNamespace,
 } from "./dbz.ts";
 export { Engine, indexSqlName, type TablePlan, type ColumnPlan, type TagMap } from "./engine.ts";
+export {
+  makeDbReader,
+  makeDbWriter,
+  newWriteCollector,
+  UniqueConstraintError,
+  type ReadRecorder,
+  type WriteCollector,
+  type EventEmit,
+} from "./db.ts";
+export { idKey, ixKey, scanKey, emitWriteKeys } from "./keys.ts";
+export type {
+  DbReader,
+  DbWriter,
+  TableReader,
+  TableWriter,
+  EventWriter,
+  IndexQb,
+  IndexQbDone,
+  IndexAccessor,
+  RangeQuery,
+  Page,
+  EqValue,
+  RangeValue,
+  Upsert,
+} from "./dbtypes.ts";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
 export {
   defineTable,

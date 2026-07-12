@@ -1,0 +1,47 @@
+/**
+ * Read/write-set keys — the currency of reactivity.
+ *
+ * A query records, for every ctx.db read, one key describing what it
+ * depended on. A mutation records, for every row it writes, the keys that
+ * write could have affected. A subscription re-runs iff the two sets
+ * intersect. Keys use *storage-form* values (enum/union variants as their
+ * integer tags), so both sides agree by construction.
+ *
+ *   id:<table>:<pk>                    one row, by primary key
+ *   scan:<table>                       any row of the table
+ *   ix:<table>:<index>:<eq-prefix>     an index range pinned by an eq prefix
+ *
+ * A write to a row emits: its id key, the table's scan key, and one ix key
+ * per index per eq-prefix length (a read pinning [a] must see a write to
+ * [a, b]). A read with no eq columns depends on the whole table -> scan key.
+ * Ranges are covered by the eq-prefix key one level up, at the cost of some
+ * over-invalidation (a re-run that finds an identical result is deduped
+ * before fan-out, never shipped).
+ */
+import { stableEncode } from "@dbzz/core";
+import type { TablePlan } from "./engine.ts";
+
+export function idKey(table: string, id: bigint): string {
+  return `id:${table}:${id}`;
+}
+
+export function scanKey(table: string): string {
+  return `scan:${table}`;
+}
+
+export function ixKey(table: string, index: string, prefixSqlValues: readonly unknown[]): string {
+  return `ix:${table}:${index}:${stableEncode(prefixSqlValues)}`;
+}
+
+/** All keys a write of `row` (full JS row, including pk) can affect. */
+export function emitWriteKeys(plan: TablePlan, row: Record<string, unknown>, into: Set<string>): void {
+  into.add(idKey(plan.name, row[plan.pk] as bigint));
+  into.add(scanKey(plan.name));
+  for (const index of plan.indexes) {
+    const prefix: unknown[] = [];
+    for (const column of index.columns) {
+      prefix.push(plan.columns.get(column)!.toSql(row[column])[0]);
+      into.add(ixKey(plan.name, index.name, prefix));
+    }
+  }
+}

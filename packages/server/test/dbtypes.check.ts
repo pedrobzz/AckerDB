@@ -1,0 +1,102 @@
+/**
+ * Compile-time assertions for the typed ctx.db surface. This file is never
+ * executed — `bun run typecheck` failing (including an unused
+ * @ts-expect-error) is the test.
+ */
+import {
+  dbz,
+  defineEventTable,
+  defineSchema,
+  defineTable,
+  type DbReader,
+  type DbWriter,
+} from "@dbzz/server";
+
+const schema = defineSchema({
+  payments: defineTable({
+    id: dbz.primaryKey(),
+    userId: dbz.bigint(),
+    status: dbz.enum("PayStatusT", ["active", "failed"]),
+    amount: dbz.number(),
+    note: dbz.nullable(dbz.string()),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_status_amount", ["userId", "status", "amount"]),
+  users: defineTable({
+    id: dbz.primaryKey(),
+    email: dbz.string(),
+    name: dbz.string(),
+    payload: dbz.union("UPayloadT", { text: dbz.string(), nothing: dbz.tag() }),
+  })
+    .index("by_email", ["email"], { unique: true })
+    .index("by_payload", ["payload"]),
+  pings: defineEventTable({
+    id: dbz.primaryKey(),
+    channel: dbz.bigint(),
+  }),
+});
+
+type S = typeof schema;
+declare const rdb: DbReader<S>;
+declare const wdb: DbWriter<S>;
+
+export async function _typecheckUsage(): Promise<void> {
+  // rows come out exactly typed
+  const p = await rdb.payments.get(1n);
+  if (p !== null) {
+    const _amount: number = p.amount;
+    const _note: string | null = p.note;
+    const _id: bigint = p.id;
+  }
+
+  // the builder state machine
+  const rows = await rdb.payments
+    .byUserStatusAmount((q) => q.eq("userId", 1n).eq("status", "active").between("amount", 1, 2))
+    .collect();
+  const _amounts: number[] = rows.map((r) => r.amount);
+
+  // shorter prefixes are fine
+  await rdb.payments.byUserStatusAmount((q) => q.eq("userId", 1n)).count();
+
+  // @ts-expect-error equalities must follow index column order
+  rdb.payments.byUserStatusAmount((q) => q.eq("status", "active"));
+  // @ts-expect-error unknown enum variant
+  rdb.payments.byUserStatusAmount((q) => q.eq("userId", 1n).eq("status", "bogus"));
+  // @ts-expect-error bigint column takes bigint, not number
+  rdb.payments.byUser((q) => q.eq("userId", 1));
+  // @ts-expect-error nothing can follow the range column
+  rdb.payments.byUserStatusAmount((q) => q.eq("userId", 1n).gte("status", "active").eq("amount", 1));
+  // @ts-expect-error ranges over enum tags are not meaningful
+  rdb.payments.byUserStatusAmount((q) => q.eq("userId", 1n).gte("status", "active"));
+
+  // union eq narrows the row type to the variant payload
+  const texts = await rdb.users.byPayload((q) => q.eq("payload", "text")).collect();
+  const _payloadValue: string = texts[0]!.payload.value;
+
+  // @ts-expect-error write methods do not exist on a query's ctx.db
+  void rdb.payments.insert;
+
+  // writer: insert / patch / upsert
+  const id = await wdb.payments.insert({ userId: 1n, status: "active", amount: 5 }); // note optional
+  await wdb.payments.patch(id, { note: null, amount: undefined });
+  // @ts-expect-error the primary key is assigned by the database
+  await wdb.payments.insert({ id: 1n, userId: 1n, status: "active", amount: 5 });
+
+  await wdb.users.byEmail.upsert(
+    { email: "a@x.com" },
+    { name: "A", payload: { tag: "nothing", value: null } },
+  );
+  await wdb.users.byEmail.upsert({ email: "a@x.com" }, (existing) => ({
+    name: existing?.name ?? "A",
+    payload: { tag: "nothing", value: null },
+  }));
+  // @ts-expect-error upsert only exists on unique index accessors
+  void wdb.payments.byUser.upsert;
+
+  // event tables: writer is insert-only, reader has no accessor at all
+  await wdb.pings.insert({ channel: 1n });
+  // @ts-expect-error event tables cannot be read
+  void wdb.pings.get;
+  // @ts-expect-error event tables do not exist on a reader
+  void rdb.pings;
+}

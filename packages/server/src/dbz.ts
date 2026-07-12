@@ -224,7 +224,10 @@ function enum_<const V extends readonly [string, ...string[]]>(
     ...makeValidator<V[number], "enum">("enum", {
       check(value, path) {
         if (typeof value !== "string" || !values.includes(value)) {
-          fail(path, `one of ${values.map((v) => JSON.stringify(v)).join(" | ")}`, value);
+          const got = typeof value === "string" ? JSON.stringify(value) : describe(value);
+          throw new ValidationError(
+            `${path}: expected one of ${values.map((v) => JSON.stringify(v)).join(" | ")} (${name}), got ${got}`,
+          );
         }
         return value as V[number];
       },
