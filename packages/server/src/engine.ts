@@ -276,12 +276,27 @@ export class Engine {
 
   // -- DDL -------------------------------------------------------------------
 
-  createTableDdl(plan: TablePlan): string {
+  createTableDdl(plan: TablePlan, nameOverride?: string): string {
     const cols: string[] = [];
     for (const column of plan.columns.values()) {
       for (const phys of column.phys) cols.push(phys.ddl);
     }
-    return `CREATE TABLE IF NOT EXISTS ${quote(plan.name)} (${cols.join(", ")})`;
+    return `CREATE TABLE IF NOT EXISTS ${quote(nameOverride ?? plan.name)} (${cols.join(", ")})`;
+  }
+
+  /** Create one table plus its indexes (user + internal scheduler index). */
+  createTablePhysical(plan: TablePlan): void {
+    this.writer.exec(this.createTableDdl(plan));
+    this.createIndexesPhysical(plan);
+  }
+
+  createIndexesPhysical(plan: TablePlan): void {
+    for (const index of plan.indexes) this.writer.exec(this.indexDdl(plan, index));
+    if (plan.scheduleAt !== null) {
+      this.writer.exec(
+        `CREATE INDEX IF NOT EXISTS ${quote(`ix__sched_${plan.name}`)} ON ${quote(plan.name)} (${quote(plan.scheduleAt)})`,
+      );
+    }
   }
 
   indexDdl(plan: TablePlan, index: IndexDef): string {
@@ -292,15 +307,7 @@ export class Engine {
 
   /** Create all tables and indexes for a fresh database and store the snapshot. */
   createAll(): void {
-    for (const plan of this.plans.values()) {
-      this.writer.exec(this.createTableDdl(plan));
-      for (const index of plan.indexes) this.writer.exec(this.indexDdl(plan, index));
-      if (plan.scheduleAt !== null) {
-        this.writer.exec(
-          `CREATE INDEX IF NOT EXISTS ${quote(`ix__sched_${plan.name}`)} ON ${quote(plan.name)} (${quote(plan.scheduleAt)})`,
-        );
-      }
-    }
+    for (const plan of this.plans.values()) this.createTablePhysical(plan);
     this.saveSnapshot(snapshotOf(this.schema));
   }
 
