@@ -51,7 +51,8 @@ const functions = {
     stats: procedure({
       args: { list: dbz.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
-        const rows = await ctx.runQuery(anyApi.todos.list, { list: args.list });
+        // server-side composition is a direct call with a tx ctx — no refs
+        const rows = await ctx.tx((tx: Ctx) => functions.todos.list(tx, { list: args.list }));
         return { count: rows.length };
       },
     }),

@@ -81,6 +81,15 @@ const functions = {
         await fetch("data:text/plain,nope");
       },
     }),
+    composeFail: mutation({
+      args: { channelId: dbz.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        // direct mutation-from-mutation joins THIS transaction...
+        await functions.messages.send(ctx, { channelId: args.channelId, body: "doomed" });
+        // ...so throwing here must roll the callee's writes back too
+        throw new Error("compose boom");
+      },
+    }),
     rewrite: mutation({
       args: { id: dbz.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
@@ -105,11 +114,15 @@ const functions = {
     pipeline: procedure({
       args: { channelId: dbz.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
-        const before = await ctx.runQuery({ $ref: "messages.list" }, { channelId: args.channelId });
+        // direct composition: queries/mutations called with a tx ctx
+        const before = await ctx.tx((tx: Ctx) => functions.messages.list(tx, { channelId: args.channelId }));
         const fetched = await (await fetch("data:text/plain,external")).text();
-        const id = await ctx.runMutation({ $ref: "messages.send" }, { channelId: args.channelId, body: fetched });
-        const after = await ctx.tx((tx: Ctx) => tx.db.messages.get(id));
-        return { before: before.length, fetched, after: after.body };
+        // one transaction, two composed calls, atomic together
+        const after = await ctx.tx(async (tx: Ctx) => {
+          const id = await functions.messages.send(tx, { channelId: args.channelId, body: fetched });
+          return (await tx.db.messages.get(id)).body;
+        });
+        return { before: before.length, fetched, after };
       },
     }),
     fetchInTx: procedure({
@@ -179,6 +192,14 @@ describe("queries and mutations", () => {
     expect(b).toBe(a);
     const rows = (await runtime.runQuery("messages.list", { channelId: 5n })) as unknown[];
     expect(rows).toHaveLength(1);
+  });
+
+  test("a directly-called mutation joins the caller's transaction", async () => {
+    await expect(runtime.runMutation("messages.composeFail", { channelId: 6n })).rejects.toThrow(
+      "compose boom",
+    );
+    const rows = (await runtime.runQuery("messages.list", { channelId: 6n })) as unknown[];
+    expect(rows).toHaveLength(0); // the callee's insert rolled back with the caller
   });
 
   test("fetch inside a mutation throws and rolls the write back", async () => {

@@ -15,7 +15,7 @@
  *   entries recompute once per (query, args), the scheduler re-arms.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { decode, encode, getRef, type FunctionReference } from "@dbzz/core";
+import { decode, encode } from "@dbzz/core";
 import { checkShape, ValidationError } from "./dbz.ts";
 import { makeDbReader, makeDbWriter, newWriteCollector, type WriteCollector } from "./db.ts";
 import type { Engine } from "./engine.ts";
@@ -181,14 +181,10 @@ export class Runtime {
   private procedureCtx(): ProcedureCtx {
     return {
       auth: ANONYMOUS,
-      tx: async <T>(fn: (tx: { db: never }) => T | Promise<T>): Promise<T> => {
-        const { result } = await this.transact((db) => fn({ db: db as never }));
+      tx: async <T>(fn: (tx: { db: never; auth: typeof ANONYMOUS }) => T | Promise<T>): Promise<T> => {
+        const { result } = await this.transact((db) => fn({ db: db as never, auth: ANONYMOUS }));
         return result;
       },
-      runQuery: (ref: FunctionReference, args: unknown) =>
-        this.runQuery(getRef(ref), args) as Promise<never>,
-      runMutation: (ref: FunctionReference, args: unknown) =>
-        this.runMutation(getRef(ref), args) as Promise<never>,
     };
   }
 

@@ -34,9 +34,15 @@ your-app/
 - Functions import their typed constructors from the generated `server.ts`:
   `query` (reactive, read-only snapshot), `mutation` (one serializable
   transaction, exactly-once via client idempotency keys, `fetch` banned),
-  `procedure` (external calls + explicit `ctx.tx` / `ctx.runQuery` /
-  `ctx.runMutation`), `sseProcedure` (data-only SSE, AI-SDK-compatible
-  headers and `[DONE]`).
+  `procedure` (external calls + explicit `ctx.tx` transactions),
+  `sseProcedure` (data-only SSE, AI-SDK-compatible headers and `[DONE]`).
+- Server-side composition is **direct function calls**, never references:
+  a mutation calls a query with its own ctx (read/write ⊇ read-only, and the
+  callee joins its transaction); procedures compose queries and mutations
+  inside `ctx.tx` — several calls in one transaction commit atomically. A
+  query calling a mutation doesn't compile (its ctx has no writes), and
+  procedures aren't callable in-process. The generated `api` object is for
+  clients only.
 - Clients import only the generated `api.ts`/`types.ts` — runtime imports
   touch `@dbzz/core` alone, so no server code can reach a client bundle.
 

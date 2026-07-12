@@ -3,7 +3,14 @@ import { mutation, query } from "./_generated/server";
 
 export const top = query({
   args: {},
-  handler: (ctx) => ctx.db.query("items").withIndex("by_seq").order("desc").take(20),
+  handler: async (ctx) => {
+    const rows = await ctx.db
+      .query("items")
+      .withIndex("by_seq")
+      .order("desc")
+      .take(20);
+    return rows;
+  },
 });
 
 export const add = mutation({
