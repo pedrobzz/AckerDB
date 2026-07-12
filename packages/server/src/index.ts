@@ -15,6 +15,8 @@ export {
   type UnionValue,
   type UnionNamespace,
 } from "./dbz.ts";
+export { Engine, indexSqlName, type TablePlan, type ColumnPlan, type TagMap } from "./engine.ts";
+export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
 export {
   defineTable,
   defineEventTable,
