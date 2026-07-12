@@ -1,0 +1,26 @@
+# local research / docs workspace (not part of the published repo)
+GOAL.md
+raw
+wiki
+opensrc
+.wiki
+.research
+.agents
+.claude
+skills-lock.json
+
+# deps / build
+node_modules
+dist
+*.log
+.DS_Store
+
+# dbzz local databases
+.zdb/
+
+# local demo monorepo (kept out of the repo on purpose)
+sandbox/
+
+# benchmark artifacts (convex local backend state, results)
+bench/.convex/
+bench/results/
