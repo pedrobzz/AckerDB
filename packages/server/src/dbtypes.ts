@@ -107,6 +107,18 @@ export interface RangeQuery<Row> {
   paginate(opts: { cursor: string | null; numItems: number }): Promise<Page<Row>>;
 }
 
+/**
+ * A write's result: awaits to the primary value (the new id for insert and
+ * upsert, void otherwise) and `.returning()` resolves to the full written
+ * row — free, the write already computed it. Delete returns the removed
+ * row, or null when the delete was an idempotent no-op.
+ */
+export interface WriteResult<T, Row> extends PromiseLike<T> {
+  catch<B = never>(onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<T | B>;
+  finally(onfinally?: (() => void) | null): Promise<T>;
+  returning(): Promise<Row>;
+}
+
 type QbResult = { readonly _row?: unknown };
 type QbRow<T> = T extends { readonly _row?: infer Row } ? Row : never;
 
@@ -125,7 +137,7 @@ export interface Upsert<C extends ObjectShape, Cols extends readonly string[]> {
   upsert(
     key: { [K in Cols[number] & keyof C]: EqValue<C, K> },
     values: UpsertValues<C, Cols> | ((existing: RowShape<C> | null) => UpsertValues<C, Cols>),
-  ): Promise<bigint>;
+  ): WriteResult<bigint, RowShape<C>>;
 }
 
 type ReaderIndexes<C extends ObjectShape, I> = {
@@ -152,10 +164,10 @@ export type TableWriter<TD> = TableWriterOf<TableColumns<TD>, TableIndexes<TD>>;
 type TableWriterOf<C extends ObjectShape, I> = {
   get(id: bigint): Promise<RowShape<C> | null>;
   scan(): RangeQuery<RowShape<C>>;
-  insert(row: InsertShape<C>): Promise<bigint>;
-  patch(id: bigint, partial: PatchShape<C>): Promise<void>;
-  replace(id: bigint, row: InsertShape<C>): Promise<void>;
-  delete(id: bigint): Promise<void>;
+  insert(row: InsertShape<C>): WriteResult<bigint, RowShape<C>>;
+  patch(id: bigint, partial: PatchShape<C>): WriteResult<void, RowShape<C>>;
+  replace(id: bigint, row: InsertShape<C>): WriteResult<void, RowShape<C>>;
+  delete(id: bigint): WriteResult<void, RowShape<C> | null>;
 } & WriterIndexes<C, I>;
 
 export interface EventWriter<C extends ObjectShape> {

@@ -79,6 +79,22 @@ export async function _typecheckUsage(): Promise<void> {
   // writer: insert / patch / upsert
   const id = await wdb.payments.insert({ userId: 1n, status: "active", amount: 5 }); // note optional
   await wdb.payments.patch(id, { note: null, amount: undefined });
+
+  // .returning() resolves to the exact row type on every write
+  const insertedRow = await wdb.payments.insert({ userId: 1n, status: "active", amount: 5 }).returning();
+  const _insStatus: "active" | "failed" = insertedRow.status;
+  const patchedRow = await wdb.payments.patch(id, { amount: 6 }).returning();
+  const _patchNote: string | null = patchedRow.note;
+  const removedRow = await wdb.payments.delete(id).returning(); // removed row or null
+  // @ts-expect-error delete's returning row is nullable — the no-op case
+  const _removedAmount: number = removedRow.amount;
+  if (removedRow !== null) {
+    const _amount: number = removedRow.amount;
+  }
+  const upserted = await wdb.users.byEmail
+    .upsert({ email: "a@x.com" }, { name: "A", payload: { tag: "nothing", value: null } })
+    .returning();
+  const _upsertEmail: string = upserted.email;
   // @ts-expect-error the primary key is assigned by the database
   await wdb.payments.insert({ id: 1n, userId: 1n, status: "active", amount: 5 });
 

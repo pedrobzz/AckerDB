@@ -38,6 +38,7 @@ export type {
   IndexAccessor,
   RangeQuery,
   Page,
+  WriteResult,
   EqValue,
   RangeValue,
   Upsert,

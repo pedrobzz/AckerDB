@@ -462,6 +462,42 @@ function checkFullRow(plan: TablePlan, engine: Engine, row: unknown, op: string)
   return out;
 }
 
+interface WriteOutcome<T> {
+  value: T;
+  row: Record<string, unknown> | null;
+}
+
+type AnyWriteResult<T> = Promise<T> & { returning(): Promise<Record<string, unknown> | null> };
+
+/**
+ * The result of a write: a real Promise of the primary value (id / void)
+ * with `.returning()` for the full written row — which every write already
+ * computes for write-key emission, so returning is free.
+ *
+ * The write executes eagerly at call time; synchronous failures are
+ * captured into the rejection so `.catch()` works. When the caller picks
+ * the row projection, the id projection is marked handled — a failing
+ * `insert(...).returning()` rejects exactly once, and a fire-and-forget
+ * failing write still triggers the usual unhandled-rejection report.
+ */
+function makeWriteResult<T>(
+  work: () => WriteOutcome<T> | Promise<WriteOutcome<T>>,
+): AnyWriteResult<T> {
+  const outcome = new Promise<WriteOutcome<T>>((resolve, reject) => {
+    try {
+      resolve(work());
+    } catch (error) {
+      reject(error);
+    }
+  });
+  const main = outcome.then((o) => o.value) as AnyWriteResult<T>;
+  main.returning = () => {
+    main.catch(() => {}); // the caller chose the row; the id projection is covered
+    return outcome.then((o) => o.row);
+  };
+  return main;
+}
+
 function writeMethods(engine: Engine, writes: WriteCollector, plan: TablePlan) {
   const conn = engine.writer;
   const table = engine.schema.tables[plan.name]!;
@@ -477,94 +513,107 @@ function writeMethods(engine: Engine, writes: WriteCollector, plan: TablePlan) {
   };
 
   return {
-    async insert(row: unknown): Promise<bigint> {
-      const values = checkFullRow(plan, engine, row, "insert");
-      const { sql, bind } = engine.insertSql(plan);
-      let inserted: { [k: string]: unknown };
-      try {
-        inserted = engine.statement(conn, sql).get(...(bind(values) as never[])) as never;
-      } catch (error) {
-        wrapUnique(plan.name, error);
-      }
-      const id = inserted[plan.pk] as bigint;
-      emitWriteKeys(plan, { ...values, [plan.pk]: id }, writes.keys);
-      touch();
-      return id;
-    },
-
-    async patch(id: bigint, partial: unknown): Promise<void> {
-      if (partial === null || typeof partial !== "object" || Array.isArray(partial)) {
-        throw new ValidationError(`${plan.name}.patch: expected a partial row object`);
-      }
-      const old = getRow(id);
-      if (old === null) throw new Error(`${plan.name}.patch: row ${id} not found`);
-      const input = partial as Record<string, unknown>;
-      const sets: string[] = [];
-      const params: unknown[] = [];
-      const updated: Record<string, unknown> = { ...old };
-      for (const key of Object.keys(input)) {
-        if (input[key] === undefined) continue; // undefined = untouched
-        if (key === plan.pk) {
-          throw new ValidationError(`${plan.name}.patch: the primary key cannot be changed`);
+    insert(row: unknown): AnyWriteResult<bigint> {
+      return makeWriteResult(() => {
+        const values = checkFullRow(plan, engine, row, "insert");
+        const { sql, bind } = engine.insertSql(plan);
+        let inserted: { [k: string]: unknown };
+        try {
+          inserted = engine.statement(conn, sql).get(...(bind(values) as never[])) as never;
+        } catch (error) {
+          wrapUnique(plan.name, error);
         }
-        const validator = table.columns[key];
-        if (!validator) throw new ValidationError(`${plan.name}.patch: unknown field "${key}"`);
-        const value = validator.check(input[key], `${plan.name}.patch.${key}`);
-        updated[key] = value;
-        const columnPlan = plan.columns.get(key)!;
-        const sqlValues = columnPlan.toSql(value);
-        columnPlan.phys.forEach((phys, i) => {
-          sets.push(`${quote(phys.name)} = ?`);
-          params.push(sqlValues[i]);
-        });
-      }
-      if (sets.length === 0) return;
-      try {
-        engine
-          .statement(conn, `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`)
-          .run(...(params as never[]), id as never);
-      } catch (error) {
-        wrapUnique(plan.name, error);
-      }
-      emitWriteKeys(plan, old, writes.keys);
-      emitWriteKeys(plan, updated, writes.keys);
-      touch();
+        const id = inserted[plan.pk] as bigint;
+        const full = { ...values, [plan.pk]: id };
+        emitWriteKeys(plan, full, writes.keys);
+        touch();
+        return { value: id, row: full };
+      });
     },
 
-    async replace(id: bigint, row: unknown): Promise<void> {
-      const values = checkFullRow(plan, engine, row, "replace");
-      const old = getRow(id);
-      if (old === null) throw new Error(`${plan.name}.replace: row ${id} not found`);
-      const sets: string[] = [];
-      const params: unknown[] = [];
-      for (const columnPlan of plan.columns.values()) {
-        if (columnPlan.kind === "pk") continue;
-        const sqlValues = columnPlan.toSql(values[columnPlan.jsName]);
-        columnPlan.phys.forEach((phys, i) => {
-          sets.push(`${quote(phys.name)} = ?`);
-          params.push(sqlValues[i]);
-        });
-      }
-      try {
-        engine
-          .statement(conn, `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`)
-          .run(...(params as never[]), id as never);
-      } catch (error) {
-        wrapUnique(plan.name, error);
-      }
-      emitWriteKeys(plan, old, writes.keys);
-      emitWriteKeys(plan, { ...values, [plan.pk]: id }, writes.keys);
-      touch();
+    patch(id: bigint, partial: unknown): AnyWriteResult<void> {
+      return makeWriteResult(() => {
+        if (partial === null || typeof partial !== "object" || Array.isArray(partial)) {
+          throw new ValidationError(`${plan.name}.patch: expected a partial row object`);
+        }
+        const old = getRow(id);
+        if (old === null) throw new Error(`${plan.name}.patch: row ${id} not found`);
+        const input = partial as Record<string, unknown>;
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        const updated: Record<string, unknown> = { ...old };
+        for (const key of Object.keys(input)) {
+          if (input[key] === undefined) continue; // undefined = untouched
+          if (key === plan.pk) {
+            throw new ValidationError(`${plan.name}.patch: the primary key cannot be changed`);
+          }
+          const validator = table.columns[key];
+          if (!validator) throw new ValidationError(`${plan.name}.patch: unknown field "${key}"`);
+          const value = validator.check(input[key], `${plan.name}.patch.${key}`);
+          updated[key] = value;
+          const columnPlan = plan.columns.get(key)!;
+          const sqlValues = columnPlan.toSql(value);
+          columnPlan.phys.forEach((phys, i) => {
+            sets.push(`${quote(phys.name)} = ?`);
+            params.push(sqlValues[i]);
+          });
+        }
+        if (sets.length === 0) return { value: undefined, row: old };
+        try {
+          engine
+            .statement(conn, `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`)
+            .run(...(params as never[]), id as never);
+        } catch (error) {
+          wrapUnique(plan.name, error);
+        }
+        emitWriteKeys(plan, old, writes.keys);
+        emitWriteKeys(plan, updated, writes.keys);
+        touch();
+        return { value: undefined, row: updated };
+      });
     },
 
-    async delete(id: bigint): Promise<void> {
-      const old = getRow(id);
-      if (old === null) return; // idempotent under retry
-      engine
-        .statement(conn, `DELETE FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`)
-        .run(id as never);
-      emitWriteKeys(plan, old, writes.keys);
-      touch();
+    replace(id: bigint, row: unknown): AnyWriteResult<void> {
+      return makeWriteResult(() => {
+        const values = checkFullRow(plan, engine, row, "replace");
+        const old = getRow(id);
+        if (old === null) throw new Error(`${plan.name}.replace: row ${id} not found`);
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        for (const columnPlan of plan.columns.values()) {
+          if (columnPlan.kind === "pk") continue;
+          const sqlValues = columnPlan.toSql(values[columnPlan.jsName]);
+          columnPlan.phys.forEach((phys, i) => {
+            sets.push(`${quote(phys.name)} = ?`);
+            params.push(sqlValues[i]);
+          });
+        }
+        try {
+          engine
+            .statement(conn, `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`)
+            .run(...(params as never[]), id as never);
+        } catch (error) {
+          wrapUnique(plan.name, error);
+        }
+        const full = { ...values, [plan.pk]: id };
+        emitWriteKeys(plan, old, writes.keys);
+        emitWriteKeys(plan, full, writes.keys);
+        touch();
+        return { value: undefined, row: full };
+      });
+    },
+
+    delete(id: bigint): AnyWriteResult<void> {
+      return makeWriteResult(() => {
+        const old = getRow(id);
+        if (old === null) return { value: undefined, row: null }; // idempotent under retry
+        engine
+          .statement(conn, `DELETE FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`)
+          .run(id as never);
+        emitWriteKeys(plan, old, writes.keys);
+        touch();
+        return { value: undefined, row: old };
+      });
     },
   };
 }
@@ -580,32 +629,33 @@ function attachUpsert(
     if (!index.unique) continue;
     const name = camelCase(index.name);
     const fn = accessor[name] as Record<string, unknown>;
-    fn["upsert"] = async (key: Record<string, unknown>, values: unknown): Promise<bigint> => {
-      const keyColumns = [...index.columns];
-      for (const column of Object.keys(key)) {
-        if (!keyColumns.includes(column)) {
-          throw new ValidationError(
-            `${plan.name}.${name}.upsert: "${column}" is not part of the unique index`,
-          );
+    fn["upsert"] = (key: Record<string, unknown>, values: unknown): AnyWriteResult<bigint> =>
+      makeWriteResult(async () => {
+        const keyColumns = [...index.columns];
+        for (const column of Object.keys(key)) {
+          if (!keyColumns.includes(column)) {
+            throw new ValidationError(
+              `${plan.name}.${name}.upsert: "${column}" is not part of the unique index`,
+            );
+          }
         }
-      }
-      const qb = new IndexQb(engine, plan, index);
-      for (const column of keyColumns) {
-        if (key[column] === undefined) {
-          throw new ValidationError(`${plan.name}.${name}.upsert: missing key column "${column}"`);
+        const qb = new IndexQb(engine, plan, index);
+        for (const column of keyColumns) {
+          if (key[column] === undefined) {
+            throw new ValidationError(`${plan.name}.${name}.upsert: missing key column "${column}"`);
+          }
+          qb.eq(column, key[column]);
         }
-        qb.eq(column, key[column]);
-      }
-      const existing = (await makeRangeQuery(engine, engine.writer, null, plan, index, qb).unique()) as
-        | Record<string, unknown>
-        | null;
-      const resolved = typeof values === "function" ? values(existing) : values;
-      if (existing === null) {
-        return writer.insert({ ...key, ...resolved });
-      }
-      await writer.patch(existing[plan.pk] as bigint, resolved);
-      return existing[plan.pk] as bigint;
-    };
+        const existing = (await makeRangeQuery(engine, engine.writer, null, plan, index, qb).unique()) as
+          | Record<string, unknown>
+          | null;
+        const resolved = typeof values === "function" ? values(existing) : values;
+        const write = existing === null
+          ? writer.insert({ ...key, ...resolved })
+          : writer.patch(existing[plan.pk] as bigint, resolved);
+        const row = (await write.returning())!;
+        return { value: row[plan.pk] as bigint, row };
+      });
   }
 }
 

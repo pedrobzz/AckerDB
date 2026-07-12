@@ -136,6 +136,51 @@ describe("writes", () => {
     expect(db.payments.byUser.upsert).toBeUndefined();
   });
 
+  test(".returning() resolves to the full written row on every write", async () => {
+    // insert: same row a get would produce, no extra read needed
+    const inserted = await db.payments
+      .insert({ userId: 3n, status: "active", amount: 9, currency: "EUR", note: null })
+      .returning();
+    expect(inserted).toEqual(await db.payments.get(inserted.id));
+
+    // patch: the updated row; empty patch returns the unchanged row
+    const patched = await db.payments.patch(inserted.id, { amount: 11 }).returning();
+    expect(patched).toMatchObject({ id: inserted.id, amount: 11, currency: "EUR" });
+    const untouched = await db.payments.patch(inserted.id, {}).returning();
+    expect(untouched).toEqual(patched);
+
+    // replace: the new row
+    const replaced = await db.payments
+      .replace(inserted.id, { userId: 4n, status: "failed", amount: 1, currency: "BRL", note: "r" })
+      .returning();
+    expect(replaced).toEqual({ id: inserted.id, userId: 4n, status: "failed", amount: 1, currency: "BRL", note: "r" });
+
+    // delete: the removed row; idempotent no-op returns null
+    const removed = await db.payments.delete(inserted.id).returning();
+    expect(removed).toEqual(replaced);
+    expect(await db.payments.delete(inserted.id).returning()).toBe(null);
+
+    // upsert: the post-write row on both paths
+    const created = await db.users.byEmail
+      .upsert({ email: "w@x.com" }, { name: "W", payload: { tag: "nothing", value: null } })
+      .returning();
+    expect(created).toMatchObject({ email: "w@x.com", name: "W" });
+    const updated = await db.users.byEmail.upsert({ email: "w@x.com" }, { name: "W2" }).returning();
+    expect(updated).toMatchObject({ id: created.id, name: "W2" });
+  });
+
+  test("writes execute eagerly and failures reject instead of throwing", async () => {
+    // eager: the write is visible before the returned result is awaited
+    const pending = db.payments.insert({ userId: 8n, status: "active", amount: 1, currency: "x", note: null });
+    expect(await db.payments.byUser((q: any) => q.eq("userId", 8n)).count()).toBe(1);
+    await pending;
+
+    // validation failures reject the promise — .catch() works on both projections
+    const bad = () => db.payments.insert({ userId: 8n });
+    expect(await bad().catch((e: Error) => e.message)).toContain("payments.insert");
+    expect(await bad().returning().catch((e: Error) => e.message)).toContain("payments.insert");
+  });
+
   test("event table insert buffers a broadcast row, persists nothing", async () => {
     await db.pings.insert({ channel: 7n });
     await db.pings.insert({ channel: 8n });
