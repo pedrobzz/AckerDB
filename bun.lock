@@ -9,6 +9,13 @@
         "typescript": "^5.9.0",
       },
     },
+    "packages/client": {
+      "name": "@dbzz/client",
+      "version": "0.1.0",
+      "dependencies": {
+        "@dbzz/core": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@dbzz/core",
       "version": "0.1.0",
@@ -22,6 +29,8 @@
     },
   },
   "packages": {
+    "@dbzz/client": ["@dbzz/client@workspace:packages/client"],
+
     "@dbzz/core": ["@dbzz/core@workspace:packages/core"],
 
     "@dbzz/server": ["@dbzz/server@workspace:packages/server"],
