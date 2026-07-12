@@ -71,6 +71,7 @@ export {
 export { Registry } from "./registry.ts";
 export { SubscriptionManager, SubEntry, type Subscriber } from "./reactive.ts";
 export { Runtime } from "./runtime.ts";
+export { serve, type ServeOptions } from "./serve.ts";
 export {
   defineTable,
   defineEventTable,
