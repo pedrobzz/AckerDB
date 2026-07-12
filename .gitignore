@@ -21,6 +21,9 @@ dist
 # local demo monorepo (kept out of the repo on purpose)
 sandbox/
 
-# benchmark artifacts (convex local backend state, results)
-bench/.convex/
+# benchmark artifacts (convex local backend state, per-run outputs)
+bench/convex-app/.convex/
+bench/convex-app/.env.local
+bench/convex-app/convex/_generated/
+bench/dbzz-app/_generated/
 bench/results/
