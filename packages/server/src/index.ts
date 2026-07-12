@@ -44,6 +44,34 @@ export type {
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
 export { reconcile, UnsafeSchemaChange } from "./reconcile.ts";
 export {
+  query,
+  mutation,
+  procedure,
+  sseProcedure,
+  isRegisteredFunction,
+  type AnyRegistered,
+  type ArgsInput,
+  type AuthCtx,
+  type MutationBuilder,
+  type MutationCtx,
+  type ProcedureBuilder,
+  type ProcedureCtx,
+  type QueryBuilder,
+  type QueryCtx,
+  type Registered,
+  type RegisteredMutation,
+  type RegisteredProcedure,
+  type RegisteredQuery,
+  type RegisteredSse,
+  type SseBuilder,
+  type SseCtx,
+  type StreamWriter,
+  type TxCtx,
+} from "./functions.ts";
+export { Registry } from "./registry.ts";
+export { SubscriptionManager, SubEntry, type Subscriber } from "./reactive.ts";
+export { Runtime } from "./runtime.ts";
+export {
   defineTable,
   defineEventTable,
   defineSchema,
