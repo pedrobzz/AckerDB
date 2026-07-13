@@ -6,6 +6,15 @@ import { join, relative } from "node:path";
 import type { Subprocess } from "bun";
 import { benchmarkConfigFromEnv, type DriverResult, type SystemName } from "./benchmark.ts";
 import {
+  assertDbzzStartup,
+  benchmarkExecutionOrder,
+  compareProfileMetrics,
+  type BenchmarkExecutionLeg,
+  type DbzzStartupMode,
+  type DbzzTelemetryMode,
+  type PairedProfileMetric,
+} from "./dbzz-profile.ts";
+import {
   ProcessTreeMonitor,
   readProcessTable,
   type ProcessTreeSnapshot,
@@ -35,8 +44,16 @@ interface MeasuredDriverResult {
   implementationVersion?: string;
 }
 
+interface DbzzMeasuredDriverResult extends MeasuredDriverResult {
+  startupMode: DbzzStartupMode;
+}
+
+type SystemResults = Partial<Record<SystemName, MeasuredDriverResult>> & {
+  dbzz?: DbzzMeasuredDriverResult;
+};
+
 interface RunRecord {
-  schemaVersion: 3;
+  schemaVersion: 4;
   timestamp: string;
   git: { commit: string; dirty: boolean; sourceHash: string };
   machine: {
@@ -54,11 +71,14 @@ interface RunRecord {
     loadGeneratorResources: string;
     sampleIntervalMs: number;
     durability: Record<SystemName, string>;
+    dbzzProfiles: string;
     spacetimeQueryTransport: string;
     subscriptionCapacity: string;
   };
-  systemOrder: SystemName[];
-  systems: Partial<Record<SystemName, MeasuredDriverResult>>;
+  executionOrder: BenchmarkExecutionLeg[];
+  systems: SystemResults;
+  dbzzTelemetryDisabled: DbzzMeasuredDriverResult;
+  dbzzTelemetryCost: PairedProfileMetric[];
 }
 
 interface ComparableMetric {
@@ -248,24 +268,30 @@ async function runMeasuredClient(
   };
 }
 
-async function benchDbzz(): Promise<MeasuredDriverResult> {
+async function benchDbzz(telemetry: DbzzTelemetryMode): Promise<DbzzMeasuredDriverResult> {
+  const expectedMode: DbzzStartupMode = { telemetry, durability: "balanced" };
   assertPortsFree([DBZZ_PORT]);
-  console.log("→ dbzz: fresh server");
+  console.log(`→ dbzz: fresh server (telemetry=${telemetry}, durability=balanced)`);
   rmSync(join(BENCH, "dbzz-app", ".zdb"), { recursive: true, force: true });
   const server = Bun.spawn(
     [process.execPath, join(REPO, "packages", "cli", "src", "main.ts"), "start", join(BENCH, "dbzz-app")],
-    { stdout: "pipe", stderr: "inherit" },
+    {
+      stdout: "pipe",
+      stderr: "inherit",
+      env: { ...process.env, DBZZ_TELEMETRY: telemetry, DBZZ_DURABILITY: "balanced" },
+    },
   );
   const output = tail(server as never);
   try {
     await waitFor(output.output, "ready on", 15_000);
+    const startupMode = assertDbzzStartup(output.output(), expectedMode);
     const startupIdle = await measureStartupIdle(server.pid);
     const measured = await runMeasuredClient(
       [process.execPath, join(BENCH, "dbzz-client.ts")],
       { DBZZ_URL: `http://127.0.0.1:${DBZZ_PORT}` },
       server.pid,
     );
-    return { ...measured, startupIdle, implementationVersion: "workspace" };
+    return { ...measured, startupIdle, implementationVersion: "workspace", startupMode };
   } finally {
     server.kill();
     await server.exited;
@@ -450,7 +476,7 @@ function savedCurrentCount(): number {
     return readdirSync(RESULTS_DIR).filter((name) => {
       if (!name.endsWith(".json")) return false;
       try {
-        return (JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as { schemaVersion?: number }).schemaVersion === 3;
+        return (JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as { schemaVersion?: number }).schemaVersion === 4;
       } catch {
         return false;
       }
@@ -460,8 +486,8 @@ function savedCurrentCount(): number {
   }
 }
 
-function balancedOrder(): SystemName[] {
-  const rotation = savedCurrentCount() % ALL_SYSTEMS.length;
+function balancedOrder(savedRuns: number): SystemName[] {
+  const rotation = savedRuns % ALL_SYSTEMS.length;
   return [...ALL_SYSTEMS.slice(rotation), ...ALL_SYSTEMS.slice(0, rotation)];
 }
 
@@ -475,6 +501,8 @@ function comparisonFingerprint(record: RunRecord): string {
       memGb: record.machine.memGb,
     },
     configs: ALL_SYSTEMS.map((name) => record.systems[name]?.workload.config ?? null),
+    dbzzTelemetryDisabledConfig: record.dbzzTelemetryDisabled.workload.config,
+    dbzzModes: [record.systems.dbzz?.startupMode, record.dbzzTelemetryDisabled.startupMode],
   });
 }
 
@@ -491,7 +519,13 @@ function latestComparable(record: RunRecord): RunRecord | undefined {
     if (!name.endsWith(".json")) continue;
     try {
       const candidate = JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as RunRecord;
-      if (candidate.schemaVersion !== 3 || !ALL_SYSTEMS.every((system) => candidate.systems[system])) continue;
+      if (
+        candidate.schemaVersion !== 4 ||
+        !candidate.dbzzTelemetryDisabled ||
+        !ALL_SYSTEMS.every((system) => candidate.systems[system])
+      ) {
+        continue;
+      }
       if (comparisonFingerprint(candidate) === fingerprint) candidates.push(candidate);
     } catch {
       // Ignore old or incomplete result files.
@@ -500,13 +534,18 @@ function latestComparable(record: RunRecord): RunRecord | undefined {
   return candidates.sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
 }
 
-function comparisonMetrics(record: RunRecord, name: SystemName): ComparableMetric[] {
-  const system = record.systems[name]!;
-  const metrics: ComparableMetric[] = [];
+function comparisonMetrics(system: MeasuredDriverResult): ComparableMetric[] {
+  const metrics: ComparableMetric[] = [
+    { label: "startup idle RSS p50 MB", value: system.startupIdle.window.rssMb.p50, lowerIsBetter: true },
+    { label: "startup idle RSS peak MB", value: system.startupIdle.window.rssMb.peak, lowerIsBetter: true },
+    { label: "startup idle CPU cores", value: system.startupIdle.window.cpuCores, lowerIsBetter: true },
+  ];
   for (const operation of system.workload.operations.filter((item) => item.profile.name === "saturation")) {
     metrics.push(
       { label: `${operation.operation} saturation TPS`, value: operation.medianThroughputPerSec, lowerIsBetter: false },
+      { label: `${operation.operation} saturation p50 ms`, value: operation.medianLatencyP50Ms, lowerIsBetter: true },
       { label: `${operation.operation} saturation p95 ms`, value: operation.medianLatencyP95Ms, lowerIsBetter: true },
+      { label: `${operation.operation} saturation p99 ms`, value: operation.medianLatencyP99Ms, lowerIsBetter: true },
     );
   }
   const connection = system.workload.connections[system.workload.connections.length - 1]!;
@@ -514,16 +553,15 @@ function comparisonMetrics(record: RunRecord, name: SystemName): ComparableMetri
   const connectionWork = system.resources.server.phases[connection.work.phaseId]!;
   metrics.push(
     { label: `${connection.connected} connections query TPS`, value: connection.work.throughputPerSec, lowerIsBetter: false },
+    { label: `${connection.connected} connections query p50 ms`, value: connection.work.latency.p50Ms, lowerIsBetter: true },
     { label: `${connection.connected} connections query p95 ms`, value: connection.work.latency.p95Ms, lowerIsBetter: true },
+    { label: `${connection.connected} connections query p99 ms`, value: connection.work.latency.p99Ms, lowerIsBetter: true },
     { label: `${connection.connected} connections idle RSS MB`, value: connectionIdle.rssMb.p50, lowerIsBetter: true },
+    { label: `${connection.connected} connections work RSS peak MB`, value: connectionWork.rssMb.peak, lowerIsBetter: true },
     { label: `${connection.connected} connections server CPU cores`, value: connectionWork.cpuCores, lowerIsBetter: true },
   );
   for (const subscription of system.workload.subscriptions) {
     const work = system.resources.server.phases[subscription.phaseId]!;
-    const capacity = subscription.capacity.reduce((best, current) =>
-      current.deliveryThroughputPerSec > best.deliveryThroughputPerSec ? current : best,
-    );
-    const capacityWork = system.resources.server.phases[capacity.phaseId]!;
     metrics.push(
       {
         label: `${subscription.pattern} subscription deliveries/s`,
@@ -531,8 +569,23 @@ function comparisonMetrics(record: RunRecord, name: SystemName): ComparableMetri
         lowerIsBetter: false,
       },
       {
+        label: `${subscription.pattern} subscription delivery p50 ms`,
+        value: subscription.deliveryLatency.p50Ms,
+        lowerIsBetter: true,
+      },
+      {
         label: `${subscription.pattern} subscription delivery p95 ms`,
         value: subscription.deliveryLatency.p95Ms,
+        lowerIsBetter: true,
+      },
+      {
+        label: `${subscription.pattern} subscription delivery p99 ms`,
+        value: subscription.deliveryLatency.p99Ms,
+        lowerIsBetter: true,
+      },
+      {
+        label: `${subscription.pattern} subscription all p50 ms`,
+        value: subscription.timeToAll.p50Ms,
         lowerIsBetter: true,
       },
       {
@@ -541,42 +594,49 @@ function comparisonMetrics(record: RunRecord, name: SystemName): ComparableMetri
         lowerIsBetter: true,
       },
       {
+        label: `${subscription.pattern} subscription all p99 ms`,
+        value: subscription.timeToAll.p99Ms,
+        lowerIsBetter: true,
+      },
+      {
         label: `${subscription.pattern} subscription server CPU cores`,
         value: work.cpuCores,
         lowerIsBetter: true,
       },
       {
-        label: `${subscription.pattern} subscription capacity deliveries/s`,
-        value: capacity.deliveryThroughputPerSec,
-        lowerIsBetter: false,
-      },
-      {
-        label: `${subscription.pattern} subscription capacity p95 ms`,
-        value: capacity.latency.p95Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${subscription.pattern} subscription capacity server CPU cores`,
-        value: capacityWork.cpuCores,
+        label: `${subscription.pattern} subscription RSS peak MB`,
+        value: work.rssMb.peak,
         lowerIsBetter: true,
       },
     );
+    for (const capacity of subscription.capacity) {
+      const capacityWork = system.resources.server.phases[capacity.phaseId]!;
+      const label = `${subscription.pattern} subscription capacity-${capacity.slots}`;
+      metrics.push(
+        { label: `${label} deliveries/s`, value: capacity.deliveryThroughputPerSec, lowerIsBetter: false },
+        { label: `${label} p50 ms`, value: capacity.latency.p50Ms, lowerIsBetter: true },
+        { label: `${label} p95 ms`, value: capacity.latency.p95Ms, lowerIsBetter: true },
+        { label: `${label} p99 ms`, value: capacity.latency.p99Ms, lowerIsBetter: true },
+        { label: `${label} server CPU cores`, value: capacityWork.cpuCores, lowerIsBetter: true },
+        { label: `${label} RSS peak MB`, value: capacityWork.rssMb.peak, lowerIsBetter: true },
+      );
+    }
   }
   return metrics;
 }
 
 function printComparableDelta(record: RunRecord, previous: RunRecord | undefined): void {
   if (!previous) {
-    console.log("\nNo previous schema-v3 result has the same machine and benchmark config; delta skipped.");
+    console.log("\nNo previous schema-v4 result has the same machine and benchmark config; delta skipped.");
     return;
   }
   console.log(`\nVs comparable run ${previous.timestamp} (⚠ = regression greater than 15%)`);
   for (const name of ALL_SYSTEMS) {
-    const oldByLabel = new Map(comparisonMetrics(previous, name).map((metric) => [metric.label, metric]));
+    const oldByLabel = new Map(comparisonMetrics(previous.systems[name]!).map((metric) => [metric.label, metric]));
     console.log(`\n${name}`);
     console.log("| metric | current | previous | delta |");
     console.log("|---|---:|---:|---:|");
-    for (const metric of comparisonMetrics(record, name)) {
+    for (const metric of comparisonMetrics(record.systems[name]!)) {
       const old = oldByLabel.get(metric.label)!;
       const delta = old.value === 0 ? 0 : (metric.value - old.value) / old.value;
       const improvement = metric.lowerIsBetter ? -delta : delta;
@@ -585,6 +645,18 @@ function printComparableDelta(record: RunRecord, previous: RunRecord | undefined
         `| ${metric.label} | ${fmt(metric.value)} | ${fmt(old.value)} | ${delta >= 0 ? "+" : ""}${fmt(delta * 100, 1)}%${warning} |`,
       );
     }
+  }
+}
+
+function printDbzzTelemetryCost(metrics: PairedProfileMetric[]): void {
+  console.log("\nDBZZ telemetry enabled vs disabled (positive delta means enabled measured higher)");
+  console.log("| metric | enabled | disabled | enabled vs disabled |");
+  console.log("|---|---:|---:|---:|");
+  for (const metric of metrics) {
+    const delta = metric.enabledVsDisabledPercent;
+    console.log(
+      `| ${metric.label} | ${fmt(metric.enabled)} | ${fmt(metric.disabled)} | ${delta === null ? "—" : `${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%`} |`,
+    );
   }
 }
 
@@ -741,10 +813,13 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
   }
 }
 
-function assertValidResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>): void {
+function assertValidResults(
+  systems: Partial<Record<SystemName, MeasuredDriverResult>>,
+  expectedWorkload?: DriverResult,
+): void {
   const errors: string[] = [];
   const entries = Object.entries(systems) as Array<[SystemName, MeasuredDriverResult]>;
-  const reference = entries[0]?.[1].workload;
+  const reference = expectedWorkload ?? entries[0]?.[1].workload;
   const referenceConfig = reference ? JSON.stringify(reference.config) : "";
   const operationShape = reference?.operations.map((item) => `${item.operation}/${item.profile.name}`).join(",");
   const connectionShape = reference?.connections.map((item) => item.targetConnections).join(",");
@@ -810,27 +885,52 @@ for (const name of requested) {
 }
 if (new Set(requested).size !== requested.length) throw new Error("each requested system may appear only once");
 const selected = requested.length > 0 ? requested : ALL_SYSTEMS;
-const order = requested.length > 0 ? selected : balancedOrder();
-const runners: Record<SystemName, () => Promise<MeasuredDriverResult>> = {
-  dbzz: benchDbzz,
-  convex: benchConvex,
-  spacetimedb: benchSpacetime,
-};
-const systems: Partial<Record<SystemName, MeasuredDriverResult>> = {};
-for (let index = 0; index < order.length; index++) {
-  const name = order[index]!;
-  if (!selected.includes(name)) continue;
-  systems[name] = await runners[name]();
-  if (index < order.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
+const fullRun = ALL_SYSTEMS.every((name) => selected.includes(name)) && selected.length === ALL_SYSTEMS.length;
+const savedRuns = savedCurrentCount();
+const order = requested.length > 0 ? selected : balancedOrder(savedRuns);
+const executionOrder = benchmarkExecutionOrder(order, fullRun, savedRuns);
+const systems: SystemResults = {};
+let dbzzTelemetryDisabled: DbzzMeasuredDriverResult | undefined;
+for (let index = 0; index < executionOrder.length; index++) {
+  const leg = executionOrder[index]!;
+  switch (leg) {
+    case "dbzz-telemetry-enabled":
+      systems.dbzz = await benchDbzz("enabled");
+      break;
+    case "dbzz-telemetry-disabled":
+      dbzzTelemetryDisabled = await benchDbzz("disabled");
+      break;
+    case "convex":
+      systems.convex = await benchConvex();
+      break;
+    case "spacetimedb":
+      systems.spacetimedb = await benchSpacetime();
+      break;
+  }
+  if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
 }
 
 assertValidResults(systems);
-printResults(systems);
-const fullRun = ALL_SYSTEMS.every((name) => selected.includes(name)) && selected.length === ALL_SYSTEMS.length;
+let dbzzTelemetryCost: PairedProfileMetric[] | undefined;
 if (fullRun) {
+  if (systems.dbzz === undefined || dbzzTelemetryDisabled === undefined) {
+    throw new Error("full benchmark requires telemetry-enabled and telemetry-disabled DBZZ profiles");
+  }
+  assertValidResults({ dbzz: dbzzTelemetryDisabled }, systems.dbzz.workload);
+  dbzzTelemetryCost = compareProfileMetrics(
+    comparisonMetrics(systems.dbzz),
+    comparisonMetrics(dbzzTelemetryDisabled),
+  );
+}
+printResults(systems);
+if (dbzzTelemetryCost !== undefined) printDbzzTelemetryCost(dbzzTelemetryCost);
+if (fullRun) {
+  if (dbzzTelemetryDisabled === undefined || dbzzTelemetryCost === undefined) {
+    throw new Error("full benchmark DBZZ profile comparison is missing");
+  }
   const cliVersion = assertSpacetimeVersionAlignment();
   const record: RunRecord = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     timestamp: new Date().toISOString(),
     git: {
       commit: git(["rev-parse", "--short", "HEAD"]),
@@ -860,15 +960,18 @@ if (fullRun) {
       loadGeneratorResources: "same shared process-table samples, reported separately from server resources to expose client-side saturation",
       sampleIntervalMs: RESOURCE_SAMPLE_MS,
       durability: {
-        dbzz: "SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT",
+        dbzz: "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
         convex: "current local backend native default",
         spacetimedb: "confirmed reads explicitly enabled; standalone native durable commit log",
       },
+      dbzzProfiles: "systems.dbzz is server-confirmed telemetry=enabled; dbzzTelemetryDisabled is server-confirmed telemetry=disabled; both use server-confirmed durability=balanced and fresh equivalent state",
       spacetimeQueryTransport: "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
       subscriptionCapacity: "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery",
     },
-    systemOrder: order,
+    executionOrder,
     systems,
+    dbzzTelemetryDisabled,
+    dbzzTelemetryCost,
   };
   const previous = latestComparable(record);
   mkdirSync(RESULTS_DIR, { recursive: true });

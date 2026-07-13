@@ -57,7 +57,7 @@ function connection(client: DbzzClient): BenchConnection {
               if (pending.delete(channel) && pending.size === 0) resolve();
               onUpdate(row);
             },
-            (message) => reject(new Error(message)),
+            (error) => reject(error),
           ),
         );
       }
@@ -82,7 +82,7 @@ function connection(client: DbzzClient): BenchConnection {
 const adapter: BenchAdapter = {
   system: "dbzz",
   connect: async (nonce, seeded) => {
-    const client = new DbzzClient({ url });
+    const client = new DbzzClient({ url, credential: { kind: "anonymous" } });
     const connected = connection(client);
     try {
       if (seeded) {

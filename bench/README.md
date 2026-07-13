@@ -23,7 +23,20 @@ The runner checks that ports 3311, 3210/3211, and 5321 are free before starting
 anything. Every system gets fresh state, a warmup before measured operations,
 and the same deterministic seed. All-three-system runs rotate system order and
 write `bench/results/<timestamp>-<gitsha>.json`; partial runs are diagnostic and
-are not saved.
+are not saved. A full run starts DBZZ twice from fresh equivalent state: once
+with default telemetry enabled and once with telemetry completely disabled.
+`systems.dbzz` remains the enabled profile used in the three-system tables; the
+disabled result and enabled-versus-disabled deltas are separate schema-v4
+fields, not a fake fourth database.
+
+Both DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`; the runner selects
+`DBZZ_TELEMETRY=enabled|disabled` for the paired profiles. It accepts a leg only
+when the server emits exactly one
+`@@dbzz-startup {"telemetry":"...","durability":"..."}` marker with the
+requested values before readiness. The record therefore contains the
+server-confirmed modes rather than treating requested environment variables as
+proof. The paired profile order alternates between saved runs and is preserved
+in `executionOrder`.
 
 Prerequisites:
 
@@ -134,6 +147,9 @@ subscribed cohort. Working phases report the same CPU/RSS fields. Because the
 server stays alive through a leg, allocators may retain or release memory
 between phases; per-scenario baseline and delta are both printed, and a negative
 delta is possible when a runtime releases memory during the later plateau.
+The enabled and disabled DBZZ legs use this identical sampling and workload;
+schema v4 stores both raw profiles plus paired throughput, p50/p95/p99 latency,
+CPU, and RSS deltas.
 
 ## What these numbers mean
 
@@ -142,13 +158,14 @@ indexed reads, small transactions, CPU-bound server calls, connection scaling,
 and subscription fanout/cardinality. It exercises production-shaped paths and
 checks actual results instead of timing no-op calls.
 
-It is not a hosted-service, WAN-latency, multi-region, authentication,
+It is not a hosted-service, WAN-latency, multi-region, bearer-authentication,
 multi-node, large-on-disk-dataset, or complex-business-workload benchmark.
 Local Convex avoids hosted network latency; dbzz and SpacetimeDB are local too.
-Durability remains each implementation's native default: dbzz uses SQLite WAL
-with `synchronous=NORMAL` and acknowledges after commit, Convex uses its current
-local backend default, and SpacetimeDB uses confirmed reads and its standalone
-durable commit log.
+DBZZ deliberately uses its observable `balanced` durability profile: SQLite
+WAL with `synchronous=NORMAL`, acknowledging after commit. This preserves the
+historical local comparison and is process-crash consistent, but it is not a
+power-loss durability claim. Convex uses its current local backend default, and
+SpacetimeDB uses confirmed reads and its standalone durable commit log.
 
 ## Current default result
 
@@ -219,8 +236,10 @@ indexed query cases and uses substantially less memory. That does not conflict
 with SpacetimeDB's official benchmarks; it demonstrates that this benchmark is
 measuring a different, explicitly defined workload.
 
-The earlier schema-v2 results remain in `bench/results/`, but they predate the
-subscription-capacity sweep and are intentionally not delta-comparable with
-this schema-v3 run. Treat small latency/RSS differences as ranges and rerun;
-the large dbzz-vs-Convex gaps and the SpacetimeDB saturated-write advantage have
-repeated across the retained runs.
+The displayed result is the last schema-v3 run and intentionally remains in
+place until a post-change full schema-v4 run exists. Schema-v2 predates the
+subscription-capacity sweep; schema-v3 predates paired telemetry and
+server-confirmed durability modes. Neither is delta-comparable with schema v4.
+Treat small latency/RSS differences as ranges and rerun; the large
+dbzz-vs-Convex gaps and the SpacetimeDB saturated-write advantage have repeated
+across the retained runs.
