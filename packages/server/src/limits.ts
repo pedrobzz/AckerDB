@@ -55,7 +55,6 @@ export interface ServiceLimits {
   };
   readonly schedulerBatchSize: number;
   readonly publication: CapacityLimits;
-  readonly clientPending: QueueLimits;
   readonly mutationReplay: {
     readonly maxAgeMs: number;
     readonly maxResultBytes: number;
@@ -63,12 +62,9 @@ export interface ServiceLimits {
     readonly maxBytes: number;
   };
   readonly auth: {
-    readonly maxTokenBytes: number;
-    readonly maxJwksBytes: number;
     readonly revocationDeadlineMs: number;
   };
   readonly telemetry: TelemetryLimits;
-  readonly recoveryBusyMs: number;
   readonly gracefulShutdownMs: number;
 }
 
@@ -105,7 +101,6 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
   const writeQueue = validateQueueLimits(limits.writeQueue, "writeQueue");
   const revalidationQueue = validateQueueLimits(limits.revalidationQueue, "revalidationQueue");
   const publication = validateCapacityLimits(limits.publication, "publication");
-  const clientPending = validateQueueLimits(limits.clientPending, "clientPending");
   const telemetry = validateTelemetryLimits(limits.telemetry);
 
   const scalarLimits: ReadonlyArray<readonly [string, number]> = [
@@ -134,10 +129,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     ["mutationReplay.maxResultBytes", limits.mutationReplay.maxResultBytes],
     ["mutationReplay.maxRecords", limits.mutationReplay.maxRecords],
     ["mutationReplay.maxBytes", limits.mutationReplay.maxBytes],
-    ["auth.maxTokenBytes", limits.auth.maxTokenBytes],
-    ["auth.maxJwksBytes", limits.auth.maxJwksBytes],
     ["auth.revocationDeadlineMs", limits.auth.revocationDeadlineMs],
-    ["recoveryBusyMs", limits.recoveryBusyMs],
     ["gracefulShutdownMs", limits.gracefulShutdownMs],
   ];
   for (const [path, value] of scalarLimits) positiveInteger(value, path);
@@ -173,7 +165,6 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     writeQueue,
     revalidationQueue,
     publication,
-    clientPending,
     telemetry,
     webSocket: Object.freeze({ ...limits.webSocket }),
     sse: Object.freeze({ ...limits.sse }),
@@ -207,14 +198,13 @@ export const PRODUCTION_LIMITS = defineServiceLimits({
   },
   schedulerBatchSize: 100,
   publication: { maxItems: 4_096, maxBytes: 32 * MiB },
-  clientPending: { maxItems: 4_096, maxBytes: 16 * MiB, maxAgeMs: 30_000 },
   mutationReplay: {
     maxAgeMs: 24 * 60 * 60 * 1_000,
     maxResultBytes: MiB,
     maxRecords: 1_000_000,
     maxBytes: 4 * GiB,
   },
-  auth: { maxTokenBytes: 16 * KiB, maxJwksBytes: MiB, revocationDeadlineMs: 5_000 },
+  auth: { revocationDeadlineMs: 5_000 },
   telemetry: {
     maxRecords: 2_048,
     maxBytes: 4 * MiB,
@@ -226,6 +216,5 @@ export const PRODUCTION_LIMITS = defineServiceLimits({
     slowOperationMs: 100,
     sampleIntervalMs: 1_000,
   },
-  recoveryBusyMs: 5_000,
   gracefulShutdownMs: 10_000,
 });
