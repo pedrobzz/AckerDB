@@ -29,6 +29,33 @@ const schema = defineSchema({
   records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }),
 });
 
+function catalog(database: string): unknown[] {
+  const db = new Database(database, { readonly: true, safeIntegers: true });
+  try {
+    return db
+      .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
+      .all();
+  } finally {
+    db.close();
+  }
+}
+
+function ownedState(database: string): Record<string, unknown> {
+  const db = new Database(database, { readonly: true, safeIntegers: true });
+  try {
+    return {
+      catalog: db
+        .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
+        .all(),
+      meta: db.query("SELECT key, value FROM _dbz_meta ORDER BY key").all(),
+      state: db.query("SELECT * FROM _dbz_state ORDER BY singleton").all(),
+      tags: db.query("SELECT type, variant, tag FROM _dbz_tags ORDER BY type, variant").all(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
 describe("durability and internal state", () => {
   test("defaults to FULL, reports balanced explicitly, and persists monotonic versions", () => {
     const { database } = fresh();
@@ -66,6 +93,113 @@ describe("durability and internal state", () => {
     db.exec("CREATE TABLE _dbz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     db.close();
     expect(() => new Engine(schema, legacy)).toThrow(IncompatibleDatabaseError);
+  });
+
+  test("refuses to adopt user or partial internal objects when metadata is absent", () => {
+    for (const ddl of [
+      "CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
+      "CREATE TABLE _dbz_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL)",
+    ]) {
+      const { database } = fresh();
+      const db = new Database(database, { create: true });
+      db.exec(ddl);
+      db.close();
+      const before = catalog(database);
+      expect(() => new Engine(schema, database)).toThrow(CorruptDatabaseError);
+      expect(catalog(database)).toEqual(before);
+    }
+  });
+
+  test("validates every internal object and singleton before writing startup state", () => {
+    const { database } = fresh();
+    const engine = new Engine(schema, database);
+    reconcile(engine);
+    engine.close();
+    const db = new Database(database);
+    db.exec("DROP INDEX ix__dbz_mutations_completed_at");
+    db.close();
+    const before = ownedState(database);
+    expect(() => new Engine(schema, database)).toThrow(IncompatibleDatabaseError);
+    expect(ownedState(database)).toEqual(before);
+  });
+
+  test("rejects dropped, extra, or changed application columns despite a matching snapshot", () => {
+    const corruptions = [
+      'ALTER TABLE "records" DROP COLUMN "value"',
+      'ALTER TABLE "records" ADD COLUMN "extra" TEXT',
+      `CREATE TABLE "replacement" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "value" INTEGER NOT NULL);
+       DROP TABLE "records";
+       ALTER TABLE "replacement" RENAME TO "records"`,
+    ];
+    for (const corruption of corruptions) {
+      const { database } = fresh();
+      const engine = new Engine(schema, database);
+      reconcile(engine);
+      engine.close();
+      const db = new Database(database);
+      db.exec(corruption);
+      db.close();
+      const before = ownedState(database);
+      expect(() => new Engine(schema, database)).toThrow(CorruptDatabaseError);
+      expect(ownedState(database)).toEqual(before);
+    }
+  });
+
+  test("rejects missing and wrong application indexes before ready or reconciliation", () => {
+    const indexed = defineSchema({
+      records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }).index("by_value", ["value"], {
+        unique: true,
+      }),
+    });
+    const corruptions = [
+      "DROP INDEX ix_records_by_value",
+      "DROP INDEX ix_records_by_value; CREATE INDEX ix_records_by_value ON records (value)",
+    ];
+    for (const corruption of corruptions) {
+      const { database } = fresh();
+      const engine = new Engine(indexed, database);
+      reconcile(engine);
+      engine.close();
+      const db = new Database(database);
+      db.exec(corruption);
+      db.close();
+      const before = ownedState(database);
+      expect(() => new Engine(indexed, database)).toThrow(CorruptDatabaseError);
+      expect(ownedState(database)).toEqual(before);
+    }
+
+    const { database } = fresh();
+    const live = new Engine(indexed, database);
+    reconcile(live);
+    live.writer.exec("DROP INDEX ix_records_by_value");
+    const before = live.writer.query("SELECT key, value FROM _dbz_meta ORDER BY key").all();
+    expect(() => reconcile(live)).toThrow(CorruptDatabaseError);
+    expect(live.writer.query("SELECT key, value FROM _dbz_meta ORDER BY key").all()).toEqual(before);
+    live.close();
+  });
+
+  test("rejects corrupt tag assignments without repairing them", () => {
+    const tagged = defineSchema({
+      records: defineTable({
+        id: dbz.primaryKey(),
+        value: dbz.enum("RecordState", ["draft", "ready", "done"]),
+      }),
+    });
+    for (const corruption of [
+      "UPDATE _dbz_tags SET tag = 0 WHERE type = 'RecordState' AND variant = 'ready'",
+      "DELETE FROM _dbz_tags WHERE type = 'RecordState' AND variant = 'done'",
+    ]) {
+      const { database } = fresh();
+      const engine = new Engine(tagged, database);
+      reconcile(engine);
+      engine.close();
+      const db = new Database(database);
+      db.exec(corruption);
+      db.close();
+      const before = ownedState(database);
+      expect(() => new Engine(tagged, database)).toThrow(CorruptDatabaseError);
+      expect(ownedState(database)).toEqual(before);
+    }
   });
 
   test("rejects inconsistent internal ledger state", () => {

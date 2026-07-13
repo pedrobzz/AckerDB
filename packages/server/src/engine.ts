@@ -40,7 +40,7 @@ import {
 import { dirname } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
-import type { Validator } from "./dbz.ts";
+import type { Descriptor, Validator } from "./dbz.ts";
 import type { IndexDef, Schema, TableDef } from "./schema.ts";
 import { snapshotOf, type SchemaSnapshot } from "./snapshot.ts";
 
@@ -146,6 +146,218 @@ const ENGINE_SCHEMA_VERSION = 2;
 const LOCK_SUFFIX = ".dbzz.lock";
 
 const quote = (name: string) => `"${name}"`;
+
+interface StoredObject {
+  type: "table" | "index";
+  name: string;
+  table: string;
+  sql: string;
+}
+
+const INTERNAL_OBJECTS: StoredObject[] = [
+  {
+    type: "table",
+    name: "_dbz_meta",
+    table: "_dbz_meta",
+    sql: "CREATE TABLE _dbz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+  },
+  {
+    type: "table",
+    name: "_dbz_tags",
+    table: "_dbz_tags",
+    sql: "CREATE TABLE _dbz_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL, PRIMARY KEY (type, variant))",
+  },
+  {
+    type: "table",
+    name: "_dbz_state",
+    table: "_dbz_state",
+    sql: `CREATE TABLE _dbz_state (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
+      clean_shutdown INTEGER NOT NULL CHECK (clean_shutdown IN (0, 1)),
+      mutation_records INTEGER NOT NULL CHECK (mutation_records >= 0),
+      mutation_result_bytes INTEGER NOT NULL CHECK (mutation_result_bytes >= 0),
+      last_checkpoint_at REAL
+    )`,
+  },
+  {
+    type: "table",
+    name: "_dbz_mutations",
+    table: "_dbz_mutations",
+    sql: `CREATE TABLE _dbz_mutations (
+      session_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      issued_at REAL NOT NULL,
+      principal_fingerprint TEXT NOT NULL,
+      function_ref TEXT NOT NULL,
+      args_fingerprint TEXT NOT NULL,
+      result TEXT NOT NULL,
+      result_bytes INTEGER NOT NULL CHECK (result_bytes >= 0),
+      commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
+      durability TEXT NOT NULL CHECK (durability IN ('production', 'balanced')),
+      completed_at REAL NOT NULL,
+      PRIMARY KEY (session_id, request_id)
+    )`,
+  },
+  {
+    type: "index",
+    name: "ix__dbz_mutations_completed_at",
+    table: "_dbz_mutations",
+    sql: "CREATE INDEX ix__dbz_mutations_completed_at ON _dbz_mutations (completed_at)",
+  },
+];
+
+const INTERNAL_OBJECT_NAMES = new Set(INTERNAL_OBJECTS.map((object) => object.name));
+const STORED_NAME = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+
+function canonicalSql(sql: string): string {
+  return sql.replace(/\s+/g, " ").trim();
+}
+
+function storedRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function corruptSnapshot(message: string): never {
+  throw new CorruptDatabaseError(`stored schema snapshot is invalid: ${message}`);
+}
+
+function storedName(value: unknown, path: string): string {
+  if (typeof value !== "string" || !STORED_NAME.test(value) || value.includes("__")) {
+    corruptSnapshot(`${path} is not a valid identifier`);
+  }
+  return value;
+}
+
+function physicalColumnDdl(name: string, descriptor: Descriptor, path: string): string[] {
+  if (!storedRecord(descriptor) || typeof descriptor["k"] !== "string") {
+    corruptSnapshot(`${path} is not a validator descriptor`);
+  }
+  const nullable = descriptor["k"] === "nullable";
+  const base = (nullable ? descriptor["inner"] : descriptor) as Descriptor;
+  if (!storedRecord(base) || typeof base["k"] !== "string") {
+    corruptSnapshot(`${path} has an invalid nullable descriptor`);
+  }
+  const notNull = nullable ? "" : " NOT NULL";
+  if (base["k"] === "pk") return [`${quote(name)} INTEGER PRIMARY KEY AUTOINCREMENT`];
+  if (base["k"] === "union") {
+    return [`${quote(name)} INTEGER${notNull}`, `${quote(`${name}__p`)} TEXT${notNull}`];
+  }
+  const type = (() => {
+    switch (base["k"]) {
+      case "string":
+      case "array":
+      case "object":
+      case "jsonb":
+        return "TEXT";
+      case "number":
+      case "scheduleAt":
+        return "REAL";
+      case "bigint":
+      case "identity":
+      case "boolean":
+      case "enum":
+        return "INTEGER";
+      case "bytes":
+        return "BLOB";
+      default:
+        corruptSnapshot(`${path} cannot be stored as a table column`);
+    }
+  })();
+  return [`${quote(name)} ${type}${notNull}`];
+}
+
+function parseStoredSnapshot(value: string): SchemaSnapshot {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    corruptSnapshot("JSON cannot be parsed");
+  }
+  if (!storedRecord(parsed) || parsed["version"] !== 1 || !storedRecord(parsed["tables"])) {
+    corruptSnapshot("root must contain version 1 and a tables object");
+  }
+  for (const [tableName, value] of Object.entries(parsed["tables"])) {
+    storedName(tableName, "table name");
+    if (!storedRecord(value) || (value["kind"] !== "table" && value["kind"] !== "event")) {
+      corruptSnapshot(`${tableName} has an invalid table kind`);
+    }
+    if (!storedRecord(value["columns"]) || !Array.isArray(value["indexes"])) {
+      corruptSnapshot(`${tableName} must contain columns and indexes`);
+    }
+    const storedColumns = value["columns"];
+    let primaryKeys = 0;
+    let scheduleColumns = 0;
+    for (const [column, descriptor] of Object.entries(storedColumns)) {
+      storedName(column, `${tableName} column`);
+      if (!storedRecord(descriptor)) corruptSnapshot(`${tableName}.${column} is invalid`);
+      if (descriptor["k"] === "pk") primaryKeys++;
+      if (descriptor["k"] === "scheduleAt") scheduleColumns++;
+      physicalColumnDdl(column, descriptor as Descriptor, `${tableName}.${column}`);
+    }
+    if (primaryKeys !== 1) corruptSnapshot(`${tableName} has ${primaryKeys} primary keys`);
+    if (scheduleColumns > 1 || (value["kind"] === "event" && scheduleColumns > 0)) {
+      corruptSnapshot(`${tableName} has invalid scheduling columns`);
+    }
+    const indexNames = new Set<string>();
+    for (const index of value["indexes"]) {
+      if (!storedRecord(index)) corruptSnapshot(`${tableName} has an invalid index`);
+      const name = storedName(index["name"], `${tableName} index name`);
+      if (indexNames.has(name)) corruptSnapshot(`${tableName} has duplicate index ${name}`);
+      indexNames.add(name);
+      if (
+        !Array.isArray(index["columns"]) ||
+        index["columns"].length === 0 ||
+        index["columns"].some((column) => typeof column !== "string" || !(column in storedColumns)) ||
+        new Set(index["columns"]).size !== index["columns"].length ||
+        typeof index["unique"] !== "boolean" ||
+        (index["algorithm"] !== "btree" && index["algorithm"] !== "direct")
+      ) {
+        corruptSnapshot(`${tableName}.${name} has an invalid definition`);
+      }
+    }
+    if (value["kind"] === "event" && value["indexes"].length > 0) {
+      corruptSnapshot(`${tableName} event table has physical indexes`);
+    }
+  }
+  return parsed as unknown as SchemaSnapshot;
+}
+
+function expectedApplicationObjects(snapshot: SchemaSnapshot): StoredObject[] {
+  const objects: StoredObject[] = [];
+  for (const [tableName, table] of Object.entries(snapshot.tables)) {
+    if (table.kind === "event") continue;
+    const columns = Object.entries(table.columns).flatMap(([column, descriptor]) =>
+      physicalColumnDdl(column, descriptor, `${tableName}.${column}`),
+    );
+    objects.push({
+      type: "table",
+      name: tableName,
+      table: tableName,
+      sql: `CREATE TABLE ${quote(tableName)} (${columns.join(", ")})`,
+    });
+    for (const index of table.indexes) {
+      const name = indexSqlName(tableName, index.name);
+      objects.push({
+        type: "index",
+        name,
+        table: tableName,
+        sql: `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quote(name)} ON ${quote(tableName)} (${index.columns.map(quote).join(", ")})`,
+      });
+    }
+    const scheduleAt = Object.entries(table.columns).find(([, descriptor]) => descriptor["k"] === "scheduleAt")?.[0];
+    if (scheduleAt !== undefined) {
+      const name = `ix__sched_${tableName}`;
+      objects.push({
+        type: "index",
+        name,
+        table: tableName,
+        sql: `CREATE INDEX ${quote(name)} ON ${quote(tableName)} (${quote(scheduleAt)})`,
+      });
+    }
+  }
+  return objects;
+}
 
 function unwrapValidator(validator: Validator<unknown, string>): {
   base: Validator<unknown, string>;
@@ -311,10 +523,18 @@ export class Engine {
     let reader: Database | null = null;
     try {
       writer = new Database(sqlitePath, { create: true, safeIntegers: true });
-      writer.exec("PRAGMA journal_mode = WAL");
-      writer.exec(`PRAGMA synchronous = ${this.durability === "production" ? "FULL" : "NORMAL"}`);
       writer.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
       writer.exec("PRAGMA foreign_keys = ON");
+      this.writer = writer;
+      this.initializeInternalSchema();
+      const integrity = this.integrity(options.integrityCheck ?? "quick");
+      if (!integrity.ok) throw new CorruptDatabaseError(integrity.errors.join("; "));
+      this.verifyInternalState();
+      this.loadSnapshot();
+      this.internTags();
+      this.buildPlans();
+      writer.exec("PRAGMA journal_mode = WAL");
+      writer.exec(`PRAGMA synchronous = ${this.durability === "production" ? "FULL" : "NORMAL"}`);
       if (path === ":memory:") {
         reader = new Database(sqlitePath, { create: true, safeIntegers: true });
         reader.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
@@ -324,19 +544,12 @@ export class Engine {
         reader.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
         reader.exec("PRAGMA foreign_keys = ON");
       }
-      this.writer = writer;
       this.reader = reader;
-      this.initializeInternalSchema();
-      const integrity = this.integrity(options.integrityCheck ?? "quick");
-      if (!integrity.ok) throw new CorruptDatabaseError(integrity.errors.join("; "));
-      this.verifyInternalState();
       const state = this.writer
         .query("SELECT clean_shutdown FROM _dbz_state WHERE singleton = 1")
         .get() as { clean_shutdown: bigint };
       this.recoveredFromCrash = state.clean_shutdown === 0n;
       this.writer.query("UPDATE _dbz_state SET clean_shutdown = 0 WHERE singleton = 1").run();
-      this.internTags();
-      this.buildPlans();
     } catch (error) {
       if (reader !== null && reader !== writer) reader.close(false);
       writer?.close(false);
@@ -363,39 +576,19 @@ export class Engine {
   }
 
   private initializeInternalSchema(): void {
-    const exists = this.writer
-      .query("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = '_dbz_meta'")
-      .get();
-    if (exists === null) {
+    const objects = this.writer
+      .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+      .all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
+    const meta = objects.find((object) => object.type === "table" && object.name === "_dbz_meta");
+    if (meta === undefined) {
+      if (objects.length > 0) {
+        throw new CorruptDatabaseError(
+          `database has ${objects.length} object(s) but no DBZZ metadata; refusing to adopt it`,
+        );
+      }
       this.writer.exec("BEGIN IMMEDIATE");
       try {
-        this.writer.exec(
-          `CREATE TABLE _dbz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-           CREATE TABLE _dbz_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL, PRIMARY KEY (type, variant));
-           CREATE TABLE _dbz_state (
-             singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-             commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
-             clean_shutdown INTEGER NOT NULL CHECK (clean_shutdown IN (0, 1)),
-             mutation_records INTEGER NOT NULL CHECK (mutation_records >= 0),
-             mutation_result_bytes INTEGER NOT NULL CHECK (mutation_result_bytes >= 0),
-             last_checkpoint_at REAL
-           );
-           CREATE TABLE _dbz_mutations (
-             session_id TEXT NOT NULL,
-             request_id TEXT NOT NULL,
-             issued_at REAL NOT NULL,
-             principal_fingerprint TEXT NOT NULL,
-             function_ref TEXT NOT NULL,
-             args_fingerprint TEXT NOT NULL,
-             result TEXT NOT NULL,
-             result_bytes INTEGER NOT NULL CHECK (result_bytes >= 0),
-             commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
-             durability TEXT NOT NULL CHECK (durability IN ('production', 'balanced')),
-             completed_at REAL NOT NULL,
-             PRIMARY KEY (session_id, request_id)
-           );
-           CREATE INDEX ix__dbz_mutations_completed_at ON _dbz_mutations (completed_at);`,
-        );
+        this.writer.exec(INTERNAL_OBJECTS.map((object) => object.sql).join(";"));
         this.writer
           .query("INSERT INTO _dbz_meta (key, value) VALUES ('engine_schema', ?)")
           .run(String(ENGINE_SCHEMA_VERSION));
@@ -410,6 +603,11 @@ export class Engine {
       return;
     }
 
+    const expectedMeta = INTERNAL_OBJECTS[0]!;
+    if (canonicalSql(meta.sql ?? "") !== canonicalSql(expectedMeta.sql)) {
+      throw new IncompatibleDatabaseError("database internal table _dbz_meta has an incompatible shape");
+    }
+
     const version = this.writer
       .query("SELECT value FROM _dbz_meta WHERE key = 'engine_schema'")
       .get() as { value: string } | null;
@@ -418,17 +616,27 @@ export class Engine {
         `database engine schema is ${version?.value ?? "legacy"}; expected ${ENGINE_SCHEMA_VERSION}`,
       );
     }
-    const expected = new Map([
-      ["_dbz_state", ["singleton", "commit_version", "clean_shutdown", "mutation_records", "mutation_result_bytes", "last_checkpoint_at"]],
-      ["_dbz_mutations", ["session_id", "request_id", "issued_at", "principal_fingerprint", "function_ref", "args_fingerprint", "result", "result_bytes", "commit_version", "durability", "completed_at"]],
-    ]);
-    for (const [table, columns] of expected) {
-      const actual = (this.writer.query(`PRAGMA table_info(${quote(table)})`).all() as { name: string }[]).map(
-        (row) => row.name,
-      );
-      if (actual.join("\0") !== columns.join("\0")) {
-        throw new IncompatibleDatabaseError(`database internal table ${table} has an incompatible shape`);
+    const actualByName = new Map(objects.map((object) => [object.name, object]));
+    for (const expected of INTERNAL_OBJECTS) {
+      const actual = actualByName.get(expected.name);
+      if (
+        actual === undefined ||
+        actual.type !== expected.type ||
+        actual.tbl_name !== expected.table ||
+        canonicalSql(actual.sql ?? "") !== canonicalSql(expected.sql)
+      ) {
+        throw new IncompatibleDatabaseError(
+          `database internal ${expected.type} ${expected.name} has an incompatible shape`,
+        );
       }
+    }
+    const unknown = objects.find(
+      (object) =>
+        (object.name.startsWith("_dbz_") || object.name.startsWith("ix__dbz_")) &&
+        !INTERNAL_OBJECT_NAMES.has(object.name),
+    );
+    if (unknown !== undefined) {
+      throw new IncompatibleDatabaseError(`database has unknown internal object ${unknown.name}`);
     }
   }
 
@@ -442,6 +650,14 @@ export class Engine {
   }
 
   private verifyInternalState(): void {
+    const unknownMeta = this.writer
+      .query("SELECT key FROM _dbz_meta WHERE key NOT IN ('engine_schema', 'schema') LIMIT 1")
+      .get() as { key: string } | null;
+    if (unknownMeta !== null) throw new CorruptDatabaseError(`unknown DBZZ metadata key ${unknownMeta.key}`);
+    const stateRows = this.writer
+      .query("SELECT COUNT(*) AS count FROM _dbz_state")
+      .get() as { count: bigint };
+    if (stateRows.count !== 1n) throw new CorruptDatabaseError("DBZZ state must contain exactly one singleton row");
     const state = this.writer
       .query("SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbz_state WHERE singleton = 1")
       .get() as
@@ -456,6 +672,19 @@ export class Engine {
     }
     if (actual.max_version > state.commit_version) {
       throw new CorruptDatabaseError("mutation ledger references a future commit version");
+    }
+    const invalidTag = this.writer
+      .query(
+        "SELECT 1 FROM _dbz_tags WHERE typeof(type) <> 'text' OR length(type) = 0 OR typeof(variant) <> 'text' OR length(variant) = 0 OR typeof(tag) <> 'integer' OR tag < 0 LIMIT 1",
+      )
+      .get();
+    const invalidTagGroup = this.writer
+      .query(
+        "SELECT 1 FROM _dbz_tags GROUP BY type HAVING MIN(tag) <> 0 OR MAX(tag) + 1 <> COUNT(*) OR COUNT(DISTINCT tag) <> COUNT(*) LIMIT 1",
+      )
+      .get();
+    if (invalidTag !== null || invalidTagGroup !== null) {
+      throw new CorruptDatabaseError("DBZZ tag assignments are invalid");
     }
   }
 
@@ -567,7 +796,6 @@ export class Engine {
   /** Assign stable tags to every named enum/union variant. */
   private internTags(): void {
     const select = this.writer.query("SELECT variant, tag FROM _dbz_tags WHERE type = ?");
-    const insert = this.writer.query("INSERT INTO _dbz_tags (type, variant, tag) VALUES (?, ?, ?)");
     for (const [typeName, validator] of this.schema.namedTypes) {
       const variants =
         validator.kind === "enum"
@@ -584,12 +812,21 @@ export class Engine {
       for (const variant of variants) {
         if (!map.toTag.has(variant)) {
           const tag = ++max;
-          insert.run(typeName, variant, tag);
           map.toTag.set(variant, tag);
           map.toName.set(tag, variant);
         }
       }
       this.tags.set(typeName, map);
+    }
+  }
+
+  /** Persist the in-memory tag plan. The caller owns the schema transaction. */
+  persistTags(): void {
+    const insert = this.writer.query(
+      "INSERT INTO _dbz_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
+    );
+    for (const [type, map] of this.tags) {
+      for (const [variant, tag] of map.toTag) insert.run(type, variant, tag);
     }
   }
 
@@ -747,8 +984,16 @@ export class Engine {
 
   /** Create all tables and indexes for a fresh database and store the snapshot. */
   createAll(): void {
-    for (const plan of this.plans.values()) this.createTablePhysical(plan);
-    this.saveSnapshot(snapshotOf(this.schema));
+    this.writer.exec("BEGIN IMMEDIATE");
+    try {
+      this.persistTags();
+      for (const plan of this.plans.values()) this.createTablePhysical(plan);
+      this.saveSnapshot(snapshotOf(this.schema));
+      this.writer.exec("COMMIT");
+    } catch (error) {
+      this.writer.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   // -- Meta ------------------------------------------------------------------
@@ -757,7 +1002,76 @@ export class Engine {
     const row = this.writer.query("SELECT value FROM _dbz_meta WHERE key = 'schema'").get() as
       | { value: string }
       | null;
-    return row === null ? null : (JSON.parse(row.value) as SchemaSnapshot);
+    const snapshot = row === null ? null : parseStoredSnapshot(row.value);
+    this.verifyApplicationSchema(snapshot);
+    if (snapshot !== null) this.verifySnapshotTags(snapshot);
+    return snapshot;
+  }
+
+  private verifyApplicationSchema(snapshot: SchemaSnapshot | null): void {
+    const actual = this.writer
+      .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+      .all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
+    const expected = new Map(
+      [...INTERNAL_OBJECTS, ...(snapshot === null ? [] : expectedApplicationObjects(snapshot))]
+        .map((object) => [object.name, object]),
+    );
+    const extra = actual.find((object) => !expected.has(object.name));
+    if (extra !== undefined) {
+      const reason = snapshot === null ? "without a schema snapshot" : "outside the stored schema snapshot";
+      throw new CorruptDatabaseError(`database object ${extra.name} exists ${reason}`);
+    }
+    for (const object of expected.values()) {
+      const stored = actual.find((candidate) => candidate.name === object.name);
+      if (
+        stored === undefined ||
+        stored.type !== object.type ||
+        stored.tbl_name !== object.table ||
+        canonicalSql(stored.sql ?? "") !== canonicalSql(object.sql)
+      ) {
+        if (INTERNAL_OBJECT_NAMES.has(object.name)) continue;
+        throw new CorruptDatabaseError(
+          `database ${object.type} ${object.name} does not match the stored schema snapshot`,
+        );
+      }
+    }
+  }
+
+  private verifySnapshotTags(snapshot: SchemaSnapshot): void {
+    const definitions = new Map<string, { descriptor: string; variants: string[] }>();
+    for (const table of Object.values(snapshot.tables)) {
+      for (const descriptor of Object.values(table.columns)) {
+        const base = (descriptor["k"] === "nullable" ? descriptor["inner"] : descriptor) as Descriptor;
+        if (base["k"] !== "enum" && base["k"] !== "union") continue;
+        const name = storedName(base["name"], "named type");
+        const variants = base["k"] === "enum"
+          ? base["values"]
+          : storedRecord(base["members"])
+            ? Object.keys(base["members"])
+            : null;
+        if (!Array.isArray(variants) || variants.length === 0 || variants.some((value) => typeof value !== "string")) {
+          corruptSnapshot(`${name} has invalid variants`);
+        }
+        const signature = JSON.stringify(base);
+        const previous = definitions.get(name);
+        if (previous !== undefined && previous.descriptor !== signature) {
+          corruptSnapshot(`named type ${name} has conflicting definitions`);
+        }
+        definitions.set(name, { descriptor: signature, variants: variants as string[] });
+      }
+    }
+    const stored = new Map<string, Set<string>>();
+    for (const row of this.writer.query("SELECT type, variant FROM _dbz_tags").all() as { type: string; variant: string }[]) {
+      const variants = stored.get(row.type) ?? new Set<string>();
+      variants.add(row.variant);
+      stored.set(row.type, variants);
+    }
+    for (const [type, definition] of definitions) {
+      const missing = definition.variants.find((variant) => !stored.get(type)?.has(variant));
+      if (missing !== undefined) {
+        throw new CorruptDatabaseError(`DBZZ tag assignment is missing ${type}.${missing}`);
+      }
+    }
   }
 
   saveSnapshot(snapshot: SchemaSnapshot): void {

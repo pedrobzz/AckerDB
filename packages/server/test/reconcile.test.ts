@@ -305,7 +305,10 @@ describe("reconcile", () => {
         role: dbz.enum("RRole", ["admin", "member", "guest"]),
         slug: dbz.string(),
       }).index("by_name", ["name"]),
-      audit: defineTable({ id: dbz.primaryKey(), line: dbz.string() }),
+      audit: defineTable({
+        id: dbz.primaryKey(),
+        line: dbz.enum("AuditKind", ["created", "deleted"]),
+      }),
     });
     const refusing = new Engine(mixed, path);
     expect(() => reconcile(refusing)).toThrow(UnsafeSchemaChange);
@@ -313,6 +316,9 @@ describe("reconcile", () => {
     expect(
       refusing.writer.query("SELECT name FROM sqlite_master WHERE name = 'audit'").get(),
     ).toBe(null);
+    expect(
+      refusing.writer.query("SELECT COUNT(*) AS count FROM _dbz_tags WHERE type = 'AuditKind'").get(),
+    ).toEqual({ count: 0n });
     refusing.close();
   });
 });

@@ -3,6 +3,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
+import { Database } from "bun:sqlite";
 import { DbzzClient } from "@dbzz/client";
 import { FIXTURE_ADMIN_USERS, FIXTURE_MESSAGES, FIXTURE_SCHEMA, makeFixture } from "./fixture.ts";
 
@@ -157,6 +158,25 @@ describe("dbz CLI", () => {
     await retried.waitFor("ready on");
     retried.child.kill("SIGTERM");
     expect(await retried.child.exited).toBe(0);
+  }, 20_000);
+
+  test("start exits without readiness when the live database schema is corrupt", async () => {
+    const port = freePort();
+    const dir = fixture(port);
+    const first = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    await first.waitFor("ready on");
+    first.child.kill("SIGTERM");
+    expect(await first.child.exited).toBe(0);
+
+    const db = new Database(join(dir, ".zdb", "data.db"));
+    db.exec("DROP INDEX ix_messages_by_channel");
+    db.close();
+
+    const failed = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    expect(await failed.child.exited).toBe(1);
+    await failed.drained;
+    expect(failed.output()).not.toContain("@@dbzz-startup");
+    expect(failed.output()).not.toContain("ready on");
   }, 20_000);
 
   test("dev: watches, re-runs codegen debounced, restarts the server", async () => {
