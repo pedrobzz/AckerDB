@@ -336,14 +336,35 @@ describe("BoundedSseProducer", () => {
     const text = `data: ${encode(chunk)}\n\n`;
     const bytes = encoder.encode(text).byteLength;
 
+    expect(budget.snapshot()).toMatchObject({
+      bytes: producer.controlReserveBytes,
+      applicationBytes: 0,
+      controlBytes: producer.controlReserveBytes,
+    });
     producer.write(chunk);
     expect(producer.snapshot().queuedBytes).toBe(bytes);
-    expect(budget.snapshot().bytes).toBe(bytes);
+    expect(budget.snapshot()).toMatchObject({
+      bytes: producer.controlReserveBytes + bytes,
+      applicationBytes: bytes,
+      controlBytes: producer.controlReserveBytes,
+    });
 
     const reader = producer.stream.getReader();
     expect(decoder.decode((await reader.read()).value)).toBe(text);
     expect(producer.snapshot().queuedBytes).toBe(0);
+    expect(budget.snapshot()).toMatchObject({
+      bytes: producer.controlReserveBytes,
+      applicationBytes: 0,
+      controlBytes: producer.controlReserveBytes,
+    });
     const completion = producer.complete();
+    await Promise.resolve();
+    const doneBytes = encoder.encode("data: [DONE]\n\n").byteLength;
+    expect(budget.snapshot()).toMatchObject({
+      bytes: doneBytes,
+      applicationBytes: 0,
+      controlBytes: doneBytes,
+    });
     expect(decoder.decode((await reader.read()).value)).toBe("data: [DONE]\n\n");
     await completion;
     expect((await reader.read()).done).toBe(true);
@@ -406,6 +427,66 @@ describe("BoundedSseProducer", () => {
     expect(secondChunks.at(-1)).toStartWith("event: dbzz-error\ndata: ");
 
     await first.stream.cancel("test cleanup");
+    expect(budget.snapshot().bytes).toBe(0);
+  });
+
+  test("admits only globally terminal-safe streams and delivers simultaneous worst-case errors", async () => {
+    const probeLimits = testLimits();
+    const probeBudget = new OutboundBudget(probeLimits.sse.maxBytes, 512);
+    const probe = new BoundedSseProducer({ budget: probeBudget, limits: probeLimits });
+    const terminalBytes = probe.controlReserveBytes;
+    await probe.stream.cancel("probe complete");
+    expect(probeBudget.snapshot().bytes).toBe(0);
+
+    const maximumActive = 4;
+    const maxBytes = terminalBytes * maximumActive;
+    const limits = testLimits({ sse: { maxBytes } });
+    const budget = new OutboundBudget(maxBytes, terminalBytes);
+    const producers = Array.from(
+      { length: maximumActive },
+      () => new BoundedSseProducer({ budget, limits }),
+    );
+    expect(budget.snapshot()).toMatchObject({
+      bytes: maxBytes,
+      applicationBytes: 0,
+      controlBytes: maxBytes,
+    });
+
+    let admissionError: unknown;
+    try {
+      new BoundedSseProducer({ budget, limits });
+    } catch (error) {
+      admissionError = error;
+    }
+    expect(admissionError).toBeInstanceOf(DbzzError);
+    expect(admissionError).toMatchObject({
+      code: "overloaded",
+      retryable: true,
+      resource: "sse",
+      message: "global SSE control byte limit exceeded",
+    });
+
+    const worstCase = new DbzzError("convergence_unavailable", "x".repeat(512), {
+      committed: true,
+      resource: "subscription",
+    });
+    for (const producer of producers) producer.fail(worstCase);
+    expect(budget.snapshot()).toMatchObject({
+      bytes: maxBytes,
+      applicationBytes: 0,
+      controlBytes: maxBytes,
+    });
+
+    const streams = await Promise.all(producers.map((producer) => collect(producer.stream)));
+    for (const chunks of streams) {
+      expect(chunks).toHaveLength(1);
+      expect(encoder.encode(chunks[0]!).byteLength).toBe(terminalBytes);
+      expect(decode(chunks[0]!.split("data: ")[1]!.trim())).toMatchObject({
+        code: "convergence_unavailable",
+        committed: true,
+        resource: "subscription",
+      });
+    }
     expect(budget.snapshot().bytes).toBe(0);
   });
 

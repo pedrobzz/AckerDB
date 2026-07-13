@@ -578,8 +578,15 @@ function sseErrorBytes(error: DbzzError, maxBytes: number): Uint8Array {
 }
 
 const MINIMUM_SSE_CONTROL_BYTES = Math.max(
-  sseErrorBytes(slowConsumer("sse", "SSE consumer stalled"), Number.MAX_SAFE_INTEGER).byteLength,
-  sseErrorBytes(overloaded("sse", "SSE delivery overloaded"), Number.MAX_SAFE_INTEGER).byteLength,
+  sseErrorBytes(new DbzzError("auth_unavailable", "", {
+    retryable: true,
+    retryAfterMs: 30_000,
+    resource: "subscription",
+  }), Number.MAX_SAFE_INTEGER).byteLength,
+  sseErrorBytes(new DbzzError("convergence_unavailable", "", {
+    committed: true,
+    resource: "subscription",
+  }), Number.MAX_SAFE_INTEGER).byteLength,
   sseDoneBytes().byteLength,
 );
 
@@ -606,6 +613,7 @@ export class BoundedSseProducer {
   private readonly reservations: StreamReservation[] = [];
   private readonly externalSignal: AbortSignal | undefined;
   private readonly externalAbort: (() => void) | undefined;
+  private terminalReservation: OutboundReservation | null = null;
   private queuedBytes = 0;
   private state: "open" | "ending" | "closed" = "open";
   private failure: DbzzError | null = null;
@@ -651,6 +659,12 @@ export class BoundedSseProducer {
       new ByteLengthQueuingStrategy({ highWaterMark: maxBytes }),
     );
     this.controller = controller;
+
+    const terminalReservation = this.budget.reserve(this.controlReserveBytes, "control");
+    if (terminalReservation === null) {
+      throw overloaded("sse", "global SSE control byte limit exceeded");
+    }
+    this.terminalReservation = terminalReservation;
 
     if (options.signal !== undefined) {
       this.externalAbort = () => this.cancel(options.signal!.reason, true);
@@ -820,8 +834,20 @@ export class BoundedSseProducer {
   }
 
   private releaseAll(): void {
+    this.terminalReservation?.release();
+    this.terminalReservation = null;
     for (const item of this.reservations.splice(0)) item.reservation.release();
     this.queuedBytes = 0;
+  }
+
+  private consumeTerminalReservation(bytes: number): OutboundReservation {
+    const reservation = this.terminalReservation;
+    if (reservation === null || bytes > reservation.remainingBytes) {
+      throw new Error("SSE terminal reservation underflow");
+    }
+    this.terminalReservation = null;
+    reservation.release(reservation.remainingBytes - bytes);
+    return reservation;
   }
 
   private waitForCapacity(): Promise<void> {
@@ -843,12 +869,7 @@ export class BoundedSseProducer {
     await this.waitForEmpty();
     if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
     const bytes = sseDoneBytes();
-    const reservation = this.budget.reserve(bytes.byteLength, "control");
-    if (reservation === null) {
-      const error = overloaded("sse", "global SSE control byte limit exceeded");
-      this.terminate(error);
-      throw error;
-    }
+    const reservation = this.consumeTerminalReservation(bytes.byteLength);
     this.state = "ending";
     this.enqueue(bytes, reservation);
     if (this.queuedBytes === 0) this.finishClose();
@@ -868,16 +889,7 @@ export class BoundedSseProducer {
     this.clearStall();
 
     const bytes = sseErrorBytes(error, this.controlReserveBytes);
-    const reservation =
-      this.queuedBytes + bytes.byteLength <= this.limits.sse.maxBytesPerStream
-        ? this.budget.reserve(bytes.byteLength, "control")
-        : null;
-    if (reservation === null) {
-      this.controller.error(error);
-      this.releaseAll();
-      this.finishClosedState();
-      return;
-    }
+    const reservation = this.consumeTerminalReservation(bytes.byteLength);
     try {
       this.enqueue(bytes, reservation);
     } catch {
