@@ -5,6 +5,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { DurabilityPolicy } from "@dbzz/core";
+import type { OidcVerifierOptions } from "@dbzz/server";
 
 export type TelemetryMode = "enabled" | "disabled";
 
@@ -21,6 +22,10 @@ export interface AppConfig {
   port: number;
   durability: DurabilityPolicy;
   telemetry: TelemetryMode;
+  /** Optional external identity providers. Bearer credentials fail closed when omitted. */
+  oidc?: Omit<OidcVerifierOptions, "fetch">;
+  /** Workload-principal OAuth scope required by the operational status endpoint. */
+  statusScope: string;
 }
 
 interface RawConfig {
@@ -29,6 +34,18 @@ interface RawConfig {
   generated?: string;
   db?: string;
   port?: number;
+  oidc?: Omit<OidcVerifierOptions, "fetch">;
+  statusScope?: string;
+}
+
+const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
+
+function statusScope(value: unknown): string {
+  const scope = value ?? "dbzz:status";
+  if (typeof scope !== "string" || !OAUTH_SCOPE_TOKEN.test(scope)) {
+    throw new Error("statusScope must be one OAuth scope token of at most 128 characters");
+  }
+  return scope;
 }
 
 function exactProfile<const T extends string>(
@@ -64,5 +81,7 @@ export function loadConfig(
     port: raw.port ?? 3211,
     durability: exactProfile(env, "DBZZ_DURABILITY", ["production", "balanced"], "production"),
     telemetry: exactProfile(env, "DBZZ_TELEMETRY", ["enabled", "disabled"], "enabled"),
+    ...(raw.oidc === undefined ? {} : { oidc: raw.oidc }),
+    statusScope: statusScope(raw.statusScope),
   };
 }
