@@ -595,7 +595,7 @@ export class OrderedReactive<C = unknown> {
             byteCount: entry.revalidationBytes,
           });
         }
-        return this.evaluateUntilCurrent(entry);
+        return this.evaluateOnce(entry);
       },
       {
         operation: "subscription",
@@ -654,9 +654,9 @@ export class OrderedReactive<C = unknown> {
     return owned;
   }
 
-  private async evaluateUntilCurrent(entry: QueryEntry<C>): Promise<DeliveryFailure[]> {
+  private async evaluateOnce(entry: QueryEntry<C>): Promise<DeliveryFailure[]> {
     const failures: DeliveryFailure[] = [];
-    while (!entry.removed && (!entry.initialized || entry.commitVersion < entry.dirtyVersion)) {
+    if (!entry.removed && (!entry.initialized || entry.commitVersion < entry.dirtyVersion)) {
       const evaluationGeneration = ++entry.evaluationGeneration;
       const initial = !entry.initialized;
       const evaluatedAt = this.observer ? this.observationNow() : undefined;
@@ -724,7 +724,12 @@ export class OrderedReactive<C = unknown> {
         }
         throw error;
       }
-      if (!current || !installed) continue;
+      if (!current || !installed) {
+        const newest = this.publication.snapshot().highWater;
+        if (newest > entry.dirtyVersion) entry.dirtyVersion = newest;
+        if (entry.removed) throw unavailable("Subscription entry was evicted");
+        return failures;
+      }
       if (installed.overflowedListeners) {
         const message = installed.overloadMessage ?? "Shared query result capacity is full";
         const outcome = overloadOutcome(message);

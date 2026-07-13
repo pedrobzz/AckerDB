@@ -499,6 +499,64 @@ describe("ordered reactive ownership", () => {
     });
   });
 
+  test("yields a revalidation turn when a hot entry becomes dirty again", async () => {
+    let version = 0n;
+    let revalidating = false;
+    let blockFirstHot = true;
+    const entered = deferred();
+    const release = deferred();
+    const order: string[] = [];
+    const reactive = new OrderedReactive({
+      limits: testLimits({ revalidationConcurrency: 1 }),
+      generation: generationSequence(),
+      evaluate: async ({ address }) => {
+        const observed = version;
+        if (revalidating) {
+          order.push(address);
+          if (address === "hot" && blockFirstHot) {
+            blockFirstHot = false;
+            entered.resolve();
+            await release.promise;
+          }
+        }
+        return evaluation(`${address}@${observed}`, observed, address);
+      },
+    });
+    const subscriber = new RecordingSubscriber();
+    for (const [id, address, scope] of [
+      [1, "hot", "group-hot"],
+      [2, "cold", "group-cold"],
+    ] as const) {
+      await reactive.subscribeQuery({
+        address,
+        args: null,
+        policyScopeFingerprint: scope,
+        context: undefined,
+        subscriber,
+        id,
+        authEpoch: 0,
+      });
+    }
+
+    revalidating = true;
+    const first = reactive.publication.reserve(64);
+    version = first.version;
+    first.commit(new ReactiveCommit(new Set(["hot", "cold"])));
+    await entered.promise;
+
+    const second = reactive.publication.reserve(64);
+    version = second.version;
+    second.commit(new ReactiveCommit(new Set(["hot"])));
+    release.resolve();
+    await Promise.all([first.completion, second.completion]);
+
+    expect(order).toEqual(["hot", "cold", "hot"]);
+    expect(reactive.snapshot().revalidation).toMatchObject({
+      active: 0,
+      queue: { queuedItems: 0, queuedBytes: 0 },
+    });
+  });
+
   test("a stalled group does not block an unrelated later publication or ordered events", async () => {
     let version = 0n;
     let stallA = false;
