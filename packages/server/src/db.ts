@@ -39,7 +39,7 @@ export interface DbStatementObservation {
 
 export type DbStatementObserver = (
   observation: Readonly<DbStatementObservation>,
-) => void | PromiseLike<void>;
+) => unknown;
 
 function deliverObservation(
   observer: DbStatementObserver | undefined,
@@ -48,7 +48,13 @@ function deliverObservation(
   if (observer === undefined) return;
   try {
     const result = observer(Object.freeze(observation));
-    if (result && typeof result.then === "function") Promise.resolve(result).catch(() => {});
+    if (
+      result !== null &&
+      (typeof result === "object" || typeof result === "function") &&
+      typeof (result as PromiseLike<unknown>).then === "function"
+    ) {
+      void Promise.resolve(result).catch(() => {});
+    }
   } catch {
     // Statement telemetry is diagnostic and never owns application work.
   }
@@ -125,6 +131,17 @@ interface QuerySpec {
   range: RangeSpec | null;
   order: "asc" | "desc";
   filters: ((row: Record<string, unknown>) => boolean)[];
+}
+
+interface PaginationOptions {
+  readonly cursor: string | null;
+  readonly numItems: number;
+}
+
+interface PaginationResult {
+  readonly page: Record<string, unknown>[];
+  readonly isDone: boolean;
+  readonly continueCursor: string;
 }
 
 const quote = (name: string) => `"${name}"`;
@@ -313,54 +330,68 @@ class RangeQueryImpl {
     extraParams: unknown[] = [],
     forceStream = false,
   ): Generator<Record<string, unknown>> {
-    const startedAt = this.observer === undefined ? 0 : performance.now();
-    let rowCount = 0;
-    let failed = false;
+    this.recordRead();
+    const { plan, filters } = this.spec;
+    const pushDown = filters.length === 0 ? limit : -1;
+    const { sql, params } = this.sqlFor(extraWhere, pushDown);
+    const bind = [...params, ...extraParams] as never[];
+    if (filters.length === 0 && !forceStream) {
+      const raws = this.engine.statement(this.conn, sql).all(...bind) as Record<string, unknown>[];
+      for (const raw of raws) yield this.engine.rowFromSql(plan, raw);
+      return;
+    }
+    const stmt = this.conn.prepare(sql);
     try {
-      this.recordRead();
-      const { plan, filters } = this.spec;
-      const pushDown = filters.length === 0 ? limit : -1;
-      const { sql, params } = this.sqlFor(extraWhere, pushDown);
-      const bind = [...params, ...extraParams] as never[];
-      if (filters.length === 0 && !forceStream) {
-        const raws = this.engine.statement(this.conn, sql).all(...bind) as Record<string, unknown>[];
-        for (const raw of raws) {
-          rowCount++;
-          yield this.engine.rowFromSql(plan, raw);
-        }
-        return;
+      let yielded = 0;
+      outer: for (const raw of stmt.iterate(...bind)) {
+        const row = this.engine.rowFromSql(plan, raw as Record<string, unknown>);
+        for (const filter of filters) if (!filter(row)) continue outer;
+        yield row;
+        if (limit >= 0 && ++yielded >= limit) return;
       }
-      const stmt = this.conn.prepare(sql);
-      try {
-        outer: for (const raw of stmt.iterate(...bind)) {
-          const row = this.engine.rowFromSql(plan, raw as Record<string, unknown>);
-          for (const filter of filters) if (!filter(row)) continue outer;
-          rowCount++;
-          yield row;
-          if (limit >= 0 && rowCount >= limit) return;
-        }
-      } finally {
-        stmt.finalize();
-      }
-    } catch (error) {
-      failed = true;
-      throw error;
     } finally {
-      if (this.observer !== undefined) {
-        deliverObservation(this.observer, {
-          kind: "read",
-          table: this.spec.plan.name,
-          statement: "select",
-          outcome: failed ? "failed" : "ok",
-          durationMs: Math.max(0, performance.now() - startedAt),
-          ...(failed ? {} : { rowCount }),
-        });
-      }
+      stmt.finalize();
     }
   }
 
   private takeSync(n: number): Record<string, unknown>[] {
     return [...this.rows(n)];
+  }
+
+  private uniqueSync(): Record<string, unknown> | null {
+    const rows = this.takeSync(2);
+    if (rows.length > 1) {
+      throw new Error(`${this.spec.plan.name}: .unique() matched more than one row`);
+    }
+    return rows[0] ?? null;
+  }
+
+  private countSync(): number {
+    if (this.spec.filters.length > 0) {
+      let count = 0;
+      for (const _ of this.rows()) count++;
+      return count;
+    }
+    this.recordRead();
+    const { where, params } = this.whereAndParams();
+    const sql = `SELECT COUNT(*) AS n FROM ${quote(this.spec.plan.name)}${where}`;
+    const row = this.engine.statement(this.conn, sql).get(...(params as never[])) as { n: bigint };
+    return Number(row.n);
+  }
+
+  private observeRead<T>(
+    statement: string,
+    work: () => T | Promise<T>,
+    rowCount: (value: T) => number | undefined,
+  ): T | Promise<T> {
+    return observeStatement(
+      this.observer,
+      "read",
+      this.spec.plan.name,
+      statement,
+      work,
+      rowCount,
+    );
   }
 
   order(dir: "asc" | "desc"): RangeQueryImpl {
@@ -387,56 +418,71 @@ class RangeQueryImpl {
   }
 
   async collect(): Promise<Record<string, unknown>[]> {
-    return [...this.rows()];
+    if (this.observer === undefined) return [...this.rows()];
+    return this.observeRead("collect", () => [...this.rows()], (rows) => rows.length);
   }
 
   async take(n: number): Promise<Record<string, unknown>[]> {
-    return this.takeSync(n);
+    if (this.observer === undefined) return this.takeSync(n);
+    return this.observeRead("take", () => this.takeSync(n), (rows) => rows.length);
   }
 
   async first(): Promise<Record<string, unknown> | null> {
-    return this.takeSync(1)[0] ?? null;
+    if (this.observer === undefined) return this.takeSync(1)[0] ?? null;
+    return this.observeRead(
+      "first",
+      () => this.takeSync(1)[0] ?? null,
+      (row) => row === null ? 0 : 1,
+    );
   }
 
   async unique(): Promise<Record<string, unknown> | null> {
-    const rows = this.takeSync(2);
-    if (rows.length > 1) {
-      throw new Error(`${this.spec.plan.name}: .unique() matched more than one row`);
-    }
-    return rows[0] ?? null;
+    if (this.observer === undefined) return this.uniqueSync();
+    return this.observeRead(
+      "unique",
+      () => this.uniqueSync(),
+      (row) => row === null ? 0 : 1,
+    );
   }
 
   async count(): Promise<number> {
-    if (this.spec.filters.length > 0) {
-      let count = 0;
-      for (const _ of this.rows()) count++;
-      return count;
-    }
-    return await observeStatement(
-      this.observer,
-      "read",
-      this.spec.plan.name,
+    if (this.observer === undefined) return this.countSync();
+    return this.observeRead(
       "count",
-      () => {
-        this.recordRead();
-        const { where, params } = this.whereAndParams();
-        const sql = `SELECT COUNT(*) AS n FROM ${quote(this.spec.plan.name)}${where}`;
-        const row = this.engine.statement(this.conn, sql).get(...(params as never[])) as { n: bigint };
-        return Number(row.n);
-      },
+      () => this.countSync(),
       (count) => count,
     );
   }
 
   async *iter(): AsyncGenerator<Record<string, unknown>> {
-    yield* this.rows(-1, "", [], true);
+    if (this.observer === undefined) {
+      yield* this.rows(-1, "", [], true);
+      return;
+    }
+    const startedAt = performance.now();
+    let rowCount = 0;
+    let failed = false;
+    try {
+      for (const row of this.rows(-1, "", [], true)) {
+        rowCount++;
+        yield row;
+      }
+    } catch (error) {
+      failed = true;
+      throw error;
+    } finally {
+      deliverObservation(this.observer, {
+        kind: "read",
+        table: this.spec.plan.name,
+        statement: "iter",
+        outcome: failed ? "failed" : "ok",
+        durationMs: Math.max(0, performance.now() - startedAt),
+        ...(failed ? {} : { rowCount }),
+      });
+    }
   }
 
-  async paginate(opts: { cursor: string | null; numItems: number }): Promise<{
-    page: Record<string, unknown>[];
-    isDone: boolean;
-    continueCursor: string;
-  }> {
+  private paginateSync(opts: PaginationOptions): PaginationResult {
     const { plan, index } = this.spec;
     const cursorCols = index === null ? [plan.pk] : [...index.columns, plan.pk];
     let extraWhere = "";
@@ -460,16 +506,24 @@ class RangeQueryImpl {
       page.push(row);
     }
     const last = page[page.length - 1];
-    const continueCursor =
-      last === undefined
-        ? (opts.cursor ?? "[]")
-        : JSON.stringify(
-            cursorCols.map((c) => {
-              const sql = plan.columns.get(c)!.toSql(last[c])[0];
-              return typeof sql === "bigint" ? { $: "b", v: sql.toString() } : sql;
-            }),
-          );
+    const continueCursor = last === undefined
+      ? (opts.cursor ?? "[]")
+      : JSON.stringify(
+          cursorCols.map((column) => {
+            const sql = plan.columns.get(column)!.toSql(last[column])[0];
+            return typeof sql === "bigint" ? { $: "b", v: sql.toString() } : sql;
+          }),
+        );
     return { page, isDone, continueCursor };
+  }
+
+  async paginate(opts: PaginationOptions): Promise<PaginationResult> {
+    if (this.observer === undefined) return this.paginateSync(opts);
+    return this.observeRead(
+      "paginate",
+      () => this.paginateSync(opts),
+      (result) => result.page.length,
+    );
   }
 }
 
@@ -794,7 +848,7 @@ function attachUpsert(
   writes: WriteCollector,
   plan: TablePlan,
   accessor: Record<string, unknown>,
-  writer: ReturnType<typeof writeMethods>,
+  childWriter: ReturnType<typeof writeMethods>,
   observer?: DbStatementObserver,
 ): void {
   for (const index of plan.indexes) {
@@ -802,7 +856,7 @@ function attachUpsert(
     const name = camelCase(index.name);
     const fn = accessor[name] as Record<string, unknown>;
     fn["upsert"] = (key: Record<string, unknown>, values: unknown): AnyWriteResult<bigint> =>
-      makeWriteResult(async () => {
+      observedWriteResult(observer, plan.name, "upsert", async () => {
         const keyColumns = [...index.columns];
         for (const column of Object.keys(key)) {
           if (!keyColumns.includes(column)) {
@@ -825,14 +879,13 @@ function attachUpsert(
           plan,
           index,
           qb,
-          observer,
         ).unique()) as
           | Record<string, unknown>
           | null;
         const resolved = typeof values === "function" ? values(existing) : values;
         const write = existing === null
-          ? writer.insert({ ...key, ...resolved })
-          : writer.patch(existing[plan.pk] as bigint, resolved);
+          ? childWriter.insert({ ...key, ...resolved })
+          : childWriter.patch(existing[plan.pk] as bigint, resolved);
         const row = (await write.returning())!;
         return { value: row[plan.pk] as bigint, row };
       });
@@ -899,11 +952,15 @@ export function makeDbWriter(
       continue;
     }
     const plan = engine.plan(name);
+    const writer = writeMethods(engine, writes, plan, observer);
     const accessor = {
       ...readMethods(engine, engine.writer, null, plan, observer),
-      ...writeMethods(engine, writes, plan, observer),
+      ...writer,
     };
-    attachUpsert(engine, writes, plan, accessor, accessor as never, observer);
+    const upsertWriter = observer === undefined
+      ? writer
+      : writeMethods(engine, writes, plan);
+    attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
     db[name] = accessor;
   }
   return db;
