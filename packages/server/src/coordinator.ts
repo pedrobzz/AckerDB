@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { decode, encode, uuidV7Timestamp } from "@dbzz/core";
+import { decode, encode, uuidV7Timestamp, type DurabilityPolicy } from "@dbzz/core";
 import { makeDbWriter, newWriteCollector, type WriteCollector } from "./db.ts";
 import type { DbWriter } from "./dbtypes.ts";
 import type { Engine, StoredMutation } from "./engine.ts";
@@ -62,6 +62,7 @@ export interface CommitRequest<T, Publication> {
 export interface CommitResult<T, Publication> {
   readonly value: T;
   readonly commitVersion: bigint;
+  readonly durability: DurabilityPolicy;
   readonly replay: "executed" | "replayed";
   readonly publication?: Publication;
 }
@@ -167,6 +168,7 @@ export class CommitCoordinator<Publication> {
         return {
           value: decode(stored.result) as T,
           commitVersion: stored.commitVersion,
+          durability: stored.durability,
           replay: "replayed",
         };
       }
@@ -256,7 +258,13 @@ export class CommitCoordinator<Publication> {
           { committed: true, cause },
         );
       }
-      return { value, commitVersion, replay: "executed", publication };
+      return {
+        value,
+        commitVersion,
+        durability: this.engine.durability,
+        replay: "executed",
+        publication,
+      };
     } catch (error) {
       if (!committed) {
         let rollbackFailed = false;

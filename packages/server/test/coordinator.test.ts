@@ -67,7 +67,12 @@ describe("CommitCoordinator", () => {
       work: (db: any) => db.notes.insert({ body: "hello" }),
       publication: (version) => ({ version }),
     });
-    expect(result).toMatchObject({ value: 1n, commitVersion: 1n, replay: "executed" });
+    expect(result).toMatchObject({
+      value: 1n,
+      commitVersion: 1n,
+      durability: "production",
+      replay: "executed",
+    });
     expect(engine.commitVersion()).toBe(1n);
     expect(published).toEqual([1n]);
   });
@@ -96,6 +101,39 @@ describe("CommitCoordinator", () => {
         idempotency: { ...identity, argsFingerprint: "different" },
       }),
     ).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  test("replays the durability persisted with the original mutation", async () => {
+    const { coordinator, engine } = fixture();
+    engine.writer.exec("BEGIN IMMEDIATE");
+    engine.insertStoredMutation({
+      ...identity,
+      result: "1",
+      resultBytes: 1,
+      commitVersion: 1n,
+      durability: "balanced",
+    });
+    engine.writer.query(
+      "UPDATE _dbz_state SET commit_version = 1, mutation_records = 1, mutation_result_bytes = 1 WHERE singleton = 1",
+    ).run();
+    engine.writer.exec("COMMIT");
+
+    const replay = await coordinator.execute({
+      operation: "mutation",
+      fairnessKey: "session-1",
+      requestBytes: 1,
+      idempotency: identity,
+      work: () => {
+        throw new Error("must not execute");
+      },
+      publication: (version) => ({ version }),
+    });
+    expect(replay).toMatchObject({
+      value: 1,
+      commitVersion: 1n,
+      durability: "balanced",
+      replay: "replayed",
+    });
   });
 
   test("handler failure rolls back data, version, and publication reservation", async () => {
