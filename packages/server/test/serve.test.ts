@@ -361,7 +361,14 @@ describe("health and protected status", () => {
     });
     expect(response.status).toBe(200);
     const status = decode(await response.text()) as Record<string, unknown>;
-    expect(status).toMatchObject({ version: 1, state: "ready", runtime: { state: "ready" } });
+    expect(status).toMatchObject({
+      version: 1,
+      state: "ready",
+      connections: 0,
+      httpIngress: 1,
+      outboundBytes: 0,
+      runtime: { state: "ready" },
+    });
     expect(verifier.verified).toEqual(["user-token", "workload-alias-token", "workload-token"]);
   });
 

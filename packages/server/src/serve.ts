@@ -298,7 +298,7 @@ export class DbzzServer {
         release = this.admitHttpIngress();
         const principal = await this.authenticate(request);
         requireStatusScope(principal, this.statusScope);
-        return json({ version: 1, state: this.lifecycle, runtime: this.runtime.status() });
+        return json({ version: 1, ...this.status() });
       } catch (error) {
         return protocolError(error);
       } finally {
