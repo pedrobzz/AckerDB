@@ -23,7 +23,7 @@
  * the array-backed layout is a later optimization if benchmarks demand it
  * (the same "only if it wins" rule the wiki applies to sized numerics).
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   copyFileSync,
@@ -298,16 +298,21 @@ export class Engine {
     this.durability = options.durability ?? "production";
     const busyTimeoutMs = positiveInt(options.busyTimeoutMs ?? 5_000, "busyTimeoutMs");
     this.processLock = acquireProcessLock(path);
+    const sqlitePath = path === ":memory:"
+      ? `file:dbzz-${randomUUID()}?mode=memory&cache=shared`
+      : path;
     let writer: Database | null = null;
     let reader: Database | null = null;
     try {
-      writer = new Database(path, { create: true, safeIntegers: true });
+      writer = new Database(sqlitePath, { create: true, safeIntegers: true });
       writer.exec("PRAGMA journal_mode = WAL");
       writer.exec(`PRAGMA synchronous = ${this.durability === "production" ? "FULL" : "NORMAL"}`);
       writer.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
       writer.exec("PRAGMA foreign_keys = ON");
       if (path === ":memory:") {
-        reader = writer;
+        reader = new Database(sqlitePath, { create: true, safeIntegers: true });
+        reader.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+        reader.exec("PRAGMA foreign_keys = ON");
       } else {
         reader = new Database(path, { readonly: false, safeIntegers: true });
         reader.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);

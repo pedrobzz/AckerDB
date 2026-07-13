@@ -53,6 +53,25 @@ function insertAndReadBack(engine: Engine, row: Record<string, unknown>) {
 }
 
 describe("engine storage", () => {
+  test("isolates in-memory reads from an uncommitted writer transaction", () => {
+    const engine = new Engine(
+      defineSchema({ notes: defineTable({ id: dbz.primaryKey(), body: dbz.string() }) }),
+      ":memory:",
+      { busyTimeoutMs: 1 },
+    );
+    try {
+      engine.createAll();
+      expect(engine.reader).not.toBe(engine.writer);
+      engine.writer.exec("BEGIN IMMEDIATE");
+      engine.writer.query('INSERT INTO "notes" ("body") VALUES (?)').run("uncommitted");
+      expect(() => engine.reader.query('SELECT * FROM "notes"').all()).toThrow("locked");
+      engine.writer.exec("ROLLBACK");
+      expect(engine.reader.query('SELECT * FROM "notes"').all()).toEqual([]);
+    } finally {
+      engine.close();
+    }
+  });
+
   test("every column kind round-trips through SQL", () => {
     const engine = new Engine(kitchenSinkSchema(), freshPath());
     engine.createAll();
