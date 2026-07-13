@@ -760,12 +760,18 @@ describe("lifecycle drain", () => {
     expect(await within(client.next())).toMatchObject({
       t: "err",
       id: null,
-      outcome: { code: "draining" },
+      outcome: {
+        code: "draining",
+        retryable: true,
+        retryAfterMs: 1_000,
+        resource: "connection",
+      },
     });
     const stream = await response.text();
     expect(stream).toContain('data: {"phase":"started"}\n\n');
     expect(stream).toContain("event: dbzz-error\n");
     expect(stream).toContain('"code":"draining"');
+    expect(stream).toContain('"retryable":true');
 
     await within(drain);
     expect(server.state).toBe("stopped");

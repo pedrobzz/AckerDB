@@ -64,6 +64,8 @@ const SSE_HEADERS = Object.freeze({
   "x-accel-buffering": "no",
 });
 
+const DRAIN_RETRY_AFTER_MS = 1_000;
+
 function json(value: unknown, status = 200): Response {
   return new Response(encode(value), {
     status,
@@ -79,7 +81,11 @@ function protocolError(error: unknown, id: number | null = null): Response {
 
 function unavailableWhile(state: DbzzServerState): DbzzError {
   if (state === "draining") {
-    return new DbzzError("draining", "server is draining", { resource: "connection" });
+    return new DbzzError("draining", "server is draining", {
+      retryable: true,
+      retryAfterMs: DRAIN_RETRY_AFTER_MS,
+      resource: "connection",
+    });
   }
   return new DbzzError("unavailable", "server is not ready", {
     retryable: true,
@@ -486,7 +492,11 @@ export class DbzzServer {
     // Runtime deadline. A final stop(true) below releases them after all owned
     // Sessions and operations have drained.
     void listenerStopped.catch(() => {});
-    const reason = new DbzzError("draining", "server is draining", { resource: "connection" });
+    const reason = new DbzzError("draining", "server is draining", {
+      retryable: true,
+      retryAfterMs: DRAIN_RETRY_AFTER_MS,
+      resource: "connection",
+    });
     const sessions = [...this.connections].map((connection) => {
       if (connection.session !== null) return connection.session.close(reason);
       connection.socket?.close(1013, "draining");

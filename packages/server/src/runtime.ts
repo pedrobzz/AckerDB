@@ -79,6 +79,8 @@ const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
 
 export type RuntimeLifecycleState = "ready" | "draining" | "stopped" | "failed";
 
+const DRAIN_RETRY_AFTER_MS = 1_000;
+
 export interface RuntimeOptions {
   readonly engine: Engine;
   readonly registry: Registry;
@@ -748,7 +750,11 @@ export class Runtime implements RuntimePort {
       operation: "lifecycle",
       lifecycleState: "draining",
     });
-    const draining = new DbzzError("draining", "runtime is draining", { resource: "operation" });
+    const draining = new DbzzError("draining", "runtime is draining", {
+      retryable: true,
+      retryAfterMs: DRAIN_RETRY_AFTER_MS,
+      resource: "operation",
+    });
     for (const state of [...this.sessions.values()]) this.removeSession(state);
     for (const producer of this.sseProducers) producer.fail(draining);
 
@@ -1284,7 +1290,11 @@ export class Runtime implements RuntimePort {
   private assertReady(): void {
     if (this.lifecycle === "ready") return;
     if (this.lifecycle === "draining") {
-      throw new DbzzError("draining", "runtime is not accepting operations", { resource: "operation" });
+      throw new DbzzError("draining", "runtime is not accepting operations", {
+        retryable: true,
+        retryAfterMs: DRAIN_RETRY_AFTER_MS,
+        resource: "operation",
+      });
     }
     throw new DbzzError("unavailable", "runtime is not available", { resource: "operation" });
   }

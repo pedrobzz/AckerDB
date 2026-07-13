@@ -854,7 +854,12 @@ describe("scheduler and lifecycle", () => {
       id: 88,
       ref: "messages.list",
       args: { channelId: 1n },
-    })).rejects.toMatchObject({ code: "draining", resource: "operation" });
+    })).rejects.toMatchObject({
+      code: "draining",
+      retryable: true,
+      retryAfterMs: 1_000,
+      resource: "operation",
+    });
     await expect(drain).rejects.toMatchObject({
       code: "deadline_exceeded",
       resource: "operation",
