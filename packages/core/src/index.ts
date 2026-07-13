@@ -12,9 +12,4 @@ export {
   type RegisteredFunction,
   type ApiFromModules,
 } from "./refs.ts";
-export {
-  PROTOCOL_VERSION,
-  type ClientMessage,
-  type ServerMessage,
-  type CallRequest,
-} from "./protocol.ts";
+export * from "./protocol.ts";
