@@ -663,7 +663,8 @@ export class Telemetry {
       postCommit: typeof input.postCommit === "boolean" ? input.postCommit : undefined,
     });
     this.aggregateSpan(state, record);
-    return this.retain(record, input.durationMs >= state.limits.slowOperationMs || input.outcome !== "ok");
+    const retain = input.durationMs >= state.limits.slowOperationMs || input.outcome !== "ok";
+    return retain ? this.retain(record, true) : true;
   }
 
   recordEvent(input: TelemetryEventInput): boolean {

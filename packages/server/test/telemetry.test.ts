@@ -915,10 +915,12 @@ describe("Telemetry", () => {
     });
   });
 
-  test("local sink receives lifecycle, slow, and failed records but not fast successes", async () => {
+  test("retains lifecycle, slow, and failed records but only aggregates fast successes", async () => {
     const scheduler = new ManualScheduler();
     const lines: string[] = [];
+    const { batches, exporter } = exporterBatches();
     const telemetry = new Telemetry({
+      exporter,
       scheduler,
       localSink: (line) => {
         lines.push(line);
@@ -947,7 +949,19 @@ describe("Telemetry", () => {
     telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" });
 
     expect(lines).toHaveLength(0);
-    expect(telemetry.snapshot()).toMatchObject({ localSink: { pendingRecords: 3 } });
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 3,
+      localSink: { pendingRecords: 3 },
+    });
+    expect(telemetry.aggregateSnapshot().series.find((series) =>
+      series.operation === "query" &&
+      series.stage === "handler" &&
+      series.outcome === "ok"
+    )).toMatchObject({ count: 2, durationMs: 199 });
+    await telemetry.flush();
+    expect(batches.flat().filter((record) => record.kind === "span").map((record) =>
+      record.durationMs
+    )).toEqual([100, 1]);
     await deliverNextLocalLine(scheduler);
     await deliverNextLocalLine(scheduler);
     await deliverNextLocalLine(scheduler);
