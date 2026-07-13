@@ -1428,7 +1428,13 @@ export class BoundedSseProducer {
     this.capacityWaiter = null;
     this.emptyWaiter = null;
     this.clearStall();
-    if (terminateStream) this.controller.error(reason ?? error);
+    if (terminateStream) {
+      const canceledRequest = isDbzzError(reason) &&
+        reason.code === "unavailable" &&
+        reason.resource === "operation";
+      if (canceledRequest) this.controller.close();
+      else this.controller.error(reason ?? error);
+    }
     this.releaseAll("unavailable");
     this.finishClosedState();
   }

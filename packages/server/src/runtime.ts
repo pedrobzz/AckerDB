@@ -1759,11 +1759,12 @@ export class Runtime implements RuntimePort {
   private procedureContext(
     principal: Principal,
     fairnessKey: string,
-    signal: AbortSignal | undefined,
+    signal: AbortSignal,
     requestBytes: number,
   ): ProcedureCtx {
     return Object.freeze({
       auth: principal,
+      abortSignal: signal,
       tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
         const execute = async (): Promise<T> => {
           aborted(signal);
@@ -1775,7 +1776,7 @@ export class Runtime implements RuntimePort {
             ...(this.telemetry.enabled
               ? { telemetry: this.observeCommit, statementTelemetry: this.observeStatement }
               : {}),
-            ...(signal === undefined ? {} : { signal }),
+            signal,
             work: (db) => work(Object.freeze({ db, auth: principal })),
             publication: (_version, writes) => {
               scheduledTouched = writes.scheduledTouched;

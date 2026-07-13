@@ -32,6 +32,8 @@ export interface TxCtx<S extends Schema = Schema> extends InvocationContext {
 
 export interface ProcedureCtx<S extends Schema = Schema> extends InvocationContext {
   readonly auth: AuthCtx;
+  /** Fires when the request, credential lease, or Runtime shuts down. */
+  readonly abortSignal: AbortSignal;
   /** Open a transaction: atomic, consistent, no external calls inside. */
   tx<T>(fn: (tx: TxCtx<S>) => T | Promise<T>): Promise<T>;
 }
@@ -45,8 +47,6 @@ export interface StreamWriter {
 
 export interface SseCtx<S extends Schema = Schema> extends ProcedureCtx<S> {
   readonly stream: StreamWriter;
-  /** Fires when the client stops or disconnects; pass it to upstream calls. */
-  readonly abortSignal: AbortSignal;
 }
 
 /** Args as the caller provides them: nullable validators become optional. */

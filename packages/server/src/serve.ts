@@ -10,10 +10,14 @@ import {
 } from "@dbzz/core";
 import {
   credentialFromAuthorization,
-  verifyClientCredential,
   type ClientPrincipal,
   type CredentialVerifier,
 } from "./auth.ts";
+import {
+  acquireAuthLease,
+  validateCredentialVerifierRevocation,
+  type AuthLease,
+} from "./auth-lease.ts";
 import { OutboundBudget, WebSocketSessionSink } from "./delivery.ts";
 import { DbzzError } from "./errors.ts";
 import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
@@ -101,6 +105,60 @@ function requestTooLarge(): DbzzError {
 function cancel(reader: { cancel(reason?: unknown): Promise<void> }, reason: unknown): void {
   void reader.cancel(reason).catch(() => {
     // The owning failure is already represented by the transport outcome.
+  });
+}
+
+interface LeaseStreamReader {
+  read(): Promise<{ readonly done: boolean; readonly value?: Uint8Array }>;
+  cancel(reason?: unknown): Promise<void>;
+  releaseLock(): void;
+}
+
+/** Keep one credential lease alive for exactly the lifetime of the response body. */
+function leasedStream(
+  source: ReadableStream<Uint8Array>,
+  release: () => void,
+): ReadableStream<Uint8Array> {
+  let reader: LeaseStreamReader;
+  try {
+    reader = source.getReader();
+  } catch (error) {
+    release();
+    throw error;
+  }
+  let finished = false;
+  const finish = (): void => {
+    if (finished) return;
+    finished = true;
+    release();
+    try {
+      reader.releaseLock();
+    } catch {
+      // Cancellation/read settlement owns the pending source operation.
+    }
+  };
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) {
+          finish();
+          controller.close();
+        } else {
+          controller.enqueue(result.value!);
+        }
+      } catch (error) {
+        finish();
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      try {
+        return reader.cancel(reason);
+      } finally {
+        finish();
+      }
+    },
   });
 }
 
@@ -214,6 +272,10 @@ export class DbzzServer {
     this.runtime = options.runtime;
     this.hostname = options.hostname ?? "127.0.0.1";
     this.verifier = options.verifier;
+    validateCredentialVerifierRevocation(
+      this.verifier,
+      this.runtime.limits.auth.revocationDeadlineMs,
+    );
     this.statusScope = configuredStatusScope(options.statusScope);
     this.outbound = new OutboundBudget(
       this.runtime.limits.webSocket.maxBytes,
@@ -299,14 +361,16 @@ export class DbzzServer {
     }
     if (url.pathname === "/status" && request.method === "GET") {
       let release: (() => void) | undefined;
+      let lease: AuthLease | undefined;
       try {
         release = this.admitHttpIngress();
-        const principal = await this.authenticate(request);
-        requireStatusScope(principal, this.statusScope);
+        lease = await this.authenticate(request);
+        requireStatusScope(lease.principal, this.statusScope);
         return json({ version: 1, ...this.status() });
       } catch (error) {
         return protocolError(error);
       } finally {
+        lease?.release();
         release?.();
       }
     }
@@ -334,14 +398,20 @@ export class DbzzServer {
     return new Response("not found", { status: 404, headers: CORS });
   }
 
-  private async authenticate(request: Request): Promise<ClientPrincipal> {
+  private async authenticate(request: Request): Promise<AuthLease> {
     const credential = credentialFromAuthorization(request.headers.get("authorization"));
-    return verifyClientCredential(credential, this.verifier);
+    return acquireAuthLease({
+      credential,
+      verifier: this.verifier,
+      signal: request.signal,
+      revocationDeadlineMs: this.runtime.limits.auth.revocationDeadlineMs,
+    });
   }
 
   private async call(request: Request, sse: boolean): Promise<Response> {
     let id: number | null = null;
     let release: (() => void) | undefined;
+    let lease: AuthLease | undefined;
     try {
       if (this.lifecycle !== "ready") throw unavailableWhile(this.lifecycle);
       release = this.admitHttpIngress();
@@ -351,17 +421,25 @@ export class DbzzServer {
         this.runtime.limits.readQueue.maxAgeMs,
       );
       id = call.id;
-      const principal = await this.authenticate(request);
+      lease = await this.authenticate(request);
       const input = {
         id: call.id,
         address: call.ref,
         args: call.args,
-        principal,
-        signal: request.signal,
+        principal: lease.principal,
+        signal: lease.signal,
       };
       if (sse) {
         const stream = await this.runtime.runSse(input);
-        return new Response(stream, { headers: SSE_HEADERS });
+        const body = leasedStream(stream, lease.release);
+        try {
+          const response = new Response(body, { headers: SSE_HEADERS });
+          lease = undefined;
+          return response;
+        } catch (error) {
+          cancel(body, error);
+          throw error;
+        }
       }
       return await this.runtime.runProcedure({
         ...input,
@@ -373,6 +451,7 @@ export class DbzzServer {
     } catch (error) {
       return protocolError(error, id);
     } finally {
+      lease?.release();
       release?.();
     }
   }

@@ -1125,6 +1125,23 @@ describe("BoundedSseProducer", () => {
     expect(canceled.snapshot()).toMatchObject({ queuedBytes: 0, state: "closed" });
     expect(budget.snapshot().bytes).toBe(0);
   });
+
+  test("closes a pending SSE pull cleanly when the HTTP request is canceled", async () => {
+    const limits = testLimits();
+    const budget = new OutboundBudget(limits.sse.maxBytes, 512);
+    const external = new AbortController();
+    const producer = new BoundedSseProducer({ budget, limits, signal: external.signal });
+    const reader = producer.stream.getReader();
+    const pending = reader.read();
+
+    external.abort(new DbzzError("unavailable", "operation was canceled", {
+      resource: "operation",
+    }));
+
+    expect(await pending).toEqual({ done: true, value: undefined });
+    expect(producer.snapshot()).toMatchObject({ queuedBytes: 0, state: "closed" });
+    expect(budget.snapshot().bytes).toBe(0);
+  });
 });
 
 describe("delivery observers", () => {

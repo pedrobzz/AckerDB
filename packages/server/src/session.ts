@@ -29,6 +29,10 @@ import {
   type Principal,
   type PrincipalInvalidation,
 } from "./auth.ts";
+import {
+  MAX_REVOCATION_DEADLINE_MS,
+  validateCredentialVerifierRevocation,
+} from "./auth-lease.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "./limits.ts";
@@ -133,7 +137,6 @@ export interface SessionOptions {
   readonly limits?: SessionLimits;
 }
 
-const DEFAULT_REVOCATION_DEADLINE_MS = 5_000;
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
 const utf8 = new TextEncoder();
 
@@ -210,35 +213,8 @@ export class Session {
   private unsubscribeInvalidation: (() => void) | null = null;
 
   constructor(options: SessionOptions) {
-    const revocationDeadlineMs = options.revocationDeadlineMs ?? DEFAULT_REVOCATION_DEADLINE_MS;
-    if (
-      !Number.isSafeInteger(revocationDeadlineMs) ||
-      revocationDeadlineMs <= 0 ||
-      revocationDeadlineMs > DEFAULT_REVOCATION_DEADLINE_MS
-    ) {
-      throw new RangeError(`revocationDeadlineMs must be an integer from 1 through ${DEFAULT_REVOCATION_DEADLINE_MS}`);
-    }
-    const revocationBound = options.verifier?.revocationBound;
-    if (
-      options.verifier !== undefined &&
-      revocationBound?.kind !== "token-expiration" &&
-      revocationBound?.kind !== "invalidation"
-    ) {
-      throw new RangeError("verifier must declare a revocationBound");
-    }
-    if (revocationBound?.kind === "invalidation") {
-      const advertisedDeadlineMs = revocationBound.deadlineMs;
-      if (
-        typeof advertisedDeadlineMs !== "number" ||
-        !Number.isFinite(advertisedDeadlineMs) ||
-        advertisedDeadlineMs <= 0
-      ) {
-        throw new RangeError("verifier invalidation deadlineMs must be a positive finite number");
-      }
-      if (advertisedDeadlineMs > revocationDeadlineMs) {
-        throw new RangeError("verifier invalidation deadlineMs cannot exceed revocationDeadlineMs");
-      }
-    }
+    const revocationDeadlineMs = options.revocationDeadlineMs ?? MAX_REVOCATION_DEADLINE_MS;
+    validateCredentialVerifierRevocation(options.verifier, revocationDeadlineMs);
     this.runtime = options.runtime;
     this.sink = options.sink;
     this.verifier = options.verifier;
