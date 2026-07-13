@@ -13,6 +13,7 @@ import {
 import { dbz, ValidationError } from "../src/dbz.ts";
 import { DbzzError, type DbzzErrorCode } from "../src/errors.ts";
 import { query } from "../src/functions.ts";
+import { invokeFunction } from "../src/invocation.ts";
 
 const ISSUER = "https://issuer.example/";
 const JWKS_URI = "https://issuer.example/jwks";
@@ -123,6 +124,36 @@ describe("principals and invocation access", () => {
     expect(policyCalls).toBe(0);
     expect(handlerCalls).toBe(0);
     expect(await fn({ auth: ANONYMOUS_PRINCIPAL }, { value: "allowed" })).toBe("allowed");
+  });
+
+  test("authorization hooks run after policy and before the handler", async () => {
+    const order: string[] = [];
+    const fn = query({
+      args: { value: dbz.string() },
+      access: (_ctx, args) => {
+        order.push(`policy:${args.value}`);
+        return args.value === "allowed";
+      },
+      handler: (_ctx, args) => {
+        order.push(`handler:${args.value}`);
+        return args.value;
+      },
+    });
+    const context = { auth: userPrincipal(), db: Object.freeze({}) as never };
+
+    expect(await invokeFunction(fn, context, { value: "allowed" }, {
+      onAuthorized: (safeContext, args) => {
+        expect(Object.isFrozen(safeContext)).toBe(true);
+        expect(Object.isFrozen(args)).toBe(true);
+        order.push(`authorized:${args.value}`);
+      },
+    })).toBe("allowed");
+    expect(order).toEqual(["policy:allowed", "authorized:allowed", "handler:allowed"]);
+
+    await expect(invokeFunction(fn, context, { value: "denied" }, {
+      onAuthorized: () => order.push("must-not-run"),
+    })).rejects.toMatchObject({ code: "unauthorized" });
+    expect(order).not.toContain("must-not-run");
   });
 
   test("builtin policies distinguish unauthenticated from unauthorized", async () => {

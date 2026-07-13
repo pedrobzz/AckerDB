@@ -3,6 +3,7 @@ import { isPrincipal, type Principal } from "./auth.ts";
 import { checkShape, type Expand, type InferShape, type ObjectShape } from "./dbz.ts";
 import { DbzzError } from "./errors.ts";
 import type { AccessPolicy, Registered } from "./functions.ts";
+import { deepFreeze } from "./immutable.ts";
 
 export interface InvocationContext {
   readonly auth: Principal;
@@ -10,6 +11,11 @@ export interface InvocationContext {
 
 interface InvocationState {
   readonly principal: Principal;
+}
+
+export interface InvocationOptions<Ctx, Args> {
+  /** Runs after args and access pass, immediately before the handler starts. */
+  readonly onAuthorized?: (ctx: Ctx, args: Args) => void;
 }
 
 const invocationState = new AsyncLocalStorage<InvocationState>();
@@ -60,19 +66,25 @@ export async function invokeFunction<
   A extends ObjectShape,
   Ctx extends InvocationContext,
   R,
->(fn: Registered<K, A, Ctx, R>, ctx: Ctx, rawArgs: unknown): Promise<Awaited<R>> {
+>(
+  fn: Registered<K, A, Ctx, R>,
+  ctx: Ctx,
+  rawArgs: unknown,
+  options: InvocationOptions<Ctx, Expand<InferShape<A>>> = {},
+): Promise<Awaited<R>> {
   const parent = invocationState.getStore();
   if (parent !== undefined && ctx.auth !== parent.principal) {
     throw new DbzzError("unauthorized", "access denied");
   }
   if (!isPrincipal(ctx.auth)) throw new DbzzError("internal", "invalid invocation context");
   const principal = parent?.principal ?? ctx.auth;
-  const args = checkShape(
+  const args = deepFreeze(checkShape(
     fn.args,
     rawArgs === undefined ? {} : rawArgs,
     "args",
-  ) as Expand<InferShape<A>>;
+  )) as Expand<InferShape<A>>;
   const safeCtx = immutableContext(ctx, principal);
   await enforceAccess(fn.access, safeCtx, args);
+  options.onAuthorized?.(safeCtx, args);
   return invocationState.run({ principal }, async () => fn.handler(safeCtx, args)) as Promise<Awaited<R>>;
 }
