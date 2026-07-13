@@ -7,7 +7,6 @@ import {
   parseCallRequest,
   type CallRequest,
   type ErrorMessage,
-  type ProcedureOkMessage,
 } from "@dbzz/core";
 import {
   credentialFromAuthorization,
@@ -364,15 +363,13 @@ export class DbzzServer {
         const stream = await this.runtime.runSse(input);
         return new Response(stream, { headers: SSE_HEADERS });
       }
-      const value = await this.runtime.runProcedure(input);
-      const frame: ProcedureOkMessage = {
-        v: PROTOCOL_VERSION,
-        t: "ok",
-        id: call.id,
-        kind: "procedure",
-        value,
-      };
-      return json(frame);
+      return await this.runtime.runProcedure({
+        ...input,
+        respond: ({ body, status }) => new Response(body, {
+          status,
+          headers: { ...CORS, "content-type": "application/json; charset=utf-8" },
+        }),
+      });
     } catch (error) {
       return protocolError(error, id);
     } finally {

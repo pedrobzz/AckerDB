@@ -677,19 +677,35 @@ describe("ordered convergence", () => {
 
 describe("procedures and bounded SSE", () => {
   test("runs external work outside an atomic procedure transaction", async () => {
-    const value = await runtime.runProcedure({
+    const response = await runtime.runProcedure({
       id: 1,
       address: "ops.pipeline",
       args: { channelId: 4n },
       principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
     });
-    expect(value).toEqual({ external: "external", body: "external" });
-    await expect(runtime.runProcedure({
+    expect(response.status).toBe(200);
+    expect(decode(await response.text())).toEqual({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: 1,
+      kind: "procedure",
+      value: { external: "external", body: "external" },
+    });
+    const failed = await runtime.runProcedure({
       id: 2,
       address: "ops.nestedTx",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
-    })).rejects.toMatchObject({ code: "validation" });
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+    expect(failed.status).toBe(400);
+    expect(decode(await failed.text())).toMatchObject({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: 2,
+      outcome: { code: "validation" },
+    });
   });
 
   test("streams data, merged data, and a terminal marker", async () => {
@@ -757,6 +773,7 @@ describe("direct ingress", () => {
       address: oversized,
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
     })).rejects.toMatchObject(expected);
     await expect(runtime.runSse({
       id: 84,

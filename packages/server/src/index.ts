@@ -227,6 +227,8 @@ export {
   type RuntimeLifecycleState,
   type RuntimeOptions,
   type RuntimeProcedureRequest,
+  type RuntimeProcedureResponder,
+  type RuntimeProcedureResponse,
   type RuntimeSseRequest,
   type RuntimeStatus,
 } from "./runtime.ts";

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, type MutationMessage } from "@dbzz/core";
+import { PROTOCOL_VERSION, decode, type MutationMessage } from "@dbzz/core";
 import {
   ANONYMOUS_PRINCIPAL,
   Engine,
@@ -438,13 +438,19 @@ describe("Runtime telemetry acceptance", () => {
 
     await app.mutation(primary.context, 710_000_003, "items.touch", { id: first.value });
 
-    const procedureResult = await app.runtime.runProcedure({
+    const procedureResponse = await app.runtime.runProcedure({
       id: 720_000_001,
       address: "ops.pipeline",
       args: { room: 1n, payload: PRIVATE_FETCH },
       principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
     });
-    expect(procedureResult).toMatchObject({ body: PRIVATE_FETCH });
+    expect(procedureResponse.status).toBe(200);
+    expect(decode(await procedureResponse.text())).toMatchObject({
+      t: "ok",
+      kind: "procedure",
+      value: { body: PRIVATE_FETCH },
+    });
 
     const stream = await app.runtime.runSse({
       id: 730_000_001,

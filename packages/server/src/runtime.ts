@@ -12,6 +12,7 @@ import {
   type MutationMessage,
   type MutationOkMessage,
   type Outcome,
+  type ProcedureOkMessage,
   type QueryMessage,
   type QueryOkMessage,
   type ResetRequestMessage,
@@ -72,7 +73,7 @@ import {
 } from "./invocation.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
-import { outcomeFromError } from "./outcome.ts";
+import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
 import {
   OrderedReactive,
   ReactiveCommit,
@@ -119,7 +120,7 @@ export interface RuntimeOptions {
   readonly now?: () => number;
 }
 
-export interface RuntimeProcedureRequest {
+interface RuntimeExternalRequest {
   readonly id: number;
   readonly address: string;
   readonly args: unknown;
@@ -128,7 +129,20 @@ export interface RuntimeProcedureRequest {
   readonly fairnessKey?: string;
 }
 
-export interface RuntimeSseRequest extends RuntimeProcedureRequest {}
+export interface RuntimeProcedureResponse {
+  readonly body: string;
+  readonly bytes: number;
+  readonly status: number;
+}
+
+/** Constructs the HTTP response; return is the measured application handoff, not network delivery. */
+export type RuntimeProcedureResponder = (response: RuntimeProcedureResponse) => Response;
+
+export interface RuntimeProcedureRequest extends RuntimeExternalRequest {
+  readonly respond: RuntimeProcedureResponder;
+}
+
+export interface RuntimeSseRequest extends RuntimeExternalRequest {}
 
 export interface RuntimeStatus {
   readonly state: RuntimeLifecycleState;
@@ -195,7 +209,7 @@ type RuntimeOperationOutcome<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly error: unknown };
 
-type RuntimeOperationFinalizer<T> = (outcome: RuntimeOperationOutcome<T>) => void | Promise<void>;
+type RuntimeOperationFinalizer<T, R> = (outcome: RuntimeOperationOutcome<T>) => R | Promise<R>;
 
 interface SessionOperationOptions<T> {
   readonly identifiers?: TraceIdentifiers;
@@ -673,7 +687,7 @@ export class Runtime implements RuntimePort {
     this.telemetry.recordMetric({ name: "runtime.connections", value: this.sessions.size, unit: "gauge" });
   }
 
-  async runProcedure(request: RuntimeProcedureRequest): Promise<unknown> {
+  async runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
     const requestBytes = this.requestBytes({
       v: PROTOCOL_VERSION,
       t: "call",
@@ -696,15 +710,178 @@ export class Runtime implements RuntimePort {
         request.args,
       );
       aborted(signal);
-      this.assertFrameFits({
+      return value;
+    }, { requestId: String(request.id) }, true, (outcome) =>
+      this.respondProcedure(request, outcome));
+  }
+
+  private respondProcedure(
+    request: RuntimeProcedureRequest,
+    outcome: RuntimeOperationOutcome<unknown>,
+  ): Response {
+    let frame: ProcedureOkMessage | ErrorMessage;
+    let status: number;
+    if (outcome.ok) {
+      frame = {
         v: PROTOCOL_VERSION,
         t: "ok",
         id: request.id,
         kind: "procedure",
-        value,
-      }, "procedure result");
-      return value;
-    }, { requestId: String(request.id) });
+        value: outcome.value,
+      };
+      status = 200;
+    } else {
+      const safe = outcomeFromError(outcome.error);
+      frame = { v: PROTOCOL_VERSION, t: "err", id: request.id, outcome: safe };
+      status = outcomeHttpStatus(safe);
+    }
+
+    let encoded: Pick<RuntimeProcedureResponse, "body" | "bytes">;
+    try {
+      encoded = this.encodeProcedureFrame(frame);
+    } catch (error) {
+      if (!outcome.ok) throw error;
+      this.recordProcedureResponseFailure(error, "encoding");
+      const safe = outcomeFromError(error);
+      frame = { v: PROTOCOL_VERSION, t: "err", id: request.id, outcome: safe };
+      status = outcomeHttpStatus(safe);
+      encoded = this.encodeProcedureFrame(frame);
+    }
+
+    return this.handoffProcedureResponse(request, Object.freeze({ ...encoded, status }));
+  }
+
+  private encodeProcedureFrame(
+    frame: ProcedureOkMessage | ErrorMessage,
+  ): Pick<RuntimeProcedureResponse, "body" | "bytes"> {
+    const startedAt = this.telemetry.enabled ? performance.now() : 0;
+    let bytes: number | undefined;
+    try {
+      const body = encode(frame);
+      bytes = utf8.encode(body).byteLength;
+      let encoded = { body, bytes };
+      if (bytes > this.limits.maxFrameBytes) {
+        if (frame.t !== "err") {
+          throw new DbzzError("overloaded", "procedure result exceeds maxFrameBytes", {
+            resource: "operation",
+          });
+        }
+        encoded = this.fitProcedureErrorFrame(frame);
+        bytes = encoded.bytes;
+      }
+      if (this.telemetry.enabled) {
+        this.traceSpan({
+          stage: "encoding",
+          outcome: "ok",
+          resource: "operation",
+          durationMs: Math.max(0, performance.now() - startedAt),
+          sizeBytes: bytes,
+        }, "procedure");
+      }
+      return encoded;
+    } catch (cause) {
+      const error = isDbzzError(cause)
+        ? cause
+        : new DbzzError("validation", "procedure result is not wire-representable", { cause });
+      if (this.telemetry.enabled) {
+        this.traceSpan({
+          stage: "encoding",
+          outcome: error.code,
+          resource: "operation",
+          durationMs: Math.max(0, performance.now() - startedAt),
+          ...(bytes === undefined ? {} : { sizeBytes: bytes }),
+        }, "procedure");
+      }
+      throw error;
+    }
+  }
+
+  private fitProcedureErrorFrame(
+    frame: ErrorMessage,
+  ): Pick<RuntimeProcedureResponse, "body" | "bytes"> {
+    const withMessage = (message: string): Pick<RuntimeProcedureResponse, "body" | "bytes"> => {
+      const body = encode({
+        ...frame,
+        outcome: { ...frame.outcome, message },
+      } satisfies ErrorMessage);
+      return { body, bytes: utf8.encode(body).byteLength };
+    };
+    let best = withMessage("");
+    if (best.bytes > this.limits.maxFrameBytes) {
+      throw new DbzzError("overloaded", "procedure error response exceeds maxFrameBytes", {
+        resource: "operation",
+      });
+    }
+
+    const characters = [...frame.outcome.message];
+    let low = 0;
+    let high = characters.length - 1;
+    while (low <= high) {
+      const length = low + Math.floor((high - low) / 2);
+      const candidate = withMessage(`${characters.slice(0, length).join("")}…`);
+      if (candidate.bytes <= this.limits.maxFrameBytes) {
+        best = candidate;
+        low = length + 1;
+      } else {
+        high = length - 1;
+      }
+    }
+    return best;
+  }
+
+  private handoffProcedureResponse(
+    request: RuntimeProcedureRequest,
+    response: RuntimeProcedureResponse,
+  ): Response {
+    const startedAt = this.telemetry.enabled ? performance.now() : 0;
+    try {
+      const delivered = request.respond(response);
+      if (!(delivered instanceof Response)) {
+        throw new TypeError("procedure responder must return a Response");
+      }
+      if (this.telemetry.enabled) {
+        this.traceSpan({
+          stage: "delivery",
+          outcome: "ok",
+          resource: "operation",
+          durationMs: Math.max(0, performance.now() - startedAt),
+          sizeBytes: response.bytes,
+        }, "procedure");
+      }
+      return delivered;
+    } catch (cause) {
+      const error = new DbzzError("internal", "HTTP response handoff failed", { cause });
+      if (this.telemetry.enabled) {
+        this.traceSpan({
+          stage: "delivery",
+          outcome: error.code,
+          resource: "operation",
+          durationMs: Math.max(0, performance.now() - startedAt),
+          sizeBytes: response.bytes,
+        }, "procedure");
+      }
+      this.recordProcedureResponseFailure(error, "delivery");
+      throw error;
+    }
+  }
+
+  private recordProcedureResponseFailure(
+    error: unknown,
+    stage: "encoding" | "delivery",
+  ): void {
+    if (!this.telemetry.enabled) return;
+    const scope = this.trace.getStore();
+    this.telemetry.recordEvent({
+      name: "failure",
+      level: "error",
+      operation: "procedure",
+      stage,
+      outcome: outcomeFromError(error).code,
+      ...(scope?.currentFunction === undefined ? {} : { functionName: scope.currentFunction }),
+      resource: "operation",
+      context: this.observationContext(),
+      errorClass: error instanceof Error ? error.name : "UnknownError",
+    });
   }
 
   async runSse(request: RuntimeSseRequest): Promise<ReadableStream<Uint8Array>> {
@@ -1154,7 +1331,7 @@ export class Runtime implements RuntimePort {
     operation: "query" | "mutation" | "subscription",
     outcome: RuntimeOperationOutcome<T>,
     options: SessionOperationOptions<T>,
-  ): Promise<void> {
+  ): Promise<T> {
     const frame = outcome.ok
       ? options.successFrame?.(outcome.value)
       : {
@@ -1163,17 +1340,20 @@ export class Runtime implements RuntimePort {
           id,
           outcome: outcomeFromError(outcome.error),
         } satisfies ErrorMessage;
-    if (frame === undefined || context.signal.aborted) return;
-    if (state !== null) {
-      await this.publishSession(state, context.authEpoch, frame);
-      return;
+    if (frame !== undefined && !context.signal.aborted) {
+      if (state !== null) {
+        await this.publishSession(state, context.authEpoch, frame);
+      } else {
+        this.assertFrameFits(
+          frame,
+          "application frame",
+          operation === "subscription" ? "subscription" : "operation",
+        );
+        await context.publish(frame);
+      }
     }
-    this.assertFrameFits(
-      frame,
-      "application frame",
-      operation === "subscription" ? "subscription" : "operation",
-    );
-    await context.publish(frame);
+    if (outcome.ok) return outcome.value;
+    throw outcome.error;
   }
 
   private makeSubscriber(state: () => RuntimeSession, authEpoch: number): Subscriber {
@@ -2038,7 +2218,7 @@ export class Runtime implements RuntimePort {
     return (observation) => this.trace.run(scope, () => this.deliveryObserver(observation));
   };
 
-  private runOperation<T>(
+  private runOperation<T, R = T>(
     session: RuntimeSession | null,
     operation: TelemetryOperation,
     functionName: string | undefined,
@@ -2046,15 +2226,15 @@ export class Runtime implements RuntimePort {
     work: () => T | Promise<T>,
     identifiers: TraceIdentifiers = {},
     synthesizeHandler = true,
-    finalize?: RuntimeOperationFinalizer<T>,
-  ): Promise<T> {
+    finalize?: RuntimeOperationFinalizer<T, R>,
+  ): Promise<R> {
     const scope = this.telemetry.enabled
       ? this.operationTrace(session, operation, functionName, identifiers)
       : undefined;
     const admittedAt = scope === undefined ? 0 : performance.now();
-    const settle = async (outcome: RuntimeOperationOutcome<T>): Promise<T> => {
-      await finalize?.(outcome);
-      if (outcome.ok) return outcome.value;
+    const settle = async (outcome: RuntimeOperationOutcome<T>): Promise<R> => {
+      if (finalize !== undefined) return finalize(outcome);
+      if (outcome.ok) return outcome.value as unknown as R;
       throw outcome.error;
     };
     let release: () => void;

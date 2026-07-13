@@ -5,11 +5,15 @@ import { join } from "node:path";
 import {
   PROTOCOL_VERSION,
   decode,
+  encode,
+  parseCallResponse,
   type ServerMessage,
 } from "@dbzz/core";
 import {
+  DbzzError,
   Engine,
   OutboundBudget,
+  PRODUCTION_LIMITS,
   Registry,
   Runtime,
   Session,
@@ -18,8 +22,12 @@ import {
   defineSchema,
   defineTable,
   mutation,
+  procedure,
   query,
   reconcile,
+  serve,
+  type RuntimeProcedureRequest,
+  type RuntimeProcedureResponse,
   type TelemetryRecord,
   type TelemetrySpanRecord,
   type WebSocketDeliverySocket,
@@ -49,6 +57,31 @@ const functions = {
       access: "public",
       args: { body: dbz.string() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.notes.insert(args),
+    }),
+  },
+  ops: {
+    echo: procedure({
+      access: "public",
+      args: { body: dbz.string() },
+      handler: (_ctx: Ctx, args: Ctx) => args.body,
+    }),
+    fail: procedure({
+      access: "public",
+      args: {},
+      handler: () => {
+        throw new DbzzError("conflict", "already exists");
+      },
+    }),
+    failLarge: procedure({
+      access: "public",
+      args: {},
+      handler: () => {
+        throw new DbzzError("overloaded", "safe detail ".repeat(100), {
+          retryable: true,
+          retryAfterMs: 125,
+          resource: "operation",
+        });
+      },
     }),
   },
 };
@@ -94,13 +127,38 @@ class BufferedSocket implements WebSocketDeliverySocket {
   close(): void {}
 }
 
+interface CapturedProcedureHandoff extends RuntimeProcedureResponse {
+  readonly activeOperations: number;
+}
+
+class ProcedureObservingRuntime extends Runtime {
+  readonly procedureHandoffs = new Map<number, CapturedProcedureHandoff>();
+  failedResponderId: number | null = null;
+
+  override runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
+    return super.runProcedure({
+      ...request,
+      respond: (response) => {
+        this.procedureHandoffs.set(request.id, {
+          ...response,
+          activeOperations: this.status().activeOperations,
+        });
+        if (request.id === this.failedResponderId) {
+          throw new Error("private responder failure");
+        }
+        return request.respond(response);
+      },
+    });
+  }
+}
+
 function spans(records: readonly TelemetryRecord[]): TelemetrySpanRecord[] {
   return records.filter((record): record is TelemetrySpanRecord => record.kind === "span");
 }
 
 function admission(
   records: readonly TelemetrySpanRecord[],
-  operation: "query" | "mutation",
+  operation: "query" | "mutation" | "procedure",
   requestId: string,
 ): TelemetrySpanRecord {
   const record = records.find((candidate) =>
@@ -270,6 +328,167 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
       .map((record) => record.stage).sort()).toEqual(["delivery", "encoding", "queue"]);
   } finally {
     await session.close();
+    await runtime.drain(Date.now() + 2_000).catch(() => {});
+    engine.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("DbzzServer correlates bounded procedure encoding and Response handoff after operation release", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-procedure-delivery-"));
+  const engine = new Engine(schema, join(directory, "data.db"));
+  reconcile(engine);
+  const exported: TelemetryRecord[] = [];
+  const runtime = new ProcedureObservingRuntime({
+    engine,
+    registry: new Registry(functions),
+    limits: { ...PRODUCTION_LIMITS, maxFrameBytes: 256 },
+    telemetry: {
+      enabled: true,
+      exporter: {
+        export(batch) {
+          exported.push(...batch);
+        },
+      },
+      localSink: false,
+      limits: {
+        maxRecords: 256,
+        maxBytes: 512 * 1_024,
+        maxMetricSeries: 64,
+        maxBatchRecords: 256,
+        batchIntervalMs: 60_000,
+        exportTimeoutMs: 100,
+        retentionMs: 60_000,
+        slowOperationMs: 0,
+        sampleIntervalMs: 60_000,
+      },
+    },
+  });
+  runtime.failedResponderId = 54;
+  const server = serve({ runtime, port: 0 });
+  const base = `http://127.0.0.1:${server.port}`;
+  const call = async (id: number, ref: string, args: unknown) => {
+    const response = await fetch(`${base}/api/call`, {
+      method: "POST",
+      body: encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args }),
+    });
+    const body = await response.text();
+    return { body, frame: parseCallResponse(decode(body)), status: response.status };
+  };
+
+  try {
+    const success = await call(51, "ops.echo", { body: "hello" });
+    const failure = await call(52, "ops.fail", {});
+    const boundedFailure = await call(53, "ops.failLarge", {});
+    const responderFailure = await call(54, "ops.echo", { body: "handoff" });
+
+    expect(success).toMatchObject({
+      status: 200,
+      frame: {
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: 51,
+        kind: "procedure",
+        value: "hello",
+      },
+    });
+    expect(failure).toMatchObject({
+      status: 409,
+      frame: {
+        v: PROTOCOL_VERSION,
+        t: "err",
+        id: 52,
+        outcome: { code: "conflict", retryable: false, message: "already exists" },
+      },
+    });
+    expect(boundedFailure.status).toBe(429);
+    expect(boundedFailure.frame).toMatchObject({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: 53,
+      outcome: {
+        code: "overloaded",
+        retryable: true,
+        retryAfterMs: 125,
+        resource: "operation",
+      },
+    });
+    expect(boundedFailure.frame.t).toBe("err");
+    if (boundedFailure.frame.t !== "err") throw new Error("expected bounded error response");
+    expect(boundedFailure.frame.outcome.message).toEndWith("…");
+    expect(encoder.encode(boundedFailure.body).byteLength).toBeLessThanOrEqual(
+      runtime.limits.maxFrameBytes,
+    );
+    expect(responderFailure).toMatchObject({
+      status: 500,
+      frame: {
+        v: PROTOCOL_VERSION,
+        t: "err",
+        id: 54,
+        outcome: { code: "internal", retryable: false, message: "HTTP response handoff failed" },
+      },
+    });
+    expect(responderFailure.body).not.toContain("private responder failure");
+
+    for (const [id, publicResponse] of [
+      [51, success],
+      [52, failure],
+      [53, boundedFailure],
+    ] as const) {
+      const handoff = runtime.procedureHandoffs.get(id);
+      expect(handoff).toBeDefined();
+      expect(handoff!.activeOperations).toBe(0);
+      expect(handoff!.body).toBe(publicResponse.body);
+      expect(handoff!.bytes).toBe(encoder.encode(publicResponse.body).byteLength);
+      expect(handoff!.bytes).toBeLessThanOrEqual(runtime.limits.maxFrameBytes);
+      expect(handoff!.status).toBe(publicResponse.status);
+    }
+    const failedHandoff = runtime.procedureHandoffs.get(54);
+    expect(failedHandoff).toMatchObject({ activeOperations: 0, status: 200 });
+    expect(failedHandoff!.bytes).toBe(encoder.encode(failedHandoff!.body).byteLength);
+    expect(runtime.status().activeOperations).toBe(0);
+
+    await runtime.telemetry.flush();
+    const retained = spans(exported);
+    for (const [id, address] of [
+      [51, "ops.echo"],
+      [52, "ops.fail"],
+      [53, "ops.failLarge"],
+    ] as const) {
+      const owner = admission(retained, "procedure", String(id));
+      const handoff = runtime.procedureHandoffs.get(id)!;
+      const responseSpans = retained.filter((record) =>
+        record.operation === "procedure" &&
+        record.resource === "operation" &&
+        record.traceId === owner.traceId &&
+        (record.stage === "encoding" || record.stage === "delivery")
+      );
+      expect(responseSpans.map((record) => record.stage).sort()).toEqual([
+        "delivery",
+        "encoding",
+      ]);
+      expect(responseSpans.every((record) => record.requestId === String(id))).toBe(true);
+      expect(responseSpans.every((record) => record.function === address)).toBe(true);
+      expect(responseSpans.every((record) => record.sizeBytes === handoff.bytes)).toBe(true);
+    }
+
+    const responderAdmission = admission(retained, "procedure", "54");
+    const responderSpans = retained.filter((record) =>
+      record.operation === "procedure" &&
+      record.resource === "operation" &&
+      record.traceId === responderAdmission.traceId &&
+      (record.stage === "encoding" || record.stage === "delivery")
+    );
+    expect(responderSpans.map(({ stage, outcome }) => ({ stage, outcome }))).toEqual([
+      { stage: "encoding", outcome: "ok" },
+      { stage: "delivery", outcome: "internal" },
+    ]);
+    expect(responderSpans.every((record) =>
+      record.requestId === "54" && record.function === "ops.echo"
+    )).toBe(true);
+    expect(responderSpans.every((record) => record.sizeBytes === failedHandoff!.bytes)).toBe(true);
+  } finally {
+    await server.drain().catch(() => {});
     await runtime.drain(Date.now() + 2_000).catch(() => {});
     engine.close();
     rmSync(directory, { recursive: true, force: true });
