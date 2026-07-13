@@ -164,7 +164,13 @@ export {
   type SubscriptionServerMessage,
 } from "./session.ts";
 export { Runtime } from "./runtime.ts";
-export { serve, type ServeOptions } from "./serve.ts";
+export {
+  DbzzServer,
+  serve,
+  type DbzzServerState,
+  type DbzzServerStatus,
+  type ServeOptions,
+} from "./serve.ts";
 export {
   defineTable,
   defineEventTable,
