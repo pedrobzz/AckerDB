@@ -149,8 +149,14 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
   if (limits.webSocket.maxBytesPerConnection > limits.webSocket.maxBytes) {
     throw new RangeError("webSocket.maxBytesPerConnection cannot exceed webSocket.maxBytes");
   }
+  if (limits.maxFrameBytes >= limits.webSocket.maxBytesPerConnection) {
+    throw new RangeError("maxFrameBytes must be smaller than webSocket.maxBytesPerConnection");
+  }
   if (limits.sse.maxBytesPerStream > limits.sse.maxBytes) {
     throw new RangeError("sse.maxBytesPerStream cannot exceed sse.maxBytes");
+  }
+  if (limits.maxFrameBytes > limits.sse.maxBytesPerStream) {
+    throw new RangeError("maxFrameBytes cannot exceed sse.maxBytesPerStream");
   }
   if (limits.resume.maxBytesPerStream > limits.resume.maxBytes) {
     throw new RangeError("resume.maxBytesPerStream cannot exceed resume.maxBytes");

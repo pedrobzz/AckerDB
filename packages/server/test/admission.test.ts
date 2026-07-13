@@ -44,6 +44,14 @@ describe("production limits", () => {
     expect(() =>
       defineServiceLimits({ ...PRODUCTION_LIMITS, maxOperationsPerConnection: 5_000 }),
     ).toThrow("cannot exceed");
+    expect(() => defineServiceLimits({
+      ...PRODUCTION_LIMITS,
+      maxFrameBytes: PRODUCTION_LIMITS.webSocket.maxBytesPerConnection,
+    })).toThrow("smaller than webSocket.maxBytesPerConnection");
+    expect(() => defineServiceLimits({
+      ...PRODUCTION_LIMITS,
+      maxFrameBytes: PRODUCTION_LIMITS.sse.maxBytesPerStream + 1,
+    })).toThrow("cannot exceed sse.maxBytesPerStream");
   });
 });
 
