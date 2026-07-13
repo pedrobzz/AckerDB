@@ -10,6 +10,7 @@ import {
   defineTable,
   type DbReader,
   type DbWriter,
+  type EventArgsOf,
 } from "@dbzz/server";
 
 const schema = defineSchema({
@@ -33,14 +34,24 @@ const schema = defineSchema({
   pings: defineEventTable({
     id: dbz.primaryKey(),
     channel: dbz.bigint(),
+  }, {
+    args: { channel: dbz.bigint() },
+    access: "public",
+    matches: (row, args) => row.channel === args.channel,
   }),
 });
 
 type S = typeof schema;
+type PingArgs = EventArgsOf<S, "pings">;
 declare const rdb: DbReader<S>;
 declare const wdb: DbWriter<S>;
 
 export async function _typecheckUsage(): Promise<void> {
+  const pingArgs: PingArgs = { channel: 1n };
+  void pingArgs;
+  // @ts-expect-error event subscription args retain their validator types
+  const invalidPingArgs: PingArgs = { channel: 1 };
+  void invalidPingArgs;
   // rows come out exactly typed
   const p = await rdb.payments.get(1n);
   if (p !== null) {

@@ -2,38 +2,57 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode } from "@dbzz/core";
 import {
-  dbz,
-  defineEventTable,
-  defineSchema,
-  defineTable,
-  Engine,
-  mutation,
-  procedure,
-  query,
-  reconcile,
-  Registry,
-  Runtime,
-  sseProcedure,
-  ValidationError,
-  type Subscriber,
-} from "@dbzz/server";
+  PROTOCOL_VERSION,
+  decode,
+  type MutationMessage,
+} from "@dbzz/core";
+import {
+  ANONYMOUS_PRINCIPAL,
+  type Principal,
+  type UserPrincipal,
+} from "../src/auth.ts";
+import { dbz } from "../src/dbz.ts";
+import { Engine } from "../src/engine.ts";
+import { mutation, procedure, query, sseProcedure } from "../src/functions.ts";
+import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
+import { reconcile } from "../src/reconcile.ts";
+import { Registry } from "../src/registry.ts";
+import { Runtime } from "../src/runtime.ts";
+import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
+import type { RuntimePublication, SessionRuntimeContext } from "../src/session.ts";
 
-class TestSub implements Subscriber {
-  updates: { id: number; value: unknown }[] = [];
-  events: { id: number; row: unknown }[] = [];
-  errors: { id: number; message: string }[] = [];
-  sendUpdate(id: number, encoded: string): void {
-    this.updates.push({ id, value: decode(encoded) });
-  }
-  sendEvent(id: number, encoded: string): void {
-    this.events.push({ id, row: decode(encoded) });
-  }
-  sendError(id: number, message: string): void {
-    this.errors.push({ id, message });
-  }
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
 }
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
+function uuidV7(now = Date.now(), sequence = 0): string {
+  const timestamp = now.toString(16).padStart(12, "0");
+  return `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${sequence.toString(16).padStart(12, "0")}`;
+}
+
+function user(subject: string): UserPrincipal {
+  return Object.freeze({
+    kind: "user",
+    issuer: "https://issuer.example",
+    subject,
+    claims: Object.freeze({ role: "member" }),
+    expiresAt: Date.now() + 60_000,
+    tokenId: `token-${subject}`,
+  });
+}
+
+const eventAccessInputs: Array<{ ctx: object; args: object }> = [];
+const eventMatchInputs: Array<{ row: object; args: object }> = [];
 
 const schema = defineSchema({
   messages: defineTable({
@@ -48,6 +67,24 @@ const schema = defineSchema({
   typing: defineEventTable({
     id: dbz.primaryKey(),
     channelId: dbz.bigint(),
+  }, {
+    args: { channelId: dbz.bigint() },
+    access: "public",
+    matches: (row, args) => row.channelId === args.channelId,
+  }),
+  privateTyping: defineEventTable({
+    id: dbz.primaryKey(),
+    channelId: dbz.bigint(),
+  }, {
+    args: { channelId: dbz.bigint() },
+    access: (ctx, args) => {
+      eventAccessInputs.push({ ctx, args });
+      return ctx.auth.kind === "user";
+    },
+    matches: (row, args) => {
+      eventMatchInputs.push({ row, args });
+      return row.channelId === args.channelId;
+    },
   }),
   reminders: defineTable({
     id: dbz.primaryKey(),
@@ -56,8 +93,12 @@ const schema = defineSchema({
   }).scheduled("reminders.fire"),
 });
 
+// Tests exercise runtime ownership, not generated application types.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ctx = any;
+
+let queryGate: Deferred<void> | null = null;
+let scheduledAttempts = 0;
 
 const functions = {
   messages: {
@@ -65,7 +106,20 @@ const functions = {
       access: "public",
       args: { channelId: dbz.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
-        ctx.db.messages.byChannel((q: Ctx) => q.eq("channelId", args.channelId)).collect(),
+        ctx.db.messages.byChannel((builder: Ctx) => builder.eq("channelId", args.channelId)).collect(),
+    }),
+    secure: query({
+      access: "authenticated",
+      args: {},
+      handler: (ctx: Ctx) => ({ kind: ctx.auth.kind, subject: ctx.auth.subject }),
+    }),
+    block: query({
+      access: "public",
+      args: {},
+      handler: async () => {
+        await queryGate?.promise;
+        return "released";
+      },
     }),
     send: mutation({
       access: "public",
@@ -73,25 +127,8 @@ const functions = {
       handler: async (ctx: Ctx, args: Ctx) => {
         const id = await ctx.db.messages.insert(args);
         await ctx.db.typing.insert({ channelId: args.channelId });
+        await ctx.db.privateTyping.insert({ channelId: args.channelId });
         return id;
-      },
-    }),
-    fetchInside: mutation({
-      access: "public",
-      args: {},
-      handler: async (ctx: Ctx) => {
-        await ctx.db.messages.insert({ channelId: 1n, body: "should roll back" });
-        await fetch("data:text/plain,nope");
-      },
-    }),
-    composeFail: mutation({
-      access: "public",
-      args: { channelId: dbz.bigint() },
-      handler: async (ctx: Ctx, args: Ctx) => {
-        // direct mutation-from-mutation joins THIS transaction...
-        await functions.messages.send(ctx, { channelId: args.channelId, body: "doomed" });
-        // ...so throwing here must roll the callee's writes back too
-        throw new Error("compose boom");
       },
     }),
     rewrite: mutation({
@@ -99,7 +136,31 @@ const functions = {
       args: { id: dbz.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const row = await ctx.db.messages.get(args.id);
-        await ctx.db.messages.patch(args.id, { body: row.body }); // same value
+        await ctx.db.messages.patch(args.id, { body: row.body });
+      },
+    }),
+    fetchInside: mutation({
+      access: "public",
+      args: {},
+      handler: async (ctx: Ctx) => {
+        await ctx.db.messages.insert({ channelId: 1n, body: "rollback" });
+        await fetch("data:text/plain,forbidden");
+      },
+    }),
+    composeFail: mutation({
+      access: "public",
+      args: { channelId: dbz.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await functions.messages.send(ctx, { channelId: args.channelId, body: "rollback" });
+        throw new Error("compose failed");
+      },
+    }),
+    largeResult: mutation({
+      access: "public",
+      args: { channelId: dbz.bigint(), size: dbz.number() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db.messages.insert({ channelId: args.channelId, body: "must-roll-back" });
+        return "x".repeat(args.size);
       },
     }),
   },
@@ -108,7 +169,9 @@ const functions = {
       access: "system",
       args: { id: dbz.bigint(), message: dbz.string(), at: dbz.number() },
       handler: async (ctx: Ctx, args: Ctx) => {
+        scheduledAttempts++;
         await ctx.db.log.insert({ line: `fired:${args.message}` });
+        if (args.message === "fail") throw new Error("scheduled failure");
       },
     }),
     schedule: mutation({
@@ -122,21 +185,13 @@ const functions = {
       access: "public",
       args: { channelId: dbz.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
-        // direct composition: queries/mutations called with a tx ctx
-        const before = await ctx.tx((tx: Ctx) => functions.messages.list(tx, { channelId: args.channelId }));
-        const fetched = await (await fetch("data:text/plain,external")).text();
-        // one transaction, two composed calls, atomic together
-        const after = await ctx.tx(async (tx: Ctx) => {
-          const id = await functions.messages.send(tx, { channelId: args.channelId, body: fetched });
+        const external = await (await fetch("data:text/plain,external")).text();
+        const body = await ctx.tx(async (tx: Ctx) => {
+          const id = await functions.messages.send(tx, { channelId: args.channelId, body: external });
           return (await tx.db.messages.get(id)).body;
         });
-        return { before: before.length, fetched, after };
+        return { external, body };
       },
-    }),
-    fetchInTx: procedure({
-      access: "public",
-      args: {},
-      handler: (ctx: Ctx) => ctx.tx(() => fetch("data:text/plain,banned")),
     }),
     nestedTx: procedure({
       access: "public",
@@ -145,17 +200,17 @@ const functions = {
     }),
     stream: sseProcedure({
       access: "public",
-      args: { n: dbz.number() },
+      args: { count: dbz.number() },
       handler: async (ctx: Ctx, args: Ctx) => {
-        for (let i = 0; i < args.n; i++) ctx.stream.write({ type: "text-delta", delta: `c${i}` });
-        ctx.stream.merge(
-          new ReadableStream({
-            start(c) {
-              c.enqueue({ type: "data-custom", data: { fromMerge: true } });
-              c.close();
-            },
-          }),
-        );
+        for (let index = 0; index < args.count; index++) {
+          ctx.stream.write({ type: "delta", value: index });
+        }
+        ctx.stream.merge(new ReadableStream({
+          start(controller) {
+            controller.enqueue({ type: "merged" });
+            controller.close();
+          },
+        }));
         await ctx.tx((tx: Ctx) => tx.db.log.insert({ line: "streamed" }));
       },
     }),
@@ -163,177 +218,499 @@ const functions = {
       access: "public",
       args: {},
       handler: () => {
-        throw new Error("boom mid-stream");
+        throw new Error("stream failed");
       },
     }),
   },
 };
 
-let dir: string;
+class SessionHarness {
+  readonly publications: RuntimePublication[] = [];
+  context!: SessionRuntimeContext;
+  private controller = new AbortController();
+
+  constructor(
+    readonly runtime: Runtime,
+    readonly clientSessionId: string,
+  ) {}
+
+  async open(principal: Principal = ANONYMOUS_PRINCIPAL): Promise<void> {
+    this.context = this.makeContext(principal, 0, this.controller);
+    await this.runtime.openSession(this.context);
+  }
+
+  async rotate(principal: Principal): Promise<readonly RuntimePublication[]> {
+    const from = this.context;
+    this.controller.abort();
+    const nextController = new AbortController();
+    const to = this.makeContext(principal, from.authEpoch + 1, nextController);
+    const frames = await this.runtime.transitionAuth({
+      attemptId: from.authEpoch + 1,
+      reason: principal.kind === "anonymous" ? "sign-out" : "refresh",
+      from,
+      to,
+    });
+    this.controller = nextController;
+    this.context = to;
+    return frames;
+  }
+
+  mutation(
+    id: number,
+    ref: string,
+    args: unknown,
+    mutationRequestId = uuidV7(Date.now(), id),
+    issuedAt = Date.now(),
+  ) {
+    const message: MutationMessage = {
+      v: PROTOCOL_VERSION,
+      t: "m",
+      id,
+      ref,
+      args,
+      mutationRequestId,
+      issuedAt,
+    };
+    return this.runtime.mutation(this.context, message);
+  }
+
+  private makeContext(
+    principal: Principal,
+    authEpoch: number,
+    controller: AbortController,
+  ): SessionRuntimeContext {
+    return Object.freeze({
+      clientSessionId: this.clientSessionId,
+      principal,
+      authEpoch,
+      signal: controller.signal,
+      publish: async (message: RuntimePublication) => {
+        if (controller.signal.aborted || this.context?.authEpoch !== authEpoch) return false;
+        this.publications.push(message);
+        return true;
+      },
+    });
+  }
+}
+
+function limits(overrides: Partial<ServiceLimits> = {}): ServiceLimits {
+  return { ...PRODUCTION_LIMITS, ...overrides };
+}
+
+async function collect(stream: ReadableStream<Uint8Array>): Promise<string[]> {
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  for await (const bytes of stream as unknown as AsyncIterable<Uint8Array>) {
+    chunks.push(decoder.decode(bytes));
+  }
+  return chunks;
+}
+
+let directory: string;
 let engine: Engine;
 let runtime: Runtime;
+let session: SessionHarness;
+
+function start(customLimits = limits()): void {
+  engine = new Engine(schema, join(directory, "data.db"));
+  reconcile(engine);
+  runtime = new Runtime({
+    engine,
+    registry: new Registry(functions),
+    limits: customLimits,
+    telemetry: false,
+  });
+  session = new SessionHarness(runtime, "session-a");
+}
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "dbzz-rt-"));
-  engine = new Engine(schema, join(dir, "data.db"));
-  reconcile(engine);
-  runtime = new Runtime({ engine, registry: new Registry(functions) });
+  directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-"));
+  queryGate = null;
+  scheduledAttempts = 0;
+  eventAccessInputs.length = 0;
+  eventMatchInputs.length = 0;
+  start();
 });
-afterEach(() => {
-  runtime.stop();
+
+afterEach(async () => {
+  await runtime.drain();
   engine.close();
-  rmSync(dir, { recursive: true, force: true });
+  rmSync(directory, { recursive: true, force: true });
 });
 
-describe("queries and mutations", () => {
-  test("one-shot query, mutation return values, arg validation", async () => {
-    const id = await runtime.runMutation("messages.send", { channelId: 1n, body: "hi" });
-    expect(id).toBe(1n);
-    const rows = (await runtime.runQuery("messages.list", { channelId: 1n })) as unknown[];
+describe("runtime commit and replay ownership", () => {
+  test("validates queries and keeps failed transaction writes invisible", async () => {
+    await session.open();
+    const first = await session.mutation(1, "messages.send", { channelId: 1n, body: "hello" });
+    expect(first.value).toBe(1n);
+    expect(first.receipt).toMatchObject({ replay: "executed", durability: "production" });
+
+    await expect(runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 2,
+      ref: "messages.list",
+      args: { channelId: 1 },
+    })).rejects.toMatchObject({ code: "validation" });
+    await expect(session.mutation(3, "messages.fetchInside", {})).rejects.toThrow("fetch is not allowed");
+    await expect(session.mutation(4, "messages.composeFail", { channelId: 2n })).rejects.toThrow("compose failed");
+
+    const rolledBack = await runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 5,
+      ref: "messages.list",
+      args: { channelId: 2n },
+    }) as unknown[];
+    expect(rolledBack).toEqual([]);
+  });
+
+  test("replays one scoped mutation exactly and rejects semantic reuse", async () => {
+    await session.open();
+    const now = Date.now();
+    const requestId = uuidV7(now, 99);
+    const first = await session.mutation(
+      1,
+      "messages.send",
+      { channelId: 5n, body: "once" },
+      requestId,
+      now,
+    );
+    engine.writer.query(
+      "UPDATE _dbz_mutations SET durability = 'balanced' WHERE session_id = ? AND request_id = ?",
+    ).run(session.context.clientSessionId, requestId);
+    const replay = await session.mutation(
+      2,
+      "messages.send",
+      { channelId: 5n, body: "once" },
+      requestId,
+      now,
+    );
+    expect(replay.value).toBe(first.value);
+    expect(replay.receipt).toMatchObject({ replay: "replayed", durability: "balanced" });
+    await expect(session.mutation(
+      3,
+      "messages.send",
+      { channelId: 5n, body: "different" },
+      requestId,
+      now,
+    )).rejects.toMatchObject({ code: "conflict", resource: "idempotency" });
+
+    const rows = await runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 4,
+      ref: "messages.list",
+      args: { channelId: 5n },
+    }) as unknown[];
     expect(rows).toHaveLength(1);
-    await expect(runtime.runQuery("messages.list", { channelId: 1 })).rejects.toThrow(ValidationError);
-    await expect(runtime.runQuery("nope.nope", {})).rejects.toThrow('unknown function');
-    await expect(runtime.runQuery("messages.send", { channelId: 1n })).rejects.toThrow(
-      "is a mutation, expected a query",
-    );
-  });
-
-  test("mutations are exactly-once per idempotency key", async () => {
-    const a = await runtime.runMutation("messages.send", { channelId: 5n, body: "once" }, "mid-1");
-    const b = await runtime.runMutation("messages.send", { channelId: 5n, body: "once" }, "mid-1");
-    expect(b).toBe(a);
-    const rows = (await runtime.runQuery("messages.list", { channelId: 5n })) as unknown[];
-    expect(rows).toHaveLength(1);
-  });
-
-  test("a directly-called mutation joins the caller's transaction", async () => {
-    await expect(runtime.runMutation("messages.composeFail", { channelId: 6n })).rejects.toThrow(
-      "compose boom",
-    );
-    const rows = (await runtime.runQuery("messages.list", { channelId: 6n })) as unknown[];
-    expect(rows).toHaveLength(0); // the callee's insert rolled back with the caller
-  });
-
-  test("fetch inside a mutation throws and rolls the write back", async () => {
-    await expect(runtime.runMutation("messages.fetchInside", {})).rejects.toThrow(
-      "not allowed inside a transaction",
-    );
-    const rows = (await runtime.runQuery("messages.list", { channelId: 1n })) as unknown[];
-    expect(rows).toHaveLength(0);
   });
 });
 
-describe("subscriptions", () => {
-  test("update on relevant writes only, deduped per (query, args)", async () => {
-    const alice = new TestSub();
-    const bob = new TestSub();
-    await runtime.subscribe("messages.list", { channelId: 1n }, alice, 10);
-    await runtime.subscribe("messages.list", { channelId: 1n }, bob, 20);
-    await runtime.subscribe("messages.list", { channelId: 2n }, bob, 21);
-    expect(runtime.subs.size).toBe(2); // channel 1 shared, channel 2 separate
+describe("ordered convergence", () => {
+  test("publishes initial reset and advances caller obligations before mutation resolution", async () => {
+    await session.open();
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 10,
+      ref: "messages.list",
+      args: { channelId: 1n },
+    });
+    expect(session.publications[0]).toMatchObject({ t: "transition", id: 10, transition: { kind: "reset" } });
 
-    expect(alice.updates).toEqual([{ id: 10, value: [] }]);
-    expect(bob.updates.map((u) => u.id).sort()).toEqual([20, 21]);
-
-    await runtime.runMutation("messages.send", { channelId: 1n, body: "one" });
-    expect(alice.updates).toHaveLength(2);
-    expect((alice.updates[1]!.value as unknown[]).length).toBe(1);
-    expect(bob.updates.filter((u) => u.id === 20)).toHaveLength(2);
-    // channel 2 subscription untouched: a write to channel 1 is invisible to it
-    expect(bob.updates.filter((u) => u.id === 21)).toHaveLength(1);
-  });
-
-  test("identical recompute results are not re-shipped", async () => {
-    const sub = new TestSub();
-    const id = (await runtime.runMutation("messages.send", { channelId: 3n, body: "same" })) as bigint;
-    await runtime.subscribe("messages.list", { channelId: 3n }, sub, 1);
-    expect(sub.updates).toHaveLength(1);
-    await runtime.runMutation("messages.rewrite", { id });
-    expect(sub.updates).toHaveLength(1); // write happened, result identical -> no frame
-  });
-
-  test("unsubscribe and disconnect stop deliveries and drop entries", async () => {
-    const sub = new TestSub();
-    await runtime.subscribe("messages.list", { channelId: 1n }, sub, 1);
-    runtime.unsubscribe(sub, 1);
-    expect(runtime.subs.size).toBe(0);
-    await runtime.runMutation("messages.send", { channelId: 1n, body: "x" });
-    expect(sub.updates).toHaveLength(1); // only the initial one
-  });
-
-  test("event tables broadcast inserted rows with per-process ids", async () => {
-    const sub = new TestSub();
-    await runtime.subscribe("events.typing", {}, sub, 7);
-    await runtime.runMutation("messages.send", { channelId: 9n, body: "typing!" });
-    expect(sub.events).toEqual([{ id: 7, row: { id: 1n, channelId: 9n } }]);
-    await expect(runtime.subscribe("events.messages", {}, sub, 8)).rejects.toThrow(
-      'unknown event table',
+    const result = await session.mutation(1, "messages.send", { channelId: 1n, body: "new" });
+    expect(result.receipt.obligations).toEqual([10]);
+    const update = session.publications.findLast(
+      (frame) => frame.t === "transition" && frame.id === 10,
     );
+    expect(update).toMatchObject({
+      t: "transition",
+      transition: { kind: "update", to: { commitVersion: result.receipt.commitVersion } },
+    });
+
+    await session.mutation(2, "messages.rewrite", { id: result.value as bigint });
+    expect(session.publications.findLast((frame) => frame.t === "transition")).toMatchObject({
+      t: "transition",
+      transition: { kind: "checkpoint" },
+    });
+  });
+
+  test("event subscriptions receive reset then committed rows", async () => {
+    await session.open();
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 20,
+      ref: "events.typing",
+      args: { channelId: 7n },
+    });
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 21,
+      ref: "events.typing",
+      args: { channelId: 8n },
+    });
+    await session.mutation(1, "messages.send", { channelId: 7n, body: "typing" });
+    expect(session.publications.filter(
+      (frame) => frame.t === "event" && frame.event.kind === "row",
+    )).toMatchObject([
+      { t: "event", id: 20, event: { row: { id: 1n, channelId: 7n } } },
+    ]);
+  });
+
+  test("authorizes and freezes event subscriptions across refresh and terminal sign-out", async () => {
+    await session.open(user("alice"));
+    await expect(runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 22,
+      ref: "events.privateTyping",
+      args: { channelId: "wrong" },
+    })).rejects.toMatchObject({ code: "validation" });
+
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 23,
+      ref: "events.privateTyping",
+      args: { channelId: 9n },
+    });
+    expect(Object.isFrozen(eventAccessInputs.at(-1)!.ctx)).toBe(true);
+    expect(Object.isFrozen(eventAccessInputs.at(-1)!.args)).toBe(true);
+    expect("token" in eventAccessInputs.at(-1)!.ctx).toBe(false);
+    expect("credential" in eventAccessInputs.at(-1)!.ctx).toBe(false);
+
+    await session.mutation(1, "messages.send", { channelId: 9n, body: "private" });
+    expect(Object.isFrozen(eventMatchInputs.at(-1)!.row)).toBe(true);
+    expect(Object.isFrozen(eventMatchInputs.at(-1)!.args)).toBe(true);
+
+    const refreshed = await session.rotate(user("bob"));
+    expect(refreshed).toMatchObject([
+      { t: "event", id: 23, event: { kind: "reset" } },
+    ]);
+    expect(refreshed.some((frame) => frame.t === "err")).toBe(false);
+
+    const signedOut = await session.rotate(ANONYMOUS_PRINCIPAL);
+    expect(signedOut).toMatchObject([
+      { t: "err", id: 23, outcome: { code: "unauthenticated" } },
+    ]);
+    expect(runtime.status().reactive.eventListeners).toBe(0);
+    expect(await session.rotate(user("alice"))).toEqual([]);
+  });
+
+  test("denies an event policy before listener attachment", async () => {
+    await session.open();
+    await expect(runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 24,
+      ref: "events.privateTyping",
+      args: { channelId: 1n },
+    })).rejects.toMatchObject({ code: "unauthenticated" });
+    expect(runtime.status().reactive.eventListeners).toBe(0);
+  });
+
+  test("auth rotation revokes then re-evaluates saved subscriptions under the new identity", async () => {
+    await session.open(user("alice"));
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 30,
+      ref: "messages.secure",
+      args: {},
+    });
+    expect(session.publications[0]).toMatchObject({
+      t: "transition",
+      transition: { kind: "reset", value: { subject: "alice" } },
+    });
+
+    const signedOut = await session.rotate(ANONYMOUS_PRINCIPAL);
+    expect(signedOut).toMatchObject([
+      { t: "transition", id: 30, transition: { kind: "revoked" } },
+      { t: "err", id: 30, outcome: { code: "unauthenticated" } },
+    ]);
+    const signedIn = await session.rotate(user("bob"));
+    expect(signedIn).toEqual([]);
   });
 });
 
-describe("procedures", () => {
-  test("pipeline: runQuery + fetch + runMutation + tx compose", async () => {
-    const out = (await runtime.runProcedure("ops.pipeline", { channelId: 4n })) as Record<string, unknown>;
-    expect(out).toEqual({ before: 0, fetched: "external", after: "external" });
+describe("procedures and bounded SSE", () => {
+  test("runs external work outside an atomic procedure transaction", async () => {
+    const value = await runtime.runProcedure({
+      id: 1,
+      address: "ops.pipeline",
+      args: { channelId: 4n },
+      principal: ANONYMOUS_PRINCIPAL,
+    });
+    expect(value).toEqual({ external: "external", body: "external" });
+    await expect(runtime.runProcedure({
+      id: 2,
+      address: "ops.nestedTx",
+      args: {},
+      principal: ANONYMOUS_PRINCIPAL,
+    })).rejects.toMatchObject({ code: "validation" });
   });
 
-  test("fetch inside ctx.tx is banned; nested tx is a clear error", async () => {
-    await expect(runtime.runProcedure("ops.fetchInTx", {})).rejects.toThrow(
-      "not allowed inside a transaction",
-    );
-    await expect(runtime.runProcedure("ops.nestedTx", {})).rejects.toThrow(
-      "cannot open a transaction inside a transaction",
-    );
-  });
-});
-
-describe("sse", () => {
-  const collect = async (stream: ReadableStream<string>) => {
-    const chunks: string[] = [];
-    for await (const chunk of stream as unknown as AsyncIterable<string>) chunks.push(chunk);
-    return chunks;
-  };
-
-  test("streams handler chunks, merged streams, then [DONE]", async () => {
-    const stream = runtime.runSse("ops.stream", { n: 2 }, new AbortController().signal);
+  test("streams data, merged data, and a terminal marker", async () => {
+    const stream = await runtime.runSse({
+      id: 1,
+      address: "ops.stream",
+      args: { count: 2 },
+      principal: ANONYMOUS_PRINCIPAL,
+    });
     const chunks = await collect(stream);
-    expect(chunks[0]).toBe('data: {"type":"text-delta","delta":"c0"}\n\n');
-    expect(chunks[1]).toBe('data: {"type":"text-delta","delta":"c1"}\n\n');
-    expect(chunks).toContain('data: {"type":"data-custom","data":{"fromMerge":true}}\n\n');
-    expect(chunks[chunks.length - 1]).toBe("data: [DONE]\n\n");
-    const log = await runtime.runQuery("messages.list", { channelId: 1n }); // sanity: runtime alive
-    expect(log).toEqual([]);
+    expect(chunks.slice(0, 2).map((chunk) => decode(chunk.slice(6).trim()))).toEqual([
+      { type: "delta", value: 0 },
+      { type: "delta", value: 1 },
+    ]);
+    expect(chunks.some((chunk) => chunk.includes('"type":"merged"'))).toBe(true);
+    expect(chunks.at(-1)).toBe("data: [DONE]\n\n");
+    expect(runtime.status().sseBudget.bytes).toBe(0);
   });
 
-  test("handler errors surface as an error chunk, stream closes", async () => {
-    const stream = runtime.runSse("ops.failingStream", {}, new AbortController().signal);
+  test("turns a post-start SSE failure into a terminal dbzz-error event", async () => {
+    const stream = await runtime.runSse({
+      id: 1,
+      address: "ops.failingStream",
+      args: {},
+      principal: ANONYMOUS_PRINCIPAL,
+    });
     const chunks = await collect(stream);
-    expect(chunks).toEqual(['data: {"type":"error","errorText":"boom mid-stream"}\n\n']);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toStartWith("event: dbzz-error\ndata: ");
+    expect(decode(chunks[0]!.split("data: ")[1]!.trim())).toMatchObject({ code: "internal" });
   });
 });
 
-describe("scheduler", () => {
-  test("due rows fire their handler once and are deleted", async () => {
-    await runtime.runMutation("reminders.schedule", { message: "ping", at: Date.now() + 40 });
-    const before = await runtime.runQuery("messages.list", { channelId: 1n });
-    expect(before).toEqual([]);
-    await Bun.sleep(120);
-    const log = engine.reader.query(`SELECT line FROM "log"`).all() as { line: string }[];
-    expect(log).toEqual([{ line: "fired:ping" }]);
-    const left = engine.reader.query(`SELECT COUNT(*) AS n FROM "reminders"`).get() as { n: bigint };
-    expect(left.n).toBe(0n);
+describe("scheduler and lifecycle", () => {
+  test("runs the handler and deletes the due row in one commit", async () => {
+    await session.open();
+    const dueAt = Date.now() + 100_000;
+    await session.mutation(1, "reminders.schedule", { message: "ok", at: dueAt });
+    expect(await runtime.runScheduled(dueAt)).toBe(1);
+    expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:ok" }]);
+    expect(engine.reader.query('SELECT COUNT(*) AS count FROM "reminders"').get()).toEqual({ count: 0n });
   });
 
-  test("deleting a scheduled row cancels it", async () => {
-    await runtime.runMutation("reminders.schedule", { message: "cancel-me", at: Date.now() + 60 });
-    // cancel through a direct transaction (same path a mutation would take)
-    const row = engine.writer.query(`SELECT id FROM "reminders"`).get() as { id: bigint };
-    await runtime.runMutation("reminders.schedule", { message: "other", at: Date.now() + 500_000 });
-    engine.writer.query(`DELETE FROM "reminders" WHERE id = ?`).run(row.id);
-    runtime.armScheduler();
-    await Bun.sleep(140);
-    const log = engine.reader.query(`SELECT line FROM "log"`).all() as { line: string }[];
-    expect(log).toEqual([]);
+  test("rolls handler writes and deletion back together on failure", async () => {
+    await session.open();
+    const dueAt = Date.now() + 100_000;
+    await session.mutation(1, "reminders.schedule", { message: "fail", at: dueAt });
+    await expect(runtime.runScheduled(dueAt)).rejects.toThrow("scheduled failure");
+    expect(engine.reader.query('SELECT COUNT(*) AS count FROM "log"').get()).toEqual({ count: 0n });
+    expect(engine.reader.query('SELECT COUNT(*) AS count FROM "reminders"').get()).toEqual({ count: 1n });
+  });
+
+  test("backs a failing due job off instead of retrying in a hot loop", async () => {
+    await session.open();
+    await session.mutation(1, "reminders.schedule", { message: "fail", at: Date.now() - 1 });
+    for (let turn = 0; turn < 20 && scheduledAttempts === 0; turn++) await Bun.sleep(5);
+    expect(scheduledAttempts).toBe(1);
+    await Bun.sleep(50);
+    expect(scheduledAttempts).toBe(1);
+  });
+
+  test("stops admission, waits for accepted work, and becomes stopped", async () => {
+    await session.open();
+    queryGate = deferred<void>();
+    const accepted = runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 1,
+      ref: "messages.block",
+      args: {},
+    });
+    await Promise.resolve();
+    const drain = runtime.drain();
+    expect(runtime.status().state).toBe("draining");
+    await expect(runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 2,
+      ref: "messages.block",
+      args: {},
+    })).rejects.toMatchObject({ code: "draining" });
+    queryGate.resolve(undefined);
+    await expect(accepted).resolves.toBe("released");
+    await drain;
+    expect(runtime.status().state).toBe("stopped");
+  });
+
+  test("rejects duplicate live client-session ownership", async () => {
+    await session.open();
+    const duplicate = new SessionHarness(runtime, "session-a");
+    await expect(duplicate.open()).rejects.toMatchObject({ code: "conflict", resource: "connection" });
+  });
+});
+
+describe("configured capacity", () => {
+  beforeEach(async () => {
+    await runtime.drain();
+    engine.close();
+    rmSync(directory, { recursive: true, force: true });
+    directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-capacity-"));
+    start(limits({ maxConnections: 1, maxFrameBytes: 256 }));
+  });
+
+  test("reports the selected durability and disabled telemetry state", () => {
+    expect(runtime.status()).toMatchObject({
+      state: "ready",
+      connections: 0,
+      telemetry: { enabled: false },
+      storage: { durability: "production", synchronous: "FULL" },
+    });
+  });
+
+  test("bounds connection admission", async () => {
+    await session.open();
+    const second = new SessionHarness(runtime, "session-b");
+    await expect(second.open()).rejects.toMatchObject({ code: "overloaded", resource: "connection" });
+  });
+
+  test("rejects an oversized mutation response before its write commits", async () => {
+    await session.open();
+    await expect(session.mutation(1, "messages.largeResult", {
+      channelId: 9n,
+      size: 512,
+    })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
+    expect(engine.commitVersion()).toBe(0n);
+    const rows = await runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 2,
+      ref: "messages.list",
+      args: { channelId: 9n },
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("removes runtime ownership when an auth transition cannot fit its capture", async () => {
+    await runtime.drain();
+    engine.close();
+    rmSync(directory, { recursive: true, force: true });
+    directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-auth-capture-"));
+    start(limits({
+      maxFrameBytes: 1_024,
+      webSocket: {
+        ...PRODUCTION_LIMITS.webSocket,
+        maxBytesPerConnection: 1_025,
+      },
+    }));
+    await session.open(user("alice"));
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 50,
+      ref: "messages.secure",
+      args: {},
+    });
+
+    await expect(session.rotate(user("bob"))).rejects.toMatchObject({ code: "unavailable" });
+    expect(runtime.status()).toMatchObject({
+      connections: 0,
+      reactive: { queryListeners: 0, eventListeners: 0 },
+    });
   });
 });

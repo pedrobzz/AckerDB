@@ -42,6 +42,10 @@ const schema = () =>
     pings: defineEventTable({
       id: dbz.primaryKey(),
       channel: dbz.bigint(),
+    }, {
+      args: {},
+      access: "public",
+      matches: () => true,
     }),
   });
 

@@ -491,7 +491,14 @@ describe("ordered reactive ownership", () => {
       evaluate: async () => evaluation(null, version, "unused"),
     });
     const subscriber = new RecordingSubscriber();
-    await reactive.subscribeEvent({ subscriber, id: 9, table: "messages", authEpoch: 2 });
+    await reactive.subscribeEvent({
+      subscriber,
+      id: 9,
+      table: "messages",
+      authEpoch: 2,
+      args: {},
+      matches: () => true,
+    });
 
     await publish(reactive, new Set(), (commitVersion) => {
       version = commitVersion;
@@ -509,17 +516,73 @@ describe("ordered reactive ownership", () => {
 
     expect(failed.deliveryFailures).toMatchObject([{ subscriptionId: 9, kind: "event", phase: "delivery" }]);
     expect(subscriber.events.map(({ event }) => event.kind)).toEqual(["reset", "row", "gap", "row"]);
-    expect(subscriber.events[2]?.event.cursor).toMatchObject({ commitVersion: 3n, sequence: 3n });
+    expect(subscriber.events[2]?.event.cursor).toMatchObject({ commitVersion: 3n, sequence: 2n });
 
     reactive.disconnect(subscriber);
     await publish(reactive, new Set(), (commitVersion) => {
       version = commitVersion;
     }, { events: [{ table: "messages", row: "not-replayed" }] });
-    await reactive.subscribeEvent({ subscriber, id: 10, table: "messages", authEpoch: 2 });
+    await reactive.subscribeEvent({
+      subscriber,
+      id: 10,
+      table: "messages",
+      authEpoch: 2,
+      args: {},
+      matches: () => true,
+    });
     expect(subscriber.events.at(-1)?.event).toMatchObject({
       kind: "reset",
       cursor: { commitVersion: 5n, sequence: 0n },
     });
+  });
+
+  test("partitions event rows per listener without exposing mutable matcher input", async () => {
+    let version = 0n;
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async () => evaluation(null, version, "unused"),
+    });
+    const subscriber = new RecordingSubscriber();
+    const seenRooms: string[] = [];
+    await reactive.subscribeEvent({
+      subscriber,
+      id: 11,
+      table: "typing",
+      authEpoch: 1,
+      args: Object.freeze({ room: "a" }),
+      matches: (value, args) => {
+        const row = value as { room: string };
+        seenRooms.push(row.room);
+        expect(Object.isFrozen(row)).toBe(true);
+        expect(Reflect.set(row, "room", "mutated")).toBe(false);
+        return row.room === (args as { room: string }).room;
+      },
+    });
+    await reactive.subscribeEvent({
+      subscriber,
+      id: 12,
+      table: "typing",
+      authEpoch: 1,
+      args: Object.freeze({ room: "b" }),
+      matches: (value, args) => {
+        const row = value as { room: string };
+        seenRooms.push(row.room);
+        return row.room === (args as { room: string }).room;
+      },
+    });
+
+    await publish(reactive, new Set(), (commitVersion) => {
+      version = commitVersion;
+    }, { events: [{ table: "typing", row: { room: "a" } }] });
+    await publish(reactive, new Set(), (commitVersion) => {
+      version = commitVersion;
+    }, { events: [{ table: "typing", row: { room: "b" } }] });
+
+    expect(seenRooms).toEqual(["a", "a", "b", "b"]);
+    expect(subscriber.events.filter(({ event }) => event.kind === "row")).toMatchObject([
+      { id: 11, event: { cursor: { sequence: 1n }, row: { room: "a" } } },
+      { id: 12, event: { cursor: { sequence: 1n }, row: { room: "b" } } },
+    ]);
   });
 
   test("detaches on auth rotation and requires an explicit subscription refresh", async () => {
@@ -536,7 +599,14 @@ describe("ordered reactive ownership", () => {
       subscriber,
     };
     await reactive.subscribeQuery({ ...base, context: "old-context", id: 1, authEpoch: 1 });
-    await reactive.subscribeEvent({ subscriber, id: 2, table: "messages", authEpoch: 1 });
+    await reactive.subscribeEvent({
+      subscriber,
+      id: 2,
+      table: "messages",
+      authEpoch: 1,
+      args: {},
+      matches: () => true,
+    });
 
     const rotated = await reactive.rotateAuth(subscriber, 2);
     expect(rotated).toMatchObject({ queryIds: [1], eventIds: [2], deliveryFailures: [] });
@@ -545,7 +615,7 @@ describe("ordered reactive ownership", () => {
       outcome: { code: "auth_stale" },
       to: { authEpoch: 2 },
     });
-    expect(subscriber.errors.at(-1)?.outcome.code).toBe("auth_stale");
+    expect(subscriber.errors).toHaveLength(0);
     expect(reactive.snapshot()).toMatchObject({ queryListeners: 0, eventListeners: 0 });
 
     await reactive.subscribeQuery({

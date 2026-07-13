@@ -70,7 +70,10 @@ describe("reconcile", () => {
         bio: dbz.nullable(dbz.string()),
       }).index("by_name", ["name"]),
       posts: defineTable({ id: dbz.primaryKey(), title: dbz.string() }),
-      pings: defineEventTable({ id: dbz.primaryKey(), n: dbz.bigint() }),
+      pings: defineEventTable(
+        { id: dbz.primaryKey(), n: dbz.bigint() },
+        { args: {}, access: "public", matches: () => true },
+      ),
     });
     const b = open(grown, path);
     expect(b.applied).toContain("created table posts");

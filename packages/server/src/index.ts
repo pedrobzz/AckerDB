@@ -170,6 +170,7 @@ export {
   defineEventTable,
   defineSchema,
   rowTypeName,
+  eventArgsTypeName,
   camelCase,
   Schema,
   TableDef,
@@ -184,4 +185,6 @@ export {
   type PatchShape,
   type SchemaTables,
   type RowOf,
+  type EventArgsOf,
+  type EventSubscriptionDefinition,
 } from "./schema.ts";

@@ -74,11 +74,31 @@ describe("defineTable", () => {
   });
 
   test("event tables: no indexes, no scheduling", () => {
-    expect(() => defineEventTable(pkCols()).index("by_name", ["name"])).toThrow("never persist");
-    expect(() => defineEventTable(pkCols()).scheduled("x.y")).toThrow("cannot be scheduled");
+    const subscription = { args: {}, access: "public" as const, matches: () => true };
+    expect(() => defineEventTable(pkCols(), subscription).index("by_name", ["name"])).toThrow("never persist");
+    expect(() => defineEventTable(pkCols(), subscription).scheduled("x.y")).toThrow("cannot be scheduled");
     expect(() =>
-      defineEventTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }),
+      defineEventTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }, subscription),
     ).toThrow("event tables cannot");
+  });
+
+  test("event tables require a complete subscription contract", () => {
+    expect(() => defineEventTable(pkCols(), undefined as never)).toThrow("metadata is required");
+    expect(() => defineEventTable(pkCols(), {
+      args: {},
+      access: "invalid" as never,
+      matches: () => true,
+    })).toThrow("event subscription access");
+    expect(() => defineEventTable(pkCols(), {
+      args: { id: dbz.primaryKey() },
+      access: "public",
+      matches: () => true,
+    })).toThrow("not a valid argument validator");
+    expect(() => defineEventTable(pkCols(), {
+      args: {},
+      access: "public",
+      matches: null as never,
+    })).toThrow("matches must be a function");
   });
 });
 

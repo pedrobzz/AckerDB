@@ -9,6 +9,7 @@ import {
   type SubscriptionTransition,
 } from "@dbzz/core";
 import { DbzzError, isDbzzError } from "./errors.ts";
+import { deepFreeze } from "./immutable.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "./limits.ts";
 import { OrderedPublication, type Publication } from "./publication.ts";
 
@@ -46,6 +47,8 @@ export interface EventSubscriptionOptions {
   readonly id: number;
   readonly table: string;
   readonly authEpoch: number;
+  readonly args: unknown;
+  readonly matches: (row: unknown, args: unknown) => boolean;
 }
 
 export interface ReactiveEvent {
@@ -77,7 +80,10 @@ export class ReactiveCommit {
     readonly caller?: Subscriber,
   ) {
     this.writeKeys = new Set(writeKeys);
-    this.events = Object.freeze([...events]);
+    this.events = Object.freeze(events.map((event) => Object.freeze({
+      table: event.table,
+      row: deepFreeze(structuredClone(event.row)),
+    })));
   }
 }
 
@@ -121,6 +127,8 @@ interface EventListener<C> {
   readonly subscriber: Subscriber;
   readonly id: number;
   readonly state: EventState<C>;
+  readonly args: unknown;
+  readonly matches: (row: unknown, args: unknown) => boolean;
   authEpoch: number;
   cursor: LiveEventCursor;
   gapped: boolean;
@@ -168,7 +176,6 @@ interface HistoryRecord<C> {
 
 interface EventState<C> {
   readonly table: string;
-  sequence: bigint;
   readonly listeners: Set<EventListener<C>>;
 }
 
@@ -262,7 +269,7 @@ export class OrderedReactive<C = unknown> {
     this.assertSubscriptionAdmission(options.subscriber, options.id);
     let state = this.eventStates.get(options.table);
     if (!state) {
-      state = { table: options.table, sequence: 0n, listeners: new Set() };
+      state = { table: options.table, listeners: new Set() };
       this.eventStates.set(options.table, state);
     }
     const listener: EventListener<C> = {
@@ -270,11 +277,13 @@ export class OrderedReactive<C = unknown> {
       subscriber: options.subscriber,
       id: options.id,
       state,
+      args: options.args,
+      matches: options.matches,
       authEpoch: options.authEpoch,
       cursor: {
         generation: this.generation(),
         commitVersion: this.publication.snapshot().highWater,
-        sequence: state.sequence,
+        sequence: 0n,
       },
       gapped: false,
       tail: Promise.resolve(),
@@ -398,12 +407,9 @@ export class OrderedReactive<C = unknown> {
         }
       } else {
         eventIds.push(binding.id);
-        try {
-          await this.queue(binding, () =>
-            subscriber.sendError(binding.id, authOutcome("auth_stale", "Authentication changed")));
-        } catch (error) {
-          failures.push(failure(binding, error));
-        }
+        // Detach is immediate, but an already-snapshotted publication may still
+        // own this tail. Drain it before a new-epoch binding is installed.
+        await binding.tail;
       }
     }
     return Object.freeze({
@@ -708,10 +714,20 @@ export class OrderedReactive<C = unknown> {
   private async publishEvent(commitVersion: bigint, event: ReactiveEvent): Promise<DeliveryFailure[]> {
     const state = this.eventStates.get(event.table);
     if (!state) return [];
-    state.sequence++;
     const failures: DeliveryFailure[] = [];
     for (const listener of [...state.listeners]) {
-      const cursor = { ...listener.cursor, commitVersion, sequence: state.sequence };
+      try {
+        if (listener.matches(event.row, listener.args) !== true) continue;
+      } catch (error) {
+        listener.gapped = true;
+        failures.push(failure(listener, error));
+        continue;
+      }
+      const cursor = {
+        ...listener.cursor,
+        commitVersion,
+        sequence: listener.cursor.sequence + 1n,
+      };
       try {
         if (listener.gapped) {
           await this.sendEvent(listener, { kind: "gap", cursor });

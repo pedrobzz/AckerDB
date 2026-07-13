@@ -109,13 +109,21 @@ export type RegisteredSse<A extends ObjectShape, R, S extends Schema = Schema> =
   R
 >;
 
-function isAccessPolicy(value: unknown): value is AccessPolicy<InvocationContext, unknown> {
+export function isAccessPolicy(value: unknown): value is AccessPolicy<InvocationContext, unknown> {
   return (
     value === "public" ||
     value === "authenticated" ||
     value === "system" ||
     typeof value === "function"
   );
+}
+
+export function validateArgsShape(args: ObjectShape, prefix = "args"): void {
+  for (const [name, validator] of Object.entries(args)) {
+    if (validator.kind === "pk" || validator.kind === "scheduleAt" || validator.kind === "tag") {
+      throw new Error(`${prefix}.${name}: dbz.${validator.kind}() is not a valid argument validator`);
+    }
+  }
 }
 
 function register<K extends string>(kind: K) {
@@ -125,11 +133,7 @@ function register<K extends string>(kind: K) {
     if (!isAccessPolicy(def.access)) {
       throw new TypeError(`${kind} access must be public, authenticated, system, or a policy callback`);
     }
-    for (const [name, validator] of Object.entries(def.args)) {
-      if (validator.kind === "pk" || validator.kind === "scheduleAt" || validator.kind === "tag") {
-        throw new Error(`args.${name}: dbz.${validator.kind}() is not a valid argument validator`);
-      }
-    }
+    validateArgsShape(def.args);
 
     const callable =
       kind === "query" || kind === "mutation"
