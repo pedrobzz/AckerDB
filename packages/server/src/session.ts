@@ -36,6 +36,16 @@ import { outcomeFromError } from "./outcome.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
 export type RuntimePublication = SubscriptionServerMessage | ErrorMessage;
+/**
+ * Exact-byte ownership for publications captured during an auth transition.
+ * Frames are valid only until `release()`; release is idempotent and empties
+ * the batch so terminal Session cleanup cannot retain obsolete publications.
+ */
+export interface RuntimePublicationBatch {
+  readonly frames: readonly RuntimePublication[];
+  readonly bytes: number;
+  release(): void;
+}
 export type SessionApplicationMessage =
   | SubscriptionServerMessage
   | QueryOkMessage
@@ -86,7 +96,7 @@ export interface RuntimeMutationResult {
 /** Transport-independent adapter implemented by the database runtime. */
 export interface RuntimePort {
   openSession(context: SessionRuntimeContext): Promise<void>;
-  transitionAuth(transition: RuntimeAuthTransition): Promise<readonly RuntimePublication[]>;
+  transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch>;
   subscribe(context: SessionRuntimeContext, message: SubscribeMessage): Promise<void>;
   unsubscribe(context: SessionRuntimeContext, message: UnsubscribeMessage): Promise<void>;
   reset(context: SessionRuntimeContext, message: ResetRequestMessage): Promise<void>;
@@ -193,6 +203,7 @@ export class Session {
   private expiryTimer: unknown;
   private ingressExpiryTimer: unknown;
   private authTail: Promise<void> = Promise.resolve();
+  private authPublications: RuntimePublicationBatch | null = null;
   private closePromise: Promise<void> | null = null;
   private unsubscribeInvalidation: (() => void) | null = null;
 
@@ -461,55 +472,59 @@ export class Session {
     try {
       await this.sink.dropApplicationFramesBefore(nextEpoch);
       if (this.isClosed() || transitionController.signal.aborted) return;
-      const transitions = await this.runtime.transitionAuth({
+      const publications = await this.runtime.transitionAuth({
         attemptId: message.attemptId,
         reason: message.credential.kind === "anonymous" ? "sign-out" : "refresh",
         from: fromContext,
         to: toContext,
       });
-      if (this.isClosed()) {
-        aborted(transitionController, authStale());
-        return;
-      }
+      this.authPublications = publications;
+      try {
+        if (this.isClosed()) {
+          aborted(transitionController, authStale());
+          return;
+        }
 
-      // A resolved runtime transition is committed even if a newer attempt
-      // arrived while it was running. Keep internal state aligned, but expose
-      // it only if this attempt is still latest.
-      this.principal = result;
-      this.authEpoch = nextEpoch;
-      this.epochController = transitionController;
-      this.scheduleExpiry(result, nextEpoch);
+        // A resolved runtime transition is committed even if a newer attempt
+        // arrived while it was running. Keep internal state aligned, but expose
+        // it only if this attempt is still latest.
+        this.principal = result;
+        this.authEpoch = nextEpoch;
+        this.epochController = transitionController;
+        this.scheduleExpiry(result, nextEpoch);
 
-      if (message.attemptId !== this.latestAttemptId || transitionController.signal.aborted) {
-        aborted(transitionController, authStale());
-        return;
-      }
-      for (const transition of transitions) {
-        await this.sink.sendApplication(nextEpoch, transition);
+        if (message.attemptId !== this.latestAttemptId || transitionController.signal.aborted) {
+          aborted(transitionController, authStale());
+          return;
+        }
+        for (const transition of publications.frames) {
+          await this.sink.sendApplication(nextEpoch, transition);
+          if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
+        }
+        const ack: AuthenticatedMessage = {
+          v: PROTOCOL_VERSION,
+          t: "auth",
+          attemptId: message.attemptId,
+          authEpoch: nextEpoch,
+          principal: result.kind,
+        };
+        await this.sendControl(ack);
         if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
+        this.lastAuthAck = ack;
+        this.paused = false;
+        this.phase = "active";
+        if (this.pendingAuthController === transitionController) this.pendingAuthController = null;
+      } finally {
+        if (this.authPublications === publications) this.authPublications = null;
+        publications.release();
       }
-      const ack: AuthenticatedMessage = {
-        v: PROTOCOL_VERSION,
-        t: "auth",
-        attemptId: message.attemptId,
-        authEpoch: nextEpoch,
-        principal: result.kind,
-      };
-      await this.sendControl(ack);
-      if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
-      this.lastAuthAck = ack;
-      this.paused = false;
-      this.phase = "active";
-      if (this.pendingAuthController === transitionController) this.pendingAuthController = null;
     } catch (error) {
-      aborted(transitionController, authStale());
-      if (
+      const obsolete =
         this.isClosed() ||
         message.attemptId !== this.latestAttemptId ||
-        transitionController.signal.aborted
-      ) {
-        return;
-      }
+        transitionController.signal.aborted;
+      aborted(transitionController, authStale());
+      if (obsolete) return;
       void this.terminate(operationError(error));
     }
   }
@@ -709,6 +724,9 @@ export class Session {
     this.clearIngressExpiry();
     aborted(this.epochController, error);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, error);
+    const authPublications = this.authPublications;
+    this.authPublications = null;
+    authPublications?.release();
     this.clearExpiry();
     const unsubscribe = this.unsubscribeInvalidation;
     this.unsubscribeInvalidation = null;

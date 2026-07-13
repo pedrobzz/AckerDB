@@ -27,6 +27,7 @@ import {
   type RuntimeMutationResult,
   type RuntimePort,
   type RuntimePublication,
+  type RuntimePublicationBatch,
   type SessionApplicationMessage,
   type SessionClock,
   type SessionControlMessage,
@@ -135,6 +136,7 @@ class FakeSink implements SessionSink {
   readonly applications: SinkApplication[] = [];
   readonly drops: number[] = [];
   readonly closes: Outcome[] = [];
+  applicationHook: ((authEpoch: number, message: SessionApplicationMessage) => Promise<void>) | null = null;
 
   constructor(private readonly order: string[] = []) {}
 
@@ -146,6 +148,7 @@ class FakeSink implements SessionSink {
   async sendApplication(authEpoch: number, message: SessionApplicationMessage): Promise<void> {
     this.order.push(`application:${message.t}:${authEpoch}`);
     this.applications.push({ authEpoch, message });
+    if (this.applicationHook !== null) await this.applicationHook(authEpoch, message);
   }
 
   async dropApplicationFramesBefore(authEpoch: number): Promise<void> {
@@ -189,6 +192,8 @@ class FakeRuntime implements RuntimePort {
   readonly queries: QueryMessage[] = [];
   readonly mutations: MutationMessage[] = [];
   readonly closes: Outcome[] = [];
+  transitionCaptureBytes = 0;
+  transitionReleaseCount = 0;
   subscribeHook: ((context: SessionRuntimeContext, id: number) => Promise<void>) | null = null;
   queryHook: ((context: SessionRuntimeContext, message: QueryMessage) => Promise<unknown>) | null = null;
 
@@ -199,11 +204,25 @@ class FakeRuntime implements RuntimePort {
     this.opens.push(context);
   }
 
-  async transitionAuth(transition: RuntimeAuthTransition): Promise<readonly RuntimePublication[]> {
+  async transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch> {
     this.order.push(`runtime:transition:${transition.attemptId}`);
     this.transitions.push(transition);
     if (transition.to.signal.aborted) throw transition.to.signal.reason;
-    return [resetTransition(transition.to.authEpoch)];
+    const frames: RuntimePublication[] = [resetTransition(transition.to.authEpoch)];
+    const bytes = frames.reduce((total, frame) => total + wireBytes(frame), 0);
+    this.transitionCaptureBytes += bytes;
+    let released = false;
+    return Object.freeze({
+      frames,
+      bytes,
+      release: () => {
+        if (released) return;
+        released = true;
+        frames.length = 0;
+        this.transitionCaptureBytes -= bytes;
+        this.transitionReleaseCount += 1;
+      },
+    });
   }
 
   async subscribe(context: SessionRuntimeContext, message: { id: number }): Promise<void> {
@@ -676,6 +695,55 @@ describe("Session Protocol-2 ownership", () => {
     expect(runtime.transitions).toHaveLength(1);
     expect(messagesOfType(sink.controls, "auth").map((message) => message.attemptId)).toEqual([2]);
     expect(verifier.calls).toEqual(["first", "second"]);
+    expect(runtime.transitionCaptureBytes).toBe(0);
+    expect(runtime.transitionReleaseCount).toBe(1);
+  });
+
+  test("releases captured auth publications immediately when close races blocked delivery", async () => {
+    const runtime = new FakeRuntime();
+    const sink = new FakeSink();
+    const verifier = new FakeVerifier();
+    const delivery = deferred<void>();
+    verifier.results.set("next", principal("next"));
+    sink.applicationHook = async () => delivery.promise;
+    const session = new Session({ runtime, sink, verifier, clock: new ManualClock() });
+    await session.handle(hello());
+
+    await session.handle(auth(1, { kind: "bearer", token: "next" }));
+    await settle();
+    expect(runtime.transitionCaptureBytes).toBeGreaterThan(0);
+    expect(runtime.transitionReleaseCount).toBe(0);
+
+    const closing = session.close(new DbzzError("draining", "server draining"));
+    expect(runtime.transitionCaptureBytes).toBe(0);
+    expect(runtime.transitionReleaseCount).toBe(1);
+    delivery.resolve(undefined);
+    await closing;
+    await settle();
+
+    expect(runtime.transitionCaptureBytes).toBe(0);
+    expect(runtime.transitionReleaseCount).toBe(1);
+    expect(messagesOfType(sink.controls, "auth")).toHaveLength(0);
+  });
+
+  test("releases captured auth publications and fails closed when delivery rejects", async () => {
+    const runtime = new FakeRuntime();
+    const sink = new FakeSink();
+    const verifier = new FakeVerifier();
+    verifier.results.set("next", principal("next"));
+    sink.applicationHook = async () => {
+      throw new Error("transport failed");
+    };
+    const session = new Session({ runtime, sink, verifier, clock: new ManualClock() });
+    await session.handle(hello());
+
+    await session.handle(auth(1, { kind: "bearer", token: "next" }));
+    await settle();
+
+    expect(runtime.transitionCaptureBytes).toBe(0);
+    expect(runtime.transitionReleaseCount).toBe(1);
+    expect(session.snapshot().phase).toBe("closed");
+    expect(sink.closes[0]?.code).toBe("internal");
   });
 
   test("sign-out rotates subscriptions, drops old frames, and rejects old-epoch queued work", async () => {

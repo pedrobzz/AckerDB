@@ -31,7 +31,11 @@ import {
   type ReadRecorder,
   type WriteCollector,
 } from "./db.ts";
-import { BoundedSseProducer, OutboundBudget } from "./delivery.ts";
+import {
+  BoundedSseProducer,
+  OutboundBudget,
+  type OutboundReservation,
+} from "./delivery.ts";
 import type { Engine } from "./engine.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import {
@@ -70,6 +74,7 @@ import type {
   RuntimeMutationResult,
   RuntimePort,
   RuntimePublication,
+  RuntimePublicationBatch,
   SessionRuntimeContext,
 } from "./session.ts";
 
@@ -111,6 +116,7 @@ export interface RuntimeStatus {
   readonly writer: ExecutorSnapshot;
   readonly reactive: ReturnType<OrderedReactive<ReactiveContext>["snapshot"]>;
   readonly publication: ReturnType<OrderedReactive<ReactiveContext>["publication"]["snapshot"]>;
+  readonly authCaptureBudget: ReturnType<OutboundBudget["snapshot"]>;
   readonly sseBudget: ReturnType<OutboundBudget["snapshot"]>;
   readonly telemetry: TelemetrySnapshot;
   readonly storage: ReturnType<Engine["status"]>;
@@ -131,7 +137,9 @@ interface AuthTransitionCapture {
   phase: "revoking" | "reattaching";
   authEpoch: number;
   readonly frames: RuntimePublication[];
+  readonly reservations: OutboundReservation[];
   bytes: number;
+  active: boolean;
 }
 
 interface RuntimeSession {
@@ -224,6 +232,7 @@ export class Runtime implements RuntimePort {
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
   private readonly scheduled: Map<string, string>;
   private readonly sessions = new Map<string, RuntimeSession>();
+  private readonly authCaptureBudget: OutboundBudget;
   private readonly sseBudget: OutboundBudget;
   private readonly sseProducers = new Set<BoundedSseProducer>();
   private readonly activeWaiters = new Set<() => void>();
@@ -276,6 +285,14 @@ export class Runtime implements RuntimePort {
       this.limits.sse.maxBytes - 1,
     );
     this.sseBudget = new OutboundBudget(this.limits.sse.maxBytes, globalControlReserve);
+    const authCaptureControlReserve = Math.min(
+      this.limits.maxFrameBytes,
+      this.limits.webSocket.maxBytes - 1,
+    );
+    this.authCaptureBudget = new OutboundBudget(
+      this.limits.webSocket.maxBytes,
+      authCaptureControlReserve,
+    );
     this.telemetry.recordEvent({
       name: "lifecycle",
       level: "info",
@@ -319,7 +336,7 @@ export class Runtime implements RuntimePort {
     this.telemetry.recordMetric({ name: "runtime.connections", value: this.sessions.size, unit: "gauge" });
   }
 
-  async transitionAuth(transition: RuntimeAuthTransition): Promise<readonly RuntimePublication[]> {
+  async transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch> {
     const state = this.currentSession(transition.from, true);
     return this.runOperation(state, "subscription", undefined, 1, async () => {
       if (
@@ -333,7 +350,9 @@ export class Runtime implements RuntimePort {
         phase: "revoking",
         authEpoch: transition.from.authEpoch,
         frames: [],
+        reservations: [],
         bytes: 0,
+        active: true,
       };
       state.capture = captured;
       try {
@@ -343,6 +362,12 @@ export class Runtime implements RuntimePort {
             resource: "subscription",
             cause: rotation.deliveryFailures[0]?.error,
           });
+        }
+        if (
+          state.capture !== captured ||
+          this.sessions.get(transition.from.clientSessionId) !== state
+        ) {
+          throw new DbzzError("auth_stale", "authentication state changed");
         }
         state.context = transition.to;
         state.subscriber = this.makeSubscriber(() => state, transition.to.authEpoch);
@@ -361,7 +386,7 @@ export class Runtime implements RuntimePort {
             });
           }
         }
-        return Object.freeze([...captured.frames]);
+        return this.finishCapture(captured);
       } catch (error) {
         // Auth transitions are terminal when their captured protocol cannot be
         // completed. Remove both old and partially reattached ownership now;
@@ -369,7 +394,8 @@ export class Runtime implements RuntimePort {
         this.removeSession(state);
         throw error;
       } finally {
-        state.capture = null;
+        if (state.capture === captured) state.capture = null;
+        this.releaseCapture(captured);
       }
     });
   }
@@ -480,6 +506,9 @@ export class Runtime implements RuntimePort {
   }
 
   private removeSession(state: RuntimeSession): void {
+    const capture = state.capture;
+    state.capture = null;
+    if (capture !== null) this.releaseCapture(capture);
     this.reactive.disconnect(state.subscriber);
     state.subscriptions.clear();
     if (this.sessions.get(state.context.clientSessionId) !== state) return;
@@ -730,6 +759,7 @@ export class Runtime implements RuntimePort {
       writer: this.coordinator.snapshot(),
       reactive: this.reactive.snapshot(),
       publication: this.reactive.publication.snapshot(),
+      authCaptureBudget: this.authCaptureBudget.snapshot(),
       sseBudget: this.sseBudget.snapshot(),
       telemetry: this.telemetry.snapshot(),
       storage: this.engine.status(),
@@ -920,6 +950,7 @@ export class Runtime implements RuntimePort {
     message: RuntimePublication,
     measuredBytes = this.assertFrameFits(message, "subscription frame", "subscription"),
   ): void {
+    if (!capture.active) throw new DbzzError("auth_stale", "authentication state changed");
     const maxItems = Math.min(Number.MAX_SAFE_INTEGER, this.limits.maxSubscriptionsPerConnection * 2);
     const maxBytes = this.limits.webSocket.maxBytesPerConnection - this.limits.maxFrameBytes;
     if (capture.frames.length >= maxItems || measuredBytes > maxBytes - capture.bytes) {
@@ -929,8 +960,47 @@ export class Runtime implements RuntimePort {
         resource: "subscription",
       });
     }
+    const reservation = this.authCaptureBudget.reserve(measuredBytes, "application");
+    if (reservation === null) {
+      throw new DbzzError("overloaded", "authentication transition exceeds global capture capacity", {
+        retryable: true,
+        retryAfterMs: 0,
+        resource: "subscription",
+      });
+    }
     capture.frames.push(message);
+    capture.reservations.push(reservation);
     capture.bytes += measuredBytes;
+  }
+
+  private finishCapture(capture: AuthTransitionCapture): RuntimePublicationBatch {
+    if (!capture.active) throw new DbzzError("auth_stale", "authentication state changed");
+    capture.active = false;
+    const frames = capture.frames.splice(0);
+    const reservations = capture.reservations.splice(0);
+    const bytes = capture.bytes;
+    capture.bytes = 0;
+    let released = false;
+    return Object.freeze({
+      frames,
+      bytes,
+      release: () => {
+        if (released) return;
+        released = true;
+        frames.length = 0;
+        for (const reservation of reservations) reservation.release();
+        reservations.length = 0;
+      },
+    });
+  }
+
+  private releaseCapture(capture: AuthTransitionCapture): void {
+    if (!capture.active && capture.reservations.length === 0) return;
+    capture.active = false;
+    capture.frames.length = 0;
+    capture.bytes = 0;
+    for (const reservation of capture.reservations) reservation.release();
+    capture.reservations.length = 0;
   }
 
   private async attachSubscription(

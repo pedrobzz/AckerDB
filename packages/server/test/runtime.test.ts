@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   PROTOCOL_VERSION,
   decode,
+  encode,
   type MutationMessage,
 } from "@dbzz/core";
 import {
@@ -20,7 +21,11 @@ import { reconcile } from "../src/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime, type RuntimeOptions } from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
-import type { RuntimePublication, SessionRuntimeContext } from "../src/session.ts";
+import type {
+  RuntimePublication,
+  RuntimePublicationBatch,
+  SessionRuntimeContext,
+} from "../src/session.ts";
 import { Telemetry } from "../src/telemetry.ts";
 
 interface Deferred<T> {
@@ -268,11 +273,20 @@ class SessionHarness {
   }
 
   async rotate(principal: Principal): Promise<readonly RuntimePublication[]> {
+    const batch = await this.rotateBatch(principal);
+    try {
+      return Object.freeze([...batch.frames]);
+    } finally {
+      batch.release();
+    }
+  }
+
+  async rotateBatch(principal: Principal): Promise<RuntimePublicationBatch> {
     const from = this.context;
     this.controller.abort();
     const nextController = new AbortController();
     const to = this.makeContext(principal, from.authEpoch + 1, nextController);
-    const frames = await this.runtime.transitionAuth({
+    const batch = await this.runtime.transitionAuth({
       attemptId: from.authEpoch + 1,
       reason: principal.kind === "anonymous" ? "sign-out" : "refresh",
       from,
@@ -280,7 +294,7 @@ class SessionHarness {
     });
     this.controller = nextController;
     this.context = to;
-    return frames;
+    return batch;
   }
 
   mutation(
@@ -332,6 +346,11 @@ async function collect(stream: ReadableStream<Uint8Array>): Promise<string[]> {
     chunks.push(decoder.decode(bytes));
   }
   return chunks;
+}
+
+function publicationBytes(frames: readonly RuntimePublication[]): number {
+  const encoder = new TextEncoder();
+  return frames.reduce((total, frame) => total + encoder.encode(encode(frame)).byteLength, 0);
 }
 
 let directory: string;
@@ -1015,6 +1034,71 @@ describe("configured capacity", () => {
     expect(runtime.status()).toMatchObject({
       connections: 0,
       reactive: { queryListeners: 0, eventListeners: 0 },
+      authCaptureBudget: { bytes: 0, applicationBytes: 0 },
     });
+  });
+
+  test("globally bounds concurrent auth capture leases and releases their exact bytes", async () => {
+    const maxFrameBytes = 1_024;
+    await restart(limits({ maxConnections: 2, maxFrameBytes }));
+    await session.open(user("alice"));
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 51,
+      ref: "messages.secure",
+      args: {},
+    });
+    const calibration = await session.rotateBatch(user("robin"));
+    const exactCaptureBytes = calibration.bytes;
+    expect(exactCaptureBytes).toBe(publicationBytes(calibration.frames));
+    expect(runtime.status().authCaptureBudget.bytes).toBe(exactCaptureBytes);
+    calibration.release();
+    expect(runtime.status().authCaptureBudget.bytes).toBe(0);
+
+    const globalBytes = exactCaptureBytes + maxFrameBytes;
+    await restart(limits({
+      maxConnections: 2,
+      maxFrameBytes,
+      webSocket: {
+        ...PRODUCTION_LIMITS.webSocket,
+        maxBytesPerConnection: globalBytes,
+        maxBytes: globalBytes,
+      },
+    }));
+    const first = session;
+    const second = new SessionHarness(runtime, "session-b");
+    await Promise.all([first.open(user("alice")), second.open(user("alice"))]);
+    for (const owner of [first, second]) {
+      await runtime.subscribe(owner.context, {
+        v: PROTOCOL_VERSION,
+        t: "sub",
+        id: 51,
+        ref: "messages.secure",
+        args: {},
+      });
+    }
+
+    const firstBatch = await first.rotateBatch(user("robin"));
+    expect(firstBatch.bytes).toBe(exactCaptureBytes);
+    expect(runtime.status().authCaptureBudget).toMatchObject({
+      bytes: exactCaptureBytes,
+      applicationBytes: exactCaptureBytes,
+      controlBytes: 0,
+      maxBytes: globalBytes,
+      reservedControlBytes: maxFrameBytes,
+    });
+    await expect(second.rotateBatch(user("robin"))).rejects.toMatchObject({
+      code: "unavailable",
+      resource: "subscription",
+    });
+    expect(runtime.status()).toMatchObject({
+      connections: 1,
+      authCaptureBudget: { bytes: exactCaptureBytes, applicationBytes: exactCaptureBytes },
+    });
+
+    firstBatch.release();
+    firstBatch.release();
+    expect(runtime.status().authCaptureBudget).toMatchObject({ bytes: 0, applicationBytes: 0 });
   });
 });
