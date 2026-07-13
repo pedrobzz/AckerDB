@@ -99,11 +99,12 @@ class ManualClock implements SessionClock {
 type VerifierResult = VerifiedPrincipal | Error | Promise<VerifiedPrincipal>;
 
 class FakeVerifier implements CredentialVerifier {
-  readonly revocationBound: RevocationBound = { kind: "invalidation", deadlineMs: 5_000 };
   readonly calls: string[] = [];
   readonly results = new Map<string, VerifierResult>();
   unsubscribeCalls = 0;
   private listener: ((invalidation: PrincipalInvalidation) => void) | null = null;
+
+  constructor(readonly revocationBound: RevocationBound = { kind: "invalidation", deadlineMs: 5_000 }) {}
 
   async verify(credential: string): Promise<VerifiedPrincipal> {
     this.calls.push(credential);
@@ -819,6 +820,55 @@ describe("Session Protocol-2 ownership", () => {
     expect(session.snapshot().phase).toBe("closed");
     expect(sink.closes[0]?.code).toBe("unauthenticated");
     expect(sink.closes[0]?.message).toBe("credential expired");
+  });
+
+  test("accepts invalidation guarantees equal to or lower than the configured revocation bound", () => {
+    for (const advertisedDeadlineMs of [5_000, 1_000]) {
+      const session = new Session({
+        runtime: new FakeRuntime(),
+        sink: new FakeSink(),
+        verifier: new FakeVerifier({ kind: "invalidation", deadlineMs: advertisedDeadlineMs }),
+        revocationDeadlineMs: 5_000,
+      });
+
+      expect(session.revocationDeadlineMs).toBe(5_000);
+    }
+
+    expect(() => new Session({
+      runtime: new FakeRuntime(),
+      sink: new FakeSink(),
+      verifier: new FakeVerifier({ kind: "token-expiration" }),
+      revocationDeadlineMs: 1,
+    })).not.toThrow();
+  });
+
+  test("rejects an invalid invalidation guarantee before opening the session", () => {
+    for (const deadlineMs of [undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const revocationBound = { kind: "invalidation", deadlineMs } as unknown as RevocationBound;
+
+      expect(() => new Session({
+        runtime: new FakeRuntime(),
+        sink: new FakeSink(),
+        verifier: new FakeVerifier(revocationBound),
+      })).toThrow("verifier invalidation deadlineMs must be a positive finite number");
+    }
+
+    const missingBound = new FakeVerifier();
+    Object.defineProperty(missingBound, "revocationBound", { value: undefined });
+    expect(() => new Session({
+      runtime: new FakeRuntime(),
+      sink: new FakeSink(),
+      verifier: missingBound,
+    })).toThrow("verifier must declare a revocationBound");
+  });
+
+  test("rejects an invalidation guarantee above the configured revocation bound", () => {
+    expect(() => new Session({
+      runtime: new FakeRuntime(),
+      sink: new FakeSink(),
+      verifier: new FakeVerifier({ kind: "invalidation", deadlineMs: 5_000 }),
+      revocationDeadlineMs: 4_999,
+    })).toThrow("verifier invalidation deadlineMs cannot exceed revocationDeadlineMs");
   });
 
   test("matching verifier invalidation uses the reserved fail-closed path within the bound", async () => {

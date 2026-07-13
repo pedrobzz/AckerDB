@@ -216,6 +216,27 @@ export class Session {
     ) {
       throw new RangeError(`revocationDeadlineMs must be an integer from 1 through ${DEFAULT_REVOCATION_DEADLINE_MS}`);
     }
+    const revocationBound = options.verifier?.revocationBound;
+    if (
+      options.verifier !== undefined &&
+      revocationBound?.kind !== "token-expiration" &&
+      revocationBound?.kind !== "invalidation"
+    ) {
+      throw new RangeError("verifier must declare a revocationBound");
+    }
+    if (revocationBound?.kind === "invalidation") {
+      const advertisedDeadlineMs = revocationBound.deadlineMs;
+      if (
+        typeof advertisedDeadlineMs !== "number" ||
+        !Number.isFinite(advertisedDeadlineMs) ||
+        advertisedDeadlineMs <= 0
+      ) {
+        throw new RangeError("verifier invalidation deadlineMs must be a positive finite number");
+      }
+      if (advertisedDeadlineMs > revocationDeadlineMs) {
+        throw new RangeError("verifier invalidation deadlineMs cannot exceed revocationDeadlineMs");
+      }
+    }
     this.runtime = options.runtime;
     this.sink = options.sink;
     this.verifier = options.verifier;
