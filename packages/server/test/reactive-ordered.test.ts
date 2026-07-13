@@ -13,6 +13,7 @@ import {
   ReactiveCommit,
   type QueryEvaluation,
   type ReactiveCommitResult,
+  type ReactiveObservation,
   type Subscriber,
 } from "../src/reactive.ts";
 
@@ -22,8 +23,19 @@ class RecordingSubscriber implements Subscriber {
   readonly errors: Array<{ id: number; outcome: Outcome }> = [];
   readonly failNextTransition = new Set<number>();
   readonly failNextEvent = new Set<number>();
+  private nextTransitionGate?: {
+    readonly id: number;
+    readonly entered: () => void;
+    readonly release: Promise<void>;
+  };
 
   async sendTransition(id: number, transition: SubscriptionTransition): Promise<void> {
+    const gate = this.nextTransitionGate;
+    if (gate?.id === id) {
+      this.nextTransitionGate = undefined;
+      gate.entered();
+      await gate.release;
+    }
     if (this.failNextTransition.delete(id)) throw new Error(`transition ${id} failed`);
     this.transitions.push({ id, transition });
   }
@@ -41,6 +53,13 @@ class RecordingSubscriber implements Subscriber {
     const transition = this.transitions.findLast((item) => item.id === id)?.transition;
     if (!transition) throw new Error(`missing transition ${id}`);
     return transition.to;
+  }
+
+  gateNextTransition(id: number): { readonly entered: Promise<void>; release(): void } {
+    const entered = deferred();
+    const release = deferred();
+    this.nextTransitionGate = { id, entered: entered.resolve, release: release.promise };
+    return { entered: entered.promise, release: release.resolve };
   }
 }
 
@@ -1112,5 +1131,210 @@ describe("ordered reactive ownership", () => {
       historyBytes: 0,
       evaluatingEntries: 0,
     });
+  });
+
+  test("observes query stages with safe metadata and exact queue timing", async () => {
+    const secret = "never-emit-this-query-payload";
+    let now = 0;
+    let version = 0n;
+    let stalled = false;
+    const entered = deferred();
+    const release = deferred();
+    const observations: ReactiveObservation[] = [];
+    const values = new Map<string, unknown>([
+      ["a", { state: "initial", secret }],
+      ["b", { state: "stable" }],
+      ["c", { state: "unaffected" }],
+    ]);
+    const reactive = new OrderedReactive({
+      limits: testLimits({ revalidationConcurrency: 1 }),
+      now: () => now,
+      generation: generationSequence(),
+      observer: (observation) => observations.push(observation),
+      evaluate: async ({ address }) => {
+        const observedVersion = version;
+        if (stalled && address === "a") {
+          entered.resolve();
+          await release.promise;
+        }
+        return evaluation(values.get(address), observedVersion, address);
+      },
+    });
+    const subscriber = new RecordingSubscriber();
+    for (const [id, address] of [[1, "a"], [2, "b"], [3, "c"]] as const) {
+      await reactive.subscribeQuery({
+        address,
+        args: { secret },
+        policyScopeFingerprint: `scope:${secret}`,
+        context: undefined,
+        subscriber,
+        id,
+        authEpoch: 0,
+      });
+    }
+
+    expect(observations.filter(({ phase }) => phase === "initial_evaluation").map(({ address }) => address))
+      .toEqual(["a", "b", "c"]);
+    expect(observations.filter(({ phase }) => phase === "delivery").map(({ subscriptionId }) => subscriptionId))
+      .toEqual([1, 2, 3]);
+    expect(observations.every(Object.isFrozen)).toBe(true);
+    observations.length = 0;
+
+    stalled = true;
+    now = 10;
+    values.set("a", { state: "changed", secret });
+    const slot = reactive.publication.reserve(64);
+    version = slot.version;
+    slot.commit(new ReactiveCommit(new Set(["a", "b"])));
+    await entered.promise;
+    now = 25;
+    release.resolve();
+    await slot.completion;
+
+    const invalidations = observations.filter(({ phase }) => phase === "invalidation_match");
+    expect(invalidations).toHaveLength(3);
+    expect(invalidations.map(({ address, outcome, resultCount }) => [address, outcome, resultCount]))
+      .toEqual([
+        ["a", "matched", 1],
+        ["b", "matched", 1],
+        ["c", "unmatched", 0],
+      ]);
+    expect(observations.filter(({ phase }) => phase === "evaluation").map(({ address }) => address))
+      .toEqual(["a", "b"]);
+    expect(observations.filter(({ phase }) => phase === "changed").map(({ address }) => address))
+      .toEqual(["a"]);
+    expect(observations.filter(({ phase }) => phase === "unchanged").map(({ address }) => address))
+      .toEqual(["b"]);
+    expect(observations.find(({ phase, address }) => phase === "revalidation_queue" && address === "b"))
+      .toMatchObject({ outcome: "ok", durationMs: 15, commitVersion: 1n });
+    expect(observations.filter(({ phase }) => phase === "fanout").map(({ address, resultCount }) => [address, resultCount]))
+      .toEqual([["a", 1], ["b", 1]]);
+    expect(observations.filter(({ phase }) => phase === "delivery").map(({ subscriptionId }) => subscriptionId))
+      .toEqual([1, 2]);
+    expect(observations.some(({ phase, address }) => phase === "evaluation" && address === "c"))
+      .toBe(false);
+
+    now = 30;
+    const gate = subscriber.gateNextTransition(1);
+    const firstReset = reactive.reset(subscriber, 1, subscriber.cursor(1));
+    await gate.entered;
+    const queuedFrom = observations.length;
+    const secondReset = reactive.reset(subscriber, 1, subscriber.cursor(1));
+    now = 45;
+    gate.release();
+    await Promise.all([firstReset, secondReset]);
+    expect(observations.slice(queuedFrom).find(({ phase }) => phase === "listener_queue"))
+      .toMatchObject({
+        kind: "query",
+        subscriptionId: 1,
+        commitVersion: 1n,
+        outcome: "ok",
+        durationMs: 15,
+      });
+
+    const allowedKeys = new Set([
+      "kind",
+      "phase",
+      "outcome",
+      "durationMs",
+      "address",
+      "subscriptionId",
+      "commitVersion",
+      "dependencyCount",
+      "resultCount",
+      "byteCount",
+    ]);
+    expect(observations.every((observation) =>
+      Object.keys(observation).every((key) => allowedKeys.has(key))
+    )).toBe(true);
+    expect(observations.every(Object.isFrozen)).toBe(true);
+    const serialized = JSON.stringify(observations, (_key, value) =>
+      typeof value === "bigint" ? value.toString() : value
+    );
+    expect(serialized).not.toContain(secret);
+    for (const forbidden of ["args", "row", "identity", "value", "policyScopeFingerprint"]) {
+      expect(serialized).not.toContain(`\"${forbidden}\"`);
+    }
+  });
+
+  test("observer failures are fail-open across event matching and failed delivery", async () => {
+    const secret = "never-emit-this-event-row";
+    const observations: ReactiveObservation[] = [];
+    let observerCalls = 0;
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      observer: (observation) => {
+        observations.push(observation);
+        observerCalls++;
+        if (observerCalls % 2 === 1) throw new Error("observer failed synchronously");
+        return Promise.reject(new Error("observer failed asynchronously"));
+      },
+      evaluate: async () => evaluation(null, 0n, "unused"),
+    });
+    const subscriber = new RecordingSubscriber();
+    await reactive.subscribeEvent({
+      subscriber,
+      id: 10,
+      table: "typing",
+      authEpoch: 0,
+      args: { room: "a", secret },
+      matches: (row, args) =>
+        (row as { room: string }).room === (args as { room: string }).room,
+    });
+    await reactive.subscribeEvent({
+      subscriber,
+      id: 11,
+      table: "typing",
+      authEpoch: 0,
+      args: { room: "b", secret },
+      matches: (row, args) =>
+        (row as { room: string }).room === (args as { room: string }).room,
+    });
+    observations.length = 0;
+    subscriber.failNextEvent.add(10);
+
+    const failed = await publish(reactive, new Set(), () => {}, {
+      events: [{ table: "typing", row: { room: "a", secret } }],
+    });
+    expect(failed.deliveryFailures).toMatchObject([{
+      subscriptionId: 10,
+      kind: "event",
+      phase: "delivery",
+    }]);
+    expect(observations.filter(({ phase }) => phase === "event_match")).toMatchObject([
+      { subscriptionId: 10, outcome: "matched", resultCount: 1 },
+      { subscriptionId: 11, outcome: "unmatched", resultCount: 0 },
+    ]);
+    expect(observations).toContainEqual(expect.objectContaining({
+      kind: "event",
+      phase: "delivery",
+      outcome: "internal",
+      subscriptionId: 10,
+    }));
+    expect(observations).toContainEqual(expect.objectContaining({
+      kind: "event",
+      phase: "failure",
+      outcome: "internal",
+      subscriptionId: 10,
+    }));
+    expect(observations.some(({ phase, subscriptionId }) =>
+      phase === "delivery" && subscriptionId === 11
+    )).toBe(false);
+
+    const recovered = await publish(reactive, new Set(), () => {}, {
+      events: [{ table: "typing", row: { room: "a", secret } }],
+    });
+    expect(recovered.deliveryFailures).toEqual([]);
+    expect(subscriber.events.filter(({ id }) => id === 10).at(-1)?.event.kind).toBe("gap");
+    await Promise.resolve();
+    expect(observerCalls).toBeGreaterThan(0);
+    expect(observations.every(Object.isFrozen)).toBe(true);
+    const serialized = JSON.stringify(observations, (_key, value) =>
+      typeof value === "bigint" ? value.toString() : value
+    );
+    expect(serialized).not.toContain(secret);
+    for (const forbidden of ["args", "row", "identity", "value", "policyScopeFingerprint"]) {
+      expect(serialized).not.toContain(`\"${forbidden}\"`);
+    }
   });
 });
