@@ -77,4 +77,16 @@ describe("production profile configuration", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("rejects listener ports that Bun would otherwise coerce", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    try {
+      for (const port of [-1, 0, 1.5, 65_536, "3211"]) {
+        writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({ port }));
+        expect(() => loadConfig(dir, {})).toThrow("port must be an integer from 1 through 65535");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

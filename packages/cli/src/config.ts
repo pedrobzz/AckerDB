@@ -48,6 +48,14 @@ function statusScope(value: unknown): string {
   return scope;
 }
 
+function listenerPort(value: unknown): number {
+  const port = value ?? 3211;
+  if (typeof port !== "number" || !Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("port must be an integer from 1 through 65535");
+  }
+  return port;
+}
+
 function exactProfile<const T extends string>(
   env: Readonly<Record<string, string | undefined>>,
   name: string,
@@ -78,7 +86,7 @@ export function loadConfig(
     functionsDir: abs(raw.functions ?? "./functions"),
     generatedDir: abs(raw.generated ?? "./_generated"),
     dbDir: abs(raw.db ?? "./.zdb"),
-    port: raw.port ?? 3211,
+    port: listenerPort(raw.port),
     durability: exactProfile(env, "DBZZ_DURABILITY", ["production", "balanced"], "production"),
     telemetry: exactProfile(env, "DBZZ_TELEMETRY", ["enabled", "disabled"], "enabled"),
     ...(raw.oidc === undefined ? {} : { oidc: raw.oidc }),
