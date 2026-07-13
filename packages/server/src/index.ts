@@ -118,6 +118,20 @@ export {
 } from "./functions.ts";
 export { Registry } from "./registry.ts";
 export {
+  BoundedSseProducer,
+  OutboundBudget,
+  WebSocketSessionSink,
+  type BoundedSseProducerOptions,
+  type DeliveryClock,
+  type OutboundBudgetSnapshot,
+  type OutboundLane,
+  type OutboundReservation,
+  type SseDeliverySnapshot,
+  type WebSocketDeliverySnapshot,
+  type WebSocketDeliverySocket,
+  type WebSocketSessionSinkOptions,
+} from "./delivery.ts";
+export {
   OrderedReactive,
   ReactiveCommit,
   type AuthRotationResult,
