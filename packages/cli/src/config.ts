@@ -4,6 +4,9 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import type { DurabilityPolicy } from "@dbzz/core";
+
+export type TelemetryMode = "enabled" | "disabled";
 
 export interface AppConfig {
   appDir: string;
@@ -16,6 +19,8 @@ export interface AppConfig {
   /** Where the local database lives. */
   dbDir: string;
   port: number;
+  durability: DurabilityPolicy;
+  telemetry: TelemetryMode;
 }
 
 interface RawConfig {
@@ -26,7 +31,23 @@ interface RawConfig {
   port?: number;
 }
 
-export function loadConfig(appDir: string): AppConfig {
+function exactProfile<const T extends string>(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const value = env[name] ?? fallback;
+  if (!allowed.includes(value as T)) {
+    throw new Error(`${name} must be exactly ${allowed.join(" or ")}; received ${JSON.stringify(value)}`);
+  }
+  return value as T;
+}
+
+export function loadConfig(
+  appDir: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): AppConfig {
   const dir = resolve(appDir);
   const configPath = join(dir, ".zdb.config.json");
   let raw: RawConfig = {};
@@ -41,5 +62,7 @@ export function loadConfig(appDir: string): AppConfig {
     generatedDir: abs(raw.generated ?? "./_generated"),
     dbDir: abs(raw.db ?? "./.zdb"),
     port: raw.port ?? 3211,
+    durability: exactProfile(env, "DBZZ_DURABILITY", ["production", "balanced"], "production"),
+    telemetry: exactProfile(env, "DBZZ_TELEMETRY", ["enabled", "disabled"], "enabled"),
   };
 }
