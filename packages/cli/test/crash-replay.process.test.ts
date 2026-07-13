@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
@@ -15,6 +15,40 @@ import { FIXTURE_MESSAGES, FIXTURE_SCHEMA, makeFixture } from "./fixture.ts";
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 30_000;
 const STEP_TIMEOUT_MS = 10_000;
+
+const CRASH_BEFORE_COMMIT_MESSAGES = `
+import { existsSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { dbz } from "@dbzz/server";
+import { mutation } from "../_generated/server.ts";
+
+const crashSentinel = join(import.meta.dir, "..", ".precommit-crash-reached");
+
+export const crashBeforeCommit = mutation({
+  access: "public",
+  args: { channelId: dbz.bigint(), body: dbz.string() },
+  handler: async (ctx, args) => {
+    const id = await ctx.db.messages.insert({
+      ...args,
+      body: \`\${args.body}:first\`,
+      role: "member",
+      payload: { tag: "nothing", value: null },
+    });
+    await ctx.db.messages.insert({
+      ...args,
+      body: \`\${args.body}:second\`,
+      role: "member",
+      payload: { tag: "nothing", value: null },
+    });
+    if (!existsSync(crashSentinel)) {
+      writeFileSync(crashSentinel, "SQL work completed before SIGKILL", { flag: "wx" });
+      process.kill(process.pid, "SIGKILL");
+      await new Promise<never>(() => {});
+    }
+    return id;
+  },
+});
+`;
 
 type CliProcess = Subprocess<"ignore", "pipe", "pipe">;
 
@@ -140,7 +174,7 @@ function spawnStart(dir: string): {
     output: () => `${stdout}${stderr.length === 0 ? "" : `\n[stderr]\n${stderr}`}`,
     waitFor: async (needle) => {
       await eventually(() => {
-        expect(stdout).toContain(needle);
+        expect(`${stdout}\n[stderr]\n${stderr}`).toContain(needle);
       }, `${JSON.stringify(needle)} in CLI output`);
       return stdout;
     },
@@ -193,7 +227,157 @@ function count(database: Database, sql: string, ...bindings: Array<string | bigi
   return Number(row.count);
 }
 
+function storageState(database: Database): {
+  commitVersion: number;
+  mutationRecords: number;
+  mutationResultBytes: number;
+} {
+  const row = database
+    .query(
+      "SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbz_state WHERE singleton = 1",
+    )
+    .get() as {
+      commit_version: number | bigint;
+      mutation_records: number | bigint;
+      mutation_result_bytes: number | bigint;
+    };
+  return {
+    commitVersion: Number(row.commit_version),
+    mutationRecords: Number(row.mutation_records),
+    mutationResultBytes: Number(row.mutation_result_bytes),
+  };
+}
+
 describe("CLI crash replay", () => {
+  test("rolls back pre-COMMIT SQL and metadata, then executes the pending retry once", async () => {
+    const port = await freePort();
+    await assertNoServer(port);
+    const dir = makeFixture({
+      "schema.ts": FIXTURE_SCHEMA,
+      "functions/messages.ts": FIXTURE_MESSAGES,
+      "functions/crash.ts": CRASH_BEFORE_COMMIT_MESSAGES,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+    const sentinel = join(dir, ".precommit-crash-reached");
+
+    const first = spawnStart(dir);
+    await first.waitFor("ready on");
+
+    const observed: ObservedTransport = {
+      holdTransitions: false,
+      heldTransitions: 0,
+      mutationRequestIds: [],
+      receipts: [],
+    };
+    const client = new DbzzClient({
+      url: `http://127.0.0.1:${port}`,
+      credential: { kind: "anonymous" },
+      clientSessionId: "precommit-crash-session",
+      reconnect: { baseDelayMs: 20, maxDelayMs: 100, stableOpenMs: 100 },
+      random: () => 0.5,
+      createWebSocket: (url) => new ObservingWebSocket(url, observed),
+    });
+    clients.push(client);
+
+    let mutationSettled = false;
+    const mutation = client.mutation<{ channelId: bigint; body: string }, bigint>(
+      "crash.crashBeforeCommit",
+      { channelId: 9n, body: "precommit-sigkill" },
+    );
+    void mutation.then(
+      () => {
+        mutationSettled = true;
+      },
+      () => {
+        mutationSettled = true;
+      },
+    );
+
+    expect(await withTimeout(first.child.exited, "pre-COMMIT fixture SIGKILL exit")).not.toBe(0);
+    await withTimeout(first.drained, "pre-COMMIT fixture output drain");
+    children.delete(first.child);
+    await assertNoServer(port);
+
+    expect(existsSync(sentinel)).toBe(true);
+    expect(observed.mutationRequestIds).toHaveLength(1);
+    const requestId = observed.mutationRequestIds[0]!;
+    expect(requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(observed.receipts).toHaveLength(0);
+    expect(mutationSettled).toBe(false);
+
+    const database = new Database(join(dir, ".zdb", "data.db"), { readonly: true });
+    databases.push(database);
+    expect(count(
+      database,
+      "SELECT COUNT(*) AS count FROM messages WHERE channelId = ? AND body IN (?, ?)",
+      9n,
+      "precommit-sigkill:first",
+      "precommit-sigkill:second",
+    )).toBe(0);
+    expect(count(
+      database,
+      "SELECT COUNT(*) AS count FROM _dbz_mutations WHERE session_id = ? AND request_id = ?",
+      client.clientSessionId,
+      requestId,
+    )).toBe(0);
+    expect(storageState(database)).toEqual({
+      commitVersion: 0,
+      mutationRecords: 0,
+      mutationResultBytes: 0,
+    });
+
+    const second = spawnStart(dir);
+    await second.waitFor("ready on");
+    expect(typeof await withTimeout(mutation, "pre-COMMIT pending mutation retry")).toBe("bigint");
+    await eventually(() => {
+      expect(observed.mutationRequestIds.length).toBeGreaterThanOrEqual(2);
+      expect(new Set(observed.mutationRequestIds)).toEqual(new Set([requestId]));
+      expect(observed.receipts).toHaveLength(1);
+      expect(observed.receipts[0]).toMatchObject({
+        mutationRequestId: requestId,
+        durability: "production",
+        replay: "executed",
+      });
+    }, "same pre-COMMIT request ID to execute after restart");
+
+    expect(count(
+      database,
+      "SELECT COUNT(*) AS count FROM messages WHERE channelId = ? AND body IN (?, ?)",
+      9n,
+      "precommit-sigkill:first",
+      "precommit-sigkill:second",
+    )).toBe(2);
+    expect(count(
+      database,
+      "SELECT COUNT(*) AS count FROM messages WHERE channelId = ? AND body = ?",
+      9n,
+      "precommit-sigkill:first",
+    )).toBe(1);
+    expect(count(
+      database,
+      "SELECT COUNT(*) AS count FROM messages WHERE channelId = ? AND body = ?",
+      9n,
+      "precommit-sigkill:second",
+    )).toBe(1);
+    expect(count(
+      database,
+      "SELECT COUNT(*) AS count FROM _dbz_mutations WHERE session_id = ? AND request_id = ? AND commit_version = 1 AND durability = 'production'",
+      client.clientSessionId,
+      requestId,
+    )).toBe(1);
+    const committedState = storageState(database);
+    expect(committedState).toMatchObject({ commitVersion: 1, mutationRecords: 1 });
+    expect(committedState.mutationResultBytes).toBeGreaterThan(0);
+
+    client.close();
+    clients.splice(clients.indexOf(client), 1);
+    second.child.kill("SIGTERM");
+    expect(await withTimeout(second.child.exited, "pre-COMMIT retry server graceful exit")).toBe(0);
+    await withTimeout(second.drained, "pre-COMMIT retry server output drain");
+    children.delete(second.child);
+  }, TEST_TIMEOUT_MS);
+
   test("replays one pending UUIDv7 mutation exactly once after SIGKILL", async () => {
     const port = await freePort();
     await assertNoServer(port);
