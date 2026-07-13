@@ -25,6 +25,18 @@ import { FIXTURE_SCHEMA, makeFixture } from "./fixture.ts";
 
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 const dirs: string[] = [];
+const replayResult = encode({ messageId: 1n, body: "preserved" });
+const replayRecord = Object.freeze({
+  sessionId: "backup-restore-session",
+  requestId: "backup-restore-request",
+  issuedAt: 1_700_000_000_000,
+  principalFingerprint: "backup-restore-principal",
+  functionRef: "messages.create",
+  argsFingerprint: "backup-restore-args",
+  result: replayResult,
+  resultBytes: new TextEncoder().encode(replayResult).byteLength,
+  completedAt: 1_700_000_000_001,
+});
 
 afterEach(() => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
@@ -52,7 +64,13 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
           "INSERT INTO messages (channelId, body, role, payload, payload__p) VALUES (?, ?, ?, ?, ?)",
         )
         .run(7n, "preserved", role, payload, encode(null));
-      expect(engine.allocateCommitVersion()).toBe(1n);
+      const commitVersion = engine.allocateCommitVersion();
+      expect(commitVersion).toBe(1n);
+      engine.insertStoredMutation({
+        ...replayRecord,
+        commitVersion,
+        durability,
+      });
       engine.writer.exec("COMMIT");
     } catch (error) {
       engine.writer.exec("ROLLBACK");
@@ -150,11 +168,28 @@ describe("dbz backup, restore, and status", () => {
     });
     try {
       expect(
-        restored.writer.query("SELECT COUNT(*) AS count FROM messages").get(),
-      ).toEqual({ count: 1n });
+        restored.writer.query("SELECT channelId, body FROM messages").get(),
+      ).toEqual({ channelId: 7n, body: "preserved" });
+      const expectedReplay = {
+        ...replayRecord,
+        commitVersion: 1n,
+        durability: "production" as const,
+      };
+      expect(
+        restored.storedMutation(replayRecord.sessionId, replayRecord.requestId),
+      ).toEqual(expectedReplay);
+      expect(restored.status()).toMatchObject({
+        commitVersion: 1n,
+        mutationRecords: 1,
+        mutationResultBytes: replayRecord.resultBytes,
+      });
       restored.writer.exec("BEGIN IMMEDIATE");
       expect(restored.allocateCommitVersion()).toBe(2n);
       restored.writer.exec("COMMIT");
+      expect(restored.commitVersion()).toBe(2n);
+      expect(
+        restored.storedMutation(replayRecord.sessionId, replayRecord.requestId),
+      ).toEqual(expectedReplay);
     } finally {
       restored.close();
     }
