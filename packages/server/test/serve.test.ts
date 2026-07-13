@@ -114,6 +114,8 @@ type Ctx = any;
 let longSseStarted: Deferred<void> | null = null;
 let blockedProcedureStarted: Deferred<void> | null = null;
 let blockedProcedureRelease: Deferred<void> | null = null;
+let blockedCredentialStarted: Deferred<void> | null = null;
+let blockedCredentialRelease: Deferred<void> | null = null;
 
 const functions = {
   notes: {
@@ -214,6 +216,10 @@ class TestVerifier implements CredentialVerifier {
         return { ...common, kind: "workload", claims: { scope: "metrics dbzz:status" } };
       case "workload-alias-token":
         return { ...common, kind: "workload", claims: { scope: "dbzz:status-extra" } };
+      case "blocked-token":
+        blockedCredentialStarted?.resolve(undefined);
+        await blockedCredentialRelease?.promise;
+        return { ...common, kind: "user", claims: { role: "member" } };
       default:
         throw new DbzzError("unauthenticated", "invalid credential");
     }
@@ -301,6 +307,8 @@ beforeEach(() => {
   longSseStarted = null;
   blockedProcedureStarted = null;
   blockedProcedureRelease = null;
+  blockedCredentialStarted = null;
+  blockedCredentialRelease = null;
   dir = mkdtempSync(join(tmpdir(), "dbzz-serve-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
@@ -802,7 +810,11 @@ describe("lifecycle drain", () => {
     const elapsed = performance.now() - startedAt;
 
     expect(failure).toBeInstanceOf(DbzzError);
-    expect(failure).toMatchObject({ code: "deadline_exceeded", resource: "operation" });
+    expect(failure).toMatchObject({
+      code: "deadline_exceeded",
+      message: "runtime graceful shutdown deadline exceeded",
+      resource: "operation",
+    });
     expect(elapsed).toBeGreaterThanOrEqual(limits.gracefulShutdownMs - 15);
     expect(elapsed).toBeLessThan(limits.gracefulShutdownMs + 500);
     expect(server.state).toBe("failed");
@@ -816,5 +828,48 @@ describe("lifecycle drain", () => {
     await expect(runtime.drain()).rejects.toBe(failure);
     await within(transport);
     expect(runtime.status().state).toBe("failed");
+  });
+
+  test("keeps the connection deadline when only Session shutdown stalls", async () => {
+    blockedCredentialStarted = deferred<void>();
+    blockedCredentialRelease = deferred<void>();
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    try {
+      client.send({
+        v: PROTOCOL_VERSION,
+        t: "hello",
+        clientSessionId: "stalled-session",
+        credential: { kind: "bearer", token: "blocked-token" },
+      });
+      await within(blockedCredentialStarted.promise);
+
+      const startedAt = performance.now();
+      let failure: unknown;
+      try {
+        await server.drain();
+      } catch (error) {
+        failure = error;
+      }
+      const elapsed = performance.now() - startedAt;
+
+      expect(failure).toBeInstanceOf(DbzzError);
+      expect(failure).toMatchObject({
+        code: "deadline_exceeded",
+        message: "graceful shutdown deadline exceeded",
+        resource: "connection",
+      });
+      expect(elapsed).toBeGreaterThanOrEqual(limits.gracefulShutdownMs - 15);
+      expect(elapsed).toBeLessThan(limits.gracefulShutdownMs + 500);
+      expect(server.state).toBe("failed");
+      expect(runtime.status().state).toBe("stopped");
+      await expect(runtime.drain()).resolves.toBeUndefined();
+
+      blockedCredentialRelease.resolve(undefined);
+      await within(client.closed());
+    } finally {
+      blockedCredentialRelease.resolve(undefined);
+      client.socket.close();
+      await within(client.closed()).catch(() => {});
+    }
   });
 });

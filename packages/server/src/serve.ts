@@ -506,15 +506,20 @@ export class DbzzServer {
       connection.socket?.close(1013, "draining");
       return Promise.resolve();
     });
-    const graceful = Promise.all([this.runtime.drain(deadlineAtMs), ...sessions])
+    const runtimeDrain = this.runtime.drain(deadlineAtMs);
+    const graceful = Promise.all([runtimeDrain, ...sessions])
       .then(() => listener.stop(true));
 
+    const deadlineError = new DbzzError("deadline_exceeded", "graceful shutdown deadline exceeded", {
+      resource: "connection",
+    });
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
       timeout = setTimeout(() => {
-        reject(new DbzzError("deadline_exceeded", "graceful shutdown deadline exceeded", {
-          resource: "connection",
-        }));
+        void runtimeDrain.then(
+          () => reject(deadlineError),
+          reject,
+        );
       }, Math.max(0, deadlineAtMs - Date.now()));
       timeout.unref?.();
     });
