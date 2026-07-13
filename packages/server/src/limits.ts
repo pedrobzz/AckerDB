@@ -163,6 +163,9 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
   if (limits.resume.maxBytesPerStream > limits.resume.maxBytes) {
     throw new RangeError("resume.maxBytesPerStream cannot exceed resume.maxBytes");
   }
+  if (limits.gracefulShutdownMs > 0x7fff_ffff) {
+    throw new RangeError("gracefulShutdownMs cannot exceed the platform timer limit");
+  }
 
   return Object.freeze({
     ...limits,

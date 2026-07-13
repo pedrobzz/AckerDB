@@ -18,9 +18,10 @@ import { mutation, procedure, query, sseProcedure } from "../src/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
 import { reconcile } from "../src/reconcile.ts";
 import { Registry } from "../src/registry.ts";
-import { Runtime } from "../src/runtime.ts";
+import { Runtime, type RuntimeOptions } from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
 import type { RuntimePublication, SessionRuntimeContext } from "../src/session.ts";
+import { Telemetry } from "../src/telemetry.ts";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -237,6 +238,17 @@ const functions = {
         throw new Error("stream failed");
       },
     }),
+    waitForAbort: sseProcedure({
+      access: "public",
+      args: {},
+      handler: async (ctx: Ctx) => {
+        ctx.stream.write({ phase: "started" });
+        if (ctx.abortSignal.aborted) return;
+        await new Promise<void>((resolve) => {
+          ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+    }),
   },
 };
 
@@ -327,16 +339,36 @@ let engine: Engine;
 let runtime: Runtime;
 let session: SessionHarness;
 
-function start(customLimits = limits()): void {
+class HangingTelemetry extends Telemetry {
+  override flush(): Promise<void> {
+    return new Promise(() => {});
+  }
+}
+
+function start(
+  customLimits = limits(),
+  telemetry: RuntimeOptions["telemetry"] = false,
+): void {
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   runtime = new Runtime({
     engine,
     registry: new Registry(functions),
     limits: customLimits,
-    telemetry: false,
+    telemetry,
   });
   session = new SessionHarness(runtime, "session-a");
+}
+
+async function restart(
+  customLimits: ServiceLimits,
+  telemetry: RuntimeOptions["telemetry"] = false,
+): Promise<void> {
+  await runtime.drain().catch(() => {});
+  engine.close();
+  rmSync(directory, { recursive: true, force: true });
+  directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-restart-"));
+  start(customLimits, telemetry);
 }
 
 beforeEach(() => {
@@ -351,7 +383,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await runtime.drain();
+  await runtime.drain().catch(() => {});
   engine.close();
   rmSync(directory, { recursive: true, force: true });
 });
@@ -672,6 +704,57 @@ describe("procedures and bounded SSE", () => {
   });
 });
 
+describe("direct ingress", () => {
+  test("rejects oversized direct calls before operation or writer admission", async () => {
+    await restart(limits({ maxRequestBytes: 256 }));
+    await session.open();
+    const oversized = "x".repeat(512);
+    const expected = {
+      code: "overloaded",
+      resource: "operation",
+      message: "request exceeds maxRequestBytes",
+    };
+
+    await expect(runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 80,
+      ref: oversized,
+      args: {},
+    })).rejects.toMatchObject(expected);
+    await expect(runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 81,
+      ref: oversized,
+      args: {},
+    })).rejects.toMatchObject(expected);
+    await expect(session.mutation(82, "messages.send", {
+      channelId: 1n,
+      body: oversized,
+    })).rejects.toMatchObject(expected);
+    await expect(runtime.runProcedure({
+      id: 83,
+      address: oversized,
+      args: {},
+      principal: ANONYMOUS_PRINCIPAL,
+    })).rejects.toMatchObject(expected);
+    await expect(runtime.runSse({
+      id: 84,
+      address: oversized,
+      args: {},
+      principal: ANONYMOUS_PRINCIPAL,
+    })).rejects.toMatchObject(expected);
+
+    expect(runtime.status()).toMatchObject({
+      activeOperations: 0,
+      writer: { active: 0, admitted: 0, queue: { queuedItems: 0 } },
+      reactive: { queryListeners: 0, eventListeners: 0 },
+    });
+    expect(engine.commitVersion()).toBe(0n);
+  });
+});
+
 describe("scheduler and lifecycle", () => {
   test("runs the handler and deletes the due row in one commit", async () => {
     await session.open();
@@ -698,6 +781,134 @@ describe("scheduler and lifecycle", () => {
     expect(scheduledAttempts).toBe(1);
     await Bun.sleep(50);
     expect(scheduledAttempts).toBe(1);
+  });
+
+  test("bounds stale scheduler attempts and rolls each no-op back before version allocation", async () => {
+    await restart(limits({ schedulerBatchSize: 3 }));
+    const scheduler = runtime as unknown as {
+      nextScheduledCandidate(now: number): Promise<{
+        table: string;
+        address: string;
+        primaryKey: unknown;
+      } | null>;
+    };
+    let attempts = 0;
+    scheduler.nextScheduledCandidate = async () => {
+      attempts++;
+      return { table: "reminders", address: "reminders.fire", primaryKey: 999n };
+    };
+
+    expect(await runtime.runScheduled(Date.now())).toBe(0);
+    expect(attempts).toBe(3);
+    expect(scheduledAttempts).toBe(0);
+    expect(engine.commitVersion()).toBe(0n);
+    expect(runtime.status().publication).toMatchObject({
+      items: 0,
+      highWater: 0n,
+      processed: 0,
+    });
+  });
+
+  test("fails an open SSE immediately and completes Runtime drain", async () => {
+    const stream = await runtime.runSse({
+      id: 85,
+      address: "ops.waitForAbort",
+      args: {},
+      principal: ANONYMOUS_PRINCIPAL,
+    });
+
+    const [chunks] = await Promise.all([collect(stream), runtime.drain()]);
+    expect(chunks[0]).toContain('"phase":"started"');
+    expect(chunks.some((chunk) => chunk.includes("event: dbzz-error"))).toBe(true);
+    expect(runtime.status()).toMatchObject({ state: "stopped", activeSse: 0, activeOperations: 0 });
+  });
+
+  test("owns a finite deadline across stalled active reader and publication work", async () => {
+    await restart(limits({ gracefulShutdownMs: 20 }));
+    await session.open();
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 86,
+      ref: "messages.parallelList",
+      args: { channelId: 1n },
+    });
+    revalidationGate = deferred<void>();
+    revalidationEntered = deferred<void>();
+    const mutation = session.mutation(87, "messages.send", { channelId: 1n, body: "blocked" });
+    await revalidationEntered.promise;
+
+    const startedAt = performance.now();
+    const drain = runtime.drain();
+    expect(runtime.status()).toMatchObject({
+      state: "draining",
+      connections: 0,
+      reader: { queue: { closed: true } },
+      writer: { queue: { closed: true } },
+      publication: { closed: true },
+      reactive: { queryListeners: 0, eventListeners: 0 },
+    });
+    await expect(runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 88,
+      ref: "messages.list",
+      args: { channelId: 1n },
+    })).rejects.toMatchObject({ code: "draining", resource: "operation" });
+    await expect(drain).rejects.toMatchObject({
+      code: "deadline_exceeded",
+      resource: "operation",
+    });
+    const elapsed = performance.now() - startedAt;
+    expect(elapsed).toBeGreaterThanOrEqual(15);
+    expect(elapsed).toBeLessThan(250);
+    expect(runtime.status().state).toBe("failed");
+
+    revalidationGate.resolve(undefined);
+    await mutation.catch(() => {});
+    expect(runtime.status().state).toBe("failed");
+  });
+
+  test("a hanging external telemetry flush cannot exceed Runtime's deadline", async () => {
+    await restart(
+      limits({ gracefulShutdownMs: 20 }),
+      new HangingTelemetry({ localSink: false }),
+    );
+
+    const startedAt = performance.now();
+    await expect(runtime.drain()).rejects.toMatchObject({
+      code: "deadline_exceeded",
+      resource: "operation",
+    });
+    const elapsed = performance.now() - startedAt;
+    expect(elapsed).toBeGreaterThanOrEqual(15);
+    expect(elapsed).toBeLessThan(250);
+    expect(runtime.status().state).toBe("failed");
+  });
+
+  test("includes the stopped lifecycle event in its owned telemetry drain", async () => {
+    const exported: unknown[] = [];
+    await restart(limits(), {
+      localSink: false,
+      exporter: {
+        export: (records) => {
+          exported.push(...records);
+        },
+      },
+    });
+
+    await runtime.drain();
+
+    expect(exported.filter(
+      (record): record is { kind: string; name: string; lifecycleState: string } =>
+        typeof record === "object" &&
+        record !== null &&
+        "kind" in record &&
+        "name" in record &&
+        "lifecycleState" in record &&
+        record.kind === "event" &&
+        record.name === "lifecycle",
+    ).map((record) => record.lifecycleState)).toEqual(["ready", "draining", "stopped"]);
   });
 
   test("stops admission, waits for accepted work, and becomes stopped", async () => {

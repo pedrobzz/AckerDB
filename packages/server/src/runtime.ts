@@ -75,8 +75,9 @@ import type {
 
 const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
+const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
 
-export type RuntimeLifecycleState = "ready" | "draining" | "stopped";
+export type RuntimeLifecycleState = "ready" | "draining" | "stopped" | "failed";
 
 export interface RuntimeOptions {
   readonly engine: Engine;
@@ -232,6 +233,7 @@ export class Runtime implements RuntimePort {
   private scheduledRun: Promise<number> | null = null;
   private sampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
+  private readonly shutdownController = new AbortController();
   private lastCpu = process.cpuUsage();
   private lastCpuAt = performance.now();
   private expectedSampleAt = performance.now();
@@ -371,8 +373,9 @@ export class Runtime implements RuntimePort {
   }
 
   async subscribe(context: SessionRuntimeContext, message: SubscribeMessage): Promise<void> {
+    const requestBytes = this.requestBytes(message);
     const state = this.currentSession(context);
-    await this.runOperation(state, "subscription", message.ref, byteLength(message), async () => {
+    await this.runOperation(state, "subscription", message.ref, requestBytes, async () => {
       const definition: RuntimeSubscription = Object.freeze({
         address: message.ref,
         args: snapshotValue(message.args),
@@ -383,29 +386,33 @@ export class Runtime implements RuntimePort {
   }
 
   async unsubscribe(context: SessionRuntimeContext, message: UnsubscribeMessage): Promise<void> {
+    const requestBytes = this.requestBytes(message);
     const state = this.currentSession(context);
-    await this.runOperation(state, "subscription", undefined, byteLength(message), () => {
+    await this.runOperation(state, "subscription", undefined, requestBytes, () => {
       this.reactive.unsubscribe(state.subscriber, message.id);
       state.subscriptions.delete(message.id);
     });
   }
 
   async reset(context: SessionRuntimeContext, message: ResetRequestMessage): Promise<void> {
+    const requestBytes = this.requestBytes(message);
     const state = this.currentSession(context);
-    await this.runOperation(state, "subscription", undefined, byteLength(message), () =>
+    await this.runOperation(state, "subscription", undefined, requestBytes, () =>
       this.reactive.reset(state.subscriber, message.id, message.cursor));
   }
 
   async query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown> {
+    const requestBytes = this.requestBytes(message);
     const state = this.currentSession(context);
-    return this.runOperation(state, "query", message.ref, byteLength(message), async () => {
+    return this.runOperation(state, "query", message.ref, requestBytes, async () => {
+      const signal = this.operationSignal(context.signal);
       const evaluation = await this.executeQuery(
         message.ref,
         message.args,
         context.principal,
         context.clientSessionId,
-        context.signal,
-        byteLength(message),
+        signal,
+        requestBytes,
       );
       this.assertFrameFits({
         v: PROTOCOL_VERSION,
@@ -419,16 +426,17 @@ export class Runtime implements RuntimePort {
   }
 
   async mutation(context: SessionRuntimeContext, message: MutationMessage): Promise<RuntimeMutationResult> {
+    const requestBytes = this.requestBytes(message);
     const state = this.currentSession(context);
-    return this.runOperation(state, "mutation", message.ref, byteLength(message), async () => {
+    return this.runOperation(state, "mutation", message.ref, requestBytes, async () => {
       const fn = this.expect(message.ref, "mutation");
-      const requestBytes = byteLength(message);
+      const signal = this.operationSignal(context.signal);
       let scheduledTouched = false;
       const result = await this.coordinator.execute({
         operation: "mutation",
         fairnessKey: context.clientSessionId,
         requestBytes,
-        signal: context.signal,
+        signal,
         idempotency: {
           sessionId: context.clientSessionId,
           requestId: message.mutationRequestId,
@@ -478,7 +486,7 @@ export class Runtime implements RuntimePort {
   }
 
   async runProcedure(request: RuntimeProcedureRequest): Promise<unknown> {
-    const requestBytes = byteLength({
+    const requestBytes = this.requestBytes({
       v: PROTOCOL_VERSION,
       t: "call",
       id: request.id,
@@ -487,18 +495,19 @@ export class Runtime implements RuntimePort {
     });
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
-      aborted(request.signal);
+      const signal = this.operationSignal(request.signal);
+      aborted(signal);
       const value = await invokeFunction(
         fn,
         this.procedureContext(
           request.principal,
           request.fairnessKey ?? digest(request.principal),
-          request.signal,
+          signal,
           requestBytes,
         ),
         request.args,
       );
-      aborted(request.signal);
+      aborted(signal);
       this.assertFrameFits({
         v: PROTOCOL_VERSION,
         t: "ok",
@@ -511,7 +520,7 @@ export class Runtime implements RuntimePort {
   }
 
   async runSse(request: RuntimeSseRequest): Promise<ReadableStream<Uint8Array>> {
-    const requestBytes = byteLength({
+    const requestBytes = this.requestBytes({
       v: PROTOCOL_VERSION,
       t: "call",
       id: request.id,
@@ -530,11 +539,12 @@ export class Runtime implements RuntimePort {
     };
     try {
       const fn = this.expect(request.address, "sse");
-      aborted(request.signal);
+      const signal = this.operationSignal(request.signal);
+      aborted(signal);
       producer = new BoundedSseProducer({
         budget: this.sseBudget,
         limits: this.limits,
-        ...(request.signal === undefined ? {} : { signal: request.signal }),
+        signal,
       });
       this.sseProducers.add(producer);
       const authorized = deferred<void>();
@@ -608,39 +618,43 @@ export class Runtime implements RuntimePort {
     this.assertReady();
     const execution = this.runOperation(null, "scheduled", undefined, 1, async () => {
       let handled = 0;
-      while (handled < this.limits.schedulerBatchSize) {
+      for (let attempts = 0; attempts < this.limits.schedulerBatchSize; attempts++) {
         const candidate = await this.nextScheduledCandidate(now);
         if (candidate === null) break;
         let row: Record<string, unknown> | null = null;
-        const result = await this.coordinator.execute({
-          operation: "scheduled",
-          fairnessKey: "system:scheduler",
-          requestBytes: 1,
-          work: async (db) => {
-            const plan = this.engine.plan(candidate.table);
-            const raw = this.engine.writer
-              .query(
-                `SELECT * FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ? AND ${quoted(plan.scheduleAt!)} <= ?`,
-              )
-              .get(candidate.primaryKey as never, now) as Record<string, unknown> | null;
-            if (raw === null) return false;
-            row = this.engine.rowFromSql(plan, raw);
-            const fn = this.expect(candidate.address, "mutation");
-            await invokeFunction(fn, Object.freeze({ db, auth: SYSTEM_PRINCIPAL }), row);
-            return true;
-          },
-          finalize: (writes) => {
-            if (row === null) return;
-            const plan = this.engine.plan(candidate.table);
-            this.engine.writer
-              .query(`DELETE FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ?`)
-              .run(row[plan.pk] as never);
-            emitWriteKeys(plan, row, writes.keys);
-            writes.scheduledTouched = true;
-          },
-          publication: (_version, writes) => this.publicationFor(writes),
-        });
-        if (result.value) handled++;
+        try {
+          await this.coordinator.execute({
+            operation: "scheduled",
+            fairnessKey: "system:scheduler",
+            requestBytes: 1,
+            signal: this.shutdownController.signal,
+            work: async (db) => {
+              const plan = this.engine.plan(candidate.table);
+              const raw = this.engine.writer
+                .query(
+                  `SELECT * FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ? AND ${quoted(plan.scheduleAt!)} <= ?`,
+                )
+                .get(candidate.primaryKey as never, now) as Record<string, unknown> | null;
+              if (raw === null) throw STALE_SCHEDULED_CANDIDATE;
+              row = this.engine.rowFromSql(plan, raw);
+              const fn = this.expect(candidate.address, "mutation");
+              await invokeFunction(fn, Object.freeze({ db, auth: SYSTEM_PRINCIPAL }), row);
+            },
+            finalize: (writes) => {
+              if (row === null) throw new Error("scheduled row disappeared during its writer turn");
+              const plan = this.engine.plan(candidate.table);
+              this.engine.writer
+                .query(`DELETE FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ?`)
+                .run(row[plan.pk] as never);
+              emitWriteKeys(plan, row, writes.keys);
+              writes.scheduledTouched = true;
+            },
+            publication: (_version, writes) => this.publicationFor(writes),
+          });
+          handled++;
+        } catch (error) {
+          if (error !== STALE_SCHEDULED_CANDIDATE) throw error;
+        }
       }
       return handled;
     });
@@ -735,25 +749,75 @@ export class Runtime implements RuntimePort {
       lifecycleState: "draining",
     });
     const draining = new DbzzError("draining", "runtime is draining", { resource: "operation" });
+    for (const state of [...this.sessions.values()]) this.removeSession(state);
     for (const producer of this.sseProducers) producer.fail(draining);
 
-    this.drainPromise = (async () => {
-      await this.waitForActiveOperations();
-      this.coordinator.close();
-      await this.coordinator.drain();
-      await this.reactive.close();
-      this.reader.close();
-      await this.reader.drain();
-      this.lifecycle = "stopped";
+    // Close every internal admission boundary before the first await. Existing
+    // handlers get one finite grace period; queued and future work cannot grow.
+    this.coordinator.close();
+    this.reader.close();
+    if (this.ownsTelemetry) this.telemetry.stop();
+    const reactiveDrain = this.reactive.close();
+    const deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs;
+    let deadlineReached = false;
+    const coreShutdown = Promise.all([
+      this.waitForActiveOperations(),
+      this.coordinator.drain(),
+      reactiveDrain,
+      this.reader.drain(),
+    ]).then(() => undefined);
+    const shutdownWork = coreShutdown.then(() => {
+      // A core that outlives the Runtime deadline must not start a detached
+      // telemetry tail after drain has already failed.
+      if (deadlineReached) return;
       this.telemetry.recordEvent({
         name: "lifecycle",
         level: "info",
         operation: "lifecycle",
         lifecycleState: "stopped",
       });
-      if (this.ownsTelemetry) this.telemetry.stop();
-      await this.telemetry.flush();
-    })();
+      return this.ownsTelemetry ? this.telemetry.drain(deadlineAtMs) : this.telemetry.flush();
+    });
+
+    const deadlineError = new DbzzError(
+      "deadline_exceeded",
+      "runtime graceful shutdown deadline exceeded",
+      { resource: "operation" },
+    );
+    let timeout!: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        deadlineReached = true;
+        this.shutdownController.abort(deadlineError);
+        reject(deadlineError);
+      }, this.limits.gracefulShutdownMs);
+    });
+    this.drainPromise = Promise.race([shutdownWork, deadline]).then(
+      () => {
+        clearTimeout(timeout);
+        this.shutdownController.abort(draining);
+        this.lifecycle = "stopped";
+      },
+      async (error) => {
+        clearTimeout(timeout);
+        deadlineReached = true;
+        this.shutdownController.abort(error);
+        this.lifecycle = "failed";
+        this.telemetry.recordEvent({
+          name: "lifecycle",
+          level: "error",
+          operation: "lifecycle",
+          lifecycleState: "failed",
+          outcome: outcomeFromError(error).code,
+          errorClass: error instanceof Error ? error.name : "UnknownError",
+        });
+        // Owned telemetry was stopped before core shutdown. Capture the final
+        // failed event into its bounded drain even though the absolute Runtime
+        // deadline has already elapsed, so no post-failure queue is retained.
+        if (this.ownsTelemetry) await this.telemetry.drain(deadlineAtMs);
+        throw error;
+      },
+    );
     return this.drainPromise;
   }
 
@@ -767,6 +831,7 @@ export class Runtime implements RuntimePort {
   }
 
   private currentSession(context: SessionRuntimeContext, allowAborted = false): RuntimeSession {
+    this.assertReady();
     const state = this.sessions.get(context.clientSessionId);
     if (
       state === undefined ||
@@ -970,7 +1035,7 @@ export class Runtime implements RuntimePort {
       input.args,
       input.context.principal,
       input.context.fairnessKey,
-      undefined,
+      this.shutdownController.signal,
       byteLength(input.args),
     );
   }
@@ -1158,6 +1223,7 @@ export class Runtime implements RuntimePort {
     sizeBytes: number,
     work: () => T | Promise<T>,
   ): Promise<T> {
+    this.assertRequestBytes(sizeBytes);
     const release = this.admitOperation(session);
     const startedAt = performance.now();
     const context = telemetryContext(
@@ -1217,7 +1283,38 @@ export class Runtime implements RuntimePort {
 
   private assertReady(): void {
     if (this.lifecycle === "ready") return;
-    throw new DbzzError("draining", "runtime is not accepting operations", { resource: "operation" });
+    if (this.lifecycle === "draining") {
+      throw new DbzzError("draining", "runtime is not accepting operations", { resource: "operation" });
+    }
+    throw new DbzzError("unavailable", "runtime is not available", { resource: "operation" });
+  }
+
+  private requestBytes(request: unknown): number {
+    let bytes: number;
+    try {
+      bytes = byteLength(request);
+    } catch (cause) {
+      throw new DbzzError("validation", "request is not wire-representable", { cause });
+    }
+    this.assertRequestBytes(bytes);
+    return bytes;
+  }
+
+  private assertRequestBytes(bytes: number): void {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      throw new RangeError("request bytes must be a non-negative safe integer");
+    }
+    if (bytes > this.limits.maxRequestBytes) {
+      throw new DbzzError("overloaded", "request exceeds maxRequestBytes", {
+        resource: "operation",
+      });
+    }
+  }
+
+  private operationSignal(signal?: AbortSignal): AbortSignal {
+    return signal === undefined
+      ? this.shutdownController.signal
+      : AbortSignal.any([signal, this.shutdownController.signal]);
   }
 
   private recordSpan(

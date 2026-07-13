@@ -789,7 +789,7 @@ describe("lifecycle drain", () => {
     const elapsed = performance.now() - startedAt;
 
     expect(failure).toBeInstanceOf(DbzzError);
-    expect(failure).toMatchObject({ code: "deadline_exceeded", resource: "connection" });
+    expect(failure).toMatchObject({ code: "deadline_exceeded", resource: "operation" });
     expect(elapsed).toBeGreaterThanOrEqual(limits.gracefulShutdownMs - 15);
     expect(elapsed).toBeLessThan(limits.gracefulShutdownMs + 500);
     expect(server.state).toBe("failed");
@@ -800,8 +800,8 @@ describe("lifecycle drain", () => {
     expect(refused).toBe(true);
 
     blockedProcedureRelease.resolve();
-    await within(runtime.drain());
+    await expect(runtime.drain()).rejects.toBe(failure);
     await within(transport);
-    expect(runtime.status().state).toBe("stopped");
+    expect(runtime.status().state).toBe("failed");
   });
 });
