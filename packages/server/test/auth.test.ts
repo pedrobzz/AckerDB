@@ -156,6 +156,23 @@ describe("principals and invocation access", () => {
     expect(order).not.toContain("must-not-run");
   });
 
+  test("authorization cannot mutate validated byte inputs", async () => {
+    const fn = query({
+      args: { value: dbz.bytes() },
+      access: (_ctx, args) => {
+        expect(Reflect.set(args.value, "0", 9)).toBe(false);
+        expect(() => args.value.fill(9)).toThrow("immutable");
+        args.value.forEach((_value, _index, exposed) => {
+          exposed[0] = 8;
+        });
+        return true;
+      },
+      handler: (_ctx, args) => [...args.value],
+    });
+
+    expect(await fn({ auth: ANONYMOUS_PRINCIPAL }, { value: new Uint8Array([1, 2]) })).toEqual([1, 2]);
+  });
+
   test("builtin policies distinguish unauthenticated from unauthorized", async () => {
     const authenticated = query({
       args: {},
