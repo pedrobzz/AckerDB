@@ -11,7 +11,7 @@ import {
 class ManualScheduler implements TelemetryScheduler {
   private nextId = 0;
   readonly intervals = new Map<number, () => void>();
-  readonly timeouts = new Map<number, () => void>();
+  readonly timeouts = new Map<number, { readonly callback: () => void; readonly delayMs: number }>();
 
   setInterval(callback: () => void): number {
     const id = ++this.nextId;
@@ -23,9 +23,9 @@ class ManualScheduler implements TelemetryScheduler {
     this.intervals.delete(handle as number);
   }
 
-  setTimeout(callback: () => void): number {
+  setTimeout(callback: () => void, delayMs: number): number {
     const id = ++this.nextId;
-    this.timeouts.set(id, callback);
+    this.timeouts.set(id, { callback, delayMs });
     return id;
   }
 
@@ -33,11 +33,13 @@ class ManualScheduler implements TelemetryScheduler {
     this.timeouts.delete(handle as number);
   }
 
-  fireNextTimeout(): void {
-    const next = this.timeouts.entries().next().value as [number, () => void] | undefined;
-    if (!next) throw new Error("No pending timeout");
+  fireNextTimeout(delayMs?: number): void {
+    const next = [...this.timeouts].find(([, timeout]) =>
+      delayMs === undefined ? true : timeout.delayMs === delayMs,
+    );
+    if (!next) throw new Error(`No pending ${delayMs ?? ""}ms timeout`);
     this.timeouts.delete(next[0]);
-    next[1]();
+    next[1].callback();
   }
 }
 
@@ -57,15 +59,24 @@ class FaultingScheduler extends ManualScheduler {
     if (this.throwOnClearInterval) throw new Error("clearInterval failed");
   }
 
-  override setTimeout(callback: () => void): number {
+  override setTimeout(callback: () => void, delayMs: number): number {
     if (this.throwOnSetTimeout) throw new Error("setTimeout failed");
-    return super.setTimeout(callback);
+    return super.setTimeout(callback, delayMs);
   }
 
   override clearTimeout(handle: unknown): void {
     super.clearTimeout(handle);
     if (this.throwOnClearTimeout) throw new Error("clearTimeout failed");
   }
+}
+
+async function settleAsyncWork(): Promise<void> {
+  for (let turn = 0; turn < 6; turn++) await Promise.resolve();
+}
+
+async function deliverNextLocalLine(scheduler: ManualScheduler): Promise<void> {
+  scheduler.fireNextTimeout(0);
+  await settleAsyncWork();
 }
 
 function exporterBatches(): {
@@ -130,7 +141,17 @@ describe("Telemetry", () => {
       queuedBytes: 0,
       oldestAgeMs: 0,
       metricSeries: 0,
-      localSinkFailures: 0,
+      localSink: {
+        configured: false,
+        inFlight: false,
+        pendingRecords: 0,
+        pendingBytes: 0,
+        oldestAgeMs: 0,
+        deliveredRecords: 0,
+        failures: 0,
+        timeouts: 0,
+        dropped: { overflow: 0, expired: 0, failure: 0, drain: 0 },
+      },
       dropped: {
         overflow: 0,
         expired: 0,
@@ -138,6 +159,7 @@ describe("Telemetry", () => {
         invalid: 0,
         exporter: 0,
         cardinality: 0,
+        drain: 0,
       },
       exporter: {
         configured: false,
@@ -149,6 +171,13 @@ describe("Telemetry", () => {
         failedRecords: 0,
       },
     });
+    expect(telemetry.aggregateSnapshot()).toBe(telemetry.aggregateSnapshot());
+    expect(telemetry.aggregateSnapshot()).toEqual({
+      maxSeries: 0,
+      overflowedRecords: 0,
+      series: [],
+    });
+    await expect(telemetry.drain(0)).resolves.toBeUndefined();
   });
 
   test("contains throwing and non-finite clocks across every record path and snapshots", () => {
@@ -195,7 +224,9 @@ describe("Telemetry", () => {
     const telemetry = new Telemetry({
       exporter,
       scheduler,
-      localSink: (line) => localLines.push(line),
+      localSink: (line) => {
+        localLines.push(line);
+      },
       now: () => 10,
       limits: { maxRecords: 10, maxBatchRecords: 10, maxBytes: 64 * 1024 },
     });
@@ -247,7 +278,14 @@ describe("Telemetry", () => {
       },
     } as never);
 
-    expect(telemetry.snapshot()).toMatchObject({ queuedRecords: 3, metricSeries: 1 });
+    expect(localLines).toHaveLength(0);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 3,
+      metricSeries: 1,
+      localSink: { pendingRecords: 2 },
+    });
+    await deliverNextLocalLine(scheduler);
+    await deliverNextLocalLine(scheduler);
     await telemetry.flush();
     telemetry.stop();
     expect(batches).toHaveLength(1);
@@ -556,7 +594,9 @@ describe("Telemetry", () => {
     const telemetry = new Telemetry({
       exporter: { export: () => new Promise<void>(() => {}) },
       scheduler,
-      localSink: (line) => localLines.push(line),
+      localSink: (line) => {
+        localLines.push(line);
+      },
       now: () => 25,
       limits: {
         maxRecords: 4,
@@ -568,8 +608,8 @@ describe("Telemetry", () => {
     telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" });
 
     const flushing = telemetry.flush();
-    expect(scheduler.timeouts.size).toBe(1);
-    scheduler.fireNextTimeout();
+    expect([...scheduler.timeouts.values()].filter(({ delayMs }) => delayMs === 5)).toHaveLength(1);
+    scheduler.fireNextTimeout(5);
     await flushing;
 
     expect(telemetry.snapshot()).toMatchObject({
@@ -584,15 +624,303 @@ describe("Telemetry", () => {
         lastFailureAtMs: 25,
       },
     });
+    await deliverNextLocalLine(scheduler);
+    await deliverNextLocalLine(scheduler);
     expect(localLines.some((line) => line.includes('"name":"exporter_degraded"'))).toBe(true);
     expect(scheduler.timeouts.size).toBe(0);
     telemetry.stop();
   });
 
-  test("local sink receives lifecycle, slow, and failed records but not fast successes", () => {
+  test("defers local output, bounds its queue, and contains sink stalls and throws", async () => {
+    const scheduler = new ManualScheduler();
+    const delivered: string[] = [];
+    let calls = 0;
+    const telemetry = new Telemetry({
+      scheduler,
+      now: () => 0,
+      localSink: (line) => {
+        calls++;
+        if (calls === 1) return new Promise<void>(() => {});
+        if (calls === 2) throw new Error("local sink failed");
+        delivered.push(line);
+      },
+      limits: {
+        maxRecords: 2,
+        maxBatchRecords: 2,
+        maxBytes: 64 * 1024,
+        exportTimeoutMs: 5,
+      },
+    });
+
+    telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "starting" });
+    expect(calls).toBe(0);
+    expect(telemetry.snapshot()).toMatchObject({ localSink: { pendingRecords: 1 } });
+    await deliverNextLocalLine(scheduler);
+    expect(calls).toBe(1);
+    expect(telemetry.snapshot()).toMatchObject({ localSink: { inFlight: true } });
+
+    for (const lifecycleState of ["ready", "draining", "stopped"] as const) {
+      telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState });
+    }
+    expect(telemetry.snapshot()).toMatchObject({
+      localSink: { pendingRecords: 2, dropped: { overflow: 1 } },
+    });
+
+    scheduler.fireNextTimeout(5);
+    await settleAsyncWork();
+    await deliverNextLocalLine(scheduler);
+    await deliverNextLocalLine(scheduler);
+
+    expect(calls).toBe(3);
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]).toContain('"lifecycleState":"stopped"');
+    expect(telemetry.snapshot()).toMatchObject({
+      localSink: {
+        inFlight: false,
+        pendingRecords: 0,
+        deliveredRecords: 1,
+        failures: 2,
+        timeouts: 1,
+        dropped: { overflow: 1, failure: 2 },
+      },
+    });
+    telemetry.stop();
+  });
+
+  test("exposes bounded privacy-safe operation aggregates without an exporter", () => {
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => 0,
+      limits: { maxMetricSeries: 3, maxRecords: 10, maxBatchRecords: 10 },
+    });
+    const canary = "SECRET_request_42";
+    const record = (input: TelemetrySpanInput): void => {
+      telemetry.recordSpan(input);
+    };
+
+    record({
+      context: { traceId: canary, spanId: "span_1", requestId: canary },
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "todos.list",
+      resource: "reader",
+      durationMs: 4,
+      sizeBytes: 10,
+      rowCount: 1,
+      resultCount: 1,
+      args: { token: canary },
+    } as TelemetrySpanInput & Record<string, unknown>);
+    record({
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "todos.list",
+      resource: "reader",
+      durationMs: 6,
+      sizeBytes: 20,
+      rowCount: 2,
+      resultCount: 2,
+    });
+    record({
+      operation: "mutation",
+      stage: "commit",
+      outcome: "ok",
+      functionName: "todos.create",
+      resource: "writer",
+      durationMs: 8,
+      dependencyCount: 3,
+    });
+    record({
+      operation: "procedure",
+      stage: "handler",
+      outcome: "internal",
+      functionName: "todos.import",
+      durationMs: 12,
+    });
+    record({
+      operation: "subscription",
+      stage: "evaluation",
+      outcome: "ok",
+      functionName: "todos.watch",
+      durationMs: 2,
+    });
+
+    const snapshot = telemetry.aggregateSnapshot();
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(snapshot).toMatchObject({ maxSeries: 3, overflowedRecords: 2 });
+    expect(snapshot.series).toHaveLength(3);
+    expect(snapshot.series.every(Object.isFrozen)).toBe(true);
+    expect(snapshot.series).toContainEqual({
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      function: "todos.list",
+      resource: "reader",
+      overflow: undefined,
+      count: 2,
+      durationMs: 10,
+      sizeBytes: 30,
+      rowCount: 3,
+      resultCount: 3,
+      dependencyCount: undefined,
+    });
+    expect(snapshot.series).toContainEqual({
+      operation: undefined,
+      stage: undefined,
+      outcome: undefined,
+      function: undefined,
+      resource: undefined,
+      overflow: true,
+      count: 2,
+      durationMs: 14,
+      sizeBytes: undefined,
+      rowCount: undefined,
+      resultCount: undefined,
+      dependencyCount: undefined,
+    });
+    const serialized = JSON.stringify(snapshot);
+    expect(serialized).not.toContain(canary);
+    expect(serialized).not.toContain("traceId");
+    expect(serialized).not.toContain("requestId");
+    expect(serialized).not.toContain("args");
+  });
+
+  test("drains every captured exporter batch before one absolute deadline", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, exporter } = exporterBatches();
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: { maxRecords: 5, maxBatchRecords: 2, maxBytes: 64 * 1024 },
+    });
+    for (let index = 0; index < 5; index++) {
+      telemetry.recordMetric({ name: `runtime.drain_${index}`, value: index, unit: "gauge" });
+    }
+
+    await expect(telemetry.drain(100)).resolves.toBeUndefined();
+
+    expect(batches.map((batch) => batch.length)).toEqual([2, 2, 1]);
+    expect(scheduler.intervals.size).toBe(0);
+    expect(scheduler.timeouts.size).toBe(0);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      dropped: { drain: 0 },
+      exporter: { attempts: 3, failures: 0, exportedRecords: 5, failedRecords: 0 },
+    });
+  });
+
+  test("ends drain at the absolute deadline and explicitly drops every remainder", async () => {
+    const scheduler = new ManualScheduler();
+    let now = 0;
+    let calls = 0;
+    const telemetry = new Telemetry({
+      exporter: {
+        export: () => {
+          calls++;
+          return new Promise<void>(() => {});
+        },
+      },
+      scheduler,
+      localSink: false,
+      now: () => now,
+      limits: {
+        maxRecords: 5,
+        maxBatchRecords: 2,
+        maxBytes: 64 * 1024,
+        exportTimeoutMs: 100,
+      },
+    });
+    for (let index = 0; index < 5; index++) {
+      telemetry.recordMetric({ name: `runtime.deadline_${index}`, value: index, unit: "gauge" });
+    }
+
+    const draining = telemetry.drain(10);
+    expect(calls).toBe(1);
+    expect([...scheduler.timeouts.values()].map(({ delayMs }) => delayMs).sort()).toEqual([10, 100]);
+    now = 10;
+    scheduler.fireNextTimeout(10);
+    await expect(draining).resolves.toBeUndefined();
+
+    expect(calls).toBe(1);
+    expect(scheduler.timeouts.size).toBe(0);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      dropped: { exporter: 0, drain: 5 },
+      exporter: { attempts: 1, failures: 1, timeouts: 1, failedRecords: 2 },
+    });
+  });
+
+  test("does not multiply an exporter that times out before the drain deadline", async () => {
+    const scheduler = new ManualScheduler();
+    let calls = 0;
+    const telemetry = new Telemetry({
+      exporter: {
+        export: () => {
+          calls++;
+          return new Promise<void>(() => {});
+        },
+      },
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: {
+        maxRecords: 5,
+        maxBatchRecords: 2,
+        maxBytes: 64 * 1024,
+        exportTimeoutMs: 5,
+      },
+    });
+    for (let index = 0; index < 5; index++) {
+      telemetry.recordMetric({ name: `runtime.stalled_${index}`, value: index, unit: "gauge" });
+    }
+
+    const draining = telemetry.drain(100);
+    expect(calls).toBe(1);
+    scheduler.fireNextTimeout(5);
+    await expect(draining).resolves.toBeUndefined();
+
+    expect(calls).toBe(1);
+    expect(scheduler.timeouts.size).toBe(0);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      dropped: { exporter: 2, drain: 3 },
+      exporter: { attempts: 1, failures: 1, timeouts: 1, failedRecords: 2 },
+    });
+  });
+
+  test("fails a drain closed when absolute-deadline scheduling is unavailable", async () => {
+    const scheduler = new FaultingScheduler();
+    scheduler.throwOnSetTimeout = true;
+    let exporterCalls = 0;
+    const telemetry = new Telemetry({
+      exporter: { export: () => void exporterCalls++ },
+      scheduler,
+      localSink: false,
+      now: () => 0,
+    });
+    telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" });
+
+    await expect(telemetry.drain(10)).resolves.toBeUndefined();
+
+    expect(exporterCalls).toBe(0);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      dropped: { exporter: 0, drain: 1 },
+      exporter: { attempts: 0, failedRecords: 0 },
+    });
+  });
+
+  test("local sink receives lifecycle, slow, and failed records but not fast successes", async () => {
+    const scheduler = new ManualScheduler();
     const lines: string[] = [];
     const telemetry = new Telemetry({
-      localSink: (line) => lines.push(line),
+      scheduler,
+      localSink: (line) => {
+        lines.push(line);
+      },
       now: () => 0,
       limits: { slowOperationMs: 100 },
     });
@@ -616,9 +944,18 @@ describe("Telemetry", () => {
     });
     telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" });
 
+    expect(lines).toHaveLength(0);
+    expect(telemetry.snapshot()).toMatchObject({ localSink: { pendingRecords: 3 } });
+    await deliverNextLocalLine(scheduler);
+    await deliverNextLocalLine(scheduler);
+    await deliverNextLocalLine(scheduler);
     expect(lines).toHaveLength(3);
     expect(lines[0]).toContain('"durationMs":100');
     expect(lines[1]).toContain('"outcome":"internal"');
     expect(lines[2]).toContain('"name":"lifecycle"');
+    expect(telemetry.snapshot()).toMatchObject({
+      localSink: { pendingRecords: 0, deliveredRecords: 3, failures: 0 },
+    });
+    telemetry.stop();
   });
 });

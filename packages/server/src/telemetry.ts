@@ -246,6 +246,26 @@ export interface TelemetryDropSnapshot {
   readonly invalid: number;
   readonly exporter: number;
   readonly cardinality: number;
+  readonly drain: number;
+}
+
+export interface TelemetryLocalSinkDropSnapshot {
+  readonly overflow: number;
+  readonly expired: number;
+  readonly failure: number;
+  readonly drain: number;
+}
+
+export interface TelemetryLocalSinkSnapshot {
+  readonly configured: boolean;
+  readonly inFlight: boolean;
+  readonly pendingRecords: number;
+  readonly pendingBytes: number;
+  readonly oldestAgeMs: number;
+  readonly deliveredRecords: number;
+  readonly failures: number;
+  readonly timeouts: number;
+  readonly dropped: TelemetryLocalSinkDropSnapshot;
 }
 
 export interface TelemetryExportSnapshot {
@@ -267,15 +287,57 @@ export interface TelemetrySnapshot {
   readonly queuedBytes: number;
   readonly oldestAgeMs: number;
   readonly metricSeries: number;
-  readonly localSinkFailures: number;
+  readonly localSink: TelemetryLocalSinkSnapshot;
   readonly dropped: TelemetryDropSnapshot;
   readonly exporter: TelemetryExportSnapshot;
+}
+
+export interface TelemetryAggregateSeries {
+  readonly operation?: TelemetryOperation;
+  readonly stage?: TelemetryStage;
+  readonly outcome?: TelemetryOutcome;
+  readonly function?: string;
+  readonly resource?: TelemetryResource;
+  readonly overflow?: true;
+  readonly count: number;
+  readonly durationMs: number;
+  readonly sizeBytes?: number;
+  readonly rowCount?: number;
+  readonly resultCount?: number;
+  readonly dependencyCount?: number;
+}
+
+export interface TelemetryAggregateSnapshot {
+  readonly maxSeries: number;
+  readonly overflowedRecords: number;
+  readonly series: readonly TelemetryAggregateSeries[];
 }
 
 interface BufferedRecord {
   readonly record: TelemetryRecord;
   readonly bytes: number;
   readonly retainedAtMs: number;
+}
+
+interface BufferedLocalLine {
+  readonly line: string;
+  readonly bytes: number;
+  readonly retainedAtMs: number;
+}
+
+interface MutableAggregate {
+  readonly operation?: TelemetryOperation;
+  readonly stage?: TelemetryStage;
+  readonly outcome?: TelemetryOutcome;
+  readonly function?: string;
+  readonly resource?: TelemetryResource;
+  readonly overflow?: true;
+  count: number;
+  durationMs: number;
+  sizeBytes?: number;
+  rowCount?: number;
+  resultCount?: number;
+  dependencyCount?: number;
 }
 
 interface TelemetryState {
@@ -286,14 +348,34 @@ interface TelemetryState {
   readonly localSink?: (safeJsonLine: string) => void;
   readonly encoder: TextEncoder;
   readonly metricSeries: Set<string>;
-  records: BufferedRecord[];
+  readonly aggregates: Map<string, MutableAggregate>;
+  readonly aggregateOverflow: MutableAggregate;
+  records: Array<BufferedRecord | undefined>;
   head: number;
   queuedBytes: number;
+  localLines: Array<BufferedLocalLine | undefined>;
+  localHead: number;
+  localBytes: number;
   stopped: boolean;
   lastNowMs?: number;
   intervalHandle?: unknown;
+  localPumpHandle?: unknown;
+  localPumpScheduled: boolean;
   exporting?: Promise<void>;
-  localSinkFailures: number;
+  localInFlight?: Promise<void>;
+  draining?: Promise<void>;
+  aggregateOverflowedRecords: number;
+  localHealth: {
+    deliveredRecords: number;
+    failures: number;
+    timeouts: number;
+    dropped: {
+      overflow: number;
+      expired: number;
+      failure: number;
+      drain: number;
+    };
+  };
   drops: {
     overflow: number;
     expired: number;
@@ -301,6 +383,7 @@ interface TelemetryState {
     invalid: number;
     exporter: number;
     cardinality: number;
+    drain: number;
   };
   exportHealth: {
     attempts: number;
@@ -320,9 +403,10 @@ const SAFE_NAME = /^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/;
 const SAFE_ERROR_CLASS = /^[A-Za-z][A-Za-z0-9_.]{0,79}$/;
 const OVERFLOW_METRIC_NAME = "telemetry.cardinality_overflow";
 const OVERFLOW_SERIES = `${OVERFLOW_METRIC_NAME}|count|telemetry|overflow`;
-const EXPORT_OK = Symbol("export-ok");
-const EXPORT_FAILED = Symbol("export-failed");
-const EXPORT_TIMED_OUT = Symbol("export-timed-out");
+const TASK_OK = Symbol("task-ok");
+const TASK_FAILED = Symbol("task-failed");
+const TASK_TIMED_OUT = Symbol("task-timed-out");
+const TASK_DEADLINE = Symbol("task-deadline");
 
 const SYSTEM_SCHEDULER: TelemetryScheduler = {
   setInterval: (callback, delayMs) => setInterval(callback, delayMs),
@@ -337,7 +421,17 @@ const DISABLED_SNAPSHOT: TelemetrySnapshot = Object.freeze({
   queuedBytes: 0,
   oldestAgeMs: 0,
   metricSeries: 0,
-  localSinkFailures: 0,
+  localSink: Object.freeze({
+    configured: false,
+    inFlight: false,
+    pendingRecords: 0,
+    pendingBytes: 0,
+    oldestAgeMs: 0,
+    deliveredRecords: 0,
+    failures: 0,
+    timeouts: 0,
+    dropped: Object.freeze({ overflow: 0, expired: 0, failure: 0, drain: 0 }),
+  }),
   dropped: Object.freeze({
     overflow: 0,
     expired: 0,
@@ -345,6 +439,7 @@ const DISABLED_SNAPSHOT: TelemetrySnapshot = Object.freeze({
     invalid: 0,
     exporter: 0,
     cardinality: 0,
+    drain: 0,
   }),
   exporter: Object.freeze({
     configured: false,
@@ -355,6 +450,12 @@ const DISABLED_SNAPSHOT: TelemetrySnapshot = Object.freeze({
     exportedRecords: 0,
     failedRecords: 0,
   }),
+});
+
+const DISABLED_AGGREGATES: TelemetryAggregateSnapshot = Object.freeze({
+  maxSeries: 0,
+  overflowedRecords: 0,
+  series: Object.freeze([]),
 });
 
 function safeId(value: string | undefined): string | undefined {
@@ -414,7 +515,23 @@ function readClock(state: TelemetryState): number | undefined {
 }
 
 function fallbackNow(state: TelemetryState): number {
-  return state.lastNowMs ?? state.records[state.head]?.retainedAtMs ?? 0;
+  return state.lastNowMs ?? state.records[state.head]?.retainedAtMs ??
+    state.localLines[state.localHead]?.retainedAtMs ?? 0;
+}
+
+function boundedSum(left: number, right: number): number {
+  const sum = left + right;
+  return Number.isFinite(sum) ? sum : Number.MAX_VALUE;
+}
+
+function boundedCount(value: number): number {
+  return Math.min(Number.MAX_SAFE_INTEGER, value + 1);
+}
+
+interface AbsoluteDeadline {
+  readonly reached: Promise<void>;
+  readonly expired: () => boolean;
+  close(): void;
 }
 
 export function captureTelemetryLink(context: Pick<TelemetryTraceContext, "traceId" | "spanId">): TelemetryLink {
@@ -445,12 +562,36 @@ export class Telemetry {
       localSink: options.localSink === false ? undefined : options.localSink ?? console.log,
       encoder: new TextEncoder(),
       metricSeries: new Set(),
+      aggregates: new Map(),
+      aggregateOverflow: {
+        overflow: true,
+        count: 0,
+        durationMs: 0,
+      },
       records: [],
       head: 0,
       queuedBytes: 0,
+      localLines: [],
+      localHead: 0,
+      localBytes: 0,
+      localPumpScheduled: false,
       stopped: false,
-      localSinkFailures: 0,
-      drops: { overflow: 0, expired: 0, oversized: 0, invalid: 0, exporter: 0, cardinality: 0 },
+      aggregateOverflowedRecords: 0,
+      localHealth: {
+        deliveredRecords: 0,
+        failures: 0,
+        timeouts: 0,
+        dropped: { overflow: 0, expired: 0, failure: 0, drain: 0 },
+      },
+      drops: {
+        overflow: 0,
+        expired: 0,
+        oversized: 0,
+        invalid: 0,
+        exporter: 0,
+        cardinality: 0,
+        drain: 0,
+      },
       exportHealth: {
         attempts: 0,
         failures: 0,
@@ -511,6 +652,7 @@ export class Telemetry {
       dependencyCount: safeCount(input.dependencyCount),
       postCommit: typeof input.postCommit === "boolean" ? input.postCommit : undefined,
     });
+    this.aggregateSpan(state, record);
     return this.retain(record, input.durationMs >= state.limits.slowOperationMs || input.outcome !== "ok");
   }
 
@@ -621,6 +763,7 @@ export class Telemetry {
   flush(): Promise<void> {
     const state = this.state;
     if (!state?.exporter) return Promise.resolve();
+    if (state.draining) return state.draining;
     if (state.exporting) return state.exporting;
     let attempt!: Promise<void>;
     attempt = this.exportNext(state)
@@ -632,21 +775,71 @@ export class Telemetry {
     return attempt;
   }
 
+  /**
+   * Stop periodic work and export every record queued when this call starts.
+   * The absolute deadline uses the configured telemetry clock and is shared by
+   * every exporter batch and deferred local line.
+   */
+  drain(deadlineAtMs: number): Promise<void> {
+    const state = this.state;
+    if (!state) return Promise.resolve();
+    if (state.draining) return state.draining;
+    this.stop();
+    const records = this.takeRecords(state, state.records.length - state.head);
+    const localLines = this.takeLocalLines(state, state.localLines.length - state.localHead);
+    let draining!: Promise<void>;
+    draining = this.performDrain(state, records, localLines, deadlineAtMs)
+      .catch(() => undefined)
+      .then(() => {
+        if (state.draining === draining) state.draining = undefined;
+      });
+    state.draining = draining;
+    return draining;
+  }
+
+  aggregateSnapshot(): TelemetryAggregateSnapshot {
+    const state = this.state;
+    if (!state) return DISABLED_AGGREGATES;
+    const series = [...state.aggregates.values()].map((aggregate) => this.freezeAggregate(aggregate));
+    if (state.aggregateOverflow.count > 0) {
+      series.push(this.freezeAggregate(state.aggregateOverflow));
+    }
+    return Object.freeze({
+      maxSeries: state.limits.maxMetricSeries,
+      overflowedRecords: state.aggregateOverflowedRecords,
+      series: Object.freeze(series),
+    });
+  }
+
   snapshot(): TelemetrySnapshot {
     const state = this.state;
     if (!state) return DISABLED_SNAPSHOT;
     const observedNow = readClock(state);
     if (observedNow === undefined) state.drops.invalid++;
-    else this.pruneExpired(state, observedNow);
+    else {
+      this.pruneExpired(state, observedNow);
+      this.pruneLocalExpired(state, observedNow);
+    }
     const now = observedNow ?? fallbackNow(state);
     const oldest = state.records[state.head];
+    const oldestLocal = state.localLines[state.localHead];
     return Object.freeze({
       enabled: true,
       queuedRecords: state.records.length - state.head,
       queuedBytes: state.queuedBytes,
       oldestAgeMs: oldest ? Math.max(0, now - oldest.retainedAtMs) : 0,
       metricSeries: state.metricSeries.size,
-      localSinkFailures: state.localSinkFailures,
+      localSink: Object.freeze({
+        configured: state.localSink !== undefined,
+        inFlight: state.localInFlight !== undefined,
+        pendingRecords: state.localLines.length - state.localHead,
+        pendingBytes: state.localBytes,
+        oldestAgeMs: oldestLocal ? Math.max(0, now - oldestLocal.retainedAtMs) : 0,
+        deliveredRecords: state.localHealth.deliveredRecords,
+        failures: state.localHealth.failures,
+        timeouts: state.localHealth.timeouts,
+        dropped: Object.freeze({ ...state.localHealth.dropped }),
+      }),
       dropped: Object.freeze({ ...state.drops }),
       exporter: Object.freeze({
         configured: state.exporter !== undefined,
@@ -660,13 +853,24 @@ export class Telemetry {
     const state = this.state;
     if (!state) return;
     state.stopped = true;
-    if (state.intervalHandle === undefined) return;
-    const handle = state.intervalHandle;
-    state.intervalHandle = undefined;
-    try {
-      state.scheduler.clearInterval(handle);
-    } catch {
-      this.observeExportFailure(state);
+    if (state.intervalHandle !== undefined) {
+      const handle = state.intervalHandle;
+      state.intervalHandle = undefined;
+      try {
+        state.scheduler.clearInterval(handle);
+      } catch {
+        this.observeExportFailure(state);
+      }
+    }
+    if (state.localPumpScheduled) {
+      const handle = state.localPumpHandle;
+      state.localPumpScheduled = false;
+      state.localPumpHandle = undefined;
+      try {
+        state.scheduler.clearTimeout(handle);
+      } catch {
+        state.localHealth.failures++;
+      }
     }
   }
 
@@ -678,20 +882,15 @@ export class Telemetry {
       return false;
     }
     let line: string;
+    let bytes: number;
     try {
       line = JSON.stringify(record);
+      bytes = state.encoder.encode(line).byteLength;
     } catch {
       state.drops.invalid++;
       return false;
     }
-    if (emitLocally && state.localSink) {
-      try {
-        state.localSink(line);
-      } catch {
-        state.localSinkFailures++;
-      }
-    }
-    const bytes = state.encoder.encode(line).byteLength;
+    if (emitLocally && state.localSink) this.enqueueLocal(state, line, bytes, now);
     if (bytes > state.limits.maxBytes) {
       state.drops.oversized++;
       return false;
@@ -708,83 +907,235 @@ export class Telemetry {
     return true;
   }
 
+  private aggregateSpan(state: TelemetryState, record: TelemetrySpanRecord): void {
+    const key = `${record.operation}|${record.stage}|${record.outcome}|${record.function ?? ""}|${record.resource ?? ""}`;
+    let aggregate = state.aggregates.get(key);
+    if (!aggregate) {
+      if (state.aggregates.size >= state.limits.maxMetricSeries - 1) {
+        aggregate = state.aggregateOverflow;
+        state.aggregateOverflowedRecords = boundedCount(state.aggregateOverflowedRecords);
+      } else {
+        aggregate = {
+          operation: record.operation,
+          stage: record.stage,
+          outcome: record.outcome,
+          function: record.function,
+          resource: record.resource,
+          count: 0,
+          durationMs: 0,
+        };
+        state.aggregates.set(key, aggregate);
+      }
+    }
+    aggregate.count = boundedCount(aggregate.count);
+    aggregate.durationMs = boundedSum(aggregate.durationMs, record.durationMs);
+    this.addAggregateValue(aggregate, "sizeBytes", record.sizeBytes);
+    this.addAggregateValue(aggregate, "rowCount", record.rowCount);
+    this.addAggregateValue(aggregate, "resultCount", record.resultCount);
+    this.addAggregateValue(aggregate, "dependencyCount", record.dependencyCount);
+  }
+
+  private addAggregateValue(
+    aggregate: MutableAggregate,
+    key: "sizeBytes" | "rowCount" | "resultCount" | "dependencyCount",
+    value: number | undefined,
+  ): void {
+    if (value === undefined) return;
+    aggregate[key] = Math.min(Number.MAX_SAFE_INTEGER, (aggregate[key] ?? 0) + value);
+  }
+
+  private freezeAggregate(aggregate: MutableAggregate): TelemetryAggregateSeries {
+    return Object.freeze({
+      operation: aggregate.operation,
+      stage: aggregate.stage,
+      outcome: aggregate.outcome,
+      function: aggregate.function,
+      resource: aggregate.resource,
+      overflow: aggregate.overflow,
+      count: aggregate.count,
+      durationMs: aggregate.durationMs,
+      sizeBytes: aggregate.sizeBytes,
+      rowCount: aggregate.rowCount,
+      resultCount: aggregate.resultCount,
+      dependencyCount: aggregate.dependencyCount,
+    });
+  }
+
+  private enqueueLocal(
+    state: TelemetryState,
+    line: string,
+    bytes: number,
+    retainedAtMs: number,
+  ): void {
+    if (bytes > state.limits.maxBytes) {
+      state.localHealth.dropped.overflow++;
+      return;
+    }
+    this.pruneLocalExpired(state, retainedAtMs);
+    while (
+      state.localLines.length - state.localHead >= state.limits.maxRecords ||
+      bytes > state.limits.maxBytes - state.localBytes
+    ) {
+      this.removeOldestLocal(state, "overflow");
+    }
+    state.localLines.push({ line, bytes, retainedAtMs });
+    state.localBytes += bytes;
+    this.scheduleLocal(state);
+  }
+
+  private scheduleLocal(state: TelemetryState): void {
+    if (
+      state.stopped ||
+      state.localPumpScheduled ||
+      state.localInFlight ||
+      state.localLines.length === state.localHead
+    ) {
+      return;
+    }
+    state.localPumpScheduled = true;
+    try {
+      state.localPumpHandle = state.scheduler.setTimeout(() => {
+        queueMicrotask(() => {
+          state.localPumpScheduled = false;
+          state.localPumpHandle = undefined;
+          if (!state.stopped) this.startLocalDelivery(state);
+        });
+      }, 0);
+    } catch {
+      state.localPumpScheduled = false;
+      state.localPumpHandle = undefined;
+      state.localHealth.failures++;
+    }
+  }
+
+  private startLocalDelivery(state: TelemetryState): void {
+    if (state.stopped || state.localInFlight) return;
+    const now = readClock(state);
+    if (now === undefined) state.drops.invalid++;
+    else this.pruneLocalExpired(state, now);
+    const line = this.takeLocalLines(state, 1)[0];
+    if (line === undefined) return;
+
+    let delivery!: Promise<void>;
+    delivery = this.deliverLocalLine(state, line)
+      .catch(() => {
+        state.localHealth.failures++;
+        state.localHealth.dropped.failure++;
+      })
+      .then(() => {
+        if (state.localInFlight === delivery) state.localInFlight = undefined;
+        this.scheduleLocal(state);
+      });
+    state.localInFlight = delivery;
+  }
+
+  private async deliverLocalLine(state: TelemetryState, line: string): Promise<void> {
+    const delivery = await this.runBoundedTask(state, () => state.localSink!(line));
+    if (delivery.result === TASK_OK) {
+      state.localHealth.deliveredRecords = boundedCount(state.localHealth.deliveredRecords);
+      if (delivery.schedulerFailed) state.localHealth.failures++;
+      return;
+    }
+    state.localHealth.failures++;
+    state.localHealth.dropped.failure++;
+    if (delivery.result === TASK_TIMED_OUT) state.localHealth.timeouts++;
+  }
+
   private async exportNext(state: TelemetryState): Promise<void> {
     const observedStart = readClock(state);
     if (observedStart === undefined) state.drops.invalid++;
     else this.pruneExpired(state, observedStart);
-    const startedAtMs = observedStart ?? fallbackNow(state);
     const count = Math.min(state.limits.maxBatchRecords, state.records.length - state.head);
     if (count === 0) return;
+    await this.exportBatch(state, Object.freeze(this.takeRecords(state, count)), observedStart, true);
+  }
 
-    const batch: TelemetryRecord[] = [];
-    for (let index = 0; index < count; index++) {
-      const buffered = state.records[state.head + index]!;
-      batch.push(buffered.record);
-      state.queuedBytes -= buffered.bytes;
-    }
-    state.head += count;
-    this.compact(state);
+  private async exportBatch(
+    state: TelemetryState,
+    batch: readonly TelemetryRecord[],
+    observedStart: number | undefined,
+    reportDegraded: boolean,
+    deadline?: AbsoluteDeadline,
+  ): Promise<
+    typeof TASK_OK | typeof TASK_FAILED | typeof TASK_TIMED_OUT | typeof TASK_DEADLINE
+  > {
+    const startedAtMs = observedStart ?? fallbackNow(state);
     state.exportHealth.attempts++;
-
-    const exported = await this.runExporter(state, Object.freeze(batch));
+    const exported = await this.runBoundedTask(state, () => state.exporter!.export(batch), deadline);
     const observedFinish = readClock(state);
     if (observedFinish === undefined) state.drops.invalid++;
     const finishedAtMs = observedFinish ?? startedAtMs;
     state.exportHealth.lastDurationMs = Math.max(0, finishedAtMs - startedAtMs);
 
-    if (exported.result === EXPORT_OK) {
-      state.exportHealth.exportedRecords += count;
+    if (exported.result === TASK_OK) {
+      state.exportHealth.exportedRecords += batch.length;
       if (observedFinish !== undefined) state.exportHealth.lastSuccessAtMs = observedFinish;
       if (exported.schedulerFailed) {
         state.exportHealth.failures++;
         if (observedFinish !== undefined) state.exportHealth.lastFailureAtMs = observedFinish;
-        this.recordExporterDegraded(finishedAtMs);
+        if (reportDegraded && !state.stopped) this.recordExporterDegraded(finishedAtMs);
       }
-      return;
+      return TASK_OK;
     }
 
     state.exportHealth.failures++;
-    state.exportHealth.failedRecords += count;
+    state.exportHealth.failedRecords += batch.length;
     if (observedFinish !== undefined) state.exportHealth.lastFailureAtMs = observedFinish;
-    state.drops.exporter += count;
-    if (exported.result === EXPORT_TIMED_OUT) state.exportHealth.timeouts++;
-    this.recordExporterDegraded(finishedAtMs);
+    if (exported.result === TASK_DEADLINE) {
+      state.exportHealth.timeouts++;
+      return TASK_DEADLINE;
+    }
+    state.drops.exporter += batch.length;
+    if (exported.result === TASK_TIMED_OUT) state.exportHealth.timeouts++;
+    if (reportDegraded && !state.stopped) this.recordExporterDegraded(finishedAtMs);
+    return exported.result;
   }
 
-  private async runExporter(
+  private async runBoundedTask(
     state: TelemetryState,
-    batch: readonly TelemetryRecord[],
+    task: () => Promise<void> | void,
+    deadline?: AbsoluteDeadline,
   ): Promise<{
-    readonly result: typeof EXPORT_OK | typeof EXPORT_FAILED | typeof EXPORT_TIMED_OUT;
+    readonly result:
+      | typeof TASK_OK
+      | typeof TASK_FAILED
+      | typeof TASK_TIMED_OUT
+      | typeof TASK_DEADLINE;
     readonly schedulerFailed: boolean;
   }> {
-    const exporter = state.exporter!;
-    let exportResult: Promise<typeof EXPORT_OK | typeof EXPORT_FAILED>;
+    if (deadline?.expired()) return { result: TASK_DEADLINE, schedulerFailed: false };
+    let taskResult: Promise<typeof TASK_OK | typeof TASK_FAILED>;
     try {
-      exportResult = Promise.resolve(exporter.export(batch)).then(
-        () => EXPORT_OK,
-        () => EXPORT_FAILED,
+      taskResult = Promise.resolve(task()).then(
+        () => TASK_OK,
+        () => TASK_FAILED,
       );
     } catch {
-      exportResult = Promise.resolve(EXPORT_FAILED);
+      taskResult = Promise.resolve(TASK_FAILED);
     }
 
     let timeoutHandle: unknown;
     let timeoutScheduled = false;
     let schedulerFailed = false;
-    const timeout = new Promise<typeof EXPORT_TIMED_OUT | typeof EXPORT_FAILED>((resolve) => {
+    const timeout = new Promise<typeof TASK_TIMED_OUT | typeof TASK_FAILED>((resolve) => {
       try {
         timeoutHandle = state.scheduler.setTimeout(
-          () => resolve(EXPORT_TIMED_OUT),
+          () => resolve(TASK_TIMED_OUT),
           state.limits.exportTimeoutMs,
         );
         timeoutScheduled = true;
       } catch {
         schedulerFailed = true;
-        resolve(EXPORT_FAILED);
+        resolve(TASK_FAILED);
       }
     });
-    const result = await Promise.race([exportResult, timeout]);
+    const result = deadline
+      ? await Promise.race([
+          taskResult,
+          timeout,
+          deadline.reached.then((): typeof TASK_DEADLINE => TASK_DEADLINE),
+        ])
+      : await Promise.race([taskResult, timeout]);
     if (timeoutScheduled) {
       try {
         state.scheduler.clearTimeout(timeoutHandle);
@@ -793,6 +1144,184 @@ export class Telemetry {
       }
     }
     return { result, schedulerFailed };
+  }
+
+  private async performDrain(
+    state: TelemetryState,
+    records: readonly TelemetryRecord[],
+    localLines: readonly string[],
+    deadlineAtMs: number,
+  ): Promise<void> {
+    const deadline = this.createDeadline(state, deadlineAtMs);
+    try {
+      await Promise.all([
+        this.drainRecords(state, records, deadline),
+        this.drainLocalLines(state, localLines, deadline),
+      ]);
+    } finally {
+      deadline.close();
+    }
+  }
+
+  private async drainRecords(
+    state: TelemetryState,
+    records: readonly TelemetryRecord[],
+    deadline: AbsoluteDeadline,
+  ): Promise<void> {
+    let offset = 0;
+    try {
+      if (!state.exporter) {
+        state.drops.drain += records.length;
+        return;
+      }
+      if (state.exporting && !(await this.waitWithinDeadline(state.exporting, deadline))) {
+        state.drops.drain += records.length;
+        return;
+      }
+      while (offset < records.length) {
+        if (deadline.expired()) {
+          state.drops.drain += records.length - offset;
+          return;
+        }
+        const batch = Object.freeze(
+          records.slice(offset, offset + state.limits.maxBatchRecords),
+        );
+        const observedStart = readClock(state);
+        if (observedStart === undefined) state.drops.invalid++;
+        const result = await this.exportBatch(state, batch, observedStart, false, deadline);
+        if (result === TASK_DEADLINE) {
+          state.drops.drain += records.length - offset;
+          return;
+        }
+        offset += batch.length;
+        // The timed-out exporter call is still outside our control. Starting
+        // another batch would accumulate concurrent hung promises during
+        // shutdown, so drop the untouched remainder under the drain counter.
+        if (result === TASK_TIMED_OUT) {
+          state.drops.drain += records.length - offset;
+          return;
+        }
+      }
+    } catch {
+      state.drops.drain += records.length - offset;
+      this.observeExportFailure(state);
+    }
+  }
+
+  private async drainLocalLines(
+    state: TelemetryState,
+    lines: readonly string[],
+    deadline: AbsoluteDeadline,
+  ): Promise<void> {
+    let offset = 0;
+    try {
+      if (!state.localSink) {
+        state.localHealth.dropped.drain += lines.length;
+        return;
+      }
+      if (state.localInFlight && !(await this.waitWithinDeadline(state.localInFlight, deadline))) {
+        state.localHealth.dropped.drain += lines.length;
+        return;
+      }
+      while (offset < lines.length) {
+        if (deadline.expired()) {
+          state.localHealth.dropped.drain += lines.length - offset;
+          return;
+        }
+        const delivery = await this.runBoundedTask(state, () => state.localSink!(lines[offset]!), deadline);
+        if (delivery.result === TASK_DEADLINE) {
+          state.localHealth.failures++;
+          state.localHealth.timeouts++;
+          state.localHealth.dropped.drain += lines.length - offset;
+          return;
+        }
+        if (delivery.result === TASK_OK) {
+          state.localHealth.deliveredRecords = boundedCount(state.localHealth.deliveredRecords);
+          if (delivery.schedulerFailed) state.localHealth.failures++;
+        } else {
+          state.localHealth.failures++;
+          state.localHealth.dropped.failure++;
+          if (delivery.result === TASK_TIMED_OUT) state.localHealth.timeouts++;
+        }
+        offset++;
+        // As with exporters, a timed-out sink may still be running. Never
+        // multiply that stalled work while trying to finish shutdown.
+        if (delivery.result === TASK_TIMED_OUT) {
+          state.localHealth.dropped.drain += lines.length - offset;
+          return;
+        }
+      }
+    } catch {
+      state.localHealth.failures++;
+      state.localHealth.dropped.drain += lines.length - offset;
+    }
+  }
+
+  private async waitWithinDeadline(
+    task: Promise<void>,
+    deadline: AbsoluteDeadline,
+  ): Promise<boolean> {
+    if (deadline.expired()) return false;
+    return Promise.race([
+      task.then(
+        () => true,
+        () => true,
+      ),
+      deadline.reached.then(() => false),
+    ]);
+  }
+
+  private createDeadline(state: TelemetryState, deadlineAtMs: number): AbsoluteDeadline {
+    let deadlineReached = false;
+    let timeoutHandle: unknown;
+    let timeoutScheduled = false;
+    let resolveReached!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      resolveReached = resolve;
+    });
+    const expire = (): void => {
+      if (deadlineReached) return;
+      deadlineReached = true;
+      resolveReached();
+    };
+    const initialNow = readClock(state);
+    if (!Number.isFinite(deadlineAtMs) || initialNow === undefined) {
+      state.drops.invalid++;
+      expire();
+    } else if (deadlineAtMs <= initialNow) {
+      expire();
+    } else {
+      try {
+        timeoutHandle = state.scheduler.setTimeout(expire, deadlineAtMs - initialNow);
+        timeoutScheduled = true;
+      } catch {
+        expire();
+      }
+    }
+
+    return {
+      reached,
+      expired: () => {
+        if (deadlineReached) return true;
+        const currentNow = readClock(state);
+        if (currentNow === undefined) {
+          state.drops.invalid++;
+          expire();
+        } else if (currentNow >= deadlineAtMs) {
+          expire();
+        }
+        return deadlineReached;
+      },
+      close: () => {
+        if (!timeoutScheduled) return;
+        timeoutScheduled = false;
+        try {
+          state.scheduler.clearTimeout(timeoutHandle);
+        } catch {
+          // Cleanup faults must not turn shutdown into a rejection.
+        }
+      },
+    };
   }
 
   private recordExporterDegraded(timestampMs: number): void {
@@ -826,6 +1355,7 @@ export class Telemetry {
   private removeOldest(state: TelemetryState, reason: "overflow" | "expired"): void {
     const oldest = state.records[state.head];
     if (!oldest) return;
+    state.records[state.head] = undefined;
     state.head++;
     state.queuedBytes -= oldest.bytes;
     state.drops[reason]++;
@@ -839,6 +1369,69 @@ export class Telemetry {
     } else if (state.head >= state.limits.maxRecords && state.head * 2 >= state.records.length) {
       state.records = state.records.slice(state.head);
       state.head = 0;
+    }
+  }
+
+  private takeRecords(state: TelemetryState, requested: number): TelemetryRecord[] {
+    const count = Math.min(Math.max(0, requested), state.records.length - state.head);
+    const records: TelemetryRecord[] = [];
+    for (let index = 0; index < count; index++) {
+      const buffered = state.records[state.head + index]!;
+      records.push(buffered.record);
+      state.queuedBytes -= buffered.bytes;
+      state.records[state.head + index] = undefined;
+    }
+    state.head += count;
+    this.compact(state);
+    return records;
+  }
+
+  private pruneLocalExpired(state: TelemetryState, now: number): void {
+    while (
+      state.localLines[state.localHead] &&
+      now - state.localLines[state.localHead]!.retainedAtMs >= state.limits.retentionMs
+    ) {
+      this.removeOldestLocal(state, "expired");
+    }
+  }
+
+  private removeOldestLocal(
+    state: TelemetryState,
+    reason: "overflow" | "expired",
+  ): void {
+    const oldest = state.localLines[state.localHead];
+    if (!oldest) return;
+    state.localLines[state.localHead] = undefined;
+    state.localHead++;
+    state.localBytes -= oldest.bytes;
+    state.localHealth.dropped[reason]++;
+    this.compactLocal(state);
+  }
+
+  private takeLocalLines(state: TelemetryState, requested: number): string[] {
+    const count = Math.min(Math.max(0, requested), state.localLines.length - state.localHead);
+    const lines: string[] = [];
+    for (let index = 0; index < count; index++) {
+      const buffered = state.localLines[state.localHead + index]!;
+      lines.push(buffered.line);
+      state.localBytes -= buffered.bytes;
+      state.localLines[state.localHead + index] = undefined;
+    }
+    state.localHead += count;
+    this.compactLocal(state);
+    return lines;
+  }
+
+  private compactLocal(state: TelemetryState): void {
+    if (state.localHead === state.localLines.length) {
+      state.localLines = [];
+      state.localHead = 0;
+    } else if (
+      state.localHead >= state.limits.maxRecords &&
+      state.localHead * 2 >= state.localLines.length
+    ) {
+      state.localLines = state.localLines.slice(state.localHead);
+      state.localHead = 0;
     }
   }
 }
