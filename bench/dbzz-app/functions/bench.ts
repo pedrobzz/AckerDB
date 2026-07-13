@@ -48,6 +48,7 @@ function validateChannelBatch(start: number, count: number): void {
 }
 
 export const seedDocuments = mutation({
+  access: "public",
   args: { start: dbz.number(), count: dbz.number() },
   handler: async (ctx, { start, count }) => {
     validateBatch(start, count, DOCUMENT_COUNT);
@@ -66,6 +67,7 @@ export const seedDocuments = mutation({
 });
 
 export const seedAccounts = mutation({
+  access: "public",
   args: { start: dbz.number(), count: dbz.number() },
   handler: async (ctx, { start, count }) => {
     validateBatch(start, count, ACCOUNT_COUNT);
@@ -77,6 +79,7 @@ export const seedAccounts = mutation({
 });
 
 export const seedChannels = mutation({
+  access: "public",
   args: { start: dbz.number(), count: dbz.number() },
   handler: async (ctx, { start, count }) => {
     validateChannelBatch(start, count);
@@ -94,6 +97,7 @@ export const seedChannels = mutation({
 });
 
 export const search = query({
+  access: "public",
   args: { partition: dbz.number(), nonce: dbz.number() },
   handler: async (ctx, { partition, nonce }) => {
     const documents = await ctx.db.documents
@@ -112,6 +116,7 @@ export const search = query({
 });
 
 export const transfer = mutation({
+  access: "public",
   args: {
     pair: dbz.number(),
     direction: dbz.number(),
@@ -142,6 +147,7 @@ export const transfer = mutation({
 });
 
 export const accountState = query({
+  access: "public",
   args: { nonce: dbz.number() },
   handler: async (ctx, { nonce }) => {
     const accounts = await ctx.db.accounts.scan().collect();
@@ -161,6 +167,7 @@ export const accountState = query({
 });
 
 export const channel = query({
+  access: "public",
   args: { channel: dbz.number() },
   handler: async (ctx, { channel }) => {
     const row = await ctx.db.channels.byChannel((q) => q.eq("channel", channel)).unique();
@@ -170,6 +177,7 @@ export const channel = query({
 });
 
 export const updateChannel = mutation({
+  access: "public",
   args: { channel: dbz.number(), nonce: dbz.number() },
   handler: async (ctx, { channel, nonce }) => {
     const row = await ctx.db.channels.byChannel((q) => q.eq("channel", channel)).unique();
@@ -183,6 +191,7 @@ export const updateChannel = mutation({
 });
 
 export const compute = procedure({
+  access: "public",
   args: {
     nonce: dbz.number(),
     seed: dbz.number(),
@@ -198,6 +207,7 @@ export const compute = procedure({
 });
 
 export const probe = query({
+  access: "public",
   args: { nonce: dbz.number() },
   handler: async (ctx, { nonce }) => {
     const account = ((nonce % ACCOUNT_COUNT) + ACCOUNT_COUNT) % ACCOUNT_COUNT;

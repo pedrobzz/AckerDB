@@ -55,12 +55,14 @@ import { dbz } from "@dbzz/server";
 import { mutation, query } from "../_generated/server.ts";
 
 export const list = query({
+  access: "public",
   args: { channelId: dbz.bigint() },
   handler: (ctx, args) =>
     ctx.db.messages.byChannel((q) => q.eq("channelId", args.channelId)).collect(),
 });
 
 export const send = mutation({
+  access: "public",
   args: { channelId: dbz.bigint(), body: dbz.string() },
   handler: async (ctx, args) => {
     const id = await ctx.db.messages.insert({
@@ -74,6 +76,7 @@ export const send = mutation({
 });
 
 export const runJob = mutation({
+  access: "system",
   args: { id: dbz.bigint(), note: dbz.string(), at: dbz.number() },
   handler: async (ctx, args) => {
     await ctx.db.messages.insert({
@@ -91,6 +94,7 @@ import { dbz } from "@dbzz/server";
 import { query } from "../../_generated/server.ts";
 
 export const count = query({
+  access: "public",
   args: {},
   handler: (ctx) => ctx.db.messages.scan().count(),
 });

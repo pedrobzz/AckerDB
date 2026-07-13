@@ -32,11 +32,13 @@ type Ctx = any;
 const functions = {
   notes: {
     list: query({
+      access: "public",
       args: { rank: dbz.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.notes.byRank((q: Ctx) => q.eq("rank", args.rank)).collect(),
     }),
     add: mutation({
+      access: "public",
       args: { body: dbz.string(), rank: dbz.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const id = await ctx.db.notes.insert(args);
@@ -45,6 +47,7 @@ const functions = {
       },
     }),
     chat: sseProcedure({
+      access: "public",
       args: { text: dbz.string() },
       handler: (ctx: Ctx, args: Ctx) => {
         ctx.stream.write({ type: "text-delta", delta: args.text });

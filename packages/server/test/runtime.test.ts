@@ -62,11 +62,13 @@ type Ctx = any;
 const functions = {
   messages: {
     list: query({
+      access: "public",
       args: { channelId: dbz.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.messages.byChannel((q: Ctx) => q.eq("channelId", args.channelId)).collect(),
     }),
     send: mutation({
+      access: "public",
       args: { channelId: dbz.bigint(), body: dbz.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const id = await ctx.db.messages.insert(args);
@@ -75,6 +77,7 @@ const functions = {
       },
     }),
     fetchInside: mutation({
+      access: "public",
       args: {},
       handler: async (ctx: Ctx) => {
         await ctx.db.messages.insert({ channelId: 1n, body: "should roll back" });
@@ -82,6 +85,7 @@ const functions = {
       },
     }),
     composeFail: mutation({
+      access: "public",
       args: { channelId: dbz.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         // direct mutation-from-mutation joins THIS transaction...
@@ -91,6 +95,7 @@ const functions = {
       },
     }),
     rewrite: mutation({
+      access: "public",
       args: { id: dbz.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const row = await ctx.db.messages.get(args.id);
@@ -100,18 +105,21 @@ const functions = {
   },
   reminders: {
     fire: mutation({
+      access: "system",
       args: { id: dbz.bigint(), message: dbz.string(), at: dbz.number() },
       handler: async (ctx: Ctx, args: Ctx) => {
         await ctx.db.log.insert({ line: `fired:${args.message}` });
       },
     }),
     schedule: mutation({
+      access: "public",
       args: { message: dbz.string(), at: dbz.number() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.reminders.insert(args),
     }),
   },
   ops: {
     pipeline: procedure({
+      access: "public",
       args: { channelId: dbz.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         // direct composition: queries/mutations called with a tx ctx
@@ -126,14 +134,17 @@ const functions = {
       },
     }),
     fetchInTx: procedure({
+      access: "public",
       args: {},
       handler: (ctx: Ctx) => ctx.tx(() => fetch("data:text/plain,banned")),
     }),
     nestedTx: procedure({
+      access: "public",
       args: {},
       handler: (ctx: Ctx) => ctx.tx(() => ctx.tx(() => 1)),
     }),
     stream: sseProcedure({
+      access: "public",
       args: { n: dbz.number() },
       handler: async (ctx: Ctx, args: Ctx) => {
         for (let i = 0; i < args.n; i++) ctx.stream.write({ type: "text-delta", delta: `c${i}` });
@@ -149,6 +160,7 @@ const functions = {
       },
     }),
     failingStream: sseProcedure({
+      access: "public",
       args: {},
       handler: () => {
         throw new Error("boom mid-stream");

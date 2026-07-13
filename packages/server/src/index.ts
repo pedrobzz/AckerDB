@@ -62,11 +62,38 @@ export type {
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
 export { reconcile, UnsafeSchemaChange } from "./reconcile.ts";
 export {
+  ANONYMOUS_PRINCIPAL,
+  createOidcVerifier,
+  isPrincipal,
+  SYSTEM_PRINCIPAL,
+  type AnonymousPrincipal,
+  type CredentialVerifier,
+  type JwtAlgorithm,
+  type OidcProviderConfig,
+  type OidcVerifierOptions,
+  type Principal,
+  type PrincipalInvalidation,
+  type RevocationBound,
+  type SystemPrincipal,
+  type UserPrincipal,
+  type VerifiedPrincipal,
+  type WorkloadPrincipal,
+} from "./auth.ts";
+export {
+  DbzzError,
+  isDbzzError,
+  type DbzzErrorCode,
+  type DbzzErrorOptions,
+  type ResourceClass,
+} from "./errors.ts";
+export { invokeFunction, type InvocationContext } from "./invocation.ts";
+export {
   query,
   mutation,
   procedure,
   sseProcedure,
   isRegisteredFunction,
+  type AccessPolicy,
   type AnyRegistered,
   type ArgsInput,
   type AuthCtx,
