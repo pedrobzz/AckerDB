@@ -415,7 +415,9 @@ describe("CommitCoordinator", () => {
       fairnessKey: "session-1",
       requestBytes: 10,
       idempotency: identity,
-      telemetry: (event: CommitTelemetryEvent) => events.push(event),
+      telemetry: (event: CommitTelemetryEvent) => {
+        events.push(event);
+      },
       work: (db: any) => db.notes.insert({ body: "hello" }),
       publication: (version: bigint) => ({ version }),
     };
@@ -459,7 +461,9 @@ describe("CommitCoordinator", () => {
       operation: "transaction",
       fairnessKey: "connection-1",
       requestBytes: 1,
-      telemetry: (event) => events.push(event),
+      telemetry: (event) => {
+        events.push(event);
+      },
       work: (db: any) => {
         void db.notes.insert({ body: "rolled back" });
         throw new Error("boom");

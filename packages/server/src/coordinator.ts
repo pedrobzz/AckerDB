@@ -6,7 +6,12 @@ import {
   type DurabilityPolicy,
   type OutcomeCode,
 } from "@dbzz/core";
-import { makeDbWriter, newWriteCollector, type WriteCollector } from "./db.ts";
+import {
+  makeDbWriter,
+  newWriteCollector,
+  type DbStatementObserver,
+  type WriteCollector,
+} from "./db.ts";
 import type { DbWriter } from "./dbtypes.ts";
 import type { Engine, StoredMutation } from "./engine.ts";
 import { DbzzError } from "./errors.ts";
@@ -53,6 +58,7 @@ export interface CommitRequest<T, Publication> {
   readonly deadlineMs?: number;
   readonly signal?: AbortSignal;
   readonly telemetry?: CommitTelemetryObserver;
+  readonly statementTelemetry?: DbStatementObserver;
   readonly idempotency?: IdempotencyIdentity;
   readonly work: (db: DbWriter<Schema>) => T | Promise<T>;
   /** Additional storage work, such as deleting a due row, in the same transaction. */
@@ -330,6 +336,7 @@ export class CommitCoordinator<Publication> {
       this.engine,
       writes,
       (table) => this.nextEventSequence(table),
+      request.statementTelemetry,
     ) as DbWriter<Schema>;
     let committed = false;
     let transactionOpen = false;

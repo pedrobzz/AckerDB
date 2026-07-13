@@ -18,6 +18,7 @@ import {
   ValidationError,
   type WriteCollector,
 } from "@dbzz/server";
+import type { DbStatementObservation } from "../src/db.ts";
 
 const schema = () =>
   defineSchema({
@@ -73,6 +74,58 @@ const pay = (userId: bigint, status: string, amount: number, currency = "USD") =
   db.payments.insert({ userId, status, amount, currency, note: null });
 
 describe("writes", () => {
+  test("observes safe read/write summaries and observer failure stays fail-open", async () => {
+    const observations: DbStatementObservation[] = [];
+    const observed: any = makeDbWriter(
+      engine,
+      newWriteCollector(),
+      () => ++eventSeq,
+      (observation) => {
+        observations.push(observation);
+      },
+    );
+    const id = await observed.payments.insert({
+      userId: 1n,
+      status: "active",
+      amount: 10,
+      currency: "USD",
+      note: null,
+    });
+    await observed.payments.get(id);
+    await observed.payments.scan().collect();
+    await observed.payments.delete(id);
+
+    expect(observations.map((observation) => observation.statement)).toEqual([
+      "insert",
+      "get",
+      "select",
+      "delete",
+    ]);
+    expect(observations).toEqual(observations.map((observation) => expect.objectContaining({
+      table: "payments",
+      outcome: "ok",
+      durationMs: expect.any(Number),
+      rowCount: 1,
+    })));
+    expect(JSON.stringify(observations)).not.toContain("USD");
+
+    const failOpen: any = makeDbWriter(
+      engine,
+      newWriteCollector(),
+      () => ++eventSeq,
+      async () => {
+        throw new Error("telemetry failed");
+      },
+    );
+    await expect(failOpen.payments.insert({
+      userId: 2n,
+      status: "active",
+      amount: 20,
+      currency: "BRL",
+      note: null,
+    })).resolves.toBeGreaterThan(0n);
+  });
+
   test("insert returns sequential bigint ids and validates", async () => {
     expect(await pay(1n, "active", 10)).toBe(1n);
     expect(await pay(1n, "failed", 20)).toBe(2n);
