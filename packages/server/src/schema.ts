@@ -46,10 +46,10 @@ export interface IndexDef {
   readonly algorithm: "btree" | "direct";
 }
 
-/** A mutation or procedure to run when a scheduled row comes due. */
+/** A mutation to run atomically with deletion when a scheduled row comes due. */
 export type ScheduledHandler =
-  | FunctionReference<"mutation" | "procedure">
-  | RegisteredFunction<"mutation" | "procedure", unknown, unknown>
+  | FunctionReference<"mutation">
+  | RegisteredFunction<"mutation", unknown, unknown>
   | string;
 
 type IndexMeta = { columns: readonly string[]; unique: boolean };

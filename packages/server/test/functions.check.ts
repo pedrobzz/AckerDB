@@ -63,6 +63,10 @@ export const _pipeline = typedProcedure({
   },
 });
 
+defineTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }).scheduled(bump);
+// @ts-expect-error scheduled handlers must be mutations so deletion shares their commit
+defineTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }).scheduled(_pipeline);
+
 export const _readOnly = typedQuery({
   args: {},
   access: "public",

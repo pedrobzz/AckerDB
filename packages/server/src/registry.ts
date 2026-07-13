@@ -57,8 +57,8 @@ export class Registry {
     if (kind === undefined) {
       throw new Error(`${where}: scheduled handler "${address}" does not exist`);
     }
-    if (kind !== "mutation" && kind !== "procedure") {
-      throw new Error(`${where}: scheduled handler "${address}" must be a mutation or procedure, got ${kind}`);
+    if (kind !== "mutation") {
+      throw new Error(`${where}: scheduled handler "${address}" must be a mutation, got ${kind}`);
     }
     return address;
   }
