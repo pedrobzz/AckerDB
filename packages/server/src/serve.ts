@@ -20,9 +20,18 @@ import {
 } from "./auth-lease.ts";
 import { OutboundBudget, WebSocketSessionSink } from "./delivery.ts";
 import { DbzzError } from "./errors.ts";
+import {
+  beginHttpTrace,
+  beginSessionAuthTrace,
+  carryHttpTrace,
+  finishHttpTrace,
+  identifyHttpTrace,
+  observeHttpAuth,
+  recordHttpTraceFailure,
+} from "./external-trace.ts";
 import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
 import type { Runtime, RuntimeStatus } from "./runtime.ts";
-import { Session } from "./session.ts";
+import { Session, withSessionAuthObserver } from "./session.ts";
 
 export type DbzzServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
 
@@ -409,6 +418,7 @@ export class DbzzServer {
   }
 
   private async call(request: Request, sse: boolean): Promise<Response> {
+    const externalTrace = beginHttpTrace(this.runtime.telemetry, sse ? "sse" : "procedure");
     let id: number | null = null;
     let release: (() => void) | undefined;
     let lease: AuthLease | undefined;
@@ -421,14 +431,17 @@ export class DbzzServer {
         this.runtime.limits.readQueue.maxAgeMs,
       );
       id = call.id;
-      lease = await this.authenticate(request);
-      const input = {
+      identifyHttpTrace(externalTrace, call.ref, String(call.id));
+      lease = externalTrace === undefined
+        ? await this.authenticate(request)
+        : await observeHttpAuth(externalTrace, () => this.authenticate(request));
+      const input = carryHttpTrace({
         id: call.id,
         address: call.ref,
         args: call.args,
         principal: lease.principal,
         signal: lease.signal,
-      };
+      }, externalTrace);
       if (sse) {
         const stream = await this.runtime.runSse(input);
         const body = leasedStream(stream, lease.release);
@@ -449,8 +462,10 @@ export class DbzzServer {
         }),
       });
     } catch (error) {
+      recordHttpTraceFailure(externalTrace, error);
       return protocolError(error, id);
     } finally {
+      finishHttpTrace(externalTrace);
       lease?.release();
       release?.();
     }
@@ -516,13 +531,15 @@ export class DbzzServer {
             }
           : {}),
       });
-      data.session = new Session({
+      data.session = new Session(withSessionAuthObserver({
         runtime: this.runtime,
         sink: data.sink,
         verifier: this.verifier,
         revocationDeadlineMs: this.runtime.limits.auth.revocationDeadlineMs,
         limits: this.runtime.limits,
-      });
+      }, this.runtime.telemetry.enabled
+        ? (input) => beginSessionAuthTrace(this.runtime.telemetry, input)
+        : undefined));
       if (this.lifecycle !== "ready") void data.session.close(unavailableWhile(this.lifecycle));
     } catch (error) {
       this.connections.delete(data);

@@ -52,6 +52,12 @@ import {
 import type { Engine } from "./engine.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import {
+  carriedHttpTrace,
+  claimHttpTrace,
+  finishClaimedHttpTrace,
+  type ClaimedHttpTrace,
+} from "./external-trace.ts";
+import {
   BoundedExecutor,
   type ExecutorSnapshot,
   type ExecutorTaskOptions,
@@ -695,6 +701,12 @@ export class Runtime implements RuntimePort {
       ref: request.address,
       args: request.args,
     });
+    const claimedTrace = claimHttpTrace(
+      carriedHttpTrace(request),
+      "procedure",
+      request.address,
+      String(request.id),
+    );
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
@@ -712,7 +724,7 @@ export class Runtime implements RuntimePort {
       aborted(signal);
       return value;
     }, { requestId: String(request.id) }, true, (outcome) =>
-      this.respondProcedure(request, outcome));
+      this.respondProcedure(request, outcome), claimedTrace);
   }
 
   private respondProcedure(
@@ -892,11 +904,29 @@ export class Runtime implements RuntimePort {
       ref: request.address,
       args: request.args,
     });
+    const claimedTrace = claimHttpTrace(
+      carriedHttpTrace(request),
+      "sse",
+      request.address,
+      String(request.id),
+    );
     const scope = this.telemetry.enabled
-      ? this.operationTrace(null, "sse", request.address, { requestId: String(request.id) })
+      ? this.operationTrace(
+          null,
+          "sse",
+          request.address,
+          { requestId: String(request.id) },
+          claimedTrace?.context,
+        )
       : undefined;
-    let traceOpened = scope !== undefined && this.telemetry.beginTrace(scope.rootContext);
+    let traceOpened = claimedTrace === undefined &&
+      scope !== undefined &&
+      this.telemetry.beginTrace(scope.rootContext);
     const finishOperationTrace = (): void => {
+      if (claimedTrace !== undefined) {
+        finishClaimedHttpTrace(claimedTrace);
+        return;
+      }
       if (!traceOpened) return;
       traceOpened = false;
       this.telemetry.finishTrace(scope!.rootContext);
@@ -2169,8 +2199,9 @@ export class Runtime implements RuntimePort {
     operation: TelemetryOperation,
     functionName: string | undefined,
     identifiers: TraceIdentifiers,
+    inheritedContext?: TelemetryTraceContext,
   ): RuntimeTraceScope {
-    const rootContext = telemetryContext({
+    const rootContext = inheritedContext ?? telemetryContext({
       ...(session === null
         ? {}
         : { connectionId: digest(session.context.clientSessionId) }),
@@ -2241,16 +2272,22 @@ export class Runtime implements RuntimePort {
     identifiers: TraceIdentifiers = {},
     synthesizeHandler = true,
     finalize?: RuntimeOperationFinalizer<T, R>,
+    claimedTrace?: ClaimedHttpTrace,
   ): Promise<R> {
     const scope = this.telemetry.enabled
-      ? this.operationTrace(session, operation, functionName, identifiers)
+      ? this.operationTrace(session, operation, functionName, identifiers, claimedTrace?.context)
       : undefined;
-    const traceOpened = scope !== undefined && this.telemetry.beginTrace(scope.rootContext);
-    const finishOperationTrace = <V>(result: Promise<V>): Promise<V> => traceOpened
-      ? result.finally(() => {
-          this.telemetry.finishTrace(scope.rootContext);
-        })
-      : result;
+    const traceOpened = claimedTrace === undefined &&
+      scope !== undefined &&
+      this.telemetry.beginTrace(scope.rootContext);
+    const finishOperationTrace = <V>(result: Promise<V>): Promise<V> =>
+      claimedTrace !== undefined
+        ? result.finally(() => finishClaimedHttpTrace(claimedTrace))
+        : traceOpened
+          ? result.finally(() => {
+              this.telemetry.finishTrace(scope!.rootContext);
+            })
+          : result;
     const admittedAt = scope === undefined ? 0 : performance.now();
     const settle = async (outcome: RuntimeOperationOutcome<T>): Promise<R> => {
       if (finalize !== undefined) return finalize(outcome);

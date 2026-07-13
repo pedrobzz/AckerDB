@@ -75,6 +75,33 @@ export interface SessionClock {
   clearTimeout(handle: unknown): void;
 }
 
+export type SessionAuthAttemptKind = "hello" | "refresh" | "sign-out";
+
+export interface SessionAuthAttemptInput {
+  readonly kind: SessionAuthAttemptKind;
+  readonly clientSessionId: string;
+  readonly attemptId?: number;
+}
+
+export interface SessionAuthAttemptObservation {
+  finish(error?: unknown): void;
+}
+
+export type SessionAuthObserver = (
+  input: SessionAuthAttemptInput,
+) => SessionAuthAttemptObservation | undefined;
+
+const SESSION_AUTH_OBSERVER: unique symbol = Symbol("dbzz.sessionAuthObserver");
+
+interface InternalSessionOptions {
+  readonly [SESSION_AUTH_OBSERVER]?: SessionAuthObserver;
+}
+
+interface PendingAuthObservation {
+  readonly owner: object;
+  readonly observation: SessionAuthAttemptObservation;
+}
+
 export interface SessionRuntimeContext {
   readonly clientSessionId: string;
   readonly principal: Principal;
@@ -137,6 +164,15 @@ export interface SessionOptions {
   readonly limits?: SessionLimits;
 }
 
+/** Attach package-internal auth observation without expanding Session's public options. */
+export function withSessionAuthObserver<T extends SessionOptions>(
+  options: T,
+  observer: SessionAuthObserver | undefined,
+): T {
+  if (observer !== undefined) Object.assign(options, { [SESSION_AUTH_OBSERVER]: observer });
+  return options;
+}
+
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
 const utf8 = new TextEncoder();
 
@@ -194,6 +230,7 @@ export class Session {
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
   private readonly verifier: CredentialVerifier | undefined;
+  private readonly observeAuth: SessionAuthObserver | undefined;
   private readonly clock: SessionClock;
   private readonly ingress: BoundedExecutor;
   private phase: SessionPhase = "awaiting_hello";
@@ -204,6 +241,7 @@ export class Session {
   private paused = true;
   private epochController = new AbortController();
   private pendingAuthController: AbortController | null = null;
+  private pendingAuthObservation: PendingAuthObservation | null = null;
   private lastAuthAck: AuthenticatedMessage | null = null;
   private expiryTimer: unknown;
   private ingressExpiryTimer: unknown;
@@ -218,6 +256,7 @@ export class Session {
     this.runtime = options.runtime;
     this.sink = options.sink;
     this.verifier = options.verifier;
+    this.observeAuth = (options as SessionOptions & InternalSessionOptions)[SESSION_AUTH_OBSERVER];
     this.clock = options.clock ?? SYSTEM_CLOCK;
     const limits = options.limits ?? PRODUCTION_LIMITS;
     this.maxRequestBytes = positiveInteger(limits.maxRequestBytes, "maxRequestBytes");
@@ -363,13 +402,25 @@ export class Session {
   }
 
   private async open(clientSessionId: string, credential: Credential): Promise<void> {
+    const observationOwner = this.observeAuth === undefined ? undefined : {};
+    if (observationOwner !== undefined) {
+      this.setPendingAuthObservation(
+        observationOwner,
+        this.beginAuthObservation({ kind: "hello", clientSessionId }),
+      );
+    }
     let principal: ClientPrincipal;
     try {
       principal = await this.verifyCredential(credential);
     } catch (error) {
-      void this.terminate(verifierError(error));
+      const failure = verifierError(error);
+      if (observationOwner !== undefined) {
+        this.finishPendingAuthObservation(observationOwner, failure);
+      }
+      void this.terminate(failure);
       return;
     }
+    if (observationOwner !== undefined) this.finishPendingAuthObservation(observationOwner);
     if (this.isClosed()) return;
     try {
       this.clientSessionId = clientSessionId;
@@ -412,13 +463,31 @@ export class Session {
     this.paused = true;
     this.phase = "refreshing";
     aborted(this.epochController, authStale());
-    if (this.pendingAuthController !== null) aborted(this.pendingAuthController, authStale());
+    const stale = authStale();
+    if (this.pendingAuthController !== null) aborted(this.pendingAuthController, stale);
+    this.finishPendingAuthObservation(undefined, stale);
     const transitionController = new AbortController();
     this.pendingAuthController = transitionController;
+    const clientSessionId = this.clientSessionId;
+    const observation = clientSessionId === null || this.observeAuth === undefined
+      ? undefined
+      : this.beginAuthObservation({
+          kind: message.credential.kind === "anonymous" ? "sign-out" : "refresh",
+          clientSessionId,
+          attemptId: message.attemptId,
+        });
+    this.setPendingAuthObservation(transitionController, observation);
 
     void this.verifyCredential(message.credential).then(
-      (principal) => this.queueAuthCompletion(message, transitionController, principal),
-      (error) => this.queueAuthCompletion(message, transitionController, verifierError(error)),
+      (principal) => {
+        this.finishPendingAuthObservation(transitionController);
+        this.queueAuthCompletion(message, transitionController, principal);
+      },
+      (error) => {
+        const failure = verifierError(error);
+        this.finishPendingAuthObservation(transitionController, failure);
+        this.queueAuthCompletion(message, transitionController, failure);
+      },
     );
   }
 
@@ -620,6 +689,41 @@ export class Session {
     return verifyClientCredential(credential, this.verifier, () => this.readNow());
   }
 
+  private beginAuthObservation(
+    input: SessionAuthAttemptInput,
+  ): SessionAuthAttemptObservation | undefined {
+    try {
+      return this.observeAuth?.(input);
+    } catch {
+      return undefined;
+    }
+  }
+
+  private finishAuthObservation(
+    observation: SessionAuthAttemptObservation | undefined,
+    error?: unknown,
+  ): void {
+    try {
+      observation?.finish(error);
+    } catch {
+      // Authentication owns application progress; observation is fail-open.
+    }
+  }
+
+  private setPendingAuthObservation(
+    owner: object,
+    observation: SessionAuthAttemptObservation | undefined,
+  ): void {
+    this.pendingAuthObservation = observation === undefined ? null : { owner, observation };
+  }
+
+  private finishPendingAuthObservation(owner?: object, error?: unknown): void {
+    const pending = this.pendingAuthObservation;
+    if (pending === null || (owner !== undefined && pending.owner !== owner)) return;
+    this.pendingAuthObservation = null;
+    this.finishAuthObservation(pending.observation, error);
+  }
+
   private isCurrent(authEpoch: number): boolean {
     return this.phase !== "closed" && this.authEpoch === authEpoch;
   }
@@ -689,6 +793,7 @@ export class Session {
     this.clearIngressExpiry();
     aborted(this.epochController, error);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, error);
+    this.finishPendingAuthObservation(undefined, error);
     const authPublications = this.authPublications;
     this.authPublications = null;
     authPublications?.release();
