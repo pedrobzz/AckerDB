@@ -766,9 +766,12 @@ export class Runtime implements RuntimePort {
     });
   }
 
-  drain(): Promise<void> {
+  drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
     if (this.drainPromise !== null) return this.drainPromise;
     if (this.lifecycle === "stopped") return Promise.resolve();
+    if (!Number.isFinite(deadlineAtMs)) {
+      throw new RangeError("runtime shutdown deadline must be finite");
+    }
     this.lifecycle = "draining";
     this.schedulerGeneration++;
     if (this.schedulerTimer !== null) clearTimeout(this.schedulerTimer);
@@ -794,7 +797,6 @@ export class Runtime implements RuntimePort {
     this.reader.close();
     if (this.ownsTelemetry) this.telemetry.stop();
     const reactiveDrain = this.reactive.close();
-    const deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs;
     let deadlineReached = false;
     const coreShutdown = Promise.all([
       this.waitForActiveOperations(),
@@ -826,7 +828,7 @@ export class Runtime implements RuntimePort {
         deadlineReached = true;
         this.shutdownController.abort(deadlineError);
         reject(deadlineError);
-      }, this.limits.gracefulShutdownMs);
+      }, Math.max(0, deadlineAtMs - Date.now()));
     });
     this.drainPromise = Promise.race([shutdownWork, deadline]).then(
       () => {

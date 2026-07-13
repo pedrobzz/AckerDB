@@ -843,7 +843,7 @@ describe("scheduler and lifecycle", () => {
   });
 
   test("owns a finite deadline across stalled active reader and publication work", async () => {
-    await restart(limits({ gracefulShutdownMs: 20 }));
+    await restart(limits({ gracefulShutdownMs: 500 }));
     await session.open();
     await runtime.subscribe(session.context, {
       v: PROTOCOL_VERSION,
@@ -858,7 +858,7 @@ describe("scheduler and lifecycle", () => {
     await revalidationEntered.promise;
 
     const startedAt = performance.now();
-    const drain = runtime.drain();
+    const drain = runtime.drain(Date.now() + 20);
     expect(runtime.status()).toMatchObject({
       state: "draining",
       connections: 0,

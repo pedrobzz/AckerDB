@@ -486,6 +486,7 @@ export class DbzzServer {
 
   private async performDrain(): Promise<void> {
     const listener = this.listener!;
+    const deadlineAtMs = Date.now() + this.runtime.limits.gracefulShutdownMs;
     const listenerStopped = listener.stop(false);
     // Bun may retain idle upgraded/keep-alive sockets after the listener stops.
     // They are not graceful application work, so do not let them consume the
@@ -502,7 +503,8 @@ export class DbzzServer {
       connection.socket?.close(1013, "draining");
       return Promise.resolve();
     });
-    const graceful = Promise.all([this.runtime.drain(), ...sessions]).then(() => listener.stop(true));
+    const graceful = Promise.all([this.runtime.drain(deadlineAtMs), ...sessions])
+      .then(() => listener.stop(true));
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => {
@@ -510,7 +512,7 @@ export class DbzzServer {
         reject(new DbzzError("deadline_exceeded", "graceful shutdown deadline exceeded", {
           resource: "connection",
         }));
-      }, this.runtime.limits.gracefulShutdownMs);
+      }, Math.max(0, deadlineAtMs - Date.now()));
       timeout.unref?.();
     });
 
