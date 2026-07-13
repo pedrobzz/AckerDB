@@ -142,13 +142,18 @@ async function dev(appDir: string): Promise<void> {
     }, 75);
   };
 
-  watch(config.appDir, { recursive: true }, (_event, filename) => {
+  const treeWatcher = watch(config.appDir, { recursive: true }, (_event, filename) => {
     if (filename === null || shouldIgnore(config, String(filename))) return;
     if (!String(filename).endsWith(".ts") && !String(filename).endsWith(".json")) return;
     trigger();
   });
+  // Bun's recursive macOS watcher can start after the server reaches readiness.
+  // Own the schema file separately so an immediate first edit cannot be lost.
+  const schemaWatcher = existsSync(config.schemaPath) ? watch(config.schemaPath, trigger) : null;
 
   const shutdown = () => {
+    treeWatcher.close();
+    schemaWatcher?.close();
     child?.kill();
     process.exit(0);
   };
