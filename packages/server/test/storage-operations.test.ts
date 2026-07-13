@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -272,6 +281,84 @@ describe("durability and internal state", () => {
     expect(recovered.writer.query("SELECT value FROM records").get()).toEqual({ value: "survives" });
     recovered.close();
   });
+
+  test("scavenges pre-publish and post-publish bootstrap crash remnants", () => {
+    const { database } = fresh();
+    const prefix = `${database}.dbzz-init-`;
+    const prePublish = `${prefix}00000000-0000-4000-8000-000000000001`;
+    const unrelatedFile = `${prefix}deployment-notes`;
+    const unrelatedDirectory = `${prefix}00000000-0000-4000-8000-000000000003`;
+    writeFileSync(prePublish, "incomplete bootstrap");
+    writeFileSync(`${prePublish}-journal`, "incomplete rollback journal");
+    writeFileSync(unrelatedFile, "user-owned");
+    mkdirSync(unrelatedDirectory);
+
+    const initialized = new Engine(schema, database);
+    reconcile(initialized);
+    const lockedArtifact = `${prefix}00000000-0000-4000-8000-000000000004`;
+    writeFileSync(lockedArtifact, "must remain while another process owns the lock");
+    expect(() => new Engine(schema, database)).toThrow("already open by process");
+    expect(existsSync(lockedArtifact)).toBe(true);
+    initialized.close();
+    expect(existsSync(prePublish)).toBe(false);
+    expect(existsSync(`${prePublish}-journal`)).toBe(false);
+    expect(readFileSync(unrelatedFile, "utf8")).toBe("user-owned");
+    expect(existsSync(unrelatedDirectory)).toBe(true);
+
+    const postPublish = `${prefix}00000000-0000-4000-8000-000000000002`;
+    linkSync(database, postPublish);
+    writeFileSync(`${postPublish}-wal`, "stale staging WAL");
+    expect(existsSync(postPublish)).toBe(true);
+
+    const reopened = new Engine(schema, database);
+    expect(reopened.commitVersion()).toBe(0n);
+    reopened.close();
+    expect(existsSync(postPublish)).toBe(false);
+    expect(existsSync(`${postPublish}-wal`)).toBe(false);
+    expect(existsSync(lockedArtifact)).toBe(false);
+    expect(readFileSync(unrelatedFile, "utf8")).toBe("user-owned");
+    expect(existsSync(unrelatedDirectory)).toBe(true);
+  });
+
+  test("reopens a large recovery-free database without temporary-copy storage", async () => {
+    const { root, database } = fresh();
+    const engine = new Engine(schema, database);
+    reconcile(engine);
+    engine.writer.exec("BEGIN IMMEDIATE");
+    engine.writer.query("INSERT INTO records (value) VALUES (?)").run("x".repeat(16 * 1_024 * 1_024));
+    engine.allocateCommitVersion();
+    engine.writer.exec("COMMIT");
+    engine.close();
+    expect(statSync(database).size).toBeGreaterThan(16 * 1_024 * 1_024);
+    expect(existsSync(`${database}-journal`)).toBe(false);
+    expect(existsSync(`${database}-wal`) ? statSync(`${database}-wal`).size : 0).toBe(0);
+
+    const unavailableTmp = join(root, "missing-tmp");
+    const script = `
+      import { dbz, defineSchema, defineTable, Engine } from "@dbzz/server";
+      const schema = defineSchema({ records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }) });
+      const started = performance.now();
+      const engine = new Engine(schema, ${JSON.stringify(database)});
+      engine.close();
+      console.log(JSON.stringify({ elapsedMs: performance.now() - started }));
+    `;
+    const child = Bun.spawn([process.execPath, "-e", script], {
+      cwd: join(import.meta.dir, "../../.."),
+      env: { ...process.env, TMPDIR: unavailableTmp, TMP: unavailableTmp, TEMP: unavailableTmp },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [exitCode, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ]);
+    expect(exitCode, stderr).toBe(0);
+    const measurement = JSON.parse(stdout) as { elapsedMs: number };
+    expect(Number.isFinite(measurement.elapsedMs)).toBe(true);
+    expect(measurement.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(existsSync(unavailableTmp)).toBe(false);
+  }, 15_000);
 });
 
 describe("checkpoint, backup, and restore", () => {

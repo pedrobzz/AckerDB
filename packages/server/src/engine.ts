@@ -28,16 +28,22 @@ import {
   closeSync,
   copyFileSync,
   existsSync,
+  fstatSync,
   fsyncSync,
+  linkSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  readSync,
   renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
 import type { Descriptor, Validator } from "./dbz.ts";
@@ -144,6 +150,12 @@ export class CorruptDatabaseError extends Error {}
 
 const ENGINE_SCHEMA_VERSION = 2;
 const LOCK_SUFFIX = ".dbzz.lock";
+const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
+const WAL_HEADER_BYTES = 32;
+const WAL_FORMAT_VERSION = 3_007_000;
+const WAL_MAGIC_LITTLE_ENDIAN = 0x377f0682;
+const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
+const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
 
 const quote = (name: string) => `"${name}"`;
 
@@ -397,6 +409,193 @@ function positiveInt(value: number, name: string): number {
   return value;
 }
 
+function readExactly(fd: number, buffer: Uint8Array, position: number, artifact: string): void {
+  let offset = 0;
+  while (offset < buffer.byteLength) {
+    const count = readSync(fd, buffer, offset, buffer.byteLength - offset, position + offset);
+    if (count === 0) throw new CorruptDatabaseError(`${artifact} changed while it was being validated`);
+    offset += count;
+  }
+}
+
+function existingDatabasePageSize(path: string): number {
+  const fd = openSync(path, "r");
+  try {
+    const status = fstatSync(fd);
+    if (!status.isFile()) throw new Error(`database path is not a regular file: ${path}`);
+    if (status.size === 0) {
+      throw new CorruptDatabaseError("pre-existing database file is empty; refusing to initialize it");
+    }
+    if (status.size < 100) throw new CorruptDatabaseError("database file is truncated before its SQLite header");
+    const header = Buffer.allocUnsafe(100);
+    readExactly(fd, header, 0, "database file");
+    if (!header.subarray(0, SQLITE_HEADER.byteLength).equals(SQLITE_HEADER)) {
+      throw new CorruptDatabaseError("database file has an invalid SQLite header");
+    }
+    const encodedPageSize = header.readUInt16BE(16);
+    const pageSize = encodedPageSize === 1 ? 65_536 : encodedPageSize;
+    if (pageSize < 512 || pageSize > 65_536 || (pageSize & (pageSize - 1)) !== 0) {
+      throw new CorruptDatabaseError("database file has an invalid SQLite page size");
+    }
+    if (status.size < pageSize || status.size % pageSize !== 0) {
+      throw new CorruptDatabaseError("database file is truncated between SQLite pages");
+    }
+    const changeCounter = header.readUInt32BE(24);
+    const headerPages = header.readUInt32BE(28);
+    const versionValidFor = header.readUInt32BE(92);
+    if (
+      headerPages !== 0 &&
+      changeCounter === versionValidFor &&
+      headerPages * pageSize !== status.size
+    ) {
+      throw new CorruptDatabaseError("database file size does not match its SQLite header");
+    }
+    return pageSize;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function walChecksum(
+  bytes: Uint8Array,
+  littleEndian: boolean,
+  initial: readonly [number, number],
+): [number, number] {
+  const words = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let [first, second] = initial;
+  for (let offset = 0; offset < bytes.byteLength; offset += 8) {
+    first = (first + words.getUint32(offset, littleEndian) + second) >>> 0;
+    second = (second + words.getUint32(offset + 4, littleEndian) + first) >>> 0;
+  }
+  return [first, second];
+}
+
+/**
+ * Reject only a valid WAL header that is provably incompatible with the main
+ * file. SQLite owns valid-prefix recovery on the disposable copy below: frame
+ * tails, salt changes, and checksum failures can all be normal crash residue.
+ * A removed whole valid suffix is likewise unknowable without a separately
+ * durable expected-end watermark.
+ */
+function existingWalPageSize(path: string): number | null {
+  const walPath = `${path}-wal`;
+  if (!existsSync(walPath)) return null;
+  const fd = openSync(walPath, "r");
+  try {
+    const size = fstatSync(fd).size;
+    if (size === 0) return null;
+    // A crash may leave an incomplete first header. SQLite treats that as no
+    // valid WAL rather than as evidence that a committed frame existed.
+    if (size < WAL_HEADER_BYTES) return null;
+    const header = Buffer.allocUnsafe(WAL_HEADER_BYTES);
+    readExactly(fd, header, 0, "database WAL");
+    const magic = header.readUInt32BE(0);
+    if (magic !== WAL_MAGIC_LITTLE_ENDIAN && magic !== WAL_MAGIC_BIG_ENDIAN) {
+      return null;
+    }
+    const littleEndian = magic === WAL_MAGIC_LITTLE_ENDIAN;
+    const checksum = walChecksum(header.subarray(0, 24), littleEndian, [0, 0]);
+    if (checksum[0] !== header.readUInt32BE(24) || checksum[1] !== header.readUInt32BE(28)) {
+      return null;
+    }
+    if (header.readUInt32BE(4) !== WAL_FORMAT_VERSION) {
+      throw new CorruptDatabaseError("database WAL uses an unsupported format");
+    }
+    const pageSize = header.readUInt32BE(8);
+    if (pageSize < 512 || pageSize > 65_536 || (pageSize & (pageSize - 1)) !== 0) {
+      throw new CorruptDatabaseError("database WAL has an invalid page size");
+    }
+    return pageSize;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function initializeInternalObjects(connection: Database): void {
+  connection.exec("BEGIN IMMEDIATE");
+  try {
+    connection.exec(INTERNAL_OBJECTS.map((object) => object.sql).join(";"));
+    connection
+      .query("INSERT INTO _dbz_meta (key, value) VALUES ('engine_schema', ?)")
+      .run(String(ENGINE_SCHEMA_VERSION));
+    connection
+      .query("INSERT INTO _dbz_state (singleton, commit_version, clean_shutdown, mutation_records, mutation_result_bytes, last_checkpoint_at) VALUES (1, 0, 1, 0, 0, NULL)")
+      .run();
+    connection.exec("COMMIT");
+  } catch (error) {
+    connection.exec("ROLLBACK");
+    throw error;
+  }
+}
+
+function removeStaleInitializationArtifacts(path: string): void {
+  const directory = dirname(path);
+  const prefix = `${basename(path)}.dbzz-init-`;
+  const stagingName = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:-(?:wal|shm|journal))?$/;
+  const stale = readdirSync(directory, { withFileTypes: true }).filter(
+    (entry) =>
+      !entry.isDirectory() &&
+      entry.name.startsWith(prefix) &&
+      stagingName.test(entry.name.slice(prefix.length)),
+  );
+  if (stale.length === 0) return;
+  for (const entry of stale) rmSync(join(directory, entry.name), { force: true });
+  fsyncPath(directory);
+}
+
+function publishMissingDatabase(path: string): boolean {
+  if (!existsSync(path) && SQLITE_SIDECAR_SUFFIXES.some((suffix) => existsSync(`${path}${suffix}`))) {
+    throw new CorruptDatabaseError("database main file is missing while SQLite sidecars exist");
+  }
+  if (existsSync(path)) return false;
+  const directory = dirname(path);
+  const stagingPath = `${path}.dbzz-init-${randomUUID()}`;
+  let staged = false;
+  try {
+    const fd = openSync(stagingPath, "wx", 0o600);
+    closeSync(fd);
+    staged = true;
+    const database = new Database(stagingPath, { create: true, safeIntegers: true });
+    try {
+      initializeInternalObjects(database);
+    } finally {
+      database.close(false);
+    }
+    fsyncPath(stagingPath);
+    if (SQLITE_SIDECAR_SUFFIXES.some((suffix) => existsSync(`${path}${suffix}`))) {
+      throw new CorruptDatabaseError("database main file is missing while SQLite sidecars exist");
+    }
+    try {
+      linkSync(stagingPath, path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
+    fsyncPath(directory);
+    return true;
+  } finally {
+    if (staged) {
+      rmSync(stagingPath, { force: true });
+      for (const suffix of SQLITE_SIDECAR_SUFFIXES) rmSync(`${stagingPath}${suffix}`, { force: true });
+      fsyncPath(directory);
+    }
+  }
+}
+
+function normalizeStorageError(error: unknown): unknown {
+  if (error instanceof CorruptDatabaseError || error instanceof IncompatibleDatabaseError) return error;
+  const code = storedRecord(error) && typeof error["code"] === "string" ? error["code"] : null;
+  if (
+    code === "SQLITE_NOTADB" ||
+    code === "SQLITE_FORMAT" ||
+    code === "SQLITE_CORRUPT" ||
+    code?.startsWith("SQLITE_CORRUPT_") === true
+  ) {
+    return new CorruptDatabaseError(`database storage is corrupt (${code})`, { cause: error });
+  }
+  return error;
+}
+
 function processIsAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -522,15 +721,16 @@ export class Engine {
     let writer: Database | null = null;
     let reader: Database | null = null;
     try {
-      writer = new Database(sqlitePath, { create: true, safeIntegers: true });
+      if (path !== ":memory:") removeStaleInitializationArtifacts(path);
+      const bootstrap = path === ":memory:" || publishMissingDatabase(path);
+      if (path !== ":memory:" && !bootstrap) {
+        this.validateExistingStorage(path, busyTimeoutMs, options.integrityCheck ?? "quick");
+      }
+      writer = new Database(sqlitePath, { create: path === ":memory:", safeIntegers: true });
       writer.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
       writer.exec("PRAGMA foreign_keys = ON");
       this.writer = writer;
-      this.initializeInternalSchema();
-      const integrity = this.integrity(options.integrityCheck ?? "quick");
-      if (!integrity.ok) throw new CorruptDatabaseError(integrity.errors.join("; "));
-      this.verifyInternalState();
-      this.loadSnapshot();
+      if (bootstrap) this.validateStorage(writer, options.integrityCheck ?? "quick", true);
       this.internTags();
       this.buildPlans();
       writer.exec("PRAGMA journal_mode = WAL");
@@ -551,10 +751,11 @@ export class Engine {
       this.recoveredFromCrash = state.clean_shutdown === 0n;
       this.writer.query("UPDATE _dbz_state SET clean_shutdown = 0 WHERE singleton = 1").run();
     } catch (error) {
+      const failure = normalizeStorageError(error);
       if (reader !== null && reader !== writer) reader.close(false);
       writer?.close(false);
       if (this.processLock !== null) rmSync(this.processLock, { recursive: true, force: true });
-      throw error;
+      throw failure;
     }
   }
 
@@ -575,31 +776,70 @@ export class Engine {
     }
   }
 
-  private initializeInternalSchema(): void {
-    const objects = this.writer
+  private validateExistingStorage(
+    path: string,
+    busyTimeoutMs: number,
+    integrityCheck: "quick" | "full",
+  ): void {
+    const walPageSize = existingWalPageSize(path);
+    const needsRecoveryCopy = ["-wal", "-journal"].some((suffix) => {
+      const sidecar = `${path}${suffix}`;
+      return existsSync(sidecar) && statSync(sidecar).size > 0;
+    });
+    const directory = needsRecoveryCopy
+      ? mkdtempSync(join(tmpdir(), "dbzz-storage-validation-"))
+      : null;
+    const validationPath = directory === null ? path : join(directory, "data.db");
+    const recoveryFreePageSize = directory === null ? existingDatabasePageSize(path) : null;
+    let database: Database | null = null;
+    try {
+      if (directory !== null) {
+        copyFileSync(path, validationPath);
+        for (const suffix of ["-wal", "-journal"] as const) {
+          if (existsSync(`${path}${suffix}`)) {
+            copyFileSync(`${path}${suffix}`, `${validationPath}${suffix}`);
+          }
+        }
+      }
+      database = new Database(validationPath, {
+        readonly: directory === null,
+        safeIntegers: true,
+      });
+      database.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
+      database.exec("PRAGMA foreign_keys = ON");
+      this.validateStorage(database, integrityCheck, false);
+      const databasePageSize = recoveryFreePageSize ?? existingDatabasePageSize(validationPath);
+      if (walPageSize !== null && walPageSize !== databasePageSize) {
+        throw new CorruptDatabaseError("database WAL page size does not match its main file");
+      }
+    } finally {
+      database?.close(false);
+      if (directory !== null) rmSync(directory, { recursive: true, force: true });
+    }
+  }
+
+  private validateStorage(
+    connection: Database,
+    integrityCheck: "quick" | "full",
+    bootstrap: boolean,
+  ): void {
+    this.initializeInternalSchema(bootstrap, connection);
+    const integrity = this.integrity(integrityCheck, connection);
+    if (!integrity.ok) throw new CorruptDatabaseError(integrity.errors.join("; "));
+    this.verifyInternalState(connection);
+    this.loadSnapshot(connection);
+  }
+
+  private initializeInternalSchema(bootstrap: boolean, connection: Database = this.writer): void {
+    const objects = connection
       .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
       .all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
     const meta = objects.find((object) => object.type === "table" && object.name === "_dbz_meta");
     if (meta === undefined) {
-      if (objects.length > 0) {
-        throw new CorruptDatabaseError(
-          `database has ${objects.length} object(s) but no DBZZ metadata; refusing to adopt it`,
-        );
+      if (!bootstrap || objects.length > 0) {
+        throw new CorruptDatabaseError("pre-existing database has no DBZZ metadata; refusing to initialize it");
       }
-      this.writer.exec("BEGIN IMMEDIATE");
-      try {
-        this.writer.exec(INTERNAL_OBJECTS.map((object) => object.sql).join(";"));
-        this.writer
-          .query("INSERT INTO _dbz_meta (key, value) VALUES ('engine_schema', ?)")
-          .run(String(ENGINE_SCHEMA_VERSION));
-        this.writer
-          .query("INSERT INTO _dbz_state (singleton, commit_version, clean_shutdown, mutation_records, mutation_result_bytes, last_checkpoint_at) VALUES (1, 0, 1, 0, 0, NULL)")
-          .run();
-        this.writer.exec("COMMIT");
-      } catch (error) {
-        this.writer.exec("ROLLBACK");
-        throw error;
-      }
+      initializeInternalObjects(connection);
       return;
     }
 
@@ -608,7 +848,7 @@ export class Engine {
       throw new IncompatibleDatabaseError("database internal table _dbz_meta has an incompatible shape");
     }
 
-    const version = this.writer
+    const version = connection
       .query("SELECT value FROM _dbz_meta WHERE key = 'engine_schema'")
       .get() as { value: string } | null;
     if (version === null || version.value !== String(ENGINE_SCHEMA_VERSION)) {
@@ -640,31 +880,31 @@ export class Engine {
     }
   }
 
-  integrity(check: "quick" | "full" = "quick"): IntegrityReport {
+  integrity(check: "quick" | "full" = "quick", connection: Database = this.writer): IntegrityReport {
     const pragma = check === "quick" ? "quick_check" : "integrity_check";
-    const results = checkRows(this.writer, pragma);
+    const results = checkRows(connection, pragma);
     const errors = results.filter((value) => value !== "ok");
-    const foreignKeys = this.writer.query("PRAGMA foreign_key_check").all() as Record<string, unknown>[];
+    const foreignKeys = connection.query("PRAGMA foreign_key_check").all() as Record<string, unknown>[];
     for (const row of foreignKeys) errors.push(`foreign key violation: ${JSON.stringify(row)}`);
     return { ok: errors.length === 0, check, errors };
   }
 
-  private verifyInternalState(): void {
-    const unknownMeta = this.writer
+  private verifyInternalState(connection: Database = this.writer): void {
+    const unknownMeta = connection
       .query("SELECT key FROM _dbz_meta WHERE key NOT IN ('engine_schema', 'schema') LIMIT 1")
       .get() as { key: string } | null;
     if (unknownMeta !== null) throw new CorruptDatabaseError(`unknown DBZZ metadata key ${unknownMeta.key}`);
-    const stateRows = this.writer
+    const stateRows = connection
       .query("SELECT COUNT(*) AS count FROM _dbz_state")
       .get() as { count: bigint };
     if (stateRows.count !== 1n) throw new CorruptDatabaseError("DBZZ state must contain exactly one singleton row");
-    const state = this.writer
+    const state = connection
       .query("SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbz_state WHERE singleton = 1")
       .get() as
       | { commit_version: bigint; mutation_records: bigint; mutation_result_bytes: bigint }
       | null;
     if (state === null) throw new CorruptDatabaseError("missing DBZZ state singleton");
-    const actual = this.writer
+    const actual = connection
       .query("SELECT COUNT(*) AS records, COALESCE(SUM(result_bytes), 0) AS bytes, COALESCE(MAX(commit_version), 0) AS max_version FROM _dbz_mutations")
       .get() as { records: bigint; bytes: bigint; max_version: bigint };
     if (state.mutation_records !== actual.records || state.mutation_result_bytes !== actual.bytes) {
@@ -673,12 +913,12 @@ export class Engine {
     if (actual.max_version > state.commit_version) {
       throw new CorruptDatabaseError("mutation ledger references a future commit version");
     }
-    const invalidTag = this.writer
+    const invalidTag = connection
       .query(
         "SELECT 1 FROM _dbz_tags WHERE typeof(type) <> 'text' OR length(type) = 0 OR typeof(variant) <> 'text' OR length(variant) = 0 OR typeof(tag) <> 'integer' OR tag < 0 LIMIT 1",
       )
       .get();
-    const invalidTagGroup = this.writer
+    const invalidTagGroup = connection
       .query(
         "SELECT 1 FROM _dbz_tags GROUP BY type HAVING MIN(tag) <> 0 OR MAX(tag) + 1 <> COUNT(*) OR COUNT(DISTINCT tag) <> COUNT(*) LIMIT 1",
       )
@@ -998,18 +1238,18 @@ export class Engine {
 
   // -- Meta ------------------------------------------------------------------
 
-  loadSnapshot(): SchemaSnapshot | null {
-    const row = this.writer.query("SELECT value FROM _dbz_meta WHERE key = 'schema'").get() as
+  loadSnapshot(connection: Database = this.writer): SchemaSnapshot | null {
+    const row = connection.query("SELECT value FROM _dbz_meta WHERE key = 'schema'").get() as
       | { value: string }
       | null;
     const snapshot = row === null ? null : parseStoredSnapshot(row.value);
-    this.verifyApplicationSchema(snapshot);
-    if (snapshot !== null) this.verifySnapshotTags(snapshot);
+    this.verifyApplicationSchema(snapshot, connection);
+    if (snapshot !== null) this.verifySnapshotTags(snapshot, connection);
     return snapshot;
   }
 
-  private verifyApplicationSchema(snapshot: SchemaSnapshot | null): void {
-    const actual = this.writer
+  private verifyApplicationSchema(snapshot: SchemaSnapshot | null, connection: Database): void {
+    const actual = connection
       .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
       .all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
     const expected = new Map(
@@ -1037,7 +1277,7 @@ export class Engine {
     }
   }
 
-  private verifySnapshotTags(snapshot: SchemaSnapshot): void {
+  private verifySnapshotTags(snapshot: SchemaSnapshot, connection: Database): void {
     const definitions = new Map<string, { descriptor: string; variants: string[] }>();
     for (const table of Object.values(snapshot.tables)) {
       for (const descriptor of Object.values(table.columns)) {
@@ -1061,7 +1301,7 @@ export class Engine {
       }
     }
     const stored = new Map<string, Set<string>>();
-    for (const row of this.writer.query("SELECT type, variant FROM _dbz_tags").all() as { type: string; variant: string }[]) {
+    for (const row of connection.query("SELECT type, variant FROM _dbz_tags").all() as { type: string; variant: string }[]) {
       const variants = stored.get(row.type) ?? new Set<string>();
       variants.add(row.variant);
       stored.set(row.type, variants);
