@@ -142,6 +142,19 @@ export type CommitTelemetryObserver = (
   event: Readonly<CommitTelemetryEvent>,
 ) => void | PromiseLike<void>;
 
+export type CommitHookStage = "commit";
+
+export interface CommitHookContext {
+  readonly operation: CommitTelemetryEvent["operation"];
+  readonly commitVersion: bigint;
+  readonly postCommit: true;
+}
+
+export type CommitWaitHook = (
+  stage: CommitHookStage,
+  context: Readonly<CommitHookContext>,
+) => void | PromiseLike<void>;
+
 export interface CommitResult<T, Publication> {
   readonly value: T;
   readonly commitVersion: bigint;
@@ -155,6 +168,7 @@ export interface CommitCoordinatorOptions<Publication> {
   readonly limits: ServiceLimits;
   readonly reservePublication: (bytes: number) => PublicationReservation<Publication>;
   readonly now?: () => number;
+  readonly wait?: CommitWaitHook;
 }
 
 type PublicationCompletion =
@@ -205,6 +219,7 @@ export class CommitCoordinator<Publication> {
   private readonly writer: BoundedExecutor;
   private readonly reservePublication: CommitCoordinatorOptions<Publication>["reservePublication"];
   private readonly now: () => number;
+  private readonly wait: CommitWaitHook | undefined;
   private readonly eventSequences = new Map<string, bigint>();
   private readonly encoder = new TextEncoder();
   private mutationRecords: number;
@@ -217,6 +232,7 @@ export class CommitCoordinator<Publication> {
     this.limits = options.limits;
     this.reservePublication = options.reservePublication;
     this.now = options.now ?? Date.now;
+    this.wait = options.wait;
     const storage = options.engine.status();
     this.mutationRecords = storage.mutationRecords;
     this.mutationResultBytes = storage.mutationResultBytes;
@@ -537,6 +553,17 @@ export class CommitCoordinator<Publication> {
         throw error;
       }
       committed = true;
+      if (this.wait !== undefined) {
+        try {
+          await this.wait("commit", Object.freeze({
+            operation: request.operation,
+            commitVersion,
+            postCommit: true,
+          }));
+        } catch {
+          // Fault gates are diagnostic and never own committed publication.
+        }
+      }
       if (idempotency) {
         this.mutationRecords++;
         this.mutationResultBytes += resultBytes;

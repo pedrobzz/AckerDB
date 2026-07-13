@@ -224,6 +224,9 @@ export {
 } from "./session.ts";
 export {
   Runtime,
+  type RuntimeHookContext,
+  type RuntimeHooks,
+  type RuntimeHookStage,
   type RuntimeLifecycleState,
   type RuntimeOptions,
   type RuntimeProcedureRequest,

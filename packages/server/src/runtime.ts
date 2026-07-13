@@ -29,8 +29,11 @@ import {
 import {
   CommitCoordinator,
   withFetchObserver,
+  type CommitHookContext,
+  type CommitHookStage,
   type CommitResult,
   type CommitTelemetryEvent,
+  type CommitWaitHook,
   type FetchObservation,
 } from "./coordinator.ts";
 import { ValidationError } from "./dbz.ts";
@@ -116,6 +119,15 @@ const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
 
 export type RuntimeLifecycleState = "ready" | "draining" | "stopped" | "failed";
 
+export type RuntimeHookStage = CommitHookStage;
+export type RuntimeHookContext = CommitHookContext;
+
+/** Optional semantic gates for deterministic fault tests; failures are fail-open. */
+export interface RuntimeHooks {
+  /** Runs after the named stage completes while its owning state machine is still paused. */
+  readonly wait?: CommitWaitHook;
+}
+
 const DRAIN_RETRY_AFTER_MS = 1_000;
 
 export interface RuntimeOptions {
@@ -123,6 +135,7 @@ export interface RuntimeOptions {
   readonly registry: Registry;
   readonly limits?: ServiceLimits;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
+  readonly hooks?: RuntimeHooks;
   readonly now?: () => number;
 }
 
@@ -441,6 +454,7 @@ export class Runtime implements RuntimePort {
       engine: this.engine,
       limits: this.limits,
       reservePublication: (bytes) => this.reactive.publication.reserve(bytes),
+      ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
       now: this.now,
     });
     const globalControlReserve = Math.min(
