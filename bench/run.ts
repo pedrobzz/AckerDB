@@ -27,6 +27,12 @@ import {
   type ProcessTreeSnapshot,
   type ProcessTreeWindowSummary,
 } from "./process-tree.ts";
+import {
+  assertPerformanceAcceptance,
+  extractComparableMetrics,
+  FROZEN_BASELINE_PATH,
+  type PerformanceAcceptanceEvidence,
+} from "./performance-gates.ts";
 
 const BENCH = import.meta.dir;
 const REPO = join(BENCH, "..");
@@ -89,6 +95,7 @@ interface RunRecord {
   systems: SystemResults;
   dbzzTelemetryDisabled: DbzzMeasuredDriverResult;
   dbzzTelemetryCost: PairedProfileMetric[];
+  performanceAcceptance: PerformanceAcceptanceEvidence;
 }
 
 interface ComparableMetric {
@@ -615,122 +622,11 @@ function latestComparable(record: RunRecord): RunRecord | undefined {
 }
 
 function comparisonMetrics(system: MeasuredDriverResult): ComparableMetric[] {
-  const metrics: ComparableMetric[] = [
-    { label: "startup idle RSS p50 MB", value: system.startupIdle.window.rssMb.p50, lowerIsBetter: true },
-    { label: "startup idle RSS peak MB", value: system.startupIdle.window.rssMb.peak, lowerIsBetter: true },
-    { label: "startup idle CPU cores", value: system.startupIdle.window.cpuCores, lowerIsBetter: true },
-  ];
-  const operationProfile = system.workload.config.profile === "quick" ? "concurrent" : "saturation";
-  for (const operation of system.workload.operations.filter((item) => item.profile.name === operationProfile)) {
-    const serverWindows = operation.trials.map((trial) => resourceWindow(system, trial.phaseId));
-    metrics.push(
-      {
-        label: `${operation.operation} ${operationProfile} TPS`,
-        value: operation.medianThroughputPerSec,
-        lowerIsBetter: false,
-      },
-      {
-        label: `${operation.operation} ${operationProfile} p50 ms`,
-        value: operation.medianLatencyP50Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${operation.operation} ${operationProfile} p95 ms`,
-        value: operation.medianLatencyP95Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${operation.operation} ${operationProfile} p99 ms`,
-        value: operation.medianLatencyP99Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${operation.operation} ${operationProfile} server CPU cores`,
-        value: medianNumber(serverWindows.map((window) => window.cpuCores)),
-        lowerIsBetter: true,
-      },
-      {
-        label: `${operation.operation} ${operationProfile} server RSS peak MB`,
-        value: Math.max(...serverWindows.map((window) => window.rssMb.peak)),
-        lowerIsBetter: true,
-      },
-    );
-  }
-  const connection = system.workload.connections[system.workload.connections.length - 1]!;
-  const connectionIdle = system.resources.server.phases[connection.connectedIdlePhaseId]!;
-  const connectionWork = system.resources.server.phases[connection.work.phaseId]!;
-  metrics.push(
-    { label: `${connection.connected} connections query TPS`, value: connection.work.throughputPerSec, lowerIsBetter: false },
-    { label: `${connection.connected} connections query p50 ms`, value: connection.work.latency.p50Ms, lowerIsBetter: true },
-    { label: `${connection.connected} connections query p95 ms`, value: connection.work.latency.p95Ms, lowerIsBetter: true },
-    { label: `${connection.connected} connections query p99 ms`, value: connection.work.latency.p99Ms, lowerIsBetter: true },
-    { label: `${connection.connected} connections idle RSS MB`, value: connectionIdle.rssMb.p50, lowerIsBetter: true },
-    { label: `${connection.connected} connections work RSS peak MB`, value: connectionWork.rssMb.peak, lowerIsBetter: true },
-    { label: `${connection.connected} connections server CPU cores`, value: connectionWork.cpuCores, lowerIsBetter: true },
-  );
-  for (const subscription of system.workload.subscriptions) {
-    const work = system.resources.server.phases[subscription.phaseId]!;
-    metrics.push(
-      {
-        label: `${subscription.pattern} subscription deliveries/s`,
-        value: subscription.deliveryThroughputPerSec,
-        lowerIsBetter: false,
-      },
-      {
-        label: `${subscription.pattern} subscription delivery p50 ms`,
-        value: subscription.deliveryLatency.p50Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${subscription.pattern} subscription delivery p95 ms`,
-        value: subscription.deliveryLatency.p95Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${subscription.pattern} subscription delivery p99 ms`,
-        value: subscription.deliveryLatency.p99Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${subscription.pattern} subscription all p50 ms`,
-        value: subscription.timeToAll.p50Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${subscription.pattern} subscription all p95 ms`,
-        value: subscription.timeToAll.p95Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${subscription.pattern} subscription all p99 ms`,
-        value: subscription.timeToAll.p99Ms,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${subscription.pattern} subscription server CPU cores`,
-        value: work.cpuCores,
-        lowerIsBetter: true,
-      },
-      {
-        label: `${subscription.pattern} subscription RSS peak MB`,
-        value: work.rssMb.peak,
-        lowerIsBetter: true,
-      },
-    );
-    for (const capacity of subscription.capacity) {
-      const capacityWork = system.resources.server.phases[capacity.phaseId]!;
-      const label = `${subscription.pattern} subscription capacity-${capacity.slots}`;
-      metrics.push(
-        { label: `${label} deliveries/s`, value: capacity.deliveryThroughputPerSec, lowerIsBetter: false },
-        { label: `${label} p50 ms`, value: capacity.latency.p50Ms, lowerIsBetter: true },
-        { label: `${label} p95 ms`, value: capacity.latency.p95Ms, lowerIsBetter: true },
-        { label: `${label} p99 ms`, value: capacity.latency.p99Ms, lowerIsBetter: true },
-        { label: `${label} server CPU cores`, value: capacityWork.cpuCores, lowerIsBetter: true },
-        { label: `${label} RSS peak MB`, value: capacityWork.rssMb.peak, lowerIsBetter: true },
-      );
-    }
-  }
-  return metrics;
+  return extractComparableMetrics(system).map((metric) => ({
+    label: metric.path,
+    value: metric.value,
+    lowerIsBetter: metric.direction === "lower",
+  }));
 }
 
 function printComparableDelta(record: RunRecord, previous: RunRecord | undefined): void {
@@ -1058,7 +954,7 @@ if (fullRun) {
     throw new Error("full benchmark DBZZ profile comparison is missing");
   }
   const cliVersion = assertSpacetimeVersionAlignment();
-  const record: RunRecord = {
+  const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
     schemaVersion: 4,
     timestamp: new Date().toISOString(),
     git: {
@@ -1103,6 +999,12 @@ if (fullRun) {
     dbzzTelemetryDisabled,
     dbzzTelemetryCost,
   };
+  const frozenBaselineJson = readFileSync(join(REPO, FROZEN_BASELINE_PATH), "utf8");
+  const performanceAcceptance = assertPerformanceAcceptance(recordWithoutAcceptance, frozenBaselineJson);
+  const record: RunRecord = { ...recordWithoutAcceptance, performanceAcceptance };
+  console.log(
+    `\nperformance acceptance passed: ${performanceAcceptance.metricCounts.frozenDbzzSpacetimeWins} frozen SpacetimeDB wins, ${performanceAcceptance.metricCounts.convexFloorChecks} Convex floors, ${performanceAcceptance.metricCounts.afterPerSystem.dbzz} comparable metrics/system`,
+  );
   const previous = latestComparable(record);
   mkdirSync(RESULTS_DIR, { recursive: true });
   const filename = `${record.timestamp.replace(/:/g, "-").replace(/\.\d+Z$/, "Z")}-${record.git.commit}.json`;
