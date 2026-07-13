@@ -16,7 +16,23 @@ export {
   type UnionValue,
   type UnionNamespace,
 } from "./dbz.ts";
-export { Engine, indexSqlName, type TablePlan, type ColumnPlan, type TagMap } from "./engine.ts";
+export {
+  CorruptDatabaseError,
+  Engine,
+  IncompatibleDatabaseError,
+  indexSqlName,
+  type BackupManifest,
+  type CheckpointReport,
+  type ColumnPlan,
+  type EngineOptions,
+  type EngineStatus,
+  type IntegrityReport,
+  type NewStoredMutation,
+  type StoredMutation,
+  type TablePlan,
+  type TagMap,
+} from "./engine.ts";
+export type { DurabilityPolicy } from "@dbzz/core";
 export {
   makeDbReader,
   makeDbWriter,
