@@ -131,6 +131,8 @@ describe("Telemetry", () => {
       telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" }),
     ).toBe(false);
     expect(telemetry.recordMetric({ name: "runtime.cpu", value: 1, unit: "ratio" })).toBe(false);
+    expect(telemetry.beginTrace({ traceId: "disabled" })).toBe(false);
+    expect(telemetry.finishTrace({ traceId: "disabled" })).toBe(false);
     await telemetry.flush();
     telemetry.stop();
     expect(exporterCalls).toBe(0);
@@ -141,6 +143,27 @@ describe("Telemetry", () => {
       queuedBytes: 0,
       oldestAgeMs: 0,
       metricSeries: 0,
+      traceRetention: {
+        maxTraces: 0,
+        maxStagedRecords: 0,
+        maxStagedBytes: 0,
+        decisionRetentionMs: 0,
+        activeTraces: 0,
+        completedDecisions: 0,
+        stagedRecords: 0,
+        stagedBytes: 0,
+        promotedTraces: 0,
+        discardedTraces: 0,
+        discardedRecords: 0,
+        dropped: {
+          activeOverflow: 0,
+          stagedOverflow: 0,
+          decisionOverflow: 0,
+          expiredDecisions: 0,
+          drain: 0,
+          invalid: 0,
+        },
+      },
       localSink: {
         configured: false,
         inFlight: false,
@@ -973,5 +996,431 @@ describe("Telemetry", () => {
       localSink: { pendingRecords: 0, deliveredRecords: 3, failures: 0 },
     });
     telemetry.stop();
+  });
+
+  test("keeps a fast completed trace aggregate-only until its bounded decision expires", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, exporter } = exporterBatches();
+    let now = 0;
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => now,
+      limits: { slowOperationMs: 100, retentionMs: 100 },
+    });
+    expect(telemetry.beginTrace({ traceId: "trace_fast" })).toBe(true);
+    for (const [spanId, durationMs] of [["span_fast_1", 10], ["span_fast_2", 20]] as const) {
+      expect(telemetry.recordSpan({
+        context: { traceId: "trace_fast", spanId },
+        operation: "query",
+        stage: "handler",
+        outcome: "ok",
+        durationMs,
+      })).toBe(true);
+    }
+    now = 40;
+    expect(telemetry.finishTrace({ traceId: "trace_fast" })).toBe(true);
+
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      traceRetention: {
+        activeTraces: 0,
+        completedDecisions: 1,
+        stagedRecords: 2,
+        promotedTraces: 0,
+        discardedTraces: 0,
+      },
+    });
+    expect(telemetry.aggregateSnapshot().series).toContainEqual({
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      count: 2,
+      durationMs: 30,
+    });
+    await telemetry.flush();
+    expect(batches).toEqual([]);
+
+    now = 140;
+    expect(telemetry.snapshot()).toMatchObject({
+      traceRetention: {
+        completedDecisions: 0,
+        stagedRecords: 0,
+        discardedTraces: 1,
+        discardedRecords: 2,
+        dropped: { expiredDecisions: 1 },
+      },
+    });
+    telemetry.stop();
+  });
+
+  test("promotes complete cumulative and wall-clock slow traces", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, exporter } = exporterBatches();
+    let now = 0;
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => now,
+      limits: { slowOperationMs: 100 },
+    });
+    expect(telemetry.beginTrace({ traceId: "trace_cumulative" })).toBe(true);
+    for (const [spanId, stage, durationMs] of [
+      ["span_cumulative_1", "admission", 40],
+      ["span_cumulative_2", "handler", 40],
+      ["span_cumulative_3", "encoding", 20],
+    ] as const) {
+      telemetry.recordSpan({
+        context: { traceId: "trace_cumulative", spanId },
+        operation: "query",
+        stage,
+        outcome: "ok",
+        durationMs,
+      });
+    }
+    expect(telemetry.finishTrace({ traceId: "trace_cumulative" })).toBe(true);
+
+    expect(telemetry.beginTrace({ traceId: "trace_wall" })).toBe(true);
+    for (const [spanId, stage] of [
+      ["span_wall_1", "admission"],
+      ["span_wall_2", "handler"],
+    ] as const) {
+      telemetry.recordSpan({
+        context: { traceId: "trace_wall", spanId },
+        operation: "mutation",
+        stage,
+        outcome: "ok",
+        durationMs: 10,
+      });
+    }
+    now = 100;
+    expect(telemetry.finishTrace({ traceId: "trace_wall" })).toBe(true);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 5,
+      traceRetention: { stagedRecords: 0, promotedTraces: 2 },
+    });
+
+    await telemetry.flush();
+    const spans = batches.flat().filter((record) => record.kind === "span");
+    expect(spans.filter((span) => span.traceId === "trace_cumulative")).toHaveLength(3);
+    expect(spans.filter((span) => span.traceId === "trace_wall")).toHaveLength(2);
+    telemetry.stop();
+  });
+
+  test("failed spans and events promote every prior fast stage in their trace", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, exporter } = exporterBatches();
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: { slowOperationMs: 100 },
+    });
+    expect(telemetry.beginTrace({ traceId: "trace_failed_span" })).toBe(true);
+    telemetry.recordSpan({
+      context: { traceId: "trace_failed_span", spanId: "span_before_failure" },
+      operation: "mutation",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 10,
+    });
+    telemetry.recordSpan({
+      context: { traceId: "trace_failed_span", spanId: "span_failure" },
+      operation: "mutation",
+      stage: "commit",
+      outcome: "internal",
+      durationMs: 1,
+    });
+    telemetry.finishTrace({ traceId: "trace_failed_span" });
+
+    expect(telemetry.beginTrace({ traceId: "trace_failed_event" })).toBe(true);
+    telemetry.recordSpan({
+      context: { traceId: "trace_failed_event", spanId: "span_before_event" },
+      operation: "procedure",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 10,
+    });
+    telemetry.recordEvent({
+      context: { traceId: "trace_failed_event", spanId: "event_failure" },
+      name: "failure",
+      level: "error",
+      operation: "procedure",
+      outcome: "internal",
+    });
+    telemetry.finishTrace({ traceId: "trace_failed_event" });
+
+    await telemetry.flush();
+    const records = batches.flat().filter((record) => record.kind !== "metric");
+    expect(records.map((record) => [record.traceId, record.kind, record.kind === "span"
+      ? record.stage
+      : record.name])).toEqual([
+      ["trace_failed_span", "span", "handler"],
+      ["trace_failed_span", "span", "commit"],
+      ["trace_failed_event", "span", "handler"],
+      ["trace_failed_event", "event", "failure"],
+    ]);
+    telemetry.stop();
+  });
+
+  test("applies a completed decision to delayed delivery and can promote it later", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, exporter } = exporterBatches();
+    let now = 0;
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => now,
+      limits: { slowOperationMs: 100, retentionMs: 1_000 },
+    });
+    telemetry.beginTrace({ traceId: "trace_delivery" });
+    telemetry.recordSpan({
+      context: { traceId: "trace_delivery", spanId: "span_admission" },
+      operation: "query",
+      stage: "admission",
+      outcome: "ok",
+      durationMs: 10,
+    });
+    now = 20;
+    telemetry.finishTrace({ traceId: "trace_delivery" });
+    telemetry.recordSpan({
+      context: { traceId: "trace_delivery", spanId: "span_delivery_ok" },
+      operation: "query",
+      stage: "delivery",
+      outcome: "ok",
+      durationMs: 1,
+    });
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      traceRetention: { completedDecisions: 1, stagedRecords: 2 },
+    });
+
+    telemetry.recordSpan({
+      context: { traceId: "trace_delivery", spanId: "span_delivery_failed" },
+      operation: "query",
+      stage: "delivery",
+      outcome: "slow_consumer",
+      durationMs: 1,
+    });
+    telemetry.recordSpan({
+      context: { traceId: "trace_delivery", spanId: "span_delivery_after_promotion" },
+      operation: "query",
+      stage: "delivery",
+      outcome: "ok",
+      durationMs: 1,
+    });
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 4,
+      traceRetention: { stagedRecords: 0, promotedTraces: 1 },
+    });
+    await telemetry.flush();
+    expect(batches.flat().filter((record) => record.kind === "span").map((record) =>
+      record.spanId
+    )).toEqual([
+      "span_admission",
+      "span_delivery_ok",
+      "span_delivery_failed",
+      "span_delivery_after_promotion",
+    ]);
+    telemetry.stop();
+  });
+
+  test("bounds trace state and staging, then cleans completed decisions", () => {
+    let now = 0;
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => now,
+      limits: {
+        maxRecords: 2,
+        maxBatchRecords: 2,
+        maxBytes: 64 * 1024,
+        retentionMs: 10,
+        slowOperationMs: 1_000,
+      },
+    });
+    expect(telemetry.beginTrace({ traceId: "trace_bound_1" })).toBe(true);
+    expect(telemetry.beginTrace({ traceId: "trace_bound_2" })).toBe(true);
+    expect(telemetry.beginTrace({ traceId: "trace_bound_3" })).toBe(false);
+    for (const [traceId, spanId] of [
+      ["trace_bound_1", "span_bound_1"],
+      ["trace_bound_2", "span_bound_2"],
+      ["trace_bound_1", "span_bound_overflow"],
+    ] as const) {
+      telemetry.recordSpan({
+        context: { traceId, spanId },
+        operation: "query",
+        stage: "handler",
+        outcome: "ok",
+        durationMs: 1,
+      });
+    }
+    expect(telemetry.snapshot()).toMatchObject({
+      traceRetention: {
+        maxTraces: 2,
+        maxStagedRecords: 2,
+        activeTraces: 2,
+        stagedRecords: 2,
+        dropped: { activeOverflow: 1, stagedOverflow: 1 },
+      },
+    });
+
+    now = 1;
+    telemetry.finishTrace({ traceId: "trace_bound_1" });
+    expect(telemetry.beginTrace({ traceId: "trace_bound_3" })).toBe(true);
+    telemetry.finishTrace({ traceId: "trace_bound_2" });
+    telemetry.finishTrace({ traceId: "trace_bound_3" });
+    expect(telemetry.snapshot()).toMatchObject({
+      traceRetention: {
+        activeTraces: 0,
+        completedDecisions: 2,
+        stagedRecords: 1,
+        discardedTraces: 1,
+        discardedRecords: 1,
+        dropped: { decisionOverflow: 1 },
+      },
+    });
+
+    now = 11;
+    expect(telemetry.snapshot()).toMatchObject({
+      traceRetention: {
+        activeTraces: 0,
+        completedDecisions: 0,
+        stagedRecords: 0,
+        stagedBytes: 0,
+        discardedTraces: 3,
+        discardedRecords: 2,
+        dropped: { expiredDecisions: 2 },
+      },
+    });
+
+    const byBytes = new Telemetry({
+      localSink: false,
+      now: () => 0,
+      limits: { maxRecords: 2, maxBatchRecords: 2, maxBytes: 1 },
+    });
+    byBytes.beginTrace({ traceId: "trace_bytes" });
+    byBytes.recordSpan({
+      context: { traceId: "trace_bytes", spanId: "span_bytes" },
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    });
+    expect(byBytes.snapshot()).toMatchObject({
+      traceRetention: {
+        stagedRecords: 0,
+        stagedBytes: 0,
+        dropped: { stagedOverflow: 1 },
+      },
+    });
+  });
+
+  test("invalid finish clocks discard active staging and release the trace slot", () => {
+    for (const failure of ["non_finite", "throw"] as const) {
+      let reads = 0;
+      const telemetry = new Telemetry({
+        localSink: false,
+        now: () => {
+          reads++;
+          if (reads !== 3) return reads - 1;
+          if (failure === "throw") throw new Error("clock failed");
+          return Number.NaN;
+        },
+        limits: { maxRecords: 1, maxBatchRecords: 1, slowOperationMs: 100 },
+      });
+      const traceId = `trace_bad_finish_${failure}`;
+      expect(telemetry.beginTrace({ traceId })).toBe(true);
+      telemetry.recordSpan({
+        context: { traceId, spanId: `span_bad_finish_${failure}` },
+        operation: "query",
+        stage: "handler",
+        outcome: "ok",
+        durationMs: 1,
+      });
+      expect(telemetry.finishTrace({ traceId })).toBe(false);
+      expect(telemetry.snapshot()).toMatchObject({
+        dropped: { invalid: 1 },
+        traceRetention: {
+          activeTraces: 0,
+          completedDecisions: 0,
+          stagedRecords: 0,
+          stagedBytes: 0,
+          discardedTraces: 1,
+          discardedRecords: 1,
+          dropped: { invalid: 1 },
+        },
+      });
+      expect(telemetry.beginTrace({ traceId: `trace_after_${failure}` })).toBe(true);
+    }
+  });
+
+  test("terminal drain discards every active and completed trace decision", async () => {
+    const scheduler = new ManualScheduler();
+    const telemetry = new Telemetry({
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: { slowOperationMs: 100 },
+    });
+    for (const traceId of ["trace_drain_active", "trace_drain_completed"]) {
+      telemetry.beginTrace({ traceId });
+      telemetry.recordSpan({
+        context: { traceId, spanId: `${traceId}_span` },
+        operation: "query",
+        stage: "handler",
+        outcome: "ok",
+        durationMs: 1,
+      });
+    }
+    telemetry.finishTrace({ traceId: "trace_drain_completed" });
+    expect(telemetry.snapshot()).toMatchObject({
+      traceRetention: { activeTraces: 1, completedDecisions: 1, stagedRecords: 2 },
+    });
+
+    await telemetry.drain(10);
+    expect(scheduler.timeouts.size).toBe(0);
+    expect(telemetry.snapshot()).toMatchObject({
+      traceRetention: {
+        activeTraces: 0,
+        completedDecisions: 0,
+        stagedRecords: 0,
+        stagedBytes: 0,
+        discardedTraces: 2,
+        discardedRecords: 2,
+        dropped: { drain: 2 },
+      },
+    });
+  });
+
+  test("threshold zero retains immediately without allocating trace state", () => {
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => 0,
+      limits: { slowOperationMs: 0 },
+    });
+    expect(telemetry.beginTrace({ traceId: "trace_all" })).toBe(true);
+    for (const spanId of ["span_all_1", "span_all_2"]) {
+      telemetry.recordSpan({
+        context: { traceId: "trace_all", spanId },
+        operation: "query",
+        stage: "handler",
+        outcome: "ok",
+        durationMs: 0,
+      });
+    }
+    expect(telemetry.finishTrace({ traceId: "trace_all" })).toBe(true);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 2,
+      traceRetention: {
+        activeTraces: 0,
+        completedDecisions: 0,
+        stagedRecords: 0,
+        promotedTraces: 0,
+      },
+    });
   });
 });

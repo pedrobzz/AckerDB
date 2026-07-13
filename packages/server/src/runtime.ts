@@ -895,6 +895,12 @@ export class Runtime implements RuntimePort {
     const scope = this.telemetry.enabled
       ? this.operationTrace(null, "sse", request.address, { requestId: String(request.id) })
       : undefined;
+    let traceOpened = scope !== undefined && this.telemetry.beginTrace(scope.rootContext);
+    const finishOperationTrace = (): void => {
+      if (!traceOpened) return;
+      traceOpened = false;
+      this.telemetry.finishTrace(scope!.rootContext);
+    };
     const admittedAt = scope === undefined ? 0 : performance.now();
     let release: () => void;
     try {
@@ -926,6 +932,7 @@ export class Runtime implements RuntimePort {
           sizeBytes: requestBytes,
         });
       }
+      finishOperationTrace();
       throw safeError;
     }
     const startedAt = scope === undefined ? 0 : performance.now();
@@ -996,6 +1003,7 @@ export class Runtime implements RuntimePort {
         }).finally(() => {
           this.sseProducers.delete(producer!);
           release();
+          finishOperationTrace();
         });
         void lifecycle.catch(() => {});
         await Promise.race([
@@ -1040,6 +1048,7 @@ export class Runtime implements RuntimePort {
             errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
           });
         }
+        finishOperationTrace();
         throw safeError;
       }
     };
@@ -1744,10 +1753,14 @@ export class Runtime implements RuntimePort {
     if (!this.telemetry.enabled) return execute();
     const scope = this.trace.getStore();
     if (scope === undefined) {
-      return this.runTraced(
-        this.operationTrace(null, "subscription", input.address, {}),
-        execute,
-      );
+      const evaluationScope = this.operationTrace(null, "subscription", input.address, {});
+      const traceOpened = this.telemetry.beginTrace(evaluationScope.rootContext);
+      const evaluation = this.runTraced(evaluationScope, execute);
+      return traceOpened
+        ? evaluation.finally(() => {
+            this.telemetry.finishTrace(evaluationScope.rootContext);
+          })
+        : evaluation;
     }
     return this.trace.run({
       ...scope,
@@ -2232,6 +2245,12 @@ export class Runtime implements RuntimePort {
     const scope = this.telemetry.enabled
       ? this.operationTrace(session, operation, functionName, identifiers)
       : undefined;
+    const traceOpened = scope !== undefined && this.telemetry.beginTrace(scope.rootContext);
+    const finishOperationTrace = <V>(result: Promise<V>): Promise<V> => traceOpened
+      ? result.finally(() => {
+          this.telemetry.finishTrace(scope.rootContext);
+        })
+      : result;
     const admittedAt = scope === undefined ? 0 : performance.now();
     const settle = async (outcome: RuntimeOperationOutcome<T>): Promise<R> => {
       if (finalize !== undefined) return finalize(outcome);
@@ -2281,7 +2300,9 @@ export class Runtime implements RuntimePort {
         });
       }
       const rejected = () => settle({ ok: false, error: safeError });
-      return scope === undefined ? rejected() : this.runTraced(scope, rejected);
+      return finishOperationTrace(
+        scope === undefined ? rejected() : this.runTraced(scope, rejected),
+      );
     }
     const startedAt = scope === undefined ? 0 : performance.now();
     const execute = () => Promise.resolve().then(work)
@@ -2324,7 +2345,7 @@ export class Runtime implements RuntimePort {
       )
       .finally(release)
       .then(settle);
-    return scope === undefined ? execute() : this.runTraced(scope, execute);
+    return finishOperationTrace(scope === undefined ? execute() : this.runTraced(scope, execute));
   }
 
   private admitOperation(session: RuntimeSession | null): () => void {

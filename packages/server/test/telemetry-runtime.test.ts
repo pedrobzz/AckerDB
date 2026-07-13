@@ -73,6 +73,8 @@ type Ctx = any;
 let operatorReadGate: Promise<void> | null = null;
 let operatorReadEntered: (() => void) | null = null;
 let operatorReadCount = 0;
+let operatorSseGate: Promise<void> | null = null;
+let operatorSseEntered: (() => void) | null = null;
 
 const addItem = mutation({
   access: "public",
@@ -163,6 +165,10 @@ const functions = {
       args: { payload: dbz.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         ctx.stream.write({ payload: args.payload });
+        if (operatorSseGate !== null) {
+          operatorSseEntered?.();
+          await operatorSseGate;
+        }
         await ctx.tx((tx: Ctx) => tx.db.audit.insert({ line: "sse:complete" }));
       },
     }),
@@ -261,6 +267,8 @@ afterEach(async () => {
   operatorReadGate = null;
   operatorReadEntered = null;
   operatorReadCount = 0;
+  operatorSseGate = null;
+  operatorSseEntered = null;
 });
 
 function uuidV7(now: number, sequence: number): string {
@@ -376,6 +384,79 @@ const operatorMetricUnits = Object.freeze({
 } as const);
 
 describe("Runtime telemetry acceptance", () => {
+  test("closes whole-operation tail decisions after final response work", async () => {
+    const exported: TelemetryRecord[] = [];
+    const app = harness({
+      enabled: true,
+      exporter: { export: (batch) => void exported.push(...batch) },
+      localSink: false,
+      limits: { ...telemetryLimits, slowOperationMs: 10_000 },
+    });
+    const session = await app.openSession("telemetry-tail-runtime");
+
+    await app.runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 740_000_001,
+      ref: "items.list",
+      args: { room: 1n },
+    });
+    await expect(app.mutation(
+      session.context,
+      740_000_002,
+      "items.fail",
+      { room: 1n, body: PRIVATE_FAILURE },
+    )).rejects.toBeDefined();
+
+    expect(app.runtime.telemetry.snapshot()).toMatchObject({
+      traceRetention: {
+        activeTraces: 0,
+        completedDecisions: 2,
+        promotedTraces: 1,
+      },
+    });
+    await app.runtime.telemetry.flush();
+    const retained = spans(exported);
+    expect(retained.some((span) => span.requestId === "740000001")).toBe(false);
+    const failed = retained.filter((span) => span.requestId === "740000002");
+    expect(failed.some((span) => span.stage === "admission")).toBe(true);
+    expect(failed.some((span) => span.stage === "handler" && span.outcome !== "ok")).toBe(true);
+    expect(app.runtime.telemetry.aggregateSnapshot().series).toContainEqual(
+      expect.objectContaining({ operation: "query", outcome: "ok" }),
+    );
+  });
+
+  test("keeps an SSE tail lifecycle active through terminal stream delivery", async () => {
+    const app = harness({
+      enabled: true,
+      localSink: false,
+      limits: { ...telemetryLimits, slowOperationMs: 10_000 },
+    });
+    let releaseSse!: () => void;
+    operatorSseGate = new Promise<void>((resolve) => {
+      releaseSse = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      operatorSseEntered = resolve;
+    });
+    const stream = await app.runtime.runSse({
+      id: 740_000_003,
+      address: "ops.stream",
+      args: { payload: PRIVATE_STREAM },
+      principal: ANONYMOUS_PRINCIPAL,
+    });
+    await entered;
+    expect(app.runtime.telemetry.snapshot().traceRetention.activeTraces).toBe(1);
+
+    const body = collectSse(stream);
+    releaseSse();
+    expect(await body).toContain("data: [DONE]");
+    expect(app.runtime.telemetry.snapshot().traceRetention).toMatchObject({
+      activeTraces: 0,
+      completedDecisions: 1,
+    });
+  });
+
   test("covers public runtime flows with safe, correlated, bounded records", async () => {
     const exported: TelemetryRecord[] = [];
     const exporter: TelemetryExporter = {
