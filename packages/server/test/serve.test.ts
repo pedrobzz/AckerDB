@@ -74,6 +74,7 @@ const limits = defineServiceLimits({
   ...PRODUCTION_LIMITS,
   maxConnections: 1,
   maxOperations: 2,
+  maxOperationsPerCaller: 2,
   maxOperationsPerConnection: 2,
   readQueue: { ...PRODUCTION_LIMITS.readQueue, maxAgeMs: 50 },
   maxRequestBytes: 512,
@@ -211,6 +212,16 @@ class TestVerifier implements CredentialVerifier {
     } as const;
     switch (token) {
       case "user-token":
+        return { ...common, kind: "user", claims: { role: "member" } };
+      case "user-rotated-token":
+        return {
+          ...common,
+          kind: "user",
+          subject: "user-token",
+          tokenId: "id-user-token-rotated",
+          claims: { role: "rotated" },
+        };
+      case "user-two-token":
         return { ...common, kind: "user", claims: { role: "member" } };
       case "workload-token":
         return { ...common, kind: "workload", claims: { scope: "metrics dbzz:status" } };
@@ -565,6 +576,141 @@ describe("Protocol-2 HTTP procedures", () => {
     await eventually(() => server.status().httpIngress === 0);
   });
 
+  test("reserves HTTP capacity across source, principal, handoff, and SSE body ownership", async () => {
+    const fairDirectory = mkdtempSync(join(tmpdir(), "dbzz-http-fairness-"));
+    const fairEngine = new Engine(schema, join(fairDirectory, "data.db"));
+    reconcile(fairEngine);
+    const fairRuntime = new Runtime({
+      engine: fairEngine,
+      registry: new Registry(functions),
+      limits: defineServiceLimits({
+        ...limits,
+        maxOperationsPerCaller: 1,
+        readQueue: { ...limits.readQueue, maxAgeMs: 500 },
+      }),
+      telemetry: false,
+    });
+    const fairServer = serve({ runtime: fairRuntime, verifier: new TestVerifier(), port: 0 });
+    const fairBase = `http://127.0.0.1:${fairServer.port}`;
+    const sourceController = new AbortController();
+    const sseController = new AbortController();
+    let heldProcedure: Promise<Response> | undefined;
+    let heldSse: Response | undefined;
+    const body = (id: number, ref: string, args: unknown) =>
+      encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args });
+
+    try {
+      const stalled = fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        body: stalledBody(),
+        signal: sourceController.signal,
+      }).catch(() => undefined);
+      await eventually(() => fairServer.status().httpIngress === 1);
+
+      const spoofedSource = await fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        headers: { "x-forwarded-for": "203.0.113.99" },
+        body: body(1, "notes.echo", { value: "spoofed" }),
+      });
+      expect(spoofedSource.status).toBe(503);
+      expect(parseCallResponse(decode(await spoofedSource.text()))).toMatchObject({
+        outcome: {
+          code: "overloaded",
+          retryable: true,
+          retryAfterMs: 0,
+          resource: "connection",
+        },
+      });
+      expect(fairServer.status()).toMatchObject({
+        httpIngress: 1,
+        httpFairnessKeys: 1,
+        httpFairShareRejections: 1,
+      });
+      sourceController.abort();
+      await stalled;
+      await eventually(() => fairServer.status().httpIngress === 0);
+
+      blockedProcedureStarted = deferred<void>();
+      blockedProcedureRelease = deferred<void>();
+      heldProcedure = fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        headers: { authorization: "Bearer user-token" },
+        body: body(2, "notes.block", {}),
+      });
+      await blockedProcedureStarted.promise;
+
+      const hot = await fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        headers: { authorization: "Bearer user-rotated-token" },
+        body: body(3, "notes.echo", { value: "hot" }),
+      });
+      expect(hot.status).toBe(429);
+      expect(parseCallResponse(decode(await hot.text()))).toMatchObject({
+        outcome: { code: "overloaded", retryable: true, resource: "operation" },
+      });
+
+      const cold = await fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        headers: { authorization: "Bearer user-two-token" },
+        body: body(4, "notes.echo", { value: "cold" }),
+      });
+      expect(cold.status).toBe(200);
+      expect(parseCallResponse(decode(await cold.text()))).toMatchObject({ value: "cold" });
+      expect(fairServer.status()).toMatchObject({ httpIngress: 1, httpFairnessKeys: 1 });
+
+      blockedProcedureRelease.resolve(undefined);
+      expect((await heldProcedure).status).toBe(200);
+      heldProcedure = undefined;
+      await eventually(() => fairServer.status().httpIngress === 0);
+
+      longSseStarted = deferred<void>();
+      heldSse = await fetch(`${fairBase}/api/sse`, {
+        method: "POST",
+        headers: { authorization: "Bearer user-token" },
+        body: body(5, "notes.stayOpen", {}),
+        signal: sseController.signal,
+      });
+      await longSseStarted.promise;
+      expect(heldSse.status).toBe(200);
+      expect(fairServer.status()).toMatchObject({ httpIngress: 1, httpFairnessKeys: 1 });
+
+      const whileStreaming = await fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        headers: { authorization: "Bearer user-token" },
+        body: body(6, "notes.echo", { value: "streaming" }),
+      });
+      expect(whileStreaming.status).toBe(429);
+      expect(parseCallResponse(decode(await whileStreaming.text()))).toMatchObject({
+        outcome: { code: "overloaded", resource: "operation" },
+      });
+
+      sseController.abort("test cancellation");
+      await heldSse.body!.cancel().catch(() => {});
+      heldSse = undefined;
+      await eventually(() =>
+        fairServer.status().httpIngress === 0 &&
+        fairRuntime.status().activeOperationCallers === 0
+      );
+      const afterCancel = await fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        headers: { authorization: "Bearer user-token" },
+        body: body(7, "notes.echo", { value: "released" }),
+      });
+      expect(afterCancel.status).toBe(200);
+      expect(parseCallResponse(decode(await afterCancel.text()))).toMatchObject({ value: "released" });
+    } finally {
+      sourceController.abort();
+      sseController.abort("test cleanup");
+      blockedProcedureRelease?.resolve(undefined);
+      await heldSse?.body?.cancel().catch(() => {});
+      await heldProcedure?.catch(() => {});
+      await fairServer.drain().catch(() => {});
+      await fairRuntime.drain().catch(() => {});
+      fairEngine.close();
+      rmSync(fairDirectory, { recursive: true, force: true });
+    }
+  });
+
   test("cancels a slow request body at the finite ingress deadline", async () => {
     const startedAt = performance.now();
     const response = await fetch(`${base}/api/call`, {
@@ -614,6 +760,7 @@ describe("SSE", () => {
     expect(success.headers.get("content-type")).toStartWith("text/event-stream");
     expect(success.headers.get("x-vercel-ai-ui-message-stream")).toBe("v1");
     expect(await success.text()).toBe('data: {"type":"text-delta","delta":"hello"}\n\ndata: [DONE]\n\n');
+    expect(server.status()).toMatchObject({ httpIngress: 0, httpFairnessKeys: 0 });
 
     const late = await fetch(`${base}/api/sse`, {
       method: "POST",
@@ -841,8 +988,12 @@ describe("lifecycle drain", () => {
     await within(drain);
     expect(server.state).toBe("stopped");
     expect(runtime.status().state).toBe("stopped");
-    expect(server.status().connections).toBe(0);
-    expect(server.status().outboundBytes).toBe(0);
+    expect(server.status()).toMatchObject({
+      connections: 0,
+      httpIngress: 0,
+      httpFairnessKeys: 0,
+      outboundBytes: 0,
+    });
   });
 
   test("force closes and fails within the deadline when an admitted operation stalls", async () => {

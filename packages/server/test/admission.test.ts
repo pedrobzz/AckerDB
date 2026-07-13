@@ -25,6 +25,7 @@ describe("production limits", () => {
     expect(Object.isFrozen(PRODUCTION_LIMITS)).toBe(true);
     expect(Object.isFrozen(PRODUCTION_LIMITS.readQueue)).toBe(true);
     expect(PRODUCTION_LIMITS.maxConnections).toBe(4_096);
+    expect(PRODUCTION_LIMITS.maxOperationsPerCaller).toBe(128);
     expect(PRODUCTION_LIMITS.readQueue).toEqual({
       maxItems: 4_096,
       maxBytes: 32 * 1024 * 1024,
@@ -51,6 +52,9 @@ describe("production limits", () => {
       ...PRODUCTION_LIMITS.telemetry,
       slowOperationMs: -1,
     })).toThrow("non-negative safe integer");
+    expect(() =>
+      defineServiceLimits({ ...PRODUCTION_LIMITS, maxOperationsPerCaller: 5_000 }),
+    ).toThrow("cannot exceed");
     expect(() =>
       defineServiceLimits({ ...PRODUCTION_LIMITS, maxOperationsPerConnection: 5_000 }),
     ).toThrow("cannot exceed");

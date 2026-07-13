@@ -26,6 +26,8 @@ export interface TelemetryLimits {
 export interface ServiceLimits {
   readonly maxConnections: number;
   readonly maxOperations: number;
+  /** One HTTP source or authenticated caller cannot consume the global operation pool. */
+  readonly maxOperationsPerCaller: number;
   readonly maxOperationsPerConnection: number;
   readonly readQueue: QueueLimits;
   readonly writeQueue: QueueLimits;
@@ -113,6 +115,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
   const scalarLimits: ReadonlyArray<readonly [string, number]> = [
     ["maxConnections", limits.maxConnections],
     ["maxOperations", limits.maxOperations],
+    ["maxOperationsPerCaller", limits.maxOperationsPerCaller],
     ["maxOperationsPerConnection", limits.maxOperationsPerConnection],
     ["maxSubscriptionsPerConnection", limits.maxSubscriptionsPerConnection],
     ["maxSubscriptions", limits.maxSubscriptions],
@@ -141,6 +144,9 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
   ];
   for (const [path, value] of scalarLimits) positiveInteger(value, path);
 
+  if (limits.maxOperationsPerCaller > limits.maxOperations) {
+    throw new RangeError("maxOperationsPerCaller cannot exceed maxOperations");
+  }
   if (limits.maxOperationsPerConnection > limits.maxOperations) {
     throw new RangeError("maxOperationsPerConnection cannot exceed maxOperations");
   }
@@ -184,6 +190,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
 export const PRODUCTION_LIMITS = defineServiceLimits({
   maxConnections: 4_096,
   maxOperations: 4_096,
+  maxOperationsPerCaller: 128,
   maxOperationsPerConnection: 128,
   readQueue: { maxItems: 4_096, maxBytes: 32 * MiB, maxAgeMs: 30_000 },
   writeQueue: { maxItems: 4_096, maxBytes: 32 * MiB, maxAgeMs: 30_000 },

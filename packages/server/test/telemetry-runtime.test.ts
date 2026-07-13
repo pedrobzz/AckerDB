@@ -340,6 +340,7 @@ const telemetryLimits = Object.freeze({
 const operatorMetricUnits = Object.freeze({
   "runtime.connections": "gauge",
   "runtime.operations": "gauge",
+  "runtime.operation_callers": "gauge",
   "runtime.sse_streams": "gauge",
   "runtime.subscriptions": "gauge",
   "runtime.subscription_entries": "gauge",
@@ -1060,7 +1061,7 @@ describe("Runtime telemetry acceptance", () => {
 
     const latest = new Map<string, TelemetryMetricRecord>();
     for (const metric of sampledMetrics!) latest.set(metric.name, metric);
-    expect(Object.keys(operatorMetricUnits)).toHaveLength(43);
+    expect(Object.keys(operatorMetricUnits)).toHaveLength(44);
     expect([...latest.keys()]).toEqual(expect.arrayContaining(Object.keys(operatorMetricUnits)));
     for (const [name, unit] of Object.entries(operatorMetricUnits)) {
       const metric = latest.get(name);
@@ -1074,6 +1075,7 @@ describe("Runtime telemetry acceptance", () => {
     const value = (name: keyof typeof operatorMetricUnits): number => latest.get(name)!.value;
     expect(value("runtime.connections")).toBe(heldStatus!.connections);
     expect(value("runtime.operations")).toBe(heldStatus!.activeOperations);
+    expect(value("runtime.operation_callers")).toBe(heldStatus!.activeOperationCallers);
     expect(value("runtime.subscriptions")).toBe(
       heldStatus!.reactive.queryListeners + heldStatus!.reactive.eventListeners,
     );

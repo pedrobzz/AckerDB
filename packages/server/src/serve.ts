@@ -1,4 +1,5 @@
 /** Production Protocol-2 HTTP, SSE, and WebSocket ownership for one Runtime. */
+import { createHash } from "node:crypto";
 import type { Server, ServerWebSocket } from "bun";
 import {
   PROTOCOL_VERSION,
@@ -47,7 +48,12 @@ export interface ServeOptions {
 export interface DbzzServerStatus {
   readonly state: DbzzServerState;
   readonly connections: number;
+  readonly preHelloConnections: number;
+  readonly connectionRejections: number;
   readonly httpIngress: number;
+  readonly httpFairnessKeys: number;
+  readonly httpGlobalRejections: number;
+  readonly httpFairShareRejections: number;
   readonly outboundBytes: number;
   readonly runtime: RuntimeStatus;
 }
@@ -123,8 +129,8 @@ interface LeaseStreamReader {
   releaseLock(): void;
 }
 
-/** Keep one credential lease alive for exactly the lifetime of the response body. */
-function leasedStream(
+/** Keep response-owned resources alive for exactly the lifetime of its body. */
+function ownedStream(
   source: ReadableStream<Uint8Array>,
   release: () => void,
 ): ReadableStream<Uint8Array> {
@@ -169,6 +175,96 @@ function leasedStream(
       }
     },
   });
+}
+
+interface HttpAdmissionSnapshot {
+  readonly active: number;
+  readonly fairnessKeys: number;
+  readonly globalRejections: number;
+  readonly fairShareRejections: number;
+}
+
+interface HttpAdmissionLease {
+  transfer(fairnessKey: string): void;
+  release(): void;
+}
+
+/** One bounded HTTP slot whose fair-share owner changes after authentication. */
+class HttpAdmission {
+  private readonly callers = new Map<string, number>();
+  private active = 0;
+  private globalRejections = 0;
+  private fairShareRejections = 0;
+
+  constructor(
+    private readonly maxOperations: number,
+    private readonly maxOperationsPerCaller: number,
+  ) {}
+
+  admit(fairnessKey: string): HttpAdmissionLease {
+    if ((this.callers.get(fairnessKey) ?? 0) >= this.maxOperationsPerCaller) {
+      this.fairShareRejections = Math.min(Number.MAX_SAFE_INTEGER, this.fairShareRejections + 1);
+      throw new DbzzError("overloaded", "HTTP source capacity is full", {
+        retryable: true,
+        retryAfterMs: 0,
+        resource: "connection",
+      });
+    }
+    if (this.active >= this.maxOperations) {
+      this.globalRejections = Math.min(Number.MAX_SAFE_INTEGER, this.globalRejections + 1);
+      throw new DbzzError("overloaded", "HTTP ingress capacity is full", {
+        retryable: true,
+        retryAfterMs: 0,
+        resource: "connection",
+      });
+    }
+
+    this.active++;
+    this.increment(fairnessKey);
+    let currentKey = fairnessKey;
+    let owned = true;
+    return Object.freeze({
+      transfer: (nextKey: string): void => {
+        if (!owned || nextKey === currentKey) return;
+        if ((this.callers.get(nextKey) ?? 0) >= this.maxOperationsPerCaller) {
+          this.fairShareRejections = Math.min(Number.MAX_SAFE_INTEGER, this.fairShareRejections + 1);
+          throw new DbzzError("overloaded", "per-caller HTTP capacity is full", {
+            retryable: true,
+            retryAfterMs: 0,
+            resource: "operation",
+          });
+        }
+        this.decrement(currentKey);
+        this.increment(nextKey);
+        currentKey = nextKey;
+      },
+      release: (): void => {
+        if (!owned) return;
+        owned = false;
+        this.active--;
+        this.decrement(currentKey);
+      },
+    });
+  }
+
+  snapshot(): HttpAdmissionSnapshot {
+    return Object.freeze({
+      active: this.active,
+      fairnessKeys: this.callers.size,
+      globalRejections: this.globalRejections,
+      fairShareRejections: this.fairShareRejections,
+    });
+  }
+
+  private increment(fairnessKey: string): void {
+    this.callers.set(fairnessKey, (this.callers.get(fairnessKey) ?? 0) + 1);
+  }
+
+  private decrement(fairnessKey: string): void {
+    const remaining = this.callers.get(fairnessKey)! - 1;
+    if (remaining === 0) this.callers.delete(fairnessKey);
+    else this.callers.set(fairnessKey, remaining);
+  }
 }
 
 /** Read no more than maxBytes of the raw HTTP body before any UTF-8 or wire decode. */
@@ -272,9 +368,11 @@ export class DbzzServer {
   private readonly verifier: CredentialVerifier | undefined;
   private readonly connections = new Set<WsData>();
   private readonly outbound: OutboundBudget;
+  private readonly httpAdmission: HttpAdmission;
   private listener: Server<WsData> | null = null;
   private lifecycle: DbzzServerState = "starting";
-  private httpIngress = 0;
+  private connectionRejections = 0;
+  private transportSampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
 
   constructor(options: ServeOptions) {
@@ -289,6 +387,10 @@ export class DbzzServer {
     this.outbound = new OutboundBudget(
       this.runtime.limits.webSocket.maxBytes,
       this.runtime.limits.maxFrameBytes,
+    );
+    this.httpAdmission = new HttpAdmission(
+      this.runtime.limits.maxOperations,
+      this.runtime.limits.maxOperationsPerCaller,
     );
 
     try {
@@ -317,6 +419,7 @@ export class DbzzServer {
         },
       });
       this.lifecycle = "ready";
+      this.startTransportSampler();
     } catch (error) {
       this.lifecycle = "failed";
       throw error;
@@ -334,10 +437,16 @@ export class DbzzServer {
   }
 
   status(): DbzzServerStatus {
+    const http = this.httpAdmission.snapshot();
     return Object.freeze({
       state: this.lifecycle,
       connections: this.connections.size,
-      httpIngress: this.httpIngress,
+      preHelloConnections: this.preHelloConnections(),
+      connectionRejections: this.connectionRejections,
+      httpIngress: http.active,
+      httpFairnessKeys: http.fairnessKeys,
+      httpGlobalRejections: http.globalRejections,
+      httpFairShareRejections: http.fairShareRejections,
       outboundBytes: this.outbound.snapshot().bytes,
       runtime: this.runtime.status(),
     });
@@ -352,6 +461,7 @@ export class DbzzServer {
 
     // Readiness and every admission path observe this before the first await.
     this.lifecycle = "draining";
+    this.stopTransportSampler();
     this.drainPromise = this.performDrain();
     return this.drainPromise;
   }
@@ -369,28 +479,30 @@ export class DbzzServer {
       return json({ version: 1, ready }, ready ? 200 : 503);
     }
     if (url.pathname === "/status" && request.method === "GET") {
-      let release: (() => void) | undefined;
+      let admission: HttpAdmissionLease | undefined;
       let lease: AuthLease | undefined;
       try {
-        release = this.admitHttpIngress();
+        const sourceKey = this.httpSourceKey(request, listener);
+        admission = this.httpAdmission.admit(sourceKey);
         lease = await this.authenticate(request);
+        admission.transfer(this.httpCallerKey(sourceKey, lease.principal));
         requireStatusScope(lease.principal, this.statusScope);
         return json({ version: 1, ...this.status() });
       } catch (error) {
         return protocolError(error);
       } finally {
         lease?.release();
-        release?.();
+        admission?.release();
       }
     }
     if (url.pathname === "/ws") {
       return this.upgradeWebSocket(request, listener);
     }
     if (url.pathname === "/api/call" && request.method === "POST") {
-      return this.call(request, false);
+      return this.call(request, false, this.httpSourceKey(request, listener));
     }
     if (url.pathname === "/api/sse" && request.method === "POST") {
-      return this.call(request, true);
+      return this.call(request, true, this.httpSourceKey(request, listener));
     }
     if (
       url.pathname === "/live" ||
@@ -417,14 +529,27 @@ export class DbzzServer {
     });
   }
 
-  private async call(request: Request, sse: boolean): Promise<Response> {
+  private httpSourceKey(request: Request, listener: Server<WsData>): string {
+    const source = listener.requestIP(request);
+    const identity = source === null ? "unknown" : `${source.family}\0${source.address}`;
+    return createHash("sha256").update(`http-source\0${identity}`).digest("base64url");
+  }
+
+  private httpCallerKey(sourceKey: string, principal: ClientPrincipal): string {
+    if (principal.kind === "anonymous") return sourceKey;
+    return createHash("sha256")
+      .update(JSON.stringify(["http-principal", principal.kind, principal.issuer, principal.subject]))
+      .digest("base64url");
+  }
+
+  private async call(request: Request, sse: boolean, sourceKey: string): Promise<Response> {
     const externalTrace = beginHttpTrace(this.runtime.telemetry, sse ? "sse" : "procedure");
     let id: number | null = null;
-    let release: (() => void) | undefined;
+    let admission: HttpAdmissionLease | undefined;
     let lease: AuthLease | undefined;
     try {
       if (this.lifecycle !== "ready") throw unavailableWhile(this.lifecycle);
-      release = this.admitHttpIngress();
+      admission = this.httpAdmission.admit(sourceKey);
       const call = await parseHttpCall(
         request,
         this.runtime.limits.maxRequestBytes,
@@ -435,19 +560,28 @@ export class DbzzServer {
       lease = externalTrace === undefined
         ? await this.authenticate(request)
         : await observeHttpAuth(externalTrace, () => this.authenticate(request));
+      const fairnessKey = this.httpCallerKey(sourceKey, lease.principal);
+      admission.transfer(fairnessKey);
       const input = carryHttpTrace({
         id: call.id,
         address: call.ref,
         args: call.args,
         principal: lease.principal,
         signal: lease.signal,
+        fairnessKey,
       }, externalTrace);
       if (sse) {
         const stream = await this.runtime.runSse(input);
-        const body = leasedStream(stream, lease.release);
+        const streamLease = lease;
+        const streamAdmission = admission;
+        const body = ownedStream(stream, () => {
+          streamLease.release();
+          streamAdmission.release();
+        });
         try {
           const response = new Response(body, { headers: SSE_HEADERS });
           lease = undefined;
+          admission = undefined;
           return response;
         } catch (error) {
           cancel(body, error);
@@ -467,25 +601,8 @@ export class DbzzServer {
     } finally {
       finishHttpTrace(externalTrace);
       lease?.release();
-      release?.();
+      admission?.release();
     }
-  }
-
-  private admitHttpIngress(): () => void {
-    if (this.httpIngress >= this.runtime.limits.maxOperations) {
-      throw new DbzzError("overloaded", "HTTP ingress capacity is full", {
-        retryable: true,
-        retryAfterMs: 0,
-        resource: "connection",
-      });
-    }
-    this.httpIngress++;
-    let owned = true;
-    return () => {
-      if (!owned) return;
-      owned = false;
-      this.httpIngress--;
-    };
   }
 
   private upgradeWebSocket(request: Request, listener: Server<WsData>): Response | undefined {
@@ -494,6 +611,7 @@ export class DbzzServer {
     }
     if (this.lifecycle !== "ready") return protocolError(unavailableWhile(this.lifecycle));
     if (this.connections.size >= this.runtime.limits.maxConnections) {
+      this.connectionRejections = Math.min(Number.MAX_SAFE_INTEGER, this.connectionRejections + 1);
       return protocolError(new DbzzError("overloaded", "connection capacity is full", {
         retryable: true,
         retryAfterMs: 0,
@@ -583,6 +701,48 @@ export class DbzzServer {
     void data.session?.close(new DbzzError("unavailable", "WebSocket disconnected", {
       resource: "connection",
     }));
+  }
+
+  private preHelloConnections(): number {
+    return Math.max(0, this.connections.size - this.runtime.connectionCount);
+  }
+
+  private startTransportSampler(): void {
+    if (!this.runtime.telemetry.enabled) return;
+    this.sampleTransport();
+    this.transportSampleTimer = setInterval(
+      () => this.sampleTransport(),
+      this.runtime.telemetry.sampleIntervalMs,
+    );
+    this.transportSampleTimer.unref?.();
+  }
+
+  private stopTransportSampler(): void {
+    if (this.transportSampleTimer === null) return;
+    clearInterval(this.transportSampleTimer);
+    this.transportSampleTimer = null;
+  }
+
+  private sampleTransport(): void {
+    if (!this.runtime.telemetry.enabled || this.lifecycle !== "ready") return;
+    if (this.runtime.state !== "ready") {
+      this.stopTransportSampler();
+      return;
+    }
+    const http = this.httpAdmission.snapshot();
+    const metrics = [
+      ["runtime.transport_websocket_connections", this.connections.size, "gauge"],
+      ["runtime.transport_websocket_pre_hello", this.preHelloConnections(), "gauge"],
+      ["runtime.transport_websocket_rejections", this.connectionRejections, "count"],
+      ["runtime.transport_websocket_outbound_bytes", this.outbound.snapshot().bytes, "bytes"],
+      ["runtime.transport_http_ingress", http.active, "gauge"],
+      ["runtime.transport_http_fairness_keys", http.fairnessKeys, "gauge"],
+      ["runtime.transport_http_global_rejections", http.globalRejections, "count"],
+      ["runtime.transport_http_fair_share_rejections", http.fairShareRejections, "count"],
+    ] as const;
+    for (const [name, value, unit] of metrics) {
+      this.runtime.telemetry.recordMetric({ name, value, unit });
+    }
   }
 
   private async performDrain(): Promise<void> {

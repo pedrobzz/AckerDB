@@ -106,6 +106,8 @@ type Ctx = any;
 let queryGate: Deferred<void> | null = null;
 let revalidationGate: Deferred<void> | null = null;
 let revalidationEntered: Deferred<void> | null = null;
+let externalProcedureStarted: Deferred<void> | null = null;
+let externalProcedureRelease: Deferred<void> | null = null;
 let scheduledAttempts = 0;
 
 const functions = {
@@ -203,6 +205,20 @@ const functions = {
     }),
   },
   ops: {
+    echo: procedure({
+      access: "public",
+      args: { value: dbz.string() },
+      handler: (_ctx: Ctx, args: Ctx) => args.value,
+    }),
+    block: procedure({
+      access: "public",
+      args: {},
+      handler: async () => {
+        externalProcedureStarted?.resolve(undefined);
+        await externalProcedureRelease?.promise;
+        return "released";
+      },
+    }),
     pipeline: procedure({
       access: "public",
       args: { channelId: dbz.bigint() },
@@ -395,6 +411,8 @@ beforeEach(() => {
   queryGate = null;
   revalidationGate = null;
   revalidationEntered = null;
+  externalProcedureStarted = null;
+  externalProcedureRelease = null;
   scheduledAttempts = 0;
   eventAccessInputs.length = 0;
   eventMatchInputs.length = 0;
@@ -706,6 +724,59 @@ describe("procedures and bounded SSE", () => {
       id: 2,
       outcome: { code: "validation" },
     });
+  });
+
+  test("reserves Runtime operation capacity for an unrelated external caller", async () => {
+    await restart(limits({
+      maxOperations: 2,
+      maxOperationsPerCaller: 1,
+      maxOperationsPerConnection: 2,
+    }));
+    externalProcedureStarted = deferred<void>();
+    externalProcedureRelease = deferred<void>();
+    const hot = user("hot");
+    const rotatedHot = Object.freeze({
+      ...hot,
+      expiresAt: hot.expiresAt + 1_000,
+      tokenId: "rotated-token-hot",
+    });
+    const cold = user("cold");
+    const invoke = (id: number, address: string, args: unknown, principal: Principal) =>
+      runtime.runProcedure({
+        id,
+        address,
+        args,
+        principal,
+        respond: ({ body, status }) => new Response(body, { status }),
+      });
+
+    const held = invoke(10, "ops.block", {}, hot);
+    try {
+      await externalProcedureStarted.promise;
+      expect(runtime.status()).toMatchObject({
+        activeOperations: 1,
+        activeOperationCallers: 1,
+      });
+
+      const rejected = await invoke(11, "ops.echo", { value: "same" }, rotatedHot);
+      expect(rejected.status).toBe(429);
+      expect(decode(await rejected.text())).toMatchObject({
+        outcome: {
+          code: "overloaded",
+          retryable: true,
+          retryAfterMs: 0,
+          resource: "operation",
+        },
+      });
+
+      const admitted = await invoke(12, "ops.echo", { value: "cold" }, cold);
+      expect(admitted.status).toBe(200);
+      expect(decode(await admitted.text())).toMatchObject({ value: "cold" });
+    } finally {
+      externalProcedureRelease.resolve(undefined);
+    }
+    expect((await held).status).toBe(200);
+    expect(runtime.status()).toMatchObject({ activeOperations: 0, activeOperationCallers: 0 });
   });
 
   test("streams data, merged data, and a terminal marker", async () => {

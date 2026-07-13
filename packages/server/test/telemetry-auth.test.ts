@@ -13,9 +13,11 @@ import {
 } from "@dbzz/core";
 import {
   Engine,
+  PRODUCTION_LIMITS,
   Registry,
   Runtime,
   dbz,
+  defineServiceLimits,
   defineSchema,
   defineTable,
   procedure,
@@ -25,8 +27,10 @@ import {
   type CredentialVerifier,
   type PrincipalInvalidation,
   type TelemetryEventRecord,
+  type TelemetryMetricRecord,
   type TelemetryRecord,
   type TelemetrySpanRecord,
+  type ServiceLimits,
   type VerifiedPrincipal,
 } from "@dbzz/server";
 
@@ -111,7 +115,12 @@ interface Fixture {
   readonly base: string;
 }
 
-function fixture(telemetryEnabled = true, slowOperationMs = 0): Fixture {
+function fixture(
+  telemetryEnabled = true,
+  slowOperationMs = 0,
+  sampleIntervalMs = 60_000,
+  limits?: ServiceLimits,
+): Fixture {
   const directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-auth-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -120,6 +129,7 @@ function fixture(telemetryEnabled = true, slowOperationMs = 0): Fixture {
   const runtime = new Runtime({
     engine,
     registry: new Registry(functions),
+    ...(limits === undefined ? {} : { limits }),
     telemetry: telemetryEnabled
       ? {
           enabled: true,
@@ -138,7 +148,7 @@ function fixture(telemetryEnabled = true, slowOperationMs = 0): Fixture {
             exportTimeoutMs: 100,
             retentionMs: 60_000,
             slowOperationMs,
-            sampleIntervalMs: 60_000,
+            sampleIntervalMs,
           },
         }
       : false,
@@ -494,6 +504,117 @@ test("disabled telemetry adds no HTTP token or WebSocket auth-observer records",
       },
     });
   } finally {
+    await cleanup(app);
+  }
+});
+
+test("samples bounded Serve pressure during pre-hello and HTTP auth stalls without identities", async () => {
+  const app = fixture(true, 0, 5, defineServiceLimits({
+    ...PRODUCTION_LIMITS,
+    maxOperationsPerCaller: 1,
+  }));
+  const forwardedCanary = "198.51.100.77-private-forwarded-canary";
+  const connectionCanary = "private-pressure-connection-canary";
+  const httpCancellation = new AbortController();
+  let client: WsClient | undefined;
+  let pendingHttp: Promise<Response | undefined> | undefined;
+
+  try {
+    client = await rawWebSocket(`ws://127.0.0.1:${app.server.port}/ws`);
+    client.send({
+      v: PROTOCOL_VERSION,
+      t: "hello",
+      clientSessionId: connectionCanary,
+      credential: { kind: "bearer", token: HANGING_WS_TOKEN },
+    });
+    await eventually(() => app.verifier.verified.includes(HANGING_WS_TOKEN));
+
+    pendingHttp = fetch(`${app.base}/api/call`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${HANGING_WS_TOKEN}`,
+        "x-forwarded-for": forwardedCanary,
+      },
+      body: encode({
+        v: PROTOCOL_VERSION,
+        t: "call",
+        id: 250,
+        ref: "ops.publicEcho",
+        args: { secret: PRIVATE_ARGUMENT },
+      }),
+      signal: httpCancellation.signal,
+    }).catch(() => undefined);
+    await eventually(() => {
+      const status = app.server.status();
+      return status.preHelloConnections === 1 && status.httpIngress === 1;
+    });
+
+    const rejected = await fetch(`${app.base}/api/call`, {
+      method: "POST",
+      headers: { "x-forwarded-for": "203.0.113.88" },
+      body: encode({
+        v: PROTOCOL_VERSION,
+        t: "call",
+        id: 251,
+        ref: "ops.publicEcho",
+        args: { secret: PRIVATE_ARGUMENT },
+      }),
+    });
+    expect(rejected.status).toBe(503);
+    await rejected.text();
+    await eventually(() => app.server.status().httpFairShareRejections === 1);
+    await Bun.sleep(20);
+    await app.runtime.telemetry.flush();
+
+    const status = app.server.status();
+    const expected = new Map<string, readonly [number, TelemetryMetricRecord["unit"]]>([
+      ["runtime.transport_websocket_connections", [status.connections, "gauge"]],
+      ["runtime.transport_websocket_pre_hello", [status.preHelloConnections, "gauge"]],
+      ["runtime.transport_websocket_rejections", [status.connectionRejections, "count"]],
+      ["runtime.transport_websocket_outbound_bytes", [status.outboundBytes, "bytes"]],
+      ["runtime.transport_http_ingress", [status.httpIngress, "gauge"]],
+      ["runtime.transport_http_fairness_keys", [status.httpFairnessKeys, "gauge"]],
+      ["runtime.transport_http_global_rejections", [status.httpGlobalRejections, "count"]],
+      ["runtime.transport_http_fair_share_rejections", [status.httpFairShareRejections, "count"]],
+    ]);
+    const latest = new Map<string, TelemetryMetricRecord>();
+    for (const record of app.exported) {
+      if (record.kind === "metric" && expected.has(record.name)) latest.set(record.name, record);
+    }
+    expect(latest.size).toBe(expected.size);
+    for (const [name, [value, unit]] of expected) {
+      expect(latest.get(name)).toMatchObject({ name, value, unit });
+      expect(Object.values(latest.get(name)!.labels).every((label) => label === undefined)).toBe(true);
+    }
+    expect(status.preHelloConnections).toBeLessThanOrEqual(status.connections);
+    expect(status.connections).toBeLessThanOrEqual(app.runtime.limits.maxConnections);
+    expect(status.httpFairnessKeys).toBeLessThanOrEqual(status.httpIngress);
+    expect(status.httpIngress).toBeLessThanOrEqual(app.runtime.limits.maxOperations);
+    expect(status.outboundBytes).toBeLessThanOrEqual(app.runtime.limits.webSocket.maxBytes);
+
+    const serialized = JSON.stringify(app.exported);
+    for (const identity of [HANGING_WS_TOKEN, connectionCanary, forwardedCanary]) {
+      expect(serialized).not.toContain(identity);
+    }
+
+    httpCancellation.abort("test cancellation");
+    await pendingHttp;
+    pendingHttp = undefined;
+    client.socket.close();
+    await within(client.closed());
+    client = undefined;
+    await eventually(() => {
+      const released = app.server.status();
+      return released.connections === 0 && released.httpIngress === 0;
+    });
+    await app.runtime.drain();
+    await Bun.sleep(20);
+    expect(app.runtime.status().telemetry.queuedRecords).toBe(0);
+  } finally {
+    httpCancellation.abort("test cleanup");
+    client?.socket.close();
+    await client?.closed().catch(() => {});
+    await pendingHttp?.catch(() => {});
     await cleanup(app);
   }
 });

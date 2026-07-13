@@ -154,6 +154,7 @@ export interface RuntimeStatus {
   readonly state: RuntimeLifecycleState;
   readonly connections: number;
   readonly activeOperations: number;
+  readonly activeOperationCallers: number;
   readonly activeSse: number;
   readonly scheduledHandlers: number;
   readonly schedulerArmed: boolean;
@@ -259,6 +260,12 @@ function snapshotValue(value: unknown): unknown {
 
 function digest(value: unknown): string {
   return createHash("sha256").update(stableEncode(value)).digest("base64url");
+}
+
+function externalCallerKey(principal: Principal): string {
+  return principal.kind === "user" || principal.kind === "workload"
+    ? digest([principal.kind, principal.issuer, principal.subject])
+    : digest([principal.kind]);
 }
 
 function convergenceError(message: string): DbzzError {
@@ -380,6 +387,7 @@ export class Runtime implements RuntimePort {
   private readonly authCaptureBudget: OutboundBudget;
   private readonly sseBudget: OutboundBudget;
   private readonly sseProducers = new Set<BoundedSseProducer>();
+  private readonly externalOperations = new Map<string, number>();
   private readonly activeWaiters = new Set<() => void>();
   private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
   private readonly ownsTelemetry: boolean;
@@ -456,6 +464,14 @@ export class Runtime implements RuntimePort {
     });
     this.startSampler();
     this.armScheduler();
+  }
+
+  get state(): RuntimeLifecycleState {
+    return this.lifecycle;
+  }
+
+  get connectionCount(): number {
+    return this.sessions.size;
   }
 
   kindOf(address: string): string | null {
@@ -710,6 +726,7 @@ export class Runtime implements RuntimePort {
       request.address,
       String(request.id),
     );
+    const fairnessKey = request.fairnessKey ?? externalCallerKey(request.principal);
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
@@ -718,7 +735,7 @@ export class Runtime implements RuntimePort {
         fn,
         this.procedureContext(
           request.principal,
-          request.fairnessKey ?? digest(request.principal),
+          fairnessKey,
           signal,
           requestBytes,
         ),
@@ -727,7 +744,7 @@ export class Runtime implements RuntimePort {
       aborted(signal);
       return value;
     }, { requestId: String(request.id) }, true, (outcome) =>
-      this.respondProcedure(request, outcome), claimedTrace);
+      this.respondProcedure(request, outcome), claimedTrace, fairnessKey);
   }
 
   private respondProcedure(
@@ -913,6 +930,7 @@ export class Runtime implements RuntimePort {
       request.address,
       String(request.id),
     );
+    const fairnessKey = request.fairnessKey ?? externalCallerKey(request.principal);
     const scope = this.telemetry.enabled
       ? this.operationTrace(
           null,
@@ -937,7 +955,7 @@ export class Runtime implements RuntimePort {
     const admittedAt = scope === undefined ? 0 : performance.now();
     let release: () => void;
     try {
-      release = this.admitOperation(null);
+      release = this.admitOperation(null, fairnessKey);
       if (scope !== undefined) {
         this.telemetry.recordSpan({
           operation: "sse",
@@ -997,7 +1015,7 @@ export class Runtime implements RuntimePort {
           Object.freeze({
             ...this.procedureContext(
               request.principal,
-              request.fairnessKey ?? digest(request.principal),
+              fairnessKey,
               producer.signal,
               requestBytes,
             ),
@@ -1207,6 +1225,7 @@ export class Runtime implements RuntimePort {
       state: this.lifecycle,
       connections: this.sessions.size,
       activeOperations: this.activeOperations,
+      activeOperationCallers: this.externalOperations.size,
       activeSse: this.sseProducers.size,
       scheduledHandlers: this.scheduled.size,
       schedulerArmed: this.schedulerTimer !== null,
@@ -2276,6 +2295,7 @@ export class Runtime implements RuntimePort {
     synthesizeHandler = true,
     finalize?: RuntimeOperationFinalizer<T, R>,
     claimedTrace?: ClaimedHttpTrace,
+    fairnessKey?: string,
   ): Promise<R> {
     const scope = this.telemetry.enabled
       ? this.operationTrace(session, operation, functionName, identifiers, claimedTrace?.context)
@@ -2300,7 +2320,7 @@ export class Runtime implements RuntimePort {
     let release: () => void;
     try {
       this.assertRequestBytes(sizeBytes);
-      release = this.admitOperation(session);
+      release = this.admitOperation(session, fairnessKey);
       if (scope !== undefined) {
         this.telemetry.recordSpan({
           operation,
@@ -2388,10 +2408,13 @@ export class Runtime implements RuntimePort {
     return finishOperationTrace(scope === undefined ? execute() : this.runTraced(scope, execute));
   }
 
-  private admitOperation(session: RuntimeSession | null): () => void {
+  private admitOperation(session: RuntimeSession | null, fairnessKey?: string): () => void {
     this.assertReady();
-    if (this.activeOperations >= this.limits.maxOperations) {
-      throw new DbzzError("overloaded", "operation capacity is full", {
+    const callerOperations = fairnessKey === undefined
+      ? 0
+      : this.externalOperations.get(fairnessKey) ?? 0;
+    if (fairnessKey !== undefined && callerOperations >= this.limits.maxOperationsPerCaller) {
+      throw new DbzzError("overloaded", "per-caller operation capacity is full", {
         retryable: true,
         retryAfterMs: 0,
         resource: "operation",
@@ -2404,14 +2427,27 @@ export class Runtime implements RuntimePort {
         resource: "operation",
       });
     }
+    if (this.activeOperations >= this.limits.maxOperations) {
+      throw new DbzzError("overloaded", "operation capacity is full", {
+        retryable: true,
+        retryAfterMs: 0,
+        resource: "operation",
+      });
+    }
     this.activeOperations++;
     if (session !== null) session.activeOperations++;
+    if (fairnessKey !== undefined) this.externalOperations.set(fairnessKey, callerOperations + 1);
     let active = true;
     return () => {
       if (!active) return;
       active = false;
       this.activeOperations--;
       if (session !== null) session.activeOperations--;
+      if (fairnessKey !== undefined) {
+        const remaining = this.externalOperations.get(fairnessKey)! - 1;
+        if (remaining === 0) this.externalOperations.delete(fairnessKey);
+        else this.externalOperations.set(fairnessKey, remaining);
+      }
       if (this.activeOperations === 0) {
         for (const resolve of this.activeWaiters) resolve();
         this.activeWaiters.clear();
@@ -2500,6 +2536,7 @@ export class Runtime implements RuntimePort {
     const metrics: ReadonlyArray<readonly [string, number, "count" | "bytes" | "milliseconds" | "gauge"]> = [
       ["runtime.connections", this.sessions.size, "gauge"],
       ["runtime.operations", this.activeOperations, "gauge"],
+      ["runtime.operation_callers", this.externalOperations.size, "gauge"],
       ["runtime.sse_streams", this.sseProducers.size, "gauge"],
       ["runtime.subscriptions", reactive.queryListeners + reactive.eventListeners, "gauge"],
       ["runtime.subscription_entries", reactive.sharedEntries, "gauge"],
