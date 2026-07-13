@@ -468,7 +468,11 @@ export class Runtime implements RuntimePort {
     if (context.authEpoch !== 0) throw new DbzzError("validation", "new sessions must start at auth epoch 0");
     if (context.principal.kind === "system") throw new DbzzError("unauthorized", "system identity is local only");
     if (this.sessions.has(context.clientSessionId)) {
-      throw new DbzzError("conflict", "client session is already connected", { resource: "connection" });
+      throw new DbzzError("conflict", "client session is already connected", {
+        retryable: true,
+        retryAfterMs: 0,
+        resource: "connection",
+      });
     }
     if (this.sessions.size >= this.limits.maxConnections) {
       throw new DbzzError("overloaded", "connection capacity is full", {
@@ -676,9 +680,8 @@ export class Runtime implements RuntimePort {
   }
 
   async closeSession(context: SessionRuntimeContext, _outcome: Outcome): Promise<void> {
-    const state = this.sessions.get(context.clientSessionId);
-    if (state === undefined) return;
-    if (state.context.authEpoch !== context.authEpoch) return;
+    const state = this.matchingSession(context);
+    if (state === null) return;
     this.removeSession(state);
   }
 

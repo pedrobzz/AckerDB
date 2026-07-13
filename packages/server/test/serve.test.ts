@@ -748,6 +748,63 @@ describe("WebSocket Session transport", () => {
     await within(first.closed());
     await eventually(() => server.status().connections === 0);
   });
+
+  test("makes overlapping ownership retryable until the old session closes", async () => {
+    const overlapDir = mkdtempSync(join(tmpdir(), "dbzz-overlap-"));
+    const overlapEngine = new Engine(schema, join(overlapDir, "data.db"));
+    reconcile(overlapEngine);
+    const overlapRuntime = new Runtime({
+      engine: overlapEngine,
+      registry: new Registry(functions),
+      limits: defineServiceLimits({ ...limits, maxConnections: 2 }),
+      telemetry: false,
+    });
+    const overlapServer = serve({ runtime: overlapRuntime, port: 0 });
+    const url = `ws://127.0.0.1:${overlapServer.port}/ws`;
+    const sessionId = "overlapping-session";
+    const open = async (): Promise<WsClient> => {
+      const client = await rawWebSocket(url);
+      client.send({
+        v: PROTOCOL_VERSION,
+        t: "hello",
+        clientSessionId: sessionId,
+        credential: { kind: "anonymous" },
+      });
+      return client;
+    };
+
+    try {
+      const first = await open();
+      expect(await within(first.next())).toMatchObject({ t: "welcome", clientSessionId: sessionId });
+
+      const overlapping = await open();
+      expect(await within(overlapping.next())).toMatchObject({
+        t: "err",
+        id: null,
+        outcome: {
+          code: "conflict",
+          retryable: true,
+          retryAfterMs: 0,
+          resource: "connection",
+        },
+      });
+      await within(overlapping.closed());
+      expect(overlapRuntime.status().connections).toBe(1);
+
+      first.socket.close();
+      await within(first.closed());
+      await eventually(() => overlapRuntime.status().connections === 0);
+
+      const resumed = await open();
+      expect(await within(resumed.next())).toMatchObject({ t: "welcome", clientSessionId: sessionId });
+      resumed.socket.close();
+      await within(resumed.closed());
+    } finally {
+      await overlapServer.drain().catch(() => {});
+      overlapEngine.close();
+      rmSync(overlapDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("lifecycle drain", () => {

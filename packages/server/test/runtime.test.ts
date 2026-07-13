@@ -981,7 +981,13 @@ describe("scheduler and lifecycle", () => {
   test("rejects duplicate live client-session ownership", async () => {
     await session.open();
     const duplicate = new SessionHarness(runtime, "session-a");
-    await expect(duplicate.open()).rejects.toMatchObject({ code: "conflict", resource: "connection" });
+    await expect(duplicate.open()).rejects.toMatchObject({
+      code: "conflict",
+      retryable: true,
+      retryAfterMs: 0,
+      resource: "connection",
+    });
+    expect(runtime.status().connections).toBe(1);
   });
 });
 
