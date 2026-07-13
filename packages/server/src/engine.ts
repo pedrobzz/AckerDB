@@ -108,6 +108,7 @@ export interface EngineStatus {
   recoveredFromCrash: boolean;
   databaseBytes: number;
   walBytes: number;
+  lastCheckpointAtMs: number | null;
   mutationRecords: number;
   mutationResultBytes: number;
 }
@@ -799,8 +800,13 @@ export class Engine {
 
   status(): EngineStatus {
     const state = this.writer
-      .query("SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbz_state WHERE singleton = 1")
-      .get() as { commit_version: bigint; mutation_records: bigint; mutation_result_bytes: bigint };
+      .query("SELECT commit_version, mutation_records, mutation_result_bytes, last_checkpoint_at FROM _dbz_state WHERE singleton = 1")
+      .get() as {
+        commit_version: bigint;
+        mutation_records: bigint;
+        mutation_result_bytes: bigint;
+        last_checkpoint_at: number | null;
+      };
     const sqlite = this.writer.query("SELECT sqlite_version() AS version").get() as { version: string };
     const fileBytes = (path: string): number =>
       path === ":memory:" || !existsSync(path) ? 0 : statSync(path).size;
@@ -813,6 +819,7 @@ export class Engine {
       recoveredFromCrash: this.recoveredFromCrash,
       databaseBytes: fileBytes(this.path),
       walBytes: fileBytes(`${this.path}-wal`),
+      lastCheckpointAtMs: state.last_checkpoint_at,
       mutationRecords: Number(state.mutation_records),
       mutationResultBytes: Number(state.mutation_result_bytes),
     };

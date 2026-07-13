@@ -153,6 +153,7 @@ describe("checkpoint, backup, and restore", () => {
     const checkpoint = engine.checkpoint("PASSIVE");
     expect(checkpoint).toMatchObject({ mode: "PASSIVE", busy: 0, oldestReader: null });
     expect(checkpoint.totalFrames).toBeGreaterThanOrEqual(checkpoint.checkpointedFrames);
+    expect(engine.status().lastCheckpointAtMs).toBeGreaterThan(0);
 
     const artifact = join(source.root, "backup.db");
     const manifest = engine.backup(artifact);
