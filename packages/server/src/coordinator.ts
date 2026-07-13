@@ -120,7 +120,7 @@ export class CommitCoordinator<Publication> {
     this.mutationResultBytes = storage.mutationResultBytes;
     this.writer = new BoundedExecutor({
       concurrency: 1,
-      discipline: "fifo",
+      discipline: "round-robin",
       limits: options.limits.writeQueue,
       resource: "writer",
       retryAfterMs: 1,

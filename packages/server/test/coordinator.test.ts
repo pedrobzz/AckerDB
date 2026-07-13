@@ -135,6 +135,38 @@ describe("CommitCoordinator", () => {
     await Promise.all([first, second]);
   });
 
+  test("gives a cold connection a writer turn before one hot connection drains its queue", async () => {
+    const { coordinator } = fixture();
+    const release = deferred();
+    const started = deferred();
+    const order: string[] = [];
+    const request = (fairnessKey: string, label: string, block = false) =>
+      coordinator.execute({
+        operation: "transaction",
+        fairnessKey,
+        requestBytes: 1,
+        work: async () => {
+          if (block) {
+            started.resolve();
+            await release.promise;
+          }
+          order.push(label);
+          return label;
+        },
+        publication: (version) => ({ version }),
+      });
+
+    const blocker = request("blocker", "blocker", true);
+    await started.promise;
+    const hotFirst = request("hot", "hot-1");
+    const hotSecond = request("hot", "hot-2");
+    const cold = request("cold", "cold");
+    release.resolve();
+
+    await Promise.all([blocker, hotFirst, hotSecond, cold]);
+    expect(order).toEqual(["blocker", "hot-1", "cold", "hot-2"]);
+  });
+
   test("replays an identical scoped request and rejects changed semantics", async () => {
     const { coordinator, engine } = fixture();
     let executions = 0;
