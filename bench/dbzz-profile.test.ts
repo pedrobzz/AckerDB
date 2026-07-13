@@ -3,42 +3,64 @@ import {
   assertDbzzStartup,
   benchmarkExecutionOrder,
   compareProfileMetrics,
+  expectedDbzzStartupMode,
   parseDbzzStartup,
+  type DbzzDurabilityMode,
+  type DbzzTelemetryMode,
 } from "./dbzz-profile.ts";
 
-const marker = (telemetry = "enabled", durability = "balanced") =>
-  `booting\n@@dbzz-startup {"telemetry":"${telemetry}","durability":"${durability}"}\n[dbz] ready on http://127.0.0.1:3311\n`;
+const marker = (
+  telemetry: DbzzTelemetryMode = "enabled",
+  durability: DbzzDurabilityMode = "balanced",
+) =>
+  `booting\n@@dbzz-startup ${JSON.stringify(expectedDbzzStartupMode(telemetry, durability))}\n[dbz] ready on http://127.0.0.1:3311\n`;
 
 describe("dbzz benchmark startup confirmation", () => {
   test("parses the exact server-confirmed marker before readiness", () => {
-    expect(parseDbzzStartup(marker())).toEqual({ telemetry: "enabled", durability: "balanced" });
-    expect(assertDbzzStartup(marker("disabled"), { telemetry: "disabled", durability: "balanced" })).toEqual({
-      telemetry: "disabled",
-      durability: "balanced",
+    expect(parseDbzzStartup(marker())).toEqual({
+      ...expectedDbzzStartupMode("enabled", "balanced"),
+      telemetryProfile: "runtime-default",
+      runtimeTelemetry: "omitted",
+      localSink: "default-console",
+      exporter: "unconfigured",
     });
+    expect(
+      assertDbzzStartup(marker("disabled"), expectedDbzzStartupMode("disabled", "balanced")),
+    ).toEqual(expectedDbzzStartupMode("disabled", "balanced"));
   });
 
   test("rejects missing, duplicate, late, malformed, and expanded markers", () => {
     expect(() => parseDbzzStartup("[dbz] ready on http://127.0.0.1:3311\n")).toThrow("exactly one");
-    expect(() => parseDbzzStartup(`${marker()}@@dbzz-startup {"telemetry":"enabled","durability":"balanced"}\n`)).toThrow(
-      "exactly one",
-    );
-    expect(() =>
-      parseDbzzStartup('[dbz] ready on http://127.0.0.1:3311\n@@dbzz-startup {"telemetry":"enabled","durability":"balanced"}\n'),
-    ).toThrow("must precede");
-    expect(() => parseDbzzStartup("@@dbzz-startup nope\n[dbz] ready on x\n")).toThrow("valid JSON");
     expect(() =>
       parseDbzzStartup(
-        '@@dbzz-startup {"telemetry":"enabled","durability":"balanced","source":"env"}\n[dbz] ready on x\n',
-      ),
-    ).toThrow("exactly telemetry and durability");
+        `${marker()}@@dbzz-startup ${JSON.stringify(expectedDbzzStartupMode("enabled", "balanced"))}\n`,
+      )
+    ).toThrow("exactly one");
+    expect(() =>
+      parseDbzzStartup(`[dbz] ready on http://127.0.0.1:3311\n@@dbzz-startup ${JSON.stringify(expectedDbzzStartupMode("enabled", "balanced"))}\n`),
+    ).toThrow("must precede");
+    expect(() => parseDbzzStartup("@@dbzz-startup nope\n[dbz] ready on x\n")).toThrow("valid JSON");
+    const expanded = { ...expectedDbzzStartupMode("enabled", "balanced"), source: "env" };
+    expect(() =>
+      parseDbzzStartup(`@@dbzz-startup ${JSON.stringify(expanded)}\n[dbz] ready on x\n`),
+    ).toThrow("must contain exactly");
   });
 
-  test("rejects invalid and mismatched modes", () => {
-    expect(() => parseDbzzStartup(marker("default"))).toThrow("invalid telemetry");
-    expect(() => parseDbzzStartup(marker("enabled", "normal"))).toThrow("invalid durability");
+  test("rejects invalid, modified, and mismatched modes", () => {
+    expect(() => parseDbzzStartup(marker().replace('"telemetry":"enabled"', '"telemetry":"default"'))).toThrow(
+      "invalid telemetry",
+    );
+    expect(() => parseDbzzStartup(marker().replace('"durability":"balanced"', '"durability":"normal"'))).toThrow(
+      "invalid durability",
+    );
+    expect(() => parseDbzzStartup(marker().replace('"maxRecords":2048', '"maxRecords":2047'))).toThrow(
+      "does not describe",
+    );
+    expect(() => parseDbzzStartup(marker().replace('"runtimeTelemetry":"omitted"', '"runtimeTelemetry":"false"'))).toThrow(
+      "does not describe",
+    );
     expect(() =>
-      assertDbzzStartup(marker(), { telemetry: "disabled", durability: "balanced" }),
+      assertDbzzStartup(marker(), expectedDbzzStartupMode("disabled", "balanced")),
     ).toThrow("expected telemetry=disabled");
   });
 });

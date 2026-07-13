@@ -1,7 +1,9 @@
+import { PRODUCTION_LIMITS, type TelemetryLimits } from "@dbzz/server";
 import type { SystemName } from "./benchmark.ts";
 
 export type DbzzTelemetryMode = "enabled" | "disabled";
 export type DbzzDurabilityMode = "production" | "balanced";
+export type DbzzTelemetryProfile = "runtime-default" | "disabled";
 export type BenchmarkExecutionLeg =
   | "dbzz-telemetry-enabled"
   | "dbzz-telemetry-disabled"
@@ -11,6 +13,12 @@ export type BenchmarkExecutionLeg =
 export interface DbzzStartupMode {
   readonly telemetry: DbzzTelemetryMode;
   readonly durability: DbzzDurabilityMode;
+  readonly telemetryProfile: DbzzTelemetryProfile;
+  readonly runtimeTelemetry: "omitted" | "false";
+  readonly exporter: "unconfigured";
+  readonly localSink: "default-console" | "disabled";
+  readonly telemetryLimits: TelemetryLimits | null;
+  readonly gracefulShutdownMs: number;
 }
 
 export interface ProfileMetric {
@@ -28,6 +36,22 @@ export interface PairedProfileMetric {
 }
 
 export const DBZZ_STARTUP_PREFIX = "@@dbzz-startup ";
+
+export function expectedDbzzStartupMode(
+  telemetry: DbzzTelemetryMode,
+  durability: DbzzDurabilityMode,
+): DbzzStartupMode {
+  return Object.freeze({
+    telemetry,
+    durability,
+    telemetryProfile: telemetry === "enabled" ? "runtime-default" : "disabled",
+    runtimeTelemetry: telemetry === "enabled" ? "omitted" : "false",
+    exporter: "unconfigured",
+    localSink: telemetry === "enabled" ? "default-console" : "disabled",
+    telemetryLimits: telemetry === "enabled" ? Object.freeze({ ...PRODUCTION_LIMITS.telemetry }) : null,
+    gracefulShutdownMs: PRODUCTION_LIMITS.gracefulShutdownMs,
+  });
+}
 
 export function benchmarkExecutionOrder(
   systemOrder: readonly SystemName[],
@@ -107,8 +131,13 @@ export function parseDbzzStartup(output: string): DbzzStartupMode {
     throw new Error("dbzz mode marker must be an object");
   }
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).sort().join(",") !== "durability,telemetry") {
-    throw new Error("dbzz mode marker must contain exactly telemetry and durability");
+  if (
+    Object.keys(record).sort().join(",") !==
+      "durability,exporter,gracefulShutdownMs,localSink,runtimeTelemetry,telemetry,telemetryLimits,telemetryProfile"
+  ) {
+    throw new Error(
+      "dbzz mode marker must contain exactly the benchmark runtime, telemetry, durability, and shutdown profile",
+    );
   }
   if (record.telemetry !== "enabled" && record.telemetry !== "disabled") {
     throw new Error("dbzz mode marker has an invalid telemetry mode");
@@ -116,14 +145,25 @@ export function parseDbzzStartup(output: string): DbzzStartupMode {
   if (record.durability !== "production" && record.durability !== "balanced") {
     throw new Error("dbzz mode marker has an invalid durability mode");
   }
-  return Object.freeze({ telemetry: record.telemetry, durability: record.durability });
+  const expected = expectedDbzzStartupMode(record.telemetry, record.durability);
+  if (
+    record.telemetryProfile !== expected.telemetryProfile ||
+    record.runtimeTelemetry !== expected.runtimeTelemetry ||
+    record.exporter !== expected.exporter ||
+    record.localSink !== expected.localSink ||
+    JSON.stringify(record.telemetryLimits) !== JSON.stringify(expected.telemetryLimits) ||
+    record.gracefulShutdownMs !== expected.gracefulShutdownMs
+  ) {
+    throw new Error("dbzz mode marker does not describe the benchmark telemetry profile exactly");
+  }
+  return expected;
 }
 
 export function assertDbzzStartup(output: string, expected: DbzzStartupMode): DbzzStartupMode {
   const actual = parseDbzzStartup(output);
-  if (actual.telemetry !== expected.telemetry || actual.durability !== expected.durability) {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(
-      `dbzz started with telemetry=${actual.telemetry}, durability=${actual.durability}; expected telemetry=${expected.telemetry}, durability=${expected.durability}`,
+      `dbzz started with telemetry=${actual.telemetry}, durability=${actual.durability}, profile=${actual.telemetryProfile}; expected telemetry=${expected.telemetry}, durability=${expected.durability}, profile=${expected.telemetryProfile}`,
     );
   }
   return actual;

@@ -24,19 +24,42 @@ anything. Every system gets fresh state, a warmup before measured operations,
 and the same deterministic seed. All-three-system runs rotate system order and
 write `bench/results/<timestamp>-<gitsha>.json`; partial runs are diagnostic and
 are not saved. A full run starts DBZZ twice from fresh equivalent state: once
-with default telemetry enabled and once with telemetry completely disabled.
-`systems.dbzz` remains the enabled profile used in the three-system tables; the
-disabled result and enabled-versus-disabled deltas are separate schema-v4
-fields, not a fake fourth database.
+with the literal `Runtime` telemetry default (the constructor option is omitted),
+then once with `telemetry: false`. `systems.dbzz` remains the enabled profile
+used in the three-system tables; the disabled result and
+enabled-versus-disabled deltas are separate schema-v4 fields, not a fake fourth
+database or a third synthetic exporter leg.
 
 Both DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`; the runner selects
-`DBZZ_TELEMETRY=enabled|disabled` for the paired profiles. It accepts a leg only
-when the server emits exactly one
-`@@dbzz-startup {"telemetry":"...","durability":"..."}` marker with the
-requested values before readiness. The record therefore contains the
-server-confirmed modes rather than treating requested environment variables as
-proof. The paired profile order alternates between saved runs and is preserved
-in `executionOrder`.
+`DBZZ_TELEMETRY=enabled|disabled` for the paired profiles. The enabled profile
+is labeled `runtime-default`: it uses the production retention/queue limits,
+the built-in console local sink, and no exporter. The disabled profile is
+labeled `disabled` and configures neither an exporter nor a local sink. DBZZ
+does not bundle a default exporter, so exporter cost is unavailable in this
+pair rather than estimated through benchmark-only code.
+
+The benchmark server emits exactly one startup marker before readiness. The
+marker confirms telemetry/durability mode, profile name, exporter/local-sink
+selection, and the exact production telemetry limits. A saved run additionally
+requires a terminal telemetry report that proves delivered local span/event
+output, collected metric series, fixed-dimension operation/stage aggregates,
+configured queue and trace-retention bounds, an unconfigured and unused
+exporter, and empty queues, in-flight work, and trace state after drain. The
+required aggregate cells follow the actual execution paths: `query.queue`,
+`mutation.queue`, `procedure.admission`, and `subscription.queue`; their counts
+and operation totals must cover the executed workload. Disabled legs must prove
+zero queue, metric-series, drop, trace-retention, local-sink, exporter, and
+aggregate activity.
+
+The parent streams DBZZ stdout and stderr while retaining only startup/readiness
+control lines, a 64 KiB diagnostic tail, and fixed telemetry counters and byte
+totals; telemetry JSON lines are not accumulated in memory. Because the default
+runtime has no exporter, records in its main exporter queue are dropped at
+terminal drain and that bounded queue may also overflow under load. The report
+checks those visible drain/overflow/expiry counters account for the retained
+queue instead of pretending default drops are zero. The local sink must still
+deliver output without failure or timeout. The paired profile order alternates
+between saved runs and is preserved in `executionOrder`.
 
 Prerequisites:
 
@@ -149,7 +172,15 @@ between phases; per-scenario baseline and delta are both printed, and a negative
 delta is possible when a runtime releases memory during the later plateau.
 The enabled and disabled DBZZ legs use this identical sampling and workload;
 schema v4 stores both raw profiles plus paired throughput, p50/p95/p99 latency,
-CPU, and RSS deltas.
+CPU, and RSS deltas. The paired table includes server CPU and peak RSS for each
+highest-concurrency operation case as well as connection and subscription
+resource plateaus. The telemetry report separately stores bounded local-output
+record/byte counters, before/after queue and trace-retention snapshots, drop
+accounting, exporter absence/zero counters, and the strict operation/stage
+aggregate matrix. There is no bundled default exporter, so this run cannot
+report an exporter cost. The paired process-tree deltas measure the cost of the
+real default local serialization/output, retention, aggregates, trace state,
+and runtime metrics relative to `telemetry: false`.
 
 ## What these numbers mean
 

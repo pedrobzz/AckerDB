@@ -1,7 +1,7 @@
 /** Apples-to-apples local microbenchmark orchestrator. */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { arch, cpus, platform, release, totalmem } from "node:os";
+import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { join, relative } from "node:path";
 import type { Subprocess } from "bun";
 import { benchmarkConfigFromEnv, type DriverResult, type SystemName } from "./benchmark.ts";
@@ -9,11 +9,18 @@ import {
   assertDbzzStartup,
   benchmarkExecutionOrder,
   compareProfileMetrics,
+  expectedDbzzStartupMode,
   type BenchmarkExecutionLeg,
   type DbzzStartupMode,
   type DbzzTelemetryMode,
   type PairedProfileMetric,
 } from "./dbzz-profile.ts";
+import {
+  assertDbzzTelemetryWorkload,
+  DbzzOutputCollector,
+  parseDbzzTelemetryReport,
+  type DbzzTelemetryReport,
+} from "./dbzz-telemetry.ts";
 import {
   ProcessTreeMonitor,
   readProcessTable,
@@ -30,6 +37,7 @@ const SPACETIME_PORT = 5321;
 const REQUIRED_SPACETIME_VERSION = "2.6.1";
 const RESOURCE_SAMPLE_MS = Number(process.env.BENCH_RESOURCE_SAMPLE_MS ?? 250);
 const COOLDOWN_MS = Number(process.env.BENCH_COOLDOWN_MS ?? 2_000);
+const DBZZ_SHUTDOWN_SLACK_MS = 2_000;
 const ALL_SYSTEMS: SystemName[] = ["dbzz", "convex", "spacetimedb"];
 
 interface ResourceCollection {
@@ -46,6 +54,7 @@ interface MeasuredDriverResult {
 
 interface DbzzMeasuredDriverResult extends MeasuredDriverResult {
   startupMode: DbzzStartupMode;
+  telemetryReport: DbzzTelemetryReport;
 }
 
 type SystemResults = Partial<Record<SystemName, MeasuredDriverResult>> & {
@@ -72,6 +81,7 @@ interface RunRecord {
     sampleIntervalMs: number;
     durability: Record<SystemName, string>;
     dbzzProfiles: string;
+    dbzzTelemetryValidation: string;
     spacetimeQueryTransport: string;
     subscriptionCapacity: string;
   };
@@ -115,6 +125,24 @@ function tail(child: { stdout: ReadableStream<Uint8Array> }): { output: () => st
     for await (const chunk of child.stdout) buffer += new TextDecoder().decode(chunk);
   })();
   return { output: () => buffer, done };
+}
+
+async function stopDbzzServer(
+  server: Subprocess,
+  timeoutMs: number,
+): Promise<{ exitCode: number; timedOut: boolean }> {
+  if (server.exitCode === null) server.kill("SIGTERM");
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const graceful = await Promise.race([
+    server.exited.then((exitCode) => ({ exitCode, timedOut: false })),
+    new Promise<{ exitCode: number; timedOut: true }>((resolve) => {
+      timeout = setTimeout(() => resolve({ exitCode: -1, timedOut: true }), timeoutMs);
+    }),
+  ]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  if (!graceful.timedOut) return graceful;
+  if (server.exitCode === null) server.kill("SIGKILL");
+  return { exitCode: await server.exited, timedOut: true };
 }
 
 async function waitFor(output: () => string, needle: string, timeoutMs: number): Promise<void> {
@@ -269,33 +297,85 @@ async function runMeasuredClient(
 }
 
 async function benchDbzz(telemetry: DbzzTelemetryMode): Promise<DbzzMeasuredDriverResult> {
-  const expectedMode: DbzzStartupMode = { telemetry, durability: "balanced" };
+  const expectedMode = expectedDbzzStartupMode(telemetry, "balanced");
+  const reportPath = join(tmpdir(), `dbzz-benchmark-telemetry-${process.pid}-${randomUUID()}.json`);
   assertPortsFree([DBZZ_PORT]);
-  console.log(`→ dbzz: fresh server (telemetry=${telemetry}, durability=balanced)`);
+  console.log(
+    `→ dbzz: fresh server (telemetry=${telemetry}, profile=${expectedMode.telemetryProfile}, durability=balanced)`,
+  );
   rmSync(join(BENCH, "dbzz-app", ".zdb"), { recursive: true, force: true });
   const server = Bun.spawn(
-    [process.execPath, join(REPO, "packages", "cli", "src", "main.ts"), "start", join(BENCH, "dbzz-app")],
+    [process.execPath, join(BENCH, "dbzz-server.ts"), join(BENCH, "dbzz-app")],
     {
       stdout: "pipe",
-      stderr: "inherit",
-      env: { ...process.env, DBZZ_TELEMETRY: telemetry, DBZZ_DURABILITY: "balanced" },
+      stderr: "pipe",
+      env: {
+        ...process.env,
+        DBZZ_TELEMETRY: telemetry,
+        DBZZ_DURABILITY: "balanced",
+        DBZZ_BENCH_TELEMETRY_REPORT: reportPath,
+      },
     },
   );
-  const output = tail(server as never);
+  const output = new DbzzOutputCollector();
+  const outputDone = Promise.all([
+    (async () => {
+      for await (const chunk of server.stdout) output.writeStdout(chunk);
+    })(),
+    (async () => {
+      for await (const chunk of server.stderr) output.writeStderr(chunk);
+    })(),
+  ]).then(() => output.finish());
+  let startupMode: DbzzStartupMode | undefined;
+  let startupIdle: MeasuredDriverResult["startupIdle"] | undefined;
+  let measured: Omit<MeasuredDriverResult, "startupIdle" | "implementationVersion"> | undefined;
+  let workloadError: unknown;
   try {
-    await waitFor(output.output, "ready on", 15_000);
-    const startupMode = assertDbzzStartup(output.output(), expectedMode);
-    const startupIdle = await measureStartupIdle(server.pid);
-    const measured = await runMeasuredClient(
+    await waitFor(() => output.output(), "ready on", 15_000);
+    startupMode = assertDbzzStartup(output.output(), expectedMode);
+    startupIdle = await measureStartupIdle(server.pid);
+    measured = await runMeasuredClient(
       [process.execPath, join(BENCH, "dbzz-client.ts")],
       { DBZZ_URL: `http://127.0.0.1:${DBZZ_PORT}` },
       server.pid,
     );
-    return { ...measured, startupIdle, implementationVersion: "workspace", startupMode };
+  } catch (error) {
+    workloadError = error;
+  }
+  try {
+    const stopped = await stopDbzzServer(
+      server,
+      expectedMode.gracefulShutdownMs + DBZZ_SHUTDOWN_SLACK_MS,
+    );
+    await outputDone;
+    if (stopped.timedOut) {
+      throw new Error(
+        `dbzz benchmark server exceeded its ${expectedMode.gracefulShutdownMs}ms graceful shutdown deadline`,
+      );
+    }
+    if (workloadError !== undefined) throw workloadError;
+    if (stopped.exitCode !== 0) {
+      throw new Error(`dbzz benchmark server failed with exit code ${stopped.exitCode}:\n${output.output()}`);
+    }
+    if (startupMode === undefined || startupIdle === undefined || measured === undefined) {
+      throw new Error("dbzz benchmark server did not complete its measured workload");
+    }
+    const telemetryReport = parseDbzzTelemetryReport(
+      readFileSync(reportPath, "utf8"),
+      startupMode,
+      output.snapshot(),
+    );
+    assertDbzzTelemetryWorkload(telemetryReport, measured.workload);
+    return { ...measured, startupIdle, implementationVersion: "workspace", startupMode, telemetryReport };
   } finally {
-    server.kill();
-    await server.exited;
-    await output.done;
+    if (server.exitCode === null) {
+      server.kill("SIGKILL");
+      await server.exited;
+    }
+    await outputDone.catch(() => {});
+    output.finish();
+    rmSync(reportPath, { force: true });
+    assertPortFree(DBZZ_PORT);
   }
 }
 
@@ -540,12 +620,40 @@ function comparisonMetrics(system: MeasuredDriverResult): ComparableMetric[] {
     { label: "startup idle RSS peak MB", value: system.startupIdle.window.rssMb.peak, lowerIsBetter: true },
     { label: "startup idle CPU cores", value: system.startupIdle.window.cpuCores, lowerIsBetter: true },
   ];
-  for (const operation of system.workload.operations.filter((item) => item.profile.name === "saturation")) {
+  const operationProfile = system.workload.config.profile === "quick" ? "concurrent" : "saturation";
+  for (const operation of system.workload.operations.filter((item) => item.profile.name === operationProfile)) {
+    const serverWindows = operation.trials.map((trial) => resourceWindow(system, trial.phaseId));
     metrics.push(
-      { label: `${operation.operation} saturation TPS`, value: operation.medianThroughputPerSec, lowerIsBetter: false },
-      { label: `${operation.operation} saturation p50 ms`, value: operation.medianLatencyP50Ms, lowerIsBetter: true },
-      { label: `${operation.operation} saturation p95 ms`, value: operation.medianLatencyP95Ms, lowerIsBetter: true },
-      { label: `${operation.operation} saturation p99 ms`, value: operation.medianLatencyP99Ms, lowerIsBetter: true },
+      {
+        label: `${operation.operation} ${operationProfile} TPS`,
+        value: operation.medianThroughputPerSec,
+        lowerIsBetter: false,
+      },
+      {
+        label: `${operation.operation} ${operationProfile} p50 ms`,
+        value: operation.medianLatencyP50Ms,
+        lowerIsBetter: true,
+      },
+      {
+        label: `${operation.operation} ${operationProfile} p95 ms`,
+        value: operation.medianLatencyP95Ms,
+        lowerIsBetter: true,
+      },
+      {
+        label: `${operation.operation} ${operationProfile} p99 ms`,
+        value: operation.medianLatencyP99Ms,
+        lowerIsBetter: true,
+      },
+      {
+        label: `${operation.operation} ${operationProfile} server CPU cores`,
+        value: medianNumber(serverWindows.map((window) => window.cpuCores)),
+        lowerIsBetter: true,
+      },
+      {
+        label: `${operation.operation} ${operationProfile} server RSS peak MB`,
+        value: Math.max(...serverWindows.map((window) => window.rssMb.peak)),
+        lowerIsBetter: true,
+      },
     );
   }
   const connection = system.workload.connections[system.workload.connections.length - 1]!;
@@ -656,6 +764,22 @@ function printDbzzTelemetryCost(metrics: PairedProfileMetric[]): void {
     const delta = metric.enabledVsDisabledPercent;
     console.log(
       `| ${metric.label} | ${fmt(metric.enabled)} | ${fmt(metric.disabled)} | ${delta === null ? "—" : `${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%`} |`,
+    );
+  }
+}
+
+function printDbzzTelemetryStatus(results: readonly DbzzMeasuredDriverResult[]): void {
+  console.log("\nDBZZ default-local telemetry validation and bounded retention status");
+  console.log(
+    "| profile | local records | serialized MB | retained before drain | drain drops | overflow drops | query queue | mutation queue | procedure admission | subscription queue | trace promoted/discarded | exporter configured |",
+  );
+  console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+  for (const result of results) {
+    const report = result.telemetryReport;
+    const operations = report.aggregates.operations;
+    const trace = report.runtime.afterDrain.traceRetention;
+    console.log(
+      `| ${report.startupMode.telemetryProfile} | ${report.localOutput.records} | ${fmt(report.localOutput.bytes / 1024 ** 2)} | ${report.drainAccounting.retainedBeforeDrain} | ${report.drainAccounting.drainDropDelta} | ${report.runtime.afterDrain.dropped.overflow} | ${operations.query.stages.queue.count} | ${operations.mutation.stages.queue.count} | ${operations.procedure.stages.admission.count} | ${operations.subscription.stages.queue.count} | ${trace.promotedTraces}/${trace.discardedTraces} | ${report.runtime.afterDrain.exporter.configured ? "yes" : "no"} |`,
     );
   }
 }
@@ -924,6 +1048,11 @@ if (fullRun) {
 }
 printResults(systems);
 if (dbzzTelemetryCost !== undefined) printDbzzTelemetryCost(dbzzTelemetryCost);
+if (systems.dbzz !== undefined) {
+  printDbzzTelemetryStatus(
+    dbzzTelemetryDisabled === undefined ? [systems.dbzz] : [systems.dbzz, dbzzTelemetryDisabled],
+  );
+}
 if (fullRun) {
   if (dbzzTelemetryDisabled === undefined || dbzzTelemetryCost === undefined) {
     throw new Error("full benchmark DBZZ profile comparison is missing");
@@ -964,7 +1093,8 @@ if (fullRun) {
         convex: "current local backend native default",
         spacetimedb: "confirmed reads explicitly enabled; standalone native durable commit log",
       },
-      dbzzProfiles: "systems.dbzz is server-confirmed telemetry=enabled; dbzzTelemetryDisabled is server-confirmed telemetry=disabled; both use server-confirmed durability=balanced and fresh equivalent state",
+      dbzzProfiles: "systems.dbzz omits Runtime.telemetry and therefore measures the exact default local console sink, retention, and limits; dbzzTelemetryDisabled passes telemetry=false; neither profile configures an exporter and both use durability=balanced with fresh equivalent state",
+      dbzzTelemetryValidation: "the parent streams DBZZ stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; every saved leg validates local record/delivery accounting, bounded queue and trace-retention state, exporter absence, the query.queue/mutation.queue/procedure.admission/subscription.queue aggregate matrix, and lower-bound consistency with workload attempts; disabled telemetry must remain entirely inactive",
       spacetimeQueryTransport: "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
       subscriptionCapacity: "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery",
     },
