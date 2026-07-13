@@ -43,6 +43,14 @@ describe("production limits", () => {
         maxBatchRecords: 3,
       }),
     ).toThrow("cannot exceed");
+    expect(validateTelemetryLimits({
+      ...PRODUCTION_LIMITS.telemetry,
+      slowOperationMs: 0,
+    }).slowOperationMs).toBe(0);
+    expect(() => validateTelemetryLimits({
+      ...PRODUCTION_LIMITS.telemetry,
+      slowOperationMs: -1,
+    })).toThrow("non-negative safe integer");
     expect(() =>
       defineServiceLimits({ ...PRODUCTION_LIMITS, maxOperationsPerConnection: 5_000 }),
     ).toThrow("cannot exceed");

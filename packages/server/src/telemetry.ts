@@ -25,6 +25,7 @@ export const TELEMETRY_STAGES = [
   "auth",
   "policy",
   "handler",
+  "fetch",
   "statement",
   "storage",
   "commit",
@@ -115,6 +116,8 @@ export interface TelemetrySpanInput {
   readonly stage: TelemetryStage;
   readonly outcome: TelemetryOutcome;
   readonly functionName?: string;
+  /** Sanitized operation summary such as `messages.collect`; never literal SQL. */
+  readonly statement?: string;
   readonly resource?: TelemetryResource;
   readonly durationMs: number;
   readonly sizeBytes?: number;
@@ -175,6 +178,7 @@ export interface TelemetrySpanRecord extends TelemetryRecordContext {
   readonly stage: TelemetryStage;
   readonly outcome: TelemetryOutcome;
   readonly function?: string;
+  readonly statement?: string;
   readonly resource?: TelemetryResource;
   readonly durationMs: number;
   readonly sizeBytes?: number;
@@ -543,16 +547,21 @@ export function captureTelemetryLink(context: Pick<TelemetryTraceContext, "trace
 
 export class Telemetry {
   readonly enabled: boolean;
+  readonly sampleIntervalMs: number;
   private readonly state?: TelemetryState;
 
   constructor(options: TelemetryOptions = {}) {
     this.enabled = options.enabled !== false;
-    if (!this.enabled) return;
+    if (!this.enabled) {
+      this.sampleIntervalMs = 0;
+      return;
+    }
 
     const limits = validateTelemetryLimits({
       ...PRODUCTION_LIMITS.telemetry,
       ...options.limits,
     });
+    this.sampleIntervalMs = limits.sampleIntervalMs;
     const scheduler = options.scheduler ?? SYSTEM_SCHEDULER;
     const state: TelemetryState = {
       limits,
@@ -643,6 +652,7 @@ export class Telemetry {
       stage: input.stage,
       outcome: input.outcome,
       function: safeName(input.functionName),
+      statement: safeName(input.statement),
       resource,
       durationMs: input.durationMs,
       sizeBytes: safeCount(input.sizeBytes),

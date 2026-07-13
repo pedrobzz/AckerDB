@@ -41,6 +41,8 @@ export {
   type ReadRecorder,
   type WriteCollector,
   type EventEmit,
+  type DbStatementObservation,
+  type DbStatementObserver,
 } from "./db.ts";
 export { idKey, ixKey, scanKey, emitWriteKeys } from "./keys.ts";
 export type {
@@ -169,6 +171,12 @@ export {
   WebSocketSessionSink,
   type BoundedSseProducerOptions,
   type DeliveryClock,
+  type DeliveryObservation,
+  type DeliveryObserver,
+  type DeliveryOutcome,
+  type DeliverySource,
+  type DeliveryStage,
+  type DeliveryTransport,
   type OutboundBudgetSnapshot,
   type OutboundLane,
   type OutboundReservation,
@@ -190,6 +198,10 @@ export {
   type QuerySubscriptionOptions,
   type ReactiveCommitResult,
   type ReactiveEvent,
+  type ReactiveObservation,
+  type ReactiveObservationOutcome,
+  type ReactiveObservationPhase,
+  type ReactiveObserver,
   type ReactiveSnapshot,
   type Subscriber,
 } from "./reactive.ts";
@@ -213,6 +225,8 @@ export {
   Runtime,
   type RuntimeLifecycleState,
   type RuntimeOptions,
+  type RuntimeProcedureRequest,
+  type RuntimeSseRequest,
   type RuntimeStatus,
 } from "./runtime.ts";
 export {

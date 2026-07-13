@@ -74,6 +74,12 @@ function positiveInteger(value: number, path: string): void {
   }
 }
 
+function nonNegativeInteger(value: number, path: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${path} must be a non-negative safe integer`);
+  }
+}
+
 export function validateCapacityLimits(limits: CapacityLimits, path = "capacity"): CapacityLimits {
   positiveInteger(limits.maxItems, `${path}.maxItems`);
   positiveInteger(limits.maxBytes, `${path}.maxBytes`);
@@ -88,7 +94,8 @@ export function validateQueueLimits(limits: QueueLimits, path = "queue"): QueueL
 
 export function validateTelemetryLimits(limits: TelemetryLimits): TelemetryLimits {
   for (const [path, value] of Object.entries(limits)) {
-    positiveInteger(value, `telemetry.${path}`);
+    if (path === "slowOperationMs") nonNegativeInteger(value, `telemetry.${path}`);
+    else positiveInteger(value, `telemetry.${path}`);
   }
   if (limits.maxBatchRecords > limits.maxRecords) {
     throw new RangeError("telemetry.maxBatchRecords cannot exceed telemetry.maxRecords");

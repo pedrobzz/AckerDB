@@ -431,6 +431,9 @@ export class DbzzServer {
         socket,
         budget: this.outbound,
         limits: this.runtime.limits,
+        ...(this.runtime.telemetry.enabled
+          ? { observer: this.runtime.deliveryObserver }
+          : {}),
       });
       data.session = new Session({
         runtime: this.runtime,

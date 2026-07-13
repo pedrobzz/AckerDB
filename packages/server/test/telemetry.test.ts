@@ -249,6 +249,7 @@ describe("Telemetry", () => {
       stage: "storage",
       outcome: "ok",
       functionName: "todos.list",
+      statement: "todos.collect",
       resource: "reader",
       durationMs: 101,
       sizeBytes: 42,
@@ -297,6 +298,7 @@ describe("Telemetry", () => {
       expect(Object.isFrozen(span)).toBe(true);
       expect(Object.isFrozen(span.links)).toBe(true);
       expect(span.links?.[0]).toEqual(link);
+      expect(span.statement).toBe("todos.collect");
     }
     const exported = JSON.stringify(batches);
     expect(exported).not.toContain(canary);

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
 import {
   PROTOCOL_VERSION,
@@ -24,16 +25,26 @@ import {
   SYSTEM_PRINCIPAL,
   type Principal,
 } from "./auth.ts";
-import { CommitCoordinator, type CommitResult } from "./coordinator.ts";
+import {
+  CommitCoordinator,
+  withFetchObserver,
+  type CommitResult,
+  type CommitTelemetryEvent,
+  type FetchObservation,
+} from "./coordinator.ts";
 import { ValidationError } from "./dbz.ts";
 import {
   makeDbReader,
+  type DbStatementObservation,
+  type DbStatementObserver,
   type ReadRecorder,
   type WriteCollector,
 } from "./db.ts";
 import {
   BoundedSseProducer,
   OutboundBudget,
+  type DeliveryObservation,
+  type DeliveryObserver,
   type OutboundReservation,
 } from "./delivery.ts";
 import type { Engine } from "./engine.ts";
@@ -50,7 +61,14 @@ import type {
   StreamWriter,
   TxCtx,
 } from "./functions.ts";
-import { authorizeInvocation, invokeFunction } from "./invocation.ts";
+import {
+  authorizeInvocation,
+  invokeFunction,
+  withInvocationObserver,
+  type InvocationObservation,
+  type InvocationPhaseRunner,
+  type InvocationPhaseScope,
+} from "./invocation.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { outcomeFromError } from "./outcome.ts";
@@ -59,6 +77,8 @@ import {
   ReactiveCommit,
   type QueryEvaluation,
   type QueryEvaluationInput,
+  type ReactiveObservation,
+  type ReactiveObserver,
   type Subscriber,
 } from "./reactive.ts";
 import type { Registry } from "./registry.ts";
@@ -66,7 +86,11 @@ import {
   Telemetry,
   type TelemetryOperation,
   type TelemetryOptions,
+  type TelemetryOutcome,
+  type TelemetryResource,
   type TelemetrySnapshot,
+  type TelemetrySpanInput,
+  type TelemetryStage,
   type TelemetryTraceContext,
 } from "./telemetry.ts";
 import type {
@@ -161,6 +185,25 @@ interface Deferred<T> {
   resolve(value: T): void;
 }
 
+type TraceIdentifiers = Partial<Pick<
+  TelemetryTraceContext,
+  "requestId" | "mutationId" | "commitId" | "subscriptionId"
+>>;
+
+interface InvocationTraceNode {
+  readonly parent: TelemetryTraceContext;
+  readonly handler: TelemetryTraceContext;
+}
+
+interface RuntimeTraceScope {
+  readonly operation: TelemetryOperation;
+  readonly rootFunction?: string;
+  readonly rootContext: TelemetryTraceContext;
+  readonly currentContext: TelemetryTraceContext;
+  readonly currentFunction?: string;
+  readonly invocations: Map<number, InvocationTraceNode>;
+}
+
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((accept) => {
@@ -205,13 +248,40 @@ function aborted(signal: AbortSignal | undefined): void {
       });
 }
 
-function telemetryContext(connectionId?: string, requestId?: string): TelemetryTraceContext {
+function telemetryContext(
+  identifiers: TraceIdentifiers & { readonly connectionId?: string } = {},
+): TelemetryTraceContext {
   return Object.freeze({
     traceId: crypto.randomUUID(),
     spanId: crypto.randomUUID(),
-    ...(connectionId === undefined ? {} : { connectionId }),
-    ...(requestId === undefined ? {} : { requestId }),
+    ...identifiers,
   });
+}
+
+function childTelemetryContext(
+  parent: TelemetryTraceContext,
+  identifiers: TraceIdentifiers = {},
+): TelemetryTraceContext {
+  return Object.freeze({
+    traceId: parent.traceId,
+    spanId: crypto.randomUUID(),
+    parentSpanId: parent.spanId,
+    ...(parent.requestId === undefined ? {} : { requestId: parent.requestId }),
+    ...(parent.connectionId === undefined ? {} : { connectionId: parent.connectionId }),
+    ...(parent.mutationId === undefined ? {} : { mutationId: parent.mutationId }),
+    ...(parent.commitId === undefined ? {} : { commitId: parent.commitId }),
+    ...(parent.subscriptionId === undefined ? {} : { subscriptionId: parent.subscriptionId }),
+    ...identifiers,
+  });
+}
+
+function observationOutcome(
+  outcome: ReactiveObservation["outcome"],
+): TelemetryOutcome {
+  return outcome === "changed" || outcome === "unchanged" ||
+      outcome === "matched" || outcome === "unmatched"
+    ? "ok"
+    : outcome;
 }
 
 /**
@@ -225,6 +295,48 @@ export class Runtime implements RuntimePort {
   readonly limits: ServiceLimits;
   readonly telemetry: Telemetry;
   readonly reactive: OrderedReactive<ReactiveContext>;
+  readonly deliveryObserver: DeliveryObserver = (observation): void => {
+    const outcome: TelemetryOutcome = observation.outcome === "dropped"
+      ? "unavailable"
+      : observation.outcome;
+    const fallbackOperation: TelemetryOperation = observation.transport === "sse"
+      ? "sse"
+      : "subscription";
+    if (observation.droppedObservations !== undefined) {
+      this.telemetry.recordMetric({
+        name: "delivery.observations_dropped",
+        value: observation.droppedObservations,
+        unit: "count",
+        labels: {
+          operation: fallbackOperation,
+          resource: observation.transport === "sse" ? "sse" : "outbound",
+        },
+      });
+    }
+    this.traceSpan({
+      stage: observation.stage,
+      outcome,
+      resource: observation.transport === "sse" ? "sse" : "outbound",
+      durationMs: observation.durationMs,
+      sizeBytes: observation.bytes,
+    }, fallbackOperation);
+    if (
+      observation.source === "terminal" &&
+      observation.stage === "encoding" &&
+      observation.terminalOutcome !== undefined
+    ) {
+      const scope = this.trace.getStore();
+      this.telemetry.recordEvent({
+        name: "failure",
+        level: "error",
+        operation: scope?.operation ?? fallbackOperation,
+        stage: "delivery",
+        outcome: observation.terminalOutcome,
+        resource: observation.transport === "sse" ? "sse" : "outbound",
+        context: this.observationContext(),
+      });
+    }
+  };
 
   private readonly now: () => number;
   private readonly reader: BoundedExecutor;
@@ -236,6 +348,7 @@ export class Runtime implements RuntimePort {
   private readonly sseBudget: OutboundBudget;
   private readonly sseProducers = new Set<BoundedSseProducer>();
   private readonly activeWaiters = new Set<() => void>();
+  private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
   private readonly ownsTelemetry: boolean;
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
@@ -258,7 +371,15 @@ export class Runtime implements RuntimePort {
     this.ownsTelemetry = !(options.telemetry instanceof Telemetry);
     this.telemetry = options.telemetry instanceof Telemetry
       ? options.telemetry
-      : new Telemetry(options.telemetry === false ? { enabled: false } : options.telemetry);
+      : new Telemetry(options.telemetry === false
+        ? { enabled: false }
+        : {
+            ...options.telemetry,
+            limits: {
+              ...this.limits.telemetry,
+              ...options.telemetry?.limits,
+            },
+          });
     this.availableReaders = [this.engine.reader];
     this.reader = new BoundedExecutor({
       concurrency: this.limits.revalidationConcurrency,
@@ -273,6 +394,7 @@ export class Runtime implements RuntimePort {
       initialVersion: this.engine.commitVersion(),
       now: this.now,
       evaluate: (input) => this.evaluateSubscription(input),
+      ...(this.telemetry.enabled ? { observer: this.observeReactive } : {}),
     });
     this.coordinator = new CommitCoordinator({
       engine: this.engine,
@@ -410,7 +532,7 @@ export class Runtime implements RuntimePort {
         ...(message.cursor === undefined ? {} : { cursor: Object.freeze({ ...message.cursor }) }),
       });
       await this.attachSubscription(state, message.id, definition, true);
-    });
+    }, { requestId: String(message.id), subscriptionId: String(message.id) });
   }
 
   async unsubscribe(context: SessionRuntimeContext, message: UnsubscribeMessage): Promise<void> {
@@ -419,14 +541,17 @@ export class Runtime implements RuntimePort {
     await this.runOperation(state, "subscription", undefined, requestBytes, () => {
       this.reactive.unsubscribe(state.subscriber, message.id);
       state.subscriptions.delete(message.id);
-    });
+    }, { requestId: String(message.id), subscriptionId: String(message.id) });
   }
 
   async reset(context: SessionRuntimeContext, message: ResetRequestMessage): Promise<void> {
     const requestBytes = this.requestBytes(message);
     const state = this.currentSession(context);
     await this.runOperation(state, "subscription", undefined, requestBytes, () =>
-      this.reactive.reset(state.subscriber, message.id, message.cursor));
+      this.reactive.reset(state.subscriber, message.id, message.cursor), {
+        requestId: String(message.id),
+        subscriptionId: String(message.id),
+      });
   }
 
   async query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown> {
@@ -435,6 +560,7 @@ export class Runtime implements RuntimePort {
     return this.runOperation(state, "query", message.ref, requestBytes, async () => {
       const signal = this.operationSignal(context.signal);
       const evaluation = await this.executeQuery(
+        "query",
         message.ref,
         message.args,
         context.principal,
@@ -450,7 +576,7 @@ export class Runtime implements RuntimePort {
         value: evaluation.value,
       } satisfies QueryOkMessage, "query result");
       return evaluation.value;
-    });
+    }, { requestId: String(message.id) });
   }
 
   async mutation(context: SessionRuntimeContext, message: MutationMessage): Promise<RuntimeMutationResult> {
@@ -465,6 +591,9 @@ export class Runtime implements RuntimePort {
         fairnessKey: context.clientSessionId,
         requestBytes,
         signal,
+        ...(this.telemetry.enabled
+          ? { telemetry: this.observeCommit, statementTelemetry: this.observeStatement }
+          : {}),
         idempotency: {
           sessionId: context.clientSessionId,
           requestId: message.mutationRequestId,
@@ -495,7 +624,10 @@ export class Runtime implements RuntimePort {
       });
       if (scheduledTouched) this.armScheduler();
       return this.finishMutation(state, message, result);
-    });
+    }, {
+      requestId: String(message.id),
+      mutationId: message.mutationRequestId,
+    }, false);
   }
 
   async closeSession(context: SessionRuntimeContext, _outcome: Outcome): Promise<void> {
@@ -547,7 +679,7 @@ export class Runtime implements RuntimePort {
         value,
       }, "procedure result");
       return value;
-    });
+    }, { requestId: String(request.id) });
   }
 
   async runSse(request: RuntimeSseRequest): Promise<ReadableStream<Uint8Array>> {
@@ -558,90 +690,158 @@ export class Runtime implements RuntimePort {
       ref: request.address,
       args: request.args,
     });
-    const release = this.admitOperation(null);
-    const startedAt = performance.now();
-    const context = telemetryContext(undefined, String(request.id));
-    let producer: BoundedSseProducer | null = null;
-    let spanRecorded = false;
-    const record = (error?: unknown) => {
-      if (spanRecorded) return;
-      spanRecorded = true;
-      this.recordSpan("sse", request.address, requestBytes, startedAt, context, error);
-    };
+    const scope = this.telemetry.enabled
+      ? this.operationTrace(null, "sse", request.address, { requestId: String(request.id) })
+      : undefined;
+    const admittedAt = scope === undefined ? 0 : performance.now();
+    let release: () => void;
     try {
-      const fn = this.expect(request.address, "sse");
-      const signal = this.operationSignal(request.signal);
-      aborted(signal);
-      producer = new BoundedSseProducer({
-        budget: this.sseBudget,
-        limits: this.limits,
-        signal,
-      });
-      this.sseProducers.add(producer);
-      const authorized = deferred<void>();
-      const stream: StreamWriter = Object.freeze({
-        write: (chunk: unknown) => producer!.write(chunk),
-        merge: (source: ReadableStream<unknown>) => {
-          void producer!.merge(source).catch(() => {});
-        },
-      });
-      const handler = invokeFunction(
-        fn,
-        Object.freeze({
-          ...this.procedureContext(
-            request.principal,
-            request.fairnessKey ?? digest(request.principal),
-            producer.signal,
-            requestBytes,
-          ),
-          stream,
-          abortSignal: producer.signal,
-        }) as SseCtx,
-        request.args,
-        { onAuthorized: () => authorized.resolve() },
-      );
-      const completion = handler.then(
-        () => producer!.complete(),
-        (error) => {
-          producer!.fail(error);
-          throw error;
-        },
-      );
-      const lifecycle = completion.then(
-        () => record(),
-        (error) => {
-          record(transportError(error));
-          throw error;
-        },
-      ).finally(() => {
-        this.sseProducers.delete(producer!);
-        release();
-      });
-      void lifecycle.catch(() => {});
-      await Promise.race([
-        authorized.promise,
-        handler.then(
-          () => undefined,
-          (error) => {
-            throw error;
-          },
-        ),
-      ]);
-      return producer.stream;
-    } catch (error) {
-      if (producer !== null) {
-        this.sseProducers.delete(producer);
-        try {
-          await producer.stream.cancel(error);
-        } catch {
-          // No stream escaped this boundary; cancellation is capacity cleanup.
-        }
+      release = this.admitOperation(null);
+      if (scope !== undefined) {
+        this.telemetry.recordSpan({
+          operation: "sse",
+          stage: "admission",
+          outcome: "ok",
+          functionName: request.address,
+          resource: "operation",
+          context: scope.rootContext,
+          durationMs: Math.max(0, performance.now() - admittedAt),
+          sizeBytes: requestBytes,
+        });
       }
-      release();
+    } catch (error) {
       const safeError = transportError(error);
-      record(safeError);
+      if (scope !== undefined) {
+        const outcome = outcomeFromError(safeError).code;
+        this.telemetry.recordSpan({
+          operation: "sse",
+          stage: "admission",
+          outcome,
+          functionName: request.address,
+          resource: "operation",
+          context: scope.rootContext,
+          durationMs: Math.max(0, performance.now() - admittedAt),
+          sizeBytes: requestBytes,
+        });
+      }
       throw safeError;
     }
+    const startedAt = scope === undefined ? 0 : performance.now();
+    const execute = async (): Promise<ReadableStream<Uint8Array>> => {
+      let producer: BoundedSseProducer | null = null;
+      let deliveryObserver: DeliveryObserver | undefined;
+      try {
+        const fn = this.expect(request.address, "sse");
+        const signal = this.operationSignal(request.signal);
+        aborted(signal);
+        producer = new BoundedSseProducer({
+          budget: this.sseBudget,
+          limits: this.limits,
+          signal,
+          ...(this.telemetry.enabled
+            ? { observer: (observation: DeliveryObservation) => deliveryObserver?.(observation) }
+            : {}),
+        });
+        this.sseProducers.add(producer);
+        const authorized = deferred<void>();
+        const stream: StreamWriter = Object.freeze({
+          write: (chunk: unknown) => producer!.write(chunk),
+          merge: (source: ReadableStream<unknown>) => {
+            void producer!.merge(source).catch(() => {});
+          },
+        });
+        const handler = invokeFunction(
+          fn,
+          Object.freeze({
+            ...this.procedureContext(
+              request.principal,
+              request.fairnessKey ?? digest(request.principal),
+              producer.signal,
+              requestBytes,
+            ),
+            stream,
+            abortSignal: producer.signal,
+          }) as SseCtx,
+          request.args,
+          {
+            onAuthorized: () => {
+              deliveryObserver = this.capturedDeliveryObserver();
+              authorized.resolve();
+            },
+          },
+        );
+        const completion = handler.then(
+          () => producer!.complete(),
+          (error) => {
+            producer!.fail(error);
+            throw error;
+          },
+        );
+        const lifecycle = completion.catch((error) => {
+          if (scope !== undefined) {
+            const safeError = transportError(error);
+            this.telemetry.recordEvent({
+              name: "failure",
+              level: "error",
+              operation: "sse",
+              outcome: outcomeFromError(safeError).code,
+              functionName: request.address,
+              context: this.observationContext(),
+              errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
+            });
+          }
+          throw error;
+        }).finally(() => {
+          this.sseProducers.delete(producer!);
+          release();
+        });
+        void lifecycle.catch(() => {});
+        await Promise.race([
+          authorized.promise,
+          handler.then(
+            () => undefined,
+            (error) => {
+              throw error;
+            },
+          ),
+        ]);
+        return producer.stream;
+      } catch (error) {
+        if (producer !== null) {
+          this.sseProducers.delete(producer);
+          try {
+            await producer.stream.cancel(error);
+          } catch {
+            // No stream escaped this boundary; cancellation is capacity cleanup.
+          }
+        }
+        release();
+        const safeError = transportError(error);
+        if (scope !== undefined) {
+          const outcome = outcomeFromError(safeError).code;
+          if (scope.invocations.size === 0) {
+            this.traceSpan({
+              operation: "sse",
+              stage: "handler",
+              outcome,
+              durationMs: Math.max(0, performance.now() - startedAt),
+              sizeBytes: requestBytes,
+            }, "sse");
+          }
+          this.telemetry.recordEvent({
+            name: outcome === "overloaded" ? "overload" : "failure",
+            level: outcome === "overloaded" ? "warn" : "error",
+            operation: "sse",
+            outcome,
+            functionName: request.address,
+            context: this.observationContext(),
+            errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
+          });
+        }
+        throw safeError;
+      }
+    };
+    return scope === undefined ? execute() : this.runTraced(scope, execute);
   }
 
   runScheduled(now = this.readNow()): Promise<number> {
@@ -659,25 +859,36 @@ export class Runtime implements RuntimePort {
             fairnessKey: "system:scheduler",
             requestBytes: 1,
             signal: this.shutdownController.signal,
+            ...(this.telemetry.enabled
+              ? { telemetry: this.observeCommit, statementTelemetry: this.observeStatement }
+              : {}),
             work: async (db) => {
               const plan = this.engine.plan(candidate.table);
-              const raw = this.engine.writer
-                .query(
+              const raw = this.measuredStatement("read", candidate.table, "scheduledGet", () =>
+                this.engine.writer.query(
                   `SELECT * FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ? AND ${quoted(plan.scheduleAt!)} <= ?`,
                 )
-                .get(candidate.primaryKey as never, now) as Record<string, unknown> | null;
+                  .get(candidate.primaryKey as never, now) as Record<string, unknown> | null,
+                (value) => value === null ? 0 : 1,
+              );
               if (raw === null) throw STALE_SCHEDULED_CANDIDATE;
               row = this.engine.rowFromSql(plan, raw);
               const fn = this.expect(candidate.address, "mutation");
               await invokeFunction(fn, Object.freeze({ db, auth: SYSTEM_PRINCIPAL }), row);
             },
             finalize: (writes) => {
-              if (row === null) throw new Error("scheduled row disappeared during its writer turn");
+              const scheduledRow = row;
+              if (scheduledRow === null) {
+                throw new Error("scheduled row disappeared during its writer turn");
+              }
               const plan = this.engine.plan(candidate.table);
-              this.engine.writer
-                .query(`DELETE FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ?`)
-                .run(row[plan.pk] as never);
-              emitWriteKeys(plan, row, writes.keys);
+              this.measuredStatement("write", candidate.table, "scheduledDelete", () =>
+                this.engine.writer
+                  .query(`DELETE FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ?`)
+                  .run(scheduledRow[plan.pk] as never),
+                () => 1,
+              );
+              emitWriteKeys(plan, scheduledRow, writes.keys);
               writes.scheduledTouched = true;
             },
             publication: (_version, writes) => this.publicationFor(writes),
@@ -1019,11 +1230,35 @@ export class Runtime implements RuntimePort {
         throw new DbzzError("not_found", `unknown event table "${table}"`);
       }
       const subscription = tableDefinition.eventSubscription!;
-      const authorized = await authorizeInvocation(
-        subscription,
-        { auth: state.context.principal },
-        definition.args,
-      );
+      const policyAt = this.telemetry.enabled ? performance.now() : 0;
+      let authorized: Awaited<ReturnType<typeof authorizeInvocation>>;
+      try {
+        authorized = await authorizeInvocation(
+          subscription,
+          { auth: state.context.principal },
+          definition.args,
+        );
+        if (this.telemetry.enabled) {
+          this.traceSpan({
+            stage: "policy",
+            outcome: "ok",
+            functionName: definition.address,
+            resource: "subscription",
+            durationMs: Math.max(0, performance.now() - policyAt),
+          }, "subscription");
+        }
+      } catch (error) {
+        if (this.telemetry.enabled) {
+          this.traceSpan({
+            stage: "policy",
+            outcome: outcomeFromError(transportError(error)).code,
+            functionName: definition.address,
+            resource: "subscription",
+            durationMs: Math.max(0, performance.now() - policyAt),
+          }, "subscription");
+        }
+        throw error;
+      }
       await this.reactive.subscribeEvent({
         subscriber: state.subscriber,
         id,
@@ -1053,6 +1288,7 @@ export class Runtime implements RuntimePort {
   }
 
   private executeQuery(
+    operation: "query" | "subscription",
     address: string,
     args: unknown,
     principal: Principal,
@@ -1063,30 +1299,118 @@ export class Runtime implements RuntimePort {
     const fn = this.expect(address, "query");
     return this.submitRead(async (connection) => {
       aborted(signal);
-      connection.exec("BEGIN DEFERRED");
+      let transactionOpen = false;
+      const beginAt = this.telemetry.enabled ? performance.now() : 0;
       try {
+        connection.exec("BEGIN DEFERRED");
+        transactionOpen = true;
+        if (this.telemetry.enabled) {
+          this.traceSpan({
+            stage: "storage",
+            outcome: "ok",
+            resource: "reader",
+            durationMs: Math.max(0, performance.now() - beginAt),
+          }, "query");
+        }
         const readSet = new Set<string>();
         const recorder: ReadRecorder = { add: (key) => readSet.add(key) };
         const version = this.engine.commitVersion(connection);
-        const db = makeDbReader(this.engine, connection, recorder);
+        const db = makeDbReader(
+          this.engine,
+          connection,
+          recorder,
+          this.telemetry.enabled ? this.observeStatement : undefined,
+        );
         const value = await invokeFunction(fn, Object.freeze({ db, auth: principal }), args);
         aborted(signal);
-        const encoded = encode(value);
-        connection.exec("COMMIT");
+        const encodingAt = this.telemetry.enabled ? performance.now() : 0;
+        let encoded: string;
+        try {
+          encoded = encode(value);
+          if (this.telemetry.enabled) {
+            this.traceSpan({
+              stage: "encoding",
+              outcome: "ok",
+              resource: "operation",
+              durationMs: Math.max(0, performance.now() - encodingAt),
+              sizeBytes: utf8.encode(encoded).byteLength,
+              resultCount: Array.isArray(value) ? value.length : value === null ? 0 : 1,
+            }, "query");
+          }
+        } catch (error) {
+          if (this.telemetry.enabled) {
+            this.traceSpan({
+              stage: "encoding",
+              outcome: outcomeFromError(transportError(error)).code,
+              resource: "operation",
+              durationMs: Math.max(0, performance.now() - encodingAt),
+            }, "query");
+          }
+          throw error;
+        }
+        const commitAt = this.telemetry.enabled ? performance.now() : 0;
+        try {
+          connection.exec("COMMIT");
+          transactionOpen = false;
+          if (this.telemetry.enabled) {
+            this.traceSpan({
+              stage: "commit",
+              outcome: "ok",
+              resource: "reader",
+              durationMs: Math.max(0, performance.now() - commitAt),
+            }, "query");
+          }
+        } catch (error) {
+          if (this.telemetry.enabled) {
+            this.traceSpan({
+              stage: "commit",
+              outcome: outcomeFromError(transportError(error)).code,
+              resource: "reader",
+              durationMs: Math.max(0, performance.now() - commitAt),
+            }, "query");
+          }
+          throw error;
+        }
         return Object.freeze({ value, encoded, readSet, commitVersion: version });
       } catch (error) {
-        try {
-          connection.exec("ROLLBACK");
-        } catch {
-          throw new DbzzError("unavailable", "reader snapshot could not be closed", {
+        if (transactionOpen) {
+          const rollbackAt = this.telemetry.enabled ? performance.now() : 0;
+          try {
+            connection.exec("ROLLBACK");
+            if (this.telemetry.enabled) {
+              this.traceSpan({
+                stage: "rollback",
+                outcome: "ok",
+                resource: "reader",
+                durationMs: Math.max(0, performance.now() - rollbackAt),
+              }, "query");
+            }
+          } catch (rollbackError) {
+            if (this.telemetry.enabled) {
+              this.traceSpan({
+                stage: "rollback",
+                outcome: "unavailable",
+                resource: "reader",
+                durationMs: Math.max(0, performance.now() - rollbackAt),
+              }, "query");
+            }
+            throw new DbzzError("unavailable", "reader snapshot could not be closed", {
+              resource: "reader",
+              cause: rollbackError,
+            });
+          }
+        } else if (this.telemetry.enabled && beginAt > 0) {
+          this.traceSpan({
+            stage: "storage",
+            outcome: outcomeFromError(transportError(error)).code,
             resource: "reader",
-            cause: error,
-          });
+            durationMs: Math.max(0, performance.now() - beginAt),
+          }, "query");
         }
         throw error;
       }
     }, {
-      operation: "query",
+      operation,
       bytes: requestBytes,
       fairnessKey,
       ...(signal === undefined ? {} : { signal }),
@@ -1096,19 +1420,54 @@ export class Runtime implements RuntimePort {
   private submitRead<T>(
     work: (connection: Database) => T | Promise<T>,
     options: ExecutorTaskOptions,
+    observed = this.telemetry.enabled,
   ): Promise<T> {
-    return this.reader.submit(async () => {
+    const run = async () => {
       const connection = this.availableReaders.pop() ?? this.engine.createReader();
       try {
         return await work(connection);
       } finally {
         this.availableReaders.push(connection);
       }
-    }, options);
+    };
+    if (!observed) return this.reader.submit(run, options);
+    const scope = this.trace.getStore();
+    const queuedAt = performance.now();
+    let started = false;
+    return this.reader.submit(() => {
+      started = true;
+      const admitted = () => {
+        this.traceSpan({
+          operation: options.operation,
+          stage: "queue",
+          outcome: "ok",
+          resource: "reader",
+          durationMs: Math.max(0, performance.now() - queuedAt),
+          sizeBytes: options.bytes,
+        }, options.operation);
+        return run();
+      };
+      return scope === undefined ? admitted() : this.trace.run(scope, admitted);
+    }, options).catch((error) => {
+      if (!started) {
+        const rejected = () => this.traceSpan({
+          operation: options.operation,
+          stage: "queue",
+          outcome: outcomeFromError(transportError(error)).code,
+          resource: "reader",
+          durationMs: Math.max(0, performance.now() - queuedAt),
+          sizeBytes: options.bytes,
+        }, options.operation);
+        if (scope === undefined) rejected();
+        else this.trace.run(scope, rejected);
+      }
+      throw error;
+    });
   }
 
   private evaluateSubscription(input: QueryEvaluationInput<ReactiveContext>): Promise<QueryEvaluation> {
-    return this.executeQuery(
+    const execute = () => this.executeQuery(
+      "subscription",
       input.address,
       input.args,
       input.context.principal,
@@ -1116,6 +1475,19 @@ export class Runtime implements RuntimePort {
       this.shutdownController.signal,
       byteLength(input.args),
     );
+    if (!this.telemetry.enabled) return execute();
+    const scope = this.trace.getStore();
+    if (scope === undefined) {
+      return this.runTraced(
+        this.operationTrace(null, "subscription", input.address, {}),
+        execute,
+      );
+    }
+    return this.trace.run({
+      ...scope,
+      operation: "subscription",
+      currentFunction: input.address,
+    }, execute);
   }
 
   private procedureContext(
@@ -1127,21 +1499,30 @@ export class Runtime implements RuntimePort {
     return Object.freeze({
       auth: principal,
       tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
-        aborted(signal);
-        let scheduledTouched = false;
-        const result = await this.coordinator.execute({
-          operation: "transaction",
-          fairnessKey,
-          requestBytes,
-          ...(signal === undefined ? {} : { signal }),
-          work: (db) => work(Object.freeze({ db, auth: principal })),
-          publication: (_version, writes) => {
-            scheduledTouched = writes.scheduledTouched;
-            return this.publicationFor(writes);
-          },
-        });
-        if (scheduledTouched) this.armScheduler();
-        return result.value;
+        const execute = async (): Promise<T> => {
+          aborted(signal);
+          let scheduledTouched = false;
+          const result = await this.coordinator.execute({
+            operation: "transaction",
+            fairnessKey,
+            requestBytes,
+            ...(this.telemetry.enabled
+              ? { telemetry: this.observeCommit, statementTelemetry: this.observeStatement }
+              : {}),
+            ...(signal === undefined ? {} : { signal }),
+            work: (db) => work(Object.freeze({ db, auth: principal })),
+            publication: (_version, writes) => {
+              scheduledTouched = writes.scheduledTouched;
+              return this.publicationFor(writes);
+            },
+          });
+          if (scheduledTouched) this.armScheduler();
+          return result.value;
+        };
+        const scope = this.trace.getStore();
+        return scope === undefined
+          ? execute()
+          : this.trace.run({ ...scope, operation: "transaction" }, execute);
       },
     });
   }
@@ -1236,14 +1617,45 @@ export class Runtime implements RuntimePort {
     label: string,
     resource: "operation" | "subscription" = "operation",
   ): number {
+    const startedAt = this.telemetry.enabled ? performance.now() : 0;
     let bytes: number;
     try {
       bytes = byteLength(frame);
     } catch (error) {
-      throw new DbzzError("validation", `${label} is not wire-representable`, { cause: error });
+      const failure = new DbzzError("validation", `${label} is not wire-representable`, {
+        cause: error,
+      });
+      if (this.telemetry.enabled) {
+        this.traceSpan({
+          stage: "encoding",
+          outcome: failure.code,
+          resource,
+          durationMs: Math.max(0, performance.now() - startedAt),
+        }, resource === "subscription" ? "subscription" : "query");
+      }
+      throw failure;
     }
     if (bytes > this.limits.maxFrameBytes) {
-      throw new DbzzError("overloaded", `${label} exceeds maxFrameBytes`, { resource });
+      const failure = new DbzzError("overloaded", `${label} exceeds maxFrameBytes`, { resource });
+      if (this.telemetry.enabled) {
+        this.traceSpan({
+          stage: "encoding",
+          outcome: failure.code,
+          resource,
+          durationMs: Math.max(0, performance.now() - startedAt),
+          sizeBytes: bytes,
+        }, resource === "subscription" ? "subscription" : "query");
+      }
+      throw failure;
+    }
+    if (this.telemetry.enabled) {
+      this.traceSpan({
+        stage: "encoding",
+        outcome: "ok",
+        resource,
+        durationMs: Math.max(0, performance.now() - startedAt),
+        sizeBytes: bytes,
+      }, resource === "subscription" ? "subscription" : "query");
     }
     return bytes;
   }
@@ -1265,7 +1677,7 @@ export class Runtime implements RuntimePort {
       operation: "scheduled",
       bytes: 1,
       fairnessKey: "system:scheduler",
-    });
+    }, false);
   }
 
   private nextScheduledCandidate(now: number): Promise<ScheduledCandidate | null> {
@@ -1273,11 +1685,13 @@ export class Runtime implements RuntimePort {
       let candidate: (ScheduledCandidate & { readonly at: number }) | null = null;
       for (const [table, address] of this.scheduled) {
         const plan = this.engine.plan(table);
-        const raw = connection
-          .query(
+        const raw = this.measuredStatement("read", table, "scheduledCandidate", () =>
+          connection.query(
             `SELECT ${quoted(plan.pk)} AS primaryKey, ${quoted(plan.scheduleAt!)} AS at FROM ${quoted(table)} WHERE ${quoted(plan.scheduleAt!)} <= ? ORDER BY ${quoted(plan.scheduleAt!)}, ${quoted(plan.pk)} LIMIT 1`,
           )
-          .get(now) as { primaryKey: unknown; at: number | bigint } | null;
+            .get(now) as { primaryKey: unknown; at: number | bigint } | null,
+          (value) => value === null ? 0 : 1,
+        );
         if (raw === null) continue;
         const at = Number(raw.at);
         if (candidate === null || at < candidate.at) {
@@ -1294,33 +1708,342 @@ export class Runtime implements RuntimePort {
     });
   }
 
+  private readonly observeInvocation = (observation: InvocationObservation): void => {
+    const scope = this.trace.getStore();
+    if (scope === undefined) return;
+    this.telemetry.recordSpan({
+      operation: scope.operation,
+      stage: observation.phase,
+      outcome: observation.outcome,
+      functionName: this.registry.addressOf(observation.fn) ?? scope.currentFunction,
+      context: scope.currentContext,
+      durationMs: observation.durationMs,
+    });
+  };
+
+  private readonly runInvocationPhase: InvocationPhaseRunner = (
+    phase: Readonly<InvocationPhaseScope>,
+    work,
+  ) => {
+    const scope = this.trace.getStore();
+    if (scope === undefined) return work();
+    let node = scope.invocations.get(phase.invocationId);
+    if (node === undefined) {
+      const parent = phase.parentInvocationId === undefined
+        ? scope.rootContext
+        : scope.invocations.get(phase.parentInvocationId)?.handler ?? scope.rootContext;
+      node = Object.freeze({ parent, handler: childTelemetryContext(parent) });
+      scope.invocations.set(phase.invocationId, node);
+    }
+    const context = phase.phase === "handler"
+      ? node.handler
+      : childTelemetryContext(node.parent);
+    const functionName = this.registry.addressOf(phase.fn) ?? scope.currentFunction;
+    return this.trace.run({
+      ...scope,
+      currentContext: context,
+      ...(functionName === undefined ? {} : { currentFunction: functionName }),
+    }, work);
+  };
+
+  private readonly observeFetch = (observation: Readonly<FetchObservation>): void => {
+    this.traceSpan({
+      stage: "fetch",
+      outcome: observation.outcome,
+      resource: "outbound",
+      durationMs: observation.durationMs,
+    }, "procedure");
+  };
+
+  private readonly observeStatement: DbStatementObserver = (
+    observation: Readonly<DbStatementObservation>,
+  ): void => {
+    this.traceSpan({
+      stage: "statement",
+      outcome: observation.outcome === "ok" ? "ok" : "internal",
+      statement: `${observation.table}.${observation.statement}`,
+      resource: observation.kind === "read" ? "reader" : "writer",
+      durationMs: observation.durationMs,
+      ...(observation.rowCount === undefined ? {} : { rowCount: observation.rowCount }),
+    }, observation.kind === "read" ? "query" : "transaction");
+  };
+
+  private measuredStatement<T>(
+    kind: DbStatementObservation["kind"],
+    table: string,
+    statement: string,
+    work: () => T,
+    rowCount: (value: T) => number,
+  ): T {
+    if (!this.telemetry.enabled) return work();
+    const startedAt = performance.now();
+    try {
+      const value = work();
+      this.observeStatement({
+        kind,
+        table,
+        statement,
+        outcome: "ok",
+        durationMs: Math.max(0, performance.now() - startedAt),
+        rowCount: rowCount(value),
+      });
+      return value;
+    } catch (error) {
+      this.observeStatement({
+        kind,
+        table,
+        statement,
+        outcome: "failed",
+        durationMs: Math.max(0, performance.now() - startedAt),
+      });
+      throw error;
+    }
+  }
+
+  private readonly observeCommit = (event: Readonly<CommitTelemetryEvent>): void => {
+    const resource: TelemetryResource = event.stage === "publication"
+      ? "publication"
+      : event.replayed === true || event.stage === "encoding"
+        ? "idempotency"
+        : "writer";
+    this.traceSpan({
+      operation: event.operation,
+      stage: event.stage,
+      outcome: event.outcome,
+      resource,
+      durationMs: event.durationMs,
+      ...(event.sizeBytes === undefined ? {} : { sizeBytes: event.sizeBytes }),
+      ...(event.resultCount === undefined ? {} : { resultCount: event.resultCount }),
+      ...(event.dependencyCount === undefined ? {} : { dependencyCount: event.dependencyCount }),
+      ...(event.replayed === undefined ? {} : { replayed: event.replayed }),
+      ...(event.postCommit === undefined ? {} : { postCommit: event.postCommit }),
+      ...(event.commitVersion === undefined
+        ? {}
+        : { context: this.observationContext({ commitId: String(event.commitVersion) }) }),
+    }, event.operation);
+  };
+
+  private readonly observeReactive: ReactiveObserver = (
+    observation: ReactiveObservation,
+  ): void => {
+    if (observation.phase === "failure") {
+      this.telemetry.recordEvent({
+        name: "failure",
+        level: "error",
+        operation: "subscription",
+        outcome: observationOutcome(observation.outcome),
+        ...(observation.address === undefined ? {} : { functionName: observation.address }),
+        resource: "subscription",
+        context: this.observationContext({
+          ...(observation.subscriptionId === undefined
+            ? {}
+            : { subscriptionId: String(observation.subscriptionId) }),
+          ...(observation.commitVersion === undefined
+            ? {}
+            : { commitId: String(observation.commitVersion) }),
+        }),
+      });
+      return;
+    }
+    const stage: TelemetryStage = observation.phase === "initial_evaluation" ||
+        observation.phase === "evaluation"
+      ? "evaluation"
+      : observation.phase === "invalidation_match" || observation.phase === "event_match"
+        ? "match"
+        : observation.phase === "revalidation_queue" || observation.phase === "listener_queue"
+          ? "queue"
+          : observation.phase;
+    const resource: TelemetryResource = observation.phase === "revalidation_queue" ||
+        observation.phase === "evaluation" || observation.phase === "initial_evaluation" ||
+        observation.phase === "changed" || observation.phase === "unchanged"
+      ? "revalidation"
+      : observation.phase === "delivery" || observation.phase === "listener_queue" ||
+          observation.phase === "fanout"
+        ? "outbound"
+        : "subscription";
+    this.traceSpan({
+      operation: "subscription",
+      stage,
+      outcome: observationOutcome(observation.outcome),
+      resource,
+      durationMs: observation.durationMs,
+      ...(observation.address === undefined ? {} : { functionName: observation.address }),
+      ...(observation.resultCount === undefined ? {} : { resultCount: observation.resultCount }),
+      ...(observation.dependencyCount === undefined
+        ? {}
+        : { dependencyCount: observation.dependencyCount }),
+      ...(observation.byteCount === undefined ? {} : { sizeBytes: observation.byteCount }),
+      context: this.observationContext({
+        ...(observation.subscriptionId === undefined
+          ? {}
+          : { subscriptionId: String(observation.subscriptionId) }),
+        ...(observation.commitVersion === undefined
+          ? {}
+          : { commitId: String(observation.commitVersion) }),
+      }),
+    }, "subscription");
+  };
+
+  private operationTrace(
+    session: RuntimeSession | null,
+    operation: TelemetryOperation,
+    functionName: string | undefined,
+    identifiers: TraceIdentifiers,
+  ): RuntimeTraceScope {
+    const rootContext = telemetryContext({
+      ...(session === null
+        ? {}
+        : { connectionId: digest(session.context.clientSessionId) }),
+      ...identifiers,
+    });
+    return {
+      operation,
+      ...(functionName === undefined ? {} : { rootFunction: functionName }),
+      rootContext,
+      currentContext: rootContext,
+      ...(functionName === undefined ? {} : { currentFunction: functionName }),
+      invocations: new Map(),
+    };
+  }
+
+  private observationContext(identifiers: TraceIdentifiers = {}): TelemetryTraceContext {
+    const current = this.trace.getStore()?.currentContext;
+    return current === undefined
+      ? telemetryContext(identifiers)
+      : childTelemetryContext(current, identifiers);
+  }
+
+  private traceSpan(
+    input: Omit<TelemetrySpanInput, "operation" | "context"> & {
+      readonly operation?: TelemetryOperation;
+      readonly context?: TelemetryTraceContext;
+    },
+    fallbackOperation: TelemetryOperation,
+  ): void {
+    if (!this.telemetry.enabled) return;
+    const scope = this.trace.getStore();
+    const context = input.context ?? this.observationContext();
+    this.telemetry.recordSpan({
+      ...input,
+      operation: input.operation ?? scope?.operation ?? fallbackOperation,
+      context,
+      functionName: input.functionName ?? scope?.currentFunction ?? scope?.rootFunction,
+    });
+  }
+
+  private runTraced<T>(scope: RuntimeTraceScope, work: () => T): T {
+    return this.trace.run(scope, () => withFetchObserver(
+      this.observeFetch,
+      () => withInvocationObserver(this.observeInvocation, work, this.runInvocationPhase),
+    ));
+  }
+
+  private capturedDeliveryObserver(): DeliveryObserver | undefined {
+    if (!this.telemetry.enabled) return undefined;
+    const scope = this.trace.getStore();
+    return scope === undefined
+      ? this.deliveryObserver
+      : (observation) => this.trace.run(scope, () => this.deliveryObserver(observation));
+  }
+
   private runOperation<T>(
     session: RuntimeSession | null,
     operation: TelemetryOperation,
     functionName: string | undefined,
     sizeBytes: number,
     work: () => T | Promise<T>,
+    identifiers: TraceIdentifiers = {},
+    synthesizeHandler = true,
   ): Promise<T> {
-    this.assertRequestBytes(sizeBytes);
-    const release = this.admitOperation(session);
-    const startedAt = performance.now();
-    const context = telemetryContext(
-      session === null ? undefined : digest(session.context.clientSessionId),
-    );
-    return Promise.resolve()
-      .then(work)
+    const scope = this.telemetry.enabled
+      ? this.operationTrace(session, operation, functionName, identifiers)
+      : undefined;
+    const admittedAt = scope === undefined ? 0 : performance.now();
+    let release: () => void;
+    try {
+      this.assertRequestBytes(sizeBytes);
+      release = this.admitOperation(session);
+      if (scope !== undefined) {
+        this.telemetry.recordSpan({
+          operation,
+          stage: "admission",
+          outcome: "ok",
+          ...(functionName === undefined ? {} : { functionName }),
+          resource: "operation",
+          context: scope.rootContext,
+          durationMs: Math.max(0, performance.now() - admittedAt),
+          sizeBytes,
+        });
+      }
+    } catch (error) {
+      const safeError = transportError(error);
+      if (scope !== undefined) {
+        const outcome = outcomeFromError(safeError).code;
+        this.telemetry.recordSpan({
+          operation,
+          stage: "admission",
+          outcome,
+          ...(functionName === undefined ? {} : { functionName }),
+          resource: "operation",
+          context: scope.rootContext,
+          durationMs: Math.max(0, performance.now() - admittedAt),
+          sizeBytes,
+        });
+        this.telemetry.recordEvent({
+          name: outcome === "overloaded" ? "overload" : "failure",
+          level: outcome === "overloaded" ? "warn" : "error",
+          operation,
+          stage: "admission",
+          outcome,
+          ...(functionName === undefined ? {} : { functionName }),
+          resource: "operation",
+          context: scope.rootContext,
+          errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
+        });
+      }
+      throw safeError;
+    }
+    const startedAt = scope === undefined ? 0 : performance.now();
+    const execute = () => Promise.resolve().then(work)
       .then(
         (value) => {
-          this.recordSpan(operation, functionName, sizeBytes, startedAt, context);
+          if (scope !== undefined && synthesizeHandler && scope.invocations.size === 0) {
+            this.traceSpan({
+              stage: "handler",
+              outcome: "ok",
+              durationMs: Math.max(0, performance.now() - startedAt),
+              sizeBytes,
+            }, operation);
+          }
           return value;
         },
         (error) => {
           const safeError = transportError(error);
-          this.recordSpan(operation, functionName, sizeBytes, startedAt, context, safeError);
+          if (scope !== undefined) {
+            const outcome = outcomeFromError(safeError).code;
+            if (synthesizeHandler && scope.invocations.size === 0) {
+              this.traceSpan({
+                stage: "handler",
+                outcome,
+                durationMs: Math.max(0, performance.now() - startedAt),
+                sizeBytes,
+              }, operation);
+            }
+            this.telemetry.recordEvent({
+              name: outcome === "overloaded" ? "overload" : "failure",
+              level: outcome === "overloaded" ? "warn" : "error",
+              operation,
+              outcome,
+              ...(functionName === undefined ? {} : { functionName }),
+              context: this.observationContext(),
+              errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
+            });
+          }
           throw safeError;
         },
       )
       .finally(release);
+    return scope === undefined ? execute() : this.runTraced(scope, execute);
   }
 
   private admitOperation(session: RuntimeSession | null): () => void {
@@ -1399,29 +2122,9 @@ export class Runtime implements RuntimePort {
       : AbortSignal.any([signal, this.shutdownController.signal]);
   }
 
-  private recordSpan(
-    operation: TelemetryOperation,
-    functionName: string | undefined,
-    sizeBytes: number,
-    startedAt: number,
-    context: TelemetryTraceContext,
-    error?: unknown,
-  ): void {
-    const outcome = error === undefined ? "ok" : outcomeFromError(error).code;
-    this.telemetry.recordSpan({
-      operation,
-      stage: "handler",
-      outcome,
-      ...(functionName === undefined ? {} : { functionName }),
-      context,
-      durationMs: Math.max(0, performance.now() - startedAt),
-      sizeBytes,
-    });
-  }
-
   private startSampler(): void {
     if (!this.telemetry.enabled) return;
-    const interval = this.limits.telemetry.sampleIntervalMs;
+    const interval = this.telemetry.sampleIntervalMs;
     this.expectedSampleAt = performance.now() + interval;
     this.sampleTimer = setInterval(() => this.sample(), interval);
     this.sampleTimer.unref?.();
@@ -1442,25 +2145,59 @@ export class Runtime implements RuntimePort {
     this.lastCpu = process.cpuUsage();
     this.lastCpuAt = now;
     const eventLoopDrift = Math.max(0, now - this.expectedSampleAt);
-    this.expectedSampleAt = now + this.limits.telemetry.sampleIntervalMs;
+    this.expectedSampleAt = now + this.telemetry.sampleIntervalMs;
     const storage = this.engine.status();
     const reactive = this.reactive.snapshot();
     const reader = this.reader.snapshot();
     const writer = this.coordinator.snapshot();
+    const publication = this.reactive.publication.snapshot();
+    const authCapture = this.authCaptureBudget.snapshot();
+    const sse = this.sseBudget.snapshot();
+    const telemetry = this.telemetry.snapshot();
+    const telemetryDrops = Object.values(telemetry.dropped).reduce((sum, value) => sum + value, 0);
     const metrics: ReadonlyArray<readonly [string, number, "count" | "bytes" | "milliseconds" | "gauge"]> = [
       ["runtime.connections", this.sessions.size, "gauge"],
       ["runtime.operations", this.activeOperations, "gauge"],
+      ["runtime.sse_streams", this.sseProducers.size, "gauge"],
       ["runtime.subscriptions", reactive.queryListeners + reactive.eventListeners, "gauge"],
+      ["runtime.subscription_entries", reactive.sharedEntries, "gauge"],
+      ["runtime.subscription_result_bytes", reactive.resultBytes, "bytes"],
+      ["runtime.subscription_history_items", reactive.historyTransitions, "gauge"],
+      ["runtime.subscription_history_bytes", reactive.historyBytes, "bytes"],
       ["runtime.read_queue_items", reader.queue.queuedItems, "gauge"],
       ["runtime.read_queue_bytes", reader.queue.queuedBytes, "bytes"],
+      ["runtime.read_queue_age", reader.queue.oldestAgeMs, "milliseconds"],
       ["runtime.write_queue_items", writer.queue.queuedItems, "gauge"],
       ["runtime.write_queue_bytes", writer.queue.queuedBytes, "bytes"],
+      ["runtime.write_queue_age", writer.queue.oldestAgeMs, "milliseconds"],
       ["runtime.revalidation_active", reactive.revalidation.active, "gauge"],
       ["runtime.revalidation_queue_items", reactive.revalidation.queue.queuedItems, "gauge"],
       ["runtime.revalidation_queue_bytes", reactive.revalidation.queue.queuedBytes, "bytes"],
       ["runtime.revalidation_queue_age", reactive.revalidation.queue.oldestAgeMs, "milliseconds"],
+      ["runtime.publication_items", publication.items, "gauge"],
+      ["runtime.publication_bytes", publication.bytes, "bytes"],
+      ["runtime.publication_age", publication.oldestAgeMs, "milliseconds"],
+      ["runtime.auth_capture_bytes", authCapture.bytes, "bytes"],
+      ["runtime.sse_outbound_bytes", sse.bytes, "bytes"],
       ["runtime.database_bytes", storage.databaseBytes, "bytes"],
       ["runtime.wal_bytes", storage.walBytes, "bytes"],
+      ["runtime.checkpoint_completed", storage.lastCheckpointAtMs === null ? 0 : 1, "gauge"],
+      ["runtime.checkpoint_age", storage.lastCheckpointAtMs === null
+        ? 0
+        : Math.max(0, Date.now() - storage.lastCheckpointAtMs), "milliseconds"],
+      ["runtime.recovered_from_crash", storage.recoveredFromCrash ? 1 : 0, "gauge"],
+      ["runtime.mutation_replay_records", storage.mutationRecords, "gauge"],
+      ["runtime.mutation_replay_bytes", storage.mutationResultBytes, "bytes"],
+      ["runtime.telemetry_queue_records", telemetry.queuedRecords, "gauge"],
+      ["runtime.telemetry_queue_bytes", telemetry.queuedBytes, "bytes"],
+      ["runtime.telemetry_queue_age", telemetry.oldestAgeMs, "milliseconds"],
+      ["runtime.telemetry_local_queue_records", telemetry.localSink.pendingRecords, "gauge"],
+      ["runtime.telemetry_local_queue_bytes", telemetry.localSink.pendingBytes, "bytes"],
+      ["runtime.telemetry_export_attempts", telemetry.exporter.attempts, "count"],
+      ["runtime.telemetry_export_failures", telemetry.exporter.failures, "count"],
+      ["runtime.telemetry_export_timeouts", telemetry.exporter.timeouts, "count"],
+      ["runtime.telemetry_export_duration", telemetry.exporter.lastDurationMs ?? 0, "milliseconds"],
+      ["runtime.telemetry_drops", telemetryDrops, "count"],
       ["runtime.rss_bytes", process.memoryUsage().rss, "bytes"],
       ["runtime.cpu_cores", cores, "gauge"],
       ["runtime.event_loop_drift", eventLoopDrift, "milliseconds"],
