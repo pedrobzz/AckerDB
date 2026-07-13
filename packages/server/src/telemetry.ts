@@ -289,6 +289,8 @@ interface TelemetryState {
   records: BufferedRecord[];
   head: number;
   queuedBytes: number;
+  stopped: boolean;
+  lastNowMs?: number;
   intervalHandle?: unknown;
   exporting?: Promise<void>;
   localSinkFailures: number;
@@ -396,8 +398,23 @@ function sanitizeLinks(links: readonly TelemetryLink[] | undefined): readonly Te
 }
 
 function readTimestamp(state: TelemetryState, timestampMs: number | undefined): number | undefined {
-  const timestamp = timestampMs ?? state.now();
-  return Number.isFinite(timestamp) ? timestamp : undefined;
+  if (timestampMs !== undefined) return Number.isFinite(timestampMs) ? timestampMs : undefined;
+  return readClock(state);
+}
+
+function readClock(state: TelemetryState): number | undefined {
+  try {
+    const now = state.now();
+    if (!Number.isFinite(now)) return undefined;
+    state.lastNowMs = now;
+    return now;
+  } catch {
+    return undefined;
+  }
+}
+
+function fallbackNow(state: TelemetryState): number {
+  return state.lastNowMs ?? state.records[state.head]?.retainedAtMs ?? 0;
 }
 
 export function captureTelemetryLink(context: Pick<TelemetryTraceContext, "traceId" | "spanId">): TelemetryLink {
@@ -431,6 +448,7 @@ export class Telemetry {
       records: [],
       head: 0,
       queuedBytes: 0,
+      stopped: false,
       localSinkFailures: 0,
       drops: { overflow: 0, expired: 0, oversized: 0, invalid: 0, exporter: 0, cardinality: 0 },
       exportHealth: {
@@ -443,7 +461,18 @@ export class Telemetry {
     };
     this.state = state;
     if (state.exporter) {
-      state.intervalHandle = scheduler.setInterval(() => void this.flush(), limits.batchIntervalMs);
+      try {
+        state.intervalHandle = scheduler.setInterval(() => {
+          if (state.stopped) return;
+          try {
+            void this.flush();
+          } catch {
+            this.observeExportFailure(state);
+          }
+        }, limits.batchIntervalMs);
+      } catch {
+        this.observeExportFailure(state);
+      }
     }
   }
 
@@ -562,7 +591,6 @@ export class Telemetry {
         state.metricSeries.size >= state.limits.maxMetricSeries - 1)
     ) {
       state.drops.cardinality++;
-      state.metricSeries.add(OVERFLOW_SERIES);
       const overflow: TelemetryMetricRecord = Object.freeze({
         schemaVersion: TELEMETRY_SCHEMA_VERSION,
         kind: "metric",
@@ -572,9 +600,10 @@ export class Telemetry {
         unit: "count",
         labels: Object.freeze({ resource: "telemetry", overflow: true }),
       });
-      return this.retain(overflow, false);
+      const retained = this.retain(overflow, false);
+      if (retained) state.metricSeries.add(OVERFLOW_SERIES);
+      return retained;
     }
-    state.metricSeries.add(seriesKey);
     const record: TelemetryMetricRecord = Object.freeze({
       schemaVersion: TELEMETRY_SCHEMA_VERSION,
       kind: "metric",
@@ -584,82 +613,32 @@ export class Telemetry {
       unit: input.unit,
       labels,
     });
-    return this.retain(record, false);
+    const retained = this.retain(record, false);
+    if (retained) state.metricSeries.add(seriesKey);
+    return retained;
   }
 
-  async flush(): Promise<void> {
+  flush(): Promise<void> {
     const state = this.state;
-    if (!state?.exporter) return;
+    if (!state?.exporter) return Promise.resolve();
     if (state.exporting) return state.exporting;
-    const now = this.readNow(state);
-    this.pruneExpired(state, now);
-    const count = Math.min(state.limits.maxBatchRecords, state.records.length - state.head);
-    if (count === 0) return;
-
-    const batch: TelemetryRecord[] = [];
-    for (let index = 0; index < count; index++) {
-      const buffered = state.records[state.head + index]!;
-      batch.push(buffered.record);
-      state.queuedBytes -= buffered.bytes;
-    }
-    state.head += count;
-    this.compact(state);
-    state.exportHealth.attempts++;
-    const startedAtMs = now;
-    const exporter = state.exporter;
-    const frozenBatch = Object.freeze(batch);
-
-    const attempt = (async () => {
-      let exportResult: Promise<typeof EXPORT_OK | typeof EXPORT_FAILED>;
-      try {
-        exportResult = Promise.resolve(exporter.export(frozenBatch)).then(
-          () => EXPORT_OK,
-          () => EXPORT_FAILED,
-        );
-      } catch {
-        exportResult = Promise.resolve(EXPORT_FAILED);
-      }
-      let timeoutHandle: unknown;
-      const timeout = new Promise<typeof EXPORT_TIMED_OUT>((resolve) => {
-        timeoutHandle = state.scheduler.setTimeout(
-          () => resolve(EXPORT_TIMED_OUT),
-          state.limits.exportTimeoutMs,
-        );
+    let attempt!: Promise<void>;
+    attempt = this.exportNext(state)
+      .catch(() => this.observeExportFailure(state))
+      .then(() => {
+        if (state.exporting === attempt) state.exporting = undefined;
       });
-      const result = await Promise.race([exportResult, timeout]);
-      state.scheduler.clearTimeout(timeoutHandle);
-      const finishedAtMs = this.readNow(state);
-      state.exportHealth.lastDurationMs = Math.max(0, finishedAtMs - startedAtMs);
-      if (result === EXPORT_OK) {
-        state.exportHealth.exportedRecords += count;
-        state.exportHealth.lastSuccessAtMs = finishedAtMs;
-      } else {
-        state.exportHealth.failures++;
-        state.exportHealth.failedRecords += count;
-        state.exportHealth.lastFailureAtMs = finishedAtMs;
-        state.drops.exporter += count;
-        if (result === EXPORT_TIMED_OUT) state.exportHealth.timeouts++;
-        this.recordEvent({
-          timestampMs: finishedAtMs,
-          name: "exporter_degraded",
-          level: "error",
-          operation: "lifecycle",
-          stage: "export",
-          outcome: "unavailable",
-          resource: "telemetry",
-        });
-      }
-      state.exporting = undefined;
-    })();
     state.exporting = attempt;
-    await attempt;
+    return attempt;
   }
 
   snapshot(): TelemetrySnapshot {
     const state = this.state;
     if (!state) return DISABLED_SNAPSHOT;
-    const now = this.readNow(state);
-    this.pruneExpired(state, now);
+    const observedNow = readClock(state);
+    if (observedNow === undefined) state.drops.invalid++;
+    else this.pruneExpired(state, observedNow);
+    const now = observedNow ?? fallbackNow(state);
     const oldest = state.records[state.head];
     return Object.freeze({
       enabled: true,
@@ -679,20 +658,32 @@ export class Telemetry {
 
   stop(): void {
     const state = this.state;
-    if (!state || state.intervalHandle === undefined) return;
-    state.scheduler.clearInterval(state.intervalHandle);
+    if (!state) return;
+    state.stopped = true;
+    if (state.intervalHandle === undefined) return;
+    const handle = state.intervalHandle;
     state.intervalHandle = undefined;
-  }
-
-  private readNow(state: TelemetryState): number {
-    const now = state.now();
-    if (!Number.isFinite(now)) throw new RangeError("telemetry clock must return finite milliseconds");
-    return now;
+    try {
+      state.scheduler.clearInterval(handle);
+    } catch {
+      this.observeExportFailure(state);
+    }
   }
 
   private retain(record: TelemetryRecord, emitLocally: boolean): boolean {
     const state = this.state!;
-    const line = JSON.stringify(record);
+    const now = readClock(state);
+    if (now === undefined) {
+      state.drops.invalid++;
+      return false;
+    }
+    let line: string;
+    try {
+      line = JSON.stringify(record);
+    } catch {
+      state.drops.invalid++;
+      return false;
+    }
     if (emitLocally && state.localSink) {
       try {
         state.localSink(line);
@@ -705,7 +696,6 @@ export class Telemetry {
       state.drops.oversized++;
       return false;
     }
-    const now = this.readNow(state);
     this.pruneExpired(state, now);
     while (
       state.records.length - state.head >= state.limits.maxRecords ||
@@ -716,6 +706,112 @@ export class Telemetry {
     state.records.push({ record, bytes, retainedAtMs: now });
     state.queuedBytes += bytes;
     return true;
+  }
+
+  private async exportNext(state: TelemetryState): Promise<void> {
+    const observedStart = readClock(state);
+    if (observedStart === undefined) state.drops.invalid++;
+    else this.pruneExpired(state, observedStart);
+    const startedAtMs = observedStart ?? fallbackNow(state);
+    const count = Math.min(state.limits.maxBatchRecords, state.records.length - state.head);
+    if (count === 0) return;
+
+    const batch: TelemetryRecord[] = [];
+    for (let index = 0; index < count; index++) {
+      const buffered = state.records[state.head + index]!;
+      batch.push(buffered.record);
+      state.queuedBytes -= buffered.bytes;
+    }
+    state.head += count;
+    this.compact(state);
+    state.exportHealth.attempts++;
+
+    const exported = await this.runExporter(state, Object.freeze(batch));
+    const observedFinish = readClock(state);
+    if (observedFinish === undefined) state.drops.invalid++;
+    const finishedAtMs = observedFinish ?? startedAtMs;
+    state.exportHealth.lastDurationMs = Math.max(0, finishedAtMs - startedAtMs);
+
+    if (exported.result === EXPORT_OK) {
+      state.exportHealth.exportedRecords += count;
+      if (observedFinish !== undefined) state.exportHealth.lastSuccessAtMs = observedFinish;
+      if (exported.schedulerFailed) {
+        state.exportHealth.failures++;
+        if (observedFinish !== undefined) state.exportHealth.lastFailureAtMs = observedFinish;
+        this.recordExporterDegraded(finishedAtMs);
+      }
+      return;
+    }
+
+    state.exportHealth.failures++;
+    state.exportHealth.failedRecords += count;
+    if (observedFinish !== undefined) state.exportHealth.lastFailureAtMs = observedFinish;
+    state.drops.exporter += count;
+    if (exported.result === EXPORT_TIMED_OUT) state.exportHealth.timeouts++;
+    this.recordExporterDegraded(finishedAtMs);
+  }
+
+  private async runExporter(
+    state: TelemetryState,
+    batch: readonly TelemetryRecord[],
+  ): Promise<{
+    readonly result: typeof EXPORT_OK | typeof EXPORT_FAILED | typeof EXPORT_TIMED_OUT;
+    readonly schedulerFailed: boolean;
+  }> {
+    const exporter = state.exporter!;
+    let exportResult: Promise<typeof EXPORT_OK | typeof EXPORT_FAILED>;
+    try {
+      exportResult = Promise.resolve(exporter.export(batch)).then(
+        () => EXPORT_OK,
+        () => EXPORT_FAILED,
+      );
+    } catch {
+      exportResult = Promise.resolve(EXPORT_FAILED);
+    }
+
+    let timeoutHandle: unknown;
+    let timeoutScheduled = false;
+    let schedulerFailed = false;
+    const timeout = new Promise<typeof EXPORT_TIMED_OUT | typeof EXPORT_FAILED>((resolve) => {
+      try {
+        timeoutHandle = state.scheduler.setTimeout(
+          () => resolve(EXPORT_TIMED_OUT),
+          state.limits.exportTimeoutMs,
+        );
+        timeoutScheduled = true;
+      } catch {
+        schedulerFailed = true;
+        resolve(EXPORT_FAILED);
+      }
+    });
+    const result = await Promise.race([exportResult, timeout]);
+    if (timeoutScheduled) {
+      try {
+        state.scheduler.clearTimeout(timeoutHandle);
+      } catch {
+        schedulerFailed = true;
+      }
+    }
+    return { result, schedulerFailed };
+  }
+
+  private recordExporterDegraded(timestampMs: number): void {
+    this.recordEvent({
+      timestampMs,
+      name: "exporter_degraded",
+      level: "error",
+      operation: "lifecycle",
+      stage: "export",
+      outcome: "unavailable",
+      resource: "telemetry",
+    });
+  }
+
+  private observeExportFailure(state: TelemetryState): void {
+    state.exportHealth.failures++;
+    const now = readClock(state);
+    if (now === undefined) state.drops.invalid++;
+    else state.exportHealth.lastFailureAtMs = now;
   }
 
   private pruneExpired(state: TelemetryState, now: number): void {

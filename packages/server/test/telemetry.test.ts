@@ -41,6 +41,33 @@ class ManualScheduler implements TelemetryScheduler {
   }
 }
 
+class FaultingScheduler extends ManualScheduler {
+  throwOnSetInterval = false;
+  throwOnClearInterval = false;
+  throwOnSetTimeout = false;
+  throwOnClearTimeout = false;
+
+  override setInterval(callback: () => void): number {
+    if (this.throwOnSetInterval) throw new Error("setInterval failed");
+    return super.setInterval(callback);
+  }
+
+  override clearInterval(handle: unknown): void {
+    super.clearInterval(handle);
+    if (this.throwOnClearInterval) throw new Error("clearInterval failed");
+  }
+
+  override setTimeout(callback: () => void): number {
+    if (this.throwOnSetTimeout) throw new Error("setTimeout failed");
+    return super.setTimeout(callback);
+  }
+
+  override clearTimeout(handle: unknown): void {
+    super.clearTimeout(handle);
+    if (this.throwOnClearTimeout) throw new Error("clearTimeout failed");
+  }
+}
+
 function exporterBatches(): {
   readonly batches: TelemetryRecord[][];
   readonly exporter: TelemetryExporter;
@@ -121,6 +148,43 @@ describe("Telemetry", () => {
         exportedRecords: 0,
         failedRecords: 0,
       },
+    });
+  });
+
+  test("contains throwing and non-finite clocks across every record path and snapshots", () => {
+    let reads = 0;
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => {
+        reads++;
+        if (reads % 2 === 1) throw new Error("clock failed");
+        return Number.NaN;
+      },
+    });
+
+    expect(
+      telemetry.recordSpan({
+        operation: "query",
+        stage: "handler",
+        outcome: "ok",
+        durationMs: 1,
+      }),
+    ).toBe(false);
+    expect(
+      telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" }),
+    ).toBe(false);
+    expect(
+      telemetry.recordMetric({
+        timestampMs: 0,
+        name: "runtime.cpu",
+        value: 1,
+        unit: "ratio",
+      }),
+    ).toBe(false);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      metricSeries: 0,
+      dropped: { invalid: 4 },
     });
   });
 
@@ -320,6 +384,170 @@ describe("Telemetry", () => {
     });
     telemetry.stop();
     expect(scheduler.intervals.size).toBe(0);
+  });
+
+  test("exports retained records even when the clock later fails", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, exporter } = exporterBatches();
+    let clockFailed = false;
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => {
+        if (clockFailed) throw new Error("clock failed");
+        return 10;
+      },
+    });
+    expect(
+      telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" }),
+    ).toBe(true);
+
+    clockFailed = true;
+    await expect(telemetry.flush()).resolves.toBeUndefined();
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(1);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      dropped: { invalid: 3 },
+      exporter: {
+        inFlight: false,
+        attempts: 1,
+        failures: 0,
+        exportedRecords: 1,
+        lastDurationMs: 0,
+      },
+    });
+    telemetry.stop();
+  });
+
+  test("contains synchronous throws and rejected exporter promises without unbounded feedback", async () => {
+    const scheduler = new ManualScheduler();
+    let calls = 0;
+    const telemetry = new Telemetry({
+      exporter: {
+        export() {
+          calls++;
+          if (calls === 1) throw new Error("synchronous exporter failure");
+          return Promise.reject(new Error("asynchronous exporter failure"));
+        },
+      },
+      scheduler,
+      localSink: false,
+      now: () => 10,
+      limits: { maxRecords: 4, maxBatchRecords: 1, maxBytes: 64 * 1024 },
+    });
+    telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" });
+
+    await expect(telemetry.flush()).resolves.toBeUndefined();
+    await expect(telemetry.flush()).resolves.toBeUndefined();
+
+    expect(calls).toBe(2);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 1,
+      dropped: { exporter: 2 },
+      exporter: {
+        inFlight: false,
+        attempts: 2,
+        failures: 2,
+        timeouts: 0,
+        exportedRecords: 0,
+        failedRecords: 2,
+        lastFailureAtMs: 10,
+      },
+    });
+    telemetry.stop();
+  });
+
+  test("fails a stalled export safely when timeout scheduling throws", async () => {
+    const scheduler = new FaultingScheduler();
+    scheduler.throwOnSetTimeout = true;
+    let rejectExport!: (reason?: unknown) => void;
+    const telemetry = new Telemetry({
+      exporter: {
+        export: () =>
+          new Promise<void>((_resolve, reject) => {
+            rejectExport = reject;
+          }),
+      },
+      scheduler,
+      localSink: false,
+      now: () => 25,
+      limits: { maxRecords: 4, maxBatchRecords: 1, maxBytes: 64 * 1024 },
+    });
+    telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" });
+
+    await expect(telemetry.flush()).resolves.toBeUndefined();
+    rejectExport(new Error("late exporter rejection"));
+    await Promise.resolve();
+
+    expect(scheduler.timeouts.size).toBe(0);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 1,
+      dropped: { exporter: 1 },
+      exporter: {
+        inFlight: false,
+        attempts: 1,
+        failures: 1,
+        timeouts: 0,
+        failedRecords: 1,
+      },
+    });
+    telemetry.stop();
+  });
+
+  test("contains scheduler setup, interval callback, cleanup, and stop failures", async () => {
+    const scheduler = new FaultingScheduler();
+    scheduler.throwOnClearTimeout = true;
+    const { batches, exporter } = exporterBatches();
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => 50,
+      limits: { maxRecords: 4, maxBatchRecords: 1, maxBytes: 64 * 1024 },
+    });
+    telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" });
+    const intervalCallback = scheduler.intervals.values().next().value;
+    expect(intervalCallback).toBeFunction();
+
+    expect(() => intervalCallback!()).not.toThrow();
+    await expect(telemetry.flush()).resolves.toBeUndefined();
+    expect(batches).toHaveLength(1);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 1,
+      exporter: { attempts: 1, failures: 1, exportedRecords: 1, failedRecords: 0 },
+    });
+
+    scheduler.throwOnClearInterval = true;
+    expect(() => telemetry.stop()).not.toThrow();
+    expect(() => telemetry.stop()).not.toThrow();
+    expect(() => intervalCallback!()).not.toThrow();
+    await Promise.resolve();
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 1,
+      exporter: { attempts: 1, failures: 2, exportedRecords: 1 },
+    });
+
+    const setupScheduler = new FaultingScheduler();
+    setupScheduler.throwOnSetInterval = true;
+    let unscheduled: Telemetry | undefined;
+    expect(() => {
+      unscheduled = new Telemetry({
+        exporter,
+        scheduler: setupScheduler,
+        localSink: false,
+        now: () => {
+          throw new Error("clock failed while observing scheduler failure");
+        },
+      });
+    }).not.toThrow();
+    expect(unscheduled!.snapshot()).toMatchObject({
+      dropped: { invalid: 2 },
+      exporter: { failures: 1 },
+    });
+    expect(() => unscheduled!.stop()).not.toThrow();
   });
 
   test("times out a stalled exporter, drops the failed batch, and remains fail-open", async () => {
