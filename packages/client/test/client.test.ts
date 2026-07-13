@@ -559,7 +559,11 @@ describe("DbzzClient protocol 2 ownership", () => {
   test("keeps event subscriptions live-only and reports sequence gaps", () => {
     const { client, clock, sockets } = harness();
     const events: DbzzLiveEvent<{ x: number }>[] = [];
-    client.subscribeEvent<{ x: number }>("events.cursor", (event) => events.push(event));
+    client.subscribeEvent<Record<never, never>, { x: number }>(
+      "events.cursor",
+      {},
+      (event) => events.push(event),
+    );
     welcome(client, sockets[0]!);
     const subscription = lastFrame(sockets[0]!, "sub");
     expect(subscription.args).toEqual({});

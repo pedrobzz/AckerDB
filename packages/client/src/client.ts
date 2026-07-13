@@ -432,15 +432,16 @@ export class DbzzClient {
     return () => this.removeSubscription(id, true);
   }
 
-  subscribeEvent<Row = unknown>(
-    ref: EventRef<Row> | string,
+  subscribeEvent<A, Row = unknown>(
+    ref: EventRef<A, Row> | string,
+    args: A,
     onEvent: (event: DbzzLiveEvent<Row>) => void,
     onError?: (error: DbzzClientError) => void,
   ): () => void {
     this.assertUsable();
     const id = this.allocateId();
     const address = getRef(ref as FunctionReference | string);
-    const frame = this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref: address, args: {} });
+    const frame = this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref: address, args });
     const bytes = this.reservePersistent(frame, "subscription");
     const subscription: EventSubscription = {
       kind: "event",

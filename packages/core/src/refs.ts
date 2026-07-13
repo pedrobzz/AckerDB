@@ -22,7 +22,7 @@ export type QueryRef<A = unknown, R = unknown> = FunctionReference<"query", A, R
 export type MutationRef<A = unknown, R = unknown> = FunctionReference<"mutation", A, R>;
 export type ProcedureRef<A = unknown, R = unknown> = FunctionReference<"procedure", A, R>;
 export type SseRef<A = unknown, R = unknown> = FunctionReference<"sse", A, R>;
-export type EventRef<Row = unknown> = FunctionReference<"event", never, Row>;
+export type EventRef<A = unknown, Row = unknown> = FunctionReference<"event", A, Row>;
 
 /** Accepts a reference object or a raw address string; returns the address. */
 export function getRef(ref: FunctionReference | string): string {

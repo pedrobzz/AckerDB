@@ -46,6 +46,10 @@ export default defineSchema({
   typingEvents: defineEventTable({
     id: dbz.primaryKey(),
     channelId: dbz.bigint(),
+  }, {
+    args: { channelId: dbz.bigint() },
+    access: "public",
+    matches: (row, args) => row.channelId === args.channelId,
   }),
 });
 `;

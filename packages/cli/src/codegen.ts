@@ -19,6 +19,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import {
+  eventArgsTypeName,
   rowTypeName,
   Schema,
   type EnumValidator,
@@ -117,7 +118,8 @@ function apiTs(config: AppConfig, schema: Schema, modules: FunctionModuleFile[])
     .filter((t) => schema.tables[t]!.kind === "event")
     .sort();
   const eventLines = eventTables.map(
-    (t) => `    ${t}: EventRef<import("./types.ts").${rowTypeName(t)}>;`,
+    (t) =>
+      `    ${t}: EventRef<import("./types.ts").${eventArgsTypeName(t)}, import("./types.ts").${rowTypeName(t)}>;`,
   );
 
   return `${HEADER}
@@ -175,14 +177,21 @@ function typesTs(config: AppConfig, schema: Schema): string {
   const rows = Object.keys(schema.tables)
     .sort()
     .map((table) => `export type ${rowTypeName(table)} = RowOf<typeof schema, ${JSON.stringify(table)}>;`);
+  const eventArgs = Object.keys(schema.tables)
+    .filter((table) => schema.tables[table]!.kind === "event")
+    .sort()
+    .map(
+      (table) =>
+        `export type ${eventArgsTypeName(table)} = EventArgsOf<typeof schema, ${JSON.stringify(table)}>;`,
+    );
 
   return `${HEADER}
 import type schema from "${schemaImport}";
-import type { Identity, RowOf } from "@dbzz/server";
+import type { EventArgsOf, Identity, RowOf } from "@dbzz/server";
 
 export type { Identity };
 
-${parts.join("\n")}${parts.length > 0 ? "\n" : ""}${rows.join("\n")}
+${parts.join("\n")}${parts.length > 0 ? "\n" : ""}${rows.join("\n")}${eventArgs.length > 0 ? "\n" : ""}${eventArgs.join("\n")}
 `;
 }
 
