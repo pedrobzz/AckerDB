@@ -114,7 +114,22 @@ export {
   type TxCtx,
 } from "./functions.ts";
 export { Registry } from "./registry.ts";
-export { SubscriptionManager, SubEntry, type Subscriber } from "./reactive.ts";
+export {
+  OrderedReactive,
+  ReactiveCommit,
+  type AuthRotationResult,
+  type DeliveryFailure,
+  type EventSubscriptionOptions,
+  type OrderedReactiveOptions,
+  type QueryEvaluation,
+  type QueryEvaluationInput,
+  type QueryEvaluator,
+  type QuerySubscriptionOptions,
+  type ReactiveCommitResult,
+  type ReactiveEvent,
+  type ReactiveSnapshot,
+  type Subscriber,
+} from "./reactive.ts";
 export { Runtime } from "./runtime.ts";
 export { serve, type ServeOptions } from "./serve.ts";
 export {
