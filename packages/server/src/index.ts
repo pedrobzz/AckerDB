@@ -130,6 +130,22 @@ export {
   type ReactiveSnapshot,
   type Subscriber,
 } from "./reactive.ts";
+export {
+  Session,
+  type RuntimeAuthTransition,
+  type RuntimeMutationResult,
+  type RuntimePort,
+  type RuntimePublication,
+  type SessionApplicationMessage,
+  type SessionClock,
+  type SessionControlMessage,
+  type SessionOptions,
+  type SessionPhase,
+  type SessionRuntimeContext,
+  type SessionSink,
+  type SessionSnapshot,
+  type SubscriptionServerMessage,
+} from "./session.ts";
 export { Runtime } from "./runtime.ts";
 export { serve, type ServeOptions } from "./serve.ts";
 export {
