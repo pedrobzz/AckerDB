@@ -34,6 +34,9 @@ export interface DeliveryObservation {
 /** Metadata-only hook. Delivery never awaits it and ignores callback failures. */
 export type DeliveryObserver = (observation: DeliveryObservation) => unknown;
 
+/** Captures the observer that owns one frame before any delivery work begins. */
+export type DeliveryObserverCapture = () => DeliveryObserver | undefined;
+
 export interface OutboundBudgetSnapshot {
   readonly bytes: number;
   readonly applicationBytes: number;
@@ -139,6 +142,7 @@ export interface DeliveryClock {
 }
 
 interface DeliveryTiming {
+  readonly observer: DeliveryObserver;
   readonly source: DeliverySource;
   readonly bytes: number;
   readonly queueStartedAt: number;
@@ -146,11 +150,16 @@ interface DeliveryTiming {
   deliveryStartedAt?: number;
 }
 
-interface DeliveryInstrumentation {
+interface PendingDeliveryObservation {
   readonly observer: DeliveryObserver;
+  readonly record: DeliveryObservation;
+}
+
+interface DeliveryInstrumentation {
+  readonly captureObserver: DeliveryObserverCapture;
   readonly clock: DeliveryClock;
   readonly transport: DeliveryTransport;
-  readonly pending: DeliveryObservation[];
+  readonly pending: PendingDeliveryObservation[];
   scheduled: boolean;
   dropped: number;
 }
@@ -181,9 +190,10 @@ function promiseLike(value: unknown): value is PromiseLike<unknown> {
 
 function observeDelivery(
   instrumentation: DeliveryInstrumentation | undefined,
+  observer: DeliveryObserver | undefined,
   observation: Omit<DeliveryObservation, "durationMs"> & { readonly startedAt: number },
 ): void {
-  if (instrumentation === undefined) return;
+  if (instrumentation === undefined || observer === undefined) return;
   if (instrumentation.pending.length >= MAX_PENDING_DELIVERY_OBSERVATIONS) {
     instrumentation.dropped = Math.min(Number.MAX_SAFE_INTEGER, instrumentation.dropped + 1);
     return;
@@ -200,7 +210,7 @@ function observeDelivery(
   } catch {
     return;
   }
-  instrumentation.pending.push(record);
+  instrumentation.pending.push({ observer, record });
   scheduleDeliveryObservations(instrumentation);
 }
 
@@ -224,10 +234,10 @@ function drainDeliveryObservations(instrumentation: DeliveryInstrumentation): vo
   for (let index = 0; index < batch.length; index++) {
     const pending = batch[index]!;
     const record = index === 0 && dropped > 0
-      ? Object.freeze({ ...pending, droppedObservations: dropped })
-      : pending;
+      ? Object.freeze({ ...pending.record, droppedObservations: dropped })
+      : pending.record;
     try {
-      const result = instrumentation.observer(record);
+      const result = pending.observer(record);
       if (promiseLike(result)) void Promise.resolve(result).catch(() => {});
     } catch {
       // Delivery instrumentation is diagnostic and always fail-open.
@@ -235,6 +245,17 @@ function drainDeliveryObservations(instrumentation: DeliveryInstrumentation): vo
   }
   if (instrumentation.pending.length > 0) {
     scheduleDeliveryObservations(instrumentation);
+  }
+}
+
+function captureDeliveryObserver(
+  instrumentation: DeliveryInstrumentation | undefined,
+): DeliveryObserver | undefined {
+  if (instrumentation === undefined) return undefined;
+  try {
+    return instrumentation.captureObserver();
+  } catch {
+    return undefined;
   }
 }
 
@@ -252,13 +273,16 @@ function observationNow(
 
 function deliveryTiming(
   instrumentation: DeliveryInstrumentation | undefined,
+  observer: DeliveryObserver | undefined,
   source: DeliverySource,
   bytes: number,
   terminalOutcome?: Outcome["code"],
 ): DeliveryTiming | undefined {
+  if (observer === undefined) return undefined;
   const queueStartedAt = observationNow(instrumentation);
   if (queueStartedAt === undefined) return undefined;
   return {
+    observer,
     source,
     bytes,
     queueStartedAt,
@@ -276,7 +300,7 @@ function observeTiming(
   if (instrumentation === undefined || timing === undefined) return;
   const startedAt = stage === "queue" ? timing.queueStartedAt : timing.deliveryStartedAt;
   if (startedAt === undefined) return;
-  observeDelivery(instrumentation, {
+  observeDelivery(instrumentation, timing.observer, {
     transport: instrumentation.transport,
     stage,
     lane,
@@ -290,6 +314,7 @@ function observeTiming(
 
 function observeEncoding(
   instrumentation: DeliveryInstrumentation | undefined,
+  observer: DeliveryObserver | undefined,
   lane: OutboundLane,
   source: DeliverySource,
   startedAt: number | undefined,
@@ -298,7 +323,7 @@ function observeEncoding(
   terminalOutcome?: Outcome["code"],
 ): void {
   if (instrumentation === undefined || startedAt === undefined) return;
-  observeDelivery(instrumentation, {
+  observeDelivery(instrumentation, observer, {
     transport: instrumentation.transport,
     stage: "encoding",
     lane,
@@ -314,10 +339,12 @@ function deliveryInstrumentation(
   observer: DeliveryObserver | undefined,
   clock: DeliveryClock,
   transport: DeliveryTransport,
+  captureObserver?: DeliveryObserverCapture,
 ): DeliveryInstrumentation | undefined {
-  return observer === undefined
+  const capture = captureObserver ?? (observer === undefined ? undefined : () => observer);
+  return capture === undefined
     ? undefined
-    : { observer, clock, transport, pending: [], scheduled: false, dropped: 0 };
+    : { captureObserver: capture, clock, transport, pending: [], scheduled: false, dropped: 0 };
 }
 
 export interface WebSocketDeliverySocket {
@@ -332,6 +359,7 @@ export interface WebSocketSessionSinkOptions {
   readonly limits: ServiceLimits;
   readonly clock?: DeliveryClock;
   readonly observer?: DeliveryObserver;
+  readonly captureObserver?: DeliveryObserverCapture;
 }
 
 export interface WebSocketDeliverySnapshot {
@@ -430,7 +458,12 @@ export class WebSocketSessionSink implements SessionSink {
     this.budget = options.budget;
     this.limits = options.limits;
     this.clock = options.clock ?? SYSTEM_CLOCK;
-    this.delivery = deliveryInstrumentation(options.observer, this.clock, "websocket");
+    this.delivery = deliveryInstrumentation(
+      options.observer,
+      this.clock,
+      "websocket",
+      options.captureObserver,
+    );
     this.controlReserveBytes = options.limits.maxFrameBytes;
   }
 
@@ -501,15 +534,16 @@ export class WebSocketSessionSink implements SessionSink {
     authEpoch: number | null,
     message: SessionControlMessage | SessionApplicationMessage,
   ): Promise<void> {
+    const observer = captureDeliveryObserver(this.delivery);
     if (this.closed) {
       const error = this.terminalError ?? unavailable("outbound", "WebSocket is closed");
       if (this.delivery !== undefined) {
-        const timing = deliveryTiming(this.delivery, "send", 0);
+        const timing = deliveryTiming(this.delivery, observer, "send", 0);
         observeTiming(this.delivery, lane, timing, "queue", safeDeliveryOutcome(error));
       }
       return Promise.reject(error);
     }
-    const encodingStartedAt = this.delivery === undefined ? undefined : observationNow(this.delivery);
+    const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
     let text: string;
     try {
       text = encode(message);
@@ -517,6 +551,7 @@ export class WebSocketSessionSink implements SessionSink {
       if (this.delivery !== undefined) {
         observeEncoding(
           this.delivery,
+          observer,
           lane,
           "send",
           encodingStartedAt,
@@ -528,11 +563,11 @@ export class WebSocketSessionSink implements SessionSink {
     }
     const bytes = utf8.encode(text).byteLength;
     if (this.delivery !== undefined) {
-      observeEncoding(this.delivery, lane, "send", encodingStartedAt, bytes, "ok");
+      observeEncoding(this.delivery, observer, lane, "send", encodingStartedAt, bytes, "ok");
     }
     const timing = this.delivery === undefined
       ? undefined
-      : deliveryTiming(this.delivery, "send", bytes);
+      : deliveryTiming(this.delivery, observer, "send", bytes);
     if (bytes > this.limits.maxFrameBytes) {
       const error = overloaded("outbound", "WebSocket frame exceeds maxFrameBytes");
       observeTiming(this.delivery, lane, timing, "queue", error.code);
@@ -761,11 +796,13 @@ export class WebSocketSessionSink implements SessionSink {
     this.releaseBuffered(this.bufferedBytes, terminal.code);
 
     const terminalOutcome = outcomeFromError(terminal).code;
-    const encodingStartedAt = observationNow(this.delivery);
+    const observer = captureDeliveryObserver(this.delivery);
+    const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
     const text = webSocketErrorText(terminal, this.limits.maxFrameBytes);
     const bytes = text === null ? 0 : utf8.encode(text).byteLength;
     observeEncoding(
       this.delivery,
+      observer,
       "control",
       "terminal",
       encodingStartedAt,
@@ -775,6 +812,7 @@ export class WebSocketSessionSink implements SessionSink {
     );
     const timing = deliveryTiming(
       this.delivery,
+      observer,
       "terminal",
       bytes,
       terminalOutcome,
@@ -1080,13 +1118,15 @@ export class BoundedSseProducer {
     encodeFrame: () => Uint8Array,
     terminalOutcome?: Outcome["code"],
   ): ObservedSseFrame {
-    const startedAt = observationNow(this.delivery);
+    const observer = captureDeliveryObserver(this.delivery);
+    const startedAt = observer === undefined ? undefined : observationNow(this.delivery);
     let bytes: Uint8Array;
     try {
       bytes = encodeFrame();
     } catch (error) {
       observeEncoding(
         this.delivery,
+        observer,
         lane,
         source,
         startedAt,
@@ -1098,6 +1138,7 @@ export class BoundedSseProducer {
     }
     observeEncoding(
       this.delivery,
+      observer,
       lane,
       source,
       startedAt,
@@ -1107,6 +1148,7 @@ export class BoundedSseProducer {
     );
     const timing = deliveryTiming(
       this.delivery,
+      observer,
       source,
       bytes.byteLength,
       terminalOutcome,

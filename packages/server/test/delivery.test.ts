@@ -1128,6 +1128,104 @@ describe("BoundedSseProducer", () => {
 });
 
 describe("delivery observers", () => {
+  test("keeps coalesced observations with the observer captured once per frame", async () => {
+    const clock = new FakeClock();
+    const limits = testLimits();
+    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
+    const socket = new FakeSocket();
+    const firstObservations: DeliveryObservation[] = [];
+    const secondObservations: DeliveryObservation[] = [];
+    const firstObserver = (observation: DeliveryObservation) => firstObservations.push(observation);
+    const secondObserver = (observation: DeliveryObservation) => secondObservations.push(observation);
+    let currentObserver = firstObserver;
+    let captures = 0;
+    const sink = new WebSocketSessionSink({
+      socket,
+      budget,
+      limits,
+      clock,
+      captureObserver: () => {
+        captures++;
+        return currentObserver;
+      },
+    });
+    const first = application(1, "first");
+    const second = application(2, "second response");
+    const firstBytes = encoder.encode(encode(first)).byteLength;
+    const secondBytes = encoder.encode(encode(second)).byteLength;
+
+    const firstSend = sink.sendApplication(1, first);
+    currentObserver = secondObserver;
+    const secondSend = sink.sendApplication(1, second);
+
+    expect(firstObservations).toEqual([]);
+    expect(secondObservations).toEqual([]);
+    await Promise.all([firstSend, secondSend]);
+    await flushObservations();
+
+    expect(captures).toBe(2);
+    expect(firstObservations.map(({ stage, bytes }) => ({ stage, bytes }))).toEqual([
+      { stage: "encoding", bytes: firstBytes },
+      { stage: "queue", bytes: firstBytes },
+      { stage: "delivery", bytes: firstBytes },
+    ]);
+    expect(secondObservations.map(({ stage, bytes }) => ({ stage, bytes }))).toEqual([
+      { stage: "encoding", bytes: secondBytes },
+      { stage: "queue", bytes: secondBytes },
+      { stage: "delivery", bytes: secondBytes },
+    ]);
+    expectSafeObservations([...firstObservations, ...secondObservations]);
+    expect(budget.snapshot().bytes).toBe(0);
+  });
+
+  test("retains the frame observer through delayed WebSocket drain", async () => {
+    const clock = new FakeClock();
+    const limits = testLimits();
+    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
+    const socket = new FakeSocket();
+    const ownerObservations: DeliveryObservation[] = [];
+    const unrelatedObservations: DeliveryObservation[] = [];
+    const owner = (observation: DeliveryObservation) => ownerObservations.push(observation);
+    const unrelated = (observation: DeliveryObservation) => unrelatedObservations.push(observation);
+    let currentObserver = owner;
+    let captures = 0;
+    const message = application(1, "buffered");
+    const bytes = encoder.encode(encode(message)).byteLength;
+    socket.plans.push({ result: -1, buffered: bytes });
+    const sink = new WebSocketSessionSink({
+      socket,
+      budget,
+      limits,
+      clock,
+      captureObserver: () => {
+        captures++;
+        return currentObserver;
+      },
+    });
+
+    const accepted = sink.sendApplication(1, message);
+    currentObserver = unrelated;
+    await accepted;
+    await flushObservations();
+    expect(ownerObservations.map(({ stage }) => stage)).toEqual(["encoding", "queue"]);
+    expect(unrelatedObservations).toEqual([]);
+
+    clock.advance(7);
+    socket.bufferedAmount = 0;
+    sink.onDrain();
+    await flushObservations();
+
+    expect(captures).toBe(1);
+    expect(ownerObservations.map(({ stage, durationMs }) => ({ stage, durationMs }))).toEqual([
+      { stage: "encoding", durationMs: 0 },
+      { stage: "queue", durationMs: 0 },
+      { stage: "delivery", durationMs: 7 },
+    ]);
+    expect(unrelatedObservations).toEqual([]);
+    expectSafeObservations(ownerObservations);
+    expect(budget.snapshot().bytes).toBe(0);
+  });
+
   test("bounds pending observations and reports the exact overflow count", async () => {
     const clock = new FakeClock();
     const limits = testLimits();
