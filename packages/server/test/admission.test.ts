@@ -11,6 +11,7 @@ import {
   validateTelemetryLimits,
 } from "../src/limits.ts";
 import { DbzzError, isDbzzError } from "../src/errors.ts";
+import { BoundedExecutor } from "../src/executor.ts";
 
 function settled<T>(ticket: Promise<T>): Promise<T | AdmissionRejected> {
   return ticket.catch((error: unknown) => {
@@ -30,6 +31,7 @@ describe("production limits", () => {
       maxAgeMs: 30_000,
     });
     expect(PRODUCTION_LIMITS.telemetry.maxRecords).toBe(2_048);
+    expect(PRODUCTION_LIMITS.revalidationConcurrency).toBe(4);
 
     expect(() => validateQueueLimits({ maxItems: 1, maxBytes: Infinity, maxAgeMs: 1 })).toThrow(
       "positive safe integer",
@@ -44,6 +46,9 @@ describe("production limits", () => {
     expect(() =>
       defineServiceLimits({ ...PRODUCTION_LIMITS, maxOperationsPerConnection: 5_000 }),
     ).toThrow("cannot exceed");
+    expect(() =>
+      defineServiceLimits({ ...PRODUCTION_LIMITS, revalidationConcurrency: 0 }),
+    ).toThrow("revalidationConcurrency must be a positive safe integer");
     expect(() => defineServiceLimits({
       ...PRODUCTION_LIMITS,
       maxFrameBytes: PRODUCTION_LIMITS.webSocket.maxBytesPerConnection,
@@ -209,5 +214,51 @@ describe("AdmissionQueue", () => {
     });
     expect(queue.snapshot()).toMatchObject({ queuedItems: 0, closed: true });
     expect(queue.snapshot().rejected.closed).toBe(2);
+  });
+});
+
+describe("BoundedExecutor", () => {
+  test("expires queued work autonomously while every execution slot is stalled", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const executor = new BoundedExecutor({
+      concurrency: 1,
+      discipline: "round-robin",
+      resource: "revalidation",
+      limits: { maxItems: 2, maxBytes: 2, maxAgeMs: 5 },
+    });
+    const active = executor.submit(() => gate, {
+      operation: "subscription",
+      bytes: 1,
+      fairnessKey: "active",
+    });
+    const queued = settled(executor.submit(() => undefined, {
+      operation: "subscription",
+      bytes: 1,
+      fairnessKey: "queued",
+    }));
+
+    expect(executor.snapshot()).toMatchObject({
+      active: 1,
+      queue: { queuedItems: 1, queuedBytes: 1 },
+    });
+    expect(await queued).toMatchObject({
+      reason: "age",
+      code: "deadline_exceeded",
+      resource: "revalidation",
+      retryable: false,
+    });
+    expect(executor.snapshot().queue).toMatchObject({
+      queuedItems: 0,
+      queuedBytes: 0,
+      rejected: { age: 1 },
+    });
+
+    release();
+    await active;
+    executor.close();
+    await executor.drain();
   });
 });

@@ -49,11 +49,13 @@ function positiveInteger(value: number, name: string): number {
 export class BoundedExecutor {
   readonly concurrency: number;
   private readonly queue: AdmissionQueue<Task<unknown>>;
+  private readonly now: () => number;
   private active = 0;
   private admitted = 0;
   private completed = 0;
   private failed = 0;
   private pumping = false;
+  private expiryTimer?: ReturnType<typeof setTimeout>;
   private readonly drainWaiters = new Set<() => void>();
 
   constructor(options: BoundedExecutorOptions) {
@@ -65,6 +67,7 @@ export class BoundedExecutor {
       retryAfterMs: options.retryAfterMs,
       now: options.now,
     });
+    this.now = options.now ?? Date.now;
   }
 
   submit<T>(work: () => T | Promise<T>, options: ExecutorTaskOptions): Promise<T> {
@@ -83,15 +86,18 @@ export class BoundedExecutor {
       ...(options.deadlineMs === undefined ? {} : { deadlineMs: options.deadlineMs }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     };
-    void this.queue
-      .enqueue(task as Task<unknown>, request)
-      .catch((error) => reject(error));
+    void this.queue.enqueue(task as Task<unknown>, request).catch((error) => {
+      reject(error);
+      this.scheduleExpiry();
+      this.resolveDrainIfIdle();
+    });
     this.pump();
     return result;
   }
 
   /** Stop accepting work, reject queued work, and let already-started handlers finish. */
   close(): void {
+    this.clearExpiryTimer();
     this.queue.close();
     this.resolveDrainIfIdle();
   }
@@ -103,13 +109,15 @@ export class BoundedExecutor {
   }
 
   snapshot(): ExecutorSnapshot {
+    const queue = this.queue.snapshot();
+    this.scheduleExpiry(queue);
     return Object.freeze({
       concurrency: this.concurrency,
       active: this.active,
       admitted: this.admitted,
       completed: this.completed,
       failed: this.failed,
-      queue: this.queue.snapshot(),
+      queue,
     });
   }
 
@@ -143,6 +151,7 @@ export class BoundedExecutor {
       }
     } finally {
       this.pumping = false;
+      this.scheduleExpiry();
     }
   }
 
@@ -150,5 +159,26 @@ export class BoundedExecutor {
     if (this.active !== 0 || this.queue.snapshot().queuedItems !== 0) return;
     for (const resolve of this.drainWaiters) resolve();
     this.drainWaiters.clear();
+  }
+
+  private scheduleExpiry(snapshot: AdmissionQueueSnapshot = this.queue.snapshot()): void {
+    this.clearExpiryTimer();
+    if (snapshot.closed || snapshot.nextExpiryAtMs === undefined) return;
+    const now = this.now();
+    if (!Number.isFinite(now)) throw new RangeError("executor clock must return finite milliseconds");
+    const delay = Math.min(Math.max(0, snapshot.nextExpiryAtMs - now), 0x7fff_ffff);
+    this.expiryTimer = setTimeout(() => {
+      this.expiryTimer = undefined;
+      this.queue.expire();
+      this.scheduleExpiry();
+      this.resolveDrainIfIdle();
+    }, delay);
+    this.expiryTimer.unref?.();
+  }
+
+  private clearExpiryTimer(): void {
+    if (this.expiryTimer === undefined) return;
+    clearTimeout(this.expiryTimer);
+    this.expiryTimer = undefined;
   }
 }

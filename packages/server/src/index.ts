@@ -89,6 +89,13 @@ export {
   type DbzzErrorOptions,
   type ResourceClass,
 } from "./errors.ts";
+export {
+  PRODUCTION_LIMITS,
+  defineServiceLimits,
+  type CapacityLimits,
+  type QueueLimits,
+  type ServiceLimits,
+} from "./limits.ts";
 export { invokeFunction, type InvocationContext } from "./invocation.ts";
 export {
   query,
@@ -163,7 +170,12 @@ export {
   type SessionSnapshot,
   type SubscriptionServerMessage,
 } from "./session.ts";
-export { Runtime } from "./runtime.ts";
+export {
+  Runtime,
+  type RuntimeLifecycleState,
+  type RuntimeOptions,
+  type RuntimeStatus,
+} from "./runtime.ts";
 export {
   DbzzServer,
   serve,

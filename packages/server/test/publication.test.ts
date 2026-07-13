@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { DbzzError } from "../src/errors.ts";
 import { OrderedPublication } from "../src/publication.ts";
+import { PublicationHandoff } from "../src/publication.ts";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -122,6 +123,30 @@ describe("ordered publication", () => {
     second.resolve();
     await Promise.all([two.completion, three.completion]);
     expect(started).toEqual([1n, 2n, 3n]);
+  });
+
+  test("ordered handoffs let later independent convergence finish first", async () => {
+    const first = deferred();
+    const started: bigint[] = [];
+    const coordinator = new OrderedPublication<string>({
+      limits: { maxItems: 2, maxBytes: 2 },
+      process: ({ version }) => {
+        started.push(version);
+        return new PublicationHandoff(version === 1n ? first.promise : Promise.resolve());
+      },
+    });
+    const one = coordinator.reserve(1);
+    one.commit("one");
+    const two = coordinator.reserve(1);
+    two.commit("two");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual([1n, 2n]);
+    await two.completion;
+    expect(coordinator.snapshot()).toMatchObject({ processed: 1, processedHighWater: 0n });
+    first.resolve();
+    await one.completion;
+    expect(coordinator.snapshot()).toMatchObject({ processed: 2, processedHighWater: 2n });
   });
 
   test("surfaces processor failure and continues without reordering", async () => {

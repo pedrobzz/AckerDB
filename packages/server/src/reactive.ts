@@ -9,9 +9,10 @@ import {
   type SubscriptionTransition,
 } from "@dbzz/core";
 import { DbzzError, isDbzzError } from "./errors.ts";
+import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
 import { deepFreeze } from "./immutable.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "./limits.ts";
-import { OrderedPublication, type Publication } from "./publication.ts";
+import { OrderedPublication, PublicationHandoff, type Publication } from "./publication.ts";
 
 export interface Subscriber {
   sendTransition(subscriptionId: number, transition: SubscriptionTransition): Promise<void>;
@@ -104,6 +105,7 @@ export interface ReactiveSnapshot {
   readonly historyTransitions: number;
   readonly historyBytes: number;
   readonly evaluatingEntries: number;
+  readonly revalidation: ExecutorSnapshot;
 }
 
 export interface AuthRotationResult {
@@ -143,6 +145,7 @@ interface QueryEntry<C> {
   readonly address: string;
   readonly encodedArgs: string;
   readonly policyScopeFingerprint: string;
+  readonly revalidationBytes: number;
   context: C;
   generation: string;
   readSet: Set<string>;
@@ -197,6 +200,7 @@ export class OrderedReactive<C = unknown> {
   private readonly evaluateQuery: QueryEvaluator<C>;
   private readonly now: () => number;
   private readonly nextGeneration: () => string;
+  private readonly revalidation: BoundedExecutor;
   private readonly entries = new Map<string, QueryEntry<C>>();
   private readonly byReadKey = new Map<string, Set<QueryEntry<C>>>();
   private readonly bySubscriber = new Map<Subscriber, Map<number, Binding<C>>>();
@@ -208,12 +212,21 @@ export class OrderedReactive<C = unknown> {
   private resultBytes = 0;
   private historyBytes = 0;
   private historyTransitions = 0;
+  private eventTail: Promise<void> = Promise.resolve();
 
   constructor(options: OrderedReactiveOptions<C>) {
     this.evaluateQuery = options.evaluate;
     this.limits = options.limits ?? PRODUCTION_LIMITS;
     this.now = options.now ?? Date.now;
     this.nextGeneration = options.generation ?? (() => crypto.randomUUID());
+    this.revalidation = new BoundedExecutor({
+      concurrency: this.limits.revalidationConcurrency,
+      discipline: "round-robin",
+      limits: this.limits.revalidationQueue,
+      resource: "revalidation",
+      retryAfterMs: 0,
+      now: this.now,
+    });
     this.publication = new OrderedPublication<ReactiveCommit>({
       limits: this.limits.publication,
       initialVersion: options.initialVersion,
@@ -478,7 +491,14 @@ export class OrderedReactive<C = unknown> {
       historyTransitions: this.historyTransitions,
       historyBytes: this.historyBytes,
       evaluatingEntries,
+      revalidation: this.revalidation.snapshot(),
     });
+  }
+
+  async close(): Promise<void> {
+    await this.publication.close();
+    this.revalidation.close();
+    await Promise.all([this.revalidation.drain(), this.eventTail]);
   }
 
   private entryFor(input: QueryEvaluationInput<C>): QueryEntry<C> {
@@ -493,6 +513,7 @@ export class OrderedReactive<C = unknown> {
       address: input.address,
       encodedArgs,
       policyScopeFingerprint: input.policyScopeFingerprint,
+      revalidationBytes: byteLength(key),
       context: input.context,
       generation: this.generation(),
       readSet: new Set(),
@@ -512,21 +533,53 @@ export class OrderedReactive<C = unknown> {
     return entry;
   }
 
-  private async ensureCurrent(entry: QueryEntry<C>, targetVersion: bigint): Promise<DeliveryFailure[]> {
+  private ensureCurrent(entry: QueryEntry<C>, targetVersion: bigint): Promise<DeliveryFailure[]> {
     if (entry.removed) throw unavailable("Subscription entry was evicted");
     if (targetVersion > entry.dirtyVersion) entry.dirtyVersion = targetVersion;
-    if (entry.initialized && entry.commitVersion >= targetVersion) return [];
+    if (entry.initialized && entry.commitVersion >= targetVersion) return Promise.resolve([]);
     if (entry.evaluation) return entry.evaluation;
-    const task = this.evaluateUntilCurrent(entry);
-    entry.evaluation = task;
-    try {
-      return await task;
-    } finally {
-      if (entry.evaluation === task) entry.evaluation = undefined;
+    const wasInitialized = entry.initialized;
+    const execution = this.revalidation.submit(
+      () => this.evaluateUntilCurrent(entry),
+      {
+        operation: "subscription",
+        bytes: entry.revalidationBytes,
+        fairnessKey: entry.policyScopeFingerprint || entry.identity,
+      },
+    ).catch(async (error): Promise<DeliveryFailure[]> => {
+      if (!wasInitialized) {
+        this.removeEntry(entry);
+        throw error;
+      }
+      if (entry.listeners.size === 0) {
+        this.removeEntry(entry);
+        return [];
+      }
+      return this.failEntry(entry, error);
+    });
+    let owned!: Promise<DeliveryFailure[]>;
+    const release = () => {
+      if (entry.evaluation === owned) entry.evaluation = undefined;
       if (entry.listeners.size === 0 && entry.initialized && entry.dormantAtMs === undefined) {
         entry.dormantAtMs = this.readNow();
       }
-    }
+    };
+    owned = execution.then(
+      async (failures) => {
+        release();
+        if (!entry.removed && entry.commitVersion < entry.dirtyVersion) {
+          const newer = await this.ensureCurrent(entry, entry.dirtyVersion);
+          return failures.length === 0 ? newer : [...failures, ...newer];
+        }
+        return failures;
+      },
+      (error) => {
+        release();
+        throw error;
+      },
+    );
+    entry.evaluation = owned;
+    return owned;
   }
 
   private async evaluateUntilCurrent(entry: QueryEntry<C>): Promise<DeliveryFailure[]> {
@@ -687,28 +740,38 @@ export class OrderedReactive<C = unknown> {
     return undefined;
   }
 
-  private async processPublication(publication: Publication<ReactiveCommit>): Promise<void> {
+  private processPublication(publication: Publication<ReactiveCommit>): PublicationHandoff {
     const commit = publication.value;
     const affectedCallerIds = commit.caller ? this.affectedQueryIds(commit.caller, commit.writeKeys) : [];
-    const failures: DeliveryFailure[] = [];
     const affected = this.affectedEntries(commit.writeKeys);
+    const required: Promise<DeliveryFailure[]>[] = [];
     for (const entry of affected) {
       if (entry.removed || entry.commitVersion >= publication.version) continue;
       if (publication.version > entry.dirtyVersion) entry.dirtyVersion = publication.version;
-      try {
-        failures.push(...await this.ensureCurrent(entry, publication.version));
-      } catch (error) {
-        failures.push(...await this.failEntry(entry, error));
-      }
+      const convergence = this.ensureCurrent(entry, publication.version);
+      required.push(convergence);
     }
-    for (const event of commit.events) {
-      failures.push(...await this.publishEvent(publication.version, event));
-    }
-    commit.result = Object.freeze({
-      affectedCallerIds: Object.freeze(affectedCallerIds),
-      deliveryFailures: Object.freeze(failures),
+    const eventDelivery = this.scheduleEvents(publication.version, commit.events);
+    return new PublicationHandoff(Promise.all([...required, eventDelivery]).then((results) => {
+      commit.result = Object.freeze({
+        affectedCallerIds: Object.freeze(affectedCallerIds),
+        deliveryFailures: Object.freeze(results.flat()),
+      });
+      this.prune();
+    }));
+  }
+
+  private scheduleEvents(
+    commitVersion: bigint,
+    events: readonly ReactiveEvent[],
+  ): Promise<DeliveryFailure[]> {
+    const delivery = this.eventTail.then(async () => {
+      const failures: DeliveryFailure[] = [];
+      for (const event of events) failures.push(...await this.publishEvent(commitVersion, event));
+      return failures;
     });
-    this.prune();
+    this.eventTail = delivery.then(() => undefined, () => undefined);
+    return delivery;
   }
 
   private async publishEvent(commitVersion: bigint, event: ReactiveEvent): Promise<DeliveryFailure[]> {

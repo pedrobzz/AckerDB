@@ -1,8 +1,8 @@
 /**
  * The storage engine: bun:sqlite with WAL, one writer connection (all
- * transactions are serialized through the runtime's writer queue) and one
- * reader connection (queries and subscription recomputes see committed
- * snapshots only).
+ * transactions are serialized through the runtime's writer queue) and
+ * isolated reader connections (queries and subscription recomputes see
+ * committed snapshots only).
  *
  * Physical mapping:
  *   - primary key            INTEGER PRIMARY KEY AUTOINCREMENT (ids never reused)
@@ -290,6 +290,9 @@ export class Engine {
   readonly tags = new Map<string, TagMap>();
   readonly plans = new Map<string, TablePlan>();
   private readonly processLock: string | null;
+  private readonly sqlitePath: string;
+  private readonly busyTimeoutMs: number;
+  private readonly additionalReaders = new Set<Database>();
   private closed = false;
 
   constructor(schema: Schema, path: string, options: EngineOptions = {}) {
@@ -297,10 +300,12 @@ export class Engine {
     this.path = path;
     this.durability = options.durability ?? "production";
     const busyTimeoutMs = positiveInt(options.busyTimeoutMs ?? 5_000, "busyTimeoutMs");
+    this.busyTimeoutMs = busyTimeoutMs;
     this.processLock = acquireProcessLock(path);
     const sqlitePath = path === ":memory:"
       ? `file:dbzz-${randomUUID()}?mode=memory&cache=shared`
       : path;
+    this.sqlitePath = sqlitePath;
     let writer: Database | null = null;
     let reader: Database | null = null;
     try {
@@ -314,7 +319,7 @@ export class Engine {
         reader.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
         reader.exec("PRAGMA foreign_keys = ON");
       } else {
-        reader = new Database(path, { readonly: false, safeIntegers: true });
+        reader = new Database(path, { readonly: true, safeIntegers: true });
         reader.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
         reader.exec("PRAGMA foreign_keys = ON");
       }
@@ -335,6 +340,23 @@ export class Engine {
       if (reader !== null && reader !== writer) reader.close(false);
       writer?.close(false);
       if (this.processLock !== null) rmSync(this.processLock, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  /** Open another isolated snapshot reader owned by this engine. */
+  createReader(): Database {
+    if (this.closed) throw new Error("engine is closed");
+    const reader = this.path === ":memory:"
+      ? new Database(this.sqlitePath, { create: true, safeIntegers: true })
+      : new Database(this.sqlitePath, { readonly: true, safeIntegers: true });
+    try {
+      reader.exec(`PRAGMA busy_timeout = ${this.busyTimeoutMs}`);
+      reader.exec("PRAGMA foreign_keys = ON");
+      this.additionalReaders.add(reader);
+      return reader;
+    } catch (error) {
+      reader.close(false);
       throw error;
     }
   }
@@ -879,6 +901,8 @@ export class Engine {
     this.closed = true;
     try {
       this.writer.query("UPDATE _dbz_state SET clean_shutdown = 1 WHERE singleton = 1").run();
+      for (const reader of this.additionalReaders) reader.close();
+      this.additionalReaders.clear();
       if (this.reader !== this.writer) this.reader.close();
       this.writer.close();
     } finally {

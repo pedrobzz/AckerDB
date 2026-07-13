@@ -35,9 +35,14 @@ export interface PublicationSnapshot {
 
 export interface OrderedPublicationOptions<T> {
   readonly limits: CapacityLimits;
-  readonly process: (publication: Publication<T>) => void | Promise<void>;
+  readonly process: (publication: Publication<T>) => void | Promise<void> | PublicationHandoff;
   readonly initialVersion?: bigint;
   readonly now?: () => number;
+}
+
+/** Ordered scheduling is complete; this promise owns only that slot's convergence. */
+export class PublicationHandoff {
+  constructor(readonly completion: Promise<void>) {}
 }
 
 type SlotState = "reserved" | "committed" | "processing" | "settled" | "canceled";
@@ -107,7 +112,9 @@ export class OrderedPublication<T> {
   private processed = 0;
   private failures = 0;
   private lastFailureVersion?: bigint;
-  private processing = false;
+  private starting = false;
+  private startedHighWater: bigint;
+  private readonly unsettledVersions = new Set<bigint>();
   private closed = false;
   private closePromise?: Promise<void>;
   private resolveClose?: () => void;
@@ -120,6 +127,7 @@ export class OrderedPublication<T> {
     }
     this.committedHighWater = initialVersion;
     this.settledHighWater = initialVersion;
+    this.startedHighWater = initialVersion;
     this.processPublication = options.process;
     this.now = options.now ?? Date.now;
   }
@@ -237,29 +245,63 @@ export class OrderedPublication<T> {
   }
 
   private pump(): void {
-    if (this.processing || this.head?.state !== "committed") return;
-    const slot = this.head;
+    if (this.starting) return;
+    let slot = this.head;
+    while (slot && slot.state !== "committed") slot = slot.next;
+    if (!slot) return;
     slot.state = "processing";
-    this.processing = true;
-    Promise.resolve()
-      .then(() => this.processPublication(slot.publication as Publication<T>))
-      .then(
-        () => this.settle(slot),
-        (error) => this.settle(slot, error),
+    this.starting = true;
+    queueMicrotask(() => {
+      this.startedHighWater = slot.version;
+      this.unsettledVersions.add(slot.version);
+      let processing: void | Promise<void> | PublicationHandoff;
+      try {
+        processing = this.processPublication(slot.publication as Publication<T>);
+      } catch (error) {
+        this.starting = false;
+        this.settle(slot, error);
+        return;
+      }
+      if (processing instanceof PublicationHandoff) {
+        this.starting = false;
+        processing.completion.then(
+          () => this.settle(slot),
+          (error) => this.settle(slot, error),
+        );
+        this.pump();
+        return;
+      }
+      Promise.resolve(processing).then(
+        () => {
+          this.starting = false;
+          this.settle(slot);
+        },
+        (error) => {
+          this.starting = false;
+          this.settle(slot, error);
+        },
       );
+    });
   }
 
   private settle(slot: Slot<T>, error?: unknown): void {
     slot.state = "settled";
-    this.processing = false;
     this.processed++;
-    this.settledHighWater = slot.version;
+    this.unsettledVersions.delete(slot.version);
+    while (
+      this.settledHighWater < this.startedHighWater &&
+      !this.unsettledVersions.has(this.settledHighWater + 1n)
+    ) {
+      this.settledHighWater++;
+    }
     this.detach(slot);
     if (error === undefined) {
       slot.resolve();
     } else {
       this.failures++;
-      this.lastFailureVersion = slot.version;
+      if (this.lastFailureVersion === undefined || slot.version > this.lastFailureVersion) {
+        this.lastFailureVersion = slot.version;
+      }
       slot.reject(error);
     }
     this.pump();

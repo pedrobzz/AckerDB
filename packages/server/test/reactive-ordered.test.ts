@@ -5,6 +5,7 @@ import type {
   SubscriptionCursor,
   SubscriptionTransition,
 } from "@dbzz/core";
+import { stableEncode } from "@dbzz/core";
 import { DbzzError } from "../src/errors.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
 import {
@@ -51,6 +52,10 @@ interface LimitOverrides {
   maxHistoryBytes?: number;
   maxHistoryBytesPerStream?: number;
   maxHistoryAgeMs?: number;
+  revalidationConcurrency?: number;
+  revalidationMaxItems?: number;
+  revalidationMaxBytes?: number;
+  revalidationMaxAgeMs?: number;
 }
 
 function testLimits(overrides: LimitOverrides = {}): ServiceLimits {
@@ -60,6 +65,13 @@ function testLimits(overrides: LimitOverrides = {}): ServiceLimits {
     maxSharedSubscriptions: overrides.maxSharedSubscriptions ?? PRODUCTION_LIMITS.maxSharedSubscriptions,
     maxSharedResultBytes: overrides.maxSharedResultBytes ?? PRODUCTION_LIMITS.maxSharedResultBytes,
     maxFrameBytes: overrides.maxFrameBytes ?? PRODUCTION_LIMITS.maxFrameBytes,
+    revalidationConcurrency:
+      overrides.revalidationConcurrency ?? PRODUCTION_LIMITS.revalidationConcurrency,
+    revalidationQueue: {
+      maxItems: overrides.revalidationMaxItems ?? PRODUCTION_LIMITS.revalidationQueue.maxItems,
+      maxBytes: overrides.revalidationMaxBytes ?? PRODUCTION_LIMITS.revalidationQueue.maxBytes,
+      maxAgeMs: overrides.revalidationMaxAgeMs ?? PRODUCTION_LIMITS.revalidationQueue.maxAgeMs,
+    },
     publication: { maxItems: 32, maxBytes: 32 * 1024 },
     resume: {
       ...PRODUCTION_LIMITS.resume,
@@ -105,6 +117,11 @@ async function publish<C>(
 
 function evaluation(value: unknown, version: bigint, ...readSet: string[]): QueryEvaluation {
   return { value, encoded: JSON.stringify(value), readSet: new Set(readSet), commitVersion: version };
+}
+
+function queuedBytes(address: string, args: unknown, scope: string): number {
+  const key = stableEncode([address, stableEncode(args), scope]);
+  return new TextEncoder().encode(key).byteLength;
 }
 
 describe("ordered reactive ownership", () => {
@@ -234,6 +251,328 @@ describe("ordered reactive ownership", () => {
     ]);
     expect(subscriber.transitions.at(-1)?.transition).toMatchObject({ kind: "update", value: "newest" });
     expect(subscriber.cursor(1).commitVersion).toBe(4n);
+  });
+
+  test("bounds queued revalidations by items and expires them with the exact age outcome", async () => {
+    let now = 0;
+    let version = 0n;
+    let stalled = false;
+    const entered = deferred();
+    const release = deferred();
+    const reactive = new OrderedReactive({
+      limits: testLimits({
+        revalidationConcurrency: 1,
+        revalidationMaxItems: 1,
+        revalidationMaxBytes: 16 * 1024,
+        revalidationMaxAgeMs: 10,
+      }),
+      now: () => now,
+      generation: generationSequence(),
+      evaluate: async ({ address }) => {
+        const observed = version;
+        if (stalled && address === "active") {
+          entered.resolve();
+          await release.promise;
+        }
+        return evaluation(`${address}@${observed}`, observed, address);
+      },
+    });
+    const active = new RecordingSubscriber();
+    const queued = new RecordingSubscriber();
+    const overflow = new RecordingSubscriber();
+    for (const [subscriber, id, address] of [
+      [active, 1, "active"],
+      [queued, 2, "queued-µ"],
+      [overflow, 3, "overflow"],
+    ] as const) {
+      await reactive.subscribeQuery({
+        address,
+        args: { tag: "é" },
+        policyScopeFingerprint: "tenant-é",
+        context: undefined,
+        subscriber,
+        id,
+        authEpoch: 0,
+      });
+    }
+
+    stalled = true;
+    const first = reactive.publication.reserve(64);
+    version = first.version;
+    first.commit(new ReactiveCommit(new Set(["active"]), [], active));
+    await entered.promise;
+
+    const second = reactive.publication.reserve(64);
+    version = second.version;
+    second.commit(new ReactiveCommit(new Set(["queued-µ", "overflow"])));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(reactive.snapshot().revalidation).toMatchObject({
+      concurrency: 1,
+      active: 1,
+      queue: {
+        queuedItems: 1,
+        queuedBytes: queuedBytes("queued-µ", { tag: "é" }, "tenant-é"),
+        oldestAgeMs: 0,
+        nextExpiryAtMs: 10,
+        rejected: { items: 1, bytes: 0, age: 0 },
+      },
+    });
+
+    now = 10;
+    expect(reactive.snapshot().revalidation.queue).toMatchObject({
+      queuedItems: 0,
+      queuedBytes: 0,
+      oldestAgeMs: 0,
+      rejected: { items: 1, bytes: 0, age: 1 },
+    });
+    await second.completion;
+    expect(overflow.errors).toMatchObject([{
+      id: 3,
+      outcome: {
+        code: "overloaded",
+        message: "Admission rejected: items",
+        resource: "revalidation",
+        retryable: true,
+        retryAfterMs: 0,
+      },
+    }]);
+    expect(queued.errors).toMatchObject([{
+      id: 2,
+      outcome: {
+        code: "deadline_exceeded",
+        message: "Admission rejected: age",
+        resource: "revalidation",
+        retryable: false,
+      },
+    }]);
+
+    release.resolve();
+    await first.completion;
+    expect(active.cursor(1).commitVersion).toBe(2n);
+  });
+
+  test("accounts exact encoded revalidation bytes at the admission boundary", async () => {
+    let version = 0n;
+    let stalled = false;
+    const entered = deferred();
+    const release = deferred();
+    const args = { tag: "é" };
+    const scope = "tenant-é";
+    const exactBytes = queuedBytes("queued-µ", args, scope);
+    const reactive = new OrderedReactive({
+      limits: testLimits({
+        revalidationConcurrency: 1,
+        revalidationMaxItems: 2,
+        revalidationMaxBytes: exactBytes,
+      }),
+      generation: generationSequence(),
+      evaluate: async ({ address }) => {
+        const observed = version;
+        if (stalled && address === "active") {
+          entered.resolve();
+          await release.promise;
+        }
+        return evaluation(`${address}@${observed}`, observed, address);
+      },
+    });
+    const active = new RecordingSubscriber();
+    const queued = new RecordingSubscriber();
+    const overflow = new RecordingSubscriber();
+    for (const [subscriber, id, address] of [
+      [active, 1, "active"],
+      [queued, 2, "queued-µ"],
+      [overflow, 3, "overflow"],
+    ] as const) {
+      await reactive.subscribeQuery({
+        address,
+        args,
+        policyScopeFingerprint: scope,
+        context: undefined,
+        subscriber,
+        id,
+        authEpoch: 0,
+      });
+    }
+
+    stalled = true;
+    const first = reactive.publication.reserve(64);
+    version = first.version;
+    first.commit(new ReactiveCommit(new Set(["active"])));
+    await entered.promise;
+    const second = reactive.publication.reserve(64);
+    version = second.version;
+    second.commit(new ReactiveCommit(new Set(["queued-µ", "overflow"])));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(reactive.snapshot().revalidation.queue).toMatchObject({
+      queuedItems: 1,
+      queuedBytes: exactBytes,
+      rejected: { items: 0, bytes: 1 },
+    });
+    release.resolve();
+    await Promise.all([first.completion, second.completion]);
+    expect(overflow.errors).toMatchObject([{
+      outcome: {
+        code: "overloaded",
+        message: "Admission rejected: bytes",
+        resource: "revalidation",
+      },
+    }]);
+  });
+
+  test("makes round-robin progress across policy groups", async () => {
+    let version = 0n;
+    let revalidating = false;
+    const entered = deferred();
+    const release = deferred();
+    const order: string[] = [];
+    const reactive = new OrderedReactive({
+      limits: testLimits({ revalidationConcurrency: 1 }),
+      generation: generationSequence(),
+      evaluate: async ({ address }) => {
+        if (revalidating) {
+          order.push(address);
+          if (address === "block") {
+            entered.resolve();
+            await release.promise;
+          }
+        }
+        return evaluation(`${address}@${version}`, version, address);
+      },
+    });
+    const subscriber = new RecordingSubscriber();
+    for (const [id, address, scope] of [
+      [1, "block", "group-a"],
+      [2, "a2", "group-a"],
+      [3, "a3", "group-a"],
+      [4, "b", "group-b"],
+    ] as const) {
+      await reactive.subscribeQuery({
+        address,
+        args: null,
+        policyScopeFingerprint: scope,
+        context: undefined,
+        subscriber,
+        id,
+        authEpoch: 0,
+      });
+    }
+
+    revalidating = true;
+    const slot = reactive.publication.reserve(64);
+    version = slot.version;
+    slot.commit(new ReactiveCommit(new Set(["block", "a2", "a3", "b"])));
+    await entered.promise;
+    expect(reactive.snapshot().revalidation).toMatchObject({
+      active: 1,
+      queue: { queuedItems: 3, activeFairnessKeys: 2 },
+    });
+    release.resolve();
+    await slot.completion;
+
+    expect(order).toEqual(["block", "a2", "b", "a3"]);
+    expect(reactive.snapshot().revalidation).toMatchObject({
+      active: 0,
+      queue: { queuedItems: 0, queuedBytes: 0 },
+    });
+  });
+
+  test("a stalled group does not block an unrelated later publication or ordered events", async () => {
+    let version = 0n;
+    let stallA = false;
+    const entered = deferred();
+    const release = deferred();
+    const reactive = new OrderedReactive({
+      limits: testLimits({ revalidationConcurrency: 2 }),
+      generation: generationSequence(),
+      evaluate: async ({ address }) => {
+        const observed = version;
+        if (stallA && address === "a") {
+          stallA = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return evaluation(`${address}@${observed}`, observed, address);
+      },
+    });
+    const firstCaller = new RecordingSubscriber();
+    const secondCaller = new RecordingSubscriber();
+    const eventSubscriber = new RecordingSubscriber();
+    await reactive.subscribeQuery({
+      address: "a",
+      args: null,
+      policyScopeFingerprint: "group-a",
+      context: undefined,
+      subscriber: firstCaller,
+      id: 1,
+      authEpoch: 0,
+    });
+    await reactive.subscribeQuery({
+      address: "b",
+      args: null,
+      policyScopeFingerprint: "group-b",
+      context: undefined,
+      subscriber: secondCaller,
+      id: 2,
+      authEpoch: 0,
+    });
+    await reactive.subscribeEvent({
+      subscriber: eventSubscriber,
+      id: 3,
+      table: "events",
+      authEpoch: 0,
+      args: null,
+      matches: () => true,
+    });
+
+    stallA = true;
+    const first = reactive.publication.reserve(64);
+    version = first.version;
+    const firstCommit = new ReactiveCommit(
+      new Set(["a"]),
+      [{ table: "events", row: "one" }],
+      firstCaller,
+    );
+    first.commit(firstCommit);
+    await entered.promise;
+    let firstSettled = false;
+    void first.completion.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+
+    const second = reactive.publication.reserve(64);
+    version = second.version;
+    const secondCommit = new ReactiveCommit(
+      new Set(["b"]),
+      [{ table: "events", row: "two" }],
+      secondCaller,
+    );
+    second.commit(secondCommit);
+    await second.completion;
+
+    expect(firstSettled).toBe(false);
+    expect(firstCommit.result).toBeUndefined();
+    expect(secondCommit.result).toMatchObject({ affectedCallerIds: [2], deliveryFailures: [] });
+    expect(secondCaller.cursor(2).commitVersion).toBe(2n);
+    expect(eventSubscriber.events.filter(({ event }) => event.kind === "row")).toMatchObject([
+      { id: 3, event: { cursor: { commitVersion: 1n, sequence: 1n }, row: "one" } },
+      { id: 3, event: { cursor: { commitVersion: 2n, sequence: 2n }, row: "two" } },
+    ]);
+    expect(reactive.publication.snapshot().processedHighWater).toBe(0n);
+
+    release.resolve();
+    await first.completion;
+    expect(firstCommit.result).toMatchObject({ affectedCallerIds: [1], deliveryFailures: [] });
+    expect(firstCaller.cursor(1).commitVersion).toBe(2n);
+    expect(reactive.publication.snapshot().processedHighWater).toBe(2n);
   });
 
   test("resumes exact cursors, replays proven chains, and resets after history overflow", async () => {

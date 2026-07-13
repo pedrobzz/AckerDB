@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Database } from "bun:sqlite";
 import {
   PROTOCOL_VERSION,
   decode,
@@ -33,7 +34,11 @@ import {
 import { BoundedSseProducer, OutboundBudget } from "./delivery.ts";
 import type { Engine } from "./engine.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
-import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
+import {
+  BoundedExecutor,
+  type ExecutorSnapshot,
+  type ExecutorTaskOptions,
+} from "./executor.ts";
 import type {
   AnyRegistered,
   ProcedureCtx,
@@ -212,6 +217,7 @@ export class Runtime implements RuntimePort {
 
   private readonly now: () => number;
   private readonly reader: BoundedExecutor;
+  private readonly availableReaders: Database[];
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
   private readonly scheduled: Map<string, string>;
   private readonly sessions = new Map<string, RuntimeSession>();
@@ -240,8 +246,9 @@ export class Runtime implements RuntimePort {
     this.telemetry = options.telemetry instanceof Telemetry
       ? options.telemetry
       : new Telemetry(options.telemetry === false ? { enabled: false } : options.telemetry);
+    this.availableReaders = [this.engine.reader];
     this.reader = new BoundedExecutor({
-      concurrency: 1,
+      concurrency: this.limits.revalidationConcurrency,
       discipline: "round-robin",
       limits: this.limits.readQueue,
       resource: "reader",
@@ -732,10 +739,11 @@ export class Runtime implements RuntimePort {
 
     this.drainPromise = (async () => {
       await this.waitForActiveOperations();
-      this.reader.close();
       this.coordinator.close();
-      await Promise.all([this.reader.drain(), this.coordinator.drain()]);
-      await this.reactive.publication.close();
+      await this.coordinator.drain();
+      await this.reactive.close();
+      this.reader.close();
+      await this.reader.drain();
       this.lifecycle = "stopped";
       this.telemetry.recordEvent({
         name: "lifecycle",
@@ -910,11 +918,9 @@ export class Runtime implements RuntimePort {
     requestBytes: number,
   ): Promise<QueryEvaluation> {
     const fn = this.expect(address, "query");
-    return this.reader.submit(async () => {
+    return this.submitRead(async (connection) => {
       aborted(signal);
-      const connection = this.engine.reader;
-      const snapshot = connection !== this.engine.writer;
-      if (snapshot) connection.exec("BEGIN DEFERRED");
+      connection.exec("BEGIN DEFERRED");
       try {
         const readSet = new Set<string>();
         const recorder: ReadRecorder = { add: (key) => readSet.add(key) };
@@ -923,18 +929,16 @@ export class Runtime implements RuntimePort {
         const value = await invokeFunction(fn, Object.freeze({ db, auth: principal }), args);
         aborted(signal);
         const encoded = encode(value);
-        if (snapshot) connection.exec("COMMIT");
+        connection.exec("COMMIT");
         return Object.freeze({ value, encoded, readSet, commitVersion: version });
       } catch (error) {
-        if (snapshot) {
-          try {
-            connection.exec("ROLLBACK");
-          } catch {
-            throw new DbzzError("unavailable", "reader snapshot could not be closed", {
-              resource: "reader",
-              cause: error,
-            });
-          }
+        try {
+          connection.exec("ROLLBACK");
+        } catch {
+          throw new DbzzError("unavailable", "reader snapshot could not be closed", {
+            resource: "reader",
+            cause: error,
+          });
         }
         throw error;
       }
@@ -944,6 +948,20 @@ export class Runtime implements RuntimePort {
       fairnessKey,
       ...(signal === undefined ? {} : { signal }),
     });
+  }
+
+  private submitRead<T>(
+    work: (connection: Database) => T | Promise<T>,
+    options: ExecutorTaskOptions,
+  ): Promise<T> {
+    return this.reader.submit(async () => {
+      const connection = this.availableReaders.pop() ?? this.engine.createReader();
+      try {
+        return await work(connection);
+      } finally {
+        this.availableReaders.push(connection);
+      }
+    }, options);
   }
 
   private evaluateSubscription(input: QueryEvaluationInput<ReactiveContext>): Promise<QueryEvaluation> {
@@ -1088,11 +1106,11 @@ export class Runtime implements RuntimePort {
   }
 
   private nextScheduledAt(): Promise<number | null> {
-    return this.reader.submit(() => {
+    return this.submitRead((connection) => {
       let earliest: number | null = null;
       for (const table of this.scheduled.keys()) {
         const plan = this.engine.plan(table);
-        const row = this.engine.reader
+        const row = connection
           .query(`SELECT MIN(${quoted(plan.scheduleAt!)}) AS at FROM ${quoted(table)}`)
           .get() as { at: number | bigint | null };
         if (row.at === null) continue;
@@ -1108,11 +1126,11 @@ export class Runtime implements RuntimePort {
   }
 
   private nextScheduledCandidate(now: number): Promise<ScheduledCandidate | null> {
-    return this.reader.submit(() => {
+    return this.submitRead((connection) => {
       let candidate: (ScheduledCandidate & { readonly at: number }) | null = null;
       for (const [table, address] of this.scheduled) {
         const plan = this.engine.plan(table);
-        const raw = this.engine.reader
+        const raw = connection
           .query(
             `SELECT ${quoted(plan.pk)} AS primaryKey, ${quoted(plan.scheduleAt!)} AS at FROM ${quoted(table)} WHERE ${quoted(plan.scheduleAt!)} <= ? ORDER BY ${quoted(plan.scheduleAt!)}, ${quoted(plan.pk)} LIMIT 1`,
           )
@@ -1258,6 +1276,10 @@ export class Runtime implements RuntimePort {
       ["runtime.read_queue_bytes", reader.queue.queuedBytes, "bytes"],
       ["runtime.write_queue_items", writer.queue.queuedItems, "gauge"],
       ["runtime.write_queue_bytes", writer.queue.queuedBytes, "bytes"],
+      ["runtime.revalidation_active", reactive.revalidation.active, "gauge"],
+      ["runtime.revalidation_queue_items", reactive.revalidation.queue.queuedItems, "gauge"],
+      ["runtime.revalidation_queue_bytes", reactive.revalidation.queue.queuedBytes, "bytes"],
+      ["runtime.revalidation_queue_age", reactive.revalidation.queue.oldestAgeMs, "milliseconds"],
       ["runtime.database_bytes", storage.databaseBytes, "bytes"],
       ["runtime.wal_bytes", storage.walBytes, "bytes"],
       ["runtime.rss_bytes", process.memoryUsage().rss, "bytes"],

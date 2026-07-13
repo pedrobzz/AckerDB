@@ -98,6 +98,8 @@ const schema = defineSchema({
 type Ctx = any;
 
 let queryGate: Deferred<void> | null = null;
+let revalidationGate: Deferred<void> | null = null;
+let revalidationEntered: Deferred<void> | null = null;
 let scheduledAttempts = 0;
 
 const functions = {
@@ -107,6 +109,20 @@ const functions = {
       args: { channelId: dbz.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.messages.byChannel((builder: Ctx) => builder.eq("channelId", args.channelId)).collect(),
+    }),
+    parallelList: query({
+      access: "public",
+      args: { channelId: dbz.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        const rows = await ctx.db.messages
+          .byChannel((builder: Ctx) => builder.eq("channelId", args.channelId))
+          .collect();
+        if (args.channelId === 1n && revalidationGate) {
+          revalidationEntered?.resolve(undefined);
+          await revalidationGate.promise;
+        }
+        return rows;
+      },
     }),
     secure: query({
       access: "authenticated",
@@ -326,6 +342,8 @@ function start(customLimits = limits()): void {
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-"));
   queryGate = null;
+  revalidationGate = null;
+  revalidationEntered = null;
   scheduledAttempts = 0;
   eventAccessInputs.length = 0;
   eventMatchInputs.length = 0;
@@ -433,6 +451,76 @@ describe("ordered convergence", () => {
     expect(session.publications.findLast((frame) => frame.t === "transition")).toMatchObject({
       t: "transition",
       transition: { kind: "checkpoint" },
+    });
+  });
+
+  test("uses isolated readers so a stalled revalidation cannot block an unrelated later mutation", async () => {
+    await session.open();
+    const secondSession = new SessionHarness(runtime, "session-b");
+    await secondSession.open();
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 60,
+      ref: "messages.parallelList",
+      args: { channelId: 1n },
+    });
+    await runtime.subscribe(secondSession.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 61,
+      ref: "messages.parallelList",
+      args: { channelId: 2n },
+    });
+
+    revalidationGate = deferred<void>();
+    revalidationEntered = deferred<void>();
+    const first = session.mutation(70, "messages.send", { channelId: 1n, body: "first" });
+    await revalidationEntered.promise;
+    let firstSettled = false;
+    void first.then(
+      () => {
+        firstSettled = true;
+      },
+      () => {
+        firstSettled = true;
+      },
+    );
+
+    const second = secondSession.mutation(71, "messages.send", { channelId: 2n, body: "second" });
+    let secondResult: Awaited<typeof second>;
+    try {
+      secondResult = await Promise.race([
+        second,
+        Bun.sleep(500).then(() => {
+          throw new Error("unrelated mutation was blocked by a stalled revalidation reader");
+        }),
+      ]);
+      expect(firstSettled).toBe(false);
+      expect(secondResult.receipt.obligations).toEqual([61]);
+      expect(secondSession.publications.findLast(
+        (frame) => frame.t === "transition" && frame.id === 61,
+      )).toMatchObject({
+        t: "transition",
+        transition: { kind: "update", to: { commitVersion: secondResult.receipt.commitVersion } },
+      });
+      expect(runtime.status()).toMatchObject({
+        reader: { concurrency: PRODUCTION_LIMITS.revalidationConcurrency, active: 1 },
+        reactive: {
+          revalidation: { concurrency: PRODUCTION_LIMITS.revalidationConcurrency, active: 1 },
+        },
+      });
+    } finally {
+      revalidationGate.resolve(undefined);
+    }
+
+    const firstResult = await first;
+    expect(firstResult.receipt.obligations).toEqual([60]);
+    expect(session.publications.findLast(
+      (frame) => frame.t === "transition" && frame.id === 60,
+    )).toMatchObject({
+      t: "transition",
+      transition: { kind: "update", to: { commitVersion: secondResult.receipt.commitVersion } },
     });
   });
 

@@ -33,6 +33,7 @@ export interface ServiceLimits {
   readonly maxSubscriptions: number;
   readonly maxSharedSubscriptions: number;
   readonly maxSharedResultBytes: number;
+  readonly revalidationConcurrency: number;
   readonly revalidationQueue: QueueLimits;
   readonly webSocket: {
     readonly maxBytesPerConnection: number;
@@ -115,6 +116,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     ["maxSubscriptions", limits.maxSubscriptions],
     ["maxSharedSubscriptions", limits.maxSharedSubscriptions],
     ["maxSharedResultBytes", limits.maxSharedResultBytes],
+    ["revalidationConcurrency", limits.revalidationConcurrency],
     ["webSocket.maxBytesPerConnection", limits.webSocket.maxBytesPerConnection],
     ["webSocket.maxBytes", limits.webSocket.maxBytes],
     ["webSocket.maxStallMs", limits.webSocket.maxStallMs],
@@ -188,6 +190,7 @@ export const PRODUCTION_LIMITS = defineServiceLimits({
   maxSubscriptions: 100_000,
   maxSharedSubscriptions: 100_000,
   maxSharedResultBytes: 128 * MiB,
+  revalidationConcurrency: 4,
   revalidationQueue: { maxItems: 100_000, maxBytes: 32 * MiB, maxAgeMs: 30_000 },
   webSocket: { maxBytesPerConnection: 4 * MiB, maxBytes: 64 * MiB, maxStallMs: 5_000 },
   sse: { maxBytesPerStream: MiB, maxBytes: 32 * MiB, maxStallMs: 5_000 },
