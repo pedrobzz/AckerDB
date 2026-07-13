@@ -46,6 +46,7 @@ class RecordingSubscriber implements Subscriber {
 interface LimitOverrides {
   maxSharedSubscriptions?: number;
   maxSharedResultBytes?: number;
+  maxFrameBytes?: number;
   maxTransitionsPerStream?: number;
   maxHistoryBytes?: number;
   maxHistoryBytesPerStream?: number;
@@ -58,6 +59,7 @@ function testLimits(overrides: LimitOverrides = {}): ServiceLimits {
     ...PRODUCTION_LIMITS,
     maxSharedSubscriptions: overrides.maxSharedSubscriptions ?? PRODUCTION_LIMITS.maxSharedSubscriptions,
     maxSharedResultBytes: overrides.maxSharedResultBytes ?? PRODUCTION_LIMITS.maxSharedResultBytes,
+    maxFrameBytes: overrides.maxFrameBytes ?? PRODUCTION_LIMITS.maxFrameBytes,
     publication: { maxItems: 32, maxBytes: 32 * 1024 },
     resume: {
       ...PRODUCTION_LIMITS.resume,
@@ -346,6 +348,54 @@ describe("ordered reactive ownership", () => {
     expect(subscriber.transitions.findLast(({ id }) => id === 4)?.transition.kind).toBe("update");
   });
 
+  test("accounts each history transition exactly once across global eviction and age pruning", async () => {
+    let now = 0;
+    let version = 0n;
+    const values = new Map([["a", "a0"], ["b", "b0"]]);
+    const reactive = new OrderedReactive({
+      limits: testLimits({
+        maxHistoryBytes: 4,
+        maxHistoryBytesPerStream: 4,
+        maxHistoryAgeMs: 10,
+      }),
+      now: () => now,
+      generation: generationSequence(),
+      evaluate: async ({ address }) => evaluation(values.get(address), version, address),
+    });
+    const subscriber = new RecordingSubscriber();
+    for (const [id, address] of [[1, "a"], [2, "b"]] as const) {
+      await reactive.subscribeQuery({
+        address,
+        args: null,
+        policyScopeFingerprint: "public",
+        context: undefined,
+        subscriber,
+        id,
+        authEpoch: 0,
+      });
+    }
+
+    await publish(reactive, new Set(["a"]), (commitVersion) => {
+      version = commitVersion;
+      values.set("a", "a1");
+    });
+    expect(reactive.snapshot()).toMatchObject({ historyTransitions: 1, historyBytes: 4 });
+
+    await publish(reactive, new Set(["b"]), (commitVersion) => {
+      version = commitVersion;
+      values.set("b", "b1");
+    });
+    // Retaining b1 evicts a1 globally: one leaves and one enters.
+    expect(reactive.snapshot()).toMatchObject({ historyTransitions: 1, historyBytes: 4 });
+
+    now = 9;
+    reactive.prune();
+    expect(reactive.snapshot()).toMatchObject({ historyTransitions: 1, historyBytes: 4 });
+    now = 10;
+    reactive.prune();
+    expect(reactive.snapshot()).toMatchObject({ historyTransitions: 0, historyBytes: 0 });
+  });
+
   test("indexes precise reads and exposes replay convergence obligations", async () => {
     let version = 0n;
     const calls = new Map<string, number>();
@@ -563,5 +613,95 @@ describe("ordered reactive ownership", () => {
     now = 10;
     expect(bounded.prune()).toBe(1);
     expect(bounded.snapshot().sharedEntries).toBe(0);
+  });
+
+  test("rejects a result larger than one frame before retaining or delivering it", async () => {
+    const subscriber = new RecordingSubscriber();
+    const reactive = new OrderedReactive({
+      limits: testLimits({ maxFrameBytes: 64, maxSharedResultBytes: 1_024 }),
+      generation: generationSequence(),
+      evaluate: async () => evaluation("x".repeat(64), 0n),
+    });
+
+    await expect(reactive.subscribeQuery({
+      address: "too-large-for-frame",
+      args: null,
+      policyScopeFingerprint: "public",
+      context: undefined,
+      subscriber,
+      id: 1,
+      authEpoch: 0,
+    })).rejects.toMatchObject({
+      code: "overloaded",
+      retryable: true,
+      retryAfterMs: 0,
+      resource: "subscription",
+      message: "Query result exceeds maxFrameBytes",
+    });
+    expect(subscriber.transitions).toEqual([]);
+    expect(subscriber.errors).toEqual([]);
+    expect(reactive.queryIds(subscriber)).toEqual([]);
+    expect(reactive.snapshot()).toMatchObject({
+      sharedEntries: 0,
+      queryListeners: 0,
+      resultBytes: 0,
+      historyTransitions: 0,
+      historyBytes: 0,
+      evaluatingEntries: 0,
+    });
+  });
+
+  test("terminates an active subscription when a recompute grows beyond one frame", async () => {
+    let version = 0n;
+    let value = "ok";
+    const subscriber = new RecordingSubscriber();
+    const reactive = new OrderedReactive({
+      limits: testLimits({ maxFrameBytes: 512, maxSharedResultBytes: 1_024 }),
+      generation: generationSequence(),
+      evaluate: async () => evaluation(value, version, "messages"),
+    });
+    await reactive.subscribeQuery({
+      address: "messages.list",
+      args: null,
+      policyScopeFingerprint: "public",
+      context: undefined,
+      subscriber,
+      id: 1,
+      authEpoch: 0,
+    });
+    expect(subscriber.transitions).toHaveLength(1);
+    expect(reactive.snapshot()).toMatchObject({ sharedEntries: 1, queryListeners: 1, resultBytes: 4 });
+
+    const result = await publish(reactive, new Set(["messages"]), (commitVersion) => {
+      version = commitVersion;
+      value = "x".repeat(512);
+    });
+
+    expect(result.deliveryFailures).toMatchObject([{
+      subscriptionId: 1,
+      kind: "query",
+      phase: "convergence",
+      error: { code: "overloaded", resource: "subscription" },
+    }]);
+    expect(subscriber.transitions).toHaveLength(1);
+    expect(subscriber.errors).toEqual([{
+      id: 1,
+      outcome: {
+        code: "overloaded",
+        retryable: true,
+        retryAfterMs: 0,
+        resource: "subscription",
+        message: "Query result exceeds maxFrameBytes",
+      },
+    }]);
+    expect(reactive.queryIds(subscriber)).toEqual([]);
+    expect(reactive.snapshot()).toMatchObject({
+      sharedEntries: 0,
+      queryListeners: 0,
+      resultBytes: 0,
+      historyTransitions: 0,
+      historyBytes: 0,
+      evaluatingEntries: 0,
+    });
   });
 });

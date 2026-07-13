@@ -178,6 +178,7 @@ interface InstalledEvaluation<C> {
   readonly changed: boolean;
   readonly forceReset: boolean;
   readonly overflowedListeners?: readonly QueryListener<C>[];
+  readonly overloadMessage?: string;
 }
 
 const utf8 = new TextEncoder();
@@ -542,8 +543,9 @@ export class OrderedReactive<C = unknown> {
       });
       if (!current || !installed) continue;
       if (installed.overflowedListeners) {
-        const outcome = overloadOutcome();
-        const convergenceError = overloaded("Shared query result capacity is full");
+        const message = installed.overloadMessage ?? "Shared query result capacity is full";
+        const outcome = overloadOutcome(message);
+        const convergenceError = overloaded(message);
         for (const listener of installed.overflowedListeners) {
           failures.push(failure(listener, convergenceError, "convergence"));
           try {
@@ -564,18 +566,21 @@ export class OrderedReactive<C = unknown> {
 
   private installEvaluation(entry: QueryEntry<C>, evaluated: QueryEvaluation): InstalledEvaluation<C> {
     const resultBytes = byteLength(evaluated.encoded);
-    if (!this.makeResultCapacity(entry, resultBytes)) {
+    const overloadMessage = this.makeResultCapacity(entry, resultBytes);
+    if (overloadMessage) {
       if (entry.listeners.size === 0) {
         this.removeEntry(entry);
-        throw new DbzzError("overloaded", "Shared query result capacity is full", {
-          retryable: true,
-          retryAfterMs: 0,
-          resource: "subscription",
-        });
+        throw overloaded(overloadMessage);
       }
       const listeners = [...entry.listeners];
       this.removeEntry(entry);
-      return { entry, changed: false, forceReset: true, overflowedListeners: listeners };
+      return {
+        entry,
+        changed: false,
+        forceReset: true,
+        overflowedListeners: listeners,
+        overloadMessage,
+      };
     }
 
     const previousVersion = entry.initialized ? entry.commitVersion : undefined;
@@ -839,14 +844,15 @@ export class OrderedReactive<C = unknown> {
     }
   }
 
-  private makeResultCapacity(entry: QueryEntry<C>, nextBytes: number): boolean {
-    if (nextBytes > this.limits.maxSharedResultBytes) return false;
+  private makeResultCapacity(entry: QueryEntry<C>, nextBytes: number): string | undefined {
+    if (nextBytes > this.limits.maxFrameBytes) return "Query result exceeds maxFrameBytes";
+    if (nextBytes > this.limits.maxSharedResultBytes) return "Shared query result capacity is full";
     while (nextBytes > this.limits.maxSharedResultBytes - (this.resultBytes - entry.resultBytes)) {
       const dormant = this.oldestDormant(entry);
-      if (!dormant) return false;
+      if (!dormant) return "Shared query result capacity is full";
       this.removeEntry(dormant);
     }
-    return true;
+    return undefined;
   }
 
   private oldestDormant(exclude?: QueryEntry<C>): QueryEntry<C> | undefined {
@@ -1034,13 +1040,13 @@ function authOutcome(code: "auth_stale" | "unauthorized", message: string): Outc
   return Object.freeze({ code, retryable: false, message });
 }
 
-function overloadOutcome(): Outcome {
+function overloadOutcome(message: string): Outcome {
   return Object.freeze({
     code: "overloaded",
     retryable: true,
     retryAfterMs: 0,
     resource: "subscription",
-    message: "Shared query result capacity is full",
+    message,
   });
 }
 
