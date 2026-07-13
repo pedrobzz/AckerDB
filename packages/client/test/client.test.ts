@@ -223,7 +223,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(refreshResolved).toBe(false);
     expect(first.frames().filter((frame) => frame.t === "q")).toHaveLength(
       sentQueriesBeforeConfirmation,
-    );
+      );
 
     first.receive({
       v: 2,
@@ -619,8 +619,9 @@ describe("DbzzClient protocol 2 ownership", () => {
             controller.close();
           },
         }),
-      );
+    );
     let authorization: string | null = null;
+    const sseCalls = new Map<string, number>();
     const fetcher: DbzzClientOptions["fetch"] = async (url, init) => {
       authorization = new Headers(init?.headers).get("authorization");
       const request = parseCallRequest(decode(String(init?.body)));
@@ -640,6 +641,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: { count: 2 } }),
         );
       }
+      sseCalls.set(request.ref, (sseCalls.get(request.ref) ?? 0) + 1);
       if (request.ref === "stream.fail") {
         return stream(
           `event: dbzz-error\ndata: ${encode({
@@ -651,6 +653,10 @@ describe("DbzzClient protocol 2 ownership", () => {
         );
       }
       if (request.ref === "stream.large") return stream("x".repeat(257));
+      if (request.ref === "stream.empty") return stream("");
+      if (request.ref === "stream.truncated") {
+        return stream(`data: ${encode({ delta: "only" })}\n\n`);
+      }
       return stream(
         `data: ${encode({ delta: "a" })}\n\ndata: ${encode({ delta: "b" })}\n\ndata: [DONE]\n\n`,
       );
@@ -689,6 +695,18 @@ describe("DbzzClient protocol 2 ownership", () => {
       overflow = error;
     }
     expect(overflow).toMatchObject({ code: "overloaded", resource: "sse" });
+    for (const ref of ["stream.empty", "stream.truncated"]) {
+      const yielded: unknown[] = [];
+      let interrupted: unknown;
+      try {
+        for await (const chunk of client.sse(ref, {})) yielded.push(chunk);
+      } catch (error) {
+        interrupted = error;
+      }
+      expect(interrupted).toMatchObject({ code: "indeterminate", resource: "sse" });
+      expect(yielded).toEqual(ref === "stream.truncated" ? [{ delta: "only" }] : []);
+      expect(sseCalls.get(ref)).toBe(1);
+    }
     expect(sockets).toHaveLength(0);
     client.close();
   });

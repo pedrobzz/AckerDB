@@ -564,7 +564,7 @@ export class DbzzClient {
         if (part.done) {
           buffer += decoder.decode();
           if (buffer.length !== 0) throw localError("malformed", "SSE stream ended mid-event", "sse");
-          return;
+          throw localError("indeterminate", "SSE stream ended before completion", "sse");
         }
         if (part.value.byteLength > this.limits.maxSseBufferBytes) {
           throw localError("overloaded", "SSE input exceeds the client buffer limit", "sse");
