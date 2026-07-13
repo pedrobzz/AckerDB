@@ -9,10 +9,12 @@ import {
   Engine,
   Registry,
   Runtime,
+  createOidcVerifier,
   reconcile,
   Schema,
   serve,
   UnsafeSchemaChange,
+  type DbzzServer,
 } from "@dbzz/server";
 import type { AppConfig } from "./config.ts";
 
@@ -65,32 +67,78 @@ export async function importFunctionModules(
 }
 
 export interface RunningApp {
-  server: ReturnType<typeof serve>;
+  server: DbzzServer;
   runtime: Runtime;
   engine: Engine;
+  /** Idempotently drain transports/runtime, then mark storage clean and close it. */
+  drain(): Promise<void>;
 }
 
 export async function startApp(config: AppConfig): Promise<RunningApp> {
   const schema = await importSchema(config);
   const modules = await importFunctionModules(config);
+  const verifier = config.oidc === undefined ? undefined : createOidcVerifier(config.oidc);
   mkdirSync(config.dbDir, { recursive: true });
-  const engine = new Engine(schema, join(config.dbDir, "data.db"));
+  const engine = new Engine(schema, join(config.dbDir, "data.db"), {
+    durability: config.durability,
+  });
+  let runtime: Runtime | undefined;
+  let server: DbzzServer | undefined;
   try {
     const { applied } = reconcile(engine);
     for (const line of applied) console.log(`[dbz] ${line}`);
+    const registry = new Registry(modules);
+    runtime = new Runtime({
+      engine,
+      registry,
+      telemetry: config.telemetry === "disabled" ? false : undefined,
+    });
+    const startedServer = serve({
+      runtime,
+      port: config.port,
+      ...(verifier === undefined ? {} : { verifier }),
+      statusScope: config.statusScope,
+    });
+    server = startedServer;
+
+    let drainPromise: Promise<void> | null = null;
+    let engineClosed = false;
+    const removeSignalHandlers = () => {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+    };
+    const drain = (): Promise<void> => {
+      if (drainPromise !== null) return drainPromise;
+      removeSignalHandlers();
+      drainPromise = startedServer.drain().then(() => {
+        if (engineClosed) return;
+        engineClosed = true;
+        engine.close();
+      });
+      return drainPromise;
+    };
+    const onSignal = () => {
+      void drain().catch((error) => {
+        console.error(`[dbz] ${error instanceof Error ? error.message : String(error)}`);
+        process.exitCode = 1;
+      });
+    };
+    process.once("SIGINT", onSignal);
+    process.once("SIGTERM", onSignal);
+
+    console.log(`@@dbzz-startup ${JSON.stringify({
+      telemetry: config.telemetry,
+      durability: config.durability,
+    })}`);
+    console.log(
+      `[dbz] ready on http://127.0.0.1:${startedServer.port} — ${registry.functions.size} function(s), ${Object.keys(schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
+    );
+    return { server: startedServer, runtime, engine, drain };
   } catch (error) {
-    if (error instanceof UnsafeSchemaChange) {
-      console.error(`[dbz] ${error.message}`);
-      engine.close();
-      process.exit(1);
-    }
+    if (server === undefined) await runtime?.drain().catch(() => {});
+    else await server.drain().catch(() => {});
+    engine.close();
+    if (error instanceof UnsafeSchemaChange) throw new Error(error.message, { cause: error });
     throw error;
   }
-  const registry = new Registry(modules);
-  const runtime = new Runtime({ engine, registry });
-  const server = serve({ runtime, port: config.port });
-  console.log(
-    `[dbz] ready on http://127.0.0.1:${server.port} — ${registry.functions.size} function(s), ${Object.keys(schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
-  );
-  return { server, runtime, engine };
 }
