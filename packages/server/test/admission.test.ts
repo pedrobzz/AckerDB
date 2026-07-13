@@ -10,6 +10,7 @@ import {
   validateQueueLimits,
   validateTelemetryLimits,
 } from "../src/limits.ts";
+import { DbzzError, isDbzzError } from "../src/errors.ts";
 
 function settled<T>(ticket: Promise<T>): Promise<T | AdmissionRejected> {
   return ticket.catch((error: unknown) => {
@@ -62,6 +63,8 @@ describe("AdmissionQueue", () => {
     );
 
     expect(rejected).toBeInstanceOf(AdmissionRejected);
+    expect(rejected).toBeInstanceOf(DbzzError);
+    expect(isDbzzError(rejected)).toBe(true);
     expect(rejected).toMatchObject({
       reason: "items",
       code: "overloaded",

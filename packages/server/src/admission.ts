@@ -1,4 +1,5 @@
 import { validateQueueLimits, type QueueLimits } from "./limits.ts";
+import { DbzzError } from "./errors.ts";
 import type { TelemetryOperation, TelemetryResource } from "./telemetry.ts";
 
 export type AdmissionDiscipline = "fifo" | "round-robin";
@@ -62,14 +63,13 @@ export interface AdmissionQueueSnapshot {
 
 type AdmissionOutcomeCode = "overloaded" | "deadline_exceeded" | "draining" | "unavailable";
 
-export class AdmissionRejected extends Error {
-  readonly code: AdmissionOutcomeCode;
-  readonly retryable: boolean;
-  readonly retryAfterMs?: number;
+export class AdmissionRejected extends DbzzError {
+  declare readonly code: AdmissionOutcomeCode;
+  declare readonly resource: TelemetryResource;
 
   constructor(
     readonly reason: AdmissionRejectionReason,
-    readonly resource: TelemetryResource,
+    resource: TelemetryResource,
     retryAfterMs: number,
   ) {
     const capacity = reason === "items" || reason === "bytes";
@@ -80,11 +80,12 @@ export class AdmissionRejected extends Error {
         : reason === "closed"
           ? "draining"
           : "unavailable";
-    super(`Admission rejected: ${reason}`);
+    super(code, `Admission rejected: ${reason}`, {
+      retryable: capacity,
+      resource,
+      ...(capacity ? { retryAfterMs } : {}),
+    });
     this.name = "AdmissionRejected";
-    this.code = code;
-    this.retryable = capacity;
-    if (capacity) this.retryAfterMs = retryAfterMs;
   }
 }
 
