@@ -117,6 +117,23 @@ describe("CommitCoordinator", () => {
     expect(publication.snapshot()).toMatchObject({ items: 0, highWater: 0n });
   });
 
+  test("measures publication bytes independently from the wire frame limit", async () => {
+    const { coordinator, engine } = fixture({
+      maxFrameBytes: 32,
+      webSocket: { ...PRODUCTION_LIMITS.webSocket, maxBytesPerConnection: 64 },
+      sse: { ...PRODUCTION_LIMITS.sse, maxBytesPerStream: 32 },
+    });
+    const result = await coordinator.execute({
+      operation: "transaction",
+      fairnessKey: "connection-1",
+      requestBytes: 1,
+      work: (db: any) => db.notes.insert({ body: "a descriptor larger than one tiny frame" }),
+      publication: (version) => ({ version }),
+    });
+    expect(result.commitVersion).toBe(1n);
+    expect(engine.writer.query('SELECT COUNT(*) AS n FROM "notes"').get()).toEqual({ n: 1n });
+  });
+
   test("fetch and nested transactions are rejected at the owning boundary", async () => {
     const { coordinator } = fixture();
     const nested = () => coordinator.execute({

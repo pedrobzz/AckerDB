@@ -182,11 +182,7 @@ export class CommitCoordinator<Publication> {
       }
     }
 
-    const reservedBytes = Math.min(
-      this.limits.maxFrameBytes,
-      this.limits.publication.maxBytes,
-    );
-    const reservation = this.reservePublication(reservedBytes);
+    const reservation = this.reservePublication(0);
     const writes = newWriteCollector();
     const db = makeDbWriter(
       this.engine,
@@ -203,12 +199,7 @@ export class CommitCoordinator<Publication> {
         return result;
       });
       const publicationBytes = this.publicationBytes(writes);
-      if (publicationBytes > reservation.reservedBytes) {
-        throw new DbzzError("overloaded", "transaction change descriptor exceeds publication capacity", {
-          retryable: false,
-          resource: "publication",
-        });
-      }
+      reservation.resize(publicationBytes);
       const result = idempotency ? encode(value) : undefined;
       const resultBytes = result === undefined ? 0 : this.encoder.encode(result).byteLength;
       if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
@@ -292,10 +283,10 @@ export class CommitCoordinator<Publication> {
   }
 
   private publicationBytes(writes: WriteCollector): number {
-    let bytes = 64;
-    for (const key of writes.keys) bytes += key.length * 3 + 8;
-    for (const event of writes.events) bytes += event.table.length * 3 + encode(event.row).length * 3 + 16;
-    return bytes;
+    return this.encoder.encode(encode({
+      keys: [...writes.keys],
+      events: writes.events,
+    })).byteLength;
   }
 
   private nextEventSequence(table: string): bigint {

@@ -13,6 +13,8 @@ export interface PublicationReservation<T> {
   readonly version: bigint;
   readonly reservedBytes: number;
   readonly completion: Promise<void>;
+  /** Replaces the provisional byte reservation while the slot is still open. */
+  resize(reservedBytes: number): void;
   /** Called synchronously after a successful COMMIT. Cannot reject for capacity. */
   commit(value: T): void;
   /** Releases a reservation when its transaction rolls back or never begins. */
@@ -41,11 +43,12 @@ export interface OrderedPublicationOptions<T> {
 type SlotState = "reserved" | "committed" | "processing" | "settled" | "canceled";
 const commitSlot = Symbol("commitPublicationSlot");
 const cancelSlot = Symbol("cancelPublicationSlot");
+const resizeSlot = Symbol("resizePublicationSlot");
 
 interface MutablePublication<T> {
   readonly version: bigint;
   value?: T;
-  readonly reservedBytes: number;
+  reservedBytes: number;
   readonly reservedAtMs: number;
 }
 
@@ -61,7 +64,7 @@ class Slot<T> implements PublicationReservation<T> {
   constructor(
     readonly owner: OrderedPublication<T>,
     readonly version: bigint,
-    readonly reservedBytes: number,
+    public reservedBytes: number,
     reservedAtMs: number,
   ) {
     this.publication = { version, reservedBytes, reservedAtMs };
@@ -73,6 +76,10 @@ class Slot<T> implements PublicationReservation<T> {
 
   commit(value: T): void {
     this.owner[commitSlot](this, value);
+  }
+
+  resize(reservedBytes: number): void {
+    this.owner[resizeSlot](this, reservedBytes);
   }
 
   cancel(): void {
@@ -198,6 +205,20 @@ export class OrderedPublication<T> {
     this.openReservation = undefined;
     this.committedHighWater = slot.version;
     this.pump();
+  }
+
+  [resizeSlot](slot: Slot<T>, reservedBytes: number): void {
+    this.assertOpenSlot(slot);
+    if (!Number.isSafeInteger(reservedBytes) || reservedBytes < 0) {
+      throw new RangeError("reservedBytes must be a non-negative safe integer");
+    }
+    const available = this.limits.maxBytes - this.bytes + slot.reservedBytes;
+    if (reservedBytes > available) {
+      throw unavailable("overloaded", "Publication capacity is full", true);
+    }
+    this.bytes += reservedBytes - slot.reservedBytes;
+    slot.reservedBytes = reservedBytes;
+    slot.publication.reservedBytes = reservedBytes;
   }
 
   [cancelSlot](slot: Slot<T>): void {

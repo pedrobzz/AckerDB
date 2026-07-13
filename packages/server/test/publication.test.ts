@@ -33,6 +33,27 @@ describe("ordered publication", () => {
     expect(coordinator.snapshot()).toMatchObject({ items: 0, bytes: 0, processed: 1 });
   });
 
+  test("resizes a provisional slot before commit without overbooking bytes", async () => {
+    const release = deferred();
+    const coordinator = new OrderedPublication<string>({
+      limits: { maxItems: 2, maxBytes: 8 },
+      process: () => release.promise,
+    });
+
+    const first = coordinator.reserve(0);
+    first.resize(5);
+    first.commit("first");
+    const second = coordinator.reserve(0);
+    expect(() => second.resize(4)).toThrow(DbzzError);
+    expect(coordinator.snapshot()).toMatchObject({ items: 2, bytes: 5 });
+    second.resize(3);
+    second.commit("second");
+    expect(coordinator.snapshot()).toMatchObject({ items: 2, bytes: 8 });
+
+    release.resolve();
+    await Promise.all([first.completion, second.completion]);
+  });
+
   test("rollback cancel releases capacity and preserves the next version", async () => {
     const seen: bigint[] = [];
     const coordinator = new OrderedPublication<string>({
