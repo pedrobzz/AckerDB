@@ -156,6 +156,7 @@ function expectSafeObservations(observations: readonly DeliveryObservation[]): v
     "durationMs",
     "outcome",
     "terminalOutcome",
+    "droppedObservations",
   ]);
   for (const observation of observations) {
     expect(Object.isFrozen(observation)).toBe(true);
@@ -164,6 +165,10 @@ function expectSafeObservations(observations: readonly DeliveryObservation[]): v
     expect(observation.bytes).toBeGreaterThanOrEqual(0);
     expect(Number.isFinite(observation.durationMs)).toBe(true);
     expect(observation.durationMs).toBeGreaterThanOrEqual(0);
+    if (observation.droppedObservations !== undefined) {
+      expect(Number.isSafeInteger(observation.droppedObservations)).toBe(true);
+      expect(observation.droppedObservations).toBeGreaterThan(0);
+    }
   }
 }
 
@@ -1123,6 +1128,87 @@ describe("BoundedSseProducer", () => {
 });
 
 describe("delivery observers", () => {
+  test("bounds pending observations and reports the exact overflow count", async () => {
+    const clock = new FakeClock();
+    const limits = testLimits();
+    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
+    const socket = new FakeSocket();
+    const observations: DeliveryObservation[] = [];
+    const sink = new WebSocketSessionSink({
+      socket,
+      budget,
+      limits,
+      clock,
+      observer: (observation) => observations.push(observation),
+    });
+    const control = { v: PROTOCOL_VERSION, t: "pong" as const };
+    const sends: Promise<void>[] = [];
+
+    for (let index = 0; index < 1_000; index++) sends.push(sink.sendControl(control));
+    expect(observations).toEqual([]);
+    expect(budget.snapshot().bytes).toBe(0);
+    await Promise.all(sends);
+    await flushObservations();
+
+    expect(observations).toHaveLength(256);
+    expect(observations[0]?.droppedObservations).toBe(3_000 - observations.length);
+    expectSafeObservations(observations);
+
+    await sink.sendControl(control);
+    await flushObservations();
+    expect(observations).toHaveLength(259);
+    expect(observations.slice(-3).every(({ droppedObservations }) => (
+      droppedObservations === undefined
+    ))).toBe(true);
+    expect(budget.snapshot().bytes).toBe(0);
+  });
+
+  test("preserves the raw no-observer path without touching the timing clock", async () => {
+    const limits = testLimits();
+    const unusedClock: DeliveryClock = {
+      now: () => {
+        throw new Error("no-observer timing clock used");
+      },
+      setTimeout: () => {
+        throw new Error("no-observer timer armed");
+      },
+      clearTimeout: () => {
+        throw new Error("no-observer timer cleared");
+      },
+    };
+    const webSocketBudget = new OutboundBudget(
+      limits.webSocket.maxBytes,
+      limits.maxFrameBytes,
+    );
+    const socket = new FakeSocket();
+    const sink = new WebSocketSessionSink({
+      socket,
+      budget: webSocketBudget,
+      limits,
+      clock: unusedClock,
+    });
+    await sink.sendControl({ v: PROTOCOL_VERSION, t: "pong" });
+    expect(socket.sent).toEqual([encode({ v: PROTOCOL_VERSION, t: "pong" })]);
+    expect(webSocketBudget.snapshot().bytes).toBe(0);
+
+    const sseBudget = new OutboundBudget(limits.sse.maxBytes, 512);
+    const producer = new BoundedSseProducer({ budget: sseBudget, limits, clock: unusedClock });
+    const reader = producer.stream.getReader();
+    const chunk = { value: "direct" };
+    const applicationRead = reader.read();
+    producer.write(chunk);
+    expect(decoder.decode((await applicationRead).value)).toBe(
+      `data: ${encode(chunk)}\n\n`,
+    );
+    const terminalRead = reader.read();
+    const completion = producer.complete();
+    expect(decoder.decode((await terminalRead).value)).toBe("data: [DONE]\n\n");
+    await completion;
+    expect((await reader.read()).done).toBe(true);
+    reader.releaseLock();
+    expect(sseBudget.snapshot().bytes).toBe(0);
+  });
+
   test("reports encoding failures without retaining unsafe input", async () => {
     const clock = new FakeClock();
     const limits = testLimits();

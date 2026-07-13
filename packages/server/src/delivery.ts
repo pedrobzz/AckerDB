@@ -27,6 +27,8 @@ export interface DeliveryObservation {
   readonly durationMs: number;
   readonly outcome: DeliveryOutcome;
   readonly terminalOutcome?: Outcome["code"];
+  /** Records omitted from this bounded observer batch before it was drained. */
+  readonly droppedObservations?: number;
 }
 
 /** Metadata-only hook. Delivery never awaits it and ignores callback failures. */
@@ -148,7 +150,12 @@ interface DeliveryInstrumentation {
   readonly observer: DeliveryObserver;
   readonly clock: DeliveryClock;
   readonly transport: DeliveryTransport;
+  readonly pending: DeliveryObservation[];
+  scheduled: boolean;
+  dropped: number;
 }
+
+const MAX_PENDING_DELIVERY_OBSERVATIONS = 256;
 
 const SYSTEM_CLOCK: DeliveryClock = Object.freeze({
   now: Date.now,
@@ -177,6 +184,10 @@ function observeDelivery(
   observation: Omit<DeliveryObservation, "durationMs"> & { readonly startedAt: number },
 ): void {
   if (instrumentation === undefined) return;
+  if (instrumentation.pending.length >= MAX_PENDING_DELIVERY_OBSERVATIONS) {
+    instrumentation.dropped = Math.min(Number.MAX_SAFE_INTEGER, instrumentation.dropped + 1);
+    return;
+  }
   let record: DeliveryObservation;
   try {
     const { startedAt, ...fields } = observation;
@@ -189,17 +200,41 @@ function observeDelivery(
   } catch {
     return;
   }
+  instrumentation.pending.push(record);
+  scheduleDeliveryObservations(instrumentation);
+}
+
+function scheduleDeliveryObservations(instrumentation: DeliveryInstrumentation): void {
+  if (instrumentation.scheduled) return;
+  instrumentation.scheduled = true;
   try {
-    queueMicrotask(() => {
-      try {
-        const result = instrumentation.observer(record);
-        if (promiseLike(result)) void Promise.resolve(result).catch(() => {});
-      } catch {
-        // Delivery instrumentation is diagnostic and always fail-open.
-      }
-    });
+    queueMicrotask(() => drainDeliveryObservations(instrumentation));
   } catch {
-    // A host scheduling failure must not affect delivery.
+    instrumentation.scheduled = false;
+    instrumentation.pending.length = 0;
+    instrumentation.dropped = 0;
+  }
+}
+
+function drainDeliveryObservations(instrumentation: DeliveryInstrumentation): void {
+  instrumentation.scheduled = false;
+  const batch = instrumentation.pending.splice(0);
+  const dropped = instrumentation.dropped;
+  instrumentation.dropped = 0;
+  for (let index = 0; index < batch.length; index++) {
+    const pending = batch[index]!;
+    const record = index === 0 && dropped > 0
+      ? Object.freeze({ ...pending, droppedObservations: dropped })
+      : pending;
+    try {
+      const result = instrumentation.observer(record);
+      if (promiseLike(result)) void Promise.resolve(result).catch(() => {});
+    } catch {
+      // Delivery instrumentation is diagnostic and always fail-open.
+    }
+  }
+  if (instrumentation.pending.length > 0) {
+    scheduleDeliveryObservations(instrumentation);
   }
 }
 
@@ -280,7 +315,9 @@ function deliveryInstrumentation(
   clock: DeliveryClock,
   transport: DeliveryTransport,
 ): DeliveryInstrumentation | undefined {
-  return observer === undefined ? undefined : { observer, clock, transport };
+  return observer === undefined
+    ? undefined
+    : { observer, clock, transport, pending: [], scheduled: false, dropped: 0 };
 }
 
 export interface WebSocketDeliverySocket {
@@ -415,7 +452,9 @@ export class WebSocketSessionSink implements SessionSink {
         retained.push(frame);
         continue;
       }
-      observeTiming(this.delivery, frame.lane, frame.timing, "queue", "dropped");
+      if (frame.timing !== undefined) {
+        observeTiming(this.delivery, frame.lane, frame.timing, "queue", "dropped");
+      }
       this.release(frame.reservation);
       frame.resolve();
     }
@@ -464,41 +503,36 @@ export class WebSocketSessionSink implements SessionSink {
   ): Promise<void> {
     if (this.closed) {
       const error = this.terminalError ?? unavailable("outbound", "WebSocket is closed");
-      const timing = deliveryTiming(this.delivery, "send", 0);
-      observeTiming(
-        this.delivery,
-        lane,
-        timing,
-        "queue",
-        safeDeliveryOutcome(error),
-      );
+      if (this.delivery !== undefined) {
+        const timing = deliveryTiming(this.delivery, "send", 0);
+        observeTiming(this.delivery, lane, timing, "queue", safeDeliveryOutcome(error));
+      }
       return Promise.reject(error);
     }
-    const encodingStartedAt = observationNow(this.delivery);
+    const encodingStartedAt = this.delivery === undefined ? undefined : observationNow(this.delivery);
     let text: string;
     try {
       text = encode(message);
     } catch (error) {
-      observeEncoding(
-        this.delivery,
-        lane,
-        "send",
-        encodingStartedAt,
-        0,
-        safeDeliveryOutcome(error),
-      );
+      if (this.delivery !== undefined) {
+        observeEncoding(
+          this.delivery,
+          lane,
+          "send",
+          encodingStartedAt,
+          0,
+          safeDeliveryOutcome(error),
+        );
+      }
       return Promise.reject(error);
     }
     const bytes = utf8.encode(text).byteLength;
-    observeEncoding(
-      this.delivery,
-      lane,
-      "send",
-      encodingStartedAt,
-      bytes,
-      "ok",
-    );
-    const timing = deliveryTiming(this.delivery, "send", bytes);
+    if (this.delivery !== undefined) {
+      observeEncoding(this.delivery, lane, "send", encodingStartedAt, bytes, "ok");
+    }
+    const timing = this.delivery === undefined
+      ? undefined
+      : deliveryTiming(this.delivery, "send", bytes);
     if (bytes > this.limits.maxFrameBytes) {
       const error = overloaded("outbound", "WebSocket frame exceeds maxFrameBytes");
       observeTiming(this.delivery, lane, timing, "queue", error.code);
@@ -532,16 +566,11 @@ export class WebSocketSessionSink implements SessionSink {
     else this.controlBytes += bytes;
 
     return new Promise<void>((resolve, reject) => {
-      this.queue.push({
-        lane,
-        authEpoch,
-        text,
-        bytes,
-        reservation,
-        ...(timing === undefined ? {} : { timing }),
-        resolve,
-        reject,
-      });
+      if (timing === undefined) {
+        this.queue.push({ lane, authEpoch, text, bytes, reservation, resolve, reject });
+      } else {
+        this.queue.push({ lane, authEpoch, text, bytes, reservation, timing, resolve, reject });
+      }
       this.pump();
     });
   }
@@ -575,22 +604,22 @@ export class WebSocketSessionSink implements SessionSink {
           break;
         }
 
-        observeTiming(
-          this.delivery,
-          frame.lane,
-          frame.timing,
-          "queue",
-          "ok",
-        );
+        if (frame.timing !== undefined) {
+          observeTiming(this.delivery, frame.lane, frame.timing, "queue", "ok");
+        }
         if (frame.timing !== undefined) {
           frame.timing.deliveryStartedAt = observationNow(this.delivery);
         }
         this.queue.shift();
-        this.buffered.push({
-          lane: frame.lane,
-          reservation: frame.reservation,
-          ...(frame.timing === undefined ? {} : { timing: frame.timing }),
-        });
+        if (frame.timing === undefined) {
+          this.buffered.push({ lane: frame.lane, reservation: frame.reservation });
+        } else {
+          this.buffered.push({
+            lane: frame.lane,
+            reservation: frame.reservation,
+            timing: frame.timing,
+          });
+        }
         this.bufferedBytes += frame.bytes;
         frame.resolve();
         if (sent === -1) {
@@ -639,13 +668,9 @@ export class WebSocketSessionSink implements SessionSink {
       remaining -= released;
       if (frame.reservation.remainingBytes === 0) {
         this.buffered.shift();
-        observeTiming(
-          this.delivery,
-          frame.lane,
-          frame.timing,
-          "delivery",
-          outcome,
-        );
+        if (frame.timing !== undefined) {
+          observeTiming(this.delivery, frame.lane, frame.timing, "delivery", outcome);
+        }
       }
     }
   }
@@ -661,13 +686,9 @@ export class WebSocketSessionSink implements SessionSink {
     outcome: DeliveryOutcome = safeDeliveryOutcome(error),
   ): void {
     for (const frame of this.queue.splice(0)) {
-      observeTiming(
-        this.delivery,
-        frame.lane,
-        frame.timing,
-        "queue",
-        outcome,
-      );
+      if (frame.timing !== undefined) {
+        observeTiming(this.delivery, frame.lane, frame.timing, "queue", outcome);
+      }
       this.release(frame.reservation);
       frame.reject(error);
     }
@@ -819,9 +840,9 @@ interface StreamReservation {
   readonly timing?: DeliveryTiming;
 }
 
-interface EncodedSseFrame {
+interface ObservedSseFrame {
   readonly bytes: Uint8Array;
-  readonly timing?: DeliveryTiming;
+  readonly timing: DeliveryTiming | undefined;
 }
 
 interface Waiter {
@@ -970,9 +991,17 @@ export class BoundedSseProducer {
   }
 
   write(chunk: unknown): void {
-    const frame = this.encodeFrame("application", "write", () => sseBytes(chunk));
+    let bytes: Uint8Array;
+    let timing: DeliveryTiming | undefined;
+    if (this.delivery === undefined) {
+      bytes = sseBytes(chunk);
+    } else {
+      const frame = this.encodeObservedFrame("application", "write", () => sseBytes(chunk));
+      bytes = frame.bytes;
+      timing = frame.timing;
+    }
     try {
-      this.enqueueApplication(frame);
+      this.enqueueApplication(bytes, timing);
     } catch (error) {
       const terminal = isDbzzError(error)
         ? error
@@ -1021,8 +1050,16 @@ export class BoundedSseProducer {
         if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
         const part = await reader.read();
         if (part.done) return;
-        const frame = this.encodeFrame("application", "merge", () => sseBytes(part.value));
-        await this.enqueueMerged(frame);
+        if (this.delivery === undefined) {
+          await this.enqueueMerged(sseBytes(part.value), undefined);
+        } else {
+          const frame = this.encodeObservedFrame(
+            "application",
+            "merge",
+            () => sseBytes(part.value),
+          );
+          await this.enqueueMerged(frame.bytes, frame.timing);
+        }
       }
     } catch (error) {
       const terminal = isDbzzError(error)
@@ -1037,12 +1074,12 @@ export class BoundedSseProducer {
     }
   }
 
-  private encodeFrame(
+  private encodeObservedFrame(
     lane: OutboundLane,
     source: DeliverySource,
     encodeFrame: () => Uint8Array,
     terminalOutcome?: Outcome["code"],
-  ): EncodedSseFrame {
+  ): ObservedSseFrame {
     const startedAt = observationNow(this.delivery);
     let bytes: Uint8Array;
     try {
@@ -1074,23 +1111,23 @@ export class BoundedSseProducer {
       bytes.byteLength,
       terminalOutcome,
     );
-    return {
-      bytes,
-      ...(timing === undefined ? {} : { timing }),
-    };
+    return { bytes, timing };
   }
 
-  private async enqueueMerged(frame: EncodedSseFrame): Promise<void> {
+  private async enqueueMerged(
+    bytes: Uint8Array,
+    timing: DeliveryTiming | undefined,
+  ): Promise<void> {
     let reservation: OutboundReservation;
     try {
-      this.validateApplicationFrame(frame.bytes.byteLength);
+      this.validateApplicationFrame(bytes.byteLength);
       for (;;) {
         if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
         this.reconcileQueue(true);
-        if (this.queuedBytes + frame.bytes.byteLength <= this.applicationLimit()) break;
+        if (this.queuedBytes + bytes.byteLength <= this.applicationLimit()) break;
         await this.waitForCapacity();
       }
-      const admitted = this.budget.reserve(frame.bytes.byteLength, "application");
+      const admitted = this.budget.reserve(bytes.byteLength, "application");
       if (admitted === null) {
         throw overloaded("sse", "global SSE outbound byte limit exceeded");
       }
@@ -1099,25 +1136,25 @@ export class BoundedSseProducer {
       observeTiming(
         this.delivery,
         "application",
-        frame.timing,
+        timing,
         "queue",
         safeDeliveryOutcome(error),
       );
       throw error;
     }
-    this.enqueue(frame, reservation);
+    this.enqueue(bytes, reservation, timing);
   }
 
-  private enqueueApplication(frame: EncodedSseFrame): void {
+  private enqueueApplication(bytes: Uint8Array, timing: DeliveryTiming | undefined): void {
     let reservation: OutboundReservation;
     try {
       if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
-      this.validateApplicationFrame(frame.bytes.byteLength);
+      this.validateApplicationFrame(bytes.byteLength);
       this.reconcileQueue(true);
-      if (this.queuedBytes + frame.bytes.byteLength > this.applicationLimit()) {
+      if (this.queuedBytes + bytes.byteLength > this.applicationLimit()) {
         throw slowConsumer("sse", "SSE producer exceeded the consumer byte budget");
       }
-      const admitted = this.budget.reserve(frame.bytes.byteLength, "application");
+      const admitted = this.budget.reserve(bytes.byteLength, "application");
       if (admitted === null) {
         throw overloaded("sse", "global SSE outbound byte limit exceeded");
       }
@@ -1126,13 +1163,13 @@ export class BoundedSseProducer {
       observeTiming(
         this.delivery,
         "application",
-        frame.timing,
+        timing,
         "queue",
         safeDeliveryOutcome(error),
       );
       throw error;
     }
-    this.enqueue(frame, reservation);
+    this.enqueue(bytes, reservation, timing);
   }
 
   private validateApplicationFrame(bytes: number): void {
@@ -1141,36 +1178,32 @@ export class BoundedSseProducer {
     }
   }
 
-  private enqueue(frame: EncodedSseFrame, reservation: OutboundReservation): void {
-    this.reservations.push({
-      reservation,
-      ...(frame.timing === undefined ? {} : { timing: frame.timing }),
-    });
-    this.queuedBytes += frame.bytes.byteLength;
+  private enqueue(
+    bytes: Uint8Array,
+    reservation: OutboundReservation,
+    timing: DeliveryTiming | undefined,
+  ): void {
+    if (timing === undefined) this.reservations.push({ reservation });
+    else this.reservations.push({ reservation, timing });
+    this.queuedBytes += bytes.byteLength;
     try {
-      this.controller.enqueue(frame.bytes);
+      this.controller.enqueue(bytes);
     } catch (error) {
       this.reservations.pop();
-      this.queuedBytes -= frame.bytes.byteLength;
+      this.queuedBytes -= bytes.byteLength;
       reservation.release();
       observeTiming(
         this.delivery,
         reservation.lane,
-        frame.timing,
+        timing,
         "queue",
         safeDeliveryOutcome(error),
       );
       throw error;
     }
-    observeTiming(
-      this.delivery,
-      reservation.lane,
-      frame.timing,
-      "queue",
-      "ok",
-    );
-    if (frame.timing !== undefined) {
-      frame.timing.deliveryStartedAt = observationNow(this.delivery);
+    if (timing !== undefined) {
+      observeTiming(this.delivery, reservation.lane, timing, "queue", "ok");
+      timing.deliveryStartedAt = observationNow(this.delivery);
     }
     this.reconcileQueue(true);
     if (this.queuedBytes > 0) this.armStall();
@@ -1214,13 +1247,9 @@ export class BoundedSseProducer {
       remaining -= released;
       if (item.reservation.remainingBytes === 0) {
         this.reservations.shift();
-        observeTiming(
-          this.delivery,
-          item.reservation.lane,
-          item.timing,
-          "delivery",
-          "ok",
-        );
+        if (item.timing !== undefined) {
+          observeTiming(this.delivery, item.reservation.lane, item.timing, "delivery", "ok");
+        }
       }
     }
   }
@@ -1230,13 +1259,9 @@ export class BoundedSseProducer {
     this.terminalReservation = null;
     for (const item of this.reservations.splice(0)) {
       item.reservation.release();
-      observeTiming(
-        this.delivery,
-        item.reservation.lane,
-        item.timing,
-        "delivery",
-        outcome,
-      );
+      if (item.timing !== undefined) {
+        observeTiming(this.delivery, item.reservation.lane, item.timing, "delivery", outcome);
+      }
     }
     this.queuedBytes = 0;
   }
@@ -1269,22 +1294,30 @@ export class BoundedSseProducer {
     if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
     await this.waitForEmpty();
     if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
-    const frame = this.encodeFrame("control", "terminal", sseDoneBytes);
+    let bytes: Uint8Array;
+    let timing: DeliveryTiming | undefined;
+    if (this.delivery === undefined) {
+      bytes = sseDoneBytes();
+    } else {
+      const frame = this.encodeObservedFrame("control", "terminal", sseDoneBytes);
+      bytes = frame.bytes;
+      timing = frame.timing;
+    }
     let reservation: OutboundReservation;
     try {
-      reservation = this.consumeTerminalReservation(frame.bytes.byteLength);
+      reservation = this.consumeTerminalReservation(bytes.byteLength);
     } catch (error) {
       observeTiming(
         this.delivery,
         "control",
-        frame.timing,
+        timing,
         "queue",
         safeDeliveryOutcome(error),
       );
       throw error;
     }
     this.state = "ending";
-    this.enqueue(frame, reservation);
+    this.enqueue(bytes, reservation, timing);
     if (this.queuedBytes === 0) this.finishClose();
   }
 
@@ -1302,27 +1335,35 @@ export class BoundedSseProducer {
     this.clearStall();
 
     const terminalOutcome = outcomeFromError(error).code;
-    const frame = this.encodeFrame(
-      "control",
-      "terminal",
-      () => sseErrorBytes(error, this.controlReserveBytes),
-      terminalOutcome,
-    );
+    let bytes: Uint8Array;
+    let timing: DeliveryTiming | undefined;
+    if (this.delivery === undefined) {
+      bytes = sseErrorBytes(error, this.controlReserveBytes);
+    } else {
+      const frame = this.encodeObservedFrame(
+        "control",
+        "terminal",
+        () => sseErrorBytes(error, this.controlReserveBytes),
+        terminalOutcome,
+      );
+      bytes = frame.bytes;
+      timing = frame.timing;
+    }
     let reservation: OutboundReservation;
     try {
-      reservation = this.consumeTerminalReservation(frame.bytes.byteLength);
+      reservation = this.consumeTerminalReservation(bytes.byteLength);
     } catch (cause) {
       observeTiming(
         this.delivery,
         "control",
-        frame.timing,
+        timing,
         "queue",
         safeDeliveryOutcome(cause),
       );
       throw cause;
     }
     try {
-      this.enqueue(frame, reservation);
+      this.enqueue(bytes, reservation, timing);
     } catch {
       this.controller.error(error);
       this.releaseAll("internal");
