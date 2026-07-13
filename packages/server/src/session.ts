@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   ProtocolError,
+  encode,
   parseClientMessage,
   type AuthenticatedMessage,
   type ClientAuthMessage,
@@ -29,6 +30,8 @@ import {
   type PrincipalInvalidation,
 } from "./auth.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
+import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
+import { PRODUCTION_LIMITS, type ServiceLimits } from "./limits.ts";
 import { outcomeFromError } from "./outcome.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
@@ -100,7 +103,13 @@ export interface SessionSnapshot {
   readonly principal: Principal | null;
   readonly authEpoch: number;
   readonly latestAttemptId: number;
+  readonly ingress: ExecutorSnapshot;
 }
+
+export type SessionLimits = Pick<
+  ServiceLimits,
+  "readQueue" | "maxRequestBytes" | "maxFrameBytes"
+>;
 
 export interface SessionOptions {
   readonly runtime: RuntimePort;
@@ -108,10 +117,13 @@ export interface SessionOptions {
   readonly verifier?: CredentialVerifier;
   readonly clock?: SessionClock;
   readonly revocationDeadlineMs?: number;
+  /** Per-session serialized ingress, request, and transport-frame limits. */
+  readonly limits?: SessionLimits;
 }
 
 const DEFAULT_REVOCATION_DEADLINE_MS = 5_000;
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
+const utf8 = new TextEncoder();
 
 const SYSTEM_CLOCK: SessionClock = Object.freeze({
   now: Date.now,
@@ -148,13 +160,27 @@ function aborted(controller: AbortController, reason: DbzzError): void {
   if (!controller.signal.aborted) controller.abort(reason);
 }
 
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive safe integer`);
+  }
+  return value;
+}
+
+function frameBytes(frame: unknown): number {
+  return utf8.encode(encode(frame)).byteLength;
+}
+
 export class Session {
   readonly revocationDeadlineMs: number;
+  readonly maxRequestBytes: number;
+  readonly maxFrameBytes: number;
 
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
   private readonly verifier: CredentialVerifier | undefined;
   private readonly clock: SessionClock;
+  private readonly ingress: BoundedExecutor;
   private phase: SessionPhase = "awaiting_hello";
   private clientSessionId: string | null = null;
   private principal: Principal | null = null;
@@ -165,7 +191,7 @@ export class Session {
   private pendingAuthController: AbortController | null = null;
   private lastAuthAck: AuthenticatedMessage | null = null;
   private expiryTimer: unknown;
-  private handleTail: Promise<void> = Promise.resolve();
+  private ingressExpiryTimer: unknown;
   private authTail: Promise<void> = Promise.resolve();
   private closePromise: Promise<void> | null = null;
   private unsubscribeInvalidation: (() => void) | null = null;
@@ -183,6 +209,17 @@ export class Session {
     this.sink = options.sink;
     this.verifier = options.verifier;
     this.clock = options.clock ?? SYSTEM_CLOCK;
+    const limits = options.limits ?? PRODUCTION_LIMITS;
+    this.maxRequestBytes = positiveInteger(limits.maxRequestBytes, "maxRequestBytes");
+    this.maxFrameBytes = positiveInteger(limits.maxFrameBytes, "maxFrameBytes");
+    this.ingress = new BoundedExecutor({
+      concurrency: 1,
+      discipline: "fifo",
+      limits: limits.readQueue,
+      resource: "connection",
+      retryAfterMs: 0,
+      now: () => this.readNow(),
+    });
     this.revocationDeadlineMs = revocationDeadlineMs;
     if (this.verifier !== undefined) {
       this.unsubscribeInvalidation = this.verifier.subscribeInvalidation((invalidation) => {
@@ -198,17 +235,73 @@ export class Session {
       principal: this.principal,
       authEpoch: this.authEpoch,
       latestAttemptId: this.latestAttemptId,
+      ingress: this.ingress.snapshot(),
     });
   }
 
   /** Accepts one decoded or undecoded Protocol-2 frame and serializes dispatch. */
   handle(frame: unknown): Promise<void> {
-    const run = this.handleTail.then(
-      () => this.dispatchFrame(frame),
-      () => this.dispatchFrame(frame),
+    let bytes: number;
+    try {
+      bytes = frameBytes(frame);
+    } catch (cause) {
+      return this.rejectFrame(new DbzzError("malformed", "frame is not wire-representable", { cause }));
+    }
+    if (bytes > this.maxFrameBytes) {
+      return this.rejectFrame(new DbzzError("overloaded", "client frame exceeds maxFrameBytes", {
+        retryable: true,
+        retryAfterMs: 0,
+        resource: "connection",
+      }));
+    }
+    if (bytes > this.maxRequestBytes) {
+      return this.rejectFrame(new DbzzError("overloaded", "client request exceeds maxRequestBytes", {
+        resource: "operation",
+      }));
+    }
+
+    const result = this.ingress.submit(() => this.dispatchFrame(frame), {
+      operation: "lifecycle",
+      bytes,
+    });
+    void result.catch((error) => {
+      void this.terminate(operationError(error));
+    });
+    void result.then(
+      () => this.armIngressExpiry(),
+      () => this.armIngressExpiry(),
     );
-    this.handleTail = run.catch(() => {});
-    return run;
+    this.armIngressExpiry();
+    return result;
+  }
+
+  private rejectFrame(error: DbzzError): Promise<never> {
+    const rejected = Promise.reject(error);
+    // Keep the transport outcome owned by Session even when its caller does
+    // not observe the returned rejection.
+    void rejected.catch(() => {});
+    void this.terminate(error);
+    return rejected;
+  }
+
+  private armIngressExpiry(): void {
+    this.clearIngressExpiry();
+    if (this.phase === "closed") return;
+    const nextExpiryAtMs = this.ingress.snapshot().queue.nextExpiryAtMs;
+    if (nextExpiryAtMs === undefined) return;
+    const delayMs = Math.max(0, nextExpiryAtMs - this.readNow());
+    this.ingressExpiryTimer = this.clock.setTimeout(() => {
+      this.ingressExpiryTimer = undefined;
+      // Snapshot expires every due admission and updates byte/item ownership.
+      this.ingress.snapshot();
+      this.armIngressExpiry();
+    }, Math.min(delayMs, MAX_TIMER_DELAY_MS));
+  }
+
+  private clearIngressExpiry(): void {
+    if (this.ingressExpiryTimer === undefined) return;
+    this.clock.clearTimeout(this.ingressExpiryTimer);
+    this.ingressExpiryTimer = undefined;
   }
 
   close(error: DbzzError = new DbzzError("draining", "session closed")): Promise<void> {
@@ -221,20 +314,20 @@ export class Session {
     try {
       message = parseClientMessage(frame);
     } catch (error) {
-      await this.terminate(error instanceof ProtocolError ? protocolError(error) : internalError(error));
+      void this.terminate(error instanceof ProtocolError ? protocolError(error) : internalError(error));
       return;
     }
 
     if (this.phase === "awaiting_hello") {
       if (message.t !== "hello") {
-        await this.terminate(new DbzzError("malformed", "hello must be the first frame"));
+        void this.terminate(new DbzzError("malformed", "hello must be the first frame"));
         return;
       }
       await this.open(message.clientSessionId, message.credential);
       return;
     }
     if (message.t === "hello") {
-      await this.terminate(new DbzzError("malformed", "hello has already been received"));
+      void this.terminate(new DbzzError("malformed", "hello has already been received"));
       return;
     }
 
@@ -264,7 +357,7 @@ export class Session {
     try {
       principal = await this.verifyCredential(credential);
     } catch (error) {
-      await this.terminate(verifierError(error));
+      void this.terminate(verifierError(error));
       return;
     }
     if (this.isClosed()) return;
@@ -288,7 +381,7 @@ export class Session {
       this.paused = false;
       this.phase = "active";
     } catch (error) {
-      await this.terminate(operationError(error));
+      void this.terminate(operationError(error));
     }
   }
 
@@ -321,8 +414,8 @@ export class Session {
 
   private enqueueAuth(task: () => Promise<void>): Promise<void> {
     const run = this.authTail.then(task, task);
-    const safe = run.catch(async (error) => {
-      await this.terminate(operationError(error));
+    const safe = run.catch((error) => {
+      void this.terminate(operationError(error));
     });
     this.authTail = safe;
     return safe;
@@ -343,19 +436,19 @@ export class Session {
   ): Promise<void> {
     if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
     if (result instanceof DbzzError) {
-      await this.terminate(result);
+      void this.terminate(result);
       return;
     }
     if (this.principal === null || this.clientSessionId === null) {
-      await this.terminate(internalError(new Error("auth completed before hello")));
+      void this.terminate(internalError(new Error("auth completed before hello")));
       return;
     }
     if (result.kind !== "anonymous" && result.expiresAt <= this.readNow()) {
-      await this.terminate(new DbzzError("unauthenticated", "credential expired"));
+      void this.terminate(new DbzzError("unauthenticated", "credential expired"));
       return;
     }
     if (this.authEpoch >= Number.MAX_SAFE_INTEGER) {
-      await this.terminate(internalError(new Error("auth epoch exhausted")));
+      void this.terminate(internalError(new Error("auth epoch exhausted")));
       return;
     }
 
@@ -417,7 +510,7 @@ export class Session {
       ) {
         return;
       }
-      await this.terminate(operationError(error));
+      void this.terminate(operationError(error));
     }
   }
 
@@ -425,7 +518,7 @@ export class Session {
     message: SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage,
   ): Promise<void> {
     if (this.principal === null || this.clientSessionId === null) {
-      await this.terminate(internalError(new Error("operation started before hello")));
+      void this.terminate(internalError(new Error("operation started before hello")));
       return;
     }
     const epoch = this.authEpoch;
@@ -502,7 +595,7 @@ export class Session {
       await this.sink.sendApplication(authEpoch, message);
       return this.isCurrent(authEpoch) && !this.paused;
     } catch (error) {
-      await this.terminate(operationError(error));
+      void this.terminate(operationError(error));
       return false;
     }
   }
@@ -521,7 +614,7 @@ export class Session {
         outcome: outcomeFromError(error),
       });
     } catch (sinkError) {
-      await this.terminate(operationError(sinkError));
+      void this.terminate(operationError(sinkError));
     }
   }
 
@@ -539,7 +632,7 @@ export class Session {
     try {
       await this.sink.sendControl(message);
     } catch (error) {
-      await this.terminate(operationError(error));
+      void this.terminate(operationError(error));
     }
   }
 
@@ -612,6 +705,8 @@ export class Session {
     this.closePromise = new Promise<void>((resolve) => {
       resolveClose = resolve;
     });
+    this.ingress.close();
+    this.clearIngressExpiry();
     aborted(this.epochController, error);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, error);
     this.clearExpiry();
@@ -623,10 +718,10 @@ export class Session {
       // Session state is already closed; cleanup remains best effort.
     }
 
-    const closeRuntime =
+    const closeRuntime = this.ingress.drain().then(() =>
       context === null
-        ? Promise.resolve()
-        : Promise.resolve(this.runtime.closeSession(context, outcome)).catch(() => {});
+        ? undefined
+        : Promise.resolve(this.runtime.closeSession(context, outcome)).catch(() => {}));
     const closeSink = (async () => {
       try {
         await this.sink.sendControl({
