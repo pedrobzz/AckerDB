@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { encode } from "@dbzz/core";
-import { Engine, reconcile } from "@dbzz/server";
+import { Engine, reconcile, type TelemetryRecord } from "@dbzz/server";
 import { importSchema } from "../src/app.ts";
 import { loadConfig } from "../src/config.ts";
 import {
@@ -103,6 +103,15 @@ function outputJson<T>(stdout: string): T {
   return JSON.parse(lines.at(-1)!) as T;
 }
 
+function telemetryRecords(stdout: string): TelemetryRecord[] {
+  return stdout
+    .trim()
+    .split("\n")
+    .slice(0, -1)
+    .map((line) => JSON.parse(line) as TelemetryRecord)
+    .filter((record) => record.schemaVersion === 1);
+}
+
 describe("dbz backup, restore, and status", () => {
   test("status and backup never create a missing source database", async () => {
     const source = fixture();
@@ -149,6 +158,17 @@ describe("dbz backup, restore, and status", () => {
     expect(existsSync(backupManifestPath(artifact))).toBe(true);
     expect(backup.manifest.sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(backup.manifest.verifiedAt).toBeGreaterThan(0);
+    expect(telemetryRecords(backupResult.stdout)).toEqual([
+      expect.objectContaining({
+        kind: "span",
+        operation: "backup",
+        stage: "storage",
+        outcome: "ok",
+        resource: "operation",
+        sizeBytes: backup.manifest.bytes,
+        commitId: "1",
+      }),
+    ]);
 
     const target = fixture();
     const restoreResult = await runCli(["restore", artifact, target]);
@@ -161,6 +181,17 @@ describe("dbz backup, restore, and status", () => {
       artifact,
       status: { commitVersion: "1" },
     });
+    expect(telemetryRecords(restoreResult.stdout)).toEqual([
+      expect.objectContaining({
+        kind: "span",
+        operation: "restore",
+        stage: "storage",
+        outcome: "ok",
+        resource: "operation",
+        sizeBytes: backup.manifest.bytes,
+        commitId: "1",
+      }),
+    ]);
 
     const targetConfig = loadConfig(target);
     const restored = new Engine(await importSchema(targetConfig), join(targetConfig.dbDir, "data.db"), {
@@ -208,6 +239,48 @@ describe("dbz backup, restore, and status", () => {
     const backupResult = await runCli(["backup", artifact, source], env);
     expect(backupResult.exitCode).toBe(0);
     expect(outputJson<BackupReport>(backupResult.stdout).manifest.durability).toBe("balanced");
+  }, 30_000);
+
+  test("backup telemetry is fail-safe, payload-free, and can be disabled exactly", async () => {
+    const source = fixture();
+    await seed(source);
+    const secret = "backup-telemetry-secret-canary";
+    const occupied = join(source, secret);
+    writeFileSync(occupied, secret);
+
+    const failed = await runCli(["backup", occupied, source]);
+    expect(failed.exitCode).toBe(1);
+    const failedRecords = failed.stdout.trim().split("\n").map(
+      (line) => JSON.parse(line) as TelemetryRecord,
+    );
+    expect(failedRecords).toEqual([
+      expect.objectContaining({
+        kind: "span",
+        operation: "backup",
+        stage: "storage",
+        outcome: "internal",
+        resource: "operation",
+      }),
+      expect.objectContaining({
+        kind: "event",
+        name: "failure",
+        operation: "backup",
+        stage: "storage",
+        outcome: "internal",
+        errorClass: "Error",
+      }),
+    ]);
+    expect(failed.stdout).not.toContain(secret);
+
+    const artifact = join(source, "disabled-backup.db");
+    const disabled = await runCli(["backup", artifact, source], { DBZZ_TELEMETRY: "disabled" });
+    expect(disabled.exitCode).toBe(0);
+    expect(disabled.stderr).toBe("");
+    expect(disabled.stdout.trim().split("\n")).toHaveLength(1);
+    expect(outputJson<BackupReport>(disabled.stdout)).toMatchObject({
+      operation: "backup",
+      manifest: { commitVersion: "1" },
+    });
   }, 30_000);
 
   test("rejects changed artifacts and malformed manifests before creating a target", async () => {

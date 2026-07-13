@@ -15,10 +15,18 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
+  CorruptDatabaseError,
+  DbzzError,
   Engine,
+  IncompatibleDatabaseError,
+  PRODUCTION_LIMITS,
+  Telemetry,
   type BackupManifest,
   type DurabilityPolicy,
   type EngineStatus,
+  type TelemetryOperation,
+  type TelemetryOutcome,
+  type TelemetryTraceContext,
 } from "@dbzz/server";
 import { importSchema } from "./app.ts";
 import type { AppConfig } from "./config.ts";
@@ -26,6 +34,72 @@ import type { AppConfig } from "./config.ts";
 const SHA256 = /^[0-9a-f]{64}$/;
 const DECIMAL_BIGINT = /^(?:0|[1-9][0-9]*)$/;
 const MAX_MANIFEST_BYTES = 16 * 1024;
+
+interface OperationTelemetryDetails {
+  readonly sizeBytes?: number;
+  readonly commitId?: string;
+}
+
+function operationOutcome(error: unknown): TelemetryOutcome {
+  if (error instanceof DbzzError) return error.code;
+  if (error instanceof CorruptDatabaseError || error instanceof IncompatibleDatabaseError) {
+    return "validation";
+  }
+  return "internal";
+}
+
+async function observeStorageOperation<T>(
+  config: AppConfig,
+  operation: Extract<TelemetryOperation, "backup" | "restore">,
+  work: () => Promise<T>,
+  details: (value: T) => OperationTelemetryDetails,
+): Promise<T> {
+  const telemetry = new Telemetry(config.telemetry === "disabled"
+    ? { enabled: false }
+    : { limits: { slowOperationMs: 0 } });
+  const context: TelemetryTraceContext = {
+    traceId: crypto.randomUUID(),
+    spanId: crypto.randomUUID(),
+  };
+  const startedAt = performance.now();
+  try {
+    const value = await work();
+    const observed = details(value);
+    telemetry.recordSpan({
+      operation,
+      stage: "storage",
+      outcome: "ok",
+      resource: "operation",
+      durationMs: Math.max(0, performance.now() - startedAt),
+      ...(observed.sizeBytes === undefined ? {} : { sizeBytes: observed.sizeBytes }),
+      context: observed.commitId === undefined ? context : { ...context, commitId: observed.commitId },
+    });
+    return value;
+  } catch (error) {
+    const outcome = operationOutcome(error);
+    telemetry.recordSpan({
+      operation,
+      stage: "storage",
+      outcome,
+      resource: "operation",
+      durationMs: Math.max(0, performance.now() - startedAt),
+      context,
+    });
+    telemetry.recordEvent({
+      name: "failure",
+      level: "error",
+      operation,
+      stage: "storage",
+      outcome,
+      resource: "operation",
+      errorClass: error instanceof Error ? error.name : "UnknownError",
+      context,
+    });
+    throw error;
+  } finally {
+    await telemetry.drain(Date.now() + PRODUCTION_LIMITS.gracefulShutdownMs);
+  }
+}
 
 export interface BackupManifestJson {
   format: 1;
@@ -286,41 +360,46 @@ export async function createVerifiedBackup(
   destination: string,
   verify: FreshProcessVerifier,
 ): Promise<BackupReport> {
-  const source = databasePath(config);
-  requireDatabase(source);
-  const artifact = resolve(destination);
-  const manifestPath = backupManifestPath(artifact);
-  if (existsSync(artifact)) throw new Error(`backup destination already exists: ${artifact}`);
-  if (existsSync(manifestPath)) throw new Error(`backup manifest already exists: ${manifestPath}`);
+  return observeStorageOperation(config, "backup", async () => {
+    const source = databasePath(config);
+    requireDatabase(source);
+    const artifact = resolve(destination);
+    const manifestPath = backupManifestPath(artifact);
+    if (existsSync(artifact)) throw new Error(`backup destination already exists: ${artifact}`);
+    if (existsSync(manifestPath)) throw new Error(`backup manifest already exists: ${manifestPath}`);
 
-  const schema = await importSchema(config);
-  let manifest: BackupManifest;
-  const engine = new Engine(schema, source, {
-    durability: config.durability,
-    integrityCheck: "full",
-  });
-  try {
-    manifest = engine.backup(artifact);
-  } finally {
-    engine.close();
-  }
+    const schema = await importSchema(config);
+    let manifest: BackupManifest;
+    const engine = new Engine(schema, source, {
+      durability: config.durability,
+      integrityCheck: "full",
+    });
+    try {
+      manifest = engine.backup(artifact);
+    } finally {
+      engine.close();
+    }
 
-  try {
-    await verify(config, artifact, manifest);
-    manifest = { ...manifest, verifiedAt: Date.now() };
-    publishManifest(manifestPath, manifest);
-  } catch (error) {
-    rmSync(artifact, { force: true });
-    throw error;
-  }
+    try {
+      await verify(config, artifact, manifest);
+      manifest = { ...manifest, verifiedAt: Date.now() };
+      publishManifest(manifestPath, manifest);
+    } catch (error) {
+      rmSync(artifact, { force: true });
+      throw error;
+    }
 
-  return {
-    format: 1,
-    operation: "backup",
-    artifact,
-    manifestPath,
-    manifest: serializeBackupManifest(manifest),
-  };
+    return {
+      format: 1,
+      operation: "backup",
+      artifact,
+      manifestPath,
+      manifest: serializeBackupManifest(manifest),
+    };
+  }, (report) => ({
+    sizeBytes: report.manifest.bytes,
+    commitId: report.manifest.commitVersion,
+  }));
 }
 
 /** Restore an artifact into a throwaway database and exercise its next commit. */
@@ -355,55 +434,60 @@ export async function restoreVerifiedBackup(
   source: string,
   verify: FreshProcessVerifier,
 ): Promise<RestoreReport> {
-  const artifact = resolve(source);
-  if (!existsSync(artifact) || !statSync(artifact).isFile()) {
-    throw new Error(`backup artifact not found at ${artifact}`);
-  }
-  const manifest = readBackupManifest(artifact);
-  if (existsSync(config.dbDir)) {
-    throw new Error(`restore requires a fresh target; database directory already exists: ${config.dbDir}`);
-  }
-
-  await verify(config, artifact, manifest);
-
-  const target = databasePath(config);
-  mkdirSync(dirname(config.dbDir), { recursive: true });
-  try {
-    // Claim the target after verification so a concurrent starter/restorer
-    // cannot appear in the gap between the freshness check and promotion.
-    mkdirSync(config.dbDir);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+  return observeStorageOperation(config, "restore", async () => {
+    const artifact = resolve(source);
+    if (!existsSync(artifact) || !statSync(artifact).isFile()) {
+      throw new Error(`backup artifact not found at ${artifact}`);
+    }
+    const manifest = readBackupManifest(artifact);
+    if (existsSync(config.dbDir)) {
       throw new Error(`restore requires a fresh target; database directory already exists: ${config.dbDir}`);
     }
-    throw error;
-  }
-  try {
-    Engine.restore(artifact, target, manifest);
-    const schema = await importSchema(config);
-    const engine = new Engine(schema, target, {
-      durability: manifest.durability,
-      integrityCheck: "full",
-    });
-    let status: EngineStatus;
+
+    await verify(config, artifact, manifest);
+
+    const target = databasePath(config);
+    mkdirSync(dirname(config.dbDir), { recursive: true });
     try {
-      status = assertManifestMatchesEngine(engine, manifest);
-      proveNextCommit(engine);
-    } finally {
-      engine.close();
+      // Claim the target after verification so a concurrent starter/restorer
+      // cannot appear in the gap between the freshness check and promotion.
+      mkdirSync(config.dbDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(`restore requires a fresh target; database directory already exists: ${config.dbDir}`);
+      }
+      throw error;
     }
-    return {
-      format: 1,
-      operation: "restore",
-      artifact,
-      database: target,
-      manifest: serializeBackupManifest(manifest),
-      status: statusJson(status),
-    };
-  } catch (error) {
-    // The target was proven absent above, so every file in this directory was
-    // created by this restore attempt and is safe to remove on failure.
-    rmSync(config.dbDir, { recursive: true, force: true });
-    throw error;
-  }
+    try {
+      Engine.restore(artifact, target, manifest);
+      const schema = await importSchema(config);
+      const engine = new Engine(schema, target, {
+        durability: manifest.durability,
+        integrityCheck: "full",
+      });
+      let status: EngineStatus;
+      try {
+        status = assertManifestMatchesEngine(engine, manifest);
+        proveNextCommit(engine);
+      } finally {
+        engine.close();
+      }
+      return {
+        format: 1,
+        operation: "restore",
+        artifact,
+        database: target,
+        manifest: serializeBackupManifest(manifest),
+        status: statusJson(status),
+      };
+    } catch (error) {
+      // The target was proven absent above, so every file in this directory was
+      // created by this restore attempt and is safe to remove on failure.
+      rmSync(config.dbDir, { recursive: true, force: true });
+      throw error;
+    }
+  }, (report) => ({
+    sizeBytes: report.manifest.bytes,
+    commitId: report.manifest.commitVersion,
+  }));
 }
