@@ -22,24 +22,76 @@ import type { PublicationReservation } from "./publication.ts";
 import type { Schema } from "./schema.ts";
 
 const transaction = new AsyncLocalStorage<true>();
+const fetchInstrumentation = new AsyncLocalStorage<FetchObserver>();
 const MAX_MUTATION_CLOCK_SKEW_MS = 5 * 60_000;
 let fetchGuardInstalled = false;
+
+export interface FetchObservation {
+  readonly durationMs: number;
+  readonly outcome: OutcomeCode | "ok";
+}
+
+export type FetchObserver = (observation: Readonly<FetchObservation>) => unknown;
+
+function observeFetch(
+  observer: FetchObserver | undefined,
+  startedAt: number,
+  outcome: FetchObservation["outcome"],
+): void {
+  if (observer === undefined) return;
+  try {
+    const result = fetchInstrumentation.exit(() => observer(Object.freeze({
+      durationMs: Math.max(0, performance.now() - startedAt),
+      outcome,
+    })));
+    if (
+      result !== null &&
+      (typeof result === "object" || typeof result === "function") &&
+      typeof (result as PromiseLike<unknown>).then === "function"
+    ) {
+      void Promise.resolve(result).catch(() => {});
+    }
+  } catch {
+    // Fetch telemetry is diagnostic and never owns application work.
+  }
+}
 
 function installFetchGuard(): void {
   if (fetchGuardInstalled) return;
   fetchGuardInstalled = true;
   const original = globalThis.fetch;
   const guarded = ((...args: Parameters<typeof fetch>) => {
+    const observer = fetchInstrumentation.getStore();
+    const startedAt = observer === undefined ? 0 : performance.now();
     if (transaction.getStore()) {
-      throw new DbzzError(
+      const error = new DbzzError(
         "validation",
         "fetch is not allowed inside a transaction; use a procedure outside ctx.tx",
       );
+      observeFetch(observer, startedAt, error.code);
+      throw error;
     }
-    return original(...args);
+    const request = original(...args);
+    if (observer === undefined) return request;
+    return request.then(
+      (response) => {
+        observeFetch(observer, startedAt, "ok");
+        return response;
+      },
+      (error) => {
+        observeFetch(observer, startedAt, telemetryOutcome(error));
+        throw error;
+      },
+    );
   }) as typeof fetch;
   Object.assign(guarded, original);
   globalThis.fetch = guarded;
+}
+
+/** Correlate outbound fetch work without capturing URLs, headers, or bodies. */
+export function withFetchObserver<T>(observer: FetchObserver, work: () => T): T {
+  installFetchGuard();
+  return fetchInstrumentation.run(observer, work);
 }
 
 export interface IdempotencyIdentity {

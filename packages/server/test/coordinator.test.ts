@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { stableEncode } from "@dbzz/core";
 import {
   CommitCoordinator,
+  withFetchObserver,
   type CommitTelemetryEvent,
+  type FetchObservation,
 } from "../src/coordinator.ts";
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
@@ -284,6 +286,7 @@ describe("CommitCoordinator", () => {
 
   test("fetch and nested transactions are rejected at the owning boundary", async () => {
     const { coordinator } = fixture();
+    const observations: FetchObservation[] = [];
     const nested = () => coordinator.execute({
       operation: "transaction",
       fairnessKey: "connection-1",
@@ -300,15 +303,28 @@ describe("CommitCoordinator", () => {
         publication: (version) => ({ version }),
       }),
     ).rejects.toMatchObject({ code: "validation" });
-    await expect(
-      coordinator.execute({
+    await expect(withFetchObserver(
+      (observation) => {
+        observations.push(observation);
+      },
+      () => coordinator.execute({
         operation: "transaction",
         fairnessKey: "connection-1",
         requestBytes: 1,
         work: () => fetch("data:text/plain,nope"),
         publication: (version) => ({ version }),
       }),
-    ).rejects.toBeInstanceOf(DbzzError);
+    )).rejects.toBeInstanceOf(DbzzError);
+    expect(observations).toEqual([expect.objectContaining({ outcome: "validation" })]);
+    expect(observations.every(Object.isFrozen)).toBe(true);
+
+    const response = await withFetchObserver(
+      () => {
+        throw new Error("telemetry failed");
+      },
+      () => fetch("data:text/plain,allowed"),
+    );
+    expect(await response.text()).toBe("allowed");
   });
 
   test("oversized result fails before commit and does not consume replay capacity", async () => {
