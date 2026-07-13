@@ -36,11 +36,11 @@ function fixture(schema = FIXTURE_SCHEMA): string {
   return dir;
 }
 
-async function seed(dir: string): Promise<void> {
-  const config = loadConfig(dir);
+async function seed(dir: string, durability: "production" | "balanced" = "production"): Promise<void> {
+  const config = loadConfig(dir, { DBZZ_DURABILITY: durability });
   const schema = await importSchema(config);
   mkdirSync(config.dbDir, { recursive: true });
-  const engine = new Engine(schema, join(config.dbDir, "data.db"));
+  const engine = new Engine(schema, join(config.dbDir, "data.db"), { durability });
   try {
     reconcile(engine);
     const role = engine.tags.get("Role")!.toTag.get("member")!;
@@ -63,10 +63,14 @@ async function seed(dir: string): Promise<void> {
   }
 }
 
-async function runCli(args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function runCli(
+  args: string[],
+  env: Readonly<Record<string, string>> = {},
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const child = Bun.spawn([process.execPath, CLI, ...args], {
     stdout: "pipe",
     stderr: "pipe",
+    env: { ...process.env, ...env },
   });
   const [exitCode, stdout, stderr] = await Promise.all([
     child.exited,
@@ -154,6 +158,21 @@ describe("dbz backup, restore, and status", () => {
     } finally {
       restored.close();
     }
+  }, 30_000);
+
+  test("status and backup preserve the explicitly selected balanced durability", async () => {
+    const source = fixture();
+    await seed(source, "balanced");
+    const env = { DBZZ_DURABILITY: "balanced" };
+
+    const statusResult = await runCli(["status", source], env);
+    expect(statusResult.exitCode).toBe(0);
+    expect(outputJson<StatusReport>(statusResult.stdout).status.durability).toBe("balanced");
+
+    const artifact = join(source, "balanced-backup.db");
+    const backupResult = await runCli(["backup", artifact, source], env);
+    expect(backupResult.exitCode).toBe(0);
+    expect(outputJson<BackupReport>(backupResult.stdout).manifest.durability).toBe("balanced");
   }, 30_000);
 
   test("rejects changed artifacts and malformed manifests before creating a target", async () => {

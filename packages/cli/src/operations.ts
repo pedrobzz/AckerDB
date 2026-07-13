@@ -260,7 +260,10 @@ export async function inspectDatabase(config: AppConfig): Promise<StatusReport> 
   const path = databasePath(config);
   requireDatabase(path);
   const schema = await importSchema(config);
-  const engine = new Engine(schema, path, { integrityCheck: "full" });
+  const engine = new Engine(schema, path, {
+    durability: config.durability,
+    integrityCheck: "full",
+  });
   try {
     return {
       format: 1,
@@ -292,7 +295,10 @@ export async function createVerifiedBackup(
 
   const schema = await importSchema(config);
   let manifest: BackupManifest;
-  const engine = new Engine(schema, source, { integrityCheck: "full" });
+  const engine = new Engine(schema, source, {
+    durability: config.durability,
+    integrityCheck: "full",
+  });
   try {
     manifest = engine.backup(artifact);
   } finally {
