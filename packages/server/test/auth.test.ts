@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import {
   ANONYMOUS_PRINCIPAL,
+  credentialFromAuthorization,
   createOidcVerifier,
   SYSTEM_PRINCIPAL,
+  verifyClientCredential,
+  type CredentialVerifier,
   type OidcVerifierOptions,
   type UserPrincipal,
 } from "../src/auth.ts";
@@ -38,6 +41,42 @@ async function expectDbzzError(promise: Promise<unknown>, code: DbzzErrorCode): 
 }
 
 describe("principals and invocation access", () => {
+  test("HTTP authorization uses the same strict credential path", async () => {
+    expect(credentialFromAuthorization(null)).toEqual({ kind: "anonymous" });
+    expect(credentialFromAuthorization("Bearer token-value")).toEqual({
+      kind: "bearer",
+      token: "token-value",
+    });
+    expect(() => credentialFromAuthorization("Basic secret")).toThrow(DbzzError);
+    expect(() => credentialFromAuthorization("Bearer one, Bearer two")).toThrow(DbzzError);
+
+    const mutableClaims = { roles: ["reader"] };
+    const verifier: CredentialVerifier = {
+      revocationBound: { kind: "token-expiration" },
+      subscribeInvalidation: () => () => {},
+      verify: async () => ({
+        kind: "user",
+        issuer: ISSUER,
+        subject: "subject-1",
+        claims: mutableClaims,
+        expiresAt: 2_000,
+        tokenId: null,
+      }),
+    };
+    const principal = await verifyClientCredential(
+      credentialFromAuthorization("bearer token-value"),
+      verifier,
+      () => 1_000,
+    );
+    expect(principal.kind).toBe("user");
+    expect(Object.isFrozen(principal)).toBe(true);
+    expect(Object.isFrozen(mutableClaims.roles)).toBe(true);
+    await expectDbzzError(
+      verifyClientCredential({ kind: "bearer", token: "token-value" }, verifier, () => 2_000),
+      "unauthenticated",
+    );
+  });
+
   test("framework errors cannot encode an invalid structured outcome", () => {
     expect(
       () => new DbzzError("overloaded", "busy", { retryAfterMs: 1 }),

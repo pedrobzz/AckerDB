@@ -6,6 +6,7 @@ import {
   type JWTVerifyOptions,
   type JWTPayload,
 } from "jose";
+import { parseCredential, type Credential } from "@dbzz/core";
 import { DbzzError } from "./errors.ts";
 
 export interface AnonymousPrincipal {
@@ -33,6 +34,7 @@ export interface WorkloadPrincipal extends ExternalPrincipal {
 }
 
 export type VerifiedPrincipal = UserPrincipal | WorkloadPrincipal;
+export type ClientPrincipal = AnonymousPrincipal | VerifiedPrincipal;
 export type Principal = AnonymousPrincipal | UserPrincipal | WorkloadPrincipal | SystemPrincipal;
 
 export const ANONYMOUS_PRINCIPAL: AnonymousPrincipal = Object.freeze({ kind: "anonymous" });
@@ -251,6 +253,53 @@ function selectClaims(payload: JWTPayload, names: readonly string[]): Readonly<R
     if (value !== undefined) selected[name] = value;
   }
   return deepFreeze(selected);
+}
+
+/** Parse one strict HTTP Authorization value into the shared transport credential. */
+export function credentialFromAuthorization(value: string | null): Credential {
+  if (value === null) return Object.freeze({ kind: "anonymous" });
+  const match = /^Bearer ([^\s,]+)$/i.exec(value);
+  if (!match) throw unauthenticated();
+  try {
+    return Object.freeze(parseCredential({ kind: "bearer", token: match[1]! }));
+  } catch (error) {
+    throw unauthenticated(error);
+  }
+}
+
+/** One fail-closed credential path shared by WebSocket, HTTP, and SSE. */
+export async function verifyClientCredential(
+  credential: Credential,
+  verifier?: CredentialVerifier,
+  now: () => number = Date.now,
+): Promise<ClientPrincipal> {
+  if (credential.kind === "anonymous") return ANONYMOUS_PRINCIPAL;
+  if (verifier === undefined) throw unauthenticated();
+  let principal: VerifiedPrincipal;
+  try {
+    principal = await verifier.verify(credential.token);
+  } catch (error) {
+    if (error instanceof DbzzError) throw error;
+    throw authUnavailable(error);
+  }
+  if (
+    !isPrincipal(principal) ||
+    (principal.kind !== "user" && principal.kind !== "workload")
+  ) {
+    throw authUnavailable(new Error("credential verifier returned an invalid principal"));
+  }
+  const timestamp = now();
+  if (!Number.isFinite(timestamp)) throw new RangeError("credential clock must return finite milliseconds");
+  if (principal.expiresAt <= timestamp) throw unauthenticated();
+  deepFreeze(principal.claims);
+  return Object.freeze({
+    kind: principal.kind,
+    issuer: principal.issuer,
+    subject: principal.subject,
+    claims: principal.claims,
+    expiresAt: principal.expiresAt,
+    tokenId: principal.tokenId,
+  });
 }
 
 function invalidJoseCredential(error: unknown): boolean {

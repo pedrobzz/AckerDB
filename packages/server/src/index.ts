@@ -63,10 +63,13 @@ export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.
 export { reconcile, UnsafeSchemaChange } from "./reconcile.ts";
 export {
   ANONYMOUS_PRINCIPAL,
+  credentialFromAuthorization,
   createOidcVerifier,
   isPrincipal,
   SYSTEM_PRINCIPAL,
+  verifyClientCredential,
   type AnonymousPrincipal,
+  type ClientPrincipal,
   type CredentialVerifier,
   type JwtAlgorithm,
   type OidcProviderConfig,

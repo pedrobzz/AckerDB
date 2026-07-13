@@ -22,13 +22,11 @@ import {
   type WelcomeMessage,
 } from "@dbzz/core";
 import {
-  ANONYMOUS_PRINCIPAL,
-  isPrincipal,
-  type AnonymousPrincipal,
+  verifyClientCredential,
+  type ClientPrincipal,
   type CredentialVerifier,
   type Principal,
   type PrincipalInvalidation,
-  type VerifiedPrincipal,
 } from "./auth.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import { outcomeFromError } from "./outcome.ts";
@@ -114,45 +112,12 @@ export interface SessionOptions {
 
 const DEFAULT_REVOCATION_DEADLINE_MS = 5_000;
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
-type ClientPrincipal = AnonymousPrincipal | VerifiedPrincipal;
 
 const SYSTEM_CLOCK: SessionClock = Object.freeze({
   now: Date.now,
   setTimeout: (callback: () => void, delayMs: number) => setTimeout(callback, delayMs),
   clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 });
-
-function deepFreeze(value: unknown): void {
-  if (typeof value !== "object" || value === null) return;
-  const pending: object[] = [value];
-  const seen = new Set<object>();
-  while (pending.length > 0) {
-    const current = pending.pop()!;
-    if (seen.has(current)) continue;
-    seen.add(current);
-    for (const child of Object.values(current)) {
-      if (typeof child === "object" && child !== null) pending.push(child);
-    }
-    Object.freeze(current);
-  }
-}
-
-function immutableVerifiedPrincipal(principal: VerifiedPrincipal): VerifiedPrincipal {
-  if (!isPrincipal(principal) || (principal.kind !== "user" && principal.kind !== "workload")) {
-    throw new DbzzError("auth_unavailable", "credential verifier returned an invalid principal", {
-      retryable: true,
-    });
-  }
-  deepFreeze(principal.claims);
-  return Object.freeze({
-    kind: principal.kind,
-    issuer: principal.issuer,
-    subject: principal.subject,
-    claims: principal.claims,
-    expiresAt: principal.expiresAt,
-    tokenId: principal.tokenId,
-  });
-}
 
 function internalError(cause: unknown): DbzzError {
   return new DbzzError("internal", "internal error", { cause });
@@ -579,21 +544,7 @@ export class Session {
   }
 
   private async verifyCredential(credential: Credential): Promise<ClientPrincipal> {
-    if (credential.kind === "anonymous") return ANONYMOUS_PRINCIPAL;
-    if (this.verifier === undefined) {
-      throw new DbzzError("unauthenticated", "invalid credential");
-    }
-    let verified: VerifiedPrincipal;
-    try {
-      verified = await this.verifier.verify(credential.token);
-    } catch (error) {
-      throw verifierError(error);
-    }
-    const principal = immutableVerifiedPrincipal(verified);
-    if (principal.expiresAt <= this.readNow()) {
-      throw new DbzzError("unauthenticated", "credential expired");
-    }
-    return principal;
+    return verifyClientCredential(credential, this.verifier, () => this.readNow());
   }
 
   private isCurrent(authEpoch: number): boolean {
