@@ -1,8 +1,8 @@
 {
-  "name": "convex-bench",
+  "name": "spacetime-bench",
   "private": true,
   "version": "0.0.0",
   "dependencies": {
-    "convex": "1.42.1"
+    "spacetimedb": "2.6.1"
   }
 }

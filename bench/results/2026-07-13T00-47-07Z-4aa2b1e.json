@@ -1,0 +1,3051 @@
+{
+  "schemaVersion": 2,
+  "timestamp": "2026-07-13T00:47:07.868Z",
+  "git": {
+    "commit": "4aa2b1e",
+    "dirty": true,
+    "sourceHash": "523501d8f05ea6f6bd66588c0dca9a352ff31af9a137762fb602267acc87f0b8"
+  },
+  "machine": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M2 Pro",
+    "logicalCpus": 12,
+    "memGb": 32,
+    "osRelease": "25.6.0",
+    "fileDescriptorLimit": 1048576
+  },
+  "versions": {
+    "bun": "1.3.14",
+    "bunRevision": "1.3.14-canary.1+c18740dd8",
+    "convexClient": "1.42.1",
+    "convexBackend": "precompiled-2026-07-06-44f7aa7",
+    "spacetimedbCli": "2.6.1",
+    "spacetimedbClient": "2.6.1",
+    "spacetimedbModule": "2.6.1"
+  },
+  "methodology": {
+    "serverResources": "250ms shared ps process-tree sampling; RSS is sampled summed per-process RSS (shared pages may be counted more than once) and CPU is cumulative user+system time",
+    "loadGeneratorResources": "same shared process-table samples, reported separately from server resources to expose client-side saturation",
+    "sampleIntervalMs": 250,
+    "durability": {
+      "dbzz": "SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT",
+      "convex": "current local backend native default",
+      "spacetimedb": "confirmed reads explicitly enabled; standalone native durable commit log"
+    },
+    "spacetimeQueryTransport": "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API"
+  },
+  "systemOrder": [
+    "dbzz",
+    "convex",
+    "spacetimedb"
+  ],
+  "systems": {
+    "dbzz": {
+      "workload": {
+        "system": "dbzz",
+        "config": {
+          "profile": "quick",
+          "seed": 56098,
+          "operation": {
+            "warmupMs": 250,
+            "steadyMs": 500,
+            "trials": 1,
+            "drainTimeoutMs": 30000,
+            "profiles": [
+              {
+                "name": "latency",
+                "connections": 1,
+                "inFlightPerConnection": 1
+              },
+              {
+                "name": "concurrent",
+                "connections": 4,
+                "inFlightPerConnection": 4
+              }
+            ]
+          },
+          "connections": {
+            "levels": [
+              1,
+              25
+            ],
+            "batchSize": 25,
+            "workMs": 500,
+            "timeoutMs": 120000
+          },
+          "subscriptions": {
+            "users": 10,
+            "queriesPerUser": 5,
+            "durationMs": 500,
+            "sharedUpdatesPerSec": 5,
+            "partitionedUpdatesPerSec": 10,
+            "setupTimeoutMs": 120000,
+            "drainTimeoutMs": 30000,
+            "patterns": [
+              "shared"
+            ]
+          },
+          "resources": {
+            "idleMs": 500
+          },
+          "seedBatchSize": 256
+        },
+        "snapshots": {
+          "seededIdle": "server:seeded-idle",
+          "seededIdlePhaseId": "server:seeded-idle-window",
+          "connectionBaselineIdlePhaseId": "connections:baseline-idle"
+        },
+        "operations": [
+          {
+            "operation": "query",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903583489.2644,
+                "windowEndedAtMs": 1783903583989.2644,
+                "wallMs": 500,
+                "attempted": 5732,
+                "completedInWindow": 5731,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 11462,
+                "latency": {
+                  "count": 5732,
+                  "minMs": 0.05254200000001674,
+                  "p50Ms": 0.07708400000001348,
+                  "p95Ms": 0.12754099999983737,
+                  "p99Ms": 0.2740000000001146,
+                  "maxMs": 1.1413340000001426
+                },
+                "errors": [],
+                "phaseId": "operation:query:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 11462,
+            "medianLatencyP50Ms": 0.07708400000001348,
+            "medianLatencyP95Ms": 0.12754099999983737,
+            "medianLatencyP99Ms": 0.2740000000001146
+          },
+          {
+            "operation": "query",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903584242.89,
+                "windowEndedAtMs": 1783903584742.89,
+                "wallMs": 500,
+                "attempted": 16346,
+                "completedInWindow": 16330,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 32660,
+                "latency": {
+                  "count": 16346,
+                  "minMs": 0.06799999999998363,
+                  "p50Ms": 0.3801250000001346,
+                  "p95Ms": 0.8448750000000018,
+                  "p99Ms": 1.4574579999998605,
+                  "maxMs": 2.3161660000000666
+                },
+                "errors": [],
+                "phaseId": "operation:query:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 32660,
+            "medianLatencyP50Ms": 0.3801250000001346,
+            "medianLatencyP95Ms": 0.8448750000000018,
+            "medianLatencyP99Ms": 1.4574579999998605
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903584998.137,
+                "windowEndedAtMs": 1783903585498.137,
+                "wallMs": 500,
+                "attempted": 5946,
+                "completedInWindow": 5945,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 11890,
+                "latency": {
+                  "count": 5946,
+                  "minMs": 0.050416000000041095,
+                  "p50Ms": 0.06891600000017206,
+                  "p95Ms": 0.11462500000016007,
+                  "p99Ms": 0.41729199999963384,
+                  "maxMs": 5.222957999999835
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-uncontended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 11890,
+            "medianLatencyP50Ms": 0.06891600000017206,
+            "medianLatencyP95Ms": 0.11462500000016007,
+            "medianLatencyP99Ms": 0.41729199999963384
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903585752.798,
+                "windowEndedAtMs": 1783903586252.798,
+                "wallMs": 500,
+                "attempted": 8363,
+                "completedInWindow": 8347,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 16694,
+                "latency": {
+                  "count": 8363,
+                  "minMs": 0.1174580000001697,
+                  "p50Ms": 0.6277500000001055,
+                  "p95Ms": 3.3460829999999078,
+                  "p99Ms": 4.676292000000103,
+                  "maxMs": 5.83829199999991
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-uncontended:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 16694,
+            "medianLatencyP50Ms": 0.6277500000001055,
+            "medianLatencyP95Ms": 3.3460829999999078,
+            "medianLatencyP99Ms": 4.676292000000103
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903586506.959,
+                "windowEndedAtMs": 1783903587006.959,
+                "wallMs": 500,
+                "attempted": 5107,
+                "completedInWindow": 5106,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 10212,
+                "latency": {
+                  "count": 5107,
+                  "minMs": 0.05195800000001327,
+                  "p50Ms": 0.07000000000061846,
+                  "p95Ms": 0.1416669999998703,
+                  "p99Ms": 0.5352909999996882,
+                  "maxMs": 3.8774999999996
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-contended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 10212,
+            "medianLatencyP50Ms": 0.07000000000061846,
+            "medianLatencyP95Ms": 0.1416669999998703,
+            "medianLatencyP99Ms": 0.5352909999996882
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903587263.842,
+                "windowEndedAtMs": 1783903587763.842,
+                "wallMs": 500,
+                "attempted": 7834,
+                "completedInWindow": 7818,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 15636,
+                "latency": {
+                  "count": 7834,
+                  "minMs": 0.1282920000003287,
+                  "p50Ms": 0.642917000000125,
+                  "p95Ms": 4.5619159999996555,
+                  "p99Ms": 5.956707999999708,
+                  "maxMs": 8.22229200000038
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-contended:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 15636,
+            "medianLatencyP50Ms": 0.642917000000125,
+            "medianLatencyP95Ms": 4.5619159999996555,
+            "medianLatencyP99Ms": 5.956707999999708
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903588018.3806,
+                "windowEndedAtMs": 1783903588518.3806,
+                "wallMs": 500,
+                "attempted": 5948,
+                "completedInWindow": 5947,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 11894,
+                "latency": {
+                  "count": 5948,
+                  "minMs": 0.056749999999738066,
+                  "p50Ms": 0.07725000000027649,
+                  "p95Ms": 0.11629199999970297,
+                  "p99Ms": 0.16924999999991996,
+                  "maxMs": 0.7276249999995343
+                },
+                "errors": [],
+                "phaseId": "operation:procedure:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 11894,
+            "medianLatencyP50Ms": 0.07725000000027649,
+            "medianLatencyP95Ms": 0.11629199999970297,
+            "medianLatencyP99Ms": 0.16924999999991996
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903588772.2136,
+                "windowEndedAtMs": 1783903589272.2136,
+                "wallMs": 500,
+                "attempted": 17686,
+                "completedInWindow": 17670,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 35340,
+                "latency": {
+                  "count": 17686,
+                  "minMs": 0.10679199999958655,
+                  "p50Ms": 0.36108299999978044,
+                  "p95Ms": 0.8065830000005008,
+                  "p99Ms": 1.5740000000005239,
+                  "maxMs": 4.232167000000118
+                },
+                "errors": [],
+                "phaseId": "operation:procedure:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 35340,
+            "medianLatencyP50Ms": 0.36108299999978044,
+            "medianLatencyP95Ms": 0.8065830000005008,
+            "medianLatencyP99Ms": 1.5740000000005239
+          }
+        ],
+        "connections": [
+          {
+            "targetConnections": 1,
+            "connected": 1,
+            "addedConnections": 1,
+            "setupMs": 1.4227499999997235,
+            "readyConnectionsPerSec": 702.8641714989944,
+            "readyLatency": {
+              "count": 1,
+              "minMs": 1.2740839999996751,
+              "p50Ms": 1.2740839999996751,
+              "p95Ms": 1.2740839999996751,
+              "p99Ms": 1.2740839999996751,
+              "maxMs": 1.2740839999996751
+            },
+            "connectedSnapshotId": "connections:1:connected",
+            "connectedIdlePhaseId": "connections:1:idle",
+            "work": {
+              "windowStartedAtMs": 1783903590281.6492,
+              "windowEndedAtMs": 1783903590781.6492,
+              "wallMs": 500,
+              "attempted": 6270,
+              "completedInWindow": 6269,
+              "completedAfterWindow": 1,
+              "failed": 0,
+              "throughputPerSec": 12538,
+              "latency": {
+                "count": 6270,
+                "minMs": 0.05275000000074215,
+                "p50Ms": 0.07283300000017334,
+                "p95Ms": 0.10974999999962165,
+                "p99Ms": 0.1547920000002705,
+                "maxMs": 0.6019169999999576
+              },
+              "errors": [],
+              "phaseId": "connections:1:work"
+            },
+            "errors": []
+          },
+          {
+            "targetConnections": 25,
+            "connected": 25,
+            "addedConnections": 24,
+            "setupMs": 2.23504099999991,
+            "readyConnectionsPerSec": 10738.058049047406,
+            "readyLatency": {
+              "count": 24,
+              "minMs": 0.9188749999993888,
+              "p50Ms": 1.4094169999998485,
+              "p95Ms": 1.5655420000002778,
+              "p99Ms": 1.588249999999789,
+              "maxMs": 1.588249999999789
+            },
+            "connectedSnapshotId": "connections:25:connected",
+            "connectedIdlePhaseId": "connections:25:idle",
+            "work": {
+              "windowStartedAtMs": 1783903591286.0325,
+              "windowEndedAtMs": 1783903591786.0325,
+              "wallMs": 500,
+              "attempted": 13928,
+              "completedInWindow": 13903,
+              "completedAfterWindow": 25,
+              "failed": 0,
+              "throughputPerSec": 27806,
+              "latency": {
+                "count": 13928,
+                "minMs": 0.15495800000098825,
+                "p50Ms": 0.8077089999987948,
+                "p95Ms": 1.5184580000004644,
+                "p99Ms": 1.8856250000008004,
+                "maxMs": 3.0035829999997077
+              },
+              "errors": [],
+              "phaseId": "connections:25:work"
+            },
+            "errors": []
+          }
+        ],
+        "subscriptions": [
+          {
+            "pattern": "shared",
+            "users": 10,
+            "queriesPerUser": 5,
+            "logicalSubscriptions": 50,
+            "distinctQueryArguments": 5,
+            "baselineIdlePhaseId": "subscriptions:shared:baseline-idle",
+            "setupMs": 7.398208000000523,
+            "setupConnectionsPerSec": 1351.6786767821739,
+            "subscribedSnapshotId": "subscriptions:shared:subscribed",
+            "subscribedIdlePhaseId": "subscriptions:shared:idle",
+            "phaseId": "subscriptions:shared:updates",
+            "updates": 2,
+            "updateThroughputPerSec": 4,
+            "expectedDeliveries": 20,
+            "observedDeliveries": 20,
+            "duplicateDeliveries": 0,
+            "unexpectedDeliveries": 0,
+            "corruptDeliveries": 0,
+            "missingDeliveries": 0,
+            "deliveryThroughputPerSec": 39.98371327413706,
+            "updateAckLatency": {
+              "count": 2,
+              "minMs": 0.9035000000003492,
+              "p50Ms": 0.9035000000003492,
+              "p95Ms": 1.3937079999996058,
+              "p99Ms": 1.3937079999996058,
+              "maxMs": 1.3937079999996058
+            },
+            "deliveryLatency": {
+              "count": 20,
+              "minMs": 0.8324589999992895,
+              "p50Ms": 0.8949169999996229,
+              "p95Ms": 1.3702499999999418,
+              "p99Ms": 1.376416999999492,
+              "maxMs": 1.376416999999492
+            },
+            "timeToAll": {
+              "count": 2,
+              "minMs": 0.8949169999996229,
+              "p50Ms": 0.8949169999996229,
+              "p95Ms": 1.376416999999492,
+              "p99Ms": 1.376416999999492,
+              "maxMs": 1.376416999999492
+            },
+            "correctness": {
+              "ok": true,
+              "errors": []
+            }
+          }
+        ]
+      },
+      "resources": {
+        "server": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1783903583250.3389,
+              "rootPid": 30376,
+              "rssKind": "sumProcessRss",
+              "rssMb": 79.65625,
+              "cumulativeCpuSeconds": 0.26,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1783903590295.607,
+              "rootPid": 30376,
+              "rssKind": "sumProcessRss",
+              "rssMb": 111.640625,
+              "cumulativeCpuSeconds": 5.28,
+              "processCount": 1
+            },
+            "connections:25:connected": {
+              "timestampMs": 1783903591302.2246,
+              "rootPid": 30376,
+              "rssKind": "sumProcessRss",
+              "rssMb": 111.65625,
+              "cumulativeCpuSeconds": 5.57,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1783903592811.9128,
+              "rootPid": 30376,
+              "rssKind": "sumProcessRss",
+              "rssMb": 111.640625,
+              "cumulativeCpuSeconds": 6.09,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 501.24609375,
+              "cpuSeconds": 0.02620508391752638,
+              "cpuCores": 0.0522798765801382,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 79.625,
+                "peak": 79.625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.32663604301030025,
+              "cpuCores": 0.6532720860206005,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 82.625,
+                "peak": 82.796875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.48822469756027265,
+              "cpuCores": 0.9764493951205453,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 95.296875,
+                "peak": 96.015625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.4694713208477015,
+              "cpuCores": 0.938942641695403,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 98.5625,
+                "peak": 99.953125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.46334201875315895,
+              "cpuCores": 0.9266840375063179,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 102.4375,
+                "peak": 103.296875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.35939447554401305,
+              "cpuCores": 0.7187889510880261,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 103.984375,
+                "peak": 104.234375
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.45698366240070953,
+              "cpuCores": 0.9139673248014191,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 105.03125,
+                "peak": 106.015625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.22930698946188244,
+              "cpuCores": 0.4586139789237649,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 108.515625,
+                "peak": 109.640625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.4786680661238121,
+              "cpuCores": 0.9573361322476241,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.515625,
+                "peak": 111.578125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 500.20361328125,
+              "cpuSeconds": 0.011439602348919387,
+              "cpuCores": 0.022869891470550473,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.578125,
+                "peak": 111.578125
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 501.969970703125,
+              "cpuSeconds": 0.008910202465225225,
+              "cpuCores": 0.01775046912217563,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.578125,
+                "peak": 111.578125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.28247782940658883,
+              "cpuCores": 0.5649556588131777,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.65625,
+                "peak": 111.65625
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "connections:25:idle": {
+              "wallMs": 501.09716796875,
+              "cpuSeconds": 0.006529803597335793,
+              "cpuCores": 0.013031012775037298,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.65625,
+                "peak": 111.65625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:25:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.4938776320710705,
+              "cpuCores": 0.987755264142141,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.65625,
+                "peak": 111.6875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 501.1025390625,
+              "cpuSeconds": 0.012032126593894965,
+              "cpuCores": 0.02401130638133577,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.6875,
+                "peak": 111.6875
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 501.074462890625,
+              "cpuSeconds": 0.009999999999999787,
+              "cpuCores": 0.019957113643970712,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.734375,
+                "peak": 111.734375
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 500.203857421875,
+              "cpuSeconds": 0.009999999999999787,
+              "cpuCores": 0.0199918490263975,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.640625,
+                "peak": 111.65625
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            }
+          }
+        },
+        "loadGenerator": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1783903583250.3389,
+              "rootPid": 30497,
+              "rssKind": "sumProcessRss",
+              "rssMb": 34.703125,
+              "cumulativeCpuSeconds": 0.03,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1783903590295.607,
+              "rootPid": 30497,
+              "rssKind": "sumProcessRss",
+              "rssMb": 98.734375,
+              "cumulativeCpuSeconds": 2.99,
+              "processCount": 1
+            },
+            "connections:25:connected": {
+              "timestampMs": 1783903591302.2246,
+              "rootPid": 30497,
+              "rssKind": "sumProcessRss",
+              "rssMb": 98.984375,
+              "cumulativeCpuSeconds": 3.19,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1783903592811.9128,
+              "rootPid": 30497,
+              "rssKind": "sumProcessRss",
+              "rssMb": 99.171875,
+              "cumulativeCpuSeconds": 3.62,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 501.24609375,
+              "cpuSeconds": 0.002489144737392094,
+              "cpuCores": 0.004965913487265145,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 34.515625,
+                "peak": 34.515625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.22814667215257622,
+              "cpuCores": 0.45629334430515245,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 51.40625,
+                "peak": 54.765625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.44499782421109235,
+              "cpuCores": 0.8899956484221847,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 85.625,
+                "peak": 86.609375
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.10990387651776401,
+              "cpuCores": 0.21980775303552802,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 87.015625,
+                "peak": 87.0625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.09841946151186365,
+              "cpuCores": 0.1968389230237273,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 87.46875,
+                "peak": 88.265625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.07986543900978038,
+              "cpuCores": 0.15973087801956076,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 88.421875,
+                "peak": 88.421875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.07965623348970219,
+              "cpuCores": 0.15931246697940438,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 88.484375,
+                "peak": 88.609375
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.2981782471046728,
+              "cpuCores": 0.5963564942093456,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 94.53125,
+                "peak": 94.6875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.7326873253472912,
+              "cpuCores": 1.4653746506945824,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 97.796875,
+                "peak": 98.203125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 500.20361328125,
+              "cpuSeconds": 0.0260510100505007,
+              "cpuCores": 0.05208081141119821,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 98.703125,
+                "peak": 98.703125
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 501.969970703125,
+              "cpuSeconds": 0.010259760068004109,
+              "cpuCores": 0.020438991706282637,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 98.734375,
+                "peak": 98.734375
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.19570683194937155,
+              "cpuCores": 0.3914136638987431,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 98.734375,
+                "peak": 98.84375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "connections:25:idle": {
+              "wallMs": 501.09716796875,
+              "cpuSeconds": 0.004081127248334759,
+              "cpuCores": 0.00814438298439809,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 98.984375,
+                "peak": 98.984375
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:25:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.39759817851620793,
+              "cpuCores": 0.7951963570324159,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 98.984375,
+                "peak": 99.09375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 501.1025390625,
+              "cpuSeconds": 0.01925548199530347,
+              "cpuCores": 0.03842623114887436,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 99.125,
+                "peak": 99.125
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 501.074462890625,
+              "cpuSeconds": 0.010000000000000231,
+              "cpuCores": 0.019957113643971597,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 99.140625,
+                "peak": 99.140625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 500.203857421875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 99.171875,
+                "peak": 99.171875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            }
+          }
+        }
+      },
+      "startupIdle": {
+        "snapshot": {
+          "timestampMs": 1783903582567.9695,
+          "rootPid": 30376,
+          "rssKind": "sumProcessRss",
+          "rssMb": 44.59375,
+          "cumulativeCpuSeconds": 0.04,
+          "processCount": 1
+        },
+        "window": {
+          "wallMs": 501.212890625,
+          "cpuSeconds": 0,
+          "cpuCores": 0,
+          "rssKind": "sumProcessRss",
+          "rssMb": {
+            "p50": 44.59375,
+            "peak": 44.59375
+          },
+          "sampleCount": 1,
+          "processCountPeak": 1
+        }
+      },
+      "implementationVersion": "workspace"
+    },
+    "convex": {
+      "workload": {
+        "system": "convex",
+        "config": {
+          "profile": "quick",
+          "seed": 56098,
+          "operation": {
+            "warmupMs": 250,
+            "steadyMs": 500,
+            "trials": 1,
+            "drainTimeoutMs": 30000,
+            "profiles": [
+              {
+                "name": "latency",
+                "connections": 1,
+                "inFlightPerConnection": 1
+              },
+              {
+                "name": "concurrent",
+                "connections": 4,
+                "inFlightPerConnection": 4
+              }
+            ]
+          },
+          "connections": {
+            "levels": [
+              1,
+              25
+            ],
+            "batchSize": 25,
+            "workMs": 500,
+            "timeoutMs": 120000
+          },
+          "subscriptions": {
+            "users": 10,
+            "queriesPerUser": 5,
+            "durationMs": 500,
+            "sharedUpdatesPerSec": 5,
+            "partitionedUpdatesPerSec": 10,
+            "setupTimeoutMs": 120000,
+            "drainTimeoutMs": 30000,
+            "patterns": [
+              "shared"
+            ]
+          },
+          "resources": {
+            "idleMs": 500
+          },
+          "seedBatchSize": 256
+        },
+        "snapshots": {
+          "seededIdle": "server:seeded-idle",
+          "seededIdlePhaseId": "server:seeded-idle-window",
+          "connectionBaselineIdlePhaseId": "connections:baseline-idle"
+        },
+        "operations": [
+          {
+            "operation": "query",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903600260.0085,
+                "windowEndedAtMs": 1783903600760.0085,
+                "wallMs": 500,
+                "attempted": 222,
+                "completedInWindow": 221,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 442,
+                "latency": {
+                  "count": 222,
+                  "minMs": 1.735124999999698,
+                  "p50Ms": 2.171041999999943,
+                  "p95Ms": 2.900499999999738,
+                  "p99Ms": 3.6334579999997914,
+                  "maxMs": 6.005040999999892
+                },
+                "errors": [],
+                "phaseId": "operation:query:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 442,
+            "medianLatencyP50Ms": 2.171041999999943,
+            "medianLatencyP95Ms": 2.900499999999738,
+            "medianLatencyP99Ms": 3.6334579999997914
+          },
+          {
+            "operation": "query",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903601026.2063,
+                "windowEndedAtMs": 1783903601526.2063,
+                "wallMs": 500,
+                "attempted": 924,
+                "completedInWindow": 908,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 1816,
+                "latency": {
+                  "count": 924,
+                  "minMs": 2.4614589999996497,
+                  "p50Ms": 8.639541000000008,
+                  "p95Ms": 10.639333000000079,
+                  "p99Ms": 11.596915999999965,
+                  "maxMs": 13.419667000000118
+                },
+                "errors": [],
+                "phaseId": "operation:query:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 1816,
+            "medianLatencyP50Ms": 8.639541000000008,
+            "medianLatencyP95Ms": 10.639333000000079,
+            "medianLatencyP99Ms": 11.596915999999965
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903601877.5254,
+                "windowEndedAtMs": 1783903602377.5254,
+                "wallMs": 500,
+                "attempted": 185,
+                "completedInWindow": 184,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 368,
+                "latency": {
+                  "count": 185,
+                  "minMs": 2.0643340000001444,
+                  "p50Ms": 2.580334000000221,
+                  "p95Ms": 3.6978330000001733,
+                  "p99Ms": 6.191624999999931,
+                  "maxMs": 6.803957999999966
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-uncontended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 368,
+            "medianLatencyP50Ms": 2.580334000000221,
+            "medianLatencyP95Ms": 3.6978330000001733,
+            "medianLatencyP99Ms": 6.191624999999931
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903602833.0388,
+                "windowEndedAtMs": 1783903603333.0388,
+                "wallMs": 500,
+                "attempted": 293,
+                "completedInWindow": 277,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 554,
+                "latency": {
+                  "count": 293,
+                  "minMs": 4.0477920000003,
+                  "p50Ms": 28.46491700000024,
+                  "p95Ms": 36.87004200000047,
+                  "p99Ms": 41.07679100000041,
+                  "maxMs": 44.12333300000046
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-uncontended:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 554,
+            "medianLatencyP50Ms": 28.46491700000024,
+            "medianLatencyP95Ms": 36.87004200000047,
+            "medianLatencyP99Ms": 41.07679100000041
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903603784.2722,
+                "windowEndedAtMs": 1783903604284.2722,
+                "wallMs": 500,
+                "attempted": 188,
+                "completedInWindow": 187,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 374,
+                "latency": {
+                  "count": 188,
+                  "minMs": 2.017250000000786,
+                  "p50Ms": 2.5769170000003214,
+                  "p95Ms": 3.4002089999994496,
+                  "p99Ms": 4.235458000000108,
+                  "maxMs": 4.957707999999911
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-contended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 374,
+            "medianLatencyP50Ms": 2.5769170000003214,
+            "medianLatencyP95Ms": 3.4002089999994496,
+            "medianLatencyP99Ms": 4.235458000000108
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903605390.245,
+                "windowEndedAtMs": 1783903605890.245,
+                "wallMs": 500,
+                "attempted": 202,
+                "completedInWindow": 186,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 372,
+                "latency": {
+                  "count": 202,
+                  "minMs": 5.57287499999984,
+                  "p50Ms": 10.428082999999788,
+                  "p95Ms": 393.45479200000045,
+                  "p99Ms": 906.0280419999999,
+                  "maxMs": 912.1637499999997
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-contended:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 372,
+            "medianLatencyP50Ms": 10.428082999999788,
+            "medianLatencyP95Ms": 393.45479200000045,
+            "medianLatencyP99Ms": 906.0280419999999
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903606645.8228,
+                "windowEndedAtMs": 1783903607145.8228,
+                "wallMs": 500,
+                "attempted": 420,
+                "completedInWindow": 419,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 838,
+                "latency": {
+                  "count": 420,
+                  "minMs": 0.873290999999881,
+                  "p50Ms": 1.0811670000002778,
+                  "p95Ms": 1.9380000000001019,
+                  "p99Ms": 2.33337500000016,
+                  "maxMs": 4.5691249999999854
+                },
+                "errors": [],
+                "phaseId": "operation:procedure:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 838,
+            "medianLatencyP50Ms": 1.0811670000002778,
+            "medianLatencyP95Ms": 1.9380000000001019,
+            "medianLatencyP99Ms": 2.33337500000016
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903607406.189,
+                "windowEndedAtMs": 1783903607906.189,
+                "wallMs": 500,
+                "attempted": 1349,
+                "completedInWindow": 1333,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 2666,
+                "latency": {
+                  "count": 1349,
+                  "minMs": 1.3449170000003505,
+                  "p50Ms": 3.339958000000479,
+                  "p95Ms": 18.98358299999927,
+                  "p99Ms": 47.665750000000116,
+                  "maxMs": 81.37412499999846
+                },
+                "errors": [],
+                "phaseId": "operation:procedure:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 2666,
+            "medianLatencyP50Ms": 3.339958000000479,
+            "medianLatencyP95Ms": 18.98358299999927,
+            "medianLatencyP99Ms": 47.665750000000116
+          }
+        ],
+        "connections": [
+          {
+            "targetConnections": 1,
+            "connected": 1,
+            "addedConnections": 1,
+            "setupMs": 3.76483300000109,
+            "readyConnectionsPerSec": 265.6160313086159,
+            "readyLatency": {
+              "count": 1,
+              "minMs": 3.7042080000010174,
+              "p50Ms": 3.7042080000010174,
+              "p95Ms": 3.7042080000010174,
+              "p99Ms": 3.7042080000010174,
+              "maxMs": 3.7042080000010174
+            },
+            "connectedSnapshotId": "connections:1:connected",
+            "connectedIdlePhaseId": "connections:1:idle",
+            "work": {
+              "windowStartedAtMs": 1783903608920.8906,
+              "windowEndedAtMs": 1783903609420.8906,
+              "wallMs": 500,
+              "attempted": 217,
+              "completedInWindow": 216,
+              "completedAfterWindow": 1,
+              "failed": 0,
+              "throughputPerSec": 432,
+              "latency": {
+                "count": 217,
+                "minMs": 1.7381659999991825,
+                "p50Ms": 2.159791000000041,
+                "p95Ms": 3.0724169999994047,
+                "p99Ms": 3.5218340000010357,
+                "maxMs": 9.885041999999885
+              },
+              "errors": [],
+              "phaseId": "connections:1:work"
+            },
+            "errors": []
+          },
+          {
+            "targetConnections": 25,
+            "connected": 25,
+            "addedConnections": 24,
+            "setupMs": 11.113375000000815,
+            "readyConnectionsPerSec": 2159.5599896519498,
+            "readyLatency": {
+              "count": 24,
+              "minMs": 6.951541999998881,
+              "p50Ms": 8.633083000000624,
+              "p95Ms": 9.922042000000147,
+              "p99Ms": 10.32445800000096,
+              "maxMs": 10.32445800000096
+            },
+            "connectedSnapshotId": "connections:25:connected",
+            "connectedIdlePhaseId": "connections:25:idle",
+            "work": {
+              "windowStartedAtMs": 1783903609934.9048,
+              "windowEndedAtMs": 1783903610434.9048,
+              "wallMs": 500,
+              "attempted": 725,
+              "completedInWindow": 700,
+              "completedAfterWindow": 25,
+              "failed": 0,
+              "throughputPerSec": 1400,
+              "latency": {
+                "count": 725,
+                "minMs": 6.345208000000639,
+                "p50Ms": 16.86120800000026,
+                "p95Ms": 24.877207999999882,
+                "p99Ms": 29.266959000000497,
+                "maxMs": 37.30400000000009
+              },
+              "errors": [],
+              "phaseId": "connections:25:work"
+            },
+            "errors": []
+          }
+        ],
+        "subscriptions": [
+          {
+            "pattern": "shared",
+            "users": 10,
+            "queriesPerUser": 5,
+            "logicalSubscriptions": 50,
+            "distinctQueryArguments": 5,
+            "baselineIdlePhaseId": "subscriptions:shared:baseline-idle",
+            "setupMs": 12.391875000001164,
+            "setupConnectionsPerSec": 806.9803802894284,
+            "subscribedSnapshotId": "subscriptions:shared:subscribed",
+            "subscribedIdlePhaseId": "subscriptions:shared:idle",
+            "phaseId": "subscriptions:shared:updates",
+            "updates": 2,
+            "updateThroughputPerSec": 4,
+            "expectedDeliveries": 20,
+            "observedDeliveries": 20,
+            "duplicateDeliveries": 0,
+            "unexpectedDeliveries": 0,
+            "corruptDeliveries": 0,
+            "missingDeliveries": 0,
+            "deliveryThroughputPerSec": 39.935753356787146,
+            "updateAckLatency": {
+              "count": 2,
+              "minMs": 4.820250000000669,
+              "p50Ms": 4.820250000000669,
+              "p95Ms": 5.070207999999184,
+              "p99Ms": 5.070207999999184,
+              "maxMs": 5.070207999999184
+            },
+            "deliveryLatency": {
+              "count": 20,
+              "minMs": 6.021083000001454,
+              "p50Ms": 6.312333000001672,
+              "p95Ms": 7.876584000001458,
+              "p99Ms": 7.897709000000759,
+              "maxMs": 7.897709000000759
+            },
+            "timeToAll": {
+              "count": 2,
+              "minMs": 6.312333000001672,
+              "p50Ms": 6.312333000001672,
+              "p95Ms": 7.897709000000759,
+              "p99Ms": 7.897709000000759,
+              "maxMs": 7.897709000000759
+            },
+            "correctness": {
+              "ok": true,
+              "errors": []
+            }
+          }
+        ]
+      },
+      "resources": {
+        "server": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1783903600017.973,
+              "rootPid": 32590,
+              "rssKind": "sumProcessRss",
+              "rssMb": 118.25,
+              "cumulativeCpuSeconds": 0.95,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1783903608939.783,
+              "rootPid": 32590,
+              "rssKind": "sumProcessRss",
+              "rssMb": 622.84375,
+              "cumulativeCpuSeconds": 21.44,
+              "processCount": 1
+            },
+            "connections:25:connected": {
+              "timestampMs": 1783903609953.8953,
+              "rootPid": 32590,
+              "rssKind": "sumProcessRss",
+              "rssMb": 637.078125,
+              "cumulativeCpuSeconds": 22.45,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1783903611479.717,
+              "rootPid": 32590,
+              "rssKind": "sumProcessRss",
+              "rssMb": 651.203125,
+              "cumulativeCpuSeconds": 26.46,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 501.281494140625,
+              "cpuSeconds": 0.013272878118427922,
+              "cpuCores": 0.026477893705576273,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 118.1875,
+                "peak": 118.1875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.8341639085183408,
+              "cpuCores": 1.6683278170366815,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 135.4375,
+                "peak": 137.078125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 3.3032026197851474,
+              "cpuCores": 6.606405239570295,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 311.671875,
+                "peak": 331.265625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.7817718698634488,
+              "cpuCores": 1.5635437397268976,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 354.375,
+                "peak": 362.078125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 1.1056903394527797,
+              "cpuCores": 2.2113806789055594,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 386.96875,
+                "peak": 399.0625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.8009380740764982,
+              "cpuCores": 1.6018761481529964,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 419.34375,
+                "peak": 427.234375
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.6877631070491272,
+              "cpuCores": 1.3755262140982545,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 443.9375,
+                "peak": 452.046875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 1.2220815727346146,
+              "cpuCores": 2.444163145469229,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 460.328125,
+                "peak": 474.671875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 4.31636037753422,
+              "cpuCores": 8.63272075506844,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 600.3125,
+                "peak": 622.203125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 501.076416015625,
+              "cpuSeconds": 0.06899225797329578,
+              "cpuCores": 0.13768809660190512,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 622.796875,
+                "peak": 622.796875
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 501.136962890625,
+              "cpuSeconds": 0.008698381086016838,
+              "cpuCores": 0.01735729297604274,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 622.8125,
+                "peak": 622.8125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.8738248147679712,
+              "cpuCores": 1.7476496295359425,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 623.28125,
+                "peak": 624.28125
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "connections:25:idle": {
+              "wallMs": 501.08544921875,
+              "cpuSeconds": 0.10879381732708993,
+              "cpuCores": 0.21711629722378098,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 636.40625,
+                "peak": 636.40625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:25:work": {
+              "wallMs": 500,
+              "cpuSeconds": 3.734403110173254,
+              "cpuCores": 7.468806220346508,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 639.796875,
+                "peak": 646.40625
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 501.044921875,
+              "cpuSeconds": 0.10153519906439712,
+              "cpuCores": 0.2026468977760201,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 650.125,
+                "peak": 650.125
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 501.077392578125,
+              "cpuSeconds": 0.06002556711047191,
+              "cpuCores": 0.1197930060297284,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 651.078125,
+                "peak": 651.078125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 500.80419921875,
+              "cpuSeconds": 0.029999999999997584,
+              "cpuCores": 0.05990365106122775,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 651.546875,
+                "peak": 652
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            }
+          }
+        },
+        "loadGenerator": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1783903600017.973,
+              "rootPid": 32825,
+              "rssKind": "sumProcessRss",
+              "rssMb": 56.859375,
+              "cumulativeCpuSeconds": 0.13,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1783903608939.783,
+              "rootPid": 32825,
+              "rssKind": "sumProcessRss",
+              "rssMb": 83.9375,
+              "cumulativeCpuSeconds": 1.23,
+              "processCount": 1
+            },
+            "connections:25:connected": {
+              "timestampMs": 1783903609953.8953,
+              "rootPid": 32825,
+              "rssKind": "sumProcessRss",
+              "rssMb": 88.4375,
+              "cumulativeCpuSeconds": 1.29,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1783903611479.717,
+              "rootPid": 32825,
+              "rssKind": "sumProcessRss",
+              "rssMb": 89.328125,
+              "cumulativeCpuSeconds": 1.49,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 501.281494140625,
+              "cpuSeconds": 0.0016591097648034903,
+              "cpuCores": 0.003309736713197034,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 56.75,
+                "peak": 56.75
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.08109985670141276,
+              "cpuCores": 0.16219971340282552,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 66.40625,
+                "peak": 66.671875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.1368351615511324,
+              "cpuCores": 0.2736703231022648,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 76.234375,
+                "peak": 79.015625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.03979508322025693,
+              "cpuCores": 0.07959016644051387,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 80.4375,
+                "peak": 80.4375
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.06329401904251997,
+              "cpuCores": 0.12658803808503993,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 81.40625,
+                "peak": 81.5625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.038428432494279074,
+              "cpuCores": 0.07685686498855815,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 81.828125,
+                "peak": 81.828125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.043536774777657716,
+              "cpuCores": 0.08707354955531543,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 81.875,
+                "peak": 81.875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.07511043832898245,
+              "cpuCores": 0.1502208766579649,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 82.21875,
+                "peak": 82.421875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.21138730738956846,
+              "cpuCores": 0.4227746147791369,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 83.6875,
+                "peak": 83.765625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 501.076416015625,
+              "cpuSeconds": 0.004357405766734379,
+              "cpuCores": 0.008696090311699088,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 83.90625,
+                "peak": 83.921875
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 501.136962890625,
+              "cpuSeconds": 0.010000000000000009,
+              "cpuCores": 0.019954624664520196,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 83.9375,
+                "peak": 83.9375
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.057886734964080366,
+              "cpuCores": 0.11577346992816073,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 83.9375,
+                "peak": 83.9375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "connections:25:idle": {
+              "wallMs": 501.08544921875,
+              "cpuSeconds": 0.00029805321420828257,
+              "cpuCores": 0.0005948151451473634,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 88.4375,
+                "peak": 88.4375
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:25:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.18027692827116137,
+              "cpuCores": 0.36055385654232275,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 88.515625,
+                "peak": 89.046875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 501.044921875,
+              "cpuSeconds": 0.004263486556024043,
+              "cpuCores": 0.008509190234019958,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 89.265625,
+                "peak": 89.265625
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 501.077392578125,
+              "cpuSeconds": 0.010000000000000009,
+              "cpuCores": 0.01995699695918903,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 89.3125,
+                "peak": 89.3125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 500.80419921875,
+              "cpuSeconds": 0.010000000000000009,
+              "cpuCores": 0.019967883687077543,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 89.328125,
+                "peak": 89.328125
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            }
+          }
+        }
+      },
+      "startupIdle": {
+        "snapshot": {
+          "timestampMs": 1783903598120.5325,
+          "rootPid": 32590,
+          "rssKind": "sumProcessRss",
+          "rssMb": 78.765625,
+          "cumulativeCpuSeconds": 0.15,
+          "processCount": 1
+        },
+        "window": {
+          "wallMs": 501.535400390625,
+          "cpuSeconds": 0,
+          "cpuCores": 0,
+          "rssKind": "sumProcessRss",
+          "rssMb": {
+            "p50": 78.765625,
+            "peak": 78.765625
+          },
+          "sampleCount": 1,
+          "processCountPeak": 1
+        }
+      },
+      "implementationVersion": "precompiled-2026-07-06-44f7aa7"
+    },
+    "spacetimedb": {
+      "workload": {
+        "system": "spacetimedb",
+        "config": {
+          "profile": "quick",
+          "seed": 56098,
+          "operation": {
+            "warmupMs": 250,
+            "steadyMs": 500,
+            "trials": 1,
+            "drainTimeoutMs": 30000,
+            "profiles": [
+              {
+                "name": "latency",
+                "connections": 1,
+                "inFlightPerConnection": 1
+              },
+              {
+                "name": "concurrent",
+                "connections": 4,
+                "inFlightPerConnection": 4
+              }
+            ]
+          },
+          "connections": {
+            "levels": [
+              1,
+              25
+            ],
+            "batchSize": 25,
+            "workMs": 500,
+            "timeoutMs": 120000
+          },
+          "subscriptions": {
+            "users": 10,
+            "queriesPerUser": 5,
+            "durationMs": 500,
+            "sharedUpdatesPerSec": 5,
+            "partitionedUpdatesPerSec": 10,
+            "setupTimeoutMs": 120000,
+            "drainTimeoutMs": 30000,
+            "patterns": [
+              "shared"
+            ]
+          },
+          "resources": {
+            "idleMs": 500
+          },
+          "seedBatchSize": 256
+        },
+        "snapshots": {
+          "seededIdle": "server:seeded-idle",
+          "seededIdlePhaseId": "server:seeded-idle-window",
+          "connectionBaselineIdlePhaseId": "connections:baseline-idle"
+        },
+        "operations": [
+          {
+            "operation": "query",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903617809.9553,
+                "windowEndedAtMs": 1783903618309.9553,
+                "wallMs": 500,
+                "attempted": 342,
+                "completedInWindow": 341,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 682,
+                "latency": {
+                  "count": 342,
+                  "minMs": 0.2584999999999127,
+                  "p50Ms": 1.4409170000001268,
+                  "p95Ms": 1.805458999999928,
+                  "p99Ms": 2.077250000000049,
+                  "maxMs": 2.372334000000137
+                },
+                "errors": [],
+                "phaseId": "operation:query:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 682,
+            "medianLatencyP50Ms": 1.4409170000001268,
+            "medianLatencyP95Ms": 1.805458999999928,
+            "medianLatencyP99Ms": 2.077250000000049
+          },
+          {
+            "operation": "query",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903618576.2415,
+                "windowEndedAtMs": 1783903619076.2415,
+                "wallMs": 500,
+                "attempted": 4712,
+                "completedInWindow": 4696,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 9392,
+                "latency": {
+                  "count": 4712,
+                  "minMs": 0.2886670000000322,
+                  "p50Ms": 1.7220829999996567,
+                  "p95Ms": 2.5001660000000356,
+                  "p99Ms": 3.1903749999999036,
+                  "maxMs": 4.868790999999874
+                },
+                "errors": [],
+                "phaseId": "operation:query:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 9392,
+            "medianLatencyP50Ms": 1.7220829999996567,
+            "medianLatencyP95Ms": 2.5001660000000356,
+            "medianLatencyP99Ms": 3.1903749999999036
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903619336.8025,
+                "windowEndedAtMs": 1783903619836.8025,
+                "wallMs": 500,
+                "attempted": 242,
+                "completedInWindow": 241,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 482,
+                "latency": {
+                  "count": 242,
+                  "minMs": 1.079957999999806,
+                  "p50Ms": 1.689875000000029,
+                  "p95Ms": 3.097874999999931,
+                  "p99Ms": 3.5495410000003176,
+                  "maxMs": 4.462999999999738
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-uncontended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 482,
+            "medianLatencyP50Ms": 1.689875000000029,
+            "medianLatencyP95Ms": 3.097874999999931,
+            "medianLatencyP99Ms": 3.5495410000003176
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903620107.2427,
+                "windowEndedAtMs": 1783903620607.2427,
+                "wallMs": 500,
+                "attempted": 1918,
+                "completedInWindow": 1902,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 3804,
+                "latency": {
+                  "count": 1918,
+                  "minMs": 1.4780409999998483,
+                  "p50Ms": 4.051500000000033,
+                  "p95Ms": 6.119959000000108,
+                  "p99Ms": 6.871625000000222,
+                  "maxMs": 7.051124999999956
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-uncontended:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 3804,
+            "medianLatencyP50Ms": 4.051500000000033,
+            "medianLatencyP95Ms": 6.119959000000108,
+            "medianLatencyP99Ms": 6.871625000000222
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903620879.2205,
+                "windowEndedAtMs": 1783903621379.2205,
+                "wallMs": 500,
+                "attempted": 287,
+                "completedInWindow": 286,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 572,
+                "latency": {
+                  "count": 287,
+                  "minMs": 0.994499999999789,
+                  "p50Ms": 1.3769160000001648,
+                  "p95Ms": 3.054874999999811,
+                  "p99Ms": 3.2044999999998254,
+                  "maxMs": 3.426292000000103
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-contended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 572,
+            "medianLatencyP50Ms": 1.3769160000001648,
+            "medianLatencyP95Ms": 3.054874999999811,
+            "medianLatencyP99Ms": 3.2044999999998254
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903621648.274,
+                "windowEndedAtMs": 1783903622148.274,
+                "wallMs": 500,
+                "attempted": 2112,
+                "completedInWindow": 2096,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 4192,
+                "latency": {
+                  "count": 2112,
+                  "minMs": 1.6312079999997877,
+                  "p50Ms": 3.7680829999999332,
+                  "p95Ms": 6.3764579999997295,
+                  "p99Ms": 8.530625000000327,
+                  "maxMs": 16.162500000000364
+                },
+                "errors": [],
+                "phaseId": "operation:mutation-contended:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 4192,
+            "medianLatencyP50Ms": 3.7680829999999332,
+            "medianLatencyP95Ms": 6.3764579999997295,
+            "medianLatencyP99Ms": 8.530625000000327
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903622416.28,
+                "windowEndedAtMs": 1783903622916.28,
+                "wallMs": 500,
+                "attempted": 390,
+                "completedInWindow": 389,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 778,
+                "latency": {
+                  "count": 390,
+                  "minMs": 0.1862090000004173,
+                  "p50Ms": 1.3330409999998665,
+                  "p95Ms": 1.449374999999236,
+                  "p99Ms": 1.8503749999999854,
+                  "maxMs": 2.3337919999994483
+                },
+                "errors": [],
+                "phaseId": "operation:procedure:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 778,
+            "medianLatencyP50Ms": 1.3330409999998665,
+            "medianLatencyP95Ms": 1.449374999999236,
+            "medianLatencyP99Ms": 1.8503749999999854
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "concurrent",
+              "connections": 4,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1783903623175.1646,
+                "windowEndedAtMs": 1783903623675.1646,
+                "wallMs": 500,
+                "attempted": 5133,
+                "completedInWindow": 5117,
+                "completedAfterWindow": 16,
+                "failed": 0,
+                "throughputPerSec": 10234,
+                "latency": {
+                  "count": 5133,
+                  "minMs": 0.20983400000022812,
+                  "p50Ms": 1.5715419999996811,
+                  "p95Ms": 2.056374999999207,
+                  "p99Ms": 4.951584000000366,
+                  "maxMs": 13.78125
+                },
+                "errors": [],
+                "phaseId": "operation:procedure:concurrent:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 10234,
+            "medianLatencyP50Ms": 1.5715419999996811,
+            "medianLatencyP95Ms": 2.056374999999207,
+            "medianLatencyP99Ms": 4.951584000000366
+          }
+        ],
+        "connections": [
+          {
+            "targetConnections": 1,
+            "connected": 1,
+            "addedConnections": 1,
+            "setupMs": 5.681749999999738,
+            "readyConnectionsPerSec": 176.0021120253524,
+            "readyLatency": {
+              "count": 1,
+              "minMs": 5.520166999999674,
+              "p50Ms": 5.520166999999674,
+              "p95Ms": 5.520166999999674,
+              "p99Ms": 5.520166999999674,
+              "maxMs": 5.520166999999674
+            },
+            "connectedSnapshotId": "connections:1:connected",
+            "connectedIdlePhaseId": "connections:1:idle",
+            "work": {
+              "windowStartedAtMs": 1783903624686.6985,
+              "windowEndedAtMs": 1783903625186.6985,
+              "wallMs": 500,
+              "attempted": 345,
+              "completedInWindow": 344,
+              "completedAfterWindow": 1,
+              "failed": 0,
+              "throughputPerSec": 688,
+              "latency": {
+                "count": 345,
+                "minMs": 0.3689590000003591,
+                "p50Ms": 1.4208749999997963,
+                "p95Ms": 1.8031659999996918,
+                "p99Ms": 2.1524170000002414,
+                "maxMs": 2.3038329999999405
+              },
+              "errors": [],
+              "phaseId": "connections:1:work"
+            },
+            "errors": []
+          },
+          {
+            "targetConnections": 25,
+            "connected": 25,
+            "addedConnections": 24,
+            "setupMs": 11.070083000000523,
+            "readyConnectionsPerSec": 2168.0054250721396,
+            "readyLatency": {
+              "count": 24,
+              "minMs": 8.652916999999434,
+              "p50Ms": 9.467416999999841,
+              "p95Ms": 10.209082999999737,
+              "p99Ms": 10.724166999998488,
+              "maxMs": 10.724166999998488
+            },
+            "connectedSnapshotId": "connections:25:connected",
+            "connectedIdlePhaseId": "connections:25:idle",
+            "work": {
+              "windowStartedAtMs": 1783903625699.848,
+              "windowEndedAtMs": 1783903626199.848,
+              "wallMs": 500,
+              "attempted": 5974,
+              "completedInWindow": 5949,
+              "completedAfterWindow": 25,
+              "failed": 0,
+              "throughputPerSec": 11898,
+              "latency": {
+                "count": 5974,
+                "minMs": 0.34950000000026193,
+                "p50Ms": 2.001666000000114,
+                "p95Ms": 3.8271660000009433,
+                "p99Ms": 5.5842090000005555,
+                "maxMs": 8.347458000000188
+              },
+              "errors": [],
+              "phaseId": "connections:25:work"
+            },
+            "errors": []
+          }
+        ],
+        "subscriptions": [
+          {
+            "pattern": "shared",
+            "users": 10,
+            "queriesPerUser": 5,
+            "logicalSubscriptions": 50,
+            "distinctQueryArguments": 5,
+            "baselineIdlePhaseId": "subscriptions:shared:baseline-idle",
+            "setupMs": 23.72087499999907,
+            "setupConnectionsPerSec": 421.5696090469004,
+            "subscribedSnapshotId": "subscriptions:shared:subscribed",
+            "subscribedIdlePhaseId": "subscriptions:shared:idle",
+            "phaseId": "subscriptions:shared:updates",
+            "updates": 2,
+            "updateThroughputPerSec": 4,
+            "expectedDeliveries": 20,
+            "observedDeliveries": 20,
+            "duplicateDeliveries": 0,
+            "unexpectedDeliveries": 0,
+            "corruptDeliveries": 0,
+            "missingDeliveries": 0,
+            "deliveryThroughputPerSec": 40.0136679487253,
+            "updateAckLatency": {
+              "count": 2,
+              "minMs": 3.898040999998557,
+              "p50Ms": 3.898040999998557,
+              "p95Ms": 4.739665999999488,
+              "p99Ms": 4.739665999999488,
+              "maxMs": 4.739665999999488
+            },
+            "deliveryLatency": {
+              "count": 20,
+              "minMs": 3.794332999999824,
+              "p50Ms": 4.0303750000002765,
+              "p95Ms": 4.7693749999998545,
+              "p99Ms": 4.7882079999999405,
+              "maxMs": 4.7882079999999405
+            },
+            "timeToAll": {
+              "count": 2,
+              "minMs": 4.0303750000002765,
+              "p50Ms": 4.0303750000002765,
+              "p95Ms": 4.7882079999999405,
+              "p99Ms": 4.7882079999999405,
+              "maxMs": 4.7882079999999405
+            },
+            "correctness": {
+              "ok": true,
+              "errors": []
+            }
+          }
+        ]
+      },
+      "resources": {
+        "server": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1783903617567.9182,
+              "rootPid": 35041,
+              "rssKind": "sumProcessRss",
+              "rssMb": 106.40625,
+              "cumulativeCpuSeconds": 0.18,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1783903624699.6826,
+              "rootPid": 35041,
+              "rssKind": "sumProcessRss",
+              "rssMb": 245.09375,
+              "cumulativeCpuSeconds": 2.53,
+              "processCount": 1
+            },
+            "connections:25:connected": {
+              "timestampMs": 1783903625716.0652,
+              "rootPid": 35041,
+              "rssKind": "sumProcessRss",
+              "rssMb": 254.34375,
+              "cumulativeCpuSeconds": 2.62,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1783903627240.841,
+              "rootPid": 35041,
+              "rssKind": "sumProcessRss",
+              "rssMb": 260.4375,
+              "cumulativeCpuSeconds": 3.62,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 501.306396484375,
+              "cpuSeconds": 0.0041398552413767775,
+              "cpuCores": 0.008258133689115635,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 106.3125,
+                "peak": 106.3125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.05986454178619277,
+              "cpuCores": 0.11972908357238554,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 113.625,
+                "peak": 114.28125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.6102828283830758,
+              "cpuCores": 1.2205656567661516,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 234.421875,
+                "peak": 237.671875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.03957233715801012,
+              "cpuCores": 0.07914467431602024,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 239.34375,
+                "peak": 239.4375
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.06907411621270332,
+              "cpuCores": 0.13814823242540664,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 240.40625,
+                "peak": 240.46875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.04878167328544514,
+              "cpuCores": 0.09756334657089027,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 240.671875,
+                "peak": 240.671875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.07000129615256845,
+              "cpuCores": 0.1400025923051369,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 240.5625,
+                "peak": 240.578125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.059294190473601294,
+              "cpuCores": 0.11858838094720259,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 240.890625,
+                "peak": 241.140625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.4502047195312544,
+              "cpuCores": 0.9004094390625088,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 243.40625,
+                "peak": 244.71875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 501.163818359375,
+              "cpuSeconds": 0.01945263650474871,
+              "cpuCores": 0.03881492596259133,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 244.796875,
+                "peak": 244.796875
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 501.09423828125,
+              "cpuSeconds": 0.0006101212524982635,
+              "cpuCores": 0.0012175778643773185,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 244.828125,
+                "peak": 245.078125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.05834567794356804,
+              "cpuCores": 0.11669135588713608,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 246.140625,
+                "peak": 246.484375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "connections:25:idle": {
+              "wallMs": 501.08447265625,
+              "cpuSeconds": 0.029385043526699572,
+              "cpuCores": 0.05864289382372873,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 251.828125,
+                "peak": 251.828125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:25:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.9551310277568752,
+              "cpuCores": 1.9102620555137504,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 255.5625,
+                "peak": 256.953125
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 501.05517578125,
+              "cpuSeconds": 0.029297970940700413,
+              "cpuCores": 0.05847254425626626,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 257.109375,
+                "peak": 257.109375
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 501.09521484375,
+              "cpuSeconds": 0.007346809955655065,
+              "cpuCores": 0.0146615049156794,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 260.34375,
+                "peak": 260.34375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 499.8291015625,
+              "cpuSeconds": 0.009999999999999787,
+              "cpuCores": 0.020006838274800532,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 260.4375,
+                "peak": 260.4375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            }
+          }
+        },
+        "loadGenerator": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1783903617567.9182,
+              "rootPid": 35693,
+              "rssKind": "sumProcessRss",
+              "rssMb": 47.4375,
+              "cumulativeCpuSeconds": 0.06,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1783903624699.6826,
+              "rootPid": 35693,
+              "rssKind": "sumProcessRss",
+              "rssMb": 97.640625,
+              "cumulativeCpuSeconds": 1.26,
+              "processCount": 1
+            },
+            "connections:25:connected": {
+              "timestampMs": 1783903625716.0652,
+              "rootPid": 35693,
+              "rssKind": "sumProcessRss",
+              "rssMb": 98.234375,
+              "cumulativeCpuSeconds": 1.35,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1783903627240.841,
+              "rootPid": 35693,
+              "rssKind": "sumProcessRss",
+              "rssMb": 119.46875,
+              "cumulativeCpuSeconds": 2.12,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 501.306396484375,
+              "cpuSeconds": 0.013449879367813979,
+              "cpuCores": 0.026829658392825216,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 47.328125,
+                "peak": 47.328125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.1220106449293519,
+              "cpuCores": 0.2440212898587038,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 63.15625,
+                "peak": 64.359375
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:query:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.25986177566543944,
+              "cpuCores": 0.5197235513308789,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 81.796875,
+                "peak": 89.28125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.03042458962726602,
+              "cpuCores": 0.06084917925453204,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 90.40625,
+                "peak": 90.40625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.049382744141802104,
+              "cpuCores": 0.09876548828360421,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 90.5,
+                "peak": 90.5
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.0202913330304485,
+              "cpuCores": 0.040582666060897,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 90.609375,
+                "peak": 90.609375
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.04018816535653835,
+              "cpuCores": 0.0803763307130767,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 90.8125,
+                "peak": 90.859375
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.07792745645701371,
+              "cpuCores": 0.15585491291402742,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 91.234375,
+                "peak": 91.25
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "operation:procedure:concurrent:trial-0": {
+              "wallMs": 500,
+              "cpuSeconds": 0.16766014417408792,
+              "cpuCores": 0.33532028834817584,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 95.53125,
+                "peak": 97.5
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 501.163818359375,
+              "cpuSeconds": 0.012902490681840018,
+              "cpuCores": 0.02574505622548332,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 97.640625,
+                "peak": 97.640625
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 501.09423828125,
+              "cpuSeconds": 0.010002643871700467,
+              "cpuCores": 0.019961602244738377,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 97.640625,
+                "peak": 97.640625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.07729722696850616,
+              "cpuCores": 0.15459445393701232,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 97.65625,
+                "peak": 97.671875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "connections:25:idle": {
+              "wallMs": 501.08447265625,
+              "cpuSeconds": 0.010870211542385766,
+              "cpuCores": 0.021693371348672507,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 98.15625,
+                "peak": 98.15625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:25:work": {
+              "wallMs": 500,
+              "cpuSeconds": 0.7287109975584745,
+              "cpuCores": 1.457421995116949,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 105.828125,
+                "peak": 116.640625
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 501.05517578125,
+              "cpuSeconds": 0.02566508762359554,
+              "cpuCores": 0.05122207865347023,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 119.265625,
+                "peak": 119.265625
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 501.09521484375,
+              "cpuSeconds": 0.007346809955655065,
+              "cpuCores": 0.0146615049156794,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 119.453125,
+                "peak": 119.453125
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 499.8291015625,
+              "cpuSeconds": 0.02772081541210447,
+              "cpuCores": 0.0554605870795584,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 119.46875,
+                "peak": 119.5
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            }
+          }
+        }
+      },
+      "startupIdle": {
+        "snapshot": {
+          "timestampMs": 1783903616824.4155,
+          "rootPid": 35041,
+          "rssKind": "sumProcessRss",
+          "rssMb": 88.671875,
+          "cumulativeCpuSeconds": 0.12,
+          "processCount": 1
+        },
+        "window": {
+          "wallMs": 501.09814453125,
+          "cpuSeconds": 0,
+          "cpuCores": 0,
+          "rssKind": "sumProcessRss",
+          "rssMb": {
+            "p50": 88.671875,
+            "peak": 88.671875
+          },
+          "sampleCount": 1,
+          "processCountPeak": 1
+        }
+      },
+      "implementationVersion": "2.6.1"
+    }
+  }
+}

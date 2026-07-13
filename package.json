@@ -6,7 +6,8 @@
   ],
   "scripts": {
     "test": "bun test packages/core/test packages/server/test packages/client/test packages/cli/test",
-    "typecheck": "bunx tsc -p tsconfig.json --noEmit"
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit",
+    "typecheck:bench": "bunx tsc -p bench/tsconfig.json --noEmit"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",
