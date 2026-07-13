@@ -19,7 +19,7 @@ import { basename, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { runCodegen } from "./codegen.ts";
-import { startApp } from "./app.ts";
+import { startApp, StartupInterruptedError } from "./app.ts";
 import {
   createVerifiedBackup,
   inspectDatabase,
@@ -169,8 +169,7 @@ try {
     case "start": {
       requireArgumentCount(args, 0, 1);
       const config = loadConfig(resolve(args[0] ?? "."));
-      await runCodegen(config);
-      await startApp(config);
+      await startApp(config, runCodegen);
       break;
     }
     case "__serve": {
@@ -233,6 +232,7 @@ try {
       usage();
   }
 } catch (error) {
+  if (error instanceof StartupInterruptedError) process.exit(0);
   console.error(`[dbz] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

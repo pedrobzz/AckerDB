@@ -139,11 +139,126 @@ describe("dbz CLI", () => {
     expect(await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).toEqual({
       version: 1,
       ready: true,
+      state: "ready",
     });
 
     started.child.kill("SIGTERM");
     expect(await started.child.exited).toBe(0);
   });
+
+  test("start owns one live port continuously from codegen through readiness", async () => {
+    const port = freePort();
+    const dir = fixture(port);
+    const gate = join(dir, "startup-gate");
+    writeFileSync(
+      join(dir, "schema.ts"),
+      `import { existsSync } from "node:fs";
+while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
+${FIXTURE_SCHEMA}`,
+    );
+    const started = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+
+    const deadline = Date.now() + 5_000;
+    let starting: Response | undefined;
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`);
+        const body = await response.clone().json() as Record<string, unknown>;
+        if (body.phase === "codegen") {
+          starting = response;
+          break;
+        }
+        await Bun.sleep(2);
+      } catch {
+        await Bun.sleep(5);
+      }
+    }
+    expect(starting).toBeDefined();
+    expect(starting!.status).toBe(503);
+    expect(await starting!.json()).toEqual({
+      version: 1,
+      ready: false,
+      state: "starting",
+      phase: "codegen",
+    });
+    expect(await (await fetch(`http://127.0.0.1:${port}/live`)).json()).toEqual({
+      version: 1,
+      live: true,
+    });
+
+    let polling = true;
+    let successfulLivenessProbes = 0;
+    let refusedLivenessProbes = 0;
+    const continuity = (async () => {
+      while (polling) {
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/live`);
+          if (response.ok) successfulLivenessProbes++;
+          else refusedLivenessProbes++;
+        } catch {
+          refusedLivenessProbes++;
+        }
+        await Bun.sleep(2);
+      }
+    })();
+
+    writeFileSync(gate, "continue");
+    await started.waitFor("ready on");
+    polling = false;
+    await continuity;
+    expect(successfulLivenessProbes).toBeGreaterThan(0);
+    expect(refusedLivenessProbes).toBe(0);
+    expect(await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).toEqual({
+      version: 1,
+      ready: true,
+      state: "ready",
+    });
+
+    started.child.kill("SIGTERM");
+    expect(await started.child.exited).toBe(0);
+  });
+
+  test("SIGTERM during startup releases the listener without activating afterward", async () => {
+    const port = freePort();
+    const dir = fixture(port);
+    const gate = join(dir, "startup-gate");
+    writeFileSync(
+      join(dir, "schema.ts"),
+      `import { existsSync } from "node:fs";
+while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
+${FIXTURE_SCHEMA}`,
+    );
+    const started = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+
+    const deadline = Date.now() + 5_000;
+    let observedStartup = false;
+    while (Date.now() < deadline && !observedStartup) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`);
+        const body = await response.json() as Record<string, unknown>;
+        observedStartup = response.status === 503 && body.phase === "codegen";
+        if (!observedStartup) await Bun.sleep(2);
+      } catch {
+        await Bun.sleep(5);
+      }
+    }
+    expect(observedStartup).toBe(true);
+
+    started.child.kill("SIGTERM");
+    const exitCode = await Promise.race([
+      started.child.exited,
+      Bun.sleep(2_000).then(() => {
+        throw new Error("startup did not terminate after SIGTERM");
+      }),
+    ]);
+    expect(exitCode).toBe(0);
+    await started.drained;
+    expect(started.output()).not.toContain("@@dbzz-startup");
+    expect(started.output()).not.toContain("ready on");
+
+    const rebound = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("ok") });
+    await rebound.stop(true);
+  }, 20_000);
 
   test("a startup failure releases Runtime and storage ownership before retry", async () => {
     const reservation = await reservePort();

@@ -6,6 +6,7 @@ import {
   decode,
   encode,
   parseCallRequest,
+  stableEncode,
   type CallRequest,
   type ErrorMessage,
 } from "@dbzz/core";
@@ -30,11 +31,27 @@ import {
   observeHttpAuth,
   recordHttpTraceFailure,
 } from "./external-trace.ts";
+import { defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
 import type { Runtime, RuntimeStatus } from "./runtime.ts";
 import { Session, withSessionAuthObserver } from "./session.ts";
 
 export type DbzzServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
+export type DbzzStartupPhase =
+  | "listening"
+  | "codegen"
+  | "loading"
+  | "opening-storage"
+  | "reconciling";
+
+export interface DbzzServerOptions {
+  readonly limits: ServiceLimits;
+  readonly port: number;
+  readonly hostname?: string;
+  readonly verifier?: CredentialVerifier;
+  /** Exact workload scope required by GET /status. */
+  readonly statusScope?: string;
+}
 
 export interface ServeOptions {
   readonly runtime: Runtime;
@@ -47,6 +64,7 @@ export interface ServeOptions {
 
 export interface DbzzServerStatus {
   readonly state: DbzzServerState;
+  readonly startupPhase: DbzzStartupPhase | null;
   readonly connections: number;
   readonly preHelloConnections: number;
   readonly connectionRejections: number;
@@ -55,7 +73,7 @@ export interface DbzzServerStatus {
   readonly httpGlobalRejections: number;
   readonly httpFairShareRejections: number;
   readonly outboundBytes: number;
-  readonly runtime: RuntimeStatus;
+  readonly runtime: RuntimeStatus | null;
 }
 
 interface WsData {
@@ -83,6 +101,13 @@ const SSE_HEADERS = Object.freeze({
 });
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
+const STARTUP_PHASE_ORDER: Readonly<Record<DbzzStartupPhase, number>> = Object.freeze({
+  listening: 0,
+  codegen: 1,
+  loading: 2,
+  "opening-storage": 3,
+  reconciling: 4,
+});
 
 function json(value: unknown, status = 200): Response {
   return new Response(encode(value), {
@@ -361,7 +386,7 @@ function requireStatusScope(principal: ClientPrincipal, required: string): void 
 
 /** Owns listener admission, every WebSocket Session, and graceful Runtime drain. */
 export class DbzzServer {
-  readonly runtime: Runtime;
+  readonly limits: ServiceLimits;
   readonly hostname: string;
   readonly statusScope: string;
 
@@ -370,27 +395,29 @@ export class DbzzServer {
   private readonly outbound: OutboundBudget;
   private readonly httpAdmission: HttpAdmission;
   private listener: Server<WsData> | null = null;
+  private activeRuntime: Runtime | null = null;
   private lifecycle: DbzzServerState = "starting";
+  private startup: DbzzStartupPhase | null = "listening";
   private connectionRejections = 0;
   private transportSampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
 
-  constructor(options: ServeOptions) {
-    this.runtime = options.runtime;
+  constructor(options: DbzzServerOptions) {
+    this.limits = defineServiceLimits(options.limits);
     this.hostname = options.hostname ?? "127.0.0.1";
     this.verifier = options.verifier;
     validateCredentialVerifierRevocation(
       this.verifier,
-      this.runtime.limits.auth.revocationDeadlineMs,
+      this.limits.auth.revocationDeadlineMs,
     );
     this.statusScope = configuredStatusScope(options.statusScope);
     this.outbound = new OutboundBudget(
-      this.runtime.limits.webSocket.maxBytes,
-      this.runtime.limits.maxFrameBytes,
+      this.limits.webSocket.maxBytes,
+      this.limits.maxFrameBytes,
     );
     this.httpAdmission = new HttpAdmission(
-      this.runtime.limits.maxOperations,
-      this.runtime.limits.maxOperationsPerCaller,
+      this.limits.maxOperations,
+      this.limits.maxOperationsPerCaller,
     );
 
     try {
@@ -398,7 +425,7 @@ export class DbzzServer {
         port: options.port,
         hostname: this.hostname,
         maxRequestBodySize: oneByteTransportLimit(
-          this.runtime.limits.maxRequestBytes,
+          this.limits.maxRequestBytes,
           "maxRequestBytes",
         ),
         development: false,
@@ -410,16 +437,14 @@ export class DbzzServer {
           drain: (socket) => socket.data.sink?.onDrain(),
           close: (socket) => this.closeWebSocket(socket),
           maxPayloadLength: oneByteTransportLimit(
-            this.runtime.limits.maxFrameBytes,
+            this.limits.maxFrameBytes,
             "maxFrameBytes",
           ),
-          backpressureLimit: this.runtime.limits.webSocket.maxBytesPerConnection,
+          backpressureLimit: this.limits.webSocket.maxBytesPerConnection,
           closeOnBackpressureLimit: true,
           idleTimeout: 120,
         },
       });
-      this.lifecycle = "ready";
-      this.startTransportSampler();
     } catch (error) {
       this.lifecycle = "failed";
       throw error;
@@ -428,6 +453,14 @@ export class DbzzServer {
 
   get state(): DbzzServerState {
     return this.lifecycle;
+  }
+
+  get startupPhase(): DbzzStartupPhase | null {
+    return this.startup;
+  }
+
+  get runtime(): Runtime | null {
+    return this.activeRuntime;
   }
 
   get port(): number {
@@ -440,6 +473,7 @@ export class DbzzServer {
     const http = this.httpAdmission.snapshot();
     return Object.freeze({
       state: this.lifecycle,
+      startupPhase: this.startup,
       connections: this.connections.size,
       preHelloConnections: this.preHelloConnections(),
       connectionRejections: this.connectionRejections,
@@ -448,8 +482,34 @@ export class DbzzServer {
       httpGlobalRejections: http.globalRejections,
       httpFairShareRejections: http.fairShareRejections,
       outboundBytes: this.outbound.snapshot().bytes,
-      runtime: this.runtime.status(),
+      runtime: this.activeRuntime?.status() ?? null,
     });
+  }
+
+  /** Publish one monotonic, non-sensitive startup phase while the listener owns its port. */
+  advanceStartup(phase: Exclude<DbzzStartupPhase, "listening">): void {
+    if (this.lifecycle !== "starting" || this.startup === null) {
+      throw new Error("server is not starting");
+    }
+    if (STARTUP_PHASE_ORDER[phase] <= STARTUP_PHASE_ORDER[this.startup]) {
+      throw new Error("startup phases must advance monotonically");
+    }
+    this.startup = phase;
+  }
+
+  /** Atomically attach the fully constructed Runtime and admit application traffic. */
+  activate(runtime: Runtime): void {
+    if (this.lifecycle !== "starting" || this.activeRuntime !== null) {
+      throw new Error("server can only be activated once while starting");
+    }
+    if (runtime.state !== "ready") throw new Error("Runtime must be ready before activation");
+    if (stableEncode(runtime.limits) !== stableEncode(this.limits)) {
+      throw new Error("Runtime limits must match listener limits");
+    }
+    this.activeRuntime = runtime;
+    this.startup = null;
+    this.lifecycle = "ready";
+    this.startTransportSampler();
   }
 
   drain(): Promise<void> {
@@ -468,16 +528,28 @@ export class DbzzServer {
 
   private async fetch(request: Request, listener: Server<WsData>): Promise<Response | undefined> {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
     if (url.pathname === "/live" && request.method === "GET") {
       const live = this.lifecycle !== "failed" && this.lifecycle !== "stopped";
       return json({ version: 1, live }, live ? 200 : 503);
     }
     if (url.pathname === "/ready" && request.method === "GET") {
-      const ready = this.lifecycle === "ready" && this.runtime.status().state === "ready";
-      return json({ version: 1, ready }, ready ? 200 : 503);
+      const runtimeState = this.activeRuntime?.status().state;
+      const ready = this.lifecycle === "ready" && runtimeState === "ready";
+      const state = this.lifecycle === "ready" && runtimeState !== "ready"
+        ? runtimeState ?? "starting"
+        : this.lifecycle;
+      return json({
+        version: 1,
+        ready,
+        state,
+        ...(this.startup === null ? {} : { phase: this.startup }),
+      }, ready ? 200 : 503);
     }
+    if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
+      return protocolError(unavailableWhile(this.lifecycle));
+    }
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === "/status" && request.method === "GET") {
       let admission: HttpAdmissionLease | undefined;
       let lease: AuthLease | undefined;
@@ -525,7 +597,7 @@ export class DbzzServer {
       credential,
       verifier: this.verifier,
       signal: request.signal,
-      revocationDeadlineMs: this.runtime.limits.auth.revocationDeadlineMs,
+      revocationDeadlineMs: this.requireRuntime().limits.auth.revocationDeadlineMs,
     });
   }
 
@@ -543,7 +615,8 @@ export class DbzzServer {
   }
 
   private async call(request: Request, sse: boolean, sourceKey: string): Promise<Response> {
-    const externalTrace = beginHttpTrace(this.runtime.telemetry, sse ? "sse" : "procedure");
+    const runtime = this.requireRuntime();
+    const externalTrace = beginHttpTrace(runtime.telemetry, sse ? "sse" : "procedure");
     let id: number | null = null;
     let admission: HttpAdmissionLease | undefined;
     let lease: AuthLease | undefined;
@@ -552,8 +625,8 @@ export class DbzzServer {
       admission = this.httpAdmission.admit(sourceKey);
       const call = await parseHttpCall(
         request,
-        this.runtime.limits.maxRequestBytes,
-        this.runtime.limits.readQueue.maxAgeMs,
+        runtime.limits.maxRequestBytes,
+        runtime.limits.readQueue.maxAgeMs,
       );
       id = call.id;
       identifyHttpTrace(externalTrace, call.ref, String(call.id));
@@ -571,7 +644,7 @@ export class DbzzServer {
         fairnessKey,
       }, externalTrace);
       if (sse) {
-        const stream = await this.runtime.runSse(input);
+        const stream = await runtime.runSse(input);
         const streamLease = lease;
         const streamAdmission = admission;
         const body = ownedStream(stream, () => {
@@ -588,7 +661,7 @@ export class DbzzServer {
           throw error;
         }
       }
-      return await this.runtime.runProcedure({
+      return await runtime.runProcedure({
         ...input,
         respond: ({ body, status }) => new Response(body, {
           status,
@@ -610,7 +683,7 @@ export class DbzzServer {
       return new Response("method not allowed", { status: 405, headers: { ...CORS, allow: "GET" } });
     }
     if (this.lifecycle !== "ready") return protocolError(unavailableWhile(this.lifecycle));
-    if (this.connections.size >= this.runtime.limits.maxConnections) {
+    if (this.connections.size >= this.limits.maxConnections) {
       this.connectionRejections = Math.min(Number.MAX_SAFE_INTEGER, this.connectionRejections + 1);
       return protocolError(new DbzzError("overloaded", "connection capacity is full", {
         retryable: true,
@@ -636,13 +709,14 @@ export class DbzzServer {
     const data = socket.data;
     data.socket = socket;
     try {
+      const runtime = this.requireRuntime();
       data.sink = new WebSocketSessionSink({
         socket,
         budget: this.outbound,
-        limits: this.runtime.limits,
-        ...(this.runtime.telemetry.enabled
+        limits: runtime.limits,
+        ...(runtime.telemetry.enabled
           ? {
-              captureObserver: (lane) => this.runtime.captureDeliveryObserver(
+              captureObserver: (lane) => runtime.captureDeliveryObserver(
                 lane,
                 data.session?.snapshot().clientSessionId ?? undefined,
               ),
@@ -650,13 +724,13 @@ export class DbzzServer {
           : {}),
       });
       data.session = new Session(withSessionAuthObserver({
-        runtime: this.runtime,
+        runtime,
         sink: data.sink,
         verifier: this.verifier,
-        revocationDeadlineMs: this.runtime.limits.auth.revocationDeadlineMs,
-        limits: this.runtime.limits,
-      }, this.runtime.telemetry.enabled
-        ? (input) => beginSessionAuthTrace(this.runtime.telemetry, input)
+        revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
+        limits: runtime.limits,
+      }, runtime.telemetry.enabled
+        ? (input) => beginSessionAuthTrace(runtime.telemetry, input)
         : undefined));
       if (this.lifecycle !== "ready") void data.session.close(unavailableWhile(this.lifecycle));
     } catch (error) {
@@ -675,7 +749,7 @@ export class DbzzServer {
       return;
     }
     const bytes = typeof raw === "string" ? Buffer.byteLength(raw) : raw.byteLength;
-    if (bytes > this.runtime.limits.maxFrameBytes) {
+    if (bytes > this.limits.maxFrameBytes) {
       void session.close(new DbzzError("overloaded", "client frame exceeds maxFrameBytes", {
         retryable: true,
         retryAfterMs: 0,
@@ -704,15 +778,16 @@ export class DbzzServer {
   }
 
   private preHelloConnections(): number {
-    return Math.max(0, this.connections.size - this.runtime.connectionCount);
+    return Math.max(0, this.connections.size - (this.activeRuntime?.connectionCount ?? 0));
   }
 
   private startTransportSampler(): void {
-    if (!this.runtime.telemetry.enabled) return;
+    const runtime = this.requireRuntime();
+    if (!runtime.telemetry.enabled) return;
     this.sampleTransport();
     this.transportSampleTimer = setInterval(
       () => this.sampleTransport(),
-      this.runtime.telemetry.sampleIntervalMs,
+      runtime.telemetry.sampleIntervalMs,
     );
     this.transportSampleTimer.unref?.();
   }
@@ -724,8 +799,9 @@ export class DbzzServer {
   }
 
   private sampleTransport(): void {
-    if (!this.runtime.telemetry.enabled || this.lifecycle !== "ready") return;
-    if (this.runtime.state !== "ready") {
+    const runtime = this.activeRuntime;
+    if (runtime === null || !runtime.telemetry.enabled || this.lifecycle !== "ready") return;
+    if (runtime.state !== "ready") {
       this.stopTransportSampler();
       return;
     }
@@ -741,19 +817,20 @@ export class DbzzServer {
       ["runtime.transport_http_fair_share_rejections", http.fairShareRejections, "count"],
     ] as const;
     for (const [name, value, unit] of metrics) {
-      this.runtime.telemetry.recordMetric({ name, value, unit });
+      runtime.telemetry.recordMetric({ name, value, unit });
     }
+  }
+
+  private requireRuntime(): Runtime {
+    const runtime = this.activeRuntime;
+    if (runtime === null) throw unavailableWhile(this.lifecycle);
+    return runtime;
   }
 
   private async performDrain(): Promise<void> {
     const listener = this.listener!;
-    const deadlineAtMs = Date.now() + this.runtime.limits.gracefulShutdownMs;
-    const listenerStopped = listener.stop(false);
-    // Bun may retain idle upgraded/keep-alive sockets after the listener stops.
-    // They are not graceful application work, so do not let them consume the
-    // Runtime deadline. A final stop(true) below releases them after all owned
-    // Sessions and operations have drained.
-    void listenerStopped.catch(() => {});
+    const runtime = this.activeRuntime;
+    const deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs;
     const reason = new DbzzError("draining", "server is draining", {
       retryable: true,
       retryAfterMs: DRAIN_RETRY_AFTER_MS,
@@ -764,9 +841,14 @@ export class DbzzServer {
       connection.socket?.close(1013, "draining");
       return Promise.resolve();
     });
-    const runtimeDrain = this.runtime.drain(deadlineAtMs);
-    const graceful = Promise.all([runtimeDrain, ...sessions])
-      .then(() => listener.stop(true));
+    const runtimeDrain = runtime?.drain(deadlineAtMs) ?? Promise.resolve();
+    const graceful = Promise.all([runtimeDrain, ...sessions]).then(async () => {
+      // Bun leaves the awaited force-stop pending on active keep-alive/SSE
+      // transports unless listener admission is closed first. Both calls stay
+      // after application drain so /live remains reachable throughout it.
+      void listener.stop(false).catch(() => {});
+      await listener.stop(true);
+    });
 
     const deadlineError = new DbzzError("deadline_exceeded", "graceful shutdown deadline exceeded", {
       resource: "connection",
@@ -800,5 +882,16 @@ export class DbzzServer {
 }
 
 export function serve(options: ServeOptions): DbzzServer {
-  return new DbzzServer(options);
+  if (options.runtime.state !== "ready") {
+    throw new Error("Runtime must be ready before serving");
+  }
+  const server = new DbzzServer({
+    limits: options.runtime.limits,
+    port: options.port,
+    ...(options.hostname === undefined ? {} : { hostname: options.hostname }),
+    ...(options.verifier === undefined ? {} : { verifier: options.verifier }),
+    ...(options.statusScope === undefined ? {} : { statusScope: options.statusScope }),
+  });
+  server.activate(options.runtime);
+  return server;
 }

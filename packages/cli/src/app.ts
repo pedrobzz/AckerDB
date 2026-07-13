@@ -6,15 +6,15 @@ import { existsSync, mkdirSync, readdirSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  DbzzServer,
   Engine,
+  PRODUCTION_LIMITS,
   Registry,
   Runtime,
   createOidcVerifier,
   reconcile,
   Schema,
-  serve,
   UnsafeSchemaChange,
-  type DbzzServer,
 } from "@dbzz/server";
 import type { AppConfig } from "./config.ts";
 
@@ -74,70 +74,131 @@ export interface RunningApp {
   drain(): Promise<void>;
 }
 
-export async function startApp(config: AppConfig): Promise<RunningApp> {
-  const schema = await importSchema(config);
-  const modules = await importFunctionModules(config);
-  const verifier = config.oidc === undefined ? undefined : createOidcVerifier(config.oidc);
-  mkdirSync(config.dbDir, { recursive: true });
-  const engine = new Engine(schema, join(config.dbDir, "data.db"), {
-    durability: config.durability,
-  });
-  let runtime: Runtime | undefined;
-  let server: DbzzServer | undefined;
-  try {
-    const { applied } = reconcile(engine);
-    for (const line of applied) console.log(`[dbz] ${line}`);
-    const registry = new Registry(modules);
-    runtime = new Runtime({
-      engine,
-      registry,
-      telemetry: config.telemetry === "disabled" ? false : undefined,
-    });
-    const startedServer = serve({
-      runtime,
-      port: config.port,
-      ...(verifier === undefined ? {} : { verifier }),
-      statusScope: config.statusScope,
-    });
-    server = startedServer;
+export type StartupPreparation = (config: AppConfig) => Promise<unknown>;
 
-    let drainPromise: Promise<void> | null = null;
-    let engineClosed = false;
-    const removeSignalHandlers = () => {
-      process.off("SIGINT", onSignal);
-      process.off("SIGTERM", onSignal);
-    };
-    const drain = (): Promise<void> => {
-      if (drainPromise !== null) return drainPromise;
-      removeSignalHandlers();
-      drainPromise = startedServer.drain().then(() => {
-        if (engineClosed) return;
-        engineClosed = true;
-        engine.close();
-      });
-      return drainPromise;
-    };
-    const onSignal = () => {
-      void drain().catch((error) => {
+export class StartupInterruptedError extends Error {
+  override readonly name = "StartupInterruptedError";
+
+  constructor() {
+    super("startup interrupted by shutdown");
+  }
+}
+
+export async function startApp(
+  config: AppConfig,
+  prepare?: StartupPreparation,
+): Promise<RunningApp> {
+  const verifier = config.oidc === undefined ? undefined : createOidcVerifier(config.oidc);
+  const server = new DbzzServer({
+    limits: PRODUCTION_LIMITS,
+    port: config.port,
+    ...(verifier === undefined ? {} : { verifier }),
+    statusScope: config.statusScope,
+  });
+
+  let shutdownRequested = false;
+  let activated = false;
+  let engineClosed = false;
+  let runtime: Runtime | undefined;
+  let ownedEngine: Engine | undefined;
+  let drainPromise: Promise<void> | null = null;
+  let interruptStartup!: () => void;
+  const startupInterrupted = new Promise<never>((_resolve, reject) => {
+    interruptStartup = () => reject(new StartupInterruptedError());
+  });
+  // JavaScript cannot cancel an arbitrary import/preparation Promise. Racing it
+  // releases DBZZ ownership; the CLI treats the typed interruption as a process
+  // boundary so abandoned user work cannot retain handles or write afterward.
+  const awaitStartup = <T>(work: Promise<T>): Promise<T> =>
+    Promise.race([work, startupInterrupted]);
+
+  const removeSignalHandlers = () => {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  };
+  const closeEngine = () => {
+    if (engineClosed || ownedEngine === undefined) return;
+    engineClosed = true;
+    ownedEngine.close();
+  };
+  const drain = (): Promise<void> => {
+    if (drainPromise !== null) return drainPromise;
+    removeSignalHandlers();
+    drainPromise = (async () => {
+      try {
+        if (activated || runtime === undefined) await server.drain();
+        else await Promise.all([server.drain(), runtime.drain()]);
+      } finally {
+        closeEngine();
+      }
+    })();
+    return drainPromise;
+  };
+  const onSignal = () => {
+    const duringStartup = server.state === "starting";
+    shutdownRequested = true;
+    const draining = drain();
+    interruptStartup();
+    if (!duringStartup) {
+      void draining.catch((error) => {
         console.error(`[dbz] ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;
       });
-    };
-    process.once("SIGINT", onSignal);
-    process.once("SIGTERM", onSignal);
+    }
+  };
+  const requireStartupOwnership = () => {
+    if (shutdownRequested || server.state !== "starting") {
+      throw new StartupInterruptedError();
+    }
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+
+  try {
+    if (prepare !== undefined) {
+      server.advanceStartup("codegen");
+      await awaitStartup(prepare(config));
+      requireStartupOwnership();
+    }
+
+    server.advanceStartup("loading");
+    const schema = await awaitStartup(importSchema(config));
+    const modules = await awaitStartup(importFunctionModules(config));
+    requireStartupOwnership();
+
+    server.advanceStartup("opening-storage");
+    mkdirSync(config.dbDir, { recursive: true });
+    ownedEngine = new Engine(schema, join(config.dbDir, "data.db"), {
+      durability: config.durability,
+    });
+
+    server.advanceStartup("reconciling");
+    const { applied } = reconcile(ownedEngine);
+    for (const line of applied) console.log(`[dbz] ${line}`);
+    const registry = new Registry(modules);
+    runtime = new Runtime({
+      engine: ownedEngine,
+      registry,
+      telemetry: config.telemetry === "disabled" ? false : undefined,
+    });
+    server.activate(runtime);
+    activated = true;
 
     console.log(`@@dbzz-startup ${JSON.stringify({
       telemetry: config.telemetry,
       durability: config.durability,
     })}`);
     console.log(
-      `[dbz] ready on http://127.0.0.1:${startedServer.port} — ${registry.functions.size} function(s), ${Object.keys(schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
+      `[dbz] ready on http://127.0.0.1:${server.port} — ${registry.functions.size} function(s), ${Object.keys(schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
     );
-    return { server: startedServer, runtime, engine, drain };
+    return { server, runtime, engine: ownedEngine, drain };
   } catch (error) {
-    if (server === undefined) await runtime?.drain().catch(() => {});
-    else await server.drain().catch(() => {});
-    engine.close();
+    // A cleanup/deadline failure is the owning shutdown outcome; never turn it
+    // into a successful typed interruption at the CLI boundary.
+    await drain();
+    if (shutdownRequested && !(error instanceof StartupInterruptedError)) {
+      throw new StartupInterruptedError();
+    }
     if (error instanceof UnsafeSchemaChange) throw new Error(error.message, { cause: error });
     throw error;
   }

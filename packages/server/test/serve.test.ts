@@ -25,7 +25,7 @@ import { reconcile } from "../src/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
-import { serve } from "../src/serve.ts";
+import { DbzzServer, serve } from "../src/serve.ts";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -351,15 +351,109 @@ async function call(
 }
 
 describe("health and protected status", () => {
+  test("owns its port through explicit startup phases and atomically activates one Runtime", async () => {
+    const early = new DbzzServer({ limits, verifier, port: 0 });
+    const earlyBase = `http://127.0.0.1:${early.port}`;
+    const earlyDir = mkdtempSync(join(tmpdir(), "dbzz-serve-startup-"));
+    let earlyEngine: Engine | undefined;
+    let earlyRuntime: Runtime | undefined;
+    try {
+      expect(await (await fetch(`${earlyBase}/live`)).json()).toEqual({ version: 1, live: true });
+      expect(early.status()).toMatchObject({
+        state: "starting",
+        startupPhase: "listening",
+        runtime: null,
+      });
+      expect(Object.isFrozen(early.limits)).toBe(true);
+      const listening = await fetch(`${earlyBase}/ready`);
+      expect(listening.status).toBe(503);
+      expect(await listening.json()).toEqual({
+        version: 1,
+        ready: false,
+        state: "starting",
+        phase: "listening",
+      });
+
+      for (const [path, init] of [
+        ["/api/call", { method: "POST", body: "{" }],
+        ["/api/sse", { method: "POST", body: "{" }],
+        ["/status", undefined],
+        ["/ws", undefined],
+      ] as const) {
+        const response = await fetch(`${earlyBase}${path}`, init);
+        expect(response.status).toBe(503);
+        expect(parseCallResponse(decode(await response.text()))).toEqual({
+          v: PROTOCOL_VERSION,
+          t: "err",
+          id: null,
+          outcome: {
+            code: "unavailable",
+            retryable: true,
+            resource: "connection",
+            message: "server is not ready",
+          },
+        });
+      }
+
+      const socket = new WebSocket(`ws://127.0.0.1:${early.port}/ws`);
+      const wsResult = await within(new Promise<"opened" | "refused">((resolve) => {
+        socket.onopen = () => resolve("opened");
+        socket.onerror = () => resolve("refused");
+      }));
+      expect(wsResult).toBe("refused");
+      socket.close();
+
+      early.advanceStartup("loading");
+      early.advanceStartup("reconciling");
+      const reconciling = await fetch(`${earlyBase}/ready`);
+      expect(reconciling.status).toBe(503);
+      expect(await reconciling.json()).toEqual({
+        version: 1,
+        ready: false,
+        state: "starting",
+        phase: "reconciling",
+      });
+
+      earlyEngine = new Engine(schema, join(earlyDir, "data.db"));
+      reconcile(earlyEngine);
+      earlyRuntime = new Runtime({
+        engine: earlyEngine,
+        registry: new Registry(functions),
+        limits,
+        telemetry: false,
+      });
+      early.activate(earlyRuntime);
+
+      const ready = await fetch(`${earlyBase}/ready`);
+      expect(ready.status).toBe(200);
+      expect(await ready.json()).toEqual({ version: 1, ready: true, state: "ready" });
+      expect(() => early.activate(earlyRuntime!)).toThrow("only be activated once");
+      expect(() => early.advanceStartup("reconciling")).toThrow("server is not starting");
+    } finally {
+      await early.drain().catch(() => {});
+      await earlyRuntime?.drain().catch(() => {});
+      earlyEngine?.close();
+      rmSync(earlyDir, { recursive: true, force: true });
+    }
+  });
+
   test("exposes detail-free liveness/readiness, removes /health, and follows Runtime readiness", async () => {
     expect(await (await fetch(`${base}/live`)).json()).toEqual({ version: 1, live: true });
-    expect(await (await fetch(`${base}/ready`)).json()).toEqual({ version: 1, ready: true });
+    expect(await (await fetch(`${base}/ready`)).json()).toEqual({
+      version: 1,
+      ready: true,
+      state: "ready",
+    });
     expect((await fetch(`${base}/health`)).status).toBe(404);
 
     await runtime.drain();
     const ready = await fetch(`${base}/ready`);
     expect(ready.status).toBe(503);
-    expect(await ready.json()).toEqual({ version: 1, ready: false });
+    expect(await ready.json()).toEqual({
+      version: 1,
+      ready: false,
+      state: "stopped",
+    });
     expect(await (await fetch(`${base}/live`)).json()).toEqual({ version: 1, live: true });
   });
 
@@ -403,6 +497,10 @@ describe("health and protected status", () => {
     expect(() => serve({ runtime: unsafeRuntime, verifier, port: 0 })).toThrow(
       "maxRequestBytes + 1 must be a safe integer",
     );
+    expect(() => new DbzzServer({
+      limits: { ...limits, maxConnections: 0 },
+      port: 0,
+    })).toThrow("maxConnections must be a positive safe integer");
   });
 
   test("sanitizes Bun's last-resort fetch error boundary", async () => {
@@ -1009,9 +1107,23 @@ describe("lifecycle drain", () => {
     await within(blockedProcedureStarted.promise);
 
     const startedAt = performance.now();
+    const draining = server.drain();
+    expect(await (await fetch(`${base}/live`)).json()).toEqual({ version: 1, live: true });
+    const notReady = await fetch(`${base}/ready`);
+    expect(notReady.status).toBe(503);
+    expect(await notReady.json()).toEqual({ version: 1, ready: false, state: "draining" });
+    const refusedDuringDrain = await fetch(`${base}/api/call`, {
+      method: "POST",
+      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 2, ref: "notes.echo", args: { value: "x" } }),
+    });
+    expect(refusedDuringDrain.status).toBe(503);
+    expect(parseCallResponse(decode(await refusedDuringDrain.text()))).toMatchObject({
+      t: "err",
+      outcome: { code: "draining", retryable: true, retryAfterMs: 1_000 },
+    });
     let failure: unknown;
     try {
-      await server.drain();
+      await draining;
     } catch (error) {
       failure = error;
     }

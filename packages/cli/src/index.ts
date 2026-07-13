@@ -4,7 +4,9 @@ export {
   importFunctionModules,
   importSchema,
   listFunctionModules,
+  StartupInterruptedError,
   startApp,
   type FunctionModuleFile,
   type RunningApp,
+  type StartupPreparation,
 } from "./app.ts";

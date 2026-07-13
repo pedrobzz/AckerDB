@@ -235,8 +235,10 @@ export {
 export {
   DbzzServer,
   serve,
+  type DbzzServerOptions,
   type DbzzServerState,
   type DbzzServerStatus,
+  type DbzzStartupPhase,
   type ServeOptions,
 } from "./serve.ts";
 export {
