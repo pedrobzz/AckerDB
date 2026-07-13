@@ -35,7 +35,12 @@ import { PRODUCTION_LIMITS, type ServiceLimits } from "./limits.ts";
 import { outcomeFromError } from "./outcome.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
-export type RuntimePublication = SubscriptionServerMessage | ErrorMessage;
+export type SessionApplicationMessage =
+  | SubscriptionServerMessage
+  | QueryOkMessage
+  | MutationOkMessage
+  | ErrorMessage;
+export type RuntimePublication = SessionApplicationMessage;
 /**
  * Exact-byte ownership for publications captured during an auth transition.
  * Frames are valid only until `release()`; release is idempotent and empties
@@ -46,11 +51,6 @@ export interface RuntimePublicationBatch {
   readonly bytes: number;
   release(): void;
 }
-export type SessionApplicationMessage =
-  | SubscriptionServerMessage
-  | QueryOkMessage
-  | MutationOkMessage
-  | ErrorMessage;
 export type SessionControlMessage = WelcomeMessage | AuthenticatedMessage | PongMessage | ErrorMessage;
 
 /**
@@ -77,7 +77,7 @@ export interface SessionRuntimeContext {
   readonly authEpoch: number;
   /** Aborted as soon as an auth refresh, expiry, invalidation, or close starts. */
   readonly signal: AbortSignal;
-  /** Publishes a subscription frame only while this exact epoch is current. */
+  /** Publishes an application frame only while this exact epoch is current. */
   publish(message: RuntimePublication): Promise<boolean>;
 }
 
@@ -100,7 +100,9 @@ export interface RuntimePort {
   subscribe(context: SessionRuntimeContext, message: SubscribeMessage): Promise<void>;
   unsubscribe(context: SessionRuntimeContext, message: UnsubscribeMessage): Promise<void>;
   reset(context: SessionRuntimeContext, message: ResetRequestMessage): Promise<void>;
+  /** Publishes the success or error frame before settling. */
   query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown>;
+  /** Publishes the success or error frame before settling. */
   mutation(context: SessionRuntimeContext, message: MutationMessage): Promise<RuntimeMutationResult>;
   closeSession(context: SessionRuntimeContext, outcome: Outcome): Promise<void>;
 }
@@ -572,33 +574,17 @@ export class Session {
           await this.runtime.reset(context, message);
           return;
         case "q": {
-          const value = await this.runtime.query(context, message);
-          await this.sendApplication(epoch, {
-            v: PROTOCOL_VERSION,
-            t: "ok",
-            id: message.id,
-            kind: "query",
-            value,
-          });
+          await this.runtime.query(context, message);
           return;
         }
         case "m": {
-          const result = await this.runtime.mutation(context, message);
-          await this.sendApplication(epoch, {
-            v: PROTOCOL_VERSION,
-            t: "ok",
-            id: message.id,
-            kind: "mutation",
-            value: result.value,
-            receipt: result.receipt,
-          });
+          await this.runtime.mutation(context, message);
           return;
         }
       }
-    } catch (error) {
-      if (!context.signal.aborted && this.isCurrent(epoch)) {
-        await this.sendApplicationError(epoch, message.id, operationError(error));
-      }
+    } catch {
+      // Runtime publishes every application outcome before rejecting. Session
+      // only keeps the serialized ingress alive for the next operation.
     }
   }
 
@@ -633,24 +619,6 @@ export class Session {
     } catch (error) {
       void this.terminate(operationError(error));
       return false;
-    }
-  }
-
-  private async sendApplicationError(
-    authEpoch: number,
-    id: number,
-    error: DbzzError,
-  ): Promise<void> {
-    if (!this.isCurrent(authEpoch) || this.paused) return;
-    try {
-      await this.sink.sendApplication(authEpoch, {
-        v: PROTOCOL_VERSION,
-        t: "err",
-        id,
-        outcome: outcomeFromError(error),
-      });
-    } catch (sinkError) {
-      void this.terminate(operationError(sinkError));
     }
   }
 

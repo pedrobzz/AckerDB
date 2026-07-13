@@ -35,7 +35,7 @@ export interface DeliveryObservation {
 export type DeliveryObserver = (observation: DeliveryObservation) => unknown;
 
 /** Captures the observer that owns one frame before any delivery work begins. */
-export type DeliveryObserverCapture = () => DeliveryObserver | undefined;
+export type DeliveryObserverCapture = (lane: OutboundLane) => DeliveryObserver | undefined;
 
 export interface OutboundBudgetSnapshot {
   readonly bytes: number;
@@ -250,10 +250,11 @@ function drainDeliveryObservations(instrumentation: DeliveryInstrumentation): vo
 
 function captureDeliveryObserver(
   instrumentation: DeliveryInstrumentation | undefined,
+  lane: OutboundLane,
 ): DeliveryObserver | undefined {
   if (instrumentation === undefined) return undefined;
   try {
-    return instrumentation.captureObserver();
+    return instrumentation.captureObserver(lane);
   } catch {
     return undefined;
   }
@@ -534,7 +535,7 @@ export class WebSocketSessionSink implements SessionSink {
     authEpoch: number | null,
     message: SessionControlMessage | SessionApplicationMessage,
   ): Promise<void> {
-    const observer = captureDeliveryObserver(this.delivery);
+    const observer = captureDeliveryObserver(this.delivery, lane);
     if (this.closed) {
       const error = this.terminalError ?? unavailable("outbound", "WebSocket is closed");
       if (this.delivery !== undefined) {
@@ -796,7 +797,7 @@ export class WebSocketSessionSink implements SessionSink {
     this.releaseBuffered(this.bufferedBytes, terminal.code);
 
     const terminalOutcome = outcomeFromError(terminal).code;
-    const observer = captureDeliveryObserver(this.delivery);
+    const observer = captureDeliveryObserver(this.delivery, "control");
     const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
     const text = webSocketErrorText(terminal, this.limits.maxFrameBytes);
     const bytes = text === null ? 0 : utf8.encode(text).byteLength;
@@ -1118,7 +1119,7 @@ export class BoundedSseProducer {
     encodeFrame: () => Uint8Array,
     terminalOutcome?: Outcome["code"],
   ): ObservedSseFrame {
-    const observer = captureDeliveryObserver(this.delivery);
+    const observer = captureDeliveryObserver(this.delivery, lane);
     const startedAt = observer === undefined ? undefined : observationNow(this.delivery);
     let bytes: Uint8Array;
     try {

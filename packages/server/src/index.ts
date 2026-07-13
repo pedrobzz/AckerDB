@@ -173,6 +173,7 @@ export {
   type DeliveryClock,
   type DeliveryObservation,
   type DeliveryObserver,
+  type DeliveryObserverCapture,
   type DeliveryOutcome,
   type DeliverySource,
   type DeliveryStage,

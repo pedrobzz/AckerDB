@@ -432,7 +432,12 @@ export class DbzzServer {
         budget: this.outbound,
         limits: this.runtime.limits,
         ...(this.runtime.telemetry.enabled
-          ? { observer: this.runtime.deliveryObserver }
+          ? {
+              captureObserver: (lane) => this.runtime.captureDeliveryObserver(
+                lane,
+                data.session?.snapshot().clientSessionId ?? undefined,
+              ),
+            }
           : {}),
       });
       data.session = new Session({

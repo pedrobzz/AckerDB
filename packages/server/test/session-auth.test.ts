@@ -21,6 +21,7 @@ import {
   type VerifiedPrincipal,
 } from "../src/auth.ts";
 import { DbzzError } from "../src/errors.ts";
+import { outcomeFromError } from "../src/outcome.ts";
 import {
   Session,
   type RuntimeAuthTransition,
@@ -243,12 +244,32 @@ class FakeRuntime implements RuntimePort {
 
   async query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown> {
     this.queries.push(message);
-    return this.queryHook === null ? { ref: message.ref, principal: context.principal.kind } : this.queryHook(context, message);
+    try {
+      const value = this.queryHook === null
+        ? { ref: message.ref, principal: context.principal.kind }
+        : await this.queryHook(context, message);
+      await context.publish({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: message.id,
+        kind: "query",
+        value,
+      });
+      return value;
+    } catch (error) {
+      await context.publish({
+        v: PROTOCOL_VERSION,
+        t: "err",
+        id: message.id,
+        outcome: outcomeFromError(error),
+      });
+      throw error;
+    }
   }
 
   async mutation(context: SessionRuntimeContext, message: MutationMessage): Promise<RuntimeMutationResult> {
     this.mutations.push(message);
-    return {
+    const result: RuntimeMutationResult = {
       value: { ref: message.ref, principal: context.principal.kind },
       receipt: {
         mutationRequestId: message.mutationRequestId,
@@ -258,6 +279,15 @@ class FakeRuntime implements RuntimePort {
         obligations: [],
       },
     };
+    await context.publish({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: message.id,
+      kind: "mutation",
+      value: result.value,
+      receipt: result.receipt,
+    });
+    return result;
   }
 
   async closeSession(_context: SessionRuntimeContext, outcome: Outcome): Promise<void> {

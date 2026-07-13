@@ -45,6 +45,7 @@ import {
   OutboundBudget,
   type DeliveryObservation,
   type DeliveryObserver,
+  type OutboundLane,
   type OutboundReservation,
 } from "./delivery.ts";
 import type { Engine } from "./engine.ts";
@@ -187,8 +188,20 @@ interface Deferred<T> {
 
 type TraceIdentifiers = Partial<Pick<
   TelemetryTraceContext,
-  "requestId" | "mutationId" | "commitId" | "subscriptionId"
+  "requestId" | "connectionId" | "mutationId" | "commitId" | "subscriptionId"
 >>;
+
+type RuntimeOperationOutcome<T> =
+  | { readonly ok: true; readonly value: T }
+  | { readonly ok: false; readonly error: unknown };
+
+type RuntimeOperationFinalizer<T> = (outcome: RuntimeOperationOutcome<T>) => void | Promise<void>;
+
+interface SessionOperationOptions<T> {
+  readonly identifiers?: TraceIdentifiers;
+  readonly synthesizeHandler?: boolean;
+  readonly successFrame?: (value: T) => RuntimePublication;
+}
 
 interface InvocationTraceNode {
   readonly parent: TelemetryTraceContext;
@@ -523,41 +536,35 @@ export class Runtime implements RuntimePort {
   }
 
   async subscribe(context: SessionRuntimeContext, message: SubscribeMessage): Promise<void> {
-    const requestBytes = this.requestBytes(message);
-    const state = this.currentSession(context);
-    await this.runOperation(state, "subscription", message.ref, requestBytes, async () => {
+    await this.runSessionOperation(context, message, "subscription", message.ref, async (state) => {
       const definition: RuntimeSubscription = Object.freeze({
         address: message.ref,
         args: snapshotValue(message.args),
         ...(message.cursor === undefined ? {} : { cursor: Object.freeze({ ...message.cursor }) }),
       });
       await this.attachSubscription(state, message.id, definition, true);
-    }, { requestId: String(message.id), subscriptionId: String(message.id) });
+    }, { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } });
   }
 
   async unsubscribe(context: SessionRuntimeContext, message: UnsubscribeMessage): Promise<void> {
-    const requestBytes = this.requestBytes(message);
-    const state = this.currentSession(context);
-    await this.runOperation(state, "subscription", undefined, requestBytes, () => {
+    await this.runSessionOperation(context, message, "subscription", undefined, (state) => {
       this.reactive.unsubscribe(state.subscriber, message.id);
       state.subscriptions.delete(message.id);
-    }, { requestId: String(message.id), subscriptionId: String(message.id) });
+    }, { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } });
   }
 
   async reset(context: SessionRuntimeContext, message: ResetRequestMessage): Promise<void> {
-    const requestBytes = this.requestBytes(message);
-    const state = this.currentSession(context);
-    await this.runOperation(state, "subscription", undefined, requestBytes, () =>
+    await this.runSessionOperation(context, message, "subscription", undefined, (state) =>
       this.reactive.reset(state.subscriber, message.id, message.cursor), {
-        requestId: String(message.id),
-        subscriptionId: String(message.id),
+        identifiers: {
+          requestId: String(message.id),
+          subscriptionId: String(message.id),
+        },
       });
   }
 
   async query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown> {
-    const requestBytes = this.requestBytes(message);
-    const state = this.currentSession(context);
-    return this.runOperation(state, "query", message.ref, requestBytes, async () => {
+    return this.runSessionOperation(context, message, "query", message.ref, async (_state, requestBytes) => {
       const signal = this.operationSignal(context.signal);
       const evaluation = await this.executeQuery(
         "query",
@@ -576,13 +583,20 @@ export class Runtime implements RuntimePort {
         value: evaluation.value,
       } satisfies QueryOkMessage, "query result");
       return evaluation.value;
-    }, { requestId: String(message.id) });
+    }, {
+      identifiers: { requestId: String(message.id) },
+      successFrame: (value) => ({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: message.id,
+        kind: "query",
+        value,
+      } satisfies QueryOkMessage),
+    });
   }
 
   async mutation(context: SessionRuntimeContext, message: MutationMessage): Promise<RuntimeMutationResult> {
-    const requestBytes = this.requestBytes(message);
-    const state = this.currentSession(context);
-    return this.runOperation(state, "mutation", message.ref, requestBytes, async () => {
+    return this.runSessionOperation(context, message, "mutation", message.ref, async (state, requestBytes) => {
       const fn = this.expect(message.ref, "mutation");
       const signal = this.operationSignal(context.signal);
       let scheduledTouched = false;
@@ -625,9 +639,20 @@ export class Runtime implements RuntimePort {
       if (scheduledTouched) this.armScheduler();
       return this.finishMutation(state, message, result);
     }, {
-      requestId: String(message.id),
-      mutationId: message.mutationRequestId,
-    }, false);
+      identifiers: {
+        requestId: String(message.id),
+        mutationId: message.mutationRequestId,
+      },
+      synthesizeHandler: false,
+      successFrame: (result) => ({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: message.id,
+        kind: "mutation",
+        value: result.value,
+        receipt: result.receipt,
+      } satisfies MutationOkMessage),
+    });
   }
 
   async closeSession(context: SessionRuntimeContext, _outcome: Outcome): Promise<void> {
@@ -765,7 +790,7 @@ export class Runtime implements RuntimePort {
           request.args,
           {
             onAuthorized: () => {
-              deliveryObserver = this.capturedDeliveryObserver();
+              deliveryObserver = this.captureDeliveryObserver();
               authorized.resolve();
             },
           },
@@ -1079,8 +1104,7 @@ export class Runtime implements RuntimePort {
     return fn;
   }
 
-  private currentSession(context: SessionRuntimeContext, allowAborted = false): RuntimeSession {
-    this.assertReady();
+  private matchingSession(context: SessionRuntimeContext): RuntimeSession | null {
     const state = this.sessions.get(context.clientSessionId);
     if (
       state === undefined ||
@@ -1088,10 +1112,68 @@ export class Runtime implements RuntimePort {
       state.context.principal !== context.principal ||
       state.context.signal !== context.signal
     ) {
-      throw new DbzzError("auth_stale", "authentication state changed");
+      return null;
     }
+    return state;
+  }
+
+  private currentSession(context: SessionRuntimeContext, allowAborted = false): RuntimeSession {
+    this.assertReady();
+    const state = this.matchingSession(context);
+    if (state === null) throw new DbzzError("auth_stale", "authentication state changed");
     if (!allowAborted) aborted(context.signal);
     return state;
+  }
+
+  private runSessionOperation<T>(
+    context: SessionRuntimeContext,
+    message: SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage,
+    operation: "query" | "mutation" | "subscription",
+    functionName: string | undefined,
+    work: (state: RuntimeSession, requestBytes: number) => T | Promise<T>,
+    options: SessionOperationOptions<T> = {},
+  ): Promise<T> {
+    const requestBytes = this.requestBytes(message);
+    const state = this.matchingSession(context);
+    return this.runOperation(
+      state,
+      operation,
+      functionName,
+      requestBytes,
+      () => work(this.currentSession(context), requestBytes),
+      options.identifiers ?? {},
+      options.synthesizeHandler ?? true,
+      (outcome) => this.publishOperationOutcome(context, state, message.id, operation, outcome, options),
+    );
+  }
+
+  private async publishOperationOutcome<T>(
+    context: SessionRuntimeContext,
+    state: RuntimeSession | null,
+    id: number,
+    operation: "query" | "mutation" | "subscription",
+    outcome: RuntimeOperationOutcome<T>,
+    options: SessionOperationOptions<T>,
+  ): Promise<void> {
+    const frame = outcome.ok
+      ? options.successFrame?.(outcome.value)
+      : {
+          v: PROTOCOL_VERSION,
+          t: "err",
+          id,
+          outcome: outcomeFromError(outcome.error),
+        } satisfies ErrorMessage;
+    if (frame === undefined || context.signal.aborted) return;
+    if (state !== null) {
+      await this.publishSession(state, context.authEpoch, frame);
+      return;
+    }
+    this.assertFrameFits(
+      frame,
+      "application frame",
+      operation === "subscription" ? "subscription" : "operation",
+    );
+    await context.publish(frame);
   }
 
   private makeSubscriber(state: () => RuntimeSession, authEpoch: number): Subscriber {
@@ -1132,7 +1214,11 @@ export class Runtime implements RuntimePort {
       return;
     }
     if (sourceAuthEpoch !== state.context.authEpoch) return;
-    this.assertFrameFits(message, "subscription frame", "subscription");
+    const resource = message.t === "transition" || message.t === "event" ||
+      this.trace.getStore()?.operation === "subscription"
+      ? "subscription"
+      : "operation";
+    this.assertFrameFits(message, "application frame", resource);
     if (!await state.context.publish(message)) {
       throw new DbzzError("auth_stale", "authentication state changed");
     }
@@ -1938,13 +2024,19 @@ export class Runtime implements RuntimePort {
     ));
   }
 
-  private capturedDeliveryObserver(): DeliveryObserver | undefined {
+  readonly captureDeliveryObserver = (
+    lane: OutboundLane = "application",
+    clientSessionId?: string,
+  ): DeliveryObserver | undefined => {
     if (!this.telemetry.enabled) return undefined;
-    const scope = this.trace.getStore();
-    return scope === undefined
-      ? this.deliveryObserver
-      : (observation) => this.trace.run(scope, () => this.deliveryObserver(observation));
-  }
+    const scope = this.trace.getStore() ?? this.operationTrace(
+      null,
+      lane === "control" ? "lifecycle" : "subscription",
+      undefined,
+      clientSessionId === undefined ? {} : { connectionId: digest(clientSessionId) },
+    );
+    return (observation) => this.trace.run(scope, () => this.deliveryObserver(observation));
+  };
 
   private runOperation<T>(
     session: RuntimeSession | null,
@@ -1954,11 +2046,17 @@ export class Runtime implements RuntimePort {
     work: () => T | Promise<T>,
     identifiers: TraceIdentifiers = {},
     synthesizeHandler = true,
+    finalize?: RuntimeOperationFinalizer<T>,
   ): Promise<T> {
     const scope = this.telemetry.enabled
       ? this.operationTrace(session, operation, functionName, identifiers)
       : undefined;
     const admittedAt = scope === undefined ? 0 : performance.now();
+    const settle = async (outcome: RuntimeOperationOutcome<T>): Promise<T> => {
+      await finalize?.(outcome);
+      if (outcome.ok) return outcome.value;
+      throw outcome.error;
+    };
     let release: () => void;
     try {
       this.assertRequestBytes(sizeBytes);
@@ -2001,12 +2099,13 @@ export class Runtime implements RuntimePort {
           errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
         });
       }
-      throw safeError;
+      const rejected = () => settle({ ok: false, error: safeError });
+      return scope === undefined ? rejected() : this.runTraced(scope, rejected);
     }
     const startedAt = scope === undefined ? 0 : performance.now();
     const execute = () => Promise.resolve().then(work)
       .then(
-        (value) => {
+        (value): RuntimeOperationOutcome<T> => {
           if (scope !== undefined && synthesizeHandler && scope.invocations.size === 0) {
             this.traceSpan({
               stage: "handler",
@@ -2015,9 +2114,9 @@ export class Runtime implements RuntimePort {
               sizeBytes,
             }, operation);
           }
-          return value;
+          return { ok: true, value };
         },
-        (error) => {
+        (error): RuntimeOperationOutcome<T> => {
           const safeError = transportError(error);
           if (scope !== undefined) {
             const outcome = outcomeFromError(safeError).code;
@@ -2039,10 +2138,11 @@ export class Runtime implements RuntimePort {
               errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
             });
           }
-          throw safeError;
+          return { ok: false, error: safeError };
         },
       )
-      .finally(release);
+      .finally(release)
+      .then(settle);
     return scope === undefined ? execute() : this.runTraced(scope, execute);
   }
 
