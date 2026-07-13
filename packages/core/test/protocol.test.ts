@@ -14,6 +14,7 @@ import {
   parseOutcome,
   parseServerMessage,
   parseSubscriptionTransition,
+  uuidV7Timestamp,
   type SubscriptionCursor,
   type TransitionMessage,
 } from "@dbzz/core";
@@ -73,6 +74,11 @@ describe("protocol 2 envelopes", () => {
   });
 
   test("parses auth, subscribe, reset, query, mutation, and HTTP call frames", () => {
+    expect(uuidV7Timestamp(mutationRequestId)).toBe(1_688_096_058_518);
+    expectProtocolError(
+      () => uuidV7Timestamp("01890a5d-ac96-474b-b4c0-123456789abc"),
+      "malformed",
+    );
     expect(
       parseClientMessage({
         v: 2,

@@ -50,7 +50,7 @@ function fixture(overrides: Partial<typeof PRODUCTION_LIMITS> = {}) {
 const identity = {
   sessionId: "session-1",
   requestId: "01890a5d-ac96-774b-b4c0-123456789abc",
-  issuedAt: 1_688_000_000_000,
+  issuedAt: 1_688_096_058_518,
   principalFingerprint: "principal",
   functionRef: "notes.add",
   argsFingerprint: stableEncode({ body: "hello" }),
@@ -207,6 +207,38 @@ describe("CommitCoordinator", () => {
       }),
     ).rejects.toMatchObject({ code: "conflict", resource: "idempotency" });
     expect(executed).toBe(false);
+    expect(engine.commitVersion()).toBe(0n);
+  });
+
+  test("uses the UUID timestamp rather than a forgeable issuedAt for replay age", async () => {
+    const now = identity.issuedAt + PRODUCTION_LIMITS.mutationReplay.maxAgeMs + 1;
+    const dir = mkdtempSync(join(tmpdir(), "dbzz-coordinator-uuid-age-"));
+    dirs.push(dir);
+    const engine = new Engine(schema, join(dir, "data.db"));
+    engines.push(engine);
+    reconcile(engine);
+    const publication = new OrderedPublication<{ version: bigint }>({
+      limits: PRODUCTION_LIMITS.publication,
+      initialVersion: 0n,
+      process: () => {},
+    });
+    const coordinator = new CommitCoordinator({
+      engine,
+      limits: PRODUCTION_LIMITS,
+      now: () => now,
+      reservePublication: (bytes) => publication.reserve(bytes),
+    });
+
+    await expect(
+      coordinator.execute({
+        operation: "mutation",
+        fairnessKey: "session-1",
+        requestBytes: 1,
+        idempotency: { ...identity, issuedAt: now },
+        work: () => null,
+        publication: (version) => ({ version }),
+      }),
+    ).rejects.toMatchObject({ code: "conflict", resource: "idempotency" });
     expect(engine.commitVersion()).toBe(0n);
   });
 });

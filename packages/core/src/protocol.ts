@@ -272,6 +272,12 @@ const resourceClasses = new Set<string>(RESOURCE_CLASSES);
 const durabilityPolicies = new Set<string>(DURABILITY_POLICIES);
 const principalKinds = new Set<string>(PRINCIPAL_KINDS);
 const uuidV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** Extract the embedded Unix-millisecond timestamp from a validated UUIDv7. */
+export function uuidV7Timestamp(value: string): number {
+  if (!uuidV7.test(value)) malformed("mutationRequestId must be UUIDv7");
+  return Number.parseInt(value.slice(0, 8) + value.slice(9, 13), 16);
+}
 const utf8 = new TextEncoder();
 
 function malformed(message: string): never {

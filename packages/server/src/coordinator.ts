@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { decode, encode } from "@dbzz/core";
+import { decode, encode, uuidV7Timestamp } from "@dbzz/core";
 import { makeDbWriter, newWriteCollector, type WriteCollector } from "./db.ts";
 import type { DbWriter } from "./dbtypes.ts";
 import type { Engine, StoredMutation } from "./engine.ts";
@@ -10,6 +10,7 @@ import type { PublicationReservation } from "./publication.ts";
 import type { Schema } from "./schema.ts";
 
 const transaction = new AsyncLocalStorage<true>();
+const MAX_MUTATION_CLOCK_SKEW_MS = 5 * 60_000;
 let fetchGuardInstalled = false;
 
 function installFetchGuard(): void {
@@ -145,6 +146,11 @@ export class CommitCoordinator<Publication> {
   ): Promise<CommitResult<T, Publication>> {
     const idempotency = request.idempotency;
     if (idempotency) {
+      if (!Number.isSafeInteger(idempotency.issuedAt) || idempotency.issuedAt < 0) {
+        throw new DbzzError("validation", "mutation issuedAt must be a non-negative safe integer", {
+          resource: "idempotency",
+        });
+      }
       this.pruneExpiredMutations();
       const stored = this.engine.storedMutation(idempotency.sessionId, idempotency.requestId);
       if (stored) {
@@ -157,7 +163,14 @@ export class CommitCoordinator<Publication> {
           replay: "replayed",
         };
       }
-      if (idempotency.issuedAt < this.readNow() - this.limits.mutationReplay.maxAgeMs) {
+      const now = this.readNow();
+      const requestCreatedAt = uuidV7Timestamp(idempotency.requestId);
+      if (requestCreatedAt > now + MAX_MUTATION_CLOCK_SKEW_MS) {
+        throw new DbzzError("validation", "mutation request ID timestamp is in the future", {
+          resource: "idempotency",
+        });
+      }
+      if (requestCreatedAt < now - this.limits.mutationReplay.maxAgeMs) {
         throw conflict("mutation request is outside the retained replay window");
       }
       if (this.mutationRecords >= this.limits.mutationReplay.maxRecords) {
