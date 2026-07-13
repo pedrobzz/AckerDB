@@ -6,6 +6,9 @@
  *   dbz start [dir]    codegen once, then serve (production)
  *   dbz codegen [dir]  one-shot codegen
  *   dbz reset [dir]    delete the local database (dev escape hatch)
+ *   dbz status [dir]   inspect a database as JSON
+ *   dbz backup <file> [dir]   create and verify a backup
+ *   dbz restore <file> [dir]  verify and restore into a fresh target
  *
  * `dbz dev` is a supervisor that never imports user code itself: codegen and
  * the server run as child processes, so every reload sees fresh modules with
@@ -17,13 +20,54 @@ import { fileURLToPath } from "node:url";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { runCodegen } from "./codegen.ts";
 import { startApp } from "./app.ts";
+import {
+  createVerifiedBackup,
+  inspectDatabase,
+  parseBackupManifest,
+  restoreVerifiedBackup,
+  serializeBackupManifest,
+  verifyBackupArtifact,
+  type FreshProcessVerifier,
+} from "./operations.ts";
 
 const CLI_PATH = fileURLToPath(import.meta.url);
 
 function usage(): never {
-  console.log("usage: dbz <dev|start|codegen|reset> [app-dir]");
+  console.log(`usage:
+  dbz dev [app-dir]
+  dbz start [app-dir]
+  dbz codegen [app-dir]
+  dbz reset [app-dir]
+  dbz status [app-dir]
+  dbz backup <artifact> [app-dir]
+  dbz restore <artifact> [app-dir]`);
   process.exit(2);
 }
+
+function requireArgumentCount(args: string[], minimum: number, maximum: number): void {
+  if (args.length < minimum || args.length > maximum) usage();
+}
+
+const verifyInFreshProcess: FreshProcessVerifier = async (config, artifact, manifest) => {
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      CLI_PATH,
+      "__verify_backup",
+      config.appDir,
+      artifact,
+      JSON.stringify(serializeBackupManifest(manifest)),
+    ],
+    { stdout: "ignore", stderr: "pipe" },
+  );
+  const [exitCode, stderr] = await Promise.all([
+    child.exited,
+    new Response(child.stderr).text(),
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`fresh-process backup verification failed: ${stderr.trim() || `exit ${exitCode}`}`);
+  }
+};
 
 async function codegenChild(appDir: string): Promise<boolean> {
   const child = Bun.spawn([process.execPath, CLI_PATH, "codegen", appDir], {
@@ -113,40 +157,82 @@ async function dev(appDir: string): Promise<void> {
   await new Promise(() => {}); // run until killed
 }
 
-const [command, dirArg] = process.argv.slice(2);
-const appDir = resolve(dirArg ?? ".");
+const [command, ...args] = process.argv.slice(2);
 
-switch (command) {
-  case "dev":
-    await dev(appDir);
-    break;
-  case "start": {
-    const config = loadConfig(appDir);
-    await runCodegen(config);
-    await startApp(config);
-    break;
-  }
-  case "__serve":
-    await startApp(loadConfig(appDir));
-    break;
-  case "codegen": {
-    const t0 = performance.now();
-    const { written } = await runCodegen(loadConfig(appDir));
-    console.log(
-      `[dbz] codegen ${written.length > 0 ? `wrote ${written.join(", ")}` : "up to date"} (${Math.round(performance.now() - t0)}ms)`,
-    );
-    break;
-  }
-  case "reset": {
-    const config = loadConfig(appDir);
-    if (existsSync(config.dbDir)) {
-      rmSync(config.dbDir, { recursive: true, force: true });
-      console.log(`[dbz] removed ${config.dbDir}`);
-    } else {
-      console.log(`[dbz] nothing to remove at ${config.dbDir}`);
+try {
+  switch (command) {
+    case "dev": {
+      requireArgumentCount(args, 0, 1);
+      await dev(resolve(args[0] ?? "."));
+      break;
     }
-    break;
+    case "start": {
+      requireArgumentCount(args, 0, 1);
+      const config = loadConfig(resolve(args[0] ?? "."));
+      await runCodegen(config);
+      await startApp(config);
+      break;
+    }
+    case "__serve": {
+      requireArgumentCount(args, 1, 1);
+      await startApp(loadConfig(resolve(args[0]!)));
+      break;
+    }
+    case "__verify_backup": {
+      requireArgumentCount(args, 3, 3);
+      const manifest = parseBackupManifest(JSON.parse(args[2]!));
+      await verifyBackupArtifact(loadConfig(resolve(args[0]!)), resolve(args[1]!), manifest);
+      break;
+    }
+    case "codegen": {
+      requireArgumentCount(args, 0, 1);
+      const t0 = performance.now();
+      const { written } = await runCodegen(loadConfig(resolve(args[0] ?? ".")));
+      console.log(
+        `[dbz] codegen ${written.length > 0 ? `wrote ${written.join(", ")}` : "up to date"} (${Math.round(performance.now() - t0)}ms)`,
+      );
+      break;
+    }
+    case "reset": {
+      requireArgumentCount(args, 0, 1);
+      const config = loadConfig(resolve(args[0] ?? "."));
+      if (existsSync(config.dbDir)) {
+        rmSync(config.dbDir, { recursive: true, force: true });
+        console.log(`[dbz] removed ${config.dbDir}`);
+      } else {
+        console.log(`[dbz] nothing to remove at ${config.dbDir}`);
+      }
+      break;
+    }
+    case "status": {
+      requireArgumentCount(args, 0, 1);
+      console.log(JSON.stringify(await inspectDatabase(loadConfig(resolve(args[0] ?? ".")))));
+      break;
+    }
+    case "backup": {
+      requireArgumentCount(args, 1, 2);
+      const report = await createVerifiedBackup(
+        loadConfig(resolve(args[1] ?? ".")),
+        resolve(args[0]!),
+        verifyInFreshProcess,
+      );
+      console.log(JSON.stringify(report));
+      break;
+    }
+    case "restore": {
+      requireArgumentCount(args, 1, 2);
+      const report = await restoreVerifiedBackup(
+        loadConfig(resolve(args[1] ?? ".")),
+        resolve(args[0]!),
+        verifyInFreshProcess,
+      );
+      console.log(JSON.stringify(report));
+      break;
+    }
+    default:
+      usage();
   }
-  default:
-    usage();
+} catch (error) {
+  console.error(`[dbz] ${error instanceof Error ? error.message : String(error)}`);
+  process.exitCode = 1;
 }
