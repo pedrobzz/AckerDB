@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { ANONYMOUS_PRINCIPAL, type UserPrincipal } from "../src/auth.ts";
 import { dbz } from "../src/dbz.ts";
 import { DbzzError } from "../src/errors.ts";
@@ -6,6 +7,7 @@ import { query } from "../src/functions.ts";
 import {
   withInvocationObserver,
   type InvocationObservation,
+  type InvocationPhaseScope,
 } from "../src/invocation.ts";
 import { Registry } from "../src/registry.ts";
 
@@ -175,6 +177,50 @@ describe("invocation instrumentation", () => {
     expect(probeCalls).toBe(1);
     expect(observations).toHaveLength(3);
     expect(observations.every((observation) => observation.fn === fn)).toBe(true);
+  });
+
+  test("runs phase work and observations inside the matching caller scope", async () => {
+    const active = new AsyncLocalStorage<Readonly<InvocationPhaseScope>>();
+    const handlerScopes: Readonly<InvocationPhaseScope>[] = [];
+    const observedScopes: Readonly<InvocationPhaseScope>[] = [];
+    const child = query({
+      args: {},
+      access: "public",
+      handler: () => {
+        handlerScopes.push(active.getStore()!);
+        return "child";
+      },
+    });
+    const parent = query({
+      args: {},
+      access: "public",
+      handler: async (ctx) => {
+        handlerScopes.push(active.getStore()!);
+        return child(ctx, {});
+      },
+    });
+
+    expect(await withInvocationObserver(
+      () => {
+        observedScopes.push(active.getStore()!);
+      },
+      () => parent({ auth: ANONYMOUS_PRINCIPAL }, {}),
+      (scope, work) => active.run(scope, work),
+    )).toBe("child");
+
+    expect(handlerScopes.map(({ invocationId, phase }) => [invocationId, phase])).toEqual([
+      [1, "handler"],
+      [2, "handler"],
+    ]);
+    expect(observedScopes.map(({ invocationId, phase }) => [invocationId, phase])).toEqual([
+      [1, "auth"],
+      [1, "policy"],
+      [2, "auth"],
+      [2, "policy"],
+      [2, "handler"],
+      [1, "handler"],
+    ]);
+    expect(observedScopes.every(Object.isFrozen)).toBe(true);
   });
 });
 

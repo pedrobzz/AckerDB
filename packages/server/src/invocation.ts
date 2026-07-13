@@ -30,8 +30,21 @@ export interface InvocationObservation {
 
 export type InvocationObserver = (observation: InvocationObservation) => unknown;
 
+export interface InvocationPhaseScope {
+  readonly fn: AnyRegistered;
+  readonly invocationId: number;
+  readonly parentInvocationId?: number;
+  readonly depth: number;
+  readonly phase: InvocationPhase;
+}
+
+export interface InvocationPhaseRunner {
+  <T>(scope: Readonly<InvocationPhaseScope>, work: () => T): T;
+}
+
 interface InvocationInstrumentationScope {
   readonly observer: InvocationObserver;
+  readonly runPhase?: InvocationPhaseRunner;
   nextInvocationId: number;
 }
 
@@ -61,9 +74,13 @@ const invocationState = new AsyncLocalStorage<InvocationState>();
 const invocationInstrumentation = new AsyncLocalStorage<InvocationInstrumentationState>();
 
 /** Install one isolated observer scope around a top-level invocation boundary. */
-export function withInvocationObserver<T>(observer: InvocationObserver, work: () => T): T {
+export function withInvocationObserver<T>(
+  observer: InvocationObserver,
+  work: () => T,
+  runPhase?: InvocationPhaseRunner,
+): T {
   return invocationInstrumentation.run({
-    scope: { observer, nextInvocationId: 0 },
+    scope: { observer, runPhase, nextInvocationId: 0 },
     invocationId: null,
     depth: -1,
   }, work);
@@ -187,15 +204,28 @@ async function observePhase<T>(
   phase: InvocationPhase,
   work: () => T | Promise<T>,
 ): Promise<T> {
-  const startedAt = performance.now();
-  try {
-    const value = await work();
-    emitObservation(state, fn, phase, startedAt, "ok");
-    return value;
-  } catch (error) {
-    emitObservation(state, fn, phase, startedAt, safeOutcome(error));
-    throw error;
-  }
+  const run = async (): Promise<T> => {
+    const startedAt = performance.now();
+    try {
+      const value = await work();
+      emitObservation(state, fn, phase, startedAt, "ok");
+      return value;
+    } catch (error) {
+      emitObservation(state, fn, phase, startedAt, safeOutcome(error));
+      throw error;
+    }
+  };
+  const runPhase = state.scope.runPhase;
+  if (runPhase === undefined) return run();
+  return runPhase(Object.freeze({
+    fn,
+    invocationId: state.invocationId!,
+    ...(state.parentInvocationId === undefined
+      ? {}
+      : { parentInvocationId: state.parentInvocationId }),
+    depth: state.depth,
+    phase,
+  }), run);
 }
 
 function runHandler<Ctx extends InvocationContext, Args, R>(
