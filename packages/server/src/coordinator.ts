@@ -74,6 +74,15 @@ export interface CommitCoordinatorOptions<Publication> {
   readonly now?: () => number;
 }
 
+type PublicationCompletion =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly cause: unknown };
+
+interface CommitHandoff<T, Publication> {
+  readonly result: CommitResult<T, Publication>;
+  readonly completion?: Promise<PublicationCompletion>;
+}
+
 function conflict(message: string): DbzzError {
   return new DbzzError("conflict", message, { resource: "idempotency" });
 }
@@ -119,22 +128,31 @@ export class CommitCoordinator<Publication> {
     });
   }
 
-  execute<T>(request: CommitRequest<T, Publication>): Promise<CommitResult<T, Publication>> {
+  async execute<T>(request: CommitRequest<T, Publication>): Promise<CommitResult<T, Publication>> {
     if (transaction.getStore()) {
-      return Promise.reject(
-        new DbzzError(
-          "validation",
-          "cannot open a transaction inside a transaction; compose calls in the current ctx.tx",
-        ),
+      throw new DbzzError(
+        "validation",
+        "cannot open a transaction inside a transaction; compose calls in the current ctx.tx",
       );
     }
-    return this.writer.submit(() => this.commit(request), {
+    const handoff = await this.writer.submit(() => this.commit(request), {
       operation: request.operation,
       bytes: request.requestBytes,
       fairnessKey: request.fairnessKey,
       ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
       ...(request.signal === undefined ? {} : { signal: request.signal }),
     });
+    if (handoff.completion !== undefined) {
+      const completion = await handoff.completion;
+      if (!completion.ok) {
+        throw new DbzzError(
+          "convergence_unavailable",
+          "the transaction committed but ordered publication failed",
+          { committed: true, cause: completion.cause },
+        );
+      }
+    }
+    return handoff.result;
   }
 
   close(): void {
@@ -151,7 +169,7 @@ export class CommitCoordinator<Publication> {
 
   private async commit<T>(
     request: CommitRequest<T, Publication>,
-  ): Promise<CommitResult<T, Publication>> {
+  ): Promise<CommitHandoff<T, Publication>> {
     const idempotency = request.idempotency;
     if (idempotency) {
       if (!Number.isSafeInteger(idempotency.issuedAt) || idempotency.issuedAt < 0) {
@@ -166,10 +184,12 @@ export class CommitCoordinator<Publication> {
           throw conflict("mutation request ID was already used with different semantics");
         }
         return {
-          value: decode(stored.result) as T,
-          commitVersion: stored.commitVersion,
-          durability: stored.durability,
-          replay: "replayed",
+          result: {
+            value: decode(stored.result) as T,
+            commitVersion: stored.commitVersion,
+            durability: stored.durability,
+            replay: "replayed",
+          },
         };
       }
       const now = this.readNow();
@@ -249,21 +269,18 @@ export class CommitCoordinator<Publication> {
         this.mutationResultBytes += resultBytes;
       }
       reservation.commit(publication);
-      try {
-        await reservation.completion;
-      } catch (cause) {
-        throw new DbzzError(
-          "convergence_unavailable",
-          "the transaction committed but ordered publication failed",
-          { committed: true, cause },
-        );
-      }
       return {
-        value,
-        commitVersion,
-        durability: this.engine.durability,
-        replay: "executed",
-        publication,
+        result: {
+          value,
+          commitVersion,
+          durability: this.engine.durability,
+          replay: "executed",
+          publication,
+        },
+        completion: reservation.completion.then(
+          (): PublicationCompletion => ({ ok: true }),
+          (cause): PublicationCompletion => ({ ok: false, cause }),
+        ),
       };
     } catch (error) {
       if (!committed) {

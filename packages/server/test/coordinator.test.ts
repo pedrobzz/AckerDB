@@ -56,6 +56,14 @@ const identity = {
   argsFingerprint: stableEncode({ body: "hello" }),
 };
 
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+}
+
 describe("CommitCoordinator", () => {
   test("persists one monotonic version and hands publication off before resolving", async () => {
     const { coordinator, engine, published } = fixture();
@@ -75,6 +83,56 @@ describe("CommitCoordinator", () => {
     });
     expect(engine.commitVersion()).toBe(1n);
     expect(published).toEqual([1n]);
+  });
+
+  test("releases the writer turn after handoff while ordered publication is pending", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "dbzz-coordinator-handoff-"));
+    dirs.push(dir);
+    const engine = new Engine(schema, join(dir, "data.db"));
+    engines.push(engine);
+    reconcile(engine);
+    const release = deferred();
+    const started = deferred();
+    const publication = new OrderedPublication<{ version: bigint }>({
+      limits: { maxItems: 2, maxBytes: PRODUCTION_LIMITS.publication.maxBytes },
+      initialVersion: 0n,
+      process: async ({ version }) => {
+        if (version === 1n) {
+          started.resolve();
+          await release.promise;
+        }
+      },
+    });
+    const coordinator = new CommitCoordinator({
+      engine,
+      limits: defineServiceLimits({
+        ...PRODUCTION_LIMITS,
+        publication: publication.limits,
+      }),
+      reservePublication: (bytes) => publication.reserve(bytes),
+    });
+    const request = (body: string) => coordinator.execute({
+      operation: "transaction" as const,
+      fairnessKey: "connection-1",
+      requestBytes: 1,
+      work: (db: any) => db.notes.insert({ body }),
+      publication: (version: bigint) => ({ version }),
+    });
+
+    const first = request("first");
+    await started.promise;
+    let firstResolved = false;
+    void first.then(() => {
+      firstResolved = true;
+    });
+    const second = request("second");
+    for (let turn = 0; turn < 20 && engine.commitVersion() < 2n; turn++) await Promise.resolve();
+    expect(engine.commitVersion()).toBe(2n);
+    expect(publication.snapshot()).toMatchObject({ items: 2, highWater: 2n });
+    expect(firstResolved).toBe(false);
+
+    release.resolve();
+    await Promise.all([first, second]);
   });
 
   test("replays an identical scoped request and rejects changed semantics", async () => {
