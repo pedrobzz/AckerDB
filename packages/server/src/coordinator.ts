@@ -50,6 +50,13 @@ export interface CommitRequest<T, Publication> {
   /** Additional storage work, such as deleting a due row, in the same transaction. */
   readonly finalize?: (writes: WriteCollector) => void | Promise<void>;
   readonly publication: (version: bigint, writes: WriteCollector) => Publication;
+  /** Last fallible response-shape check, still inside the transaction. */
+  readonly validate?: (
+    value: T,
+    version: bigint,
+    writes: WriteCollector,
+    publication: Publication,
+  ) => void;
 }
 
 export interface CommitResult<T, Publication> {
@@ -222,6 +229,8 @@ export class CommitCoordinator<Publication> {
       if (commitVersion !== reservation.version) {
         throw new DbzzError("internal", "storage and publication versions diverged");
       }
+      publication = request.publication(commitVersion, writes);
+      request.validate?.(value, commitVersion, writes, publication);
       if (idempotency && result !== undefined) {
         this.engine.insertStoredMutation({
           ...idempotency,
@@ -231,7 +240,6 @@ export class CommitCoordinator<Publication> {
           durability: this.engine.durability,
         });
       }
-      publication = request.publication(commitVersion, writes);
       this.engine.writer.exec("COMMIT");
       committed = true;
       if (idempotency) {

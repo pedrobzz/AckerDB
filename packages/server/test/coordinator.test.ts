@@ -134,6 +134,23 @@ describe("CommitCoordinator", () => {
     expect(engine.writer.query('SELECT COUNT(*) AS n FROM "notes"').get()).toEqual({ n: 1n });
   });
 
+  test("rolls back when the final response shape cannot be published", async () => {
+    const { coordinator, engine, publication } = fixture();
+    await expect(coordinator.execute({
+      operation: "transaction",
+      fairnessKey: "connection-1",
+      requestBytes: 1,
+      work: (db: any) => db.notes.insert({ body: "must disappear" }),
+      publication: (version) => ({ version }),
+      validate: () => {
+        throw new DbzzError("overloaded", "response is too large", { resource: "operation" });
+      },
+    })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
+    expect(engine.commitVersion()).toBe(0n);
+    expect(engine.writer.query('SELECT COUNT(*) AS n FROM "notes"').get()).toEqual({ n: 0n });
+    expect(publication.snapshot()).toMatchObject({ items: 0, highWater: 0n });
+  });
+
   test("fetch and nested transactions are rejected at the owning boundary", async () => {
     const { coordinator } = fixture();
     const nested = () => coordinator.execute({
