@@ -2,11 +2,13 @@
 
 ## Outcome
 
-Implementation and behavioral verification are complete at `007a44a`. A lean
+Implementation and behavioral verification for stories 1–44 and 48–50 are
+complete at `007a44a`. A lean
 same-host DBZZ/Convex/SpacetimeDB comparison completed on Hetzner in 4m12s,
-passed correctness, and proved the current DBZZ-over-Convex margin. Historical
-Apple M2 acceptance remains explicitly deferred: the Linux run cannot prove
-that machine-bound gate and was intentionally not saved as an accepted result.
+passed correctness, and proved a strong current DBZZ-over-local-Convex margin.
+The branch is not clean-clone/acceptance complete: its required frozen baseline
+JSON is untracked, and no accepted post-change schema-v5 result proves stories
+45–47. Historical Apple M2 acceptance remains explicitly deferred.
 
 ## Accepted Results
 
@@ -47,7 +49,7 @@ that machine-bound gate and was intentionally not saved as an accepted result.
 
 - `bun run test`: 487 passed and the known macOS whole-process RSS stabilization
   proof missed its 60-second allocator deadline; its immediate isolated rerun
-  passed with 7,227 assertions. The prior canonical run was 488/488.
+  passed. The prior canonical run was 488/488.
 - `bun run typecheck`: passed.
 - `bunx tsc -p bench/tsconfig.json --noEmit`: passed.
 - Benchmark contract suites: 41 passed, 0 failed, 183 assertions.
@@ -57,12 +59,21 @@ that machine-bound gate and was intentionally not saved as an accepted result.
   swap, and no surviving benchmark processes or listeners.
 - Dynamic-workflow verifier and wiki index/link lint: passed.
 
+The benchmark contract tests above ran in the local worktree, where the required
+frozen baseline exists. Because that JSON is untracked, the same committed test
+code fails from a clean checkout until the baseline is committed or redesigned
+as a tracked fixture.
+
 ## Remaining Risks
 
-- Literal historical story 47 acceptance still requires the default all-system
-  benchmark on the frozen Apple M2 machine to preserve all 273 prior
-  DBZZ-over-SpacetimeDB wins and 126 DBZZ-over-Convex floors. Pedro explicitly
-  deferred that historical comparison for the current Hetzner check.
+- `bench/results/2026-07-13T15-34-33Z-74d8554.json` is a hard clean-clone
+  blocker because committed tests and the runner load it but Git does not track
+  it.
+- Story 45 still needs an accepted post-change telemetry default/exporter/
+  disabled cost result. Story 46 has strong current-host evidence but not the
+  frozen default acceptance workload. Story 47 still needs the Apple M2 run to
+  preserve all 273 prior DBZZ-over-SpacetimeDB wins; Pedro explicitly deferred
+  that historical comparison for the current Hetzner check.
 - The documented single-node, local-SQLite, no-automatic-failover limitations
   remain intentional product boundaries rather than hidden guarantees.
 

@@ -19,24 +19,26 @@
     "C2_client_transports": "complete",
     "T1_telemetry": "complete",
     "Q1_behavior_fault_tests": "complete",
-    "P1_benchmark": "current_host_comparison_complete_historical_acceptance_deferred",
-    "V1_verification": "complete_for_current_scope",
-    "G1_atomic_commits": "complete"
+    "P1_benchmark": "current_host_complete_schema_v5_acceptance_deferred",
+    "V1_verification": "blocked_by_untracked_frozen_baseline",
+    "G1_atomic_commits": "blocked_by_untracked_frozen_baseline"
   },
   "verification": {
-    "status": "complete_for_current_scope",
+    "status": "blocked_by_untracked_frozen_baseline_and_deferred_acceptance",
     "completed": [
       "focused SSE and full process-resource suites",
-      "488-test canonical public/fault/privacy/cardinality suite",
+      "prior 488/488 canonical pass; latest broad run reached 487 plus one RSS stabilization timeout, whose isolated rerun passed",
       "root and benchmark typechecks",
-      "38-test benchmark contract and acceptance-gate suite",
+      "41-test benchmark contract and acceptance-gate suite with 183 assertions",
       "story-by-story independent PRD audits",
       "wiki lint and workflow validation",
       "252-second zero-swap current-host DBZZ/Convex/SpacetimeDB comparison",
       "post-benchmark process/listener and remote worktree cleanup"
     ],
     "pending": [
-      "optional historical M2 acceptance explicitly deferred for the current Hetzner comparison"
+      "commit or redesign the required untracked frozen benchmark baseline",
+      "clean-checkout verification after the baseline is tracked",
+      "schema-v5 telemetry-cost and frozen performance acceptance explicitly deferred for the current Hetzner comparison"
     ]
   }
 }
