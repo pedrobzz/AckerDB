@@ -128,7 +128,7 @@ describe("benchmark acceptance and persistence policy", () => {
 
   test("runs the complete current-host comparison without historical acceptance", () => {
     expect(benchmarkRunPolicy(allSystems, "default", "current")).toEqual({
-      profiledDbzz: true,
+      profiledDbzz: false,
       acceptAndSave: false,
       diagnosticMessage:
         "current-host default comparison complete: historical acceptance skipped; result not saved",

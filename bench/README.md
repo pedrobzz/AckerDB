@@ -34,11 +34,13 @@ profile used in the three-system tables. The exporter and disabled results plus
 their deltas are separate schema-v5 evidence, not extra databases. Partial runs
 execute only the selected systems and one default-enabled DBZZ profile.
 
-`BENCH_COMPARISON=current` keeps the complete default workload, all three DBZZ
-telemetry profiles, correctness checks, telemetry validation, and same-host
-comparison tables. It exits successfully without evaluating the historical
-machine-bound gate or saving a result. This is the intended mode for comparing
-the current systems on a different machine.
+`BENCH_COMPARISON=current` keeps the complete default workload, DBZZ's literal
+runtime-default telemetry profile, correctness checks, telemetry validation,
+and same-host DBZZ/Convex/SpacetimeDB tables. It skips the exporter and disabled
+DBZZ cost legs because they do not affect the three-system margin question,
+then exits successfully without evaluating the historical machine-bound gate
+or saving a result. This is the intended mode for comparing the current systems
+on a different machine.
 
 All DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`. The
 `runtime-default` profile uses the production retention/queue limits, built-in

@@ -64,7 +64,7 @@ export function benchmarkRunPolicy(
   }
   if (comparison === "current") {
     return {
-      profiledDbzz: true,
+      profiledDbzz: false,
       acceptAndSave: false,
       diagnosticMessage:
         `current-host ${profile} comparison complete: historical acceptance skipped; result not saved`,
