@@ -7,6 +7,7 @@ import {
   encode,
   type MutationOkMessage,
   type Outcome,
+  type SubscriptionTransition,
   type TransitionMessage,
 } from "@dbzz/core";
 import {
@@ -24,6 +25,7 @@ import {
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
 import { mutation, query } from "../src/functions.ts";
+import { defineServiceLimits, PRODUCTION_LIMITS } from "../src/limits.ts";
 import { reconcile } from "../src/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
@@ -69,6 +71,61 @@ class FixedClock implements SessionClock, DbzzClientClock {
   clearTimeout = (_handle: unknown): void => {};
   setInterval = (_callback: () => void, _delayMs: number): number => 2;
   clearInterval = (_handle: unknown): void => {};
+}
+
+interface ReconnectTask {
+  at: number;
+  readonly callback: () => void;
+  readonly intervalMs?: number;
+}
+
+class ReconnectClock implements DbzzClientClock {
+  private time = NOW;
+  private nextId = 0;
+  private readonly tasks = new Map<number, ReconnectTask>();
+
+  now(): number {
+    return this.time;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback });
+    return id;
+  }
+
+  clearTimeout(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  setInterval(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
+    return id;
+  }
+
+  clearInterval(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  advance(ms: number): void {
+    const target = this.time + ms;
+    for (;;) {
+      let next: [number, ReconnectTask] | undefined;
+      for (const entry of this.tasks) {
+        if (entry[1].at <= target && (next === undefined || entry[1].at < next[1].at)) {
+          next = entry;
+        }
+      }
+      if (next === undefined) break;
+      const [id, task] = next;
+      this.time = task.at;
+      if (task.intervalMs === undefined) this.tasks.delete(id);
+      else task.at += task.intervalMs;
+      task.callback();
+    }
+    this.time = target;
+  }
 }
 
 class UserVerifier implements CredentialVerifier {
@@ -187,6 +244,13 @@ class DeterministicSink implements SessionSink {
   }
 }
 
+type TransitionCutPhase = "before" | "after";
+
+interface TransitionCut {
+  readonly kind: SubscriptionTransition["kind"];
+  readonly phase: TransitionCutPhase;
+}
+
 class SessionSocket implements DbzzWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
@@ -194,9 +258,12 @@ class SessionSocket implements DbzzWebSocket {
   onerror: (() => void) | null = null;
   session!: Session;
   readonly pending = new Set<Promise<void>>();
+  readonly attemptedTransitions: TransitionMessage[] = [];
+  readonly deliveredTransitions: TransitionMessage[] = [];
   error: unknown;
   private closed = false;
   private inboundTail: Promise<void> = Promise.resolve();
+  private transitionCut?: TransitionCut;
 
   send(data: string): void {
     if (this.closed) throw new Error("socket is closed");
@@ -224,6 +291,30 @@ class SessionSocket implements DbzzWebSocket {
     if (!this.closed) this.onmessage?.({ data: text });
   }
 
+  deliverApplication(publication: RuntimePublication): void {
+    if (this.closed) return;
+    const transition = publication.message.t === "transition"
+      ? publication.message
+      : undefined;
+    if (transition !== undefined) {
+      this.attemptedTransitions.push(transition);
+      if (this.consumeTransitionCut(transition, "before")) {
+        this.close();
+        return;
+      }
+    }
+    this.receiveText(publication.text);
+    if (transition !== undefined) {
+      this.deliveredTransitions.push(transition);
+      if (this.consumeTransitionCut(transition, "after")) this.close();
+    }
+  }
+
+  cutNextTransition(kind: SubscriptionTransition["kind"], phase: TransitionCutPhase): void {
+    if (this.transitionCut !== undefined) throw new Error("a transition cut is already armed");
+    this.transitionCut = { kind, phase };
+  }
+
   serverClose(): void {
     if (this.closed) return;
     this.closed = true;
@@ -248,17 +339,38 @@ class SessionSocket implements DbzzWebSocket {
       .finally(() => this.pending.delete(settled));
     this.pending.add(settled);
   }
+
+  private consumeTransitionCut(
+    transition: TransitionMessage,
+    phase: TransitionCutPhase,
+  ): boolean {
+    if (
+      this.transitionCut?.kind !== transition.transition.kind ||
+      this.transitionCut.phase !== phase
+    ) return false;
+    this.transitionCut = undefined;
+    return true;
+  }
 }
 
 class SessionSocketSink implements SessionSink {
-  constructor(private readonly socket: SessionSocket) {}
+  constructor(
+    private readonly socket: SessionSocket,
+    private readonly remoteControlHandoff = false,
+  ) {}
 
   async sendControl(message: SessionControlMessage): Promise<void> {
-    this.socket.receive(message);
+    if (!this.remoteControlHandoff) {
+      this.socket.receive(message);
+      return;
+    }
+    // A transport handoff completes before the remote peer can react to it.
+    // Two turns put Session's post-await state transition ahead of loopback delivery.
+    queueMicrotask(() => queueMicrotask(() => this.socket.receive(message)));
   }
 
   async sendApplication(_authEpoch: number, publication: RuntimePublication): Promise<void> {
-    this.socket.receiveText(publication.text);
+    this.socket.deliverApplication(publication);
   }
 
   async dropApplicationFramesBefore(_authEpoch: number): Promise<void> {}
@@ -280,6 +392,17 @@ function transitionMessages(records: readonly ApplicationRecord[]): TransitionMe
 
 async function settle(): Promise<void> {
   for (let turn = 0; turn < 16; turn++) await Promise.resolve();
+}
+
+async function waitForTransitionAttempt(
+  socket: SessionSocket,
+  kind: SubscriptionTransition["kind"],
+): Promise<void> {
+  for (let turn = 0; turn < 100; turn++) {
+    if (socket.attemptedTransitions.some(({ transition }) => transition.kind === kind)) return;
+    await Promise.resolve();
+  }
+  throw new Error(`timed out waiting for ${kind} transition`);
 }
 
 const schema = defineSchema({
@@ -309,6 +432,248 @@ const schema = defineSchema({
 // Integration tests exercise runtime ownership rather than generated application types.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ctx = any;
+
+type ReconnectTransitionCase = readonly [
+  transition: SubscriptionTransition["kind"],
+  phase: TransitionCutPhase,
+  recoveryTransitions: readonly SubscriptionTransition["kind"][],
+  updates: readonly string[],
+  errors: readonly string[],
+];
+
+const RECONNECT_TRANSITION_CASES: readonly ReconnectTransitionCase[] = [
+  ["reset", "before", ["reset"], ["", "one,two"], []],
+  ["reset", "after", ["resume"], ["", "one,two"], []],
+  ["update", "before", ["update"], ["", "one"], []],
+  ["update", "after", ["resume"], ["", "one"], []],
+  ["checkpoint", "before", ["checkpoint"], ["true"], []],
+  ["checkpoint", "after", ["resume"], ["true"], []],
+  ["resume", "before", ["resume"], [""], []],
+  ["resume", "after", ["resume"], [""], []],
+  ["revoked", "before", ["reset"], ["alice", "bob"], []],
+  ["revoked", "after", ["reset"], ["alice", "bob"], ["auth_stale"]],
+];
+
+interface ReconnectTransitionEvidence {
+  readonly transition: SubscriptionTransition["kind"];
+  readonly phase: TransitionCutPhase;
+  readonly cutAttempted: boolean;
+  readonly cutApplied: boolean;
+  readonly recoveryTransitions: readonly SubscriptionTransition["kind"][];
+  readonly updates: readonly string[];
+  readonly errors: readonly string[];
+}
+
+async function reconnectTransitionEvidence(
+  transition: SubscriptionTransition["kind"],
+  phase: TransitionCutPhase,
+): Promise<ReconnectTransitionEvidence> {
+  const directory = mkdtempSync(join(tmpdir(), `dbzz-reconnect-${transition}-${phase}-`));
+  const engine = new Engine(schema, join(directory, "data.db"));
+  reconcile(engine);
+  const limits = transition === "reset"
+    ? defineServiceLimits({
+        ...PRODUCTION_LIMITS,
+        resume: { ...PRODUCTION_LIMITS.resume, maxTransitionsPerStream: 1 },
+      })
+    : PRODUCTION_LIMITS;
+  const registry = new Registry({
+    messages: {
+      list: query({
+        access: "public",
+        args: { channelId: dbz.bigint() },
+        handler: (ctx: Ctx, args: Ctx) =>
+          ctx.db.messages.byChannel((builder: Ctx) =>
+            builder.eq("channelId", args.channelId)
+          ).collect(),
+      }),
+      nonempty: query({
+        access: "public",
+        args: { channelId: dbz.bigint() },
+        handler: async (ctx: Ctx, args: Ctx) =>
+          (await ctx.db.messages.byChannel((builder: Ctx) =>
+            builder.eq("channelId", args.channelId)
+          ).collect()).length > 0,
+      }),
+      identity: query({
+        access: "authenticated",
+        args: {},
+        handler: (ctx: Ctx) => ({ subject: ctx.auth.subject }),
+      }),
+      send: mutation({
+        access: "public",
+        args: { channelId: dbz.bigint(), body: dbz.string() },
+        handler: (ctx: Ctx, args: Ctx) => ctx.db.messages.insert(args),
+      }),
+    },
+  });
+  const runtime = new Runtime({ engine, registry, limits, telemetry: false, now: () => NOW });
+  const writerSink = new DeterministicSink();
+  const writer = new Session({
+    runtime,
+    sink: writerSink,
+    source: TEST_SOURCE,
+    clock: new FixedClock(),
+  });
+  const verifier = new UserVerifier();
+  const clock = new ReconnectClock();
+  const sockets: SessionSocket[] = [];
+  const client = new DbzzClient({
+    url: "http://loopback.test",
+    credential: { kind: "bearer", token: "alice" },
+    clientSessionId: `reconnect-${transition}-${phase}`,
+    clock,
+    random: () => 0,
+    reconnect: { baseDelayMs: 1, maxDelayMs: 1, stableOpenMs: 60_000 },
+    createWebSocket: () => {
+      const socket = new SessionSocket();
+      socket.session = new Session({
+        runtime,
+        sink: new SessionSocketSink(socket, true),
+        source: TEST_SOURCE,
+        verifier,
+        clock: new FixedClock(),
+      });
+      sockets.push(socket);
+      queueMicrotask(() => socket.open());
+      return socket;
+    },
+  });
+  const updates: string[] = [];
+  const errors: string[] = [];
+  let mutationSequence = 0;
+
+  const write = async (args: unknown): Promise<void> => {
+    const sequence = ++mutationSequence;
+    await handle(writer, {
+      v: PROTOCOL_VERSION,
+      t: "m",
+      id: sequence,
+      ref: "messages.send",
+      args,
+      mutationRequestId: uuidV7(NOW, 100 + sequence),
+      issuedAt: NOW,
+    });
+  };
+  const latestSocket = (): SessionSocket => {
+    const socket = sockets.at(-1);
+    if (socket === undefined) throw new Error("client did not create a socket");
+    return socket;
+  };
+  const reconnect = async (): Promise<SessionSocket> => {
+    const previousCount = sockets.length;
+    clock.advance(1);
+    const socket = sockets[previousCount];
+    if (socket === undefined) throw new Error(`${transition}/${phase}: client did not reconnect`);
+    await socket.settle();
+    return socket;
+  };
+  const onError = (error: DbzzClientError): void => {
+    errors.push(error.code);
+  };
+
+  try {
+    await handle(writer, {
+      v: PROTOCOL_VERSION,
+      t: "hello",
+      clientSessionId: `writer-${transition}-${phase}`,
+      credential: { kind: "anonymous" },
+    });
+
+    if (transition === "checkpoint") await write({ channelId: 1n, body: "seed" });
+
+    if (transition === "checkpoint") {
+      client.subscribe("messages.nonempty", { channelId: 1n }, (value) => {
+        updates.push(String(value));
+      }, onError);
+    } else if (transition === "revoked") {
+      client.subscribe("messages.identity", {}, (value) => {
+        updates.push((value as { readonly subject: string }).subject);
+      }, onError);
+    } else {
+      client.subscribe("messages.list", { channelId: 1n }, (value) => {
+        const rows = value as readonly { readonly body: string }[];
+        updates.push(rows.map(({ body }) => body).sort().join(","));
+      }, onError);
+    }
+
+    const first = latestSocket();
+    await first.settle();
+    let cutSocket: SessionSocket;
+    let refresh: Promise<unknown> | undefined;
+
+    switch (transition) {
+      case "reset": {
+        first.close();
+        await first.settle();
+        await write({ channelId: 1n, body: "one" });
+        await write({ channelId: 1n, body: "two" });
+        const previousCount = sockets.length;
+        clock.advance(1);
+        cutSocket = sockets[previousCount]!;
+        cutSocket.cutNextTransition("reset", phase);
+        await cutSocket.settle();
+        break;
+      }
+      case "update":
+        cutSocket = first;
+        cutSocket.cutNextTransition("update", phase);
+        await write({ channelId: 1n, body: "one" });
+        await cutSocket.settle();
+        break;
+      case "checkpoint":
+        cutSocket = first;
+        cutSocket.cutNextTransition("checkpoint", phase);
+        await write({ channelId: 1n, body: "second" });
+        await cutSocket.settle();
+        break;
+      case "resume": {
+        first.close();
+        await first.settle();
+        const previousCount = sockets.length;
+        clock.advance(1);
+        cutSocket = sockets[previousCount]!;
+        cutSocket.cutNextTransition("resume", phase);
+        await cutSocket.settle();
+        break;
+      }
+      case "revoked":
+        cutSocket = first;
+        cutSocket.cutNextTransition("revoked", phase);
+        refresh = client.refreshCredential({ kind: "bearer", token: "bob" });
+        void refresh.catch(() => {});
+        await waitForTransitionAttempt(cutSocket, "revoked");
+        await cutSocket.settle();
+        break;
+    }
+
+    const recoverySocket = await reconnect();
+    await refresh;
+    await recoverySocket.settle();
+    return {
+      transition,
+      phase,
+      cutAttempted: cutSocket.attemptedTransitions.some(({ transition: attempted }) =>
+        attempted.kind === transition
+      ),
+      cutApplied: cutSocket.deliveredTransitions.some(({ transition: delivered }) =>
+        delivered.kind === transition
+      ),
+      recoveryTransitions: recoverySocket.deliveredTransitions.map(({ transition: recovered }) =>
+        recovered.kind
+      ),
+      updates,
+      errors,
+    };
+  } finally {
+    client.close();
+    await Promise.all(sockets.map((socket) => socket.settle()));
+    await writer.close();
+    await runtime.drain();
+    engine.close("clean");
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 describe("Session + Runtime integration", () => {
   test("preserves exact noncanonical Session bytes in concrete Runtime telemetry", async () => {
@@ -372,6 +737,20 @@ describe("Session + Runtime integration", () => {
       await runtime.drain();
       engine.close("clean");
       rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("reconnects safely immediately before and after every query transition kind", async () => {
+    for (const [transition, phase, recoveryTransitions, updates, errors] of RECONNECT_TRANSITION_CASES) {
+      expect(await reconnectTransitionEvidence(transition, phase)).toEqual({
+        transition,
+        phase,
+        cutAttempted: true,
+        cutApplied: phase === "after",
+        recoveryTransitions,
+        updates,
+        errors,
+      });
     }
   });
 
