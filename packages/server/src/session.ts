@@ -334,6 +334,10 @@ export class Session {
     });
   }
 
+  get currentClientSessionId(): string | null {
+    return this.clientSessionId;
+  }
+
   /** Accepts one decoded Protocol-2 frame with transport-owned byte accounting. */
   handle(received: ReceivedFrame): Promise<void> {
     const { bytes } = received;

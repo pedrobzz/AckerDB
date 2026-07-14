@@ -414,6 +414,7 @@ describe("Session Protocol-2 ownership", () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
     const session = new Session({ runtime, sink, source: TEST_SOURCE });
+    expect(session.currentClientSessionId).toBeNull();
 
     await handle(session, hello());
     await handle(session, { v: 2, t: "sub", id: 1, ref: "messages.list", args: {} });
@@ -430,6 +431,7 @@ describe("Session Protocol-2 ownership", () => {
       principal: ANONYMOUS_PRINCIPAL,
       authEpoch: 0,
     });
+    expect(session.currentClientSessionId).toBe("client-1");
     expect(runtime.opens[0]).toMatchObject({
       clientSessionId: "client-1",
       principal: ANONYMOUS_PRINCIPAL,

@@ -765,7 +765,7 @@ export class DbzzServer {
           ? {
               captureObserver: (lane) => runtime.captureDeliveryObserver(
                 lane,
-                data.session?.snapshot().clientSessionId ?? undefined,
+                data.session?.currentClientSessionId ?? undefined,
               ),
             }
           : {}),
