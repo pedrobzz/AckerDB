@@ -13,22 +13,25 @@ connections, and reactive delivery through each product's current client SDK.
 ## Run it
 
 ```sh
-bun bench/run.ts                              # default: all systems, saves JSON
-BENCH_PROFILE=quick bun bench/run.ts          # smoke profile, saves JSON
-BENCH_PROFILE=stress bun bench/run.ts         # adds 5,000 and 10,000 connections
-bun bench/run.ts dbzz convex                  # any subset; does not save JSON
+bun bench/run.ts                              # default all-system acceptance; saves only if every gate passes
+BENCH_PROFILE=quick bun bench/run.ts          # paired all-system smoke diagnostic; never saves
+BENCH_PROFILE=stress bun bench/run.ts         # paired all-system stress diagnostic; never saves
+bun bench/run.ts dbzz convex                  # partial diagnostic; never saves
 ```
 
-The runner checks that ports 3311, 3210/3211, and 5321 are free before starting
-anything. Every system gets fresh state, a warmup before measured operations,
-and the same deterministic seed. All-three-system runs rotate system order and
-write `bench/results/<timestamp>-<gitsha>.json`; partial runs are diagnostic and
-are not saved. A full run starts DBZZ twice from fresh equivalent state: once
-with the literal `Runtime` telemetry default (the constructor option is omitted),
-then once with `telemetry: false`. `systems.dbzz` remains the enabled profile
-used in the three-system tables; the disabled result and
+Before each selected system starts, the runner checks only that leg's fixed
+ports: 3311 for DBZZ, 3210 and 3211 for Convex, and 5321 for SpacetimeDB. Thus
+an unrelated occupied port does not block a partial diagnostic. Every system
+gets fresh state, a warmup before measured operations, and the same
+deterministic seed. The unqualified all-system command rotates system order;
+an explicit system list preserves its order. All-system runs also start DBZZ
+twice from fresh equivalent state, including quick and stress diagnostics:
+once with the literal `Runtime` telemetry default (the constructor option is
+omitted), then once with `telemetry: false`. `systems.dbzz` remains the enabled
+profile used in the three-system tables; the disabled result and
 enabled-versus-disabled deltas are separate schema-v4 fields, not a fake fourth
-database or a third synthetic exporter leg.
+database or a third synthetic exporter leg. Partial runs execute only the
+selected systems and one enabled DBZZ profile when DBZZ is selected.
 
 Both DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`; the runner selects
 `DBZZ_TELEMETRY=enabled|disabled` for the paired profiles. The enabled profile
@@ -40,7 +43,7 @@ pair rather than estimated through benchmark-only code.
 
 The benchmark server emits exactly one startup marker before readiness. The
 marker confirms telemetry/durability mode, profile name, exporter/local-sink
-selection, and the exact production telemetry limits. A saved run additionally
+selection, and the exact production telemetry limits. Every DBZZ leg also
 requires a terminal telemetry report that proves delivered local span/event
 output, collected metric series, fixed-dimension operation/stage aggregates,
 configured queue and trace-retention bounds, an unconfigured and unused
@@ -60,6 +63,58 @@ checks those visible drain/overflow/expiry counters account for the retained
 queue instead of pretending default drops are zero. The local sink must still
 deliver output without failure or timeout. The paired profile order alternates
 between saved runs and is preserved in `executionOrder`.
+
+## Save-blocking schema-v4 performance gate
+
+Only an all-system run with `BENCH_PROFILE=default` (or no `BENCH_PROFILE`) can
+enter performance acceptance and write
+`bench/results/<timestamp>-<gitsha>.json`. Quick, stress, and partial runs print
+the same diagnostic result tables, then finish with an explicit
+acceptance-skipped/result-not-saved message. The result file is written only
+after every correctness, telemetry, comparability, and performance check has
+passed.
+
+Acceptance is anchored to the immutable schema-v3 baseline
+`results/2026-07-13T15-34-33Z-74d8554.json`. Its exact SHA-256 is
+`ab78ada0d9d16576b7aca175c1230c456064bcf5b4a80e66b5e1c55a4528a474`, and its
+identity must remain schema version 3 at Git commit `74d8554`. The after-run
+must be schema v4 and must exactly match the baseline's complete machine
+object, 250 ms server-sampling interval, and workload config for DBZZ, Convex,
+and SpacetimeDB. The gate records the baseline source hash, machine
+fingerprint, and config SHA in its evidence; it does not require the changed
+source hash to equal the baseline. A default-profile environment override that
+changes the frozen config therefore fails before save.
+
+Each system must expose the same 351 unique comparable metric paths with the
+same direction and family. From the frozen baseline, all 273 strict
+DBZZ-over-SpacetimeDB wins are immutable obligations: every path where DBZZ was
+strictly higher for a higher-is-better metric or strictly lower for a
+lower-is-better metric must remain a strict DBZZ win over SpacetimeDB in the
+after-run. This is a current DBZZ-versus-current-SpacetimeDB comparison on the
+frozen machine/config, not a tolerance against DBZZ's old absolute value.
+
+The after-run must also pass exactly 126 DBZZ-versus-Convex floors:
+
+- 20 operation and connection-work throughput paths: DBZZ must be at least
+  5x Convex.
+- 20 operation and connection-work p95 latency paths: DBZZ must be at most
+  50% of Convex.
+- One shared fixed-rate delivery-throughput path: DBZZ must be at least 1.25x
+  Convex.
+- 11 fixed-rate or capacity delivery-p95 paths where both systems completed
+  the offered work exactly: DBZZ must be at most 50% of Convex.
+- 74 loaded server-RSS p50/peak paths: DBZZ must be at most 50% of Convex.
+  Startup, seeded-idle, and pre-connection/subscription baseline RSS are not
+  part of this Convex floor.
+
+Finally, DBZZ's partitioned fixed-rate case must complete the offered workload
+before save: correctness must pass; completed updates must equal
+`duration × configured updates/s`; observed deliveries must equal expected
+deliveries with none missing; update throughput must reach the configured
+offered rate; and delivery throughput must reach at least 99% of expected
+deliveries divided by the offered duration. Missing metric paths, a changed
+floor count, or any failed condition rejects the run without creating a result
+file.
 
 Prerequisites:
 

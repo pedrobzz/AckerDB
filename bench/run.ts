@@ -8,6 +8,7 @@ import { benchmarkConfigFromEnv, type DriverResult, type SystemName } from "./be
 import {
   assertDbzzStartup,
   benchmarkExecutionOrder,
+  benchmarkRunPolicy,
   compareProfileMetrics,
   expectedDbzzStartupMode,
   type BenchmarkExecutionLeg,
@@ -905,10 +906,10 @@ for (const name of requested) {
 }
 if (new Set(requested).size !== requested.length) throw new Error("each requested system may appear only once");
 const selected = requested.length > 0 ? requested : ALL_SYSTEMS;
-const fullRun = ALL_SYSTEMS.every((name) => selected.includes(name)) && selected.length === ALL_SYSTEMS.length;
+const runPolicy = benchmarkRunPolicy(selected, benchmarkConfigFromEnv().profile);
 const savedRuns = savedCurrentCount();
 const order = requested.length > 0 ? selected : balancedOrder(savedRuns);
-const executionOrder = benchmarkExecutionOrder(order, fullRun, savedRuns);
+const executionOrder = benchmarkExecutionOrder(order, runPolicy.pairedDbzz, savedRuns);
 const systems: SystemResults = {};
 let dbzzTelemetryDisabled: DbzzMeasuredDriverResult | undefined;
 for (let index = 0; index < executionOrder.length; index++) {
@@ -932,9 +933,9 @@ for (let index = 0; index < executionOrder.length; index++) {
 
 assertValidResults(systems);
 let dbzzTelemetryCost: PairedProfileMetric[] | undefined;
-if (fullRun) {
+if (runPolicy.pairedDbzz) {
   if (systems.dbzz === undefined || dbzzTelemetryDisabled === undefined) {
-    throw new Error("full benchmark requires telemetry-enabled and telemetry-disabled DBZZ profiles");
+    throw new Error("all-system benchmark requires telemetry-enabled and telemetry-disabled DBZZ profiles");
   }
   assertValidResults({ dbzz: dbzzTelemetryDisabled }, systems.dbzz.workload);
   dbzzTelemetryCost = compareProfileMetrics(
@@ -949,9 +950,9 @@ if (systems.dbzz !== undefined) {
     dbzzTelemetryDisabled === undefined ? [systems.dbzz] : [systems.dbzz, dbzzTelemetryDisabled],
   );
 }
-if (fullRun) {
+if (runPolicy.acceptAndSave) {
   if (dbzzTelemetryDisabled === undefined || dbzzTelemetryCost === undefined) {
-    throw new Error("full benchmark DBZZ profile comparison is missing");
+    throw new Error("default acceptance benchmark DBZZ profile comparison is missing");
   }
   const cliVersion = assertSpacetimeVersionAlignment();
   const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
@@ -1012,5 +1013,5 @@ if (fullRun) {
   console.log(`\nsaved bench/results/${filename}`);
   printComparableDelta(record, previous);
 } else {
-  console.log("\npartial run: result not saved");
+  console.log(`\n${runPolicy.diagnosticMessage}`);
 }

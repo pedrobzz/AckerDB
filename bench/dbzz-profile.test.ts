@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   assertDbzzStartup,
   benchmarkExecutionOrder,
+  benchmarkRunPolicy,
   compareProfileMetrics,
   expectedDbzzStartupMode,
   parseDbzzStartup,
@@ -66,7 +67,7 @@ describe("dbzz benchmark startup confirmation", () => {
 });
 
 describe("dbzz benchmark profile order", () => {
-  test("adds both DBZZ profiles only to full runs and alternates their order", () => {
+  test("adds both DBZZ profiles only to all-system runs and alternates their order", () => {
     expect(benchmarkExecutionOrder(["convex", "dbzz", "spacetimedb"], true, 0)).toEqual([
       "convex",
       "dbzz-telemetry-enabled",
@@ -83,6 +84,40 @@ describe("dbzz benchmark profile order", () => {
       "dbzz-telemetry-enabled",
       "convex",
     ]);
+  });
+});
+
+describe("benchmark acceptance and persistence policy", () => {
+  const allSystems = ["dbzz", "convex", "spacetimedb"] as const;
+
+  test("accepts and saves only the default all-system profile", () => {
+    expect(benchmarkRunPolicy(allSystems, "default")).toEqual({
+      pairedDbzz: true,
+      acceptAndSave: true,
+      diagnosticMessage: null,
+    });
+  });
+
+  test("keeps all-system quick and stress profiles paired but diagnostic", () => {
+    for (const profile of ["quick", "stress"] as const) {
+      expect(benchmarkRunPolicy(allSystems, profile)).toEqual({
+        pairedDbzz: true,
+        acceptAndSave: false,
+        diagnosticMessage:
+          `${profile} all-system diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
+      });
+    }
+  });
+
+  test("keeps every partial profile unpaired and diagnostic", () => {
+    for (const profile of ["quick", "default", "stress"] as const) {
+      expect(benchmarkRunPolicy(["dbzz", "convex"], profile)).toEqual({
+        pairedDbzz: false,
+        acceptAndSave: false,
+        diagnosticMessage:
+          `partial ${profile} diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
+      });
+    }
   });
 });
 

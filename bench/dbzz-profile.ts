@@ -1,5 +1,5 @@
 import { PRODUCTION_LIMITS, type TelemetryLimits } from "@dbzz/server";
-import type { SystemName } from "./benchmark.ts";
+import type { BenchmarkConfig, SystemName } from "./benchmark.ts";
 
 export type DbzzTelemetryMode = "enabled" | "disabled";
 export type DbzzDurabilityMode = "production" | "balanced";
@@ -35,7 +35,36 @@ export interface PairedProfileMetric {
   readonly lowerIsBetter: boolean;
 }
 
+export type BenchmarkRunPolicy =
+  | { readonly pairedDbzz: true; readonly acceptAndSave: true; readonly diagnosticMessage: null }
+  | { readonly pairedDbzz: boolean; readonly acceptAndSave: false; readonly diagnosticMessage: string };
+
 export const DBZZ_STARTUP_PREFIX = "@@dbzz-startup ";
+
+export function benchmarkRunPolicy(
+  systems: readonly SystemName[],
+  profile: BenchmarkConfig["profile"],
+): BenchmarkRunPolicy {
+  const allSystems = systems.length === 3 &&
+    (["dbzz", "convex", "spacetimedb"] as const).every((system) => systems.includes(system));
+  if (!allSystems) {
+    return {
+      pairedDbzz: false,
+      acceptAndSave: false,
+      diagnosticMessage:
+        `partial ${profile} diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
+    };
+  }
+  if (profile !== "default") {
+    return {
+      pairedDbzz: true,
+      acceptAndSave: false,
+      diagnosticMessage:
+        `${profile} all-system diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
+    };
+  }
+  return { pairedDbzz: true, acceptAndSave: true, diagnosticMessage: null };
+}
 
 export function expectedDbzzStartupMode(
   telemetry: DbzzTelemetryMode,
