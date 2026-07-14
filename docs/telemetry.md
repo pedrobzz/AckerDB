@@ -94,12 +94,16 @@ a failed lifecycle event also promotes its known trace.
 
 Promotion moves every still-staged span into the normal retained/local path and
 retains later spans directly while that active/completed trace state remains
-known. A fast successful trace instead keeps its completed decision and staged
-diagnostics for up to `retentionMs`, then discards them without export or local
-output. This completed-decision window lets a delayed transport span with the
-same trace ID still apply and promote the trace decision. After expiry or early
-eviction, a late span falls back to its own failed/slow decision and cannot
-recover already discarded diagnostics.
+known. A lease-eligible outbound frame captured by an active trace claims one
+delivery lease. Once the operation has finished and terminal delivery
+finalization releases its last known lease, a fast successful trace settles
+immediately and discards its staged diagnostics without export or local output.
+This cleanup is independent of the deliberately lossy delivery-observation
+queue. `retentionMs` is the bounded fallback only when a completed decision's
+delivery was abandoned or never claimed; expiry or early eviction then makes a
+late span use its own failed/slow decision without recovering discarded
+diagnostics. Failed or slow delivery promotes the trace before releasing the
+lease.
 
 Setting `slowOperationMs` to `0` retains every valid span immediately and
 allocates no active, completed, or staged trace state. A span outside an
@@ -357,15 +361,16 @@ and subscription IDs. Each WebSocket frame captures its delivery owner before
 encoding and retains that owner through queueing and a delayed Bun `onDrain`, so
 query, mutation, error, and subscription frames preserve their originating
 correlation instead of inheriting whichever operation happens to be active
-later. A completed decision remains available for `retentionMs` so a delayed
-delivery observation can still classify and promote that trace; this is a
-finite diagnostic window, not a promise that arbitrarily late observations
-retain prior spans. Session-owned control frames emitted outside an application
-operation receive a distinct `lifecycle` trace rather than reusing the
-preceding application trace. Child spans retain the trace ID and parent span
-ID. Other signals emitted without a current operation get a new trace context;
-operators must not assume every asynchronous record belongs to one end-to-end
-trace.
+later. Terminal delivery finalization classifies the trace and releases that
+frame's lease even when the diagnostic observation is dropped, cannot be
+scheduled, or fails. Healthy completed traces therefore settle after their last
+known physical delivery; only abandoned or unclaimed completed decisions remain
+available for the finite `retentionMs` fallback. Session-owned control frames
+emitted outside an application operation receive a distinct `lifecycle` trace
+rather than reusing the preceding application trace. Child spans retain the
+trace ID and parent span ID. Other signals emitted without a current operation
+get a new trace context; operators must not assume every asynchronous record
+belongs to one end-to-end trace.
 
 Transport observation itself is bounded and fail-open. Each instrumented
 WebSocket sink or SSE producer retains at most 256 pending delivery observations
