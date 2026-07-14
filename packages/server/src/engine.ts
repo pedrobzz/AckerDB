@@ -98,13 +98,13 @@ export interface IntegrityReport {
 }
 
 export interface CheckpointReport {
-  mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE";
-  busy: number;
-  totalFrames: number;
-  checkpointedFrames: number;
-  residualFrames: number;
-  oldestReader: null;
-  durationMs: number;
+  readonly mode: "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE";
+  readonly busy: number;
+  readonly totalFrames: number;
+  readonly checkpointedFrames: number;
+  readonly residualFrames: number;
+  readonly oldestReader: null;
+  readonly durationMs: number;
 }
 
 export interface EngineStatus {
@@ -117,6 +117,7 @@ export interface EngineStatus {
   databaseBytes: number;
   walBytes: number;
   lastCheckpointAtMs: number | null;
+  lastCheckpoint: CheckpointReport | null;
   mutationRecords: number;
   mutationResultBytes: number;
 }
@@ -707,6 +708,7 @@ export class Engine {
   private readonly sqlitePath: string;
   private readonly busyTimeoutMs: number;
   private readonly additionalReaders = new Set<Database>();
+  private lastCheckpoint: CheckpointReport | null = null;
   private closed = false;
 
   constructor(schema: Schema, path: string, options: EngineOptions = {}) {
@@ -1376,6 +1378,7 @@ export class Engine {
       databaseBytes: fileBytes(this.path),
       walBytes: fileBytes(`${this.path}-wal`),
       lastCheckpointAtMs: state.last_checkpoint_at,
+      lastCheckpoint: this.lastCheckpoint,
       mutationRecords: Number(state.mutation_records),
       mutationResultBytes: Number(state.mutation_result_bytes),
     };
@@ -1391,7 +1394,7 @@ export class Engine {
     this.writer
       .query("UPDATE _dbz_state SET last_checkpoint_at = ? WHERE singleton = 1")
       .run(Date.now());
-    return {
+    const report: CheckpointReport = Object.freeze({
       mode,
       busy,
       totalFrames,
@@ -1399,7 +1402,9 @@ export class Engine {
       residualFrames: Math.max(0, totalFrames - checkpointedFrames),
       oldestReader: null,
       durationMs: performance.now() - started,
-    };
+    });
+    this.lastCheckpoint = report;
+    return report;
   }
 
   /** Caller must serialize this with writers. The destination must not exist. */

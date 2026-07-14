@@ -420,7 +420,10 @@ exact metric names:
   `runtime.transport_sse_ack_ingress`, and
   `runtime.transport_sse_ack_noops`;
 - storage and recovery: `runtime.database_bytes`, `runtime.wal_bytes`,
-  `runtime.checkpoint_completed`, `runtime.checkpoint_age`,
+  `runtime.checkpoint_completed`, `runtime.checkpoint_busy`,
+  `runtime.checkpoint_total_frames`, `runtime.checkpoint_checkpointed_frames`,
+  `runtime.checkpoint_residual_frames`, `runtime.checkpoint_duration`,
+  `runtime.checkpoint_age`,
   `runtime.recovered_from_crash`, `runtime.mutation_replay_records`, and
   `runtime.mutation_replay_bytes`;
 - telemetry self-health: `runtime.telemetry_queue_records`,
@@ -433,10 +436,14 @@ exact metric names:
   `runtime.event_loop_drift`.
 
 `runtime.connections` is also emitted immediately when a runtime session opens
-or closes. `runtime.checkpoint_completed` and
-`runtime.recovered_from_crash` are 0/1 gauges. Checkpoint age is zero until an
-explicit `Engine.checkpoint(...)` has been recorded; the checkpoint report
-itself remains the source for busy/total/checkpointed/residual frame counts.
+or closes. `runtime.checkpoint_completed` is 0 until the current engine
+instance completes a checkpoint invocation, then 1. Its busy, total,
+checkpointed, residual, and duration metrics are zero while that report is
+absent and then mirror `runtime.storage.lastCheckpoint` in protected `/status`.
+The detailed report is intentionally process-local: after restart,
+`runtime.checkpoint_completed` returns to 0 while `runtime.checkpoint_age` can
+remain nonzero because it derives from the persisted `lastCheckpointAtMs`
+historical timestamp. `runtime.recovered_from_crash` is also a 0/1 gauge.
 `runtime.recovered_from_crash` records what the current engine open observed and
 remains stable for that process. `runtime.telemetry_drops` sums the top-level
 record/export drop categories; local-sink and trace-retention drops remain

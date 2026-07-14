@@ -422,6 +422,11 @@ const operatorMetricUnits = Object.freeze({
   "runtime.database_bytes": "bytes",
   "runtime.wal_bytes": "bytes",
   "runtime.checkpoint_completed": "gauge",
+  "runtime.checkpoint_busy": "gauge",
+  "runtime.checkpoint_total_frames": "gauge",
+  "runtime.checkpoint_checkpointed_frames": "gauge",
+  "runtime.checkpoint_residual_frames": "gauge",
+  "runtime.checkpoint_duration": "milliseconds",
   "runtime.checkpoint_age": "milliseconds",
   "runtime.recovered_from_crash": "gauge",
   "runtime.mutation_replay_records": "gauge",
@@ -1163,6 +1168,34 @@ describe("Runtime telemetry acceptance", () => {
     expect(exported.every(Object.isFrozen)).toBe(true);
   });
 
+  test("samples an explicit zero state before this process checkpoints", async () => {
+    const checkpointMetrics = Object.keys(operatorMetricUnits).filter((name) =>
+      name.startsWith("runtime.checkpoint_")
+    );
+    const sampled = Promise.withResolvers<ReadonlyMap<string, number>>();
+    const app = harness({
+      enabled: true,
+      exporter: {
+        export(batch) {
+          const latest = new Map(metrics(batch).map((metric) => [metric.name, metric.value]));
+          if (checkpointMetrics.every((name) => latest.has(name))) sampled.resolve(latest);
+        },
+      },
+      localSink: false,
+      limits: { ...telemetryLimits, batchIntervalMs: 5, sampleIntervalMs: 10 },
+    });
+
+    const latest = await Promise.race([
+      sampled.promise,
+      Bun.sleep(1_000).then(() => {
+        throw new Error("Runtime did not export its initial checkpoint sample");
+      }),
+    ]);
+    expect(app.runtime.status().storage.lastCheckpoint).toBeNull();
+    expect(checkpointMetrics).toHaveLength(7);
+    for (const name of checkpointMetrics) expect(latest.get(name)).toBe(0);
+  });
+
   test("samples the complete operator surface from TelemetryOptions", async () => {
     const exported: TelemetryRecord[] = [];
     const sampled = Promise.withResolvers<readonly TelemetryMetricRecord[]>();
@@ -1280,7 +1313,7 @@ describe("Runtime telemetry acceptance", () => {
 
     const latest = new Map<string, TelemetryMetricRecord>();
     for (const metric of sampledMetrics!) latest.set(metric.name, metric);
-    expect(Object.keys(operatorMetricUnits)).toHaveLength(44);
+    expect(Object.keys(operatorMetricUnits)).toHaveLength(49);
     expect([...latest.keys()]).toEqual(expect.arrayContaining(Object.keys(operatorMetricUnits)));
     for (const [name, unit] of Object.entries(operatorMetricUnits)) {
       const metric = latest.get(name);
@@ -1315,6 +1348,21 @@ describe("Runtime telemetry acceptance", () => {
     expect(value("runtime.database_bytes")).toBe(heldStatus!.storage.databaseBytes);
     expect(value("runtime.wal_bytes")).toBe(heldStatus!.storage.walBytes);
     expect(value("runtime.checkpoint_completed")).toBe(1);
+    const checkpoint = heldStatus!.storage.lastCheckpoint;
+    expect(checkpoint).not.toBeNull();
+    expect(value("runtime.checkpoint_busy")).toBe(checkpoint!.busy);
+    expect(value("runtime.checkpoint_total_frames")).toBe(
+      checkpoint!.totalFrames,
+    );
+    expect(value("runtime.checkpoint_checkpointed_frames")).toBe(
+      checkpoint!.checkpointedFrames,
+    );
+    expect(value("runtime.checkpoint_residual_frames")).toBe(
+      checkpoint!.residualFrames,
+    );
+    expect(value("runtime.checkpoint_duration")).toBe(
+      checkpoint!.durationMs,
+    );
     expect(value("runtime.recovered_from_crash")).toBe(0);
     expect(value("runtime.mutation_replay_records")).toBe(heldStatus!.storage.mutationRecords);
     expect(value("runtime.mutation_replay_bytes")).toBe(heldStatus!.storage.mutationResultBytes);

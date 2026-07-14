@@ -2654,6 +2654,7 @@ export class Runtime implements RuntimePort {
     const eventLoopDrift = Math.max(0, now - this.expectedSampleAt);
     this.expectedSampleAt = now + this.telemetry.sampleIntervalMs;
     const storage = this.engine.status();
+    const checkpoint = storage.lastCheckpoint;
     const reactive = this.reactive.snapshot();
     const reader = this.reader.snapshot();
     const writer = this.coordinator.snapshot();
@@ -2689,7 +2690,12 @@ export class Runtime implements RuntimePort {
       ["runtime.sse_outbound_bytes", sse.bytes, "bytes"],
       ["runtime.database_bytes", storage.databaseBytes, "bytes"],
       ["runtime.wal_bytes", storage.walBytes, "bytes"],
-      ["runtime.checkpoint_completed", storage.lastCheckpointAtMs === null ? 0 : 1, "gauge"],
+      ["runtime.checkpoint_completed", checkpoint === null ? 0 : 1, "gauge"],
+      ["runtime.checkpoint_busy", checkpoint?.busy ?? 0, "gauge"],
+      ["runtime.checkpoint_total_frames", checkpoint?.totalFrames ?? 0, "gauge"],
+      ["runtime.checkpoint_checkpointed_frames", checkpoint?.checkpointedFrames ?? 0, "gauge"],
+      ["runtime.checkpoint_residual_frames", checkpoint?.residualFrames ?? 0, "gauge"],
+      ["runtime.checkpoint_duration", checkpoint?.durationMs ?? 0, "milliseconds"],
       ["runtime.checkpoint_age", storage.lastCheckpointAtMs === null
         ? 0
         : Math.max(0, Date.now() - storage.lastCheckpointAtMs), "milliseconds"],

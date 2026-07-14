@@ -182,9 +182,15 @@ restore a verified artifact into a fresh configured database directory.
 
 Storage status reports engine/SQLite versions, durability and synchronous
 mode, commit version, crash-recovery observation, database/WAL bytes, and
-mutation replay records/bytes. Checkpoint reports expose busy, total,
-checkpointed, and residual WAL frames; checkpointing is not a substitute for a
-commit acknowledgement or verified backup.
+mutation replay records/bytes. `runtime.storage.lastCheckpoint` is `null` until
+the current engine instance completes a checkpoint invocation, then exposes its
+mode, busy result, total/checkpointed/residual WAL frames, and duration through
+protected `/status`. The detailed report is deliberately not persisted because
+its WAL-frame state becomes stale across restart. The separate
+`lastCheckpointAtMs` is a persisted historical invocation timestamp and can be
+non-null while `lastCheckpoint` is null. Busy or residual frames mean the
+invocation did not fully checkpoint the WAL; checkpointing is not a substitute
+for a commit acknowledgement or verified backup.
 
 ## Health and protected status
 

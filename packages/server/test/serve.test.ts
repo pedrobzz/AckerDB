@@ -565,6 +565,7 @@ describe("health and protected status", () => {
     });
     expect(alias.status).toBe(403);
 
+    const checkpoint = engine.checkpoint("PASSIVE");
     const response = await fetch(`${base}/status`, {
       headers: { authorization: "Bearer workload-token" },
     });
@@ -578,6 +579,10 @@ describe("health and protected status", () => {
       outboundBytes: 0,
       runtime: {
         state: "ready",
+        storage: {
+          lastCheckpointAtMs: expect.any(Number),
+          lastCheckpoint: checkpoint,
+        },
         telemetryAggregates: { maxSeries: 0, overflowedRecords: 0, series: [] },
       },
     });

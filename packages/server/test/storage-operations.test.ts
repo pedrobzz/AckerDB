@@ -425,6 +425,10 @@ describe("checkpoint, backup, and restore", () => {
     const source = fresh();
     const engine = new Engine(schema, source.database);
     reconcile(engine);
+    expect(engine.status()).toMatchObject({
+      lastCheckpointAtMs: null,
+      lastCheckpoint: null,
+    });
     engine.writer.exec("BEGIN IMMEDIATE");
     engine.writer.query("INSERT INTO records (value) VALUES (?)").run("backed-up");
     expect(engine.allocateCommitVersion()).toBe(1n);
@@ -432,8 +436,15 @@ describe("checkpoint, backup, and restore", () => {
 
     const checkpoint = engine.checkpoint("PASSIVE");
     expect(checkpoint).toMatchObject({ mode: "PASSIVE", busy: 0, oldestReader: null });
+    expect(Object.isFrozen(checkpoint)).toBe(true);
     expect(checkpoint.totalFrames).toBeGreaterThanOrEqual(checkpoint.checkpointedFrames);
-    expect(engine.status().lastCheckpointAtMs).toBeGreaterThan(0);
+    expect(engine.status()).toMatchObject({
+      lastCheckpointAtMs: expect.any(Number),
+      lastCheckpoint: checkpoint,
+    });
+    const latestCheckpoint = engine.checkpoint("PASSIVE");
+    expect(latestCheckpoint).not.toBe(checkpoint);
+    expect(engine.status().lastCheckpoint).toBe(latestCheckpoint);
 
     const artifact = join(source.root, "backup.db");
     const manifest = engine.backup(artifact);
@@ -451,6 +462,10 @@ describe("checkpoint, backup, and restore", () => {
     const reopened = new Engine(schema, restored);
     reconcile(reopened);
     expect(reopened.commitVersion()).toBe(1n);
+    expect(reopened.status()).toMatchObject({
+      lastCheckpointAtMs: expect.any(Number),
+      lastCheckpoint: null,
+    });
     expect(reopened.writer.query("SELECT value FROM records").get()).toEqual({ value: "backed-up" });
     reopened.writer.exec("BEGIN IMMEDIATE");
     expect(reopened.allocateCommitVersion()).toBe(2n);
