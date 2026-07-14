@@ -361,7 +361,7 @@ interface BufferedLocalLine {
 }
 
 interface BufferedTraceSpan {
-  readonly record: TelemetrySpanRecord;
+  readonly span: SanitizedTelemetrySpan;
   readonly bytes: number;
 }
 
@@ -371,6 +371,25 @@ interface EncodedRecord {
 }
 
 type JsonSpanPrimitive = string | number | boolean;
+
+interface SanitizedTelemetrySpan {
+  readonly timestampMs: number;
+  readonly context: TelemetryRecordContext;
+  readonly links?: readonly TelemetryLink[];
+  readonly operation: TelemetryOperation;
+  readonly stage: TelemetryStage;
+  readonly outcome: TelemetryOutcome;
+  readonly function?: string;
+  readonly statement?: string;
+  readonly resource?: TelemetryResource;
+  readonly durationMs: number;
+  readonly sizeBytes?: number;
+  readonly rowCount?: number;
+  readonly resultCount?: number;
+  readonly replayed?: boolean;
+  readonly dependencyCount?: number;
+  readonly postCommit?: boolean;
+}
 
 interface MutableTraceRetention {
   readonly traceId: string;
@@ -571,7 +590,7 @@ function isMember<const T extends readonly string[]>(values: T, value: unknown):
 }
 
 function sanitizeContext(context: TelemetryTraceContext | undefined): TelemetryRecordContext {
-  return Object.freeze({
+  return {
     traceId: safeId(context?.traceId),
     spanId: safeId(context?.spanId),
     parentSpanId: safeId(context?.parentSpanId),
@@ -580,7 +599,7 @@ function sanitizeContext(context: TelemetryTraceContext | undefined): TelemetryR
     mutationId: safeId(context?.mutationId),
     commitId: safeId(context?.commitId),
     subscriptionId: safeId(context?.subscriptionId),
-  });
+  };
 }
 
 function sanitizeLinks(links: readonly TelemetryLink[] | undefined): readonly TelemetryLink[] | undefined {
@@ -592,6 +611,53 @@ function sanitizeLinks(links: readonly TelemetryLink[] | undefined): readonly Te
     if (traceId && spanId) safe.push(Object.freeze({ traceId, spanId }));
   }
   return safe.length ? Object.freeze(safe) : undefined;
+}
+
+function sanitizeSpan(
+  input: TelemetrySpanInput,
+  timestampMs: number,
+): SanitizedTelemetrySpan {
+  return {
+    timestampMs,
+    context: sanitizeContext(input.context),
+    links: sanitizeLinks(input.links),
+    operation: input.operation,
+    stage: input.stage,
+    outcome: input.outcome,
+    function: safeName(input.functionName),
+    statement: safeName(input.statement),
+    resource: isMember(TELEMETRY_RESOURCES, input.resource) ? input.resource : undefined,
+    durationMs: input.durationMs,
+    sizeBytes: safeCount(input.sizeBytes),
+    rowCount: safeCount(input.rowCount),
+    resultCount: safeCount(input.resultCount),
+    replayed: typeof input.replayed === "boolean" ? input.replayed : undefined,
+    dependencyCount: safeCount(input.dependencyCount),
+    postCommit: typeof input.postCommit === "boolean" ? input.postCommit : undefined,
+  };
+}
+
+function materializeSpan(span: SanitizedTelemetrySpan): TelemetrySpanRecord {
+  return Object.freeze({
+    schemaVersion: TELEMETRY_SCHEMA_VERSION,
+    kind: "span",
+    timestampMs: span.timestampMs,
+    ...span.context,
+    links: span.links,
+    operation: span.operation,
+    stage: span.stage,
+    outcome: span.outcome,
+    function: span.function,
+    statement: span.statement,
+    resource: span.resource,
+    durationMs: span.durationMs,
+    sizeBytes: span.sizeBytes,
+    rowCount: span.rowCount,
+    resultCount: span.resultCount,
+    replayed: span.replayed,
+    dependencyCount: span.dependencyCount,
+    postCommit: span.postCommit,
+  });
 }
 
 function readTimestamp(state: TelemetryState, timestampMs: number | undefined): number | undefined {
@@ -644,23 +710,23 @@ function jsonPropertyBytes(
     : jsonPropertyPrefixBytes(name, leadingComma) + jsonPrimitiveBytes(value);
 }
 
-/** Exact JSON/UTF-8 size for a sanitized span without allocating its serialized form. */
-function stagedSpanBytes(record: TelemetrySpanRecord): number {
-  let bytes = 2 + jsonPropertyBytes("schemaVersion", record.schemaVersion, false);
-  bytes += jsonPropertyBytes("kind", record.kind);
-  bytes += jsonPropertyBytes("timestampMs", record.timestampMs);
-  bytes += jsonPropertyBytes("traceId", record.traceId);
-  bytes += jsonPropertyBytes("spanId", record.spanId);
-  bytes += jsonPropertyBytes("parentSpanId", record.parentSpanId);
-  bytes += jsonPropertyBytes("requestId", record.requestId);
-  bytes += jsonPropertyBytes("connectionId", record.connectionId);
-  bytes += jsonPropertyBytes("mutationId", record.mutationId);
-  bytes += jsonPropertyBytes("commitId", record.commitId);
-  bytes += jsonPropertyBytes("subscriptionId", record.subscriptionId);
-  if (record.links !== undefined) {
+/** Exact JSON/UTF-8 size of the public record represented by one sanitized span. */
+function stagedSpanBytes(span: SanitizedTelemetrySpan): number {
+  let bytes = 2 + jsonPropertyBytes("schemaVersion", TELEMETRY_SCHEMA_VERSION, false);
+  bytes += jsonPropertyBytes("kind", "span");
+  bytes += jsonPropertyBytes("timestampMs", span.timestampMs);
+  bytes += jsonPropertyBytes("traceId", span.context.traceId);
+  bytes += jsonPropertyBytes("spanId", span.context.spanId);
+  bytes += jsonPropertyBytes("parentSpanId", span.context.parentSpanId);
+  bytes += jsonPropertyBytes("requestId", span.context.requestId);
+  bytes += jsonPropertyBytes("connectionId", span.context.connectionId);
+  bytes += jsonPropertyBytes("mutationId", span.context.mutationId);
+  bytes += jsonPropertyBytes("commitId", span.context.commitId);
+  bytes += jsonPropertyBytes("subscriptionId", span.context.subscriptionId);
+  if (span.links !== undefined) {
     let linkBytes = 2;
-    for (let index = 0; index < record.links.length; index++) {
-      const link = record.links[index]!;
+    for (let index = 0; index < span.links.length; index++) {
+      const link = span.links[index]!;
       linkBytes += (index === 0 ? 0 : 1) + 2;
       linkBytes += jsonPropertyBytes("traceId", link.traceId, false);
       linkBytes += jsonPropertyBytes("spanId", link.spanId);
@@ -668,19 +734,19 @@ function stagedSpanBytes(record: TelemetrySpanRecord): number {
     // The property prefix is followed by the already-counted raw JSON array.
     bytes += jsonPropertyPrefixBytes("links") + linkBytes;
   }
-  bytes += jsonPropertyBytes("operation", record.operation);
-  bytes += jsonPropertyBytes("stage", record.stage);
-  bytes += jsonPropertyBytes("outcome", record.outcome);
-  bytes += jsonPropertyBytes("function", record.function);
-  bytes += jsonPropertyBytes("statement", record.statement);
-  bytes += jsonPropertyBytes("resource", record.resource);
-  bytes += jsonPropertyBytes("durationMs", record.durationMs);
-  bytes += jsonPropertyBytes("sizeBytes", record.sizeBytes);
-  bytes += jsonPropertyBytes("rowCount", record.rowCount);
-  bytes += jsonPropertyBytes("resultCount", record.resultCount);
-  bytes += jsonPropertyBytes("replayed", record.replayed);
-  bytes += jsonPropertyBytes("dependencyCount", record.dependencyCount);
-  bytes += jsonPropertyBytes("postCommit", record.postCommit);
+  bytes += jsonPropertyBytes("operation", span.operation);
+  bytes += jsonPropertyBytes("stage", span.stage);
+  bytes += jsonPropertyBytes("outcome", span.outcome);
+  bytes += jsonPropertyBytes("function", span.function);
+  bytes += jsonPropertyBytes("statement", span.statement);
+  bytes += jsonPropertyBytes("resource", span.resource);
+  bytes += jsonPropertyBytes("durationMs", span.durationMs);
+  bytes += jsonPropertyBytes("sizeBytes", span.sizeBytes);
+  bytes += jsonPropertyBytes("rowCount", span.rowCount);
+  bytes += jsonPropertyBytes("resultCount", span.resultCount);
+  bytes += jsonPropertyBytes("replayed", span.replayed);
+  bytes += jsonPropertyBytes("dependencyCount", span.dependencyCount);
+  bytes += jsonPropertyBytes("postCommit", span.postCommit);
   return bytes;
 }
 
@@ -898,47 +964,27 @@ export class Telemetry {
       state.drops.invalid++;
       return false;
     }
-    const resource = isMember(TELEMETRY_RESOURCES, input.resource) ? input.resource : undefined;
-    const record: TelemetrySpanRecord = Object.freeze({
-      schemaVersion: TELEMETRY_SCHEMA_VERSION,
-      kind: "span",
-      timestampMs,
-      ...sanitizeContext(input.context),
-      links: sanitizeLinks(input.links),
-      operation: input.operation,
-      stage: input.stage,
-      outcome: input.outcome,
-      function: safeName(input.functionName),
-      statement: safeName(input.statement),
-      resource,
-      durationMs: input.durationMs,
-      sizeBytes: safeCount(input.sizeBytes),
-      rowCount: safeCount(input.rowCount),
-      resultCount: safeCount(input.resultCount),
-      replayed: typeof input.replayed === "boolean" ? input.replayed : undefined,
-      dependencyCount: safeCount(input.dependencyCount),
-      postCommit: typeof input.postCommit === "boolean" ? input.postCommit : undefined,
-    });
-    this.aggregateSpan(state, record);
+    const span = sanitizeSpan(input, timestampMs);
+    this.aggregateSpan(state, span);
     const retain = input.durationMs >= state.limits.slowOperationMs || input.outcome !== "ok";
-    if (state.limits.slowOperationMs === 0) return this.retain(record, true);
+    if (state.limits.slowOperationMs === 0) return this.retain(materializeSpan(span), true);
 
-    const traceId = record.traceId;
+    const traceId = span.context.traceId;
     if (traceId) {
       this.pruneCompletedTraces(state, timestampMs);
       const trace = state.activeTraces.get(traceId) ?? state.completedTraces.get(traceId);
       if (trace) {
-        trace.observedDurationMs = boundedSum(trace.observedDurationMs, record.durationMs);
-        if (trace.retained) return this.retain(record, true);
+        trace.observedDurationMs = boundedSum(trace.observedDurationMs, span.durationMs);
+        if (trace.retained) return this.retain(materializeSpan(span), true);
         if (retain || trace.observedDurationMs >= state.limits.slowOperationMs) {
           this.promoteTrace(state, trace, timestampMs);
-          return this.retain(record, true);
+          return this.retain(materializeSpan(span), true);
         }
-        this.stageTraceSpan(state, trace, record);
+        this.stageTraceSpan(state, trace, span);
         return true;
       }
     }
-    return retain ? this.retain(record, true) : true;
+    return retain ? this.retain(materializeSpan(span), true) : true;
   }
 
   recordEvent(input: TelemetryEventInput): boolean {
@@ -1196,9 +1242,9 @@ export class Telemetry {
   private stageTraceSpan(
     state: TelemetryState,
     trace: MutableTraceRetention,
-    record: TelemetrySpanRecord,
+    span: SanitizedTelemetrySpan,
   ): void {
-    const bytes = stagedSpanBytes(record);
+    const bytes = stagedSpanBytes(span);
     while (
       (state.stagedTraceRecords >= state.limits.maxRecords ||
         bytes > state.limits.maxBytes - state.stagedTraceBytes) &&
@@ -1216,7 +1262,7 @@ export class Telemetry {
       );
       return;
     }
-    trace.staged.push({ record, bytes });
+    trace.staged.push({ span, bytes });
     state.stagedTraceRecords++;
     state.stagedTraceBytes += bytes;
   }
@@ -1231,9 +1277,10 @@ export class Telemetry {
     state.traceHealth.promotedTraces = boundedCount(state.traceHealth.promotedTraces);
     const staged = this.releaseTraceSpans(state, trace);
     for (const span of staged) {
-      const encoded = this.encodeRecord(state, span.record);
+      const record = materializeSpan(span.span);
+      const encoded = this.encodeRecord(state, record);
       if (encoded) {
-        this.retainEncoded(state, span.record, encoded.line, encoded.bytes, true, retainedAtMs);
+        this.retainEncoded(state, record, encoded.line, encoded.bytes, true, retainedAtMs);
       }
     }
   }
@@ -1360,8 +1407,8 @@ export class Telemetry {
     return true;
   }
 
-  private aggregateSpan(state: TelemetryState, record: TelemetrySpanRecord): void {
-    const key = `${record.operation}|${record.stage}|${record.outcome}|${record.function ?? ""}|${record.resource ?? ""}`;
+  private aggregateSpan(state: TelemetryState, span: SanitizedTelemetrySpan): void {
+    const key = `${span.operation}|${span.stage}|${span.outcome}|${span.function ?? ""}|${span.resource ?? ""}`;
     let aggregate = state.aggregates.get(key);
     if (!aggregate) {
       if (state.aggregates.size >= state.limits.maxMetricSeries - 1) {
@@ -1369,11 +1416,11 @@ export class Telemetry {
         state.aggregateOverflowedRecords = boundedCount(state.aggregateOverflowedRecords);
       } else {
         aggregate = {
-          operation: record.operation,
-          stage: record.stage,
-          outcome: record.outcome,
-          function: record.function,
-          resource: record.resource,
+          operation: span.operation,
+          stage: span.stage,
+          outcome: span.outcome,
+          function: span.function,
+          resource: span.resource,
           count: 0,
           durationMs: 0,
         };
@@ -1381,11 +1428,11 @@ export class Telemetry {
       }
     }
     aggregate.count = boundedCount(aggregate.count);
-    aggregate.durationMs = boundedSum(aggregate.durationMs, record.durationMs);
-    this.addAggregateValue(aggregate, "sizeBytes", record.sizeBytes);
-    this.addAggregateValue(aggregate, "rowCount", record.rowCount);
-    this.addAggregateValue(aggregate, "resultCount", record.resultCount);
-    this.addAggregateValue(aggregate, "dependencyCount", record.dependencyCount);
+    aggregate.durationMs = boundedSum(aggregate.durationMs, span.durationMs);
+    this.addAggregateValue(aggregate, "sizeBytes", span.sizeBytes);
+    this.addAggregateValue(aggregate, "rowCount", span.rowCount);
+    this.addAggregateValue(aggregate, "resultCount", span.resultCount);
+    this.addAggregateValue(aggregate, "dependencyCount", span.dependencyCount);
   }
 
   private addAggregateValue(
