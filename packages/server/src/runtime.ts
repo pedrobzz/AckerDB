@@ -2228,7 +2228,7 @@ export class Runtime implements RuntimePort {
           observation.phase === "fanout"
         ? "outbound"
         : "subscription";
-    this.traceSpan({
+    this.telemetry.recordSpan({
       operation: "subscription",
       stage,
       outcome: observationOutcome(observation.outcome),
@@ -2248,7 +2248,7 @@ export class Runtime implements RuntimePort {
           ? {}
           : { commitId: String(observation.commitVersion) }),
       }),
-    }, "subscription");
+    });
   };
 
   private operationTrace(

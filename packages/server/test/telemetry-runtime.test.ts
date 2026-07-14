@@ -578,11 +578,13 @@ describe("Runtime telemetry acceptance", () => {
     expect(sseBody).toContain(PRIVATE_STREAM);
     expect(sseBody).toContain('"t":"sse_done"');
 
-    const dueAt = Date.now() + 120_000;
-    await app.mutation(primary.context, 740_000_001, "jobs.schedule", {
+    const scheduleIssuedAt = Date.now();
+    const scheduleMutationId = uuidV7(scheduleIssuedAt, 74);
+    const dueAt = scheduleIssuedAt + 120_000;
+    const scheduled = await app.mutation(primary.context, 740_000_001, "jobs.schedule", {
       label: "acceptance",
       at: dueAt,
-    });
+    }, scheduleMutationId, scheduleIssuedAt);
     expect(await app.runtime.runScheduled(dueAt)).toBe(1);
 
     let failingPublishes = 0;
@@ -863,6 +865,16 @@ describe("Runtime telemetry acceptance", () => {
       span.traceId === mutationAdmission.traceId && span.function === "items.list"
     );
     expect(mutationRevalidation.length).toBeGreaterThan(0);
+
+    const unmatchedInvalidation = requiredSpan(retainedSpans, (span) =>
+      span.operation === "subscription" &&
+      span.stage === "match" &&
+      span.mutationId === scheduleMutationId &&
+      span.commitId === String(scheduled.receipt.commitVersion) &&
+      span.resultCount === 0
+    );
+    expect(unmatchedInvalidation).toMatchObject({ dependencyCount: 2 });
+    expect(unmatchedInvalidation.function).toBeUndefined();
 
     const scheduledAdmission = requiredSpan(retainedSpans, (span) =>
       span.operation === "scheduled" && span.stage === "admission"

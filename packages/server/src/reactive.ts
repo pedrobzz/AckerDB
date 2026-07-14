@@ -930,23 +930,15 @@ export class OrderedReactive<C = unknown> {
     const affectedCallerIds = commit.caller ? this.affectedQueryIds(commit.caller, commit.writeKeys) : [];
     const matchedAt = this.observer ? this.observationNow() : undefined;
     const affected = this.affectedEntries(commit.writeKeys);
-    if (this.observer) {
-      for (const entry of this.entries.values()) {
-        let matchedDependencies = 0;
-        for (const key of entry.readSet) {
-          if (commit.writeKeys.has(key)) matchedDependencies++;
-        }
-        this.observe(matchedAt, {
-          kind: "query",
-          phase: "invalidation_match",
-          outcome: affected.has(entry) ? "matched" : "unmatched",
-          address: entry.address,
-          commitVersion: publication.version,
-          dependencyCount: entry.readSet.size,
-          resultCount: matchedDependencies,
-          byteCount: entry.resultBytes,
-        });
-      }
+    if (this.observer && commit.writeKeys.size > 0 && this.entries.size > 0) {
+      this.observe(matchedAt, {
+        kind: "query",
+        phase: "invalidation_match",
+        outcome: affected.size === 0 ? "unmatched" : "matched",
+        commitVersion: publication.version,
+        dependencyCount: commit.writeKeys.size,
+        resultCount: affected.size,
+      });
     }
     const required: Promise<DeliveryFailure[]>[] = [];
     for (const entry of affected) {

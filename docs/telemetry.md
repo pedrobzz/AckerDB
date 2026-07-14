@@ -188,6 +188,16 @@ top level: `traceId`, `spanId`, `parentSpanId`, `requestId`, `connectionId`,
 a readonly array of `{ traceId, spanId }`. Metric records deliberately have no
 correlation-ID fields.
 
+Query invalidation telemetry follows the same dependency index as reactivity.
+Each commit with retained shared-query state and a nonempty write set receives
+one commit-level match span: `dependencyCount` is the number of written
+dependency keys considered and `resultCount` is the number of affected shared
+queries. A zero `resultCount` means no retained query matched.
+The per-query queue, evaluation, and changed-or-unchanged spans identify the
+affected functions without duplicating match timing. Unrelated query state is
+never enumerated merely to produce telemetry, so instrumentation work scales
+with changed dependencies and actual revalidation rather than every live query.
+
 ### Span record
 
 ```ts

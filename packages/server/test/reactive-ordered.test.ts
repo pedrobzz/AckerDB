@@ -1323,13 +1323,15 @@ describe("ordered reactive ownership", () => {
     await slot.completion;
 
     const invalidations = observations.filter(({ phase }) => phase === "invalidation_match");
-    expect(invalidations).toHaveLength(3);
-    expect(invalidations.map(({ address, outcome, resultCount }) => [address, outcome, resultCount]))
-      .toEqual([
-        ["a", "matched", 1],
-        ["b", "matched", 1],
-        ["c", "unmatched", 0],
-      ]);
+    expect(invalidations).toEqual([{
+      kind: "query",
+      phase: "invalidation_match",
+      outcome: "matched",
+      durationMs: 0,
+      commitVersion: 1n,
+      dependencyCount: 2,
+      resultCount: 2,
+    }]);
     expect(observations.filter(({ phase }) => phase === "evaluation").map(({ address }) => address))
       .toEqual(["a", "b"]);
     expect(observations.filter(({ phase }) => phase === "changed").map(({ address }) => address))
@@ -1344,6 +1346,40 @@ describe("ordered reactive ownership", () => {
       .toEqual([1, 2]);
     expect(observations.some(({ phase, address }) => phase === "evaluation" && address === "c"))
       .toBe(false);
+
+    observations.length = 0;
+    const unmatched = reactive.publication.reserve(64);
+    version = unmatched.version;
+    unmatched.commit(new ReactiveCommit(new Set(["unobserved-key"])));
+    await unmatched.completion;
+    expect(observations.filter(({ phase }) => phase === "invalidation_match")).toEqual([
+      {
+        kind: "query",
+        phase: "invalidation_match",
+        outcome: "unmatched",
+        durationMs: 0,
+        commitVersion: 2n,
+        dependencyCount: 1,
+        resultCount: 0,
+      },
+    ]);
+    expect(observations.filter(({ phase }) => phase === "evaluation")).toHaveLength(0);
+
+    observations.length = 0;
+    await publish(reactive, new Set(), (nextVersion) => {
+      version = nextVersion;
+    });
+    expect(observations.filter(({ phase }) => phase === "invalidation_match")).toHaveLength(0);
+
+    const emptyObservations: ReactiveObservation[] = [];
+    const empty = new OrderedReactive({
+      observer: (observation) => emptyObservations.push(observation),
+      evaluate: async () => evaluation(null, 0n, "unused"),
+    });
+    const emptyPublication = empty.publication.reserve(64);
+    emptyPublication.commit(new ReactiveCommit(new Set(["unobserved-key"])));
+    await emptyPublication.completion;
+    expect(emptyObservations).toHaveLength(0);
 
     now = 30;
     const gate = subscriber.gateNextTransition(1);
@@ -1386,6 +1422,43 @@ describe("ordered reactive ownership", () => {
     for (const forbidden of ["args", "row", "identity", "value", "policyScopeFingerprint"]) {
       expect(serialized).not.toContain(`\"${forbidden}\"`);
     }
+  });
+
+  test("observes invalidation work in proportion to affected query state", async () => {
+    const observations: ReactiveObservation[] = [];
+    let version = 0n;
+    const reactive = new OrderedReactive({
+      observer: (observation) => observations.push(observation),
+      evaluate: async ({ address }) => evaluation(address, version, `read:${address}`),
+    });
+    const subscriber = new RecordingSubscriber();
+    for (let id = 1; id <= 256; id++) {
+      await reactive.subscribeQuery({
+        address: `query-${id}`,
+        args: {},
+        policyScopeFingerprint: "scope",
+        fairnessKey: "caller",
+        context: undefined,
+        subscriber,
+        id,
+        authEpoch: 0,
+      });
+    }
+    observations.length = 0;
+
+    await publish(reactive, new Set(["read:query-256"]), (nextVersion) => {
+      version = nextVersion;
+    });
+
+    expect(observations.filter(({ phase }) => phase === "invalidation_match")).toEqual([{
+      kind: "query",
+      phase: "invalidation_match",
+      outcome: "matched",
+      durationMs: 0,
+      commitVersion: 1n,
+      dependencyCount: 1,
+      resultCount: 1,
+    }]);
   });
 
   test("observer failures are fail-open across event matching and failed delivery", async () => {
