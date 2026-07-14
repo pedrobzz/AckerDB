@@ -230,6 +230,7 @@ interface AuthTransitionCapture {
 interface RuntimeSession {
   context: SessionRuntimeContext;
   subscriber: Subscriber;
+  readonly telemetryConnectionId?: string;
   readonly subscriptions: Map<number, RuntimeSubscription>;
   capture: AuthTransitionCapture | null;
   activeOperations: number;
@@ -515,6 +516,9 @@ export class Runtime implements RuntimePort {
     state = {
       context,
       subscriber,
+      ...(this.telemetry.enabled
+        ? { telemetryConnectionId: digest(context.clientSessionId) }
+        : {}),
       subscriptions: new Map(),
       capture: null,
       activeOperations: 0,
@@ -2326,7 +2330,7 @@ export class Runtime implements RuntimePort {
     const rootContext = inheritedContext ?? prepareTelemetryTraceContext({
       ...(session === null
         ? {}
-        : { connectionId: digest(session.context.clientSessionId) }),
+        : { connectionId: session.telemetryConnectionId }),
       ...identifiers,
     });
     return {
