@@ -663,7 +663,11 @@ export class Runtime implements RuntimePort {
         requestBytes,
         signal,
         ...(this.telemetry.enabled
-          ? { telemetry: this.observeCommit, statementTelemetry: this.observeStatement }
+          ? {
+              telemetry: this.observeCommit,
+              statementTelemetry: this.observeStatement,
+              run: AsyncLocalStorage.snapshot(),
+            }
           : {}),
         idempotency: {
           sessionId: context.clientSessionId,
@@ -1155,7 +1159,11 @@ export class Runtime implements RuntimePort {
             requestBytes: 1,
             signal: this.shutdownController.signal,
             ...(this.telemetry.enabled
-              ? { telemetry: this.observeCommit, statementTelemetry: this.observeStatement }
+              ? {
+                  telemetry: this.observeCommit,
+                  statementTelemetry: this.observeStatement,
+                  run: AsyncLocalStorage.snapshot(),
+                }
               : {}),
             work: async (db) => {
               const plan = this.engine.plan(candidate.table);
@@ -1905,7 +1913,11 @@ export class Runtime implements RuntimePort {
             fairnessKey,
             requestBytes,
             ...(this.telemetry.enabled
-              ? { telemetry: this.observeCommit, statementTelemetry: this.observeStatement }
+              ? {
+                  telemetry: this.observeCommit,
+                  statementTelemetry: this.observeStatement,
+                  run: AsyncLocalStorage.snapshot(),
+                }
               : {}),
             signal,
             work: (db) => work(Object.freeze({ db, auth: principal })),

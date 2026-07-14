@@ -111,6 +111,8 @@ export interface CommitRequest<T, Publication> {
   readonly signal?: AbortSignal;
   readonly telemetry?: CommitTelemetryObserver;
   readonly statementTelemetry?: DbStatementObserver;
+  /** Restore the request owner's async instrumentation while its writer turn runs. */
+  readonly run?: <R>(work: () => R) => R;
   readonly idempotency?: IdempotencyIdentity;
   readonly work: (db: DbWriter<Schema>) => T | Promise<T>;
   /** Additional storage work, such as deleting a due row, in the same transaction. */
@@ -127,7 +129,14 @@ export interface CommitRequest<T, Publication> {
 
 export interface CommitTelemetryEvent {
   readonly operation: "mutation" | "transaction" | "scheduled";
-  readonly stage: "queue" | "storage" | "encoding" | "commit" | "rollback" | "publication";
+  readonly stage:
+    | "queue"
+    | "execution"
+    | "storage"
+    | "encoding"
+    | "commit"
+    | "rollback"
+    | "publication";
   readonly outcome: "ok" | OutcomeCode;
   readonly durationMs: number;
   readonly sizeBytes?: number;
@@ -257,7 +266,7 @@ export class CommitCoordinator<Publication> {
     let admitted = false;
     let handoff: CommitHandoff<T, Publication>;
     try {
-      handoff = await this.writer.submit(() => {
+      const admittedWork = () => {
         admitted = true;
         observeCommit(request, {
           stage: "queue",
@@ -266,13 +275,18 @@ export class CommitCoordinator<Publication> {
           sizeBytes: request.requestBytes,
         });
         return this.commit(request);
-      }, {
-        operation: request.operation,
-        bytes: request.requestBytes,
-        fairnessKey: request.fairnessKey,
-        ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
-        ...(request.signal === undefined ? {} : { signal: request.signal }),
-      });
+      };
+      const run = request.run;
+      handoff = await this.writer.submit(
+        run === undefined ? admittedWork : () => run(admittedWork),
+        {
+          operation: request.operation,
+          bytes: request.requestBytes,
+          fairnessKey: request.fairnessKey,
+          ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
+          ...(request.signal === undefined ? {} : { signal: request.signal }),
+        },
+      );
     } catch (error) {
       if (!admitted) {
         observeCommit(request, {
@@ -414,11 +428,33 @@ export class CommitCoordinator<Publication> {
     try {
       this.engine.writer.exec("BEGIN IMMEDIATE");
       transactionOpen = true;
-      const value = await transaction.run(true, async () => {
-        const result = await request.work(db);
-        await request.finalize?.(writes);
-        return result;
-      });
+      const executionAt = request.telemetry === undefined ? undefined : performance.now();
+      let value: T;
+      try {
+        value = await transaction.run(true, async () => {
+          const result = await request.work(db);
+          await request.finalize?.(writes);
+          return result;
+        });
+        if (executionAt !== undefined) {
+          observeCommit(request, {
+            stage: "execution",
+            outcome: "ok",
+            durationMs: Math.max(0, performance.now() - executionAt),
+            dependencyCount: writes.keys.size,
+          });
+        }
+      } catch (error) {
+        if (executionAt !== undefined) {
+          observeCommit(request, {
+            stage: "execution",
+            outcome: telemetryOutcome(error),
+            durationMs: Math.max(0, performance.now() - executionAt),
+            dependencyCount: writes.keys.size,
+          });
+        }
+        throw error;
+      }
       const publicationAt = performance.now();
       let publicationBytes: number;
       try {

@@ -25,6 +25,7 @@ export const TELEMETRY_STAGES = [
   "auth",
   "policy",
   "handler",
+  "execution",
   "fetch",
   "statement",
   "storage",

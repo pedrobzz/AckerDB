@@ -423,7 +423,7 @@ describe("CommitCoordinator", () => {
     expect(engine.commitVersion()).toBe(0n);
   });
 
-  test("observes writer queue, storage, encoding, commit, replay, and post-commit publication", async () => {
+  test("observes writer queue, execution, storage, encoding, commit, replay, and post-commit publication", async () => {
     const { coordinator } = fixture();
     const events: CommitTelemetryEvent[] = [];
     const request = {
@@ -441,6 +441,7 @@ describe("CommitCoordinator", () => {
     await coordinator.execute(request);
     expect(new Set(events.map((event) => event.stage))).toEqual(new Set([
       "queue",
+      "execution",
       "storage",
       "encoding",
       "commit",
@@ -452,6 +453,14 @@ describe("CommitCoordinator", () => {
       commitVersion: 1n,
     });
     expect(commit!.dependencyCount).toBeGreaterThan(0);
+    const execution = events.filter((event) => event.stage === "execution");
+    expect(execution).toEqual([
+      expect.objectContaining({
+        outcome: "ok",
+        dependencyCount: expect.any(Number),
+      }),
+    ]);
+    expect(execution[0]!.durationMs).toBeGreaterThanOrEqual(0);
     expect(events.find((event) => event.stage === "publication" && event.postCommit)).toMatchObject({
       outcome: "ok",
       commitVersion: 1n,
@@ -468,6 +477,7 @@ describe("CommitCoordinator", () => {
       commitVersion: 1n,
     }));
     expect(events.some((event) => event.stage === "commit")).toBe(false);
+    expect(events.some((event) => event.stage === "execution")).toBe(false);
   });
 
   test("observes rollback and telemetry observer failures never affect a transaction", async () => {
@@ -480,14 +490,17 @@ describe("CommitCoordinator", () => {
       telemetry: (event) => {
         events.push(event);
       },
-      work: (db: any) => {
-        void db.notes.insert({ body: "rolled back" });
+      work: (db: any) => db.notes.insert({ body: "rolled back" }),
+      finalize: () => {
         throw new Error("boom");
       },
       publication: (version) => ({ version }),
     })).rejects.toThrow("boom");
     expect(events).toContainEqual(expect.objectContaining({ stage: "rollback", outcome: "ok" }));
     expect(events).toContainEqual(expect.objectContaining({ stage: "storage", outcome: "internal" }));
+    expect(events.filter((event) => event.stage === "execution")).toEqual([
+      expect.objectContaining({ stage: "execution", outcome: "internal" }),
+    ]);
     expect(engine.commitVersion()).toBe(0n);
 
     await expect(coordinator.execute({

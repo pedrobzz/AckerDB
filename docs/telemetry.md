@@ -267,10 +267,10 @@ interface TelemetryMetricRecord {
 `lifecycle`. `TELEMETRY_STAGES` is exactly:
 
 ```text
-admission     auth          policy        handler       fetch
-statement     storage       commit        rollback      publication
-match         evaluation    changed       unchanged     encoding
-fanout        queue         delivery      export
+admission     auth          policy        handler       execution
+fetch         statement     storage       commit        rollback
+publication   match         evaluation    changed       unchanged
+encoding      fanout        queue         delivery      export
 ```
 
 `TelemetryOutcome` is `ok` plus the finite Protocol 2 failure codes, and
@@ -297,7 +297,7 @@ When telemetry is enabled, current automatic span coverage is:
 | Function invocation | `auth`, `policy`, and `handler` for top-level and directly nested function calls, with parent/child span relationships. Here the Runtime `auth` span is invocation principal/argument validation, distinct from transport credential verification. |
 | Outbound fetch | `fetch` around `globalThis.fetch` used inside a traced runtime operation. It records duration/outcome only—never URL, headers, or body; a fetch rejected inside a writer transaction is observed too. |
 | Database API | `statement` for `ctx.db` reads/writes and scheduler reads, using logical `table.operation` summaries and optional row counts. |
-| SQLite transaction path | Reader `queue`, `storage`, `encoding`, `commit`, and `rollback`; writer/`ctx.tx` `queue`, idempotency `storage`, result `encoding`, `commit`, `rollback`, and pre/post-commit `publication`. |
+| SQLite transaction path | Reader `queue`, `storage`, `encoding`, `commit`, and `rollback`; every executed writer mutation, scheduled handler, or `ctx.tx` emits exactly one `execution` span around its application work and transactional finalizer, plus `queue`, full pre-commit `storage`, result `encoding`, `commit`/`rollback`, and pre/post-commit `publication`. Replayed mutations emit idempotency `storage` but no `execution`. |
 | Ordered realtime | `match`, `evaluation`, `changed`, `unchanged`, `queue`, `fanout`, and logical subscriber `delivery`, with dependency/result/byte counts when known. |
 | WebSocket and SSE transport | `encoding`, `queue`, and `delivery` spans with bytes, duration, outcome, and `outbound`/`sse` resource. WebSocket `delivery` observes release from Bun's buffered-byte ownership (including delayed `onDrain`). SSE retains the frame's captured observer until a valid cumulative receiver acknowledgement releases it, or reports cancellation/terminal timeout as the delivery outcome. Terminal failures also emit a `failure` event. Capabilities, proofs, and chunk values are never recorded. |
 | HTTP procedure response | `procedure` `encoding` followed by `delivery`, both with resource `operation`, the original trace/request/function correlation, and exact encoded response bytes. `delivery` ends when the responder returns the constructed Bun `Response`; it is an encoded-response handoff, not proof of socket, kernel, or network completion. |
@@ -440,9 +440,6 @@ inspect `aggregateSnapshot()`.
   `admission` failure span/event.
 - `fetch` coverage applies to `globalThis.fetch` while a traced runtime scope is
   active; other HTTP clients are not automatically observed.
-- `ctx.tx(...)` emits `transaction` operation stage spans through the writer
-  coordinator, but there is no additional synthetic whole-transaction handler
-  span.
 - There is no bundled OTLP/OpenTelemetry SDK exporter, remote endpoint config,
   dashboard, or durable telemetry spool. The exporter callback is the current
   backend-neutral boundary.

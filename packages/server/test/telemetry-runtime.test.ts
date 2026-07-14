@@ -89,6 +89,8 @@ let operatorReadEntered: (() => void) | null = null;
 let operatorReadCount = 0;
 let operatorSseGate: Promise<void> | null = null;
 let operatorSseEntered: (() => void) | null = null;
+let operatorWriteGate: Promise<void> | null = null;
+let operatorWriteEntered: (() => void) | null = null;
 
 const addItem = mutation({
   access: "public",
@@ -120,6 +122,16 @@ const functions = {
           await operatorReadGate;
         }
         return "released";
+      },
+    }),
+    holdAdd: mutation({
+      access: "public",
+      args: { room: dbz.bigint(), body: dbz.string() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        const id = await ctx.db.items.insert(args);
+        operatorWriteEntered?.();
+        if (operatorWriteGate !== null) await operatorWriteGate;
+        return id;
       },
     }),
     add: addItem,
@@ -284,6 +296,8 @@ afterEach(async () => {
   operatorReadCount = 0;
   operatorSseGate = null;
   operatorSseEntered = null;
+  operatorWriteGate = null;
+  operatorWriteEntered = null;
 });
 
 function uuidV7(now: number, sequence: number): string {
@@ -426,6 +440,90 @@ const operatorMetricUnits = Object.freeze({
 } as const);
 
 describe("Runtime telemetry acceptance", () => {
+  test("restores each queued writer's trace, invocation, and statement owner", async () => {
+    const exported: TelemetryRecord[] = [];
+    const app = harness({
+      enabled: true,
+      exporter: { export: (batch) => void exported.push(...batch) },
+      localSink: false,
+      limits: telemetryLimits,
+    });
+    const session = await app.openSession("telemetry-queued-writer-owner");
+    const release = Promise.withResolvers<void>();
+    const entered = Promise.withResolvers<void>();
+    operatorWriteGate = release.promise;
+    operatorWriteEntered = () => entered.resolve();
+    const issuedAt = Date.now();
+    const held = app.mutation(
+      session.context,
+      700_000_001,
+      "items.holdAdd",
+      { room: 7n, body: "held" },
+      uuidV7(issuedAt, 701),
+      issuedAt,
+    );
+    await entered.promise;
+    const procedure = app.runtime.runProcedure({
+      id: 700_000_002,
+      address: "ops.pipeline",
+      args: { room: 7n, payload: "queued" },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+    try {
+      for (let attempts = 0; app.runtime.status().writer.queue.queuedItems === 0; attempts++) {
+        if (attempts === 100) throw new Error("procedure transaction did not enter the writer queue");
+        await Bun.sleep(0);
+      }
+    } finally {
+      operatorWriteGate = null;
+      operatorWriteEntered = null;
+      release.resolve();
+    }
+    await held;
+    expect((await procedure).status).toBe(200);
+    await app.runtime.telemetry.flush();
+
+    const retained = spans(exported);
+    const heldAdmission = requiredSpan(retained, (span) =>
+      span.operation === "mutation" &&
+      span.stage === "admission" &&
+      span.requestId === "700000001"
+    );
+    const procedureAdmission = requiredSpan(retained, (span) =>
+      span.operation === "procedure" &&
+      span.stage === "admission" &&
+      span.requestId === "700000002"
+    );
+    const heldExecution = requiredSpan(retained, (span) =>
+      span.operation === "mutation" &&
+      span.stage === "execution" &&
+      span.function === "items.holdAdd"
+    );
+    const transactionExecution = requiredSpan(retained, (span) =>
+      span.operation === "transaction" &&
+      span.stage === "execution" &&
+      span.function === "ops.pipeline"
+    );
+    const nestedHandler = requiredSpan(retained, (span) =>
+      span.stage === "handler" &&
+      span.function === "items.add" &&
+      span.requestId === "700000002"
+    );
+    const nestedStatement = requiredSpan(retained, (span) =>
+      span.stage === "statement" &&
+      span.function === "items.add" &&
+      span.requestId === "700000002"
+    );
+    expect(heldExecution.traceId).toBe(heldAdmission.traceId);
+    expect(transactionExecution.traceId).toBe(procedureAdmission.traceId);
+    expect(nestedHandler.traceId).toBe(procedureAdmission.traceId);
+    expect(nestedStatement.traceId).toBe(procedureAdmission.traceId);
+    expect(transactionExecution.traceId).not.toBe(heldExecution.traceId);
+    expectRetainedParentage(retained, heldAdmission);
+    expectRetainedParentage(retained, procedureAdmission);
+  });
+
   test("closes whole-operation tail decisions after final response work", async () => {
     const exported: TelemetryRecord[] = [];
     const app = harness({
@@ -714,6 +812,7 @@ describe("Runtime telemetry acceptance", () => {
       "auth",
       "policy",
       "handler",
+      "execution",
       "fetch",
       "statement",
       "storage",
@@ -792,6 +891,12 @@ describe("Runtime telemetry acceptance", () => {
       span.mutationId === mutationId
     );
     expect(mutationStatement.parentSpanId).toBe(mutationHandler.spanId);
+    const mutationExecution = requiredSpan(retainedSpans, (span) =>
+      span.operation === "mutation" &&
+      span.stage === "execution" &&
+      span.mutationId === mutationId
+    );
+    expect(mutationExecution.traceId).toBe(mutationAdmission.traceId);
     const committed = requiredSpan(retainedSpans, (span) =>
       span.stage === "commit" &&
       span.mutationId === mutationId &&
@@ -813,6 +918,9 @@ describe("Runtime telemetry acceptance", () => {
     );
     const replaySkippedHandler = !retainedSpans.some((span) =>
       span.traceId === replayAdmission.traceId && span.stage === "handler"
+    );
+    const replaySkippedExecution = !retainedSpans.some((span) =>
+      span.traceId === replayAdmission.traceId && span.stage === "execution"
     );
     expectRetainedParentage(retainedSpans, mutationAdmission);
 
@@ -842,6 +950,11 @@ describe("Runtime telemetry acceptance", () => {
       span.stage === "commit" &&
       span.requestId === "720000001"
     );
+    const procedureTransactionExecution = requiredSpan(retainedSpans, (span) =>
+      span.operation === "transaction" &&
+      span.stage === "execution" &&
+      span.requestId === "720000001"
+    );
     expectRetainedParentage(retainedSpans, procedureAdmission);
 
     const sseAdmission = requiredSpan(retainedSpans, (span) =>
@@ -858,6 +971,11 @@ describe("Runtime telemetry acceptance", () => {
     const sseTransactionCommit = retainedSpans.find((span) =>
       span.operation === "transaction" &&
       span.stage === "commit" &&
+      span.requestId === "730000001"
+    );
+    const sseTransactionExecution = requiredSpan(retainedSpans, (span) =>
+      span.operation === "transaction" &&
+      span.stage === "execution" &&
       span.requestId === "730000001"
     );
     const sseDelivery = retainedSpans.find((span) =>
@@ -920,6 +1038,7 @@ describe("Runtime telemetry acceptance", () => {
       "auth",
       "policy",
       "handler",
+      "execution",
       "storage",
       "commit",
     ]));
@@ -979,10 +1098,16 @@ describe("Runtime telemetry acceptance", () => {
       mutationId: deliveryMutationId,
       commitId: String(deliveredCommit.receipt.commitVersion),
     });
+    expect(requiredSpan(retainedSpans, (span) =>
+      span.operation === "mutation" &&
+      span.stage === "execution" &&
+      span.mutationId === failedMutationId
+    )).toMatchObject({ outcome: "internal" });
 
     expect({
       aggregateIncludesTransactions: aggregateOperations.includes("transaction"),
       replaySkippedHandler,
+      replaySkippedExecution,
       initialSubscriptionRoutedAsSubscription: initialSubscriptionTrace.every((span) =>
         span.operation === "subscription"
       ),
@@ -991,16 +1116,22 @@ describe("Runtime telemetry acceptance", () => {
       ),
       procedureTransactionParentedToHandler:
         procedureTransactionCommit?.parentSpanId === procedureHandler.spanId,
+      procedureExecutionParentedToHandler:
+        procedureTransactionExecution.parentSpanId === procedureHandler.spanId,
       sseTransactionParentedToHandler: sseTransactionCommit?.parentSpanId === sseHandler.spanId,
+      sseExecutionParentedToHandler: sseTransactionExecution.parentSpanId === sseHandler.spanId,
       sseDeliveryParentedToHandler: sseDelivery?.parentSpanId === sseHandler.spanId,
       scheduledRootsCoherent,
     }).toEqual({
       aggregateIncludesTransactions: true,
       replaySkippedHandler: true,
+      replaySkippedExecution: true,
       initialSubscriptionRoutedAsSubscription: true,
       revalidationRoutedAsSubscription: true,
       procedureTransactionParentedToHandler: true,
+      procedureExecutionParentedToHandler: true,
       sseTransactionParentedToHandler: true,
+      sseExecutionParentedToHandler: true,
       sseDeliveryParentedToHandler: true,
       scheduledRootsCoherent: true,
     });
