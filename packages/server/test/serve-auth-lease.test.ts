@@ -210,7 +210,7 @@ describe("HTTP and SSE credential leases", () => {
 
   afterEach(async () => {
     await server.drain().catch(() => {});
-    engine.close();
+    engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
   });
 

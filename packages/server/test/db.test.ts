@@ -66,7 +66,7 @@ beforeEach(() => {
   db = makeDbWriter(engine, writes, () => ++eventSeq);
 });
 afterEach(() => {
-  engine.close();
+  engine.close("clean");
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -528,7 +528,7 @@ describe("pagination", () => {
       if (res.isDone) break;
     }
     expect(viaIndex).toEqual([null, null, "a", "b"]); // NULLs group first in ASC
-    e2.close();
+    e2.close("clean");
     rmSync(d2, { recursive: true, force: true });
   });
 });

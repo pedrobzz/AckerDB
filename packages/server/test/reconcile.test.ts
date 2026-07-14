@@ -50,17 +50,17 @@ describe("reconcile", () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
     expect(a.applied).toEqual(["initialized 1 table(s)"]);
-    a.engine.close();
+    a.engine.close("clean");
     const b = open(baseSchema(), path);
     expect(b.applied).toEqual([]);
-    b.engine.close();
+    b.engine.close("clean");
   });
 
   test("adding tables and nullable columns applies with data present", async () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
     await a.db.users.insert({ name: "ana", role: "admin" });
-    a.engine.close();
+    a.engine.close("clean");
 
     const grown = defineSchema({
       users: defineTable({
@@ -82,13 +82,13 @@ describe("reconcile", () => {
     const ana = await b.db.users.get(1n);
     expect(ana).toMatchObject({ name: "ana", bio: null });
     await b.db.posts.insert({ title: "t" });
-    b.engine.close();
+    b.engine.close("clean");
   });
 
   test("required column: rebuild when empty, refuse when rows exist", async () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
-    a.engine.close();
+    a.engine.close("clean");
 
     const withCredits = defineSchema({
       users: defineTable({
@@ -101,7 +101,7 @@ describe("reconcile", () => {
     const b = open(withCredits, path); // empty table -> rebuild
     expect(b.applied).toEqual(["rebuilt table users"]);
     await b.db.users.insert({ name: "ana", role: "admin", credits: 5 });
-    b.engine.close();
+    b.engine.close("clean");
 
     const withMore = defineSchema({
       users: defineTable({
@@ -115,7 +115,7 @@ describe("reconcile", () => {
     const engine = new Engine(withMore, path);
     expect(() => reconcile(engine)).toThrow(UnsafeSchemaChange);
     expect(() => reconcile(engine)).toThrow("1 row(s) with no value");
-    engine.close();
+    engine.close("clean");
   });
 
   test("widen keeps data and ids; sequence never reuses ids across rebuild", async () => {
@@ -124,7 +124,7 @@ describe("reconcile", () => {
     await a.db.users.insert({ name: "a", role: "admin" });
     await a.db.users.insert({ name: "b", role: "member" });
     await a.db.users.delete(2n); // high id gone; must not be reused
-    a.engine.close();
+    a.engine.close("clean");
 
     const widened = defineSchema({
       users: defineTable({
@@ -138,7 +138,7 @@ describe("reconcile", () => {
     expect(await b.db.users.get(1n)).toMatchObject({ name: "a" });
     const newId = await b.db.users.insert({ name: null, role: "guest" });
     expect(newId).toBe(3n);
-    b.engine.close();
+    b.engine.close("clean");
   });
 
   test("narrow refuses when NULLs exist, applies when clean", async () => {
@@ -148,30 +148,30 @@ describe("reconcile", () => {
     });
     const a = open(nullable, path);
     await a.db.users.insert({ name: null });
-    a.engine.close();
+    a.engine.close("clean");
 
     const required = defineSchema({
       users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
     });
     const refusing = new Engine(required, path);
     expect(() => reconcile(refusing)).toThrow("1 row(s) hold NULL");
-    refusing.close();
+    refusing.close("clean");
 
     const fix = open(nullable, path);
     await fix.db.users.patch(1n, { name: "fixed" });
-    fix.engine.close();
+    fix.engine.close("clean");
 
     const b = open(required, path);
     expect(b.applied).toEqual(["rebuilt table users"]);
     expect((await b.db.users.get(1n)).name).toBe("fixed");
-    b.engine.close();
+    b.engine.close("clean");
   });
 
   test("enum variants: add/reorder free; removal gated on live rows", async () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
     await a.db.users.insert({ name: "m", role: "member" });
-    a.engine.close();
+    a.engine.close("clean");
 
     // reorder + add: applies, tags stable
     const reordered = defineSchema({
@@ -183,7 +183,7 @@ describe("reconcile", () => {
     });
     const b = open(reordered, path);
     expect((await b.db.users.get(1n)).role).toBe("member");
-    b.engine.close();
+    b.engine.close("clean");
 
     // removing 'member' while a row holds it: refuse with the count
     const dropped = defineSchema({
@@ -195,15 +195,15 @@ describe("reconcile", () => {
     });
     const refusing = new Engine(dropped, path);
     expect(() => reconcile(refusing)).toThrow("variant 'member' removed, but 1 row(s) still hold it");
-    refusing.close();
+    refusing.close("clean");
 
     // clear the row, then removal applies
     const c = open(reordered, path);
     await c.db.users.patch(1n, { role: "guest" });
-    c.engine.close();
+    c.engine.close("clean");
     const d = open(dropped, path);
     expect((await d.db.users.get(1n)).role).toBe("guest");
-    d.engine.close();
+    d.engine.close("clean");
   });
 
   test("union payload change gated on rows holding that variant", async () => {
@@ -218,19 +218,19 @@ describe("reconcile", () => {
     const v1 = uSchema(dbz.object({ url: dbz.string() }));
     const a = open(v1, path);
     await a.db.posts.insert({ body: { tag: "text", value: "hello" } });
-    a.engine.close();
+    a.engine.close("clean");
 
     // only 'text' rows exist: changing 'image' payload is safe
     const v2 = uSchema(dbz.object({ url: dbz.string(), width: dbz.number() }));
     const b = open(v2, path);
     await b.db.posts.insert({ body: { tag: "image", value: { url: "u", width: 1 } } });
-    b.engine.close();
+    b.engine.close("clean");
 
     // now an 'image' row exists: changing it again refuses
     const v3 = uSchema(dbz.object({ href: dbz.string() }));
     const refusing = new Engine(v3, path);
     expect(() => reconcile(refusing)).toThrow("variant 'image' payload type changed");
-    refusing.close();
+    refusing.close("clean");
   });
 
   test("index lifecycle: add, drop, unique over duplicates refuses", async () => {
@@ -238,7 +238,7 @@ describe("reconcile", () => {
     const a = open(baseSchema(), path);
     await a.db.users.insert({ name: "dup", role: "admin" });
     await a.db.users.insert({ name: "dup", role: "member" });
-    a.engine.close();
+    a.engine.close("clean");
 
     const uniqueName = defineSchema({
       users: defineTable({
@@ -249,7 +249,7 @@ describe("reconcile", () => {
     });
     const refusing = new Engine(uniqueName, path);
     expect(() => reconcile(refusing)).toThrow("1 group(s) of duplicate rows");
-    refusing.close();
+    refusing.close("clean");
 
     const roleIndexed = defineSchema({
       users: defineTable({
@@ -263,7 +263,7 @@ describe("reconcile", () => {
     expect(b.applied).toContain("created index users.by_role");
     const admins = await b.db.users.byRole((q: any) => q.eq("role", "admin")).collect();
     expect(admins).toHaveLength(1);
-    b.engine.close();
+    b.engine.close("clean");
   });
 
   test("dropping tables: empty drops, non-empty refuses", async () => {
@@ -274,28 +274,28 @@ describe("reconcile", () => {
     });
     const a = open(two, path);
     await a.db.logs.insert({ line: "x" });
-    a.engine.close();
+    a.engine.close("clean");
 
     const one = defineSchema({
       users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
     });
     const refusing = new Engine(one, path);
     expect(() => reconcile(refusing)).toThrow("table logs dropped, but it still holds 1 row(s)");
-    refusing.close();
+    refusing.close("clean");
 
     const b = open(two, path);
     await b.db.logs.delete(1n);
-    b.engine.close();
+    b.engine.close("clean");
     const c = open(one, path);
     expect(c.applied).toContain("dropped logs");
-    c.engine.close();
+    c.engine.close("clean");
   });
 
   test("refusal leaves the database untouched (all-or-nothing)", async () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
     await a.db.users.insert({ name: "keeper", role: "admin" });
-    a.engine.close();
+    a.engine.close("clean");
 
     // one safe change (new table) + one unsafe (required column on non-empty)
     const mixed = defineSchema({
@@ -319,6 +319,6 @@ describe("reconcile", () => {
     expect(
       refusing.writer.query("SELECT COUNT(*) AS count FROM _dbz_tags WHERE type = 'AuditKind'").get(),
     ).toEqual({ count: 0n });
-    refusing.close();
+    refusing.close("clean");
   });
 });

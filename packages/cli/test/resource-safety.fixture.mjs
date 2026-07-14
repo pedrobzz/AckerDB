@@ -161,7 +161,13 @@ const runtime = new Runtime({
 const server = serve({ runtime, verifier, port });
 
 let shutdown;
-const drain = () => shutdown ??= server.drain().finally(() => engine.close());
+const drain = () => shutdown ??= server.drain().then(
+  () => engine.close("clean"),
+  (error) => {
+    engine.close("unclean");
+    throw error;
+  },
+);
 const onSignal = () => void drain().then(
   () => process.exit(0),
   (error) => {

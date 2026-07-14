@@ -77,7 +77,7 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
       throw error;
     }
   } finally {
-    engine.close();
+    engine.close("clean");
   }
 }
 
@@ -222,7 +222,7 @@ describe("dbz backup, restore, and status", () => {
         restored.storedMutation(replayRecord.sessionId, replayRecord.requestId),
       ).toEqual(expectedReplay);
     } finally {
-      restored.close();
+      restored.close("clean");
     }
   }, 30_000);
 
@@ -341,7 +341,7 @@ describe("dbz backup, restore, and status", () => {
       expect(live.commitVersion()).toBe(1n);
       expect(live.writer.query("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 1n });
     } finally {
-      live.close();
+      live.close("clean");
     }
   }, 30_000);
 

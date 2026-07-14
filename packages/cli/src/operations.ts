@@ -347,7 +347,7 @@ export async function inspectDatabase(config: AppConfig): Promise<StatusReport> 
       status: statusJson(engine.status()),
     };
   } finally {
-    engine.close();
+    engine.close("clean");
   }
 }
 
@@ -377,7 +377,7 @@ export async function createVerifiedBackup(
     try {
       manifest = engine.backup(artifact);
     } finally {
-      engine.close();
+      engine.close("clean");
     }
 
     try {
@@ -421,7 +421,7 @@ export async function verifyBackupArtifact(
       assertManifestMatchesEngine(engine, manifest);
       proveNextCommit(engine);
     } finally {
-      engine.close();
+      engine.close("clean");
     }
   } finally {
     rmSync(temporaryDir, { recursive: true, force: true });
@@ -470,7 +470,7 @@ export async function restoreVerifiedBackup(
         status = assertManifestMatchesEngine(engine, manifest);
         proveNextCommit(engine);
       } finally {
-        engine.close();
+        engine.close("clean");
       }
       return {
         format: 1,

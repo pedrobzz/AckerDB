@@ -470,7 +470,7 @@ describe("Session + Runtime integration", () => {
     } finally {
       await session.close();
       await runtime.drain();
-      engine.close();
+      engine.close("clean");
       rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -579,7 +579,7 @@ describe("Session + Runtime integration", () => {
       client.close();
       await socket?.settle();
       await runtime.drain();
-      engine.close();
+      engine.close("clean");
       rmSync(directory, { recursive: true, force: true });
     }
   });
@@ -725,7 +725,7 @@ describe("Session + Runtime integration", () => {
     } finally {
       await Promise.all([slow.close(), target.close(), caller.close()]);
       await runtime.drain();
-      engine.close();
+      engine.close("clean");
       rmSync(directory, { recursive: true, force: true });
     }
   });

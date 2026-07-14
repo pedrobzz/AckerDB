@@ -24,6 +24,7 @@ export {
   type BackupManifest,
   type CheckpointReport,
   type ColumnPlan,
+  type EngineCloseDisposition,
   type EngineOptions,
   type EngineStatus,
   type IntegrityReport,

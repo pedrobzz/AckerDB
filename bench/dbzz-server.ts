@@ -7,6 +7,7 @@ import {
   reconcile,
   serve,
   type DbzzServer,
+  type EngineCloseDisposition,
 } from "@dbzz/server";
 import { importFunctionModules, importSchema } from "../packages/cli/src/app.ts";
 import { loadConfig } from "../packages/cli/src/config.ts";
@@ -44,9 +45,13 @@ try {
     `[dbz] ready on http://127.0.0.1:${server.port} — ${registry.functions.size} function(s), ${Object.keys(schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
   );
 } catch (error) {
-  if (server === undefined) await runtime?.drain().catch(() => {});
-  else await server.drain().catch(() => {});
-  engine.close();
+  let shutdown: EngineCloseDisposition = "unclean";
+  try {
+    if (server === undefined) await runtime?.drain();
+    else await server.drain();
+    shutdown = "clean";
+  } catch {}
+  engine.close(shutdown);
   throw error;
 }
 
@@ -62,9 +67,11 @@ await new Promise<void>((resolve) => {
 
 const beforeDrain = runtime.status().telemetry;
 let drainError: unknown;
+let drainFailed = false;
 try {
   await server.drain();
 } catch (error) {
+  drainFailed = true;
   drainError = error;
 }
 const report = createDbzzTelemetryReport(
@@ -76,6 +83,6 @@ const report = createDbzzTelemetryReport(
 try {
   await Bun.write(reportPath, `${JSON.stringify(report, null, 2)}\n`);
 } finally {
-  engine.close();
+  engine.close(drainFailed ? "unclean" : "clean");
 }
-if (drainError !== undefined) throw drainError;
+if (drainFailed) throw drainError;

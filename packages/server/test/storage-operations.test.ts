@@ -65,6 +65,17 @@ function ownedState(database: string): Record<string, unknown> {
   }
 }
 
+function cleanShutdown(database: string): bigint {
+  const db = new Database(database, { readonly: true, safeIntegers: true });
+  try {
+    return (db.query("SELECT clean_shutdown FROM _dbz_state WHERE singleton = 1").get() as {
+      clean_shutdown: bigint;
+    }).clean_shutdown;
+  } finally {
+    db.close();
+  }
+}
+
 describe("durability and internal state", () => {
   test("defaults to FULL, reports balanced explicitly, and persists monotonic versions", () => {
     const { database } = fresh();
@@ -79,7 +90,7 @@ describe("durability and internal state", () => {
     production.writer.exec("BEGIN IMMEDIATE");
     expect(production.allocateCommitVersion()).toBe(1n);
     production.writer.exec("COMMIT");
-    production.close();
+    production.close("clean");
 
     const balanced = new Engine(schema, database, { durability: "balanced" });
     expect(balanced.status()).toMatchObject({
@@ -88,14 +99,14 @@ describe("durability and internal state", () => {
       commitVersion: 1n,
       recoveredFromCrash: false,
     });
-    balanced.close();
+    balanced.close("clean");
   });
 
   test("rejects another process owner and legacy internal schemas", () => {
     const { database } = fresh();
     const owner = new Engine(schema, database);
     expect(() => new Engine(schema, database)).toThrow("already open by process");
-    owner.close();
+    owner.close("clean");
 
     const legacy = fresh().database;
     const db = new Database(legacy, { create: true });
@@ -123,7 +134,7 @@ describe("durability and internal state", () => {
     const { database } = fresh();
     const engine = new Engine(schema, database);
     reconcile(engine);
-    engine.close();
+    engine.close("clean");
     const db = new Database(database);
     db.exec("DROP INDEX ix__dbz_mutations_completed_at");
     db.close();
@@ -144,7 +155,7 @@ describe("durability and internal state", () => {
       const { database } = fresh();
       const engine = new Engine(schema, database);
       reconcile(engine);
-      engine.close();
+      engine.close("clean");
       const db = new Database(database);
       db.exec(corruption);
       db.close();
@@ -168,7 +179,7 @@ describe("durability and internal state", () => {
       const { database } = fresh();
       const engine = new Engine(indexed, database);
       reconcile(engine);
-      engine.close();
+      engine.close("clean");
       const db = new Database(database);
       db.exec(corruption);
       db.close();
@@ -184,7 +195,7 @@ describe("durability and internal state", () => {
     const before = live.writer.query("SELECT key, value FROM _dbz_meta ORDER BY key").all();
     expect(() => reconcile(live)).toThrow(CorruptDatabaseError);
     expect(live.writer.query("SELECT key, value FROM _dbz_meta ORDER BY key").all()).toEqual(before);
-    live.close();
+    live.close("clean");
   });
 
   test("rejects corrupt tag assignments without repairing them", () => {
@@ -201,7 +212,7 @@ describe("durability and internal state", () => {
       const { database } = fresh();
       const engine = new Engine(tagged, database);
       reconcile(engine);
-      engine.close();
+      engine.close("clean");
       const db = new Database(database);
       db.exec(corruption);
       db.close();
@@ -215,7 +226,7 @@ describe("durability and internal state", () => {
     const { database } = fresh();
     const engine = new Engine(schema, database);
     reconcile(engine);
-    engine.close();
+    engine.close("clean");
 
     const db = new Database(database, { safeIntegers: true });
     db.query("UPDATE _dbz_state SET mutation_records = 1 WHERE singleton = 1").run();
@@ -252,7 +263,7 @@ describe("durability and internal state", () => {
     expect(engine.pruneStoredMutations(20)).toBe(0);
     expect(engine.pruneStoredMutations(21)).toBe(1);
     expect(engine.status()).toMatchObject({ mutationRecords: 0, mutationResultBytes: 0 });
-    engine.close();
+    engine.close("clean");
   });
 
   test("detects an unclean prior process without deleting WAL state", async () => {
@@ -279,7 +290,55 @@ describe("durability and internal state", () => {
     expect(recovered.recoveredFromCrash).toBe(true);
     expect(recovered.commitVersion()).toBe(1n);
     expect(recovered.writer.query("SELECT value FROM records").get()).toEqual({ value: "survives" });
-    recovered.close();
+    recovered.close("clean");
+  });
+
+  test("records only the first explicit shutdown outcome", () => {
+    const { database } = fresh();
+    const failed = new Engine(schema, database);
+    reconcile(failed);
+    failed.close("unclean");
+    failed.close("clean");
+    expect(cleanShutdown(database)).toBe(0n);
+
+    const recovered = new Engine(schema, database);
+    expect(recovered.recoveredFromCrash).toBe(true);
+    recovered.close("clean");
+    recovered.close("unclean");
+    expect(cleanShutdown(database)).toBe(1n);
+
+    const orderly = new Engine(schema, database);
+    expect(orderly.recoveredFromCrash).toBe(false);
+    orderly.close("clean");
+  });
+
+  test("rejects an absent shutdown outcome without releasing ownership", () => {
+    const { database } = fresh();
+    const engine = new Engine(schema, database);
+    expect(() => (engine.close as (shutdown?: string) => void)()).toThrow(
+      'engine close disposition must be exactly "clean" or "unclean"',
+    );
+    expect(engine.writer.query("SELECT 1 AS value").get()).toEqual({ value: 1n });
+    engine.close("unclean");
+    expect(cleanShutdown(database)).toBe(0n);
+  });
+
+  test("releases every native handle when the clean marker write fails", () => {
+    const { database } = fresh();
+    const engine = new Engine(schema, database);
+    const additionalReader = engine.createReader();
+    const closeAdditionalReader = additionalReader.close.bind(additionalReader);
+    additionalReader.close = () => {
+      closeAdditionalReader();
+      throw new Error("secondary reader close failure");
+    };
+    engine.writer.exec("DROP TABLE _dbz_state");
+
+    expect(() => engine.close("clean")).toThrow("no such table: _dbz_state");
+    for (const connection of [engine.writer, engine.reader, additionalReader]) {
+      expect(() => connection.query("SELECT 1").get()).toThrow("closed database");
+    }
+    expect(existsSync(`${database}.dbzz.lock`)).toBe(false);
   });
 
   test("scavenges pre-publish and post-publish bootstrap crash remnants", () => {
@@ -299,7 +358,7 @@ describe("durability and internal state", () => {
     writeFileSync(lockedArtifact, "must remain while another process owns the lock");
     expect(() => new Engine(schema, database)).toThrow("already open by process");
     expect(existsSync(lockedArtifact)).toBe(true);
-    initialized.close();
+    initialized.close("clean");
     expect(existsSync(prePublish)).toBe(false);
     expect(existsSync(`${prePublish}-journal`)).toBe(false);
     expect(readFileSync(unrelatedFile, "utf8")).toBe("user-owned");
@@ -312,7 +371,7 @@ describe("durability and internal state", () => {
 
     const reopened = new Engine(schema, database);
     expect(reopened.commitVersion()).toBe(0n);
-    reopened.close();
+    reopened.close("clean");
     expect(existsSync(postPublish)).toBe(false);
     expect(existsSync(`${postPublish}-wal`)).toBe(false);
     expect(existsSync(lockedArtifact)).toBe(false);
@@ -328,7 +387,7 @@ describe("durability and internal state", () => {
     engine.writer.query("INSERT INTO records (value) VALUES (?)").run("x".repeat(16 * 1_024 * 1_024));
     engine.allocateCommitVersion();
     engine.writer.exec("COMMIT");
-    engine.close();
+    engine.close("clean");
     expect(statSync(database).size).toBeGreaterThan(16 * 1_024 * 1_024);
     expect(existsSync(`${database}-journal`)).toBe(false);
     expect(existsSync(`${database}-wal`) ? statSync(`${database}-wal`).size : 0).toBe(0);
@@ -339,7 +398,7 @@ describe("durability and internal state", () => {
       const schema = defineSchema({ records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }) });
       const started = performance.now();
       const engine = new Engine(schema, ${JSON.stringify(database)});
-      engine.close();
+      engine.close("clean");
       console.log(JSON.stringify({ elapsedMs: performance.now() - started }));
     `;
     const child = Bun.spawn([process.execPath, "-e", script], {
@@ -385,7 +444,7 @@ describe("checkpoint, backup, and restore", () => {
       schemaFingerprint: engine.schemaFingerprint(),
     });
     expect(manifest.sha256).toBe(createHash("sha256").update(readFileSync(artifact)).digest("hex"));
-    engine.close();
+    engine.close("clean");
 
     const restored = fresh().database;
     Engine.restore(artifact, restored, manifest);
@@ -396,7 +455,7 @@ describe("checkpoint, backup, and restore", () => {
     reopened.writer.exec("BEGIN IMMEDIATE");
     expect(reopened.allocateCommitVersion()).toBe(2n);
     reopened.writer.exec("COMMIT");
-    reopened.close();
+    reopened.close("clean");
   });
 
   test("refuses an artifact whose manifest digest no longer matches", () => {
@@ -405,7 +464,7 @@ describe("checkpoint, backup, and restore", () => {
     reconcile(engine);
     const artifact = join(source.root, "backup.db");
     const manifest = engine.backup(artifact);
-    engine.close();
+    engine.close("clean");
     const bytes = readFileSync(artifact);
     bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0xff;
     writeFileSync(artifact, bytes);

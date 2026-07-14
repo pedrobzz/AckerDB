@@ -170,7 +170,7 @@ function fixture(
 async function cleanup(value: Fixture): Promise<void> {
   await value.server.drain().catch(() => {});
   await value.runtime.drain().catch(() => {});
-  value.engine.close();
+  value.engine.close("clean");
   rmSync(value.directory, { recursive: true, force: true });
 }
 

@@ -452,7 +452,7 @@ async function restart(
   telemetry: RuntimeOptions["telemetry"] = false,
 ): Promise<void> {
   await runtime.drain().catch(() => {});
-  engine.close();
+  engine.close("clean");
   rmSync(directory, { recursive: true, force: true });
   directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-restart-"));
   start(customLimits, telemetry);
@@ -475,7 +475,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   await runtime.drain().catch(() => {});
-  engine.close();
+  engine.close("clean");
   rmSync(directory, { recursive: true, force: true });
 });
 
@@ -1279,7 +1279,7 @@ describe("scheduler and lifecycle", () => {
 describe("configured capacity", () => {
   beforeEach(async () => {
     await runtime.drain();
-    engine.close();
+    engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
     directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-capacity-"));
     start(limits({ maxConnections: 1, maxFrameBytes: 256 }));
@@ -1319,7 +1319,7 @@ describe("configured capacity", () => {
 
   test("removes runtime ownership when an auth transition cannot fit its capture", async () => {
     await runtime.drain();
-    engine.close();
+    engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
     directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-auth-capture-"));
     start(limits({

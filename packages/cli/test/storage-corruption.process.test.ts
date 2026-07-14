@@ -168,7 +168,7 @@ function cleanDatabase(): Buffer {
   const engine = new Engine(schema, source);
   reconcile(engine);
   engine.backup(artifact);
-  engine.close();
+  engine.close("clean");
   return readFileSync(artifact);
 }
 

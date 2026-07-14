@@ -253,7 +253,7 @@ class RuntimeHarness {
     this.closed = true;
     for (const session of this.sessions) session.abort();
     await this.runtime.drain(Date.now() + 2_000).catch(() => {});
-    this.engine.close();
+    this.engine.close("clean");
     rmSync(this.directory, { recursive: true, force: true });
   }
 }

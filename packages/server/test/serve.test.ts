@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -336,7 +337,7 @@ beforeEach(() => {
 afterEach(async () => {
   await server.drain().catch(() => {});
   await runtime.drain().catch(() => {});
-  engine.close();
+  engine.close("clean");
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -497,7 +498,7 @@ describe("health and protected status", () => {
     } finally {
       await early.drain().catch(() => {});
       await earlyRuntime?.drain().catch(() => {});
-      earlyEngine?.close();
+      earlyEngine?.close("clean");
       rmSync(earlyDir, { recursive: true, force: true });
     }
   });
@@ -888,7 +889,7 @@ describe("Protocol-2 HTTP procedures", () => {
       await heldProcedure?.catch(() => {});
       await fairServer.drain().catch(() => {});
       await fairRuntime.drain().catch(() => {});
-      fairEngine.close();
+      fairEngine.close("clean");
       rmSync(fairDirectory, { recursive: true, force: true });
     }
   });
@@ -1211,7 +1212,7 @@ describe("WebSocket Session transport", () => {
       await within(resumed.closed());
     } finally {
       await overlapServer.drain().catch(() => {});
-      overlapEngine.close();
+      overlapEngine.close("clean");
       rmSync(overlapDir, { recursive: true, force: true });
     }
   });
@@ -1267,7 +1268,7 @@ describe("lifecycle drain", () => {
     });
   });
 
-  test("force closes and fails within the deadline when an admitted operation stalls", async () => {
+  test("force closes and preserves unclean storage when an admitted operation stalls", async () => {
     blockedProcedureStarted = deferred<void>();
     blockedProcedureRelease = deferred<void>();
     const transport = fetch(`${base}/api/call`, {
@@ -1321,6 +1322,15 @@ describe("lifecycle drain", () => {
     await expect(runtime.drain()).rejects.toBe(failure);
     await within(transport);
     expect(runtime.status().state).toBe("failed");
+    engine.close("unclean");
+    const persisted = new Database(join(dir, "data.db"), { readonly: true, safeIntegers: true });
+    try {
+      expect(
+        persisted.query("SELECT clean_shutdown FROM _dbz_state WHERE singleton = 1").get(),
+      ).toEqual({ clean_shutdown: 0n });
+    } finally {
+      persisted.close();
+    }
   });
 
   test("keeps the connection deadline when only Session shutdown stalls", async () => {

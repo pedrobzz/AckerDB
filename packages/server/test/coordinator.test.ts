@@ -24,7 +24,7 @@ const schema = defineSchema({
 const dirs: string[] = [];
 const engines: Engine[] = [];
 afterEach(() => {
-  for (const engine of engines.splice(0)) engine.close();
+  for (const engine of engines.splice(0)) engine.close("clean");
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 

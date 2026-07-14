@@ -96,7 +96,13 @@ const runtime = new Runtime({
 });
 const server = serve({ runtime, port });
 let draining: Promise<void> | undefined;
-const drain = () => draining ??= server.drain().finally(() => engine.close());
+const drain = () => draining ??= server.drain().then(
+  () => engine.close("clean"),
+  (error) => {
+    engine.close("unclean");
+    throw error;
+  },
+);
 const onSignal = () => void drain().then(
   () => process.exit(0),
   (error) => {

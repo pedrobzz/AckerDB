@@ -5,6 +5,8 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
 import { DbzzClient } from "@dbzz/client";
+import { startApp } from "../src/app.ts";
+import { loadConfig } from "../src/config.ts";
 import { FIXTURE_ADMIN_USERS, FIXTURE_MESSAGES, FIXTURE_SCHEMA, makeFixture } from "./fixture.ts";
 
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
@@ -95,6 +97,26 @@ const clientFor = (port: number) => new DbzzClient({
   credential: { kind: "anonymous" },
 });
 
+function shutdownMarker(dir: string): bigint {
+  const db = new Database(join(dir, ".zdb", "data.db"), { readonly: true, safeIntegers: true });
+  try {
+    return (db.query("SELECT clean_shutdown FROM _dbz_state WHERE singleton = 1").get() as {
+      clean_shutdown: bigint;
+    }).clean_shutdown;
+  } finally {
+    db.close();
+  }
+}
+
+function within<T>(work: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    work,
+    Bun.sleep(2_000).then(() => {
+      throw new Error(`${label} did not release its resources`);
+    }),
+  ]);
+}
+
 describe("dbz CLI", () => {
   test("start: codegen + serve, functions callable, reset wipes the db", async () => {
     const port = freePort();
@@ -145,6 +167,39 @@ describe("dbz CLI", () => {
     started.child.kill("SIGTERM");
     expect(await started.child.exited).toBe(0);
   });
+
+  test("failed drain releases ownership without recording a clean shutdown", async () => {
+    const port = freePort();
+    const dir = makeFixture({
+      "schema.ts": `
+        import { dbz, defineSchema, defineTable } from "@dbzz/server";
+        export default defineSchema({ records: defineTable({ id: dbz.primaryKey() }) });
+      `,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+    const config = loadConfig(dir, { DBZZ_TELEMETRY: "disabled" });
+    const failed = await startApp(config);
+    const failure = new Error("injected drain failure");
+    const drainServer = failed.server.drain.bind(failed.server);
+    failed.server.drain = async () => {
+      await drainServer();
+      throw failure;
+    };
+
+    await expect(within(failed.drain(), "failed drain")).rejects.toBe(failure);
+    await expect(failed.drain()).rejects.toBe(failure);
+    expect(shutdownMarker(dir)).toBe(0n);
+
+    const restarted = await startApp(config);
+    try {
+      expect(restarted.engine.recoveredFromCrash).toBe(true);
+      await within(restarted.drain(), "successful drain");
+      expect(shutdownMarker(dir)).toBe(1n);
+    } finally {
+      await restarted.drain().catch(() => {});
+    }
+  }, 20_000);
 
   test("start owns one live port continuously from codegen through readiness", async () => {
     const port = freePort();

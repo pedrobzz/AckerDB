@@ -89,6 +89,8 @@ export interface EngineOptions {
   integrityCheck?: "quick" | "full";
 }
 
+export type EngineCloseDisposition = "clean" | "unclean";
+
 export interface IntegrityReport {
   ok: boolean;
   check: "quick" | "full";
@@ -1457,18 +1459,37 @@ export class Engine {
     }
   }
 
-  close(): void {
+  /** Release every native handle and record only an explicitly clean shutdown. */
+  close(shutdown: EngineCloseDisposition): void {
+    if (shutdown !== "clean" && shutdown !== "unclean") {
+      throw new TypeError('engine close disposition must be exactly "clean" or "unclean"');
+    }
     if (this.closed) return;
     this.closed = true;
-    try {
-      this.writer.query("UPDATE _dbz_state SET clean_shutdown = 1 WHERE singleton = 1").run();
-      for (const reader of this.additionalReaders) reader.close();
-      this.additionalReaders.clear();
-      if (this.reader !== this.writer) this.reader.close();
-      this.writer.close();
-    } finally {
-      if (this.processLock !== null) rmSync(this.processLock, { recursive: true, force: true });
+    let failed = false;
+    let failure: unknown;
+    const attempt = (work: () => void) => {
+      try {
+        work();
+      } catch (error) {
+        if (!failed) failure = error;
+        failed = true;
+      }
+    };
+    if (shutdown === "clean") {
+      attempt(() => {
+        this.writer.query("UPDATE _dbz_state SET clean_shutdown = 1 WHERE singleton = 1").run();
+      });
     }
+    for (const reader of this.additionalReaders) attempt(() => reader.close());
+    this.additionalReaders.clear();
+    if (this.reader !== this.writer) attempt(() => this.reader.close());
+    attempt(() => this.writer.close());
+    const processLock = this.processLock;
+    if (processLock !== null) {
+      attempt(() => rmSync(processLock, { recursive: true, force: true }));
+    }
+    if (failed) throw failure;
   }
 }
 

@@ -329,7 +329,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
   } finally {
     await session.close();
     await runtime.drain(Date.now() + 2_000).catch(() => {});
-    engine.close();
+    engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
   }
 });
@@ -490,7 +490,7 @@ test("DbzzServer correlates bounded procedure encoding and Response handoff afte
   } finally {
     await server.drain().catch(() => {});
     await runtime.drain(Date.now() + 2_000).catch(() => {});
-    engine.close();
+    engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
   }
 });

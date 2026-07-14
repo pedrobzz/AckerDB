@@ -12,6 +12,7 @@ import {
   Registry,
   Runtime,
   createOidcVerifier,
+  type EngineCloseDisposition,
   reconcile,
   Schema,
   UnsafeSchemaChange,
@@ -70,7 +71,7 @@ export interface RunningApp {
   server: DbzzServer;
   runtime: Runtime;
   engine: Engine;
-  /** Idempotently drain transports/runtime, then mark storage clean and close it. */
+  /** Idempotently drain; success marks storage clean, while failure releases it unclean. */
   drain(): Promise<void>;
 }
 
@@ -116,20 +117,22 @@ export async function startApp(
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   };
-  const closeEngine = () => {
+  const closeEngine = (shutdown: EngineCloseDisposition) => {
     if (engineClosed || ownedEngine === undefined) return;
     engineClosed = true;
-    ownedEngine.close();
+    ownedEngine.close(shutdown);
   };
   const drain = (): Promise<void> => {
     if (drainPromise !== null) return drainPromise;
     removeSignalHandlers();
     drainPromise = (async () => {
+      let shutdown: EngineCloseDisposition = "unclean";
       try {
         if (activated || runtime === undefined) await server.drain();
         else await Promise.all([server.drain(), runtime.drain()]);
+        shutdown = "clean";
       } finally {
-        closeEngine();
+        closeEngine(shutdown);
       }
     })();
     return drainPromise;
