@@ -280,6 +280,7 @@ export class Session {
   private phase: SessionPhase = "awaiting_hello";
   private clientSessionId: string | null = null;
   private principal: Principal | null = null;
+  private context: SessionRuntimeContext | null = null;
   private authEpoch = 0;
   private latestAttemptId = 0;
   private paused = true;
@@ -472,7 +473,9 @@ export class Session {
       this.paused = true;
       this.epochController = new AbortController();
       this.scheduleExpiry(principal, this.authEpoch);
-      await this.runtime.openSession(this.runtimeContext(principal, this.authEpoch, this.epochController));
+      const context = this.createRuntimeContext(principal, this.authEpoch, this.epochController);
+      this.context = context;
+      await this.runtime.openSession(context);
       if (this.isClosed()) return;
       await this.sendControl({
         v: PROTOCOL_VERSION,
@@ -574,11 +577,13 @@ export class Session {
       return;
     }
 
-    const fromPrincipal = this.principal;
-    const fromEpoch = this.authEpoch;
-    const nextEpoch = fromEpoch + 1;
-    const fromContext = this.runtimeContext(fromPrincipal, fromEpoch, this.epochController);
-    const toContext = this.runtimeContext(result, nextEpoch, transitionController);
+    const fromContext = this.context;
+    if (fromContext === null) {
+      void this.terminate(internalError(new Error("auth completed before runtime context")));
+      return;
+    }
+    const nextEpoch = this.authEpoch + 1;
+    const toContext = this.createRuntimeContext(result, nextEpoch, transitionController);
 
     try {
       await this.sink.dropApplicationFramesBefore(nextEpoch);
@@ -600,6 +605,7 @@ export class Session {
         // arrived while it was running. Keep internal state aligned, but expose
         // it only if this attempt is still latest.
         this.principal = result;
+        this.context = toContext;
         this.authEpoch = nextEpoch;
         this.epochController = transitionController;
         this.scheduleExpiry(result, nextEpoch);
@@ -647,12 +653,12 @@ export class Session {
     >,
   ): Promise<void> {
     const { message } = request;
-    if (this.principal === null || this.clientSessionId === null) {
+    const context = this.context;
+    if (this.principal === null || this.clientSessionId === null || context === null) {
       void this.terminate(internalError(new Error("operation started before hello")));
       return;
     }
     const epoch = this.authEpoch;
-    const context = this.runtimeContext(this.principal, epoch, this.epochController);
     if (context.signal.aborted || !this.isCurrent(epoch)) return;
     try {
       switch (message.t) {
@@ -680,7 +686,7 @@ export class Session {
     }
   }
 
-  private runtimeContext(
+  private createRuntimeContext(
     principal: Principal,
     authEpoch: number,
     controller: AbortController,
@@ -823,10 +829,7 @@ export class Session {
 
   private terminate(error: DbzzError): Promise<void> {
     if (this.closePromise !== null) return this.closePromise;
-    const context =
-      this.principal === null || this.clientSessionId === null
-        ? null
-        : this.runtimeContext(this.principal, this.authEpoch, this.epochController);
+    const context = this.context;
     const outcome = outcomeFromError(error);
     this.phase = "closed";
     this.paused = true;

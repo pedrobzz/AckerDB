@@ -201,6 +201,7 @@ class FakeRuntime implements RuntimePort {
   readonly queries: QueryMessage[] = [];
   readonly queryRequests: RuntimeRequest<QueryMessage>[] = [];
   readonly mutations: MutationMessage[] = [];
+  readonly operationContexts: SessionRuntimeContext[] = [];
   readonly closes: Outcome[] = [];
   readonly transitionPublications: RuntimePublication[] = [];
   transitionCaptureBytes = 0;
@@ -239,27 +240,31 @@ class FakeRuntime implements RuntimePort {
 
   async subscribe(context: SessionRuntimeContext, request: Parameters<RuntimePort["subscribe"]>[1]): Promise<void> {
     const { message } = request;
+    this.operationContexts.push(context);
     this.subscriptions.push(message.id);
     if (this.subscribeHook !== null) await this.subscribeHook(context, message.id);
     await context.publish(prepareRuntimePublication(resetTransition(context.authEpoch, message.id)));
   }
 
   async unsubscribe(
-    _context: SessionRuntimeContext,
+    context: SessionRuntimeContext,
     request: Parameters<RuntimePort["unsubscribe"]>[1],
   ): Promise<void> {
     const { message } = request;
+    this.operationContexts.push(context);
     this.unsubscriptions.push(message.id);
   }
 
   async reset(context: SessionRuntimeContext, request: Parameters<RuntimePort["reset"]>[1]): Promise<void> {
     const { message } = request;
+    this.operationContexts.push(context);
     this.resets.push(message.id);
     await context.publish(prepareRuntimePublication(resetTransition(context.authEpoch, message.id)));
   }
 
   async query(context: SessionRuntimeContext, request: RuntimeRequest<QueryMessage>): Promise<unknown> {
     const { message } = request;
+    this.operationContexts.push(context);
     this.queryRequests.push(request);
     this.queries.push(message);
     try {
@@ -290,6 +295,7 @@ class FakeRuntime implements RuntimePort {
     request: RuntimeRequest<MutationMessage>,
   ): Promise<RuntimeMutationResult> {
     const { message } = request;
+    this.operationContexts.push(context);
     this.mutations.push(message);
     const result: RuntimeMutationResult = {
       value: { ref: message.ref, principal: context.principal.kind },
@@ -434,6 +440,8 @@ describe("Session Protocol-2 ownership", () => {
     expect(runtime.unsubscriptions).toEqual([1]);
     expect(runtime.queries).toHaveLength(1);
     expect(runtime.mutations).toHaveLength(1);
+    expect(runtime.operationContexts).toHaveLength(5);
+    expect(runtime.operationContexts.every((context) => context === runtime.opens[0])).toBe(true);
     expect(messagesOfType(sink.controls, "welcome")[0]).toMatchObject({ authEpoch: 0, principal: "anonymous" });
     expect(messagesOfType(sink.controls, "pong")).toHaveLength(1);
     expect(messagesOfType(sink.applications.map((entry) => entry.message), "transition")).toHaveLength(2);
@@ -815,6 +823,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, auth(1, { kind: "bearer", token: "alice-refreshed" }));
     await settle();
     const sameOwner = runtime.transitions[0]!;
+    expect(sameOwner.from).toBe(opened);
 
     expect(Object.isFrozen(opened)).toBe(true);
     expect(Object.isFrozen(sameOwner.to)).toBe(true);
@@ -827,6 +836,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, auth(2, { kind: "bearer", token: "bob" }));
     await settle();
     const changedOwner = runtime.transitions[1]!;
+    expect(changedOwner.from).toBe(sameOwner.to);
     expect(changedOwner.from).toMatchObject({
       authEpoch: sameOwner.to.authEpoch,
       fairnessKey: sameOwner.to.fairnessKey,
@@ -838,6 +848,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, auth(3, { kind: "anonymous" }));
     await settle();
     const signedOut = runtime.transitions[2]!;
+    expect(signedOut.from).toBe(changedOwner.to);
     expect(signedOut.from).toMatchObject({
       authEpoch: changedOwner.to.authEpoch,
       fairnessKey: changedOwner.to.fairnessKey,
