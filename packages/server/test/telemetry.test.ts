@@ -1037,6 +1037,110 @@ describe("Telemetry", () => {
     });
   });
 
+  test("keeps high-population identities out of bounded metric and aggregate series", () => {
+    const maxMetricSeries = 4;
+    const population = 10_000;
+    const privatePrefix = "private_population_";
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => 0,
+      limits: {
+        maxMetricSeries,
+        maxRecords: 4,
+        maxBatchRecords: 4,
+        maxBytes: 64 * 1024,
+      },
+    });
+    const dimensions = [
+      ["query", "handler", "todos.list", "reader"],
+      ["mutation", "commit", "todos.create", "writer"],
+      ["subscription", "evaluation", "todos.watch", "subscription"],
+    ] as const;
+
+    for (let index = 0; index < population; index++) {
+      const identity = `${privatePrefix}${index}`;
+      const [operation, stage, functionName, resource] = dimensions[index % dimensions.length]!;
+      const dimension = { operation, stage, outcome: "ok" as const, functionName, resource };
+      const privateValues = {
+        userId: `${identity}_user`,
+        principalId: `${identity}_principal`,
+        requestId: `${identity}_request`,
+        connectionId: `${identity}_connection`,
+        subscriptionId: `${identity}_subscription`,
+        args: { privateValue: `${identity}_argument` },
+      };
+      telemetry.recordSpan({
+        context: {
+          traceId: `${identity}_trace`,
+          spanId: `${identity}_span`,
+          ...privateValues,
+        },
+        ...dimension,
+        durationMs: 1,
+        principal: { kind: "user", subject: `${identity}_principal` },
+        ...privateValues,
+      } as TelemetrySpanInput & Record<string, unknown>);
+      telemetry.recordMetric({
+        name: "runtime.operations",
+        value: 1,
+        unit: "count",
+        labels: {
+          ...dimension,
+          ...privateValues,
+        },
+      } as never);
+    }
+
+    expect(telemetry.snapshot()).toMatchObject({
+      metricSeries: dimensions.length,
+      dropped: { cardinality: 0 },
+    });
+    const populationAggregate = telemetry.aggregateSnapshot();
+    expect(populationAggregate).toMatchObject({
+      maxSeries: maxMetricSeries,
+      overflowedRecords: 0,
+    });
+    expect(populationAggregate.series).toHaveLength(dimensions.length);
+    expect(populationAggregate.series.reduce((count, series) => count + series.count, 0))
+      .toBe(population);
+
+    telemetry.recordSpan({
+      operation: "procedure",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "todos.overflow",
+      resource: "operation",
+      durationMs: 1,
+    });
+    telemetry.recordMetric({
+      name: "runtime.operations",
+      value: 1,
+      unit: "count",
+      labels: {
+        operation: "procedure",
+        functionName: "todos.overflow",
+        outcome: "ok",
+        resource: "operation",
+      },
+    });
+
+    expect(telemetry.snapshot()).toMatchObject({
+      metricSeries: maxMetricSeries,
+      dropped: { cardinality: 1 },
+    });
+    const cappedAggregate = telemetry.aggregateSnapshot();
+    expect(cappedAggregate).toMatchObject({
+      maxSeries: maxMetricSeries,
+      overflowedRecords: 1,
+    });
+    expect(cappedAggregate.series).toHaveLength(maxMetricSeries);
+    expect(cappedAggregate.series.at(-1)).toMatchObject({ overflow: true, count: 1 });
+    const serialized = JSON.stringify(cappedAggregate);
+    expect(serialized).not.toContain(privatePrefix);
+    expect(serialized).not.toMatch(/user|principal|args|requestId|connectionId|subscriptionId/);
+    telemetry.stop();
+  });
+
   test("drains every captured exporter batch before one absolute deadline", async () => {
     const scheduler = new ManualScheduler();
     const { batches, exporter } = exporterBatches();
