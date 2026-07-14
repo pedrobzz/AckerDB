@@ -206,13 +206,15 @@ describe("dbzz benchmark telemetry report", () => {
   test("requires every disabled telemetry snapshot and aggregate field to remain inert", () => {
     const fixture = disabledFixture();
     const startup = expectedDbzzStartupMode("disabled", "balanced");
-    expect(parseDbzzTelemetryReport(JSON.stringify(fixture.terminal), startup, fixture.output)).toMatchObject({
+    const report = parseDbzzTelemetryReport(JSON.stringify(fixture.terminal), startup, fixture.output);
+    expect(report).toMatchObject({
       runtime: {
         beforeDrain: { enabled: false, queuedRecords: 0, metricSeries: 0 },
         afterDrain: { enabled: false, queuedRecords: 0, metricSeries: 0 },
       },
       aggregates: { maxSeries: 0, spans: 0 },
     });
+    expect(() => assertDbzzTelemetryWorkload(report, fakeWorkload(1_000_000))).not.toThrow();
 
     const activityPaths = [
       ["runtime", "beforeDrain", "queuedRecords"],

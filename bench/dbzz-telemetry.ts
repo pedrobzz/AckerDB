@@ -659,6 +659,7 @@ export function assertDbzzTelemetryWorkload(
   report: DbzzTelemetryReport,
   workload: DriverResult,
 ): void {
+  if (report.startupMode.telemetry === "disabled") return;
   const lowerBounds = workloadTelemetryLowerBounds(workload);
   const stages: Readonly<Record<BenchmarkOperation, TelemetryStage>> = {
     query: "queue",
