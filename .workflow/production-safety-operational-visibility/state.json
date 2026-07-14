@@ -1,0 +1,42 @@
+{
+  "title": "Production safety and operational visibility",
+  "slug": "production-safety-operational-visibility",
+  "created_at": "2026-07-13T14:56:11+00:00",
+  "goal": "Implement pedrobzz/dbzz#1 as a proven single-node production-safety foundation without losing required benchmark wins",
+  "status": "verification",
+  "approval": {
+    "required": false,
+    "granted": true,
+    "notes": "Pedro explicitly requested local implementation, configured subagents, and atomic local commits; push, publishing, merging, external writes, and destructive user-data operations remain excluded."
+  },
+  "packets": {
+    "D1_architecture_map": "complete",
+    "D2_contract_research": "complete",
+    "D3_acceptance_test_map": "complete",
+    "B0_baseline": "complete",
+    "C1_shared_contracts": "complete",
+    "S1_server_foundation": "complete",
+    "C2_client_transports": "complete",
+    "T1_telemetry": "complete",
+    "Q1_behavior_fault_tests": "complete",
+    "P1_benchmark": "current_host_comparison_complete_historical_acceptance_deferred",
+    "V1_verification": "complete_for_current_scope",
+    "G1_atomic_commits": "complete"
+  },
+  "verification": {
+    "status": "complete_for_current_scope",
+    "completed": [
+      "focused SSE and full process-resource suites",
+      "488-test canonical public/fault/privacy/cardinality suite",
+      "root and benchmark typechecks",
+      "38-test benchmark contract and acceptance-gate suite",
+      "story-by-story independent PRD audits",
+      "wiki lint and workflow validation",
+      "252-second zero-swap current-host DBZZ/Convex/SpacetimeDB comparison",
+      "post-benchmark process/listener and remote worktree cleanup"
+    ],
+    "pending": [
+      "optional historical M2 acceptance explicitly deferred for the current Hetzner comparison"
+    ]
+  }
+}
