@@ -1055,6 +1055,159 @@ describe("Telemetry", () => {
     telemetry.stop();
   });
 
+  test("accounts staged span bytes exactly without pre-serializing fast traces", async () => {
+    const maximalId = (letter: string): string => letter + "a".repeat(127);
+    const inputs: TelemetrySpanInput[] = [
+      {
+        timestampMs: -0,
+        context: { traceId: "trace_minimal", spanId: "span_minimal" },
+        operation: "query",
+        stage: "handler",
+        outcome: "ok",
+        durationMs: Number.MIN_VALUE,
+      },
+      {
+        timestampMs: Number.MAX_VALUE,
+        context: {
+          traceId: maximalId("T"),
+          spanId: maximalId("S"),
+          parentSpanId: maximalId("P"),
+          requestId: maximalId("R"),
+          connectionId: maximalId("C"),
+          mutationId: maximalId("M"),
+          commitId: maximalId("K"),
+          subscriptionId: maximalId("U"),
+        },
+        links: Array.from({ length: 33 }, (_, index) => ({
+          traceId: maximalId(index % 2 === 0 ? "L" : "N"),
+          spanId: maximalId(index % 2 === 0 ? "I" : "J"),
+        })),
+        operation: "subscription",
+        stage: "publication",
+        outcome: "ok",
+        functionName: maximalId("F"),
+        statement: maximalId("Q"),
+        resource: "subscription",
+        durationMs: Number.MAX_SAFE_INTEGER - 1,
+        sizeBytes: Number.MAX_SAFE_INTEGER,
+        rowCount: Number.MAX_SAFE_INTEGER,
+        resultCount: Number.MAX_SAFE_INTEGER,
+        replayed: false,
+        dependencyCount: Number.MAX_SAFE_INTEGER,
+        postCommit: true,
+      },
+    ];
+
+    const exactSizes: number[] = [];
+    for (const [index, input] of inputs.entries()) {
+      const scheduler = new ManualScheduler();
+      const { batches, exporter } = exporterBatches();
+      const telemetry = new Telemetry({
+        exporter,
+        scheduler,
+        localSink: false,
+        now: () => 0,
+        limits: { maxBytes: 64 * 1024, slowOperationMs: Number.MAX_SAFE_INTEGER },
+      });
+      const traceId = input.context!.traceId;
+      expect(telemetry.beginTrace({ traceId })).toBe(true);
+      expect(telemetry.recordSpan(input)).toBe(true);
+      const stagedBytes = telemetry.snapshot().traceRetention.stagedBytes;
+      telemetry.recordEvent({
+        context: { traceId, spanId: `promote_${index}` },
+        name: "failure",
+        level: "error",
+        operation: input.operation,
+        outcome: "internal",
+      });
+      await telemetry.flush();
+      const span = batches.flat().find((record) =>
+        record.kind === "span" && record.spanId === input.context!.spanId
+      );
+      expect(span).toBeDefined();
+      const encodedBytes = new TextEncoder().encode(JSON.stringify(span)).byteLength;
+      expect(stagedBytes).toBe(encodedBytes);
+      exactSizes.push(encodedBytes);
+      telemetry.stop();
+    }
+
+    const coercible = Object.freeze({
+      toString: () => "apparently_safe",
+      toJSON: () => "x".repeat(4_096),
+    }) as unknown as string;
+    const scheduler = new ManualScheduler();
+    const { batches, exporter } = exporterBatches();
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: { maxBytes: 64 * 1024, slowOperationMs: 100 },
+    });
+    expect(telemetry.beginTrace({ traceId: coercible })).toBe(false);
+    expect(telemetry.beginTrace({ traceId: "trace_coercion" })).toBe(true);
+    telemetry.recordSpan({
+      context: {
+        traceId: "trace_coercion",
+        spanId: coercible,
+        requestId: coercible,
+      },
+      links: [{ traceId: coercible, spanId: coercible }],
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      functionName: coercible,
+      statement: coercible,
+      durationMs: 1,
+    });
+    const coercionBytes = telemetry.snapshot().traceRetention.stagedBytes;
+    telemetry.recordEvent({
+      context: { traceId: "trace_coercion", spanId: "promote_coercion" },
+      name: "failure",
+      level: "error",
+      operation: "query",
+      outcome: "internal",
+      errorClass: coercible,
+    });
+    await telemetry.flush();
+    const coercionSpan = batches.flat().find((record) =>
+      record.kind === "span" && record.traceId === "trace_coercion"
+    );
+    if (coercionSpan?.kind !== "span") throw new Error("coercion span was not exported");
+    expect(coercionSpan.spanId).toBeUndefined();
+    expect(coercionSpan.requestId).toBeUndefined();
+    expect(coercionSpan.links).toBeUndefined();
+    expect(coercionSpan.function).toBeUndefined();
+    expect(coercionSpan.statement).toBeUndefined();
+    expect(coercionBytes).toBe(
+      new TextEncoder().encode(JSON.stringify(coercionSpan)).byteLength,
+    );
+    const coercionEvent = batches.flat().find((record) =>
+      record.kind === "event" && record.traceId === "trace_coercion"
+    );
+    if (coercionEvent?.kind !== "event") throw new Error("coercion event was not exported");
+    expect(coercionEvent.errorClass).toBeUndefined();
+    telemetry.stop();
+
+    const input = inputs[0]!;
+    for (const [maxBytes, accepted] of [
+      [exactSizes[0]!, true],
+      [exactSizes[0]! - 1, false],
+    ] as const) {
+      const telemetry = new Telemetry({
+        localSink: false,
+        now: () => 0,
+        limits: { maxBytes, slowOperationMs: Number.MAX_SAFE_INTEGER },
+      });
+      telemetry.beginTrace({ traceId: input.context!.traceId });
+      telemetry.recordSpan(input);
+      expect(telemetry.snapshot().traceRetention).toMatchObject(accepted
+        ? { stagedRecords: 1, stagedBytes: maxBytes, dropped: { stagedOverflow: 0 } }
+        : { stagedRecords: 0, stagedBytes: 0, dropped: { stagedOverflow: 1 } });
+      telemetry.stop();
+    }
+  });
+
   test("promotes complete cumulative and wall-clock slow traces", async () => {
     const scheduler = new ManualScheduler();
     const { batches, exporter } = exporterBatches();

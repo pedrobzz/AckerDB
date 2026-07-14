@@ -370,6 +370,8 @@ interface EncodedRecord {
   readonly bytes: number;
 }
 
+type JsonSpanPrimitive = string | number | boolean;
+
 interface MutableTraceRetention {
   readonly traceId: string;
   readonly startedAtMs: number;
@@ -553,11 +555,11 @@ const DISABLED_AGGREGATES: TelemetryAggregateSnapshot = Object.freeze({
 });
 
 function safeId(value: string | undefined): string | undefined {
-  return value !== undefined && SAFE_ID.test(value) ? value : undefined;
+  return typeof value === "string" && SAFE_ID.test(value) ? value : undefined;
 }
 
 function safeName(value: string | undefined): string | undefined {
-  return value !== undefined && SAFE_NAME.test(value) ? value : undefined;
+  return typeof value === "string" && SAFE_NAME.test(value) ? value : undefined;
 }
 
 function safeCount(value: number | undefined): number | undefined {
@@ -620,6 +622,66 @@ function boundedSum(left: number, right: number): number {
 
 function boundedCount(value: number): number {
   return Math.min(Number.MAX_SAFE_INTEGER, value + 1);
+}
+
+function jsonPrimitiveBytes(value: JsonSpanPrimitive): number {
+  if (typeof value === "string") return value.length + 2;
+  if (typeof value === "boolean") return value ? 4 : 5;
+  return String(value).length;
+}
+
+function jsonPropertyPrefixBytes(name: string, leadingComma = true): number {
+  return (leadingComma ? 1 : 0) + name.length + 3;
+}
+
+function jsonPropertyBytes(
+  name: string,
+  value: JsonSpanPrimitive | undefined,
+  leadingComma = true,
+): number {
+  return value === undefined
+    ? 0
+    : jsonPropertyPrefixBytes(name, leadingComma) + jsonPrimitiveBytes(value);
+}
+
+/** Exact JSON/UTF-8 size for a sanitized span without allocating its serialized form. */
+function stagedSpanBytes(record: TelemetrySpanRecord): number {
+  let bytes = 2 + jsonPropertyBytes("schemaVersion", record.schemaVersion, false);
+  bytes += jsonPropertyBytes("kind", record.kind);
+  bytes += jsonPropertyBytes("timestampMs", record.timestampMs);
+  bytes += jsonPropertyBytes("traceId", record.traceId);
+  bytes += jsonPropertyBytes("spanId", record.spanId);
+  bytes += jsonPropertyBytes("parentSpanId", record.parentSpanId);
+  bytes += jsonPropertyBytes("requestId", record.requestId);
+  bytes += jsonPropertyBytes("connectionId", record.connectionId);
+  bytes += jsonPropertyBytes("mutationId", record.mutationId);
+  bytes += jsonPropertyBytes("commitId", record.commitId);
+  bytes += jsonPropertyBytes("subscriptionId", record.subscriptionId);
+  if (record.links !== undefined) {
+    let linkBytes = 2;
+    for (let index = 0; index < record.links.length; index++) {
+      const link = record.links[index]!;
+      linkBytes += (index === 0 ? 0 : 1) + 2;
+      linkBytes += jsonPropertyBytes("traceId", link.traceId, false);
+      linkBytes += jsonPropertyBytes("spanId", link.spanId);
+    }
+    // The property prefix is followed by the already-counted raw JSON array.
+    bytes += jsonPropertyPrefixBytes("links") + linkBytes;
+  }
+  bytes += jsonPropertyBytes("operation", record.operation);
+  bytes += jsonPropertyBytes("stage", record.stage);
+  bytes += jsonPropertyBytes("outcome", record.outcome);
+  bytes += jsonPropertyBytes("function", record.function);
+  bytes += jsonPropertyBytes("statement", record.statement);
+  bytes += jsonPropertyBytes("resource", record.resource);
+  bytes += jsonPropertyBytes("durationMs", record.durationMs);
+  bytes += jsonPropertyBytes("sizeBytes", record.sizeBytes);
+  bytes += jsonPropertyBytes("rowCount", record.rowCount);
+  bytes += jsonPropertyBytes("resultCount", record.resultCount);
+  bytes += jsonPropertyBytes("replayed", record.replayed);
+  bytes += jsonPropertyBytes("dependencyCount", record.dependencyCount);
+  bytes += jsonPropertyBytes("postCommit", record.postCommit);
+  return bytes;
 }
 
 interface AbsoluteDeadline {
@@ -913,7 +975,7 @@ export class Telemetry {
           ? input.lifecycleState
           : undefined,
       errorClass:
-        input.errorClass !== undefined && SAFE_ERROR_CLASS.test(input.errorClass)
+        typeof input.errorClass === "string" && SAFE_ERROR_CLASS.test(input.errorClass)
           ? input.errorClass
           : undefined,
     });
@@ -1136,33 +1198,27 @@ export class Telemetry {
     trace: MutableTraceRetention,
     record: TelemetrySpanRecord,
   ): void {
-    const encoded = this.encodeRecord(state, record);
-    if (!encoded) {
-      state.traceHealth.dropped.stagedOverflow = boundedCount(
-        state.traceHealth.dropped.stagedOverflow,
-      );
-      return;
-    }
+    const bytes = stagedSpanBytes(record);
     while (
       (state.stagedTraceRecords >= state.limits.maxRecords ||
-        encoded.bytes > state.limits.maxBytes - state.stagedTraceBytes) &&
+        bytes > state.limits.maxBytes - state.stagedTraceBytes) &&
       this.evictOldestCompletedTrace(state, trace.traceId, true)
     ) {
       // Prefer a current active trace over an older completed tail decision.
     }
     if (
-      encoded.bytes > state.limits.maxBytes ||
+      bytes > state.limits.maxBytes ||
       state.stagedTraceRecords >= state.limits.maxRecords ||
-      encoded.bytes > state.limits.maxBytes - state.stagedTraceBytes
+      bytes > state.limits.maxBytes - state.stagedTraceBytes
     ) {
       state.traceHealth.dropped.stagedOverflow = boundedCount(
         state.traceHealth.dropped.stagedOverflow,
       );
       return;
     }
-    trace.staged.push({ record, bytes: encoded.bytes });
+    trace.staged.push({ record, bytes });
     state.stagedTraceRecords++;
-    state.stagedTraceBytes += encoded.bytes;
+    state.stagedTraceBytes += bytes;
   }
 
   private promoteTrace(
