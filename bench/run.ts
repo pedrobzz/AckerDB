@@ -3,6 +3,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { join, relative } from "node:path";
+import { runCodegen } from "../packages/cli/src/codegen.ts";
+import { loadConfig } from "../packages/cli/src/config.ts";
 import { benchmarkConfigFromEnv, type DriverResult, type SystemName } from "./benchmark.ts";
 import {
   assertDbzzStartup,
@@ -1033,6 +1035,12 @@ if (comparison !== "frozen" && comparison !== "current") {
   throw new Error(`BENCH_COMPARISON must be frozen or current`);
 }
 const runPolicy = benchmarkRunPolicy(selected, benchmarkConfigFromEnv().profile, comparison);
+if (selected.includes("dbzz")) {
+  await runCodegen(loadConfig(join(BENCH, "dbzz-app"), {
+    DBZZ_DURABILITY: "balanced",
+    DBZZ_TELEMETRY: "enabled",
+  }));
+}
 const spacetimeVersion = selected.includes("spacetimedb") ? assertSpacetimeVersionAlignment() : undefined;
 const savedRuns = savedCurrentCount();
 const order = requested.length > 0 ? selected : balancedOrder(savedRuns);
