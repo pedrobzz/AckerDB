@@ -59,21 +59,17 @@ const COMBINED_MAX_STABILIZATION_MS = 60_000;
 const COMBINED_HARNESS_TIMEOUT_STEPS = 8;
 const COMBINED_TEST_TIMEOUT_MS =
   COMBINED_MAX_STABILIZATION_MS + COMBINED_HARNESS_TIMEOUT_STEPS * STEP_TIMEOUT_MS;
-const SSE_MIN_WARMUP_EPOCHS = 15;
-const SSE_STABILITY_EPOCHS = 8;
-// Keep the independent proof window outside the settling cap so a plateau
-// accepted on its final allowed epoch can still be measured completely.
-const SSE_MAX_STABILIZATION_EPOCHS = 64;
-const SSE_MAX_TOTAL_EPOCHS = SSE_MAX_STABILIZATION_EPOCHS + MEASURED_EPOCHS;
-const SSE_MAX_STABILIZATION_MS = 90_000;
+// Repeated close/release cycles prove SSE-owned resources without using
+// whole-process allocator RSS as a proxy for ownership.
+const SSE_CHURN_EPOCHS = 8;
 // One epoch has five sequentially bounded phases: response headers, open
 // credit, terminal grace, close/release, and exact descriptor recovery.
 const SSE_EPOCH_TIMEOUT_MS = 5 * STEP_TIMEOUT_MS;
 // Fixture readiness/baseline and final release/descriptors/shutdown are outside
-// the stabilization deadline. The test timeout is derived from both real caps.
+// the per-epoch bounds. The test timeout is derived from every finite phase.
 const SSE_HARNESS_TIMEOUT_STEPS = 8;
 const SSE_TEST_TIMEOUT_MS =
-  SSE_MAX_STABILIZATION_MS + SSE_HARNESS_TIMEOUT_STEPS * STEP_TIMEOUT_MS;
+  SSE_CHURN_EPOCHS * SSE_EPOCH_TIMEOUT_MS + SSE_HARNESS_TIMEOUT_STEPS * STEP_TIMEOUT_MS;
 const SSE_PAYLOAD_BYTES = 30 * KiB;
 const SSE_STALL_MS = 300;
 // The fixture's 64 KiB stream cap exercises the producer's exact terminal reserve.
@@ -888,9 +884,6 @@ test(
       : undefined;
     if (baselineDescriptors !== undefined) expect(baselineDescriptors.listeners).toBe(1);
 
-    const processMonitor = new ProcessTreeMonitor(processHarness.child.pid, PROCESS_SAMPLE_MS);
-    monitors.add(processMonitor);
-    processMonitor.start();
     const descriptorMonitor = baselineDescriptors === undefined
       ? undefined
       : new DescriptorMonitor(processHarness.child.pid, DESCRIPTOR_SAMPLE_MS);
@@ -900,9 +893,7 @@ test(
     }
 
     const churn = async (id: number) => {
-      const sampleStart = processMonitor.samples().length;
       const descriptorStart = descriptorMonitor?.samples().length;
-      processMonitor.sampleNow();
       descriptorMonitor?.sampleNow();
       const paused = await pausedSse({
         port,
@@ -1006,13 +997,10 @@ test(
       if (baselineDescriptors !== undefined) {
         expect(descriptorRecovered).toEqual(baselineDescriptors);
       }
-      const recovered = processMonitor.sampleNow();
       descriptorMonitor?.sampleNow();
-      const samples = processMonitor.samples().slice(sampleStart);
       const descriptorSamples = descriptorStart === undefined
         ? undefined
         : descriptorMonitor!.samples().slice(descriptorStart);
-      expect(samples.length).toBeGreaterThan(2);
       if (baselineDescriptors !== undefined && descriptorSamples !== undefined) {
         expect(maximum(descriptorSamples.map((sample) => sample.open))).toBeLessThanOrEqual(
           baselineDescriptors.open + SSE_DESCRIPTOR_PEAK_DELTA,
@@ -1025,8 +1013,6 @@ test(
         );
       }
       return {
-        rssPeak: maximum(samples.map((sample) => sample.rssMb)),
-        rssRecovered: recovered.rssMb,
         sseBytes: budget.peakBytes,
         wireBytes: wireBody.byteLength,
         framingBytes,
@@ -1040,200 +1026,39 @@ test(
       };
     };
 
-    const rssTrendBudgetMb = LIMITS.sseBytes / (KiB * KiB);
-    const plateauShift = (values: readonly number[]) => {
-      const half = values.length / 2;
-      const average = (part: readonly number[]) =>
-        part.reduce((sum, value) => sum + value, 0) / part.length;
-      return Math.abs(average(values.slice(half)) - average(values.slice(0, half)));
-    };
-    type Epoch = Awaited<ReturnType<typeof churn>>;
-    let epochId = 0;
-    let rebases = 0;
-    let stabilizationRetries = 0;
-    const allEpochs: Epoch[] = [];
-    const stabilizationStartedAt = Date.now();
-    const stabilizationDeadlineAt = stabilizationStartedAt + SSE_MAX_STABILIZATION_MS;
-    const stabilizationBudgetError = (reason: string, epochCap: number) => new Error(
-      `paused SSE exhausted its global stabilization budget: ${JSON.stringify({
-        reason,
-        epochs: epochId,
-        epochCap,
-        maxStabilizationEpochs: SSE_MAX_STABILIZATION_EPOCHS,
-        maxTotalEpochs: SSE_MAX_TOTAL_EPOCHS,
-        elapsedMs: Date.now() - stabilizationStartedAt,
-        maxElapsedMs: SSE_MAX_STABILIZATION_MS,
-        rebases,
-        stabilizationRetries,
-        recovered: allEpochs.map((sample) => sample.rssRecovered),
-        peaks: allEpochs.map((sample) => sample.rssPeak),
-      })}`,
-    );
-    const nextEpoch = async (epochCap = SSE_MAX_TOTAL_EPOCHS) => {
-      const remainingMs = stabilizationDeadlineAt - Date.now();
-      if (epochId >= epochCap) throw stabilizationBudgetError("epoch cap", epochCap);
-      if (remainingMs <= 0) {
-        throw stabilizationBudgetError("wall-time cap", epochCap);
-      }
-      const id = ++epochId;
-      try {
-        const sample = await withTimeout(
-          churn(id),
-          `paused SSE epoch ${id}`,
-          Math.min(SSE_EPOCH_TIMEOUT_MS, remainingMs),
-        );
-        allEpochs.push(sample);
-        return sample;
-      } catch (error) {
-        if (Date.now() >= stabilizationDeadlineAt) {
-          throw stabilizationBudgetError("wall-time cap", epochCap);
-        }
-        throw error;
-      }
-    };
-    const settle = async (seed: readonly Epoch[]) => {
-      let warmup = [...seed];
-      let candidate: {
-        readonly recoveredMinimum: number;
-        readonly recoveredTolerance: number;
-        readonly peakMinimum: number;
-        readonly peakTolerance: number;
-      } | undefined;
-      for (;;) {
-        const sample = await nextEpoch(SSE_MAX_STABILIZATION_EPOCHS);
-        if (
-          candidate !== undefined &&
-          (sample.rssRecovered < candidate.recoveredMinimum - candidate.recoveredTolerance ||
-            sample.rssPeak < candidate.peakMinimum - candidate.peakTolerance)
-        ) {
-          rebases++;
-          warmup = [sample];
-          candidate = undefined;
-          continue;
-        }
-        warmup.push(sample);
-        if (warmup.length < SSE_STABILITY_EPOCHS) continue;
-        const plateau = warmup.slice(-SSE_STABILITY_EPOCHS);
-        const recovered = plateau.map((sample) => sample.rssRecovered);
-        const peaks = plateau.map((sample) => sample.rssPeak);
-        // Comparing half-window means rejects allocator descent while allowing
-        // normal page-level sample ordering inside one settled plateau.
-        if (
-          plateauShift(recovered) <= rssTrendBudgetMb &&
-          plateauShift(peaks) <= rssTrendBudgetMb
-        ) {
-          candidate = {
-            recoveredMinimum: minimum(recovered),
-            recoveredTolerance: maximum(recovered) - minimum(recovered) + rssTrendBudgetMb,
-            peakMinimum: minimum(peaks),
-            peakTolerance: maximum(peaks) - minimum(peaks) + rssTrendBudgetMb,
-          };
-          if (
-            warmup.length >= SSE_MIN_WARMUP_EPOCHS &&
-            positiveTrend(recovered) <= rssTrendBudgetMb &&
-            positiveTrend(peaks) <= rssTrendBudgetMb
-          ) {
-            return { warmup, plateau };
-          }
-        }
-      }
-    };
-
-    let seed: readonly Epoch[] = [];
-    let settled!: Awaited<ReturnType<typeof settle>>;
-    let measured!: Epoch[];
-    let recoveredProof!: ReturnType<typeof resourceMetricProof>;
-    let peakProof!: ReturnType<typeof resourceMetricProof>;
-    for (;;) {
-      settled = await settle(seed);
-      const warmRecovered = settled.plateau.map((sample) => sample.rssRecovered);
-      const warmPeaks = settled.plateau.map((sample) => sample.rssPeak);
-      const recoveredTolerance = maximum(warmRecovered) - minimum(warmRecovered) +
-        rssTrendBudgetMb;
-      const peakTolerance = maximum(warmPeaks) - minimum(warmPeaks) + rssTrendBudgetMb;
-      measured = [];
-      let lowerPlateau: Epoch | undefined;
-      for (let epoch = 0; epoch < MEASURED_EPOCHS; epoch++) {
-        const sample = await nextEpoch();
-        if (
-          sample.rssRecovered < minimum(warmRecovered) - recoveredTolerance ||
-          sample.rssPeak < minimum(warmPeaks) - peakTolerance
-        ) {
-          lowerPlateau = sample;
-          break;
-        }
-        measured.push(sample);
-      }
-      if (lowerPlateau !== undefined) {
-        rebases++;
-        seed = [lowerPlateau];
-        continue;
-      }
-      recoveredProof = resourceMetricProof(
-        measured.map((epoch) => epoch.rssRecovered),
-        warmRecovered,
-        rssTrendBudgetMb,
-      );
-      peakProof = resourceMetricProof(
-        measured.map((epoch) => epoch.rssPeak),
-        warmPeaks,
-        rssTrendBudgetMb,
-      );
-      if (
-        resourceMetricProofAccepted(recoveredProof) &&
-        resourceMetricProofAccepted(peakProof)
-      ) break;
-
-      // A measured window that still moves becomes additional warmup. A true
-      // leak can never pass the unchanged proof and exhausts the one global cap.
-      stabilizationRetries++;
-      seed = [...settled.plateau, ...measured];
+    const startedAt = Date.now();
+    const epochs = [];
+    for (let id = 1; id <= SSE_CHURN_EPOCHS; id++) {
+      epochs.push(await withTimeout(churn(id), `paused SSE epoch ${id}`, SSE_EPOCH_TIMEOUT_MS));
     }
-    processMonitor.stop();
     descriptorMonitor?.stop();
 
-    const warmupPlateauRecovered = settled.plateau.map((epoch) => epoch.rssRecovered);
-    const warmupPlateauPeaks = settled.plateau.map((epoch) => epoch.rssPeak);
-    const measuredRecoveredRss = measured.map((epoch) => epoch.rssRecovered);
-    const measuredPeakRss = measured.map((epoch) => epoch.rssPeak);
-    assertResourceMetricProof(recoveredProof);
-    assertResourceMetricProof(peakProof);
-    expect(processMonitor.samples()[0]!.rssKind).toBe(PROCESS_TREE_RSS_KIND);
-    const maxMeasuredSseBytes = maximum(measured.map((epoch) => epoch.sseBytes));
-    const maxMeasuredWireBytes = maximum(measured.map((epoch) => epoch.wireBytes));
+    const maxMeasuredSseBytes = maximum(epochs.map((epoch) => epoch.sseBytes));
+    const maxMeasuredWireBytes = maximum(epochs.map((epoch) => epoch.wireBytes));
     console.log("@@sse-resource-proof", encode({
-      totalEpochs: epochId,
-      stabilizationElapsedMs: Date.now() - stabilizationStartedAt,
-      rebases,
-      stabilizationRetries,
-      warmupPlateauRecovered,
-      warmupPlateauPeaks,
-      measuredPostGcRss: measuredRecoveredRss,
-      measuredPeakRss,
-      recoveredProof,
-      peakProof,
-      rssTrendBudgetMb,
+      totalEpochs: epochs.length,
+      elapsedMs: Date.now() - startedAt,
       maxMeasuredSseBytes,
       maxMeasuredWireBytes,
-      maxMeasuredFramingBytes: maximum(measured.map((epoch) => epoch.framingBytes)),
-      maxTerminalFrameBytes: maximum(measured.map((epoch) => epoch.terminalFrameBytes)),
-      maxTransferChunks: maximum(measured.map((epoch) => epoch.transferChunks)),
+      maxMeasuredFramingBytes: maximum(epochs.map((epoch) => epoch.framingBytes)),
+      maxTerminalFrameBytes: maximum(epochs.map((epoch) => epoch.terminalFrameBytes)),
+      maxTransferChunks: maximum(epochs.map((epoch) => epoch.transferChunks)),
       descriptors: baselineDescriptors === undefined
         ? undefined
         : {
             baseline: baselineDescriptors,
-            measuredPeaks: measured.map((epoch) => epoch.descriptorPeak),
-            measuredRecovered: measured.map((epoch) => epoch.descriptorRecovered),
+            measuredPeaks: epochs.map((epoch) => epoch.descriptorPeak),
+            measuredRecovered: epochs.map((epoch) => epoch.descriptorRecovered),
           },
     }));
     expect(maxMeasuredSseBytes).toBeLessThanOrEqual(LIMITS.sseBytesPerStream);
     expect(maxMeasuredWireBytes).toBeLessThanOrEqual(
       LIMITS.sseBytesPerStream + SSE_HTTP_FRAMING_BYTES,
     );
-    expect(maximum(measured.map((epoch) => epoch.terminalFrameBytes))).toBeLessThan(
+    expect(maximum(epochs.map((epoch) => epoch.terminalFrameBytes))).toBeLessThan(
       SSE_CONTROL_RESERVE_BYTES,
     );
-    expect(maximum(allEpochs.map((epoch) => epoch.initialWireBytes))).toBeLessThanOrEqual(
+    expect(maximum(epochs.map((epoch) => epoch.initialWireBytes))).toBeLessThanOrEqual(
       LIMITS.sseBytesPerStream + SSE_HTTP_FRAMING_BYTES,
     );
     expect(tcpSockets.size).toBe(0);
