@@ -3,8 +3,57 @@ import { AdmissionRejected } from "./admission.ts";
 import { ValidationError } from "./dbz.ts";
 import { DbzzError } from "./errors.ts";
 
+export const PUBLIC_ERROR_FALLBACK = "err";
+const MAX_PUBLIC_MESSAGE_UNITS = 512;
+
+export interface FittedOutcome<T> {
+  readonly value: T;
+  readonly bytes: number;
+}
+
+function codePointPrefix(value: string, maxUnits: number): string {
+  let result = "";
+  for (const character of value) {
+    if (result.length + character.length > maxUnits) break;
+    result += character;
+  }
+  return result;
+}
+
 function boundedMessage(message: string): string {
-  return message.length <= 512 ? message : `${message.slice(0, 509)}...`;
+  if (message.length === 0) return PUBLIC_ERROR_FALLBACK;
+  return message.length <= MAX_PUBLIC_MESSAGE_UNITS
+    ? message
+    : `${codePointPrefix(message, MAX_PUBLIC_MESSAGE_UNITS - 3)}...`;
+}
+
+/** Fits one parser-valid public outcome without splitting Unicode code points. */
+export function fitOutcome<T>(
+  outcome: Outcome,
+  maxBytes: number,
+  encodeOutcome: (candidate: Outcome) => FittedOutcome<T>,
+): FittedOutcome<T> | null {
+  const withMessage = (message: string) => encodeOutcome({ ...outcome, message });
+  const message = outcome.message.length === 0 ? PUBLIC_ERROR_FALLBACK : outcome.message;
+  const complete = withMessage(message);
+  if (complete.bytes <= maxBytes) return complete;
+
+  let best = withMessage(PUBLIC_ERROR_FALLBACK);
+  if (best.bytes > maxBytes) return null;
+  const characters = [...message];
+  let low = 1;
+  let high = characters.length - 1;
+  while (low <= high) {
+    const length = low + Math.floor((high - low) / 2);
+    const candidate = withMessage(`${characters.slice(0, length).join("")}…`);
+    if (candidate.bytes <= maxBytes) {
+      best = candidate;
+      low = length + 1;
+    } else {
+      high = length - 1;
+    }
+  }
+  return best;
 }
 
 /** Convert every owning failure boundary to the one safe transport contract. */

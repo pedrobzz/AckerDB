@@ -8,8 +8,10 @@ import {
   encode,
   parseCallResponse,
   parseServerMessage,
+  parseSseMessage,
   type CallResponse,
   type ServerMessage,
+  type SseMessage,
 } from "@dbzz/core";
 import type {
   CredentialVerifier,
@@ -164,6 +166,7 @@ const functions = {
       args: { text: dbz.string() },
       handler: (ctx: Ctx, args: Ctx) => {
         ctx.stream.write({ type: "text-delta", delta: args.text });
+        ctx.stream.write({ type: "usage", chunks: 1 });
       },
     }),
     failLate: sseProcedure({
@@ -348,6 +351,68 @@ async function call(
     body: encode({ v: PROTOCOL_VERSION, t: "call", id: ++requestId, ref, args }),
   });
   return { status: response.status, frame: parseCallResponse(decode(await response.text())) };
+}
+
+interface SseResponseReader {
+  readonly streamId: string;
+  next(): Promise<SseMessage | null>;
+  cancel(reason?: unknown): Promise<void>;
+}
+
+function readSse(response: Response): SseResponseReader {
+  const streamId = response.headers.get("x-dbzz-sse-stream");
+  if (streamId === null) throw new Error("SSE response is missing its stream capability");
+  if (response.body === null) throw new Error("SSE response is missing its body");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let ended = false;
+  return {
+    streamId,
+    cancel: (reason) => reader.cancel(reason),
+    next: async () => {
+      for (;;) {
+        const boundary = buffer.indexOf("\n\n");
+        if (boundary >= 0) {
+          const event = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          if (!event.startsWith("data: ")) throw new Error(`invalid SSE event ${JSON.stringify(event)}`);
+          return parseSseMessage(decode(event.slice(6)));
+        }
+        if (ended) {
+          if (buffer !== "") throw new Error(`truncated SSE event ${JSON.stringify(buffer)}`);
+          return null;
+        }
+        const chunk = await reader.read();
+        if (chunk.done) {
+          buffer += decoder.decode();
+          ended = true;
+        } else {
+          buffer += decoder.decode(chunk.value, { stream: true });
+        }
+      }
+    },
+  };
+}
+
+function acknowledgeSse(
+  baseUrl: string,
+  stream: string,
+  message: SseMessage,
+  overrides: { readonly stream?: string; readonly seq?: number; readonly proof?: string } = {},
+  authorization?: string,
+): Promise<Response> {
+  return fetch(`${baseUrl}/api/sse/ack`, {
+    method: "POST",
+    headers: authorization === undefined ? {} : { authorization },
+    body: encode({
+      v: PROTOCOL_VERSION,
+      t: "sse_ack",
+      stream: overrides.stream ?? stream,
+      seq: overrides.seq ?? message.seq,
+      proof: overrides.proof ?? message.proof,
+    }),
+  });
 }
 
 describe("health and protected status", () => {
@@ -688,12 +753,14 @@ describe("Protocol-2 HTTP procedures", () => {
       }),
       telemetry: false,
     });
-    const fairServer = serve({ runtime: fairRuntime, verifier: new TestVerifier(), port: 0 });
+    const fairVerifier = new TestVerifier();
+    const fairServer = serve({ runtime: fairRuntime, verifier: fairVerifier, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const sourceController = new AbortController();
     const sseController = new AbortController();
     let heldProcedure: Promise<Response> | undefined;
     let heldSse: Response | undefined;
+    let heldSseReader: SseResponseReader | undefined;
     const body = (id: number, ref: string, args: unknown) =>
       encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args });
 
@@ -770,7 +837,23 @@ describe("Protocol-2 HTTP procedures", () => {
       });
       await longSseStarted.promise;
       expect(heldSse.status).toBe(200);
-      expect(fairServer.status()).toMatchObject({ httpIngress: 1, httpFairnessKeys: 1 });
+      expect(fairServer.status()).toMatchObject({ httpIngress: 0, httpFairnessKeys: 0 });
+      expect(fairRuntime.status()).toMatchObject({ activeOperations: 1, activeOperationCallers: 1 });
+      heldSseReader = readSse(heldSse);
+      const started = await heldSseReader.next();
+      expect(started).toMatchObject({ t: "sse_chunk", value: { phase: "started" } });
+      const verifiedBeforeAck = [...fairVerifier.verified];
+      const credit = await acknowledgeSse(
+        fairBase,
+        heldSseReader.streamId,
+        started!,
+        {},
+        "Bearer must-not-be-verified",
+      );
+      expect(credit.status).toBe(204);
+      expect(await credit.text()).toBe("");
+      expect(fairVerifier.verified).toEqual(verifiedBeforeAck);
+      expect(fairServer.status()).toMatchObject({ httpIngress: 0, httpFairnessKeys: 0 });
 
       const whileStreaming = await fetch(`${fairBase}/api/call`, {
         method: "POST",
@@ -783,7 +866,8 @@ describe("Protocol-2 HTTP procedures", () => {
       });
 
       sseController.abort("test cancellation");
-      await heldSse.body!.cancel().catch(() => {});
+      await heldSseReader.cancel("test cancellation").catch(() => {});
+      heldSseReader = undefined;
       heldSse = undefined;
       await eventually(() =>
         fairServer.status().httpIngress === 0 &&
@@ -800,7 +884,7 @@ describe("Protocol-2 HTTP procedures", () => {
       sourceController.abort();
       sseController.abort("test cleanup");
       blockedProcedureRelease?.resolve(undefined);
-      await heldSse?.body?.cancel().catch(() => {});
+      await heldSseReader?.cancel("test cleanup").catch(() => {});
       await heldProcedure?.catch(() => {});
       await fairServer.drain().catch(() => {});
       await fairRuntime.drain().catch(() => {});
@@ -830,7 +914,7 @@ describe("Protocol-2 HTTP procedures", () => {
 });
 
 describe("SSE", () => {
-  test("keeps pre-stream HTTP errors distinct from terminal stream errors", async () => {
+  test("routes capability ACKs without oracles and keeps the registry through terminal credit", async () => {
     const denied = await fetch(`${base}/api/sse`, {
       method: "POST",
       body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "notes.chat", args: { text: "no" } }),
@@ -856,19 +940,100 @@ describe("SSE", () => {
     });
     expect(success.status).toBe(200);
     expect(success.headers.get("content-type")).toStartWith("text/event-stream");
-    expect(success.headers.get("x-vercel-ai-ui-message-stream")).toBe("v1");
-    expect(await success.text()).toBe('data: {"type":"text-delta","delta":"hello"}\n\ndata: [DONE]\n\n');
+    expect(success.headers.get("x-vercel-ai-ui-message-stream")).toBeNull();
+    expect(success.headers.get("x-dbzz-sse-stream")).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(success.headers.get("x-dbzz-sse-max-stall-ms")).toBe(String(limits.sse.maxStallMs));
+    expect(success.headers.get("access-control-expose-headers")).toBe(
+      "x-dbzz-sse-stream, x-dbzz-sse-max-stall-ms",
+    );
     expect(server.status()).toMatchObject({ httpIngress: 0, httpFairnessKeys: 0 });
+    expect(runtime.status().activeSse).toBe(1);
+
+    const reader = readSse(success);
+    const first = await reader.next();
+    const second = await reader.next();
+    expect(first).toMatchObject({ t: "sse_chunk", seq: 1, value: { type: "text-delta", delta: "hello" } });
+    expect(second).toMatchObject({ t: "sse_chunk", seq: 2, value: { type: "usage", chunks: 1 } });
+    const beforeNoops = runtime.status().sseBudget.bytes;
+    const verifiedBeforeAcks = [...verifier.verified];
+    for (const response of [
+      await acknowledgeSse(base, reader.streamId, second!, {
+        stream: "AAAAAAAAAAAAAAAAAAAAAA",
+      }, "Bearer ack-must-not-verify"),
+      await acknowledgeSse(base, reader.streamId, second!, { proof: `${second!.proof}x` }),
+      await acknowledgeSse(base, reader.streamId, second!, { seq: second!.seq + 100 }),
+    ]) {
+      expect(response.status).toBe(204);
+      expect(await response.text()).toBe("");
+    }
+    expect(verifier.verified).toEqual(verifiedBeforeAcks);
+    expect(runtime.status().sseBudget.bytes).toBe(beforeNoops);
+    expect(server.status()).toMatchObject({ sseAckIngress: 3, sseAckNoops: 3 });
+
+    const cumulative = await acknowledgeSse(base, reader.streamId, second!);
+    expect(cumulative.status).toBe(204);
+    expect(runtime.status().sseBudget.bytes).toBeLessThan(beforeNoops);
+    const terminal = await reader.next();
+    expect(terminal).toMatchObject({ t: "sse_done", seq: 3 });
+    expect(runtime.status().activeSse).toBe(1);
+    expect((await acknowledgeSse(base, reader.streamId, terminal!)).status).toBe(204);
+    expect(await reader.next()).toBeNull();
+    await eventually(() => runtime.status().activeSse === 0);
+    expect(runtime.status().sseBudget.bytes).toBe(0);
+
+    const stale = await acknowledgeSse(base, reader.streamId, terminal!);
+    expect(stale.status).toBe(204);
+    expect(await stale.text()).toBe("");
+    expect(server.status()).toMatchObject({ sseAckIngress: 6, sseAckNoops: 4 });
+
+    const malformed = await fetch(`${base}/api/sse/ack`, {
+      method: "POST",
+      body: encode({
+        v: PROTOCOL_VERSION,
+        t: "sse_ack",
+        stream: reader.streamId,
+        seq: terminal!.seq,
+        proof: terminal!.proof,
+        extra: true,
+      }),
+    });
+    expect(malformed.status).toBe(400);
+    expect(parseCallResponse(decode(await malformed.text()))).toMatchObject({
+      t: "err",
+      id: null,
+      outcome: { code: "malformed" },
+    });
+    expect(server.status()).toMatchObject({
+      httpIngress: 0,
+      httpFairnessKeys: 0,
+      sseAckIngress: 7,
+      sseAckNoops: 4,
+    });
+
+    const preflight = await fetch(`${base}/api/sse/ack`, { method: "OPTIONS" });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-expose-headers")).toContain("x-dbzz-sse-stream");
+    const wrongMethod = await fetch(`${base}/api/sse/ack`);
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get("allow")).toBe("POST");
 
     const late = await fetch(`${base}/api/sse`, {
       method: "POST",
       body: encode({ v: PROTOCOL_VERSION, t: "call", id: 3, ref: "notes.failLate", args: {} }),
     });
     expect(late.status).toBe(200);
-    const terminal = await late.text();
-    expect(terminal).toContain('data: {"phase":"started"}\n\n');
-    expect(terminal).toContain("event: dbzz-error\n");
-    expect(terminal).toContain('"code":"unavailable"');
+    const lateReader = readSse(late);
+    expect(await lateReader.next()).toMatchObject({
+      t: "sse_chunk",
+      value: { phase: "started" },
+    });
+    const failure = await lateReader.next();
+    expect(failure).toMatchObject({
+      t: "sse_error",
+      outcome: { code: "unavailable", resource: "sse" },
+    });
+    expect((await acknowledgeSse(base, lateReader.streamId, failure!)).status).toBe(204);
+    expect(await lateReader.next()).toBeNull();
     expect(verifier.verified).toEqual(["user-token"]);
   });
 });
@@ -1062,6 +1227,10 @@ describe("lifecycle drain", () => {
     });
     await within(longSseStarted.promise);
     expect(response.status).toBe(200);
+    const sse = readSse(response);
+    const started = await within(sse.next());
+    expect(started).toMatchObject({ t: "sse_chunk", value: { phase: "started" } });
+    expect((await acknowledgeSse(base, sse.streamId, started!)).status).toBe(204);
 
     const drain = server.drain();
     expect(server.state).toBe("draining");
@@ -1077,11 +1246,15 @@ describe("lifecycle drain", () => {
         resource: "connection",
       },
     });
-    const stream = await response.text();
-    expect(stream).toContain('data: {"phase":"started"}\n\n');
-    expect(stream).toContain("event: dbzz-error\n");
-    expect(stream).toContain('"code":"draining"');
-    expect(stream).toContain('"retryable":true');
+    const terminal = await within(sse.next());
+    expect(terminal).toMatchObject({
+      t: "sse_error",
+      outcome: { code: "draining", retryable: true },
+    });
+    expect(server.state).toBe("draining");
+    const drainCredit = await acknowledgeSse(base, sse.streamId, terminal!);
+    expect(drainCredit.status).toBe(204);
+    expect(await sse.next()).toBeNull();
 
     await within(drain);
     expect(server.state).toBe("stopped");

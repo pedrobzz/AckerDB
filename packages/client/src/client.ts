@@ -10,8 +10,8 @@ import {
   parseCallResponse,
   parseClientMessage,
   parseCredential,
-  parseOutcome,
   parseServerMessage,
+  parseSseMessage,
   type ClientMessage,
   type Credential,
   type EventRef,
@@ -27,6 +27,10 @@ import {
   type QueryRef,
   type ResourceClass,
   type ServerMessage,
+  type SseAckRequest,
+  type SseChunkMessage,
+  type SseDoneMessage,
+  type SseErrorMessage,
   type SseRef,
   type SubscriptionCursor,
   type SubscriptionTransition,
@@ -39,6 +43,7 @@ export interface DbzzClientLimits {
   readonly maxMutationAgeMs: number;
   readonly maxFrameBytes: number;
   readonly maxSseBufferBytes: number;
+  readonly maxSseAckAgeMs: number;
 }
 
 export interface DbzzReconnectOptions {
@@ -103,6 +108,7 @@ export const DBZZ_CLIENT_LIMITS: DbzzClientLimits = Object.freeze({
   maxMutationAgeMs: 24 * 60 * 60 * 1_000,
   maxFrameBytes: 1024 * 1024,
   maxSseBufferBytes: 1024 * 1024,
+  maxSseAckAgeMs: 5_000,
 });
 
 export const DBZZ_RECONNECT_DEFAULTS: DbzzReconnectOptions = Object.freeze({
@@ -192,8 +198,24 @@ interface FetchControl {
   readonly timeoutHandle?: unknown;
 }
 
+interface CancelableResponse {
+  cancel(reason?: unknown): Promise<void>;
+}
+
+interface SseResponseReader extends CancelableResponse {
+  read(): Promise<
+    | { readonly done: true; readonly value?: undefined }
+    | { readonly done: false; readonly value: Uint8Array }
+  >;
+  releaseLock(): void;
+}
+
 const encoder = new TextEncoder();
 const UUID_RANDOM_MASK = (1n << 74n) - 1n;
+const SSE_STREAM_HEADER = "x-dbzz-sse-stream";
+const SSE_STALL_HEADER = "x-dbzz-sse-max-stall-ms";
+const MAX_SSE_TOKEN_LENGTH = 128;
+const MAX_SSE_ACK_ATTEMPTS = 8;
 
 function positiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -208,6 +230,55 @@ function localError(
   committed?: true,
 ): DbzzClientError {
   return new DbzzClientError({ code, message, retryable: false, resource, committed });
+}
+
+function cancelWithoutWaiting(target: CancelableResponse, reason?: unknown): void {
+  try {
+    void Promise.resolve(target.cancel(reason)).catch(() => {});
+  } catch {
+    // Cleanup cannot inherit control from an external cancellation implementation.
+  }
+}
+
+function releaseReaderLock(reader: SseResponseReader): void {
+  try {
+    reader.releaseLock();
+  } catch {
+    // A pending external read may make immediate lock release impossible.
+  }
+}
+
+async function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  error: DbzzClientError,
+  onLate?: (value: T) => void,
+): Promise<T> {
+  const discard = (value: T): never => {
+    try {
+      onLate?.(value);
+    } catch {
+      // Late external values cannot regain ownership or replace the cancellation outcome.
+    }
+    throw error;
+  };
+  const observed = promise.then((value) => (signal.aborted ? discard(value) : value));
+  if (signal.aborted) {
+    void observed.catch(() => {});
+    throw error;
+  }
+  let rejectInterrupted!: () => void;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    rejectInterrupted = () => reject(error);
+  });
+  const onAbort = (): void => rejectInterrupted();
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    const value = await Promise.race([observed, interrupted]);
+    return signal.aborted ? discard(value) : value;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 function freezeCredential(credential: Credential): Credential {
@@ -490,9 +561,13 @@ export class DbzzClient {
       }
       let text: string;
       try {
-        text = await this.readBoundedResponse(response, this.limits.maxFrameBytes);
+        text = await this.readBoundedResponse(
+          response,
+          this.limits.maxFrameBytes,
+          fetchControl.controller.signal,
+        );
       } catch (error) {
-        if (error instanceof DbzzClientError) throw error;
+        if (error instanceof DbzzClientError && error.code !== "unavailable") throw error;
         throw localError("indeterminate", "procedure response was interrupted", "operation");
       }
       let parsed;
@@ -523,65 +598,158 @@ export class DbzzClient {
     options: DbzzCallOptions = {},
   ): AsyncGenerator<Chunk, void, undefined> {
     this.assertUsable();
+    if (options.signal?.aborted) {
+      throw localError("unavailable", "SSE request was canceled", "sse");
+    }
     const id = this.allocateId();
     const body = this.encodeCall(id, getRef(ref as FunctionReference | string), args);
-    const release = this.reserveTransient(body, "sse");
+    const releaseReservation = this.reserveTransient(body, "sse");
     const fetchControl = this.createFetchController(options.signal);
-    let reader: { releaseLock(): void } | undefined;
-    try {
-      let response: Response;
+    let responseBody: CancelableResponse | undefined;
+    let reader: SseResponseReader | undefined;
+    let cleanupStarted = false;
+    let cleanupReason: unknown;
+    const cancellationError = localError("unavailable", "SSE request was canceled", "sse");
+    let interruptWait: (() => void) | undefined;
+    const waitForOwnership = async <T>(promise: Promise<T>): Promise<T> => {
+      if (cleanupStarted) {
+        void promise.catch(() => {});
+        throw cancellationError;
+      }
+      let rejectInterrupted!: () => void;
+      const interrupted = new Promise<never>((_resolve, reject) => {
+        rejectInterrupted = () => reject(cancellationError);
+      });
+      interruptWait = rejectInterrupted;
       try {
-        response = await this.fetcher(`${this.httpUrl}/api/sse`, {
+        const value = await Promise.race([promise, interrupted]);
+        if (cleanupStarted) throw cancellationError;
+        return value;
+      } finally {
+        if (interruptWait === rejectInterrupted) interruptWait = undefined;
+      }
+    };
+    const cancelOwnedResponse = (): void => {
+      const ownedReader = reader;
+      const ownedBody = ownedReader ? undefined : responseBody;
+      reader = undefined;
+      responseBody = undefined;
+      if (ownedReader) {
+        cancelWithoutWaiting(ownedReader, cleanupReason);
+        releaseReaderLock(ownedReader);
+      } else if (ownedBody) {
+        cancelWithoutWaiting(ownedBody, cleanupReason);
+      }
+    };
+    const cleanup = (reason?: unknown): void => {
+      if (!cleanupStarted) {
+        cleanupStarted = true;
+        cleanupReason = reason;
+        fetchControl.controller.signal.removeEventListener("abort", onAbort);
+        this.releaseFetchController(fetchControl);
+        releaseReservation();
+        cancelOwnedResponse();
+      }
+    };
+    const onAbort = (): void => {
+      cleanup(fetchControl.controller.signal.reason);
+      interruptWait?.();
+    };
+    fetchControl.controller.signal.addEventListener("abort", onAbort, { once: true });
+    if (fetchControl.controller.signal.aborted) onAbort();
+    try {
+      if (cleanupStarted) {
+        throw localError("unavailable", "SSE request was canceled", "sse");
+      }
+      let response: Response;
+      const pendingResponse = (async () =>
+        this.fetcher(`${this.httpUrl}/api/sse`, {
           method: "POST",
           headers: this.httpHeaders(),
           body,
           signal: fetchControl.controller.signal,
+        }))().then((candidate) => {
+          if (!cleanupStarted) return candidate;
+          if (candidate.body) cancelWithoutWaiting(candidate.body, cleanupReason);
+          throw cancellationError;
         });
-      } catch {
+      try {
+        response = await waitForOwnership(pendingResponse);
+      } catch (error) {
+        if (error === cancellationError || cleanupStarted || fetchControl.controller.signal.aborted) {
+          throw cancellationError;
+        }
         throw localError("indeterminate", "SSE procedure completion is unknown", "sse");
       }
+      responseBody = response.body ?? undefined;
+      if (cleanupStarted) {
+        cancelOwnedResponse();
+        throw localError("unavailable", "SSE response was canceled", "sse");
+      }
       if (!response.ok) {
-        const text = await this.readBoundedResponse(response, this.limits.maxFrameBytes);
+        responseBody = undefined;
+        const text = await this.readBoundedResponse(
+          response,
+          this.limits.maxFrameBytes,
+          fetchControl.controller.signal,
+          "sse",
+        );
         let parsed: ServerMessage;
         try {
           parsed = parseServerMessage(decode(text));
         } catch (error) {
-          throw this.protocolError(error);
+          throw this.protocolError(error, "sse");
         }
         if (parsed.t !== "err" || (parsed.id !== null && parsed.id !== id)) {
           throw localError("malformed", "SSE error response does not match its request", "sse");
         }
         throw new DbzzClientError(parsed.outcome);
       }
+      if (response.status !== 200) {
+        throw localError("malformed", "SSE endpoint returned an unexpected success status", "sse");
+      }
+      const stream = this.sseStream(response);
+      const ackAgeMs = this.sseAckAge(response);
       if (!response.body) throw localError("malformed", "SSE response has no body", "sse");
 
       const streamReader = response.body.getReader();
+      responseBody = undefined;
       reader = streamReader;
-      const decoder = new TextDecoder();
+      const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
       let buffer = "";
+      let pendingBytes = 0;
+      let strippedPrefixBytes = 0;
+      let scanFrom = 0;
+      let decoderAtStart = true;
+      const appendDecoded = (text: string): void => {
+        if (decoderAtStart && text.length !== 0) {
+          decoderAtStart = false;
+          if (text.startsWith("\uFEFF")) {
+            strippedPrefixBytes = 3;
+            text = text.slice(1);
+          }
+        }
+        buffer += text;
+      };
+      let expectedSequence = 1;
       for (;;) {
-        const part = await streamReader.read();
-        if (part.done) {
-          buffer += decoder.decode();
-          if (buffer.length !== 0) throw localError("malformed", "SSE stream ended mid-event", "sse");
-          throw localError("indeterminate", "SSE stream ended before completion", "sse");
-        }
-        if (part.value.byteLength > this.limits.maxSseBufferBytes) {
-          throw localError("overloaded", "SSE input exceeds the client buffer limit", "sse");
-        }
-        buffer += decoder.decode(part.value, { stream: true });
-        if (encoder.encode(buffer).byteLength > this.limits.maxSseBufferBytes) {
-          throw localError("overloaded", "SSE input exceeds the client buffer limit", "sse");
-        }
-
+        let payload: string | null = null;
         for (;;) {
-          const lfBoundary = buffer.indexOf("\n\n");
-          const crlfBoundary = buffer.indexOf("\r\n\r\n");
+          const lfBoundary = buffer.indexOf("\n\n", scanFrom);
+          const crlfBoundary = buffer.indexOf("\r\n\r\n", scanFrom);
           const useCrlf = crlfBoundary !== -1 && (lfBoundary === -1 || crlfBoundary < lfBoundary);
           const boundary = useCrlf ? crlfBoundary : lfBoundary;
-          if (boundary === -1) break;
+          if (boundary === -1) {
+            scanFrom = Math.max(0, buffer.length - 3);
+            break;
+          }
+          const consumedEnd = boundary + (useCrlf ? 4 : 2);
           const block = buffer.slice(0, boundary).replaceAll("\r\n", "\n");
-          buffer = buffer.slice(boundary + (useCrlf ? 4 : 2));
+          pendingBytes -=
+            encoder.encode(buffer.slice(0, consumedEnd)).byteLength + strippedPrefixBytes;
+          strippedPrefixBytes = 0;
+          buffer = buffer.slice(consumedEnd);
+          scanFrom = 0;
           let eventName = "message";
           const data: string[] = [];
           for (const line of block.split("\n")) {
@@ -593,33 +761,76 @@ export class DbzzClient {
             else if (field === "data") data.push(value);
           }
           if (data.length === 0) continue;
-          const payload = data.join("\n");
-          if (eventName === "dbzz-error") {
-            try {
-              throw new DbzzClientError(parseOutcome(decode(payload)));
-            } catch (error) {
-              if (error instanceof DbzzClientError) throw error;
-              throw this.protocolError(error);
-            }
-          }
           if (eventName !== "message") {
             throw localError("malformed", "unknown SSE event type", "sse");
           }
-          if (payload === "[DONE]") return;
-          try {
-            yield decode(payload) as Chunk;
-          } catch {
-            throw localError("malformed", "invalid SSE data payload", "sse");
-          }
+          payload = data.join("\n");
+          break;
         }
+        if (payload === null) {
+          let part: Awaited<ReturnType<SseResponseReader["read"]>>;
+          try {
+            part = await waitForOwnership((async () => streamReader.read())());
+          } catch (error) {
+            if (cleanupStarted || fetchControl.controller.signal.aborted) {
+              throw cancellationError;
+            }
+            throw error;
+          }
+          if (cleanupStarted || fetchControl.controller.signal.aborted) {
+            throw cancellationError;
+          }
+          if (part.done) {
+            try {
+              appendDecoded(decoder.decode());
+            } catch (error) {
+              throw this.protocolError(error, "sse");
+            }
+            if (buffer.length !== 0) {
+              throw localError("malformed", "SSE stream ended mid-event", "sse");
+            }
+            throw localError("indeterminate", "SSE stream ended before completion", "sse");
+          }
+          pendingBytes += part.value.byteLength;
+          if (pendingBytes > this.limits.maxSseBufferBytes) {
+            throw localError("overloaded", "SSE input exceeds the client buffer limit", "sse");
+          }
+          try {
+            appendDecoded(decoder.decode(part.value, { stream: true }));
+          } catch (error) {
+            throw this.protocolError(error, "sse");
+          }
+          continue;
+        }
+
+        let frame: SseChunkMessage | SseDoneMessage | SseErrorMessage;
+        try {
+          frame = parseSseMessage(decode(payload));
+        } catch (error) {
+          throw this.protocolError(error, "sse");
+        }
+        if (frame.seq !== expectedSequence) {
+          throw localError(
+            "malformed",
+            `SSE sequence ${frame.seq} does not match expected ${expectedSequence}`,
+            "sse",
+          );
+        }
+        if (frame.t === "sse_chunk") {
+          yield frame.value as Chunk;
+          await this.acknowledgeSse(stream, frame, ackAgeMs, fetchControl.controller.signal);
+          expectedSequence++;
+          continue;
+        }
+        await this.acknowledgeSse(stream, frame, ackAgeMs, fetchControl.controller.signal);
+        if (frame.t === "sse_done") return;
+        throw new DbzzClientError(frame.outcome);
       }
     } catch (error) {
       if (error instanceof DbzzClientError) throw error;
       throw localError("indeterminate", "SSE response was interrupted", "sse");
     } finally {
-      reader?.releaseLock();
-      this.releaseFetchController(fetchControl);
-      release();
+      cleanup();
     }
   }
 
@@ -1324,10 +1535,220 @@ export class DbzzClient {
     return now;
   }
 
-  private protocolError(error: unknown): DbzzClientError {
+  private protocolError(error: unknown, resource: ResourceClass = "connection"): DbzzClientError {
     return error instanceof ProtocolError
-      ? localError(error.code, error.message, "connection")
-      : localError("malformed", "invalid protocol payload", "connection");
+      ? localError(error.code, error.message, resource)
+      : localError("malformed", "invalid protocol payload", resource);
+  }
+
+  private sseStream(response: Response): string {
+    const stream = response.headers.get(SSE_STREAM_HEADER);
+    if (
+      stream === null ||
+      stream.length === 0 ||
+      stream.length > MAX_SSE_TOKEN_LENGTH ||
+      encoder.encode(stream).byteLength > MAX_SSE_TOKEN_LENGTH ||
+      stream.trim() !== stream
+    ) {
+      throw localError("malformed", `SSE response requires a bounded ${SSE_STREAM_HEADER} header`, "sse");
+    }
+    return stream;
+  }
+
+  private sseAckAge(response: Response): number {
+    const header = response.headers.get(SSE_STALL_HEADER);
+    if (header === null) {
+      throw localError("malformed", `SSE response requires ${SSE_STALL_HEADER}`, "sse");
+    }
+    if (!/^[1-9]\d{0,15}$/.test(header)) {
+      throw localError("malformed", `${SSE_STALL_HEADER} must be positive integer milliseconds`, "sse");
+    }
+    const value = Number(header);
+    if (!Number.isSafeInteger(value)) {
+      throw localError("malformed", `${SSE_STALL_HEADER} must be safe integer milliseconds`, "sse");
+    }
+    return Math.min(value, MAX_RETRY_AFTER_MS, this.limits.maxSseAckAgeMs);
+  }
+
+  private async acknowledgeSse(
+    stream: string,
+    frame: SseChunkMessage | SseDoneMessage | SseErrorMessage,
+    maxAgeMs: number,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const acknowledgment: SseAckRequest = {
+      v: PROTOCOL_VERSION,
+      t: "sse_ack",
+      stream,
+      seq: frame.seq,
+      proof: frame.proof,
+    };
+    const body = encode(acknowledgment);
+    this.frameBytes(body, "sse");
+    const startedAt = this.now();
+    const deadlineAt = Math.min(Number.MAX_SAFE_INTEGER, startedAt + maxAgeMs);
+    let attempts = 0;
+
+    for (;;) {
+      attempts++;
+      let retryAfterMs = 0;
+      try {
+        const result = await this.withinSseAckDeadline(signal, deadlineAt, async (attemptSignal) => {
+          const cancellationError = localError("unavailable", "SSE acknowledgment was canceled", "sse");
+          const response = await raceWithAbort(
+            (async () =>
+              this.fetcher(`${this.httpUrl}/api/sse/ack`, {
+                method: "POST",
+                headers: { "content-type": "text/plain;charset=UTF-8" },
+                body,
+                signal: attemptSignal,
+              }))(),
+            attemptSignal,
+            cancellationError,
+            (late) => {
+              if (late.body) cancelWithoutWaiting(late.body, attemptSignal.reason);
+            },
+          );
+          if (attemptSignal.aborted) {
+            if (response.body) cancelWithoutWaiting(response.body, attemptSignal.reason);
+            throw cancellationError;
+          }
+          if (response.status === 204) {
+            if (response.body === null) return null;
+            cancelWithoutWaiting(response.body);
+            throw localError("malformed", "SSE acknowledgment 204 response must not have a body", "sse");
+          }
+
+          const text = await this.readBoundedResponse(
+            response,
+            this.limits.maxFrameBytes,
+            attemptSignal,
+            "sse",
+          );
+          if (attemptSignal.aborted) throw cancellationError;
+          let parsed: ServerMessage;
+          try {
+            parsed = parseServerMessage(decode(text));
+          } catch (error) {
+            throw this.protocolError(error, "sse");
+          }
+          if (parsed.t !== "err" || parsed.id !== null) {
+            throw localError("malformed", "SSE acknowledgment returned an invalid response", "sse");
+          }
+          const error = new DbzzClientError(parsed.outcome);
+          if ((response.status === 429 || response.status === 503) && error.retryable) {
+            return Math.max(error.retryAfterMs ?? 0, this.retryAfter(response));
+          }
+          throw error;
+        });
+        if (result === null) return;
+        retryAfterMs = result;
+      } catch (error) {
+        if (error instanceof DbzzClientError) throw error;
+        if (signal.aborted) {
+          throw localError("unavailable", "SSE acknowledgment was canceled", "sse");
+        }
+      }
+
+      if (attempts >= MAX_SSE_ACK_ATTEMPTS) {
+        throw localError("deadline_exceeded", "SSE acknowledgment retry limit exceeded", "sse");
+      }
+      const remainingMs = deadlineAt - this.now();
+      if (remainingMs <= 0) {
+        throw localError("deadline_exceeded", "SSE acknowledgment deadline exceeded", "sse");
+      }
+      const random = this.random();
+      if (!Number.isFinite(random) || random < 0 || random >= 1) {
+        throw localError("internal", "client random source is invalid", "sse");
+      }
+      const jitterCeiling = Math.min(
+        this.reconnect.maxDelayMs,
+        this.reconnect.baseDelayMs * 2 ** Math.min(attempts - 1, 30),
+      );
+      const delayMs = Math.max(
+        retryAfterMs,
+        Math.floor(random * (jitterCeiling + 1)),
+      );
+      if (delayMs >= remainingMs) {
+        throw localError("deadline_exceeded", "SSE acknowledgment cannot retry before its deadline", "sse");
+      }
+      await this.waitForSseRetry(delayMs, signal);
+    }
+  }
+
+  private async withinSseAckDeadline<T>(
+    signal: AbortSignal,
+    deadlineAt: number,
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    if (signal.aborted) throw localError("unavailable", "SSE acknowledgment was canceled", "sse");
+    const remainingMs = deadlineAt - this.now();
+    if (remainingMs <= 0) {
+      throw localError("deadline_exceeded", "SSE acknowledgment deadline exceeded", "sse");
+    }
+    const controller = new AbortController();
+    let timeoutHandle: unknown;
+    let rejectInterrupted!: (error: DbzzClientError) => void;
+    const interrupted = new Promise<never>((_resolve, reject) => {
+      rejectInterrupted = reject;
+    });
+    const onAbort = () => {
+      controller.abort(signal.reason);
+      rejectInterrupted(localError("unavailable", "SSE acknowledgment was canceled", "sse"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = this.clock.setTimeout(() => {
+        const error = localError("deadline_exceeded", "SSE acknowledgment deadline exceeded", "sse");
+        reject(error);
+        controller.abort(error);
+      }, remainingMs);
+    });
+    try {
+      return await Promise.race([
+        Promise.resolve().then(() => work(controller.signal)),
+        interrupted,
+        timeout,
+      ]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      this.clock.clearTimeout(timeoutHandle);
+      controller.abort();
+    }
+  }
+
+  private retryAfter(response: Response): number {
+    const header = response.headers.get("retry-after");
+    if (header === null) return 0;
+    const value = header.trim();
+    if (value.length === 0 || value.length > 64) {
+      throw localError("malformed", "Retry-After is invalid", "sse");
+    }
+    let delayMs: number;
+    if (/^\d+$/.test(value)) {
+      delayMs = Number(value) * 1_000;
+    } else {
+      const at = Date.parse(value);
+      if (!Number.isFinite(at)) throw localError("malformed", "Retry-After is invalid", "sse");
+      delayMs = Math.max(0, at - this.now());
+    }
+    return Math.min(Number.isFinite(delayMs) ? delayMs : MAX_RETRY_AFTER_MS, MAX_RETRY_AFTER_MS);
+  }
+
+  private waitForSseRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(localError("unavailable", "SSE acknowledgment was canceled", "sse"));
+    if (delayMs === 0) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const handle = this.clock.setTimeout(() => {
+        signal.removeEventListener("abort", onAbort);
+        resolve();
+      }, delayMs);
+      const onAbort = () => {
+        this.clock.clearTimeout(handle);
+        reject(localError("unavailable", "SSE acknowledgment was canceled", "sse"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   private httpHeaders(): Record<string, string> {
@@ -1356,24 +1777,61 @@ export class DbzzClient {
     control.controller.abort();
   }
 
-  private async readBoundedResponse(response: Response, maxBytes: number): Promise<string> {
+  private async readBoundedResponse(
+    response: Response,
+    maxBytes: number,
+    signal: AbortSignal,
+    resource: ResourceClass = "operation",
+  ): Promise<string> {
+    const cancellationError = localError("unavailable", "response read was canceled", resource);
+    if (signal.aborted) {
+      if (response.body) cancelWithoutWaiting(response.body, signal.reason);
+      throw cancellationError;
+    }
     if (!response.body) return "";
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let bytes = 0;
     let text = "";
+    let complete = false;
+    let interruptRead: (() => void) | undefined;
+    const onAbort = (): void => interruptRead?.();
+    signal.addEventListener("abort", onAbort, { once: true });
+    if (signal.aborted) onAbort();
     try {
       for (;;) {
-        const part = await reader.read();
-        if (part.done) return text + decoder.decode();
+        let part: Awaited<ReturnType<SseResponseReader["read"]>>;
+        let rejectInterrupted!: () => void;
+        const interrupted = new Promise<never>((_resolve, reject) => {
+          rejectInterrupted = () => reject(cancellationError);
+        });
+        interruptRead = rejectInterrupted;
+        try {
+          part = await Promise.race([(async () => reader.read())(), interrupted]);
+        } catch (error) {
+          if (signal.aborted) throw cancellationError;
+          throw error;
+        } finally {
+          if (interruptRead === rejectInterrupted) interruptRead = undefined;
+        }
+        if (signal.aborted) throw cancellationError;
+        if (part.done) {
+          const result = text + decoder.decode();
+          complete = true;
+          return result;
+        }
         bytes += part.value.byteLength;
         if (bytes > maxBytes) {
-          throw localError("overloaded", "response exceeds the client frame limit", "operation");
+          throw localError("overloaded", "response exceeds the client frame limit", resource);
         }
         text += decoder.decode(part.value, { stream: true });
       }
     } finally {
-      reader.releaseLock();
+      signal.removeEventListener("abort", onAbort);
+      if (!complete) {
+        cancelWithoutWaiting(reader, signal.reason);
+      }
+      releaseReaderLock(reader);
     }
   }
 }

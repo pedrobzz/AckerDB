@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
 import {
@@ -16,6 +16,7 @@ import {
   type QueryMessage,
   type QueryOkMessage,
   type ResetRequestMessage,
+  type SseAckRequest,
   type SubscribeMessage,
   type SubscriptionTransition,
   type TransitionMessage,
@@ -82,7 +83,7 @@ import {
 } from "./invocation.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
-import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
+import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
 import {
   OrderedReactive,
   ReactiveCommit,
@@ -162,6 +163,11 @@ export interface RuntimeProcedureRequest extends RuntimeExternalRequest {
 }
 
 export interface RuntimeSseRequest extends RuntimeExternalRequest {}
+
+export interface RuntimeSseResponse {
+  readonly stream: ReadableStream<Uint8Array>;
+  readonly streamId: string;
+}
 
 export interface RuntimeStatus {
   readonly state: RuntimeLifecycleState;
@@ -399,7 +405,7 @@ export class Runtime implements RuntimePort {
   private readonly sessions = new Map<string, RuntimeSession>();
   private readonly authCaptureBudget: OutboundBudget;
   private readonly sseBudget: OutboundBudget;
-  private readonly sseProducers = new Set<BoundedSseProducer>();
+  private readonly sseProducers = new Map<string, BoundedSseProducer>();
   private readonly externalOperations = new Map<string, number>();
   private readonly activeWaiters = new Set<() => void>();
   private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
@@ -845,34 +851,19 @@ export class Runtime implements RuntimePort {
   private fitProcedureErrorFrame(
     frame: ErrorMessage,
   ): Pick<RuntimeProcedureResponse, "body" | "bytes"> {
-    const withMessage = (message: string): Pick<RuntimeProcedureResponse, "body" | "bytes"> => {
-      const body = encode({
+    const fitted = fitOutcome(frame.outcome, this.limits.maxFrameBytes, (outcome) => {
+      const value = encode({
         ...frame,
-        outcome: { ...frame.outcome, message },
+        outcome,
       } satisfies ErrorMessage);
-      return { body, bytes: utf8.encode(body).byteLength };
-    };
-    let best = withMessage("");
-    if (best.bytes > this.limits.maxFrameBytes) {
+      return { value, bytes: utf8.encode(value).byteLength };
+    });
+    if (fitted === null) {
       throw new DbzzError("overloaded", "procedure error response exceeds maxFrameBytes", {
         resource: "operation",
       });
     }
-
-    const characters = [...frame.outcome.message];
-    let low = 0;
-    let high = characters.length - 1;
-    while (low <= high) {
-      const length = low + Math.floor((high - low) / 2);
-      const candidate = withMessage(`${characters.slice(0, length).join("")}…`);
-      if (candidate.bytes <= this.limits.maxFrameBytes) {
-        best = candidate;
-        low = length + 1;
-      } else {
-        high = length - 1;
-      }
-    }
-    return best;
+    return { body: fitted.value, bytes: fitted.bytes };
   }
 
   private handoffProcedureResponse(
@@ -930,7 +921,7 @@ export class Runtime implements RuntimePort {
     });
   }
 
-  async runSse(request: RuntimeSseRequest): Promise<ReadableStream<Uint8Array>> {
+  async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
     const requestBytes = this.requestBytes({
       v: PROTOCOL_VERSION,
       t: "call",
@@ -1001,8 +992,10 @@ export class Runtime implements RuntimePort {
       throw safeError;
     }
     const startedAt = scope === undefined ? 0 : performance.now();
-    const execute = async (): Promise<ReadableStream<Uint8Array>> => {
+    const execute = async (): Promise<RuntimeSseResponse> => {
       let producer: BoundedSseProducer | null = null;
+      let streamId: string | null = null;
+      let lifecycle: Promise<void> | null = null;
       let deliveryObserver: DeliveryObserver | undefined;
       try {
         const fn = this.expect(request.address, "sse");
@@ -1016,7 +1009,8 @@ export class Runtime implements RuntimePort {
             ? { observer: (observation: DeliveryObservation) => deliveryObserver?.(observation) }
             : {}),
         });
-        this.sseProducers.add(producer);
+        streamId = this.registerSseProducer(producer);
+        void producer.finished.then(() => this.removeSseProducer(streamId!, producer!));
         const authorized = deferred<void>();
         const stream: StreamWriter = Object.freeze({
           write: (chunk: unknown) => producer!.write(chunk),
@@ -1046,12 +1040,17 @@ export class Runtime implements RuntimePort {
         );
         const completion = handler.then(
           () => producer!.complete(),
-          (error) => {
+          async (error) => {
             producer!.fail(error);
+            try {
+              await producer!.complete();
+            } catch {
+              // Preserve the handler failure after terminal ACK/cancel owns cleanup.
+            }
             throw error;
           },
         );
-        const lifecycle = completion.catch((error) => {
+        lifecycle = completion.catch((error) => {
           if (scope !== undefined) {
             const safeError = transportError(error);
             this.telemetry.recordEvent({
@@ -1066,7 +1065,6 @@ export class Runtime implements RuntimePort {
           }
           throw error;
         }).finally(() => {
-          this.sseProducers.delete(producer!);
           release();
           finishOperationTrace();
         });
@@ -1080,17 +1078,20 @@ export class Runtime implements RuntimePort {
             },
           ),
         ]);
-        return producer.stream;
+        return Object.freeze({ stream: producer.stream, streamId });
       } catch (error) {
         if (producer !== null) {
-          this.sseProducers.delete(producer);
           try {
             await producer.stream.cancel(error);
           } catch {
             // No stream escaped this boundary; cancellation is capacity cleanup.
           }
         }
-        release();
+        if (lifecycle !== null) await lifecycle.catch(() => {});
+        else {
+          release();
+          finishOperationTrace();
+        }
         const safeError = transportError(error);
         if (scope !== undefined) {
           const outcome = outcomeFromError(safeError).code;
@@ -1113,11 +1114,27 @@ export class Runtime implements RuntimePort {
             errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
           });
         }
-        finishOperationTrace();
         throw safeError;
       }
     };
     return scope === undefined ? execute() : this.runTraced(scope, execute);
+  }
+
+  /** Receiver credit is capability-authenticated and remains routable during drain. */
+  ackSse(request: SseAckRequest): boolean {
+    return this.sseProducers.get(request.stream)?.ack(request.seq, request.proof) ?? false;
+  }
+
+  private registerSseProducer(producer: BoundedSseProducer): string {
+    let streamId: string;
+    do streamId = randomBytes(16).toString("base64url");
+    while (this.sseProducers.has(streamId));
+    this.sseProducers.set(streamId, producer);
+    return streamId;
+  }
+
+  private removeSseProducer(streamId: string, producer: BoundedSseProducer): void {
+    if (this.sseProducers.get(streamId) === producer) this.sseProducers.delete(streamId);
   }
 
   runScheduled(now = this.readNow()): Promise<number> {
@@ -1277,7 +1294,7 @@ export class Runtime implements RuntimePort {
       resource: "operation",
     });
     for (const state of [...this.sessions.values()]) this.removeSession(state);
-    for (const producer of this.sseProducers) producer.fail(draining);
+    for (const producer of this.sseProducers.values()) producer.fail(draining);
 
     // Close every internal admission boundary before the first await. Existing
     // handlers get one finite grace period; queued and future work cannot grow.

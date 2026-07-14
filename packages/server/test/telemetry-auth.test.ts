@@ -9,7 +9,9 @@ import {
   encode,
   parseCallResponse,
   parseServerMessage,
+  parseSseMessage,
   type ServerMessage,
+  type SseMessage,
 } from "@dbzz/core";
 import {
   Engine,
@@ -226,6 +228,45 @@ async function within<T>(promise: Promise<T>, timeoutMs = 2_000): Promise<T> {
   ]);
 }
 
+async function readSseMessage(
+  reader: { read(): Promise<{ readonly done: boolean; readonly value?: Uint8Array }> },
+): Promise<SseMessage> {
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const part = await within(reader.read());
+    if (part.done || part.value === undefined) {
+      throw new Error("SSE response ended before its next frame");
+    }
+    text += decoder.decode(part.value, { stream: true });
+    const boundary = text.indexOf("\n\n");
+    if (boundary < 0) continue;
+    if (!text.startsWith("data: ") || text.length !== boundary + 2) {
+      throw new Error(`invalid receiver-credited SSE frame ${JSON.stringify(text)}`);
+    }
+    return parseSseMessage(decode(text.slice(6, boundary)));
+  }
+}
+
+function acknowledgeSse(
+  base: string,
+  stream: string,
+  message: SseMessage,
+  authorization?: string,
+): Promise<Response> {
+  return fetch(`${base}/api/sse/ack`, {
+    method: "POST",
+    headers: authorization === undefined ? {} : { authorization },
+    body: encode({
+      v: PROTOCOL_VERSION,
+      t: "sse_ack",
+      stream,
+      seq: message.seq,
+      proof: message.proof,
+    }),
+  });
+}
+
 test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pre-Runtime failures", async () => {
   const app = fixture();
   const call = async (
@@ -271,7 +312,28 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
 
     const stream = await call("/api/sse", 103, "ops.stream", VALID_SSE_TOKEN);
     expect(stream.status).toBe(200);
-    expect(await stream.text()).toContain(PRIVATE_STREAM_RESULT);
+    const streamId = stream.headers.get("x-dbzz-sse-stream");
+    if (streamId === null || stream.body === null) throw new Error("missing SSE response ownership");
+    const streamReader = stream.body.getReader();
+    const chunk = await readSseMessage(streamReader);
+    expect(chunk).toMatchObject({
+      t: "sse_chunk",
+      value: { result: PRIVATE_STREAM_RESULT },
+    });
+    const verifiedBeforeCredit = [...app.verifier.verified];
+    expect((await acknowledgeSse(
+      app.base,
+      streamId,
+      chunk,
+      `Bearer ${PRIVATE_AUTH_HEADER}`,
+    )).status).toBe(204);
+    expect(app.verifier.verified).toEqual(verifiedBeforeCredit);
+    const terminal = await readSseMessage(streamReader);
+    expect(terminal.t).toBe("sse_done");
+    expect((await acknowledgeSse(app.base, streamId, terminal)).status).toBe(204);
+    expect(await within(streamReader.read())).toEqual({ done: true, value: undefined });
+    streamReader.releaseLock();
+    await eventually(() => app.runtime.status().telemetry.traceRetention.activeTraces === 0);
     expectTailBaseline(app.runtime);
 
     const deniedStream = await call("/api/sse", 104, "ops.stream", INVALID_SSE_TOKEN);

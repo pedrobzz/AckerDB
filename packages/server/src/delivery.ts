@@ -1,11 +1,20 @@
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   PROTOCOL_VERSION,
+  RESOURCE_CLASSES,
   encode,
   type Outcome,
+  type SseDoneMessage,
+  type SseErrorMessage,
 } from "@dbzz/core";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import type { ServiceLimits } from "./limits.ts";
-import { outcomeFromError, outcomeWebSocketClose } from "./outcome.ts";
+import {
+  PUBLIC_ERROR_FALLBACK,
+  fitOutcome,
+  outcomeFromError,
+  outcomeWebSocketClose,
+} from "./outcome.ts";
 import type {
   SessionApplicationMessage,
   SessionControlMessage,
@@ -101,17 +110,18 @@ export class OutboundBudget {
 
   reserve(bytes: number, lane: OutboundLane): OutboundReservation | null {
     byteCount(bytes, "reserved bytes");
-    const total = this.applicationBytes + this.controlBytes;
-    if (total + bytes > this.maxBytes) return null;
-    if (
-      lane === "application" &&
-      this.applicationBytes + bytes > this.maxBytes - this.reservedControlBytes
-    ) {
-      return null;
-    }
+    if (bytes > this.availableBytes(lane)) return null;
     if (lane === "application") this.applicationBytes += bytes;
     else this.controlBytes += bytes;
     return new BudgetReservation(this, lane, bytes);
+  }
+
+  availableBytes(lane: OutboundLane): number {
+    const total = this.applicationBytes + this.controlBytes;
+    const available = this.maxBytes - total;
+    return lane === "control"
+      ? available
+      : Math.min(available, this.maxBytes - this.reservedControlBytes - this.applicationBytes);
   }
 
   snapshot(): OutboundBudgetSnapshot {
@@ -191,7 +201,10 @@ function promiseLike(value: unknown): value is PromiseLike<unknown> {
 function observeDelivery(
   instrumentation: DeliveryInstrumentation | undefined,
   observer: DeliveryObserver | undefined,
-  observation: Omit<DeliveryObservation, "durationMs"> & { readonly startedAt: number },
+  observation: Omit<DeliveryObservation, "durationMs"> & {
+    readonly startedAt: number;
+    readonly endedAt?: number;
+  },
 ): void {
   if (instrumentation === undefined || observer === undefined) return;
   if (instrumentation.pending.length >= MAX_PENDING_DELIVERY_OBSERVATIONS) {
@@ -200,8 +213,8 @@ function observeDelivery(
   }
   let record: DeliveryObservation;
   try {
-    const { startedAt, ...fields } = observation;
-    const elapsed = instrumentation.clock.now() - startedAt;
+    const { startedAt, endedAt, ...fields } = observation;
+    const elapsed = (endedAt ?? instrumentation.clock.now()) - startedAt;
     if (!Number.isFinite(elapsed)) return;
     record = Object.freeze({
       ...fields,
@@ -322,6 +335,7 @@ function observeEncoding(
   bytes: number,
   outcome: DeliveryOutcome,
   terminalOutcome?: Outcome["code"],
+  endedAt?: number,
 ): void {
   if (instrumentation === undefined || startedAt === undefined) return;
   observeDelivery(instrumentation, observer, {
@@ -333,6 +347,7 @@ function observeEncoding(
     outcome,
     ...(terminalOutcome === undefined ? {} : { terminalOutcome }),
     startedAt,
+    ...(endedAt === undefined ? {} : { endedAt }),
   });
 }
 
@@ -405,28 +420,15 @@ function unavailable(resource: "outbound" | "sse", message: string): DbzzError {
 
 function webSocketErrorText(error: DbzzError, maxBytes: number): string | null {
   const outcome = outcomeFromError(error);
-  const encodeMessage = (message: string) =>
-    encode({
+  return fitOutcome(outcome, maxBytes, (candidate) => {
+    const value = encode({
       v: PROTOCOL_VERSION,
       t: "err",
       id: null,
-      outcome: { ...outcome, message },
+      outcome: candidate,
     } satisfies SessionControlMessage);
-  let text = encodeMessage(outcome.message);
-  if (utf8.encode(text).byteLength <= maxBytes) return text;
-  const characters = [...outcome.message];
-  let low = 0;
-  let high = characters.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (utf8.encode(encodeMessage(characters.slice(0, middle).join(""))).byteLength <= maxBytes) {
-      low = middle;
-    } else {
-      high = middle - 1;
-    }
-  }
-  text = encodeMessage(characters.slice(0, low).join(""));
-  return utf8.encode(text).byteLength <= maxBytes ? text : null;
+    return { value, bytes: utf8.encode(value).byteLength };
+  })?.value ?? null;
 }
 
 /** A FIFO Protocol-2 sink with one finite queue and Bun-aware drain ownership. */
@@ -869,19 +871,33 @@ export interface BoundedSseProducerOptions {
 }
 
 export interface SseDeliverySnapshot {
-  readonly queuedBytes: number;
+  readonly unackedBytes: number;
+  readonly unackedFrames: number;
   readonly state: "open" | "ending" | "closed";
   readonly mergeActive: boolean;
 }
 
 interface StreamReservation {
+  readonly seq: number;
+  readonly proof: string;
   readonly reservation: OutboundReservation;
   readonly timing?: DeliveryTiming;
 }
 
 interface ObservedSseFrame {
+  readonly seq: number;
+  readonly proof: string;
   readonly bytes: Uint8Array;
   readonly timing: DeliveryTiming | undefined;
+}
+
+interface PreparedSseChunk {
+  readonly source: Extract<DeliverySource, "write" | "merge">;
+  readonly encodedValue: string;
+  readonly encodedValueBytes: number;
+  readonly observer: DeliveryObserver | undefined;
+  readonly encodingStartedAt: number | undefined;
+  readonly encodingFinishedAt: number | undefined;
 }
 
 interface Waiter {
@@ -900,46 +916,71 @@ function waiter(): Waiter {
   return { promise, resolve, reject };
 }
 
-function sseBytes(data: unknown): Uint8Array {
-  return utf8.encode(`data: ${encode(data)}\n\n`);
+function sseFrameBytes(message: SseDoneMessage | SseErrorMessage): Uint8Array {
+  return utf8.encode(`data: ${encode(message)}\n\n`);
 }
 
-function sseDoneBytes(): Uint8Array {
-  return utf8.encode("data: [DONE]\n\n");
+function sseChunkBytes(seq: number, proof: string, encodedValue: string): Uint8Array {
+  return utf8.encode(
+    `data: {"v":${PROTOCOL_VERSION},"t":"sse_chunk","seq":${seq},"proof":${JSON.stringify(proof)},"value":${encodedValue}}\n\n`,
+  );
 }
 
-function sseErrorBytes(error: DbzzError, maxBytes: number): Uint8Array {
+const SSE_PROOF_LENGTH = 22;
+const SSE_CHUNK_FIXED_BYTES =
+  Buffer.byteLength(`data: {"v":${PROTOCOL_VERSION},"t":"sse_chunk","seq":`) +
+  Buffer.byteLength(`,"proof":"","value":}\n\n`) +
+  SSE_PROOF_LENGTH;
+const MINIMUM_SSE_VALUE_BYTES = Buffer.byteLength("0");
+
+function sseProof(): string {
+  return randomBytes(16).toString("base64url");
+}
+
+function sameProof(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  return leftBytes.byteLength === rightBytes.byteLength && timingSafeEqual(leftBytes, rightBytes);
+}
+
+function sseDoneBytes(seq: number, proof: string): Uint8Array {
+  return sseFrameBytes({ v: PROTOCOL_VERSION, t: "sse_done", seq, proof });
+}
+
+function sseErrorBytes(error: DbzzError, maxBytes: number, seq: number, proof: string): Uint8Array {
   const outcome = outcomeFromError(error);
-  const encodeOutcome = (message: string) =>
-    utf8.encode(`event: dbzz-error\ndata: ${encode({ ...outcome, message })}\n\n`);
-  let result = encodeOutcome(outcome.message);
-  if (result.byteLength <= maxBytes) return result;
-  const characters = [...outcome.message];
-  let low = 0;
-  let high = characters.length;
-  while (low < high) {
-    const middle = Math.ceil((low + high) / 2);
-    if (encodeOutcome(characters.slice(0, middle).join("")).byteLength <= maxBytes) low = middle;
-    else high = middle - 1;
-  }
-  result = encodeOutcome(characters.slice(0, low).join(""));
-  if (result.byteLength > maxBytes) {
+  const fitted = fitOutcome(outcome, maxBytes, (candidate) => {
+    const value = sseFrameBytes({
+      v: PROTOCOL_VERSION,
+      t: "sse_error",
+      seq,
+      proof,
+      outcome: candidate,
+    });
+    return { value, bytes: value.byteLength };
+  });
+  if (fitted === null) {
     throw new RangeError("SSE control reserve cannot encode a terminal outcome");
   }
-  return result;
+  return fitted.value;
 }
 
+const MAXIMUM_SSE_SEQUENCE = Number.MAX_SAFE_INTEGER;
+const MAXIMUM_SSE_PROOF = "x".repeat(SSE_PROOF_LENGTH);
+const MAXIMUM_SSE_RESOURCE = RESOURCE_CLASSES.reduce(
+  (longest, resource) => resource.length > longest.length ? resource : longest,
+);
 const MINIMUM_SSE_CONTROL_BYTES = Math.max(
-  sseErrorBytes(new DbzzError("auth_unavailable", "", {
+  sseErrorBytes(new DbzzError("unsupported_protocol", PUBLIC_ERROR_FALLBACK, {
     retryable: true,
     retryAfterMs: 30_000,
-    resource: "subscription",
-  }), Number.MAX_SAFE_INTEGER).byteLength,
-  sseErrorBytes(new DbzzError("convergence_unavailable", "", {
+    resource: MAXIMUM_SSE_RESOURCE,
+  }), Number.MAX_SAFE_INTEGER, MAXIMUM_SSE_SEQUENCE, MAXIMUM_SSE_PROOF).byteLength,
+  sseErrorBytes(new DbzzError("convergence_unavailable", PUBLIC_ERROR_FALLBACK, {
     committed: true,
     resource: "subscription",
-  }), Number.MAX_SAFE_INTEGER).byteLength,
-  sseDoneBytes().byteLength,
+  }), Number.MAX_SAFE_INTEGER, MAXIMUM_SSE_SEQUENCE, MAXIMUM_SSE_PROOF).byteLength,
+  sseDoneBytes(MAXIMUM_SSE_SEQUENCE, MAXIMUM_SSE_PROOF).byteLength,
 );
 
 interface SseSourceReader {
@@ -949,13 +990,15 @@ interface SseSourceReader {
 }
 
 /**
- * A byte-strategy SSE source. Direct writes are finite; one merge may pull at a
- * time and waits for stream credit instead of creating detached reader tails.
+ * A receiver-credited SSE source. Direct writes are finite; a merge owns at
+ * most one unacknowledged frame and never retains a pulled value while waiting.
  */
 export class BoundedSseProducer {
   readonly stream: ReadableStream<Uint8Array>;
   readonly signal: AbortSignal;
   readonly controlReserveBytes: number;
+  private readonly finishedWaiter = waiter();
+  readonly finished = this.finishedWaiter.promise;
 
   private readonly budget: OutboundBudget;
   private readonly limits: ServiceLimits;
@@ -963,17 +1006,20 @@ export class BoundedSseProducer {
   private readonly delivery: DeliveryInstrumentation | undefined;
   private readonly controller: ReadableStreamDefaultController<Uint8Array>;
   private readonly abortController = new AbortController();
-  private readonly reservations: StreamReservation[] = [];
+  private readonly reservations = new Map<number, StreamReservation>();
   private readonly externalSignal: AbortSignal | undefined;
   private readonly externalAbort: (() => void) | undefined;
   private terminalReservation: OutboundReservation | null = null;
-  private queuedBytes = 0;
+  private unackedBytes = 0;
+  private nextSequence = 1;
+  private acknowledgedSequence = 0;
   private state: "open" | "ending" | "closed" = "open";
   private failure: DbzzError | null = null;
+  private closureError: DbzzError | null = null;
   private activeMerge: Promise<void> | null = null;
   private activeReader: SseSourceReader | null = null;
-  private capacityWaiter: Waiter | null = null;
   private emptyWaiter: Waiter | null = null;
+  private closedWaiter: Waiter | null = null;
   private completion: Promise<void> | null = null;
   private stallSince: number | null = null;
   private stallTimer: unknown;
@@ -1003,9 +1049,6 @@ export class BoundedSseProducer {
         start: (value) => {
           controller = value;
         },
-        pull: () => {
-          this.reconcileQueue(true);
-        },
         cancel: (reason) => {
           this.cancel(reason, false);
         },
@@ -1030,23 +1073,18 @@ export class BoundedSseProducer {
   }
 
   write(chunk: unknown): void {
-    let bytes: Uint8Array;
-    let timing: DeliveryTiming | undefined;
-    if (this.delivery === undefined) {
-      bytes = sseBytes(chunk);
-    } else {
-      const frame = this.encodeObservedFrame("application", "write", () => sseBytes(chunk));
-      bytes = frame.bytes;
-      timing = frame.timing;
-    }
     try {
-      this.enqueueApplication(bytes, timing);
+      this.preflightApplication();
     } catch (error) {
-      const terminal = isDbzzError(error)
-        ? error
-        : new DbzzError("internal", "SSE producer failed", { cause: error });
-      this.terminate(terminal);
-      throw terminal;
+      this.failWrite(error);
+    }
+    const prepared = this.prepareApplicationFrame("write", chunk);
+    try {
+      this.preflightApplication();
+      const frame = this.materializeApplicationFrame(prepared);
+      this.enqueueApplication(frame);
+    } catch (error) {
+      this.failWrite(error);
     }
   }
 
@@ -1073,12 +1111,40 @@ export class BoundedSseProducer {
   }
 
   snapshot(): SseDeliverySnapshot {
-    this.reconcileQueue(false);
     return Object.freeze({
-      queuedBytes: this.queuedBytes,
+      unackedBytes: this.unackedBytes,
+      unackedFrames: this.reservations.size,
       state: this.state,
       mergeActive: this.activeMerge !== null,
     });
+  }
+
+  ack(seq: number, proof: string): boolean {
+    if (
+      !Number.isSafeInteger(seq) ||
+      seq < 1 ||
+      typeof proof !== "string" ||
+      proof.length !== SSE_PROOF_LENGTH
+    ) {
+      return false;
+    }
+    if (seq <= this.acknowledgedSequence || seq >= this.nextSequence) return false;
+    const boundary = this.reservations.get(seq);
+    if (boundary === undefined || !sameProof(boundary.proof, proof)) {
+      return false;
+    }
+
+    this.releaseThrough(seq);
+    this.acknowledgedSequence = seq;
+    if (this.unackedBytes === 0) {
+      this.clearStall();
+      this.emptyWaiter?.resolve();
+      this.emptyWaiter = null;
+      if (this.state === "ending") this.finishClose();
+    } else {
+      this.restartStall();
+    }
+    return true;
   }
 
   private async consume(source: ReadableStream<unknown>): Promise<void> {
@@ -1087,18 +1153,21 @@ export class BoundedSseProducer {
     try {
       for (;;) {
         if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
+        await this.waitForEmpty();
+        this.preflightApplication();
         const part = await reader.read();
+        this.preflightApplication();
         if (part.done) return;
-        if (this.delivery === undefined) {
-          await this.enqueueMerged(sseBytes(part.value), undefined);
-        } else {
-          const frame = this.encodeObservedFrame(
-            "application",
-            "merge",
-            () => sseBytes(part.value),
-          );
-          await this.enqueueMerged(frame.bytes, frame.timing);
+        if (this.unackedBytes !== 0) {
+          throw slowConsumer("sse", "SSE merge credit was consumed while awaiting its source");
         }
+        const prepared = this.prepareApplicationFrame("merge", part.value);
+        this.preflightApplication();
+        if (this.unackedBytes !== 0) {
+          throw slowConsumer("sse", "SSE merge credit was consumed while encoding its source");
+        }
+        const frame = this.materializeApplicationFrame(prepared);
+        this.enqueueApplication(frame);
       }
     } catch (error) {
       const terminal = isDbzzError(error)
@@ -1113,23 +1182,91 @@ export class BoundedSseProducer {
     }
   }
 
-  private encodeObservedFrame(
-    lane: OutboundLane,
-    source: DeliverySource,
-    encodeFrame: () => Uint8Array,
-    terminalOutcome?: Outcome["code"],
-  ): ObservedSseFrame {
-    const observer = captureDeliveryObserver(this.delivery, lane);
-    const startedAt = observer === undefined ? undefined : observationNow(this.delivery);
-    let bytes: Uint8Array;
+  private prepareApplicationFrame(
+    source: Extract<DeliverySource, "write" | "merge">,
+    value: unknown,
+  ): PreparedSseChunk {
+    const observer = captureDeliveryObserver(this.delivery, "application");
+    const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
     try {
-      bytes = encodeFrame();
+      const encodedValue = encode(value);
+      return {
+        source,
+        encodedValue,
+        encodedValueBytes: Buffer.byteLength(encodedValue),
+        observer,
+        encodingStartedAt,
+        encodingFinishedAt: observer === undefined ? undefined : observationNow(this.delivery),
+      };
     } catch (error) {
       observeEncoding(
         this.delivery,
         observer,
-        lane,
+        "application",
         source,
+        encodingStartedAt,
+        0,
+        safeDeliveryOutcome(error),
+      );
+      throw error;
+    }
+  }
+
+  private candidateApplicationBytes(frame: PreparedSseChunk): number {
+    if (this.nextSequence >= MAXIMUM_SSE_SEQUENCE) {
+      throw overloaded("sse", "SSE sequence space exhausted");
+    }
+    return SSE_CHUNK_FIXED_BYTES + String(this.nextSequence).length + frame.encodedValueBytes;
+  }
+
+  private materializeApplicationFrame(frame: PreparedSseChunk): ObservedSseFrame {
+    const expectedBytes = this.candidateApplicationBytes(frame);
+    const seq = this.nextSequence;
+    const proof = sseProof();
+    const bytes = sseChunkBytes(seq, proof, frame.encodedValue);
+    if (bytes.byteLength !== expectedBytes) throw new Error("SSE frame byte accounting mismatch");
+    observeEncoding(
+      this.delivery,
+      frame.observer,
+      "application",
+      frame.source,
+      frame.encodingStartedAt,
+      bytes.byteLength,
+      "ok",
+      undefined,
+      frame.encodingFinishedAt,
+    );
+    const timing = frame.observer === undefined || frame.encodingFinishedAt === undefined
+      ? undefined
+      : {
+          observer: frame.observer,
+          source: frame.source,
+          bytes: bytes.byteLength,
+          queueStartedAt: frame.encodingFinishedAt,
+        };
+    return { seq, proof, bytes, timing };
+  }
+
+  private encodeTerminalFrame(
+    encodeFrame: (seq: number, proof: string) => Uint8Array,
+    terminalOutcome?: Outcome["code"],
+  ): ObservedSseFrame {
+    if (this.nextSequence > MAXIMUM_SSE_SEQUENCE) {
+      throw overloaded("sse", "SSE sequence space exhausted");
+    }
+    const seq = this.nextSequence;
+    const proof = sseProof();
+    const observer = captureDeliveryObserver(this.delivery, "control");
+    const startedAt = observer === undefined ? undefined : observationNow(this.delivery);
+    let bytes: Uint8Array;
+    try {
+      bytes = encodeFrame(seq, proof);
+    } catch (error) {
+      observeEncoding(
+        this.delivery,
+        observer,
+        "control",
+        "terminal",
         startedAt,
         0,
         safeDeliveryOutcome(error),
@@ -1140,8 +1277,8 @@ export class BoundedSseProducer {
     observeEncoding(
       this.delivery,
       observer,
-      lane,
-      source,
+      "control",
+      "terminal",
       startedAt,
       bytes.byteLength,
       "ok",
@@ -1150,51 +1287,20 @@ export class BoundedSseProducer {
     const timing = deliveryTiming(
       this.delivery,
       observer,
-      source,
+      "terminal",
       bytes.byteLength,
       terminalOutcome,
     );
-    return { bytes, timing };
+    return { seq, proof, bytes, timing };
   }
 
-  private async enqueueMerged(
-    bytes: Uint8Array,
-    timing: DeliveryTiming | undefined,
-  ): Promise<void> {
-    let reservation: OutboundReservation;
-    try {
-      this.validateApplicationFrame(bytes.byteLength);
-      for (;;) {
-        if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
-        this.reconcileQueue(true);
-        if (this.queuedBytes + bytes.byteLength <= this.applicationLimit()) break;
-        await this.waitForCapacity();
-      }
-      const admitted = this.budget.reserve(bytes.byteLength, "application");
-      if (admitted === null) {
-        throw overloaded("sse", "global SSE outbound byte limit exceeded");
-      }
-      reservation = admitted;
-    } catch (error) {
-      observeTiming(
-        this.delivery,
-        "application",
-        timing,
-        "queue",
-        safeDeliveryOutcome(error),
-      );
-      throw error;
-    }
-    this.enqueue(bytes, reservation, timing);
-  }
-
-  private enqueueApplication(bytes: Uint8Array, timing: DeliveryTiming | undefined): void {
+  private enqueueApplication(frame: ObservedSseFrame): void {
+    const { bytes, timing } = frame;
     let reservation: OutboundReservation;
     try {
       if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
       this.validateApplicationFrame(bytes.byteLength);
-      this.reconcileQueue(true);
-      if (this.queuedBytes + bytes.byteLength > this.applicationLimit()) {
+      if (this.unackedBytes + bytes.byteLength > this.applicationLimit()) {
         throw slowConsumer("sse", "SSE producer exceeded the consumer byte budget");
       }
       const admitted = this.budget.reserve(bytes.byteLength, "application");
@@ -1212,7 +1318,7 @@ export class BoundedSseProducer {
       );
       throw error;
     }
-    this.enqueue(bytes, reservation, timing);
+    this.enqueue(frame, reservation);
   }
 
   private validateApplicationFrame(bytes: number): void {
@@ -1222,18 +1328,25 @@ export class BoundedSseProducer {
   }
 
   private enqueue(
-    bytes: Uint8Array,
+    frame: ObservedSseFrame,
     reservation: OutboundReservation,
-    timing: DeliveryTiming | undefined,
   ): void {
-    if (timing === undefined) this.reservations.push({ reservation });
-    else this.reservations.push({ reservation, timing });
-    this.queuedBytes += bytes.byteLength;
+    const { seq, proof, bytes, timing } = frame;
+    if (seq !== this.nextSequence) {
+      reservation.release();
+      throw new Error("SSE frames must enqueue in sequence order");
+    }
+    const owned = timing === undefined
+      ? { seq, proof, reservation }
+      : { seq, proof, reservation, timing };
+    this.reservations.set(seq, owned);
+    this.unackedBytes += bytes.byteLength;
     try {
       this.controller.enqueue(bytes);
+      this.nextSequence = seq + 1;
     } catch (error) {
-      this.reservations.pop();
-      this.queuedBytes -= bytes.byteLength;
+      this.reservations.delete(seq);
+      this.unackedBytes -= bytes.byteLength;
       reservation.release();
       observeTiming(
         this.delivery,
@@ -1248,65 +1361,68 @@ export class BoundedSseProducer {
       observeTiming(this.delivery, reservation.lane, timing, "queue", "ok");
       timing.deliveryStartedAt = observationNow(this.delivery);
     }
-    this.reconcileQueue(true);
-    if (this.queuedBytes > 0) this.armStall();
+    this.armStall();
   }
 
   private applicationLimit(): number {
     return this.limits.sse.maxBytesPerStream - this.controlReserveBytes;
   }
 
-  private reconcileQueue(markProgress: boolean): void {
-    if (this.state === "closed") return;
-    const desired = this.controller.desiredSize;
-    if (desired === null) return;
-    const observed = Math.max(
-      0,
-      Math.min(this.limits.sse.maxBytesPerStream, Math.ceil(this.limits.sse.maxBytesPerStream - desired)),
-    );
-    const released = this.queuedBytes - Math.min(this.queuedBytes, observed);
-    if (released > 0) {
-      this.releaseQueue(released);
-      if (markProgress && this.queuedBytes > 0) this.restartStall();
-      this.capacityWaiter?.resolve();
-      this.capacityWaiter = null;
+  private preflightApplication(): void {
+    if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
+    if (this.nextSequence >= MAXIMUM_SSE_SEQUENCE) {
+      throw overloaded("sse", "SSE sequence space exhausted");
     }
-    if (this.queuedBytes === 0) {
-      this.clearStall();
-      this.emptyWaiter?.resolve();
-      this.emptyWaiter = null;
-      if (this.state === "ending") this.finishClose();
+    const minimumBytes =
+      SSE_CHUNK_FIXED_BYTES + String(this.nextSequence).length + MINIMUM_SSE_VALUE_BYTES;
+    if (minimumBytes > this.limits.maxFrameBytes || minimumBytes > this.applicationLimit()) {
+      throw overloaded("sse", "SSE event envelope exceeds maxFrameBytes");
+    }
+    if (minimumBytes > this.applicationLimit() - this.unackedBytes) {
+      throw slowConsumer("sse", "SSE producer exceeded the consumer byte budget");
+    }
+    if (minimumBytes > this.budget.availableBytes("application")) {
+      throw overloaded("sse", "global SSE outbound byte limit exceeded");
     }
   }
 
-  private releaseQueue(bytes: number): void {
-    let remaining = bytes;
-    while (remaining > 0) {
-      const item = this.reservations[0];
-      if (item === undefined) throw new Error("SSE byte accounting underflow");
-      const released = Math.min(remaining, item.reservation.remainingBytes);
-      item.reservation.release(released);
-      this.queuedBytes -= released;
-      remaining -= released;
-      if (item.reservation.remainingBytes === 0) {
-        this.reservations.shift();
-        if (item.timing !== undefined) {
-          observeTiming(this.delivery, item.reservation.lane, item.timing, "delivery", "ok");
-        }
+  private failWrite(error: unknown): never {
+    const terminal = isDbzzError(error)
+      ? error
+      : new DbzzError("internal", "SSE producer failed", { cause: error });
+    this.terminate(terminal);
+    throw terminal;
+  }
+
+  private releaseThrough(seq: number): void {
+    let current = this.acknowledgedSequence + 1;
+    for (;;) {
+      const item = this.reservations.get(current);
+      if (item === undefined) throw new Error("SSE acknowledgment range is not contiguous");
+      this.reservations.delete(current);
+      const bytes = item.reservation.remainingBytes;
+      item.reservation.release();
+      this.unackedBytes -= bytes;
+      if (item.timing !== undefined) {
+        observeTiming(this.delivery, item.reservation.lane, item.timing, "delivery", "ok");
       }
+      if (current === seq) break;
+      current++;
     }
+    if (this.unackedBytes < 0) throw new Error("SSE byte accounting underflow");
   }
 
   private releaseAll(outcome: DeliveryOutcome = "unavailable"): void {
     this.terminalReservation?.release();
     this.terminalReservation = null;
-    for (const item of this.reservations.splice(0)) {
+    for (const item of this.reservations.values()) {
       item.reservation.release();
       if (item.timing !== undefined) {
         observeTiming(this.delivery, item.reservation.lane, item.timing, "delivery", outcome);
       }
     }
-    this.queuedBytes = 0;
+    this.reservations.clear();
+    this.unackedBytes = 0;
   }
 
   private consumeTerminalReservation(bytes: number): OutboundReservation {
@@ -1319,49 +1435,67 @@ export class BoundedSseProducer {
     return reservation;
   }
 
-  private waitForCapacity(): Promise<void> {
-    if (this.capacityWaiter === null) this.capacityWaiter = waiter();
-    return this.capacityWaiter.promise;
-  }
-
   private waitForEmpty(): Promise<void> {
-    this.reconcileQueue(true);
-    if (this.queuedBytes === 0) return Promise.resolve();
+    if (this.unackedBytes === 0) return Promise.resolve();
     if (this.emptyWaiter === null) this.emptyWaiter = waiter();
     return this.emptyWaiter.promise;
   }
 
-  private async completeOpenStream(): Promise<void> {
-    const merge = this.activeMerge;
-    if (merge !== null) await merge;
-    if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
-    await this.waitForEmpty();
-    if (this.state !== "open") throw this.failure ?? unavailable("sse", "SSE stream is closed");
-    let bytes: Uint8Array;
-    let timing: DeliveryTiming | undefined;
-    if (this.delivery === undefined) {
-      bytes = sseDoneBytes();
-    } else {
-      const frame = this.encodeObservedFrame("control", "terminal", sseDoneBytes);
-      bytes = frame.bytes;
-      timing = frame.timing;
+  private waitForClosed(): Promise<void> {
+    if (this.state === "closed") {
+      return this.closureError === null ? Promise.resolve() : Promise.reject(this.closureError);
     }
+    if (this.closedWaiter === null) this.closedWaiter = waiter();
+    return this.closedWaiter.promise;
+  }
+
+  private async completeOpenStream(): Promise<void> {
+    if (this.state === "ending") return this.waitForClosed();
+    if (this.state === "closed") return this.waitForClosed();
+    const merge = this.activeMerge;
+    if (merge !== null) {
+      try {
+        await merge;
+      } catch (error) {
+        if ((this.state as SseDeliverySnapshot["state"]) !== "open") return this.waitForClosed();
+        throw error;
+      }
+    }
+    if ((this.state as SseDeliverySnapshot["state"]) !== "open") return this.waitForClosed();
+    try {
+      await this.waitForEmpty();
+    } catch (error) {
+      if ((this.state as SseDeliverySnapshot["state"]) !== "open") return this.waitForClosed();
+      throw error;
+    }
+    if ((this.state as SseDeliverySnapshot["state"]) !== "open") return this.waitForClosed();
+    const frame = this.encodeTerminalFrame(
+      (seq, proof) => sseDoneBytes(seq, proof),
+    );
     let reservation: OutboundReservation;
     try {
-      reservation = this.consumeTerminalReservation(bytes.byteLength);
+      reservation = this.consumeTerminalReservation(frame.bytes.byteLength);
     } catch (error) {
       observeTiming(
         this.delivery,
         "control",
-        timing,
+        frame.timing,
         "queue",
         safeDeliveryOutcome(error),
       );
       throw error;
     }
     this.state = "ending";
-    this.enqueue(bytes, reservation, timing);
-    if (this.queuedBytes === 0) this.finishClose();
+    try {
+      this.enqueue(frame, reservation);
+    } catch (error) {
+      const terminal = isDbzzError(error)
+        ? error
+        : new DbzzError("internal", "SSE producer failed", { cause: error });
+      this.forceClose(terminal, "internal");
+      throw terminal;
+    }
+    await this.waitForClosed();
   }
 
   private terminate(error: DbzzError): void {
@@ -1371,62 +1505,54 @@ export class BoundedSseProducer {
     if (!this.abortController.signal.aborted) this.abortController.abort(error);
     const reader = this.activeReader;
     if (reader !== null) void reader.cancel(error).then(undefined, () => {});
-    this.capacityWaiter?.reject(error);
-    this.capacityWaiter = null;
     this.emptyWaiter?.reject(error);
     this.emptyWaiter = null;
     this.clearStall();
 
     const terminalOutcome = outcomeFromError(error).code;
-    let bytes: Uint8Array;
-    let timing: DeliveryTiming | undefined;
-    if (this.delivery === undefined) {
-      bytes = sseErrorBytes(error, this.controlReserveBytes);
-    } else {
-      const frame = this.encodeObservedFrame(
-        "control",
-        "terminal",
-        () => sseErrorBytes(error, this.controlReserveBytes),
+    let frame: ObservedSseFrame;
+    try {
+      frame = this.encodeTerminalFrame(
+        (seq, proof) => sseErrorBytes(error, this.controlReserveBytes, seq, proof),
         terminalOutcome,
       );
-      bytes = frame.bytes;
-      timing = frame.timing;
+    } catch {
+      this.forceClose(error, "internal");
+      return;
     }
     let reservation: OutboundReservation;
     try {
-      reservation = this.consumeTerminalReservation(bytes.byteLength);
+      reservation = this.consumeTerminalReservation(frame.bytes.byteLength);
     } catch (cause) {
       observeTiming(
         this.delivery,
         "control",
-        timing,
+        frame.timing,
         "queue",
         safeDeliveryOutcome(cause),
       );
-      throw cause;
-    }
-    try {
-      this.enqueue(bytes, reservation, timing);
-    } catch {
-      this.controller.error(error);
-      this.releaseAll("internal");
-      this.finishClosedState();
+      this.forceClose(error, "internal");
       return;
     }
-    if (this.queuedBytes === 0) this.finishClose();
+    try {
+      this.enqueue(frame, reservation);
+    } catch {
+      this.forceClose(error, "internal");
+    }
   }
 
   private cancel(reason: unknown, terminateStream: boolean): void {
     if (this.state === "closed") return;
     const error = unavailable("sse", "SSE consumer canceled the stream");
     this.failure = error;
+    this.closureError = error;
     if (!this.abortController.signal.aborted) this.abortController.abort(reason ?? error);
     const reader = this.activeReader;
     if (reader !== null) void reader.cancel(reason).then(undefined, () => {});
-    this.capacityWaiter?.reject(error);
     this.emptyWaiter?.reject(error);
-    this.capacityWaiter = null;
+    this.closedWaiter?.reject(error);
     this.emptyWaiter = null;
+    this.closedWaiter = null;
     this.clearStall();
     if (terminateStream) {
       const canceledRequest = isDbzzError(reason) &&
@@ -1444,20 +1570,41 @@ export class BoundedSseProducer {
     try {
       this.controller.close();
     } finally {
+      this.closedWaiter?.resolve();
+      this.closedWaiter = null;
       this.finishClosedState();
     }
+  }
+
+  private forceClose(error: DbzzError, outcome: DeliveryOutcome): void {
+    if (this.state === "closed") return;
+    this.failure ??= error;
+    this.closureError = error;
+    if (!this.abortController.signal.aborted) this.abortController.abort(error);
+    try {
+      this.controller.error(error);
+    } catch {
+      // Releasing the application-owned budget does not depend on stream state.
+    }
+    this.emptyWaiter?.reject(error);
+    this.closedWaiter?.reject(error);
+    this.emptyWaiter = null;
+    this.closedWaiter = null;
+    this.releaseAll(outcome);
+    this.finishClosedState();
   }
 
   private finishClosedState(): void {
     this.state = "closed";
     this.clearStall();
+    this.finishedWaiter.resolve();
     if (this.externalSignal !== undefined && this.externalAbort !== undefined) {
       this.externalSignal.removeEventListener("abort", this.externalAbort);
     }
   }
 
   private armStall(): void {
-    if (this.state !== "open" || this.queuedBytes === 0) return;
+    if (this.state === "closed" || this.unackedBytes === 0) return;
     if (this.stallSince === null) this.stallSince = this.clock.now();
     if (this.stallTimer !== undefined) return;
     const elapsed = Math.max(0, this.clock.now() - this.stallSince);
@@ -1482,20 +1629,14 @@ export class BoundedSseProducer {
 
   private onStallTimer(): void {
     this.stallTimer = undefined;
-    if (this.state !== "open" || this.stallSince === null) return;
-    const before = this.queuedBytes;
-    this.reconcileQueue(false);
-    if (this.queuedBytes < before) {
-      this.stallSince = this.clock.now();
-      this.armStall();
-      return;
-    }
-    if (this.queuedBytes === 0) return;
+    if (this.state === "closed" || this.stallSince === null || this.unackedBytes === 0) return;
     const elapsed = Math.max(0, this.clock.now() - this.stallSince);
     if (elapsed < this.limits.sse.maxStallMs) {
       this.armStall();
       return;
     }
-    this.terminate(slowConsumer("sse", "SSE consumer stalled"));
+    const error = this.failure ?? slowConsumer("sse", "SSE consumer stalled");
+    if (this.state === "open") this.terminate(error);
+    else this.forceClose(error, outcomeFromError(error).code);
   }
 }

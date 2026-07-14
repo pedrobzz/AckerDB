@@ -13,6 +13,8 @@ import {
   parseMutationReceipt,
   parseOutcome,
   parseServerMessage,
+  parseSseAckRequest,
+  parseSseMessage,
   parseSubscriptionTransition,
   uuidV7Timestamp,
   type SubscriptionCursor,
@@ -159,6 +161,58 @@ describe("structured outcomes", () => {
         }),
       "malformed",
     );
+  });
+});
+
+describe("SSE receiver acknowledgments", () => {
+  test("parses exact chunk, completion, error, and cumulative acknowledgment envelopes", () => {
+    expect(parseSseMessage({
+      v: 2,
+      t: "sse_chunk",
+      seq: 1,
+      proof: "proof-1",
+      value: { id: 1n },
+    })).toEqual({ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: { id: 1n } });
+    expect(parseSseMessage({ v: 2, t: "sse_done", seq: 2, proof: "proof-2" })).toEqual({
+      v: 2,
+      t: "sse_done",
+      seq: 2,
+      proof: "proof-2",
+    });
+    expect(parseSseMessage({
+      v: 2,
+      t: "sse_error",
+      seq: 3,
+      proof: "proof-3",
+      outcome: { code: "slow_consumer", retryable: false, message: "stalled", resource: "sse" },
+    }).t).toBe("sse_error");
+    expect(parseSseAckRequest({
+      v: 2,
+      t: "sse_ack",
+      stream: "stream-1",
+      seq: 3,
+      proof: "proof-3",
+    })).toEqual({ v: 2, t: "sse_ack", stream: "stream-1", seq: 3, proof: "proof-3" });
+  });
+
+  test("rejects unknown fields, unsafe sequences, empty tokens, and the wrong envelope kind", () => {
+    for (const value of [
+      { v: 2, t: "sse_chunk", seq: 0, proof: "proof", value: null },
+      { v: 2, t: "sse_done", seq: Number.MAX_SAFE_INTEGER + 1, proof: "proof" },
+      { v: 2, t: "sse_done", seq: 1, proof: "" },
+      { v: 2, t: "sse_done", seq: 1, proof: "proof", legacy: true },
+      { v: 2, t: "sse_error", seq: 1, proof: "proof", outcome: { code: "wat" } },
+    ]) {
+      expectProtocolError(() => parseSseMessage(value), "malformed");
+    }
+    for (const value of [
+      { v: 2, t: "call", stream: "stream", seq: 1, proof: "proof" },
+      { v: 2, t: "sse_ack", stream: "", seq: 1, proof: "proof" },
+      { v: 2, t: "sse_ack", stream: "stream", seq: -1, proof: "proof" },
+      { v: 2, t: "sse_ack", stream: "stream", seq: 1, proof: "x".repeat(129) },
+    ]) {
+      expectProtocolError(() => parseSseAckRequest(value), "malformed");
+    }
   });
 });
 

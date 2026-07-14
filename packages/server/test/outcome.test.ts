@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { ProtocolError } from "@dbzz/core";
+import { ProtocolError, decode, encode, parseOutcome } from "@dbzz/core";
 import { AdmissionRejected } from "../src/admission.ts";
 import { ValidationError } from "../src/dbz.ts";
 import { DbzzError } from "../src/errors.ts";
 import {
+  fitOutcome,
   outcomeFromError,
   outcomeHttpStatus,
   outcomeWebSocketClose,
@@ -31,6 +32,21 @@ describe("structured transport outcomes", () => {
       retryable: false,
       message: "internal server error",
     });
+    expect(outcomeFromError(new DbzzError("unavailable", ""))).toEqual({
+      code: "unavailable",
+      retryable: false,
+      message: "err",
+    });
+    expect(outcomeFromError(new ProtocolError("malformed", ""))).toEqual({
+      code: "malformed",
+      retryable: false,
+      message: "err",
+    });
+    expect(outcomeFromError(new ValidationError(""))).toEqual({
+      code: "validation",
+      retryable: false,
+      message: "err",
+    });
   });
 
   test("maps protocol, validation, and admission failures exactly", () => {
@@ -47,6 +63,29 @@ describe("structured transport outcomes", () => {
       resource: "reader",
       message: "Admission rejected: items",
     });
+  });
+
+  test("bounds long emoji messages without splitting a public parser code point", () => {
+    const outcome = outcomeFromError(new DbzzError("unavailable", "💥".repeat(300)));
+    expect(outcome.message.length).toBeLessThanOrEqual(512);
+    expect(outcome.message).not.toContain("�");
+    expect([...outcome.message].some((character) => {
+      const point = character.codePointAt(0)!;
+      return point >= 0xd800 && point <= 0xdfff;
+    })).toBe(false);
+    expect(parseOutcome(decode(encode(outcome)))).toEqual(outcome);
+  });
+
+  test("fits an intrinsically nonempty public outcome", () => {
+    const fitted = fitOutcome(
+      { code: "unavailable", retryable: false, message: "" },
+      Number.MAX_SAFE_INTEGER,
+      (outcome) => {
+        const value = encode(outcome);
+        return { value, bytes: Buffer.byteLength(value) };
+      },
+    );
+    expect(parseOutcome(decode(fitted!.value)).message).toBe("err");
   });
 
   test("uses the fixed HTTP and WebSocket mappings", () => {

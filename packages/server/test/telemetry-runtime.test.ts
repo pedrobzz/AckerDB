@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, decode, type MutationMessage } from "@dbzz/core";
+import {
+  PROTOCOL_VERSION,
+  decode,
+  parseSseMessage,
+  type MutationMessage,
+} from "@dbzz/core";
 import {
   ANONYMOUS_PRINCIPAL,
   Engine,
@@ -276,13 +281,39 @@ function uuidV7(now: number, sequence: number): string {
   return `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${sequence.toString(16).padStart(12, "0")}`;
 }
 
-async function collectSse(stream: ReadableStream<Uint8Array>): Promise<string> {
+async function collectSse(
+  runtime: Runtime,
+  response: Awaited<ReturnType<Runtime["runSse"]>>,
+): Promise<string> {
   const decoder = new TextDecoder();
   let body = "";
-  for await (const chunk of stream as unknown as AsyncIterable<Uint8Array>) {
-    body += decoder.decode(chunk, { stream: true });
+  let buffered = "";
+  for await (const chunk of response.stream as unknown as AsyncIterable<Uint8Array>) {
+    const text = decoder.decode(chunk, { stream: true });
+    body += text;
+    buffered += text;
+    for (;;) {
+      const boundary = buffered.indexOf("\n\n");
+      if (boundary === -1) break;
+      const block = buffered.slice(0, boundary);
+      buffered = buffered.slice(boundary + 2);
+      const payload = block.split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).replace(/^ /, ""))
+        .join("\n");
+      const frame = parseSseMessage(decode(payload));
+      runtime.ackSse({
+        v: PROTOCOL_VERSION,
+        t: "sse_ack",
+        stream: response.streamId,
+        seq: frame.seq,
+        proof: frame.proof,
+      });
+    }
   }
-  return body + decoder.decode();
+  body += decoder.decode();
+  expect(buffered).toBe("");
+  return body;
 }
 
 function spans(records: readonly TelemetryRecord[]): TelemetrySpanRecord[] {
@@ -449,9 +480,9 @@ describe("Runtime telemetry acceptance", () => {
     await entered;
     expect(app.runtime.telemetry.snapshot().traceRetention.activeTraces).toBe(1);
 
-    const body = collectSse(stream);
+    const body = collectSse(app.runtime, stream);
     releaseSse();
-    expect(await body).toContain("data: [DONE]");
+    expect(await body).toContain('"t":"sse_done"');
     expect(app.runtime.telemetry.snapshot().traceRetention).toMatchObject({
       activeTraces: 0,
       completedDecisions: 1,
@@ -540,9 +571,9 @@ describe("Runtime telemetry acceptance", () => {
       args: { payload: PRIVATE_STREAM },
       principal: ANONYMOUS_PRINCIPAL,
     });
-    const sseBody = await collectSse(stream);
+    const sseBody = await collectSse(app.runtime, stream);
     expect(sseBody).toContain(PRIVATE_STREAM);
-    expect(sseBody).toEndWith("data: [DONE]\n\n");
+    expect(sseBody).toContain('"t":"sse_done"');
 
     const dueAt = Date.now() + 120_000;
     await app.mutation(primary.context, 740_000_001, "jobs.schedule", {

@@ -6,7 +6,10 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
+  parseCallResponse,
+  parseSseMessage,
   type MutationMessage,
+  type SseMessage,
 } from "@dbzz/core";
 import {
   ANONYMOUS_PRINCIPAL,
@@ -15,11 +18,16 @@ import {
 } from "../src/auth.ts";
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
+import { DbzzError } from "../src/errors.ts";
 import { mutation, procedure, query, sseProcedure } from "../src/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
 import { reconcile } from "../src/reconcile.ts";
 import { Registry } from "../src/registry.ts";
-import { Runtime, type RuntimeOptions } from "../src/runtime.ts";
+import {
+  Runtime,
+  type RuntimeOptions,
+  type RuntimeSseResponse,
+} from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
 import type {
   RuntimePublication,
@@ -108,6 +116,8 @@ let revalidationGate: Deferred<void> | null = null;
 let revalidationEntered: Deferred<void> | null = null;
 let externalProcedureStarted: Deferred<void> | null = null;
 let externalProcedureRelease: Deferred<void> | null = null;
+let externalSseStarted: Deferred<void> | null = null;
+let externalSseRelease: Deferred<void> | null = null;
 let scheduledAttempts = 0;
 
 const functions = {
@@ -236,6 +246,13 @@ const functions = {
       args: {},
       handler: (ctx: Ctx) => ctx.tx(() => ctx.tx(() => 1)),
     }),
+    failEmoji: procedure({
+      access: "public",
+      args: {},
+      handler: () => {
+        throw new DbzzError("conflict", "💥".repeat(512));
+      },
+    }),
     stream: sseProcedure({
       access: "public",
       args: { count: dbz.number() },
@@ -268,6 +285,15 @@ const functions = {
         await new Promise<void>((resolve) => {
           ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
         });
+      },
+    }),
+    holdSse: sseProcedure({
+      access: "public",
+      args: {},
+      handler: async (ctx: Ctx) => {
+        ctx.stream.write({ phase: "held" });
+        externalSseStarted?.resolve(undefined);
+        await externalSseRelease?.promise;
       },
     }),
   },
@@ -355,13 +381,39 @@ function limits(overrides: Partial<ServiceLimits> = {}): ServiceLimits {
   return { ...PRODUCTION_LIMITS, ...overrides };
 }
 
-async function collect(stream: ReadableStream<Uint8Array>): Promise<string[]> {
-  const decoder = new TextDecoder();
-  const chunks: string[] = [];
-  for await (const bytes of stream as unknown as AsyncIterable<Uint8Array>) {
-    chunks.push(decoder.decode(bytes));
+async function collectSse(
+  response: RuntimeSseResponse,
+  acknowledge: (message: SseMessage) => void = (message) => {
+    expect(runtime.ackSse({
+      v: PROTOCOL_VERSION,
+      t: "sse_ack",
+      stream: response.streamId,
+      seq: message.seq,
+      proof: message.proof,
+    })).toBe(true);
+  },
+): Promise<SseMessage[]> {
+  const messages: SseMessage[] = [];
+  for await (const bytes of response.stream as unknown as AsyncIterable<Uint8Array>) {
+    const message = sseMessage(bytes);
+    messages.push(message);
+    acknowledge(message);
   }
-  return chunks;
+  return messages;
+}
+
+function sseMessage(bytes: Uint8Array): SseMessage {
+  const text = new TextDecoder().decode(bytes);
+  expect(text).toStartWith("data: ");
+  return parseSseMessage(decode(text.slice(6).trim()));
+}
+
+async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error("condition did not become true");
+    await Bun.sleep(2);
+  }
 }
 
 function publicationBytes(frames: readonly RuntimePublication[]): number {
@@ -413,6 +465,8 @@ beforeEach(() => {
   revalidationEntered = null;
   externalProcedureStarted = null;
   externalProcedureRelease = null;
+  externalSseStarted = null;
+  externalSseRelease = null;
   scheduledAttempts = 0;
   eventAccessInputs.length = 0;
   eventMatchInputs.length = 0;
@@ -779,34 +833,113 @@ describe("procedures and bounded SSE", () => {
     expect(runtime.status()).toMatchObject({ activeOperations: 0, activeOperationCallers: 0 });
   });
 
+  test("fits a tight all-emoji procedure failure to a parser-valid fallback", async () => {
+    const id = 89;
+    const fallback = {
+      v: PROTOCOL_VERSION,
+      t: "err" as const,
+      id,
+      outcome: { code: "conflict" as const, retryable: false, message: "err" },
+    };
+    const maxFrameBytes = new TextEncoder().encode(encode(fallback)).byteLength;
+    await restart(limits({ maxFrameBytes }));
+
+    const response = await runtime.runProcedure({
+      id,
+      address: "ops.failEmoji",
+      args: {},
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+    const body = await response.text();
+    expect(response.status).toBe(409);
+    expect(new TextEncoder().encode(body).byteLength).toBe(maxFrameBytes);
+    expect(parseCallResponse(decode(body))).toEqual(fallback);
+  });
+
   test("streams data, merged data, and a terminal marker", async () => {
-    const stream = await runtime.runSse({
+    const response = await runtime.runSse({
       id: 1,
       address: "ops.stream",
       args: { count: 2 },
       principal: ANONYMOUS_PRINCIPAL,
     });
-    const chunks = await collect(stream);
-    expect(chunks.slice(0, 2).map((chunk) => decode(chunk.slice(6).trim()))).toEqual([
+    expect(response.streamId).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    const messages = await collectSse(response, (message) => {
+      if (message.seq === 1) return;
+      if (message.seq !== 2) {
+        if (message.t !== "sse_chunk") expect(runtime.status().activeSse).toBe(1);
+        expect(runtime.ackSse({
+          v: PROTOCOL_VERSION,
+          t: "sse_ack",
+          stream: response.streamId,
+          seq: message.seq,
+          proof: message.proof,
+        })).toBe(true);
+        return;
+      }
+      const before = runtime.status().sseBudget.bytes;
+      expect(runtime.status().activeSse).toBe(1);
+      expect(runtime.ackSse({
+        v: PROTOCOL_VERSION,
+        t: "sse_ack",
+        stream: "AAAAAAAAAAAAAAAAAAAAAA",
+        seq: message.seq,
+        proof: message.proof,
+      })).toBe(false);
+      expect(runtime.ackSse({
+        v: PROTOCOL_VERSION,
+        t: "sse_ack",
+        stream: response.streamId,
+        seq: message.seq,
+        proof: `${message.proof}x`,
+      })).toBe(false);
+      expect(runtime.ackSse({
+        v: PROTOCOL_VERSION,
+        t: "sse_ack",
+        stream: response.streamId,
+        seq: message.seq + 100,
+        proof: message.proof,
+      })).toBe(false);
+      expect(runtime.status().sseBudget.bytes).toBe(before);
+      expect(runtime.ackSse({
+        v: PROTOCOL_VERSION,
+        t: "sse_ack",
+        stream: response.streamId,
+        seq: message.seq,
+        proof: message.proof,
+      })).toBe(true);
+    });
+    expect(messages.filter((message) => message.t === "sse_chunk").map((message) => message.value)).toEqual([
       { type: "delta", value: 0 },
       { type: "delta", value: 1 },
+      { type: "merged" },
     ]);
-    expect(chunks.some((chunk) => chunk.includes('"type":"merged"'))).toBe(true);
-    expect(chunks.at(-1)).toBe("data: [DONE]\n\n");
+    expect(messages.at(-1)?.t).toBe("sse_done");
+    expect(runtime.ackSse({
+      v: PROTOCOL_VERSION,
+      t: "sse_ack",
+      stream: response.streamId,
+      seq: messages.at(-1)!.seq,
+      proof: messages.at(-1)!.proof,
+    })).toBe(false);
+    expect(runtime.status().activeSse).toBe(0);
     expect(runtime.status().sseBudget.bytes).toBe(0);
   });
 
   test("turns a post-start SSE failure into a terminal dbzz-error event", async () => {
-    const stream = await runtime.runSse({
+    const response = await runtime.runSse({
       id: 1,
       address: "ops.failingStream",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     });
-    const chunks = await collect(stream);
-    expect(chunks).toHaveLength(1);
-    expect(chunks[0]).toStartWith("event: dbzz-error\ndata: ");
-    expect(decode(chunks[0]!.split("data: ")[1]!.trim())).toMatchObject({ code: "internal" });
+    const messages = await collectSse(response);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      t: "sse_error",
+      outcome: { code: "internal" },
+    });
   });
 });
 
@@ -917,17 +1050,98 @@ describe("scheduler and lifecycle", () => {
   });
 
   test("fails an open SSE immediately and completes Runtime drain", async () => {
-    const stream = await runtime.runSse({
+    const response = await runtime.runSse({
       id: 85,
       address: "ops.waitForAbort",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     });
 
-    const [chunks] = await Promise.all([collect(stream), runtime.drain()]);
-    expect(chunks[0]).toContain('"phase":"started"');
-    expect(chunks.some((chunk) => chunk.includes("event: dbzz-error"))).toBe(true);
+    const [messages] = await Promise.all([collectSse(response), runtime.drain()]);
+    expect(messages[0]).toMatchObject({ t: "sse_chunk", value: { phase: "started" } });
+    expect(messages.some((message) => message.t === "sse_error")).toBe(true);
     expect(runtime.status()).toMatchObject({ state: "stopped", activeSse: 0, activeOperations: 0 });
+  });
+
+  test("expires capabilities independently while held SSE handlers keep operation admission", async () => {
+    await restart(limits({
+      sse: { ...PRODUCTION_LIMITS.sse, maxStallMs: 100 },
+    }));
+    const heldReleases: Deferred<void>[] = [];
+    const beginHeld = async (id: number) => {
+      const started = deferred<void>();
+      const release = deferred<void>();
+      heldReleases.push(release);
+      externalSseStarted = started;
+      externalSseRelease = release;
+      const response = await runtime.runSse({
+        id,
+        address: "ops.holdSse",
+        args: {},
+        principal: ANONYMOUS_PRINCIPAL,
+      });
+      await started.promise;
+      return { response, release };
+    };
+
+    try {
+      const acknowledged = await beginHeld(90);
+      const acknowledgedReader = acknowledged.response.stream.getReader();
+      expect(sseMessage((await acknowledgedReader.read()).value!)).toMatchObject({
+        t: "sse_chunk",
+        value: { phase: "held" },
+      });
+      const acknowledgedTerminal = sseMessage((await acknowledgedReader.read()).value!);
+      expect(acknowledgedTerminal).toMatchObject({
+        t: "sse_error",
+        outcome: { code: "slow_consumer" },
+      });
+      expect(runtime.status()).toMatchObject({ activeSse: 1, activeOperations: 1 });
+      expect(runtime.ackSse({
+        v: PROTOCOL_VERSION,
+        t: "sse_ack",
+        stream: acknowledged.response.streamId,
+        seq: acknowledgedTerminal.seq,
+        proof: acknowledgedTerminal.proof,
+      })).toBe(true);
+      expect((await acknowledgedReader.read()).done).toBe(true);
+      acknowledgedReader.releaseLock();
+      await eventually(() => runtime.status().activeSse === 0);
+      expect(runtime.status().activeOperations).toBe(1);
+      acknowledged.release.resolve(undefined);
+      await eventually(() => runtime.status().activeOperations === 0);
+
+      const forced = await beginHeld(91);
+      const forcedReader = forced.response.stream.getReader();
+      expect(sseMessage((await forcedReader.read()).value!).t).toBe("sse_chunk");
+      const forcedTerminal = sseMessage((await forcedReader.read()).value!);
+      expect(forcedTerminal.t).toBe("sse_error");
+      expect(runtime.status()).toMatchObject({ activeSse: 1, activeOperations: 1 });
+      await expect(forcedReader.read()).rejects.toMatchObject({ code: "slow_consumer" });
+      forcedReader.releaseLock();
+      await eventually(() => runtime.status().activeSse === 0);
+      expect(runtime.status().activeOperations).toBe(1);
+      expect(runtime.ackSse({
+        v: PROTOCOL_VERSION,
+        t: "sse_ack",
+        stream: forced.response.streamId,
+        seq: forcedTerminal.seq,
+        proof: forcedTerminal.proof,
+      })).toBe(false);
+      forced.release.resolve(undefined);
+      await eventually(() => runtime.status().activeOperations === 0);
+
+      const canceled = await beginHeld(92);
+      const canceledReader = canceled.response.stream.getReader();
+      expect(sseMessage((await canceledReader.read()).value!).t).toBe("sse_chunk");
+      await canceledReader.cancel("consumer stopped");
+      await eventually(() => runtime.status().activeSse === 0);
+      expect(runtime.status().activeOperations).toBe(1);
+      canceled.release.resolve(undefined);
+      await eventually(() => runtime.status().activeOperations === 0);
+    } finally {
+      for (const release of heldReleases) release.resolve(undefined);
+    }
   });
 
   test("owns a finite deadline across stalled active reader and publication work", async () => {

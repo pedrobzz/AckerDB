@@ -2,7 +2,14 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, decode, encode, parseCallResponse } from "@dbzz/core";
+import {
+  PROTOCOL_VERSION,
+  decode,
+  encode,
+  parseCallResponse,
+  parseSseMessage,
+  type SseMessage,
+} from "@dbzz/core";
 import type {
   CredentialVerifier,
   PrincipalInvalidation,
@@ -43,6 +50,45 @@ async function eventually(check: () => boolean): Promise<void> {
   await within((async () => {
     while (!check()) await Bun.sleep(2);
   })());
+}
+
+async function readSseMessage(
+  reader: { read(): Promise<{ readonly done: boolean; readonly value?: Uint8Array }> },
+): Promise<SseMessage> {
+  const decoder = new TextDecoder();
+  let text = "";
+  for (;;) {
+    const part = await within(reader.read());
+    if (part.done || part.value === undefined) {
+      throw new Error("SSE response ended before its next frame");
+    }
+    text += decoder.decode(part.value, { stream: true });
+    const boundary = text.indexOf("\n\n");
+    if (boundary < 0) continue;
+    if (!text.startsWith("data: ") || text.length !== boundary + 2) {
+      throw new Error(`invalid receiver-credited SSE frame ${JSON.stringify(text)}`);
+    }
+    return parseSseMessage(decode(text.slice(6, boundary)));
+  }
+}
+
+function acknowledgeSse(
+  base: string,
+  stream: string,
+  message: SseMessage,
+  authorization?: string,
+): Promise<Response> {
+  return fetch(`${base}/api/sse/ack`, {
+    method: "POST",
+    headers: authorization === undefined ? {} : { authorization },
+    body: encode({
+      v: PROTOCOL_VERSION,
+      t: "sse_ack",
+      stream,
+      seq: message.seq,
+      proof: message.proof,
+    }),
+  });
 }
 
 async function waitForAbort(signal: AbortSignal): Promise<void> {
@@ -249,8 +295,27 @@ describe("HTTP and SSE credential leases", () => {
 
   test("owns an SSE lease through normal body completion", async () => {
     const complete = await request("sse", "auth.once", "user-complete");
-    expect(await complete.text()).toContain("data: [DONE]");
-    expect(verifier.activeListeners).toBe(0);
+    const streamId = complete.headers.get("x-dbzz-sse-stream");
+    if (streamId === null || complete.body === null) throw new Error("missing SSE response ownership");
+    const reader = complete.body.getReader();
+    const chunk = await readSseMessage(reader);
+    expect(chunk).toMatchObject({ t: "sse_chunk", value: { phase: "once" } });
+    expect(verifier.activeListeners).toBe(1);
+
+    const subscribed = verifier.subscribeCalls;
+    expect((await acknowledgeSse(
+      base,
+      streamId,
+      chunk,
+      "Bearer ack-must-not-create-an-auth-lease",
+    )).status).toBe(204);
+    expect(verifier.subscribeCalls).toBe(subscribed);
+    const terminal = await readSseMessage(reader);
+    expect(terminal.t).toBe("sse_done");
+    expect((await acknowledgeSse(base, streamId, terminal)).status).toBe(204);
+    expect(await within(reader.read())).toEqual({ done: true, value: undefined });
+    reader.releaseLock();
+    await eventually(() => verifier.activeListeners === 0);
   });
 
   test("releases an SSE lease when the response consumer cancels", async () => {

@@ -233,6 +233,7 @@ export {
   type RuntimeProcedureResponder,
   type RuntimeProcedureResponse,
   type RuntimeSseRequest,
+  type RuntimeSseResponse,
   type RuntimeStatus,
 } from "./runtime.ts";
 export {

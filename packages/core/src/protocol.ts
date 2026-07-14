@@ -14,6 +14,7 @@ const MAX_SESSION_ID_LENGTH = 128;
 const MAX_REFERENCE_LENGTH = 512;
 const MAX_CURSOR_PART_LENGTH = 512;
 const MAX_SAFE_MESSAGE_LENGTH = 512;
+const MAX_SSE_TOKEN_LENGTH = 128;
 
 export const OUTCOME_CODES = [
   "malformed",
@@ -255,6 +256,27 @@ export interface CallRequest extends Frame<"call"> {
 
 export type CallResponse = ProcedureOkMessage | ErrorMessage;
 
+interface SseFrame<T extends string> extends Frame<T> {
+  seq: number;
+  proof: string;
+}
+
+export interface SseChunkMessage extends SseFrame<"sse_chunk"> {
+  value: unknown;
+}
+
+export type SseDoneMessage = SseFrame<"sse_done">;
+
+export interface SseErrorMessage extends SseFrame<"sse_error"> {
+  outcome: Outcome;
+}
+
+export type SseMessage = SseChunkMessage | SseDoneMessage | SseErrorMessage;
+
+export interface SseAckRequest extends SseFrame<"sse_ack"> {
+  stream: string;
+}
+
 export class ProtocolError extends Error {
   constructor(
     readonly code: "malformed" | "unsupported_protocol",
@@ -315,6 +337,13 @@ function payload(value: unknown, name: string): unknown {
 function protocolId(value: unknown, name: string): number {
   if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > MAX_PROTOCOL_ID) {
     malformed(`${name} must be an integer from 1 through ${MAX_PROTOCOL_ID}`);
+  }
+  return value as number;
+}
+
+function positiveSafeInteger(value: unknown, name: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    malformed(`${name} must be a positive safe integer`);
   }
   return value as number;
 }
@@ -639,4 +668,36 @@ export function parseCallResponse(value: unknown): CallResponse {
   const result = parseServerMessage(value);
   if (result.t === "err" || (result.t === "ok" && result.kind === "procedure")) return result;
   return malformed("HTTP response must be a procedure result or error");
+}
+
+export function parseSseMessage(value: unknown): SseMessage {
+  const result = frame(value);
+  switch (result.t) {
+    case "sse_chunk":
+      exact(result, ["v", "t", "seq", "proof", "value"]);
+      payload(result.value, "SSE chunk value");
+      break;
+    case "sse_done":
+      exact(result, ["v", "t", "seq", "proof"]);
+      break;
+    case "sse_error":
+      exact(result, ["v", "t", "seq", "proof", "outcome"]);
+      parseOutcome(result.outcome);
+      break;
+    default:
+      return malformed("unknown SSE frame type");
+  }
+  positiveSafeInteger(result.seq, "SSE sequence");
+  string(result.proof, "SSE proof", MAX_SSE_TOKEN_LENGTH);
+  return result as unknown as SseMessage;
+}
+
+export function parseSseAckRequest(value: unknown): SseAckRequest {
+  const result = frame(value);
+  if (result.t !== "sse_ack") malformed("SSE acknowledgment must be an sse_ack frame");
+  exact(result, ["v", "t", "stream", "seq", "proof"]);
+  string(result.stream, "SSE stream", MAX_SSE_TOKEN_LENGTH);
+  positiveSafeInteger(result.seq, "SSE sequence");
+  string(result.proof, "SSE proof", MAX_SSE_TOKEN_LENGTH);
+  return result as unknown as SseAckRequest;
 }

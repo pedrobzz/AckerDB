@@ -6,9 +6,10 @@ import {
   decode,
   encode,
   parseCallRequest,
+  parseSseAckRequest,
   stableEncode,
-  type CallRequest,
   type ErrorMessage,
+  type SseAckRequest,
 } from "@dbzz/core";
 import {
   credentialFromAuthorization,
@@ -72,6 +73,8 @@ export interface DbzzServerStatus {
   readonly httpFairnessKeys: number;
   readonly httpGlobalRejections: number;
   readonly httpFairShareRejections: number;
+  readonly sseAckIngress: number;
+  readonly sseAckNoops: number;
   readonly outboundBytes: number;
   readonly runtime: RuntimeStatus | null;
 }
@@ -90,13 +93,13 @@ const CORS = Object.freeze({
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
   "access-control-allow-headers": "content-type, authorization",
+  "access-control-expose-headers": "x-dbzz-sse-stream, x-dbzz-sse-max-stall-ms",
 });
 
 const SSE_HEADERS = Object.freeze({
   ...CORS,
   "content-type": "text/event-stream; charset=utf-8",
   "cache-control": "no-cache, no-transform",
-  "x-vercel-ai-ui-message-stream": "v1",
   "x-accel-buffering": "no",
 });
 
@@ -343,7 +346,12 @@ async function readBoundedBody(request: Request, maxBytes: number, maxAgeMs: num
   }
 }
 
-async function parseHttpCall(request: Request, maxBytes: number, maxAgeMs: number): Promise<CallRequest> {
+async function parseHttpBody<T>(
+  request: Request,
+  maxBytes: number,
+  maxAgeMs: number,
+  parse: (value: unknown) => T,
+): Promise<T> {
   const text = await readBoundedBody(request, maxBytes, maxAgeMs);
   let decoded: unknown;
   try {
@@ -351,7 +359,7 @@ async function parseHttpCall(request: Request, maxBytes: number, maxAgeMs: numbe
   } catch (cause) {
     throw new DbzzError("malformed", "malformed request body", { cause });
   }
-  return parseCallRequest(decoded);
+  return parse(decoded);
 }
 
 function configuredStatusScope(value: string | undefined): string {
@@ -399,6 +407,8 @@ export class DbzzServer {
   private lifecycle: DbzzServerState = "starting";
   private startup: DbzzStartupPhase | null = "listening";
   private connectionRejections = 0;
+  private sseAckIngress = 0;
+  private sseAckNoops = 0;
   private transportSampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
 
@@ -481,6 +491,8 @@ export class DbzzServer {
       httpFairnessKeys: http.fairnessKeys,
       httpGlobalRejections: http.globalRejections,
       httpFairShareRejections: http.fairShareRejections,
+      sseAckIngress: this.sseAckIngress,
+      sseAckNoops: this.sseAckNoops,
       outboundBytes: this.outbound.snapshot().bytes,
       runtime: this.activeRuntime?.status() ?? null,
     });
@@ -546,10 +558,19 @@ export class DbzzServer {
         ...(this.startup === null ? {} : { phase: this.startup }),
       }, ready ? 200 : 503);
     }
+    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
+    if (url.pathname === "/api/sse/ack") {
+      if (request.method !== "POST") {
+        return new Response("method not allowed", {
+          status: 405,
+          headers: { ...CORS, allow: "POST" },
+        });
+      }
+      return this.acknowledgeSse(request, this.httpSourceKey(request, listener));
+    }
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
       return protocolError(unavailableWhile(this.lifecycle));
     }
-    if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === "/status" && request.method === "GET") {
       let admission: HttpAdmissionLease | undefined;
       let lease: AuthLease | undefined;
@@ -623,10 +644,11 @@ export class DbzzServer {
     try {
       if (this.lifecycle !== "ready") throw unavailableWhile(this.lifecycle);
       admission = this.httpAdmission.admit(sourceKey);
-      const call = await parseHttpCall(
+      const call = await parseHttpBody(
         request,
         runtime.limits.maxRequestBytes,
         runtime.limits.readQueue.maxAgeMs,
+        parseCallRequest,
       );
       id = call.id;
       identifyHttpTrace(externalTrace, call.ref, String(call.id));
@@ -644,18 +666,18 @@ export class DbzzServer {
         fairnessKey,
       }, externalTrace);
       if (sse) {
-        const stream = await runtime.runSse(input);
+        const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;
-        const streamAdmission = admission;
-        const body = ownedStream(stream, () => {
-          streamLease.release();
-          streamAdmission.release();
-        });
+        lease = undefined;
+        const body = ownedStream(stream, () => streamLease.release());
         try {
-          const response = new Response(body, { headers: SSE_HEADERS });
-          lease = undefined;
-          admission = undefined;
-          return response;
+          return new Response(body, {
+            headers: {
+              ...SSE_HEADERS,
+              "x-dbzz-sse-stream": streamId,
+              "x-dbzz-sse-max-stall-ms": String(runtime.limits.sse.maxStallMs),
+            },
+          });
         } catch (error) {
           cancel(body, error);
           throw error;
@@ -674,6 +696,28 @@ export class DbzzServer {
     } finally {
       finishHttpTrace(externalTrace);
       lease?.release();
+      admission?.release();
+    }
+  }
+
+  private async acknowledgeSse(request: Request, sourceKey: string): Promise<Response> {
+    this.sseAckIngress = Math.min(Number.MAX_SAFE_INTEGER, this.sseAckIngress + 1);
+    let admission: HttpAdmissionLease | undefined;
+    try {
+      admission = this.httpAdmission.admit(sourceKey);
+      const acknowledgment = await parseHttpBody<SseAckRequest>(
+        request,
+        this.limits.maxRequestBytes,
+        this.limits.readQueue.maxAgeMs,
+        parseSseAckRequest,
+      );
+      if (!(this.activeRuntime?.ackSse(acknowledgment) ?? false)) {
+        this.sseAckNoops = Math.min(Number.MAX_SAFE_INTEGER, this.sseAckNoops + 1);
+      }
+      return new Response(null, { status: 204, headers: CORS });
+    } catch (error) {
+      return protocolError(error);
+    } finally {
       admission?.release();
     }
   }
@@ -815,6 +859,8 @@ export class DbzzServer {
       ["runtime.transport_http_fairness_keys", http.fairnessKeys, "gauge"],
       ["runtime.transport_http_global_rejections", http.globalRejections, "count"],
       ["runtime.transport_http_fair_share_rejections", http.fairShareRejections, "count"],
+      ["runtime.transport_sse_ack_ingress", this.sseAckIngress, "count"],
+      ["runtime.transport_sse_ack_noops", this.sseAckNoops, "count"],
     ] as const;
     for (const [name, value, unit] of metrics) {
       runtime.telemetry.recordMetric({ name, value, unit });
