@@ -48,6 +48,7 @@ import {
 } from "./db.ts";
 import {
   BoundedSseProducer,
+  FINALIZE_DELIVERY_OBSERVER,
   OutboundBudget,
   type DeliveryObservation,
   type DeliveryObserver,
@@ -96,9 +97,11 @@ import {
 } from "./reactive.ts";
 import type { Registry } from "./registry.ts";
 import {
+  CLAIM_DELIVERY_LEASE,
   deriveTelemetryTraceContext,
   prepareTelemetryTraceContext,
   RECORD_PREPARED_SPAN,
+  RELEASE_DELIVERY_LEASE,
   Telemetry,
   type PreparedTelemetrySpanInput,
   type PreparedTelemetryTraceContext,
@@ -126,6 +129,8 @@ const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
 const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
+/** Package-private transport hook; intentionally absent from the public index. */
+export const CAPTURE_DELIVERY_OBSERVER = Symbol("dbzz.captureDeliveryObserver");
 
 export type RuntimeLifecycleState = "ready" | "draining" | "stopped" | "failed";
 
@@ -1027,7 +1032,7 @@ export class Runtime implements RuntimePort {
           request.args,
           {
             onAuthorized: () => {
-              deliveryObserver = this.captureDeliveryObserver();
+              deliveryObserver = this[CAPTURE_DELIVERY_OBSERVER]();
               authorized.resolve();
             },
           },
@@ -2350,7 +2355,7 @@ export class Runtime implements RuntimePort {
     ));
   }
 
-  readonly captureDeliveryObserver = (
+  readonly [CAPTURE_DELIVERY_OBSERVER] = (
     lane: OutboundLane = "application",
     clientSessionId?: string,
   ): DeliveryObserver | undefined => {
@@ -2361,7 +2366,24 @@ export class Runtime implements RuntimePort {
       undefined,
       clientSessionId === undefined ? {} : { connectionId: digest(clientSessionId) },
     );
-    return (observation) => this.trace.run(scope, () => this.deliveryObserver(observation));
+    const lease = scope.operation === "sse"
+      ? undefined
+      : this.telemetry[CLAIM_DELIVERY_LEASE](scope.rootContext);
+    if (lease === undefined) {
+      return (observation) => this.trace.run(scope, () => this.deliveryObserver(observation));
+    }
+    let released = false;
+    return Object.assign(
+      (observation: DeliveryObservation) =>
+        this.trace.run(scope, () => this.deliveryObserver(observation)),
+      {
+        [FINALIZE_DELIVERY_OBSERVER]: () => {
+          if (released) return;
+          released = true;
+          this.telemetry[RELEASE_DELIVERY_LEASE](lease);
+        },
+      },
+    );
   };
 
   private runOperation<T, R = T>(

@@ -44,6 +44,9 @@ export interface DeliveryObservation {
 /** Metadata-only hook. Delivery never awaits it and ignores callback failures. */
 export type DeliveryObserver = (observation: DeliveryObservation) => unknown;
 
+/** Package-private terminal ownership released even when diagnostics are dropped. */
+export const FINALIZE_DELIVERY_OBSERVER = Symbol("dbzz.finalizeDeliveryObserver");
+
 /** Captures the observer that owns one frame before any delivery work begins. */
 export type DeliveryObserverCapture = (lane: OutboundLane) => DeliveryObserver | undefined;
 
@@ -182,6 +185,7 @@ interface DeliveryTiming {
 interface PendingDeliveryObservation {
   readonly observer: DeliveryObserver;
   readonly record: DeliveryObservation;
+  readonly terminal: boolean;
 }
 
 interface DeliveryInstrumentation {
@@ -217,6 +221,26 @@ function promiseLike(value: unknown): value is PromiseLike<unknown> {
   );
 }
 
+function terminalObservation(
+  observation: Pick<DeliveryObservation, "stage" | "source" | "outcome">,
+): boolean {
+  return observation.stage === "delivery" ||
+    (observation.stage === "queue" && observation.outcome !== "ok") ||
+    (observation.stage === "encoding" &&
+      observation.source === "send" &&
+      observation.outcome !== "ok");
+}
+
+function finalizeDeliveryObserver(observer: DeliveryObserver): void {
+  try {
+    (observer as DeliveryObserver & {
+      readonly [FINALIZE_DELIVERY_OBSERVER]?: () => void;
+    })[FINALIZE_DELIVERY_OBSERVER]?.();
+  } catch {
+    // Instrumentation ownership is fail-open.
+  }
+}
+
 function observeDelivery(
   instrumentation: DeliveryInstrumentation | undefined,
   observer: DeliveryObserver | undefined,
@@ -226,23 +250,29 @@ function observeDelivery(
   },
 ): void {
   if (instrumentation === undefined || observer === undefined) return;
+  const terminal = terminalObservation(observation);
   if (instrumentation.pending.length >= MAX_PENDING_DELIVERY_OBSERVATIONS) {
     instrumentation.dropped = Math.min(Number.MAX_SAFE_INTEGER, instrumentation.dropped + 1);
+    if (terminal) finalizeDeliveryObserver(observer);
     return;
   }
   let record: DeliveryObservation;
   try {
     const { startedAt, endedAt, ...fields } = observation;
     const elapsed = (endedAt ?? instrumentation.clock.now()) - startedAt;
-    if (!Number.isFinite(elapsed)) return;
+    if (!Number.isFinite(elapsed)) {
+      if (terminal) finalizeDeliveryObserver(observer);
+      return;
+    }
     record = Object.freeze({
       ...fields,
       durationMs: Math.max(0, elapsed),
     });
   } catch {
+    if (terminal) finalizeDeliveryObserver(observer);
     return;
   }
-  instrumentation.pending.push({ observer, record });
+  instrumentation.pending.push({ observer, record, terminal });
   scheduleDeliveryObservations(instrumentation);
 }
 
@@ -253,7 +283,9 @@ function scheduleDeliveryObservations(instrumentation: DeliveryInstrumentation):
     queueMicrotask(() => drainDeliveryObservations(instrumentation));
   } catch {
     instrumentation.scheduled = false;
-    instrumentation.pending.length = 0;
+    for (const pending of instrumentation.pending.splice(0)) {
+      if (pending.terminal) finalizeDeliveryObserver(pending.observer);
+    }
     instrumentation.dropped = 0;
   }
 }
@@ -273,6 +305,8 @@ function drainDeliveryObservations(instrumentation: DeliveryInstrumentation): vo
       if (promiseLike(result)) void Promise.resolve(result).catch(() => {});
     } catch {
       // Delivery instrumentation is diagnostic and always fail-open.
+    } finally {
+      if (pending.terminal) finalizeDeliveryObserver(pending.observer);
     }
   }
   if (instrumentation.pending.length > 0) {
@@ -313,7 +347,10 @@ function deliveryTiming(
 ): DeliveryTiming | undefined {
   if (observer === undefined) return undefined;
   const queueStartedAt = observationNow(instrumentation);
-  if (queueStartedAt === undefined) return undefined;
+  if (queueStartedAt === undefined) {
+    finalizeDeliveryObserver(observer);
+    return undefined;
+  }
   return {
     observer,
     source,
@@ -332,7 +369,10 @@ function observeTiming(
 ): void {
   if (instrumentation === undefined || timing === undefined) return;
   const startedAt = stage === "queue" ? timing.queueStartedAt : timing.deliveryStartedAt;
-  if (startedAt === undefined) return;
+  if (startedAt === undefined) {
+    if (stage === "delivery" || outcome !== "ok") finalizeDeliveryObserver(timing.observer);
+    return;
+  }
   observeDelivery(instrumentation, timing.observer, {
     transport: instrumentation.transport,
     stage,
@@ -356,7 +396,12 @@ function observeEncoding(
   terminalOutcome?: Outcome["code"],
   endedAt?: number,
 ): void {
-  if (instrumentation === undefined || startedAt === undefined) return;
+  if (instrumentation === undefined || startedAt === undefined) {
+    if (source === "send" && outcome !== "ok" && observer !== undefined) {
+      finalizeDeliveryObserver(observer);
+    }
+    return;
+  }
   observeDelivery(instrumentation, observer, {
     transport: instrumentation.transport,
     stage: "encoding",

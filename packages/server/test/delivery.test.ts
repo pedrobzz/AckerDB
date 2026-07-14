@@ -9,6 +9,7 @@ import {
 } from "@dbzz/core";
 import {
   BoundedSseProducer,
+  FINALIZE_DELIVERY_OBSERVER,
   OutboundBudget,
   WebSocketSessionSink,
   type DeliveryClock,
@@ -22,6 +23,12 @@ import {
   type RuntimePublication,
   type SessionControlMessage,
 } from "../src/session.ts";
+import {
+  CLAIM_DELIVERY_LEASE,
+  prepareTelemetryTraceContext,
+  RELEASE_DELIVERY_LEASE,
+  Telemetry,
+} from "../src/telemetry.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -1665,12 +1672,48 @@ describe("delivery observers", () => {
     const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
     const socket = new FakeSocket();
     const observations: DeliveryObservation[] = [];
+    const telemetry = new Telemetry({
+      localSink: false,
+      limits: {
+        maxRecords: 4_096,
+        maxBytes: 16 * 1_024 * 1_024,
+        slowOperationMs: 100,
+      },
+    });
+    let finalized = 0;
+    let traceSequence = 0;
     const sink = new WebSocketSessionSink({
       socket,
       budget,
       limits,
       clock,
-      observer: (observation) => observations.push(observation),
+      captureObserver: () => {
+        const sequence = traceSequence++;
+        const context = prepareTelemetryTraceContext({
+          traceId: `trace_delivery_burst_${sequence}`,
+          spanId: `span_delivery_burst_${sequence}`,
+        });
+        expect(telemetry.beginTrace(context)).toBe(true);
+        telemetry.recordSpan({
+          context,
+          operation: "query",
+          stage: "handler",
+          outcome: "ok",
+          durationMs: 1,
+        });
+        const lease = telemetry[CLAIM_DELIVERY_LEASE](context);
+        if (lease === undefined) throw new Error("delivery lease was not claimed");
+        expect(telemetry.finishTrace(context)).toBe(true);
+        return Object.assign(
+          (observation: DeliveryObservation) => observations.push(observation),
+          {
+            [FINALIZE_DELIVERY_OBSERVER]: () => {
+              finalized++;
+              telemetry[RELEASE_DELIVERY_LEASE](lease);
+            },
+          },
+        );
+      },
     });
     const control = { v: PROTOCOL_VERSION, t: "pong" as const };
     const sends: Promise<void>[] = [];
@@ -1678,20 +1721,115 @@ describe("delivery observers", () => {
     for (let index = 0; index < 1_000; index++) sends.push(sink.sendControl(control));
     expect(observations).toEqual([]);
     expect(budget.snapshot().bytes).toBe(0);
+    expect(telemetry.snapshot().traceRetention.completedDecisions).toBeGreaterThan(0);
     await Promise.all(sends);
     await flushObservations();
 
+    expect(finalized).toBe(1_000);
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      completedDecisions: 0,
+      stagedRecords: 0,
+      dropped: { decisionOverflow: 0 },
+    });
     expect(observations).toHaveLength(256);
     expect(observations[0]?.droppedObservations).toBe(3_000 - observations.length);
     expectSafeObservations(observations);
 
     await sink.sendControl(control);
     await flushObservations();
+    expect(finalized).toBe(1_001);
     expect(observations).toHaveLength(259);
     expect(observations.slice(-3).every(({ droppedObservations }) => (
       droppedObservations === undefined
     ))).toBe(true);
     expect(budget.snapshot().bytes).toBe(0);
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      completedDecisions: 0,
+      stagedRecords: 0,
+      dropped: { decisionOverflow: 0 },
+    });
+    telemetry.stop();
+  });
+
+  test("finalizes terminal ownership when clocks or observation scheduling fail", async () => {
+    const limits = testLimits();
+    const control = { v: PROTOCOL_VERSION, t: "pong" as const };
+    const clocks: DeliveryClock[] = [
+      {
+        now: () => Number.NaN,
+        setTimeout: () => 0,
+        clearTimeout: () => {},
+      },
+      {
+        now: () => {
+          throw new Error("clock failed");
+        },
+        setTimeout: () => 0,
+        clearTimeout: () => {},
+      },
+    ];
+
+    for (const clock of clocks) {
+      let finalized = 0;
+      const sink = new WebSocketSessionSink({
+        socket: new FakeSocket(),
+        budget: new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes),
+        limits,
+        clock,
+        captureObserver: () => Object.assign(
+          () => {},
+          { [FINALIZE_DELIVERY_OBSERVER]: () => finalized++ },
+        ),
+      });
+      await sink.sendControl(control);
+      expect(finalized).toBe(1);
+    }
+
+    let clockReads = 0;
+    let deliveryStartFinalized = 0;
+    const partialObservations: DeliveryObservation[] = [];
+    const deliveryStartSink = new WebSocketSessionSink({
+      socket: new FakeSocket(),
+      budget: new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes),
+      limits,
+      clock: {
+        now: () => ++clockReads === 5 ? Number.NaN : 0,
+        setTimeout: () => 0,
+        clearTimeout: () => {},
+      },
+      captureObserver: () => Object.assign(
+        (observation: DeliveryObservation) => partialObservations.push(observation),
+        { [FINALIZE_DELIVERY_OBSERVER]: () => deliveryStartFinalized++ },
+      ),
+    });
+    await deliveryStartSink.sendControl(control);
+    expect(deliveryStartFinalized).toBe(1);
+    await flushObservations();
+    expect(partialObservations.map(({ stage }) => stage)).toEqual(["encoding", "queue"]);
+
+    let finalized = 0;
+    const scheduledSink = new WebSocketSessionSink({
+      socket: new FakeSocket(),
+      budget: new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes),
+      limits,
+      clock: new FakeClock(),
+      captureObserver: () => Object.assign(
+        () => {},
+        { [FINALIZE_DELIVERY_OBSERVER]: () => finalized++ },
+      ),
+    });
+    const schedule = globalThis.queueMicrotask;
+    let sent: Promise<void>;
+    globalThis.queueMicrotask = () => {
+      throw new Error("observation scheduling failed");
+    };
+    try {
+      sent = scheduledSink.sendControl(control);
+      expect(finalized).toBe(1);
+    } finally {
+      globalThis.queueMicrotask = schedule;
+    }
+    await sent!;
   });
 
   test("preserves the no-observer path while receiver ACK owns release", async () => {

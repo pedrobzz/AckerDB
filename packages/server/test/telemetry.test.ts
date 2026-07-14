@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CLAIM_DELIVERY_LEASE,
   captureTelemetryLink,
   deriveTelemetryTraceContext,
   prepareTelemetryTraceContext,
   RECORD_PREPARED_SPAN,
+  RELEASE_DELIVERY_LEASE,
   Telemetry,
   type PreparedTelemetryTraceContext,
   type TelemetryExporter,
@@ -1277,6 +1279,182 @@ describe("Telemetry", () => {
       },
     });
     telemetry.stop();
+  });
+
+  test("settles a fast trace only after every claimed delivery is released", () => {
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => 0,
+      limits: { slowOperationMs: 100 },
+    });
+    const context = prepareTelemetryTraceContext({
+      traceId: "trace_delivery_leases",
+      spanId: "span_delivery_leases",
+    });
+    expect(telemetry.beginTrace(context)).toBe(true);
+    telemetry.recordSpan({
+      context,
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    });
+    const first = telemetry[CLAIM_DELIVERY_LEASE](context);
+    const second = telemetry[CLAIM_DELIVERY_LEASE](context);
+    if (first === undefined || second === undefined) throw new Error("delivery lease was not claimed");
+
+    telemetry[RELEASE_DELIVERY_LEASE](first);
+    expect(telemetry.finishTrace(context)).toBe(true);
+    expect(telemetry.snapshot()).toMatchObject({
+      traceRetention: {
+        activeTraces: 0,
+        completedDecisions: 1,
+        stagedRecords: 1,
+        discardedTraces: 0,
+      },
+    });
+
+    telemetry[RELEASE_DELIVERY_LEASE](second);
+    expect(telemetry.snapshot()).toMatchObject({
+      traceRetention: {
+        completedDecisions: 0,
+        stagedRecords: 0,
+        discardedTraces: 1,
+        discardedRecords: 1,
+        dropped: { decisionOverflow: 0, expiredDecisions: 0, drain: 0 },
+      },
+    });
+    telemetry.stop();
+  });
+
+  test("promotes a delayed failed delivery before its final lease settles", async () => {
+    const { batches, exporter } = exporterBatches();
+    const telemetry = new Telemetry({
+      exporter,
+      localSink: false,
+      now: () => 0,
+      limits: { slowOperationMs: 100 },
+    });
+    const context = prepareTelemetryTraceContext({
+      traceId: "trace_failed_delivery_lease",
+      spanId: "span_failed_delivery_root",
+    });
+    expect(telemetry.beginTrace(context)).toBe(true);
+    telemetry.recordSpan({
+      context,
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    });
+    const lease = telemetry[CLAIM_DELIVERY_LEASE](context);
+    if (lease === undefined) throw new Error("delivery lease was not claimed");
+    expect(telemetry.finishTrace(context)).toBe(true);
+
+    telemetry.recordSpan({
+      context: { ...context, spanId: "span_failed_delivery" },
+      operation: "query",
+      stage: "delivery",
+      outcome: "slow_consumer",
+      durationMs: 1,
+    });
+    telemetry[RELEASE_DELIVERY_LEASE](lease);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 2,
+      traceRetention: {
+        completedDecisions: 0,
+        stagedRecords: 0,
+        promotedTraces: 1,
+        discardedTraces: 0,
+      },
+    });
+    await telemetry.flush();
+    expect(batches.flat().filter((record) => record.kind === "span").map((record) =>
+      record.spanId
+    )).toEqual(["span_failed_delivery_root", "span_failed_delivery"]);
+    telemetry.stop();
+  });
+
+  test("bounds abandoned leases and ignores an expired generation after trace-id reuse", async () => {
+    let now = 0;
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => now,
+      limits: { slowOperationMs: 100, retentionMs: 10 },
+    });
+    const expiredContext = prepareTelemetryTraceContext({
+      traceId: "trace_reused_delivery",
+      spanId: "span_expired_delivery",
+    });
+    telemetry.beginTrace(expiredContext);
+    telemetry.recordSpan({
+      context: expiredContext,
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    });
+    const expiredLease = telemetry[CLAIM_DELIVERY_LEASE](expiredContext);
+    if (expiredLease === undefined) throw new Error("delivery lease was not claimed");
+    telemetry.finishTrace(expiredContext);
+    now = 10;
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      completedDecisions: 0,
+      discardedTraces: 1,
+      dropped: { expiredDecisions: 1 },
+    });
+
+    const reusedContext = prepareTelemetryTraceContext({
+      traceId: expiredContext.traceId,
+      spanId: "span_reused_delivery",
+    });
+    expect(telemetry.beginTrace(reusedContext)).toBe(true);
+    telemetry.recordSpan({
+      context: reusedContext,
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    });
+    const reusedLease = telemetry[CLAIM_DELIVERY_LEASE](reusedContext);
+    if (reusedLease === undefined) throw new Error("delivery lease was not claimed");
+    telemetry[RELEASE_DELIVERY_LEASE](expiredLease);
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      activeTraces: 1,
+      stagedRecords: 1,
+    });
+    telemetry[RELEASE_DELIVERY_LEASE](reusedLease);
+    telemetry.finishTrace(reusedContext);
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      activeTraces: 0,
+      completedDecisions: 0,
+      discardedTraces: 2,
+    });
+
+    const drainContext = prepareTelemetryTraceContext({
+      traceId: "trace_abandoned_delivery",
+      spanId: "span_abandoned_delivery",
+    });
+    telemetry.beginTrace(drainContext);
+    telemetry.recordSpan({
+      context: drainContext,
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    });
+    const drainLease = telemetry[CLAIM_DELIVERY_LEASE](drainContext);
+    if (drainLease === undefined) throw new Error("delivery lease was not claimed");
+    telemetry.finishTrace(drainContext);
+    await telemetry.drain(20);
+    telemetry[RELEASE_DELIVERY_LEASE](drainLease);
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      activeTraces: 0,
+      completedDecisions: 0,
+      stagedRecords: 0,
+      discardedTraces: 3,
+      dropped: { expiredDecisions: 1, drain: 1 },
+    });
   });
 
   test("accounts staged span bytes exactly without pre-serializing fast traces", async () => {

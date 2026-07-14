@@ -39,7 +39,11 @@ import {
 } from "./external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
-import type { Runtime, RuntimeStatus } from "./runtime.ts";
+import {
+  CAPTURE_DELIVERY_OBSERVER,
+  type Runtime,
+  type RuntimeStatus,
+} from "./runtime.ts";
 import { Session, withSessionAuthObserver } from "./session.ts";
 
 export type DbzzServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
@@ -763,7 +767,7 @@ export class DbzzServer {
         limits: runtime.limits,
         ...(runtime.telemetry.enabled
           ? {
-              captureObserver: (lane) => runtime.captureDeliveryObserver(
+              captureObserver: (lane) => runtime[CAPTURE_DELIVERY_OBSERVER](
                 lane,
                 data.session?.currentClientSessionId ?? undefined,
               ),

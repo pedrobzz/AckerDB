@@ -36,6 +36,7 @@ import {
   type TelemetrySpanRecord,
   type WebSocketDeliverySocket,
 } from "@dbzz/server";
+import { CAPTURE_DELIVERY_OBSERVER } from "../src/runtime.ts";
 
 const encoder = new TextEncoder();
 const TEST_SOURCE = Object.freeze({ family: "test", address: "telemetry-delivery" });
@@ -318,7 +319,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     socket,
     budget,
     limits: runtime.limits,
-    captureObserver: (lane) => runtime.captureDeliveryObserver(
+    captureObserver: (lane) => runtime[CAPTURE_DELIVERY_OBSERVER](
       lane,
       session.snapshot().clientSessionId ?? undefined,
     ),
@@ -452,6 +453,120 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     expect(pongTrace).not.toBe(mutationAdmission.traceId);
     expect(controlDelivery.filter((record) => record.traceId === pongTrace)
       .map((record) => record.stage).sort()).toEqual(["delivery", "encoding", "queue"]);
+  } finally {
+    await session.close();
+    await runtime.drain(Date.now() + 2_000).catch(() => {});
+    engine.close("clean");
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("Runtime releases fast WebSocket tails after final physical delivery", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-delivery-lease-"));
+  const engine = new Engine(schema, join(directory, "data.db"));
+  reconcile(engine);
+  const exported: TelemetryRecord[] = [];
+  const runtime = new Runtime({
+    engine,
+    registry: new Registry(functions),
+    telemetry: {
+      enabled: true,
+      exporter: { export: (batch) => void exported.push(...batch) },
+      localSink: false,
+      limits: {
+        maxRecords: 512,
+        maxBytes: 1_024 * 1_024,
+        maxMetricSeries: 128,
+        maxBatchRecords: 512,
+        batchIntervalMs: 60_000,
+        exportTimeoutMs: 100,
+        retentionMs: 60_000,
+        slowOperationMs: 10_000,
+        sampleIntervalMs: 60_000,
+      },
+    },
+  });
+  const socket = new BufferedSocket(runtime);
+  let session!: Session;
+  const sink = new WebSocketSessionSink({
+    socket,
+    budget: new OutboundBudget(
+      runtime.limits.webSocket.maxBytes,
+      runtime.limits.maxFrameBytes,
+    ),
+    limits: runtime.limits,
+    captureObserver: (lane) => runtime[CAPTURE_DELIVERY_OBSERVER](
+      lane,
+      session.snapshot().clientSessionId ?? undefined,
+    ),
+  });
+  session = new Session({ runtime, sink, source: TEST_SOURCE });
+
+  try {
+    await handle(session, {
+      v: PROTOCOL_VERSION,
+      t: "hello",
+      clientSessionId: "telemetry-delivery-lease-session",
+      credential: { kind: "anonymous" },
+    });
+
+    socket.bufferNext();
+    await handle(session, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 51,
+      ref: "notes.list",
+      args: {},
+    });
+    await settle();
+    expect(runtime.telemetry.snapshot().traceRetention).toMatchObject({
+      activeTraces: 0,
+      completedDecisions: 1,
+      discardedTraces: 0,
+    });
+    expect(runtime.telemetry.snapshot().traceRetention.stagedRecords).toBeGreaterThan(0);
+
+    socket.bufferedAmount = 0;
+    sink.onDrain();
+    await settle();
+    expect(runtime.telemetry.snapshot().traceRetention).toMatchObject({
+      completedDecisions: 0,
+      stagedRecords: 0,
+      discardedTraces: 1,
+    });
+    await runtime.telemetry.flush();
+    expect(spans(exported).filter((span) => span.requestId === "51")).toEqual([]);
+
+    socket.bufferNext();
+    await handle(session, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 52,
+      ref: "notes.list",
+      args: {},
+    });
+    await settle();
+    expect(runtime.telemetry.snapshot().traceRetention.completedDecisions).toBe(1);
+    await sink.close({
+      code: "draining",
+      retryable: true,
+      message: "service draining",
+      resource: "connection",
+    });
+    await settle();
+    expect(runtime.telemetry.snapshot().traceRetention).toMatchObject({
+      completedDecisions: 0,
+      stagedRecords: 0,
+      promotedTraces: 1,
+      discardedTraces: 1,
+    });
+    await runtime.telemetry.flush();
+    const failedDelivery = spans(exported).filter((span) => span.requestId === "52");
+    expect(failedDelivery.some((span) => span.stage === "admission")).toBe(true);
+    expect(failedDelivery).toContainEqual(expect.objectContaining({
+      stage: "delivery",
+      outcome: "draining",
+    }));
   } finally {
     await session.close();
     await runtime.drain(Date.now() + 2_000).catch(() => {});

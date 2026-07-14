@@ -422,6 +422,7 @@ interface MutableTraceRetention {
   readonly traceId: string;
   readonly startedAtMs: number;
   completedAtMs?: number;
+  pendingDeliveries?: number;
   observedDurationMs: number;
   retained: boolean;
   staged: BufferedTraceSpan[];
@@ -531,6 +532,15 @@ const PREPARED_TRACE_CONTEXTS = new WeakSet<TelemetryTraceContext>();
 
 /** Package-private entry point for spans carrying an authenticated prepared context. */
 export const RECORD_PREPARED_SPAN = Symbol("dbzz.recordPreparedTelemetrySpan");
+
+declare const TELEMETRY_DELIVERY_LEASE: unique symbol;
+export interface TelemetryDeliveryLease {
+  readonly [TELEMETRY_DELIVERY_LEASE]: true;
+}
+
+/** Package-private ownership for one Runtime frame awaiting terminal delivery observation. */
+export const CLAIM_DELIVERY_LEASE = Symbol("dbzz.claimTelemetryDeliveryLease");
+export const RELEASE_DELIVERY_LEASE = Symbol("dbzz.releaseTelemetryDeliveryLease");
 
 const SYSTEM_SCHEDULER: TelemetryScheduler = {
   setInterval: (callback, delayMs) => setInterval(callback, delayMs),
@@ -992,6 +1002,34 @@ export class Telemetry {
     return true;
   }
 
+  [CLAIM_DELIVERY_LEASE](
+    context: PreparedTelemetryTraceContext,
+  ): TelemetryDeliveryLease | undefined {
+    const state = this.state;
+    if (!state || state.limits.slowOperationMs === 0) return undefined;
+    const trace = state.activeTraces.get(context.traceId);
+    if (!trace || trace.pendingDeliveries === Number.MAX_SAFE_INTEGER) return undefined;
+    trace.pendingDeliveries = (trace.pendingDeliveries ?? 0) + 1;
+    return trace as unknown as TelemetryDeliveryLease;
+  }
+
+  [RELEASE_DELIVERY_LEASE](lease: TelemetryDeliveryLease): void {
+    const state = this.state;
+    if (!state) return;
+    const trace = lease as unknown as MutableTraceRetention;
+    const active = state.activeTraces.get(trace.traceId);
+    const completed = state.completedTraces.get(trace.traceId);
+    if (
+      (active !== trace && completed !== trace) ||
+      trace.pendingDeliveries === undefined ||
+      trace.pendingDeliveries === 0
+    ) return;
+    trace.pendingDeliveries--;
+    if (completed === trace && trace.pendingDeliveries === 0) {
+      this.settleDeliveredTrace(state, trace);
+    }
+  }
+
   /** Finish a trace and preserve its bounded decision for delayed delivery spans. */
   finishTrace(
     context: Pick<TelemetryTraceContext, "traceId">,
@@ -1032,6 +1070,7 @@ export class Telemetry {
     }
     trace.completedAtMs = completedAtMs;
     state.completedTraces.set(traceId, trace);
+    if (trace.pendingDeliveries === 0) this.settleDeliveredTrace(state, trace);
     return true;
   }
 
@@ -1476,6 +1515,15 @@ export class Telemetry {
     if (!trace) return;
     state.completedTraces.delete(traceId);
     state.traceHealth.dropped[reason] = boundedCount(state.traceHealth.dropped[reason]);
+    this.discardTrace(state, trace);
+  }
+
+  private settleDeliveredTrace(
+    state: TelemetryState,
+    trace: MutableTraceRetention,
+  ): void {
+    if (state.completedTraces.get(trace.traceId) !== trace) return;
+    state.completedTraces.delete(trace.traceId);
     this.discardTrace(state, trace);
   }
 
