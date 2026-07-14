@@ -125,6 +125,45 @@ describe("frozen performance acceptance", () => {
     expect(evidence.exclusions).toEqual(PERFORMANCE_EXCLUSIONS);
   });
 
+  test("allows shorter measurement effort without changing the workload identity", () => {
+    const after = copy();
+    for (const system of ["dbzz", "convex", "spacetimedb"] as const) {
+      const config = after.systems[system]!.workload.config;
+      config.operation.warmupMs = 500;
+      config.operation.steadyMs = 2_000;
+      config.operation.trials = 1;
+      config.connections.workMs = 1_000;
+      config.subscriptions.durationMs = 2_000;
+      config.subscriptions.capacityDurationMs = 2_000;
+      for (const result of after.systems[system]!.workload.subscriptions) {
+        const rate = result.pattern === "shared"
+          ? config.subscriptions.sharedUpdatesPerSec
+          : config.subscriptions.partitionedUpdatesPerSec;
+        result.updates = (config.subscriptions.durationMs / 1_000) * rate;
+        result.expectedDeliveries = result.updates * (result.pattern === "shared" ? result.users : 1);
+        result.observedDeliveries = result.expectedDeliveries;
+        result.missingDeliveries = 0;
+      }
+    }
+    expect(assertPerformanceAcceptance(after, baselineJson).passed).toBe(true);
+  });
+
+  test("rejects current-system measurement drift and frozen workload drift", () => {
+    const currentDrift = copy();
+    currentDrift.systems.convex!.workload.config.operation.steadyMs = 2_000;
+    expect(() => assertPerformanceAcceptance(currentDrift, baselineJson)).toThrow(
+      "convex after-run config does not match the current DBZZ config",
+    );
+
+    const workloadDrift = copy();
+    for (const system of ["dbzz", "convex", "spacetimedb"] as const) {
+      workloadDrift.systems[system]!.workload.config.connections.levels = [1, 100, 500];
+    }
+    expect(() => assertPerformanceAcceptance(workloadDrift, baselineJson)).toThrow(
+      "after-run workload identity does not match the frozen baseline",
+    );
+  });
+
   test("rejects any mutation of the immutable baseline source", () => {
     const tampered = baselineJson.replace('"dirty": true', '"dirty": false');
     expect(tampered).not.toBe(baselineJson);

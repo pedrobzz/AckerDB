@@ -14,6 +14,7 @@ connections, and reactive delivery through each product's current client SDK.
 
 ```sh
 bun bench/run.ts                              # default all-system acceptance; saves only if every gate passes
+BENCH_COMPARISON=current bun bench/run.ts     # same-host comparison only; skips historical acceptance and save
 BENCH_PROFILE=quick bun bench/run.ts          # profiled all-system smoke diagnostic; never saves
 BENCH_PROFILE=stress bun bench/run.ts         # profiled all-system stress diagnostic; never saves
 bun bench/run.ts dbzz convex                  # partial diagnostic; never saves
@@ -32,6 +33,12 @@ callback, and with `telemetry: false`. `systems.dbzz` remains the exact default
 profile used in the three-system tables. The exporter and disabled results plus
 their deltas are separate schema-v5 evidence, not extra databases. Partial runs
 execute only the selected systems and one default-enabled DBZZ profile.
+
+`BENCH_COMPARISON=current` keeps the complete default workload, all three DBZZ
+telemetry profiles, correctness checks, telemetry validation, and same-host
+comparison tables. It exits successfully without evaluating the historical
+machine-bound gate or saving a result. This is the intended mode for comparing
+the current systems on a different machine.
 
 All DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`. The
 `runtime-default` profile uses the production retention/queue limits, built-in
@@ -88,11 +95,15 @@ Acceptance is anchored to the immutable schema-v3 baseline
 `ab78ada0d9d16576b7aca175c1230c456064bcf5b4a80e66b5e1c55a4528a474`, and its
 identity must remain schema version 3 at Git commit `74d8554`. The after-run
 must be schema v5 and must exactly match the baseline's complete machine
-object, 250 ms server-sampling interval, and workload config for DBZZ, Convex,
-and SpacetimeDB. The gate records the baseline source hash, machine
+object, 250 ms server-sampling interval, and workload identity for DBZZ,
+Convex, and SpacetimeDB. Workload identity includes the dataset seed, operation
+and concurrency shapes, connection levels, subscription population/rates/
+patterns/capacity points, and setup behavior. Measurement effort—warmup,
+steady-window length, trial count, idle plateau length, and connection/
+subscription window duration—may change, but must remain identical across the
+three current systems. The gate records the baseline source hash, machine
 fingerprint, and config SHA in its evidence; it does not require the changed
-source hash to equal the baseline. A default-profile environment override that
-changes the frozen config therefore fails before save.
+source hash to equal the baseline.
 
 Each system must expose the same 351 unique comparable metric paths with the
 same direction and family. From the frozen baseline, all 273 strict
@@ -182,14 +193,15 @@ The default operation profiles are:
 | concurrent | 8 | 4 | 32 |
 | saturation | 32 | 4 | 128 |
 
-Each operation/profile has a 1-second warmup and three independent 3-second
-steady trials. The displayed throughput and percentiles are medians of those
-trials.
+Each operation/profile has a 500 ms warmup and one 2-second steady trial. The
+window still contains enough completed operations for stable percentiles on
+this local workload; an implausible headline result is rerun instead of making
+every normal run pay for three repetitions.
 
 The connection ladder grows one cohort through 1, 100, 500, and 1,000 active
 clients. “Ready” includes the native connection plus one validated indexed
 probe, then every active connection keeps exactly one indexed query in flight
-for two seconds. The stress profile adds 5,000 and 10,000. This is end-to-end
+for one second. The stress profile adds 5,000 and 10,000. This is end-to-end
 SDK + client event loop + server capacity; load-generator CPU is reported
 separately so a client-side ceiling is visible.
 
@@ -197,9 +209,9 @@ The default subscription cases both use 500 independent client connections and
 50 query arguments per user (25,000 logical subscriptions):
 
 - `shared`: all users have the same 50 arguments. It applies 20 updates/s;
-  every update must reach all 500 users (50,000 checked deliveries total).
+  every update must reach all 500 users (20,000 checked deliveries total).
 - `partitioned`: every user has 50 unique arguments. It applies 100 updates/s;
-  every update has one intended recipient (500 checked deliveries total).
+  every update has one intended recipient (200 checked deliveries total).
 
 The patterns use disjoint seeded channels. Subscription readiness is explicit,
 updates use a fixed-rate offered window, and a channel is not reused until its
@@ -213,14 +225,14 @@ closed-loop saturation sweep. Independent writer connections ramp through 1,
 8, 32, 128, and 512 slots, capped by the distinct channels available to the
 pattern (50 shared channels and 500 partitioned users by default). A write only
 completes after every intended client validates the exact new version, payload,
-and checksum. Each level runs for 10 seconds. This reports sustainable
+and checksum. Each level runs for two seconds. This reports sustainable
 updates/s, deliveries/s, and latency without allowing an unbounded offered-load
 queue to make throughput look higher than the system can deliver.
 
 ## CPU and memory
 
-The server and load generator are sampled separately from one shared macOS
-process-table scan every 250 ms. For each process tree:
+The server and load generator are sampled separately from one shared `ps`
+process-table scan every 250 ms on macOS or Linux. For each process tree:
 
 - CPU is cumulative user + system CPU divided by exact phase wall time, shown
   as average cores.

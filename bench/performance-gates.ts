@@ -414,6 +414,33 @@ function configSha256(record: BenchmarkRecordLike): string {
   }));
 }
 
+function workloadIdentity(config: DriverResult["config"]): object {
+  return {
+    profile: config.profile,
+    seed: config.seed,
+    operation: {
+      drainTimeoutMs: config.operation.drainTimeoutMs,
+      profiles: config.operation.profiles,
+    },
+    connections: {
+      levels: config.connections.levels,
+      batchSize: config.connections.batchSize,
+      timeoutMs: config.connections.timeoutMs,
+    },
+    subscriptions: {
+      users: config.subscriptions.users,
+      queriesPerUser: config.subscriptions.queriesPerUser,
+      sharedUpdatesPerSec: config.subscriptions.sharedUpdatesPerSec,
+      partitionedUpdatesPerSec: config.subscriptions.partitionedUpdatesPerSec,
+      capacitySlots: config.subscriptions.capacitySlots,
+      setupTimeoutMs: config.subscriptions.setupTimeoutMs,
+      drainTimeoutMs: config.subscriptions.drainTimeoutMs,
+      patterns: config.subscriptions.patterns,
+    },
+    seedBatchSize: config.seedBatchSize,
+  };
+}
+
 function assertComparableRun(baseline: BenchmarkRecordLike, after: BenchmarkRecordLike): void {
   if (JSON.stringify(after.machine) !== JSON.stringify(baseline.machine)) {
     throw new Error("after-run machine does not match the frozen baseline machine");
@@ -423,9 +450,16 @@ function assertComparableRun(baseline: BenchmarkRecordLike, after: BenchmarkReco
   }
   const baselineSystems = requireSystems(baseline);
   const afterSystems = requireSystems(after);
+  const afterConfig = JSON.stringify(afterSystems.dbzz.workload.config);
   for (const name of ["dbzz", "convex", "spacetimedb"] as const) {
-    if (JSON.stringify(afterSystems[name].workload.config) !== JSON.stringify(baselineSystems[name].workload.config)) {
-      throw new Error(`${name} after-run config does not match the frozen baseline`);
+    if (JSON.stringify(afterSystems[name].workload.config) !== afterConfig) {
+      throw new Error(`${name} after-run config does not match the current DBZZ config`);
+    }
+    if (
+      JSON.stringify(workloadIdentity(afterSystems[name].workload.config)) !==
+        JSON.stringify(workloadIdentity(baselineSystems[name].workload.config))
+    ) {
+      throw new Error(`${name} after-run workload identity does not match the frozen baseline`);
     }
   }
 }

@@ -165,7 +165,7 @@ async function waitFor(output: () => string, needle: string, timeoutMs: number):
 }
 
 function findPidByCommand(...fragments: string[]): number {
-  const output = Bun.spawnSync(["ps", "-eo", "pid,command"]).stdout.toString();
+  const output = Bun.spawnSync(["ps", "-ww", "-eo", "pid,command"]).stdout.toString();
   for (const line of output.split("\n")) {
     if (fragments.every((fragment) => line.includes(fragment))) return Number(line.trim().split(/\s+/)[0]);
   }
@@ -652,7 +652,7 @@ function git(args: string[]): string {
 }
 
 function fileDescriptorLimit(): number {
-  const result = Bun.spawnSync(["zsh", "-c", "ulimit -n"], { stdout: "pipe" });
+  const result = Bun.spawnSync(["sh", "-c", "ulimit -n"], { stdout: "pipe" });
   return Number(result.stdout.toString().trim());
 }
 
@@ -1028,7 +1028,12 @@ for (const name of requested) {
 }
 if (new Set(requested).size !== requested.length) throw new Error("each requested system may appear only once");
 const selected = requested.length > 0 ? requested : ALL_SYSTEMS;
-const runPolicy = benchmarkRunPolicy(selected, benchmarkConfigFromEnv().profile);
+const comparison = process.env.BENCH_COMPARISON ?? "frozen";
+if (comparison !== "frozen" && comparison !== "current") {
+  throw new Error(`BENCH_COMPARISON must be frozen or current`);
+}
+const runPolicy = benchmarkRunPolicy(selected, benchmarkConfigFromEnv().profile, comparison);
+const spacetimeVersion = selected.includes("spacetimedb") ? assertSpacetimeVersionAlignment() : undefined;
 const savedRuns = savedCurrentCount();
 const order = requested.length > 0 ? selected : balancedOrder(savedRuns);
 const executionOrder = benchmarkExecutionOrder(order, runPolicy.profiledDbzz, savedRuns);
@@ -1106,7 +1111,7 @@ if (runPolicy.acceptAndSave) {
   ) {
     throw new Error("default acceptance benchmark DBZZ profile measurements are missing");
   }
-  const cliVersion = assertSpacetimeVersionAlignment();
+  const cliVersion = spacetimeVersion!;
   const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
     schemaVersion: 5,
     timestamp: new Date().toISOString(),

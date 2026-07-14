@@ -126,6 +126,15 @@ describe("benchmark acceptance and persistence policy", () => {
     });
   });
 
+  test("runs the complete current-host comparison without historical acceptance", () => {
+    expect(benchmarkRunPolicy(allSystems, "default", "current")).toEqual({
+      profiledDbzz: true,
+      acceptAndSave: false,
+      diagnosticMessage:
+        "current-host default comparison complete: historical acceptance skipped; result not saved",
+    });
+  });
+
   test("keeps all-system quick and stress profiles paired but diagnostic", () => {
     for (const profile of ["quick", "stress"] as const) {
       expect(benchmarkRunPolicy(allSystems, profile)).toEqual({

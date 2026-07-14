@@ -43,12 +43,14 @@ export interface ProfileComparisonMetric {
 export type BenchmarkRunPolicy =
   | { readonly profiledDbzz: true; readonly acceptAndSave: true; readonly diagnosticMessage: null }
   | { readonly profiledDbzz: boolean; readonly acceptAndSave: false; readonly diagnosticMessage: string };
+export type BenchmarkComparison = "frozen" | "current";
 
 export const DBZZ_STARTUP_PREFIX = "@@dbzz-startup ";
 
 export function benchmarkRunPolicy(
   systems: readonly SystemName[],
   profile: BenchmarkConfig["profile"],
+  comparison: BenchmarkComparison = "frozen",
 ): BenchmarkRunPolicy {
   const allSystems = systems.length === 3 &&
     (["dbzz", "convex", "spacetimedb"] as const).every((system) => systems.includes(system));
@@ -58,6 +60,14 @@ export function benchmarkRunPolicy(
       acceptAndSave: false,
       diagnosticMessage:
         `partial ${profile} diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
+    };
+  }
+  if (comparison === "current") {
+    return {
+      profiledDbzz: true,
+      acceptAndSave: false,
+      diagnosticMessage:
+        `current-host ${profile} comparison complete: historical acceptance skipped; result not saved`,
     };
   }
   if (profile !== "default") {
