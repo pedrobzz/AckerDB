@@ -1512,6 +1512,135 @@ describe("configured capacity", () => {
     await expect(second.open()).rejects.toMatchObject({ code: "overloaded", resource: "connection" });
   });
 
+  test("sheds each Runtime operation limit in order and recovers all capacity", async () => {
+    await restart(limits({
+      maxConnections: 5,
+      maxOperations: 3,
+      maxOperationsPerCaller: 2,
+      maxOperationsPerConnection: 1,
+    }));
+    const hotPeer = new SessionHarness(runtime, "session-hot-peer");
+    const hotExcess = new SessionHarness(runtime, "session-hot-excess");
+    const cold = new SessionHarness(runtime, "session-cold");
+    const globalExcess = new SessionHarness(runtime, "session-global-excess");
+    await Promise.all([
+      session.open(user("hot")),
+      hotPeer.open(user("hot")),
+      hotExcess.open(user("hot")),
+      cold.open(user("cold")),
+      globalExcess.open(user("global-excess")),
+    ]);
+    const gate = deferred<void>();
+    queryGate = gate;
+    const blocked = (owner: SessionHarness, id: number) =>
+      runtime.query(owner.context, request({
+        v: PROTOCOL_VERSION,
+        t: "q",
+        id,
+        ref: "messages.block",
+        args: {},
+      }));
+    const held: Promise<unknown>[] = [];
+    const overload = {
+      code: "overloaded",
+      retryable: true,
+      retryAfterMs: 0,
+      resource: "operation",
+    } as const;
+    const scenarios = [
+      [session, session, "per-connection operation capacity is full"],
+      [hotPeer, hotExcess, "per-caller operation capacity is full"],
+      [cold, globalExcess, "operation capacity is full"],
+    ] as const;
+
+    try {
+      for (const [index, [admitted, rejected, message]] of scenarios.entries()) {
+        held.push(blocked(admitted, 60 + index * 2));
+        await eventually(() => runtime.status().activeOperations === index + 1);
+        await expect(blocked(rejected, 61 + index * 2)).rejects.toMatchObject({
+          ...overload,
+          message,
+        });
+      }
+      expect(runtime.status()).toMatchObject({
+        activeOperations: 3,
+        activeOperationCallers: 2,
+        reader: { active: 3, queue: { queuedItems: 0, queuedBytes: 0 } },
+      });
+    } finally {
+      gate.resolve(undefined);
+    }
+
+    await expect(Promise.all(held)).resolves.toEqual(["released", "released", "released"]);
+    expect(runtime.status()).toMatchObject({
+      activeOperations: 0,
+      activeOperationCallers: 0,
+      reader: { active: 0, queue: { queuedItems: 0, queuedBytes: 0 } },
+    });
+    await expect(blocked(globalExcess, 66)).resolves.toBe("released");
+  });
+
+  test("sheds per-connection and global subscription saturation then reuses released capacity", async () => {
+    await restart(limits({
+      maxConnections: 3,
+      maxSubscriptionsPerConnection: 1,
+      maxSubscriptions: 2,
+    }));
+    const second = new SessionHarness(runtime, "session-b");
+    const third = new SessionHarness(runtime, "session-c");
+    await Promise.all([session.open(), second.open(), third.open()]);
+    const subscribe = (owner: SessionHarness, id: number, channelId: bigint) =>
+      runtime.subscribe(owner.context, request({
+        v: PROTOCOL_VERSION,
+        t: "sub",
+        id,
+        ref: "messages.list",
+        args: { channelId },
+      }));
+    const unsubscribe = (owner: SessionHarness, id: number) =>
+      runtime.unsubscribe(owner.context, request({
+        v: PROTOCOL_VERSION,
+        t: "unsub",
+        id,
+      }));
+    const overload = {
+      code: "overloaded",
+      retryable: true,
+      retryAfterMs: 0,
+      resource: "subscription",
+    } as const;
+    for (const [admitted, admittedId, admittedChannel, rejected, rejectedId, rejectedChannel, message] of [
+      [session, 1, 1n, session, 2, 2n, "Per-connection subscription capacity is full"],
+      [second, 1, 2n, third, 1, 3n, "Global subscription capacity is full"],
+    ] as const) {
+      await subscribe(admitted, admittedId, admittedChannel);
+      await expect(subscribe(rejected, rejectedId, rejectedChannel)).rejects.toMatchObject({
+        ...overload,
+        message,
+      });
+    }
+    const saturated = runtime.status();
+    expect(saturated.reactive).toMatchObject({
+      queryListeners: 2,
+      evaluatingEntries: 0,
+      revalidation: { active: 0, queue: { queuedItems: 0, queuedBytes: 0 } },
+    });
+    expect(saturated.reactive.queryListeners).toBe(runtime.limits.maxSubscriptions);
+    expect(saturated.reactive.resultBytes).toBeLessThanOrEqual(runtime.limits.maxSharedResultBytes);
+
+    await unsubscribe(session, 1);
+    await expect(subscribe(third, 1, 3n)).resolves.toBeUndefined();
+    expect(third.publications.findLast(
+      (frame) => frame.t === "transition" && frame.id === 1,
+    )).toMatchObject({
+      transition: { kind: "reset", value: [] },
+    });
+    expect(runtime.status().reactive).toMatchObject({ queryListeners: 2 });
+
+    await Promise.all([unsubscribe(second, 1), unsubscribe(third, 1)]);
+    expect(runtime.status().reactive).toMatchObject({ queryListeners: 0 });
+  });
+
   test("rejects an oversized mutation response before its write commits", async () => {
     await session.open();
     await expect(session.mutation(1, "messages.largeResult", {
