@@ -118,6 +118,8 @@ type Ctx = any;
 let longSseStarted: Deferred<void> | null = null;
 let blockedProcedureStarted: Deferred<void> | null = null;
 let blockedProcedureRelease: Deferred<void> | null = null;
+let blockedMutationStarted: Deferred<void> | null = null;
+let blockedMutationRelease: Deferred<void> | null = null;
 let blockedCredentialStarted: Deferred<void> | null = null;
 let blockedCredentialRelease: Deferred<void> | null = null;
 
@@ -196,6 +198,15 @@ const functions = {
       handler: async () => {
         blockedProcedureStarted?.resolve();
         await blockedProcedureRelease?.promise;
+        return "released";
+      },
+    }),
+    hold: mutation({
+      access: "public",
+      args: {},
+      handler: async () => {
+        blockedMutationStarted?.resolve();
+        await blockedMutationRelease?.promise;
         return "released";
       },
     }),
@@ -310,6 +321,18 @@ async function connectWebSocket(
   return client;
 }
 
+function sendHeldMutation(client: WsClient, id: number): void {
+  client.send({
+    v: PROTOCOL_VERSION,
+    t: "m",
+    id,
+    ref: "notes.hold",
+    args: {},
+    mutationRequestId: uuidV7(id),
+    issuedAt: Date.now(),
+  });
+}
+
 let dir: string;
 let engine: Engine;
 let runtime: Runtime;
@@ -322,6 +345,8 @@ beforeEach(() => {
   longSseStarted = null;
   blockedProcedureStarted = null;
   blockedProcedureRelease = null;
+  blockedMutationStarted = null;
+  blockedMutationRelease = null;
   blockedCredentialStarted = null;
   blockedCredentialRelease = null;
   dir = mkdtempSync(join(tmpdir(), "dbzz-serve-"));
@@ -1158,6 +1183,131 @@ describe("WebSocket Session transport", () => {
     first.socket.close();
     await within(first.closed());
     await eventually(() => server.status().connections === 0);
+  });
+
+  test("shares caller capacity across WebSocket connections, HTTP, and anonymous source", async () => {
+    const fairDirectory = mkdtempSync(join(tmpdir(), "dbzz-ws-fairness-"));
+    const fairEngine = new Engine(schema, join(fairDirectory, "data.db"));
+    reconcile(fairEngine);
+    const fairLimits = defineServiceLimits({
+      ...limits,
+      maxConnections: 4,
+      maxOperations: 3,
+      maxOperationsPerCaller: 2,
+      maxOperationsPerConnection: 2,
+      gracefulShutdownMs: 1_000,
+    });
+    const fairRuntime = new Runtime({
+      engine: fairEngine,
+      registry: new Registry(functions),
+      limits: fairLimits,
+      telemetry: false,
+    });
+    const fairServer = serve({ runtime: fairRuntime, verifier: new TestVerifier(), port: 0 });
+    const fairBase = `http://127.0.0.1:${fairServer.port}`;
+    const wsUrl = `ws://127.0.0.1:${fairServer.port}/ws`;
+    const clients: WsClient[] = [];
+    const body = (id: number, ref = "notes.echo", args: unknown = { value: "ok" }) =>
+      encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args });
+
+    try {
+      const first = await connectWebSocket(wsUrl, { kind: "bearer", token: "user-token" });
+      const second = await connectWebSocket(wsUrl, { kind: "bearer", token: "user-rotated-token" });
+      const excess = await connectWebSocket(wsUrl, { kind: "bearer", token: "user-token" });
+      const cold = await connectWebSocket(wsUrl, { kind: "bearer", token: "user-two-token" });
+      clients.push(first, second, excess, cold);
+      blockedMutationStarted = deferred<void>();
+      blockedMutationRelease = deferred<void>();
+      sendHeldMutation(first, 101);
+      await blockedMutationStarted.promise;
+      sendHeldMutation(second, 102);
+      await eventually(() => fairRuntime.status().activeOperations === 2);
+      expect(fairRuntime.status()).toMatchObject({
+        activeOperations: 2,
+        activeOperationCallers: 1,
+      });
+
+      excess.send({ v: PROTOCOL_VERSION, t: "q", id: 103, ref: "notes.list", args: { rank: 1n } });
+      expect(await within(excess.next())).toMatchObject({
+        t: "err",
+        id: 103,
+        outcome: { code: "overloaded", retryable: true, resource: "operation" },
+      });
+
+      const samePrincipalHttp = await fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        headers: { authorization: "Bearer user-rotated-token" },
+        body: body(104),
+      });
+      expect(samePrincipalHttp.status).toBe(429);
+      expect(parseCallResponse(decode(await samePrincipalHttp.text()))).toMatchObject({
+        outcome: { code: "overloaded", retryable: true, resource: "operation" },
+      });
+
+      cold.send({ v: PROTOCOL_VERSION, t: "q", id: 105, ref: "notes.list", args: { rank: 1n } });
+      expect(await within(cold.next())).toMatchObject({ t: "ok", id: 105, kind: "query", value: [] });
+      expect(fairRuntime.status()).toMatchObject({
+        activeOperations: 2,
+        activeOperationCallers: 1,
+      });
+
+      blockedMutationRelease.resolve(undefined);
+      expect(await within(first.next())).toMatchObject({ t: "ok", id: 101, kind: "mutation" });
+      expect(await within(second.next())).toMatchObject({ t: "ok", id: 102, kind: "mutation" });
+      await eventually(() =>
+        fairRuntime.status().activeOperations === 0 &&
+        fairRuntime.status().activeOperationCallers === 0
+      );
+
+      for (const client of clients.splice(0)) client.socket.close();
+      await eventually(() =>
+        fairServer.status().connections === 0 && fairRuntime.status().connections === 0
+      );
+
+      const anonymousFirst = await connectWebSocket(wsUrl);
+      const anonymousSecond = await connectWebSocket(wsUrl);
+      clients.push(anonymousFirst, anonymousSecond);
+      blockedMutationStarted = deferred<void>();
+      blockedMutationRelease = deferred<void>();
+      sendHeldMutation(anonymousFirst, 201);
+      await blockedMutationStarted.promise;
+      sendHeldMutation(anonymousSecond, 202);
+      await eventually(() => fairRuntime.status().activeOperations === 2);
+      expect(fairRuntime.status().activeOperationCallers).toBe(1);
+
+      const spoofedAnonymous = await fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        headers: { "x-forwarded-for": "203.0.113.99" },
+        body: body(203),
+      });
+      expect(spoofedAnonymous.status).toBe(429);
+      expect(parseCallResponse(decode(await spoofedAnonymous.text()))).toMatchObject({
+        outcome: { code: "overloaded", retryable: true, resource: "operation" },
+      });
+
+      const verifiedCold = await fetch(`${fairBase}/api/call`, {
+        method: "POST",
+        headers: { authorization: "Bearer user-two-token" },
+        body: body(204, "notes.echo", { value: "cold" }),
+      });
+      expect(verifiedCold.status).toBe(200);
+      expect(parseCallResponse(decode(await verifiedCold.text()))).toMatchObject({ value: "cold" });
+
+      blockedMutationRelease.resolve(undefined);
+      expect(await within(anonymousFirst.next())).toMatchObject({ t: "ok", id: 201, kind: "mutation" });
+      expect(await within(anonymousSecond.next())).toMatchObject({ t: "ok", id: 202, kind: "mutation" });
+      await eventually(() =>
+        fairRuntime.status().activeOperations === 0 &&
+        fairRuntime.status().activeOperationCallers === 0
+      );
+    } finally {
+      blockedMutationRelease?.resolve(undefined);
+      for (const client of clients) client.socket.close();
+      await fairServer.drain().catch(() => {});
+      await fairRuntime.drain().catch(() => {});
+      fairEngine.close("clean");
+      rmSync(fairDirectory, { recursive: true, force: true });
+    }
   });
 
   test("makes overlapping ownership retryable until the old session closes", async () => {

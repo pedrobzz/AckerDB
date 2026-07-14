@@ -31,6 +31,7 @@ export interface QueryEvaluationInput<C> {
   readonly address: string;
   readonly args: unknown;
   readonly policyScopeFingerprint: string;
+  readonly fairnessKey: string;
   readonly context: C;
 }
 
@@ -157,6 +158,7 @@ interface QueryListener<C> {
   readonly subscriber: Subscriber;
   readonly id: number;
   readonly entry: QueryEntry<C>;
+  readonly fairnessKey: string;
   authEpoch: number;
   cursor?: SubscriptionCursor;
   tail: Promise<void>;
@@ -184,6 +186,8 @@ interface QueryEntry<C> {
   readonly encodedArgs: string;
   readonly policyScopeFingerprint: string;
   readonly revalidationBytes: number;
+  /** Oldest active listener owns shared work; an admitted evaluation snapshots this key. */
+  ownerFairnessKey: string;
   context: C;
   generation: string;
   readSet: Set<string>;
@@ -280,6 +284,7 @@ export class OrderedReactive<C = unknown> {
     this.assertSubscriptionAdmission(options.subscriber, options.id);
     let entry = this.entryFor(options);
     entry.context = options.context;
+    if (entry.listeners.size === 0) entry.ownerFairnessKey = options.fairnessKey;
 
     try {
       for (;;) {
@@ -293,6 +298,7 @@ export class OrderedReactive<C = unknown> {
             subscriber: options.subscriber,
             id: options.id,
             entry,
+            fairnessKey: options.fairnessKey,
             authEpoch: options.authEpoch,
             cursor: options.cursor,
             tail: Promise.resolve(),
@@ -554,6 +560,7 @@ export class OrderedReactive<C = unknown> {
       encodedArgs,
       policyScopeFingerprint: input.policyScopeFingerprint,
       revalidationBytes: byteLength(key),
+      ownerFairnessKey: input.fairnessKey,
       context: input.context,
       generation: this.generation(),
       readSet: new Set(),
@@ -579,6 +586,8 @@ export class OrderedReactive<C = unknown> {
     if (entry.initialized && entry.commitVersion >= targetVersion) return Promise.resolve([]);
     if (entry.evaluation) return entry.evaluation;
     const wasInitialized = entry.initialized;
+    const fairnessKey = entry.ownerFairnessKey;
+    const context = entry.context;
     const queuedAt = this.observer ? this.observationNow() : undefined;
     let started = false;
     const execution = this.revalidation.submit(
@@ -595,12 +604,12 @@ export class OrderedReactive<C = unknown> {
             byteCount: entry.revalidationBytes,
           });
         }
-        return this.evaluateOnce(entry);
+        return this.evaluateOnce(entry, fairnessKey, context);
       },
       {
         operation: "subscription",
         bytes: entry.revalidationBytes,
-        fairnessKey: entry.policyScopeFingerprint || entry.identity,
+        fairnessKey,
       },
     ).catch(async (error): Promise<DeliveryFailure[]> => {
       if (!started && this.observer) {
@@ -654,7 +663,11 @@ export class OrderedReactive<C = unknown> {
     return owned;
   }
 
-  private async evaluateOnce(entry: QueryEntry<C>): Promise<DeliveryFailure[]> {
+  private async evaluateOnce(
+    entry: QueryEntry<C>,
+    fairnessKey: string,
+    context: C,
+  ): Promise<DeliveryFailure[]> {
     const failures: DeliveryFailure[] = [];
     if (!entry.removed && (!entry.initialized || entry.commitVersion < entry.dirtyVersion)) {
       const evaluationGeneration = ++entry.evaluationGeneration;
@@ -666,7 +679,8 @@ export class OrderedReactive<C = unknown> {
           address: entry.address,
           args: decode(entry.encodedArgs),
           policyScopeFingerprint: entry.policyScopeFingerprint,
-          context: entry.context,
+          fairnessKey,
+          context,
         });
         this.validateEvaluation(evaluated);
         const highWater = this.publication.snapshot().highWater;
@@ -1180,6 +1194,9 @@ export class OrderedReactive<C = unknown> {
     if (!mine) this.bySubscriber.set(binding.subscriber, (mine = new Map()));
     mine.set(binding.id, binding);
     if (binding.kind === "query") {
+      if (binding.entry.listeners.size === 0) {
+        binding.entry.ownerFairnessKey = binding.fairnessKey;
+      }
       binding.entry.listeners.add(binding);
       binding.entry.dormantAtMs = undefined;
       this.queryListeners++;
@@ -1197,6 +1214,8 @@ export class OrderedReactive<C = unknown> {
     if (binding.kind === "query") {
       binding.entry.listeners.delete(binding);
       this.queryListeners--;
+      const oldest = binding.entry.listeners.values().next().value;
+      if (oldest !== undefined) binding.entry.ownerFairnessKey = oldest.fairnessKey;
       if (binding.entry.listeners.size === 0 && !binding.entry.removed) {
         binding.entry.dormantAtMs = this.readNow();
       }

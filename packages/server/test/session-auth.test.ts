@@ -20,6 +20,7 @@ import {
   type UserPrincipal,
   type VerifiedPrincipal,
 } from "../src/auth.ts";
+import { callerFairnessKey } from "../src/caller.ts";
 import { DbzzError } from "../src/errors.ts";
 import { outcomeFromError } from "../src/outcome.ts";
 import {
@@ -38,6 +39,7 @@ import {
 } from "../src/session.ts";
 
 const utf8 = new TextEncoder();
+const TEST_SOURCE = Object.freeze({ family: "test", address: "session-auth" });
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -354,7 +356,7 @@ describe("Session Protocol-2 ownership", () => {
   test("requires hello first and forwards a structured terminal outcome", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
-    const session = new Session({ runtime, sink });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE });
 
     await session.handle(query(1));
     // Termination starts from inside this admitted ingress handler. Awaiting
@@ -381,7 +383,7 @@ describe("Session Protocol-2 ownership", () => {
   test("owns anonymous hello and dispatches every non-auth frame with one epoch context", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
-    const session = new Session({ runtime, sink });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE });
 
     await session.handle(hello());
     await session.handle({ v: 2, t: "sub", id: 1, ref: "messages.list", args: {} });
@@ -417,7 +419,7 @@ describe("Session Protocol-2 ownership", () => {
   test("awaits each runtime dispatch so subscription state cannot be overtaken", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
-    const session = new Session({ runtime, sink });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE });
     const subscriptionGate = deferred<void>();
     runtime.subscribeHook = async () => subscriptionGate.promise;
     await session.handle(hello());
@@ -449,6 +451,7 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({
       runtime,
       sink,
+      source: TEST_SOURCE,
       limits: sessionLimits({ maxItems: 2, maxBytes: queuedBytes + 1_000, maxAgeMs: 1_000 }),
     });
     await session.handle(hello());
@@ -501,6 +504,7 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({
       runtime,
       sink,
+      source: TEST_SOURCE,
       limits: sessionLimits({ maxItems: 3, maxBytes: queuedBytes, maxAgeMs: 1_000 }),
     });
     await session.handle(hello());
@@ -535,6 +539,7 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({
       runtime,
       sink,
+      source: TEST_SOURCE,
       clock,
       limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 10 }),
     });
@@ -578,6 +583,7 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({
       runtime,
       sink,
+      source: TEST_SOURCE,
       limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 }, maxFrameBytes),
     });
     await session.handle(hello());
@@ -610,6 +616,7 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({
       runtime,
       sink,
+      source: TEST_SOURCE,
       limits: sessionLimits(
         { maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 },
         maxFrameBytes,
@@ -652,6 +659,7 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({
       runtime,
       sink,
+      source: TEST_SOURCE,
       limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 }),
     });
     await session.handle(hello());
@@ -694,7 +702,7 @@ describe("Session Protocol-2 ownership", () => {
     const second = deferred<VerifiedPrincipal>();
     verifier.results.set("first", first.promise);
     verifier.results.set("second", second.promise);
-    const session = new Session({ runtime, sink, verifier, clock: new ManualClock() });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
     await session.handle(hello());
     order.length = 0;
 
@@ -730,6 +738,66 @@ describe("Session Protocol-2 ownership", () => {
     expect(runtime.transitionReleaseCount).toBe(1);
   });
 
+  test("switches immutable epoch fairness ownership on refresh and sign-out", async () => {
+    const runtime = new FakeRuntime();
+    const sink = new FakeSink();
+    const verifier = new FakeVerifier();
+    const alice = principal("alice");
+    const refreshedAlice = Object.freeze({
+      ...principal("alice", 90_000),
+      claims: Object.freeze({ roles: ["admin"], private: "claim-canary" }),
+      tokenId: "refreshed-token-canary",
+    });
+    const bob = principal("bob");
+    verifier.results.set("alice", alice);
+    verifier.results.set("alice-refreshed", refreshedAlice);
+    verifier.results.set("bob", bob);
+    const session = new Session({
+      runtime,
+      sink,
+      source: TEST_SOURCE,
+      verifier,
+      clock: new ManualClock(),
+    });
+
+    await session.handle(hello({ kind: "bearer", token: "alice" }));
+    const opened = runtime.opens[0]!;
+    await session.handle(auth(1, { kind: "bearer", token: "alice-refreshed" }));
+    await settle();
+    const sameOwner = runtime.transitions[0]!;
+
+    expect(Object.isFrozen(opened)).toBe(true);
+    expect(Object.isFrozen(sameOwner.to)).toBe(true);
+    expect(sameOwner.from).toMatchObject({ authEpoch: 0, fairnessKey: opened.fairnessKey });
+    expect(sameOwner.from.signal).toBe(opened.signal);
+    expect(sameOwner.to.authEpoch).toBe(1);
+    expect(sameOwner.to.fairnessKey).toBe(opened.fairnessKey);
+    expect(sameOwner.to.fairnessKey).toBe(callerFairnessKey(refreshedAlice, TEST_SOURCE));
+
+    await session.handle(auth(2, { kind: "bearer", token: "bob" }));
+    await settle();
+    const changedOwner = runtime.transitions[1]!;
+    expect(changedOwner.from).toMatchObject({
+      authEpoch: sameOwner.to.authEpoch,
+      fairnessKey: sameOwner.to.fairnessKey,
+    });
+    expect(changedOwner.from.signal).toBe(sameOwner.to.signal);
+    expect(changedOwner.to.fairnessKey).not.toBe(sameOwner.to.fairnessKey);
+    expect(changedOwner.to.fairnessKey).toBe(callerFairnessKey(bob, TEST_SOURCE));
+
+    await session.handle(auth(3, { kind: "anonymous" }));
+    await settle();
+    const signedOut = runtime.transitions[2]!;
+    expect(signedOut.from).toMatchObject({
+      authEpoch: changedOwner.to.authEpoch,
+      fairnessKey: changedOwner.to.fairnessKey,
+    });
+    expect(signedOut.from.signal).toBe(changedOwner.to.signal);
+    expect(signedOut.to.authEpoch).toBe(3);
+    expect(signedOut.to.fairnessKey).toBe(callerFairnessKey(ANONYMOUS_PRINCIPAL, TEST_SOURCE));
+    expect(opened.fairnessKey).toBe(callerFairnessKey(alice, TEST_SOURCE));
+  });
+
   test("releases captured auth publications immediately when close races blocked delivery", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
@@ -737,7 +805,7 @@ describe("Session Protocol-2 ownership", () => {
     const delivery = deferred<void>();
     verifier.results.set("next", principal("next"));
     sink.applicationHook = async () => delivery.promise;
-    const session = new Session({ runtime, sink, verifier, clock: new ManualClock() });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
     await session.handle(hello());
 
     await session.handle(auth(1, { kind: "bearer", token: "next" }));
@@ -765,7 +833,7 @@ describe("Session Protocol-2 ownership", () => {
     sink.applicationHook = async () => {
       throw new Error("transport failed");
     };
-    const session = new Session({ runtime, sink, verifier, clock: new ManualClock() });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
     await session.handle(hello());
 
     await session.handle(auth(1, { kind: "bearer", token: "next" }));
@@ -782,7 +850,7 @@ describe("Session Protocol-2 ownership", () => {
     const sink = new FakeSink();
     const verifier = new FakeVerifier();
     verifier.results.set("user", principal("user"));
-    const session = new Session({ runtime, sink, verifier, clock: new ManualClock() });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
     await session.handle(hello({ kind: "bearer", token: "user" }));
 
     const authHandle = session.handle(auth(1, { kind: "anonymous" }));
@@ -817,7 +885,7 @@ describe("Session Protocol-2 ownership", () => {
     verifier.results.set("valid", principal("user"));
     const failure = deferred<VerifiedPrincipal>();
     verifier.results.set("invalid", failure.promise);
-    const session = new Session({ runtime, sink, verifier, clock: new ManualClock() });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
     await session.handle(hello({ kind: "bearer", token: "valid" }));
 
     await session.handle(auth(1, { kind: "bearer", token: "invalid" }));
@@ -840,7 +908,7 @@ describe("Session Protocol-2 ownership", () => {
     const sink = new FakeSink();
     const verifier = new FakeVerifier();
     verifier.results.set("short", principal("short", 1_100));
-    const session = new Session({ runtime, sink, verifier, clock });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock });
     await session.handle(hello({ kind: "bearer", token: "short" }));
 
     await clock.advance(99);
@@ -857,6 +925,7 @@ describe("Session Protocol-2 ownership", () => {
       const session = new Session({
         runtime: new FakeRuntime(),
         sink: new FakeSink(),
+        source: TEST_SOURCE,
         verifier: new FakeVerifier({ kind: "invalidation", deadlineMs: advertisedDeadlineMs }),
         revocationDeadlineMs: 5_000,
       });
@@ -867,6 +936,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(() => new Session({
       runtime: new FakeRuntime(),
       sink: new FakeSink(),
+      source: TEST_SOURCE,
       verifier: new FakeVerifier({ kind: "token-expiration" }),
       revocationDeadlineMs: 1,
     })).not.toThrow();
@@ -879,6 +949,7 @@ describe("Session Protocol-2 ownership", () => {
       expect(() => new Session({
         runtime: new FakeRuntime(),
         sink: new FakeSink(),
+        source: TEST_SOURCE,
         verifier: new FakeVerifier(revocationBound),
       })).toThrow("verifier invalidation deadlineMs must be a positive finite number");
     }
@@ -888,6 +959,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(() => new Session({
       runtime: new FakeRuntime(),
       sink: new FakeSink(),
+      source: TEST_SOURCE,
       verifier: missingBound,
     })).toThrow("verifier must declare a revocationBound");
   });
@@ -896,6 +968,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(() => new Session({
       runtime: new FakeRuntime(),
       sink: new FakeSink(),
+      source: TEST_SOURCE,
       verifier: new FakeVerifier({ kind: "invalidation", deadlineMs: 5_000 }),
       revocationDeadlineMs: 4_999,
     })).toThrow("verifier invalidation deadlineMs cannot exceed revocationDeadlineMs");
@@ -910,6 +983,7 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({
       runtime,
       sink,
+      source: TEST_SOURCE,
       verifier,
       clock,
       revocationDeadlineMs: 5_000,
@@ -934,7 +1008,7 @@ describe("Session Protocol-2 ownership", () => {
       throw new DbzzError("unauthorized", "access denied");
     };
     const sink = new FakeSink();
-    const session = new Session({ runtime, sink });
+    const session = new Session({ runtime, sink, source: TEST_SOURCE });
     await session.handle(hello());
     await session.handle(query(7));
     await settle();

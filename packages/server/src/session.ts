@@ -33,6 +33,11 @@ import {
   MAX_REVOCATION_DEADLINE_MS,
   validateCredentialVerifierRevocation,
 } from "./auth-lease.ts";
+import {
+  callerFairnessKey,
+  transportSource,
+  type TransportSource,
+} from "./caller.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "./limits.ts";
@@ -105,6 +110,8 @@ interface PendingAuthObservation {
 export interface SessionRuntimeContext {
   readonly clientSessionId: string;
   readonly principal: Principal;
+  /** Fixed-width caller ownership shared with HTTP and immutable for this auth epoch. */
+  readonly fairnessKey: string;
   readonly authEpoch: number;
   /** Aborted as soon as an auth refresh, expiry, invalidation, or close starts. */
   readonly signal: AbortSignal;
@@ -157,6 +164,8 @@ export type SessionLimits = Pick<
 export interface SessionOptions {
   readonly runtime: RuntimePort;
   readonly sink: SessionSink;
+  /** Actual peer address captured by the transport; forwarded headers are not trusted. */
+  readonly source: TransportSource;
   readonly verifier?: CredentialVerifier;
   readonly clock?: SessionClock;
   readonly revocationDeadlineMs?: number;
@@ -232,6 +241,7 @@ export class Session {
   private readonly verifier: CredentialVerifier | undefined;
   private readonly observeAuth: SessionAuthObserver | undefined;
   private readonly clock: SessionClock;
+  private readonly source: TransportSource;
   private readonly ingress: BoundedExecutor;
   private phase: SessionPhase = "awaiting_hello";
   private clientSessionId: string | null = null;
@@ -258,6 +268,7 @@ export class Session {
     this.verifier = options.verifier;
     this.observeAuth = (options as SessionOptions & InternalSessionOptions)[SESSION_AUTH_OBSERVER];
     this.clock = options.clock ?? SYSTEM_CLOCK;
+    this.source = transportSource(options.source);
     const limits = options.limits ?? PRODUCTION_LIMITS;
     this.maxRequestBytes = positiveInteger(limits.maxRequestBytes, "maxRequestBytes");
     this.maxFrameBytes = positiveInteger(limits.maxFrameBytes, "maxFrameBytes");
@@ -643,6 +654,7 @@ export class Session {
     return Object.freeze({
       clientSessionId,
       principal,
+      fairnessKey: callerFairnessKey(principal, this.source),
       authEpoch,
       signal: controller.signal,
       publish: (message: RuntimePublication) => this.publish(authEpoch, message),

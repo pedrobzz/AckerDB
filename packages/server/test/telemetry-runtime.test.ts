@@ -32,6 +32,7 @@ import {
   type TelemetryRecord,
   type TelemetrySpanRecord,
 } from "@dbzz/server";
+import { callerFairnessKey } from "../src/caller.ts";
 
 const PRIMARY_SESSION = "telemetry-acceptance-primary-session";
 const FAILING_SESSION = "telemetry-acceptance-failing-session";
@@ -45,6 +46,7 @@ const QUERY_SUBSCRIPTION_ID = 810_000_001;
 const MATCHING_EVENT_SUBSCRIPTION_ID = 810_000_002;
 const NONMATCHING_EVENT_SUBSCRIPTION_ID = 810_000_003;
 const FAILING_SUBSCRIPTION_ID = 810_000_004;
+const TEST_SOURCE = Object.freeze({ family: "test", address: "telemetry-runtime" });
 
 const schema = defineSchema({
   items: defineTable({
@@ -211,6 +213,7 @@ class RuntimeHarness {
     const context: SessionRuntimeContext = Object.freeze({
       clientSessionId,
       principal: ANONYMOUS_PRINCIPAL,
+      fairnessKey: callerFairnessKey(ANONYMOUS_PRINCIPAL, TEST_SOURCE),
       authEpoch: 0,
       signal: controller.signal,
       publish: async (frame: RuntimePublication) => {

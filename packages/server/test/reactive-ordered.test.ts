@@ -156,7 +156,12 @@ describe("ordered reactive ownership", () => {
     const first = new RecordingSubscriber();
     const peer = new RecordingSubscriber();
     const isolated = new RecordingSubscriber();
-    const common = { address: "messages.list", args: { room: 7 }, policyScopeFingerprint: "room:7" };
+    const common = {
+      address: "messages.list",
+      args: { room: 7 },
+      policyScopeFingerprint: "room:7",
+      fairnessKey: "caller",
+    };
 
     await reactive.subscribeQuery({ ...common, context: { request: "first" }, subscriber: first, id: 1, authEpoch: 4 });
     await reactive.subscribeQuery({
@@ -184,6 +189,52 @@ describe("ordered reactive ownership", () => {
     expect(reactive.snapshot()).toMatchObject({ sharedEntries: 2, queryListeners: 3 });
   });
 
+  test("keeps shared revalidation with the oldest active caller until ownership leaves", async () => {
+    let version = 0n;
+    const revalidationOwners: string[] = [];
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async ({ fairnessKey }) => {
+        if (version > 0n) revalidationOwners.push(fairnessKey);
+        return evaluation(`value-${version}`, version, "messages");
+      },
+    });
+    const first = new RecordingSubscriber();
+    const peer = new RecordingSubscriber();
+    const common = {
+      address: "messages.list",
+      args: null,
+      policyScopeFingerprint: "same-claim-sensitive-scope",
+      context: undefined,
+      authEpoch: 0,
+    };
+
+    await reactive.subscribeQuery({
+      ...common,
+      fairnessKey: "caller-first",
+      subscriber: first,
+      id: 1,
+    });
+    await reactive.subscribeQuery({
+      ...common,
+      fairnessKey: "caller-peer",
+      subscriber: peer,
+      id: 2,
+    });
+    expect(reactive.snapshot()).toMatchObject({ sharedEntries: 1, queryListeners: 2 });
+
+    await publish(reactive, new Set(["messages"]), (commitVersion) => {
+      version = commitVersion;
+    });
+    expect(revalidationOwners).toEqual(["caller-first"]);
+
+    reactive.disconnect(first);
+    await publish(reactive, new Set(["messages"]), (commitVersion) => {
+      version = commitVersion;
+    });
+    expect(revalidationOwners).toEqual(["caller-first", "caller-peer"]);
+  });
+
   test("retries an optimistic setup evaluation raced by commit publication", async () => {
     let version = 0n;
     let calls = 0;
@@ -202,6 +253,7 @@ describe("ordered reactive ownership", () => {
       address: "messages.list",
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber,
       id: 1,
@@ -237,6 +289,7 @@ describe("ordered reactive ownership", () => {
       address: "messages.list",
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber,
       id: 1,
@@ -308,6 +361,7 @@ describe("ordered reactive ownership", () => {
         address,
         args: { tag: "é" },
         policyScopeFingerprint: "tenant-é",
+        fairnessKey: "tenant-é",
         context: undefined,
         subscriber,
         id,
@@ -408,6 +462,7 @@ describe("ordered reactive ownership", () => {
         address,
         args,
         policyScopeFingerprint: scope,
+        fairnessKey: scope,
         context: undefined,
         subscriber,
         id,
@@ -442,7 +497,7 @@ describe("ordered reactive ownership", () => {
     }]);
   });
 
-  test("makes round-robin progress across policy groups", async () => {
+  test("makes round-robin progress across callers independently of policy fingerprints", async () => {
     let version = 0n;
     let revalidating = false;
     const entered = deferred();
@@ -463,16 +518,17 @@ describe("ordered reactive ownership", () => {
       },
     });
     const subscriber = new RecordingSubscriber();
-    for (const [id, address, scope] of [
-      [1, "block", "group-a"],
-      [2, "a2", "group-a"],
-      [3, "a3", "group-a"],
-      [4, "b", "group-b"],
+    for (const [id, address, scope, fairnessKey] of [
+      [1, "block", "claims-a-1", "caller-a"],
+      [2, "a2", "claims-a-2", "caller-a"],
+      [3, "a3", "claims-a-3", "caller-a"],
+      [4, "b", "claims-b", "caller-b"],
     ] as const) {
       await reactive.subscribeQuery({
         address,
         args: null,
         policyScopeFingerprint: scope,
+        fairnessKey,
         context: undefined,
         subscriber,
         id,
@@ -531,6 +587,7 @@ describe("ordered reactive ownership", () => {
         address,
         args: null,
         policyScopeFingerprint: scope,
+        fairnessKey: scope,
         context: undefined,
         subscriber,
         id,
@@ -582,6 +639,7 @@ describe("ordered reactive ownership", () => {
       address: "a",
       args: null,
       policyScopeFingerprint: "group-a",
+      fairnessKey: "group-a",
       context: undefined,
       subscriber: firstCaller,
       id: 1,
@@ -591,6 +649,7 @@ describe("ordered reactive ownership", () => {
       address: "b",
       args: null,
       policyScopeFingerprint: "group-b",
+      fairnessKey: "group-b",
       context: undefined,
       subscriber: secondCaller,
       id: 2,
@@ -665,6 +724,7 @@ describe("ordered reactive ownership", () => {
       address: "messages.list",
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber,
       authEpoch: 0,
@@ -708,6 +768,7 @@ describe("ordered reactive ownership", () => {
       address: "messages.list",
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber,
       id: 1,
@@ -739,6 +800,7 @@ describe("ordered reactive ownership", () => {
       address,
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber,
       id,
@@ -784,6 +846,7 @@ describe("ordered reactive ownership", () => {
         address,
         args: null,
         policyScopeFingerprint: "public",
+        fairnessKey: "public",
         context: undefined,
         subscriber,
         id,
@@ -828,6 +891,7 @@ describe("ordered reactive ownership", () => {
         address,
         args: null,
         policyScopeFingerprint: "public",
+        fairnessKey: "public",
         context: undefined,
         subscriber,
         id,
@@ -874,6 +938,7 @@ describe("ordered reactive ownership", () => {
       address: "messages.list",
       args: null,
       policyScopeFingerprint: "room:7",
+      fairnessKey: "room:7",
       context: undefined,
       subscriber,
       id: 7,
@@ -1012,6 +1077,7 @@ describe("ordered reactive ownership", () => {
       address: "messages.list",
       args: null,
       policyScopeFingerprint: "user:1",
+      fairnessKey: "user:1",
       subscriber,
     };
     await reactive.subscribeQuery({ ...base, context: "old-context", id: 1, authEpoch: 1 });
@@ -1037,6 +1103,7 @@ describe("ordered reactive ownership", () => {
     await reactive.subscribeQuery({
       ...base,
       policyScopeFingerprint: "user:1:refreshed",
+      fairnessKey: "user:1:refreshed",
       context: "fresh-context",
       id: 3,
       authEpoch: 2,
@@ -1060,6 +1127,7 @@ describe("ordered reactive ownership", () => {
       address: "too-large",
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber: new RecordingSubscriber(),
       id: 1,
@@ -1079,6 +1147,7 @@ describe("ordered reactive ownership", () => {
       address: "first",
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber,
       id: 1,
@@ -1089,6 +1158,7 @@ describe("ordered reactive ownership", () => {
       address: "second",
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber,
       id: 2,
@@ -1113,6 +1183,7 @@ describe("ordered reactive ownership", () => {
       address: "too-large-for-frame",
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber,
       id: 1,
@@ -1150,6 +1221,7 @@ describe("ordered reactive ownership", () => {
       address: "messages.list",
       args: null,
       policyScopeFingerprint: "public",
+      fairnessKey: "public",
       context: undefined,
       subscriber,
       id: 1,
@@ -1224,6 +1296,7 @@ describe("ordered reactive ownership", () => {
         address,
         args: { secret },
         policyScopeFingerprint: `scope:${secret}`,
+        fairnessKey: `scope:${secret}`,
         context: undefined,
         subscriber,
         id,

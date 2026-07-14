@@ -34,6 +34,7 @@ import {
 } from "@dbzz/server";
 
 const encoder = new TextEncoder();
+const TEST_SOURCE = Object.freeze({ family: "test", address: "telemetry-delivery" });
 
 const schema = defineSchema({
   notes: defineTable({
@@ -227,7 +228,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
       session.snapshot().clientSessionId ?? undefined,
     ),
   });
-  session = new Session({ runtime, sink });
+  session = new Session({ runtime, sink, source: TEST_SOURCE });
 
   try {
     await session.handle({

@@ -27,6 +27,7 @@ import {
   SYSTEM_PRINCIPAL,
   type Principal,
 } from "./auth.ts";
+import { callerFairnessKey, transportSource } from "./caller.ts";
 import {
   CommitCoordinator,
   withFetchObserver,
@@ -117,6 +118,7 @@ import type {
 const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
 const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
+const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 
 export type RuntimeLifecycleState = "ready" | "draining" | "stopped" | "failed";
 
@@ -189,7 +191,6 @@ export interface RuntimeStatus {
 
 interface ReactiveContext {
   readonly principal: Principal;
-  readonly fairnessKey: string;
 }
 
 interface RuntimeSubscription {
@@ -279,12 +280,6 @@ function snapshotValue(value: unknown): unknown {
 
 function digest(value: unknown): string {
   return createHash("sha256").update(stableEncode(value)).digest("base64url");
-}
-
-function externalCallerKey(principal: Principal): string {
-  return principal.kind === "user" || principal.kind === "workload"
-    ? digest([principal.kind, principal.issuer, principal.subject])
-    : digest([principal.kind]);
 }
 
 function convergenceError(message: string): DbzzError {
@@ -592,7 +587,7 @@ export class Runtime implements RuntimePort {
         if (state.capture === captured) state.capture = null;
         this.releaseCapture(captured);
       }
-    });
+    }, {}, true, undefined, undefined, transition.from.fairnessKey);
   }
 
   async subscribe(context: SessionRuntimeContext, message: SubscribeMessage): Promise<void> {
@@ -631,7 +626,7 @@ export class Runtime implements RuntimePort {
         message.ref,
         message.args,
         context.principal,
-        context.clientSessionId,
+        context.fairnessKey,
         signal,
         requestBytes,
       );
@@ -662,7 +657,7 @@ export class Runtime implements RuntimePort {
       let scheduledTouched = false;
       const result = await this.coordinator.execute({
         operation: "mutation",
-        fairnessKey: context.clientSessionId,
+        fairnessKey: context.fairnessKey,
         requestBytes,
         signal,
         ...(this.telemetry.enabled
@@ -746,7 +741,10 @@ export class Runtime implements RuntimePort {
       request.address,
       String(request.id),
     );
-    const fairnessKey = request.fairnessKey ?? externalCallerKey(request.principal);
+    const fairnessKey = request.fairnessKey ?? callerFairnessKey(
+      request.principal,
+      DIRECT_RUNTIME_SOURCE,
+    );
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
@@ -935,7 +933,10 @@ export class Runtime implements RuntimePort {
       request.address,
       String(request.id),
     );
-    const fairnessKey = request.fairnessKey ?? externalCallerKey(request.principal);
+    const fairnessKey = request.fairnessKey ?? callerFairnessKey(
+      request.principal,
+      DIRECT_RUNTIME_SOURCE,
+    );
     const scope = this.telemetry.enabled
       ? this.operationTrace(
           null,
@@ -1379,6 +1380,7 @@ export class Runtime implements RuntimePort {
       state === undefined ||
       state.context.authEpoch !== context.authEpoch ||
       state.context.principal !== context.principal ||
+      state.context.fairnessKey !== context.fairnessKey ||
       state.context.signal !== context.signal
     ) {
       return null;
@@ -1413,6 +1415,8 @@ export class Runtime implements RuntimePort {
       options.identifiers ?? {},
       options.synthesizeHandler ?? true,
       (outcome) => this.publishOperationOutcome(context, state, message.id, operation, outcome, options),
+      undefined,
+      context.fairnessKey,
     );
   }
 
@@ -1634,9 +1638,9 @@ export class Runtime implements RuntimePort {
         address: definition.address,
         args: definition.args,
         policyScopeFingerprint: digest(state.context.principal),
+        fairnessKey: state.context.fairnessKey,
         context: {
           principal: state.context.principal,
-          fairnessKey: state.context.clientSessionId,
         },
         authEpoch: state.context.authEpoch,
         ...(!remember || definition.cursor === undefined ? {} : { cursor: definition.cursor }),
@@ -1829,7 +1833,7 @@ export class Runtime implements RuntimePort {
       input.address,
       input.args,
       input.context.principal,
-      input.context.fairnessKey,
+      input.fairnessKey,
       this.shutdownController.signal,
       byteLength(input.args),
     );

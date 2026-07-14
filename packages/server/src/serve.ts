@@ -1,5 +1,4 @@
 /** Production Protocol-2 HTTP, SSE, and WebSocket ownership for one Runtime. */
-import { createHash } from "node:crypto";
 import type { Server, ServerWebSocket } from "bun";
 import {
   PROTOCOL_VERSION,
@@ -12,6 +11,7 @@ import {
   type SseAckRequest,
 } from "@dbzz/core";
 import {
+  ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
   type ClientPrincipal,
   type CredentialVerifier,
@@ -21,6 +21,11 @@ import {
   validateCredentialVerifierRevocation,
   type AuthLease,
 } from "./auth-lease.ts";
+import {
+  callerFairnessKey,
+  transportSource,
+  type TransportSource,
+} from "./caller.ts";
 import { OutboundBudget, WebSocketSessionSink } from "./delivery.ts";
 import { DbzzError } from "./errors.ts";
 import {
@@ -80,6 +85,7 @@ export interface DbzzServerStatus {
 }
 
 interface WsData {
+  readonly source: TransportSource;
   socket: ServerWebSocket<WsData> | null;
   sink: WebSocketSessionSink | null;
   session: Session | null;
@@ -566,7 +572,8 @@ export class DbzzServer {
           headers: { ...CORS, allow: "POST" },
         });
       }
-      return this.acknowledgeSse(request, this.httpSourceKey(request, listener));
+      const source = this.requestSource(request, listener);
+      return this.acknowledgeSse(request, callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
     }
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
       return protocolError(unavailableWhile(this.lifecycle));
@@ -575,10 +582,10 @@ export class DbzzServer {
       let admission: HttpAdmissionLease | undefined;
       let lease: AuthLease | undefined;
       try {
-        const sourceKey = this.httpSourceKey(request, listener);
-        admission = this.httpAdmission.admit(sourceKey);
+        const source = this.requestSource(request, listener);
+        admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
         lease = await this.authenticate(request);
-        admission.transfer(this.httpCallerKey(sourceKey, lease.principal));
+        admission.transfer(callerFairnessKey(lease.principal, source));
         requireStatusScope(lease.principal, this.statusScope);
         return json({ version: 1, ...this.status() });
       } catch (error) {
@@ -592,10 +599,10 @@ export class DbzzServer {
       return this.upgradeWebSocket(request, listener);
     }
     if (url.pathname === "/api/call" && request.method === "POST") {
-      return this.call(request, false, this.httpSourceKey(request, listener));
+      return this.call(request, false, this.requestSource(request, listener));
     }
     if (url.pathname === "/api/sse" && request.method === "POST") {
-      return this.call(request, true, this.httpSourceKey(request, listener));
+      return this.call(request, true, this.requestSource(request, listener));
     }
     if (
       url.pathname === "/live" ||
@@ -622,20 +629,11 @@ export class DbzzServer {
     });
   }
 
-  private httpSourceKey(request: Request, listener: Server<WsData>): string {
-    const source = listener.requestIP(request);
-    const identity = source === null ? "unknown" : `${source.family}\0${source.address}`;
-    return createHash("sha256").update(`http-source\0${identity}`).digest("base64url");
+  private requestSource(request: Request, listener: Server<WsData>): TransportSource {
+    return transportSource(listener.requestIP(request));
   }
 
-  private httpCallerKey(sourceKey: string, principal: ClientPrincipal): string {
-    if (principal.kind === "anonymous") return sourceKey;
-    return createHash("sha256")
-      .update(JSON.stringify(["http-principal", principal.kind, principal.issuer, principal.subject]))
-      .digest("base64url");
-  }
-
-  private async call(request: Request, sse: boolean, sourceKey: string): Promise<Response> {
+  private async call(request: Request, sse: boolean, source: TransportSource): Promise<Response> {
     const runtime = this.requireRuntime();
     const externalTrace = beginHttpTrace(runtime.telemetry, sse ? "sse" : "procedure");
     let id: number | null = null;
@@ -643,7 +641,7 @@ export class DbzzServer {
     let lease: AuthLease | undefined;
     try {
       if (this.lifecycle !== "ready") throw unavailableWhile(this.lifecycle);
-      admission = this.httpAdmission.admit(sourceKey);
+      admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
       const call = await parseHttpBody(
         request,
         runtime.limits.maxRequestBytes,
@@ -655,7 +653,7 @@ export class DbzzServer {
       lease = externalTrace === undefined
         ? await this.authenticate(request)
         : await observeHttpAuth(externalTrace, () => this.authenticate(request));
-      const fairnessKey = this.httpCallerKey(sourceKey, lease.principal);
+      const fairnessKey = callerFairnessKey(lease.principal, source);
       admission.transfer(fairnessKey);
       const input = carryHttpTrace({
         id: call.id,
@@ -736,7 +734,12 @@ export class DbzzServer {
       }));
     }
 
-    const data: WsData = { socket: null, sink: null, session: null };
+    const data: WsData = {
+      source: this.requestSource(request, listener),
+      socket: null,
+      sink: null,
+      session: null,
+    };
     // Reserve the transport slot before upgrade/open/hello can perform any work.
     this.connections.add(data);
     try {
@@ -770,6 +773,7 @@ export class DbzzServer {
       data.session = new Session(withSessionAuthObserver({
         runtime,
         sink: data.sink,
+        source: data.source,
         verifier: this.verifier,
         revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
         limits: runtime.limits,

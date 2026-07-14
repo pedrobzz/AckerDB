@@ -39,6 +39,7 @@ import {
 } from "../src/session.ts";
 
 const NOW = 1_720_000_000_000;
+const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime-session" });
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -337,6 +338,7 @@ describe("Session + Runtime integration", () => {
     const session = new Session({
       runtime,
       sink,
+      source: TEST_SOURCE,
       verifier: new UserVerifier(),
       clock: new FixedClock(),
     });
@@ -506,6 +508,7 @@ describe("Session + Runtime integration", () => {
         socket.session = new Session({
           runtime,
           sink: new SessionSocketSink(socket),
+          source: TEST_SOURCE,
           verifier: new UserVerifier(),
           clock,
         });
@@ -617,9 +620,9 @@ describe("Session + Runtime integration", () => {
     const slowSink = new DeterministicSink();
     const targetSink = new DeterministicSink();
     const callerSink = new DeterministicSink();
-    const slow = new Session({ runtime, sink: slowSink, verifier, clock: new FixedClock() });
-    const target = new Session({ runtime, sink: targetSink, verifier, clock: new FixedClock() });
-    const caller = new Session({ runtime, sink: callerSink, clock: new FixedClock() });
+    const slow = new Session({ runtime, sink: slowSink, source: TEST_SOURCE, verifier, clock: new FixedClock() });
+    const target = new Session({ runtime, sink: targetSink, source: TEST_SOURCE, verifier, clock: new FixedClock() });
+    const caller = new Session({ runtime, sink: callerSink, source: TEST_SOURCE, clock: new FixedClock() });
 
     try {
       await slow.handle({

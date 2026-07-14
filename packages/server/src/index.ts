@@ -34,6 +34,7 @@ export {
   type TagMap,
 } from "./engine.ts";
 export type { DurabilityPolicy } from "@dbzz/core";
+export type { TransportSource } from "./caller.ts";
 export {
   makeDbReader,
   makeDbWriter,

@@ -16,6 +16,7 @@ import {
   type Principal,
   type UserPrincipal,
 } from "../src/auth.ts";
+import { callerFairnessKey } from "../src/caller.ts";
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
@@ -35,6 +36,8 @@ import type {
   SessionRuntimeContext,
 } from "../src/session.ts";
 import { Telemetry } from "../src/telemetry.ts";
+
+const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime" });
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -366,6 +369,7 @@ class SessionHarness {
     return Object.freeze({
       clientSessionId: this.clientSessionId,
       principal,
+      fairnessKey: callerFairnessKey(principal, TEST_SOURCE),
       authEpoch,
       signal: controller.signal,
       publish: async (message: RuntimePublication) => {
