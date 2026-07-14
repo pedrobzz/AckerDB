@@ -49,7 +49,34 @@ export type SessionApplicationMessage =
   | QueryOkMessage
   | MutationOkMessage
   | ErrorMessage;
-export type RuntimePublication = SessionApplicationMessage;
+const RUNTIME_PUBLICATION_BRAND: unique symbol = Symbol("dbzz.runtimePublication");
+const runtimePublications = new WeakSet<object>();
+
+export interface RuntimePublication {
+  readonly message: SessionApplicationMessage;
+  readonly text: string;
+  readonly bytes: number;
+  readonly [RUNTIME_PUBLICATION_BRAND]: true;
+}
+
+export function prepareRuntimePublication(message: SessionApplicationMessage): RuntimePublication {
+  Object.freeze(message);
+  const text = encode(message);
+  const publication = Object.freeze({
+    message,
+    text,
+    bytes: Buffer.byteLength(text),
+    [RUNTIME_PUBLICATION_BRAND]: true as const,
+  });
+  runtimePublications.add(publication);
+  return publication;
+}
+
+export function assertRuntimePublication(publication: RuntimePublication): void {
+  if (!runtimePublications.has(publication)) {
+    throw new TypeError("application publication was not prepared by dbzz");
+  }
+}
 /**
  * Exact-byte ownership for publications captured during an auth transition.
  * Frames are valid only until `release()`; release is idempotent and empties
@@ -69,7 +96,7 @@ export type SessionControlMessage = WelcomeMessage | AuthenticatedMessage | Pong
  */
 export interface SessionSink {
   sendControl(message: SessionControlMessage): Promise<void>;
-  sendApplication(authEpoch: number, message: SessionApplicationMessage): Promise<void>;
+  sendApplication(authEpoch: number, publication: RuntimePublication): Promise<void>;
   dropApplicationFramesBefore(authEpoch: number): Promise<void>;
   close(outcome: Outcome): Promise<void>;
 }
@@ -576,8 +603,9 @@ export class Session {
           aborted(transitionController, authStale());
           return;
         }
-        for (const transition of publications.frames) {
-          await this.sink.sendApplication(nextEpoch, transition);
+        for (const publication of publications.frames) {
+          assertRuntimePublication(publication);
+          await this.sink.sendApplication(nextEpoch, publication);
           if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
         }
         const ack: AuthenticatedMessage = {
@@ -657,21 +685,18 @@ export class Session {
       fairnessKey: callerFairnessKey(principal, this.source),
       authEpoch,
       signal: controller.signal,
-      publish: (message: RuntimePublication) => this.publish(authEpoch, message),
+      publish: (publication: RuntimePublication) => this.sendApplication(authEpoch, publication),
     });
-  }
-
-  private publish(authEpoch: number, message: RuntimePublication): Promise<boolean> {
-    return this.sendApplication(authEpoch, message);
   }
 
   private async sendApplication(
     authEpoch: number,
-    message: SessionApplicationMessage,
+    publication: RuntimePublication,
   ): Promise<boolean> {
     if (!this.isCurrent(authEpoch) || this.paused) return false;
     try {
-      await this.sink.sendApplication(authEpoch, message);
+      assertRuntimePublication(publication);
+      await this.sink.sendApplication(authEpoch, publication);
       return this.isCurrent(authEpoch) && !this.paused;
     } catch (error) {
       void this.terminate(operationError(error));

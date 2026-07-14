@@ -17,6 +17,11 @@ import {
 } from "../src/delivery.ts";
 import { DbzzError } from "../src/errors.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
+import {
+  prepareRuntimePublication,
+  type RuntimePublication,
+  type SessionControlMessage,
+} from "../src/session.ts";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -118,7 +123,13 @@ class FakeSocket implements WebSocketDeliverySocket {
 }
 
 function application(id: number, value: unknown = `value-${id}`) {
-  return { v: PROTOCOL_VERSION, t: "ok" as const, id, kind: "query" as const, value };
+  return prepareRuntimePublication({
+    v: PROTOCOL_VERSION,
+    t: "ok",
+    id,
+    kind: "query",
+    value,
+  });
 }
 
 async function state(promise: Promise<unknown>): Promise<"pending" | "resolved" | "rejected"> {
@@ -220,6 +231,30 @@ describe("OutboundBudget", () => {
 });
 
 describe("WebSocketSessionSink", () => {
+  test("rejects forged application publications before reserving claimed bytes", async () => {
+    const limits = testLimits();
+    const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
+    const socket = new FakeSocket();
+    const sink = new WebSocketSessionSink({ socket, budget, limits });
+    const forged = {
+      message: {
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: 1,
+        kind: "query",
+        value: "unsafe",
+      },
+      text: "x".repeat(limits.maxFrameBytes + 1),
+      bytes: 1,
+    } as unknown as RuntimePublication;
+
+    await expect(sink.sendApplication(1, forged)).rejects.toThrow(
+      "application publication was not prepared by dbzz",
+    );
+    expect(socket.sent).toEqual([]);
+    expect(budget.snapshot().bytes).toBe(0);
+  });
+
   test("observes exact queue wait and full buffered delivery for both lanes", async () => {
     const clock = new FakeClock();
     const limits = testLimits();
@@ -227,8 +262,8 @@ describe("WebSocketSessionSink", () => {
     const socket = new FakeSocket();
     const observations: DeliveryObservation[] = [];
     const message = application(1, "💥");
-    const messageText = encode(message);
-    const messageBytes = encoder.encode(messageText).byteLength;
+    const messageText = message.text;
+    const messageBytes = message.bytes;
     const control = { v: PROTOCOL_VERSION, t: "pong" as const };
     const controlBytes = encoder.encode(encode(control)).byteLength;
     socket.plans.push(
@@ -261,15 +296,6 @@ describe("WebSocketSessionSink", () => {
     await flushObservations();
 
     expect(observations).toEqual([
-      {
-        transport: "websocket",
-        stage: "encoding",
-        lane: "application",
-        source: "send",
-        bytes: messageBytes,
-        durationMs: 0,
-        outcome: "ok",
-      },
       {
         transport: "websocket",
         stage: "queue",
@@ -327,7 +353,7 @@ describe("WebSocketSessionSink", () => {
     const socket = new FakeSocket();
     const observations: DeliveryObservation[] = [];
     const first = application(1);
-    const firstBytes = encoder.encode(encode(first)).byteLength;
+    const firstBytes = first.bytes;
     socket.plans.push({ result: -1, buffered: firstBytes });
     const sink = new WebSocketSessionSink({
       socket,
@@ -383,7 +409,7 @@ describe("WebSocketSessionSink", () => {
     const socket = new FakeSocket();
     const observations: DeliveryObservation[] = [];
     const message = application(1);
-    const messageBytes = encoder.encode(encode(message)).byteLength;
+    const messageBytes = message.bytes;
     socket.plans.push({ result: 0 }, { result: 0 });
     const sink = new WebSocketSessionSink({
       socket,
@@ -397,15 +423,6 @@ describe("WebSocketSessionSink", () => {
     await flushObservations();
 
     expect(observations.filter(({ lane }) => lane === "application")).toEqual([
-      {
-        transport: "websocket",
-        stage: "encoding",
-        lane: "application",
-        source: "send",
-        bytes: messageBytes,
-        durationMs: 0,
-        outcome: "ok",
-      },
       {
         transport: "websocket",
         stage: "queue",
@@ -458,8 +475,8 @@ describe("WebSocketSessionSink", () => {
     const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
     const socket = new FakeSocket();
     const first = application(1, "💥");
-    const firstText = encode(first);
-    const firstBytes = encoder.encode(firstText).byteLength;
+    const firstText = first.text;
+    const firstBytes = first.bytes;
     socket.plans.push({ result: -1, buffered: firstBytes });
     const sink = new WebSocketSessionSink({ socket, budget, limits });
 
@@ -483,7 +500,7 @@ describe("WebSocketSessionSink", () => {
     const limits = testLimits();
     const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
     const socket = new FakeSocket();
-    const firstText = encode(application(1));
+    const firstText = application(1).text;
     socket.plans.push({ result: -1, buffered: encoder.encode(firstText).byteLength });
     const sink = new WebSocketSessionSink({ socket, budget, limits });
 
@@ -499,7 +516,7 @@ describe("WebSocketSessionSink", () => {
     socket.bufferedAmount = 0;
     sink.onDrain();
     await expect(current).resolves.toBeUndefined();
-    expect(socket.sent).toEqual([firstText, encode(application(3))]);
+    expect(socket.sent).toEqual([firstText, application(3).text]);
     expect(budget.snapshot().bytes).toBe(0);
   });
 
@@ -512,7 +529,7 @@ describe("WebSocketSessionSink", () => {
     const socket = new FakeSocket();
     const observations: DeliveryObservation[] = [];
     const message = application(1, "x".repeat(45));
-    const frameBytes = encoder.encode(encode(message)).byteLength;
+    const frameBytes = message.bytes;
     const capacity = limits.webSocket.maxBytesPerConnection - limits.maxFrameBytes;
     socket.plans.push({ result: -1, buffered: frameBytes });
     const sink = new WebSocketSessionSink({
@@ -524,9 +541,9 @@ describe("WebSocketSessionSink", () => {
 
     const writes: Promise<unknown>[] = [];
     for (let index = 0; index < Math.floor(capacity / frameBytes); index++) {
-      writes.push(sink.sendApplication(1, { ...message, id: index + 1 }).catch((error) => error));
+      writes.push(sink.sendApplication(1, application(index + 1, "x".repeat(45))).catch((error) => error));
     }
-    const overflow = sink.sendApplication(1, { ...message, id: 99 });
+    const overflow = sink.sendApplication(1, application(99, "x".repeat(45)));
     await expect(overflow).rejects.toMatchObject({ code: "slow_consumer", resource: "outbound" });
     await Promise.all(writes);
     await flushObservations();
@@ -627,17 +644,17 @@ describe("WebSocketSessionSink", () => {
     const busySocket = new FakeSocket();
     const healthySocket = new FakeSocket();
     const message = application(1, "x".repeat(90));
-    const frameBytes = encoder.encode(encode(message)).byteLength;
+    const frameBytes = message.bytes;
     busySocket.plans.push({ result: -1, buffered: frameBytes });
     const busy = new WebSocketSessionSink({ socket: busySocket, budget, limits });
     const healthy = new WebSocketSessionSink({ socket: healthySocket, budget, limits });
 
     const held = [
       busy.sendApplication(1, message).catch((error) => error),
-      busy.sendApplication(1, { ...message, id: 2 }).catch((error) => error),
+      busy.sendApplication(1, application(2, "x".repeat(90))).catch((error) => error),
     ];
     await Promise.resolve();
-    await expect(busy.sendApplication(1, { ...message, id: 3 })).rejects.toMatchObject({
+    await expect(busy.sendApplication(1, application(3, "x".repeat(90)))).rejects.toMatchObject({
       code: "overloaded",
       resource: "outbound",
     });
@@ -655,7 +672,7 @@ describe("WebSocketSessionSink", () => {
     const limits = testLimits({ webSocket: { maxStallMs: 10 } });
     const budget = new OutboundBudget(limits.webSocket.maxBytes, limits.maxFrameBytes);
     const socket = new FakeSocket();
-    const text = encode(application(1));
+    const text = application(1).text;
     const bytes = encoder.encode(text).byteLength;
     socket.plans.push({ result: -1, buffered: bytes });
     const sink = new WebSocketSessionSink({ socket, budget, limits, clock });
@@ -1570,8 +1587,8 @@ describe("delivery observers", () => {
     });
     const first = application(1, "first");
     const second = application(2, "second response");
-    const firstBytes = encoder.encode(encode(first)).byteLength;
-    const secondBytes = encoder.encode(encode(second)).byteLength;
+    const firstBytes = first.bytes;
+    const secondBytes = second.bytes;
 
     const firstSend = sink.sendApplication(1, first);
     currentObserver = secondObserver;
@@ -1584,12 +1601,10 @@ describe("delivery observers", () => {
 
     expect(captures).toBe(2);
     expect(firstObservations.map(({ stage, bytes }) => ({ stage, bytes }))).toEqual([
-      { stage: "encoding", bytes: firstBytes },
       { stage: "queue", bytes: firstBytes },
       { stage: "delivery", bytes: firstBytes },
     ]);
     expect(secondObservations.map(({ stage, bytes }) => ({ stage, bytes }))).toEqual([
-      { stage: "encoding", bytes: secondBytes },
       { stage: "queue", bytes: secondBytes },
       { stage: "delivery", bytes: secondBytes },
     ]);
@@ -1609,7 +1624,7 @@ describe("delivery observers", () => {
     let currentObserver = owner;
     let captures = 0;
     const message = application(1, "buffered");
-    const bytes = encoder.encode(encode(message)).byteLength;
+    const bytes = message.bytes;
     socket.plans.push({ result: -1, buffered: bytes });
     const sink = new WebSocketSessionSink({
       socket,
@@ -1626,7 +1641,7 @@ describe("delivery observers", () => {
     currentObserver = unrelated;
     await accepted;
     await flushObservations();
-    expect(ownerObservations.map(({ stage }) => stage)).toEqual(["encoding", "queue"]);
+    expect(ownerObservations.map(({ stage }) => stage)).toEqual(["queue"]);
     expect(unrelatedObservations).toEqual([]);
 
     clock.advance(7);
@@ -1636,7 +1651,6 @@ describe("delivery observers", () => {
 
     expect(captures).toBe(1);
     expect(ownerObservations.map(({ stage, durationMs }) => ({ stage, durationMs }))).toEqual([
-      { stage: "encoding", durationMs: 0 },
       { stage: "queue", durationMs: 0 },
       { stage: "delivery", durationMs: 7 },
     ]);
@@ -1732,7 +1746,11 @@ describe("delivery observers", () => {
       observer: (observation) => webSocketObservations.push(observation),
     });
 
-    await expect(sink.sendApplication(1, application(1, Number.NaN))).rejects.toThrow(
+    await expect(sink.sendControl({
+      v: PROTOCOL_VERSION,
+      t: "pong",
+      unsafe: Number.NaN,
+    } as unknown as SessionControlMessage)).rejects.toThrow(
       "cannot encode non-finite number",
     );
     await flushObservations();
@@ -1740,7 +1758,7 @@ describe("delivery observers", () => {
       {
         transport: "websocket",
         stage: "encoding",
-        lane: "application",
+        lane: "control",
         source: "send",
         bytes: 0,
         durationMs: 0,

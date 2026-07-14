@@ -10,6 +10,7 @@ import {
   type ServerMessage,
 } from "@dbzz/core";
 import {
+  ANONYMOUS_PRINCIPAL,
   DbzzError,
   Engine,
   OutboundBudget,
@@ -28,6 +29,8 @@ import {
   serve,
   type RuntimeProcedureRequest,
   type RuntimeProcedureResponse,
+  type RuntimePublication,
+  type SessionRuntimeContext,
   type TelemetryRecord,
   type TelemetrySpanRecord,
   type WebSocketDeliverySocket,
@@ -53,6 +56,11 @@ const functions = {
       access: "public",
       args: {},
       handler: (ctx: Ctx) => ctx.db.notes.scan().collect(),
+    }),
+    large: query({
+      access: "public",
+      args: { size: dbz.number() },
+      handler: (_ctx: Ctx, args: Ctx) => "x".repeat(args.size),
     }),
     add: mutation({
       access: "public",
@@ -184,6 +192,84 @@ function delivery(
   );
 }
 
+test("Runtime prepares one canonical query frame for WebSocket delivery", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "dbzz-query-publication-"));
+  const engine = new Engine(schema, join(directory, "data.db"));
+  reconcile(engine);
+  const payload = {
+    bigint: 7n,
+    bytes: new Uint8Array([0, 255]),
+    literal: { $: "literal" },
+  };
+  let reads = 0;
+  const value = Object.defineProperty({}, "payload", {
+    enumerable: true,
+    get() {
+      reads++;
+      return payload;
+    },
+  });
+  const runtime = new Runtime({
+    engine,
+    registry: new Registry({
+      probe: {
+        once: query({
+          access: "public",
+          args: {},
+          handler: () => value,
+        }),
+      },
+    }),
+  });
+  const socket = new BufferedSocket(runtime);
+  const sink = new WebSocketSessionSink({
+    socket,
+    budget: new OutboundBudget(
+      runtime.limits.webSocket.maxBytes,
+      runtime.limits.maxFrameBytes,
+    ),
+    limits: runtime.limits,
+  });
+  const controller = new AbortController();
+  const context: SessionRuntimeContext = Object.freeze({
+    clientSessionId: "query-publication",
+    principal: ANONYMOUS_PRINCIPAL,
+    fairnessKey: "query-publication",
+    authEpoch: 0,
+    signal: controller.signal,
+    publish: async (publication: RuntimePublication) => {
+      await sink.sendApplication(0, publication);
+      return true;
+    },
+  });
+
+  try {
+    await runtime.openSession(context);
+    const result = await runtime.query(context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 1,
+      ref: "probe.once",
+      args: {},
+    });
+
+    expect(result).toBe(value);
+    expect(reads).toBe(1);
+    expect(socket.frames).toEqual([encode({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: 1,
+      kind: "query",
+      value: { payload },
+    })]);
+  } finally {
+    controller.abort();
+    await runtime.drain(Date.now() + 2_000).catch(() => {});
+    engine.close("clean");
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("Runtime owns correlated WebSocket outcomes through delayed physical delivery", async () => {
   const directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-delivery-"));
   const engine = new Engine(schema, join(directory, "data.db"));
@@ -278,6 +364,15 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     socket.bufferedAmount = 0;
     sink.onDrain();
 
+    await session.handle({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 44,
+      ref: "notes.large",
+      args: { size: runtime.limits.maxFrameBytes + 1 },
+    });
+    await settle();
+
     await session.handle({ v: PROTOCOL_VERSION, t: "ping" });
     await settle();
     await runtime.telemetry.flush();
@@ -286,20 +381,28 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
       [41, 0],
       [42, 0],
       [43, 0],
+      [44, 0],
     ]);
     const errorFrames = socket.frames
       .map((text) => decode(text) as ServerMessage)
       .filter((frame) => frame.t === "err" && frame.id === 43);
     expect(errorFrames).toHaveLength(1);
     expect(errorFrames[0]).toMatchObject({ outcome: { code: "not_found" } });
+    const oversizedFrames = socket.frames
+      .map((text) => decode(text) as ServerMessage)
+      .filter((frame) => frame.t === "err" && frame.id === 44);
+    expect(oversizedFrames).toHaveLength(1);
+    expect(oversizedFrames[0]).toMatchObject({ outcome: { code: "overloaded" } });
 
     const retained = spans(exported);
     const queryAdmission = admission(retained, "query", "41");
     const mutationAdmission = admission(retained, "mutation", "42");
     const failureAdmission = admission(retained, "query", "43");
+    const oversizedAdmission = admission(retained, "query", "44");
     const queryDelivery = delivery(retained, "query", queryAdmission.traceId!);
     const mutationDelivery = delivery(retained, "mutation", mutationAdmission.traceId!);
     const failureDelivery = delivery(retained, "query", failureAdmission.traceId!);
+    const oversizedDelivery = delivery(retained, "query", oversizedAdmission.traceId!);
 
     for (const [records, owner] of [
       [queryDelivery, queryAdmission],
@@ -315,6 +418,19 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
       expect(records.every((record) => record.connectionId === owner.connectionId)).toBe(true);
     }
     expect(mutationDelivery.every((record) => record.mutationId === mutationId)).toBe(true);
+    const oversizedEncoding = oversizedDelivery.filter((record) =>
+      record.stage === "encoding" && record.outcome === "overloaded"
+    );
+    expect(oversizedEncoding).toHaveLength(1);
+    expect(oversizedEncoding[0]!.sizeBytes).toBeGreaterThan(runtime.limits.maxFrameBytes);
+    const boundedDelivery = oversizedDelivery.filter((record) => record.outcome === "ok");
+    expect(boundedDelivery.map((record) => record.stage).sort()).toEqual([
+      "delivery",
+      "encoding",
+      "queue",
+    ]);
+    expect(new Set(boundedDelivery.map((record) => record.sizeBytes)).size).toBe(1);
+    expect(boundedDelivery[0]!.sizeBytes).toBeLessThanOrEqual(runtime.limits.maxFrameBytes);
 
     const controlDelivery = retained.filter((record) =>
       record.operation === "lifecycle" &&

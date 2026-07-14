@@ -25,6 +25,7 @@ import {
   sseProcedure,
   type RuntimeOptions,
   type RuntimePublication,
+  type SessionApplicationMessage,
   type SessionRuntimeContext,
   type TelemetryEventRecord,
   type TelemetryExporter,
@@ -184,7 +185,7 @@ const functions = {
 
 interface TestSession {
   readonly context: SessionRuntimeContext;
-  readonly publications: RuntimePublication[];
+  readonly publications: SessionApplicationMessage[];
   readonly abort: () => void;
 }
 
@@ -209,7 +210,7 @@ class RuntimeHarness {
     publish?: (frame: RuntimePublication) => Promise<boolean> | boolean,
   ): Promise<TestSession> {
     const controller = new AbortController();
-    const publications: RuntimePublication[] = [];
+    const publications: SessionApplicationMessage[] = [];
     const context: SessionRuntimeContext = Object.freeze({
       clientSessionId,
       principal: ANONYMOUS_PRINCIPAL,
@@ -217,7 +218,7 @@ class RuntimeHarness {
       authEpoch: 0,
       signal: controller.signal,
       publish: async (frame: RuntimePublication) => {
-        publications.push(frame);
+        publications.push(frame.message);
         return publish === undefined ? true : publish(frame);
       },
     });

@@ -24,6 +24,7 @@ import { callerFairnessKey } from "../src/caller.ts";
 import { DbzzError } from "../src/errors.ts";
 import { outcomeFromError } from "../src/outcome.ts";
 import {
+  prepareRuntimePublication,
   Session,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
@@ -133,6 +134,7 @@ class FakeVerifier implements CredentialVerifier {
 interface SinkApplication {
   readonly authEpoch: number;
   readonly message: SessionApplicationMessage;
+  readonly publication: RuntimePublication;
 }
 
 class FakeSink implements SessionSink {
@@ -149,9 +151,10 @@ class FakeSink implements SessionSink {
     this.controls.push(message);
   }
 
-  async sendApplication(authEpoch: number, message: SessionApplicationMessage): Promise<void> {
+  async sendApplication(authEpoch: number, publication: RuntimePublication): Promise<void> {
+    const { message } = publication;
     this.order.push(`application:${message.t}:${authEpoch}`);
-    this.applications.push({ authEpoch, message });
+    this.applications.push({ authEpoch, message, publication });
     if (this.applicationHook !== null) await this.applicationHook(authEpoch, message);
   }
 
@@ -196,6 +199,7 @@ class FakeRuntime implements RuntimePort {
   readonly queries: QueryMessage[] = [];
   readonly mutations: MutationMessage[] = [];
   readonly closes: Outcome[] = [];
+  readonly transitionPublications: RuntimePublication[] = [];
   transitionCaptureBytes = 0;
   transitionReleaseCount = 0;
   subscribeHook: ((context: SessionRuntimeContext, id: number) => Promise<void>) | null = null;
@@ -212,8 +216,9 @@ class FakeRuntime implements RuntimePort {
     this.order.push(`runtime:transition:${transition.attemptId}`);
     this.transitions.push(transition);
     if (transition.to.signal.aborted) throw transition.to.signal.reason;
-    const frames: RuntimePublication[] = [resetTransition(transition.to.authEpoch)];
-    const bytes = frames.reduce((total, frame) => total + wireBytes(frame), 0);
+    const frames = [prepareRuntimePublication(resetTransition(transition.to.authEpoch))];
+    this.transitionPublications.push(frames[0]!);
+    const bytes = frames.reduce((total, frame) => total + frame.bytes, 0);
     this.transitionCaptureBytes += bytes;
     let released = false;
     return Object.freeze({
@@ -232,7 +237,7 @@ class FakeRuntime implements RuntimePort {
   async subscribe(context: SessionRuntimeContext, message: { id: number }): Promise<void> {
     this.subscriptions.push(message.id);
     if (this.subscribeHook !== null) await this.subscribeHook(context, message.id);
-    await context.publish(resetTransition(context.authEpoch, message.id));
+    await context.publish(prepareRuntimePublication(resetTransition(context.authEpoch, message.id)));
   }
 
   async unsubscribe(_context: SessionRuntimeContext, message: { id: number }): Promise<void> {
@@ -241,7 +246,7 @@ class FakeRuntime implements RuntimePort {
 
   async reset(context: SessionRuntimeContext, message: { id: number }): Promise<void> {
     this.resets.push(message.id);
-    await context.publish(resetTransition(context.authEpoch, message.id));
+    await context.publish(prepareRuntimePublication(resetTransition(context.authEpoch, message.id)));
   }
 
   async query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown> {
@@ -250,21 +255,21 @@ class FakeRuntime implements RuntimePort {
       const value = this.queryHook === null
         ? { ref: message.ref, principal: context.principal.kind }
         : await this.queryHook(context, message);
-      await context.publish({
+      await context.publish(prepareRuntimePublication({
         v: PROTOCOL_VERSION,
         t: "ok",
         id: message.id,
         kind: "query",
         value,
-      });
+      }));
       return value;
     } catch (error) {
-      await context.publish({
+      await context.publish(prepareRuntimePublication({
         v: PROTOCOL_VERSION,
         t: "err",
         id: message.id,
         outcome: outcomeFromError(error),
-      });
+      }));
       throw error;
     }
   }
@@ -281,14 +286,14 @@ class FakeRuntime implements RuntimePort {
         obligations: [],
       },
     };
-    await context.publish({
+    await context.publish(prepareRuntimePublication({
       v: PROTOCOL_VERSION,
       t: "ok",
       id: message.id,
       kind: "mutation",
       value: result.value,
       receipt: result.receipt,
-    });
+    }));
     return result;
   }
 
@@ -732,6 +737,7 @@ describe("Session Protocol-2 ownership", () => {
     first.resolve(principal("first"));
     await settle();
     expect(runtime.transitions).toHaveLength(1);
+    expect(sink.applications[0]?.publication).toBe(runtime.transitionPublications[0]);
     expect(messagesOfType(sink.controls, "auth").map((message) => message.attemptId)).toEqual([2]);
     expect(verifier.calls).toEqual(["first", "second"]);
     expect(runtime.transitionCaptureBytes).toBe(0);

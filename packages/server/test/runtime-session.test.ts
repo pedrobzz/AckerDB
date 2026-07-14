@@ -32,6 +32,7 @@ import { Runtime } from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
 import {
   Session,
+  type RuntimePublication,
   type SessionApplicationMessage,
   type SessionClock,
   type SessionControlMessage,
@@ -134,7 +135,8 @@ class DeterministicSink implements SessionSink {
     this.trace.push(`control:${message.t}`);
   }
 
-  async sendApplication(authEpoch: number, message: SessionApplicationMessage): Promise<void> {
+  async sendApplication(authEpoch: number, publication: RuntimePublication): Promise<void> {
+    const { message } = publication;
     const record = { authEpoch, message };
     this.trace.push(applicationTrace(authEpoch, message));
     const block = this.applicationBlock;
@@ -212,8 +214,12 @@ class SessionSocket implements DbzzWebSocket {
     if (!this.closed) this.onopen?.();
   }
 
-  receive(message: SessionControlMessage | SessionApplicationMessage): void {
+  receive(message: SessionControlMessage): void {
     if (!this.closed) this.onmessage?.({ data: encode(message) });
+  }
+
+  receiveText(text: string): void {
+    if (!this.closed) this.onmessage?.({ data: text });
   }
 
   serverClose(): void {
@@ -249,8 +255,8 @@ class SessionSocketSink implements SessionSink {
     this.socket.receive(message);
   }
 
-  async sendApplication(_authEpoch: number, message: SessionApplicationMessage): Promise<void> {
-    this.socket.receive(message);
+  async sendApplication(_authEpoch: number, publication: RuntimePublication): Promise<void> {
+    this.socket.receiveText(publication.text);
   }
 
   async dropApplicationFramesBefore(_authEpoch: number): Promise<void> {}

@@ -106,13 +106,15 @@ import {
   type TelemetryStage,
   type TelemetryTraceContext,
 } from "./telemetry.ts";
-import type {
-  RuntimeAuthTransition,
-  RuntimeMutationResult,
-  RuntimePort,
-  RuntimePublication,
-  RuntimePublicationBatch,
-  SessionRuntimeContext,
+import {
+  prepareRuntimePublication,
+  type RuntimeAuthTransition,
+  type RuntimeMutationResult,
+  type RuntimePort,
+  type RuntimePublication,
+  type RuntimePublicationBatch,
+  type SessionApplicationMessage,
+  type SessionRuntimeContext,
 } from "./session.ts";
 
 const utf8 = new TextEncoder();
@@ -199,6 +201,12 @@ interface RuntimeSubscription {
   readonly cursor?: SubscribeMessage["cursor"];
 }
 
+interface QueryExecution {
+  readonly value: unknown;
+  readonly readSet: ReadonlySet<string>;
+  readonly commitVersion: bigint;
+}
+
 interface AuthTransitionCapture {
   phase: "revoking" | "reattaching";
   authEpoch: number;
@@ -238,10 +246,15 @@ type RuntimeOperationOutcome<T> =
 
 type RuntimeOperationFinalizer<T, R> = (outcome: RuntimeOperationOutcome<T>) => R | Promise<R>;
 
+interface FinishedRuntimeMutation {
+  readonly result: RuntimeMutationResult;
+  readonly publication: RuntimePublication;
+}
+
 interface SessionOperationOptions<T> {
   readonly identifiers?: TraceIdentifiers;
   readonly synthesizeHandler?: boolean;
-  readonly successFrame?: (value: T) => RuntimePublication;
+  readonly successPublication?: (value: T) => RuntimePublication;
 }
 
 interface InvocationTraceNode {
@@ -568,12 +581,12 @@ export class Runtime implements RuntimePort {
             await this.attachSubscription(state, id, definition, false);
           } catch (error) {
             state.subscriptions.delete(id);
-            this.captureFrame(captured, {
+            this.captureFrame(captured, this.prepareFrame({
               v: PROTOCOL_VERSION,
               t: "err",
               id,
               outcome: outcomeFromError(transportError(error)),
-            });
+            }, "subscription frame", "subscription"));
           }
         }
         return this.finishCapture(captured);
@@ -619,6 +632,7 @@ export class Runtime implements RuntimePort {
   }
 
   async query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown> {
+    let publication: RuntimePublication | undefined;
     return this.runSessionOperation(context, message, "query", message.ref, async (_state, requestBytes) => {
       const signal = this.operationSignal(context.signal);
       const evaluation = await this.executeQuery(
@@ -630,7 +644,7 @@ export class Runtime implements RuntimePort {
         signal,
         requestBytes,
       );
-      this.assertFrameFits({
+      publication = this.prepareFrame({
         v: PROTOCOL_VERSION,
         t: "ok",
         id: message.id,
@@ -640,21 +654,20 @@ export class Runtime implements RuntimePort {
       return evaluation.value;
     }, {
       identifiers: { requestId: String(message.id) },
-      successFrame: (value) => ({
-        v: PROTOCOL_VERSION,
-        t: "ok",
-        id: message.id,
-        kind: "query",
-        value,
-      } satisfies QueryOkMessage),
+      successPublication: () => {
+        if (publication === undefined) throw new Error("query publication was not prepared");
+        return publication;
+      },
     });
   }
 
   async mutation(context: SessionRuntimeContext, message: MutationMessage): Promise<RuntimeMutationResult> {
+    let successPublication: RuntimePublication | undefined;
     return this.runSessionOperation(context, message, "mutation", message.ref, async (state, requestBytes) => {
       const fn = this.expect(message.ref, "mutation");
       const signal = this.operationSignal(context.signal);
       let scheduledTouched = false;
+      let executedPublication: RuntimePublication | undefined;
       const result = await this.coordinator.execute({
         operation: "mutation",
         fairnessKey: context.fairnessKey,
@@ -676,37 +689,34 @@ export class Runtime implements RuntimePort {
           scheduledTouched = writes.scheduledTouched;
           return this.publicationFor(writes, state.subscriber);
         },
-        validate: (value, version, writes) => {
-          const obligations = this.reactive.affectedQueryIds(state.subscriber, writes.keys);
-          this.assertFrameFits(
+        validate: (value, version, _writes, publication) => {
+          executedPublication = this.prepareFrame(
             this.mutationFrame(
               message,
               value,
               version,
               this.engine.durability,
               "executed",
-              obligations,
+              publication.affectedCallerIds,
             ),
             "mutation result",
           );
         },
       });
       if (scheduledTouched) this.armScheduler();
-      return this.finishMutation(state, message, result);
+      const finished = await this.finishMutation(state, message, result, executedPublication);
+      successPublication = finished.publication;
+      return finished.result;
     }, {
       identifiers: {
         requestId: String(message.id),
         mutationId: message.mutationRequestId,
       },
       synthesizeHandler: false,
-      successFrame: (result) => ({
-        v: PROTOCOL_VERSION,
-        t: "ok",
-        id: message.id,
-        kind: "mutation",
-        value: result.value,
-        receipt: result.receipt,
-      } satisfies MutationOkMessage),
+      successPublication: () => {
+        if (successPublication === undefined) throw new Error("mutation publication was not prepared");
+        return successPublication;
+      },
     });
   }
 
@@ -1428,24 +1438,33 @@ export class Runtime implements RuntimePort {
     outcome: RuntimeOperationOutcome<T>,
     options: SessionOperationOptions<T>,
   ): Promise<T> {
-    const frame = outcome.ok
-      ? options.successFrame?.(outcome.value)
-      : {
-          v: PROTOCOL_VERSION,
-          t: "err",
-          id,
-          outcome: outcomeFromError(outcome.error),
-        } satisfies ErrorMessage;
-    if (frame !== undefined && !context.signal.aborted) {
-      if (state !== null) {
-        await this.publishSession(state, context.authEpoch, frame);
-      } else {
-        this.assertFrameFits(
-          frame,
-          "application frame",
-          operation === "subscription" ? "subscription" : "operation",
-        );
-        await context.publish(frame);
+    if (!context.signal.aborted) {
+      const successPublication = outcome.ok
+        ? options.successPublication?.(outcome.value)
+        : undefined;
+      const message = outcome.ok
+        ? successPublication?.message
+        : {
+            v: PROTOCOL_VERSION,
+            t: "err",
+            id,
+            outcome: outcomeFromError(outcome.error),
+          } satisfies ErrorMessage;
+      if (message !== undefined) {
+        if (state !== null) {
+          await this.publishSession(
+            state,
+            context.authEpoch,
+            message,
+            successPublication,
+          );
+        } else {
+          await context.publish(successPublication ?? this.prepareFrame(
+            message,
+            "application frame",
+            operation === "subscription" ? "subscription" : "operation",
+          ));
+        }
       }
     }
     if (outcome.ok) return outcome.value;
@@ -1453,7 +1472,7 @@ export class Runtime implements RuntimePort {
   }
 
   private makeSubscriber(state: () => RuntimeSession, authEpoch: number): Subscriber {
-    const publish = (message: RuntimePublication): Promise<void> =>
+    const publish = (message: SessionApplicationMessage): Promise<void> =>
       this.publishSession(state(), authEpoch, message);
     return Object.freeze({
       sendTransition: (id: number, transition: SubscriptionTransition) => publish({
@@ -1480,22 +1499,31 @@ export class Runtime implements RuntimePort {
   private async publishSession(
     state: RuntimeSession,
     sourceAuthEpoch: number,
-    message: RuntimePublication,
+    message: SessionApplicationMessage,
+    prepared?: RuntimePublication,
   ): Promise<void> {
+    if (prepared !== undefined && prepared.message !== message) {
+      throw new TypeError("prepared publication does not own the supplied message");
+    }
     const capture = state.capture;
     if (capture !== null) {
       if (!this.captureAccepts(capture, sourceAuthEpoch, message)) return;
-      const bytes = this.assertFrameFits(message, "subscription frame", "subscription");
-      this.captureFrame(capture, message, bytes);
+      this.captureFrame(
+        capture,
+        prepared ?? this.prepareFrame(message, "subscription frame", "subscription"),
+      );
       return;
     }
     if (sourceAuthEpoch !== state.context.authEpoch) return;
-    const resource = message.t === "transition" || message.t === "event" ||
-      this.trace.getStore()?.operation === "subscription"
-      ? "subscription"
-      : "operation";
-    this.assertFrameFits(message, "application frame", resource);
-    if (!await state.context.publish(message)) {
+    const publication = prepared ?? this.prepareFrame(
+      message,
+      "application frame",
+      message.t === "transition" || message.t === "event" ||
+          this.trace.getStore()?.operation === "subscription"
+        ? "subscription"
+        : "operation",
+    );
+    if (!await state.context.publish(publication)) {
       throw new DbzzError("auth_stale", "authentication state changed");
     }
   }
@@ -1503,7 +1531,7 @@ export class Runtime implements RuntimePort {
   private captureAccepts(
     capture: AuthTransitionCapture,
     sourceAuthEpoch: number,
-    message: RuntimePublication,
+    message: SessionApplicationMessage,
   ): boolean {
     if (sourceAuthEpoch !== capture.authEpoch) return false;
     if (capture.phase === "revoking") {
@@ -1522,20 +1550,19 @@ export class Runtime implements RuntimePort {
 
   private captureFrame(
     capture: AuthTransitionCapture,
-    message: RuntimePublication,
-    measuredBytes = this.assertFrameFits(message, "subscription frame", "subscription"),
+    publication: RuntimePublication,
   ): void {
     if (!capture.active) throw new DbzzError("auth_stale", "authentication state changed");
     const maxItems = Math.min(Number.MAX_SAFE_INTEGER, this.limits.maxSubscriptionsPerConnection * 2);
     const maxBytes = this.limits.webSocket.maxBytesPerConnection - this.limits.maxFrameBytes;
-    if (capture.frames.length >= maxItems || measuredBytes > maxBytes - capture.bytes) {
+    if (capture.frames.length >= maxItems || publication.bytes > maxBytes - capture.bytes) {
       throw new DbzzError("overloaded", "authentication transition exceeds capture capacity", {
         retryable: true,
         retryAfterMs: 0,
         resource: "subscription",
       });
     }
-    const reservation = this.authCaptureBudget.reserve(measuredBytes, "application");
+    const reservation = this.authCaptureBudget.reserve(publication.bytes, "application");
     if (reservation === null) {
       throw new DbzzError("overloaded", "authentication transition exceeds global capture capacity", {
         retryable: true,
@@ -1543,9 +1570,9 @@ export class Runtime implements RuntimePort {
         resource: "subscription",
       });
     }
-    capture.frames.push(message);
+    capture.frames.push(publication);
     capture.reservations.push(reservation);
-    capture.bytes += measuredBytes;
+    capture.bytes += publication.bytes;
   }
 
   private finishCapture(capture: AuthTransitionCapture): RuntimePublicationBatch {
@@ -1657,7 +1684,7 @@ export class Runtime implements RuntimePort {
     fairnessKey: string,
     signal: AbortSignal | undefined,
     requestBytes: number,
-  ): Promise<QueryEvaluation> {
+  ): Promise<QueryExecution> {
     const fn = this.expect(address, "query");
     return this.submitRead(async (connection) => {
       aborted(signal);
@@ -1685,31 +1712,6 @@ export class Runtime implements RuntimePort {
         );
         const value = await invokeFunction(fn, Object.freeze({ db, auth: principal }), args);
         aborted(signal);
-        const encodingAt = this.telemetry.enabled ? performance.now() : 0;
-        let encoded: string;
-        try {
-          encoded = encode(value);
-          if (this.telemetry.enabled) {
-            this.traceSpan({
-              stage: "encoding",
-              outcome: "ok",
-              resource: "operation",
-              durationMs: Math.max(0, performance.now() - encodingAt),
-              sizeBytes: utf8.encode(encoded).byteLength,
-              resultCount: Array.isArray(value) ? value.length : value === null ? 0 : 1,
-            }, "query");
-          }
-        } catch (error) {
-          if (this.telemetry.enabled) {
-            this.traceSpan({
-              stage: "encoding",
-              outcome: outcomeFromError(transportError(error)).code,
-              resource: "operation",
-              durationMs: Math.max(0, performance.now() - encodingAt),
-            }, "query");
-          }
-          throw error;
-        }
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
         try {
           connection.exec("COMMIT");
@@ -1733,7 +1735,7 @@ export class Runtime implements RuntimePort {
           }
           throw error;
         }
-        return Object.freeze({ value, encoded, readSet, commitVersion: version });
+        return Object.freeze({ value, readSet, commitVersion: version });
       } catch (error) {
         if (transactionOpen) {
           const rollbackAt = this.telemetry.enabled ? performance.now() : 0;
@@ -1836,7 +1838,7 @@ export class Runtime implements RuntimePort {
       input.fairnessKey,
       this.shutdownController.signal,
       byteLength(input.args),
-    );
+    ).then((execution) => this.encodeQueryEvaluation(execution));
     if (!this.telemetry.enabled) return execute();
     const scope = this.trace.getStore();
     if (scope === undefined) {
@@ -1854,6 +1856,38 @@ export class Runtime implements RuntimePort {
       operation: "subscription",
       currentFunction: input.address,
     }, execute);
+  }
+
+  private encodeQueryEvaluation(execution: QueryExecution): QueryEvaluation {
+    const startedAt = this.telemetry.enabled ? performance.now() : 0;
+    try {
+      const encoded = encode(execution.value);
+      if (this.telemetry.enabled) {
+        this.traceSpan({
+          stage: "encoding",
+          outcome: "ok",
+          resource: "operation",
+          durationMs: Math.max(0, performance.now() - startedAt),
+          sizeBytes: Buffer.byteLength(encoded),
+          resultCount: Array.isArray(execution.value)
+            ? execution.value.length
+            : execution.value === null
+              ? 0
+              : 1,
+        }, "subscription");
+      }
+      return Object.freeze({ ...execution, encoded });
+    } catch (error) {
+      if (this.telemetry.enabled) {
+        this.traceSpan({
+          stage: "encoding",
+          outcome: outcomeFromError(transportError(error)).code,
+          resource: "operation",
+          durationMs: Math.max(0, performance.now() - startedAt),
+        }, "subscription");
+      }
+      throw error;
+    }
   }
 
   private procedureContext(
@@ -1898,7 +1932,7 @@ export class Runtime implements RuntimePort {
     return new ReactiveCommit(
       writes.keys,
       writes.events,
-      caller,
+      caller === undefined ? [] : this.reactive.affectedQueryIds(caller, writes.keys),
     );
   }
 
@@ -1906,7 +1940,8 @@ export class Runtime implements RuntimePort {
     state: RuntimeSession,
     message: MutationMessage,
     result: CommitResult<unknown, ReactiveCommit>,
-  ): Promise<RuntimeMutationResult> {
+    executedPublication?: RuntimePublication,
+  ): Promise<FinishedRuntimeMutation> {
     let obligations: readonly number[];
     if (result.replay === "replayed") {
       const convergence = await this.reactive.converge(state.subscriber, result.commitVersion);
@@ -1920,22 +1955,34 @@ export class Runtime implements RuntimePort {
       obligations = convergence.affectedCallerIds;
       this.assertConvergence(state.subscriber, obligations, convergence.deliveryFailures);
     }
-    const frame = this.mutationFrame(
-      message,
-      result.value,
-      result.commitVersion,
-      result.durability,
-      result.replay,
-      obligations,
-    );
-    try {
-      this.assertFrameFits(frame, "mutation result");
-    } catch (error) {
-      throw convergenceError(
-        `mutation ${message.mutationRequestId} committed but its receipt cannot fit one frame`,
-      );
+    let publication = executedPublication;
+    if (result.replay === "replayed") {
+      try {
+        publication = this.prepareFrame(this.mutationFrame(
+          message,
+          result.value,
+          result.commitVersion,
+          result.durability,
+          result.replay,
+          obligations,
+        ), "mutation result");
+      } catch {
+        throw convergenceError(
+          `mutation ${message.mutationRequestId} committed but its receipt cannot fit one frame`,
+        );
+      }
     }
-    return Object.freeze({ value: result.value, receipt: frame.receipt });
+    if (
+      publication === undefined ||
+      publication.message.t !== "ok" ||
+      publication.message.kind !== "mutation"
+    ) {
+      throw convergenceError("committed mutation publication was not prepared");
+    }
+    return Object.freeze({
+      result: Object.freeze({ value: result.value, receipt: publication.message.receipt }),
+      publication,
+    });
   }
 
   private mutationFrame(
@@ -1979,15 +2026,15 @@ export class Runtime implements RuntimePort {
     }
   }
 
-  private assertFrameFits(
-    frame: unknown,
+  private prepareFrame(
+    frame: SessionApplicationMessage,
     label: string,
     resource: "operation" | "subscription" = "operation",
-  ): number {
+  ): RuntimePublication {
     const startedAt = this.telemetry.enabled ? performance.now() : 0;
-    let bytes: number;
+    let publication: RuntimePublication;
     try {
-      bytes = byteLength(frame);
+      publication = prepareRuntimePublication(frame);
     } catch (error) {
       const failure = new DbzzError("validation", `${label} is not wire-representable`, {
         cause: error,
@@ -1996,21 +2043,21 @@ export class Runtime implements RuntimePort {
         this.traceSpan({
           stage: "encoding",
           outcome: failure.code,
-          resource,
+          resource: "outbound",
           durationMs: Math.max(0, performance.now() - startedAt),
         }, resource === "subscription" ? "subscription" : "query");
       }
       throw failure;
     }
-    if (bytes > this.limits.maxFrameBytes) {
+    if (publication.bytes > this.limits.maxFrameBytes) {
       const failure = new DbzzError("overloaded", `${label} exceeds maxFrameBytes`, { resource });
       if (this.telemetry.enabled) {
         this.traceSpan({
           stage: "encoding",
           outcome: failure.code,
-          resource,
+          resource: "outbound",
           durationMs: Math.max(0, performance.now() - startedAt),
-          sizeBytes: bytes,
+          sizeBytes: publication.bytes,
         }, resource === "subscription" ? "subscription" : "query");
       }
       throw failure;
@@ -2019,12 +2066,21 @@ export class Runtime implements RuntimePort {
       this.traceSpan({
         stage: "encoding",
         outcome: "ok",
-        resource,
+        resource: "outbound",
         durationMs: Math.max(0, performance.now() - startedAt),
-        sizeBytes: bytes,
+        sizeBytes: publication.bytes,
+        ...(frame.t === "ok" && frame.kind === "query"
+          ? {
+              resultCount: Array.isArray(frame.value)
+                ? frame.value.length
+                : frame.value === null
+                  ? 0
+                  : 1,
+            }
+          : {}),
       }, resource === "subscription" ? "subscription" : "query");
     }
-    return bytes;
+    return publication;
   }
 
   private nextScheduledAt(): Promise<number | null> {

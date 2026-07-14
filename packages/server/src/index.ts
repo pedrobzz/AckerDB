@@ -209,6 +209,7 @@ export {
   type Subscriber,
 } from "./reactive.ts";
 export {
+  prepareRuntimePublication,
   Session,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,

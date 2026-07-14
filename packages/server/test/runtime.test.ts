@@ -33,9 +33,14 @@ import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
 import type {
   RuntimePublication,
   RuntimePublicationBatch,
+  SessionApplicationMessage,
   SessionRuntimeContext,
 } from "../src/session.ts";
-import { Telemetry } from "../src/telemetry.ts";
+import {
+  Telemetry,
+  type TelemetryRecord,
+  type TelemetrySpanRecord,
+} from "../src/telemetry.ts";
 
 const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime" });
 
@@ -115,6 +120,8 @@ const schema = defineSchema({
 type Ctx = any;
 
 let queryGate: Deferred<void> | null = null;
+let queryFailureGate: Deferred<void> | null = null;
+let queryFailureEntered: Deferred<void> | null = null;
 let revalidationGate: Deferred<void> | null = null;
 let revalidationEntered: Deferred<void> | null = null;
 let externalProcedureStarted: Deferred<void> | null = null;
@@ -122,6 +129,8 @@ let externalProcedureRelease: Deferred<void> | null = null;
 let externalSseStarted: Deferred<void> | null = null;
 let externalSseRelease: Deferred<void> | null = null;
 let scheduledAttempts = 0;
+let mutationResultReads = 0;
+let mutationResultValue: object = {};
 
 const functions = {
   messages: {
@@ -157,6 +166,25 @@ const functions = {
         await queryGate?.promise;
         return "released";
       },
+    }),
+    blockFail: query({
+      access: "public",
+      args: {},
+      handler: async () => {
+        queryFailureEntered?.resolve(undefined);
+        await queryFailureGate?.promise;
+        throw new Error("stale query failure");
+      },
+    }),
+    largeQuery: query({
+      access: "public",
+      args: { size: dbz.number() },
+      handler: (_ctx: Ctx, args: Ctx) => "x".repeat(args.size),
+    }),
+    nonWireQuery: query({
+      access: "public",
+      args: {},
+      handler: () => Number.NaN,
     }),
     send: mutation({
       access: "public",
@@ -199,6 +227,11 @@ const functions = {
         await ctx.db.messages.insert({ channelId: args.channelId, body: "must-roll-back" });
         return "x".repeat(args.size);
       },
+    }),
+    canaryResult: mutation({
+      access: "public",
+      args: {},
+      handler: () => mutationResultValue,
     }),
   },
   reminders: {
@@ -303,7 +336,8 @@ const functions = {
 };
 
 class SessionHarness {
-  readonly publications: RuntimePublication[] = [];
+  readonly publications: SessionApplicationMessage[] = [];
+  readonly preparedPublications: RuntimePublication[] = [];
   context!: SessionRuntimeContext;
   private controller = new AbortController();
 
@@ -317,10 +351,10 @@ class SessionHarness {
     await this.runtime.openSession(this.context);
   }
 
-  async rotate(principal: Principal): Promise<readonly RuntimePublication[]> {
+  async rotate(principal: Principal): Promise<readonly SessionApplicationMessage[]> {
     const batch = await this.rotateBatch(principal);
     try {
-      return Object.freeze([...batch.frames]);
+      return Object.freeze(batch.frames.map((publication) => publication.message));
     } finally {
       batch.release();
     }
@@ -372,9 +406,10 @@ class SessionHarness {
       fairnessKey: callerFairnessKey(principal, TEST_SOURCE),
       authEpoch,
       signal: controller.signal,
-      publish: async (message: RuntimePublication) => {
+      publish: async (publication: RuntimePublication) => {
         if (controller.signal.aborted || this.context?.authEpoch !== authEpoch) return false;
-        this.publications.push(message);
+        this.preparedPublications.push(publication);
+        this.publications.push(publication.message);
         return true;
       },
     });
@@ -421,8 +456,7 @@ async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void
 }
 
 function publicationBytes(frames: readonly RuntimePublication[]): number {
-  const encoder = new TextEncoder();
-  return frames.reduce((total, frame) => total + encoder.encode(encode(frame)).byteLength, 0);
+  return frames.reduce((total, frame) => total + frame.bytes, 0);
 }
 
 let directory: string;
@@ -465,6 +499,8 @@ async function restart(
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-"));
   queryGate = null;
+  queryFailureGate = null;
+  queryFailureEntered = null;
   revalidationGate = null;
   revalidationEntered = null;
   externalProcedureStarted = null;
@@ -472,6 +508,14 @@ beforeEach(() => {
   externalSseStarted = null;
   externalSseRelease = null;
   scheduledAttempts = 0;
+  mutationResultReads = 0;
+  mutationResultValue = Object.defineProperty({}, "payload", {
+    enumerable: true,
+    get() {
+      mutationResultReads++;
+      return "stable";
+    },
+  });
   eventAccessInputs.length = 0;
   eventMatchInputs.length = 0;
   start();
@@ -484,6 +528,38 @@ afterEach(async () => {
 });
 
 describe("runtime commit and replay ownership", () => {
+  test("reuses the precommit mutation publication after idempotency encoding", async () => {
+    await session.open();
+    const result = await session.mutation(1, "messages.canaryResult", {});
+    const publication = session.preparedPublications.at(-1);
+
+    expect(result.value).toBe(mutationResultValue);
+    expect(mutationResultReads).toBe(2);
+    expect(publication?.message).toMatchObject({ t: "ok", kind: "mutation" });
+    if (publication?.message.t !== "ok" || publication.message.kind !== "mutation") {
+      throw new Error("expected mutation publication");
+    }
+    expect(publication.message.value).toBe(mutationResultValue);
+  });
+
+  test("publishes one safe error when a query result is not wire-representable", async () => {
+    await session.open();
+    await expect(runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 2,
+      ref: "messages.nonWireQuery",
+      args: {},
+    })).rejects.toMatchObject({ code: "validation" });
+
+    expect(session.publications.filter((frame) => frame.id === 2)).toEqual([
+      expect.objectContaining({
+        t: "err",
+        outcome: expect.objectContaining({ code: "validation" }),
+      }),
+    ]);
+  });
+
   test("validates queries and keeps failed transaction writes invisible", async () => {
     await session.open();
     const first = await session.mutation(1, "messages.send", { channelId: 1n, body: "hello" });
@@ -553,6 +629,78 @@ describe("runtime commit and replay ownership", () => {
 });
 
 describe("ordered convergence", () => {
+  test("does not encode an old-epoch error rejected by auth capture", async () => {
+    const exported: TelemetryRecord[] = [];
+    await restart(limits(), {
+      localSink: false,
+      exporter: { export: (records) => void exported.push(...records) },
+    });
+    await session.open(user("alice"));
+    await runtime.subscribe(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 89,
+      ref: "messages.parallelList",
+      args: { channelId: 1n },
+    });
+    queryFailureGate = deferred<void>();
+    queryFailureEntered = deferred<void>();
+    const failedQuery = runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 90,
+      ref: "messages.blockFail",
+      args: {},
+    });
+    void failedQuery.catch(() => {});
+    await queryFailureEntered.promise;
+
+    revalidationGate = deferred<void>();
+    revalidationEntered = deferred<void>();
+    const nextController = new AbortController();
+    const nextPrincipal = user("bob");
+    const nextContext: SessionRuntimeContext = Object.freeze({
+      ...session.context,
+      principal: nextPrincipal,
+      fairnessKey: callerFairnessKey(nextPrincipal, TEST_SOURCE),
+      authEpoch: 1,
+      signal: nextController.signal,
+      publish: async () => true,
+    });
+    let transition: Promise<RuntimePublicationBatch> | undefined;
+    try {
+      transition = runtime.transitionAuth({
+        attemptId: 1,
+        reason: "refresh",
+        from: session.context,
+        to: nextContext,
+      });
+      await Promise.race([
+        revalidationEntered.promise,
+        transition.then(() => {
+          throw new Error("auth transition completed before revalidation stalled");
+        }),
+      ]);
+      queryFailureGate.resolve(undefined);
+      await expect(failedQuery).rejects.toThrow("stale query failure");
+      await runtime.telemetry.flush();
+    } finally {
+      queryFailureGate.resolve(undefined);
+      revalidationGate.resolve(undefined);
+      const batch = await transition;
+      batch?.release();
+      nextController.abort();
+    }
+
+    const requestSpans = exported.filter((record): record is TelemetrySpanRecord =>
+      record.kind === "span" && record.requestId === "90"
+    );
+    expect(requestSpans.some((record) => record.stage === "handler" && record.outcome !== "ok")).toBe(true);
+    expect(requestSpans.filter((record) =>
+      record.stage === "encoding" && record.resource === "outbound"
+    )).toEqual([]);
+  });
+
   test("publishes initial reset and advances caller obligations before mutation resolution", async () => {
     await session.open();
     await runtime.subscribe(session.context, {
@@ -1319,6 +1467,24 @@ describe("configured capacity", () => {
       args: { channelId: 9n },
     });
     expect(rows).toEqual([]);
+  });
+
+  test("publishes an error instead of an oversized query success frame", async () => {
+    await session.open();
+    await expect(runtime.query(session.context, {
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 3,
+      ref: "messages.largeQuery",
+      args: { size: 512 },
+    })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
+
+    expect(session.publications.filter((frame) => frame.id === 3)).toEqual([
+      expect.objectContaining({
+        t: "err",
+        outcome: expect.objectContaining({ code: "overloaded", resource: "operation" }),
+      }),
+    ]);
   });
 
   test("removes runtime ownership when an auth transition cannot fit its capture", async () => {

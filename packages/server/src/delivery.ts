@@ -15,10 +15,11 @@ import {
   outcomeFromError,
   outcomeWebSocketClose,
 } from "./outcome.ts";
-import type {
-  SessionApplicationMessage,
-  SessionControlMessage,
-  SessionSink,
+import {
+  assertRuntimePublication,
+  type RuntimePublication,
+  type SessionControlMessage,
+  type SessionSink,
 } from "./session.ts";
 
 export type OutboundLane = "application" | "control";
@@ -492,8 +493,8 @@ export class WebSocketSessionSink implements SessionSink {
     return this.enqueue("control", null, message);
   }
 
-  sendApplication(authEpoch: number, message: SessionApplicationMessage): Promise<void> {
-    return this.enqueue("application", authEpoch, message);
+  sendApplication(authEpoch: number, publication: RuntimePublication): Promise<void> {
+    return this.enqueue("application", authEpoch, publication);
   }
 
   async dropApplicationFramesBefore(authEpoch: number): Promise<void> {
@@ -553,7 +554,7 @@ export class WebSocketSessionSink implements SessionSink {
   private enqueue(
     lane: OutboundLane,
     authEpoch: number | null,
-    message: SessionControlMessage | SessionApplicationMessage,
+    frame: SessionControlMessage | RuntimePublication,
   ): Promise<void> {
     const observer = captureDeliveryObserver(this.delivery, lane);
     if (this.closed) {
@@ -564,27 +565,43 @@ export class WebSocketSessionSink implements SessionSink {
       }
       return Promise.reject(error);
     }
-    const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
     let text: string;
-    try {
-      text = encode(message);
-    } catch (error) {
-      if (this.delivery !== undefined) {
-        observeEncoding(
-          this.delivery,
-          observer,
-          lane,
-          "send",
-          encodingStartedAt,
-          0,
-          safeDeliveryOutcome(error),
-        );
+    let bytes: number;
+    if (lane === "application") {
+      const publication = frame as RuntimePublication;
+      try {
+        assertRuntimePublication(publication);
+      } catch (error) {
+        const timing = this.delivery === undefined
+          ? undefined
+          : deliveryTiming(this.delivery, observer, "send", 0);
+        observeTiming(this.delivery, lane, timing, "queue", safeDeliveryOutcome(error));
+        return Promise.reject(error);
       }
-      return Promise.reject(error);
-    }
-    const bytes = utf8.encode(text).byteLength;
-    if (this.delivery !== undefined) {
-      observeEncoding(this.delivery, observer, lane, "send", encodingStartedAt, bytes, "ok");
+      text = publication.text;
+      bytes = publication.bytes;
+    } else {
+      const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
+      try {
+        text = encode(frame);
+      } catch (error) {
+        if (this.delivery !== undefined) {
+          observeEncoding(
+            this.delivery,
+            observer,
+            lane,
+            "send",
+            encodingStartedAt,
+            0,
+            safeDeliveryOutcome(error),
+          );
+        }
+        return Promise.reject(error);
+      }
+      bytes = utf8.encode(text).byteLength;
+      if (this.delivery !== undefined) {
+        observeEncoding(this.delivery, observer, lane, "send", encodingStartedAt, bytes, "ok");
+      }
     }
     const timing = this.delivery === undefined
       ? undefined

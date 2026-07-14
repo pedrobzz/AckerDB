@@ -127,7 +127,11 @@ async function publish<C>(
 ): Promise<ReactiveCommitResult> {
   const slot = reactive.publication.reserve(64);
   prepare(slot.version);
-  const commit = new ReactiveCommit(writeKeys, options.events, options.caller);
+  const commit = new ReactiveCommit(
+    writeKeys,
+    options.events,
+    options.caller === undefined ? [] : reactive.affectedQueryIds(options.caller, writeKeys),
+  );
   slot.commit(commit);
   await slot.completion;
   if (!commit.result) throw new Error("publication did not produce a result");
@@ -144,6 +148,39 @@ function queuedBytes(address: string, args: unknown, scope: string): number {
 }
 
 describe("ordered reactive ownership", () => {
+  test("uses the immutable caller obligations captured before publication", async () => {
+    let version = 0n;
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async () => evaluation("value", version, "messages"),
+    });
+    const caller = new RecordingSubscriber();
+    const subscription = {
+      address: "messages.list",
+      args: null,
+      policyScopeFingerprint: "public",
+      fairnessKey: "caller",
+      context: undefined,
+      subscriber: caller,
+      authEpoch: 0,
+    };
+    await reactive.subscribeQuery({ ...subscription, id: 1 });
+    const writeKeys = new Set(["messages"]);
+    const affectedCallerIds = reactive.affectedQueryIds(caller, writeKeys);
+    const commit = new ReactiveCommit(writeKeys, [], affectedCallerIds);
+
+    affectedCallerIds.push(99);
+    reactive.unsubscribe(caller, 1);
+    await reactive.subscribeQuery({ ...subscription, id: 2 });
+    const slot = reactive.publication.reserve(64);
+    version = slot.version;
+    slot.commit(commit);
+    await slot.completion;
+
+    expect(Object.isFrozen(commit.affectedCallerIds)).toBe(true);
+    expect(commit.result).toMatchObject({ affectedCallerIds: [1], deliveryFailures: [] });
+  });
+
   test("shares only address, args, and explicit policy-scope peers", async () => {
     let evaluations = 0;
     const reactive = new OrderedReactive<{ request: string }>({
@@ -372,7 +409,12 @@ describe("ordered reactive ownership", () => {
     stalled = true;
     const first = reactive.publication.reserve(64);
     version = first.version;
-    first.commit(new ReactiveCommit(new Set(["active"]), [], active));
+    const activeWrites = new Set(["active"]);
+    first.commit(new ReactiveCommit(
+      activeWrites,
+      [],
+      reactive.affectedQueryIds(active, activeWrites),
+    ));
     await entered.promise;
 
     const second = reactive.publication.reserve(64);
@@ -670,7 +712,7 @@ describe("ordered reactive ownership", () => {
     const firstCommit = new ReactiveCommit(
       new Set(["a"]),
       [{ table: "events", row: "one" }],
-      firstCaller,
+      [1],
     );
     first.commit(firstCommit);
     await entered.promise;
@@ -689,7 +731,7 @@ describe("ordered reactive ownership", () => {
     const secondCommit = new ReactiveCommit(
       new Set(["b"]),
       [{ table: "events", row: "two" }],
-      secondCaller,
+      [2],
     );
     second.commit(secondCommit);
     await second.completion;

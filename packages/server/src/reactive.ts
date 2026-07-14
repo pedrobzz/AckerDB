@@ -74,14 +74,16 @@ export interface ReactiveCommitResult {
 export class ReactiveCommit {
   readonly writeKeys: ReadonlySet<string>;
   readonly events: readonly ReactiveEvent[];
+  readonly affectedCallerIds: readonly number[];
   result?: ReactiveCommitResult;
 
   constructor(
     writeKeys: ReadonlySet<string>,
     events: readonly ReactiveEvent[] = [],
-    readonly caller?: Subscriber,
+    affectedCallerIds: readonly number[] = [],
   ) {
     this.writeKeys = new Set(writeKeys);
+    this.affectedCallerIds = Object.freeze([...affectedCallerIds]);
     this.events = Object.freeze(events.map((event) => Object.freeze({
       table: event.table,
       row: deepFreeze(structuredClone(event.row)),
@@ -927,7 +929,6 @@ export class OrderedReactive<C = unknown> {
 
   private processPublication(publication: Publication<ReactiveCommit>): PublicationHandoff {
     const commit = publication.value;
-    const affectedCallerIds = commit.caller ? this.affectedQueryIds(commit.caller, commit.writeKeys) : [];
     const matchedAt = this.observer ? this.observationNow() : undefined;
     const affected = this.affectedEntries(commit.writeKeys);
     if (this.observer && commit.writeKeys.size > 0 && this.entries.size > 0) {
@@ -950,7 +951,7 @@ export class OrderedReactive<C = unknown> {
     const eventDelivery = this.scheduleEvents(publication.version, commit.events);
     return new PublicationHandoff(Promise.all([...required, eventDelivery]).then((results) => {
       commit.result = Object.freeze({
-        affectedCallerIds: Object.freeze(affectedCallerIds),
+        affectedCallerIds: commit.affectedCallerIds,
         deliveryFailures: Object.freeze(results.flat()),
       });
       this.prune();
