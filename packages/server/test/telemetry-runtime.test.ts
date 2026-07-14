@@ -33,6 +33,7 @@ import {
   type TelemetryExporter,
   type TelemetryMetricRecord,
   type TelemetryRecord,
+  type TelemetryScheduler,
   type TelemetrySpanRecord,
 } from "@dbzz/server";
 import { callerFairnessKey } from "../src/caller.ts";
@@ -1327,13 +1328,29 @@ describe("Runtime telemetry acceptance", () => {
     }));
   });
 
-  test("exporter throws and stalls fail open for application work", async () => {
+  test("exporter throws and an indefinitely stalled export fail open for application work", async () => {
+    const exporterTimeoutMs = 60_000;
+    const operationDeadlineMs = 1_000;
+    let pendingExporterTimeout: (() => void) | undefined;
+    const scheduler: TelemetryScheduler = {
+      setInterval: () => undefined,
+      clearInterval: () => {},
+      setTimeout(callback, delayMs) {
+        if (delayMs !== exporterTimeoutMs) throw new Error(`Unexpected ${delayMs}ms timeout`);
+        pendingExporterTimeout = callback;
+        return callback;
+      },
+      clearTimeout(handle) {
+        if (handle === pendingExporterTimeout) pendingExporterTimeout = undefined;
+      },
+    };
     let mode: "throw" | "stall" | "capture" = "throw";
     const captured: TelemetryRecord[] = [];
+    const stalledExport = new Promise<void>(() => {});
     const exporter: TelemetryExporter = {
       export(batch) {
         if (mode === "throw") throw new Error("export failed");
-        if (mode === "stall") return new Promise<void>(() => {});
+        if (mode === "stall") return stalledExport;
         captured.push(...batch);
       },
     };
@@ -1341,33 +1358,78 @@ describe("Runtime telemetry acceptance", () => {
       enabled: true,
       exporter,
       localSink: false,
-      limits: telemetryLimits,
+      scheduler,
+      limits: { ...telemetryLimits, exportTimeoutMs: exporterTimeoutMs },
     });
     const session = await app.openSession("telemetry-exporter-fail-open");
 
     await expect(app.runtime.telemetry.flush()).resolves.toBeUndefined();
     expect(app.runtime.telemetry.snapshot().exporter.failures).toBeGreaterThanOrEqual(1);
 
+    await app.runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: QUERY_SUBSCRIPTION_ID,
+      ref: "items.list",
+      args: { room: 9n },
+    }));
     mode = "stall";
     const stalledFlush = app.runtime.telemetry.flush();
-    const mutation = await app.mutation(session.context, 910_000_001, "items.add", {
-      room: 9n,
-      body: "application-remains-correct",
-    });
-    expect(mutation.receipt.replay).toBe("executed");
-    await expect(stalledFlush).resolves.toBeUndefined();
+    const exporterTimeout = pendingExporterTimeout;
+    expect(exporterTimeout).toBeDefined();
+
+    try {
+      const { mutation, rows } = await Promise.race([
+        (async () => {
+          const mutation = await app.mutation(session.context, 910_000_001, "items.add", {
+            room: 9n,
+            body: "application-remains-correct",
+          });
+          const rows = await app.runtime.query(session.context, request({
+            v: PROTOCOL_VERSION,
+            t: "q",
+            id: 910_000_002,
+            ref: "items.list",
+            args: { room: 9n },
+          }));
+          return { mutation, rows };
+        })(),
+        Bun.sleep(operationDeadlineMs).then(() => {
+          throw new Error("application work waited for the stalled telemetry exporter");
+        }),
+      ]);
+      expect(mutation.receipt).toMatchObject({
+        replay: "executed",
+        obligations: [QUERY_SUBSCRIPTION_ID],
+      });
+      expect(rows).toMatchObject([{ body: "application-remains-correct" }]);
+      expect(session.publications.findLast(
+        (frame) => frame.t === "transition" && frame.id === QUERY_SUBSCRIPTION_ID,
+      )).toMatchObject({
+        transition: {
+          kind: "update",
+          to: { commitVersion: mutation.receipt.commitVersion },
+          value: [{ room: 9n, body: "application-remains-correct" }],
+        },
+      });
+      const exporting = app.runtime.telemetry.snapshot();
+      expect(exporting.exporter).toMatchObject({
+        inFlight: true,
+        attempts: 2,
+        failures: 1,
+        timeouts: 0,
+      });
+      expect(exporting.queuedRecords).toBeLessThanOrEqual(telemetryLimits.maxRecords);
+      expect(exporting.queuedBytes).toBeLessThanOrEqual(telemetryLimits.maxBytes);
+    } finally {
+      exporterTimeout!();
+      await stalledFlush;
+    }
     const degraded = app.runtime.telemetry.snapshot();
     expect(degraded.exporter.failures).toBeGreaterThanOrEqual(2);
     expect(degraded.exporter.timeouts).toBeGreaterThanOrEqual(1);
     expect(degraded.queuedRecords).toBeLessThanOrEqual(telemetryLimits.maxRecords);
     expect(degraded.queuedBytes).toBeLessThanOrEqual(telemetryLimits.maxBytes);
-    expect(await app.runtime.query(session.context, request({
-      v: PROTOCOL_VERSION,
-      t: "q",
-      id: 910_000_002,
-      ref: "items.list",
-      args: { room: 9n },
-    }))).toMatchObject([{ body: "application-remains-correct" }]);
 
     mode = "capture";
     await app.runtime.telemetry.flush();
