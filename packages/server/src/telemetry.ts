@@ -1589,9 +1589,7 @@ export class Telemetry {
   ): MutableTraceRetention | undefined {
     if (AuthenticTelemetryTraceContext.owns(context)) {
       const trace = AuthenticTelemetryTraceContext.retention(context);
-      if (trace !== undefined) {
-        return trace.owner === state && trace.phase !== "settled" ? trace : undefined;
-      }
+      return trace?.owner === state && trace.phase !== "settled" ? trace : undefined;
     }
     const traceId = context === undefined ? undefined : safeId(context.traceId);
     if (traceId === undefined) return undefined;

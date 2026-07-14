@@ -354,13 +354,13 @@ describe("Telemetry", () => {
       requestId: "unsafe request identifier",
       connectionId: "connection_prepared_parity",
     };
+    const preparedRoot = prepareTelemetryTraceContext(root);
+    const preparedChild = deriveTelemetryTraceContext(preparedRoot);
     const child = {
       ...root,
-      spanId: "span_prepared_child",
+      spanId: preparedChild.spanId,
       parentSpanId: root.spanId,
     };
-    const preparedRoot = prepareTelemetryTraceContext(root);
-    const preparedChild = prepareTelemetryTraceContext(child);
 
     expect(publicTelemetry.beginTrace(root, 0)).toBe(true);
     expect(preparedTelemetry.beginTrace(preparedRoot, 0)).toBe(true);
@@ -501,6 +501,53 @@ describe("Telemetry", () => {
       completedDecisions: 1,
       dropped: { decisionOverflow: 1 },
     });
+  });
+
+  test("does not attach a stale authentic child to a reused trace id", () => {
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => 0,
+      limits: { slowOperationMs: 100 },
+    });
+    const oldRoot = prepareTelemetryTraceContext({
+      traceId: "trace_prepared_reused",
+      spanId: "span_prepared_old_root",
+    });
+    const staleChild = deriveTelemetryTraceContext(oldRoot);
+    expect(telemetry.beginTrace(oldRoot)).toBe(true);
+    const lease = telemetry[CLAIM_DELIVERY_LEASE](oldRoot);
+    if (lease === undefined) throw new Error("delivery lease was not claimed");
+    expect(telemetry.finishTrace(oldRoot)).toBe(true);
+    telemetry[RELEASE_DELIVERY_LEASE](lease);
+
+    const newRoot = prepareTelemetryTraceContext({
+      traceId: oldRoot.traceId,
+      spanId: "span_prepared_new_root",
+    });
+    expect(telemetry.beginTrace(newRoot)).toBe(true);
+    const newLease = telemetry[CLAIM_DELIVERY_LEASE](newRoot);
+    if (newLease === undefined) throw new Error("delivery lease was not claimed");
+    for (const outcome of ["ok", "internal"] as const) {
+      expect(telemetry[RECORD_PREPARED_SPAN]({
+        context: staleChild,
+        operation: "query",
+        stage: "handler",
+        outcome,
+        durationMs: 1,
+      })).toBe(true);
+    }
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 1,
+      traceRetention: { activeTraces: 1, stagedRecords: 0, promotedTraces: 0 },
+    });
+    expect(telemetry.finishTrace(newRoot)).toBe(true);
+    telemetry[RELEASE_DELIVERY_LEASE](newLease);
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      activeTraces: 0,
+      completedDecisions: 0,
+      stagedRecords: 0,
+    });
+    telemetry.stop();
   });
 
   test("bounds metric cardinality and folds excess dimensions into one explicit series", async () => {
