@@ -6,6 +6,7 @@ import type {
 } from "./session.ts";
 import {
   deriveTelemetryTraceContext,
+  identifyTelemetryTraceRequest,
   prepareTelemetryTraceContext,
   RECORD_PREPARED_SPAN,
   type PreparedTelemetryTraceContext,
@@ -110,7 +111,7 @@ export function identifyHttpTrace(
   const state = trace?.[HTTP_TRACE_STATE];
   if (state?.phase !== "external") return;
   state.functionName = functionName;
-  state.context = prepareTelemetryTraceContext({ ...state.context, requestId });
+  state.context = identifyTelemetryTraceRequest(state.context, requestId);
 }
 
 export async function observeHttpAuth<T>(

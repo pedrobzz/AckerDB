@@ -446,6 +446,63 @@ describe("Telemetry", () => {
     expect(telemetry.snapshot().dropped.invalid).toBe(1);
   });
 
+  test("keeps prepared trace ownership isolated across telemetry instances", () => {
+    const options = {
+      localSink: false as const,
+      now: () => 0,
+      limits: { maxRecords: 1, maxBatchRecords: 1, slowOperationMs: 100 },
+    };
+    const first = new Telemetry(options);
+    const second = new Telemetry(options);
+    const context = prepareTelemetryTraceContext({
+      traceId: "trace_prepared_owner",
+      spanId: "span_prepared_owner",
+    });
+    expect(second.beginTrace({ traceId: context.traceId })).toBe(true);
+    expect(second.recordSpan({
+      context: { traceId: context.traceId, spanId: "span_second_owner" },
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    })).toBe(true);
+    expect(second.finishTrace({ traceId: context.traceId })).toBe(true);
+    expect(first.beginTrace(context)).toBe(true);
+    const lease = first[CLAIM_DELIVERY_LEASE](context);
+    if (lease === undefined) throw new Error("delivery lease was not claimed");
+
+    expect(second.beginTrace(context)).toBe(false);
+    expect(second[RECORD_PREPARED_SPAN]({
+      context,
+      operation: "query",
+      stage: "delivery",
+      outcome: "internal",
+      durationMs: 1,
+    })).toBe(true);
+    second[RELEASE_DELIVERY_LEASE](lease);
+    expect(second.finishTrace(context)).toBe(false);
+    expect(second.snapshot().traceRetention).toMatchObject({
+      completedDecisions: 1,
+      stagedRecords: 1,
+      promotedTraces: 0,
+      dropped: { decisionOverflow: 0 },
+    });
+    expect(first.finishTrace(context)).toBe(true);
+    expect(first.snapshot().traceRetention).toMatchObject({
+      activeTraces: 0,
+      completedDecisions: 1,
+    });
+
+    first[RELEASE_DELIVERY_LEASE](lease);
+    expect(first.snapshot().traceRetention.completedDecisions).toBe(0);
+    expect(second.beginTrace(context)).toBe(true);
+    expect(second.finishTrace(context)).toBe(true);
+    expect(second.snapshot().traceRetention).toMatchObject({
+      completedDecisions: 1,
+      dropped: { decisionOverflow: 1 },
+    });
+  });
+
   test("bounds metric cardinality and folds excess dimensions into one explicit series", async () => {
     const scheduler = new ManualScheduler();
     const { batches, exporter } = exporterBatches();
