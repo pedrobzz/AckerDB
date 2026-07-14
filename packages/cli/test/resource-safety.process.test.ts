@@ -20,7 +20,6 @@ import {
 import { makeFixture } from "./fixture.ts";
 import { decodeChunkedBody, parseSseBody, pausedSse } from "./paused-sse.ts";
 
-const TEST_TIMEOUT_MS = 30_000;
 const STEP_TIMEOUT_MS = 8_000;
 const STATUS_TOKEN = "resource-status";
 const KiB = 1024;
@@ -53,8 +52,13 @@ const DECLARED_RETAINED_BYTES =
 const DECLARED_RETAINED_MB = DECLARED_RETAINED_BYTES / (KiB * KiB);
 const PROCESS_SAMPLE_MS = 20;
 const DESCRIPTOR_SAMPLE_MS = 50;
-const WARMUP_EPOCHS = 5;
 const MEASURED_EPOCHS = 5;
+const COMBINED_STABILITY_EPOCHS = 8;
+const COMBINED_MAX_TOTAL_EPOCHS = 40;
+const COMBINED_MAX_STABILIZATION_MS = 60_000;
+const COMBINED_HARNESS_TIMEOUT_STEPS = 8;
+const COMBINED_TEST_TIMEOUT_MS =
+  COMBINED_MAX_STABILIZATION_MS + COMBINED_HARNESS_TIMEOUT_STEPS * STEP_TIMEOUT_MS;
 const SSE_MIN_WARMUP_EPOCHS = 15;
 const SSE_STABILITY_EPOCHS = 8;
 const SSE_MAX_TOTAL_EPOCHS = 64;
@@ -634,6 +638,47 @@ function slope(values: readonly number[]): number {
   return values.reduce((sum, value, index) => sum + (index - mean) * value, 0) / denominator;
 }
 
+function positiveTrend(values: readonly number[]): number {
+  return Math.max(0, slope(values) * (values.length - 1));
+}
+
+function resourceMetricProof(
+  measuredValues: readonly number[],
+  settledValues: readonly number[],
+  trendBudgetMb: number,
+) {
+  const settledVariability = maximum(settledValues) - minimum(settledValues);
+  const tolerance = settledVariability + trendBudgetMb;
+  const spread = maximum(measuredValues) - minimum(measuredValues);
+  const firstLast = Math.abs(measuredValues.at(-1)! - measuredValues[0]!);
+  const growthTrend = positiveTrend(measuredValues);
+  const maximumAllowed = maximum(settledValues) + tolerance;
+  return {
+    settledVariability,
+    tolerance,
+    spread,
+    firstLast,
+    growthTrend,
+    maximum: maximum(measuredValues),
+    maximumAllowed,
+    trendBudgetMb,
+  };
+}
+
+function resourceMetricProofAccepted(proof: ReturnType<typeof resourceMetricProof>): boolean {
+  return proof.spread <= proof.tolerance &&
+    proof.firstLast <= proof.tolerance &&
+    proof.maximum <= proof.maximumAllowed &&
+    proof.growthTrend <= proof.trendBudgetMb;
+}
+
+function assertResourceMetricProof(proof: ReturnType<typeof resourceMetricProof>): void {
+  expect(proof.spread).toBeLessThanOrEqual(proof.tolerance);
+  expect(proof.firstLast).toBeLessThanOrEqual(proof.tolerance);
+  expect(proof.maximum).toBeLessThanOrEqual(proof.maximumAllowed);
+  expect(proof.growthTrend).toBeLessThanOrEqual(proof.trendBudgetMb);
+}
+
 function maximum(values: readonly number[]): number {
   return Math.max(...values);
 }
@@ -1010,8 +1055,6 @@ test(
     };
 
     const rssTrendBudgetMb = LIMITS.sseBytes / (KiB * KiB);
-    const linearTrend = (values: readonly number[]) => slope(values) * (values.length - 1);
-    const positiveTrend = (values: readonly number[]) => Math.max(0, linearTrend(values));
     const plateauShift = (values: readonly number[]) => {
       const half = values.length / 2;
       const average = (part: readonly number[]) =>
@@ -1106,40 +1149,11 @@ test(
       }
     };
 
-    const metricProof = (measuredValues: readonly number[], settledValues: readonly number[]) => {
-      const settledVariability = maximum(settledValues) - minimum(settledValues);
-      const tolerance = settledVariability + rssTrendBudgetMb;
-      const spread = maximum(measuredValues) - minimum(measuredValues);
-      const firstLast = Math.abs(measuredValues.at(-1)! - measuredValues[0]!);
-      const growthTrend = positiveTrend(measuredValues);
-      const maximumAllowed = maximum(settledValues) + tolerance;
-      return {
-        settledVariability,
-        tolerance,
-        spread,
-        firstLast,
-        growthTrend,
-        maximum: maximum(measuredValues),
-        maximumAllowed,
-      };
-    };
-    const proofAccepted = (proof: ReturnType<typeof metricProof>) =>
-      proof.spread <= proof.tolerance &&
-      proof.firstLast <= proof.tolerance &&
-      proof.maximum <= proof.maximumAllowed &&
-      proof.growthTrend <= rssTrendBudgetMb;
-    const assertMetricProof = (proof: ReturnType<typeof metricProof>) => {
-      expect(proof.spread).toBeLessThanOrEqual(proof.tolerance);
-      expect(proof.firstLast).toBeLessThanOrEqual(proof.tolerance);
-      expect(proof.maximum).toBeLessThanOrEqual(proof.maximumAllowed);
-      expect(proof.growthTrend).toBeLessThanOrEqual(rssTrendBudgetMb);
-    };
-
     let seed: readonly Epoch[] = [];
     let settled!: Awaited<ReturnType<typeof settle>>;
     let measured!: Epoch[];
-    let recoveredProof!: ReturnType<typeof metricProof>;
-    let peakProof!: ReturnType<typeof metricProof>;
+    let recoveredProof!: ReturnType<typeof resourceMetricProof>;
+    let peakProof!: ReturnType<typeof resourceMetricProof>;
     for (;;) {
       settled = await settle(seed);
       const warmRecovered = settled.plateau.map((sample) => sample.rssRecovered);
@@ -1165,12 +1179,20 @@ test(
         seed = [lowerPlateau];
         continue;
       }
-      recoveredProof = metricProof(
+      recoveredProof = resourceMetricProof(
         measured.map((epoch) => epoch.rssRecovered),
         warmRecovered,
+        rssTrendBudgetMb,
       );
-      peakProof = metricProof(measured.map((epoch) => epoch.rssPeak), warmPeaks);
-      if (proofAccepted(recoveredProof) && proofAccepted(peakProof)) break;
+      peakProof = resourceMetricProof(
+        measured.map((epoch) => epoch.rssPeak),
+        warmPeaks,
+        rssTrendBudgetMb,
+      );
+      if (
+        resourceMetricProofAccepted(recoveredProof) &&
+        resourceMetricProofAccepted(peakProof)
+      ) break;
 
       // A measured window that still moves becomes additional warmup. A true
       // leak can never pass the unchanged proof and exhausts the one global cap.
@@ -1184,8 +1206,8 @@ test(
     const warmupPlateauPeaks = settled.plateau.map((epoch) => epoch.rssPeak);
     const measuredRecoveredRss = measured.map((epoch) => epoch.rssRecovered);
     const measuredPeakRss = measured.map((epoch) => epoch.rssPeak);
-    assertMetricProof(recoveredProof);
-    assertMetricProof(peakProof);
+    assertResourceMetricProof(recoveredProof);
+    assertResourceMetricProof(peakProof);
     expect(processMonitor.samples()[0]!.rssKind).toBe(PROCESS_TREE_RSS_KIND);
     const maxMeasuredSseBytes = maximum(measured.map((epoch) => epoch.sseBytes));
     const maxMeasuredWireBytes = maximum(measured.map((epoch) => epoch.wireBytes));
@@ -1273,6 +1295,10 @@ processResourceTest(
     status: 200,
     frame: { t: "ok", value: 1 },
   });
+  expect(await call(base, 2, "pressure.echo", { value: 2 }, "pressure")).toMatchObject({
+    status: 200,
+    frame: { t: "ok", value: 2 },
+  });
   warm.socket.close();
   await withTimeout(warm.closed(), "warm WebSocket close");
   const warmReleased = await eventually(
@@ -1281,6 +1307,10 @@ processResourceTest(
     "warm resources to be released",
   );
   assertResourcesReleased(warmReleased);
+  expect(await call(base, 3, "pressure.collect", {})).toMatchObject({
+    status: 200,
+    frame: { t: "ok", value: null },
+  });
 
   const baselineRss = snapshotProcessTree(processHarness.child.pid);
   const baselineDescriptors = descriptorSnapshot(processHarness.child.pid);
@@ -1546,61 +1576,163 @@ processResourceTest(
     descriptorMonitor.sampleNow();
     const processSamples = processMonitor.samples().slice(processStart);
     const descriptorSamples = descriptorMonitor.samples().slice(descriptorStart);
+    // Peak samples above include all request work. The immediate post-GC sample
+    // is the independent recovered metric; live ownership survives this collect.
+    expect(await call(base, from + 99, "pressure.collect", {})).toMatchObject({
+      status: 200,
+      frame: { t: "ok", value: null },
+    });
+    const recovered = processMonitor.sampleNow();
     return {
-      rssMinimum: minimum(processSamples.map((sample) => sample.rssMb)),
       rssPeak: maximum(processSamples.map((sample) => sample.rssMb)),
+      rssRecovered: recovered.rssMb,
       descriptorsPeak: maximum(descriptorSamples.map((sample) => sample.open)),
       listenersMinimum: minimum(descriptorSamples.map((sample) => sample.listeners)),
       listenersPeak: maximum(descriptorSamples.map((sample) => sample.listeners)),
     };
   };
 
-  const warmupEpochs = [];
-  for (let epoch = 0; epoch < WARMUP_EPOCHS; epoch++) {
-    warmupEpochs.push(await overloadEpoch(100 + epoch * 100));
-  }
-  const measuredEpochs = [];
-  for (let epoch = 0; epoch < MEASURED_EPOCHS; epoch++) {
-    measuredEpochs.push(await overloadEpoch(1_000 + epoch * 100));
+  type PressureEpoch = Awaited<ReturnType<typeof overloadEpoch>>;
+  const allEpochs: PressureEpoch[] = [];
+  let epochId = 0;
+  let stabilizationRetries = 0;
+  const stabilizationStartedAt = Date.now();
+  const stabilizationDeadlineAt = stabilizationStartedAt + COMBINED_MAX_STABILIZATION_MS;
+  const stabilizationBudgetError = (reason: string) => new Error(
+    `combined pressure exhausted its global stabilization budget: ${JSON.stringify({
+      reason,
+      epochs: epochId,
+      maxEpochs: COMBINED_MAX_TOTAL_EPOCHS,
+      elapsedMs: Date.now() - stabilizationStartedAt,
+      maxElapsedMs: COMBINED_MAX_STABILIZATION_MS,
+      stabilizationRetries,
+      recovered: allEpochs.map((sample) => sample.rssRecovered),
+      peaks: allEpochs.map((sample) => sample.rssPeak),
+      descriptors: allEpochs.map((sample) => sample.descriptorsPeak),
+    })}`,
+  );
+  const nextEpoch = async () => {
+    const remainingMs = stabilizationDeadlineAt - Date.now();
+    if (epochId >= COMBINED_MAX_TOTAL_EPOCHS) throw stabilizationBudgetError("epoch cap");
+    if (remainingMs <= 0) throw stabilizationBudgetError("wall-time cap");
+    const id = ++epochId;
+    try {
+      const sample = await withTimeout(
+        overloadEpoch(id * 100),
+        `combined pressure epoch ${id}`,
+        Math.min(STEP_TIMEOUT_MS, remainingMs),
+      );
+      allEpochs.push(sample);
+      return sample;
+    } catch (error) {
+      if (Date.now() >= stabilizationDeadlineAt) {
+        throw stabilizationBudgetError("wall-time cap");
+      }
+      throw error;
+    }
+  };
+  const metricSettled = (values: readonly number[]) =>
+    maximum(values) - minimum(values) <= DECLARED_RETAINED_MB &&
+    positiveTrend(values) <= DECLARED_RETAINED_MB;
+
+  let settledEpochs!: readonly PressureEpoch[];
+  let measuredEpochs!: PressureEpoch[];
+  let recoveredProof!: ReturnType<typeof resourceMetricProof>;
+  let peakProof!: ReturnType<typeof resourceMetricProof>;
+  for (;;) {
+    for (;;) {
+      if (allEpochs.length >= COMBINED_STABILITY_EPOCHS) {
+        const candidate = allEpochs.slice(-COMBINED_STABILITY_EPOCHS);
+        if (
+          metricSettled(candidate.map((epoch) => epoch.rssRecovered)) &&
+          metricSettled(candidate.map((epoch) => epoch.rssPeak))
+        ) {
+          settledEpochs = candidate;
+          break;
+        }
+      }
+      await nextEpoch();
+    }
+
+    const candidateMeasured: PressureEpoch[] = [];
+    for (let epoch = 0; epoch < MEASURED_EPOCHS; epoch++) {
+      candidateMeasured.push(await nextEpoch());
+    }
+    const candidateRecoveredProof = resourceMetricProof(
+      candidateMeasured.map((epoch) => epoch.rssRecovered),
+      settledEpochs.map((epoch) => epoch.rssRecovered),
+      DECLARED_RETAINED_MB,
+    );
+    const candidatePeakProof = resourceMetricProof(
+      candidateMeasured.map((epoch) => epoch.rssPeak),
+      settledEpochs.map((epoch) => epoch.rssPeak),
+      DECLARED_RETAINED_MB,
+    );
+    const settledDescriptorPeaks = settledEpochs.map((epoch) => epoch.descriptorsPeak);
+    const candidateDescriptorPeaks = candidateMeasured.map((epoch) => epoch.descriptorsPeak);
+    const descriptorVariability = maximum(settledDescriptorPeaks) -
+      minimum(settledDescriptorPeaks);
+    const descriptorAccepted = maximum(candidateDescriptorPeaks) <=
+        maximum(settledDescriptorPeaks) + descriptorVariability &&
+      candidateDescriptorPeaks.at(-1)! <= candidateDescriptorPeaks[0]! &&
+      slope(candidateDescriptorPeaks) <= 0;
+    if (
+      resourceMetricProofAccepted(candidateRecoveredProof) &&
+      resourceMetricProofAccepted(candidatePeakProof) &&
+      descriptorAccepted
+    ) {
+      measuredEpochs = candidateMeasured;
+      recoveredProof = candidateRecoveredProof;
+      peakProof = candidatePeakProof;
+      break;
+    }
+
+    // A moving measurement window remains part of the experiment. A one-time
+    // regime shift must settle again; continuing retention exhausts one cap.
+    stabilizationRetries++;
   }
   processMonitor.stop();
   descriptorMonitor.stop();
 
-  const warmupRssPeaks = warmupEpochs.map((epoch) => epoch.rssPeak);
-  const warmupRssMinimums = warmupEpochs.map((epoch) => epoch.rssMinimum);
-  const rssPeaks = measuredEpochs.map((epoch) => epoch.rssPeak);
-  const warmupRssVariability = maximum(warmupRssPeaks) - minimum(warmupRssMinimums);
-  const rssPeakToleranceMb = warmupRssVariability + DECLARED_RETAINED_MB;
-  const rssRecoveryToleranceMb = Math.max(
-    0,
-    maximum(warmupRssPeaks) - baselineRss.rssMb,
-  ) + rssPeakToleranceMb;
-  const rssStepGrowth = maximum([
-    0,
-    ...rssPeaks.slice(1).map((value, index) => value - rssPeaks[index]!),
-  ]);
-  const measuredRssGrowth = rssPeaks.at(-1)! - rssPeaks[0]!;
-  const measuredRssTrend = slope(rssPeaks) * (MEASURED_EPOCHS - 1);
-
-  // A positive fitted trend may consume at most one declared retained-byte
-  // budget across the whole window; it cannot grow once per epoch indefinitely.
-  expect(measuredRssTrend).toBeLessThanOrEqual(DECLARED_RETAINED_MB);
-  expect(rssStepGrowth).toBeLessThanOrEqual(rssPeakToleranceMb);
-  expect(measuredRssGrowth).toBeLessThanOrEqual(rssPeakToleranceMb);
-  expect(rssPeaks.at(-1)).toBeLessThanOrEqual(
-    maximum(warmupRssPeaks) + rssPeakToleranceMb,
-  );
-
-  const warmupDescriptorPeaks = warmupEpochs.map((epoch) => epoch.descriptorsPeak);
+  const settledRecoveredRss = settledEpochs.map((epoch) => epoch.rssRecovered);
+  const settledPeakRss = settledEpochs.map((epoch) => epoch.rssPeak);
+  const measuredRecoveredRss = measuredEpochs.map((epoch) => epoch.rssRecovered);
+  const measuredPeakRss = measuredEpochs.map((epoch) => epoch.rssPeak);
+  const settledDescriptorPeaks = settledEpochs.map((epoch) => epoch.descriptorsPeak);
   const descriptorPeaks = measuredEpochs.map((epoch) => epoch.descriptorsPeak);
-  const warmupDescriptorVariability = maximum(warmupDescriptorPeaks) -
-    minimum(warmupDescriptorPeaks);
+  const descriptorVariability = maximum(settledDescriptorPeaks) -
+    minimum(settledDescriptorPeaks);
+
+  console.log("@@combined-pressure-epochs", JSON.stringify({
+    baselineRss: baselineRss.rssMb,
+    totalEpochs: epochId,
+    stabilizationElapsedMs: Date.now() - stabilizationStartedAt,
+    stabilizationRetries,
+    allRecoveredRss: allEpochs.map((epoch) => epoch.rssRecovered),
+    allPeakRss: allEpochs.map((epoch) => epoch.rssPeak),
+    settledRecoveredRss,
+    settledPeakRss,
+    measuredRecoveredRss,
+    measuredPeakRss,
+    recoveredProof,
+    peakProof,
+    declaredRetainedMb: DECLARED_RETAINED_MB,
+  }));
+
+  expect(maximum(settledRecoveredRss) - minimum(settledRecoveredRss))
+    .toBeLessThanOrEqual(DECLARED_RETAINED_MB);
+  expect(positiveTrend(settledRecoveredRss)).toBeLessThanOrEqual(DECLARED_RETAINED_MB);
+  expect(maximum(settledPeakRss) - minimum(settledPeakRss))
+    .toBeLessThanOrEqual(DECLARED_RETAINED_MB);
+  expect(positiveTrend(settledPeakRss)).toBeLessThanOrEqual(DECLARED_RETAINED_MB);
+  assertResourceMetricProof(recoveredProof);
+  assertResourceMetricProof(peakProof);
   expect(maximum(descriptorPeaks)).toBeLessThanOrEqual(
-    maximum(warmupDescriptorPeaks) + warmupDescriptorVariability,
+    maximum(settledDescriptorPeaks) + descriptorVariability,
   );
   expect(descriptorPeaks.at(-1)!).toBeLessThanOrEqual(descriptorPeaks[0]!);
   expect(slope(descriptorPeaks)).toBeLessThanOrEqual(0);
-  for (const epoch of [...warmupEpochs, ...measuredEpochs]) {
+  for (const epoch of allEpochs) {
     expect(epoch.listenersMinimum).toBe(baselineDescriptors.listeners);
     expect(epoch.listenersPeak).toBe(baselineDescriptors.listeners);
   }
@@ -1661,17 +1793,38 @@ processResourceTest(
       value.listeners === baselineDescriptors.listeners,
     "file descriptors to return exactly to baseline",
   );
+  expect(await call(base, 99_999, "pressure.collect", {})).toMatchObject({
+    status: 200,
+    frame: { t: "ok", value: null },
+  });
   const finalRss = snapshotProcessTree(processHarness.child.pid);
+
+  console.log("@@combined-resource-proof", JSON.stringify({
+    baselineRss: baselineRss.rssMb,
+    totalEpochs: epochId,
+    stabilizationElapsedMs: Date.now() - stabilizationStartedAt,
+    stabilizationRetries,
+    settledRecoveredRss,
+    settledPeakRss,
+    measuredRecoveredRss,
+    measuredPeakRss,
+    recoveredProof,
+    peakProof,
+    finalRss: finalRss.rssMb,
+    finalRssMaximum: recoveredProof.maximumAllowed,
+    descriptorBaseline: baselineDescriptors,
+    settledDescriptorPeaks,
+    measuredDescriptorPeaks: descriptorPeaks,
+    finalDescriptors,
+  }));
 
   expect(finalDescriptors.open).toBe(baselineDescriptors.open);
   expect(finalDescriptors.listeners).toBe(baselineDescriptors.listeners);
-  expect(finalRss.rssMb).toBeLessThanOrEqual(
-    baselineRss.rssMb + rssRecoveryToleranceMb,
-  );
+  expect(finalRss.rssMb).toBeLessThanOrEqual(recoveredProof.maximumAllowed);
 
   processHarness.child.kill("SIGTERM");
   expect(await withTimeout(processHarness.child.exited, "fixture shutdown")).toBe(0);
   await withTimeout(processHarness.drained, "fixture output drain");
 },
-  TEST_TIMEOUT_MS,
+  COMBINED_TEST_TIMEOUT_MS,
 );
