@@ -3,7 +3,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { join, relative } from "node:path";
-import type { Subprocess } from "bun";
 import { benchmarkConfigFromEnv, type DriverResult, type SystemName } from "./benchmark.ts";
 import {
   assertDbzzStartup,
@@ -28,12 +27,20 @@ import {
   type ProcessTreeSnapshot,
   type ProcessTreeWindowSummary,
 } from "./process-tree.ts";
+import { withTimeout } from "./load-engine.ts";
 import {
   assertPerformanceAcceptance,
   extractComparableMetrics,
   FROZEN_BASELINE_PATH,
   type PerformanceAcceptanceEvidence,
 } from "./performance-gates.ts";
+import {
+  activePhaseIds,
+  benchmarkFailure,
+  BoundedTextTail,
+  stopSubprocess,
+  type BenchmarkFailurePart,
+} from "./process-lifecycle.ts";
 
 const BENCH = import.meta.dir;
 const REPO = join(BENCH, "..");
@@ -127,30 +134,22 @@ async function measureStartupIdle(rootPid: number): Promise<MeasuredDriverResult
   return { snapshot, window: monitor.summarize(startedAt, endedAt) };
 }
 
-function tail(child: { stdout: ReadableStream<Uint8Array> }): { output: () => string; done: Promise<void> } {
-  let buffer = "";
+function tail(
+  child: { stdout: ReadableStream<Uint8Array> },
+  echo = false,
+): { output: () => string; done: Promise<void> } {
+  const output = new BoundedTextTail();
   const done = (async () => {
-    for await (const chunk of child.stdout) buffer += new TextDecoder().decode(chunk);
+    try {
+      for await (const chunk of child.stdout) {
+        output.write(chunk);
+        if (echo) process.stderr.write(chunk);
+      }
+    } finally {
+      output.finish();
+    }
   })();
-  return { output: () => buffer, done };
-}
-
-async function stopDbzzServer(
-  server: Subprocess,
-  timeoutMs: number,
-): Promise<{ exitCode: number; timedOut: boolean }> {
-  if (server.exitCode === null) server.kill("SIGTERM");
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const graceful = await Promise.race([
-    server.exited.then((exitCode) => ({ exitCode, timedOut: false })),
-    new Promise<{ exitCode: number; timedOut: true }>((resolve) => {
-      timeout = setTimeout(() => resolve({ exitCode: -1, timedOut: true }), timeoutMs);
-    }),
-  ]);
-  if (timeout !== undefined) clearTimeout(timeout);
-  if (!graceful.timedOut) return graceful;
-  if (server.exitCode === null) server.kill("SIGKILL");
-  return { exitCode: await server.exited, timedOut: true };
+  return { output: () => output.output(), done };
 }
 
 async function waitFor(output: () => string, needle: string, timeoutMs: number): Promise<void> {
@@ -210,9 +209,12 @@ async function runMeasuredClient(
   const child = Bun.spawn(command, {
     cwd: REPO,
     stdout: "pipe",
-    stderr: "inherit",
+    stderr: "pipe",
     env: { ...process.env, ...env },
   });
+  const stderr = tail({ stdout: child.stderr }, true);
+  const stdoutTail = new BoundedTextTail();
+  const stdoutDecoder = new TextDecoder();
   const serverMonitor = new ProcessTreeMonitor(serverPid, RESOURCE_SAMPLE_MS);
   const loadMonitor = new ProcessTreeMonitor(child.pid, RESOURCE_SAMPLE_MS);
   const phaseStarts = new Map<string, number>();
@@ -232,17 +234,21 @@ async function runMeasuredClient(
   };
   let workload: DriverResult | undefined;
   let buffer = "";
-  sampleResources();
-  const resourceTimer = setInterval(() => {
-    try {
-      sampleResources();
-    } catch {
-      clearInterval(resourceTimer);
-    }
-  }, RESOURCE_SAMPLE_MS);
+  let resourceTimer: ReturnType<typeof setInterval> | undefined;
+  const failures: BenchmarkFailurePart[] = [];
+  let childExited = false;
   try {
+    sampleResources();
+    resourceTimer = setInterval(() => {
+      try {
+        sampleResources();
+      } catch {
+        if (resourceTimer !== undefined) clearInterval(resourceTimer);
+      }
+    }, RESOURCE_SAMPLE_MS);
     for await (const chunk of child.stdout) {
-      buffer += new TextDecoder().decode(chunk);
+      stdoutTail.write(chunk);
+      buffer += stdoutDecoder.decode(chunk, { stream: true });
       for (;;) {
         const newline = buffer.indexOf("\n");
         if (newline === -1) break;
@@ -261,6 +267,7 @@ async function runMeasuredClient(
         );
       }
     }
+    buffer += stdoutDecoder.decode();
     if (buffer.trim() !== "") {
       parseClientLine(
         buffer,
@@ -275,25 +282,64 @@ async function runMeasuredClient(
       );
     }
     const exitCode = await child.exited;
+    childExited = true;
     if (exitCode !== 0) throw new Error(`benchmark client failed with exit code ${exitCode}`);
     if (!workload) throw new Error(`benchmark client produced no result`);
+    if (resourceFailure) throw resourceFailure;
+  } catch (error) {
+    failures.push({ stage: "client", error });
   } finally {
     try {
       sampleResources();
     } catch {
       // The stored sampler failure is rethrown below.
     }
-    clearInterval(resourceTimer);
+    if (resourceTimer !== undefined) clearInterval(resourceTimer);
+    if (!childExited) {
+      try {
+        await stopSubprocess(child, 1_000);
+        childExited = true;
+      } catch (error) {
+        failures.push({ stage: "client cleanup", error });
+      }
+    }
+    try {
+      await withTimeout(stderr.done, 1_000, "benchmark client stderr drain");
+    } catch (error) {
+      failures.push({ stage: "client stderr", error });
+    }
+    stdoutTail.finish();
   }
 
-  if (resourceFailure) throw resourceFailure;
+  if (resourceFailure && !failures.some(({ error }) => error === resourceFailure)) {
+    failures.push({ stage: "resource sampling", error: resourceFailure });
+  }
+  const clientFailure = () => {
+    const active = activePhaseIds(phaseStarts, phaseBounds);
+    const lastCompleted = [...phaseBounds.keys()].at(-1) ?? "none";
+    return benchmarkFailure("benchmark client", failures, {
+      summary: [
+        `active phases: ${active.length === 0 ? "none" : active.join(", ")}`,
+        `last completed phase: ${lastCompleted}`,
+      ],
+      tail: `client stdout tail:\n${stdoutTail.output().slice(-32_000)}\n` +
+        `client stderr tail:\n${stderr.output().slice(-32_000)}`,
+    });
+  };
+  if (failures.length > 0) throw clientFailure();
+  if (!workload) throw new Error("benchmark client completed without workload state");
 
   const serverPhases: Record<string, ProcessTreeWindowSummary> = {};
   const loadPhases: Record<string, ProcessTreeWindowSummary> = {};
-  for (const [id, bounds] of phaseBounds) {
-    if (bounds.endMs - bounds.startMs < RESOURCE_SAMPLE_MS) continue;
-    serverPhases[id] = serverMonitor.summarize(bounds.startMs, bounds.endMs);
-    loadPhases[id] = loadMonitor.summarize(bounds.startMs, bounds.endMs);
+  try {
+    for (const [id, bounds] of phaseBounds) {
+      if (bounds.endMs - bounds.startMs < RESOURCE_SAMPLE_MS) continue;
+      serverPhases[id] = serverMonitor.summarize(bounds.startMs, bounds.endMs);
+      loadPhases[id] = loadMonitor.summarize(bounds.startMs, bounds.endMs);
+    }
+  } catch (error) {
+    failures.push({ stage: "resource windows", error });
+    throw clientFailure();
   }
   return {
     workload,
@@ -326,18 +372,22 @@ async function benchDbzz(telemetry: DbzzTelemetryMode): Promise<DbzzMeasuredDriv
     },
   );
   const output = new DbzzOutputCollector();
-  const outputDone = Promise.all([
+  const outputDone = Promise.allSettled([
     (async () => {
       for await (const chunk of server.stdout) output.writeStdout(chunk);
     })(),
     (async () => {
       for await (const chunk of server.stderr) output.writeStderr(chunk);
     })(),
-  ]).then(() => output.finish());
+  ]).then((readers) => {
+    output.finish();
+    const errors = readers.flatMap((reader) => reader.status === "rejected" ? [reader.reason] : []);
+    if (errors.length > 0) throw new AggregateError(errors, "dbzz output readers failed");
+  });
   let startupMode: DbzzStartupMode | undefined;
   let startupIdle: MeasuredDriverResult["startupIdle"] | undefined;
   let measured: Omit<MeasuredDriverResult, "startupIdle" | "implementationVersion"> | undefined;
-  let workloadError: unknown;
+  const failures: BenchmarkFailurePart[] = [];
   try {
     await waitFor(() => output.output(), "ready on", 15_000);
     startupMode = assertDbzzStartup(output.output(), expectedMode);
@@ -348,43 +398,80 @@ async function benchDbzz(telemetry: DbzzTelemetryMode): Promise<DbzzMeasuredDriv
       server.pid,
     );
   } catch (error) {
-    workloadError = error;
+    failures.push({ stage: "workload", error });
   }
+
+  let serverStopped = false;
+  let stopped: { exitCode: number; timedOut: boolean } | undefined;
   try {
-    const stopped = await stopDbzzServer(
+    stopped = await stopSubprocess(
       server,
       expectedMode.gracefulShutdownMs + DBZZ_SHUTDOWN_SLACK_MS,
     );
-    await outputDone;
-    if (stopped.timedOut) {
-      throw new Error(
-        `dbzz benchmark server exceeded its ${expectedMode.gracefulShutdownMs}ms graceful shutdown deadline`,
-      );
-    }
-    if (workloadError !== undefined) throw workloadError;
-    if (stopped.exitCode !== 0) {
-      throw new Error(`dbzz benchmark server failed with exit code ${stopped.exitCode}:\n${output.output()}`);
-    }
-    if (startupMode === undefined || startupIdle === undefined || measured === undefined) {
-      throw new Error("dbzz benchmark server did not complete its measured workload");
-    }
-    const telemetryReport = parseDbzzTelemetryReport(
-      readFileSync(reportPath, "utf8"),
-      startupMode,
-      output.snapshot(),
-    );
-    assertDbzzTelemetryWorkload(telemetryReport, measured.workload);
-    return { ...measured, startupIdle, implementationVersion: "workspace", startupMode, telemetryReport };
-  } finally {
-    if (server.exitCode === null) {
-      server.kill("SIGKILL");
-      await server.exited;
-    }
-    await outputDone.catch(() => {});
-    output.finish();
-    rmSync(reportPath, { force: true });
-    assertPortFree(DBZZ_PORT);
+    serverStopped = true;
+  } catch (error) {
+    failures.push({ stage: "shutdown", error });
   }
+  if (!serverStopped) {
+    try {
+      await stopSubprocess(server, 1_000);
+    } catch (error) {
+      failures.push({ stage: "forced cleanup", error });
+    }
+  }
+  if (stopped?.timedOut) {
+    failures.push({
+      stage: "shutdown",
+      error: new Error(
+        `dbzz benchmark server exceeded its ${expectedMode.gracefulShutdownMs}ms graceful shutdown deadline`,
+      ),
+    });
+  } else if (stopped !== undefined && stopped.exitCode !== 0) {
+    failures.push({
+      stage: "server exit",
+      error: new Error(`dbzz benchmark server failed with exit code ${stopped.exitCode}`),
+    });
+  }
+  try {
+    await withTimeout(outputDone, 2_000, "dbzz output drain");
+  } catch (error) {
+    failures.push({ stage: "server output", error });
+  }
+
+  let result: DbzzMeasuredDriverResult | undefined;
+  if (failures.length === 0) {
+    try {
+      if (startupMode === undefined || startupIdle === undefined || measured === undefined) {
+        throw new Error("dbzz benchmark server did not complete its measured workload");
+      }
+      const telemetryReport = parseDbzzTelemetryReport(
+        readFileSync(reportPath, "utf8"),
+        startupMode,
+        output.snapshot(),
+      );
+      assertDbzzTelemetryWorkload(telemetryReport, measured.workload);
+      result = { ...measured, startupIdle, implementationVersion: "workspace", startupMode, telemetryReport };
+    } catch (error) {
+      failures.push({ stage: "validation", error });
+    }
+  }
+  try {
+    rmSync(reportPath, { force: true });
+  } catch (error) {
+    failures.push({ stage: "report cleanup", error });
+  }
+  try {
+    assertPortFree(DBZZ_PORT);
+  } catch (error) {
+    failures.push({ stage: "port cleanup", error });
+  }
+  if (failures.length > 0) {
+    throw benchmarkFailure("dbzz benchmark", failures, {
+      tail: `server output tail:\n${output.output()}`,
+    });
+  }
+  if (result === undefined) throw new Error("dbzz benchmark completed without a result");
+  return result;
 }
 
 function convexBackendPid(): number {
