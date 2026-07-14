@@ -185,10 +185,12 @@ async function runOperationTrial(
   const computePayload = fixedPayload("procedure-payload:", PROCEDURE_PAYLOAD_BYTES);
 
   const result = await runClosedLoop({
+    phaseId,
     durationMs: config.operation.steadyMs,
     slots,
     drainTimeoutMs: config.operation.drainTimeoutMs,
     onWindowStart: (timestampMs) => phaseStartAt(phaseId, timestampMs),
+    cancel: () => closeAll(connections),
     operation: async (slot) => {
       const connection = connections[Math.floor(slot / profile.inFlightPerConnection)]!;
       const nonce = nextNonce();
@@ -255,9 +257,11 @@ async function runOperationCase(
   }
   try {
     const warmup = await runClosedLoop({
+      phaseId: `operation:${operation}:${profile.name}:warmup`,
       durationMs: config.operation.warmupMs,
       slots: profile.connections * profile.inFlightPerConnection,
       drainTimeoutMs: config.operation.drainTimeoutMs,
+      cancel: () => closeAll(opened.connections),
       operation: async (slot) => {
         const connection = opened.connections[Math.floor(slot / profile.inFlightPerConnection)]!;
         const nonce = nextNonce();
@@ -329,10 +333,12 @@ async function runConnectionScale(
 
       const phaseId = `connections:${target}:work`;
       const work = await runClosedLoop({
+        phaseId,
         durationMs: config.connections.workMs,
         slots: cohort.length,
         drainTimeoutMs: config.operation.drainTimeoutMs,
         onWindowStart: (timestampMs) => phaseStartAt(phaseId, timestampMs),
+        cancel: () => closeAll(cohort),
         operation: async (slot) => {
           const nonce = nextNonce();
           const partition = nonce % DOCUMENT_PARTITIONS;
@@ -550,11 +556,13 @@ async function runSubscriptionCase(
       const capacityDeliveryLatencies: number[] = [];
       measuring = true;
       const result = await runClosedLoop({
+        phaseId: capacityPhaseId,
         durationMs: config.subscriptions.capacityDurationMs,
         slots,
         drainTimeoutMs,
         onWindowStart: (timestampMs) => phaseStartAt(capacityPhaseId, timestampMs),
-        operation: async (slot) => {
+        cancel: () => closeAll(writers),
+        operation: async (slot, _sequence, cancellation) => {
           const channel = pattern === "shared" ? slot : queriesPerUser + slot * queriesPerUser;
           const version = (versions.get(channel) ?? 0) + 1;
           versions.set(channel, version);
@@ -583,7 +591,7 @@ async function runSubscriptionCase(
           const ackStartedAt = performance.now();
           await writers[slot]!.updateChannel(channel, nonce);
           const ackLatency = performance.now() - ackStartedAt;
-          await probe.done;
+          await cancellation.wait(probe.done);
           return { probe, ackLatency };
         },
         validate: ({ probe, ackLatency }) => {

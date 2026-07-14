@@ -38,15 +38,51 @@ export async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, lab
 }
 
 interface ClosedLoopOptions<T> {
+  phaseId: string;
   durationMs: number;
   slots: number;
   drainTimeoutMs: number;
   onWindowStart?(timestampMs: number): void;
-  operation(slot: number, sequence: number): Promise<T>;
+  operation(slot: number, sequence: number, cancellation: ClosedLoopCancellation): Promise<T>;
+  cancel(): Promise<void> | void;
   validate?(value: T, slot: number, sequence: number): void;
 }
 
+interface ClosedLoopCancellation {
+  readonly signal: AbortSignal;
+  wait<T>(work: Promise<T>): Promise<T>;
+}
+
+function closedLoopCancellation(controller: AbortController): ClosedLoopCancellation {
+  const waiters = new Set<(reason: unknown) => void>();
+  controller.signal.addEventListener("abort", () => {
+    for (const reject of waiters) reject(controller.signal.reason);
+    waiters.clear();
+  }, { once: true });
+  return Object.freeze({
+    signal: controller.signal,
+    wait<T>(work: Promise<T>): Promise<T> {
+      if (controller.signal.aborted) return Promise.reject(controller.signal.reason);
+      return new Promise<T>((resolve, reject) => {
+        waiters.add(reject);
+        work.then(
+          (value) => {
+            waiters.delete(reject);
+            resolve(value);
+          },
+          (error) => {
+            waiters.delete(reject);
+            reject(error);
+          },
+        );
+      });
+    },
+  });
+}
+
 export async function runClosedLoop<T>(options: ClosedLoopOptions<T>): Promise<ClosedLoopResult> {
+  const controller = new AbortController();
+  const cancellation = closedLoopCancellation(controller);
   const startedAt = performance.now();
   const deadline = startedAt + options.durationMs;
   const windowStartedAtMs = performance.timeOrigin + startedAt;
@@ -66,20 +102,63 @@ export async function runClosedLoop<T>(options: ClosedLoopOptions<T>): Promise<C
       const currentSequence = sequence++;
       attempted++;
       try {
-        const value = await options.operation(slot, currentSequence);
+        const value = await options.operation(slot, currentSequence, cancellation);
+        if (controller.signal.aborted) return;
         options.validate?.(value, slot, currentSequence);
         const completedAt = performance.now();
         latencies.push(completedAt - operationStartedAt);
         if (completedAt <= deadline) completedInWindow++;
         else completedAfterWindow++;
       } catch (error) {
+        if (controller.signal.aborted) return;
         failed++;
         if (errors.length < 8) errors.push(error instanceof Error ? error.message : String(error));
       }
     }
   });
 
-  await withTimeout(Promise.all(workers), options.durationMs + options.drainTimeoutMs, "closed-loop drain");
+  try {
+    await withTimeout(
+      Promise.all(workers),
+      options.durationMs + options.drainTimeoutMs,
+      `phase ${options.phaseId}`,
+    );
+  } catch (cause) {
+    const settled = completedInWindow + completedAfterWindow + failed;
+    const error = new Error(
+      `phase ${options.phaseId} exceeded ${options.durationMs}ms window + ` +
+        `${options.drainTimeoutMs}ms drain: ${attempted} attempted, ${settled} settled, ` +
+        `${attempted - settled} in flight`,
+      { cause },
+    );
+    controller.abort(error);
+    let cleanup: PromiseSettledResult<void>[];
+    try {
+      cleanup = await withTimeout(
+        Promise.allSettled([
+          Promise.resolve().then(() => options.cancel()),
+          Promise.all(workers).then(() => undefined),
+        ]),
+        Math.max(1, Math.min(options.drainTimeoutMs, 5_000)),
+        `phase ${options.phaseId} cancellation`,
+      );
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        `${error.message}; phase cancellation did not settle`,
+      );
+    }
+    const cleanupErrors = cleanup.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : []
+    );
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        `${error.message}; phase cancellation failed`,
+      );
+    }
+    throw error;
+  }
   return {
     windowStartedAtMs,
     windowEndedAtMs: windowStartedAtMs + options.durationMs,

@@ -26,14 +26,22 @@ describe("latency statistics", () => {
 describe("closed-loop accounting", () => {
   test("accounts for every attempted request and exposes an exact epoch window", async () => {
     let emittedStart = 0;
+    const signals = new Set<AbortSignal>();
     const result = await runClosedLoop({
+      phaseId: "accounting",
       durationMs: 20,
       slots: 2,
       drainTimeoutMs: 1_000,
+      cancel: () => {
+        throw new Error("successful work must not cancel");
+      },
       onWindowStart: (timestampMs) => {
         emittedStart = timestampMs;
       },
-      operation: async (_slot, sequence) => sequence,
+      operation: async (_slot, sequence, cancellation) => {
+        signals.add(cancellation.signal);
+        return sequence;
+      },
       validate: (value, _slot, sequence) => {
         if (value !== sequence) throw new Error(`sequence ${value} != ${sequence}`);
       },
@@ -43,6 +51,86 @@ describe("closed-loop accounting", () => {
     expect(result.failed).toBe(0);
     expect(result.windowStartedAtMs).toBe(emittedStart);
     expect(result.windowEndedAtMs - result.windowStartedAtMs).toBe(20);
+    expect(signals.size).toBe(1);
+    expect([...signals][0]!.aborted).toBe(false);
+  });
+
+  test("aborts timed-out operations and settles every closed-loop worker", async () => {
+    let active = 0;
+    let finished = 0;
+    let attempts = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const signals = new Set<AbortSignal>();
+    let thrown: unknown;
+
+    try {
+      await runClosedLoop({
+        phaseId: "subscriptions:partitioned:capacity-500",
+        durationMs: 10,
+        slots: 3,
+        drainTimeoutMs: 10,
+        cancel: () => release(),
+        operation: async (_slot, _sequence, cancellation) => {
+          attempts++;
+          active++;
+          signals.add(cancellation.signal);
+          try {
+            await gate;
+          } finally {
+            active--;
+            finished++;
+          }
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toBe(
+      "phase subscriptions:partitioned:capacity-500 exceeded 10ms window + 10ms drain: " +
+        "3 attempted, 0 settled, 3 in flight",
+    );
+    expect({ active, attempts, finished }).toEqual({ active: 0, attempts: 3, finished: 3 });
+    expect(signals.size).toBe(1);
+    const [signal] = signals;
+    expect(signal!.aborted).toBe(true);
+    expect(signal!.reason).toBe(thrown);
+  });
+
+  test("aborts benchmark-owned delivery waits without detaching the operation", async () => {
+    let active = 0;
+    let signal: AbortSignal | undefined;
+    let thrown: unknown;
+
+    try {
+      await runClosedLoop({
+        phaseId: "subscriptions:shared:capacity-50",
+        durationMs: 10,
+        slots: 1,
+        drainTimeoutMs: 10,
+        cancel: () => {},
+        operation: async (_slot, _sequence, cancellation) => {
+          signal = cancellation.signal;
+          active++;
+          try {
+            await cancellation.wait(new Promise<never>(() => {}));
+          } finally {
+            active--;
+          }
+        },
+      });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(active).toBe(0);
+    expect(signal?.aborted).toBe(true);
+    expect(signal?.reason).toBe(thrown);
   });
 });
 
