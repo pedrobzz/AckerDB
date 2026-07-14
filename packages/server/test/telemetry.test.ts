@@ -811,6 +811,117 @@ describe("Telemetry", () => {
     expect(serialized).not.toContain("args");
   });
 
+  test("separates function leaves and every fixed aggregate label", () => {
+    const telemetry = new Telemetry({ localSink: false, now: () => 0 });
+    for (const [operation, stage, outcome, functionName, resource, durationMs] of [
+      ["query", "handler", "ok", "todos.one", "reader", 1],
+      ["query", "handler", "ok", "todos.two", "reader", 2],
+      ["mutation", "handler", "ok", "todos.one", "reader", 4],
+      ["query", "commit", "ok", "todos.one", "reader", 8],
+      ["query", "handler", "internal", "todos.one", "reader", 16],
+      ["query", "handler", "ok", "todos.one", "writer", 32],
+      ["query", "handler", "ok", "todos.one", "reader", 64],
+    ] as const) {
+      expect(telemetry.recordSpan({
+        operation,
+        stage,
+        outcome,
+        functionName,
+        resource,
+        durationMs,
+      })).toBe(true);
+    }
+
+    expect(telemetry.aggregateSnapshot().series.map((series) => [
+      series.operation,
+      series.stage,
+      series.outcome,
+      series.function,
+      series.resource,
+      series.count,
+      series.durationMs,
+    ])).toEqual([
+      ["query", "handler", "ok", "todos.one", "reader", 2, 65],
+      ["query", "handler", "ok", "todos.two", "reader", 1, 2],
+      ["mutation", "handler", "ok", "todos.one", "reader", 1, 4],
+      ["query", "commit", "ok", "todos.one", "reader", 1, 8],
+      ["query", "handler", "internal", "todos.one", "reader", 1, 16],
+      ["query", "handler", "ok", "todos.one", "writer", 1, 32],
+    ]);
+  });
+
+  test("shares the aggregate series limit across function leaves and fixed label codes", () => {
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => 0,
+      limits: { maxMetricSeries: 3 },
+    });
+    for (const [operation, stage, functionName, durationMs] of [
+      ["query", "handler", "todos.one", 1],
+      ["query", "handler", "todos.two", 2],
+      ["query", "handler", "todos.three", 4],
+      ["mutation", "commit", "todos.one", 8],
+      ["query", "handler", "todos.one", 16],
+    ] as const) {
+      expect(telemetry.recordSpan({
+        operation,
+        stage,
+        outcome: "ok",
+        functionName,
+        durationMs,
+      })).toBe(true);
+    }
+
+    expect(telemetry.aggregateSnapshot()).toEqual({
+      maxSeries: 3,
+      overflowedRecords: 2,
+      series: [
+        {
+          operation: "query",
+          stage: "handler",
+          outcome: "ok",
+          function: "todos.one",
+          resource: undefined,
+          overflow: undefined,
+          count: 2,
+          durationMs: 17,
+          sizeBytes: undefined,
+          rowCount: undefined,
+          resultCount: undefined,
+          dependencyCount: undefined,
+        },
+        {
+          operation: "query",
+          stage: "handler",
+          outcome: "ok",
+          function: "todos.two",
+          resource: undefined,
+          overflow: undefined,
+          count: 1,
+          durationMs: 2,
+          sizeBytes: undefined,
+          rowCount: undefined,
+          resultCount: undefined,
+          dependencyCount: undefined,
+        },
+        {
+          operation: undefined,
+          stage: undefined,
+          outcome: undefined,
+          function: undefined,
+          resource: undefined,
+          overflow: true,
+          count: 2,
+          durationMs: 12,
+          sizeBytes: undefined,
+          rowCount: undefined,
+          resultCount: undefined,
+          dependencyCount: undefined,
+        },
+      ],
+    });
+  });
+
   test("drains every captured exporter batch before one absolute deadline", async () => {
     const scheduler = new ManualScheduler();
     const { batches, exporter } = exporterBatches();

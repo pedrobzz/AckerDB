@@ -81,6 +81,18 @@ export const TELEMETRY_RESOURCES = [
 ] as const;
 export type TelemetryResource = (typeof TELEMETRY_RESOURCES)[number];
 
+function labelCodes<Label extends string>(labels: readonly Label[]): Readonly<Record<Label, number>> {
+  const codes = Object.create(null) as Record<Label, number>;
+  for (let index = 0; index < labels.length; index++) codes[labels[index]!] = index;
+  return codes;
+}
+
+const AGGREGATE_OPERATION_CODES = labelCodes(TELEMETRY_OPERATIONS);
+const AGGREGATE_STAGE_CODES = labelCodes(TELEMETRY_STAGES);
+const AGGREGATE_OUTCOME_CODES = labelCodes(TELEMETRY_OUTCOMES);
+const AGGREGATE_RESOURCE_CODES = labelCodes(TELEMETRY_RESOURCES);
+const AGGREGATE_RESOURCE_CARDINALITY = TELEMETRY_RESOURCES.length + 1;
+
 export const TELEMETRY_EVENT_NAMES = [
   "lifecycle",
   "overload",
@@ -423,7 +435,8 @@ interface TelemetryState {
   readonly localSink?: (safeJsonLine: string) => void;
   readonly encoder: TextEncoder;
   readonly metricSeries: Set<string>;
-  readonly aggregates: Map<string, MutableAggregate>;
+  readonly aggregateSeries: Map<number, Map<string | undefined, MutableAggregate>>;
+  readonly aggregateOrder: MutableAggregate[];
   readonly aggregateOverflow: MutableAggregate;
   readonly activeTraces: Map<string, MutableTraceRetention>;
   readonly completedTraces: Map<string, MutableTraceRetention>;
@@ -789,7 +802,8 @@ export class Telemetry {
       localSink: options.localSink === false ? undefined : options.localSink ?? console.log,
       encoder: new TextEncoder(),
       metricSeries: new Set(),
-      aggregates: new Map(),
+      aggregateSeries: new Map(),
+      aggregateOrder: [],
       aggregateOverflow: {
         overflow: true,
         count: 0,
@@ -1145,7 +1159,7 @@ export class Telemetry {
   aggregateSnapshot(): TelemetryAggregateSnapshot {
     const state = this.state;
     if (!state) return DISABLED_AGGREGATES;
-    const series = [...state.aggregates.values()].map((aggregate) => this.freezeAggregate(aggregate));
+    const series = state.aggregateOrder.map((aggregate) => this.freezeAggregate(aggregate));
     if (state.aggregateOverflow.count > 0) {
       series.push(this.freezeAggregate(state.aggregateOverflow));
     }
@@ -1408,10 +1422,14 @@ export class Telemetry {
   }
 
   private aggregateSpan(state: TelemetryState, span: SanitizedTelemetrySpan): void {
-    const key = `${span.operation}|${span.stage}|${span.outcome}|${span.function ?? ""}|${span.resource ?? ""}`;
-    let aggregate = state.aggregates.get(key);
+    const code = (((AGGREGATE_OPERATION_CODES[span.operation] * TELEMETRY_STAGES.length +
+      AGGREGATE_STAGE_CODES[span.stage]) * TELEMETRY_OUTCOMES.length +
+      AGGREGATE_OUTCOME_CODES[span.outcome]) * AGGREGATE_RESOURCE_CARDINALITY) +
+      (span.resource === undefined ? 0 : AGGREGATE_RESOURCE_CODES[span.resource] + 1);
+    let functions = state.aggregateSeries.get(code);
+    let aggregate = functions?.get(span.function);
     if (!aggregate) {
-      if (state.aggregates.size >= state.limits.maxMetricSeries - 1) {
+      if (state.aggregateOrder.length >= state.limits.maxMetricSeries - 1) {
         aggregate = state.aggregateOverflow;
         state.aggregateOverflowedRecords = boundedCount(state.aggregateOverflowedRecords);
       } else {
@@ -1424,7 +1442,12 @@ export class Telemetry {
           count: 0,
           durationMs: 0,
         };
-        state.aggregates.set(key, aggregate);
+        if (!functions) {
+          functions = new Map();
+          state.aggregateSeries.set(code, functions);
+        }
+        functions.set(span.function, aggregate);
+        state.aggregateOrder.push(aggregate);
       }
     }
     aggregate.count = boundedCount(aggregate.count);
