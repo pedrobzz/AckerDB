@@ -1,6 +1,7 @@
 import {
   PROTOCOL_VERSION,
   ProtocolError,
+  decode,
   encode,
   parseClientMessage,
   type AuthenticatedMessage,
@@ -158,8 +159,10 @@ export interface RuntimeMutationResult {
   readonly receipt: MutationReceipt;
 }
 
-/** One decoded transport frame paired with its exact received UTF-8 byte count. */
-export interface ReceivedFrame {
+/** One raw WebSocket message whose byte ownership remains inside Session. */
+export type SessionWireFrame = string | Uint8Array;
+
+interface DecodedFrame {
   readonly frame: unknown;
   readonly bytes: number;
 }
@@ -222,6 +225,7 @@ export function withSessionAuthObserver<T extends SessionOptions>(
 }
 
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
+const STRICT_UTF8 = new TextDecoder("utf-8", { fatal: true });
 
 const SYSTEM_CLOCK: SessionClock = Object.freeze({
   now: Date.now,
@@ -338,11 +342,15 @@ export class Session {
     return this.clientSessionId;
   }
 
-  /** Accepts one decoded Protocol-2 frame with transport-owned byte accounting. */
-  handle(received: ReceivedFrame): Promise<void> {
-    const { bytes } = received;
-    if (!Number.isSafeInteger(bytes) || bytes < 0) {
-      return this.rejectFrame(new DbzzError("malformed", "client frame byte count is invalid"));
+  /** Owns exact byte admission and Protocol-2 decoding for one raw WebSocket message. */
+  handle(raw: SessionWireFrame): Promise<void> {
+    let bytes: number;
+    if (typeof raw === "string") {
+      bytes = Buffer.byteLength(raw);
+    } else if (raw instanceof Uint8Array) {
+      bytes = raw.byteLength;
+    } else {
+      return this.rejectFrame(new DbzzError("malformed", "client frame must be text or binary"));
     }
     if (bytes > this.maxFrameBytes) {
       return this.rejectFrame(new DbzzError("overloaded", "client frame exceeds maxFrameBytes", {
@@ -356,6 +364,20 @@ export class Session {
         resource: "operation",
       }));
     }
+
+    let text: string;
+    try {
+      text = typeof raw === "string" ? raw : STRICT_UTF8.decode(raw);
+    } catch (cause) {
+      return this.rejectFrame(new DbzzError("malformed", "client frame is not valid UTF-8", { cause }));
+    }
+    let frame: unknown;
+    try {
+      frame = decode(text);
+    } catch (cause) {
+      return this.rejectFrame(new DbzzError("malformed", "malformed client frame", { cause }));
+    }
+    const received = { frame, bytes } satisfies DecodedFrame;
 
     const result = this.ingress.submit(() => this.dispatchFrame(received), {
       operation: "lifecycle",
@@ -405,7 +427,7 @@ export class Session {
     return this.terminate(error);
   }
 
-  private async dispatchFrame(received: ReceivedFrame): Promise<void> {
+  private async dispatchFrame(received: DecodedFrame): Promise<void> {
     if (this.phase === "closed") return;
     let message: ClientMessage;
     try {

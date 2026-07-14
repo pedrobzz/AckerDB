@@ -26,7 +26,6 @@ import { outcomeFromError } from "../src/outcome.ts";
 import {
   prepareRuntimePublication,
   Session,
-  type ReceivedFrame,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
   type RuntimePort,
@@ -41,7 +40,6 @@ import {
   type SessionSink,
 } from "../src/session.ts";
 
-const utf8 = new TextEncoder();
 const TEST_SOURCE = Object.freeze({ family: "test", address: "session-auth" });
 
 interface Deferred<T> {
@@ -360,11 +358,18 @@ function mutation(id: number): MutationMessage {
 }
 
 function wireBytes(value: unknown): number {
-  return utf8.encode(encode(value)).byteLength;
+  return Buffer.byteLength(encode(value));
 }
 
-function handle(session: Session, frame: unknown, bytes = wireBytes(frame)): Promise<void> {
-  return session.handle({ frame, bytes } satisfies ReceivedFrame);
+function wireWithBytes(value: unknown, bytes: number): string {
+  const text = encode(value);
+  const padding = bytes - Buffer.byteLength(text);
+  if (padding < 0) throw new RangeError("wire target is smaller than its encoded value");
+  return " ".repeat(padding) + text;
+}
+
+function handle(session: Session, frame: unknown): Promise<void> {
+  return session.handle(encode(frame));
 }
 
 function sessionLimits(
@@ -528,15 +533,15 @@ describe("Session Protocol-2 ownership", () => {
     });
   });
 
-  test("uses the received byte count for serialized ingress and Runtime", async () => {
+  test("derives exact received bytes for serialized ingress and Runtime", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
     const gate = deferred<void>();
     runtime.queryHook = async () => gate.promise;
     const admittedBytes = 173;
     const queuedFrames = [
-      { frame: { ...query(2), args: { value: "é" } }, bytes: 211 },
-      { frame: query(3), bytes: 307 },
+      { wire: wireWithBytes({ ...query(2), args: { value: "é" } }, 211), bytes: 211 },
+      { wire: wireWithBytes(query(3), 307), bytes: 307 },
     ];
     const queuedBytes = queuedFrames.reduce((total, received) => total + received.bytes, 0);
     const session = new Session({
@@ -547,10 +552,10 @@ describe("Session Protocol-2 ownership", () => {
     });
     await handle(session, hello());
 
-    const admitted = handle(session, query(1), admittedBytes);
+    const admitted = session.handle(wireWithBytes(query(1), admittedBytes));
     await settle();
     expect(runtime.queryRequests[0]?.bytes).toBe(admittedBytes);
-    const queued = queuedFrames.map(({ frame, bytes }) => handle(session, frame, bytes));
+    const queued = queuedFrames.map(({ wire }) => session.handle(wire));
     expect(session.snapshot().ingress.queue).toMatchObject({ queuedItems: 2, queuedBytes });
 
     const rejected = handle(session, query(4));
@@ -627,7 +632,7 @@ describe("Session Protocol-2 ownership", () => {
     });
     await handle(session, hello());
 
-    await expect(handle(session, query(1), maxFrameBytes + 1)).rejects.toMatchObject({
+    await expect(session.handle(wireWithBytes(query(1), maxFrameBytes + 1))).rejects.toMatchObject({
       code: "overloaded",
       retryable: true,
       retryAfterMs: 0,
@@ -665,7 +670,7 @@ describe("Session Protocol-2 ownership", () => {
     const oversizedBytes = maxRequestBytes + 1;
     expect(oversizedBytes).toBeLessThanOrEqual(maxFrameBytes);
 
-    await expect(handle(session, query(1), oversizedBytes)).rejects.toMatchObject({
+    await expect(session.handle(wireWithBytes(query(1), oversizedBytes))).rejects.toMatchObject({
       code: "overloaded",
       retryable: false,
       resource: "operation",
@@ -703,11 +708,32 @@ describe("Session Protocol-2 ownership", () => {
     });
 
     await handle(session, hello());
-    await expect(handle(session, message, bytes)).resolves.toBeUndefined();
+    await expect(session.handle(text)).resolves.toBeUndefined();
 
     expect(runtime.queryRequests).toHaveLength(1);
     expect(runtime.queryRequests[0]).toMatchObject({ message, bytes });
     await session.close();
+  });
+
+  test("cannot receive a decoded frame with a caller-claimed byte count", async () => {
+    const runtime = new FakeRuntime();
+    const sink = new FakeSink();
+    const session = new Session({ runtime, sink, source: TEST_SOURCE });
+    const forged = { frame: hello(), bytes: 1 };
+
+    // @ts-expect-error Session accepts only raw text or binary wire input.
+    await expect(session.handle(forged)).rejects.toMatchObject({
+      code: "malformed",
+      message: "client frame must be text or binary",
+    });
+    await session.close();
+
+    expect(runtime.opens).toEqual([]);
+    expect(session.snapshot().ingress).toMatchObject({
+      admitted: 0,
+      active: 0,
+      queue: { queuedItems: 0, queuedBytes: 0, closed: true },
+    });
   });
 
   test("close rejects queued frames and waits for the admitted handler to finish", async () => {

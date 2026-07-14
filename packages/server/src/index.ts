@@ -211,7 +211,6 @@ export {
 export {
   prepareRuntimePublication,
   Session,
-  type ReceivedFrame,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
   type RuntimePort,
@@ -225,6 +224,7 @@ export {
   type SessionRuntimeContext,
   type SessionSink,
   type SessionSnapshot,
+  type SessionWireFrame,
   type SubscriptionServerMessage,
 } from "./session.ts";
 export {

@@ -27,7 +27,6 @@ import {
   query,
   reconcile,
   serve,
-  type ReceivedFrame,
   type RuntimeProcedureRequest,
   type RuntimeProcedureResponse,
   type RuntimePublication,
@@ -102,8 +101,8 @@ function uuidV7(now: number, sequence: number): string {
   return `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${sequence.toString(16).padStart(12, "0")}`;
 }
 
-function handle(session: Session, frame: unknown, bytes = Buffer.byteLength(encode(frame))): Promise<void> {
-  return session.handle({ frame, bytes } satisfies ReceivedFrame);
+function handle(session: Session, frame: unknown): Promise<void> {
+  return session.handle(encode(frame));
 }
 
 function request<Message>(message: Message, bytes = Buffer.byteLength(encode(message))): RuntimeRequest<Message> {

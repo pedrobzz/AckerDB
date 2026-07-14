@@ -796,25 +796,7 @@ export class DbzzServer {
       socket.terminate();
       return;
     }
-    const bytes = typeof raw === "string" ? Buffer.byteLength(raw) : raw.byteLength;
-    if (bytes > this.limits.maxFrameBytes) {
-      void session.close(new DbzzError("overloaded", "client frame exceeds maxFrameBytes", {
-        retryable: true,
-        retryAfterMs: 0,
-        resource: "connection",
-      }));
-      return;
-    }
-
-    let frame: unknown;
-    try {
-      const text = typeof raw === "string" ? raw : strictUtf8.decode(raw);
-      frame = decode(text);
-    } catch (cause) {
-      void session.close(new DbzzError("malformed", "malformed WebSocket frame", { cause }));
-      return;
-    }
-    void session.handle({ frame, bytes }).catch(() => {});
+    void session.handle(raw).catch(() => {});
   }
 
   private closeWebSocket(socket: ServerWebSocket<WsData>): void {

@@ -4,9 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   PROTOCOL_VERSION,
-  decode,
   encode,
-  parseClientMessage,
   type MutationOkMessage,
   type Outcome,
   type TransitionMessage,
@@ -32,7 +30,6 @@ import { Runtime } from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
 import {
   Session,
-  type ReceivedFrame,
   type RuntimePublication,
   type SessionApplicationMessage,
   type SessionClock,
@@ -61,8 +58,8 @@ function uuidV7(now: number, sequence: number): string {
   return `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${sequence.toString(16).padStart(12, "0")}`;
 }
 
-function handle(session: Session, frame: unknown, bytes = Buffer.byteLength(encode(frame))): Promise<void> {
-  return session.handle({ frame, bytes } satisfies ReceivedFrame);
+function handle(session: Session, frame: unknown): Promise<void> {
+  return session.handle(encode(frame));
 }
 
 class FixedClock implements SessionClock, DbzzClientClock {
@@ -202,10 +199,7 @@ class SessionSocket implements DbzzWebSocket {
 
   send(data: string): void {
     if (this.closed) throw new Error("socket is closed");
-    const message = parseClientMessage(decode(data));
-    const operation = this.inboundTail.then(() =>
-      this.session.handle({ frame: message, bytes: Buffer.byteLength(data) })
-    );
+    const operation = this.inboundTail.then(() => this.session.handle(data));
     this.inboundTail = operation.catch(() => {});
     this.track(operation);
   }

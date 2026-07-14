@@ -1134,7 +1134,7 @@ describe("WebSocket Session transport", () => {
     expect(runtime.status().connections).toBe(0);
   });
 
-  test("applies maxRequestBytes to the exact received WebSocket text", async () => {
+  test("accepts exact-limit noncanonical text and rejects the next received byte", async () => {
     const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
     client.send({
       v: PROTOCOL_VERSION,
@@ -1153,11 +1153,23 @@ describe("WebSocket Session transport", () => {
     });
     const canonicalBytes = Buffer.byteLength(canonical);
     expect(canonicalBytes).toBeLessThan(limits.maxRequestBytes);
-    const text = " ".repeat(limits.maxRequestBytes + 1 - canonicalBytes) + canonical;
-    expect(Buffer.byteLength(text)).toBe(limits.maxRequestBytes + 1);
-    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(limits.maxFrameBytes);
+    const exact = " ".repeat(limits.maxRequestBytes - canonicalBytes) + canonical;
+    expect(Buffer.byteLength(exact)).toBe(limits.maxRequestBytes);
 
-    client.socket.send(text);
+    client.socket.send(exact);
+    expect(await within(client.next())).toMatchObject({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: 1,
+      kind: "query",
+      value: [],
+    });
+
+    const oneByteOver = ` ${exact}`;
+    expect(Buffer.byteLength(oneByteOver)).toBe(limits.maxRequestBytes + 1);
+    expect(Buffer.byteLength(oneByteOver)).toBeLessThanOrEqual(limits.maxFrameBytes);
+
+    client.socket.send(oneByteOver);
     expect(await within(client.next())).toMatchObject({
       v: PROTOCOL_VERSION,
       t: "err",
@@ -1165,6 +1177,56 @@ describe("WebSocket Session transport", () => {
       outcome: { code: "overloaded", resource: "operation" },
     });
     expect((await within(client.closed())).code).toBe(1013);
+  });
+
+  test("accepts valid binary UTF-8 at the exact request limit", async () => {
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    client.send({
+      v: PROTOCOL_VERSION,
+      t: "hello",
+      clientSessionId: "binary-request-byte-limit",
+      credential: { kind: "anonymous" },
+    });
+    expect(await within(client.next())).toMatchObject({ t: "welcome" });
+
+    const mutationRequestId = uuidV7(2);
+    const canonical = encode({
+      v: PROTOCOL_VERSION,
+      t: "m",
+      id: 2,
+      ref: "notes.add",
+      args: { body: "é", rank: 1n },
+      mutationRequestId,
+      issuedAt: Date.now(),
+    });
+    const exact = " ".repeat(limits.maxRequestBytes - Buffer.byteLength(canonical)) + canonical;
+    const binary = new TextEncoder().encode(exact);
+    expect(binary.byteLength).toBe(limits.maxRequestBytes);
+
+    client.socket.send(binary);
+    expect(await within(client.next())).toMatchObject({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: 2,
+      kind: "mutation",
+      value: 1n,
+      receipt: { mutationRequestId },
+    });
+    client.socket.close();
+    await within(client.closed());
+  });
+
+  test("rejects invalid binary UTF-8 before Protocol-2 decoding", async () => {
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    client.socket.send(new Uint8Array([0xc3, 0x28]));
+
+    expect(await within(client.next())).toMatchObject({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: null,
+      outcome: { code: "malformed" },
+    });
+    expect((await within(client.closed())).code).toBe(1002);
   });
 
   test("bounds malformed and one-byte-over frames, then lets Bun reject larger payloads", async () => {
