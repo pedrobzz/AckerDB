@@ -712,6 +712,7 @@ describe("Session Protocol-2 ownership", () => {
 
     expect(runtime.queryRequests).toHaveLength(1);
     expect(runtime.queryRequests[0]).toMatchObject({ message, bytes });
+    expect(Object.isFrozen(runtime.queryRequests[0])).toBe(true);
     await session.close();
   });
 

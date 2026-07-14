@@ -58,7 +58,6 @@ import {
 import type { Engine } from "./engine.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import {
-  carriedHttpTrace,
   claimHttpTrace,
   finishClaimedHttpTrace,
   type ClaimedHttpTrace,
@@ -86,6 +85,7 @@ import {
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
+import { claimHttpRequestProvenance } from "./request-provenance.ts";
 import {
   OrderedReactive,
   ReactiveCommit,
@@ -114,6 +114,7 @@ import {
   type TelemetryTraceContext,
 } from "./telemetry.ts";
 import {
+  claimRuntimeRequestBytes,
   prepareRuntimePublication,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
@@ -726,15 +727,16 @@ export class Runtime implements RuntimePort {
   }
 
   async runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
-    const requestBytes = this.externalRequestBytes({
+    const provenance = claimHttpRequestProvenance(request);
+    const requestBytes = this.admittedRequestBytes({
       v: PROTOCOL_VERSION,
       t: "call",
       id: request.id,
       ref: request.address,
       args: request.args,
-    });
+    }, provenance?.bytes);
     const claimedTrace = claimHttpTrace(
-      carriedHttpTrace(request),
+      provenance?.trace,
       "procedure",
       request.address,
       String(request.id),
@@ -918,15 +920,16 @@ export class Runtime implements RuntimePort {
   }
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
-    const requestBytes = this.externalRequestBytes({
+    const provenance = claimHttpRequestProvenance(request);
+    const requestBytes = this.admittedRequestBytes({
       v: PROTOCOL_VERSION,
       t: "call",
       id: request.id,
       ref: request.address,
       args: request.args,
-    });
+    }, provenance?.bytes);
     const claimedTrace = claimHttpTrace(
-      carriedHttpTrace(request),
+      provenance?.trace,
       "sse",
       request.address,
       String(request.id),
@@ -1404,8 +1407,11 @@ export class Runtime implements RuntimePort {
     work: (state: RuntimeSession, requestBytes: number) => T | Promise<T>,
     options: SessionOperationOptions<T> = {},
   ): Promise<T> {
-    const { message, bytes: requestBytes } = request;
-    this.assertRequestBytes(requestBytes);
+    const { message } = request;
+    const requestBytes = this.admittedRequestBytes(
+      message,
+      claimRuntimeRequestBytes(request),
+    );
     const state = this.matchingSession(context);
     return this.runOperation(
       state,
@@ -2573,13 +2579,15 @@ export class Runtime implements RuntimePort {
     throw new DbzzError("unavailable", "runtime is not available", { resource: "operation" });
   }
 
-  /** HTTP callers do not yet carry transport-owned bytes into Runtime. */
-  private externalRequestBytes(request: unknown): number {
-    let bytes: number;
-    try {
-      bytes = byteLength(request);
-    } catch (cause) {
-      throw new DbzzError("validation", "request is not wire-representable", { cause });
+  /** Trusts only package-owned transport provenance; direct callers are re-encoded canonically. */
+  private admittedRequestBytes(request: unknown, receivedBytes?: number): number {
+    let bytes = receivedBytes;
+    if (bytes === undefined) {
+      try {
+        bytes = byteLength(request);
+      } catch (cause) {
+        throw new DbzzError("validation", "request is not wire-representable", { cause });
+      }
     }
     this.assertRequestBytes(bytes);
     return bytes;

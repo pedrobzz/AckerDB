@@ -269,22 +269,28 @@ function acknowledgeSse(
 
 test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pre-Runtime failures", async () => {
   const app = fixture();
+  const receivedBytes = new Map<number, number>();
   const call = async (
     path: "/api/call" | "/api/sse",
     id: number,
     ref: string,
     token: string,
-  ): Promise<Response> => fetch(`${app.base}${path}`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${token}` },
-    body: encode({
+  ): Promise<Response> => {
+    const canonical = encode({
       v: PROTOCOL_VERSION,
       t: "call",
       id,
       ref,
       args: { secret: PRIVATE_ARGUMENT },
-    }),
-  });
+    });
+    const body = `${" ".repeat(id === 101 ? 37 : id === 103 ? 53 : 0)}${canonical}`;
+    receivedBytes.set(id, Buffer.byteLength(body));
+    return fetch(`${app.base}${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+      body,
+    });
+  };
 
   try {
     const procedure = await call("/api/call", 101, "ops.echo", VALID_PROCEDURE_TOKEN);
@@ -412,6 +418,7 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
     expect(auth[0]!.traceId).toBe(procedureAdmission.traceId);
     expect(auth[0]!.traceId).toBe(procedureDelivery.traceId);
     expect(procedureAdmission.function).toBe("ops.echo");
+    expect(procedureAdmission.sizeBytes).toBe(receivedBytes.get(101));
 
     const anonymousAdmission = oneSpan(retainedSpans, "procedure", "admission", "106");
     const anonymousDelivery = oneSpan(retainedSpans, "procedure", "delivery", "106");
@@ -420,6 +427,7 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
 
     const sseAdmission = oneSpan(retainedSpans, "sse", "admission", "103");
     expect(auth[2]!.traceId).toBe(sseAdmission.traceId);
+    expect(sseAdmission.sizeBytes).toBe(receivedBytes.get(103));
     expect(retainedSpans.some((record) =>
       record.operation === "sse" &&
       record.stage === "delivery" &&

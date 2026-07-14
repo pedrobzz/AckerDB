@@ -173,6 +173,21 @@ export interface RuntimeRequest<Message> {
   readonly bytes: number;
 }
 
+const runtimeRequestBytes = new WeakMap<object, number>();
+
+function prepareRuntimeRequest<Message>(message: Message, bytes: number): RuntimeRequest<Message> {
+  const request = Object.freeze({ message, bytes });
+  runtimeRequestBytes.set(request, bytes);
+  return request;
+}
+
+/** Claims exact Session-owned transport bytes once; intentionally absent from the public index. */
+export function claimRuntimeRequestBytes(request: RuntimeRequest<unknown>): number | undefined {
+  const bytes = runtimeRequestBytes.get(request);
+  if (bytes !== undefined) runtimeRequestBytes.delete(request);
+  return bytes;
+}
+
 /** Transport-independent adapter implemented by the database runtime. */
 export interface RuntimePort {
   openSession(context: SessionRuntimeContext): Promise<void>;
@@ -466,7 +481,7 @@ export class Session {
           await this.sendControlError(message.id, authStale());
           return;
         }
-        await this.runOperation({ message, bytes: received.bytes });
+        await this.runOperation(prepareRuntimeRequest(message, received.bytes));
         return;
     }
   }

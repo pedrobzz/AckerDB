@@ -608,10 +608,13 @@ test("DbzzServer correlates bounded procedure encoding and Response handoff afte
   runtime.failedResponderId = 54;
   const server = serve({ runtime, port: 0 });
   const base = `http://127.0.0.1:${server.port}`;
+  const receivedBytes = new Map<number, number>();
   const call = async (id: number, ref: string, args: unknown) => {
+    const requestBody = `${" ".repeat(19)}${encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args })}`;
+    receivedBytes.set(id, encoder.encode(requestBody).byteLength);
     const response = await fetch(`${base}/api/call`, {
       method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args }),
+      body: requestBody,
     });
     const body = await response.text();
     return { body, frame: parseCallResponse(decode(body)), status: response.status };
@@ -688,6 +691,7 @@ test("DbzzServer correlates bounded procedure encoding and Response handoff afte
     expect(failedHandoff).toMatchObject({ activeOperations: 0, status: 200 });
     expect(failedHandoff!.bytes).toBe(encoder.encode(failedHandoff!.body).byteLength);
     expect(runtime.status().activeOperations).toBe(0);
+    expect(runtime.status().telemetry.traceRetention.activeTraces).toBe(0);
 
     await runtime.telemetry.flush();
     const retained = spans(exported);
@@ -698,6 +702,7 @@ test("DbzzServer correlates bounded procedure encoding and Response handoff afte
     ] as const) {
       const owner = admission(retained, "procedure", String(id));
       const handoff = runtime.procedureHandoffs.get(id)!;
+      expect(owner.sizeBytes).toBe(receivedBytes.get(id));
       const responseSpans = retained.filter((record) =>
         record.operation === "procedure" &&
         record.resource === "operation" &&

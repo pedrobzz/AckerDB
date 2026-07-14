@@ -36,6 +36,7 @@ import {
   type SessionControlMessage,
   type SessionSink,
 } from "../src/session.ts";
+import type { TelemetryRecord, TelemetrySpanRecord } from "../src/telemetry.ts";
 
 const NOW = 1_720_000_000_000;
 const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime-session" });
@@ -310,6 +311,70 @@ const schema = defineSchema({
 type Ctx = any;
 
 describe("Session + Runtime integration", () => {
+  test("preserves exact noncanonical Session bytes in concrete Runtime telemetry", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-session-bytes-"));
+    const engine = new Engine(schema, join(directory, "data.db"));
+    reconcile(engine);
+    const exported: TelemetryRecord[] = [];
+    const runtime = new Runtime({
+      engine,
+      registry: new Registry({
+        messages: {
+          list: query({
+            access: "public",
+            args: { channelId: dbz.bigint() },
+            handler: (ctx: Ctx, args: Ctx) =>
+              ctx.db.messages.byChannel((builder: Ctx) =>
+                builder.eq("channelId", args.channelId)
+              ).collect(),
+          }),
+        },
+      }),
+      telemetry: {
+        enabled: true,
+        exporter: { export: (batch) => void exported.push(...batch) },
+        localSink: false,
+        limits: { slowOperationMs: 0, batchIntervalMs: 60_000, sampleIntervalMs: 60_000 },
+      },
+      now: () => NOW,
+    });
+    const sink = new DeterministicSink();
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new FixedClock() });
+
+    try {
+      await handle(session, {
+        v: PROTOCOL_VERSION,
+        t: "hello",
+        clientSessionId: "exact-session-bytes",
+        credential: { kind: "anonymous" },
+      });
+      const message = {
+        v: PROTOCOL_VERSION,
+        t: "q" as const,
+        id: 91,
+        ref: "messages.list",
+        args: { channelId: 1n },
+      };
+      const canonical = encode(message);
+      const received = `${" ".repeat(137)}${canonical}`;
+      const receivedBytes = Buffer.byteLength(received);
+      expect(receivedBytes).toBeGreaterThan(Buffer.byteLength(canonical));
+
+      await session.handle(received);
+      await runtime.telemetry.flush();
+      const requestSpans = exported.filter((record): record is TelemetrySpanRecord =>
+        record.kind === "span" && record.requestId === "91"
+      );
+      expect(requestSpans.find((span) => span.stage === "admission")?.sizeBytes).toBe(receivedBytes);
+      expect(requestSpans.find((span) => span.stage === "queue")?.sizeBytes).toBe(receivedBytes);
+    } finally {
+      await session.close();
+      await runtime.drain();
+      engine.close("clean");
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("orders convergence, replay, and auth-epoch transitions end to end", async () => {
     const directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-session-"));
     const engine = new Engine(schema, join(directory, "data.db"));

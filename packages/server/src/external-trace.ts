@@ -31,7 +31,6 @@ interface HttpTraceState {
 
 const HTTP_TRACE_STATE: unique symbol = Symbol("dbzz.httpTraceState");
 const CLAIMED_TRACE_STATE: unique symbol = Symbol("dbzz.claimedHttpTraceState");
-const HTTP_TRACE_CARRIER: unique symbol = Symbol("dbzz.httpTraceCarrier");
 
 /** Package-internal opaque ownership token passed from Serve to Runtime. */
 export interface ExternalHttpTrace {
@@ -41,10 +40,6 @@ export interface ExternalHttpTrace {
 export interface ClaimedHttpTrace {
   readonly context: PreparedTelemetryTraceContext;
   readonly [CLAIMED_TRACE_STATE]: HttpTraceState;
-}
-
-interface HttpTraceCarrier {
-  readonly [HTTP_TRACE_CARRIER]?: ExternalHttpTrace;
 }
 
 function durationSince(startedAt: number): number {
@@ -105,18 +100,6 @@ export function beginHttpTrace(
   } catch {
     return undefined;
   }
-}
-
-export function carryHttpTrace<T extends object>(
-  value: T,
-  trace: ExternalHttpTrace | undefined,
-): T {
-  if (trace !== undefined) Object.assign(value, { [HTTP_TRACE_CARRIER]: trace });
-  return value;
-}
-
-export function carriedHttpTrace(value: object): ExternalHttpTrace | undefined {
-  return (value as HttpTraceCarrier)[HTTP_TRACE_CARRIER];
 }
 
 export function identifyHttpTrace(

@@ -31,7 +31,6 @@ import { DbzzError } from "./errors.ts";
 import {
   beginHttpTrace,
   beginSessionAuthTrace,
-  carryHttpTrace,
   finishHttpTrace,
   identifyHttpTrace,
   observeHttpAuth,
@@ -39,6 +38,7 @@ import {
 } from "./external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
+import { carryHttpRequestProvenance } from "./request-provenance.ts";
 import {
   CAPTURE_DELIVERY_OBSERVER,
   type Runtime,
@@ -305,8 +305,22 @@ class HttpAdmission {
   }
 }
 
+interface BoundedHttpBody {
+  readonly text: string;
+  readonly bytes: number;
+}
+
+interface ParsedHttpBody<T> {
+  readonly value: T;
+  readonly bytes: number;
+}
+
 /** Read no more than maxBytes of the raw HTTP body before any UTF-8 or wire decode. */
-async function readBoundedBody(request: Request, maxBytes: number, maxAgeMs: number): Promise<string> {
+async function readBoundedBody(
+  request: Request,
+  maxBytes: number,
+  maxAgeMs: number,
+): Promise<BoundedHttpBody> {
   const declared = request.headers.get("content-length");
   if (declared !== null) {
     if (!/^\d+$/.test(declared)) {
@@ -350,7 +364,7 @@ async function readBoundedBody(request: Request, maxBytes: number, maxAgeMs: num
     offset += chunk.byteLength;
   }
   try {
-    return strictUtf8.decode(body);
+    return { text: strictUtf8.decode(body), bytes };
   } catch (cause) {
     throw new DbzzError("malformed", "request body is not valid UTF-8", { cause });
   }
@@ -361,15 +375,15 @@ async function parseHttpBody<T>(
   maxBytes: number,
   maxAgeMs: number,
   parse: (value: unknown) => T,
-): Promise<T> {
-  const text = await readBoundedBody(request, maxBytes, maxAgeMs);
+): Promise<ParsedHttpBody<T>> {
+  const body = await readBoundedBody(request, maxBytes, maxAgeMs);
   let decoded: unknown;
   try {
-    decoded = decode(text);
+    decoded = decode(body.text);
   } catch (cause) {
     throw new DbzzError("malformed", "malformed request body", { cause });
   }
-  return parse(decoded);
+  return { value: parse(decoded), bytes: body.bytes };
 }
 
 function configuredStatusScope(value: string | undefined): string {
@@ -646,7 +660,7 @@ export class DbzzServer {
     try {
       if (this.lifecycle !== "ready") throw unavailableWhile(this.lifecycle);
       admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
-      const call = await parseHttpBody(
+      const { value: call, bytes } = await parseHttpBody(
         request,
         runtime.limits.maxRequestBytes,
         runtime.limits.readQueue.maxAgeMs,
@@ -659,14 +673,14 @@ export class DbzzServer {
         : await observeHttpAuth(externalTrace, () => this.authenticate(request));
       const fairnessKey = callerFairnessKey(lease.principal, source);
       admission.transfer(fairnessKey);
-      const input = carryHttpTrace({
+      const input = carryHttpRequestProvenance({
         id: call.id,
         address: call.ref,
         args: call.args,
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,
-      }, externalTrace);
+      }, bytes, externalTrace);
       if (sse) {
         const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;
@@ -707,7 +721,7 @@ export class DbzzServer {
     let admission: HttpAdmissionLease | undefined;
     try {
       admission = this.httpAdmission.admit(sourceKey);
-      const acknowledgment = await parseHttpBody<SseAckRequest>(
+      const { value: acknowledgment } = await parseHttpBody<SseAckRequest>(
         request,
         this.limits.maxRequestBytes,
         this.limits.readQueue.maxAgeMs,

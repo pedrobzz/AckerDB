@@ -145,6 +145,11 @@ const functions = {
       args: { value: dbz.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
+    numbers: procedure({
+      access: "public",
+      args: { values: dbz.array(dbz.number()) },
+      handler: (_ctx: Ctx, args: Ctx) => args.values.length,
+    }),
     identity: procedure({
       access: "authenticated",
       args: {},
@@ -667,6 +672,22 @@ describe("Protocol-2 HTTP procedures", () => {
       t: "err",
       id: 5,
       outcome: { code: "internal", retryable: false, message: "internal server error" },
+    });
+  });
+
+  test("admits the received HTTP bytes without rejecting a larger canonical re-encoding", async () => {
+    const exponents = Array.from({ length: 60 }, () => "1e9").join(",");
+    const body = `{"v":${PROTOCOL_VERSION},"t":"call","id":9,"ref":"notes.numbers","args":{"values":[${exponents}]}}`;
+    expect(Buffer.byteLength(body)).toBeLessThanOrEqual(limits.maxRequestBytes);
+    expect(Buffer.byteLength(encode(decode(body)))).toBeGreaterThan(limits.maxRequestBytes);
+
+    const response = await fetch(`${base}/api/call`, { method: "POST", body });
+    expect(response.status).toBe(200);
+    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
+      t: "ok",
+      id: 9,
+      kind: "procedure",
+      value: 60,
     });
   });
 

@@ -24,9 +24,11 @@ import { mutation, procedure, query, sseProcedure } from "../src/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
 import { reconcile } from "../src/reconcile.ts";
 import { Registry } from "../src/registry.ts";
+import { carryHttpRequestProvenance } from "../src/request-provenance.ts";
 import {
   Runtime,
   type RuntimeOptions,
+  type RuntimeProcedureResponse,
   type RuntimeSseResponse,
 } from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
@@ -1101,10 +1103,9 @@ describe("procedures and bounded SSE", () => {
 });
 
 describe("direct ingress", () => {
-  test("rejects oversized direct calls before operation or writer admission", async () => {
+  test("rejects canonically oversized direct requests despite forged low byte counts", async () => {
     await restart(limits({ maxRequestBytes: 256 }));
     await session.open();
-    const oversizedBytes = 257;
     const oversized = "x".repeat(512);
     const expected = {
       code: "overloaded",
@@ -1112,58 +1113,39 @@ describe("direct ingress", () => {
       message: "request exceeds maxRequestBytes",
     };
 
-    await expect(runtime.subscribe(session.context, request({
-      v: PROTOCOL_VERSION,
-      t: "sub",
-      id: 80,
-      ref: "messages.list",
-      args: {},
-    }, oversizedBytes))).rejects.toMatchObject(expected);
     await expect(runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 81,
-      ref: "messages.list",
+      ref: oversized,
       args: {},
-    }, oversizedBytes))).rejects.toMatchObject(expected);
+    }, 0))).rejects.toMatchObject(expected);
     await expect(runtime.mutation(session.context, request({
       v: PROTOCOL_VERSION,
       t: "m",
       id: 82,
       ref: "messages.send",
-      args: { channelId: 1n, body: "small" },
+      args: { channelId: 1n, body: oversized },
       mutationRequestId: uuidV7(Date.now(), 82),
       issuedAt: Date.now(),
-    }, oversizedBytes))).rejects.toMatchObject(expected);
-    await expect(runtime.unsubscribe(session.context, request({
-      v: PROTOCOL_VERSION,
-      t: "unsub",
-      id: 83,
-    }, oversizedBytes))).rejects.toMatchObject(expected);
-    await expect(runtime.reset(session.context, request({
-      v: PROTOCOL_VERSION,
-      t: "reset",
-      id: 84,
-      cursor: {
-        generation: "small",
-        commitVersion: 0n,
-        authEpoch: 0,
-        identity: "small",
-      },
-    }, oversizedBytes))).rejects.toMatchObject(expected);
-    await expect(runtime.runProcedure({
+    }, 0))).rejects.toMatchObject(expected);
+    const procedure = {
       id: 85,
       address: oversized,
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }) => new Response(body, { status }),
-    })).rejects.toMatchObject(expected);
-    await expect(runtime.runSse({
+      respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+      bytes: 0,
+    };
+    await expect(runtime.runProcedure(procedure)).rejects.toMatchObject(expected);
+    const sse = {
       id: 86,
       address: oversized,
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
-    })).rejects.toMatchObject(expected);
+      bytes: 0,
+    };
+    await expect(runtime.runSse(sse)).rejects.toMatchObject(expected);
 
     expect(runtime.status()).toMatchObject({
       activeOperations: 0,
@@ -1173,7 +1155,7 @@ describe("direct ingress", () => {
     expect(engine.commitVersion()).toBe(0n);
   });
 
-  test("accepts a Runtime request at the exact byte boundary", async () => {
+  test("accepts canonical direct requests despite forged high byte counts", async () => {
     await restart(limits({ maxRequestBytes: 256 }));
     await session.open();
 
@@ -1183,7 +1165,45 @@ describe("direct ingress", () => {
       id: 87,
       ref: "messages.list",
       args: { channelId: 1n },
-    }, 256))).resolves.toEqual([]);
+    }, 257))).resolves.toEqual([]);
+
+    const procedureRequest = {
+      id: 88,
+      address: "ops.echo",
+      args: { value: "accepted" },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+      bytes: 257,
+    };
+    const procedure = await runtime.runProcedure(procedureRequest);
+    expect(procedure.status).toBe(200);
+
+    const sseRequest = {
+      id: 89,
+      address: "ops.stream",
+      args: { count: 0 },
+      principal: ANONYMOUS_PRINCIPAL,
+      bytes: 257,
+    };
+    const sse = await runtime.runSse(sseRequest);
+    expect((await collectSse(sse)).at(-1)?.t).toBe("sse_done");
+  });
+
+  test("claims transport provenance once across request spreads", async () => {
+    await restart(limits({ maxRequestBytes: 256 }));
+    const carried = carryHttpRequestProvenance({
+      id: 90,
+      address: "ops.echo",
+      args: { value: "accepted canonically after the claim" },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+    }, 257, undefined);
+
+    await expect(runtime.runProcedure({ ...carried })).rejects.toMatchObject({
+      code: "overloaded",
+      resource: "operation",
+    });
+    expect((await runtime.runProcedure({ ...carried })).status).toBe(200);
   });
 });
 

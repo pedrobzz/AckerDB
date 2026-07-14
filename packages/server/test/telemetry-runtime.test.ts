@@ -468,7 +468,7 @@ describe("Runtime telemetry acceptance", () => {
     );
   });
 
-  test("uses the Runtime request byte count for admission and reader queue telemetry", async () => {
+  test("uses canonical bytes for untrusted direct Runtime telemetry", async () => {
     const exported: TelemetryRecord[] = [];
     const app = harness({
       enabled: true,
@@ -477,15 +477,16 @@ describe("Runtime telemetry acceptance", () => {
       limits: { ...telemetryLimits, slowOperationMs: 0 },
     });
     const session = await app.openSession("telemetry-request-bytes");
-    const bytes = 777;
-
-    await app.runtime.query(session.context, request({
+    const message = {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 740_000_010,
       ref: "items.list",
       args: { room: 1n },
-    }, bytes));
+    } as const;
+    const bytes = Buffer.byteLength(encode(message));
+
+    await app.runtime.query(session.context, request(message, Number.MAX_SAFE_INTEGER));
     await app.runtime.telemetry.flush();
 
     const querySpans = spans(exported).filter((span) => span.requestId === "740000010");
