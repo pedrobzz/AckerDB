@@ -2,11 +2,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { Subprocess } from "bun";
 import {
   activePhaseIds,
+  BENCHMARK_START_SIGNAL,
   benchmarkFailure,
   BenchmarkError,
   BoundedTextTail,
   stopSubprocess,
 } from "./process-lifecycle.ts";
+import { ProcessTreeMonitor, readProcessTable } from "./process-tree.ts";
 
 const children = new Set<Subprocess>();
 
@@ -19,6 +21,49 @@ afterEach(async () => {
 });
 
 describe("bounded process diagnostics", () => {
+  test("holds workload phases until the parent samples the client process", async () => {
+    const lifecycleUrl = new URL("./process-lifecycle.ts", import.meta.url).href;
+    const child = Bun.spawn([
+      process.execPath,
+      "-e",
+      `import { waitForBenchmarkStart } from ${JSON.stringify(lifecycleUrl)};` +
+      `console.log("ready");await waitForBenchmarkStart();` +
+      `console.log(performance.timeOrigin + performance.now());` +
+      `await Bun.sleep(60);console.log(performance.timeOrigin + performance.now())`,
+    ], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    children.add(child);
+    const reader = child.stdout.getReader();
+    const decoder = new TextDecoder();
+    expect(decoder.decode((await reader.read()).value)).toBe("ready\n");
+
+    const phaseOutput = reader.read();
+    expect(await Promise.race([
+      phaseOutput.then(() => "started" as const),
+      Bun.sleep(25).then(() => "blocked" as const),
+    ])).toBe("blocked");
+    const monitors = [new ProcessTreeMonitor(child.pid, 20), new ProcessTreeMonitor(child.pid, 20)];
+    const baselineTable = readProcessTable();
+    const baselines = monitors.map((monitor) => monitor.sampleNow(baselineTable));
+
+    child.stdin.write(BENCHMARK_START_SIGNAL);
+    child.stdin.end();
+    const phaseStartedAt = Number(decoder.decode((await phaseOutput).value).trim());
+    await Bun.sleep(25);
+    const phaseTable = readProcessTable();
+    for (const monitor of monitors) monitor.sampleNow(phaseTable);
+    const phaseEndedAt = Number(decoder.decode((await reader.read()).value).trim());
+    expect(await child.exited).toBe(0);
+    const finalTable = readProcessTable();
+    const finalSamples = monitors.map((monitor) => monitor.sampleNow(finalTable));
+    for (let index = 0; index < monitors.length; index++) {
+      expect(phaseStartedAt).toBeGreaterThanOrEqual(baselines[index]!.timestampMs);
+      expect(phaseEndedAt).toBeLessThanOrEqual(finalSamples[index]!.timestampMs);
+      expect(monitors[index]!.summarize(phaseStartedAt, phaseEndedAt).sampleCount).toBeGreaterThan(0);
+    }
+    reader.releaseLock();
+    children.delete(child);
+  });
+
   test("retains a streaming UTF-8 tail within the configured character bound", () => {
     const tail = new BoundedTextTail(8);
     const encoded = new TextEncoder().encode("prefix-🙂-tail");

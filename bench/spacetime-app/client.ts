@@ -10,6 +10,7 @@ import {
   type ProbeResult,
   type SearchResult,
 } from "../benchmark.ts";
+import { waitForBenchmarkStart } from "../process-lifecycle.ts";
 import { runWorkload } from "../workload.ts";
 import { DbConnection, tables, type EventContext } from "./module_bindings/index.ts";
 import { setGlobalLogLevel } from "spacetimedb";
@@ -119,5 +120,6 @@ const adapter: BenchAdapter = {
   },
 };
 
+await waitForBenchmarkStart();
 const result = await runWorkload(adapter);
 console.log(`@@result ${JSON.stringify(result)}`);

@@ -12,6 +12,7 @@ import {
   type ProbeResult,
   type SearchResult,
 } from "../benchmark.ts";
+import { waitForBenchmarkStart } from "../process-lifecycle.ts";
 import { runWorkload } from "../workload.ts";
 
 const url = process.env.CONVEX_URL ?? "http://127.0.0.1:3210";
@@ -103,5 +104,6 @@ const adapter: BenchAdapter = {
   },
 };
 
+await waitForBenchmarkStart();
 const result = await runWorkload(adapter);
 console.log(`@@result ${JSON.stringify(result)}`);

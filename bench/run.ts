@@ -36,6 +36,7 @@ import {
 } from "./performance-gates.ts";
 import {
   activePhaseIds,
+  BENCHMARK_START_SIGNAL,
   benchmarkFailure,
   BoundedTextTail,
   stopSubprocess,
@@ -208,6 +209,7 @@ async function runMeasuredClient(
 ): Promise<Omit<MeasuredDriverResult, "startupIdle" | "implementationVersion">> {
   const child = Bun.spawn(command, {
     cwd: REPO,
+    stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, ...env },
@@ -246,6 +248,8 @@ async function runMeasuredClient(
         if (resourceTimer !== undefined) clearInterval(resourceTimer);
       }
     }, RESOURCE_SAMPLE_MS);
+    child.stdin.write(BENCHMARK_START_SIGNAL);
+    child.stdin.end();
     for await (const chunk of child.stdout) {
       stdoutTail.write(chunk);
       buffer += stdoutDecoder.decode(chunk, { stream: true });
@@ -331,14 +335,16 @@ async function runMeasuredClient(
 
   const serverPhases: Record<string, ProcessTreeWindowSummary> = {};
   const loadPhases: Record<string, ProcessTreeWindowSummary> = {};
+  let resourcePhase = "unknown";
   try {
     for (const [id, bounds] of phaseBounds) {
       if (bounds.endMs - bounds.startMs < RESOURCE_SAMPLE_MS) continue;
+      resourcePhase = id;
       serverPhases[id] = serverMonitor.summarize(bounds.startMs, bounds.endMs);
       loadPhases[id] = loadMonitor.summarize(bounds.startMs, bounds.endMs);
     }
   } catch (error) {
-    failures.push({ stage: "resource windows", error });
+    failures.push({ stage: `resource window ${resourcePhase}`, error });
     throw clientFailure();
   }
   return {

@@ -1,6 +1,7 @@
 import type { Subprocess } from "bun";
 
 export const DIAGNOSTIC_TAIL_CHARS = 64 * 1_024;
+export const BENCHMARK_START_SIGNAL = "start\n";
 
 type StoppableProcess = Pick<Subprocess, "exitCode" | "exited" | "kill">;
 
@@ -12,6 +13,14 @@ export interface BenchmarkFailurePart {
 export interface BenchmarkDiagnostics {
   readonly summary?: readonly string[];
   readonly tail?: string;
+}
+
+/** Blocks a benchmark client until the parent has established resource baselines. */
+export async function waitForBenchmarkStart(): Promise<void> {
+  const signal = await Bun.stdin.text();
+  if (signal !== BENCHMARK_START_SIGNAL) {
+    throw new Error(`invalid benchmark start signal ${JSON.stringify(signal)}`);
+  }
 }
 
 export class BenchmarkError extends Error {
