@@ -13,7 +13,7 @@ const baselineJson = readFileSync(new URL(`../${FROZEN_BASELINE_PATH}`, import.m
 const baseline = JSON.parse(baselineJson) as BenchmarkRecordLike;
 const copy = () => {
   const record = structuredClone(baseline);
-  record.schemaVersion = 4;
+  record.schemaVersion = 5;
   return record;
 };
 
@@ -87,6 +87,12 @@ describe("complete benchmark metric extraction", () => {
 });
 
 describe("frozen performance acceptance", () => {
+  test("requires the exporter-cost schema-v5 after record", () => {
+    const oldAfter = copy();
+    oldAfter.schemaVersion = 4;
+    expect(() => assertPerformanceAcceptance(oldAfter, baselineJson)).toThrow("after-run schema-v5");
+  });
+
   test("the immutable baseline passes its own complete wins and margin floors", () => {
     const evidence = assertPerformanceAcceptance(copy(), baselineJson);
     expect(evidence).toMatchObject({

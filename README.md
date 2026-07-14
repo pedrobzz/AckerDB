@@ -132,9 +132,10 @@ bun run typecheck:bench
 ```
 
 The comparative benchmark runs DBZZ, Convex, and SpacetimeDB on the same
-machine and also measures DBZZ with telemetry enabled and disabled. Its
-workload, durability profile, correctness gates, results, and interpretation
-limits are documented in [bench/README.md](bench/README.md).
+machine and separately measures DBZZ's exact default telemetry, minimum
+in-process exporter handoff cost, and fully disabled telemetry. Its workload,
+durability profile, correctness gates, results, and interpretation limits are
+documented in [bench/README.md](bench/README.md).
 
 ```sh
 bun bench/run.ts

@@ -3,9 +3,12 @@ import type { BenchmarkConfig, SystemName } from "./benchmark.ts";
 
 export type DbzzTelemetryMode = "enabled" | "disabled";
 export type DbzzDurabilityMode = "production" | "balanced";
-export type DbzzTelemetryProfile = "runtime-default" | "disabled";
+export type DbzzBenchmarkProfile = "enabled" | "exporter" | "disabled";
+export type DbzzBenchmarkExporterMode = "disabled" | "in-process";
+export type DbzzTelemetryProfile = "runtime-default" | "benchmark-exporter" | "disabled";
 export type BenchmarkExecutionLeg =
   | "dbzz-telemetry-enabled"
+  | "dbzz-telemetry-exporter"
   | "dbzz-telemetry-disabled"
   | "convex"
   | "spacetimedb";
@@ -14,8 +17,8 @@ export interface DbzzStartupMode {
   readonly telemetry: DbzzTelemetryMode;
   readonly durability: DbzzDurabilityMode;
   readonly telemetryProfile: DbzzTelemetryProfile;
-  readonly runtimeTelemetry: "omitted" | "false";
-  readonly exporter: "unconfigured";
+  readonly runtimeTelemetry: "omitted" | "options" | "false";
+  readonly exporter: "unconfigured" | "benchmark-in-process";
   readonly localSink: "default-console" | "disabled";
   readonly telemetryLimits: TelemetryLimits | null;
   readonly gracefulShutdownMs: number;
@@ -27,17 +30,19 @@ export interface ProfileMetric {
   readonly lowerIsBetter: boolean;
 }
 
-export interface PairedProfileMetric {
+export interface ProfileComparisonMetric {
   readonly label: string;
-  readonly enabled: number;
-  readonly disabled: number;
-  readonly enabledVsDisabledPercent: number | null;
+  readonly measuredProfile: DbzzTelemetryProfile;
+  readonly measured: number;
+  readonly referenceProfile: DbzzTelemetryProfile;
+  readonly reference: number;
+  readonly measuredVsReferencePercent: number | null;
   readonly lowerIsBetter: boolean;
 }
 
 export type BenchmarkRunPolicy =
-  | { readonly pairedDbzz: true; readonly acceptAndSave: true; readonly diagnosticMessage: null }
-  | { readonly pairedDbzz: boolean; readonly acceptAndSave: false; readonly diagnosticMessage: string };
+  | { readonly profiledDbzz: true; readonly acceptAndSave: true; readonly diagnosticMessage: null }
+  | { readonly profiledDbzz: boolean; readonly acceptAndSave: false; readonly diagnosticMessage: string };
 
 export const DBZZ_STARTUP_PREFIX = "@@dbzz-startup ";
 
@@ -49,7 +54,7 @@ export function benchmarkRunPolicy(
     (["dbzz", "convex", "spacetimedb"] as const).every((system) => systems.includes(system));
   if (!allSystems) {
     return {
-      pairedDbzz: false,
+      profiledDbzz: false,
       acceptAndSave: false,
       diagnosticMessage:
         `partial ${profile} diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
@@ -57,81 +62,108 @@ export function benchmarkRunPolicy(
   }
   if (profile !== "default") {
     return {
-      pairedDbzz: true,
+      profiledDbzz: true,
       acceptAndSave: false,
       diagnosticMessage:
         `${profile} all-system diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
     };
   }
-  return { pairedDbzz: true, acceptAndSave: true, diagnosticMessage: null };
+  return { profiledDbzz: true, acceptAndSave: true, diagnosticMessage: null };
+}
+
+export function benchmarkProfileFromConfig(
+  telemetry: DbzzTelemetryMode,
+  exporter: DbzzBenchmarkExporterMode,
+): DbzzBenchmarkProfile {
+  if (telemetry === "disabled") {
+    if (exporter !== "disabled") {
+      throw new Error("the benchmark exporter requires telemetry to be enabled");
+    }
+    return "disabled";
+  }
+  return exporter === "in-process" ? "exporter" : "enabled";
 }
 
 export function expectedDbzzStartupMode(
-  telemetry: DbzzTelemetryMode,
+  profile: DbzzBenchmarkProfile,
   durability: DbzzDurabilityMode,
 ): DbzzStartupMode {
+  const telemetry = profile === "disabled" ? "disabled" : "enabled";
   return Object.freeze({
     telemetry,
     durability,
-    telemetryProfile: telemetry === "enabled" ? "runtime-default" : "disabled",
-    runtimeTelemetry: telemetry === "enabled" ? "omitted" : "false",
-    exporter: "unconfigured",
-    localSink: telemetry === "enabled" ? "default-console" : "disabled",
-    telemetryLimits: telemetry === "enabled" ? Object.freeze({ ...PRODUCTION_LIMITS.telemetry }) : null,
+    telemetryProfile: profile === "enabled"
+      ? "runtime-default"
+      : profile === "exporter"
+        ? "benchmark-exporter"
+        : "disabled",
+    runtimeTelemetry: profile === "enabled" ? "omitted" : profile === "exporter" ? "options" : "false",
+    exporter: profile === "exporter" ? "benchmark-in-process" : "unconfigured",
+    localSink: profile === "disabled" ? "disabled" : "default-console",
+    telemetryLimits: profile === "disabled" ? null : Object.freeze({ ...PRODUCTION_LIMITS.telemetry }),
     gracefulShutdownMs: PRODUCTION_LIMITS.gracefulShutdownMs,
   });
 }
 
 export function benchmarkExecutionOrder(
   systemOrder: readonly SystemName[],
-  pairedDbzz: boolean,
+  profiledDbzz: boolean,
   savedRuns: number,
 ): BenchmarkExecutionLeg[] {
   if (!Number.isSafeInteger(savedRuns) || savedRuns < 0) {
     throw new RangeError("savedRuns must be a non-negative safe integer");
   }
-  const dbzzModes: DbzzTelemetryMode[] = !pairedDbzz
-    ? ["enabled"]
-    : savedRuns % 2 === 0
-      ? ["enabled", "disabled"]
-      : ["disabled", "enabled"];
+  const rotations: readonly (readonly DbzzBenchmarkProfile[])[] = [
+    ["enabled", "exporter", "disabled"],
+    ["disabled", "enabled", "exporter"],
+    ["exporter", "disabled", "enabled"],
+  ];
+  const dbzzProfiles: readonly DbzzBenchmarkProfile[] = profiledDbzz
+    ? rotations[savedRuns % rotations.length]!
+    : ["enabled"];
   return systemOrder.flatMap((system) =>
     system === "dbzz"
-      ? dbzzModes.map((telemetry) => `dbzz-telemetry-${telemetry}` as const)
+      ? dbzzProfiles.map((profile) => `dbzz-telemetry-${profile}` as const)
       : [system],
   );
 }
 
 export function compareProfileMetrics(
-  enabled: readonly ProfileMetric[],
-  disabled: readonly ProfileMetric[],
-): PairedProfileMetric[] {
-  const disabledByLabel = new Map<string, ProfileMetric>();
-  for (const metric of disabled) {
-    if (disabledByLabel.has(metric.label)) throw new Error(`disabled profile duplicates ${metric.label}`);
-    disabledByLabel.set(metric.label, metric);
+  measuredProfile: DbzzTelemetryProfile,
+  measured: readonly ProfileMetric[],
+  referenceProfile: DbzzTelemetryProfile,
+  reference: readonly ProfileMetric[],
+): ProfileComparisonMetric[] {
+  const referenceByLabel = new Map<string, ProfileMetric>();
+  for (const metric of reference) {
+    if (referenceByLabel.has(metric.label)) {
+      throw new Error(`${referenceProfile} profile duplicates ${metric.label}`);
+    }
+    referenceByLabel.set(metric.label, metric);
   }
   const seen = new Set<string>();
-  const paired = enabled.map((metric) => {
-    if (seen.has(metric.label)) throw new Error(`enabled profile duplicates ${metric.label}`);
+  const paired = measured.map((metric) => {
+    if (seen.has(metric.label)) throw new Error(`${measuredProfile} profile duplicates ${metric.label}`);
     seen.add(metric.label);
-    const reference = disabledByLabel.get(metric.label);
-    if (reference === undefined) throw new Error(`disabled profile is missing ${metric.label}`);
-    if (reference.lowerIsBetter !== metric.lowerIsBetter) {
+    const baseline = referenceByLabel.get(metric.label);
+    if (baseline === undefined) throw new Error(`${referenceProfile} profile is missing ${metric.label}`);
+    if (baseline.lowerIsBetter !== metric.lowerIsBetter) {
       throw new Error(`profiles disagree on metric direction for ${metric.label}`);
     }
     return {
       label: metric.label,
-      enabled: metric.value,
-      disabled: reference.value,
-      enabledVsDisabledPercent:
-        reference.value === 0 ? null : ((metric.value - reference.value) / reference.value) * 100,
+      measuredProfile,
+      measured: metric.value,
+      referenceProfile,
+      reference: baseline.value,
+      measuredVsReferencePercent:
+        baseline.value === 0 ? null : ((metric.value - baseline.value) / baseline.value) * 100,
       lowerIsBetter: metric.lowerIsBetter,
     };
   });
-  if (seen.size !== disabledByLabel.size) {
-    const extra = [...disabledByLabel.keys()].find((label) => !seen.has(label))!;
-    throw new Error(`enabled profile is missing ${extra}`);
+  if (seen.size !== referenceByLabel.size) {
+    const extra = [...referenceByLabel.keys()].find((label) => !seen.has(label))!;
+    throw new Error(`${measuredProfile} profile is missing ${extra}`);
   }
   return paired;
 }
@@ -174,8 +206,21 @@ export function parseDbzzStartup(output: string): DbzzStartupMode {
   if (record.durability !== "production" && record.durability !== "balanced") {
     throw new Error("dbzz mode marker has an invalid durability mode");
   }
-  const expected = expectedDbzzStartupMode(record.telemetry, record.durability);
   if (
+    record.telemetryProfile !== "runtime-default" &&
+    record.telemetryProfile !== "benchmark-exporter" &&
+    record.telemetryProfile !== "disabled"
+  ) {
+    throw new Error("dbzz mode marker has an invalid telemetry profile");
+  }
+  const profile: DbzzBenchmarkProfile = record.telemetryProfile === "runtime-default"
+    ? "enabled"
+    : record.telemetryProfile === "benchmark-exporter"
+      ? "exporter"
+      : "disabled";
+  const expected = expectedDbzzStartupMode(profile, record.durability);
+  if (
+    record.telemetry !== expected.telemetry ||
     record.telemetryProfile !== expected.telemetryProfile ||
     record.runtimeTelemetry !== expected.runtimeTelemetry ||
     record.exporter !== expected.exporter ||

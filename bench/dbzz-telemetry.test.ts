@@ -6,7 +6,7 @@ import {
   type TelemetryStage,
 } from "@dbzz/server";
 import type { DriverResult } from "./benchmark.ts";
-import { expectedDbzzStartupMode } from "./dbzz-profile.ts";
+import { expectedDbzzStartupMode, type DbzzBenchmarkProfile } from "./dbzz-profile.ts";
 import {
   assertDbzzTelemetryWorkload,
   createDbzzTelemetryReport,
@@ -23,10 +23,11 @@ interface EnabledFixture {
   readonly report: DbzzTelemetryReport;
 }
 
-async function enabledFixture(): Promise<EnabledFixture> {
+async function enabledFixture(profile: Extract<DbzzBenchmarkProfile, "enabled" | "exporter"> = "enabled"): Promise<EnabledFixture> {
   const collector = new DbzzOutputCollector();
   const encoder = new TextEncoder();
   const telemetry = new Telemetry({
+    ...(profile === "exporter" ? { exporter: { export() {} } } : {}),
     localSink: (line) => collector.writeStdout(encoder.encode(`${line}\n`)),
   });
   const spans: ReadonlyArray<readonly [TelemetryOperation, TelemetryStage]> = [
@@ -57,7 +58,7 @@ async function enabledFixture(): Promise<EnabledFixture> {
     throw new Error("fixture failed to retain its runtime metric");
   }
 
-  const startup = expectedDbzzStartupMode("enabled", "balanced");
+  const startup = expectedDbzzStartupMode(profile, "balanced");
   const beforeDrain = telemetry.snapshot();
   await telemetry.drain(Date.now() + 1_000);
   collector.finish();
@@ -136,6 +137,7 @@ describe("dbzz benchmark telemetry report", () => {
     });
     expect(report.drainAccounting).toEqual({
       retainedBeforeDrain: 6,
+      exportedDuringDrain: 0,
       drainDropDelta: 6,
       overflowDropDelta: 0,
       expiredDropDelta: 0,
@@ -145,6 +147,45 @@ describe("dbzz benchmark telemetry report", () => {
     expect(report.aggregates.operations.mutation.stages.queue.count).toBe(1);
     expect(report.aggregates.operations.procedure.stages.admission.count).toBe(1);
     expect(report.aggregates.operations.subscription.stages.queue.count).toBe(1);
+  });
+
+  test("proves the explicit exporter profile drains healthy batches and publishes exact accounting", async () => {
+    const { report } = await enabledFixture("exporter");
+
+    expect(report.startupMode).toEqual(expectedDbzzStartupMode("exporter", "balanced"));
+    expect(report.runtime.afterDrain.exporter).toMatchObject({
+      configured: true,
+      inFlight: false,
+      failures: 0,
+      timeouts: 0,
+      exportedRecords: 6,
+      failedRecords: 0,
+    });
+    expect(report.runtime.afterDrain.exporter.attempts).toBeGreaterThanOrEqual(1);
+    expect(report.drainAccounting).toEqual({
+      retainedBeforeDrain: 6,
+      exportedDuringDrain: 6,
+      drainDropDelta: 0,
+      overflowDropDelta: 0,
+      expiredDropDelta: 0,
+      drainTimeAdditionsOrRemovals: 0,
+    });
+    expect(report.localOutput.records).toBe(5);
+  });
+
+  test("rejects an inactive, failed, or dropping benchmark exporter", async () => {
+    const fixture = await enabledFixture("exporter");
+    const startup = expectedDbzzStartupMode("exporter", "balanced");
+    const invalid = [
+      [["runtime", "afterDrain", "exporter", "configured"], false],
+      [["runtime", "afterDrain", "exporter", "failures"], 1],
+      [["runtime", "afterDrain", "dropped", "overflow"], 1],
+    ] as const;
+    for (const [path, value] of invalid) {
+      const terminal = structuredClone(fixture.terminal);
+      setPath(terminal, path, value);
+      expect(() => parseDbzzTelemetryReport(JSON.stringify(terminal), startup, fixture.output)).toThrow();
+    }
   });
 
   test("keeps child output streaming and bounded while preserving control lines and fixed counters", () => {

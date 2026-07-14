@@ -465,7 +465,7 @@ export function assertPerformanceAcceptance(
   if (baseline.schemaVersion !== 3 || baseline.git?.commit !== "74d8554") {
     throw new Error("frozen benchmark baseline identity is invalid");
   }
-  if (after.schemaVersion !== 4) throw new Error("performance acceptance requires an after-run schema-v4 record");
+  if (after.schemaVersion !== 5) throw new Error("performance acceptance requires an after-run schema-v5 record");
   assertComparableRun(baseline, after);
   const baselineSystems = requireSystems(baseline);
   const afterSystems = requireSystems(after);

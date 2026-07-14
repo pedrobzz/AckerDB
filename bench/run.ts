@@ -11,9 +11,9 @@ import {
   compareProfileMetrics,
   expectedDbzzStartupMode,
   type BenchmarkExecutionLeg,
+  type DbzzBenchmarkProfile,
   type DbzzStartupMode,
-  type DbzzTelemetryMode,
-  type PairedProfileMetric,
+  type ProfileComparisonMetric,
 } from "./dbzz-profile.ts";
 import {
   assertDbzzTelemetryWorkload,
@@ -77,7 +77,7 @@ type SystemResults = Partial<Record<SystemName, MeasuredDriverResult>> & {
 };
 
 interface RunRecord {
-  schemaVersion: 4;
+  schemaVersion: 5;
   timestamp: string;
   git: { commit: string; dirty: boolean; sourceHash: string };
   machine: {
@@ -103,7 +103,9 @@ interface RunRecord {
   executionOrder: BenchmarkExecutionLeg[];
   systems: SystemResults;
   dbzzTelemetryDisabled: DbzzMeasuredDriverResult;
-  dbzzTelemetryCost: PairedProfileMetric[];
+  dbzzExporterProfile: DbzzMeasuredDriverResult;
+  dbzzTelemetryCost: ProfileComparisonMetric[];
+  dbzzExporterCost: ProfileComparisonMetric[];
   performanceAcceptance: PerformanceAcceptanceEvidence;
 }
 
@@ -356,8 +358,9 @@ async function runMeasuredClient(
   };
 }
 
-async function benchDbzz(telemetry: DbzzTelemetryMode): Promise<DbzzMeasuredDriverResult> {
-  const expectedMode = expectedDbzzStartupMode(telemetry, "balanced");
+async function benchDbzz(profile: DbzzBenchmarkProfile): Promise<DbzzMeasuredDriverResult> {
+  const expectedMode = expectedDbzzStartupMode(profile, "balanced");
+  const telemetry = profile === "disabled" ? "disabled" : "enabled";
   const reportPath = join(tmpdir(), `dbzz-benchmark-telemetry-${process.pid}-${randomUUID()}.json`);
   assertPortsFree([DBZZ_PORT]);
   console.log(
@@ -372,6 +375,7 @@ async function benchDbzz(telemetry: DbzzTelemetryMode): Promise<DbzzMeasuredDriv
       env: {
         ...process.env,
         DBZZ_TELEMETRY: telemetry,
+        DBZZ_BENCH_EXPORTER: profile === "exporter" ? "in-process" : "disabled",
         DBZZ_DURABILITY: "balanced",
         DBZZ_BENCH_TELEMETRY_REPORT: reportPath,
       },
@@ -657,7 +661,11 @@ function savedCurrentCount(): number {
     return readdirSync(RESULTS_DIR).filter((name) => {
       if (!name.endsWith(".json")) return false;
       try {
-        return (JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as { schemaVersion?: number }).schemaVersion === 4;
+        const result = JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as {
+          schemaVersion?: number;
+          dbzzExporterProfile?: unknown;
+        };
+        return result.schemaVersion === 5 && result.dbzzExporterProfile !== undefined;
       } catch {
         return false;
       }
@@ -683,7 +691,12 @@ function comparisonFingerprint(record: RunRecord): string {
     },
     configs: ALL_SYSTEMS.map((name) => record.systems[name]?.workload.config ?? null),
     dbzzTelemetryDisabledConfig: record.dbzzTelemetryDisabled.workload.config,
-    dbzzModes: [record.systems.dbzz?.startupMode, record.dbzzTelemetryDisabled.startupMode],
+    dbzzExporterProfileConfig: record.dbzzExporterProfile.workload.config,
+    dbzzModes: [
+      record.systems.dbzz?.startupMode,
+      record.dbzzExporterProfile.startupMode,
+      record.dbzzTelemetryDisabled.startupMode,
+    ],
   });
 }
 
@@ -701,8 +714,9 @@ function latestComparable(record: RunRecord): RunRecord | undefined {
     try {
       const candidate = JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as RunRecord;
       if (
-        candidate.schemaVersion !== 4 ||
+        candidate.schemaVersion !== 5 ||
         !candidate.dbzzTelemetryDisabled ||
+        !candidate.dbzzExporterProfile ||
         !ALL_SYSTEMS.every((system) => candidate.systems[system])
       ) {
         continue;
@@ -725,7 +739,7 @@ function comparisonMetrics(system: MeasuredDriverResult): ComparableMetric[] {
 
 function printComparableDelta(record: RunRecord, previous: RunRecord | undefined): void {
   if (!previous) {
-    console.log("\nNo previous schema-v4 result has the same machine and benchmark config; delta skipped.");
+    console.log("\nNo previous schema-v5 result has the same machine and benchmark config; delta skipped.");
     return;
   }
   console.log(`\nVs comparable run ${previous.timestamp} (⚠ = regression greater than 15%)`);
@@ -746,30 +760,45 @@ function printComparableDelta(record: RunRecord, previous: RunRecord | undefined
   }
 }
 
-function printDbzzTelemetryCost(metrics: PairedProfileMetric[]): void {
-  console.log("\nDBZZ telemetry enabled vs disabled (positive delta means enabled measured higher)");
-  console.log("| metric | enabled | disabled | enabled vs disabled |");
+function printDbzzProfileCost(title: string, metrics: ProfileComparisonMetric[]): void {
+  const first = metrics[0];
+  if (first === undefined) throw new Error(`${title} has no comparable metrics`);
+  console.log(`\n${title} (positive delta means ${first.measuredProfile} measured higher)`);
+  console.log(`| metric | ${first.measuredProfile} | ${first.referenceProfile} | measured vs reference |`);
   console.log("|---|---:|---:|---:|");
   for (const metric of metrics) {
-    const delta = metric.enabledVsDisabledPercent;
+    if (
+      metric.measuredProfile !== first.measuredProfile ||
+      metric.referenceProfile !== first.referenceProfile
+    ) {
+      throw new Error(`${title} mixes telemetry profile comparisons`);
+    }
+    const delta = metric.measuredVsReferencePercent;
     console.log(
-      `| ${metric.label} | ${fmt(metric.enabled)} | ${fmt(metric.disabled)} | ${delta === null ? "—" : `${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%`} |`,
+      `| ${metric.label} | ${fmt(metric.measured)} | ${fmt(metric.reference)} | ${delta === null ? "—" : `${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%`} |`,
     );
   }
+}
+
+function aggregateCell(cell: { readonly count: number; readonly durationMs: number }): string {
+  return `${cell.count}/${fmt(cell.count === 0 ? 0 : cell.durationMs / cell.count)}`;
 }
 
 function printDbzzTelemetryStatus(results: readonly DbzzMeasuredDriverResult[]): void {
   console.log("\nDBZZ default-local telemetry validation and bounded retention status");
   console.log(
-    "| profile | local records | serialized MB | retained before drain | drain drops | overflow drops | query queue | mutation queue | procedure admission | subscription queue | trace promoted/discarded | exporter configured |",
+    "| profile | local records | serialized MB | retained before drain | exported during drain | drain drops | overflow drops | query queue count/mean ms | mutation queue count/mean ms | procedure admission | subscription queue count/mean ms | trace promoted/discarded | exporter records |",
   );
-  console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+  console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
   for (const result of results) {
     const report = result.telemetryReport;
     const operations = report.aggregates.operations;
     const trace = report.runtime.afterDrain.traceRetention;
+    const queryQueue = operations.query.stages.queue;
+    const mutationQueue = operations.mutation.stages.queue;
+    const subscriptionQueue = operations.subscription.stages.queue;
     console.log(
-      `| ${report.startupMode.telemetryProfile} | ${report.localOutput.records} | ${fmt(report.localOutput.bytes / 1024 ** 2)} | ${report.drainAccounting.retainedBeforeDrain} | ${report.drainAccounting.drainDropDelta} | ${report.runtime.afterDrain.dropped.overflow} | ${operations.query.stages.queue.count} | ${operations.mutation.stages.queue.count} | ${operations.procedure.stages.admission.count} | ${operations.subscription.stages.queue.count} | ${trace.promotedTraces}/${trace.discardedTraces} | ${report.runtime.afterDrain.exporter.configured ? "yes" : "no"} |`,
+      `| ${report.startupMode.telemetryProfile} | ${report.localOutput.records} | ${fmt(report.localOutput.bytes / 1024 ** 2)} | ${report.drainAccounting.retainedBeforeDrain} | ${report.drainAccounting.exportedDuringDrain} | ${report.drainAccounting.drainDropDelta} | ${report.runtime.afterDrain.dropped.overflow} | ${aggregateCell(queryQueue)} | ${aggregateCell(mutationQueue)} | ${operations.procedure.stages.admission.count} | ${aggregateCell(subscriptionQueue)} | ${trace.promotedTraces}/${trace.discardedTraces} | ${report.runtime.afterDrain.exporter.exportedRecords} |`,
     );
   }
 }
@@ -1002,14 +1031,18 @@ const selected = requested.length > 0 ? requested : ALL_SYSTEMS;
 const runPolicy = benchmarkRunPolicy(selected, benchmarkConfigFromEnv().profile);
 const savedRuns = savedCurrentCount();
 const order = requested.length > 0 ? selected : balancedOrder(savedRuns);
-const executionOrder = benchmarkExecutionOrder(order, runPolicy.pairedDbzz, savedRuns);
+const executionOrder = benchmarkExecutionOrder(order, runPolicy.profiledDbzz, savedRuns);
 const systems: SystemResults = {};
 let dbzzTelemetryDisabled: DbzzMeasuredDriverResult | undefined;
+let dbzzExporterProfile: DbzzMeasuredDriverResult | undefined;
 for (let index = 0; index < executionOrder.length; index++) {
   const leg = executionOrder[index]!;
   switch (leg) {
     case "dbzz-telemetry-enabled":
       systems.dbzz = await benchDbzz("enabled");
+      break;
+    case "dbzz-telemetry-exporter":
+      dbzzExporterProfile = await benchDbzz("exporter");
       break;
     case "dbzz-telemetry-disabled":
       dbzzTelemetryDisabled = await benchDbzz("disabled");
@@ -1025,31 +1058,57 @@ for (let index = 0; index < executionOrder.length; index++) {
 }
 
 assertValidResults(systems);
-let dbzzTelemetryCost: PairedProfileMetric[] | undefined;
-if (runPolicy.pairedDbzz) {
-  if (systems.dbzz === undefined || dbzzTelemetryDisabled === undefined) {
-    throw new Error("all-system benchmark requires telemetry-enabled and telemetry-disabled DBZZ profiles");
+let dbzzTelemetryCost: ProfileComparisonMetric[] | undefined;
+let dbzzExporterCost: ProfileComparisonMetric[] | undefined;
+if (runPolicy.profiledDbzz) {
+  if (
+    systems.dbzz === undefined ||
+    dbzzTelemetryDisabled === undefined ||
+    dbzzExporterProfile === undefined
+  ) {
+    throw new Error("all-system benchmark requires default, exporter, and disabled DBZZ telemetry profiles");
   }
   assertValidResults({ dbzz: dbzzTelemetryDisabled }, systems.dbzz.workload);
+  assertValidResults({ dbzz: dbzzExporterProfile }, systems.dbzz.workload);
   dbzzTelemetryCost = compareProfileMetrics(
+    "runtime-default",
     comparisonMetrics(systems.dbzz),
+    "disabled",
     comparisonMetrics(dbzzTelemetryDisabled),
+  );
+  dbzzExporterCost = compareProfileMetrics(
+    "benchmark-exporter",
+    comparisonMetrics(dbzzExporterProfile),
+    "runtime-default",
+    comparisonMetrics(systems.dbzz),
   );
 }
 printResults(systems);
-if (dbzzTelemetryCost !== undefined) printDbzzTelemetryCost(dbzzTelemetryCost);
+if (dbzzTelemetryCost !== undefined) {
+  printDbzzProfileCost("DBZZ default telemetry cost", dbzzTelemetryCost);
+}
+if (dbzzExporterCost !== undefined) {
+  printDbzzProfileCost("DBZZ exporter handoff cost", dbzzExporterCost);
+}
 if (systems.dbzz !== undefined) {
-  printDbzzTelemetryStatus(
-    dbzzTelemetryDisabled === undefined ? [systems.dbzz] : [systems.dbzz, dbzzTelemetryDisabled],
-  );
+  printDbzzTelemetryStatus([
+    systems.dbzz,
+    ...(dbzzExporterProfile === undefined ? [] : [dbzzExporterProfile]),
+    ...(dbzzTelemetryDisabled === undefined ? [] : [dbzzTelemetryDisabled]),
+  ]);
 }
 if (runPolicy.acceptAndSave) {
-  if (dbzzTelemetryDisabled === undefined || dbzzTelemetryCost === undefined) {
-    throw new Error("default acceptance benchmark DBZZ profile comparison is missing");
+  if (
+    dbzzTelemetryDisabled === undefined ||
+    dbzzExporterProfile === undefined ||
+    dbzzTelemetryCost === undefined ||
+    dbzzExporterCost === undefined
+  ) {
+    throw new Error("default acceptance benchmark DBZZ profile measurements are missing");
   }
   const cliVersion = assertSpacetimeVersionAlignment();
   const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     timestamp: new Date().toISOString(),
     git: {
       commit: git(["rev-parse", "--short", "HEAD"]),
@@ -1083,15 +1142,17 @@ if (runPolicy.acceptAndSave) {
         convex: "current local backend native default",
         spacetimedb: "confirmed reads explicitly enabled; standalone native durable commit log",
       },
-      dbzzProfiles: "systems.dbzz omits Runtime.telemetry and therefore measures the exact default local console sink, retention, and limits; dbzzTelemetryDisabled passes telemetry=false; neither profile configures an exporter and both use durability=balanced with fresh equivalent state",
-      dbzzTelemetryValidation: "the parent streams DBZZ stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; every saved leg validates local record/delivery accounting, bounded queue and trace-retention state, exporter absence, the query.queue/mutation.queue/procedure.admission/subscription.queue aggregate matrix, and lower-bound consistency with workload attempts; disabled telemetry must remain entirely inactive",
+      dbzzProfiles: "systems.dbzz omits Runtime.telemetry and measures the exact default local console sink, retention, and limits; dbzzExporterProfile adds only an explicit in-process exporter callback to that default; dbzzTelemetryDisabled passes telemetry=false; all three use durability=balanced with fresh equivalent state",
+      dbzzTelemetryValidation: "the parent streams DBZZ stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; enabled legs validate local record/delivery accounting, bounded queue and trace-retention state, exact exporter selection and health, the query.queue/mutation.queue/procedure.admission/subscription.queue aggregate matrix, and lower-bound consistency with workload attempts; disabled telemetry must remain entirely inactive",
       spacetimeQueryTransport: "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
       subscriptionCapacity: "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery",
     },
     executionOrder,
     systems,
     dbzzTelemetryDisabled,
+    dbzzExporterProfile,
     dbzzTelemetryCost,
+    dbzzExporterCost,
   };
   const frozenBaselineJson = readFileSync(join(REPO, FROZEN_BASELINE_PATH), "utf8");
   const performanceAcceptance = assertPerformanceAcceptance(recordWithoutAcceptance, frozenBaselineJson);

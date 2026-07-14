@@ -65,6 +65,7 @@ export interface DbzzTelemetryTerminalReport {
 
 export interface DbzzTelemetryDrainAccounting {
   readonly retainedBeforeDrain: number;
+  readonly exportedDuringDrain: number;
   readonly drainDropDelta: number;
   readonly overflowDropDelta: number;
   readonly expiredDropDelta: number;
@@ -413,6 +414,37 @@ function assertExporterUnconfigured(snapshot: TelemetrySnapshot, label: string):
   }
 }
 
+function assertExporterConfigured(snapshot: TelemetrySnapshot, label: string, drained: boolean): void {
+  const exporter = snapshot.exporter;
+  const attempts = safeCount(exporter.attempts, `${label}.attempts`);
+  const exportedRecords = safeCount(exporter.exportedRecords, `${label}.exportedRecords`);
+  safeCount(exporter.failures, `${label}.failures`);
+  safeCount(exporter.timeouts, `${label}.timeouts`);
+  safeCount(exporter.failedRecords, `${label}.failedRecords`);
+  if (exporter.lastSuccessAtMs !== undefined) {
+    finiteNonNegative(exporter.lastSuccessAtMs, `${label}.lastSuccessAtMs`);
+  }
+  if (exporter.lastDurationMs !== undefined) {
+    finiteNonNegative(exporter.lastDurationMs, `${label}.lastDurationMs`);
+  }
+  if (
+    !exporter.configured ||
+    exporter.failures !== 0 ||
+    exporter.timeouts !== 0 ||
+    exporter.failedRecords !== 0 ||
+    exporter.lastFailureAtMs !== undefined ||
+    (drained && (
+      exporter.inFlight ||
+      attempts === 0 ||
+      exportedRecords === 0 ||
+      exporter.lastSuccessAtMs === undefined ||
+      exporter.lastDurationMs === undefined
+    ))
+  ) {
+    throw new Error(`${label} did not complete healthy benchmark exports`);
+  }
+}
+
 function assertAllDisabled(value: unknown, label: string): void {
   if (typeof value === "number") {
     if (value !== 0) throw new Error(`${label} must remain zero while telemetry is disabled`);
@@ -521,15 +553,29 @@ export function parseDbzzTelemetryReport(
     }
     drainAccounting = Object.freeze({
       retainedBeforeDrain: 0,
+      exportedDuringDrain: 0,
       drainDropDelta: 0,
       overflowDropDelta: 0,
       expiredDropDelta: 0,
       drainTimeAdditionsOrRemovals: 0,
     });
   } else {
-    if (!beforeDrain.enabled || !afterDrain.enabled) throw new Error("default telemetry reported disabled");
-    assertExporterUnconfigured(beforeDrain, "default telemetry beforeDrain");
-    assertExporterUnconfigured(afterDrain, "default telemetry afterDrain");
+    if (!beforeDrain.enabled || !afterDrain.enabled) throw new Error("enabled telemetry reported disabled");
+    if (expected.exporter === "benchmark-in-process") {
+      assertExporterConfigured(beforeDrain, "benchmark exporter beforeDrain", false);
+      assertExporterConfigured(afterDrain, "benchmark exporter afterDrain", true);
+      if (
+        afterDrain.dropped.exporter !== 0 ||
+        afterDrain.dropped.overflow !== 0 ||
+        afterDrain.dropped.expired !== 0 ||
+        afterDrain.dropped.drain !== 0
+      ) {
+        throw new Error("benchmark exporter dropped retained telemetry records");
+      }
+    } else {
+      assertExporterUnconfigured(beforeDrain, "default telemetry beforeDrain");
+      assertExporterUnconfigured(afterDrain, "default telemetry afterDrain");
+    }
     if (!beforeDrain.localSink.configured || !afterDrain.localSink.configured) {
       throw new Error("default telemetry did not configure its console local sink");
     }
@@ -621,12 +667,20 @@ export function parseDbzzTelemetryReport(
     const drainDropDelta = afterDrain.dropped.drain - beforeDrain.dropped.drain;
     const overflowDropDelta = afterDrain.dropped.overflow - beforeDrain.dropped.overflow;
     const expiredDropDelta = afterDrain.dropped.expired - beforeDrain.dropped.expired;
-    const accounted = drainDropDelta + overflowDropDelta + expiredDropDelta;
-    if (drainDropDelta < 0 || overflowDropDelta < 0 || expiredDropDelta < 0 || accounted < beforeDrain.queuedRecords) {
-      throw new Error("default telemetry terminal drops do not account for the pre-drain retained queue");
+    const exportedDuringDrain = afterDrain.exporter.exportedRecords - beforeDrain.exporter.exportedRecords;
+    const accounted = exportedDuringDrain + drainDropDelta + overflowDropDelta + expiredDropDelta;
+    if (
+      exportedDuringDrain < 0 ||
+      drainDropDelta < 0 ||
+      overflowDropDelta < 0 ||
+      expiredDropDelta < 0 ||
+      accounted < beforeDrain.queuedRecords
+    ) {
+      throw new Error("enabled telemetry terminal export/drop accounting does not cover the pre-drain queue");
     }
     drainAccounting = Object.freeze({
       retainedBeforeDrain: beforeDrain.queuedRecords,
+      exportedDuringDrain,
       drainDropDelta,
       overflowDropDelta,
       expiredDropDelta,

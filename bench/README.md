@@ -14,8 +14,8 @@ connections, and reactive delivery through each product's current client SDK.
 
 ```sh
 bun bench/run.ts                              # default all-system acceptance; saves only if every gate passes
-BENCH_PROFILE=quick bun bench/run.ts          # paired all-system smoke diagnostic; never saves
-BENCH_PROFILE=stress bun bench/run.ts         # paired all-system stress diagnostic; never saves
+BENCH_PROFILE=quick bun bench/run.ts          # profiled all-system smoke diagnostic; never saves
+BENCH_PROFILE=stress bun bench/run.ts         # profiled all-system stress diagnostic; never saves
 bun bench/run.ts dbzz convex                  # partial diagnostic; never saves
 ```
 
@@ -25,32 +25,35 @@ an unrelated occupied port does not block a partial diagnostic. Every system
 gets fresh state, a warmup before measured operations, and the same
 deterministic seed. The unqualified all-system command rotates system order;
 an explicit system list preserves its order. All-system runs also start DBZZ
-twice from fresh equivalent state, including quick and stress diagnostics:
-once with the literal `Runtime` telemetry default (the constructor option is
-omitted), then once with `telemetry: false`. `systems.dbzz` remains the enabled
-profile used in the three-system tables; the disabled result and
-enabled-versus-disabled deltas are separate schema-v4 fields, not a fake fourth
-database or a third synthetic exporter leg. Partial runs execute only the
-selected systems and one enabled DBZZ profile when DBZZ is selected.
+three times from fresh equivalent state, including quick and stress
+diagnostics: with the literal `Runtime` telemetry default (the constructor
+option is omitted), with that same default plus an explicit in-process exporter
+callback, and with `telemetry: false`. `systems.dbzz` remains the exact default
+profile used in the three-system tables. The exporter and disabled results plus
+their deltas are separate schema-v5 evidence, not extra databases. Partial runs
+execute only the selected systems and one default-enabled DBZZ profile.
 
-Both DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`; the runner selects
-`DBZZ_TELEMETRY=enabled|disabled` for the paired profiles. The enabled profile
-is labeled `runtime-default`: it uses the production retention/queue limits,
-the built-in console local sink, and no exporter. The disabled profile is
-labeled `disabled` and configures neither an exporter nor a local sink. DBZZ
-does not bundle a default exporter, so exporter cost is unavailable in this
-pair rather than estimated through benchmark-only code.
+All DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`. The
+`runtime-default` profile uses the production retention/queue limits, built-in
+console local sink, and no exporter. The `benchmark-exporter` profile changes
+only the explicit `TelemetryExporter` callback; its synchronous in-process
+handoff discards the batch after DBZZ has delivered it, measuring the minimum
+framework queue/batch/export cost without pretending to represent a particular
+network backend. The `disabled` profile configures neither an exporter nor a
+local sink. The runner confirms these choices through `DBZZ_TELEMETRY` and the
+benchmark-private `DBZZ_BENCH_EXPORTER` selector.
 
 The benchmark server emits exactly one startup marker before readiness. The
 marker confirms telemetry/durability mode, profile name, exporter/local-sink
 selection, and the exact production telemetry limits. Every DBZZ leg also
 requires a terminal telemetry report that proves delivered local span/event
 output, collected metric series, fixed-dimension operation/stage aggregates,
-configured queue and trace-retention bounds, an unconfigured and unused
-exporter, and empty queues, in-flight work, and trace state after drain. The
+configured queue and trace-retention bounds, the exact absent or healthy
+exporter state, and empty queues, in-flight work, and trace state after drain. The
 required aggregate cells follow the actual execution paths: `query.queue`,
 `mutation.queue`, `procedure.admission`, and `subscription.queue`; their counts
-and operation totals must cover the executed workload. Disabled legs must prove
+and operation totals must cover the executed workload. The status table publishes
+each queue cell's count and mean observed duration. Disabled legs must prove
 zero queue, metric-series, drop, trace-retention, local-sink, exporter, and
 aggregate activity.
 
@@ -60,11 +63,13 @@ totals; telemetry JSON lines are not accumulated in memory. Because the default
 runtime has no exporter, records in its main exporter queue are dropped at
 terminal drain and that bounded queue may also overflow under load. The report
 checks those visible drain/overflow/expiry counters account for the retained
-queue instead of pretending default drops are zero. The local sink must still
-deliver output without failure or timeout. The paired profile order alternates
-between saved runs and is preserved in `executionOrder`.
+queue instead of pretending default drops are zero. The explicit exporter leg
+must instead export every drained batch with zero failures/timeouts and balanced
+queue accounting. The local sink must deliver output without failure or
+timeout in both enabled legs. The three profile positions rotate between saved
+runs and are preserved in `executionOrder`.
 
-## Save-blocking schema-v4 performance gate
+## Save-blocking schema-v5 performance gate
 
 Only an all-system run with `BENCH_PROFILE=default` (or no `BENCH_PROFILE`) can
 enter performance acceptance and write
@@ -78,7 +83,7 @@ Acceptance is anchored to the immutable schema-v3 baseline
 `results/2026-07-13T15-34-33Z-74d8554.json`. Its exact SHA-256 is
 `ab78ada0d9d16576b7aca175c1230c456064bcf5b4a80e66b5e1c55a4528a474`, and its
 identity must remain schema version 3 at Git commit `74d8554`. The after-run
-must be schema v4 and must exactly match the baseline's complete machine
+must be schema v5 and must exactly match the baseline's complete machine
 object, 250 ms server-sampling interval, and workload config for DBZZ, Convex,
 and SpacetimeDB. The gate records the baseline source hash, machine
 fingerprint, and config SHA in its evidence; it does not require the changed
@@ -225,17 +230,17 @@ subscribed cohort. Working phases report the same CPU/RSS fields. Because the
 server stays alive through a leg, allocators may retain or release memory
 between phases; per-scenario baseline and delta are both printed, and a negative
 delta is possible when a runtime releases memory during the later plateau.
-The enabled and disabled DBZZ legs use this identical sampling and workload;
-schema v4 stores both raw profiles plus paired throughput, p50/p95/p99 latency,
-CPU, and RSS deltas. The paired table includes server CPU and peak RSS for each
-highest-concurrency operation case as well as connection and subscription
-resource plateaus. The telemetry report separately stores bounded local-output
-record/byte counters, before/after queue and trace-retention snapshots, drop
-accounting, exporter absence/zero counters, and the strict operation/stage
-aggregate matrix. There is no bundled default exporter, so this run cannot
-report an exporter cost. The paired process-tree deltas measure the cost of the
-real default local serialization/output, retention, aggregates, trace state,
-and runtime metrics relative to `telemetry: false`.
+The default, exporter, and disabled DBZZ legs use identical sampling and
+workload. Schema v5 stores all three raw profiles, default-versus-disabled
+throughput/p50/p95/p99/CPU/RSS deltas, and exporter-versus-default deltas over
+the same metric set. Those tables include server CPU and peak RSS for each
+highest-concurrency operation case plus connection and subscription resource
+plateaus. The telemetry report separately stores bounded local-output
+record/byte counters, before/after queue and trace-retention snapshots,
+export/drop accounting, exporter health and delivered-record counts, and the
+strict operation/stage aggregate matrix. The exporter delta is explicitly the
+minimum DBZZ handoff cost; transport, collector, and vendor-backend costs remain
+outside the product and benchmark contract.
 
 ## What these numbers mean
 
@@ -323,9 +328,9 @@ with SpacetimeDB's official benchmarks; it demonstrates that this benchmark is
 measuring a different, explicitly defined workload.
 
 The displayed result is the last schema-v3 run and intentionally remains in
-place until a post-change full schema-v4 run exists. Schema-v2 predates the
+place until a post-change full schema-v5 run exists. Schema-v2 predates the
 subscription-capacity sweep; schema-v3 predates paired telemetry and
-server-confirmed durability modes. Neither is delta-comparable with schema v4.
+server-confirmed durability modes. Neither is delta-comparable with schema v5.
 Treat small latency/RSS differences as ranges and rerun; the large
 dbzz-vs-Convex gaps and the SpacetimeDB saturated-write advantage have repeated
 across the retained runs.

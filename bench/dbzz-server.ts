@@ -8,11 +8,19 @@ import {
   serve,
   type DbzzServer,
   type EngineCloseDisposition,
+  type TelemetryExporter,
 } from "@dbzz/server";
 import { importFunctionModules, importSchema } from "../packages/cli/src/app.ts";
 import { loadConfig } from "../packages/cli/src/config.ts";
-import { expectedDbzzStartupMode } from "./dbzz-profile.ts";
+import {
+  benchmarkProfileFromConfig,
+  expectedDbzzStartupMode,
+} from "./dbzz-profile.ts";
 import { createDbzzTelemetryReport } from "./dbzz-telemetry.ts";
+
+const BENCHMARK_EXPORTER: TelemetryExporter = Object.freeze({
+  export() {},
+});
 
 const appDir = process.argv[2];
 if (appDir === undefined) throw new Error("dbzz benchmark server requires an app directory");
@@ -22,7 +30,15 @@ if (reportPath === undefined || !isAbsolute(reportPath)) {
 }
 
 const config = loadConfig(appDir);
-const startupMode = expectedDbzzStartupMode(config.telemetry, config.durability);
+const exporterMode = process.env.DBZZ_BENCH_EXPORTER;
+if (exporterMode !== "disabled" && exporterMode !== "in-process") {
+  throw new Error("DBZZ_BENCH_EXPORTER must be disabled or in-process");
+}
+const profile = benchmarkProfileFromConfig(
+  config.telemetry,
+  exporterMode,
+);
+const startupMode = expectedDbzzStartupMode(profile, config.durability);
 const schema = await importSchema(config);
 const modules = await importFunctionModules(config);
 mkdirSync(config.dbDir, { recursive: true });
@@ -37,7 +53,11 @@ try {
   runtime = new Runtime({
     engine,
     registry,
-    ...(config.telemetry === "disabled" ? { telemetry: false } : {}),
+    ...(profile === "disabled"
+      ? { telemetry: false }
+      : profile === "exporter"
+        ? { telemetry: { exporter: BENCHMARK_EXPORTER } }
+        : {}),
   });
   server = serve({ runtime, port: config.port, statusScope: config.statusScope });
   console.log(`@@dbzz-startup ${JSON.stringify(startupMode)}`);
