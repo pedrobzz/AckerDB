@@ -5,11 +5,14 @@ import type {
   SessionAuthAttemptObservation,
 } from "./session.ts";
 import {
+  deriveTelemetryTraceContext,
+  prepareTelemetryTraceContext,
+  RECORD_PREPARED_SPAN,
+  type PreparedTelemetryTraceContext,
   type Telemetry,
   type TelemetryOperation,
   type TelemetryOutcome,
   type TelemetryResource,
-  type TelemetryTraceContext,
 } from "./telemetry.ts";
 
 type HttpOperation = "procedure" | "sse";
@@ -20,7 +23,7 @@ interface HttpTraceState {
   readonly operation: HttpOperation;
   readonly startedAt: number;
   readonly opened: boolean;
-  context: TelemetryTraceContext;
+  context: PreparedTelemetryTraceContext;
   functionName: string;
   phase: HttpTracePhase;
   failureRecorded: boolean;
@@ -36,33 +39,12 @@ export interface ExternalHttpTrace {
 }
 
 export interface ClaimedHttpTrace {
-  readonly context: TelemetryTraceContext;
+  readonly context: PreparedTelemetryTraceContext;
   readonly [CLAIMED_TRACE_STATE]: HttpTraceState;
 }
 
 interface HttpTraceCarrier {
   readonly [HTTP_TRACE_CARRIER]?: ExternalHttpTrace;
-}
-
-function rootContext(identifiers: {
-  readonly requestId?: string;
-  readonly connectionId?: string;
-} = {}): TelemetryTraceContext {
-  return Object.freeze({
-    traceId: crypto.randomUUID(),
-    spanId: crypto.randomUUID(),
-    ...identifiers,
-  });
-}
-
-function childContext(parent: TelemetryTraceContext): TelemetryTraceContext {
-  return Object.freeze({
-    traceId: parent.traceId,
-    spanId: crypto.randomUUID(),
-    parentSpanId: parent.spanId,
-    ...(parent.requestId === undefined ? {} : { requestId: parent.requestId }),
-    ...(parent.connectionId === undefined ? {} : { connectionId: parent.connectionId }),
-  });
 }
 
 function durationSince(startedAt: number): number {
@@ -84,7 +66,7 @@ function recordFailureEvent(
   telemetry: Telemetry,
   operation: TelemetryOperation,
   functionName: string,
-  context: TelemetryTraceContext,
+  context: PreparedTelemetryTraceContext,
   outcome: TelemetryOutcome,
   resource: TelemetryResource,
   error: unknown,
@@ -108,7 +90,7 @@ export function beginHttpTrace(
 ): ExternalHttpTrace | undefined {
   if (!telemetry.enabled) return undefined;
   try {
-    const context = rootContext();
+    const context = prepareTelemetryTraceContext();
     const state: HttpTraceState = {
       telemetry,
       operation,
@@ -145,7 +127,7 @@ export function identifyHttpTrace(
   const state = trace?.[HTTP_TRACE_STATE];
   if (state?.phase !== "external") return;
   state.functionName = functionName;
-  state.context = Object.freeze({ ...state.context, requestId });
+  state.context = prepareTelemetryTraceContext({ ...state.context, requestId });
 }
 
 export async function observeHttpAuth<T>(
@@ -158,13 +140,13 @@ export async function observeHttpAuth<T>(
   try {
     const value = await work();
     try {
-      state.telemetry.recordSpan({
+      state.telemetry[RECORD_PREPARED_SPAN]({
         operation: state.operation,
         stage: "auth",
         outcome: "ok",
         functionName: state.functionName,
         resource: "operation",
-        context: childContext(state.context),
+        context: deriveTelemetryTraceContext(state.context),
         durationMs: durationSince(startedAt),
       });
     } catch {
@@ -175,8 +157,8 @@ export async function observeHttpAuth<T>(
     state.failureRecorded = true;
     try {
       const outcome = outcomeFromError(error).code;
-      const context = childContext(state.context);
-      state.telemetry.recordSpan({
+      const context = deriveTelemetryTraceContext(state.context);
+      state.telemetry[RECORD_PREPARED_SPAN]({
         operation: state.operation,
         stage: "auth",
         outcome,
@@ -210,9 +192,9 @@ export function recordHttpTraceFailure(
   state.failureRecorded = true;
   try {
     const safe = outcomeFromError(error);
-    const context = childContext(state.context);
+    const context = deriveTelemetryTraceContext(state.context);
     const resource = safe.resource ?? "operation";
-    state.telemetry.recordSpan({
+    state.telemetry[RECORD_PREPARED_SPAN]({
       operation: state.operation,
       stage: "admission",
       outcome: safe.code,
@@ -269,7 +251,7 @@ export function beginSessionAuthTrace(
 ): SessionAuthAttemptObservation | undefined {
   if (!telemetry.enabled) return undefined;
   try {
-    const context = rootContext({
+    const context = prepareTelemetryTraceContext({
       connectionId: createHash("sha256").update(input.clientSessionId).digest("base64url"),
       requestId: input.attemptId === undefined ? "hello" : String(input.attemptId),
     });
@@ -283,7 +265,7 @@ export function beginSessionAuthTrace(
         finished = true;
         try {
           const outcome = error === undefined ? "ok" : outcomeFromError(error).code;
-          telemetry.recordSpan({
+          telemetry[RECORD_PREPARED_SPAN]({
             operation: "lifecycle",
             stage: "auth",
             outcome,

@@ -96,13 +96,17 @@ import {
 } from "./reactive.ts";
 import type { Registry } from "./registry.ts";
 import {
+  deriveTelemetryTraceContext,
+  prepareTelemetryTraceContext,
+  RECORD_PREPARED_SPAN,
   Telemetry,
+  type PreparedTelemetrySpanInput,
+  type PreparedTelemetryTraceContext,
   type TelemetryOperation,
   type TelemetryOptions,
   type TelemetryOutcome,
   type TelemetryResource,
   type TelemetrySnapshot,
-  type TelemetrySpanInput,
   type TelemetryStage,
   type TelemetryTraceContext,
 } from "./telemetry.ts";
@@ -259,15 +263,15 @@ interface SessionOperationOptions<T> {
 }
 
 interface InvocationTraceNode {
-  readonly parent: TelemetryTraceContext;
-  readonly handler: TelemetryTraceContext;
+  readonly parent: PreparedTelemetryTraceContext;
+  readonly handler: PreparedTelemetryTraceContext;
 }
 
 interface RuntimeTraceScope {
   readonly operation: TelemetryOperation;
   readonly rootFunction?: string;
-  readonly rootContext: TelemetryTraceContext;
-  readonly currentContext: TelemetryTraceContext;
+  readonly rootContext: PreparedTelemetryTraceContext;
+  readonly currentContext: PreparedTelemetryTraceContext;
   readonly currentFunction?: string;
   readonly invocations: Map<number, InvocationTraceNode>;
 }
@@ -314,33 +318,6 @@ function aborted(signal: AbortSignal | undefined): void {
         resource: "operation",
         cause: signal.reason,
       });
-}
-
-function telemetryContext(
-  identifiers: TraceIdentifiers & { readonly connectionId?: string } = {},
-): TelemetryTraceContext {
-  return Object.freeze({
-    traceId: crypto.randomUUID(),
-    spanId: crypto.randomUUID(),
-    ...identifiers,
-  });
-}
-
-function childTelemetryContext(
-  parent: TelemetryTraceContext,
-  identifiers: TraceIdentifiers = {},
-): TelemetryTraceContext {
-  return Object.freeze({
-    traceId: parent.traceId,
-    spanId: crypto.randomUUID(),
-    parentSpanId: parent.spanId,
-    ...(parent.requestId === undefined ? {} : { requestId: parent.requestId }),
-    ...(parent.connectionId === undefined ? {} : { connectionId: parent.connectionId }),
-    ...(parent.mutationId === undefined ? {} : { mutationId: parent.mutationId }),
-    ...(parent.commitId === undefined ? {} : { commitId: parent.commitId }),
-    ...(parent.subscriptionId === undefined ? {} : { subscriptionId: parent.subscriptionId }),
-    ...identifiers,
-  });
 }
 
 function observationOutcome(
@@ -979,7 +956,7 @@ export class Runtime implements RuntimePort {
     try {
       release = this.admitOperation(null, fairnessKey);
       if (scope !== undefined) {
-        this.telemetry.recordSpan({
+        this.telemetry[RECORD_PREPARED_SPAN]({
           operation: "sse",
           stage: "admission",
           outcome: "ok",
@@ -994,7 +971,7 @@ export class Runtime implements RuntimePort {
       const safeError = transportError(error);
       if (scope !== undefined) {
         const outcome = outcomeFromError(safeError).code;
-        this.telemetry.recordSpan({
+        this.telemetry[RECORD_PREPARED_SPAN]({
           operation: "sse",
           stage: "admission",
           outcome,
@@ -2143,7 +2120,7 @@ export class Runtime implements RuntimePort {
   private readonly observeInvocation = (observation: InvocationObservation): void => {
     const scope = this.trace.getStore();
     if (scope === undefined) return;
-    this.telemetry.recordSpan({
+    this.telemetry[RECORD_PREPARED_SPAN]({
       operation: scope.operation,
       stage: observation.phase,
       outcome: observation.outcome,
@@ -2164,12 +2141,12 @@ export class Runtime implements RuntimePort {
       const parent = phase.parentInvocationId === undefined
         ? scope.rootContext
         : scope.invocations.get(phase.parentInvocationId)?.handler ?? scope.rootContext;
-      node = Object.freeze({ parent, handler: childTelemetryContext(parent) });
+      node = Object.freeze({ parent, handler: deriveTelemetryTraceContext(parent) });
       scope.invocations.set(phase.invocationId, node);
     }
     const context = phase.phase === "handler"
       ? node.handler
-      : childTelemetryContext(node.parent);
+      : deriveTelemetryTraceContext(node.parent);
     const functionName = this.registry.addressOf(phase.fn) ?? scope.currentFunction;
     return this.trace.run({
       ...scope,
@@ -2293,7 +2270,7 @@ export class Runtime implements RuntimePort {
           observation.phase === "fanout"
         ? "outbound"
         : "subscription";
-    this.telemetry.recordSpan({
+    this.telemetry[RECORD_PREPARED_SPAN]({
       operation: "subscription",
       stage,
       outcome: observationOutcome(observation.outcome),
@@ -2321,9 +2298,9 @@ export class Runtime implements RuntimePort {
     operation: TelemetryOperation,
     functionName: string | undefined,
     identifiers: TraceIdentifiers,
-    inheritedContext?: TelemetryTraceContext,
+    inheritedContext?: PreparedTelemetryTraceContext,
   ): RuntimeTraceScope {
-    const rootContext = inheritedContext ?? telemetryContext({
+    const rootContext = inheritedContext ?? prepareTelemetryTraceContext({
       ...(session === null
         ? {}
         : { connectionId: digest(session.context.clientSessionId) }),
@@ -2339,24 +2316,26 @@ export class Runtime implements RuntimePort {
     };
   }
 
-  private observationContext(identifiers: TraceIdentifiers = {}): TelemetryTraceContext {
+  private observationContext(
+    identifiers: TraceIdentifiers = {},
+  ): PreparedTelemetryTraceContext {
     const current = this.trace.getStore()?.currentContext;
     return current === undefined
-      ? telemetryContext(identifiers)
-      : childTelemetryContext(current, identifiers);
+      ? prepareTelemetryTraceContext(identifiers)
+      : deriveTelemetryTraceContext(current, identifiers);
   }
 
   private traceSpan(
-    input: Omit<TelemetrySpanInput, "operation" | "context"> & {
+    input: Omit<PreparedTelemetrySpanInput, "operation" | "context"> & {
       readonly operation?: TelemetryOperation;
-      readonly context?: TelemetryTraceContext;
+      readonly context?: PreparedTelemetryTraceContext;
     },
     fallbackOperation: TelemetryOperation,
   ): void {
     if (!this.telemetry.enabled) return;
     const scope = this.trace.getStore();
     const context = input.context ?? this.observationContext();
-    this.telemetry.recordSpan({
+    this.telemetry[RECORD_PREPARED_SPAN]({
       ...input,
       operation: input.operation ?? scope?.operation ?? fallbackOperation,
       context,
@@ -2422,7 +2401,7 @@ export class Runtime implements RuntimePort {
       this.assertRequestBytes(sizeBytes);
       release = this.admitOperation(session, fairnessKey);
       if (scope !== undefined) {
-        this.telemetry.recordSpan({
+        this.telemetry[RECORD_PREPARED_SPAN]({
           operation,
           stage: "admission",
           outcome: "ok",
@@ -2437,7 +2416,7 @@ export class Runtime implements RuntimePort {
       const safeError = transportError(error);
       if (scope !== undefined) {
         const outcome = outcomeFromError(safeError).code;
-        this.telemetry.recordSpan({
+        this.telemetry[RECORD_PREPARED_SPAN]({
           operation,
           stage: "admission",
           outcome,

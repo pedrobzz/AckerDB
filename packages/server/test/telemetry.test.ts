@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
   captureTelemetryLink,
+  deriveTelemetryTraceContext,
+  prepareTelemetryTraceContext,
+  RECORD_PREPARED_SPAN,
   Telemetry,
+  type PreparedTelemetryTraceContext,
   type TelemetryExporter,
   type TelemetryRecord,
   type TelemetryScheduler,
@@ -329,6 +333,115 @@ describe("Telemetry", () => {
     expect(exported).not.toContain("principalId");
     expect(localLines.join("\n")).not.toContain(canary);
     expect(localLines).toHaveLength(2);
+  });
+
+  test("keeps prepared and public span retention byte-for-byte equivalent", async () => {
+    const publicExport = exporterBatches();
+    const preparedExport = exporterBatches();
+    const options = {
+      localSink: false as const,
+      now: () => 10,
+      limits: { slowOperationMs: 100, batchIntervalMs: 60_000 },
+    };
+    const publicTelemetry = new Telemetry({ ...options, exporter: publicExport.exporter });
+    const preparedTelemetry = new Telemetry({ ...options, exporter: preparedExport.exporter });
+    const unsafeLabel = "private label must not survive";
+    const root = {
+      traceId: "trace_prepared_parity",
+      spanId: "span_prepared_root",
+      requestId: "unsafe request identifier",
+      connectionId: "connection_prepared_parity",
+    };
+    const child = {
+      ...root,
+      spanId: "span_prepared_child",
+      parentSpanId: root.spanId,
+    };
+    const preparedRoot = prepareTelemetryTraceContext(root);
+    const preparedChild = prepareTelemetryTraceContext(child);
+
+    expect(publicTelemetry.beginTrace(root, 0)).toBe(true);
+    expect(preparedTelemetry.beginTrace(preparedRoot, 0)).toBe(true);
+    const fastSpan = {
+      timestampMs: 1,
+      operation: "query" as const,
+      stage: "admission" as const,
+      outcome: "ok" as const,
+      functionName: unsafeLabel,
+      statement: unsafeLabel,
+      resource: "operation" as const,
+      durationMs: 5,
+      sizeBytes: 42,
+    };
+    const failedSpan = {
+      timestampMs: 2,
+      operation: "query" as const,
+      stage: "handler" as const,
+      outcome: "internal" as const,
+      functionName: unsafeLabel,
+      statement: unsafeLabel,
+      resource: "operation" as const,
+      durationMs: 7,
+      resultCount: 1,
+    };
+    expect(publicTelemetry.recordSpan({ ...fastSpan, context: root })).toBe(true);
+    expect(preparedTelemetry[RECORD_PREPARED_SPAN]({
+      ...fastSpan,
+      context: preparedRoot,
+    })).toBe(true);
+    expect(publicTelemetry.recordSpan({ ...failedSpan, context: child })).toBe(true);
+    expect(preparedTelemetry[RECORD_PREPARED_SPAN]({
+      ...failedSpan,
+      context: preparedChild,
+    })).toBe(true);
+    expect(publicTelemetry.finishTrace(root, 3)).toBe(true);
+    expect(preparedTelemetry.finishTrace(preparedRoot, 3)).toBe(true);
+
+    await publicTelemetry.flush();
+    await preparedTelemetry.flush();
+    publicTelemetry.stop();
+    preparedTelemetry.stop();
+
+    expect(preparedTelemetry.aggregateSnapshot()).toEqual(publicTelemetry.aggregateSnapshot());
+    expect(preparedTelemetry.snapshot()).toEqual(publicTelemetry.snapshot());
+    const publicJson = JSON.stringify(publicExport.batches);
+    expect(JSON.stringify(preparedExport.batches)).toBe(publicJson);
+    expect(publicJson).not.toContain(unsafeLabel);
+    expect(publicJson).not.toContain("unsafe request identifier");
+  });
+
+  test("rejects forged prepared contexts and sanitizes derived identifiers once", () => {
+    const telemetry = new Telemetry({ localSink: false, now: () => 0 });
+    expect(() => prepareTelemetryTraceContext({ traceId: "unsafe trace", spanId: "span" }))
+      .toThrow("safe traceId and spanId");
+    const parent = prepareTelemetryTraceContext({
+      traceId: "trace_prepared_authentic",
+      spanId: "span_prepared_authentic",
+      connectionId: "connection_prepared_authentic",
+    });
+    const child = deriveTelemetryTraceContext(parent, {
+      requestId: "request_prepared_authentic",
+      connectionId: "unsafe derived connection",
+    });
+    expect(Object.isFrozen(parent)).toBe(true);
+    expect(Object.isFrozen(child)).toBe(true);
+    expect(child).toMatchObject({
+      traceId: parent.traceId,
+      parentSpanId: parent.spanId,
+      requestId: "request_prepared_authentic",
+    });
+    expect(child.connectionId).toBeUndefined();
+
+    const forged = Object.freeze({ ...parent }) as PreparedTelemetryTraceContext;
+    expect(() => deriveTelemetryTraceContext(forged)).toThrow("authentic prepared parent");
+    expect(telemetry[RECORD_PREPARED_SPAN]({
+      context: forged,
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    })).toBe(false);
+    expect(telemetry.snapshot().dropped.invalid).toBe(1);
   });
 
   test("bounds metric cardinality and folds excess dimensions into one explicit series", async () => {

@@ -115,6 +115,13 @@ export interface TelemetryTraceContext {
   readonly subscriptionId?: string;
 }
 
+declare const PREPARED_TRACE_CONTEXT: unique symbol;
+
+/** Package-authentic context whose identifiers were sanitized once at creation. */
+export type PreparedTelemetryTraceContext = TelemetryTraceContext & {
+  readonly [PREPARED_TRACE_CONTEXT]: true;
+};
+
 export interface TelemetryLink {
   readonly traceId: string;
   readonly spanId: string;
@@ -138,6 +145,14 @@ export interface TelemetrySpanInput {
   readonly replayed?: boolean;
   readonly dependencyCount?: number;
   readonly postCommit?: boolean;
+}
+
+/** Package-internal span input; the context carries the runtime authenticity boundary. */
+export interface PreparedTelemetrySpanInput extends Omit<
+  TelemetrySpanInput,
+  "context" | "links"
+> {
+  readonly context: PreparedTelemetryTraceContext;
 }
 
 export interface TelemetryEventInput {
@@ -512,6 +527,10 @@ const TASK_OK = Symbol("task-ok");
 const TASK_FAILED = Symbol("task-failed");
 const TASK_TIMED_OUT = Symbol("task-timed-out");
 const TASK_DEADLINE = Symbol("task-deadline");
+const PREPARED_TRACE_CONTEXTS = new WeakSet<TelemetryTraceContext>();
+
+/** Package-private entry point for spans carrying an authenticated prepared context. */
+export const RECORD_PREPARED_SPAN = Symbol("dbzz.recordPreparedTelemetrySpan");
 
 const SYSTEM_SCHEDULER: TelemetryScheduler = {
   setInterval: (callback, delayMs) => setInterval(callback, delayMs),
@@ -596,6 +615,59 @@ function safeName(value: string | undefined): string | undefined {
 
 function safeCount(value: number | undefined): number | undefined {
   return value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/** Create or authenticate one package-owned context, sanitizing identifiers once. */
+export function prepareTelemetryTraceContext(
+  context: Partial<TelemetryTraceContext> = {},
+): PreparedTelemetryTraceContext {
+  if (PREPARED_TRACE_CONTEXTS.has(context as TelemetryTraceContext)) {
+    return context as PreparedTelemetryTraceContext;
+  }
+  const sanitized = sanitizeContext({
+    ...context,
+    traceId: context.traceId ?? crypto.randomUUID(),
+    spanId: context.spanId ?? crypto.randomUUID(),
+  });
+  if (sanitized.traceId === undefined || sanitized.spanId === undefined) {
+    throw new TypeError("prepared telemetry contexts require safe traceId and spanId values");
+  }
+  const prepared = Object.freeze(sanitized) as PreparedTelemetryTraceContext;
+  PREPARED_TRACE_CONTEXTS.add(prepared);
+  return prepared;
+}
+
+/** Derive one authenticated child while inheriting already-sanitized operation identifiers. */
+export function deriveTelemetryTraceContext(
+  parent: PreparedTelemetryTraceContext,
+  identifiers: Partial<Pick<
+    TelemetryTraceContext,
+    "requestId" | "connectionId" | "mutationId" | "commitId" | "subscriptionId"
+  >> = {},
+): PreparedTelemetryTraceContext {
+  if (!PREPARED_TRACE_CONTEXTS.has(parent)) {
+    throw new TypeError("telemetry child contexts require an authentic prepared parent");
+  }
+  const prepared = Object.freeze({
+    traceId: parent.traceId,
+    spanId: crypto.randomUUID(),
+    parentSpanId: parent.spanId,
+    requestId: identifiers.requestId === undefined
+      ? parent.requestId
+      : safeId(identifiers.requestId),
+    connectionId: identifiers.connectionId === undefined
+      ? parent.connectionId
+      : safeId(identifiers.connectionId),
+    mutationId: identifiers.mutationId === undefined
+      ? parent.mutationId
+      : safeId(identifiers.mutationId),
+    commitId: identifiers.commitId === undefined ? parent.commitId : safeId(identifiers.commitId),
+    subscriptionId: identifiers.subscriptionId === undefined
+      ? parent.subscriptionId
+      : safeId(identifiers.subscriptionId),
+  }) as PreparedTelemetryTraceContext;
+  PREPARED_TRACE_CONTEXTS.add(prepared);
+  return prepared;
 }
 
 function isMember<const T extends readonly string[]>(values: T, value: unknown): value is T[number] {
@@ -979,19 +1051,55 @@ export class Telemetry {
       return false;
     }
     const span = sanitizeSpan(input, timestampMs);
+    return this.recordSanitizedSpan(state, span);
+  }
+
+  [RECORD_PREPARED_SPAN](input: PreparedTelemetrySpanInput): boolean {
+    const state = this.state;
+    if (!state) return false;
+    const timestampMs = readTimestamp(state, input.timestampMs);
+    if (
+      timestampMs === undefined ||
+      !PREPARED_TRACE_CONTEXTS.has(input.context) ||
+      !Number.isFinite(input.durationMs) ||
+      input.durationMs < 0
+    ) {
+      state.drops.invalid++;
+      return false;
+    }
+    return this.recordSanitizedSpan(state, {
+      timestampMs,
+      context: input.context,
+      operation: input.operation,
+      stage: input.stage,
+      outcome: input.outcome,
+      function: safeName(input.functionName),
+      statement: safeName(input.statement),
+      resource: input.resource,
+      durationMs: input.durationMs,
+      sizeBytes: safeCount(input.sizeBytes),
+      rowCount: safeCount(input.rowCount),
+      resultCount: safeCount(input.resultCount),
+      replayed: input.replayed,
+      dependencyCount: safeCount(input.dependencyCount),
+      postCommit: input.postCommit,
+    });
+  }
+
+  private recordSanitizedSpan(state: TelemetryState, span: SanitizedTelemetrySpan): boolean {
     this.aggregateSpan(state, span);
-    const retain = input.durationMs >= state.limits.slowOperationMs || input.outcome !== "ok";
+    const retain = span.durationMs >= state.limits.slowOperationMs || span.outcome !== "ok";
     if (state.limits.slowOperationMs === 0) return this.retain(materializeSpan(span), true);
 
     const traceId = span.context.traceId;
     if (traceId) {
-      this.pruneCompletedTraces(state, timestampMs);
+      this.pruneCompletedTraces(state, span.timestampMs);
       const trace = state.activeTraces.get(traceId) ?? state.completedTraces.get(traceId);
       if (trace) {
         trace.observedDurationMs = boundedSum(trace.observedDurationMs, span.durationMs);
         if (trace.retained) return this.retain(materializeSpan(span), true);
         if (retain || trace.observedDurationMs >= state.limits.slowOperationMs) {
-          this.promoteTrace(state, trace, timestampMs);
+          this.promoteTrace(state, trace, span.timestampMs);
           return this.retain(materializeSpan(span), true);
         }
         this.stageTraceSpan(state, trace, span);
