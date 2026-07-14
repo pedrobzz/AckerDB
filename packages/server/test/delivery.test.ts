@@ -198,6 +198,9 @@ describe("OutboundBudget", () => {
       bytes: 90,
       applicationBytes: 70,
       controlBytes: 20,
+      peakBytes: 90,
+      peakApplicationBytes: 70,
+      peakControlBytes: 20,
     });
 
     first!.release(30);
@@ -205,7 +208,14 @@ describe("OutboundBudget", () => {
     expect(budget.snapshot().bytes).toBe(60);
     first!.release();
     control!.release();
-    expect(budget.snapshot().bytes).toBe(0);
+    expect(budget.snapshot()).toMatchObject({
+      bytes: 0,
+      applicationBytes: 0,
+      controlBytes: 0,
+      peakBytes: 90,
+      peakApplicationBytes: 70,
+      peakControlBytes: 20,
+    });
   });
 });
 
@@ -1198,8 +1208,17 @@ describe("BoundedSseProducer", () => {
     });
     producer.write({ text: "unread" });
     const reader = producer.stream.getReader();
-    const chunk = sseMessage((await reader.read()).value!);
+    const chunkBytes = (await reader.read()).value!;
+    const chunk = sseMessage(chunkBytes);
     expect(chunk.t).toBe("sse_chunk");
+    expect(budget.snapshot()).toMatchObject({
+      bytes: chunkBytes.byteLength + producer.controlReserveBytes,
+      applicationBytes: chunkBytes.byteLength,
+      controlBytes: producer.controlReserveBytes,
+      peakBytes: chunkBytes.byteLength + producer.controlReserveBytes,
+      peakApplicationBytes: chunkBytes.byteLength,
+      peakControlBytes: producer.controlReserveBytes,
+    });
 
     clock.advance(9);
     expect(producer.snapshot().state).toBe("open");
@@ -1207,16 +1226,33 @@ describe("BoundedSseProducer", () => {
     expect(producer.signal.aborted).toBe(true);
     expect(producer.signal.reason).toMatchObject({ code: "slow_consumer", resource: "sse" });
     expect(producer.snapshot()).toMatchObject({ state: "ending", unackedFrames: 2 });
-    const terminal = sseMessage((await reader.read()).value!);
+    const terminalBytes = (await reader.read()).value!;
+    const terminal = sseMessage(terminalBytes);
     expect(terminal).toMatchObject({
       t: "sse_error",
       outcome: { code: "slow_consumer", resource: "sse" },
+    });
+    expect(budget.snapshot()).toMatchObject({
+      bytes: chunkBytes.byteLength + terminalBytes.byteLength,
+      applicationBytes: chunkBytes.byteLength,
+      controlBytes: terminalBytes.byteLength,
+      peakBytes: chunkBytes.byteLength + producer.controlReserveBytes,
+      peakApplicationBytes: chunkBytes.byteLength,
+      peakControlBytes: producer.controlReserveBytes,
     });
     clock.advance(9);
     expect(producer.snapshot().state).toBe("ending");
     expect(budget.snapshot().bytes).toBeGreaterThan(0);
     clock.advance(1);
     expect(producer.snapshot()).toMatchObject({ state: "closed", unackedBytes: 0, unackedFrames: 0 });
+    expect(budget.snapshot()).toMatchObject({
+      bytes: 0,
+      applicationBytes: 0,
+      controlBytes: 0,
+      peakBytes: chunkBytes.byteLength + producer.controlReserveBytes,
+      peakApplicationBytes: chunkBytes.byteLength,
+      peakControlBytes: producer.controlReserveBytes,
+    });
     await expect(reader.read()).rejects.toMatchObject({ code: "slow_consumer" });
     reader.releaseLock();
     await flushObservations();

@@ -50,6 +50,12 @@ export interface OutboundBudgetSnapshot {
   readonly bytes: number;
   readonly applicationBytes: number;
   readonly controlBytes: number;
+  /** Lifetime maximum simultaneous total ownership since construction. */
+  readonly peakBytes: number;
+  /** Independent lifetime maximum for the application lane. */
+  readonly peakApplicationBytes: number;
+  /** Independent lifetime maximum for the control lane. */
+  readonly peakControlBytes: number;
   readonly maxBytes: number;
   readonly reservedControlBytes: number;
 }
@@ -97,6 +103,9 @@ export class OutboundBudget {
 
   private applicationBytes = 0;
   private controlBytes = 0;
+  private peakBytes = 0;
+  private peakApplicationBytes = 0;
+  private peakControlBytes = 0;
 
   constructor(maxBytes: number, reservedControlBytes = 0) {
     byteCount(maxBytes, "maxBytes");
@@ -111,8 +120,14 @@ export class OutboundBudget {
   reserve(bytes: number, lane: OutboundLane): OutboundReservation | null {
     byteCount(bytes, "reserved bytes");
     if (bytes > this.availableBytes(lane)) return null;
-    if (lane === "application") this.applicationBytes += bytes;
-    else this.controlBytes += bytes;
+    if (lane === "application") {
+      this.applicationBytes += bytes;
+      this.peakApplicationBytes = Math.max(this.peakApplicationBytes, this.applicationBytes);
+    } else {
+      this.controlBytes += bytes;
+      this.peakControlBytes = Math.max(this.peakControlBytes, this.controlBytes);
+    }
+    this.peakBytes = Math.max(this.peakBytes, this.applicationBytes + this.controlBytes);
     return new BudgetReservation(this, lane, bytes);
   }
 
@@ -129,6 +144,9 @@ export class OutboundBudget {
       bytes: this.applicationBytes + this.controlBytes,
       applicationBytes: this.applicationBytes,
       controlBytes: this.controlBytes,
+      peakBytes: this.peakBytes,
+      peakApplicationBytes: this.peakApplicationBytes,
+      peakControlBytes: this.peakControlBytes,
       maxBytes: this.maxBytes,
       reservedControlBytes: this.reservedControlBytes,
     });

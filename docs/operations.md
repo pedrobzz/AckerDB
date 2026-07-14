@@ -202,6 +202,12 @@ is the full `DbzzServer.status()` snapshot with `version: 1` added: transport
 connection count, HTTP ingress/fairness and rejection counts, SSE
 acknowledgement ingress/no-op counts, global WebSocket outbound bytes, and the
 runtime queue, publication, reactivity, SSE, telemetry, and storage snapshots.
+`runtime.authCaptureBudget` and `runtime.sseBudget` distinguish current
+total/application/control byte ownership from lifetime peaks since Runtime
+construction. `peakBytes` is the maximum simultaneous total; the two lane peaks
+are independent and need not sum to it. Protected status therefore retains a
+short-lived ownership peak after current gauges return to zero. The transport's
+top-level `outboundBytes` remains a current scalar.
 With the CLI and no configured OIDC provider, no bearer can authenticate, so
 operators must configure a workload provider that selects `scope` before
 `/status` is usable.

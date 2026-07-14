@@ -61,7 +61,10 @@ const COMBINED_TEST_TIMEOUT_MS =
   COMBINED_MAX_STABILIZATION_MS + COMBINED_HARNESS_TIMEOUT_STEPS * STEP_TIMEOUT_MS;
 const SSE_MIN_WARMUP_EPOCHS = 15;
 const SSE_STABILITY_EPOCHS = 8;
-const SSE_MAX_TOTAL_EPOCHS = 64;
+// Keep the independent proof window outside the settling cap so a plateau
+// accepted on its final allowed epoch can still be measured completely.
+const SSE_MAX_STABILIZATION_EPOCHS = 64;
+const SSE_MAX_TOTAL_EPOCHS = SSE_MAX_STABILIZATION_EPOCHS + MEASURED_EPOCHS;
 const SSE_MAX_STABILIZATION_MS = 90_000;
 // One epoch has five sequentially bounded phases: response headers, open
 // credit, terminal grace, close/release, and exact descriptor recovery.
@@ -73,6 +76,8 @@ const SSE_TEST_TIMEOUT_MS =
   SSE_MAX_STABILIZATION_MS + SSE_HARNESS_TIMEOUT_STEPS * STEP_TIMEOUT_MS;
 const SSE_PAYLOAD_BYTES = 30 * KiB;
 const SSE_STALL_MS = 300;
+// The fixture's 64 KiB stream cap exercises the producer's exact terminal reserve.
+const SSE_CONTROL_RESERVE_BYTES = KiB;
 const SSE_APPLICATION_FRAME_LIMIT = 1;
 const SSE_HTTP_FRAME_LIMIT = SSE_APPLICATION_FRAME_LIMIT + 1;
 const SSE_HTTP_FRAMING_BYTES =
@@ -628,8 +633,17 @@ function assertResourceCeilings(value: ResourceStatus): void {
   );
   expect(value.runtime.publication.items).toBeLessThanOrEqual(LIMITS.publicationItems);
   expect(value.runtime.publication.bytes).toBeLessThanOrEqual(LIMITS.publicationBytes);
-  expect(value.runtime.authCaptureBudget.bytes).toBeLessThanOrEqual(LIMITS.webSocketBytes);
-  expect(value.runtime.sseBudget.bytes).toBeLessThanOrEqual(LIMITS.sseBytes);
+  const authCaptureBudget = value.runtime.authCaptureBudget;
+  const sseBudget = value.runtime.sseBudget;
+  for (const budget of [authCaptureBudget, sseBudget]) {
+    expect(budget.bytes).toBeLessThanOrEqual(budget.peakBytes);
+    expect(budget.applicationBytes).toBeLessThanOrEqual(budget.peakApplicationBytes);
+    expect(budget.controlBytes).toBeLessThanOrEqual(budget.peakControlBytes);
+    expect(budget.peakApplicationBytes).toBeLessThanOrEqual(budget.peakBytes);
+    expect(budget.peakControlBytes).toBeLessThanOrEqual(budget.peakBytes);
+  }
+  expect(authCaptureBudget.peakBytes).toBeLessThanOrEqual(LIMITS.webSocketBytes);
+  expect(sseBudget.peakBytes).toBeLessThanOrEqual(LIMITS.sseBytes);
 }
 
 function slope(values: readonly number[]): number {
@@ -857,7 +871,17 @@ test(
     const base = `http://127.0.0.1:${port}`;
     const initial = await status(base);
     assertResourcesReleased(initial);
-    expect(initial).toMatchObject({ sseAckIngress: 0, sseAckNoops: 0 });
+    expect(initial).toMatchObject({
+      sseAckIngress: 0,
+      sseAckNoops: 0,
+      runtime: {
+        sseBudget: {
+          peakBytes: 0,
+          peakApplicationBytes: 0,
+          peakControlBytes: 0,
+        },
+      },
+    });
 
     const baselineDescriptors = DESCRIPTOR_MONITOR_AVAILABLE
       ? await settledDescriptorSnapshot(processHarness.child.pid)
@@ -901,69 +925,26 @@ test(
       const headerBytes = Buffer.byteLength(paused.headers);
       expect(headerBytes).toBeLessThanOrEqual(SSE_HTTP_HEADER_BYTES);
 
-      const open = await eventually(
+      // Keep the raw receiver paused through both finite stall windows. Lifetime
+      // peaks preserve the transient ownership after current gauges reach zero.
+      const released = await eventually(
         () => status(base),
-        (value) => value.runtime.activeSse === 1 &&
-          value.runtime.sseBudget.applicationBytes > SSE_PAYLOAD_BYTES,
-        `paused SSE ${id} to consume its single receiver credit`,
+        resourcesReleased,
+        `paused SSE ${id} resources after terminal grace`,
       );
-      assertResourceCeilings(open);
-      expect(open).toMatchObject({
-        httpIngress: 1,
-        httpFairnessKeys: 1,
-        sseAckIngress: 0,
-        sseAckNoops: 0,
-        runtime: {
-          activeOperations: 1,
-          activeOperationCallers: 1,
-          activeSse: 1,
-        },
-      });
-      expect(open.runtime.sseBudget.bytes).toBeGreaterThan(0);
-      expect(open.runtime.sseBudget.bytes).toBeLessThanOrEqual(LIMITS.sseBytesPerStream);
-      expect(open.runtime.sseBudget.bytes).toBeLessThanOrEqual(LIMITS.sseBytes);
-      expect(open.runtime.sseBudget.maxBytes).toBe(LIMITS.sseBytes);
-
-      const terminalGrace = await eventually(
-        () => status(base),
-        (value) => value.runtime.activeSse === 1 &&
-          value.runtime.sseBudget.controlBytes > 0 &&
-          value.runtime.sseBudget.controlBytes < open.runtime.sseBudget.controlBytes,
-        `paused SSE ${id} terminal grace`,
-      );
-      assertResourceCeilings(terminalGrace);
-      expect(terminalGrace).toMatchObject({
-        httpIngress: 1,
-        httpFairnessKeys: 1,
-        sseAckIngress: 0,
-        sseAckNoops: 0,
-        runtime: {
-          activeOperations: 1,
-          activeOperationCallers: 1,
-          activeSse: 1,
-        },
-      });
-      expect(terminalGrace.runtime.sseBudget.applicationBytes).toBe(
-        open.runtime.sseBudget.applicationBytes,
-      );
-      expect(terminalGrace.runtime.sseBudget.bytes).toBeLessThanOrEqual(
-        LIMITS.sseBytesPerStream,
-      );
-
-      // Resume while the bounded terminal frame is still in its finite grace
-      // window. No ACK endpoint is called before or after this read.
-      const wireBodyPromise = paused.resumeAndRead();
-      const [wireBody, released] = await Promise.all([
-        wireBodyPromise,
-        eventually(
-          () => status(base),
-          resourcesReleased,
-          `paused SSE ${id} resources after terminal grace`,
-        ),
-      ]);
       assertResourceCeilings(released);
       assertResourcesReleased(released);
       expect(released).toMatchObject({ sseAckIngress: 0, sseAckNoops: 0 });
+      const budget = released.runtime.sseBudget;
+      expect(budget.maxBytes).toBe(LIMITS.sseBytes);
+      expect(budget.peakControlBytes).toBe(SSE_CONTROL_RESERVE_BYTES);
+      expect(budget.peakApplicationBytes).toBeGreaterThan(SSE_PAYLOAD_BYTES);
+      expect(budget.peakBytes).toBeLessThanOrEqual(LIMITS.sseBytesPerStream);
+      expect(budget.peakBytes).toBeLessThanOrEqual(LIMITS.sseBytes);
+
+      // Reading the transport does not grant DBZZ receiver credit; no ACK
+      // endpoint is called before or after the complete bounded response.
+      const wireBody = await paused.resumeAndRead();
 
       const decodedBody = decodeChunkedBody(wireBody);
       const framingBytes = wireBody.byteLength - decodedBody.payload.byteLength;
@@ -993,6 +974,9 @@ test(
       const applicationValue = (parsed.frames[0] as { value: { payload: unknown } }).value;
       expect(typeof applicationValue.payload).toBe("string");
       expect(applicationValue.payload as string).toHaveLength(SSE_PAYLOAD_BYTES);
+      const applicationFrameBytes = Buffer.byteLength(`data: ${encode(parsed.frames[0])}\n\n`);
+      expect(budget.peakApplicationBytes).toBe(applicationFrameBytes);
+      expect(budget.peakBytes).toBe(applicationFrameBytes + SSE_CONTROL_RESERVE_BYTES);
       expect(parsed.frames[1]).toMatchObject({
         t: "sse_error",
         seq: 2,
@@ -1002,6 +986,10 @@ test(
           resource: "sse",
         },
       });
+      const terminalFrameBytes = Buffer.byteLength(`data: ${encode(parsed.frames[1])}\n\n`);
+      expect(terminalFrameBytes).toBeGreaterThan(0);
+      expect(terminalFrameBytes).toBeLessThan(SSE_CONTROL_RESERVE_BYTES);
+      expect(decodedBody.payload.byteLength).toBe(applicationFrameBytes + terminalFrameBytes);
 
       expect(await call(base, 10_000 + id, "pressure.collect", {})).toMatchObject({
         status: 200,
@@ -1039,12 +1027,10 @@ test(
       return {
         rssPeak: maximum(samples.map((sample) => sample.rssMb)),
         rssRecovered: recovered.rssMb,
-        sseBytes: maximum([
-          open.runtime.sseBudget.bytes,
-          terminalGrace.runtime.sseBudget.bytes,
-        ]),
+        sseBytes: budget.peakBytes,
         wireBytes: wireBody.byteLength,
         framingBytes,
+        terminalFrameBytes,
         transferChunks: decodedBody.transferChunks,
         initialWireBytes: paused.initialWireBytes,
         descriptorPeak: descriptorSamples === undefined
@@ -1068,11 +1054,13 @@ test(
     const allEpochs: Epoch[] = [];
     const stabilizationStartedAt = Date.now();
     const stabilizationDeadlineAt = stabilizationStartedAt + SSE_MAX_STABILIZATION_MS;
-    const stabilizationBudgetError = (reason: string) => new Error(
+    const stabilizationBudgetError = (reason: string, epochCap: number) => new Error(
       `paused SSE exhausted its global stabilization budget: ${JSON.stringify({
         reason,
         epochs: epochId,
-        maxEpochs: SSE_MAX_TOTAL_EPOCHS,
+        epochCap,
+        maxStabilizationEpochs: SSE_MAX_STABILIZATION_EPOCHS,
+        maxTotalEpochs: SSE_MAX_TOTAL_EPOCHS,
         elapsedMs: Date.now() - stabilizationStartedAt,
         maxElapsedMs: SSE_MAX_STABILIZATION_MS,
         rebases,
@@ -1081,10 +1069,12 @@ test(
         peaks: allEpochs.map((sample) => sample.rssPeak),
       })}`,
     );
-    const nextEpoch = async () => {
+    const nextEpoch = async (epochCap = SSE_MAX_TOTAL_EPOCHS) => {
       const remainingMs = stabilizationDeadlineAt - Date.now();
-      if (epochId >= SSE_MAX_TOTAL_EPOCHS) throw stabilizationBudgetError("epoch cap");
-      if (remainingMs <= 0) throw stabilizationBudgetError("wall-time cap");
+      if (epochId >= epochCap) throw stabilizationBudgetError("epoch cap", epochCap);
+      if (remainingMs <= 0) {
+        throw stabilizationBudgetError("wall-time cap", epochCap);
+      }
       const id = ++epochId;
       try {
         const sample = await withTimeout(
@@ -1096,7 +1086,7 @@ test(
         return sample;
       } catch (error) {
         if (Date.now() >= stabilizationDeadlineAt) {
-          throw stabilizationBudgetError("wall-time cap");
+          throw stabilizationBudgetError("wall-time cap", epochCap);
         }
         throw error;
       }
@@ -1110,7 +1100,7 @@ test(
         readonly peakTolerance: number;
       } | undefined;
       for (;;) {
-        const sample = await nextEpoch();
+        const sample = await nextEpoch(SSE_MAX_STABILIZATION_EPOCHS);
         if (
           candidate !== undefined &&
           (sample.rssRecovered < candidate.recoveredMinimum - candidate.recoveredTolerance ||
@@ -1226,6 +1216,7 @@ test(
       maxMeasuredSseBytes,
       maxMeasuredWireBytes,
       maxMeasuredFramingBytes: maximum(measured.map((epoch) => epoch.framingBytes)),
+      maxTerminalFrameBytes: maximum(measured.map((epoch) => epoch.terminalFrameBytes)),
       maxTransferChunks: maximum(measured.map((epoch) => epoch.transferChunks)),
       descriptors: baselineDescriptors === undefined
         ? undefined
@@ -1238,6 +1229,9 @@ test(
     expect(maxMeasuredSseBytes).toBeLessThanOrEqual(LIMITS.sseBytesPerStream);
     expect(maxMeasuredWireBytes).toBeLessThanOrEqual(
       LIMITS.sseBytesPerStream + SSE_HTTP_FRAMING_BYTES,
+    );
+    expect(maximum(measured.map((epoch) => epoch.terminalFrameBytes))).toBeLessThan(
+      SSE_CONTROL_RESERVE_BYTES,
     );
     expect(maximum(allEpochs.map((epoch) => epoch.initialWireBytes))).toBeLessThanOrEqual(
       LIMITS.sseBytesPerStream + SSE_HTTP_FRAMING_BYTES,
