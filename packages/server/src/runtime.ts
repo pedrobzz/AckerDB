@@ -113,6 +113,7 @@ import {
   type RuntimePort,
   type RuntimePublication,
   type RuntimePublicationBatch,
+  type RuntimeRequest,
   type SessionApplicationMessage,
   type SessionRuntimeContext,
 } from "./session.ts";
@@ -603,8 +604,9 @@ export class Runtime implements RuntimePort {
     }, {}, true, undefined, undefined, transition.from.fairnessKey);
   }
 
-  async subscribe(context: SessionRuntimeContext, message: SubscribeMessage): Promise<void> {
-    await this.runSessionOperation(context, message, "subscription", message.ref, async (state) => {
+  async subscribe(context: SessionRuntimeContext, request: RuntimeRequest<SubscribeMessage>): Promise<void> {
+    const { message } = request;
+    await this.runSessionOperation(context, request, "subscription", message.ref, async (state) => {
       const definition: RuntimeSubscription = Object.freeze({
         address: message.ref,
         args: snapshotValue(message.args),
@@ -614,15 +616,17 @@ export class Runtime implements RuntimePort {
     }, { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } });
   }
 
-  async unsubscribe(context: SessionRuntimeContext, message: UnsubscribeMessage): Promise<void> {
-    await this.runSessionOperation(context, message, "subscription", undefined, (state) => {
+  async unsubscribe(context: SessionRuntimeContext, request: RuntimeRequest<UnsubscribeMessage>): Promise<void> {
+    const { message } = request;
+    await this.runSessionOperation(context, request, "subscription", undefined, (state) => {
       this.reactive.unsubscribe(state.subscriber, message.id);
       state.subscriptions.delete(message.id);
     }, { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } });
   }
 
-  async reset(context: SessionRuntimeContext, message: ResetRequestMessage): Promise<void> {
-    await this.runSessionOperation(context, message, "subscription", undefined, (state) =>
+  async reset(context: SessionRuntimeContext, request: RuntimeRequest<ResetRequestMessage>): Promise<void> {
+    const { message } = request;
+    await this.runSessionOperation(context, request, "subscription", undefined, (state) =>
       this.reactive.reset(state.subscriber, message.id, message.cursor), {
         identifiers: {
           requestId: String(message.id),
@@ -631,9 +635,10 @@ export class Runtime implements RuntimePort {
       });
   }
 
-  async query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown> {
+  async query(context: SessionRuntimeContext, request: RuntimeRequest<QueryMessage>): Promise<unknown> {
+    const { message } = request;
     let publication: RuntimePublication | undefined;
-    return this.runSessionOperation(context, message, "query", message.ref, async (_state, requestBytes) => {
+    return this.runSessionOperation(context, request, "query", message.ref, async (_state, requestBytes) => {
       const signal = this.operationSignal(context.signal);
       const evaluation = await this.executeQuery(
         "query",
@@ -661,9 +666,10 @@ export class Runtime implements RuntimePort {
     });
   }
 
-  async mutation(context: SessionRuntimeContext, message: MutationMessage): Promise<RuntimeMutationResult> {
+  async mutation(context: SessionRuntimeContext, request: RuntimeRequest<MutationMessage>): Promise<RuntimeMutationResult> {
+    const { message } = request;
     let successPublication: RuntimePublication | undefined;
-    return this.runSessionOperation(context, message, "mutation", message.ref, async (state, requestBytes) => {
+    return this.runSessionOperation(context, request, "mutation", message.ref, async (state, requestBytes) => {
       const fn = this.expect(message.ref, "mutation");
       const signal = this.operationSignal(context.signal);
       let scheduledTouched = false;
@@ -738,7 +744,7 @@ export class Runtime implements RuntimePort {
   }
 
   async runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
-    const requestBytes = this.requestBytes({
+    const requestBytes = this.externalRequestBytes({
       v: PROTOCOL_VERSION,
       t: "call",
       id: request.id,
@@ -930,7 +936,7 @@ export class Runtime implements RuntimePort {
   }
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
-    const requestBytes = this.requestBytes({
+    const requestBytes = this.externalRequestBytes({
       v: PROTOCOL_VERSION,
       t: "call",
       id: request.id,
@@ -1408,13 +1414,16 @@ export class Runtime implements RuntimePort {
 
   private runSessionOperation<T>(
     context: SessionRuntimeContext,
-    message: SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage,
+    request: RuntimeRequest<
+      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage
+    >,
     operation: "query" | "mutation" | "subscription",
     functionName: string | undefined,
     work: (state: RuntimeSession, requestBytes: number) => T | Promise<T>,
     options: SessionOperationOptions<T> = {},
   ): Promise<T> {
-    const requestBytes = this.requestBytes(message);
+    const { message, bytes: requestBytes } = request;
+    this.assertRequestBytes(requestBytes);
     const state = this.matchingSession(context);
     return this.runOperation(
       state,
@@ -2563,7 +2572,8 @@ export class Runtime implements RuntimePort {
     throw new DbzzError("unavailable", "runtime is not available", { resource: "operation" });
   }
 
-  private requestBytes(request: unknown): number {
+  /** HTTP callers do not yet carry transport-owned bytes into Runtime. */
+  private externalRequestBytes(request: unknown): number {
     let bytes: number;
     try {
       bytes = byteLength(request);

@@ -32,6 +32,7 @@ import { Runtime } from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
 import {
   Session,
+  type ReceivedFrame,
   type RuntimePublication,
   type SessionApplicationMessage,
   type SessionClock,
@@ -58,6 +59,10 @@ function deferred<T>(): Deferred<T> {
 function uuidV7(now: number, sequence: number): string {
   const timestamp = now.toString(16).padStart(12, "0");
   return `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${sequence.toString(16).padStart(12, "0")}`;
+}
+
+function handle(session: Session, frame: unknown, bytes = Buffer.byteLength(encode(frame))): Promise<void> {
+  return session.handle({ frame, bytes } satisfies ReceivedFrame);
 }
 
 class FixedClock implements SessionClock, DbzzClientClock {
@@ -198,7 +203,9 @@ class SessionSocket implements DbzzWebSocket {
   send(data: string): void {
     if (this.closed) throw new Error("socket is closed");
     const message = parseClientMessage(decode(data));
-    const operation = this.inboundTail.then(() => this.session.handle(message));
+    const operation = this.inboundTail.then(() =>
+      this.session.handle({ frame: message, bytes: Buffer.byteLength(data) })
+    );
     this.inboundTail = operation.catch(() => {});
     this.track(operation);
   }
@@ -350,7 +357,7 @@ describe("Session + Runtime integration", () => {
     });
 
     try {
-      await session.handle({
+      await handle(session, {
         v: PROTOCOL_VERSION,
         t: "hello",
         clientSessionId: "integration-client",
@@ -364,7 +371,7 @@ describe("Session + Runtime integration", () => {
         principal: "user",
       }]);
 
-      await session.handle({
+      await handle(session, {
         v: PROTOCOL_VERSION,
         t: "sub",
         id: 10,
@@ -394,7 +401,7 @@ describe("Session + Runtime integration", () => {
       };
       sink.dropNextMutationResponse = true;
       const mutationTraceStart = sink.trace.length;
-      await session.handle(mutation);
+      await handle(session, mutation);
 
       expect(sink.trace.slice(mutationTraceStart)).toEqual([
         "application:transition:10:update:0",
@@ -416,7 +423,7 @@ describe("Session + Runtime integration", () => {
       });
       expect(mutationMessages(sink.applications)).toHaveLength(0);
 
-      await session.handle({ ...mutation, id: 3 });
+      await handle(session, { ...mutation, id: 3 });
       const replay = mutationMessages(sink.applications).at(-1);
       expect(replay).toMatchObject({
         id: 3,
@@ -432,7 +439,7 @@ describe("Session + Runtime integration", () => {
       expect(mutationExecutions).toBe(1);
       expect(engine.reader.query('SELECT COUNT(*) AS count FROM "messages"').get()).toEqual({ count: 1n });
 
-      await session.handle({
+      await handle(session, {
         v: PROTOCOL_VERSION,
         t: "sub",
         id: 20,
@@ -446,7 +453,7 @@ describe("Session + Runtime integration", () => {
 
       const rotationTraceStart = sink.trace.length;
       const authenticated = sink.waitForAuth(1);
-      await session.handle({
+      await handle(session, {
         v: PROTOCOL_VERSION,
         t: "auth",
         attemptId: 1,
@@ -631,33 +638,33 @@ describe("Session + Runtime integration", () => {
     const caller = new Session({ runtime, sink: callerSink, source: TEST_SOURCE, clock: new FixedClock() });
 
     try {
-      await slow.handle({
+      await handle(slow, {
         v: PROTOCOL_VERSION,
         t: "hello",
         clientSessionId: "slow-client",
         credential: { kind: "bearer", token: "alice" },
       });
-      await target.handle({
+      await handle(target, {
         v: PROTOCOL_VERSION,
         t: "hello",
         clientSessionId: "target-client",
         credential: { kind: "bearer", token: "alice" },
       });
-      await caller.handle({
+      await handle(caller, {
         v: PROTOCOL_VERSION,
         t: "hello",
         clientSessionId: "caller-client",
         credential: { kind: "anonymous" },
       });
       for (const session of [slow, target]) {
-        await session.handle({
+        await handle(session, {
           v: PROTOCOL_VERSION,
           t: "sub",
           id: 10,
           ref: "messages.list",
           args: { channelId: 1n },
         });
-        await session.handle({
+        await handle(session, {
           v: PROTOCOL_VERSION,
           t: "sub",
           id: 20,
@@ -669,7 +676,7 @@ describe("Session + Runtime integration", () => {
       const slowQuery = slowSink.blockNextApplication(({ message }) =>
         message.t === "transition" && message.id === 10 && message.transition.kind === "update"
       );
-      const queryMutation = caller.handle({
+      const queryMutation = handle(caller, {
         v: PROTOCOL_VERSION,
         t: "m",
         id: 1,
@@ -681,7 +688,7 @@ describe("Session + Runtime integration", () => {
       await slowQuery.entered;
 
       const firstAuth = targetSink.waitForAuth(1);
-      await target.handle({
+      await handle(target, {
         v: PROTOCOL_VERSION,
         t: "auth",
         attemptId: 1,
@@ -698,7 +705,7 @@ describe("Session + Runtime integration", () => {
       const slowEvent = slowSink.blockNextApplication(({ message }) =>
         message.t === "event" && message.id === 20 && message.event.kind === "row"
       );
-      const eventMutation = caller.handle({
+      const eventMutation = handle(caller, {
         v: PROTOCOL_VERSION,
         t: "m",
         id: 2,
@@ -710,7 +717,7 @@ describe("Session + Runtime integration", () => {
       await slowEvent.entered;
 
       const secondAuth = targetSink.waitForAuth(2);
-      await target.handle({
+      await handle(target, {
         v: PROTOCOL_VERSION,
         t: "auth",
         attemptId: 2,

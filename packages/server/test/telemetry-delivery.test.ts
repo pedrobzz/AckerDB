@@ -27,9 +27,11 @@ import {
   query,
   reconcile,
   serve,
+  type ReceivedFrame,
   type RuntimeProcedureRequest,
   type RuntimeProcedureResponse,
   type RuntimePublication,
+  type RuntimeRequest,
   type SessionRuntimeContext,
   type TelemetryRecord,
   type TelemetrySpanRecord,
@@ -98,6 +100,14 @@ const functions = {
 function uuidV7(now: number, sequence: number): string {
   const timestamp = now.toString(16).padStart(12, "0");
   return `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${sequence.toString(16).padStart(12, "0")}`;
+}
+
+function handle(session: Session, frame: unknown, bytes = Buffer.byteLength(encode(frame))): Promise<void> {
+  return session.handle({ frame, bytes } satisfies ReceivedFrame);
+}
+
+function request<Message>(message: Message, bytes = Buffer.byteLength(encode(message))): RuntimeRequest<Message> {
+  return { message, bytes };
 }
 
 async function settle(): Promise<void> {
@@ -245,13 +255,13 @@ test("Runtime prepares one canonical query frame for WebSocket delivery", async 
 
   try {
     await runtime.openSession(context);
-    const result = await runtime.query(context, {
+    const result = await runtime.query(context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 1,
       ref: "probe.once",
       args: {},
-    });
+    }));
 
     expect(result).toBe(value);
     expect(reads).toBe(1);
@@ -317,7 +327,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
   session = new Session({ runtime, sink, source: TEST_SOURCE });
 
   try {
-    await session.handle({
+    await handle(session, {
       v: PROTOCOL_VERSION,
       t: "hello",
       clientSessionId: "telemetry-delivery-session",
@@ -325,7 +335,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     });
 
     socket.bufferNext();
-    await session.handle({
+    await handle(session, {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 41,
@@ -339,7 +349,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     const issuedAt = Date.now();
     const mutationId = uuidV7(issuedAt, 42);
     socket.bufferNext();
-    await session.handle({
+    await handle(session, {
       v: PROTOCOL_VERSION,
       t: "m",
       id: 42,
@@ -353,7 +363,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     sink.onDrain();
 
     socket.bufferNext();
-    await session.handle({
+    await handle(session, {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 43,
@@ -364,7 +374,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     socket.bufferedAmount = 0;
     sink.onDrain();
 
-    await session.handle({
+    await handle(session, {
       v: PROTOCOL_VERSION,
       t: "q",
       id: 44,
@@ -373,7 +383,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     });
     await settle();
 
-    await session.handle({ v: PROTOCOL_VERSION, t: "ping" });
+    await handle(session, { v: PROTOCOL_VERSION, t: "ping" });
     await settle();
     await runtime.telemetry.flush();
 

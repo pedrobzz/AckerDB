@@ -814,7 +814,7 @@ export class DbzzServer {
       void session.close(new DbzzError("malformed", "malformed WebSocket frame", { cause }));
       return;
     }
-    void session.handle(frame).catch(() => {});
+    void session.handle({ frame, bytes }).catch(() => {});
   }
 
   private closeWebSocket(socket: ServerWebSocket<WsData>): void {

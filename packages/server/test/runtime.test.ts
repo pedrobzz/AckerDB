@@ -33,6 +33,7 @@ import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";
 import type {
   RuntimePublication,
   RuntimePublicationBatch,
+  RuntimeRequest,
   SessionApplicationMessage,
   SessionRuntimeContext,
 } from "../src/session.ts";
@@ -60,6 +61,10 @@ function deferred<T>(): Deferred<T> {
 function uuidV7(now = Date.now(), sequence = 0): string {
   const timestamp = now.toString(16).padStart(12, "0");
   return `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${sequence.toString(16).padStart(12, "0")}`;
+}
+
+function request<Message>(message: Message, bytes = Buffer.byteLength(encode(message))): RuntimeRequest<Message> {
+  return { message, bytes };
 }
 
 function user(subject: string): UserPrincipal {
@@ -392,7 +397,7 @@ class SessionHarness {
       mutationRequestId,
       issuedAt,
     };
-    return this.runtime.mutation(this.context, message);
+    return this.runtime.mutation(this.context, request(message));
   }
 
   private makeContext(
@@ -544,13 +549,13 @@ describe("runtime commit and replay ownership", () => {
 
   test("publishes one safe error when a query result is not wire-representable", async () => {
     await session.open();
-    await expect(runtime.query(session.context, {
+    await expect(runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
       ref: "messages.nonWireQuery",
       args: {},
-    })).rejects.toMatchObject({ code: "validation" });
+    }))).rejects.toMatchObject({ code: "validation" });
 
     expect(session.publications.filter((frame) => frame.id === 2)).toEqual([
       expect.objectContaining({
@@ -566,23 +571,23 @@ describe("runtime commit and replay ownership", () => {
     expect(first.value).toBe(1n);
     expect(first.receipt).toMatchObject({ replay: "executed", durability: "production" });
 
-    await expect(runtime.query(session.context, {
+    await expect(runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
       ref: "messages.list",
       args: { channelId: 1 },
-    })).rejects.toMatchObject({ code: "validation" });
+    }))).rejects.toMatchObject({ code: "validation" });
     await expect(session.mutation(3, "messages.fetchInside", {})).rejects.toThrow("fetch is not allowed");
     await expect(session.mutation(4, "messages.composeFail", { channelId: 2n })).rejects.toThrow("compose failed");
 
-    const rolledBack = await runtime.query(session.context, {
+    const rolledBack = await runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 5,
       ref: "messages.list",
       args: { channelId: 2n },
-    }) as unknown[];
+    })) as unknown[];
     expect(rolledBack).toEqual([]);
   });
 
@@ -617,13 +622,13 @@ describe("runtime commit and replay ownership", () => {
       now,
     )).rejects.toMatchObject({ code: "conflict", resource: "idempotency" });
 
-    const rows = await runtime.query(session.context, {
+    const rows = await runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 4,
       ref: "messages.list",
       args: { channelId: 5n },
-    }) as unknown[];
+    })) as unknown[];
     expect(rows).toHaveLength(1);
   });
 });
@@ -636,22 +641,22 @@ describe("ordered convergence", () => {
       exporter: { export: (records) => void exported.push(...records) },
     });
     await session.open(user("alice"));
-    await runtime.subscribe(session.context, {
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 89,
       ref: "messages.parallelList",
       args: { channelId: 1n },
-    });
+    }));
     queryFailureGate = deferred<void>();
     queryFailureEntered = deferred<void>();
-    const failedQuery = runtime.query(session.context, {
+    const failedQuery = runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 90,
       ref: "messages.blockFail",
       args: {},
-    });
+    }));
     void failedQuery.catch(() => {});
     await queryFailureEntered.promise;
 
@@ -703,13 +708,13 @@ describe("ordered convergence", () => {
 
   test("publishes initial reset and advances caller obligations before mutation resolution", async () => {
     await session.open();
-    await runtime.subscribe(session.context, {
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 10,
       ref: "messages.list",
       args: { channelId: 1n },
-    });
+    }));
     expect(session.publications[0]).toMatchObject({ t: "transition", id: 10, transition: { kind: "reset" } });
 
     const result = await session.mutation(1, "messages.send", { channelId: 1n, body: "new" });
@@ -733,20 +738,20 @@ describe("ordered convergence", () => {
     await session.open();
     const secondSession = new SessionHarness(runtime, "session-b");
     await secondSession.open();
-    await runtime.subscribe(session.context, {
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 60,
       ref: "messages.parallelList",
       args: { channelId: 1n },
-    });
-    await runtime.subscribe(secondSession.context, {
+    }));
+    await runtime.subscribe(secondSession.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 61,
       ref: "messages.parallelList",
       args: { channelId: 2n },
-    });
+    }));
 
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
@@ -801,20 +806,20 @@ describe("ordered convergence", () => {
 
   test("event subscriptions receive reset then committed rows", async () => {
     await session.open();
-    await runtime.subscribe(session.context, {
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 20,
       ref: "events.typing",
       args: { channelId: 7n },
-    });
-    await runtime.subscribe(session.context, {
+    }));
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 21,
       ref: "events.typing",
       args: { channelId: 8n },
-    });
+    }));
     await session.mutation(1, "messages.send", { channelId: 7n, body: "typing" });
     expect(session.publications.filter(
       (frame) => frame.t === "event" && frame.event.kind === "row",
@@ -825,21 +830,21 @@ describe("ordered convergence", () => {
 
   test("authorizes and freezes event subscriptions across refresh and terminal sign-out", async () => {
     await session.open(user("alice"));
-    await expect(runtime.subscribe(session.context, {
+    await expect(runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 22,
       ref: "events.privateTyping",
       args: { channelId: "wrong" },
-    })).rejects.toMatchObject({ code: "validation" });
+    }))).rejects.toMatchObject({ code: "validation" });
 
-    await runtime.subscribe(session.context, {
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 23,
       ref: "events.privateTyping",
       args: { channelId: 9n },
-    });
+    }));
     expect(Object.isFrozen(eventAccessInputs.at(-1)!.ctx)).toBe(true);
     expect(Object.isFrozen(eventAccessInputs.at(-1)!.args)).toBe(true);
     expect("token" in eventAccessInputs.at(-1)!.ctx).toBe(false);
@@ -865,25 +870,25 @@ describe("ordered convergence", () => {
 
   test("denies an event policy before listener attachment", async () => {
     await session.open();
-    await expect(runtime.subscribe(session.context, {
+    await expect(runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 24,
       ref: "events.privateTyping",
       args: { channelId: 1n },
-    })).rejects.toMatchObject({ code: "unauthenticated" });
+    }))).rejects.toMatchObject({ code: "unauthenticated" });
     expect(runtime.status().reactive.eventListeners).toBe(0);
   });
 
   test("auth rotation revokes then re-evaluates saved subscriptions under the new identity", async () => {
     await session.open(user("alice"));
-    await runtime.subscribe(session.context, {
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 30,
       ref: "messages.secure",
       args: {},
-    });
+    }));
     expect(session.publications[0]).toMatchObject({
       t: "transition",
       transition: { kind: "reset", value: { subject: "alice" } },
@@ -1099,6 +1104,7 @@ describe("direct ingress", () => {
   test("rejects oversized direct calls before operation or writer admission", async () => {
     await restart(limits({ maxRequestBytes: 256 }));
     await session.open();
+    const oversizedBytes = 257;
     const oversized = "x".repeat(512);
     const expected = {
       code: "overloaded",
@@ -1106,33 +1112,54 @@ describe("direct ingress", () => {
       message: "request exceeds maxRequestBytes",
     };
 
-    await expect(runtime.subscribe(session.context, {
+    await expect(runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 80,
-      ref: oversized,
+      ref: "messages.list",
       args: {},
-    })).rejects.toMatchObject(expected);
-    await expect(runtime.query(session.context, {
+    }, oversizedBytes))).rejects.toMatchObject(expected);
+    await expect(runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 81,
-      ref: oversized,
+      ref: "messages.list",
       args: {},
-    })).rejects.toMatchObject(expected);
-    await expect(session.mutation(82, "messages.send", {
-      channelId: 1n,
-      body: oversized,
-    })).rejects.toMatchObject(expected);
-    await expect(runtime.runProcedure({
+    }, oversizedBytes))).rejects.toMatchObject(expected);
+    await expect(runtime.mutation(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "m",
+      id: 82,
+      ref: "messages.send",
+      args: { channelId: 1n, body: "small" },
+      mutationRequestId: uuidV7(Date.now(), 82),
+      issuedAt: Date.now(),
+    }, oversizedBytes))).rejects.toMatchObject(expected);
+    await expect(runtime.unsubscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "unsub",
       id: 83,
+    }, oversizedBytes))).rejects.toMatchObject(expected);
+    await expect(runtime.reset(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "reset",
+      id: 84,
+      cursor: {
+        generation: "small",
+        commitVersion: 0n,
+        authEpoch: 0,
+        identity: "small",
+      },
+    }, oversizedBytes))).rejects.toMatchObject(expected);
+    await expect(runtime.runProcedure({
+      id: 85,
       address: oversized,
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
       respond: ({ body, status }) => new Response(body, { status }),
     })).rejects.toMatchObject(expected);
     await expect(runtime.runSse({
-      id: 84,
+      id: 86,
       address: oversized,
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
@@ -1144,6 +1171,19 @@ describe("direct ingress", () => {
       reactive: { queryListeners: 0, eventListeners: 0 },
     });
     expect(engine.commitVersion()).toBe(0n);
+  });
+
+  test("accepts a Runtime request at the exact byte boundary", async () => {
+    await restart(limits({ maxRequestBytes: 256 }));
+    await session.open();
+
+    await expect(runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 87,
+      ref: "messages.list",
+      args: { channelId: 1n },
+    }, 256))).resolves.toEqual([]);
   });
 });
 
@@ -1299,13 +1339,13 @@ describe("scheduler and lifecycle", () => {
   test("owns a finite deadline across stalled active reader and publication work", async () => {
     await restart(limits({ gracefulShutdownMs: 500 }));
     await session.open();
-    await runtime.subscribe(session.context, {
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 86,
       ref: "messages.parallelList",
       args: { channelId: 1n },
-    });
+    }));
     revalidationGate = deferred<void>();
     revalidationEntered = deferred<void>();
     const mutation = session.mutation(87, "messages.send", { channelId: 1n, body: "blocked" });
@@ -1321,13 +1361,13 @@ describe("scheduler and lifecycle", () => {
       publication: { closed: true },
       reactive: { queryListeners: 0, eventListeners: 0 },
     });
-    await expect(runtime.query(session.context, {
+    await expect(runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 88,
       ref: "messages.list",
       args: { channelId: 1n },
-    })).rejects.toMatchObject({
+    }))).rejects.toMatchObject({
       code: "draining",
       retryable: true,
       retryAfterMs: 1_000,
@@ -1392,23 +1432,23 @@ describe("scheduler and lifecycle", () => {
   test("stops admission, waits for accepted work, and becomes stopped", async () => {
     await session.open();
     queryGate = deferred<void>();
-    const accepted = runtime.query(session.context, {
+    const accepted = runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 1,
       ref: "messages.block",
       args: {},
-    });
+    }));
     await Promise.resolve();
     const drain = runtime.drain();
     expect(runtime.status().state).toBe("draining");
-    await expect(runtime.query(session.context, {
+    await expect(runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
       ref: "messages.block",
       args: {},
-    })).rejects.toMatchObject({ code: "draining" });
+    }))).rejects.toMatchObject({ code: "draining" });
     queryGate.resolve(undefined);
     await expect(accepted).resolves.toBe("released");
     await drain;
@@ -1459,25 +1499,25 @@ describe("configured capacity", () => {
       size: 512,
     })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
     expect(engine.commitVersion()).toBe(0n);
-    const rows = await runtime.query(session.context, {
+    const rows = await runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 2,
       ref: "messages.list",
       args: { channelId: 9n },
-    });
+    }));
     expect(rows).toEqual([]);
   });
 
   test("publishes an error instead of an oversized query success frame", async () => {
     await session.open();
-    await expect(runtime.query(session.context, {
+    await expect(runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
       t: "q",
       id: 3,
       ref: "messages.largeQuery",
       args: { size: 512 },
-    })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
+    }))).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
 
     expect(session.publications.filter((frame) => frame.id === 3)).toEqual([
       expect.objectContaining({
@@ -1500,13 +1540,13 @@ describe("configured capacity", () => {
       },
     }));
     await session.open(user("alice"));
-    await runtime.subscribe(session.context, {
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 50,
       ref: "messages.secure",
       args: {},
-    });
+    }));
 
     await expect(session.rotate(user("bob"))).rejects.toMatchObject({ code: "unavailable" });
     expect(runtime.status()).toMatchObject({
@@ -1520,13 +1560,13 @@ describe("configured capacity", () => {
     const maxFrameBytes = 1_024;
     await restart(limits({ maxConnections: 2, maxFrameBytes }));
     await session.open(user("alice"));
-    await runtime.subscribe(session.context, {
+    await runtime.subscribe(session.context, request({
       v: PROTOCOL_VERSION,
       t: "sub",
       id: 51,
       ref: "messages.secure",
       args: {},
-    });
+    }));
     const calibration = await session.rotateBatch(user("robin"));
     const exactCaptureBytes = calibration.bytes;
     expect(exactCaptureBytes).toBe(publicationBytes(calibration.frames));
@@ -1548,13 +1588,13 @@ describe("configured capacity", () => {
     const second = new SessionHarness(runtime, "session-b");
     await Promise.all([first.open(user("alice")), second.open(user("alice"))]);
     for (const owner of [first, second]) {
-      await runtime.subscribe(owner.context, {
+      await runtime.subscribe(owner.context, request({
         v: PROTOCOL_VERSION,
         t: "sub",
         id: 51,
         ref: "messages.secure",
         args: {},
-      });
+      }));
     }
 
     const firstBatch = await first.rotateBatch(user("robin"));

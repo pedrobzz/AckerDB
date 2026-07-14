@@ -1134,6 +1134,39 @@ describe("WebSocket Session transport", () => {
     expect(runtime.status().connections).toBe(0);
   });
 
+  test("applies maxRequestBytes to the exact received WebSocket text", async () => {
+    const client = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    client.send({
+      v: PROTOCOL_VERSION,
+      t: "hello",
+      clientSessionId: "raw-request-byte-limit",
+      credential: { kind: "anonymous" },
+    });
+    expect(await within(client.next())).toMatchObject({ t: "welcome" });
+
+    const canonical = encode({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 1,
+      ref: "notes.list",
+      args: { rank: 1n },
+    });
+    const canonicalBytes = Buffer.byteLength(canonical);
+    expect(canonicalBytes).toBeLessThan(limits.maxRequestBytes);
+    const text = " ".repeat(limits.maxRequestBytes + 1 - canonicalBytes) + canonical;
+    expect(Buffer.byteLength(text)).toBe(limits.maxRequestBytes + 1);
+    expect(Buffer.byteLength(text)).toBeLessThanOrEqual(limits.maxFrameBytes);
+
+    client.socket.send(text);
+    expect(await within(client.next())).toMatchObject({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: null,
+      outcome: { code: "overloaded", resource: "operation" },
+    });
+    expect((await within(client.closed())).code).toBe(1013);
+  });
+
   test("bounds malformed and one-byte-over frames, then lets Bun reject larger payloads", async () => {
     const malformed = await rawWebSocket(`ws://127.0.0.1:${server.port}/ws`);
     malformed.socket.send("{");

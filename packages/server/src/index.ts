@@ -211,10 +211,12 @@ export {
 export {
   prepareRuntimePublication,
   Session,
+  type ReceivedFrame,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
   type RuntimePort,
   type RuntimePublication,
+  type RuntimeRequest,
   type SessionApplicationMessage,
   type SessionClock,
   type SessionControlMessage,

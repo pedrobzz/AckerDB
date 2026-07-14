@@ -26,11 +26,13 @@ import { outcomeFromError } from "../src/outcome.ts";
 import {
   prepareRuntimePublication,
   Session,
+  type ReceivedFrame,
   type RuntimeAuthTransition,
   type RuntimeMutationResult,
   type RuntimePort,
   type RuntimePublication,
   type RuntimePublicationBatch,
+  type RuntimeRequest,
   type SessionApplicationMessage,
   type SessionClock,
   type SessionControlMessage,
@@ -197,6 +199,7 @@ class FakeRuntime implements RuntimePort {
   readonly unsubscriptions: number[] = [];
   readonly resets: number[] = [];
   readonly queries: QueryMessage[] = [];
+  readonly queryRequests: RuntimeRequest<QueryMessage>[] = [];
   readonly mutations: MutationMessage[] = [];
   readonly closes: Outcome[] = [];
   readonly transitionPublications: RuntimePublication[] = [];
@@ -234,22 +237,30 @@ class FakeRuntime implements RuntimePort {
     });
   }
 
-  async subscribe(context: SessionRuntimeContext, message: { id: number }): Promise<void> {
+  async subscribe(context: SessionRuntimeContext, request: Parameters<RuntimePort["subscribe"]>[1]): Promise<void> {
+    const { message } = request;
     this.subscriptions.push(message.id);
     if (this.subscribeHook !== null) await this.subscribeHook(context, message.id);
     await context.publish(prepareRuntimePublication(resetTransition(context.authEpoch, message.id)));
   }
 
-  async unsubscribe(_context: SessionRuntimeContext, message: { id: number }): Promise<void> {
+  async unsubscribe(
+    _context: SessionRuntimeContext,
+    request: Parameters<RuntimePort["unsubscribe"]>[1],
+  ): Promise<void> {
+    const { message } = request;
     this.unsubscriptions.push(message.id);
   }
 
-  async reset(context: SessionRuntimeContext, message: { id: number }): Promise<void> {
+  async reset(context: SessionRuntimeContext, request: Parameters<RuntimePort["reset"]>[1]): Promise<void> {
+    const { message } = request;
     this.resets.push(message.id);
     await context.publish(prepareRuntimePublication(resetTransition(context.authEpoch, message.id)));
   }
 
-  async query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown> {
+  async query(context: SessionRuntimeContext, request: RuntimeRequest<QueryMessage>): Promise<unknown> {
+    const { message } = request;
+    this.queryRequests.push(request);
     this.queries.push(message);
     try {
       const value = this.queryHook === null
@@ -274,7 +285,11 @@ class FakeRuntime implements RuntimePort {
     }
   }
 
-  async mutation(context: SessionRuntimeContext, message: MutationMessage): Promise<RuntimeMutationResult> {
+  async mutation(
+    context: SessionRuntimeContext,
+    request: RuntimeRequest<MutationMessage>,
+  ): Promise<RuntimeMutationResult> {
+    const { message } = request;
     this.mutations.push(message);
     const result: RuntimeMutationResult = {
       value: { ref: message.ref, principal: context.principal.kind },
@@ -342,6 +357,10 @@ function wireBytes(value: unknown): number {
   return utf8.encode(encode(value)).byteLength;
 }
 
+function handle(session: Session, frame: unknown, bytes = wireBytes(frame)): Promise<void> {
+  return session.handle({ frame, bytes } satisfies ReceivedFrame);
+}
+
 function sessionLimits(
   readQueue: SessionLimits["readQueue"],
   maxFrameBytes = 1_024,
@@ -363,7 +382,7 @@ describe("Session Protocol-2 ownership", () => {
     const sink = new FakeSink();
     const session = new Session({ runtime, sink, source: TEST_SOURCE });
 
-    await session.handle(query(1));
+    await handle(session, query(1));
     // Termination starts from inside this admitted ingress handler. Awaiting
     // the resulting close proves that handler can leave the executor and
     // satisfy its own drain without a promise cycle.
@@ -390,13 +409,13 @@ describe("Session Protocol-2 ownership", () => {
     const sink = new FakeSink();
     const session = new Session({ runtime, sink, source: TEST_SOURCE });
 
-    await session.handle(hello());
-    await session.handle({ v: 2, t: "sub", id: 1, ref: "messages.list", args: {} });
-    await session.handle({ v: 2, t: "reset", id: 1, cursor: cursor(0) });
-    await session.handle(query(2));
-    await session.handle(mutation(3));
-    await session.handle({ v: 2, t: "unsub", id: 1 });
-    await session.handle({ v: 2, t: "ping" });
+    await handle(session, hello());
+    await handle(session, { v: 2, t: "sub", id: 1, ref: "messages.list", args: {} });
+    await handle(session, { v: 2, t: "reset", id: 1, cursor: cursor(0) });
+    await handle(session, query(2));
+    await handle(session, mutation(3));
+    await handle(session, { v: 2, t: "unsub", id: 1 });
+    await handle(session, { v: 2, t: "ping" });
     await settle();
 
     expect(session.snapshot()).toMatchObject({
@@ -427,16 +446,16 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({ runtime, sink, source: TEST_SOURCE });
     const subscriptionGate = deferred<void>();
     runtime.subscribeHook = async () => subscriptionGate.promise;
-    await session.handle(hello());
+    await handle(session, hello());
 
-    const subscribing = session.handle({
+    const subscribing = handle(session, {
       v: 2,
       t: "sub",
       id: 1,
       ref: "messages.list",
       args: {},
     });
-    const mutating = session.handle(mutation(2));
+    const mutating = handle(session, mutation(2));
     await settle();
 
     expect(runtime.subscriptions).toEqual([1]);
@@ -459,17 +478,17 @@ describe("Session Protocol-2 ownership", () => {
       source: TEST_SOURCE,
       limits: sessionLimits({ maxItems: 2, maxBytes: queuedBytes + 1_000, maxAgeMs: 1_000 }),
     });
-    await session.handle(hello());
+    await handle(session, hello());
 
-    const admitted = session.handle(query(1));
+    const admitted = handle(session, query(1));
     await settle();
-    const queued = queuedFrames.map((frame) => session.handle(frame));
+    const queued = queuedFrames.map((frame) => handle(session, frame));
     expect(session.snapshot().ingress).toMatchObject({
       active: 1,
       queue: { queuedItems: 2, queuedBytes, oldestAgeMs: 0 },
     });
 
-    const rejected = session.handle(query(4));
+    const rejected = handle(session, query(4));
     await expect(rejected).rejects.toMatchObject({
       reason: "items",
       code: "overloaded",
@@ -499,27 +518,32 @@ describe("Session Protocol-2 ownership", () => {
     });
   });
 
-  test("bounds a blocked serialized ingress by exact queued UTF-8 bytes", async () => {
+  test("uses the received byte count for serialized ingress and Runtime", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
     const gate = deferred<void>();
     runtime.queryHook = async () => gate.promise;
-    const queuedFrames = [query(2), query(3)];
-    const queuedBytes = queuedFrames.reduce((total, frame) => total + wireBytes(frame), 0);
+    const admittedBytes = 173;
+    const queuedFrames = [
+      { frame: { ...query(2), args: { value: "é" } }, bytes: 211 },
+      { frame: query(3), bytes: 307 },
+    ];
+    const queuedBytes = queuedFrames.reduce((total, received) => total + received.bytes, 0);
     const session = new Session({
       runtime,
       sink,
       source: TEST_SOURCE,
       limits: sessionLimits({ maxItems: 3, maxBytes: queuedBytes, maxAgeMs: 1_000 }),
     });
-    await session.handle(hello());
+    await handle(session, hello());
 
-    const admitted = session.handle(query(1));
+    const admitted = handle(session, query(1), admittedBytes);
     await settle();
-    const queued = queuedFrames.map((frame) => session.handle(frame));
+    expect(runtime.queryRequests[0]?.bytes).toBe(admittedBytes);
+    const queued = queuedFrames.map(({ frame, bytes }) => handle(session, frame, bytes));
     expect(session.snapshot().ingress.queue).toMatchObject({ queuedItems: 2, queuedBytes });
 
-    const rejected = session.handle(query(4));
+    const rejected = handle(session, query(4));
     await expect(rejected).rejects.toMatchObject({
       reason: "bytes",
       code: "overloaded",
@@ -548,11 +572,11 @@ describe("Session Protocol-2 ownership", () => {
       clock,
       limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 10 }),
     });
-    await session.handle(hello());
+    await handle(session, hello());
 
-    const admitted = session.handle(query(1));
+    const admitted = handle(session, query(1));
     await settle();
-    const queued = session.handle(query(2));
+    const queued = handle(session, query(2));
     expect(session.snapshot().ingress.queue).toMatchObject({
       queuedItems: 1,
       queuedBytes: wireBytes(query(2)),
@@ -591,10 +615,9 @@ describe("Session Protocol-2 ownership", () => {
       source: TEST_SOURCE,
       limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 }, maxFrameBytes),
     });
-    await session.handle(hello());
-    const oversized = { ...query(1), args: { value: "x".repeat(maxFrameBytes) } };
+    await handle(session, hello());
 
-    await expect(session.handle(oversized)).rejects.toMatchObject({
+    await expect(handle(session, query(1), maxFrameBytes + 1)).rejects.toMatchObject({
       code: "overloaded",
       retryable: true,
       retryAfterMs: 0,
@@ -628,13 +651,11 @@ describe("Session Protocol-2 ownership", () => {
         maxRequestBytes,
       ),
     });
-    await session.handle(hello());
-    const oversized = { ...query(1), args: { value: "x".repeat(maxRequestBytes) } };
-    const oversizedBytes = wireBytes(oversized);
-    expect(oversizedBytes).toBeGreaterThan(maxRequestBytes);
+    await handle(session, hello());
+    const oversizedBytes = maxRequestBytes + 1;
     expect(oversizedBytes).toBeLessThanOrEqual(maxFrameBytes);
 
-    await expect(session.handle(oversized)).rejects.toMatchObject({
+    await expect(handle(session, query(1), oversizedBytes)).rejects.toMatchObject({
       code: "overloaded",
       retryable: false,
       resource: "operation",
@@ -656,6 +677,29 @@ describe("Session Protocol-2 ownership", () => {
     });
   });
 
+  test("accepts the exact UTF-8 request boundary and preserves its byte count", async () => {
+    const runtime = new FakeRuntime();
+    const sink = new FakeSink();
+    const message = { ...query(1), args: { value: "é".repeat(32) } };
+    const text = encode(message);
+    const bytes = Buffer.byteLength(text);
+    expect(bytes).toBeGreaterThan(text.length);
+    expect(bytes).toBeGreaterThan(wireBytes(hello()));
+    const session = new Session({
+      runtime,
+      sink,
+      source: TEST_SOURCE,
+      limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 }, bytes, bytes),
+    });
+
+    await handle(session, hello());
+    await expect(handle(session, message, bytes)).resolves.toBeUndefined();
+
+    expect(runtime.queryRequests).toHaveLength(1);
+    expect(runtime.queryRequests[0]).toMatchObject({ message, bytes });
+    await session.close();
+  });
+
   test("close rejects queued frames and waits for the admitted handler to finish", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
@@ -667,14 +711,14 @@ describe("Session Protocol-2 ownership", () => {
       source: TEST_SOURCE,
       limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 }),
     });
-    await session.handle(hello());
+    await handle(session, hello());
 
     let admittedFinished = false;
-    const admitted = session.handle(query(1)).then(() => {
+    const admitted = handle(session, query(1)).then(() => {
       admittedFinished = true;
     });
     await settle();
-    const queued = [session.handle(query(2)), session.handle(query(3))];
+    const queued = [handle(session, query(2)), handle(session, query(3))];
     const closing = session.close(new DbzzError("draining", "server draining"));
 
     for (const frame of queued) {
@@ -708,15 +752,15 @@ describe("Session Protocol-2 ownership", () => {
     verifier.results.set("first", first.promise);
     verifier.results.set("second", second.promise);
     const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
-    await session.handle(hello());
+    await handle(session, hello());
     order.length = 0;
 
-    await session.handle(auth(1, { kind: "bearer", token: "first" }));
+    await handle(session, auth(1, { kind: "bearer", token: "first" }));
     expect(runtime.opens[0]!.signal.aborted).toBe(true);
-    await session.handle(query(9));
+    await handle(session, query(9));
     expect(runtime.queries).toHaveLength(0);
     expect((sink.controls.at(-1) as ErrorMessage).outcome.code).toBe("auth_stale");
-    await session.handle(auth(2, { kind: "bearer", token: "second" }));
+    await handle(session, auth(2, { kind: "bearer", token: "second" }));
 
     second.resolve(principal("second"));
     await settle();
@@ -766,9 +810,9 @@ describe("Session Protocol-2 ownership", () => {
       clock: new ManualClock(),
     });
 
-    await session.handle(hello({ kind: "bearer", token: "alice" }));
+    await handle(session, hello({ kind: "bearer", token: "alice" }));
     const opened = runtime.opens[0]!;
-    await session.handle(auth(1, { kind: "bearer", token: "alice-refreshed" }));
+    await handle(session, auth(1, { kind: "bearer", token: "alice-refreshed" }));
     await settle();
     const sameOwner = runtime.transitions[0]!;
 
@@ -780,7 +824,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(sameOwner.to.fairnessKey).toBe(opened.fairnessKey);
     expect(sameOwner.to.fairnessKey).toBe(callerFairnessKey(refreshedAlice, TEST_SOURCE));
 
-    await session.handle(auth(2, { kind: "bearer", token: "bob" }));
+    await handle(session, auth(2, { kind: "bearer", token: "bob" }));
     await settle();
     const changedOwner = runtime.transitions[1]!;
     expect(changedOwner.from).toMatchObject({
@@ -791,7 +835,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(changedOwner.to.fairnessKey).not.toBe(sameOwner.to.fairnessKey);
     expect(changedOwner.to.fairnessKey).toBe(callerFairnessKey(bob, TEST_SOURCE));
 
-    await session.handle(auth(3, { kind: "anonymous" }));
+    await handle(session, auth(3, { kind: "anonymous" }));
     await settle();
     const signedOut = runtime.transitions[2]!;
     expect(signedOut.from).toMatchObject({
@@ -812,9 +856,9 @@ describe("Session Protocol-2 ownership", () => {
     verifier.results.set("next", principal("next"));
     sink.applicationHook = async () => delivery.promise;
     const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
-    await session.handle(hello());
+    await handle(session, hello());
 
-    await session.handle(auth(1, { kind: "bearer", token: "next" }));
+    await handle(session, auth(1, { kind: "bearer", token: "next" }));
     await settle();
     expect(runtime.transitionCaptureBytes).toBeGreaterThan(0);
     expect(runtime.transitionReleaseCount).toBe(0);
@@ -840,9 +884,9 @@ describe("Session Protocol-2 ownership", () => {
       throw new Error("transport failed");
     };
     const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
-    await session.handle(hello());
+    await handle(session, hello());
 
-    await session.handle(auth(1, { kind: "bearer", token: "next" }));
+    await handle(session, auth(1, { kind: "bearer", token: "next" }));
     await settle();
 
     expect(runtime.transitionCaptureBytes).toBe(0);
@@ -857,10 +901,10 @@ describe("Session Protocol-2 ownership", () => {
     const verifier = new FakeVerifier();
     verifier.results.set("user", principal("user"));
     const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
-    await session.handle(hello({ kind: "bearer", token: "user" }));
+    await handle(session, hello({ kind: "bearer", token: "user" }));
 
-    const authHandle = session.handle(auth(1, { kind: "anonymous" }));
-    const oldEpochQuery = session.handle(query(4));
+    const authHandle = handle(session, auth(1, { kind: "anonymous" }));
+    const oldEpochQuery = handle(session, query(4));
     await Promise.all([authHandle, oldEpochQuery]);
     await settle();
 
@@ -892,9 +936,9 @@ describe("Session Protocol-2 ownership", () => {
     const failure = deferred<VerifiedPrincipal>();
     verifier.results.set("invalid", failure.promise);
     const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
-    await session.handle(hello({ kind: "bearer", token: "valid" }));
+    await handle(session, hello({ kind: "bearer", token: "valid" }));
 
-    await session.handle(auth(1, { kind: "bearer", token: "invalid" }));
+    await handle(session, auth(1, { kind: "bearer", token: "invalid" }));
     failure.reject(new DbzzError("unauthenticated", "invalid credential"));
     await settle();
 
@@ -915,7 +959,7 @@ describe("Session Protocol-2 ownership", () => {
     const verifier = new FakeVerifier();
     verifier.results.set("short", principal("short", 1_100));
     const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock });
-    await session.handle(hello({ kind: "bearer", token: "short" }));
+    await handle(session, hello({ kind: "bearer", token: "short" }));
 
     await clock.advance(99);
     expect(session.snapshot().phase).toBe("active");
@@ -994,7 +1038,7 @@ describe("Session Protocol-2 ownership", () => {
       clock,
       revocationDeadlineMs: 5_000,
     });
-    await session.handle(hello({ kind: "bearer", token: "valid" }));
+    await handle(session, hello({ kind: "bearer", token: "valid" }));
 
     verifier.emit({ issuer: "https://issuer.example/", subject: "someone-else" });
     expect(session.snapshot().phase).toBe("active");
@@ -1015,8 +1059,8 @@ describe("Session Protocol-2 ownership", () => {
     };
     const sink = new FakeSink();
     const session = new Session({ runtime, sink, source: TEST_SOURCE });
-    await session.handle(hello());
-    await session.handle(query(7));
+    await handle(session, hello());
+    await handle(session, query(7));
     await settle();
 
     const error = messagesOfType(

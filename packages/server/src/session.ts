@@ -158,17 +158,29 @@ export interface RuntimeMutationResult {
   readonly receipt: MutationReceipt;
 }
 
+/** One decoded transport frame paired with its exact received UTF-8 byte count. */
+export interface ReceivedFrame {
+  readonly frame: unknown;
+  readonly bytes: number;
+}
+
+/** One validated operation paired with the byte count owned by its transport. */
+export interface RuntimeRequest<Message> {
+  readonly message: Message;
+  readonly bytes: number;
+}
+
 /** Transport-independent adapter implemented by the database runtime. */
 export interface RuntimePort {
   openSession(context: SessionRuntimeContext): Promise<void>;
   transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch>;
-  subscribe(context: SessionRuntimeContext, message: SubscribeMessage): Promise<void>;
-  unsubscribe(context: SessionRuntimeContext, message: UnsubscribeMessage): Promise<void>;
-  reset(context: SessionRuntimeContext, message: ResetRequestMessage): Promise<void>;
+  subscribe(context: SessionRuntimeContext, request: RuntimeRequest<SubscribeMessage>): Promise<void>;
+  unsubscribe(context: SessionRuntimeContext, request: RuntimeRequest<UnsubscribeMessage>): Promise<void>;
+  reset(context: SessionRuntimeContext, request: RuntimeRequest<ResetRequestMessage>): Promise<void>;
   /** Publishes the success or error frame before settling. */
-  query(context: SessionRuntimeContext, message: QueryMessage): Promise<unknown>;
+  query(context: SessionRuntimeContext, request: RuntimeRequest<QueryMessage>): Promise<unknown>;
   /** Publishes the success or error frame before settling. */
-  mutation(context: SessionRuntimeContext, message: MutationMessage): Promise<RuntimeMutationResult>;
+  mutation(context: SessionRuntimeContext, request: RuntimeRequest<MutationMessage>): Promise<RuntimeMutationResult>;
   closeSession(context: SessionRuntimeContext, outcome: Outcome): Promise<void>;
 }
 
@@ -210,7 +222,6 @@ export function withSessionAuthObserver<T extends SessionOptions>(
 }
 
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
-const utf8 = new TextEncoder();
 
 const SYSTEM_CLOCK: SessionClock = Object.freeze({
   now: Date.now,
@@ -252,10 +263,6 @@ function positiveInteger(value: number, name: string): number {
     throw new RangeError(`${name} must be a positive safe integer`);
   }
   return value;
-}
-
-function frameBytes(frame: unknown): number {
-  return utf8.encode(encode(frame)).byteLength;
 }
 
 export class Session {
@@ -326,13 +333,11 @@ export class Session {
     });
   }
 
-  /** Accepts one decoded or undecoded Protocol-2 frame and serializes dispatch. */
-  handle(frame: unknown): Promise<void> {
-    let bytes: number;
-    try {
-      bytes = frameBytes(frame);
-    } catch (cause) {
-      return this.rejectFrame(new DbzzError("malformed", "frame is not wire-representable", { cause }));
+  /** Accepts one decoded Protocol-2 frame with transport-owned byte accounting. */
+  handle(received: ReceivedFrame): Promise<void> {
+    const { bytes } = received;
+    if (!Number.isSafeInteger(bytes) || bytes < 0) {
+      return this.rejectFrame(new DbzzError("malformed", "client frame byte count is invalid"));
     }
     if (bytes > this.maxFrameBytes) {
       return this.rejectFrame(new DbzzError("overloaded", "client frame exceeds maxFrameBytes", {
@@ -347,7 +352,7 @@ export class Session {
       }));
     }
 
-    const result = this.ingress.submit(() => this.dispatchFrame(frame), {
+    const result = this.ingress.submit(() => this.dispatchFrame(received), {
       operation: "lifecycle",
       bytes,
     });
@@ -395,11 +400,11 @@ export class Session {
     return this.terminate(error);
   }
 
-  private async dispatchFrame(frame: unknown): Promise<void> {
+  private async dispatchFrame(received: ReceivedFrame): Promise<void> {
     if (this.phase === "closed") return;
     let message: ClientMessage;
     try {
-      message = parseClientMessage(frame);
+      message = parseClientMessage(received.frame);
     } catch (error) {
       void this.terminate(error instanceof ProtocolError ? protocolError(error) : internalError(error));
       return;
@@ -434,7 +439,7 @@ export class Session {
           await this.sendControlError(message.id, authStale());
           return;
         }
-        await this.runOperation(message);
+        await this.runOperation({ message, bytes: received.bytes });
         return;
     }
   }
@@ -637,8 +642,11 @@ export class Session {
   }
 
   private async runOperation(
-    message: SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage,
+    request: RuntimeRequest<
+      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage
+    >,
   ): Promise<void> {
+    const { message } = request;
     if (this.principal === null || this.clientSessionId === null) {
       void this.terminate(internalError(new Error("operation started before hello")));
       return;
@@ -649,20 +657,20 @@ export class Session {
     try {
       switch (message.t) {
         case "sub":
-          await this.runtime.subscribe(context, message);
+          await this.runtime.subscribe(context, request as RuntimeRequest<SubscribeMessage>);
           return;
         case "unsub":
-          await this.runtime.unsubscribe(context, message);
+          await this.runtime.unsubscribe(context, request as RuntimeRequest<UnsubscribeMessage>);
           return;
         case "reset":
-          await this.runtime.reset(context, message);
+          await this.runtime.reset(context, request as RuntimeRequest<ResetRequestMessage>);
           return;
         case "q": {
-          await this.runtime.query(context, message);
+          await this.runtime.query(context, request as RuntimeRequest<QueryMessage>);
           return;
         }
         case "m": {
-          await this.runtime.mutation(context, message);
+          await this.runtime.mutation(context, request as RuntimeRequest<MutationMessage>);
           return;
         }
       }
