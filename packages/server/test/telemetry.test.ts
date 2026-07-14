@@ -8,6 +8,7 @@ import {
   RELEASE_DELIVERY_LEASE,
   Telemetry,
   type PreparedTelemetryTraceContext,
+  type TelemetryAggregateSnapshot,
   type TelemetryExporter,
   type TelemetryRecord,
   type TelemetryScheduler,
@@ -87,14 +88,18 @@ async function deliverNextLocalLine(scheduler: ManualScheduler): Promise<void> {
 
 function exporterBatches(): {
   readonly batches: TelemetryRecord[][];
+  readonly aggregates: TelemetryAggregateSnapshot[];
   readonly exporter: TelemetryExporter;
 } {
   const batches: TelemetryRecord[][] = [];
+  const aggregates: TelemetryAggregateSnapshot[] = [];
   return {
     batches,
+    aggregates,
     exporter: {
-      export(records) {
+      export(records, aggregate) {
         batches.push([...records]);
+        if (aggregate !== undefined) aggregates.push(aggregate);
       },
     },
   };
@@ -198,6 +203,9 @@ describe("Telemetry", () => {
         timeouts: 0,
         exportedRecords: 0,
         failedRecords: 0,
+        aggregateSnapshotPending: false,
+        exportedAggregateSnapshots: 0,
+        failedAggregateSnapshots: 0,
       },
     });
     expect(telemetry.aggregateSnapshot()).toBe(telemetry.aggregateSnapshot());
@@ -668,6 +676,139 @@ describe("Telemetry", () => {
     expect(scheduler.intervals.size).toBe(0);
   });
 
+  test("exports changed cumulative aggregates even when fast success retains no record", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, aggregates, exporter } = exporterBatches();
+    const telemetry = new Telemetry({ exporter, scheduler, localSink: false, now: () => 0 });
+
+    expect(telemetry.recordSpan({
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "todos.list",
+      durationMs: 1,
+    })).toBe(true);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      exporter: { aggregateSnapshotPending: true, exportedAggregateSnapshots: 0 },
+    });
+
+    await telemetry.flush();
+    expect(batches).toEqual([[]]);
+    expect(aggregates).toEqual([telemetry.aggregateSnapshot()]);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      exporter: {
+        attempts: 1,
+        aggregateSnapshotPending: false,
+        exportedAggregateSnapshots: 1,
+        failedAggregateSnapshots: 0,
+      },
+    });
+
+    await telemetry.flush();
+    expect(batches).toHaveLength(1);
+    telemetry.stop();
+  });
+
+  test("preserves aggregate updates recorded while an asynchronous export is in flight", async () => {
+    const scheduler = new ManualScheduler();
+    const snapshots: TelemetryAggregateSnapshot[] = [];
+    let release!: () => void;
+    const telemetry = new Telemetry({
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      exporter: {
+        export(_records, aggregates) {
+          if (aggregates !== undefined) snapshots.push(aggregates);
+          if (snapshots.length === 1) return new Promise<void>((resolve) => void (release = resolve));
+        },
+      },
+    });
+    telemetry.recordSpan({ operation: "query", stage: "handler", outcome: "ok", durationMs: 1 });
+
+    const first = telemetry.flush();
+    telemetry.recordSpan({ operation: "query", stage: "handler", outcome: "ok", durationMs: 2 });
+    expect(telemetry.snapshot().exporter).toMatchObject({
+      inFlight: true,
+      aggregateSnapshotPending: true,
+    });
+    release();
+    await first;
+    expect(telemetry.snapshot().exporter).toMatchObject({
+      inFlight: false,
+      aggregateSnapshotPending: true,
+      exportedAggregateSnapshots: 1,
+    });
+
+    await telemetry.flush();
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[0]!.series[0]).toMatchObject({ count: 1, durationMs: 1 });
+    expect(snapshots[1]!.series[0]).toMatchObject({ count: 2, durationMs: 3 });
+    expect(telemetry.snapshot().exporter).toMatchObject({
+      aggregateSnapshotPending: false,
+      exportedAggregateSnapshots: 2,
+      failedAggregateSnapshots: 0,
+    });
+    telemetry.stop();
+  });
+
+  test("retries a failed aggregate export from the latest cumulative snapshot", async () => {
+    const scheduler = new ManualScheduler();
+    const snapshots: TelemetryAggregateSnapshot[] = [];
+    let calls = 0;
+    const telemetry = new Telemetry({
+      scheduler,
+      localSink: false,
+      now: () => 10,
+      exporter: {
+        export(_records, aggregates) {
+          calls++;
+          if (aggregates !== undefined) snapshots.push(aggregates);
+          if (calls === 1) throw new Error("aggregate export failed");
+        },
+      },
+    });
+    telemetry.recordSpan({ operation: "query", stage: "handler", outcome: "ok", durationMs: 1 });
+
+    await telemetry.flush();
+    expect(telemetry.snapshot().exporter).toMatchObject({
+      aggregateSnapshotPending: true,
+      exportedAggregateSnapshots: 0,
+      failedAggregateSnapshots: 1,
+    });
+    telemetry.recordSpan({ operation: "query", stage: "handler", outcome: "ok", durationMs: 2 });
+    await telemetry.flush();
+
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[1]!.series[0]).toMatchObject({ count: 2, durationMs: 3 });
+    expect(telemetry.snapshot().exporter).toMatchObject({
+      aggregateSnapshotPending: false,
+      exportedAggregateSnapshots: 1,
+      failedAggregateSnapshots: 1,
+    });
+    telemetry.stop();
+  });
+
+  test("drains a changed aggregate when no retained exporter records exist", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, aggregates, exporter } = exporterBatches();
+    const telemetry = new Telemetry({ exporter, scheduler, localSink: false, now: () => 0 });
+    telemetry.recordSpan({ operation: "query", stage: "handler", outcome: "ok", durationMs: 1 });
+
+    await telemetry.drain(1_000);
+
+    expect(batches).toEqual([[]]);
+    expect(aggregates).toEqual([telemetry.aggregateSnapshot()]);
+    expect(telemetry.snapshot().exporter).toMatchObject({
+      inFlight: false,
+      aggregateSnapshotPending: false,
+      exportedAggregateSnapshots: 1,
+      failedAggregateSnapshots: 0,
+    });
+  });
+
   test("exports retained records even when the clock later fails", async () => {
     const scheduler = new ManualScheduler();
     const { batches, exporter } = exporterBatches();
@@ -850,6 +991,7 @@ describe("Telemetry", () => {
       },
     });
     telemetry.recordEvent({ name: "lifecycle", level: "info", lifecycleState: "ready" });
+    telemetry.recordSpan({ operation: "query", stage: "handler", outcome: "ok", durationMs: 1 });
 
     const flushing = telemetry.flush();
     expect([...scheduler.timeouts.values()].filter(({ delayMs }) => delayMs === 5)).toHaveLength(1);
@@ -865,6 +1007,9 @@ describe("Telemetry", () => {
         failures: 1,
         timeouts: 1,
         failedRecords: 1,
+        aggregateSnapshotPending: true,
+        exportedAggregateSnapshots: 0,
+        failedAggregateSnapshots: 1,
         lastFailureAtMs: 25,
       },
     });
@@ -1141,11 +1286,13 @@ describe("Telemetry", () => {
     });
   });
 
-  test("keeps high-population identities out of bounded metric and aggregate series", () => {
+  test("keeps high-population identities out of bounded exported aggregate series", async () => {
     const maxMetricSeries = 4;
     const population = 10_000;
     const privatePrefix = "private_population_";
+    const { aggregates, exporter } = exporterBatches();
     const telemetry = new Telemetry({
+      exporter,
       localSink: false,
       now: () => 0,
       limits: {
@@ -1239,7 +1386,9 @@ describe("Telemetry", () => {
     });
     expect(cappedAggregate.series).toHaveLength(maxMetricSeries);
     expect(cappedAggregate.series.at(-1)).toMatchObject({ overflow: true, count: 1 });
-    const serialized = JSON.stringify(cappedAggregate);
+    await telemetry.flush();
+    expect(aggregates).toEqual([cappedAggregate]);
+    const serialized = JSON.stringify(aggregates[0]);
     expect(serialized).not.toContain(privatePrefix);
     expect(serialized).not.toMatch(/user|principal|args|requestId|connectionId|subscriptionId/);
     telemetry.stop();
@@ -1434,7 +1583,7 @@ describe("Telemetry", () => {
 
   test("keeps a fast completed trace aggregate-only until its bounded decision expires", async () => {
     const scheduler = new ManualScheduler();
-    const { batches, exporter } = exporterBatches();
+    const { batches, aggregates, exporter } = exporterBatches();
     let now = 0;
     const telemetry = new Telemetry({
       exporter,
@@ -1474,7 +1623,8 @@ describe("Telemetry", () => {
       durationMs: 30,
     });
     await telemetry.flush();
-    expect(batches).toEqual([]);
+    expect(batches).toEqual([[]]);
+    expect(aggregates).toEqual([telemetry.aggregateSnapshot()]);
 
     now = 140;
     expect(telemetry.snapshot()).toMatchObject({

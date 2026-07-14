@@ -406,6 +406,9 @@ function assertExporterUnconfigured(snapshot: TelemetrySnapshot, label: string):
     exporter.timeouts !== 0 ||
     exporter.exportedRecords !== 0 ||
     exporter.failedRecords !== 0 ||
+    exporter.aggregateSnapshotPending ||
+    exporter.exportedAggregateSnapshots !== 0 ||
+    exporter.failedAggregateSnapshots !== 0 ||
     exporter.lastSuccessAtMs !== undefined ||
     exporter.lastFailureAtMs !== undefined ||
     exporter.lastDurationMs !== undefined
@@ -418,9 +421,14 @@ function assertExporterConfigured(snapshot: TelemetrySnapshot, label: string, dr
   const exporter = snapshot.exporter;
   const attempts = safeCount(exporter.attempts, `${label}.attempts`);
   const exportedRecords = safeCount(exporter.exportedRecords, `${label}.exportedRecords`);
+  const exportedAggregateSnapshots = safeCount(
+    exporter.exportedAggregateSnapshots,
+    `${label}.exportedAggregateSnapshots`,
+  );
   safeCount(exporter.failures, `${label}.failures`);
   safeCount(exporter.timeouts, `${label}.timeouts`);
   safeCount(exporter.failedRecords, `${label}.failedRecords`);
+  safeCount(exporter.failedAggregateSnapshots, `${label}.failedAggregateSnapshots`);
   if (exporter.lastSuccessAtMs !== undefined) {
     finiteNonNegative(exporter.lastSuccessAtMs, `${label}.lastSuccessAtMs`);
   }
@@ -432,11 +440,15 @@ function assertExporterConfigured(snapshot: TelemetrySnapshot, label: string, dr
     exporter.failures !== 0 ||
     exporter.timeouts !== 0 ||
     exporter.failedRecords !== 0 ||
+    exporter.failedAggregateSnapshots !== 0 ||
+    typeof exporter.aggregateSnapshotPending !== "boolean" ||
     exporter.lastFailureAtMs !== undefined ||
     (drained && (
       exporter.inFlight ||
+      exporter.aggregateSnapshotPending ||
       attempts === 0 ||
       exportedRecords === 0 ||
+      exportedAggregateSnapshots === 0 ||
       exporter.lastSuccessAtMs === undefined ||
       exporter.lastDurationMs === undefined
     ))

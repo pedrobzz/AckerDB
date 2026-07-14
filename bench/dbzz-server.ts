@@ -8,7 +8,9 @@ import {
   serve,
   type DbzzServer,
   type EngineCloseDisposition,
+  type TelemetryAggregateSnapshot,
   type TelemetryExporter,
+  type TelemetryRecord,
 } from "@dbzz/server";
 import { importFunctionModules, importSchema } from "../packages/cli/src/app.ts";
 import { loadConfig } from "../packages/cli/src/config.ts";
@@ -18,8 +20,14 @@ import {
 } from "./dbzz-profile.ts";
 import { createDbzzTelemetryReport } from "./dbzz-telemetry.ts";
 
+let exportedAggregateSnapshot: TelemetryAggregateSnapshot | undefined;
 const BENCHMARK_EXPORTER: TelemetryExporter = Object.freeze({
-  export() {},
+  export(
+    _records: readonly TelemetryRecord[],
+    aggregates?: TelemetryAggregateSnapshot,
+  ) {
+    if (aggregates !== undefined) exportedAggregateSnapshot = aggregates;
+  },
 });
 
 const appDir = process.argv[2];
@@ -94,11 +102,18 @@ try {
   drainFailed = true;
   drainError = error;
 }
+const aggregateSnapshot = runtime.telemetry.aggregateSnapshot();
+if (
+  profile === "exporter" &&
+  JSON.stringify(exportedAggregateSnapshot) !== JSON.stringify(aggregateSnapshot)
+) {
+  throw new Error("benchmark exporter did not receive the terminal cumulative aggregate snapshot");
+}
 const report = createDbzzTelemetryReport(
   startupMode,
   beforeDrain,
   runtime.status().telemetry,
-  runtime.telemetry.aggregateSnapshot(),
+  aggregateSnapshot,
 );
 try {
   await Bun.write(reportPath, `${JSON.stringify(report, null, 2)}\n`);

@@ -576,7 +576,10 @@ describe("health and protected status", () => {
       connections: 0,
       httpIngress: 1,
       outboundBytes: 0,
-      runtime: { state: "ready" },
+      runtime: {
+        state: "ready",
+        telemetryAggregates: { maxSeries: 0, overflowedRecords: 0, series: [] },
+      },
     });
     expect(verifier.verified).toEqual(["user-token", "workload-alias-token", "workload-token"]);
   });

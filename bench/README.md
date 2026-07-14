@@ -49,7 +49,9 @@ selection, and the exact production telemetry limits. Every DBZZ leg also
 requires a terminal telemetry report that proves delivered local span/event
 output, collected metric series, fixed-dimension operation/stage aggregates,
 configured queue and trace-retention bounds, the exact absent or healthy
-exporter state, and empty queues, in-flight work, and trace state after drain. The
+exporter state, a positive cumulative aggregate snapshot delivered to the
+benchmark exporter, and empty queues, false aggregate-pending state, no
+in-flight work, and empty trace state after drain. The
 required aggregate cells follow the actual execution paths: `query.queue`,
 `mutation.queue`, `procedure.admission`, and `subscription.queue`; their counts
 and operation totals must cover the executed workload. The status table publishes
@@ -65,9 +67,11 @@ terminal drain and that bounded queue may also overflow under load. The report
 checks those visible drain/overflow/expiry counters account for the retained
 queue instead of pretending default drops are zero. The explicit exporter leg
 must instead export every drained batch with zero failures/timeouts and balanced
-queue accounting. The local sink must deliver output without failure or
-timeout in both enabled legs. The three profile positions rotate between saved
-runs and are preserved in `executionOrder`.
+queue accounting. It must also agree with the terminal Runtime aggregate
+snapshot and report zero failed or pending aggregate snapshots. The local sink
+must deliver output without failure or timeout in both enabled legs. The three
+profile positions rotate between saved runs and are preserved in
+`executionOrder`.
 
 ## Save-blocking schema-v5 performance gate
 

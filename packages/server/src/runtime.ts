@@ -103,6 +103,7 @@ import {
   RECORD_PREPARED_SPAN,
   RELEASE_DELIVERY_LEASE,
   Telemetry,
+  type TelemetryAggregateSnapshot,
   type PreparedTelemetrySpanInput,
   type PreparedTelemetryTraceContext,
   type TelemetryOperation,
@@ -199,6 +200,7 @@ export interface RuntimeStatus {
   readonly authCaptureBudget: ReturnType<OutboundBudget["snapshot"]>;
   readonly sseBudget: ReturnType<OutboundBudget["snapshot"]>;
   readonly telemetry: TelemetrySnapshot;
+  readonly telemetryAggregates: TelemetryAggregateSnapshot;
   readonly storage: ReturnType<Engine["status"]>;
 }
 
@@ -1281,6 +1283,7 @@ export class Runtime implements RuntimePort {
       authCaptureBudget: this.authCaptureBudget.snapshot(),
       sseBudget: this.sseBudget.snapshot(),
       telemetry: this.telemetry.snapshot(),
+      telemetryAggregates: this.telemetry.aggregateSnapshot(),
       storage: this.engine.status(),
     });
   }

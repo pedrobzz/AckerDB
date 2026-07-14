@@ -125,6 +125,9 @@ describe("dbzz benchmark telemetry report", () => {
       timeouts: 0,
       exportedRecords: 0,
       failedRecords: 0,
+      aggregateSnapshotPending: false,
+      exportedAggregateSnapshots: 0,
+      failedAggregateSnapshots: 0,
     });
     expect(report.localOutput.byKind).toEqual({ span: 4, event: 1, metric: 0 });
     expect(report.runtime.afterDrain.localSink.deliveredRecords).toBe(5);
@@ -160,8 +163,11 @@ describe("dbzz benchmark telemetry report", () => {
       timeouts: 0,
       exportedRecords: 6,
       failedRecords: 0,
+      aggregateSnapshotPending: false,
+      failedAggregateSnapshots: 0,
     });
     expect(report.runtime.afterDrain.exporter.attempts).toBeGreaterThanOrEqual(1);
+    expect(report.runtime.afterDrain.exporter.exportedAggregateSnapshots).toBeGreaterThan(0);
     expect(report.drainAccounting).toEqual({
       retainedBeforeDrain: 6,
       exportedDuringDrain: 6,
@@ -179,6 +185,9 @@ describe("dbzz benchmark telemetry report", () => {
     const invalid = [
       [["runtime", "afterDrain", "exporter", "configured"], false],
       [["runtime", "afterDrain", "exporter", "failures"], 1],
+      [["runtime", "afterDrain", "exporter", "aggregateSnapshotPending"], true],
+      [["runtime", "afterDrain", "exporter", "exportedAggregateSnapshots"], 0],
+      [["runtime", "afterDrain", "exporter", "failedAggregateSnapshots"], 1],
       [["runtime", "afterDrain", "dropped", "overflow"], 1],
     ] as const;
     for (const [path, value] of invalid) {

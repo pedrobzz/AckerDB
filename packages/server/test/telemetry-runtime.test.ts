@@ -29,6 +29,7 @@ import {
   type RuntimeRequest,
   type SessionApplicationMessage,
   type SessionRuntimeContext,
+  type TelemetryAggregateSnapshot,
   type TelemetryEventRecord,
   type TelemetryExporter,
   type TelemetryMetricRecord,
@@ -527,9 +528,15 @@ describe("Runtime telemetry acceptance", () => {
 
   test("closes whole-operation tail decisions after final response work", async () => {
     const exported: TelemetryRecord[] = [];
+    const exportedAggregates: TelemetryAggregateSnapshot[] = [];
     const app = harness({
       enabled: true,
-      exporter: { export: (batch) => void exported.push(...batch) },
+      exporter: {
+        export(batch, aggregates) {
+          exported.push(...batch);
+          if (aggregates !== undefined) exportedAggregates.push(aggregates);
+        },
+      },
       localSink: false,
       limits: { ...telemetryLimits, slowOperationMs: 10_000 },
     });
@@ -557,6 +564,7 @@ describe("Runtime telemetry acceptance", () => {
       },
     });
     await app.runtime.telemetry.flush();
+    expect(exportedAggregates).toEqual([app.runtime.status().telemetryAggregates]);
     const retained = spans(exported);
     expect(retained.some((span) => span.requestId === "740000001")).toBe(false);
     const failed = retained.filter((span) => span.requestId === "740000002");
@@ -1438,11 +1446,13 @@ describe("Runtime telemetry acceptance", () => {
 
   test("disabled telemetry produces no exported records", async () => {
     const exported: TelemetryRecord[] = [];
+    const exportedAggregates: TelemetryAggregateSnapshot[] = [];
     const app = harness({
       enabled: false,
       exporter: {
-        export(batch) {
+        export(batch, aggregates) {
           exported.push(...batch);
+          if (aggregates !== undefined) exportedAggregates.push(aggregates);
         },
       },
       localSink: false,
@@ -1457,6 +1467,12 @@ describe("Runtime telemetry acceptance", () => {
     }))).toEqual([]);
     await app.runtime.telemetry.flush();
     expect(exported).toEqual([]);
+    expect(exportedAggregates).toEqual([]);
+    expect(app.runtime.status().telemetryAggregates).toEqual({
+      maxSeries: 0,
+      overflowedRecords: 0,
+      series: [],
+    });
     expect(app.runtime.telemetry.snapshot()).toMatchObject({
       enabled: false,
       queuedRecords: 0,

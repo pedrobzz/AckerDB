@@ -50,12 +50,16 @@ switch, not numeric telemetry tuning.
 The default local sink is `console.log`. Telemetry enqueues every valid event
 and every retained diagnostic span as a safe schema-v1 JSON line, subject to
 the bounded local queue and its drop accounting. With a positive threshold,
-fast successful operation spans update aggregates immediately but are printed
-or exported only if their tracked trace is later promoted. Metrics are
+fast successful operation spans update aggregates immediately, but their
+individual diagnostic records are printed or exported only if their tracked
+trace is later promoted. Changed cumulative aggregates remain externally
+visible through protected status and configured exporters. Metrics are
 retained/exportable but not printed.
 `localSink: false` suppresses local lines. No remote exporter is installed by
 the CLI, so production export requires a programmatic `TelemetryExporter`
 whose `export(records)` method may target the backend of the operator's choice.
+The callback also receives a second optional cumulative aggregate snapshot when
+the bounded aggregate state changed: `export(records, aggregates?)`.
 
 ## Default bounds
 
@@ -139,12 +143,19 @@ counts their staged diagnostics. These trace-retention counters are separate
 from the top-level retained/export `dropped` counters and
 `localSink.dropped`.
 
-Exporter calls receive at most `maxBatchRecords`, have a finite timeout, and do
-not run on the database commit or client-delivery path. Synchronous throws,
-rejected promises, timeout scheduling failure, and stalled exporters are
-contained and reflected in exporter health/drop counters; failed batches are
-not retried. Local output is also deferred and bounded by the same record, byte,
-and retention-age limits. `Telemetry.drain(deadlineAtMs)` stops periodic and
+Exporter calls receive at most `maxBatchRecords` plus the latest bounded
+cumulative aggregate snapshot only when it changed. Calls have a finite timeout
+and do not run on the database commit or client-delivery path. Synchronous
+throws, rejected promises, timeout scheduling failure, and stalled exporters
+are contained and reflected in exporter health/drop counters. Failed retained
+record batches are not retried; a failed aggregate snapshot remains pending and
+the next export sends the latest cumulative snapshot, so updates cannot be lost
+or double-counted by an ambiguous delta. `aggregateSnapshotPending` remains
+true while the current cumulative state still needs a confirmed export, while
+`exportedAggregateSnapshots` and
+`failedAggregateSnapshots` are cumulative attempt outcomes. Local output is also
+deferred and bounded by the same record, byte, and retention-age limits.
+`Telemetry.drain(deadlineAtMs)` stops periodic and
 deferred work, releases every active/completed trace decision without
 force-promoting unpromoted staging, and works through the already retained
 records in bounded batches and local lines captured at drain start. One
@@ -287,7 +298,9 @@ operation/stage/outcome/function/resource dimensions. Every valid span updates
 aggregates before tail retention is applied; a fast successful span below
 `slowOperationMs` remains aggregate-only unless its trace is later promoted.
 Excess aggregate keys fold into an explicit overflow series rather than growing
-without bound.
+without bound. `Runtime.status().telemetryAggregates` exposes this same snapshot
+through protected `/status`, so default CLI operators do not need application
+code to observe aggregate-only work.
 
 ## Automatic runtime signals
 
@@ -429,12 +442,13 @@ remains stable for that process. `runtime.telemetry_drops` sums the top-level
 record/export drop categories; local-sink and trace-retention drops remain
 separately visible in the telemetry snapshot.
 
-Protected `/status` includes `Telemetry.snapshot()`: enabled state, queued
+Protected `/status` includes `Telemetry.snapshot()` and the sibling
+`runtime.telemetryAggregates` cumulative snapshot: enabled state, queued
 records/bytes/age, metric-series count, nested trace-retention and local-sink
 health, top-level drop totals, and exporter
-configuration/in-flight/attempt/failure/timeout/delivery timestamps. It does
-not contain queued or staged record payloads. In-process callers can also
-inspect `aggregateSnapshot()`.
+configuration/in-flight/attempt/failure/timeout/delivery timestamps, including
+pending/exported/failed aggregate snapshots. It does not contain queued or
+staged record payloads.
 
 ## Current telemetry limitations
 
