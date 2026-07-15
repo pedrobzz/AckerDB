@@ -4,6 +4,10 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import type { DurabilityPolicy } from "@dbzz/core";
+import type { OidcVerifierOptions } from "@dbzz/server";
+
+export type TelemetryMode = "enabled" | "disabled";
 
 export interface AppConfig {
   appDir: string;
@@ -16,6 +20,12 @@ export interface AppConfig {
   /** Where the local database lives. */
   dbDir: string;
   port: number;
+  durability: DurabilityPolicy;
+  telemetry: TelemetryMode;
+  /** Optional external identity providers. Bearer credentials fail closed when omitted. */
+  oidc?: Omit<OidcVerifierOptions, "fetch">;
+  /** Workload-principal OAuth scope required by the operational status endpoint. */
+  statusScope: string;
 }
 
 interface RawConfig {
@@ -24,9 +34,45 @@ interface RawConfig {
   generated?: string;
   db?: string;
   port?: number;
+  oidc?: Omit<OidcVerifierOptions, "fetch">;
+  statusScope?: string;
 }
 
-export function loadConfig(appDir: string): AppConfig {
+const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
+
+function statusScope(value: unknown): string {
+  const scope = value ?? "dbzz:status";
+  if (typeof scope !== "string" || !OAUTH_SCOPE_TOKEN.test(scope)) {
+    throw new Error("statusScope must be one OAuth scope token of at most 128 characters");
+  }
+  return scope;
+}
+
+function listenerPort(value: unknown): number {
+  const port = value ?? 3211;
+  if (typeof port !== "number" || !Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error("port must be an integer from 1 through 65535");
+  }
+  return port;
+}
+
+function exactProfile<const T extends string>(
+  env: Readonly<Record<string, string | undefined>>,
+  name: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const value = env[name] ?? fallback;
+  if (!allowed.includes(value as T)) {
+    throw new Error(`${name} must be exactly ${allowed.join(" or ")}; received ${JSON.stringify(value)}`);
+  }
+  return value as T;
+}
+
+export function loadConfig(
+  appDir: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): AppConfig {
   const dir = resolve(appDir);
   const configPath = join(dir, ".zdb.config.json");
   let raw: RawConfig = {};
@@ -40,6 +86,10 @@ export function loadConfig(appDir: string): AppConfig {
     functionsDir: abs(raw.functions ?? "./functions"),
     generatedDir: abs(raw.generated ?? "./_generated"),
     dbDir: abs(raw.db ?? "./.zdb"),
-    port: raw.port ?? 3211,
+    port: listenerPort(raw.port),
+    durability: exactProfile(env, "DBZZ_DURABILITY", ["production", "balanced"], "production"),
+    telemetry: exactProfile(env, "DBZZ_TELEMETRY", ["enabled", "disabled"], "enabled"),
+    ...(raw.oidc === undefined ? {} : { oidc: raw.oidc }),
+    statusScope: statusScope(raw.statusScope),
   };
 }

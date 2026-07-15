@@ -9,7 +9,7 @@ import type { Schema, ScheduledHandler } from "./schema.ts";
 
 export class Registry {
   readonly functions = new Map<string, AnyRegistered>();
-  private readonly addressByObject = new Map<object, string>();
+  private readonly addressByObject = new Map<AnyRegistered, string>();
 
   /** `modules` is keyed by dot path: functions/messages.ts -> "messages". */
   constructor(modules: Record<string, Record<string, unknown>>) {
@@ -25,6 +25,12 @@ export class Registry {
         if (this.functions.has(address)) {
           throw new Error(`duplicate function address "${address}"`);
         }
+        const existingAddress = this.addressByObject.get(value);
+        if (existingAddress !== undefined) {
+          throw new Error(
+            `registered function is exported at both "${existingAddress}" and "${address}"`,
+          );
+        }
         this.functions.set(address, value);
         this.addressByObject.set(value, address);
       }
@@ -39,13 +45,17 @@ export class Registry {
     return this.functions.get(address)?.kind;
   }
 
+  addressOf(fn: AnyRegistered): string | undefined {
+    return this.addressByObject.get(fn);
+  }
+
   /** Resolve a .scheduled(...) handler (string | ref | registered fn) to an address. */
   resolveHandler(handler: ScheduledHandler, where: string): string {
     let address: string;
     if (typeof handler === "string") {
       address = handler;
     } else if (isRegisteredFunction(handler)) {
-      const found = this.addressByObject.get(handler);
+      const found = this.addressOf(handler);
       if (found === undefined) {
         throw new Error(`${where}: scheduled handler is not exported from any function module`);
       }
@@ -57,8 +67,8 @@ export class Registry {
     if (kind === undefined) {
       throw new Error(`${where}: scheduled handler "${address}" does not exist`);
     }
-    if (kind !== "mutation" && kind !== "procedure") {
-      throw new Error(`${where}: scheduled handler "${address}" must be a mutation or procedure, got ${kind}`);
+    if (kind !== "mutation") {
+      throw new Error(`${where}: scheduled handler "${address}" must be a mutation, got ${kind}`);
     }
     return address;
   }

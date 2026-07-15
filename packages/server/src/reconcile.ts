@@ -310,6 +310,7 @@ export function reconcile(engine: Engine): { applied: string[] } {
 
   writer.exec("BEGIN IMMEDIATE");
   try {
+    engine.persistTags();
     for (const op of ops) op();
     engine.saveSnapshot(target);
     writer.exec("COMMIT");

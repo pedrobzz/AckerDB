@@ -1,7 +1,10 @@
 {
   "name": "@dbzz/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
+  "files": [
+    "src"
+  ],
   "bin": {
     "dbz": "./src/main.ts"
   },
@@ -9,7 +12,7 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:*",
-    "@dbzz/server": "workspace:*"
+    "@dbzz/core": "workspace:0.1.1",
+    "@dbzz/server": "workspace:0.1.1"
   }
 }

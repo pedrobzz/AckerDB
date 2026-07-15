@@ -1,0 +1,44 @@
+{
+  "title": "Production safety and operational visibility",
+  "slug": "production-safety-operational-visibility",
+  "created_at": "2026-07-13T14:56:11+00:00",
+  "goal": "Implement pedrobzz/dbzz#1 as a proven single-node production-safety foundation without losing required benchmark wins",
+  "status": "verification",
+  "approval": {
+    "required": false,
+    "granted": true,
+    "notes": "Pedro explicitly requested local implementation, configured subagents, and atomic local commits; push, publishing, merging, external writes, and destructive user-data operations remain excluded."
+  },
+  "packets": {
+    "D1_architecture_map": "complete",
+    "D2_contract_research": "complete",
+    "D3_acceptance_test_map": "complete",
+    "B0_baseline": "complete",
+    "C1_shared_contracts": "complete",
+    "S1_server_foundation": "complete",
+    "C2_client_transports": "complete",
+    "T1_telemetry": "complete",
+    "Q1_behavior_fault_tests": "complete",
+    "P1_benchmark": "current_host_complete_schema_v5_acceptance_deferred",
+    "V1_verification": "blocked_by_untracked_frozen_baseline",
+    "G1_atomic_commits": "blocked_by_untracked_frozen_baseline"
+  },
+  "verification": {
+    "status": "blocked_by_untracked_frozen_baseline_and_deferred_acceptance",
+    "completed": [
+      "focused SSE and full process-resource suites",
+      "prior 488/488 canonical pass; latest broad run reached 487 plus one RSS stabilization timeout, whose isolated rerun passed",
+      "root and benchmark typechecks",
+      "41-test benchmark contract and acceptance-gate suite with 183 assertions",
+      "story-by-story independent PRD audits",
+      "wiki lint and workflow validation",
+      "252-second zero-swap current-host DBZZ/Convex/SpacetimeDB comparison",
+      "post-benchmark process/listener and remote worktree cleanup"
+    ],
+    "pending": [
+      "commit or redesign the required untracked frozen benchmark baseline",
+      "clean-checkout verification after the baseline is tracked",
+      "schema-v5 telemetry-cost and frozen performance acceptance explicitly deferred for the current Hetzner comparison"
+    ]
+  }
+}

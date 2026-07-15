@@ -1,0 +1,8 @@
+{
+  "name": "spacetime-bench",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "spacetimedb": "2.6.1"
+  }
+}

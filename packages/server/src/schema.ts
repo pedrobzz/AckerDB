@@ -8,10 +8,17 @@ import {
   ValidationError,
   type Descriptor,
   type Expand,
+  type InferShape,
   type InferValidator,
   type ObjectShape,
   type Validator,
 } from "./dbz.ts";
+import {
+  isAccessPolicy,
+  validateArgsShape,
+  type AccessPolicy,
+} from "./functions.ts";
+import type { InvocationContext } from "./invocation.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 
@@ -46,11 +53,29 @@ export interface IndexDef {
   readonly algorithm: "btree" | "direct";
 }
 
-/** A mutation or procedure to run when a scheduled row comes due. */
+/** A mutation to run atomically with deletion when a scheduled row comes due. */
 export type ScheduledHandler =
-  | FunctionReference<"mutation" | "procedure">
-  | RegisteredFunction<"mutation" | "procedure", unknown, unknown>
+  | FunctionReference<"mutation">
+  | RegisteredFunction<"mutation", unknown, unknown>
   | string;
+
+export interface EventSubscriptionDefinition<
+  Cols extends ObjectShape,
+  Args extends ObjectShape,
+> {
+  readonly args: Args;
+  readonly access: AccessPolicy<InvocationContext, Expand<InferShape<Args>>>;
+  readonly matches: (
+    row: Readonly<RowShape<Cols>>,
+    args: Readonly<Expand<InferShape<Args>>>,
+  ) => boolean;
+}
+
+interface RuntimeEventSubscriptionDefinition {
+  readonly args: ObjectShape;
+  readonly access: AccessPolicy<InvocationContext, unknown>;
+  readonly matches: (row: unknown, args: unknown) => boolean;
+}
 
 type IndexMeta = { columns: readonly string[]; unique: boolean };
 
@@ -59,15 +84,24 @@ export class TableDef<
   // eslint-disable-next-line @typescript-eslint/ban-types
   Ixs extends Record<string, IndexMeta> = {},
   Kind extends "table" | "event" = "table" | "event",
+  EventArgs extends ObjectShape = ObjectShape,
 > {
   readonly columns: Cols;
   readonly kind: Kind;
   readonly indexes: IndexDef[] = [];
   scheduledHandler: ScheduledHandler | null = null;
+  readonly eventSubscription: RuntimeEventSubscriptionDefinition | null;
+  /** Type-only carrier used by EventArgsOf. */
+  readonly _eventArgsType?: EventArgs;
 
-  constructor(columns: Cols, kind: Kind) {
+  constructor(
+    columns: Cols,
+    kind: Kind,
+    eventSubscription: EventSubscriptionDefinition<Cols, EventArgs> | null = null,
+  ) {
     this.columns = columns;
     this.kind = kind;
+    this.eventSubscription = eventSubscription as RuntimeEventSubscriptionDefinition | null;
     let pkCount = 0;
     let scheduleAtCount = 0;
     for (const [name, validator] of Object.entries(columns)) {
@@ -107,7 +141,12 @@ export class TableDef<
     name: N,
     columns: C,
     opts?: O,
-  ): TableDef<Cols, Ixs & Record<N, { columns: C; unique: O["unique"] extends true ? true : false }>, Kind> {
+  ): TableDef<
+    Cols,
+    Ixs & Record<N, { columns: C; unique: O["unique"] extends true ? true : false }>,
+    Kind,
+    EventArgs
+  > {
     checkName(name, "index");
     if (this.kind === "event") {
       throw new ValidationError(
@@ -152,7 +191,8 @@ export class TableDef<
     return this as unknown as TableDef<
       Cols,
       Ixs & Record<N, { columns: C; unique: O["unique"] extends true ? true : false }>,
-      Kind
+      Kind,
+      EventArgs
     >;
   }
 
@@ -177,10 +217,30 @@ export function defineTable<Cols extends ObjectShape>(
   return new TableDef(columns, "table");
 }
 
-export function defineEventTable<Cols extends ObjectShape>(
+export function defineEventTable<Cols extends ObjectShape, Args extends ObjectShape>(
   columns: Cols,
-): TableDef<Cols, Record<never, never>, "event"> {
-  return new TableDef(columns, "event");
+  subscription: EventSubscriptionDefinition<Cols, Args>,
+): TableDef<Cols, Record<never, never>, "event", Args> {
+  if (subscription === undefined || subscription === null || typeof subscription !== "object") {
+    throw new TypeError("event table subscription metadata is required");
+  }
+  if (!isAccessPolicy(subscription.access)) {
+    throw new TypeError(
+      "event subscription access must be public, authenticated, system, or a policy callback",
+    );
+  }
+  if (
+    typeof subscription.args !== "object" ||
+    subscription.args === null ||
+    Array.isArray(subscription.args)
+  ) {
+    throw new TypeError("event subscription args must be an object shape");
+  }
+  validateArgsShape(subscription.args, "event args");
+  if (typeof subscription.matches !== "function") {
+    throw new TypeError("event subscription matches must be a function");
+  }
+  return new TableDef(columns, "event", Object.freeze({ ...subscription }));
 }
 
 /** Turn a table name into its generated row type name: PascalCase + singularized last word. */
@@ -189,6 +249,10 @@ export function rowTypeName(table: string): string {
   const last = words[words.length - 1]!;
   words[words.length - 1] = singularize(last);
   return words.map((w) => w[0]!.toUpperCase() + w.slice(1)).join("");
+}
+
+export function eventArgsTypeName(table: string): string {
+  return `${rowTypeName(table)}Args`;
 }
 
 function singularize(word: string): string {
@@ -300,6 +364,12 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
     for (const [column, validator] of Object.entries(table.columns)) {
       walk(validator, `${tableName}.${column}`, "column");
     }
+    if (table.kind === "event") {
+      claimTypeName(eventArgsTypeName(tableName), `event args for table "${tableName}"`);
+      for (const [name, validator] of Object.entries(table.eventSubscription!.args)) {
+        walk(validator, `${tableName}.eventArgs.${name}`, "nested");
+      }
+    }
   }
 
   return new Schema(tables, namedTypes);
@@ -308,11 +378,11 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
 // ---------------------------------------------------------------------------
 // Type utilities shared by ctx.db typing and codegen.
 
-export type TableColumns<TD> = TD extends TableDef<infer C, Record<string, IndexMeta>, "table" | "event">
+export type TableColumns<TD> = TD extends TableDef<infer C, Record<string, IndexMeta>, "table" | "event", ObjectShape>
   ? C
   : never;
-export type TableIndexes<TD> = TD extends TableDef<ObjectShape, infer I, "table" | "event"> ? I : never;
-export type TableKind<TD> = TD extends TableDef<ObjectShape, Record<string, IndexMeta>, infer K>
+export type TableIndexes<TD> = TD extends TableDef<ObjectShape, infer I, "table" | "event", ObjectShape> ? I : never;
+export type TableKind<TD> = TD extends TableDef<ObjectShape, Record<string, IndexMeta>, infer K, ObjectShape>
   ? K
   : never;
 export type { IndexMeta };
@@ -344,3 +414,9 @@ export type SchemaTables<S> = S extends Schema<infer T> ? T : never;
 
 /** The exact row type of a table, as generated codegen types use it. */
 export type RowOf<S, T extends keyof SchemaTables<S>> = RowShape<TableColumns<SchemaTables<S>[T]>>;
+
+/** Caller input accepted by an event table's subscription argument schema. */
+export type EventArgsOf<S, T extends keyof SchemaTables<S>> =
+  SchemaTables<S>[T] extends TableDef<ObjectShape, Record<string, IndexMeta>, "event", infer A>
+    ? InsertShape<A>
+    : never;

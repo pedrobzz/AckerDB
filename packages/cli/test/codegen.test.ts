@@ -58,7 +58,9 @@ describe("codegen", () => {
     expect(api).toContain("messages: typeof m_messages;");
     expect(api).toContain("admin: {");
     expect(api).toContain("users: typeof m_admin_users;");
-    expect(api).toContain('typingEvents: EventRef<import("./types.ts").TypingEvent>;');
+    expect(api).toContain(
+      'typingEvents: EventRef<import("./types.ts").TypingEventArgs, import("./types.ts").TypingEvent>;',
+    );
   });
 
   test("types.ts carries enum namespaces, union constructors and row types", async () => {
@@ -76,6 +78,9 @@ describe("codegen", () => {
     );
     expect(types).toContain('export type Message = RowOf<typeof schema, "messages">;');
     expect(types).toContain('export type TypingEvent = RowOf<typeof schema, "typingEvents">;');
+    expect(types).toContain(
+      'export type TypingEventArgs = EventArgsOf<typeof schema, "typingEvents">;',
+    );
     expect(types).toContain("export type { Identity };");
     // no runtime import of @dbzz/server anywhere in client-facing files
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");

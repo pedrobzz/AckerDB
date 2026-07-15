@@ -18,6 +18,7 @@ import {
   ValidationError,
   type WriteCollector,
 } from "@dbzz/server";
+import type { DbStatementObservation, DbStatementObserver } from "../src/db.ts";
 
 const schema = () =>
   defineSchema({
@@ -42,6 +43,10 @@ const schema = () =>
     pings: defineEventTable({
       id: dbz.primaryKey(),
       channel: dbz.bigint(),
+    }, {
+      args: {},
+      access: "public",
+      matches: () => true,
     }),
   });
 
@@ -61,14 +66,106 @@ beforeEach(() => {
   db = makeDbWriter(engine, writes, () => ++eventSeq);
 });
 afterEach(() => {
-  engine.close();
+  engine.close("clean");
   rmSync(dir, { recursive: true, force: true });
 });
 
 const pay = (userId: bigint, status: string, amount: number, currency = "USD") =>
   db.payments.insert({ userId, status, amount, currency, note: null });
 
+const observedDb = (observer: DbStatementObserver): any =>
+  makeDbWriter(engine, newWriteCollector(), () => ++eventSeq, observer);
+
 describe("writes", () => {
+  test("observes frozen safe summaries and observer failures stay fail-open", async () => {
+    const canary = "never-export-this-row";
+    const observations: DbStatementObservation[] = [];
+    const observed = observedDb((observation) => observations.push(observation));
+    const id = await observed.payments.insert({
+      userId: 1n,
+      status: "active",
+      amount: 10,
+      currency: "USD",
+      note: canary,
+    });
+    await observed.payments.get(id);
+    await observed.payments.scan().collect();
+    await observed.payments.delete(id);
+
+    expect(observations.map((observation) => observation.statement)).toEqual([
+      "insert",
+      "get",
+      "collect",
+      "delete",
+    ]);
+    expect(observations).toEqual(observations.map((observation) => expect.objectContaining({
+      table: "payments",
+      outcome: "ok",
+      durationMs: expect.any(Number),
+      rowCount: 1,
+    })));
+    expect(observations.every(Object.isFrozen)).toBe(true);
+    const allowedKeys = new Set([
+      "kind",
+      "table",
+      "statement",
+      "outcome",
+      "durationMs",
+      "rowCount",
+    ]);
+    expect(observations.every((observation) =>
+      Object.keys(observation).every((key) => allowedKeys.has(key))
+    )).toBe(true);
+    expect(JSON.stringify(observations)).not.toContain(canary);
+
+    let observerCalls = 0;
+    const failOpen = observedDb(() => {
+      if (++observerCalls === 1) throw new Error("telemetry failed synchronously");
+      return Promise.reject(new Error("telemetry failed asynchronously"));
+    });
+    await expect(failOpen.payments.insert({
+      userId: 2n,
+      status: "active",
+      amount: 20,
+      currency: "BRL",
+      note: null,
+    })).resolves.toBeGreaterThan(0n);
+    await expect(failOpen.payments.insert({
+      userId: 3n,
+      status: "active",
+      amount: 30,
+      currency: "BRL",
+      note: null,
+    })).resolves.toBeGreaterThan(0n);
+    await Promise.resolve();
+    expect(observerCalls).toBe(2);
+  });
+
+  test("upsert is the sole observation owner on insert, patch, and failure", async () => {
+    const observations: DbStatementObservation[] = [];
+    const observed = observedDb((observation) => observations.push(observation));
+    const key = { email: "owner@x.com" };
+    const inserted = await observed.users.byEmail.upsert(key, {
+      name: "Owner",
+      payload: { tag: "nothing", value: null },
+    }).returning();
+    await observed.users.byEmail.upsert(key, { name: "Updated" });
+    await expect(observed.users.byEmail.upsert(key, () => {
+      throw new Error("resolver failed");
+    })).rejects.toThrow("resolver failed");
+
+    expect(inserted).toMatchObject({ email: key.email, name: "Owner" });
+    expect(observations.map(({ statement, outcome, rowCount }) => ({
+      statement,
+      outcome,
+      rowCount,
+    }))).toEqual([
+      { statement: "upsert", outcome: "ok", rowCount: 1 },
+      { statement: "upsert", outcome: "ok", rowCount: 1 },
+      { statement: "upsert", outcome: "failed", rowCount: undefined },
+    ]);
+  });
+
   test("insert returns sequential bigint ids and validates", async () => {
     expect(await pay(1n, "active", 10)).toBe(1n);
     expect(await pay(1n, "failed", 20)).toBe(2n);
@@ -221,6 +318,50 @@ describe("reads", () => {
   test("get by primary key", async () => {
     expect((await db.payments.get(1n)).amount).toBe(100);
     expect(await db.payments.get(99n)).toBe(null);
+  });
+
+  test("each public read materializer owns exactly one success or failure observation", async () => {
+    const observations: DbStatementObservation[] = [];
+    const observed = observedDb((observation) => observations.push(observation));
+
+    await observed.payments.scan().collect();
+    await observed.payments.scan().take(2);
+    await observed.payments.byUser((q: any) => q.eq("userId", 2n)).first();
+    await observed.payments.byUser((q: any) => q.eq("userId", 2n)).unique();
+    await observed.payments.scan().count();
+    await observed.payments.scan().filter((row: any) => row.currency === "BRL").count();
+    await observed.payments.scan().paginate({ cursor: null, numItems: 2 });
+
+    let iterated = 0;
+    for await (const _row of observed.payments.scan().iter()) iterated++;
+    expect(iterated).toBe(5);
+    for await (const _row of observed.payments.scan().iter()) break;
+
+    await expect(
+      observed.payments.byUser((q: any) => q.eq("userId", 1n)).unique(),
+    ).rejects.toThrow("more than one");
+    const failedIter = observed.payments.scan().filter(() => {
+      throw new Error("filter failed");
+    }).iter();
+    await expect(failedIter.next()).rejects.toThrow("filter failed");
+
+    expect(observations.map(({ statement, outcome, rowCount }) => ({
+      statement,
+      outcome,
+      rowCount,
+    }))).toEqual([
+      { statement: "collect", outcome: "ok", rowCount: 5 },
+      { statement: "take", outcome: "ok", rowCount: 2 },
+      { statement: "first", outcome: "ok", rowCount: 1 },
+      { statement: "unique", outcome: "ok", rowCount: 1 },
+      { statement: "count", outcome: "ok", rowCount: 5 },
+      { statement: "count", outcome: "ok", rowCount: 1 },
+      { statement: "paginate", outcome: "ok", rowCount: 2 },
+      { statement: "iter", outcome: "ok", rowCount: 5 },
+      { statement: "iter", outcome: "ok", rowCount: 1 },
+      { statement: "unique", outcome: "failed", rowCount: undefined },
+      { statement: "iter", outcome: "failed", rowCount: undefined },
+    ]);
   });
 
   test("index eq + range + order + take compose", async () => {
@@ -387,7 +528,7 @@ describe("pagination", () => {
       if (res.isDone) break;
     }
     expect(viaIndex).toEqual([null, null, "a", "b"]); // NULLs group first in ASC
-    e2.close();
+    e2.close("clean");
     rmSync(d2, { recursive: true, force: true });
   });
 });

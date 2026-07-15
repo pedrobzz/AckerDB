@@ -1,27 +1,37 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { decode, encode } from "@dbzz/core";
+import { Database } from "bun:sqlite";
+import { DbzzClient } from "@dbzz/client";
+import { startApp } from "../src/app.ts";
+import { loadConfig } from "../src/config.ts";
 import { FIXTURE_ADMIN_USERS, FIXTURE_MESSAGES, FIXTURE_SCHEMA, makeFixture } from "./fixture.ts";
 
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 
 const dirs: string[] = [];
 const children: Subprocess<"ignore", "pipe", "inherit">[] = [];
+const portReservations = new Set<Server>();
 afterEach(async () => {
   for (const child of children.splice(0)) {
     child.kill();
     await child.exited;
   }
+  await Promise.all([...portReservations].map((server) => new Promise<void>((resolve) => {
+    server.close(() => resolve());
+  })));
+  portReservations.clear();
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
 /** Spawn the CLI, tailing (and fully draining) its stdout into a buffer. */
-function spawnCli(args: string[]) {
+function spawnCli(args: string[], env: Readonly<Record<string, string>> = {}) {
   const child = Bun.spawn([process.execPath, CLI, ...args], {
     stdout: "pipe",
     stderr: "inherit",
+    env: { ...process.env, ...env },
   }) as Subprocess<"ignore", "pipe", "inherit">;
   children.push(child);
   let buffer = "";
@@ -50,6 +60,27 @@ const freePort = () => {
   return port;
 };
 
+const reservePort = async (): Promise<{ port: number; release(): Promise<void> }> => {
+  const server = createServer();
+  portReservations.add(server);
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
+  });
+  const address = server.address();
+  if (typeof address !== "object" || address === null) throw new Error("port reservation has no address");
+  return {
+    port: address.port,
+    release: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        portReservations.delete(server);
+        if (error === undefined) resolve();
+        else reject(error);
+      });
+    }),
+  };
+};
+
 const fixture = (port: number) => {
   const dir = makeFixture({
     "schema.ts": FIXTURE_SCHEMA,
@@ -61,13 +92,30 @@ const fixture = (port: number) => {
   return dir;
 };
 
-const call = async (port: number, body: unknown) => {
-  const res = await fetch(`http://127.0.0.1:${port}/api/call`, {
-    method: "POST",
-    body: encode(body),
-  });
-  return decode(await res.text()) as Record<string, unknown>;
-};
+const clientFor = (port: number) => new DbzzClient({
+  url: `http://127.0.0.1:${port}`,
+  credential: { kind: "anonymous" },
+});
+
+function shutdownMarker(dir: string): bigint {
+  const db = new Database(join(dir, ".zdb", "data.db"), { readonly: true, safeIntegers: true });
+  try {
+    return (db.query("SELECT clean_shutdown FROM _dbz_state WHERE singleton = 1").get() as {
+      clean_shutdown: bigint;
+    }).clean_shutdown;
+  } finally {
+    db.close();
+  }
+}
+
+function within<T>(work: Promise<T>, label: string): Promise<T> {
+  return Promise.race([
+    work,
+    Bun.sleep(2_000).then(() => {
+      throw new Error(`${label} did not release its resources`);
+    }),
+  ]);
+}
 
 describe("dbz CLI", () => {
   test("start: codegen + serve, functions callable, reset wipes the db", async () => {
@@ -75,17 +123,22 @@ describe("dbz CLI", () => {
     const dir = fixture(port);
     const started = spawnCli(["start", dir]);
     await started.waitFor("ready on");
+    expect(started.output()).toContain(
+      '@@dbzz-startup {"telemetry":"enabled","durability":"production"}',
+    );
     expect(existsSync(join(dir, "_generated", "api.ts"))).toBe(true);
 
-    const id = await call(port, { ref: "messages.send", args: { channelId: 1n, body: "hi" }, mid: "c1" });
-    expect(id).toEqual({ value: 1n });
-    const rows = await call(port, { ref: "messages.list", args: { channelId: 1n } });
-    expect((rows["value"] as unknown[]).length).toBe(1);
-    const count = await call(port, { ref: "admin.users.count", args: {} });
-    expect(count).toEqual({ value: 1 });
+    const client = clientFor(port);
+    expect(await client.mutation<{ channelId: bigint; body: string }, bigint>(
+      "messages.send",
+      { channelId: 1n, body: "hi" },
+    )).toBe(1n);
+    expect(await client.query<unknown, unknown[]>("messages.list", { channelId: 1n })).toHaveLength(1);
+    expect(await client.query<Record<never, never>, number>("admin.users.count", {})).toBe(1);
+    client.close();
 
-    started.child.kill();
-    await started.child.exited;
+    started.child.kill("SIGTERM");
+    expect(await started.child.exited).toBe(0);
 
     expect(existsSync(join(dir, ".zdb", "data.db"))).toBe(true);
     const reset = spawnCli(["reset", dir]);
@@ -93,14 +146,218 @@ describe("dbz CLI", () => {
     expect(existsSync(join(dir, ".zdb"))).toBe(false);
   });
 
+  test("start confirms the effective balanced/no-telemetry profile exactly once before readiness", async () => {
+    const port = freePort();
+    const dir = fixture(port);
+    const started = spawnCli(["start", dir], {
+      DBZZ_DURABILITY: "balanced",
+      DBZZ_TELEMETRY: "disabled",
+    });
+    const output = await started.waitFor("ready on");
+    const marker = '@@dbzz-startup {"telemetry":"disabled","durability":"balanced"}';
+    expect(output.split("@@dbzz-startup")).toHaveLength(2);
+    expect(output.indexOf(marker)).toBeGreaterThanOrEqual(0);
+    expect(output.indexOf(marker)).toBeLessThan(output.indexOf("[dbz] ready on"));
+    expect(await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).toEqual({
+      version: 1,
+      ready: true,
+      state: "ready",
+    });
+
+    started.child.kill("SIGTERM");
+    expect(await started.child.exited).toBe(0);
+  });
+
+  test("failed drain releases ownership without recording a clean shutdown", async () => {
+    const port = freePort();
+    const dir = makeFixture({
+      "schema.ts": `
+        import { dbz, defineSchema, defineTable } from "@dbzz/server";
+        export default defineSchema({ records: defineTable({ id: dbz.primaryKey() }) });
+      `,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+    const config = loadConfig(dir, { DBZZ_TELEMETRY: "disabled" });
+    const failed = await startApp(config);
+    const failure = new Error("injected drain failure");
+    const drainServer = failed.server.drain.bind(failed.server);
+    failed.server.drain = async () => {
+      await drainServer();
+      throw failure;
+    };
+
+    await expect(within(failed.drain(), "failed drain")).rejects.toBe(failure);
+    await expect(failed.drain()).rejects.toBe(failure);
+    expect(shutdownMarker(dir)).toBe(0n);
+
+    const restarted = await startApp(config);
+    try {
+      expect(restarted.engine.recoveredFromCrash).toBe(true);
+      await within(restarted.drain(), "successful drain");
+      expect(shutdownMarker(dir)).toBe(1n);
+    } finally {
+      await restarted.drain().catch(() => {});
+    }
+  }, 20_000);
+
+  test("start owns one live port continuously from codegen through readiness", async () => {
+    const port = freePort();
+    const dir = fixture(port);
+    const gate = join(dir, "startup-gate");
+    writeFileSync(
+      join(dir, "schema.ts"),
+      `import { existsSync } from "node:fs";
+while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
+${FIXTURE_SCHEMA}`,
+    );
+    const started = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+
+    const deadline = Date.now() + 5_000;
+    let starting: Response | undefined;
+    while (Date.now() < deadline) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`);
+        const body = await response.clone().json() as Record<string, unknown>;
+        if (body.phase === "codegen") {
+          starting = response;
+          break;
+        }
+        await Bun.sleep(2);
+      } catch {
+        await Bun.sleep(5);
+      }
+    }
+    expect(starting).toBeDefined();
+    expect(starting!.status).toBe(503);
+    expect(await starting!.json()).toEqual({
+      version: 1,
+      ready: false,
+      state: "starting",
+      phase: "codegen",
+    });
+    expect(await (await fetch(`http://127.0.0.1:${port}/live`)).json()).toEqual({
+      version: 1,
+      live: true,
+    });
+
+    let polling = true;
+    let successfulLivenessProbes = 0;
+    let refusedLivenessProbes = 0;
+    const continuity = (async () => {
+      while (polling) {
+        try {
+          const response = await fetch(`http://127.0.0.1:${port}/live`);
+          if (response.ok) successfulLivenessProbes++;
+          else refusedLivenessProbes++;
+        } catch {
+          refusedLivenessProbes++;
+        }
+        await Bun.sleep(2);
+      }
+    })();
+
+    writeFileSync(gate, "continue");
+    await started.waitFor("ready on");
+    polling = false;
+    await continuity;
+    expect(successfulLivenessProbes).toBeGreaterThan(0);
+    expect(refusedLivenessProbes).toBe(0);
+    expect(await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).toEqual({
+      version: 1,
+      ready: true,
+      state: "ready",
+    });
+
+    started.child.kill("SIGTERM");
+    expect(await started.child.exited).toBe(0);
+  });
+
+  test("SIGTERM during startup releases the listener without activating afterward", async () => {
+    const port = freePort();
+    const dir = fixture(port);
+    const gate = join(dir, "startup-gate");
+    writeFileSync(
+      join(dir, "schema.ts"),
+      `import { existsSync } from "node:fs";
+while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
+${FIXTURE_SCHEMA}`,
+    );
+    const started = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+
+    const deadline = Date.now() + 5_000;
+    let observedStartup = false;
+    while (Date.now() < deadline && !observedStartup) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/ready`);
+        const body = await response.json() as Record<string, unknown>;
+        observedStartup = response.status === 503 && body.phase === "codegen";
+        if (!observedStartup) await Bun.sleep(2);
+      } catch {
+        await Bun.sleep(5);
+      }
+    }
+    expect(observedStartup).toBe(true);
+
+    started.child.kill("SIGTERM");
+    const exitCode = await Promise.race([
+      started.child.exited,
+      Bun.sleep(2_000).then(() => {
+        throw new Error("startup did not terminate after SIGTERM");
+      }),
+    ]);
+    expect(exitCode).toBe(0);
+    await started.drained;
+    expect(started.output()).not.toContain("@@dbzz-startup");
+    expect(started.output()).not.toContain("ready on");
+
+    const rebound = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("ok") });
+    await rebound.stop(true);
+  }, 20_000);
+
+  test("a startup failure releases Runtime and storage ownership before retry", async () => {
+    const reservation = await reservePort();
+    const dir = fixture(reservation.port);
+    const failed = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    expect(await failed.child.exited).toBe(1);
+    await failed.drained;
+    expect(failed.output()).not.toContain("@@dbzz-startup");
+
+    await reservation.release();
+    const retried = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    await retried.waitFor("ready on");
+    retried.child.kill("SIGTERM");
+    expect(await retried.child.exited).toBe(0);
+  }, 20_000);
+
+  test("start exits without readiness when the live database schema is corrupt", async () => {
+    const port = freePort();
+    const dir = fixture(port);
+    const first = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    await first.waitFor("ready on");
+    first.child.kill("SIGTERM");
+    expect(await first.child.exited).toBe(0);
+
+    const db = new Database(join(dir, ".zdb", "data.db"));
+    db.exec("DROP INDEX ix_messages_by_channel");
+    db.close();
+
+    const failed = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    expect(await failed.child.exited).toBe(1);
+    await failed.drained;
+    expect(failed.output()).not.toContain("@@dbzz-startup");
+    expect(failed.output()).not.toContain("ready on");
+  }, 20_000);
+
   test("dev: watches, re-runs codegen debounced, restarts the server", async () => {
     const port = freePort();
     const dir = fixture(port);
     const dev = spawnCli(["dev", dir]);
     await dev.waitFor("ready on");
+    const client = clientFor(port);
 
     // survives data before the edit
-    await call(port, { ref: "messages.send", args: { channelId: 2n, body: "before" }, mid: "d1" });
+    await client.mutation("messages.send", { channelId: 2n, body: "before" });
 
     // edit the schema: add a table (a safe change)
     writeFileSync(
@@ -117,7 +374,7 @@ describe("dbz CLI", () => {
     let alive = false;
     while (Date.now() < deadline && !alive) {
       try {
-        const res = await fetch(`http://127.0.0.1:${port}/health`);
+        const res = await fetch(`http://127.0.0.1:${port}/ready`);
         alive = res.ok;
       } catch {
         await Bun.sleep(50);
@@ -130,7 +387,7 @@ describe("dbz CLI", () => {
     expect(types).toContain('export type Note = RowOf<typeof schema, "notes">;');
 
     // data survived the reload (safe reconciliation, same database)
-    const rows = await call(port, { ref: "messages.list", args: { channelId: 2n } });
-    expect((rows["value"] as unknown[]).length).toBe(1);
+    expect(await client.query<unknown, unknown[]>("messages.list", { channelId: 2n })).toHaveLength(1);
+    client.close();
   }, 20_000);
 });

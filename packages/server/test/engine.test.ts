@@ -53,6 +53,25 @@ function insertAndReadBack(engine: Engine, row: Record<string, unknown>) {
 }
 
 describe("engine storage", () => {
+  test("isolates in-memory reads from an uncommitted writer transaction", () => {
+    const engine = new Engine(
+      defineSchema({ notes: defineTable({ id: dbz.primaryKey(), body: dbz.string() }) }),
+      ":memory:",
+      { busyTimeoutMs: 1 },
+    );
+    try {
+      engine.createAll();
+      expect(engine.reader).not.toBe(engine.writer);
+      engine.writer.exec("BEGIN IMMEDIATE");
+      engine.writer.query('INSERT INTO "notes" ("body") VALUES (?)').run("uncommitted");
+      expect(() => engine.reader.query('SELECT * FROM "notes"').all()).toThrow("locked");
+      engine.writer.exec("ROLLBACK");
+      expect(engine.reader.query('SELECT * FROM "notes"').all()).toEqual([]);
+    } finally {
+      engine.close("clean");
+    }
+  });
+
   test("every column kind round-trips through SQL", () => {
     const engine = new Engine(kitchenSinkSchema(), freshPath());
     engine.createAll();
@@ -85,7 +104,7 @@ describe("engine storage", () => {
     expect(second.row["payload"]).toEqual({ tag: "nothing", value: null });
     expect(second.row["maybeRole"]).toBe("guest");
     expect(second.row["maybePayload"]).toEqual({ tag: "text", value: "t" });
-    engine.close();
+    engine.close("clean");
   });
 
   test("enum and union values are stored as integer tags", () => {
@@ -114,7 +133,7 @@ describe("engine storage", () => {
     expect(raw.role).toBe(2n); // guest is the third declared variant
     expect(raw.payload).toBe(0n); // text is the first
     expect(raw.payload__p).toBe('"x"');
-    engine.close();
+    engine.close("clean");
   });
 });
 
@@ -132,23 +151,23 @@ describe("tag interning", () => {
     expect(first.tags.get("Status")!.toTag).toEqual(
       new Map([["draft", 0], ["published", 1], ["archived", 2]]),
     );
-    first.close();
+    first.close("clean");
 
     // reorder: purely cosmetic, tags unchanged
     const reordered = new Engine(schemaWith(["archived", "draft", "published"]), path);
     expect(reordered.tags.get("Status")!.toTag).toEqual(
       new Map([["draft", 0], ["published", 1], ["archived", 2]]),
     );
-    reordered.close();
+    reordered.close("clean");
 
     // drop "published", add "trashed": new variant gets a fresh tag (3), never 1
     const changed = new Engine(schemaWith(["draft", "archived", "trashed"]), path);
     expect(changed.tags.get("Status")!.toTag.get("trashed")).toBe(3);
-    changed.close();
+    changed.close("clean");
 
     // re-adding "published" finds its original tag again
     const readded = new Engine(schemaWith(["draft", "published", "archived", "trashed"]), path);
     expect(readded.tags.get("Status")!.toTag.get("published")).toBe(1);
-    readded.close();
+    readded.close("clean");
   });
 });

@@ -18,12 +18,21 @@ dist
 # dbzz local databases
 .zdb/
 
+# local registry (verdaccio): published tarballs + user file
+registry/storage/
+registry/htpasswd
+
 # local demo monorepo (kept out of the repo on purpose)
 sandbox/
 
-# benchmark artifacts (convex local backend state, per-run outputs)
+# benchmark artifacts (local backend state, generated bindings)
+# bench/results/ is tracked on purpose: it is the cross-run comparison history
 bench/convex-app/.convex/
 bench/convex-app/.env.local
 bench/convex-app/convex/_generated/
 bench/dbzz-app/_generated/
-bench/results/
+bench/spacetime-app/.stdb-data/
+bench/spacetime-app/module_bindings/
+
+.internal-docs
+.workflow/

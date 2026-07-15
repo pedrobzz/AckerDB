@@ -1,11 +1,14 @@
 {
   "name": "@dbzz/client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
+  "files": [
+    "src"
+  ],
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:*"
+    "@dbzz/core": "workspace:0.1.1"
   }
 }

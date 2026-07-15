@@ -1,0 +1,12 @@
+{
+  "name": "spacetime-bench-module",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "dependencies": {
+    "spacetimedb": "2.6.1"
+  },
+  "devDependencies": {
+    "typescript": "~5.6.2"
+  }
+}

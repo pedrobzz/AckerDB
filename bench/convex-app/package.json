@@ -3,6 +3,6 @@
   "private": true,
   "version": "0.0.0",
   "dependencies": {
-    "convex": "^1.42.1"
+    "convex": "1.42.1"
   }
 }

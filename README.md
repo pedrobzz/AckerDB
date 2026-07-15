@@ -1,93 +1,146 @@
 # dbzz
 
-A full stateful backend in a CLI — reactive queries, transactional mutations,
-procedures, scheduled work and event broadcast on top of Bun + SQLite.
-Inspired by Convex and SpacetimeDB; designed in `.wiki/dbzz/v1` (local
-workspace, not committed).
+DBZZ is a single-node, stateful TypeScript backend built on Bun and SQLite. It
+provides typed queries, transactional mutations, procedures, scheduled work,
+live query subscriptions, and live event streams through Protocol 2.
 
-This monorepo is the packages you install to build a dbzz app — not an app
-itself:
+The supported production topology is one Bun server process owning one local
+SQLite database file. DBZZ is not a horizontally scaled or replicated service,
+and the server/CLI packages execute source TypeScript and `bun:sqlite`; deploy
+them with Bun rather than Node.js.
+
+The current milestone is a production-safety foundation, not a hosted or
+distributed database. Its contracts are explicit: external identity is
+verified or deliberately anonymous, query state moves through ordered
+transitions, mutation effects are durably deduplicated, every framework-owned
+queue and transport buffer is finite, shutdown has a deadline, and
+backups are verified by restoring them before they are accepted.
 
 | Package | Purpose |
-|---|---|
-| `@dbzz/core` | Wire format, protocol and typed function references shared by server and client |
-| `@dbzz/server` | The `dbz` schema DSL, bun:sqlite engine, reconciliation, reactivity, function runtime, transport |
-| `@dbzz/client` | The Node/Bun client: subscribe, query, mutate, call procedures, consume SSE. No Bun-specific APIs |
-| `@dbzz/cli` | The `dbz` CLI: `dev` (watch + debounced codegen + auto-restart), `start`, `codegen`, `reset` |
+| --- | --- |
+| `@dbzz/core` | Protocol 2 envelopes, wire encoding, outcomes, cursors, and typed function references. |
+| `@dbzz/server` | Schema DSL, SQLite engine, function runtime, authentication, reactivity, transport, limits, and telemetry. |
+| `@dbzz/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, reconnect, and credential refresh. |
+| `@dbzz/cli` | `dbz dev`, `start`, `codegen`, `reset`, `status`, `backup`, and `restore`. |
 
-## The shape of an app
+## Application shape
 
-```
+```text
 your-app/
 ├── apps/
 │   ├── server/                 # schema.ts, functions/, .zdb.config.json
-│   └── client/                 # anything with WebSocket+fetch globals
+│   └── client/                 # any runtime with WebSocket, fetch, and Web Crypto
 └── packages/
-    └── server-codegen/         # `dbz codegen` output — committable, diff-friendly
+    └── server-codegen/
         └── _generated/{server,api,types}.ts
 ```
 
-- `schema.ts` default-exports `defineSchema({...})` built from `dbz.*`
-  validators (string/number/bigint/boolean/bytes/array/object/enum/union/
-  jsonb/nullable/identity/scheduleAt), `defineTable` / `defineEventTable`,
-  `.index(...)` (b-tree, multi-column, unique, direct) and `.scheduled(...)`.
-- Functions import their typed constructors from the generated `server.ts`:
-  `query` (reactive, read-only snapshot), `mutation` (one serializable
-  transaction, exactly-once via client idempotency keys, `fetch` banned),
-  `procedure` (external calls + explicit `ctx.tx` transactions),
-  `sseProcedure` (data-only SSE, AI-SDK-compatible headers and `[DONE]`).
-- Server-side composition is **direct function calls**, never references:
-  a mutation calls a query with its own ctx (read/write ⊇ read-only, and the
-  callee joins its transaction); procedures compose queries and mutations
-  inside `ctx.tx` — several calls in one transaction commit atomically. A
-  query calling a mutation doesn't compile (its ctx has no writes), and
-  procedures aren't callable in-process. The generated `api` object is for
-  clients only.
-- Clients import only the generated `api.ts`/`types.ts` — runtime imports
-  touch `@dbzz/core` alone, so no server code can reach a client bundle.
+- `schema.ts` default-exports `defineSchema(...)`. Persistent tables use
+  `defineTable`; `defineEventTable` declares non-persistent live events.
+- Functions use the generated `query`, `mutation`, `procedure`, and
+  `sseProcedure` constructors. Every function must declare `access` as
+  `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
+- Queries run against a SQLite snapshot and record precise dependency keys.
+  Mutations run through one serialized writer transaction. Procedures may do
+  external work and open explicit `ctx.tx(...)` transactions. Scheduled
+  mutations execute as the local `system` principal.
+- Direct server-side query/mutation composition preserves the caller's
+  immutable principal and still validates arguments and the callee's policy.
+  Procedures and SSE procedures exist only at the transport boundary.
+- Generated client references carry compile-time inferred argument and return
+  types without importing server runtime code into the client. Results are
+  checked for wire representability and frame bounds, not against a declared
+  runtime output schema.
 
-Reactivity: every query records its read set (id / index-prefix / scan
-keys); every mutation emits write keys; subscriptions re-run only on
-intersection, deduplicated per `(query, stable-args)` — 1,000 subscribers to
-the same result cost one recomputation — and identical results are never
-re-shipped.
+The client requires an explicit credential, including for anonymous use:
 
-## Performance
+```ts
+import { DbzzClient } from "@dbzz/client";
+import { api } from "./_generated/api";
 
-Benchmarked against the Convex local backend (see [bench/README.md](bench/README.md),
-`bun bench/run.ts`): **15x** mutation round-trip throughput, **26x** faster
-subscription updates (p50), **3.9x** lower RSS after load, **19x** less CPU
-for the same workload.
+const client = new DbzzClient({
+  url: "http://127.0.0.1:3211",
+  credential: { kind: "anonymous" },
+});
 
-## Development
+const unsubscribe = client.subscribe(api.todos.list, {}, console.log);
+await client.mutation(api.todos.create, { text: "ship it" });
+
+unsubscribe();
+client.close();
+```
+
+## Production contracts
+
+- [Authentication and authorization](docs/authentication.md) documents strict
+  bearer handling, immutable principals, external OIDC/JWKS configuration,
+  access policies, WebSocket refresh, and bounded credential validity for
+  sessions, HTTP procedures, and SSE.
+- [Ordered realtime and mutation semantics](docs/realtime.md) documents
+  transition cursors, resume-or-reset behavior, read-your-writes mutation
+  receipts, receiver-confirmed Protocol 2 SSE delivery, reconnect behavior, and
+  the deliberately weaker live-event contract.
+- [Operations, limits, and recovery](docs/operations.md) documents finite
+  production defaults, typed outcomes, durability profiles, health endpoints,
+  startup/readiness phases, evidence-preserving crash recovery, signal-driven
+  draining, and verified backup/restore.
+- [Telemetry](docs/telemetry.md) documents the default-on privacy boundary,
+  tuning and disabling, bounded whole-operation tail retention and fail-open
+  export, schema version 1 records, correlated auth/operation/receiver-delivery
+  coverage, CLI backup/restore spans, and runtime/storage health metrics.
+- [Production-readiness report](docs/production-readiness-report.md) records the
+  full issue #1 implementation and decision history, verification and benchmark
+  evidence, remaining release blockers, and the operational gap versus Convex
+  Cloud and SpacetimeDB/Maincloud.
+
+The remaining single-node and product limitations are listed explicitly in
+[Operations: remaining limitations](docs/operations.md#remaining-limitations).
+
+## Configuration and CLI
+
+All `.zdb.config.json` fields are optional. The path defaults are
+`./schema.ts`, `./functions`, `./_generated`, and `./.zdb`; the default port is
+`3211`. External identity providers and the protected status scope are also
+configured there. Durability and telemetry profiles are exact environment
+switches:
+
+```sh
+DBZZ_DURABILITY=production DBZZ_TELEMETRY=enabled dbz start ./apps/server
+```
+
+`production` and `enabled` are the defaults. See the linked contract documents
+before selecting `balanced` durability or disabling telemetry.
+
+The CLI listener is plaintext HTTP/WebSocket on `127.0.0.1`; it does not
+terminate TLS. Keep it on loopback or a private encrypted hop behind TLS
+termination as described in the
+[authentication trust boundary](docs/authentication.md#trust-boundary).
+
+```sh
+dbz dev [app-dir]
+dbz start [app-dir]
+dbz codegen [app-dir]
+dbz reset [app-dir]
+dbz status [app-dir]
+dbz backup <artifact> [app-dir]
+dbz restore <artifact> [app-dir]
+```
+
+## Development and performance
 
 ```sh
 bun install
-bun test packages/core/test packages/server/test packages/client/test packages/cli/test
+bun run test
 bun run typecheck
+bun run typecheck:bench
 ```
 
-The gitignored `sandbox/` is a full usage monorepo (server app + Bun client
-+ Node smoke test) driving every feature end to end: `cd sandbox && bun run
-setup && bun run demo`.
+The comparative benchmark runs DBZZ, Convex, and SpacetimeDB on the same
+machine and separately measures DBZZ's exact default telemetry, minimum
+in-process exporter handoff cost, and fully disabled telemetry. Its workload,
+durability profile, correctness gates, results, and interpretation limits are
+documented in [bench/README.md](bench/README.md).
 
-## MVP scope (deliberate divergences from the v1 wiki)
-
-- **No TypeScript migration files.** Reconciliation applies every safe
-  change automatically and *refuses* anything destructive with row counts
-  (`dbz reset` is the dev escape hatch). The typed migration-file layer is
-  the post-MVP half of the same design.
-- **Auth is stubbed anonymous.** `ctx.auth` exists with the designed shape
-  and `dbz.identity()` is implemented (branded bigint); the JWT identity
-  layer and `@dbzz/auth` providers are not in the MVP.
-- **No React client.** `@dbzz/client` is the Node/Bun client; `useQuery` et
-  al. are a later package.
-- **Direct indexes execute as SQLite b-trees.** Same API and semantics; the
-  array-backed layout lands only if benchmarks show it wins (the wiki's own
-  rule for sized numerics).
-- **Event tables reject `.index(...)`** — rows never persist, so an index
-  could never be observed; allowing it would let the schema lie.
-- **Generated `types.ts`/`server.ts` use type-only imports of
-  `@dbzz/server`** (erased at compile time — client bundles still contain
-  only `@dbzz/core`). Renames are not detected by reconciliation (they read
-  as drop+add and refuse when data exists).
+```sh
+bun bench/run.ts
+```
