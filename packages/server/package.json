@@ -2,11 +2,14 @@
   "name": "@dbzz/server",
   "version": "0.1.0",
   "type": "module",
+  "files": [
+    "src"
+  ],
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:*",
+    "@dbzz/core": "workspace:0.1.0",
     "jose": "6.2.3"
   }
 }

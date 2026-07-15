@@ -1,0 +1,15 @@
+#!/bin/sh
+# Protect main: work lands via feature-branch merges (AGENTS.md "Local Publishing").
+
+# Conflict-resolution merge commits skip pre-merge-commit, so guard them here.
+if git rev-parse -q --verify MERGE_HEAD >/dev/null; then
+  exec bun scripts/merge-guard.ts
+fi
+
+branch=$(git symbolic-ref --short -q HEAD)
+if [ "$branch" = "main" ] && [ "$DBZZ_ALLOW_MAIN" != "1" ]; then
+  echo "✖ direct commits to main are blocked — create a branch:" >&2
+  echo "    git checkout -b feat/<name>" >&2
+  echo "  escape hatch: DBZZ_ALLOW_MAIN=1 git commit ..." >&2
+  exit 1
+fi

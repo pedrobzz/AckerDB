@@ -1,0 +1,16 @@
+#!/bin/sh
+# Backstop guard: git runs this on EVERY ref update, and a non-zero exit in the
+# "prepared" stage aborts the update. Commit hooks never see fast-forward
+# merges (--ff/--ff-only override the no-ff config), cherry-picks, or rebases
+# onto main — this catches all of them, and --no-verify does not skip it.
+[ "$1" = "prepared" ] || exit 0
+[ "$DBZZ_ALLOW_MAIN" = "1" ] && exit 0
+
+ZEROS=0000000000000000000000000000000000000000
+while read -r old new ref; do
+  [ "$ref" = "refs/heads/main" ] || continue
+  [ "$old" = "$ZEROS" ] && continue   # branch creation (baseline)
+  [ "$new" = "$ZEROS" ] && continue   # branch deletion
+  bun scripts/merge-guard.ts --range "$old" "$new" || exit 1
+done
+exit 0

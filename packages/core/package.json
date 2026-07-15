@@ -2,6 +2,9 @@
   "name": "@dbzz/core",
   "version": "0.1.0",
   "type": "module",
+  "files": [
+    "src"
+  ],
   "exports": {
     ".": "./src/index.ts"
   }

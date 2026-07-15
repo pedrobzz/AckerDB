@@ -18,6 +18,10 @@ dist
 # dbzz local databases
 .zdb/
 
+# local registry (verdaccio): published tarballs + user file
+registry/storage/
+registry/htpasswd
+
 # local demo monorepo (kept out of the repo on purpose)
 sandbox/
 
@@ -29,3 +33,6 @@ bench/convex-app/convex/_generated/
 bench/dbzz-app/_generated/
 bench/spacetime-app/.stdb-data/
 bench/spacetime-app/module_bindings/
+
+.internal-docs
+.workflow/

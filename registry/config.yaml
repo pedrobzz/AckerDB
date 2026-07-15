@@ -1,0 +1,33 @@
+# dbzz local registry (Verdaccio). Start it with: bun run registry
+# Storage and user file live next to this config and are gitignored —
+# every published version is kept on disk, so old versions stay installable.
+listen: localhost:4873
+
+storage: ./storage
+
+web:
+  title: dbzz local registry
+
+auth:
+  htpasswd:
+    file: ./htpasswd
+    max_users: 100
+
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+
+packages:
+  '@dbzz/*':
+    # local-only: no proxy, so @dbzz never leaks to / resolves from npmjs
+    access: $all
+    publish: $authenticated
+    unpublish: $authenticated
+  '**':
+    access: $all
+    proxy: npmjs
+
+log:
+  type: stdout
+  format: pretty
+  level: warn
