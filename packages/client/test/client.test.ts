@@ -2113,3 +2113,22 @@ describe("subscription cursor confirmations", () => {
     client.close();
   });
 });
+
+describe("subscription argument encoding", () => {
+  test("rejects unencodable arguments with the exact validation error", () => {
+    const { client } = harness();
+    try {
+      client.subscribe("todos.byScore", { score: Number.NaN }, () => {});
+      throw new Error("subscribe must reject NaN arguments");
+    } catch (error) {
+      expect(error).toBeInstanceOf(DbzzClientError);
+      expect(error).toMatchObject({
+        code: "validation",
+        retryable: false,
+        message: "cannot encode non-finite number NaN",
+        resource: "subscription",
+      });
+    }
+    client.close();
+  });
+});

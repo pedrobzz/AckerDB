@@ -30,6 +30,25 @@ export const PENDING_STATE: { readonly status: "pending" } = Object.freeze({
   status: "pending",
 });
 
+// Re-establishing a rejected-but-retryable subscription mirrors the client's
+// own reconnect shape, floored by the server's explicit retry hint.
+const RETRY_BASE_MS = 100;
+const RETRY_MAX_MS = 3_000;
+
+// Snapshots promise immutability, so delivered rows must not be mutable
+// through the snapshot either: a consumer sort() or push() would silently
+// corrupt the retained data every later state is built from. Wire values are
+// trees of plain objects, arrays, primitives, and binary payloads; typed
+// arrays cannot be frozen and stay as delivered.
+function deepFreeze(value: unknown): void {
+  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
+  if (value instanceof Uint8Array) return;
+  Object.freeze(value);
+  for (const key of Object.keys(value)) {
+    deepFreeze((value as Record<string, unknown>)[key]);
+  }
+}
+
 /**
  * One live-query external-store entry: a client subscription plus a
  * connection-state observer folded into a single immutable snapshot. The
@@ -45,6 +64,8 @@ export class QueryStoreEntry<Rows> {
   private state: DbzzQueryState<Rows> = PENDING_STATE;
   private stopQuery: (() => void) | null = null;
   private stopConnectionState: (() => void) | null = null;
+  private retryHandle: ReturnType<typeof setTimeout> | null = null;
+  private retryAttempt = 0;
 
   constructor(
     private readonly client: DbzzClient,
@@ -85,6 +106,10 @@ export class QueryStoreEntry<Rows> {
     this.stopConnectionState = this.client.subscribeConnectionState((connection) =>
       this.onConnectionState(connection),
     );
+    this.startQuery();
+  }
+
+  private startQuery(): void {
     try {
       this.stopQuery = this.client.subscribe(
         this.address,
@@ -94,23 +119,17 @@ export class QueryStoreEntry<Rows> {
         { onCursorConfirmed: () => this.onCursorConfirmed() },
       );
     } catch (error) {
-      // subscribe() rejects synchronously when the client cannot accept the
-      // subscription (closed, blocked, over its pending limits, unencodable
-      // arguments); that rejection is this query's error state.
-      this.onError(
-        error instanceof DbzzClientError
-          ? error
-          : new DbzzClientError({
-              code: "validation",
-              retryable: false,
-              message: "subscription cannot be encoded",
-              resource: "subscription",
-            }),
-      );
+      // subscribe() rejects synchronously with the exact DbzzClientError when
+      // the client cannot accept the subscription (closed, blocked, over its
+      // pending limits, unencodable arguments); that rejection is this
+      // query's error state.
+      if (!(error instanceof DbzzClientError)) throw error;
+      this.onError(error);
     }
   }
 
   private stop(): void {
+    this.clearRetry();
     this.stopQuery?.();
     this.stopQuery = null;
     this.stopConnectionState?.();
@@ -120,10 +139,13 @@ export class QueryStoreEntry<Rows> {
   private onUpdate(data: Rows): void {
     // Applied reset/update deliveries are authoritative on the live
     // connection: delivered data is always fresh.
+    this.settleRetries();
+    deepFreeze(data);
     this.replace({ status: "success", data, stale: false });
   }
 
   private onCursorConfirmed(): void {
+    this.settleRetries();
     if (this.state.status === "success" && this.state.stale) {
       this.replace({ status: "success", data: this.state.data, stale: false });
     }
@@ -140,6 +162,48 @@ export class QueryStoreEntry<Rows> {
             ? this.state.staleData
             : undefined,
     });
+    // A retryable rejection removed the subscription, but the consumer's
+    // demand still stands: re-establish it after the server's hint or the
+    // client's own backoff shape, whichever is later.
+    if (error.retryable && this.listeners.size > 0 && this.retryHandle === null) {
+      const backoff = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** this.retryAttempt);
+      this.retryAttempt++;
+      this.retryHandle = setTimeout(
+        () => {
+          this.retryHandle = null;
+          this.resubscribe();
+        },
+        Math.max(error.retryAfterMs ?? 0, backoff),
+      );
+    }
+  }
+
+  private resubscribe(): void {
+    if (this.listeners.size === 0) return;
+    // Blocked, failed, and closed clients own their subscriptions' fate: a
+    // blocked client retains them for refreshCredential() recovery, and a
+    // resubscribe here would discard that retained state.
+    const phase = this.client.currentConnectionState.phase;
+    if (phase === "authentication-blocked" || phase === "terminal-error" || phase === "closed") {
+      return;
+    }
+    this.stopQuery?.();
+    this.stopQuery = null;
+    this.startQuery();
+  }
+
+  private settleRetries(): void {
+    // An authoritative delivery proves the subscription healthy: cancel any
+    // scheduled resubscribe and restart the backoff shape.
+    this.retryAttempt = 0;
+    this.clearRetry();
+  }
+
+  private clearRetry(): void {
+    if (this.retryHandle !== null) {
+      clearTimeout(this.retryHandle);
+      this.retryHandle = null;
+    }
   }
 
   private onConnectionState(connection: DbzzConnectionState): void {

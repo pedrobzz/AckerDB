@@ -3,6 +3,7 @@ import {
   MAX_RETRY_AFTER_MS,
   PROTOCOL_VERSION,
   ProtocolError,
+  WireError,
   decode,
   encode,
   getRef,
@@ -553,7 +554,7 @@ export class DbzzClient {
     this.assertUsable();
     const id = this.allocateId();
     const address = getRef(ref as FunctionReference | string);
-    const frame = this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref: address, args });
+    const frame = this.encodeSubscriptionOrReject(id, address, args);
     const bytes = this.reservePersistent(frame, "subscription");
     const subscription: QuerySubscription = {
       kind: "query",
@@ -582,7 +583,7 @@ export class DbzzClient {
     this.assertUsable();
     const id = this.allocateId();
     const address = getRef(ref as FunctionReference | string);
-    const frame = this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref: address, args });
+    const frame = this.encodeSubscriptionOrReject(id, address, args);
     const bytes = this.reservePersistent(frame, "subscription");
     const subscription: EventSubscription = {
       kind: "event",
@@ -1575,6 +1576,20 @@ export class DbzzClient {
     } catch (error) {
       if (error instanceof ProtocolError) {
         throw localError("validation", "procedure request cannot be encoded", "operation");
+      }
+      throw error;
+    }
+  }
+
+  // Subscription arguments are caller-supplied values, so unencodable ones
+  // (non-finite numbers, functions, ...) surface as the exact validation
+  // rejection rather than a raw wire error.
+  private encodeSubscriptionOrReject(id: number, ref: string, args: unknown): string {
+    try {
+      return this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref, args });
+    } catch (error) {
+      if (error instanceof WireError) {
+        throw localError("validation", error.message, "subscription");
       }
       throw error;
     }

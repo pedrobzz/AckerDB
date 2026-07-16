@@ -379,6 +379,64 @@ describe("useQuery state transitions", () => {
     await render(root, <></>);
   });
 
+  test("a retryable rejection resubscribes on its own and recovers without remounting", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const id = await bootToSuccess(harness, root, container);
+
+    // The server rejects the subscription with an explicitly retryable error;
+    // the base client removes it, but the mounted consumer's demand stands.
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: {
+        code: "overloaded",
+        retryable: true,
+        retryAfterMs: 10,
+        message: "subscription rejected",
+      },
+    });
+    expect(container.textContent).toBe("error:overloaded:one");
+
+    const deadline = Date.now() + 2_000;
+    while (harness.subFrames("sub").length < 2 && Date.now() < deadline) {
+      await act(async () => {
+        await Bun.sleep(20);
+      });
+    }
+    const subs = harness.subFrames("sub");
+    expect(subs).toHaveLength(2);
+    expect(subs[1]!.args).toEqual({ list: 1n });
+
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id: subs[1]!.id,
+      transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
+    });
+    expect(container.textContent).toBe("fresh:one,two");
+    await render(root, <></>);
+  });
+
+  test("unmounting cancels a scheduled retryable resubscribe", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const id = await bootToSuccess(harness, root, container);
+
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "overloaded", retryable: true, message: "subscription rejected" },
+    });
+    await render(root, <></>);
+    await Bun.sleep(300);
+    expect(harness.subFrames("sub")).toHaveLength(1);
+  });
+
   test("an error before any delivery retains nothing", async () => {
     const harness = createHarness();
     const container = mountPoint();
@@ -529,14 +587,30 @@ describe("useQuery state transitions", () => {
     await render(root, <></>);
   });
 
+  test("delivered rows are immutable through the snapshot", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    await bootToSuccess(harness, root, container);
+
+    const state = observed!;
+    if (state.status !== "success") throw new Error("expected success");
+    expect(Object.isFrozen(state.data)).toBe(true);
+    expect(() => state.data.push("mutated")).toThrow(TypeError);
+    expect(container.textContent).toBe("fresh:one");
+    await render(root, <></>);
+  });
+
   test("unencodable argument values become the exact validation error state", async () => {
     const harness = createHarness();
     const container = mountPoint();
     const root = createRoot(container);
     const numbers = { $ref: "todos.byScore" } as QueryRef<{ score: number }, string[]>;
+    let captured: DbzzQueryState<string[]> | undefined;
 
     function BadArgs(): ReactNode {
       const state = useQuery(numbers, { score: Number.NaN });
+      captured = state;
       return <span>{state.status === "error" ? `error:${state.error.code}` : state.status}</span>;
     }
 
@@ -547,6 +621,9 @@ describe("useQuery state transitions", () => {
       </DbzzProvider>,
     );
     expect(container.textContent).toBe("error:validation");
+    if (captured?.status !== "error") throw new Error("expected an error state");
+    expect(captured.error.message).toBe("cannot encode non-finite number NaN");
+    expect(captured.error.outcome).toMatchObject({ retryable: false, resource: "subscription" });
     expect(harness.subFrames("sub")).toHaveLength(0);
     await render(root, <></>);
   });
