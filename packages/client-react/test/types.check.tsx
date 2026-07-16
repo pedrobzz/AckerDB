@@ -1,10 +1,13 @@
 // Compile-time contract for the public @dbzz/client-react surface. This file
 // is typechecked (see the package tsconfig) and never executed.
+import type { SseRef } from "@dbzz/client";
 import {
   DbzzProvider,
   useConnectionState,
+  useSseProcedure,
   type DbzzConnectionState,
   type DbzzProviderConfig,
+  type SseProcedureCall,
 } from "@dbzz/client-react";
 import type { ReactElement, ReactNode } from "react";
 
@@ -112,6 +115,28 @@ declare const ready: Extract<DbzzConnectionState, { phase: "ready" }>;
 // @ts-expect-error the ready state carries no error
 ready.error;
 
+// --- SSE procedure hook: ref-driven argument and chunk inference -------------
+
+declare const chatRef: SseRef<{ prompt: string }, { delta: string }>;
+
+function StreamConsumer(): ReactNode {
+  const start = useSseProcedure(chatRef);
+  const _call: SseProcedureCall<{ prompt: string }, { delta: string }> = start;
+  const stream: ReadableStream<{ delta: string }> = start({ prompt: "hi" });
+  const withSignal: ReadableStream<{ delta: string }> = start(
+    { prompt: "hi" },
+    { signal: new AbortController().signal },
+  );
+  // @ts-expect-error arguments are inferred from the generated reference
+  start({ prompt: 1 });
+  // @ts-expect-error the chunk type is the server-validated yield type
+  const wrongChunks: ReadableStream<number> = start({ prompt: "hi" });
+  // Raw addresses remain usable but infer nothing.
+  const untyped: ReadableStream<unknown> = useSseProcedure("chat.stream")({});
+  void [stream, withSignal, wrongChunks, untyped, _call];
+  return null;
+}
+
 // --- forbidden imperative escape hatches ------------------------------------
 
 type PublicExports = keyof typeof import("@dbzz/client-react");
@@ -119,13 +144,16 @@ type AssertNever<T extends never> = T;
 
 // The value surface is exactly the provider and its hooks: no client getter,
 // no close hook, no client class re-export.
-type UnexpectedExports = AssertNever<Exclude<PublicExports, "DbzzProvider" | "useConnectionState">>;
+type UnexpectedExports = AssertNever<
+  Exclude<PublicExports, "DbzzProvider" | "useConnectionState" | "useSseProcedure">
+>;
 type NoImperativeEscape = AssertNever<
   Extract<PublicExports, "useDbzzClient" | "useClient" | "useClose" | "close" | "DbzzClient">
 >;
 
 export {
   Consumer,
+  StreamConsumer,
   badReconnect,
   bare,
   clientProp,

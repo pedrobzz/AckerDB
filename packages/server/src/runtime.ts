@@ -54,6 +54,7 @@ import {
   type DeliveryObserver,
   type OutboundLane,
   type OutboundReservation,
+  type SseDeliverySnapshot,
 } from "./delivery.ts";
 import type { Engine } from "./engine.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
@@ -69,9 +70,10 @@ import {
 } from "./executor.ts";
 import type {
   AnyRegistered,
+  AnyRegisteredSse,
   ProcedureCtx,
   SseCtx,
-  StreamWriter,
+  SseSource,
   TxCtx,
 } from "./functions.ts";
 import {
@@ -327,6 +329,81 @@ function aborted(signal: AbortSignal | undefined): void {
         resource: "operation",
         cause: signal.reason,
       });
+}
+
+interface SseChunkIterator {
+  next(): Promise<IteratorResult<unknown, unknown>>;
+  /** Returns/cancels the handler's source so its cleanup runs exactly once. */
+  release(reason?: unknown): Promise<unknown>;
+}
+
+function sseChunkIterator(source: SseSource<unknown>): SseChunkIterator {
+  if (source instanceof ReadableStream) {
+    const reader = source.getReader();
+    return {
+      next: async () => {
+        const part = await reader.read();
+        return part.done ? { done: true, value: undefined } : { done: false, value: part.value };
+      },
+      release: (reason) => reader.cancel(reason),
+    };
+  }
+  if (
+    (typeof source === "object" || typeof source === "function") &&
+    source !== null &&
+    Symbol.asyncIterator in source
+  ) {
+    const iterator = source[Symbol.asyncIterator]();
+    return {
+      next: () => iterator.next(),
+      release: (reason) =>
+        iterator.return === undefined ? Promise.resolve() : iterator.return(reason),
+    };
+  }
+  throw new DbzzError("internal", "sse handler must return a ReadableStream or async iterable");
+}
+
+/**
+ * Adapts the handler's returned source into the producer's merge input.
+ * Zero high-water: the source advances only when the receiver-credited merge
+ * loop asks for the next chunk, so downstream acknowledgement drives the
+ * handler. Every chunk is validated against the declared `yields` validator;
+ * a failing chunk releases the source and fails the stream with the exact
+ * validation error. `handlerContext` restores the invocation-time async
+ * context, so generator bodies keep the handler's trace/invocation ownership.
+ */
+function validatedSseSource(
+  fn: AnyRegisteredSse,
+  source: SseSource<unknown>,
+  handlerContext: <T>(work: () => T) => T,
+): ReadableStream<unknown> {
+  const iterator = handlerContext(() => sseChunkIterator(source));
+  return new ReadableStream<unknown>(
+    {
+      pull: async (controller) => {
+        const part = await handlerContext(() => iterator.next());
+        if (part.done === true) {
+          controller.close();
+          return;
+        }
+        let chunk: unknown;
+        try {
+          chunk = fn.yields.check(part.value, "chunk");
+        } catch (error) {
+          // The source's own cleanup failures cannot mask the validation error.
+          void Promise.resolve()
+            .then(() => handlerContext(() => iterator.release(error)))
+            .catch(() => {});
+          throw transportError(error);
+        }
+        controller.enqueue(chunk);
+      },
+      cancel: async (reason) => {
+        await handlerContext(() => iterator.release(reason));
+      },
+    },
+    { highWaterMark: 0 },
+  );
 }
 
 function observationOutcome(
@@ -1010,7 +1087,10 @@ export class Runtime implements RuntimePort {
       let lifecycle: Promise<void> | null = null;
       let deliveryObserver: DeliveryObserver | undefined;
       try {
-        const fn = this.expect(request.address, "sse");
+        const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
+        if (fn.yields === undefined) {
+          throw new DbzzError("internal", `sse "${request.address}" has no yields validator`);
+        }
         const signal = this.operationSignal(request.signal);
         aborted(signal);
         producer = new BoundedSseProducer({
@@ -1024,12 +1104,7 @@ export class Runtime implements RuntimePort {
         streamId = this.registerSseProducer(producer);
         void producer.finished.then(() => this.removeSseProducer(streamId!, producer!));
         const authorized = deferred<void>();
-        const stream: StreamWriter = Object.freeze({
-          write: (chunk: unknown) => producer!.write(chunk),
-          merge: (source: ReadableStream<unknown>) => {
-            void producer!.merge(source).catch(() => {});
-          },
-        });
+        let handlerContext: <T>(work: () => T) => T = (work) => work();
         const handler = invokeFunction(
           fn,
           Object.freeze({
@@ -1039,20 +1114,30 @@ export class Runtime implements RuntimePort {
               producer.signal,
               requestBytes,
             ),
-            stream,
             abortSignal: producer.signal,
           }) as SseCtx,
           request.args,
           {
             onAuthorized: () => {
               deliveryObserver = this[CAPTURE_DELIVERY_OBSERVER]();
+              handlerContext = AsyncLocalStorage.snapshot();
               authorized.resolve();
             },
           },
         );
-        const completion = handler.then(
-          () => producer!.complete(),
-          async (error) => {
+        const completion = handler
+          .then(async (result: SseSource<unknown>) => {
+            const source = validatedSseSource(fn, result, handlerContext);
+            try {
+              await producer!.merge(source);
+            } catch (error) {
+              // merge() that never consumed the source still owns releasing it.
+              void source.cancel(error).catch(() => {});
+              throw error;
+            }
+            return producer!.complete();
+          })
+          .catch(async (error) => {
             producer!.fail(error);
             try {
               await producer!.complete();
@@ -1060,8 +1145,7 @@ export class Runtime implements RuntimePort {
               // Preserve the handler failure after terminal ACK/cancel owns cleanup.
             }
             throw error;
-          },
-        );
+          });
         lifecycle = completion.catch((error) => {
           if (scope !== undefined) {
             const safeError = transportError(error);
@@ -1135,6 +1219,11 @@ export class Runtime implements RuntimePort {
   /** Receiver credit is capability-authenticated and remains routable during drain. */
   ackSse(request: SseAckRequest): boolean {
     return this.sseProducers.get(request.stream)?.ack(request.seq, request.proof) ?? false;
+  }
+
+  /** Delivery snapshot of one active stream, or null once it finished. */
+  sseSnapshot(streamId: string): SseDeliverySnapshot | null {
+    return this.sseProducers.get(streamId)?.snapshot() ?? null;
   }
 
   private registerSseProducer(producer: BoundedSseProducer): string {

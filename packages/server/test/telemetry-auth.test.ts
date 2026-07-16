@@ -77,8 +77,9 @@ const functions = {
     stream: sseProcedure({
       access: "authenticated",
       args: { secret: dbz.string() },
-      handler: (ctx: Ctx) => {
-        ctx.stream.write({ result: PRIVATE_STREAM_RESULT });
+      yields: dbz.object({ result: dbz.string() }),
+      handler: async function* () {
+        yield { result: PRIVATE_STREAM_RESULT };
       },
     }),
   },

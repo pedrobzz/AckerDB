@@ -74,15 +74,16 @@ const functions = {
     endless: sseProcedure({
       access: "public",
       args: {},
-      handler: (ctx) => {
+      yields: dbz.object({ payload: dbz.string() }),
+      handler: () => {
         let emitted = false;
-        ctx.stream.merge(new ReadableStream({
+        return new ReadableStream({
           pull(controller) {
             if (emitted) return;
             emitted = true;
             controller.enqueue({ payload: streamPayload });
           },
-        }));
+        });
       },
     }),
     block: procedure({

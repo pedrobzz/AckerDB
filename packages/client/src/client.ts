@@ -646,6 +646,11 @@ export class DbzzClient {
     }
   }
 
+  /**
+   * Acknowledged SSE stream: `Chunk` is the ref's server-validated yield
+   * type. Chunk N's receiver credit is sent when the consumer requests chunk
+   * N+1, so iteration pace is the backpressure signal end to end.
+   */
   async *sse<A, Chunk = unknown>(
     ref: SseRef<A, Chunk> | string,
     args: A,

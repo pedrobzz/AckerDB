@@ -130,16 +130,18 @@ const functions = {
     once: sseProcedure({
       access: "authenticated",
       args: {},
-      handler: (ctx: Ctx) => {
-        ctx.stream.write({ phase: "once" });
+      yields: dbz.object({ phase: dbz.string() }),
+      handler: async function* () {
+        yield { phase: "once" };
       },
     }),
     stream: sseProcedure({
       access: "authenticated",
       args: {},
-      handler: async (ctx: Ctx) => {
-        ctx.stream.write({ phase: "started" });
+      yields: dbz.object({ phase: dbz.string() }),
+      handler: async function* (ctx: Ctx) {
         blockedSseStarted.resolve();
+        yield { phase: "started" };
         await waitForAbort(ctx.abortSignal);
       },
     }),

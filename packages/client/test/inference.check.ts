@@ -4,16 +4,18 @@
  * @ts-expect-error) is the test.
  */
 import { DbzzClient } from "@dbzz/client";
-import { anyApi, type ApiFromModules, type MutationReceipt } from "@dbzz/core";
+import { anyApi, type ApiFromModules, type MutationReceipt, type SseRef } from "@dbzz/core";
 import {
   dbz,
   defineSchema,
   mutation,
   procedure,
   query,
+  sseProcedure,
   type MutationBuilder,
   type ProcedureBuilder,
   type QueryBuilder,
+  type SseBuilder,
 } from "@dbzz/server";
 
 const schema = defineSchema({});
@@ -47,13 +49,30 @@ const pipeline = generatedProcedure({
   })),
 });
 
+const generatedSse = sseProcedure as SseBuilder<Schema>;
+
+const ticker = generatedSse({
+  args: { label: dbz.string() },
+  yields: dbz.object({ label: dbz.string(), tick: dbz.number() }),
+  access: "public",
+  handler: async function* (_ctx, args) {
+    yield { label: args.label, tick: 0 };
+  },
+});
+
 const api = anyApi as unknown as ApiFromModules<{
   generated: {
     authorizationSummary: typeof authorizationSummary;
     createItem: typeof createItem;
     pipeline: typeof pipeline;
+    ticker: typeof ticker;
   };
 }>;
+
+// Generated SSE references carry the yields validator's chunk type.
+const _tickerRef: SseRef<{ label: string }, { label: string; tick: number }> = api.generated.ticker;
+// @ts-expect-error the SSE reference chunk is the validated yield, not the handler completion
+const _completionRef: SseRef<{ label: string }, void> = api.generated.ticker;
 
 declare const client: DbzzClient;
 
@@ -75,4 +94,13 @@ export async function _generatedClientInference(): Promise<void> {
   const _committed: true = procedureResult.committed;
   // @ts-expect-error nested mutation inference remains intact through the procedure result
   const _wrongProcedureId: string = procedureResult.item.id;
+
+  for await (const chunk of client.sse(api.generated.ticker, { label: "sse" })) {
+    const _tick: number = chunk.tick;
+    const _label: string = chunk.label;
+    // @ts-expect-error the SSE chunk type follows the yields validator
+    const _wrongTick: string = chunk.tick;
+  }
+  // @ts-expect-error SSE arguments are inferred from the reference
+  client.sse(api.generated.ticker, { label: 1 });
 }

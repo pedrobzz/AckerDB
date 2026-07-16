@@ -172,25 +172,28 @@ const functions = {
     chat: sseProcedure({
       access: "authenticated",
       args: { text: dbz.string() },
-      handler: (ctx: Ctx, args: Ctx) => {
-        ctx.stream.write({ type: "text-delta", delta: args.text });
-        ctx.stream.write({ type: "usage", chunks: 1 });
+      yields: dbz.jsonb(),
+      handler: async function* (_ctx: Ctx, args: Ctx) {
+        yield { type: "text-delta", delta: args.text };
+        yield { type: "usage", chunks: 1 };
       },
     }),
     failLate: sseProcedure({
       access: "public",
       args: {},
-      handler: (ctx: Ctx) => {
-        ctx.stream.write({ phase: "started" });
+      yields: dbz.jsonb(),
+      handler: async function* () {
+        yield { phase: "started" };
         throw new DbzzError("unavailable", "stream failed", { resource: "sse" });
       },
     }),
     stayOpen: sseProcedure({
       access: "public",
       args: {},
-      handler: async (ctx: Ctx) => {
-        ctx.stream.write({ phase: "started" });
+      yields: dbz.jsonb(),
+      handler: async function* (ctx: Ctx) {
         longSseStarted?.resolve();
+        yield { phase: "started" };
         await new Promise<void>((resolve) => {
           if (ctx.abortSignal.aborted) resolve();
           else ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
@@ -1006,8 +1009,9 @@ describe("SSE", () => {
 
     const reader = readSse(success);
     const first = await reader.next();
-    const second = await reader.next();
     expect(first).toMatchObject({ t: "sse_chunk", seq: 1, value: { type: "text-delta", delta: "hello" } });
+    expect((await acknowledgeSse(base, reader.streamId, first!)).status).toBe(204);
+    const second = await reader.next();
     expect(second).toMatchObject({ t: "sse_chunk", seq: 2, value: { type: "usage", chunks: 1 } });
     const beforeNoops = runtime.status().sseBudget.bytes;
     const verifiedBeforeAcks = [...verifier.verified];
@@ -1023,10 +1027,10 @@ describe("SSE", () => {
     }
     expect(verifier.verified).toEqual(verifiedBeforeAcks);
     expect(runtime.status().sseBudget.bytes).toBe(beforeNoops);
-    expect(server.status()).toMatchObject({ sseAckIngress: 3, sseAckNoops: 3 });
+    expect(server.status()).toMatchObject({ sseAckIngress: 4, sseAckNoops: 3 });
 
-    const cumulative = await acknowledgeSse(base, reader.streamId, second!);
-    expect(cumulative.status).toBe(204);
+    const credited = await acknowledgeSse(base, reader.streamId, second!);
+    expect(credited.status).toBe(204);
     expect(runtime.status().sseBudget.bytes).toBeLessThan(beforeNoops);
     const terminal = await reader.next();
     expect(terminal).toMatchObject({ t: "sse_done", seq: 3 });
@@ -1039,7 +1043,7 @@ describe("SSE", () => {
     const stale = await acknowledgeSse(base, reader.streamId, terminal!);
     expect(stale.status).toBe(204);
     expect(await stale.text()).toBe("");
-    expect(server.status()).toMatchObject({ sseAckIngress: 6, sseAckNoops: 4 });
+    expect(server.status()).toMatchObject({ sseAckIngress: 7, sseAckNoops: 4 });
 
     const malformed = await fetch(`${base}/api/sse/ack`, {
       method: "POST",
@@ -1061,7 +1065,7 @@ describe("SSE", () => {
     expect(server.status()).toMatchObject({
       httpIngress: 0,
       httpFairnessKeys: 0,
-      sseAckIngress: 7,
+      sseAckIngress: 8,
       sseAckNoops: 4,
     });
 
@@ -1078,10 +1082,13 @@ describe("SSE", () => {
     });
     expect(late.status).toBe(200);
     const lateReader = readSse(late);
-    expect(await lateReader.next()).toMatchObject({
+    const lateStarted = await lateReader.next();
+    expect(lateStarted).toMatchObject({
       t: "sse_chunk",
       value: { phase: "started" },
     });
+    // Crediting the chunk advances the handler into its failure.
+    expect((await acknowledgeSse(base, lateReader.streamId, lateStarted!)).status).toBe(204);
     const failure = await lateReader.next();
     expect(failure).toMatchObject({
       t: "sse_error",

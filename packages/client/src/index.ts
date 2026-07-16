@@ -1,5 +1,5 @@
 export * from "./client.ts";
-export { anyApi } from "@dbzz/core";
+export { anyApi, getRef } from "@dbzz/core";
 export type {
   ApiFromModules,
   EventRef,

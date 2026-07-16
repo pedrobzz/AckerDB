@@ -163,7 +163,7 @@ export {
   type RegisteredSse,
   type SseBuilder,
   type SseCtx,
-  type StreamWriter,
+  type SseSource,
   type TxCtx,
 } from "./functions.ts";
 export { Registry } from "./registry.ts";
