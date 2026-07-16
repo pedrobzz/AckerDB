@@ -125,7 +125,13 @@ resolution and move ~12 milli-cores per system between identical runs:
   the run fails only when current DBZZ falls behind current SpacetimeDB by
   more than the floor. Every accepted run prints and records each near-tie
   path's baseline and current margins, so within-floor drift stays visible
-  run-over-run.
+  run-over-run. A near-tie path can therefore drift at most one envelope
+  behind current SpacetimeDB — a bounded, non-compounding worst case of
+  roughly its baseline margin plus the floor — before the gate fails. The
+  fixed-rate throughput near-ties are additionally backstopped regardless of
+  the envelope: delivery-completeness correctness, the partitioned
+  offered-load completion gate, and the shared Convex delivery floor all
+  reject a failure to deliver the offered work.
 
 The near-tie classification is derived from the digest-pinned frozen baseline
 only, so it can never grow, and the near-tie count is itself frozen. This is a

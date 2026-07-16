@@ -19,8 +19,15 @@ export const FROZEN_CONVEX_FLOORS = 126;
  * Run-to-run measurement noise floor from the repo benchmark doctrine:
  * percentiles move ±15% between runs on this hardware, and a real regression
  * shows a consistent direction across metrics and runs rather than a
- * single-draw flip. Applied as a fraction of the SpacetimeDB value on the
- * same path.
+ * single-draw flip. The doctrine quantifies 15% for latency percentiles; it
+ * is adopted as the single repo-derived bound for every family rather than
+ * inventing uncalibrated per-family numbers. The exposure this creates is
+ * bounded and non-compounding: a near-tie path can drift at most one
+ * envelope behind current SpacetimeDB — roughly its baseline margin plus
+ * the floor, once — before the gate fails, and every near-tie margin is
+ * printed and recorded on every accepted run, unlike the strict gate, which
+ * surfaced nothing until a flip. Applied as a fraction of the SpacetimeDB
+ * value on the same path.
  */
 export const NOISE_FLOOR_RELATIVE = 0.15;
 /**

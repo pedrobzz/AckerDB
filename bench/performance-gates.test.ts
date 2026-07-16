@@ -310,6 +310,21 @@ describe("frozen performance acceptance", () => {
     );
   });
 
+  test("a coherent setup slowdown that lands beyond the floor fails even though both setup paths are near-ties", () => {
+    const after = copy();
+    const dbzzSetup = subscription(after, "dbzz", "partitioned");
+    const spacetimeSetup = subscription(after, "spacetimedb", "partitioned");
+    // one internally consistent regression: setup time and its derived
+    // connections/s move together until DBZZ is 16% behind SpacetimeDB
+    const factor = (spacetimeSetup.setupMs * 1.16) / dbzzSetup.setupMs;
+    expect(factor).toBeGreaterThan(1);
+    dbzzSetup.setupMs *= factor;
+    dbzzSetup.setupConnectionsPerSec /= factor;
+    expect(() => assertPerformanceAcceptance(after, baselineJson)).toThrow(
+      "frozen near-tie DBZZ-over-SpacetimeDB win reversed beyond the noise floor at subscriptions/partitioned/fixed-rate/setupMs",
+    );
+  });
+
   test("rejects every frozen Convex floor group adversarially", () => {
     const cases: { name: string; mutate(record: BenchmarkRecordLike): void }[] = [
       {
