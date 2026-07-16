@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { NativeWebSocket, mountPoint, nativeFetch } from "./support/dom.ts";
+import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -125,7 +125,7 @@ function createApp(): App {
         createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
         fetch: (url, init) => {
           if (url.endsWith("/api/call")) calls.push({ signal: init?.signal ?? undefined });
-          return nativeFetch(url, init);
+          return fetch(url, init);
         },
         ...overrides,
       };
@@ -431,7 +431,7 @@ describe("useProcedure against a real dbzz server", () => {
         clientSessionId: sessionId,
         fetch: (url, init) => {
           if (url.endsWith("/api/call")) dispatches.push(tag);
-          return nativeFetch(url, init);
+          return fetch(url, init);
         },
       });
 
