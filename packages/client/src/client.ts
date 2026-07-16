@@ -203,8 +203,19 @@ export class DbzzClientError extends Error {
   readonly retryAfterMs?: number;
   readonly resource?: ResourceClass;
   readonly committed?: true;
+  /**
+   * Present when application-lifecycle suspension settled this non-resumable
+   * operation (a procedure, SSE stream, or AI generation): the application
+   * entered background, so the client aborted the in-flight transport work —
+   * or refused to start new work — and produced this outcome. Consumers that
+   * separate deliberate lifecycle cancellation from failure (the AI SDK
+   * transport classifies these as aborts, not errors) key on it. The code
+   * stays an ordinary base category: `unavailable` when the work provably
+   * never ran, `indeterminate` when completion is unknown.
+   */
+  readonly interruption?: "suspension";
 
-  constructor(outcome: Outcome) {
+  constructor(outcome: Outcome, interruption?: "suspension") {
     super(outcome.message);
     this.name = "DbzzClientError";
     this.outcome = Object.freeze({ ...outcome });
@@ -213,6 +224,7 @@ export class DbzzClientError extends Error {
     this.retryAfterMs = outcome.retryAfterMs;
     this.resource = outcome.resource;
     this.committed = outcome.committed;
+    if (interruption !== undefined) this.interruption = interruption;
   }
 }
 
@@ -319,6 +331,32 @@ function localError(
 ): DbzzClientError {
   return new DbzzClientError({ code, message, retryable: false, resource, committed });
 }
+
+/**
+ * A typed outcome produced by lifecycle suspension settling — or refusing to
+ * start — non-resumable work. The code is an ordinary base-client category;
+ * the `interruption` marker is what tells consumers the application lifecycle
+ * (not a failure and not their own abort) owned the settlement.
+ */
+function suspensionError(
+  code: OutcomeCode,
+  message: string,
+  resource?: ResourceClass,
+): DbzzClientError {
+  return new DbzzClientError({ code, message, retryable: false, resource }, "suspension");
+}
+
+/**
+ * The reason suspendTransport gives every in-flight fetch controller.
+ * Settlement paths compare the signal's reason against this exact value, so
+ * suspension-caused outcomes carry their {@link DbzzClientError.interruption}
+ * marker while caller aborts and close() keep their plain outcomes.
+ */
+const SUSPENSION_INTERRUPTION = suspensionError(
+  "unavailable",
+  "client suspended while the request was in flight",
+  "connection",
+);
 
 function cancelWithoutWaiting(target: CancelableResponse, reason?: unknown): void {
   try {
@@ -763,10 +801,26 @@ export class DbzzClient {
     if (options.signal?.aborted) {
       throw localError("unavailable", "procedure request was canceled", "operation");
     }
+    // Procedures are non-resumable: while the application is backgrounded no
+    // transport work may start, and queueing until activation would silently
+    // dispatch work whose caller stopped observing it minutes ago — the same
+    // hidden-restart class suspension settlement exists to prevent. A call
+    // that starts while suspended settles now, determinately (the server
+    // never saw it), with the typed suspension outcome.
+    if (this.suspended) {
+      throw suspensionError("unavailable", "client is suspended", "operation");
+    }
     const id = this.allocateId();
     const body = this.encodeCall(id, getRef(ref as FunctionReference | string), args);
     const release = this.reserveTransient(body, "operation");
     const fetchControl = this.createFetchController(options.signal, this.limits.maxQueryAgeMs);
+    // Suspension settles this call with its exact typed indeterminate outcome
+    // (marked, so consumers can tell lifecycle interruption from failure); a
+    // caller abort or an ordinary network failure keeps the plain one.
+    const indeterminate = (message: string): DbzzClientError =>
+      fetchControl.controller.signal.reason === SUSPENSION_INTERRUPTION
+        ? suspensionError("indeterminate", message, "operation")
+        : localError("indeterminate", message, "operation");
     try {
       let response: Response;
       try {
@@ -788,7 +842,7 @@ export class DbzzClient {
           },
         );
       } catch {
-        throw localError("indeterminate", "procedure completion is unknown", "operation");
+        throw indeterminate("procedure completion is unknown");
       }
       let text: string;
       try {
@@ -799,7 +853,7 @@ export class DbzzClient {
         );
       } catch (error) {
         if (error instanceof DbzzClientError && error.code !== "unavailable") throw error;
-        throw localError("indeterminate", "procedure response was interrupted", "operation");
+        throw indeterminate("procedure response was interrupted");
       }
       let parsed;
       try {
@@ -837,6 +891,13 @@ export class DbzzClient {
     if (options.signal?.aborted) {
       throw localError("unavailable", "SSE request was canceled", "sse");
     }
+    // The same non-resumable contract as procedure(): a stream first pulled
+    // while the application is backgrounded settles now with the typed
+    // suspension outcome instead of dispatching transport work — or queueing
+    // a hidden start — that activation must never silently perform.
+    if (this.suspended) {
+      throw suspensionError("unavailable", "client is suspended", "sse");
+    }
     const id = this.allocateId();
     const body = this.encodeCall(id, getRef(ref as FunctionReference | string), args);
     const releaseReservation = this.reserveTransient(body, "sse");
@@ -845,7 +906,10 @@ export class DbzzClient {
     let reader: SseResponseReader | undefined;
     let cleanupStarted = false;
     let cleanupReason: unknown;
-    const cancellationError = localError("unavailable", "SSE request was canceled", "sse");
+    // The stream's one cancellation outcome. Reassigned (before any throw can
+    // observe it — onAbort runs first) when suspension owns the abort, so the
+    // terminal error names the lifecycle interruption exactly.
+    let cancellationError = localError("unavailable", "SSE request was canceled", "sse");
     let interruptWait: (() => void) | undefined;
     const waitForOwnership = async <T>(promise: Promise<T>): Promise<T> => {
       if (cleanupStarted) {
@@ -888,6 +952,13 @@ export class DbzzClient {
       }
     };
     const onAbort = (): void => {
+      if (fetchControl.controller.signal.reason === SUSPENSION_INTERRUPTION) {
+        cancellationError = suspensionError(
+          "unavailable",
+          "SSE stream was interrupted by suspension",
+          "sse",
+        );
+      }
       cleanup(fetchControl.controller.signal.reason);
       interruptWait?.();
     };
@@ -946,6 +1017,20 @@ export class DbzzClient {
       }
       const stream = this.sseStream(response);
       const ackAgeMs = this.sseAckAge(response);
+      // An acknowledgement failure that follows the request's abort settles
+      // with the stream's one cancellation outcome (suspension-marked when
+      // the lifecycle owned the abort) — the same post-abort rule the read
+      // path applies. Genuine acknowledgement failures pass through exactly.
+      const acknowledge = async (
+        frame: SseChunkMessage | SseDoneMessage | SseErrorMessage,
+      ): Promise<void> => {
+        try {
+          await this.acknowledgeSse(stream, frame, ackAgeMs, fetchControl.controller.signal);
+        } catch (error) {
+          if (cleanupStarted || fetchControl.controller.signal.aborted) throw cancellationError;
+          throw error;
+        }
+      };
       if (!response.body) throw localError("malformed", "SSE response has no body", "sse");
 
       const streamReader = response.body.getReader();
@@ -1054,11 +1139,11 @@ export class DbzzClient {
         }
         if (frame.t === "sse_chunk") {
           yield frame.value as Chunk;
-          await this.acknowledgeSse(stream, frame, ackAgeMs, fetchControl.controller.signal);
+          await acknowledge(frame);
           expectedSequence++;
           continue;
         }
-        await this.acknowledgeSse(stream, frame, ackAgeMs, fetchControl.controller.signal);
+        await acknowledge(frame);
         if (frame.t === "sse_done") return;
         throw new DbzzClientError(frame.outcome);
       }
@@ -1130,8 +1215,10 @@ export class DbzzClient {
    * connect() demand. Pending-request expiry timers stay armed — their
    * absolute deadlines remain correct however late the platform fires them.
    * Non-resumable transports (procedures, SSE) are aborted so their callers
-   * settle instead of hanging across the gap; nothing restarts them on
-   * resume. Duplicate notifications coalesce.
+   * settle promptly with suspension-marked typed outcomes instead of hanging
+   * across the gap; nothing restarts them on resume, and new procedure/SSE
+   * work started while suspended is refused with the same marked contract
+   * rather than queued. Duplicate notifications coalesce.
    */
   private suspendTransport(): void {
     if (this.closed || this.suspended) return;
@@ -1143,7 +1230,10 @@ export class DbzzClient {
       this.authAttempt.expiryHandle = undefined;
     }
     this.retireConnection(1001, "client suspended");
-    for (const controller of this.activeFetches) controller.abort();
+    // The abort reason marks these settlements as lifecycle interruptions:
+    // each in-flight procedure and SSE stream produces its exact typed
+    // suspension outcome (never a caller-abort or failure outcome).
+    for (const controller of this.activeFetches) controller.abort(SUSPENSION_INTERRUPTION);
     this.activeFetches.clear();
     this.publishConnectionState();
   }

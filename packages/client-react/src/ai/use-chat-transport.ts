@@ -1,4 +1,4 @@
-import type { SseRef } from "@dbzz/client";
+import { DbzzClientError, type SseRef } from "@dbzz/client";
 import type { ChatTransport, InferUIMessageChunk, UIMessage, UIMessageChunk } from "ai";
 import { useEffect, useInsertionEffect, useState } from "react";
 import { useSseProcedure, type SseProcedureCall } from "../use-sse-procedure.ts";
@@ -95,12 +95,15 @@ function standardChatArgs<UI_MESSAGE extends UIMessage>(
  * fails its stream with the client's typed cancellation, but the SDK
  * classifies stream failures as errors (status "error", `onError`,
  * `onFinish({ isError: true })`) unless its own per-request signal fired or
- * the failure is named `AbortError` — and the hook's unmount lifetime is
- * invisible to both. This pull-through keeps dbzz's semantics exact — lazy
- * start on the first pull, one chunk per pull, cancel propagation, and the
- * identical error object for real failures — and only failures that follow
- * the request's own abort surface as `AbortError`, which the SDK settles as
- * cancellation (`isAbort: true`, no error callbacks).
+ * the failure is named `AbortError` — and the hook's unmount lifetime and the
+ * client's lifecycle suspension are both invisible to it. This pull-through
+ * keeps dbzz's semantics exact — lazy start on the first pull, one chunk per
+ * pull, cancel propagation, and the identical error object for real failures
+ * — and only two failure families surface as `AbortError`, which the SDK
+ * settles as cancellation (`isAbort: true`, no error callbacks): failures
+ * that follow the request's own abort, and dbzz's suspension-marked
+ * interruptions (the application backgrounded, so the client settled the
+ * non-resumable generation — a lifecycle cancellation, not an app failure).
  */
 function abortAwareStream<Chunk>(
   stream: ReadableStream<Chunk>,
@@ -115,7 +118,9 @@ function abortAwareStream<Chunk>(
         try {
           part = await reader.read();
         } catch (error) {
-          if (!aborted.aborted) throw error;
+          const interrupted =
+            error instanceof DbzzClientError && error.interruption === "suspension";
+          if (!aborted.aborted && !interrupted) throw error;
           // Cancellation owns the outcome; `Error` (not DOMException) keeps
           // the transport free of DOM globals, and the SDK only reads the
           // name.
