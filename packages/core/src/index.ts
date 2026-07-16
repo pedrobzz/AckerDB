@@ -1,4 +1,5 @@
 export { encode, decode, stableEncode, WireError } from "./wire.ts";
+export type { Identity } from "./identity.ts";
 export {
   anyApi,
   getRef,

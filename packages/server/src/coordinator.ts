@@ -127,6 +127,15 @@ export interface CommitRequest<T, Publication> {
   ) => void;
 }
 
+export interface FrameworkTransactionRequest<T> {
+  readonly fairnessKey: string;
+  readonly requestBytes: number;
+  readonly signal?: AbortSignal;
+  readonly work: () => T | Promise<T>;
+  /** Synchronous committed-state handoff before the single writer admits its next turn. */
+  readonly afterCommit?: (value: T) => void;
+}
+
 export interface CommitTelemetryEvent {
   readonly operation: "mutation" | "transaction" | "scheduled";
   readonly stage:
@@ -324,6 +333,49 @@ export class CommitCoordinator<Publication> {
       });
     }
     return handoff.result;
+  }
+
+  /** Serialize framework-owned storage through the same bounded writer without publishing app state. */
+  async transactFramework<T>(request: FrameworkTransactionRequest<T>): Promise<T> {
+    if (transaction.getStore()) {
+      throw new DbzzError("validation", "cannot open a framework transaction inside a transaction");
+    }
+    return this.writer.submit(async () => {
+      let open = false;
+      try {
+        this.engine.writer.exec("BEGIN IMMEDIATE");
+        open = true;
+        const value = await transaction.run(true, request.work);
+        this.engine.writer.exec("COMMIT");
+        open = false;
+        try {
+          request.afterCommit?.(value);
+        } catch (cause) {
+          throw new DbzzError(
+            "convergence_unavailable",
+            "framework transaction committed but its post-commit handoff failed",
+            { committed: true, cause },
+          );
+        }
+        return value;
+      } catch (error) {
+        if (open) {
+          try {
+            this.engine.writer.exec("ROLLBACK");
+          } catch (rollbackError) {
+            throw new DbzzError("indeterminate", "framework transaction outcome could not be determined", {
+              cause: new AggregateError([error, rollbackError]),
+            });
+          }
+        }
+        throw error;
+      }
+    }, {
+      operation: "transaction",
+      bytes: request.requestBytes,
+      fairnessKey: request.fairnessKey,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    });
   }
 
   close(): void {

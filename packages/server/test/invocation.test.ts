@@ -14,6 +14,7 @@ import { Registry } from "../src/registry.ts";
 function user(): UserPrincipal {
   return Object.freeze({
     kind: "user",
+    identity: 1n as UserPrincipal["identity"],
     issuer: "https://issuer.example/",
     subject: "user-1",
     claims: Object.freeze({}),

@@ -2,6 +2,13 @@ export type SystemName = "dbzz" | "convex" | "spacetimedb";
 export type OperationName = "query" | "mutation-uncontended" | "mutation-contended" | "procedure";
 export type SubscriptionPattern = "shared" | "partitioned";
 
+export const OPERATION_NAMES = Object.freeze([
+  "query",
+  "mutation-uncontended",
+  "mutation-contended",
+  "procedure",
+] as const satisfies readonly OperationName[]);
+
 export const DOCUMENT_PARTITIONS = 64;
 export const DOCUMENTS_PER_PARTITION = 128;
 export const DOCUMENT_COUNT = DOCUMENT_PARTITIONS * DOCUMENTS_PER_PARTITION;
@@ -279,6 +286,16 @@ export function benchmarkConfigFromEnv(): BenchmarkConfig {
     },
     seedBatchSize: positiveInt("BENCH_SEED_BATCH", 256),
   };
+}
+
+/**
+ * Discrete offered fixed-rate update count for one measurement window. The
+ * workload emits exactly this many updates and acceptance requires exactly
+ * this many back, so the offered-work contract has a single source of truth
+ * even when durationMs is not a whole number of seconds.
+ */
+export function offeredFixedRateUpdates(durationMs: number, updatesPerSec: number): number {
+  return Math.max(1, Math.floor((durationMs / 1_000) * updatesPerSec));
 }
 
 export function subscriptionCapacitySlots(

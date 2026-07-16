@@ -1,9 +1,12 @@
 export * from "./client.ts";
-export { anyApi } from "@dbzz/core";
+export { anyApi, getRef, stableEncode } from "@dbzz/core";
 export type {
   ApiFromModules,
+  AuthenticationDescriptor,
+  CredentialProvenance,
   EventRef,
   FunctionReference,
+  Identity,
   MutationRef,
   ProcedureRef,
   QueryRef,

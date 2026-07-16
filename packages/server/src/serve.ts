@@ -14,11 +14,9 @@ import {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
   type ClientPrincipal,
-  type CredentialVerifier,
 } from "./auth.ts";
 import {
   acquireAuthLease,
-  validateCredentialVerifierRevocation,
   type AuthLease,
 } from "./auth-lease.ts";
 import {
@@ -58,7 +56,6 @@ export interface DbzzServerOptions {
   readonly limits: ServiceLimits;
   readonly port: number;
   readonly hostname?: string;
-  readonly verifier?: CredentialVerifier;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
 }
@@ -67,7 +64,6 @@ export interface ServeOptions {
   readonly runtime: Runtime;
   readonly port: number;
   readonly hostname?: string;
-  readonly verifier?: CredentialVerifier;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
 }
@@ -422,7 +418,6 @@ export class DbzzServer {
   readonly hostname: string;
   readonly statusScope: string;
 
-  private readonly verifier: CredentialVerifier | undefined;
   private readonly connections = new Set<WsData>();
   private readonly outbound: OutboundBudget;
   private readonly httpAdmission: HttpAdmission;
@@ -439,11 +434,6 @@ export class DbzzServer {
   constructor(options: DbzzServerOptions) {
     this.limits = defineServiceLimits(options.limits);
     this.hostname = options.hostname ?? "127.0.0.1";
-    this.verifier = options.verifier;
-    validateCredentialVerifierRevocation(
-      this.verifier,
-      this.limits.auth.revocationDeadlineMs,
-    );
     this.statusScope = configuredStatusScope(options.statusScope);
     this.outbound = new OutboundBudget(
       this.limits.webSocket.maxBytes,
@@ -639,11 +629,13 @@ export class DbzzServer {
 
   private async authenticate(request: Request): Promise<AuthLease> {
     const credential = credentialFromAuthorization(request.headers.get("authorization"));
+    const runtime = this.requireRuntime();
     return acquireAuthLease({
       credential,
-      verifier: this.verifier,
+      verifier: runtime.credentialVerifier,
+      resolveIdentity: (account, signal) => runtime.resolveIdentity(account, signal),
       signal: request.signal,
-      revocationDeadlineMs: this.requireRuntime().limits.auth.revocationDeadlineMs,
+      revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
     });
   }
 
@@ -680,7 +672,7 @@ export class DbzzServer {
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,
-      }, bytes, externalTrace);
+      }, bytes, externalTrace, lease.invalidationScope);
       if (sse) {
         const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;
@@ -792,7 +784,6 @@ export class DbzzServer {
         runtime,
         sink: data.sink,
         source: data.source,
-        verifier: this.verifier,
         revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
         limits: runtime.limits,
       }, runtime.telemetry.enabled
@@ -939,7 +930,6 @@ export function serve(options: ServeOptions): DbzzServer {
     limits: options.runtime.limits,
     port: options.port,
     ...(options.hostname === undefined ? {} : { hostname: options.hostname }),
-    ...(options.verifier === undefined ? {} : { verifier: options.verifier }),
     ...(options.statusScope === undefined ? {} : { statusScope: options.statusScope }),
   });
   server.activate(options.runtime);

@@ -22,7 +22,6 @@ dist
 registry/storage/
 registry/htpasswd
 
-# local demo monorepo (kept out of the repo on purpose)
 sandbox/
 
 # benchmark artifacts (local backend state, generated bindings)

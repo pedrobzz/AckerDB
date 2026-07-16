@@ -2,11 +2,16 @@ import type { Credential } from "@dbzz/core";
 import {
   ANONYMOUS_PRINCIPAL,
   verifyClientCredential,
+  type AuthenticatedPrincipal,
   type ClientPrincipal,
   type CredentialVerifier,
+  type IdentityResolver,
   type PrincipalInvalidation,
-  type VerifiedPrincipal,
 } from "./auth.ts";
+import {
+  subscribeAuthInvalidation,
+  type AuthInvalidationScope,
+} from "./auth-invalidation.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 
 export interface AuthLeaseClock {
@@ -18,12 +23,15 @@ export interface AuthLeaseClock {
 export interface AuthLease {
   readonly principal: ClientPrincipal;
   readonly signal: AbortSignal;
+  /** Package-owned origin used to defer only this one-shot lease's local invalidation. */
+  readonly invalidationScope?: AuthInvalidationScope;
   release(): void;
 }
 
 export interface AcquireAuthLeaseOptions {
   readonly credential: Credential;
   readonly verifier?: CredentialVerifier;
+  readonly resolveIdentity: IdentityResolver;
   readonly signal?: AbortSignal;
   readonly revocationDeadlineMs: number;
   readonly clock?: AuthLeaseClock;
@@ -65,7 +73,7 @@ function expired(): DbzzError {
   return new DbzzError("unauthenticated", "credential expired");
 }
 
-function matches(principal: VerifiedPrincipal, invalidation: PrincipalInvalidation): boolean {
+function matches(principal: AuthenticatedPrincipal, invalidation: PrincipalInvalidation): boolean {
   return (
     principal.issuer === invalidation.issuer &&
     (invalidation.subject === undefined || principal.subject === invalidation.subject) &&
@@ -115,12 +123,18 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
   const verifier = options.verifier;
   validateCredentialVerifierRevocation(verifier, options.revocationDeadlineMs);
   if (verifier === undefined) {
-    await verifyClientCredential(options.credential, undefined, () => clock.now());
+    await verifyClientCredential(
+      options.credential,
+      undefined,
+      options.resolveIdentity,
+      () => clock.now(),
+    );
     throw new Error("unreachable credential verification result");
   }
 
   const controller = new AbortController();
-  let principal: VerifiedPrincipal | undefined;
+  let principal: AuthenticatedPrincipal | undefined;
+  let invalidationScope: AuthInvalidationScope | undefined;
   let expiryTimer: { readonly handle: unknown } | undefined;
   let unsubscribe: (() => void) | undefined;
   let subscriptionSettled = false;
@@ -179,7 +193,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     if (principal === undefined || matches(principal, invalidation)) abort(revoked());
   };
 
-  const scheduleExpiry = (verified: VerifiedPrincipal): void => {
+  const scheduleExpiry = (verified: AuthenticatedPrincipal): void => {
     try {
       const now = clock.now();
       if (!Number.isFinite(now)) throw new RangeError("auth lease clock must return finite milliseconds");
@@ -209,9 +223,9 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     if (ended) throw controller.signal.reason;
 
     try {
-      const stop = verifier.subscribeInvalidation(onInvalidation);
-      if (typeof stop !== "function") throw new TypeError("verifier returned an invalid unsubscribe callback");
-      unsubscribe = stop;
+      const subscription = subscribeAuthInvalidation(verifier, onInvalidation);
+      unsubscribe = subscription.unsubscribe;
+      invalidationScope = subscription.scope;
       subscriptionSettled = true;
     } catch (error) {
       subscriptionSettled = true;
@@ -224,7 +238,12 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     }
 
     const verified = await Promise.race([
-      verifyClientCredential(options.credential, verifier, () => clock.now()),
+      verifyClientCredential(
+        options.credential,
+        verifier,
+        (account) => options.resolveIdentity(account, controller.signal),
+        () => clock.now(),
+      ),
       interrupted,
     ]);
     acquiring = false;
@@ -236,7 +255,12 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     scheduleExpiry(verified);
     if (ended) throw controller.signal.reason;
 
-    return Object.freeze({ principal: verified, signal: controller.signal, release });
+    return Object.freeze({
+      principal: verified,
+      signal: controller.signal,
+      ...(invalidationScope === undefined ? {} : { invalidationScope }),
+      release,
+    });
   } catch (error) {
     acquiring = false;
     release();

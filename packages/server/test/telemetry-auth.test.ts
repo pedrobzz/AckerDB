@@ -33,7 +33,7 @@ import {
   type TelemetryRecord,
   type TelemetrySpanRecord,
   type ServiceLimits,
-  type VerifiedPrincipal,
+  type VerifiedCredential,
 } from "@dbzz/server";
 
 const VALID_PROCEDURE_TOKEN = "valid-procedure-token-canary";
@@ -77,8 +77,9 @@ const functions = {
     stream: sseProcedure({
       access: "authenticated",
       args: { secret: dbz.string() },
-      handler: (ctx: Ctx) => {
-        ctx.stream.write({ result: PRIVATE_STREAM_RESULT });
+      yields: dbz.object({ result: dbz.string() }),
+      handler: async function* () {
+        yield { result: PRIVATE_STREAM_RESULT };
       },
     }),
   },
@@ -88,9 +89,9 @@ class AuthTelemetryVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
   readonly verified: string[] = [];
 
-  async verify(token: string): Promise<VerifiedPrincipal> {
+  async verify(token: string): Promise<VerifiedCredential> {
     this.verified.push(token);
-    if (token === HANGING_WS_TOKEN) return new Promise<VerifiedPrincipal>(() => {});
+    if (token === HANGING_WS_TOKEN) return new Promise<VerifiedCredential>(() => {});
     if (!token.startsWith("valid-")) throw new Error(PRIVATE_VERIFIER_ERROR);
     return {
       kind: "user",
@@ -131,6 +132,7 @@ function fixture(
   const runtime = new Runtime({
     engine,
     registry: new Registry(functions),
+    verifier,
     ...(limits === undefined ? {} : { limits }),
     telemetry: telemetryEnabled
       ? {
@@ -155,7 +157,7 @@ function fixture(
         }
       : false,
   });
-  const server = serve({ runtime, verifier, port: 0 });
+  const server = serve({ runtime, port: 0 });
   return {
     directory,
     engine,

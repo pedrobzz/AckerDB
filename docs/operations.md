@@ -39,7 +39,7 @@ shape and its cross-field invariants; it does not accept a partial object.
 | Publication handoff | 4,096 items, 32 MiB |
 | Scheduled handlers per batch | 100 |
 | Mutation replay | 24 h, 1 MiB/result, 1,000,000 records, 4 GiB |
-| Remote credential invalidation guarantee | Verifier `deadlineMs` must be positive, finite, and no greater than configured `revocationDeadlineMs` (5 s default and maximum); Session and `DbzzServer` construction validate it, matching callbacks initiate immediate fail-closed session/lease abort, and the verifier owns feed propagation within its advertised bound |
+| Remote credential invalidation guarantee | Verifier `deadlineMs` must be positive, finite, and no greater than configured `revocationDeadlineMs` (5 s default and maximum); Runtime construction validates its single verifier before activation, matching callbacks initiate immediate fail-closed session/lease abort, and the verifier owns feed propagation within its advertised bound |
 | Graceful shutdown deadline | 10 s |
 | Telemetry retention/export | See [Telemetry](telemetry.md#default-bounds) |
 
@@ -62,15 +62,17 @@ transition may retain at most 2,048 frames and 3 MiB; all transitions share a
 `overloaded` with resource `subscription`. Protected status exposes
 `runtime.authCaptureBudget`, and telemetry emits `runtime.auth_capture_bytes`.
 
-Read, write, and revalidation executors use round-robin fairness keys. The
-active-operation caller key is shared across HTTP and WebSocket for the same
-verified `(kind, issuer, subject)` principal. Anonymous HTTP and WebSocket
-callers are instead grouped by their transport source/socket address, while
-WebSocket retains a separate per-connection ceiling. HTTP source admission is
-applied before authentication and transferred to the stable caller afterward.
-DBZZ does not trust `Forwarded` or `X-Forwarded-For`; clients behind one reverse
-proxy therefore share that proxy's anonymous source group. Fairness is among
-admitted groups, not a latency SLA.
+Read, write, and revalidation executors use round-robin fairness keys. A user's
+active-operation key is its durable Identity, shared across HTTP and WebSocket;
+a workload remains keyed by its verified `(kind, issuer, subject)`. Exact
+external-account identity resolution has its own fixed-width pre-principal key.
+Anonymous HTTP and WebSocket callers are instead grouped by their transport
+source/socket address, while WebSocket retains a separate per-connection
+ceiling. HTTP source admission is applied before authentication and transferred
+to the stable caller afterward. DBZZ does not trust `Forwarded` or
+`X-Forwarded-For`; clients behind one reverse proxy therefore share that
+proxy's anonymous source group. Fairness is among admitted groups, not a
+latency SLA.
 
 SSE acknowledgement requests use their stream capability and per-frame proof
 rather than repeating bearer verification. They still pass through finite HTTP

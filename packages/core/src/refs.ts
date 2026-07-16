@@ -21,7 +21,9 @@ export interface FunctionReference<
 export type QueryRef<A = unknown, R = unknown> = FunctionReference<"query", A, R>;
 export type MutationRef<A = unknown, R = unknown> = FunctionReference<"mutation", A, R>;
 export type ProcedureRef<A = unknown, R = unknown> = FunctionReference<"procedure", A, R>;
-export type SseRef<A = unknown, R = unknown> = FunctionReference<"sse", A, R>;
+/** An SSE reference's second parameter is the validated per-chunk type the
+ *  stream yields to clients — never the handler's completion value. */
+export type SseRef<A = unknown, Chunk = unknown> = FunctionReference<"sse", A, Chunk>;
 export type EventRef<A = unknown, Row = unknown> = FunctionReference<"event", A, Row>;
 
 /** Accepts a reference object or a raw address string; returns the address. */

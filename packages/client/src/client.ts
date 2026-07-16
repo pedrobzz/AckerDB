@@ -3,6 +3,7 @@ import {
   MAX_RETRY_AFTER_MS,
   PROTOCOL_VERSION,
   ProtocolError,
+  WireError,
   decode,
   encode,
   getRef,
@@ -12,6 +13,8 @@ import {
   parseCredential,
   parseServerMessage,
   parseSseMessage,
+  type AuthenticatedMessage,
+  type AuthenticationDescriptor,
   type ClientMessage,
   type Credential,
   type EventRef,
@@ -22,7 +25,6 @@ import {
   type MutationRef,
   type Outcome,
   type OutcomeCode,
-  type PrincipalKind,
   type ProcedureRef,
   type QueryRef,
   type ResourceClass,
@@ -34,6 +36,7 @@ import {
   type SseRef,
   type SubscriptionCursor,
   type SubscriptionTransition,
+  type WelcomeMessage,
 } from "@dbzz/core";
 
 export interface DbzzClientLimits {
@@ -72,6 +75,29 @@ export interface DbzzWebSocket {
 export type DbzzWebSocketFactory = (url: string) => DbzzWebSocket;
 export type DbzzFetch = (url: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * Application-lifecycle notifications, driven by an injected platform
+ * observer: the client owns what suspension means, the adapter owns when it
+ * happens. `suspend` (the application entered background) retires the
+ * physical connection while keeping all logical demand; `resume` (the
+ * application returned to active) recovers immediately when demand exists.
+ * Both coalesce duplicates, so the adapter may forward platform events
+ * verbatim.
+ */
+export interface DbzzLifecyclePort {
+  suspend(): void;
+  resume(): void;
+}
+
+/**
+ * Registers a platform lifecycle observer for one client lifetime and returns
+ * its deregistration. The client invokes the source once, at the end of
+ * construction, and invokes the returned function exactly once, before any
+ * other teardown in close() — so the observer exists exactly as long as the
+ * client does.
+ */
+export type DbzzLifecycleSource = (port: DbzzLifecyclePort) => () => void;
+
 export interface DbzzClientOptions {
   /** Server base URL, for example `http://127.0.0.1:3211`. */
   readonly url: string;
@@ -85,12 +111,60 @@ export interface DbzzClientOptions {
   readonly random?: () => number;
   readonly createWebSocket?: DbzzWebSocketFactory;
   readonly fetch?: DbzzFetch;
+  readonly lifecycle?: DbzzLifecycleSource;
 }
 
-export interface DbzzAuthentication {
-  readonly authEpoch: number;
-  readonly principal: PrincipalKind;
-}
+/** Server-confirmed, secret-free principal descriptor for one auth epoch. */
+export type DbzzAuthentication = AuthenticationDescriptor & { readonly authEpoch: number };
+
+/**
+ * Public connection lifecycle. `suspended` and `resuming` are produced by the
+ * injected lifecycle notifications (the native adapter's AppState observer):
+ * backgrounding retires the transport and publishes `suspended`; activation
+ * with demand publishes `resuming` until the fresh handshake completes.
+ */
+export type DbzzConnectionState =
+  | { readonly phase: "connecting" }
+  | { readonly phase: "ready"; readonly authentication: DbzzAuthentication }
+  | { readonly phase: "reconnecting" }
+  | { readonly phase: "authentication-blocked"; readonly error: DbzzClientError }
+  | { readonly phase: "terminal-error"; readonly error: DbzzClientError }
+  | { readonly phase: "closed" }
+  | { readonly phase: "suspended" }
+  | { readonly phase: "resuming" };
+
+/**
+ * Public authentication lifecycle, derived from the same protocol facts as
+ * {@link DbzzConnectionState} and published in the same transition turns.
+ *
+ * - `authenticating`: a credential presentation is in flight — the connect
+ *   handshake (`hello`/`welcome`) or an explicit `refreshCredential` attempt.
+ *   `credential` is the kind being presented; the server treats an anonymous
+ *   presentation on an established session as a sign-out.
+ * - `unauthenticated`: the server confirmed an anonymous session principal.
+ * - `authenticated`: the server confirmed a user or workload principal. User
+ *   descriptors carry durable Identity separately from exact credential
+ *   provenance; workload descriptors carry provenance but no user Identity.
+ * - `refresh-required`: the server rejected the credential or an attempt timed
+ *   out; the client will not reconnect until `refreshCredential` supplies a
+ *   new credential. The same error is the connection state's
+ *   `authentication-blocked` error.
+ * - `failed`: the client stopped permanently; no credential can recover it.
+ * - `closed`: the client was closed.
+ */
+export type DbzzAuthenticationState =
+  | { readonly phase: "authenticating"; readonly credential: Credential["kind"] }
+  | {
+      readonly phase: "unauthenticated";
+      readonly authentication: Extract<DbzzAuthentication, { principal: "anonymous" }>;
+    }
+  | {
+      readonly phase: "authenticated";
+      readonly authentication: Exclude<DbzzAuthentication, { principal: "anonymous" }>;
+    }
+  | { readonly phase: "refresh-required"; readonly error: DbzzClientError }
+  | { readonly phase: "failed"; readonly error: DbzzClientError }
+  | { readonly phase: "closed" };
 
 export type DbzzLiveEvent<Row> =
   | { readonly kind: "row"; readonly cursor: LiveEventCursor; readonly row: Row }
@@ -99,6 +173,19 @@ export type DbzzLiveEvent<Row> =
 
 export interface DbzzCallOptions {
   readonly signal?: AbortSignal;
+}
+
+export interface DbzzSubscribeOptions {
+  /**
+   * Fires when the server authoritatively confirms the already-held value
+   * without redelivering it: applied `resume` and `checkpoint` transitions,
+   * and deliveries landing exactly on the held cursor. Together with
+   * `onUpdate` this makes "the held data is current on this connection"
+   * observable, which is what reconnect-aware consumers (the React binding's
+   * stale/fresh distinction) need. Value deliveries keep flowing through
+   * `onUpdate`; this never carries data.
+   */
+  readonly onCursorConfirmed?: () => void;
 }
 
 export const DBZZ_CLIENT_LIMITS: DbzzClientLimits = Object.freeze({
@@ -124,8 +211,19 @@ export class DbzzClientError extends Error {
   readonly retryAfterMs?: number;
   readonly resource?: ResourceClass;
   readonly committed?: true;
+  /**
+   * Present when application-lifecycle suspension settled this non-resumable
+   * operation (a procedure, SSE stream, or AI generation): the application
+   * entered background, so the client aborted the in-flight transport work —
+   * or refused to start new work — and produced this outcome. Consumers that
+   * separate deliberate lifecycle cancellation from failure (the AI SDK
+   * transport classifies these as aborts, not errors) key on it. The code
+   * stays an ordinary base category: `unavailable` when the work provably
+   * never ran, `indeterminate` when completion is unknown.
+   */
+  readonly interruption?: "suspension";
 
-  constructor(outcome: Outcome) {
+  constructor(outcome: Outcome, interruption?: "suspension") {
     super(outcome.message);
     this.name = "DbzzClientError";
     this.outcome = Object.freeze({ ...outcome });
@@ -134,6 +232,7 @@ export class DbzzClientError extends Error {
     this.retryAfterMs = outcome.retryAfterMs;
     this.resource = outcome.resource;
     this.committed = outcome.committed;
+    if (interruption !== undefined) this.interruption = interruption;
   }
 }
 
@@ -144,11 +243,12 @@ interface QuerySubscription {
   readonly args: unknown;
   readonly onUpdate: (value: unknown) => void;
   readonly onError?: (error: DbzzClientError) => void;
+  readonly onCursorConfirmed?: () => void;
   cursor?: SubscriptionCursor;
   resetRequested: boolean;
   frame: string;
   bytes: number;
-  sentConnection?: number;
+  sentGeneration?: number;
 }
 
 interface EventSubscription {
@@ -160,7 +260,7 @@ interface EventSubscription {
   cursor?: LiveEventCursor;
   frame: string;
   bytes: number;
-  sentConnection?: number;
+  sentGeneration?: number;
 }
 
 type Subscription = QuerySubscription | EventSubscription;
@@ -176,7 +276,7 @@ interface PendingRequest {
   readonly reject: (error: DbzzClientError) => void;
   readonly mutationRequestId?: string;
   expiryHandle?: unknown;
-  sentConnection?: number;
+  sentGeneration?: number;
   receipt?: MutationReceipt;
   result?: unknown;
   obligations?: Set<number>;
@@ -185,10 +285,13 @@ interface PendingRequest {
 interface AuthAttempt {
   readonly id: number;
   readonly credential: Credential;
+  readonly result: Promise<DbzzAuthentication>;
   readonly resolve: (authentication: DbzzAuthentication) => void;
   readonly reject: (error: DbzzClientError) => void;
+  /** Absolute deadline: the timer pauses across suspension, this does not. */
+  readonly expiresAtMs: number;
   expiryHandle?: unknown;
-  sentConnection?: number;
+  sentGeneration?: number;
 }
 
 interface FetchControl {
@@ -203,8 +306,13 @@ interface CancelableResponse {
 }
 
 interface SseResponseReader extends CancelableResponse {
+  // The done branch admits `value?: Uint8Array` (never read here) because
+  // that is the WHATWG `ReadableStreamReadDoneResult` shape: consumers
+  // typechecking this source against the DOM lib must be able to assign
+  // `response.body.getReader()` directly. Bun's stricter reader type remains
+  // assignable to the wider target.
   read(): Promise<
-    | { readonly done: true; readonly value?: undefined }
+    | { readonly done: true; readonly value?: Uint8Array }
     | { readonly done: false; readonly value: Uint8Array }
   >;
   releaseLock(): void;
@@ -231,6 +339,32 @@ function localError(
 ): DbzzClientError {
   return new DbzzClientError({ code, message, retryable: false, resource, committed });
 }
+
+/**
+ * A typed outcome produced by lifecycle suspension settling — or refusing to
+ * start — non-resumable work. The code is an ordinary base-client category;
+ * the `interruption` marker is what tells consumers the application lifecycle
+ * (not a failure and not their own abort) owned the settlement.
+ */
+function suspensionError(
+  code: OutcomeCode,
+  message: string,
+  resource?: ResourceClass,
+): DbzzClientError {
+  return new DbzzClientError({ code, message, retryable: false, resource }, "suspension");
+}
+
+/**
+ * The reason suspendTransport gives every in-flight fetch controller.
+ * Settlement paths compare the signal's reason against this exact value, so
+ * suspension-caused outcomes carry their {@link DbzzClientError.interruption}
+ * marker while caller aborts and close() keep their plain outcomes.
+ */
+const SUSPENSION_INTERRUPTION = suspensionError(
+  "unavailable",
+  "client suspended while the request was in flight",
+  "connection",
+);
 
 function cancelWithoutWaiting(target: CancelableResponse, reason?: unknown): void {
   try {
@@ -286,6 +420,12 @@ function freezeCredential(credential: Credential): Credential {
   return parsed.kind === "anonymous"
     ? Object.freeze({ kind: "anonymous" })
     : Object.freeze({ kind: "bearer", token: parsed.token });
+}
+
+function sameCredential(left: Credential, right: Credential): boolean {
+  return left.kind === "anonymous"
+    ? right.kind === "anonymous"
+    : right.kind === "bearer" && left.token === right.token;
 }
 
 function sameCursor(left: SubscriptionCursor | undefined, right: SubscriptionCursor | null): boolean {
@@ -367,6 +507,39 @@ const SYSTEM_CLOCK: DbzzClientClock = {
   clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
 };
 
+const CONNECTING_STATE: DbzzConnectionState = Object.freeze({ phase: "connecting" });
+const RECONNECTING_STATE: DbzzConnectionState = Object.freeze({ phase: "reconnecting" });
+const CLOSED_STATE: DbzzConnectionState = Object.freeze({ phase: "closed" });
+const SUSPENDED_STATE: DbzzConnectionState = Object.freeze({ phase: "suspended" });
+const RESUMING_STATE: DbzzConnectionState = Object.freeze({ phase: "resuming" });
+
+const AUTHENTICATING_ANONYMOUS: DbzzAuthenticationState = Object.freeze({
+  phase: "authenticating",
+  credential: "anonymous",
+});
+const AUTHENTICATING_BEARER: DbzzAuthenticationState = Object.freeze({
+  phase: "authenticating",
+  credential: "bearer",
+});
+const CLOSED_AUTHENTICATION_STATE: DbzzAuthenticationState = Object.freeze({ phase: "closed" });
+
+function authenticationFromFrame(
+  frame: WelcomeMessage | AuthenticatedMessage,
+): DbzzAuthentication {
+  if (frame.principal === "anonymous") {
+    return Object.freeze({ authEpoch: frame.authEpoch, principal: "anonymous" });
+  }
+  const provenance = Object.freeze({ ...frame.provenance });
+  return frame.principal === "user"
+    ? Object.freeze({
+        authEpoch: frame.authEpoch,
+        principal: "user",
+        identity: frame.identity,
+        provenance,
+      })
+    : Object.freeze({ authEpoch: frame.authEpoch, principal: "workload", provenance });
+}
+
 const SYSTEM_SOCKET_FACTORY: DbzzWebSocketFactory = (url) =>
   new WebSocket(url) as unknown as DbzzWebSocket;
 const SYSTEM_FETCH: DbzzFetch = (url, init) => fetch(url, init);
@@ -393,16 +566,38 @@ export class DbzzClient {
   private readonly activeFetches = new Set<AbortController>();
 
   private credential: Credential;
+  /** The credential the current connection's hello presented. */
+  private helloCredential?: Credential;
   private socket: DbzzWebSocket | null = null;
   private socketOpen = false;
   private ready = false;
   private closed = false;
   private permanentFailure = false;
   private authBlocked = false;
-  private connectionSerial = 0;
+  /** The application is backgrounded: no transport exists and none is dialed. */
+  private suspended = false;
+  /** A foreground recovery attempt is in flight, from resume until its first outcome. */
+  private resuming = false;
+  private stopLifecycle?: () => void;
+  /**
+   * Monotonically increasing generation of the physical connection: each dial
+   * in ensureConnected() takes the next value. Work that can outlive a
+   * connection proves it still owns the active generation before mutating
+   * state — socket callbacks by socket identity (each generation owns a
+   * distinct socket object), connection timers by capturing the generation,
+   * sent-work stamps by comparing it. Suspension retires the current
+   * generation by detaching its socket; the resume dial takes a fresh one.
+   */
+  private connectionGeneration = 0;
   private nextId = 1;
   private reconnectAttempt = 0;
-  private serverRetryFloorMs = 0;
+  /**
+   * Absolute clock time before which the server asked this client not to
+   * reconnect (a retryable session error's Retry-After hint). An admission
+   * deadline, not client backoff: it expires by clock, never by lifecycle —
+   * suspension retains it and activation honors any remainder.
+   */
+  private serverRetryNotBeforeMs = 0;
   private pendingItems = 0;
   private pendingBytes = 0;
   private authAttempt?: AuthAttempt;
@@ -410,6 +605,14 @@ export class DbzzClient {
   private stableHandle?: unknown;
   private pingHandle?: unknown;
   private authentication?: DbzzAuthentication;
+  private connectionState: DbzzConnectionState = CONNECTING_STATE;
+  private readonly connectionStateListeners = new Set<(state: DbzzConnectionState) => void>();
+  private authenticationState: DbzzAuthenticationState;
+  private readonly authenticationStateListeners = new Set<(state: DbzzAuthenticationState) => void>();
+  private connectRequested = false;
+  private everReady = false;
+  private blockingError?: DbzzClientError;
+  private terminalError?: DbzzClientError;
 
   constructor(options: DbzzClientOptions) {
     this.httpUrl = options.url.replace(/\/$/, "");
@@ -420,6 +623,8 @@ export class DbzzClient {
     this.createWebSocket = options.createWebSocket ?? SYSTEM_SOCKET_FACTORY;
     this.fetcher = options.fetch ?? SYSTEM_FETCH;
     this.credential = freezeCredential(options.credential);
+    this.authenticationState =
+      this.credential.kind === "anonymous" ? AUTHENTICATING_ANONYMOUS : AUTHENTICATING_BEARER;
     this.limits = Object.freeze({ ...DBZZ_CLIENT_LIMITS, ...options.limits });
     this.reconnect = Object.freeze({ ...DBZZ_RECONNECT_DEFAULTS, ...options.reconnect });
     for (const [name, value] of Object.entries(this.limits)) positiveInteger(value, name);
@@ -435,43 +640,116 @@ export class DbzzClient {
       clientSessionId: this.clientSessionId,
       credential: this.credential,
     });
+    // Registered last: a lifecycle source that notifies synchronously (a
+    // platform that is already backgrounded) must observe a fully constructed
+    // client, and a constructor failure must not leave an observer behind.
+    this.stopLifecycle = options.lifecycle?.({
+      suspend: () => this.suspendTransport(),
+      resume: () => this.resumeTransport(),
+    });
   }
 
   get currentAuthentication(): DbzzAuthentication | undefined {
     return this.authentication === undefined ? undefined : Object.freeze({ ...this.authentication });
   }
 
+  /** Immutable snapshot; the same object is returned until the next transition. */
+  get currentConnectionState(): DbzzConnectionState {
+    return this.connectionState;
+  }
+
+  /** Notifies on connection-state transitions only; read the snapshot for the current value. */
+  subscribeConnectionState(listener: (state: DbzzConnectionState) => void): () => void {
+    this.connectionStateListeners.add(listener);
+    return () => {
+      this.connectionStateListeners.delete(listener);
+    };
+  }
+
+  /** Immutable snapshot; the same object is returned until the next transition. */
+  get currentAuthenticationState(): DbzzAuthenticationState {
+    return this.authenticationState;
+  }
+
+  /** Notifies on authentication-state transitions only; read the snapshot for the current value. */
+  subscribeAuthenticationState(listener: (state: DbzzAuthenticationState) => void): () => void {
+    this.authenticationStateListeners.add(listener);
+    return () => {
+      this.authenticationStateListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Establishes standing connection demand: the client dials now and keeps
+   * reconnecting after drops until close(), even with no operations in flight.
+   * No-op when closed, failed, blocked, or connected. While suspended the
+   * demand is remembered and the dial happens on resume — suspension never
+   * clears standing demand, it only refuses to dial.
+   */
+  connect(): void {
+    this.connectRequested = true;
+    this.ensureConnected();
+  }
+
+  /**
+   * Presents a credential for this session: the server verifies it, retires
+   * the current auth epoch, and confirms the new principal. Presenting the
+   * anonymous credential is the protocol's sign-out. Single-flight: a call
+   * with the credential already in flight joins that attempt; a different
+   * credential supersedes it with an `auth_stale` rejection.
+   */
   refreshCredential(credential: Credential): Promise<DbzzAuthentication> {
     if (this.closed) throw localError("unavailable", "client is closed", "connection");
     if (this.permanentFailure) {
       throw localError("unavailable", "client stopped after a protocol failure", "connection");
     }
     const nextCredential = freezeCredential(credential);
+    if (this.authAttempt && sameCredential(this.authAttempt.credential, nextCredential)) {
+      return this.authAttempt.result;
+    }
+    const id = this.allocateId();
+    // The auth frame is validated against the wire and frame limits before
+    // any state changes, so an unencodable credential rejects here instead of
+    // installing an attempt whose frame can never be sent.
+    this.frameBytes(
+      this.encodeClient({ v: PROTOCOL_VERSION, t: "auth", attemptId: id, credential: nextCredential }),
+      "connection",
+    );
     if (this.authAttempt) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.reject(localError("auth_stale", "authentication attempt was superseded", "connection"));
     }
     this.credential = nextCredential;
     this.authBlocked = false;
-    const id = this.allocateId();
+    this.blockingError = undefined;
     let resolve!: (authentication: DbzzAuthentication) => void;
     let reject!: (error: DbzzClientError) => void;
     const result = new Promise<DbzzAuthentication>((promiseResolve, promiseReject) => {
       resolve = promiseResolve;
       reject = promiseReject;
     });
-    const attempt: AuthAttempt = { id, credential: nextCredential, resolve, reject };
-    attempt.expiryHandle = this.clock.setTimeout(() => {
-      if (this.authAttempt !== attempt) return;
-      this.authAttempt = undefined;
-      this.authBlocked = true;
-      this.ready = false;
-      attempt.reject(localError("auth_unavailable", "authentication timed out", "connection"));
-      this.socket?.close(1008, "authentication timed out");
-    }, this.limits.maxQueryAgeMs);
+    const attempt: AuthAttempt = {
+      id,
+      credential: nextCredential,
+      result,
+      resolve,
+      reject,
+      expiresAtMs: this.now() + this.limits.maxQueryAgeMs,
+    };
+    // While suspended no timer is armed — background timers cannot be trusted
+    // to fire — but the absolute deadline stands: resume re-evaluates it.
+    if (!this.suspended) {
+      attempt.expiryHandle = this.clock.setTimeout(
+        () => this.expireAuthAttempt(attempt),
+        this.limits.maxQueryAgeMs,
+      );
+    }
     this.authAttempt = attempt;
     if (this.ready) this.sendAuth(attempt);
     else this.ensureConnected();
+    // Published last: a listener may reenter close(), which must find the
+    // installed attempt and its expiry timer so it can release them.
+    this.publishConnectionState();
     return result;
   }
 
@@ -480,11 +758,12 @@ export class DbzzClient {
     args: A,
     onUpdate: (value: R) => void,
     onError?: (error: DbzzClientError) => void,
+    options: DbzzSubscribeOptions = {},
   ): () => void {
     this.assertUsable();
     const id = this.allocateId();
     const address = getRef(ref as FunctionReference | string);
-    const frame = this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref: address, args });
+    const frame = this.encodeSubscriptionOrReject(id, address, args);
     const bytes = this.reservePersistent(frame, "subscription");
     const subscription: QuerySubscription = {
       kind: "query",
@@ -493,6 +772,7 @@ export class DbzzClient {
       args,
       onUpdate: onUpdate as (value: unknown) => void,
       onError,
+      onCursorConfirmed: options.onCursorConfirmed,
       resetRequested: false,
       frame,
       bytes,
@@ -512,7 +792,7 @@ export class DbzzClient {
     this.assertUsable();
     const id = this.allocateId();
     const address = getRef(ref as FunctionReference | string);
-    const frame = this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref: address, args });
+    const frame = this.encodeSubscriptionOrReject(id, address, args);
     const bytes = this.reservePersistent(frame, "subscription");
     const subscription: EventSubscription = {
       kind: "event",
@@ -543,21 +823,51 @@ export class DbzzClient {
     options: DbzzCallOptions = {},
   ): Promise<R> {
     this.assertUsable();
+    if (options.signal?.aborted) {
+      throw localError("unavailable", "procedure request was canceled", "operation");
+    }
+    // Procedures are non-resumable: while the application is backgrounded no
+    // transport work may start, and queueing until activation would silently
+    // dispatch work whose caller stopped observing it minutes ago — the same
+    // hidden-restart class suspension settlement exists to prevent. A call
+    // that starts while suspended settles now, determinately (the server
+    // never saw it), with the typed suspension outcome.
+    if (this.suspended) {
+      throw suspensionError("unavailable", "client is suspended", "operation");
+    }
     const id = this.allocateId();
     const body = this.encodeCall(id, getRef(ref as FunctionReference | string), args);
     const release = this.reserveTransient(body, "operation");
     const fetchControl = this.createFetchController(options.signal, this.limits.maxQueryAgeMs);
+    // Suspension settles this call with its exact typed indeterminate outcome
+    // (marked, so consumers can tell lifecycle interruption from failure); a
+    // caller abort or an ordinary network failure keeps the plain one.
+    const indeterminate = (message: string): DbzzClientError =>
+      fetchControl.controller.signal.reason === SUSPENSION_INTERRUPTION
+        ? suspensionError("indeterminate", message, "operation")
+        : localError("indeterminate", message, "operation");
     try {
       let response: Response;
       try {
-        response = await this.fetcher(`${this.httpUrl}/api/call`, {
-          method: "POST",
-          headers: this.httpHeaders(),
-          body,
-          signal: fetchControl.controller.signal,
-        });
+        // Response acquisition must settle through the owned controller even
+        // when the injected fetch ignores its signal, so abort and close()
+        // cannot leave the caller or its transient reservation pending.
+        response = await raceWithAbort(
+          (async () =>
+            this.fetcher(`${this.httpUrl}/api/call`, {
+              method: "POST",
+              headers: this.httpHeaders(),
+              body,
+              signal: fetchControl.controller.signal,
+            }))(),
+          fetchControl.controller.signal,
+          localError("indeterminate", "procedure completion is unknown", "operation"),
+          (late) => {
+            if (late.body) cancelWithoutWaiting(late.body, fetchControl.controller.signal.reason);
+          },
+        );
       } catch {
-        throw localError("indeterminate", "procedure completion is unknown", "operation");
+        throw indeterminate("procedure completion is unknown");
       }
       let text: string;
       try {
@@ -568,7 +878,7 @@ export class DbzzClient {
         );
       } catch (error) {
         if (error instanceof DbzzClientError && error.code !== "unavailable") throw error;
-        throw localError("indeterminate", "procedure response was interrupted", "operation");
+        throw indeterminate("procedure response was interrupted");
       }
       let parsed;
       try {
@@ -592,6 +902,20 @@ export class DbzzClient {
     }
   }
 
+  /**
+   * Acknowledged SSE stream: `Chunk` is the ref's server-validated yield
+   * type. Chunk N's receiver credit is sent when the consumer requests chunk
+   * N+1, so iteration pace is the backpressure signal end to end.
+   *
+   * The stream is lazy: calling this creates a description of work, and the
+   * work itself — reservation, fetch, everything — starts at the first pull.
+   * Suspension ownership keys on that same moment, mirroring procedure()'s
+   * call-time check: a first pull while suspended settles with the marked
+   * suspension refusal, while a stream whose first pull happens while active
+   * is fresh demand-driven foreground work regardless of when the generator
+   * object was created — a never-pulled stream holds no state, hangs no one,
+   * and has nothing for activation to restart.
+   */
   async *sse<A, Chunk = unknown>(
     ref: SseRef<A, Chunk> | string,
     args: A,
@@ -601,6 +925,13 @@ export class DbzzClient {
     if (options.signal?.aborted) {
       throw localError("unavailable", "SSE request was canceled", "sse");
     }
+    // The same non-resumable contract as procedure(): a stream first pulled
+    // while the application is backgrounded settles now with the typed
+    // suspension outcome instead of dispatching transport work — or queueing
+    // a hidden start — that activation must never silently perform.
+    if (this.suspended) {
+      throw suspensionError("unavailable", "client is suspended", "sse");
+    }
     const id = this.allocateId();
     const body = this.encodeCall(id, getRef(ref as FunctionReference | string), args);
     const releaseReservation = this.reserveTransient(body, "sse");
@@ -609,7 +940,10 @@ export class DbzzClient {
     let reader: SseResponseReader | undefined;
     let cleanupStarted = false;
     let cleanupReason: unknown;
-    const cancellationError = localError("unavailable", "SSE request was canceled", "sse");
+    // The stream's one cancellation outcome. Reassigned (before any throw can
+    // observe it — onAbort runs first) when suspension owns the abort, so the
+    // terminal error names the lifecycle interruption exactly.
+    let cancellationError = localError("unavailable", "SSE request was canceled", "sse");
     let interruptWait: (() => void) | undefined;
     const waitForOwnership = async <T>(promise: Promise<T>): Promise<T> => {
       if (cleanupStarted) {
@@ -652,6 +986,13 @@ export class DbzzClient {
       }
     };
     const onAbort = (): void => {
+      if (fetchControl.controller.signal.reason === SUSPENSION_INTERRUPTION) {
+        cancellationError = suspensionError(
+          "unavailable",
+          "SSE stream was interrupted by suspension",
+          "sse",
+        );
+      }
       cleanup(fetchControl.controller.signal.reason);
       interruptWait?.();
     };
@@ -684,16 +1025,25 @@ export class DbzzClient {
       responseBody = response.body ?? undefined;
       if (cleanupStarted) {
         cancelOwnedResponse();
-        throw localError("unavailable", "SSE response was canceled", "sse");
+        throw cancellationError;
       }
       if (!response.ok) {
         responseBody = undefined;
-        const text = await this.readBoundedResponse(
-          response,
-          this.limits.maxFrameBytes,
-          fetchControl.controller.signal,
-          "sse",
-        );
+        let text: string;
+        try {
+          text = await this.readBoundedResponse(
+            response,
+            this.limits.maxFrameBytes,
+            fetchControl.controller.signal,
+            "sse",
+          );
+        } catch (error) {
+          // A failure that follows the request's abort settles with the
+          // stream's one cancellation outcome (suspension-marked when the
+          // lifecycle owned the abort), like every other post-abort path.
+          if (cleanupStarted || fetchControl.controller.signal.aborted) throw cancellationError;
+          throw error;
+        }
         let parsed: ServerMessage;
         try {
           parsed = parseServerMessage(decode(text));
@@ -710,6 +1060,20 @@ export class DbzzClient {
       }
       const stream = this.sseStream(response);
       const ackAgeMs = this.sseAckAge(response);
+      // An acknowledgement failure that follows the request's abort settles
+      // with the stream's one cancellation outcome (suspension-marked when
+      // the lifecycle owned the abort) — the same post-abort rule the read
+      // path applies. Genuine acknowledgement failures pass through exactly.
+      const acknowledge = async (
+        frame: SseChunkMessage | SseDoneMessage | SseErrorMessage,
+      ): Promise<void> => {
+        try {
+          await this.acknowledgeSse(stream, frame, ackAgeMs, fetchControl.controller.signal);
+        } catch (error) {
+          if (cleanupStarted || fetchControl.controller.signal.aborted) throw cancellationError;
+          throw error;
+        }
+      };
       if (!response.body) throw localError("malformed", "SSE response has no body", "sse");
 
       const streamReader = response.body.getReader();
@@ -818,11 +1182,11 @@ export class DbzzClient {
         }
         if (frame.t === "sse_chunk") {
           yield frame.value as Chunk;
-          await this.acknowledgeSse(stream, frame, ackAgeMs, fetchControl.controller.signal);
+          await acknowledge(frame);
           expectedSequence++;
           continue;
         }
-        await this.acknowledgeSse(stream, frame, ackAgeMs, fetchControl.controller.signal);
+        await acknowledge(frame);
         if (frame.t === "sse_done") return;
         throw new DbzzClientError(frame.outcome);
       }
@@ -837,6 +1201,16 @@ export class DbzzClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    // The platform lifecycle observer is removed before any other teardown,
+    // so no suspend/resume notification can race the close sequence.
+    const stopLifecycle = this.stopLifecycle;
+    this.stopLifecycle = undefined;
+    try {
+      stopLifecycle?.();
+    } catch {
+      // The observer is external code; its removal failing cannot block the
+      // client's own teardown.
+    }
     this.clearReconnectTimer();
     this.clearConnectionTimers();
     if (this.authAttempt) {
@@ -845,7 +1219,7 @@ export class DbzzClient {
       this.authAttempt = undefined;
     }
     for (const request of [...this.pending.values()]) {
-      const indeterminate = request.kind === "mutation" && request.sentConnection !== undefined;
+      const indeterminate = request.kind === "mutation" && request.sentGeneration !== undefined;
       this.finishRequest(
         request,
         undefined,
@@ -867,6 +1241,132 @@ export class DbzzClient {
     this.ready = false;
     this.socketOpen = false;
     socket?.close(1000, "client closed");
+    this.publishConnectionState();
+    this.connectionStateListeners.clear();
+    this.authenticationStateListeners.clear();
+  }
+
+  /**
+   * The application entered background. The physical connection is retired —
+   * its generation ends when its socket is detached, making every late
+   * callback it owns provably stale — and every connection-owned timer
+   * (reconnect, stable-open, heartbeat, the credential-presentation deadline)
+   * is stopped because none can be trusted to fire while the platform has the
+   * process suspended. Logical demand survives untouched: subscriptions and
+   * their cursors, pending requests and their mutation identities, the
+   * in-flight credential presentation, the current credential, and standing
+   * connect() demand. Pending-request expiry timers stay armed — their
+   * absolute deadlines remain correct however late the platform fires them.
+   * Non-resumable transports (procedures, SSE) are aborted so their callers
+   * settle promptly with suspension-marked typed outcomes instead of hanging
+   * across the gap; nothing restarts them on resume, and new procedure/SSE
+   * work started while suspended is refused with the same marked contract
+   * rather than queued. Duplicate notifications coalesce.
+   */
+  private suspendTransport(): void {
+    if (this.closed || this.suspended) return;
+    this.suspended = true;
+    this.resuming = false;
+    this.clearReconnectTimer();
+    if (this.authAttempt !== undefined) {
+      this.clock.clearTimeout(this.authAttempt.expiryHandle);
+      this.authAttempt.expiryHandle = undefined;
+    }
+    this.retireConnection(1001, "client suspended");
+    // The abort reason marks these settlements as lifecycle interruptions:
+    // each in-flight procedure and SSE stream produces its exact typed
+    // suspension outcome (never a caller-abort or failure outcome).
+    for (const controller of this.activeFetches) controller.abort(SUSPENSION_INTERRUPTION);
+    this.activeFetches.clear();
+    this.publishConnectionState();
+  }
+
+  /**
+   * Synchronously ends the current physical connection's generation. The
+   * socket is detached before close() is issued because socket close is
+   * asynchronous on real transports: every late callback the retired socket
+   * still owns must already fail the identity proof, or a delayed welcome or
+   * auth frame could mutate the state the caller is about to publish.
+   * Connection-owned timers stop with their generation and live-event
+   * cursors reset to their next boundary, exactly as an observed close would
+   * have done. Callers own the resulting flags and their state publication.
+   * Every path that blocks authentication retires the connection through
+   * here, so `authBlocked` implies no socket exists — which is why sends
+   * need no separate blocked check.
+   */
+  private retireConnection(code: number, reason: string): void {
+    this.clearConnectionTimers();
+    const socket = this.socket;
+    this.socket = null;
+    this.socketOpen = false;
+    this.ready = false;
+    this.authentication = undefined;
+    // Live events are never replayed: the next connection starts them at a
+    // fresh reset boundary, exactly like an ordinary reconnect.
+    for (const subscription of this.subscriptions.values()) {
+      if (subscription.kind === "event") subscription.cursor = undefined;
+    }
+    socket?.close(code, reason);
+  }
+
+  /**
+   * The application returned to active. Paused deadlines are re-evaluated
+   * against the current clock — an absolute deadline that elapsed while
+   * suspended expires now, never by waiting for a stale pre-suspension timer.
+   * When logical demand exists the fresh authenticated connection begins in
+   * this same event turn: the reconnect timer was cleared at suspension, so
+   * no stale client backoff can delay the first attempt. The one thing that
+   * can is a server-directed Retry-After deadline that has not elapsed —
+   * admission control that a lifecycle transition must not bypass; the
+   * ordinary bounded reconnect policy holds the remainder. Demand is exactly
+   * {@link hasReconnectWork} — live subscriptions, pending requests, an
+   * in-flight credential presentation, or standing connect() demand;
+   * suspension cleared none of it. With no demand the client stays idle
+   * rather than opening a socket because the application became active. If
+   * the immediate attempt fails, the ordinary reconnect policy takes over —
+   * there is no special retry behavior. Duplicate notifications coalesce.
+   */
+  private resumeTransport(): void {
+    if (this.closed || !this.suspended) return;
+    this.suspended = false;
+    const attempt = this.authAttempt;
+    if (attempt !== undefined) {
+      const remainingMs = attempt.expiresAtMs - this.now();
+      if (remainingMs <= 0) this.expireAuthAttempt(attempt);
+      else {
+        attempt.expiryHandle = this.clock.setTimeout(
+          () => this.expireAuthAttempt(attempt),
+          remainingMs,
+        );
+      }
+    }
+    if (!this.permanentFailure && !this.authBlocked && this.hasReconnectWork()) {
+      // ensureConnected is the single enforcement point for the server's
+      // Retry-After deadline: an unelapsed one defers this dial to the
+      // ordinary reconnect policy (which clears `resuming` again), everything
+      // else dials inside this event turn.
+      this.resuming = true;
+      this.ensureConnected();
+    }
+    this.publishConnectionState();
+  }
+
+  /**
+   * A credential presentation reached its absolute deadline: reject it, block
+   * until a new credential is supplied, and retire any socket. Shared by the
+   * live expiry timer and resume's re-evaluation of a paused deadline.
+   */
+  private expireAuthAttempt(attempt: AuthAttempt): void {
+    if (this.authAttempt !== attempt) return;
+    this.authAttempt = undefined;
+    this.authBlocked = true;
+    this.ready = false;
+    this.resuming = false;
+    const error = localError("auth_unavailable", "authentication timed out", "connection");
+    this.blockingError = error;
+    attempt.reject(error);
+    this.retireConnection(1008, "authentication timed out");
+    this.publishConnectionState();
   }
 
   private request(kind: "query" | "mutation", ref: string, args: unknown): Promise<unknown> {
@@ -925,8 +1425,104 @@ export class DbzzClient {
     }
   }
 
+  private publishConnectionState(): void {
+    // Both snapshots are derived from the same transition before either
+    // listener set runs, so no listener can observe them disagreeing.
+    const authenticationBefore = this.authenticationState;
+    const authenticationAfter = this.deriveAuthenticationState(authenticationBefore);
+    this.authenticationState = authenticationAfter;
+    const connectionBefore = this.connectionState;
+    const connectionAfter = this.deriveConnectionState(connectionBefore);
+    this.connectionState = connectionAfter;
+    if (authenticationAfter !== authenticationBefore) {
+      for (const listener of [...this.authenticationStateListeners]) {
+        // A reentrant transition already notified every listener with the
+        // newer state; delivering the superseded one would reorder time.
+        if (this.authenticationState !== authenticationAfter) return;
+        listener(authenticationAfter);
+      }
+    }
+    if (connectionAfter === connectionBefore) return;
+    for (const listener of [...this.connectionStateListeners]) {
+      // A reentrant transition already notified every listener with the newer
+      // state; delivering the superseded one afterwards would reorder time.
+      if (this.connectionState !== connectionAfter) return;
+      listener(connectionAfter);
+    }
+  }
+
+  private deriveConnectionState(current: DbzzConnectionState): DbzzConnectionState {
+    if (this.closed) return CLOSED_STATE;
+    if (this.permanentFailure) {
+      return current.phase === "terminal-error" && current.error === this.terminalError
+        ? current
+        : Object.freeze({ phase: "terminal-error" as const, error: this.terminalError! });
+    }
+    if (this.authBlocked) {
+      // Authentication-blocked outranks suspended: both mean "no transport,
+      // no dialing", but blocked is the actionable fact — a credential is
+      // required, and backgrounding cannot repair that. Consumers key on it
+      // (the React query store defers retries while blocked), so it stays
+      // visible across suspension.
+      return current.phase === "authentication-blocked" && current.error === this.blockingError
+        ? current
+        : Object.freeze({ phase: "authentication-blocked" as const, error: this.blockingError! });
+    }
+    if (this.suspended) return SUSPENDED_STATE;
+    if (this.ready) {
+      return current.phase === "ready" && current.authentication === this.authentication
+        ? current
+        : Object.freeze({ phase: "ready" as const, authentication: this.authentication! });
+    }
+    if (this.resuming) return RESUMING_STATE;
+    return this.everReady ? RECONNECTING_STATE : CONNECTING_STATE;
+  }
+
+  private deriveAuthenticationState(current: DbzzAuthenticationState): DbzzAuthenticationState {
+    if (this.closed) return CLOSED_AUTHENTICATION_STATE;
+    if (this.permanentFailure) {
+      return current.phase === "failed" && current.error === this.terminalError
+        ? current
+        : Object.freeze({ phase: "failed" as const, error: this.terminalError! });
+    }
+    if (this.authBlocked) {
+      return current.phase === "refresh-required" && current.error === this.blockingError
+        ? current
+        : Object.freeze({ phase: "refresh-required" as const, error: this.blockingError! });
+    }
+    // A pending refresh attempt outranks a live session: the server already
+    // retired the previous epoch when the attempt reached it, and this client
+    // withholds operations until the presented credential is confirmed.
+    const pending = this.authAttempt;
+    if (pending !== undefined || !this.ready) {
+      return (pending?.credential ?? this.credential).kind === "anonymous"
+        ? AUTHENTICATING_ANONYMOUS
+        : AUTHENTICATING_BEARER;
+    }
+    const authentication = this.authentication!;
+    if (authentication.principal === "anonymous") {
+      return current.phase === "unauthenticated" && current.authentication === authentication
+        ? current
+        : Object.freeze({ phase: "unauthenticated" as const, authentication });
+    }
+    return current.phase === "authenticated" && current.authentication === authentication
+      ? current
+      : Object.freeze({ phase: "authenticated" as const, authentication });
+  }
+
   private ensureConnected(): void {
-    if (this.closed || this.permanentFailure || this.authBlocked || this.socket) return;
+    if (this.closed || this.permanentFailure || this.authBlocked || this.suspended || this.socket) {
+      return;
+    }
+    // Server admission control is enforced at the one physical dial boundary:
+    // no demand path — new work, connect(), a credential refresh, or a
+    // lifecycle activation — may open a socket before the server's
+    // Retry-After deadline. The bounded reconnect policy holds the remainder
+    // (an already-scheduled timer is preserved; scheduling clears `resuming`).
+    if (this.serverRetryNotBeforeMs > this.now()) {
+      this.scheduleReconnect();
+      return;
+    }
     this.clearReconnectTimer();
     let socket: DbzzWebSocket;
     try {
@@ -936,7 +1532,7 @@ export class DbzzClient {
       return;
     }
     this.socket = socket;
-    this.connectionSerial++;
+    this.connectionGeneration++;
     socket.onopen = () => this.handleOpen(socket);
     socket.onmessage = (event) => this.handleIncoming(socket, event.data);
     socket.onerror = () => socket.close();
@@ -946,6 +1542,7 @@ export class DbzzClient {
   private handleOpen(socket: DbzzWebSocket): void {
     if (this.socket !== socket || this.closed) return;
     this.socketOpen = true;
+    this.helloCredential = this.credential;
     try {
       this.sendFrame({
         v: PROTOCOL_VERSION,
@@ -963,6 +1560,9 @@ export class DbzzClient {
     this.socket = null;
     this.socketOpen = false;
     this.ready = false;
+    // A foreground recovery attempt whose socket died is over: what follows
+    // is the ordinary reconnect policy and its ordinary phases.
+    this.resuming = false;
     this.authentication = undefined;
     this.clearConnectionTimers();
     for (const subscription of this.subscriptions.values()) {
@@ -971,6 +1571,7 @@ export class DbzzClient {
     if (!this.closed && !this.permanentFailure && !this.authBlocked && this.hasReconnectWork()) {
       this.scheduleReconnect();
     }
+    this.publishConnectionState();
   }
 
   private handleIncoming(socket: DbzzWebSocket, data: unknown): void {
@@ -1002,17 +1603,38 @@ export class DbzzClient {
         }
         if (this.ready) return;
         this.ready = true;
-        this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
-        if (this.authAttempt) this.sendAuth(this.authAttempt);
+        this.everReady = true;
+        // The fresh handshake completed: a foreground recovery attempt ends
+        // in ready exactly like any other successful connection.
+        this.resuming = false;
+        this.authentication = authenticationFromFrame(frame);
+        if (this.authAttempt) {
+          // A hello that presented this attempt's credential value was just
+          // verified by this welcome; a second auth round-trip would re-verify
+          // the same token and retire the epoch it created. Only a credential
+          // that changed after the hello still needs its own transition.
+          if (
+            this.helloCredential !== undefined &&
+            sameCredential(this.authAttempt.credential, this.helloCredential)
+          ) {
+            this.resolveAuth(this.authAttempt, this.authentication);
+          } else {
+            this.sendAuth(this.authAttempt);
+          }
+        }
         this.flushState();
         this.startConnectionTimers();
+        // Published last: a listener may reenter close(), which must find the
+        // connection timers already installed so it can release them.
+        this.publishConnectionState();
         return;
       case "auth": {
         const attempt = this.authAttempt;
         if (!attempt || attempt.id !== frame.attemptId) return;
-        this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
+        this.authentication = authenticationFromFrame(frame);
         this.resolveAuth(attempt, this.authentication);
         this.flushState();
+        this.publishConnectionState();
         return;
       }
       case "transition":
@@ -1042,6 +1664,10 @@ export class DbzzClient {
     if (sameCursor(subscription.cursor, transition.to)) {
       if (transition.kind === "reset") subscription.resetRequested = false;
       this.advanceConvergence(id, transition.to.commitVersion);
+      // A delivery landing exactly on the held cursor (typically the resume
+      // acknowledgment after reconnect) authoritatively confirms the held
+      // value — unless the client is still demanding a reset.
+      if (!subscription.resetRequested) subscription.onCursorConfirmed?.();
       return;
     }
     if (subscription.resetRequested && transition.kind !== "reset") return;
@@ -1068,6 +1694,7 @@ export class DbzzClient {
         break;
       case "checkpoint":
       case "resume":
+        subscription.onCursorConfirmed?.();
         break;
     }
   }
@@ -1141,9 +1768,9 @@ export class DbzzClient {
   private applyError(id: number | null, error: DbzzClientError): void {
     if (id === null) {
       if (error.retryable) {
-        this.serverRetryFloorMs = Math.max(
-          this.serverRetryFloorMs,
-          Math.min(error.retryAfterMs ?? 0, MAX_RETRY_AFTER_MS),
+        this.serverRetryNotBeforeMs = Math.max(
+          this.serverRetryNotBeforeMs,
+          this.now() + Math.min(error.retryAfterMs ?? 0, MAX_RETRY_AFTER_MS),
         );
         this.socket?.close(1013, "retry later");
       } else if (
@@ -1270,7 +1897,7 @@ export class DbzzClient {
   private expireRequest(request: PendingRequest): void {
     if (this.pending.get(request.id) !== request) return;
     const committed = request.receipt !== undefined;
-    const mutationMayHaveCommitted = request.kind === "mutation" && request.sentConnection !== undefined;
+    const mutationMayHaveCommitted = request.kind === "mutation" && request.sentGeneration !== undefined;
     this.finishRequest(
       request,
       undefined,
@@ -1291,22 +1918,22 @@ export class DbzzClient {
     if (!this.canSendOperations()) return;
     const now = this.now();
     for (const subscription of this.subscriptions.values()) {
-      if (subscription.sentConnection !== this.connectionSerial) this.sendSubscription(subscription);
+      if (subscription.sentGeneration !== this.connectionGeneration) this.sendSubscription(subscription);
     }
     for (const request of [...this.pending.values()]) {
       if (request.expiresAtMs <= now) this.expireRequest(request);
-      else if (request.sentConnection !== this.connectionSerial) this.sendRequest(request);
+      else if (request.sentGeneration !== this.connectionGeneration) this.sendRequest(request);
     }
   }
 
   private sendRequest(request: PendingRequest): void {
     this.sendText(request.frame);
-    request.sentConnection = this.connectionSerial;
+    request.sentGeneration = this.connectionGeneration;
   }
 
   private sendSubscription(subscription: Subscription): void {
     this.sendText(subscription.frame);
-    subscription.sentConnection = this.connectionSerial;
+    subscription.sentGeneration = this.connectionGeneration;
   }
 
   private sendAuth(attempt: AuthAttempt): void {
@@ -1316,7 +1943,7 @@ export class DbzzClient {
       attemptId: attempt.id,
       credential: attempt.credential,
     });
-    attempt.sentConnection = this.connectionSerial;
+    attempt.sentGeneration = this.connectionGeneration;
   }
 
   private resolveAuth(attempt: AuthAttempt, authentication: DbzzAuthentication): void {
@@ -1329,19 +1956,27 @@ export class DbzzClient {
   private blockAuthentication(error: DbzzClientError): void {
     this.authBlocked = true;
     this.ready = false;
+    this.resuming = false;
+    this.blockingError = error;
     if (this.authAttempt) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.reject(error);
       this.authAttempt = undefined;
     }
+    // Retired before any externally owned callback runs: an onError handler
+    // may reenter refreshCredential in the same turn, and its recovery dial
+    // must find the rejected socket already detached or it would never dial.
+    this.retireConnection(1008, "authentication failed");
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
-    this.socket?.close(1008, "authentication failed");
+    this.publishConnectionState();
   }
 
   private failPermanently(error: DbzzClientError): void {
     if (this.permanentFailure || this.closed) return;
     this.permanentFailure = true;
+    this.resuming = false;
+    this.terminalError = error;
     this.clearReconnectTimer();
     if (this.authAttempt) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
@@ -1354,11 +1989,18 @@ export class DbzzClient {
       this.releasePersistent(subscription.bytes);
     }
     this.subscriptions.clear();
-    this.socket?.close(1002, "protocol failure");
+    this.retireConnection(1002, "protocol failure");
+    this.publishConnectionState();
   }
 
   private scheduleReconnect(): void {
-    if (this.reconnectHandle !== undefined || this.socket || !this.hasReconnectWork()) return;
+    if (this.reconnectHandle !== undefined || this.socket || this.suspended || !this.hasReconnectWork()) {
+      return;
+    }
+    // Scheduling is the entry to the ordinary reconnect policy: a foreground
+    // recovery attempt that reaches it (its dial failed outright) publishes
+    // ordinary reconnect phases from here on.
+    this.resuming = false;
     const windowMs = Math.min(
       this.reconnect.maxDelayMs,
       this.reconnect.baseDelayMs * 2 ** Math.min(this.reconnectAttempt + 1, 30),
@@ -1368,14 +2010,18 @@ export class DbzzClient {
       this.failPermanently(localError("internal", "client random source is invalid", "connection"));
       return;
     }
-    const floor = Math.min(this.serverRetryFloorMs, MAX_RETRY_AFTER_MS);
+    // The server's admission deadline floors the delay by whatever of it
+    // remains; once elapsed it is naturally inert, so it is never cleared.
+    const floor = Math.min(
+      Math.max(0, this.serverRetryNotBeforeMs - this.now()),
+      MAX_RETRY_AFTER_MS,
+    );
     const minimum = Math.max(this.reconnect.baseDelayMs, floor);
     const ceiling = Math.max(minimum, windowMs);
     const delay = Math.min(
       MAX_RETRY_AFTER_MS,
       minimum + Math.floor(random * (ceiling - minimum + 1)),
     );
-    this.serverRetryFloorMs = 0;
     this.reconnectAttempt++;
     this.reconnectHandle = this.clock.setTimeout(() => {
       this.reconnectHandle = undefined;
@@ -1385,12 +2031,12 @@ export class DbzzClient {
 
   private startConnectionTimers(): void {
     this.clearConnectionTimers();
-    const serial = this.connectionSerial;
+    const generation = this.connectionGeneration;
     this.stableHandle = this.clock.setTimeout(() => {
-      if (this.ready && this.connectionSerial === serial) this.reconnectAttempt = 0;
+      if (this.ready && this.connectionGeneration === generation) this.reconnectAttempt = 0;
     }, this.reconnect.stableOpenMs);
     this.pingHandle = this.clock.setInterval(() => {
-      if (this.ready && this.connectionSerial === serial) {
+      if (this.ready && this.connectionGeneration === generation) {
         this.sendFrame({ v: PROTOCOL_VERSION, t: "ping" });
       }
     }, 30_000);
@@ -1409,7 +2055,12 @@ export class DbzzClient {
   }
 
   private hasReconnectWork(): boolean {
-    return this.subscriptions.size > 0 || this.pending.size > 0 || this.authAttempt !== undefined;
+    return (
+      this.connectRequested ||
+      this.subscriptions.size > 0 ||
+      this.pending.size > 0 ||
+      this.authAttempt !== undefined
+    );
   }
 
   private canSendOperations(): boolean {
@@ -1450,6 +2101,20 @@ export class DbzzClient {
     } catch (error) {
       if (error instanceof ProtocolError) {
         throw localError("validation", "procedure request cannot be encoded", "operation");
+      }
+      throw error;
+    }
+  }
+
+  // Subscription arguments are caller-supplied values, so unencodable ones
+  // (non-finite numbers, functions, ...) surface as the exact validation
+  // rejection rather than a raw wire error.
+  private encodeSubscriptionOrReject(id: number, ref: string, args: unknown): string {
+    try {
+      return this.encodeClient({ v: PROTOCOL_VERSION, t: "sub", id, ref, args });
+    } catch (error) {
+      if (error instanceof WireError) {
+        throw localError("validation", error.message, "subscription");
       }
       throw error;
     }
@@ -1614,9 +2279,28 @@ export class DbzzClient {
             throw cancellationError;
           }
           if (response.status === 204) {
-            if (response.body === null) return null;
-            cancelWithoutWaiting(response.body);
-            throw localError("malformed", "SSE acknowledgment 204 response must not have a body", "sse");
+            // Spec fetches model No Content as a null body; Bun's native
+            // fetch models it as an empty stream. Both are exact — anything
+            // that actually delivers bytes is not.
+            const body = response.body;
+            if (body === null) return null;
+            const reader = body.getReader();
+            let empty = false;
+            try {
+              const part = await raceWithAbort(
+                (async () => reader.read())(),
+                attemptSignal,
+                cancellationError,
+              );
+              if (!part.done) {
+                throw localError("malformed", "SSE acknowledgment 204 response must not have a body", "sse");
+              }
+              empty = true;
+              return null;
+            } finally {
+              if (!empty) cancelWithoutWaiting(reader, attemptSignal.reason);
+              releaseReaderLock(reader);
+            }
           }
 
           const text = await this.readBoundedResponse(

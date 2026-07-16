@@ -15,12 +15,14 @@ import { encode } from "../../core/src/wire.ts";
 import {
   ANONYMOUS_PRINCIPAL,
   type CredentialVerifier,
+  type ExternalAccount,
   type PrincipalInvalidation,
   type RevocationBound,
-  type UserPrincipal,
-  type VerifiedPrincipal,
+  type VerifiedCredential,
+  type VerifiedUserCredential,
 } from "../src/auth.ts";
 import { callerFairnessKey } from "../src/caller.ts";
+import type { Identity } from "../src/dbz.ts";
 import { DbzzError } from "../src/errors.ts";
 import { outcomeFromError } from "../src/outcome.ts";
 import {
@@ -100,7 +102,7 @@ class ManualClock implements SessionClock {
   }
 }
 
-type VerifierResult = VerifiedPrincipal | Error | Promise<VerifiedPrincipal>;
+type VerifierResult = VerifiedCredential | Error | Promise<VerifiedCredential>;
 
 class FakeVerifier implements CredentialVerifier {
   readonly calls: string[] = [];
@@ -110,7 +112,7 @@ class FakeVerifier implements CredentialVerifier {
 
   constructor(readonly revocationBound: RevocationBound = { kind: "invalidation", deadlineMs: 5_000 }) {}
 
-  async verify(credential: string): Promise<VerifiedPrincipal> {
+  async verify(credential: string): Promise<VerifiedCredential> {
     this.calls.push(credential);
     const result = this.results.get(credential);
     if (result === undefined) throw new Error("unconfigured fake credential");
@@ -191,6 +193,7 @@ function resetTransition(authEpoch: number, id = 1): TransitionMessage {
 }
 
 class FakeRuntime implements RuntimePort {
+  credentialVerifier: CredentialVerifier | undefined;
   readonly opens: SessionRuntimeContext[] = [];
   readonly transitions: RuntimeAuthTransition[] = [];
   readonly subscriptions: number[] = [];
@@ -206,8 +209,28 @@ class FakeRuntime implements RuntimePort {
   transitionReleaseCount = 0;
   subscribeHook: ((context: SessionRuntimeContext, id: number) => Promise<void>) | null = null;
   queryHook: ((context: SessionRuntimeContext, message: QueryMessage) => Promise<unknown>) | null = null;
+  resolveIdentityHook: (
+    (account: ExternalAccount, signal?: AbortSignal) => Promise<Identity>
+  ) | null = null;
+  private readonly identities = new Map<string, Identity>();
+  private nextIdentity = 0n;
 
-  constructor(private readonly order: string[] = []) {}
+  constructor(
+    private readonly order: string[] = [],
+    credentialVerifier?: CredentialVerifier,
+  ) {
+    this.credentialVerifier = credentialVerifier;
+  }
+
+  async resolveIdentity(account: ExternalAccount, signal?: AbortSignal): Promise<Identity> {
+    if (this.resolveIdentityHook !== null) return this.resolveIdentityHook(account, signal);
+    const key = `${account.issuer}\0${account.subject}`;
+    const existing = this.identities.get(key);
+    if (existing !== undefined) return existing;
+    const identity = (++this.nextIdentity) as Identity;
+    this.identities.set(key, identity);
+    return identity;
+  }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {
     this.order.push("runtime:open");
@@ -322,7 +345,7 @@ class FakeRuntime implements RuntimePort {
   }
 }
 
-function principal(subject: string, expiresAt = 60_000): UserPrincipal {
+function principal(subject: string, expiresAt = 60_000): VerifiedUserCredential {
   return {
     kind: "user",
     issuer: "https://issuer.example/",
@@ -784,11 +807,12 @@ describe("Session Protocol-2 ownership", () => {
     const runtime = new FakeRuntime(order);
     const sink = new FakeSink(order);
     const verifier = new FakeVerifier();
-    const first = deferred<VerifiedPrincipal>();
-    const second = deferred<VerifiedPrincipal>();
+    const first = deferred<VerifiedCredential>();
+    const second = deferred<VerifiedCredential>();
     verifier.results.set("first", first.promise);
     verifier.results.set("second", second.promise);
-    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
+    runtime.credentialVerifier = verifier;
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
     await handle(session, hello());
     order.length = 0;
 
@@ -814,6 +838,25 @@ describe("Session Protocol-2 ownership", () => {
       "application:transition:1",
       "control:auth:2",
     ]);
+    const accepted = messagesOfType(sink.controls, "auth")[0]!;
+    expect(accepted).toEqual({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: 2,
+      authEpoch: 1,
+      principal: "user",
+      identity: 1n as Identity,
+      provenance: { issuer: "https://issuer.example/", subject: "second" },
+    });
+    expect(Object.keys(accepted).sort()).toEqual([
+      "attemptId",
+      "authEpoch",
+      "identity",
+      "principal",
+      "provenance",
+      "t",
+      "v",
+    ]);
 
     first.resolve(principal("first"));
     await settle();
@@ -823,6 +866,99 @@ describe("Session Protocol-2 ownership", () => {
     expect(verifier.calls).toEqual(["first", "second"]);
     expect(runtime.transitionCaptureBytes).toBe(0);
     expect(runtime.transitionReleaseCount).toBe(1);
+  });
+
+  test("cancels obsolete refresh Identity resolution while the winning refresh succeeds", async () => {
+    const runtime = new FakeRuntime();
+    const sink = new FakeSink();
+    const verifier = new FakeVerifier();
+    verifier.results.set("first", principal("first"));
+    verifier.results.set("second", principal("second"));
+    verifier.results.set("closing", principal("closing"));
+    const signals = new Map<string, AbortSignal>();
+    runtime.resolveIdentityHook = async (account, signal) => {
+      if (signal === undefined) throw new Error("Identity resolution requires auth cancellation");
+      signals.set(account.subject, signal);
+      if (account.subject === "second") return 2n as Identity;
+      return new Promise<Identity>((_resolve, reject) => {
+        if (signal.aborted) reject(signal.reason);
+        else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    };
+    runtime.credentialVerifier = verifier;
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
+    await handle(session, hello());
+
+    await handle(session, auth(1, { kind: "bearer", token: "first" }));
+    await settle();
+    expect(signals.get("first")?.aborted).toBe(false);
+
+    await handle(session, auth(2, { kind: "bearer", token: "second" }));
+    await settle();
+    expect(signals.get("first")?.aborted).toBe(true);
+    expect(session.snapshot()).toMatchObject({
+      phase: "active",
+      authEpoch: 1,
+      principal: { kind: "user", subject: "second", identity: 2n },
+    });
+
+    await handle(session, auth(3, { kind: "bearer", token: "closing" }));
+    await settle();
+    expect(signals.get("closing")?.aborted).toBe(false);
+    await session.close(new DbzzError("draining", "server draining"));
+    expect(signals.get("closing")?.aborted).toBe(true);
+  });
+
+  test("cancels blocked hello Identity resolution when the Session closes", async () => {
+    const runtime = new FakeRuntime();
+    const verifier = new FakeVerifier();
+    verifier.results.set("hello", principal("hello"));
+    let resolutionSignal: AbortSignal | undefined;
+    runtime.resolveIdentityHook = async (_account, signal) => {
+      if (signal === undefined) throw new Error("Identity resolution requires auth cancellation");
+      resolutionSignal = signal;
+      return new Promise<Identity>((_resolve, reject) => {
+        if (signal.aborted) reject(signal.reason);
+        else signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    };
+    runtime.credentialVerifier = verifier;
+    const session = new Session({
+      runtime,
+      sink: new FakeSink(),
+      source: TEST_SOURCE,
+      clock: new ManualClock(),
+    });
+
+    const opening = handle(session, hello({ kind: "bearer", token: "hello" }));
+    await settle();
+    expect(resolutionSignal?.aborted).toBe(false);
+    const closing = session.close(new DbzzError("draining", "server draining"));
+    expect(resolutionSignal?.aborted).toBe(true);
+    await Promise.all([opening, closing]);
+    expect(runtime.opens).toHaveLength(0);
+    expect(runtime.closes).toHaveLength(0);
+  });
+
+  test("never opens a Runtime session when expiry lands at the Session boundary", async () => {
+    const expiryTimes = [0, 999, 1_000];
+    const expiryClock = new ManualClock();
+    expiryClock.now = () => expiryTimes.shift() ?? 1_000;
+    const expiryRuntime = new FakeRuntime();
+    const expiryVerifier = new FakeVerifier();
+    expiryVerifier.results.set("boundary", principal("boundary", 1_000));
+    expiryRuntime.credentialVerifier = expiryVerifier;
+    const expirySession = new Session({
+      runtime: expiryRuntime,
+      sink: new FakeSink(),
+      source: TEST_SOURCE,
+      clock: expiryClock,
+    });
+    await handle(expirySession, hello({ kind: "bearer", token: "boundary" }));
+    await expirySession.close();
+    expect(expirySession.snapshot().phase).toBe("closed");
+    expect(expiryRuntime.opens).toHaveLength(0);
+    expect(expiryRuntime.closes).toHaveLength(0);
   });
 
   test("switches immutable epoch fairness ownership on refresh and sign-out", async () => {
@@ -839,11 +975,11 @@ describe("Session Protocol-2 ownership", () => {
     verifier.results.set("alice", alice);
     verifier.results.set("alice-refreshed", refreshedAlice);
     verifier.results.set("bob", bob);
+    runtime.credentialVerifier = verifier;
     const session = new Session({
       runtime,
       sink,
       source: TEST_SOURCE,
-      verifier,
       clock: new ManualClock(),
     });
 
@@ -860,7 +996,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(sameOwner.from.signal).toBe(opened.signal);
     expect(sameOwner.to.authEpoch).toBe(1);
     expect(sameOwner.to.fairnessKey).toBe(opened.fairnessKey);
-    expect(sameOwner.to.fairnessKey).toBe(callerFairnessKey(refreshedAlice, TEST_SOURCE));
+    expect(sameOwner.to.fairnessKey).toBe(callerFairnessKey(sameOwner.to.principal, TEST_SOURCE));
 
     await handle(session, auth(2, { kind: "bearer", token: "bob" }));
     await settle();
@@ -872,7 +1008,7 @@ describe("Session Protocol-2 ownership", () => {
     });
     expect(changedOwner.from.signal).toBe(sameOwner.to.signal);
     expect(changedOwner.to.fairnessKey).not.toBe(sameOwner.to.fairnessKey);
-    expect(changedOwner.to.fairnessKey).toBe(callerFairnessKey(bob, TEST_SOURCE));
+    expect(changedOwner.to.fairnessKey).toBe(callerFairnessKey(changedOwner.to.principal, TEST_SOURCE));
 
     await handle(session, auth(3, { kind: "anonymous" }));
     await settle();
@@ -885,7 +1021,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(signedOut.from.signal).toBe(changedOwner.to.signal);
     expect(signedOut.to.authEpoch).toBe(3);
     expect(signedOut.to.fairnessKey).toBe(callerFairnessKey(ANONYMOUS_PRINCIPAL, TEST_SOURCE));
-    expect(opened.fairnessKey).toBe(callerFairnessKey(alice, TEST_SOURCE));
+    expect(opened.fairnessKey).toBe(callerFairnessKey(opened.principal, TEST_SOURCE));
   });
 
   test("releases captured auth publications immediately when close races blocked delivery", async () => {
@@ -895,7 +1031,8 @@ describe("Session Protocol-2 ownership", () => {
     const delivery = deferred<void>();
     verifier.results.set("next", principal("next"));
     sink.applicationHook = async () => delivery.promise;
-    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
+    runtime.credentialVerifier = verifier;
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
     await handle(session, hello());
 
     await handle(session, auth(1, { kind: "bearer", token: "next" }));
@@ -923,7 +1060,8 @@ describe("Session Protocol-2 ownership", () => {
     sink.applicationHook = async () => {
       throw new Error("transport failed");
     };
-    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
+    runtime.credentialVerifier = verifier;
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
     await handle(session, hello());
 
     await handle(session, auth(1, { kind: "bearer", token: "next" }));
@@ -940,7 +1078,8 @@ describe("Session Protocol-2 ownership", () => {
     const sink = new FakeSink();
     const verifier = new FakeVerifier();
     verifier.results.set("user", principal("user"));
-    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
+    runtime.credentialVerifier = verifier;
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
     await handle(session, hello({ kind: "bearer", token: "user" }));
 
     const authHandle = handle(session, auth(1, { kind: "anonymous" }));
@@ -973,9 +1112,10 @@ describe("Session Protocol-2 ownership", () => {
     const sink = new FakeSink();
     const verifier = new FakeVerifier();
     verifier.results.set("valid", principal("user"));
-    const failure = deferred<VerifiedPrincipal>();
+    const failure = deferred<VerifiedCredential>();
     verifier.results.set("invalid", failure.promise);
-    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock: new ManualClock() });
+    runtime.credentialVerifier = verifier;
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
     await handle(session, hello({ kind: "bearer", token: "valid" }));
 
     await handle(session, auth(1, { kind: "bearer", token: "invalid" }));
@@ -998,7 +1138,8 @@ describe("Session Protocol-2 ownership", () => {
     const sink = new FakeSink();
     const verifier = new FakeVerifier();
     verifier.results.set("short", principal("short", 1_100));
-    const session = new Session({ runtime, sink, source: TEST_SOURCE, verifier, clock });
+    runtime.credentialVerifier = verifier;
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock });
     await handle(session, hello({ kind: "bearer", token: "short" }));
 
     await clock.advance(99);
@@ -1013,10 +1154,12 @@ describe("Session Protocol-2 ownership", () => {
   test("accepts invalidation guarantees equal to or lower than the configured revocation bound", () => {
     for (const advertisedDeadlineMs of [5_000, 1_000]) {
       const session = new Session({
-        runtime: new FakeRuntime(),
+        runtime: new FakeRuntime(
+          [],
+          new FakeVerifier({ kind: "invalidation", deadlineMs: advertisedDeadlineMs }),
+        ),
         sink: new FakeSink(),
         source: TEST_SOURCE,
-        verifier: new FakeVerifier({ kind: "invalidation", deadlineMs: advertisedDeadlineMs }),
         revocationDeadlineMs: 5_000,
       });
 
@@ -1024,10 +1167,9 @@ describe("Session Protocol-2 ownership", () => {
     }
 
     expect(() => new Session({
-      runtime: new FakeRuntime(),
+      runtime: new FakeRuntime([], new FakeVerifier({ kind: "token-expiration" })),
       sink: new FakeSink(),
       source: TEST_SOURCE,
-      verifier: new FakeVerifier({ kind: "token-expiration" }),
       revocationDeadlineMs: 1,
     })).not.toThrow();
   });
@@ -1037,29 +1179,29 @@ describe("Session Protocol-2 ownership", () => {
       const revocationBound = { kind: "invalidation", deadlineMs } as unknown as RevocationBound;
 
       expect(() => new Session({
-        runtime: new FakeRuntime(),
+        runtime: new FakeRuntime([], new FakeVerifier(revocationBound)),
         sink: new FakeSink(),
         source: TEST_SOURCE,
-        verifier: new FakeVerifier(revocationBound),
       })).toThrow("verifier invalidation deadlineMs must be a positive finite number");
     }
 
     const missingBound = new FakeVerifier();
     Object.defineProperty(missingBound, "revocationBound", { value: undefined });
     expect(() => new Session({
-      runtime: new FakeRuntime(),
+      runtime: new FakeRuntime([], missingBound),
       sink: new FakeSink(),
       source: TEST_SOURCE,
-      verifier: missingBound,
     })).toThrow("verifier must declare a revocationBound");
   });
 
   test("rejects an invalidation guarantee above the configured revocation bound", () => {
     expect(() => new Session({
-      runtime: new FakeRuntime(),
+      runtime: new FakeRuntime(
+        [],
+        new FakeVerifier({ kind: "invalidation", deadlineMs: 5_000 }),
+      ),
       sink: new FakeSink(),
       source: TEST_SOURCE,
-      verifier: new FakeVerifier({ kind: "invalidation", deadlineMs: 5_000 }),
       revocationDeadlineMs: 4_999,
     })).toThrow("verifier invalidation deadlineMs cannot exceed revocationDeadlineMs");
   });
@@ -1070,11 +1212,11 @@ describe("Session Protocol-2 ownership", () => {
     const sink = new FakeSink();
     const verifier = new FakeVerifier();
     verifier.results.set("valid", principal("user", 20_000));
+    runtime.credentialVerifier = verifier;
     const session = new Session({
       runtime,
       sink,
       source: TEST_SOURCE,
-      verifier,
       clock,
       revocationDeadlineMs: 5_000,
     });

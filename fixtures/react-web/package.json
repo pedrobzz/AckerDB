@@ -1,0 +1,15 @@
+{
+  "name": "dbzz-fixture-react-web",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dbzz/client-react": "workspace:*",
+    "@dbzz/server": "workspace:*",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3"
+  }
+}

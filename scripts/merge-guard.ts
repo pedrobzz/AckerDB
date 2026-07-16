@@ -9,7 +9,7 @@
 //                                 ff merges (--ff/--ff-only override the no-ff
 //                                 config), cherry-pick, rebase, --no-verify
 //                                 merges (commit hooks are skipped, this isn't)
-import { fail, git, semverGt, syncedVersion, tryGit } from "./lib";
+import { PACKAGES, fail, git, semverGt, syncedVersion, tryGit } from "./lib";
 
 // Commit types that force a version bump; everything else (chore, docs, test,
 // refactor, ...) merges freely. A breaking `!` on any type also forces a bump.
@@ -18,8 +18,18 @@ const BUMP_TYPES = ["feat", "fix"];
 const bumpType = new RegExp(`^(${BUMP_TYPES.join("|")})(\\(.+\\))?!?:`, "i");
 const breaking = /^[a-z]+(\(.+\))?!:/i;
 
-function versionAt(ref: string): string {
-  return syncedVersion((pkg) => git("show", `${ref}:packages/${pkg}/package.json`));
+function versionAt(ref: string, requireCompleteSet: boolean): string {
+  const present = PACKAGES.filter(
+    (pkg) => tryGit("show", `${ref}:packages/${pkg}/package.json`) !== null,
+  );
+  if (requireCompleteSet && present.length !== PACKAGES.length) {
+    const missing = PACKAGES.filter((pkg) => !present.includes(pkg));
+    fail(`${ref} is missing release package(s): ${missing.map((pkg) => `@dbzz/${pkg}`).join(", ")}`);
+  }
+  return syncedVersion(
+    (pkg) => git("show", `${ref}:packages/${pkg}/package.json`),
+    present,
+  );
 }
 
 function check(subjects: string[], mainVersion: string, newVersion: string): void {
@@ -55,7 +65,9 @@ if (args[0] === "--range") {
     .split("\n")
     .filter(Boolean);
   if (subjects.length === 0) process.exit(0); // pure rewind (reset to an ancestor)
-  check(subjects, versionAt(oldRef), versionAt(newRef));
+  // The old ref may predate a package added by this release. The new ref must
+  // contain the complete release set and keep every package in lockstep.
+  check(subjects, versionAt(oldRef, false), versionAt(newRef, true));
   process.exit(0);
 }
 
@@ -79,4 +91,4 @@ const subjects = heads
 
 // HEAD = main before the merge; ":" = the index, i.e. the merged result.
 const mergedVersion = syncedVersion((pkg) => git("show", `:packages/${pkg}/package.json`));
-check(subjects, versionAt("HEAD"), mergedVersion);
+check(subjects, versionAt("HEAD", false), mergedVersion);

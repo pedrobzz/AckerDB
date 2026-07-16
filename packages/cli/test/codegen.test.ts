@@ -52,6 +52,7 @@ describe("codegen", () => {
       "messages.list",
       "messages.runJob",
       "messages.send",
+      "messages.tail",
     ]);
     // the api object produces exactly these addresses
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");

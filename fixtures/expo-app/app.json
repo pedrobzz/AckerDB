@@ -1,0 +1,9 @@
+{
+  "expo": {
+    "name": "dbzz-fixture-expo-app",
+    "slug": "dbzz-fixture-expo-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "platforms": ["ios", "android"]
+  }
+}

@@ -1,21 +1,50 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  assertPerformanceAcceptance,
+  classifyFrozenWin,
+  evaluatePerformanceAcceptance,
   extractComparableMetrics,
   FROZEN_BASELINE_PATH,
   FROZEN_BASELINE_SHA256,
+  FROZEN_NEAR_TIE_WINS,
+  nearTieDriftTable,
+  NOISE_FLOOR_CPU_CORES,
+  NOISE_FLOOR_RELATIVE,
+  noiseAllowance,
   PERFORMANCE_EXCLUSIONS,
   type BenchmarkRecordLike,
+  type ComparableMetric,
 } from "./performance-gates.ts";
+import { persistBenchmarkOutcome } from "./result-persistence.ts";
 
 const baselineJson = readFileSync(new URL(`../${FROZEN_BASELINE_PATH}`, import.meta.url), "utf8");
 const baseline = JSON.parse(baselineJson) as BenchmarkRecordLike;
 const copy = () => {
   const record = structuredClone(baseline);
-  record.schemaVersion = 5;
+  record.schemaVersion = 6;
   return record;
 };
+const passedValidation = Object.freeze({ status: "passed", failures: Object.freeze([]) } as const);
+
+function performance(record: BenchmarkRecordLike, source = baselineJson) {
+  return evaluatePerformanceAcceptance(record, source, passedValidation);
+}
+
+function passingEvidence(record: BenchmarkRecordLike) {
+  const result = performance(record);
+  expect(result.status).toBe("passed");
+  if (result.status !== "passed") throw new Error(`expected passing performance evidence`);
+  return result.evidence;
+}
+
+function failedPerformance(record: BenchmarkRecordLike) {
+  const result = performance(record);
+  expect(result.status).toBe("failed");
+  if (result.status !== "failed") throw new Error(`expected failed performance evidence`);
+  return result;
+}
 
 function operation(record: BenchmarkRecordLike, system: "dbzz" | "convex", name = "query", profile = "latency") {
   return record.systems[system]!.workload.operations.find(
@@ -27,7 +56,11 @@ function connection(record: BenchmarkRecordLike, system: "dbzz" | "convex", targ
   return record.systems[system]!.workload.connections.find((item) => item.targetConnections === target)!;
 }
 
-function subscription(record: BenchmarkRecordLike, system: "dbzz" | "convex", pattern: "shared" | "partitioned") {
+function subscription(
+  record: BenchmarkRecordLike,
+  system: "dbzz" | "convex" | "spacetimedb",
+  pattern: "shared" | "partitioned",
+) {
   return record.systems[system]!.workload.subscriptions.find((item) => item.pattern === pattern)!;
 }
 
@@ -72,7 +105,7 @@ describe("complete benchmark metric extraction", () => {
 
     const omittedCase = copy();
     omittedCase.systems.dbzz!.workload.operations.pop();
-    expect(() => assertPerformanceAcceptance(omittedCase, baselineJson)).toThrow("comparable metric count");
+    expect(() => performance(omittedCase)).toThrow("comparable metric count");
 
     const duplicate = copy();
     duplicate.systems.dbzz!.workload.operations.push(structuredClone(duplicate.systems.dbzz!.workload.operations[0]!));
@@ -87,16 +120,28 @@ describe("complete benchmark metric extraction", () => {
 });
 
 describe("frozen performance acceptance", () => {
-  test("requires the exporter-cost schema-v5 after record", () => {
+  test("requires the correctness-aware schema-v6 after record", () => {
     const oldAfter = copy();
-    oldAfter.schemaVersion = 4;
-    expect(() => assertPerformanceAcceptance(oldAfter, baselineJson)).toThrow("after-run schema-v5");
+    oldAfter.schemaVersion = 5;
+    expect(() => performance(oldAfter)).toThrow("after-run schema-v6");
+  });
+
+  test("does not evaluate performance when measured correctness failed", () => {
+    expect(evaluatePerformanceAcceptance(copy(), "not a baseline", {
+      status: "failed",
+      failures: [{
+        target: "dbzz",
+        kind: "operation",
+        case: "query/latency/trial-0",
+        errors: ["checksum mismatch"],
+      }],
+    })).toEqual({ status: "not-evaluated", reason: "correctness-failed" });
   });
 
   test("the immutable baseline passes its own complete wins and margin floors", () => {
-    const evidence = assertPerformanceAcceptance(copy(), baselineJson);
+    const evidence = passingEvidence(copy());
     expect(evidence).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 3,
       passed: true,
       baseline: {
         path: FROZEN_BASELINE_PATH,
@@ -107,7 +152,16 @@ describe("frozen performance acceptance", () => {
         baselinePerSystem: { dbzz: 351, convex: 351, spacetimedb: 351 },
         afterPerSystem: { dbzz: 351, convex: 351, spacetimedb: 351 },
         frozenDbzzSpacetimeWins: 273,
+        frozenNearTieWins: 22,
         convexFloorChecks: 126,
+      },
+      sharedFixedRate: {
+        offeredUpdatesPerSec: 20,
+        offeredUpdates: 100,
+        completedUpdates: 100,
+        expectedDeliveries: 50_000,
+        observedDeliveries: 50_000,
+        passed: true,
       },
       partitionedFixedRate: {
         offeredUpdatesPerSec: 100,
@@ -123,6 +177,101 @@ describe("frozen performance acceptance", () => {
     expect(evidence.frozenDbzzSpacetimeWins).toHaveLength(273);
     expect(evidence.convexFloors).toHaveLength(126);
     expect(evidence.exclusions).toEqual(PERFORMANCE_EXCLUSIONS);
+  });
+
+  test("classifies exactly the frozen near-tie wins, keeping every other win a strict solid obligation", () => {
+    const evidence = passingEvidence(copy());
+    const nearTies = evidence.frozenDbzzSpacetimeWins.filter((win) => win.classification === "near-tie");
+    const solids = evidence.frozenDbzzSpacetimeWins.filter((win) => win.classification === "solid");
+    expect(nearTies).toHaveLength(FROZEN_NEAR_TIE_WINS);
+    expect(solids).toHaveLength(273 - FROZEN_NEAR_TIE_WINS);
+    expect(nearTies.map((win) => win.path)).toEqual([
+      "connections/100/resources/server/idle/cpuCores",
+      "connections/1000/resources/server/idle/cpuCores",
+      "connections/500/resources/server/idle/cpuCores",
+      "operations/procedure/saturation/latency/p95Ms",
+      "subscriptions/partitioned/capacity/32/deliveryLatency/p50Ms",
+      "subscriptions/partitioned/capacity/32/timeToAll/p50Ms",
+      "subscriptions/partitioned/capacity/32/updateAckLatency/p50Ms",
+      "subscriptions/partitioned/fixed-rate/deliveryThroughputPerSec",
+      "subscriptions/partitioned/fixed-rate/resources/server/subscribed-idle/cpuCores",
+      "subscriptions/partitioned/fixed-rate/setupConnectionsPerSec",
+      "subscriptions/partitioned/fixed-rate/setupMs",
+      "subscriptions/partitioned/fixed-rate/updateThroughputPerSec",
+      "subscriptions/shared/capacity/32/deliveryLatency/p99Ms",
+      "subscriptions/shared/capacity/32/updateAckLatency/p95Ms",
+      "subscriptions/shared/capacity/32/updateAckLatency/p99Ms",
+      "subscriptions/shared/capacity/50/deliveryLatency/p95Ms",
+      "subscriptions/shared/capacity/50/deliveryLatency/p99Ms",
+      "subscriptions/shared/capacity/50/timeToAll/p99Ms",
+      "subscriptions/shared/capacity/50/updateAckLatency/p99Ms",
+      "subscriptions/shared/capacity/8/resources/server/work/cpuCores",
+      "subscriptions/shared/fixed-rate/deliveryThroughputPerSec",
+      "subscriptions/shared/fixed-rate/resources/server/subscribed-idle/cpuCores",
+    ]);
+    for (const win of solids) expect(win.noiseAllowance, win.path).toBe(0);
+    for (const win of nearTies) expect(win.noiseAllowance, win.path).toBeGreaterThan(0);
+  });
+
+  test("noise floor boundaries are deterministic per family and margin", () => {
+    const metric = (family: string, direction: "higher" | "lower", value: number): ComparableMetric => ({
+      path: `synthetic/${family}/${direction}/${value}`,
+      value,
+      direction,
+      family,
+    });
+
+    expect(noiseAllowance("operation.throughput", 100)).toBe(NOISE_FLOOR_RELATIVE * 100);
+    expect(noiseAllowance("resource.cpu", 1)).toBe(NOISE_FLOOR_RELATIVE);
+    expect(noiseAllowance("resource.cpu", 0.05)).toBe(NOISE_FLOOR_CPU_CORES);
+    expect(noiseAllowance("resource.rss", 0.05)).toBe(NOISE_FLOOR_RELATIVE * 0.05);
+
+    // relative floor: a 10% margin is a near-tie, a 16% margin is solid, and
+    // a margin at the floor is solid (classification uses a strict <)
+    expect(classifyFrozenWin(metric("operation.throughput", "higher", 110), metric("operation.throughput", "higher", 100))).toBe("near-tie");
+    expect(classifyFrozenWin(metric("operation.throughput", "higher", 116), metric("operation.throughput", "higher", 100))).toBe("solid");
+    expect(classifyFrozenWin(metric("operation.latency.p95", "lower", 3.4), metric("operation.latency.p95", "lower", 4))).toBe("solid");
+    expect(classifyFrozenWin(metric("operation.latency.p95", "lower", 3.5), metric("operation.latency.p95", "lower", 4))).toBe("near-tie");
+
+    // resource.cpu absolute floor: a large relative margin at milli-core scale
+    // is still a near-tie, while the same relative margin at load scale is solid
+    expect(classifyFrozenWin(metric("resource.cpu", "lower", 0.034), metric("resource.cpu", "lower", 0.048))).toBe("near-tie");
+    expect(classifyFrozenWin(metric("resource.cpu", "lower", 0.68), metric("resource.cpu", "lower", 0.96))).toBe("solid");
+    expect(classifyFrozenWin(metric("resource.cpu", "lower", 0.075), metric("resource.cpu", "lower", 0.1))).toBe("solid");
+    expect(classifyFrozenWin(metric("resource.cpu", "lower", 0.08), metric("resource.cpu", "lower", 0.1))).toBe("near-tie");
+
+    expect(() => classifyFrozenWin(metric("resource.cpu", "lower", 0.1), metric("resource.cpu", "lower", 0.1))).toThrow(
+      "is not a frozen baseline win",
+    );
+  });
+
+  test("accepts a shorter window that is not a whole number of seconds at its realized offered rate", () => {
+    const after = copy();
+    for (const system of ["dbzz", "convex", "spacetimedb"] as const) {
+      const config = after.systems[system]!.workload.config;
+      config.subscriptions.durationMs = 1_999;
+      for (const result of after.systems[system]!.workload.subscriptions) {
+        const rate = result.pattern === "shared"
+          ? config.subscriptions.sharedUpdatesPerSec
+          : config.subscriptions.partitionedUpdatesPerSec;
+        // the workload floors the offered count, so an on-time run reports
+        // a measured rate below the nominal configured rate (39/1.999 < 20/s)
+        result.updates = Math.floor((config.subscriptions.durationMs / 1_000) * rate);
+        result.expectedDeliveries = result.updates * (result.pattern === "shared" ? result.users : 1);
+        result.observedDeliveries = result.expectedDeliveries;
+        result.missingDeliveries = 0;
+        if (system !== "convex") {
+          // Convex keeps its frozen measured rates so its 1.25x delivery
+          // floor margin is untouched; only DBZZ and SpacetimeDB report the
+          // on-time realized rates the gate must accept
+          result.updateThroughputPerSec = result.updates / (config.subscriptions.durationMs / 1_000);
+          result.deliveryThroughputPerSec = result.observedDeliveries / (config.subscriptions.durationMs / 1_000);
+        }
+      }
+    }
+    const evidence = passingEvidence(after);
+    expect(evidence.sharedFixedRate).toMatchObject({ offeredUpdates: 39, completedUpdates: 39, passed: true });
+    expect(evidence.partitionedFixedRate).toMatchObject({ offeredUpdates: 199, completedUpdates: 199, passed: true });
   });
 
   test("allows shorter measurement effort without changing the workload identity", () => {
@@ -145,13 +294,13 @@ describe("frozen performance acceptance", () => {
         result.missingDeliveries = 0;
       }
     }
-    expect(assertPerformanceAcceptance(after, baselineJson).passed).toBe(true);
+    expect(passingEvidence(after).passed).toBe(true);
   });
 
   test("rejects current-system measurement drift and frozen workload drift", () => {
     const currentDrift = copy();
     currentDrift.systems.convex!.workload.config.operation.steadyMs = 2_000;
-    expect(() => assertPerformanceAcceptance(currentDrift, baselineJson)).toThrow(
+    expect(() => performance(currentDrift)).toThrow(
       "convex after-run config does not match the current DBZZ config",
     );
 
@@ -159,7 +308,7 @@ describe("frozen performance acceptance", () => {
     for (const system of ["dbzz", "convex", "spacetimedb"] as const) {
       workloadDrift.systems[system]!.workload.config.connections.levels = [1, 100, 500];
     }
-    expect(() => assertPerformanceAcceptance(workloadDrift, baselineJson)).toThrow(
+    expect(() => performance(workloadDrift)).toThrow(
       "after-run workload identity does not match the frozen baseline",
     );
   });
@@ -167,7 +316,7 @@ describe("frozen performance acceptance", () => {
   test("rejects any mutation of the immutable baseline source", () => {
     const tampered = baselineJson.replace('"dirty": true', '"dirty": false');
     expect(tampered).not.toBe(baselineJson);
-    expect(() => assertPerformanceAcceptance(copy(), tampered)).toThrow(
+    expect(() => performance(copy(), tampered)).toThrow(
       "frozen benchmark baseline digest",
     );
   });
@@ -175,9 +324,140 @@ describe("frozen performance acceptance", () => {
   test("fails if any prior strict DBZZ-over-SpacetimeDB path is no longer a strict win", () => {
     const after = copy();
     after.systems.dbzz!.startupIdle.window.rssMb.p50 = after.systems.spacetimedb!.startupIdle.window.rssMb.p50;
-    expect(() => assertPerformanceAcceptance(after, baselineJson)).toThrow(
-      "frozen DBZZ-over-SpacetimeDB win lost at resources/startup-idle/rssMb/p50",
-    );
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "resources/startup-idle/rssMb/p50",
+      message: expect.stringContaining("frozen DBZZ-over-SpacetimeDB win lost"),
+    }));
+  });
+
+  test("persists an ordinary measured performance regression as failed evidence", async () => {
+    const after = copy();
+    after.systems.dbzz!.startupIdle.window.rssMb.p50 = after.systems.spacetimedb!.startupIdle.window.rssMb.p50;
+    const performanceAcceptance = failedPerformance(after);
+    const directory = mkdtempSync(join(tmpdir(), "dbzz-bench-failure-"));
+    const path = join(directory, "result.json");
+    try {
+      const outcome = await persistBenchmarkOutcome(path, {
+        ...after,
+        schemaVersion: 6,
+        validation: passedValidation,
+        performanceAcceptance,
+      });
+      const saved = JSON.parse(readFileSync(path, "utf8")) as {
+        performanceAcceptance: { status: string; failures: Array<{ path: string }> };
+      };
+
+      expect(outcome.status).toBe("failed");
+      expect(saved.performanceAcceptance).toMatchObject({
+        status: "failed",
+        failures: [{ path: "resources/startup-idle/rssMb/p50" }],
+      });
+      expect(Object.isFrozen(performanceAcceptance)).toBe(true);
+      expect(Object.isFrozen(performanceAcceptance.failures)).toBe(true);
+      expect(Object.isFrozen(performanceAcceptance.failures[0])).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("a solid win that slips behind by less than the noise floor still fails: the floor never loosens strict obligations", () => {
+    const after = copy();
+    const spacetime = after.systems.spacetimedb!.resources.server.phases["connections:100:work"]!.cpuCores;
+    after.systems.dbzz!.resources.server.phases["connections:100:work"]!.cpuCores = spacetime * 1.01;
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "connections/100/resources/server/work/cpuCores",
+      message: expect.stringContaining("frozen DBZZ-over-SpacetimeDB win lost"),
+    }));
+  });
+
+  test("a near-tie win flipped within the noise floor passes and stays visible in evidence and the drift table", () => {
+    const after = copy();
+    // delivery throughput may flip the ranking only inside the hard offered-rate floor
+    const spacetimeDelivery = subscription(after, "spacetimedb", "shared").deliveryThroughputPerSec;
+    subscription(after, "dbzz", "shared").deliveryThroughputPerSec = spacetimeDelivery * 0.995;
+    // setup has no offered-rate floor, so it can use the full envelope
+    const spacetimeSetup = subscription(after, "spacetimedb", "partitioned").setupMs;
+    subscription(after, "dbzz", "partitioned").setupMs = spacetimeSetup * 1.1;
+    const spacetimeIdle = after.systems.spacetimedb!.resources.server.phases["connections:500:idle"]!.cpuCores;
+    after.systems.dbzz!.resources.server.phases["connections:500:idle"]!.cpuCores = spacetimeIdle + 0.02;
+
+    const evidence = passingEvidence(after);
+    expect(evidence.metricCounts.frozenNearTieWins).toBe(22);
+    const delivery = evidence.frozenDbzzSpacetimeWins.find(
+      (win) => win.path === "subscriptions/shared/fixed-rate/deliveryThroughputPerSec",
+    )!;
+    expect(delivery.classification).toBe("near-tie");
+    expect(delivery.afterDbzz).toBeLessThan(delivery.afterSpacetime);
+    const idle = evidence.frozenDbzzSpacetimeWins.find(
+      (win) => win.path === "connections/500/resources/server/idle/cpuCores",
+    )!;
+    expect(idle.classification).toBe("near-tie");
+    expect(idle.noiseAllowance).toBe(NOISE_FLOOR_CPU_CORES);
+
+    const table = nearTieDriftTable(evidence.frozenDbzzSpacetimeWins);
+    expect(table).toContain("subscriptions/shared/fixed-rate/deliveryThroughputPerSec");
+    expect(table).toContain("subscriptions/partitioned/fixed-rate/setupMs");
+    expect(table).toContain("-10.0%");
+    expect(table).toContain("connections/500/resources/server/idle/cpuCores");
+    expect(table.split("\n")).toHaveLength(1 + 22);
+  });
+
+  test("a shared fixed-rate delivery sag below the offered target fails even with exact delivery counts inside the envelope", () => {
+    const after = copy();
+    const shared = subscription(after, "dbzz", "shared");
+    // 10% below the 10,000/s offered target: exact counts, within the near-tie
+    // envelope and above the Convex floor, so only the offered-rate gate trips
+    shared.deliveryThroughputPerSec = 9_000;
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual({
+      kind: "fixed-rate",
+      path: "subscriptions/shared/fixed-rate",
+      message: "shared fixed-rate offered target failed: 9000/s, expected at least 9900/s with exact completion",
+    });
+  });
+
+  test("a near-tie win reversed beyond the noise floor fails on both the relative and the absolute cpu envelope", () => {
+    const relative = copy();
+    subscription(relative, "dbzz", "shared").deliveryThroughputPerSec =
+      subscription(relative, "spacetimedb", "shared").deliveryThroughputPerSec * 0.8;
+    const relativeResult = failedPerformance(relative);
+    expect(relativeResult.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "subscriptions/shared/fixed-rate/deliveryThroughputPerSec",
+      message: expect.stringContaining("reversed beyond the noise floor"),
+    }));
+
+    const absolute = copy();
+    const spacetimeIdle = absolute.systems.spacetimedb!.resources.server.phases["connections:500:idle"]!.cpuCores;
+    absolute.systems.dbzz!.resources.server.phases["connections:500:idle"]!.cpuCores = spacetimeIdle + 0.03;
+    const absoluteResult = failedPerformance(absolute);
+    expect(absoluteResult.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "connections/500/resources/server/idle/cpuCores",
+      message: expect.stringContaining("reversed beyond the noise floor"),
+    }));
+  });
+
+  test("a coherent setup slowdown that lands beyond the floor fails even though both setup paths are near-ties", () => {
+    const after = copy();
+    const dbzzSetup = subscription(after, "dbzz", "partitioned");
+    const spacetimeSetup = subscription(after, "spacetimedb", "partitioned");
+    // one internally consistent regression: setup time and its derived
+    // connections/s move together until DBZZ is 16% behind SpacetimeDB
+    const factor = (spacetimeSetup.setupMs * 1.16) / dbzzSetup.setupMs;
+    expect(factor).toBeGreaterThan(1);
+    dbzzSetup.setupMs *= factor;
+    dbzzSetup.setupConnectionsPerSec /= factor;
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "subscriptions/partitioned/fixed-rate/setupMs",
+      message: expect.stringContaining("reversed beyond the noise floor"),
+    }));
   });
 
   test("rejects every frozen Convex floor group adversarially", () => {
@@ -242,15 +522,22 @@ describe("frozen performance acceptance", () => {
     for (const entry of cases) {
       const after = copy();
       entry.mutate(after);
-      expect(() => assertPerformanceAcceptance(after, baselineJson), entry.name).toThrow("Convex floor failed");
+      const result = failedPerformance(after);
+      expect(
+        result.failures.some((failure) => failure.kind === "convex-floor" && failure.message.includes("Convex floor failed")),
+        entry.name,
+      ).toBe(true);
     }
   });
 
   test("requires partitioned fixed-rate to complete the exact offered workload", () => {
     const after = copy();
     subscription(after, "dbzz", "partitioned").updates--;
-    expect(() => assertPerformanceAcceptance(after, baselineJson)).toThrow(
-      "partitioned fixed-rate offered target failed",
-    );
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual(expect.objectContaining({
+      kind: "fixed-rate",
+      path: "subscriptions/partitioned/fixed-rate",
+      message: expect.stringContaining("partitioned fixed-rate offered target failed"),
+    }));
   });
 });

@@ -21,7 +21,10 @@ HTTP parsing is intentionally strict:
   values produce `unauthenticated`.
 
 All transports then use `verifyClientCredential`. A bearer credential without
-a configured verifier fails closed as `unauthenticated`.
+a configured verifier fails closed as `unauthenticated`. A verified user result
+is credential evidence, not yet an application principal: DBZZ snapshots that
+evidence, then transactionally resolves its exact `(issuer, subject)` through
+the Engine-owned identity directory before constructing the user principal.
 
 ### Trust boundary
 
@@ -45,27 +48,63 @@ responsible for authenticating the credential, validating issuer/audience and
 any deployment-specific claims. It must expose `revocationBound` metadata and
 an invalidation subscription. An invalidation-based verifier must advertise a
 positive finite `deadlineMs` no greater than the configured
-`revocationDeadlineMs`; Session and `DbzzServer` construction validate that
-declaration before a session or HTTP listener opens. Sessions and remote
-credential leases enforce expiry and react immediately to matching callbacks,
+`revocationDeadlineMs`; the Runtime owns the single configured verifier and
+validates that declaration before application traffic is activated. Sessions
+and remote credential leases enforce expiry and react immediately to matching callbacks,
 but DBZZ neither creates nor measures the external invalidation feed or its
 upstream propagation latency. Delivering invalidations within the advertised
-bound remains the verifier's responsibility. `verifyClientCredential` still
-rejects an invalid principal shape or expired result, freezes the returned
-principal and claims, and maps unexpected verifier failures to retryable
-`auth_unavailable`. Applications should authorize only from the resulting
-principal and explicitly selected claims, never from an unverified token body.
+bound remains the verifier's responsibility. `verifyClientCredential` rejects
+invalid evidence and results that expire before or during Identity resolution,
+deeply freezes selected claims, and maps unexpected verifier or resolver
+failures to retryable `auth_unavailable`. Claims remain current credential
+provenance and are never copied into the durable identity directory.
+Applications should authorize only from the resulting principal and explicitly
+selected claims, never from an unverified token body.
 
 | Principal | Fields and meaning |
 | --- | --- |
 | `anonymous` | No external identity. Public policies may admit it. |
-| `user` | `issuer`, `subject`, deeply frozen selected `claims`, `expiresAt` in Unix milliseconds, and nullable `tokenId`. |
-| `workload` | The same verified fields, for service-to-service authority and protected operational status. |
+| `user` | Non-null branded `identity`, plus `issuer`, `subject`, deeply frozen selected `claims`, `expiresAt` in Unix milliseconds, and nullable `tokenId`. `identity` is the durable provider-neutral key for application rows. |
+| `workload` | The verified issuer/subject fields, for service-to-service authority and protected operational status. Workloads have no application Identity. |
 | `system` | Local runtime authority used by scheduled handlers. A remote session cannot become `system`. |
 
-`ctx.auth`, selected claims, and validated arguments are frozen. Direct nested
-query and mutation calls inherit the original principal; a nested call cannot
-replace it with a more privileged context.
+`ctx.auth`, selected claims, and validated arguments are frozen. After narrowing
+`ctx.auth.kind === "user"`, `ctx.auth.identity` is the typed non-null Identity to
+store in application ownership columns. Direct nested query and mutation calls
+inherit the original principal; a nested call cannot replace it with a more
+privileged context.
+
+### Explicit account linking
+
+Applications may opt in to cross-provider continuity by exporting a procedure
+that calls `ctx.linkAccount(rawBearerToken)`. The argument is the second
+account's raw bearer token, not an `Authorization` header. The capability exists
+only on procedure and SSE contexts; query, mutation, and transaction contexts
+cannot invoke it.
+
+DBZZ first verifies the token through the Runtime's same configured verifier,
+with no writer transaction open. It then enters the canonical writer and
+atomically attaches the verified exact `(issuer, subject)` to the current
+user's durable Identity. Linking is idempotent when that account already belongs
+to the same Identity. An account owned by another Identity returns a generic
+conflict without revealing its owner. DBZZ never allocates a new Identity,
+auto-links by mutable claims, merges Identities, or rewrites application rows
+through this primitive.
+
+### Explicit account unlinking
+
+Applications may opt in to the inverse operation from a procedure or SSE
+procedure with `ctx.unlinkAccount({ issuer, subject })`. The current user must
+own that exact account, and the same transaction refuses to remove the
+Identity's final account. A successful unlink deletes only the directory link:
+the durable Identity and every application row owned by it remain unchanged.
+
+After commit, DBZZ publishes an exact-account invalidation through the
+Runtime's canonical authentication boundary, so matching sessions and remote
+credential leases fail closed; rollback publishes nothing. Authenticating
+later with the removed credential follows normal first-login resolution and
+may provision a new Identity. This primitive is not full-user deletion,
+provider-side revocation, or application-data erasure.
 
 ## Function access policies
 
@@ -203,7 +242,7 @@ A custom `CredentialVerifier` can instead declare
 optionally subject or token ID. `deadlineMs` must be positive and finite and
 cannot exceed the Session `revocationDeadlineMs` ceiling (5 seconds by default
 and at most); DBZZ rejects a missing, malformed, or over-ceiling advertisement
-before a session or `DbzzServer` listener opens. Matching connected sessions
+before the Runtime is activated. Matching connected sessions
 begin their reserved fail-closed path immediately when the callback fires. The
 advertisement is the verifier's integration contract: the deployment remains
 responsible for the invalidation source and for delivering its callback to

@@ -17,7 +17,7 @@ import {
 import type {
   CredentialVerifier,
   PrincipalInvalidation,
-  VerifiedPrincipal,
+  VerifiedCredential,
 } from "../src/auth.ts";
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
@@ -153,7 +153,20 @@ const functions = {
     identity: procedure({
       access: "authenticated",
       args: {},
-      handler: (ctx: Ctx) => ({ kind: ctx.auth.kind, subject: ctx.auth.subject }),
+      handler: (ctx: Ctx) => ({
+        kind: ctx.auth.kind,
+        subject: ctx.auth.subject,
+        identity: ctx.auth.kind === "user" ? ctx.auth.identity : null,
+      }),
+    }),
+    identityQuery: query({
+      access: "authenticated",
+      args: {},
+      handler: (ctx: Ctx) => ({
+        kind: ctx.auth.kind,
+        subject: ctx.auth.subject,
+        identity: ctx.auth.kind === "user" ? ctx.auth.identity : null,
+      }),
     }),
     conflict: procedure({
       access: "public",
@@ -172,25 +185,28 @@ const functions = {
     chat: sseProcedure({
       access: "authenticated",
       args: { text: dbz.string() },
-      handler: (ctx: Ctx, args: Ctx) => {
-        ctx.stream.write({ type: "text-delta", delta: args.text });
-        ctx.stream.write({ type: "usage", chunks: 1 });
+      yields: dbz.jsonb(),
+      handler: async function* (_ctx: Ctx, args: Ctx) {
+        yield { type: "text-delta", delta: args.text };
+        yield { type: "usage", chunks: 1 };
       },
     }),
     failLate: sseProcedure({
       access: "public",
       args: {},
-      handler: (ctx: Ctx) => {
-        ctx.stream.write({ phase: "started" });
+      yields: dbz.jsonb(),
+      handler: async function* () {
+        yield { phase: "started" };
         throw new DbzzError("unavailable", "stream failed", { resource: "sse" });
       },
     }),
     stayOpen: sseProcedure({
       access: "public",
       args: {},
-      handler: async (ctx: Ctx) => {
-        ctx.stream.write({ phase: "started" });
+      yields: dbz.jsonb(),
+      handler: async function* (ctx: Ctx) {
         longSseStarted?.resolve();
+        yield { phase: "started" };
         await new Promise<void>((resolve) => {
           if (ctx.abortSignal.aborted) resolve();
           else ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
@@ -222,7 +238,7 @@ class TestVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
   readonly verified: string[] = [];
 
-  async verify(token: string): Promise<VerifiedPrincipal> {
+  async verify(token: string): Promise<VerifiedCredential> {
     this.verified.push(token);
     const common = {
       issuer: "https://issuer.example",
@@ -357,9 +373,15 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "dbzz-serve-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
-  runtime = new Runtime({ engine, registry: new Registry(functions), limits, telemetry: false });
   verifier = new TestVerifier();
-  server = serve({ runtime, verifier, port: 0 });
+  runtime = new Runtime({
+    engine,
+    registry: new Registry(functions),
+    verifier,
+    limits,
+    telemetry: false,
+  });
+  server = serve({ runtime, port: 0 });
   base = `http://127.0.0.1:${server.port}`;
   requestId = 0;
 });
@@ -448,7 +470,7 @@ function acknowledgeSse(
 
 describe("health and protected status", () => {
   test("owns its port through explicit startup phases and atomically activates one Runtime", async () => {
-    const early = new DbzzServer({ limits, verifier, port: 0 });
+    const early = new DbzzServer({ limits, port: 0 });
     const earlyBase = `http://127.0.0.1:${early.port}`;
     const earlyDir = mkdtempSync(join(tmpdir(), "dbzz-serve-startup-"));
     let earlyEngine: Engine | undefined;
@@ -515,6 +537,7 @@ describe("health and protected status", () => {
       earlyRuntime = new Runtime({
         engine: earlyEngine,
         registry: new Registry(functions),
+        verifier,
         limits,
         telemetry: false,
       });
@@ -590,15 +613,15 @@ describe("health and protected status", () => {
   });
 
   test("validates configured status scope", () => {
-    expect(() => serve({ runtime, verifier, port: 0, statusScope: "" })).toThrow(TypeError);
-    expect(() => serve({ runtime, verifier, port: 0, statusScope: "two scopes" })).toThrow(TypeError);
-    expect(() => serve({ runtime, verifier, port: 0, statusScope: "x".repeat(129) })).toThrow(TypeError);
+    expect(() => serve({ runtime, port: 0, statusScope: "" })).toThrow(TypeError);
+    expect(() => serve({ runtime, port: 0, statusScope: "two scopes" })).toThrow(TypeError);
+    expect(() => serve({ runtime, port: 0, statusScope: "x".repeat(129) })).toThrow(TypeError);
 
     const unsafeRuntime = Object.create(runtime) as Runtime;
     Object.defineProperty(unsafeRuntime, "limits", {
       value: { ...runtime.limits, maxRequestBytes: Number.MAX_SAFE_INTEGER },
     });
-    expect(() => serve({ runtime: unsafeRuntime, verifier, port: 0 })).toThrow(
+    expect(() => serve({ runtime: unsafeRuntime, port: 0 })).toThrow(
       "maxRequestBytes + 1 must be a safe integer",
     );
     expect(() => new DbzzServer({
@@ -646,10 +669,39 @@ describe("Protocol-2 HTTP procedures", () => {
         t: "ok",
         id: 2,
         kind: "procedure",
-        value: { kind: "user", subject: "user-token" },
+        value: { kind: "user", subject: "user-token", identity: 1n },
       },
     });
     expect(verifier.verified).toEqual(["user-token"]);
+  });
+
+  test("resolves one durable Identity for the same user over HTTP and WebSocket", async () => {
+    const http = await call("notes.identity", {}, "Bearer user-token");
+    expect(http.status).toBe(200);
+    if (http.frame.t !== "ok") throw new Error("expected HTTP procedure success");
+
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`, {
+      kind: "bearer",
+      token: "user-token",
+    });
+    client.send({ v: PROTOCOL_VERSION, t: "q", id: 1, ref: "notes.identityQuery", args: {} });
+    const websocket = await within(client.next());
+    expect(websocket).toMatchObject({ t: "ok", id: 1, kind: "query" });
+    if (websocket.t !== "ok") throw new Error("expected WebSocket query success");
+
+    expect(websocket.value).toEqual(http.frame.value);
+    expect(http.frame.value).toEqual({
+      kind: "user",
+      subject: "user-token",
+      identity: 1n,
+    });
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_identities").get())
+      .toEqual({ count: 1n });
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_identity_accounts").get())
+      .toEqual({ count: 1n });
+
+    client.socket.close();
+    await within(client.closed());
   });
 
   test("is procedure-only and maps every outcome through its exact HTTP status", async () => {
@@ -798,9 +850,11 @@ describe("Protocol-2 HTTP procedures", () => {
     const fairDirectory = mkdtempSync(join(tmpdir(), "dbzz-http-fairness-"));
     const fairEngine = new Engine(schema, join(fairDirectory, "data.db"));
     reconcile(fairEngine);
+    const fairVerifier = new TestVerifier();
     const fairRuntime = new Runtime({
       engine: fairEngine,
       registry: new Registry(functions),
+      verifier: fairVerifier,
       limits: defineServiceLimits({
         ...limits,
         maxOperationsPerCaller: 1,
@@ -808,8 +862,7 @@ describe("Protocol-2 HTTP procedures", () => {
       }),
       telemetry: false,
     });
-    const fairVerifier = new TestVerifier();
-    const fairServer = serve({ runtime: fairRuntime, verifier: fairVerifier, port: 0 });
+    const fairServer = serve({ runtime: fairRuntime, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const sourceController = new AbortController();
     const sseController = new AbortController();
@@ -1006,8 +1059,9 @@ describe("SSE", () => {
 
     const reader = readSse(success);
     const first = await reader.next();
-    const second = await reader.next();
     expect(first).toMatchObject({ t: "sse_chunk", seq: 1, value: { type: "text-delta", delta: "hello" } });
+    expect((await acknowledgeSse(base, reader.streamId, first!)).status).toBe(204);
+    const second = await reader.next();
     expect(second).toMatchObject({ t: "sse_chunk", seq: 2, value: { type: "usage", chunks: 1 } });
     const beforeNoops = runtime.status().sseBudget.bytes;
     const verifiedBeforeAcks = [...verifier.verified];
@@ -1023,10 +1077,10 @@ describe("SSE", () => {
     }
     expect(verifier.verified).toEqual(verifiedBeforeAcks);
     expect(runtime.status().sseBudget.bytes).toBe(beforeNoops);
-    expect(server.status()).toMatchObject({ sseAckIngress: 3, sseAckNoops: 3 });
+    expect(server.status()).toMatchObject({ sseAckIngress: 4, sseAckNoops: 3 });
 
-    const cumulative = await acknowledgeSse(base, reader.streamId, second!);
-    expect(cumulative.status).toBe(204);
+    const credited = await acknowledgeSse(base, reader.streamId, second!);
+    expect(credited.status).toBe(204);
     expect(runtime.status().sseBudget.bytes).toBeLessThan(beforeNoops);
     const terminal = await reader.next();
     expect(terminal).toMatchObject({ t: "sse_done", seq: 3 });
@@ -1039,7 +1093,7 @@ describe("SSE", () => {
     const stale = await acknowledgeSse(base, reader.streamId, terminal!);
     expect(stale.status).toBe(204);
     expect(await stale.text()).toBe("");
-    expect(server.status()).toMatchObject({ sseAckIngress: 6, sseAckNoops: 4 });
+    expect(server.status()).toMatchObject({ sseAckIngress: 7, sseAckNoops: 4 });
 
     const malformed = await fetch(`${base}/api/sse/ack`, {
       method: "POST",
@@ -1061,7 +1115,7 @@ describe("SSE", () => {
     expect(server.status()).toMatchObject({
       httpIngress: 0,
       httpFairnessKeys: 0,
-      sseAckIngress: 7,
+      sseAckIngress: 8,
       sseAckNoops: 4,
     });
 
@@ -1078,10 +1132,13 @@ describe("SSE", () => {
     });
     expect(late.status).toBe(200);
     const lateReader = readSse(late);
-    expect(await lateReader.next()).toMatchObject({
+    const lateStarted = await lateReader.next();
+    expect(lateStarted).toMatchObject({
       t: "sse_chunk",
       value: { phase: "started" },
     });
+    // Crediting the chunk advances the handler into its failure.
+    expect((await acknowledgeSse(base, lateReader.streamId, lateStarted!)).status).toBe(204);
     const failure = await lateReader.next();
     expect(failure).toMatchObject({
       t: "sse_error",
@@ -1324,10 +1381,11 @@ describe("WebSocket Session transport", () => {
     const fairRuntime = new Runtime({
       engine: fairEngine,
       registry: new Registry(functions),
+      verifier: new TestVerifier(),
       limits: fairLimits,
       telemetry: false,
     });
-    const fairServer = serve({ runtime: fairRuntime, verifier: new TestVerifier(), port: 0 });
+    const fairServer = serve({ runtime: fairRuntime, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const wsUrl = `ws://127.0.0.1:${fairServer.port}/ws`;
     const clients: WsClient[] = [];

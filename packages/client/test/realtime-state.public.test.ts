@@ -32,8 +32,8 @@ import {
   type CredentialVerifier,
   type PrincipalInvalidation,
   type RuntimeHooks,
-  type UserPrincipal,
-  type VerifiedPrincipal,
+  type VerifiedCredential,
+  type VerifiedUserCredential,
 } from "@dbzz/server";
 import {
   FrameProxy,
@@ -273,7 +273,7 @@ class TestVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
   private readonly expiresAt = Date.now() + 60_000;
 
-  async verify(token: string): Promise<VerifiedPrincipal> {
+  async verify(token: string): Promise<VerifiedCredential> {
     const common = {
       issuer: "https://issuer.example/",
       subject: token,
@@ -281,7 +281,7 @@ class TestVerifier implements CredentialVerifier {
       tokenId: `token-${token}`,
     } as const;
     if (token === "alice" || token === "bob") {
-      return { ...common, kind: "user", claims: { role: "member" } } satisfies UserPrincipal;
+      return { ...common, kind: "user", claims: { role: "member" } } satisfies VerifiedUserCredential;
     }
     if (token === "status") {
       return { ...common, kind: "workload", claims: { scope: "dbzz:status" } };
@@ -383,8 +383,15 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
       if (stage === "commit" && context.operation === "mutation") return commitGate.pause();
     },
   };
-  const runtime = new Runtime({ engine, registry, limits, telemetry: false, hooks });
-  const server = serve({ runtime, verifier: new TestVerifier(), port: 0 });
+  const runtime = new Runtime({
+    engine,
+    registry,
+    verifier: new TestVerifier(),
+    limits,
+    telemetry: false,
+    hooks,
+  });
+  const server = serve({ runtime, port: 0 });
   const base = `http://127.0.0.1:${server.port}`;
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
   const clock = new ReconnectClock();

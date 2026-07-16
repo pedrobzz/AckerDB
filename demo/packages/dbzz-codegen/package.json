@@ -1,0 +1,20 @@
+{
+  "name": "@demo/dbzz-codegen",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./api": "./src/api.ts",
+    "./server": "./src/server.ts",
+    "./types": "./src/types.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dbzz/core": "link:@dbzz/core",
+    "@dbzz/server": "link:@dbzz/server"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}

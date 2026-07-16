@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx"
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "test/**/*.ts",
+    "test/**/*.tsx",
+    "types/**/*.d.ts",
+    "../../fixtures/react-web/**/*.ts",
+    "../../fixtures/react-web/**/*.tsx"
+  ],
+  "exclude": ["node_modules"]
+}

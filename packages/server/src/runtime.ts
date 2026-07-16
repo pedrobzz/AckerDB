@@ -25,9 +25,17 @@ import {
 import {
   ANONYMOUS_PRINCIPAL,
   SYSTEM_PRINCIPAL,
+  verifyUserBearerCredential,
+  type CredentialVerifier,
+  type ExternalAccount,
   type Principal,
 } from "./auth.ts";
-import { callerFairnessKey, transportSource } from "./caller.ts";
+import {
+  AuthInvalidationBoundary,
+  type AuthInvalidationScope,
+} from "./auth-invalidation.ts";
+import { validateCredentialVerifierRevocation } from "./auth-lease.ts";
+import { callerFairnessKey, externalAccountFairnessKey, transportSource } from "./caller.ts";
 import {
   CommitCoordinator,
   withFetchObserver,
@@ -38,7 +46,7 @@ import {
   type CommitWaitHook,
   type FetchObservation,
 } from "./coordinator.ts";
-import { ValidationError } from "./dbz.ts";
+import { ValidationError, type Identity } from "./dbz.ts";
 import {
   makeDbReader,
   type DbStatementObservation,
@@ -54,6 +62,7 @@ import {
   type DeliveryObserver,
   type OutboundLane,
   type OutboundReservation,
+  type SseDeliverySnapshot,
 } from "./delivery.ts";
 import type { Engine } from "./engine.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
@@ -69,9 +78,10 @@ import {
 } from "./executor.ts";
 import type {
   AnyRegistered,
+  AnyRegisteredSse,
   ProcedureCtx,
   SseCtx,
-  StreamWriter,
+  SseSource,
   TxCtx,
 } from "./functions.ts";
 import {
@@ -146,10 +156,24 @@ export interface RuntimeHooks {
 }
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
+/** Individually retained non-ok delivery observations per summary key per sampler interval. */
+const DELIVERY_FAILURE_EXEMPLARS_PER_INTERVAL = 8;
+/** Early flush bound so an unsampled storm cannot defer its summary indefinitely. */
+const DELIVERY_FAILURE_SUMMARY_FLUSH_THRESHOLD = 4_096;
+
+interface DeliveryFailureSummary {
+  readonly operation: TelemetryOperation;
+  readonly stage: TelemetryStage;
+  readonly outcome: TelemetryOutcome;
+  readonly resource: TelemetryResource;
+  exemplars: number;
+  summarized: number;
+}
 
 export interface RuntimeOptions {
   readonly engine: Engine;
   readonly registry: Registry;
+  readonly verifier?: CredentialVerifier;
   readonly limits?: ServiceLimits;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
   readonly hooks?: RuntimeHooks;
@@ -329,6 +353,81 @@ function aborted(signal: AbortSignal | undefined): void {
       });
 }
 
+interface SseChunkIterator {
+  next(): Promise<IteratorResult<unknown, unknown>>;
+  /** Returns/cancels the handler's source so its cleanup runs exactly once. */
+  release(reason?: unknown): Promise<unknown>;
+}
+
+function sseChunkIterator(source: SseSource<unknown>): SseChunkIterator {
+  if (source instanceof ReadableStream) {
+    const reader = source.getReader();
+    return {
+      next: async () => {
+        const part = await reader.read();
+        return part.done ? { done: true, value: undefined } : { done: false, value: part.value };
+      },
+      release: (reason) => reader.cancel(reason),
+    };
+  }
+  if (
+    (typeof source === "object" || typeof source === "function") &&
+    source !== null &&
+    Symbol.asyncIterator in source
+  ) {
+    const iterator = source[Symbol.asyncIterator]();
+    return {
+      next: () => iterator.next(),
+      release: (reason) =>
+        iterator.return === undefined ? Promise.resolve() : iterator.return(reason),
+    };
+  }
+  throw new DbzzError("internal", "sse handler must return a ReadableStream or async iterable");
+}
+
+/**
+ * Adapts the handler's returned source into the producer's merge input.
+ * Zero high-water: the source advances only when the receiver-credited merge
+ * loop asks for the next chunk, so downstream acknowledgement drives the
+ * handler. Every chunk is validated against the declared `yields` validator;
+ * a failing chunk releases the source and fails the stream with the exact
+ * validation error. `handlerContext` restores the invocation-time async
+ * context, so generator bodies keep the handler's trace/invocation ownership.
+ */
+function validatedSseSource(
+  fn: AnyRegisteredSse,
+  source: SseSource<unknown>,
+  handlerContext: <T>(work: () => T) => T,
+): ReadableStream<unknown> {
+  const iterator = handlerContext(() => sseChunkIterator(source));
+  return new ReadableStream<unknown>(
+    {
+      pull: async (controller) => {
+        const part = await handlerContext(() => iterator.next());
+        if (part.done === true) {
+          controller.close();
+          return;
+        }
+        let chunk: unknown;
+        try {
+          chunk = fn.yields.check(part.value, "chunk");
+        } catch (error) {
+          // The source's own cleanup failures cannot mask the validation error.
+          void Promise.resolve()
+            .then(() => handlerContext(() => iterator.release(error)))
+            .catch(() => {});
+          throw transportError(error);
+        }
+        controller.enqueue(chunk);
+      },
+      cancel: async (reason) => {
+        await handlerContext(() => iterator.release(reason));
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
 function observationOutcome(
   outcome: ReactiveObservation["outcome"],
 ): TelemetryOutcome {
@@ -346,6 +445,7 @@ function observationOutcome(
 export class Runtime implements RuntimePort {
   readonly engine: Engine;
   readonly registry: Registry;
+  readonly credentialVerifier: CredentialVerifier | undefined;
   readonly limits: ServiceLimits;
   readonly telemetry: Telemetry;
   readonly reactive: OrderedReactive<ReactiveContext>;
@@ -356,29 +456,71 @@ export class Runtime implements RuntimePort {
     const fallbackOperation: TelemetryOperation = observation.transport === "sse"
       ? "sse"
       : "subscription";
+    const resource: TelemetryResource = observation.transport === "sse" ? "sse" : "outbound";
     if (observation.droppedObservations !== undefined) {
       this.telemetry.recordMetric({
         name: "delivery.observations_dropped",
         value: observation.droppedObservations,
         unit: "count",
-        labels: {
-          operation: fallbackOperation,
-          resource: observation.transport === "sse" ? "sse" : "outbound",
-        },
+        labels: { operation: fallbackOperation, resource },
       });
     }
-    this.traceSpan({
-      stage: observation.stage,
-      outcome,
-      resource: observation.transport === "sse" ? "sse" : "outbound",
-      durationMs: observation.durationMs,
-      sizeBytes: observation.bytes,
-    }, fallbackOperation);
-    if (
-      observation.source === "terminal" &&
+    // Mass disconnect and fanout backpressure can fail thousands of queued
+    // frames inside one event-loop turn. Per-frame failure records at that
+    // rate carry no more signal than a count and can outrun any bounded
+    // asynchronous exporter, so beyond a per-interval exemplar budget the
+    // remainder is summarized into delivery.failures_coalesced instead of
+    // being individually retained. A successfully encoded terminal error
+    // frame reports outcome "ok" while carrying the actual failure in
+    // terminalOutcome, so that shape budgets by the terminal outcome.
+    const terminalFailure = observation.source === "terminal" &&
       observation.stage === "encoding" &&
-      observation.terminalOutcome !== undefined
-    ) {
+      observation.terminalOutcome !== undefined;
+    const failureOutcome: TelemetryOutcome | undefined = outcome !== "ok"
+      ? outcome
+      : terminalFailure
+        ? observation.terminalOutcome
+        : undefined;
+    let summarizedFailure = false;
+    if (failureOutcome !== undefined && this.telemetry.enabled) {
+      const operation = this.trace.getStore()?.operation ?? fallbackOperation;
+      const key = `${operation}|${observation.stage}|${failureOutcome}|${resource}`;
+      let summary = this.deliveryFailureSummaries.get(key);
+      if (summary === undefined) {
+        summary = {
+          operation,
+          stage: observation.stage,
+          outcome: failureOutcome,
+          resource,
+          exemplars: 0,
+          summarized: 0,
+        };
+        this.deliveryFailureSummaries.set(key, summary);
+      }
+      if (summary.exemplars >= DELIVERY_FAILURE_EXEMPLARS_PER_INTERVAL) {
+        summarizedFailure = true;
+        summary.summarized++;
+        if (summary.summarized >= DELIVERY_FAILURE_SUMMARY_FLUSH_THRESHOLD) {
+          this.flushDeliveryFailureSummary(summary);
+        }
+      } else {
+        summary.exemplars++;
+      }
+    }
+    // A summarized observation emits no span at all: even its ok-outcome
+    // encoding span would be individually retained under slowOperationMs 0
+    // or once an exemplar failure event has promoted the ambient trace,
+    // which would reopen the storm this budget exists to bound.
+    if (!summarizedFailure) {
+      this.traceSpan({
+        stage: observation.stage,
+        outcome,
+        resource,
+        durationMs: observation.durationMs,
+        sizeBytes: observation.bytes,
+      }, fallbackOperation);
+    }
+    if (terminalFailure && !summarizedFailure) {
       const scope = this.trace.getStore();
       this.telemetry.recordEvent({
         name: "failure",
@@ -386,13 +528,14 @@ export class Runtime implements RuntimePort {
         operation: scope?.operation ?? fallbackOperation,
         stage: "delivery",
         outcome: observation.terminalOutcome,
-        resource: observation.transport === "sse" ? "sse" : "outbound",
+        resource,
         context: this.observationContext(),
       });
     }
   };
 
   private readonly now: () => number;
+  private readonly authInvalidation: AuthInvalidationBoundary;
   private readonly reader: BoundedExecutor;
   private readonly availableReaders: Database[];
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
@@ -403,6 +546,7 @@ export class Runtime implements RuntimePort {
   private readonly sseProducers = new Map<string, BoundedSseProducer>();
   private readonly externalOperations = new Map<string, number>();
   private readonly activeWaiters = new Set<() => void>();
+  private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
   private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
   private readonly ownsTelemetry: boolean;
   private lifecycle: RuntimeLifecycleState = "ready";
@@ -421,6 +565,12 @@ export class Runtime implements RuntimePort {
     this.engine = options.engine;
     this.registry = options.registry;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
+    this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
+    this.credentialVerifier = this.authInvalidation.verifier;
+    validateCredentialVerifierRevocation(
+      this.credentialVerifier,
+      this.limits.auth.revocationDeadlineMs,
+    );
     this.now = options.now ?? Date.now;
     this.scheduled = options.registry.resolveScheduled(options.engine.schema);
     this.ownsTelemetry = !(options.telemetry instanceof Telemetry);
@@ -492,6 +642,129 @@ export class Runtime implements RuntimePort {
   kindOf(address: string): string | null {
     if (address.startsWith("events.")) return "event";
     return this.registry.kindOf(address) ?? null;
+  }
+
+  async resolveIdentity(
+    account: ExternalAccount,
+    signal?: AbortSignal,
+  ): Promise<Identity> {
+    const requestBytes = this.admittedRequestBytes(account);
+    const operationSignal = this.operationSignal(signal);
+    const fairnessKey = externalAccountFairnessKey(account);
+    return this.runOperation(
+      null,
+      "transaction",
+      undefined,
+      requestBytes,
+      async () => {
+        const existing = await this.submitRead(
+          (connection) => this.engine.identityForAccount(
+            connection,
+            account.issuer,
+            account.subject,
+          ),
+          {
+            operation: "transaction",
+            bytes: requestBytes,
+            fairnessKey,
+            signal: operationSignal,
+          },
+          false,
+        );
+        if (existing !== null) return existing;
+        return this.coordinator.transactFramework({
+          fairnessKey,
+          requestBytes,
+          signal: operationSignal,
+          work: () => this.engine.resolveIdentity(account.issuer, account.subject),
+        });
+      },
+      {},
+      false,
+      undefined,
+      undefined,
+      fairnessKey,
+    );
+  }
+
+  private async linkAccount(
+    principal: Principal,
+    rawBearerToken: string,
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+  ): Promise<void> {
+    if (principal.kind !== "user") {
+      throw new DbzzError("unauthorized", "account linking requires a user identity");
+    }
+    aborted(signal);
+    const account = await verifyUserBearerCredential(
+      rawBearerToken,
+      this.credentialVerifier,
+      this.now,
+    );
+    aborted(signal);
+    await this.coordinator.transactFramework({
+      fairnessKey,
+      requestBytes,
+      signal,
+      work: () => {
+        if (account.expiresAt <= this.readNow()) {
+          throw new DbzzError("unauthenticated", "invalid credential");
+        }
+        if (!this.engine.attachIdentityAccount(
+          principal.identity,
+          account.issuer,
+          account.subject,
+        )) {
+          throw new DbzzError("conflict", "external account is already linked");
+        }
+      },
+    });
+  }
+
+  private async unlinkAccount(
+    principal: Principal,
+    candidate: ExternalAccount,
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+    accountUnlinked: (account: ExternalAccount) => void,
+  ): Promise<void> {
+    if (principal.kind !== "user") {
+      throw new DbzzError("unauthorized", "account unlinking requires ownership");
+    }
+    if (
+      typeof candidate !== "object" ||
+      candidate === null ||
+      typeof candidate.issuer !== "string" ||
+      candidate.issuer.length === 0 ||
+      typeof candidate.subject !== "string" ||
+      candidate.subject.length === 0
+    ) {
+      throw new DbzzError("validation", "external account must have an issuer and subject");
+    }
+    const account = Object.freeze({ issuer: candidate.issuer, subject: candidate.subject });
+    aborted(signal);
+    const result = await this.coordinator.transactFramework({
+      fairnessKey,
+      requestBytes,
+      signal,
+      work: () => this.engine.detachIdentityAccount(
+        principal.identity,
+        account.issuer,
+        account.subject,
+      ),
+      afterCommit: (committed) => {
+        if (committed === "removed") accountUnlinked(account);
+      },
+    });
+    if (result === "not_owned") {
+      throw new DbzzError("unauthorized", "account unlinking requires ownership");
+    }
+    if (result === "last_account") {
+      throw new DbzzError("conflict", "cannot unlink the final external account");
+    }
   }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {
@@ -755,6 +1028,26 @@ export class Runtime implements RuntimePort {
       request.principal,
       DIRECT_RUNTIME_SOURCE,
     );
+    const originScope = provenance?.invalidationScope;
+    const invalidations = new Map<string, Map<string, ExternalAccount>>();
+    const publishInvalidation = (account: ExternalAccount): void => {
+      const selfScope =
+        request.principal.kind === "user" &&
+        request.principal.issuer === account.issuer &&
+        request.principal.subject === account.subject
+          ? originScope
+          : undefined;
+      if (!this.authInvalidation.publishAccount(account, selfScope)) return;
+      let subjects = invalidations.get(account.issuer);
+      if (subjects === undefined) invalidations.set(account.issuer, (subjects = new Map()));
+      subjects.set(account.subject, account);
+    };
+    const publishOriginInvalidations = (scope: AuthInvalidationScope): void => {
+      for (const subjects of invalidations.values()) {
+        for (const account of subjects.values()) this.authInvalidation.publishAccountTo(account, scope);
+      }
+      invalidations.clear();
+    };
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
@@ -766,13 +1059,19 @@ export class Runtime implements RuntimePort {
           fairnessKey,
           signal,
           requestBytes,
+          publishInvalidation,
         ),
         request.args,
       );
       aborted(signal);
       return value;
-    }, { requestId: String(request.id) }, true, (outcome) =>
-      this.respondProcedure(request, outcome), claimedTrace, fairnessKey);
+    }, { requestId: String(request.id) }, true, (outcome) => {
+      try {
+        return this.respondProcedure(request, outcome);
+      } finally {
+        if (originScope !== undefined) publishOriginInvalidations(originScope);
+      }
+    }, claimedTrace, fairnessKey);
   }
 
   private respondProcedure(
@@ -1010,7 +1309,10 @@ export class Runtime implements RuntimePort {
       let lifecycle: Promise<void> | null = null;
       let deliveryObserver: DeliveryObserver | undefined;
       try {
-        const fn = this.expect(request.address, "sse");
+        const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
+        if (fn.yields === undefined) {
+          throw new DbzzError("internal", `sse "${request.address}" has no yields validator`);
+        }
         const signal = this.operationSignal(request.signal);
         aborted(signal);
         producer = new BoundedSseProducer({
@@ -1024,12 +1326,7 @@ export class Runtime implements RuntimePort {
         streamId = this.registerSseProducer(producer);
         void producer.finished.then(() => this.removeSseProducer(streamId!, producer!));
         const authorized = deferred<void>();
-        const stream: StreamWriter = Object.freeze({
-          write: (chunk: unknown) => producer!.write(chunk),
-          merge: (source: ReadableStream<unknown>) => {
-            void producer!.merge(source).catch(() => {});
-          },
-        });
+        let handlerContext: <T>(work: () => T) => T = (work) => work();
         const handler = invokeFunction(
           fn,
           Object.freeze({
@@ -1038,21 +1335,32 @@ export class Runtime implements RuntimePort {
               fairnessKey,
               producer.signal,
               requestBytes,
+              (account) => this.authInvalidation.publishAccount(account),
             ),
-            stream,
             abortSignal: producer.signal,
           }) as SseCtx,
           request.args,
           {
             onAuthorized: () => {
               deliveryObserver = this[CAPTURE_DELIVERY_OBSERVER]();
+              handlerContext = AsyncLocalStorage.snapshot();
               authorized.resolve();
             },
           },
         );
-        const completion = handler.then(
-          () => producer!.complete(),
-          async (error) => {
+        const completion = handler
+          .then(async (result: SseSource<unknown>) => {
+            const source = validatedSseSource(fn, result, handlerContext);
+            try {
+              await producer!.merge(source);
+            } catch (error) {
+              // merge() that never consumed the source still owns releasing it.
+              void source.cancel(error).catch(() => {});
+              throw error;
+            }
+            return producer!.complete();
+          })
+          .catch(async (error) => {
             producer!.fail(error);
             try {
               await producer!.complete();
@@ -1060,8 +1368,7 @@ export class Runtime implements RuntimePort {
               // Preserve the handler failure after terminal ACK/cancel owns cleanup.
             }
             throw error;
-          },
-        );
+          });
         lifecycle = completion.catch((error) => {
           if (scope !== undefined) {
             const safeError = transportError(error);
@@ -1135,6 +1442,11 @@ export class Runtime implements RuntimePort {
   /** Receiver credit is capability-authenticated and remains routable during drain. */
   ackSse(request: SseAckRequest): boolean {
     return this.sseProducers.get(request.stream)?.ack(request.seq, request.proof) ?? false;
+  }
+
+  /** Delivery snapshot of one active stream, or null once it finished. */
+  sseSnapshot(streamId: string): SseDeliverySnapshot | null {
+    return this.sseProducers.get(streamId)?.snapshot() ?? null;
   }
 
   private registerSseProducer(producer: BoundedSseProducer): string {
@@ -1330,6 +1642,7 @@ export class Runtime implements RuntimePort {
       // A core that outlives the Runtime deadline must not start a detached
       // telemetry tail after drain has already failed.
       if (deadlineReached) return;
+      this.flushDeliveryFailureSummaries();
       this.telemetry.recordEvent({
         name: "lifecycle",
         level: "info",
@@ -1907,10 +2220,26 @@ export class Runtime implements RuntimePort {
     fairnessKey: string,
     signal: AbortSignal,
     requestBytes: number,
+    accountUnlinked: (account: ExternalAccount) => void,
   ): ProcedureCtx {
     return Object.freeze({
       auth: principal,
       abortSignal: signal,
+      linkAccount: (rawBearerToken: string) => this.linkAccount(
+        principal,
+        rawBearerToken,
+        fairnessKey,
+        signal,
+        requestBytes,
+      ),
+      unlinkAccount: (account: ExternalAccount) => this.unlinkAccount(
+        principal,
+        account,
+        fairnessKey,
+        signal,
+        requestBytes,
+        accountUnlinked,
+      ),
       tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
         const execute = async (): Promise<T> => {
           aborted(signal);
@@ -2717,6 +3046,36 @@ export class Runtime implements RuntimePort {
       ["runtime.event_loop_drift", eventLoopDrift, "milliseconds"],
     ];
     for (const [name, value, unit] of metrics) this.telemetry.recordMetric({ name, value, unit });
+    this.flushDeliveryFailureSummaries();
+  }
+
+  /** Emit and reset one coalesced non-ok delivery observation summary. */
+  private flushDeliveryFailureSummary(summary: DeliveryFailureSummary): void {
+    if (summary.summarized > 0) {
+      this.telemetry.recordMetric({
+        name: "delivery.failures_coalesced",
+        value: summary.summarized,
+        unit: "count",
+        labels: {
+          operation: summary.operation,
+          stage: summary.stage,
+          outcome: summary.outcome,
+          resource: summary.resource,
+        },
+        // The count must stay observable on the default local-console
+        // profile, where the summarized per-frame records no longer appear.
+        local: true,
+      });
+    }
+    summary.summarized = 0;
+  }
+
+  /** Flush every summary and reset exemplar budgets for the next interval. */
+  private flushDeliveryFailureSummaries(): void {
+    for (const summary of this.deliveryFailureSummaries.values()) {
+      this.flushDeliveryFailureSummary(summary);
+    }
+    this.deliveryFailureSummaries.clear();
   }
 
   private readNow(): number {

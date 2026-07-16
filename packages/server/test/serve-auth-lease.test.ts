@@ -13,7 +13,7 @@ import {
 import type {
   CredentialVerifier,
   PrincipalInvalidation,
-  VerifiedPrincipal,
+  VerifiedCredential,
 } from "../src/auth.ts";
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
@@ -130,16 +130,18 @@ const functions = {
     once: sseProcedure({
       access: "authenticated",
       args: {},
-      handler: (ctx: Ctx) => {
-        ctx.stream.write({ phase: "once" });
+      yields: dbz.object({ phase: dbz.string() }),
+      handler: async function* () {
+        yield { phase: "once" };
       },
     }),
     stream: sseProcedure({
       access: "authenticated",
       args: {},
-      handler: async (ctx: Ctx) => {
-        ctx.stream.write({ phase: "started" });
+      yields: dbz.object({ phase: dbz.string() }),
+      handler: async function* (ctx: Ctx) {
         blockedSseStarted.resolve();
+        yield { phase: "started" };
         await waitForAbort(ctx.abortSignal);
       },
     }),
@@ -157,7 +159,7 @@ class LeaseVerifier implements CredentialVerifier {
     return this.listeners.size;
   }
 
-  async verify(token: string): Promise<VerifiedPrincipal> {
+  async verify(token: string): Promise<VerifiedCredential> {
     return {
       kind: "user",
       issuer: "https://issuer.example",
@@ -197,13 +199,14 @@ describe("HTTP and SSE credential leases", () => {
     directory = mkdtempSync(join(tmpdir(), "dbzz-serve-auth-lease-"));
     engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
+    verifier = new LeaseVerifier();
     runtime = new Runtime({
       engine,
       registry: new Registry(functions),
+      verifier,
       telemetry: false,
     });
-    verifier = new LeaseVerifier();
-    server = serve({ runtime, verifier, port: 0 });
+    server = serve({ runtime, port: 0 });
     base = `http://127.0.0.1:${server.port}`;
     requestId = 0;
   });
@@ -233,12 +236,17 @@ describe("HTTP and SSE credential leases", () => {
       }),
     });
 
-  test("validates the verifier before opening another HTTP listener", () => {
+  test("validates the Runtime-owned verifier before serving", () => {
     const invalid = Object.create(verifier) as LeaseVerifier;
     Object.defineProperty(invalid, "revocationBound", {
       value: { kind: "invalidation", deadlineMs: 5_001 },
     });
-    expect(() => serve({ runtime, verifier: invalid, port: 0 })).toThrow(
+    expect(() => new Runtime({
+      engine,
+      registry: new Registry(functions),
+      verifier: invalid,
+      telemetry: false,
+    })).toThrow(
       "verifier invalidation deadlineMs cannot exceed revocationDeadlineMs",
     );
   });

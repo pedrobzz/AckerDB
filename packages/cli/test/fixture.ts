@@ -56,7 +56,16 @@ export default defineSchema({
 
 export const FIXTURE_MESSAGES = `
 import { dbz } from "@dbzz/server";
-import { mutation, query } from "../_generated/server.ts";
+import { mutation, query, sseProcedure } from "../_generated/server.ts";
+
+export const tail = sseProcedure({
+  access: "public",
+  args: { channelId: dbz.bigint() },
+  yields: dbz.object({ body: dbz.string() }),
+  handler: async function* (_ctx, args) {
+    yield { body: "channel " + args.channelId };
+  },
+});
 
 export const list = query({
   access: "public",

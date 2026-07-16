@@ -4,6 +4,7 @@ import {
   decode,
   encode,
   parseClientMessage,
+  type AuthenticationDescriptor,
   type AuthenticatedMessage,
   type ClientAuthMessage,
   type ClientMessage,
@@ -27,6 +28,7 @@ import {
   verifyClientCredential,
   type ClientPrincipal,
   type CredentialVerifier,
+  type ExternalAccount,
   type Principal,
   type PrincipalInvalidation,
 } from "./auth.ts";
@@ -43,6 +45,7 @@ import { DbzzError, isDbzzError } from "./errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "./limits.ts";
 import { outcomeFromError } from "./outcome.ts";
+import type { Identity } from "./dbz.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
 export type SessionApplicationMessage =
@@ -89,6 +92,14 @@ export interface RuntimePublicationBatch {
   release(): void;
 }
 export type SessionControlMessage = WelcomeMessage | AuthenticatedMessage | PongMessage | ErrorMessage;
+
+function authenticationDescriptor(principal: ClientPrincipal): AuthenticationDescriptor {
+  if (principal.kind === "anonymous") return Object.freeze({ principal: "anonymous" });
+  const provenance = Object.freeze({ issuer: principal.issuer, subject: principal.subject });
+  return principal.kind === "user"
+    ? Object.freeze({ principal: "user", identity: principal.identity, provenance })
+    : Object.freeze({ principal: "workload", provenance });
+}
 
 /**
  * A bounded transport queue. Control writes use reserved capacity, while
@@ -190,6 +201,8 @@ export function claimRuntimeRequestBytes(request: RuntimeRequest<unknown>): numb
 
 /** Transport-independent adapter implemented by the database runtime. */
 export interface RuntimePort {
+  readonly credentialVerifier: CredentialVerifier | undefined;
+  resolveIdentity(account: ExternalAccount, signal?: AbortSignal): Promise<Identity>;
   openSession(context: SessionRuntimeContext): Promise<void>;
   transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch>;
   subscribe(context: SessionRuntimeContext, request: RuntimeRequest<SubscribeMessage>): Promise<void>;
@@ -223,7 +236,6 @@ export interface SessionOptions {
   readonly sink: SessionSink;
   /** Actual peer address captured by the transport; forwarded headers are not trusted. */
   readonly source: TransportSource;
-  readonly verifier?: CredentialVerifier;
   readonly clock?: SessionClock;
   readonly revocationDeadlineMs?: number;
   /** Per-session serialized ingress, request, and transport-frame limits. */
@@ -291,7 +303,6 @@ export class Session {
 
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
-  private readonly verifier: CredentialVerifier | undefined;
   private readonly observeAuth: SessionAuthObserver | undefined;
   private readonly clock: SessionClock;
   private readonly source: TransportSource;
@@ -316,10 +327,9 @@ export class Session {
 
   constructor(options: SessionOptions) {
     const revocationDeadlineMs = options.revocationDeadlineMs ?? MAX_REVOCATION_DEADLINE_MS;
-    validateCredentialVerifierRevocation(options.verifier, revocationDeadlineMs);
+    validateCredentialVerifierRevocation(options.runtime.credentialVerifier, revocationDeadlineMs);
     this.runtime = options.runtime;
     this.sink = options.sink;
-    this.verifier = options.verifier;
     this.observeAuth = (options as SessionOptions & InternalSessionOptions)[SESSION_AUTH_OBSERVER];
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.source = transportSource(options.source);
@@ -335,8 +345,8 @@ export class Session {
       now: () => this.readNow(),
     });
     this.revocationDeadlineMs = revocationDeadlineMs;
-    if (this.verifier !== undefined) {
-      this.unsubscribeInvalidation = this.verifier.subscribeInvalidation((invalidation) => {
+    if (this.runtime.credentialVerifier !== undefined) {
+      this.unsubscribeInvalidation = this.runtime.credentialVerifier.subscribeInvalidation((invalidation) => {
         this.onInvalidation(invalidation);
       });
     }
@@ -487,7 +497,9 @@ export class Session {
   }
 
   private async open(clientSessionId: string, credential: Credential): Promise<void> {
-    const observationOwner = this.observeAuth === undefined ? undefined : {};
+    const authController = new AbortController();
+    this.pendingAuthController = authController;
+    const observationOwner = this.observeAuth === undefined ? undefined : authController;
     if (observationOwner !== undefined) {
       this.setPendingAuthObservation(
         observationOwner,
@@ -496,15 +508,17 @@ export class Session {
     }
     let principal: ClientPrincipal;
     try {
-      principal = await this.verifyCredential(credential);
+      principal = await this.verifyCredential(credential, authController.signal);
     } catch (error) {
       const failure = verifierError(error);
+      if (this.pendingAuthController === authController) this.pendingAuthController = null;
       if (observationOwner !== undefined) {
         this.finishPendingAuthObservation(observationOwner, failure);
       }
       void this.terminate(failure);
       return;
     }
+    if (this.pendingAuthController === authController) this.pendingAuthController = null;
     if (observationOwner !== undefined) this.finishPendingAuthObservation(observationOwner);
     if (this.isClosed()) return;
     try {
@@ -514,6 +528,7 @@ export class Session {
       this.paused = true;
       this.epochController = new AbortController();
       this.scheduleExpiry(principal, this.authEpoch);
+      if (this.isClosed()) return;
       const context = this.createRuntimeContext(principal, this.authEpoch, this.epochController);
       this.context = context;
       await this.runtime.openSession(context);
@@ -523,7 +538,7 @@ export class Session {
         t: "welcome",
         clientSessionId,
         authEpoch: this.authEpoch,
-        principal: principal.kind,
+        ...authenticationDescriptor(principal),
       });
       if (this.isClosed()) return;
       this.paused = false;
@@ -565,7 +580,7 @@ export class Session {
         });
     this.setPendingAuthObservation(transitionController, observation);
 
-    void this.verifyCredential(message.credential).then(
+    void this.verifyCredential(message.credential, transitionController.signal).then(
       (principal) => {
         this.finishPendingAuthObservation(transitionController);
         this.queueAuthCompletion(message, transitionController, principal);
@@ -665,7 +680,7 @@ export class Session {
           t: "auth",
           attemptId: message.attemptId,
           authEpoch: nextEpoch,
-          principal: result.kind,
+          ...authenticationDescriptor(result),
         };
         await this.sendControl(ack);
         if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
@@ -777,8 +792,18 @@ export class Session {
     }
   }
 
-  private async verifyCredential(credential: Credential): Promise<ClientPrincipal> {
-    return verifyClientCredential(credential, this.verifier, () => this.readNow());
+  private async verifyCredential(
+    credential: Credential,
+    signal?: AbortSignal,
+  ): Promise<ClientPrincipal> {
+    const principal = await verifyClientCredential(
+      credential,
+      this.runtime.credentialVerifier,
+      (account) => this.runtime.resolveIdentity(account, signal),
+      () => this.readNow(),
+    );
+    if (signal?.aborted) throw signal.reason;
+    return principal;
   }
 
   private beginAuthObservation(
@@ -852,6 +877,12 @@ export class Session {
   }
 
   private onInvalidation(invalidation: PrincipalInvalidation): void {
+    const error = new DbzzError("unauthenticated", "credential revoked");
+    if (this.pendingAuthController !== null) {
+      aborted(this.pendingAuthController, error);
+      void this.terminate(error);
+      return;
+    }
     const principal = this.principal;
     if (
       this.phase === "closed" ||
@@ -865,7 +896,7 @@ export class Session {
     }
     // Immediate fail-closed is stronger than the configured maximum deadline
     // and uses the sink's reserved control path.
-    void this.terminate(new DbzzError("unauthenticated", "credential revoked"));
+    void this.terminate(error);
   }
 
   private terminate(error: DbzzError): Promise<void> {

@@ -191,12 +191,13 @@ const functions = {
     stream: sseProcedure({
       access: "public",
       args: { payload: dbz.string() },
-      handler: async (ctx: Ctx, args: Ctx) => {
-        ctx.stream.write({ payload: args.payload });
+      yields: dbz.object({ payload: dbz.string() }),
+      handler: async function* (ctx: Ctx, args: Ctx) {
         if (operatorSseGate !== null) {
           operatorSseEntered?.();
           await operatorSseGate;
         }
+        yield { payload: args.payload };
         await ctx.tx((tx: Ctx) => tx.db.audit.insert({ line: "sse:complete" }));
       },
     }),
@@ -631,6 +632,12 @@ describe("Runtime telemetry acceptance", () => {
     const body = collectSse(app.runtime, stream);
     releaseSse();
     expect(await body).toContain('"t":"sse_done"');
+    // The lifecycle settles a few microtasks after the terminal credit closes
+    // the body stream.
+    for (let turn = 0; app.runtime.telemetry.snapshot().traceRetention.activeTraces !== 0; turn++) {
+      if (turn === 100) break;
+      await Bun.sleep(0);
+    }
     expect(app.runtime.telemetry.snapshot().traceRetention).toMatchObject({
       activeTraces: 0,
       completedDecisions: 1,
@@ -1382,6 +1389,105 @@ describe("Runtime telemetry acceptance", () => {
       unit: "count",
       labels: expect.objectContaining({ operation: "subscription", resource: "outbound" }),
     }));
+  });
+
+  test("coalesces delivery failure storms beyond the per-interval exemplar budget", async () => {
+    const exported: TelemetryRecord[] = [];
+    const app = harness({
+      enabled: true,
+      exporter: { export: (batch) => void exported.push(...batch) },
+      localSink: false,
+      limits: telemetryLimits,
+    });
+
+    // A mass-disconnect storm fails many queued frames in one turn. Only a
+    // bounded exemplar set may be retained individually; the remainder must
+    // be summarized instead of flooding the bounded export queue. Terminal
+    // error frames that encode successfully report outcome "ok" while
+    // carrying the actual failure in terminalOutcome and must coalesce too.
+    for (let index = 0; index < 30; index++) {
+      app.runtime.deliveryObserver(Object.freeze({
+        transport: "websocket",
+        stage: "delivery",
+        lane: "application",
+        source: "send",
+        bytes: 64,
+        durationMs: 1,
+        outcome: "dropped",
+      }));
+    }
+    for (let index = 0; index < 12; index++) {
+      app.runtime.deliveryObserver(Object.freeze({
+        transport: "websocket",
+        stage: "encoding",
+        lane: "control",
+        source: "terminal",
+        bytes: 64,
+        durationMs: 1,
+        outcome: "ok",
+        terminalOutcome: "unavailable",
+      }));
+    }
+    await app.runtime.drain();
+
+    expect(spans(exported).filter((span) =>
+      span.operation === "subscription" && span.stage === "delivery" && span.outcome === "unavailable"
+    )).toHaveLength(8);
+    // Summarized terminal observations emit no span either: this retain-all
+    // configuration (slowOperationMs 0) would otherwise keep one ok-outcome
+    // encoding span per summarized frame and reopen the storm.
+    expect(spans(exported).filter((span) =>
+      span.operation === "subscription" && span.stage === "encoding"
+    )).toHaveLength(8);
+    expect(events(exported).filter((event) =>
+      event.name === "failure" && event.stage === "delivery" && event.outcome === "unavailable"
+    )).toHaveLength(8);
+
+    const summaries = metrics(exported).filter((metric) => metric.name === "delivery.failures_coalesced");
+    expect(summaries).toHaveLength(2);
+    for (const summary of summaries) {
+      expect(summary.unit).toBe("count");
+      expect(summary.labels.operation).toBe("subscription");
+      expect(summary.labels.outcome).toBe("unavailable");
+      expect(summary.labels.resource).toBe("outbound");
+    }
+    const byStage = new Map(summaries.map((summary) => [summary.labels.stage, summary.value]));
+    expect(byStage.get("delivery")).toBe(22);
+    expect(byStage.get("encoding")).toBe(4);
+  });
+
+  test("keeps coalesced failure counts observable on the default local-only profile", async () => {
+    const localLines: string[] = [];
+    const app = harness({
+      enabled: true,
+      localSink: (line) => {
+        localLines.push(line);
+      },
+      limits: telemetryLimits,
+    });
+
+    for (let index = 0; index < 30; index++) {
+      app.runtime.deliveryObserver(Object.freeze({
+        transport: "websocket",
+        stage: "delivery",
+        lane: "application",
+        source: "send",
+        bytes: 64,
+        durationMs: 1,
+        outcome: "dropped",
+      }));
+    }
+    await app.runtime.drain();
+
+    // Without an exporter the console local sink is the only output, so the
+    // summarized magnitude must be printed there instead of silently sitting
+    // in the undeliverable retained queue.
+    const summaries = localLines
+      .map((line) => JSON.parse(line) as TelemetryRecord)
+      .filter((record) => record.kind === "metric" && record.name === "delivery.failures_coalesced");
+    expect(summaries).toHaveLength(1);
+    expect((summaries[0] as TelemetryMetricRecord).value).toBe(22);
+    expect((summaries[0] as TelemetryMetricRecord).labels.stage).toBe("delivery");
   });
 
   test("exporter throws and an indefinitely stalled export fail open for application work", async () => {

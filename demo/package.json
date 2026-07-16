@@ -1,0 +1,30 @@
+{
+  "name": "dbzz-demo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "app/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "admin:dev": "bun run --cwd app/admin-panel dev",
+    "admin:build": "bun run --cwd app/admin-panel build",
+    "server:dev": "bun run --cwd app/server dev",
+    "server:start": "bun run --cwd app/server start",
+    "codegen": "dbz codegen app/server",
+    "design:dev": "bun run --cwd app/design dev",
+    "smoke": "bun scripts/smoke.ts",
+    "typecheck": "bun run codegen && tsc -p scripts/tsconfig.json && bun run --cwd app/server typecheck && bun run --cwd packages/dbzz-codegen typecheck && bun run --cwd app/admin-panel typecheck && bun run --cwd app/design typecheck"
+  },
+  "dependencies": {
+    "@dbzz/cli": "link:@dbzz/cli",
+    "@dbzz/client": "link:@dbzz/client",
+    "@dbzz/client-react": "link:@dbzz/client-react",
+    "@dbzz/core": "link:@dbzz/core",
+    "@dbzz/server": "link:@dbzz/server"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.9.0"
+  }
+}

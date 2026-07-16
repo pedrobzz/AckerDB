@@ -6,8 +6,10 @@ import {
   parseCallRequest,
   parseClientMessage,
   parseSseAckRequest,
+  type AuthenticationDescriptor,
   type ClientMessage,
   type Credential,
+  type Identity,
   type ServerMessage,
   type SseAckRequest,
   type SubscriptionCursor,
@@ -15,11 +17,24 @@ import {
 import {
   DbzzClient,
   DbzzClientError,
+  type DbzzAuthenticationState,
   type DbzzClientClock,
   type DbzzClientOptions,
   type DbzzLiveEvent,
+  type DbzzConnectionState,
   type DbzzWebSocket,
 } from "@dbzz/client";
+
+const USER_AUTHENTICATION = {
+  principal: "user",
+  identity: 1n as Identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-1" },
+} satisfies AuthenticationDescriptor;
+const REFRESHED_USER_AUTHENTICATION = {
+  principal: "user",
+  identity: USER_AUTHENTICATION.identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-1-refreshed" },
+} satisfies AuthenticationDescriptor;
 
 interface ClockTask {
   at: number;
@@ -154,12 +169,14 @@ function harness(
 
 function welcome(client: DbzzClient, socket: FakeSocket, principal: "anonymous" | "user" = "anonymous"): void {
   socket.open();
+  const descriptor: AuthenticationDescriptor =
+    principal === "user" ? USER_AUTHENTICATION : { principal: "anonymous" };
   socket.receive({
     v: PROTOCOL_VERSION,
     t: "welcome",
     clientSessionId: client.clientSessionId,
     authEpoch: 0,
-    principal,
+    ...descriptor,
   });
 }
 
@@ -299,7 +316,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       t: "welcome",
       clientSessionId: "stable-session",
       authEpoch: 4,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     expect(first.frames().some((frame) => frame.t === "q")).toBe(true);
 
@@ -370,7 +387,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     const auth = lastFrame(socket, "auth");
     expect(auth.credential).toEqual({ kind: "bearer", token: "token-b" });
@@ -380,9 +397,9 @@ describe("DbzzClient protocol 2 ownership", () => {
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 2,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
-    expect(await refresh).toEqual({ authEpoch: 2, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 2, ...USER_AUTHENTICATION });
     expect(socket.frames().some((frame) => frame.t === "q")).toBe(true);
 
     client.close();
@@ -708,6 +725,41 @@ describe("DbzzClient protocol 2 ownership", () => {
     client.close();
   });
 
+  test("releases an event subscription exactly once across repeated unsubscribe and close", () => {
+    const { client, sockets } = harness();
+    const events: DbzzLiveEvent<{ x: number }>[] = [];
+    const unsubscribe = client.subscribeEvent<Record<never, never>, { x: number }>(
+      "events.cursor",
+      {},
+      (event) => events.push(event),
+    );
+    welcome(client, sockets[0]!);
+    const id = lastFrame(sockets[0]!, "sub").id;
+    unsubscribe();
+    unsubscribe();
+    expect(
+      sockets[0]!.frames().filter((frame) => frame.t === "unsub"),
+    ).toEqual([{ v: 2, t: "unsub", id }]);
+    sockets[0]!.receive({
+      v: 2,
+      t: "event",
+      id,
+      event: { kind: "reset", cursor: { generation: "g", commitVersion: 0n, sequence: 0n } },
+    });
+    expect(events).toHaveLength(0);
+
+    // close() releases surviving subscriptions itself; a hook cleanup running
+    // afterwards must find nothing left to release and send nothing.
+    const second = harness();
+    const release = second.client.subscribeEvent("events.cursor", {}, () => {});
+    welcome(second.client, second.sockets[0]!);
+    second.client.close();
+    expect(() => release()).not.toThrow();
+    expect(
+      second.sockets[0]!.frames().filter((frame) => frame.t === "unsub"),
+    ).toHaveLength(0);
+  });
+
   test("uses strict authenticated HTTP procedure envelopes", async () => {
     let authorization: string | null = null;
     const fetcher: DbzzClientOptions["fetch"] = async (url, init) => {
@@ -909,15 +961,9 @@ describe("DbzzClient protocol 2 ownership", () => {
       "the first jitter delay",
     );
     const refresh = client.refreshCredential({ kind: "bearer", token: "current-token" });
+    // The dialed hello presents the refreshed credential, so the welcome
+    // resolves the attempt without a separate auth round-trip.
     welcome(client, sockets[0]!, "user");
-    const auth = lastFrame(sockets[0]!, "auth");
-    sockets[0]!.receive({
-      v: 2,
-      t: "auth",
-      attemptId: auth.attemptId,
-      authEpoch: 1,
-      principal: "user",
-    });
     await refresh;
     expect(clock.nextDueIn()).toBe(50);
     clock.advance(49);
@@ -1123,12 +1169,15 @@ describe("DbzzClient protocol 2 ownership", () => {
       let streamCancellations = 0;
       const fake204 = {
         status: 204,
-        body: {
+        body: new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.enqueue(sseUtf8.encode("not empty"));
+          },
           cancel() {
             acknowledgmentCancellations++;
             return adversarialCancellation(behavior);
           },
-        },
+        }),
         headers: new Headers(),
       } as unknown as Response;
       const { client } = harness({
@@ -1792,5 +1841,827 @@ describe("DbzzClient protocol 2 ownership", () => {
     });
     expect(attempts).toBe(8);
     client.close();
+  });
+
+  test("skips the procedure fetch when its signal is already aborted", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    let calls = 0;
+    const { client } = harness({
+      fetch: async (_url, init) => {
+        calls++;
+        const request = parseCallRequest(decode(String(init?.body)));
+        return new Response(
+          encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+        );
+      },
+    });
+    const completion = client
+      .procedure("procedure.pre-aborted", {}, { signal: abort.signal })
+      .catch((error) => error);
+
+    await settlesPromptly(completion, "pre-aborted procedure completion");
+    expect(await completion).toMatchObject({ code: "unavailable", resource: "operation" });
+    expect(calls).toBe(0);
+    expect(await client.procedure<{}, string>("procedure.after-pre-abort", {})).toBe("available");
+    expect(calls).toBe(1);
+    client.close();
+  });
+
+  test("settles a procedure whose fetch ignores its abort signal, on abort and on close", async () => {
+    for (const shutdown of ["abort", "close"] as const) {
+      const abort = new AbortController();
+      const hanging = deferred<Response>();
+      let lateCancellations = 0;
+      const { client } = harness({
+        // A hostile transport: never settles until released, ignores the signal.
+        fetch: async () => hanging.promise,
+      });
+      const completion = client
+        .procedure("procedure.hanging-fetch", {}, { signal: abort.signal })
+        .catch((error) => error);
+      await Promise.resolve();
+
+      if (shutdown === "abort") abort.abort();
+      else client.close();
+      await settlesPromptly(completion, `${shutdown} of a signal-ignoring procedure fetch`);
+      expect(await completion).toMatchObject({ code: "indeterminate", resource: "operation" });
+
+      hanging.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              lateCancellations++;
+            },
+          }),
+        ),
+      );
+      await eventually(() => lateCancellations === 1, `${shutdown} late response disposal`);
+      client.close();
+    }
+  });
+});
+
+describe("DbzzClient connection state", () => {
+  test("publishes connecting, ready, reconnecting, and closed with stable snapshots", () => {
+    const { client, sockets } = harness();
+    const phases: string[] = [];
+    const unsubscribe = client.subscribeConnectionState((state) => phases.push(state.phase));
+
+    const initial = client.currentConnectionState;
+    expect(initial).toEqual({ phase: "connecting" });
+    expect(client.currentConnectionState).toBe(initial);
+
+    client.connect();
+    expect(sockets).toHaveLength(1);
+    expect(client.currentConnectionState).toBe(initial);
+    client.connect();
+    expect(sockets).toHaveLength(1);
+
+    welcome(client, sockets[0]!);
+    const ready = client.currentConnectionState;
+    expect(ready).toEqual({
+      phase: "ready",
+      authentication: { authEpoch: 0, principal: "anonymous" },
+    });
+    expect(client.currentConnectionState).toBe(ready);
+
+    sockets[0]!.drop();
+    expect(client.currentConnectionState).toEqual({ phase: "reconnecting" });
+    expect(sockets).toHaveLength(1);
+
+    client.connect();
+    expect(sockets).toHaveLength(2);
+    expect(client.currentConnectionState.phase).toBe("reconnecting");
+    welcome(client, sockets[1]!);
+    expect(client.currentConnectionState.phase).toBe("ready");
+
+    client.close();
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    client.connect();
+    expect(sockets).toHaveLength(2);
+    expect(phases).toEqual(["ready", "reconnecting", "ready", "closed"]);
+    unsubscribe();
+  });
+
+  test("connect establishes standing demand that survives drops without operations", () => {
+    const { client, clock, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    sockets[0]!.drop();
+    expect(client.currentConnectionState.phase).toBe("reconnecting");
+    expect(sockets).toHaveLength(1);
+    clock.advance(100);
+    expect(sockets).toHaveLength(2);
+    welcome(client, sockets[1]!);
+    expect(client.currentConnectionState.phase).toBe("ready");
+    client.close();
+    expect(clock.taskCount).toBe(0);
+  });
+
+  test("keeps the connecting snapshot when the first attempt drops before welcome", () => {
+    const { client, sockets } = harness();
+    const phases: string[] = [];
+    client.subscribeConnectionState((state) => phases.push(state.phase));
+    const initial = client.currentConnectionState;
+    client.connect();
+    sockets[0]!.drop();
+    expect(client.currentConnectionState).toBe(initial);
+    expect(phases).toEqual([]);
+    client.close();
+    expect(phases).toEqual(["closed"]);
+  });
+
+  test("reports authentication-blocked with the exact error and recovers through refreshCredential", async () => {
+    const { client, sockets } = harness();
+    const states: DbzzConnectionState[] = [];
+    client.subscribeConnectionState((state) => states.push(state));
+    client.connect();
+    welcome(client, sockets[0]!);
+
+    const blocking = new DbzzClientError({
+      code: "unauthenticated",
+      retryable: false,
+      message: "credential expired",
+    });
+    sockets[0]!.receive({
+      v: 2,
+      t: "err",
+      id: null,
+      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
+    });
+    const blocked = client.currentConnectionState;
+    if (blocked.phase !== "authentication-blocked") throw new Error(`unexpected ${blocked.phase}`);
+    expect(blocked.error).toBeInstanceOf(DbzzClientError);
+    expect(blocked.error.code).toBe(blocking.code);
+    expect(client.currentConnectionState).toBe(blocked);
+
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    expect(client.currentConnectionState.phase).toBe("reconnecting");
+    const second = sockets[1]!;
+    second.open();
+    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
+    second.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 1,
+      ...USER_AUTHENTICATION,
+    });
+    // The hello presented the refreshed credential, so this welcome is its
+    // verification: the attempt resolves without a second auth round-trip.
+    expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await refresh).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
+    const upgraded = client.currentConnectionState;
+    if (upgraded.phase !== "ready") throw new Error(`unexpected ${upgraded.phase}`);
+    expect(upgraded.authentication).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
+    expect(states.map((state) => state.phase)).toEqual([
+      "ready",
+      "authentication-blocked",
+      "reconnecting",
+      "ready",
+    ]);
+    client.close();
+  });
+
+  test("reports terminal-error with the failure that stopped the client", () => {
+    const { client, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    sockets[0]!.receiveRaw("not json");
+    const terminal = client.currentConnectionState;
+    if (terminal.phase !== "terminal-error") throw new Error(`unexpected ${terminal.phase}`);
+    expect(terminal.error).toBeInstanceOf(DbzzClientError);
+    expect(terminal.error.code).toBe("malformed");
+    expect(client.currentConnectionState).toBe(terminal);
+    client.close();
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+  });
+
+  test("a ready listener that reenters close releases every timer", () => {
+    const { client, clock, sockets } = harness();
+    client.subscribeConnectionState((state) => {
+      if (state.phase === "ready") client.close();
+    });
+    client.connect();
+    welcome(client, sockets[0]!);
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(clock.taskCount).toBe(0);
+    expect(sockets[0]!.closes).toHaveLength(1);
+  });
+
+  test("a recovery listener that reenters close releases the authentication attempt", async () => {
+    const { client, clock, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    sockets[0]!.receive({
+      v: 2,
+      t: "err",
+      id: null,
+      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
+    });
+    client.subscribeConnectionState((state) => {
+      if (state.phase === "reconnecting") client.close();
+    });
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(clock.taskCount).toBe(0);
+    expect(sockets.filter((socket) => socket.closes.length === 0)).toHaveLength(0);
+    expect(await refresh).toBeInstanceOf(DbzzClientError);
+  });
+
+  test("a nested close during notification never delivers stale state", () => {
+    const { client, clock, sockets } = harness();
+    const observed: string[] = [];
+    client.subscribeConnectionState((state) => {
+      if (state.phase === "ready") client.close();
+    });
+    client.subscribeConnectionState((state) => observed.push(state.phase));
+    client.connect();
+    welcome(client, sockets[0]!);
+    expect(observed).toEqual(["closed"]);
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(clock.taskCount).toBe(0);
+  });
+
+  test("close notifies once and later subscriptions stay silent", () => {
+    const { client } = harness();
+    let notified = 0;
+    client.subscribeConnectionState(() => notified++);
+    client.close();
+    client.close();
+    expect(notified).toBe(1);
+    let late = 0;
+    const unsubscribe = client.subscribeConnectionState(() => late++);
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(late).toBe(0);
+    unsubscribe();
+  });
+});
+
+describe("subscription cursor confirmations", () => {
+  test("confirms applied resume and checkpoint transitions but never value deliveries", () => {
+    const { client, clock, sockets } = harness();
+    const updates: unknown[] = [];
+    let confirmations = 0;
+    client.subscribe(
+      "todos.list",
+      { list: 1n },
+      (value) => updates.push(value),
+      undefined,
+      { onCursorConfirmed: () => confirmations++ },
+    );
+    const first = sockets[0]!;
+    welcome(client, first);
+    const subscription = lastFrame(first, "sub");
+    const c1 = cursor(1n);
+    const c2 = cursor(2n);
+
+    // Value deliveries keep flowing through onUpdate alone.
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: c1, value: ["one"] },
+    });
+    expect(updates).toEqual([["one"]]);
+    expect(confirmations).toBe(0);
+
+    // A checkpoint silently advances the cursor and confirms the held value.
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "checkpoint", from: c1, to: c2 },
+    });
+    expect(confirmations).toBe(1);
+    expect(updates).toEqual([["one"]]);
+
+    // Reconnect resumes from the retained cursor; the server's positive
+    // resume lands exactly on the held cursor and confirms it.
+    first.drop();
+    clock.advance(100);
+    const second = sockets[1]!;
+    welcome(client, second);
+    expect(lastFrame(second, "sub").cursor).toEqual(c2);
+    second.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "resume", from: c2, to: c2 },
+    });
+    expect(confirmations).toBe(2);
+    expect(updates).toEqual([["one"]]);
+    client.close();
+  });
+
+  test("withholds held-cursor confirmation while a reset is demanded", () => {
+    const { client, sockets } = harness();
+    const updates: unknown[] = [];
+    let confirmations = 0;
+    client.subscribe(
+      "todos.list",
+      { list: 1n },
+      (value) => updates.push(value),
+      undefined,
+      { onCursorConfirmed: () => confirmations++ },
+    );
+    const first = sockets[0]!;
+    welcome(client, first);
+    const subscription = lastFrame(first, "sub");
+    const c0 = cursor(0n);
+    const c1 = cursor(1n);
+    const c2 = cursor(2n);
+    const c3 = cursor(3n);
+
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: c1, value: ["one"] },
+    });
+
+    // A mismatched predecessor makes the client demand a reset; deliveries
+    // landing on the held cursor are no longer trusted as confirmations.
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
+    });
+    expect(lastFrame(first, "reset")).toEqual({ v: 2, t: "reset", id: subscription.id, cursor: c1 });
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "update", from: c0, to: c1, value: ["one-too-late"] },
+    });
+    expect(confirmations).toBe(0);
+
+    // The authoritative reset delivers through onUpdate; a duplicate of it
+    // landing on the now-held cursor confirms again.
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
+    });
+    expect(updates).toEqual([["one"], ["three-authoritative"]]);
+    expect(confirmations).toBe(0);
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
+    });
+    expect(confirmations).toBe(1);
+    expect(updates).toEqual([["one"], ["three-authoritative"]]);
+    client.close();
+  });
+});
+
+describe("subscription argument encoding", () => {
+  test("rejects unencodable arguments with the exact validation error", () => {
+    const { client } = harness();
+    try {
+      client.subscribe("todos.byScore", { score: Number.NaN }, () => {});
+      throw new Error("subscribe must reject NaN arguments");
+    } catch (error) {
+      expect(error).toBeInstanceOf(DbzzClientError);
+      expect(error).toMatchObject({
+        code: "validation",
+        retryable: false,
+        message: "cannot encode non-finite number NaN",
+        resource: "subscription",
+      });
+    }
+    client.close();
+  });
+});
+
+describe("DbzzClient close-time mutation settlement", () => {
+  test("close settles sent mutations as indeterminate and unsent mutations as unavailable", async () => {
+    const { client, sockets } = harness();
+    const sent = client.mutation("todos.add", { text: "sent" }).catch((error) => error);
+    welcome(client, sockets[0]!);
+    expect(lastFrame(sockets[0]!, "m").args).toEqual({ text: "sent" });
+
+    // Written to a connection that dropped: the server may have committed.
+    sockets[0]!.drop();
+    // Created while disconnected: provably never reached the server.
+    const unsent = client.mutation("todos.add", { text: "unsent" }).catch((error) => error);
+
+    client.close();
+    expect(await sent).toMatchObject({
+      code: "indeterminate",
+      resource: "idempotency",
+      message: "mutation completion is unknown",
+    });
+    expect(await unsent).toMatchObject({
+      code: "unavailable",
+      resource: "operation",
+      message: "client closed",
+    });
+  });
+});
+
+describe("DbzzClient authentication state", () => {
+  test("publishes authenticating, unauthenticated, and closed with stable snapshots", () => {
+    const { client, sockets } = harness();
+    const phases: string[] = [];
+    const unsubscribe = client.subscribeAuthenticationState((state) => phases.push(state.phase));
+
+    const initial = client.currentAuthenticationState;
+    expect(initial).toEqual({ phase: "authenticating", credential: "anonymous" });
+    expect(client.currentAuthenticationState).toBe(initial);
+
+    client.connect();
+    expect(client.currentAuthenticationState).toBe(initial);
+
+    welcome(client, sockets[0]!);
+    const confirmed = client.currentAuthenticationState;
+    expect(confirmed).toEqual({
+      phase: "unauthenticated",
+      authentication: { authEpoch: 0, principal: "anonymous" },
+    });
+    expect(client.currentAuthenticationState).toBe(confirmed);
+    // Both surfaces publish from one transition and share the confirmation.
+    const ready = client.currentConnectionState;
+    if (
+      ready.phase !== "ready" ||
+      ready.authentication.principal !== "anonymous" ||
+      confirmed.phase !== "unauthenticated"
+    ) {
+      throw new Error("expected a confirmed anonymous session");
+    }
+    expect(confirmed.authentication).toBe(ready.authentication);
+
+    // A reconnect re-presents the stored credential before any confirmation.
+    sockets[0]!.drop();
+    expect(client.currentAuthenticationState).toBe(initial);
+
+    client.close();
+    expect(client.currentAuthenticationState).toEqual({ phase: "closed" });
+    expect(phases).toEqual(["unauthenticated", "authenticating", "closed"]);
+    unsubscribe();
+  });
+
+  test("confirms a bearer connection as authenticated with the welcome principal", () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    client.connect();
+    sockets[0]!.open();
+    sockets[0]!.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 4,
+      ...USER_AUTHENTICATION,
+    });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticated",
+      authentication: { authEpoch: 4, ...USER_AUTHENTICATION },
+    });
+    client.close();
+  });
+
+  test("replaces provenance atomically while preserving durable Identity", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    welcome(client, sockets[0]!, "user");
+    const before = client.currentAuthentication;
+    expect(before).toEqual({ authEpoch: 0, ...USER_AUTHENTICATION });
+
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-refreshed" });
+    const attempt = lastFrame(sockets[0]!, "auth");
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: 1,
+      ...REFRESHED_USER_AUTHENTICATION,
+    });
+
+    const after = await refresh;
+    expect(after).toEqual({ authEpoch: 1, ...REFRESHED_USER_AUTHENTICATION });
+    if (after.principal !== "user") throw new Error(`unexpected ${after.principal}`);
+    expect(before).toEqual({ authEpoch: 0, ...USER_AUTHENTICATION });
+    expect(Object.isFrozen(after)).toBe(true);
+    expect(Object.isFrozen(after.provenance)).toBe(true);
+    const ready = client.currentConnectionState;
+    if (ready.phase !== "ready") throw new Error(`unexpected ${ready.phase}`);
+    const authenticationState = client.currentAuthenticationState;
+    if (authenticationState.phase !== "authenticated") {
+      throw new Error(`unexpected ${authenticationState.phase}`);
+    }
+    expect(ready.authentication).toBe(authenticationState.authentication);
+    client.close();
+  });
+
+  test("tracks refresh and sign-out through the pending credential kind", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    const states: DbzzAuthenticationState[] = [];
+    client.subscribeAuthenticationState((state) => states.push(state));
+    client.connect();
+    welcome(client, sockets[0]!, "user");
+
+    // An anonymous presentation on a live session is the protocol's sign-out.
+    const signOut = client.refreshCredential({ kind: "anonymous" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "anonymous",
+    });
+    // The transport session stays ready while the credential is re-verified;
+    // only the authentication surface reports the in-flight presentation.
+    expect(client.currentConnectionState.phase).toBe("ready");
+    const signOutFrame = lastFrame(sockets[0]!, "auth");
+    expect(signOutFrame.credential).toEqual({ kind: "anonymous" });
+    sockets[0]!.receive({
+      v: 2,
+      t: "auth",
+      attemptId: signOutFrame.attemptId,
+      authEpoch: 1,
+      principal: "anonymous",
+    });
+    expect(await signOut).toEqual({ authEpoch: 1, principal: "anonymous" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "unauthenticated",
+      authentication: { authEpoch: 1, principal: "anonymous" },
+    });
+
+    // A superseded refresh rejects with auth_stale and the state reports the
+    // newest pending credential kind until its confirmation arrives.
+    const superseded = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-c" });
+    expect(await superseded).toMatchObject({ code: "auth_stale" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    const refreshFrame = lastFrame(sockets[0]!, "auth");
+    expect(refreshFrame.credential).toEqual({ kind: "bearer", token: "token-c" });
+    sockets[0]!.receive({
+      v: 2,
+      t: "auth",
+      attemptId: refreshFrame.attemptId,
+      authEpoch: 2,
+      ...USER_AUTHENTICATION,
+    });
+    expect(await refresh).toEqual({ authEpoch: 2, ...USER_AUTHENTICATION });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticated",
+      authentication: { authEpoch: 2, ...USER_AUTHENTICATION },
+    });
+    expect(states.map((state) => state.phase)).toEqual([
+      "authenticated",
+      "authenticating",
+      "unauthenticated",
+      "authenticating",
+      "authenticated",
+    ]);
+    client.close();
+  });
+
+  test("coalesces an identical in-flight credential into a single attempt", async () => {
+    const { client, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    const first = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    const second = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    expect(second).toBe(first);
+    expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(1);
+    const attempt = lastFrame(sockets[0]!, "auth");
+    sockets[0]!.receive({
+      v: 2,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: 1,
+      ...USER_AUTHENTICATION,
+    });
+    expect(await first).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
+
+    // A doubled sign-out joins the in-flight attempt instead of rejecting the
+    // first caller with auth_stale.
+    const signOutFirst = client.refreshCredential({ kind: "anonymous" });
+    const signOutSecond = client.refreshCredential({ kind: "anonymous" });
+    expect(signOutSecond).toBe(signOutFirst);
+    expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(2);
+    const signOutAttempt = lastFrame(sockets[0]!, "auth");
+    sockets[0]!.receive({
+      v: 2,
+      t: "auth",
+      attemptId: signOutAttempt.attemptId,
+      authEpoch: 2,
+      principal: "anonymous",
+    });
+    expect(await signOutFirst).toEqual({ authEpoch: 2, principal: "anonymous" });
+    client.close();
+  });
+
+  test("a same-value refresh between hello and welcome resolves without a second verification", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+    // The refresh presents the value the in-flight hello already carries; the
+    // welcome verifies that value once for both.
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-a" });
+    socket.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 2,
+      ...USER_AUTHENTICATION,
+    });
+    expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await refresh).toEqual({ authEpoch: 2, ...USER_AUTHENTICATION });
+    client.close();
+  });
+
+  test("an A-B-A refresh interleaving matches the hello by value and supersedes the detour", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+    const detour = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
+    const back = client.refreshCredential({ kind: "bearer", token: "token-a" });
+    socket.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 1,
+      ...USER_AUTHENTICATION,
+    });
+    expect(await detour).toMatchObject({ code: "auth_stale" });
+    // The surviving attempt's value is what the hello presented, so the
+    // welcome resolves it without an auth frame.
+    expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await back).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
+    client.close();
+  });
+
+  test("a refresh whose auth frame exceeds the client limit rejects without installing an attempt", () => {
+    const { client, clock, sockets } = harness({ limits: { maxFrameBytes: 256 } });
+    client.connect();
+    welcome(client, sockets[0]!);
+    const confirmed = client.currentAuthenticationState;
+    const timers = clock.taskCount;
+
+    let caught: unknown;
+    try {
+      client.refreshCredential({ kind: "bearer", token: "t".repeat(300) });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(DbzzClientError);
+    expect(caught).toMatchObject({ code: "overloaded", resource: "connection" });
+    // Nothing was installed: no attempt, no expiry timer, no state change,
+    // and operations still flow on the untouched session.
+    expect(clock.taskCount).toBe(timers);
+    expect(client.currentAuthenticationState).toBe(confirmed);
+    expect(client.currentConnectionState.phase).toBe("ready");
+    const query = client.query("todos.list", {}).catch(() => {});
+    expect(sockets[0]!.frames().some((frame) => frame.t === "q")).toBe(true);
+    void query;
+    client.close();
+    expect(clock.taskCount).toBe(0);
+  });
+
+  test("a refresh in flight across a reconnect resolves from the replayed hello's welcome", async () => {
+    const { client, clock, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    welcome(client, sockets[0]!, "user");
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    sockets[0]!.drop();
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    clock.advance(100);
+    const second = sockets[1]!;
+    second.open();
+    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
+    second.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 3,
+      ...USER_AUTHENTICATION,
+    });
+    // One verification: the hello carried the pending credential, so no
+    // second auth frame follows the welcome.
+    expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await refresh).toEqual({ authEpoch: 3, ...USER_AUTHENTICATION });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticated",
+      authentication: { authEpoch: 3, ...USER_AUTHENTICATION },
+    });
+    client.close();
+  });
+
+  test("reports refresh-required with the exact error shared with the connection state", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    welcome(client, sockets[0]!, "user");
+    sockets[0]!.receive({
+      v: 2,
+      t: "err",
+      id: null,
+      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
+    });
+    const blocked = client.currentAuthenticationState;
+    if (blocked.phase !== "refresh-required") throw new Error(`unexpected ${blocked.phase}`);
+    expect(blocked.error).toBeInstanceOf(DbzzClientError);
+    expect(blocked.error.code).toBe("unauthenticated");
+    expect(client.currentAuthenticationState).toBe(blocked);
+    const connection = client.currentConnectionState;
+    if (connection.phase !== "authentication-blocked") throw new Error(`unexpected ${connection.phase}`);
+    expect(connection.error).toBe(blocked.error);
+
+    // A new credential leaves the blocked state and replays the handshake.
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    const second = sockets[1]!;
+    second.open();
+    // The reconnect hello presents the refreshed credential, so its welcome
+    // is the verification: one round-trip, no separate auth frame.
+    second.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 0,
+      ...USER_AUTHENTICATION,
+    });
+    expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await refresh).toEqual({ authEpoch: 0, ...USER_AUTHENTICATION });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticated",
+      authentication: { authEpoch: 0, ...USER_AUTHENTICATION },
+    });
+    client.close();
+  });
+
+  test("a refresh timeout blocks with auth_unavailable and rejects the attempt", async () => {
+    const { client, clock, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    clock.advance(30_000);
+    const error = await refresh;
+    expect(error).toMatchObject({ code: "auth_unavailable", message: "authentication timed out" });
+    const blocked = client.currentAuthenticationState;
+    if (blocked.phase !== "refresh-required") throw new Error(`unexpected ${blocked.phase}`);
+    expect(blocked.error).toBe(error as DbzzClientError);
+    client.close();
+  });
+
+  test("failed mirrors the terminal connection error and close notifies once", () => {
+    const { client, sockets } = harness();
+    let notified = 0;
+    client.subscribeAuthenticationState(() => notified++);
+    client.connect();
+    welcome(client, sockets[0]!);
+    sockets[0]!.receiveRaw("not json");
+    const failed = client.currentAuthenticationState;
+    if (failed.phase !== "failed") throw new Error(`unexpected ${failed.phase}`);
+    const terminal = client.currentConnectionState;
+    if (terminal.phase !== "terminal-error") throw new Error(`unexpected ${terminal.phase}`);
+    expect(failed.error).toBe(terminal.error);
+    expect(client.currentAuthenticationState).toBe(failed);
+
+    client.close();
+    client.close();
+    expect(client.currentAuthenticationState).toEqual({ phase: "closed" });
+    expect(notified).toBe(3);
+    let late = 0;
+    const unsubscribe = client.subscribeAuthenticationState(() => late++);
+    expect(late).toBe(0);
+    unsubscribe();
+  });
+
+  test("an authentication listener that reenters close never observes stale state", () => {
+    const { client, clock, sockets } = harness();
+    const observed: string[] = [];
+    client.subscribeAuthenticationState((state) => {
+      if (state.phase === "unauthenticated") client.close();
+    });
+    client.subscribeAuthenticationState((state) => observed.push(state.phase));
+    client.subscribeConnectionState((state) => observed.push(`connection:${state.phase}`));
+    client.connect();
+    welcome(client, sockets[0]!);
+    expect(observed).toEqual(["closed", "connection:closed"]);
+    expect(client.currentAuthenticationState).toEqual({ phase: "closed" });
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(clock.taskCount).toBe(0);
   });
 });

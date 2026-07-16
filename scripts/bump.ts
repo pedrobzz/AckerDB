@@ -1,5 +1,5 @@
 // bun run bump <patch|minor|major>
-// Bumps all 4 packages to the same next version and commits the bump.
+// Bumps every published package to the same next version and commits the bump.
 // Run it on your feature branch — the merge guard on main requires the bump
 // to arrive together with the feat/fix commits it covers.
 import { PACKAGES, fail, git, parseSemver, pkgJsonPath, syncedVersion, tryGit } from "./lib";

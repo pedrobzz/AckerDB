@@ -7,6 +7,7 @@ import {
   type JWTPayload,
 } from "jose";
 import { parseCredential, type Credential } from "@dbzz/core";
+import type { Identity } from "./dbz.ts";
 import { DbzzError } from "./errors.ts";
 import { deepFreeze } from "./immutable.ts";
 
@@ -26,7 +27,13 @@ interface ExternalPrincipal {
   readonly tokenId: string | null;
 }
 
-export interface UserPrincipal extends ExternalPrincipal {
+export interface ExternalAccount {
+  readonly issuer: string;
+  readonly subject: string;
+}
+
+/** Cryptographically verified user evidence before DBZZ assigns application identity. */
+export interface VerifiedUserCredential extends ExternalPrincipal {
   readonly kind: "user";
 }
 
@@ -34,17 +41,26 @@ export interface WorkloadPrincipal extends ExternalPrincipal {
   readonly kind: "workload";
 }
 
-export type VerifiedPrincipal = UserPrincipal | WorkloadPrincipal;
-export type ClientPrincipal = AnonymousPrincipal | VerifiedPrincipal;
+export interface UserPrincipal extends ExternalPrincipal {
+  readonly kind: "user";
+  readonly identity: Identity;
+}
+
+export type VerifiedCredential = VerifiedUserCredential | WorkloadPrincipal;
+export type AuthenticatedPrincipal = UserPrincipal | WorkloadPrincipal;
+export type ClientPrincipal = AnonymousPrincipal | AuthenticatedPrincipal;
 export type Principal = AnonymousPrincipal | UserPrincipal | WorkloadPrincipal | SystemPrincipal;
+export type IdentityResolver = (
+  account: ExternalAccount,
+  signal?: AbortSignal,
+) => Promise<Identity>;
 
 export const ANONYMOUS_PRINCIPAL: AnonymousPrincipal = Object.freeze({ kind: "anonymous" });
 export const SYSTEM_PRINCIPAL: SystemPrincipal = Object.freeze({ kind: "system" });
 
-export function isPrincipal(value: unknown): value is Principal {
+function isExternalPrincipal(value: unknown): value is ExternalPrincipal & { kind: "user" | "workload" } {
   if (typeof value !== "object" || value === null || !("kind" in value)) return false;
-  const principal = value as Partial<Principal>;
-  if (principal.kind === "anonymous" || principal.kind === "system") return true;
+  const principal = value as Partial<ExternalPrincipal> & { kind?: unknown };
   return (
     (principal.kind === "user" || principal.kind === "workload") &&
     typeof principal.issuer === "string" &&
@@ -59,6 +75,21 @@ export function isPrincipal(value: unknown): value is Principal {
   );
 }
 
+export function isPrincipal(value: unknown): value is Principal {
+  if (typeof value !== "object" || value === null || !("kind" in value)) return false;
+  const principal = value as Partial<Principal>;
+  if (principal.kind === "anonymous" || principal.kind === "system") return !("identity" in value);
+  if (!isExternalPrincipal(value)) return false;
+  const identity = (value as { readonly identity?: unknown }).identity;
+  return principal.kind === "workload"
+    ? !("identity" in value)
+    : typeof identity === "bigint" && identity > 0n;
+}
+
+export function isVerifiedCredential(value: unknown): value is VerifiedCredential {
+  return isExternalPrincipal(value) && !("identity" in value);
+}
+
 export interface PrincipalInvalidation {
   readonly issuer: string;
   readonly subject?: string;
@@ -71,7 +102,7 @@ export type RevocationBound =
 
 export interface CredentialVerifier {
   readonly revocationBound: RevocationBound;
-  verify(credential: string): Promise<VerifiedPrincipal>;
+  verify(credential: string): Promise<VerifiedCredential>;
   subscribeInvalidation(listener: (invalidation: PrincipalInvalidation) => void): () => void;
 }
 
@@ -252,38 +283,101 @@ export function credentialFromAuthorization(value: string | null): Credential {
   }
 }
 
-/** One fail-closed credential path shared by WebSocket, HTTP, and SSE. */
-export async function verifyClientCredential(
-  credential: Credential,
-  verifier?: CredentialVerifier,
+/** Verify one raw bearer token into immutable external credential evidence. */
+export async function verifyBearerCredential(
+  rawBearerToken: string,
+  verifier: CredentialVerifier | undefined,
   now: () => number = Date.now,
-): Promise<ClientPrincipal> {
-  if (credential.kind === "anonymous") return ANONYMOUS_PRINCIPAL;
-  if (verifier === undefined) throw unauthenticated();
-  let principal: VerifiedPrincipal;
+): Promise<VerifiedCredential> {
+  let credential: Credential;
   try {
-    principal = await verifier.verify(credential.token);
+    credential = parseCredential({ kind: "bearer", token: rawBearerToken });
+  } catch (error) {
+    throw unauthenticated(error);
+  }
+  if (credential.kind !== "bearer") throw unauthenticated();
+  if (verifier === undefined) throw unauthenticated();
+  let candidate: VerifiedCredential;
+  try {
+    candidate = await verifier.verify(credential.token);
   } catch (error) {
     if (error instanceof DbzzError) throw error;
     throw authUnavailable(error);
   }
-  if (
-    !isPrincipal(principal) ||
-    (principal.kind !== "user" && principal.kind !== "workload")
-  ) {
-    throw authUnavailable(new Error("credential verifier returned an invalid principal"));
+  if (!isVerifiedCredential(candidate)) {
+    throw authUnavailable(new Error("credential verifier returned invalid credential evidence"));
   }
+  const { kind, issuer, subject, claims, expiresAt, tokenId } = candidate;
+  const verified: VerifiedCredential = Object.freeze({
+    kind,
+    issuer,
+    subject,
+    claims: deepFreeze(claims),
+    expiresAt,
+    tokenId,
+  });
   const timestamp = now();
   if (!Number.isFinite(timestamp)) throw new RangeError("credential clock must return finite milliseconds");
-  if (principal.expiresAt <= timestamp) throw unauthenticated();
-  deepFreeze(principal.claims);
+  if (verified.expiresAt <= timestamp) throw unauthenticated();
+  return verified;
+}
+
+/** Verify that a raw bearer token proves one configured external user account. */
+export async function verifyUserBearerCredential(
+  rawBearerToken: string,
+  verifier: CredentialVerifier | undefined,
+  now: () => number = Date.now,
+): Promise<VerifiedUserCredential> {
+  const verified = await verifyBearerCredential(rawBearerToken, verifier, now);
+  if (verified.kind !== "user") throw unauthenticated();
+  return verified;
+}
+
+/** One fail-closed credential path shared by WebSocket, HTTP, and SSE. */
+export async function verifyClientCredential(
+  credential: Credential,
+  verifier: CredentialVerifier | undefined,
+  resolveIdentity: IdentityResolver,
+  now: () => number = Date.now,
+): Promise<ClientPrincipal> {
+  if (credential.kind === "anonymous") return ANONYMOUS_PRINCIPAL;
+  const verified = await verifyBearerCredential(credential.token, verifier, now);
+  if (verified.kind === "workload") {
+    return Object.freeze({
+      kind: "workload",
+      issuer: verified.issuer,
+      subject: verified.subject,
+      claims: verified.claims,
+      expiresAt: verified.expiresAt,
+      tokenId: verified.tokenId,
+    });
+  }
+  let identity: Identity;
+  try {
+    identity = await resolveIdentity(Object.freeze({
+      issuer: verified.issuer,
+      subject: verified.subject,
+    }));
+  } catch (error) {
+    if (error instanceof DbzzError) throw error;
+    throw authUnavailable(error);
+  }
+  if (typeof identity !== "bigint" || identity <= 0n) {
+    throw authUnavailable(new Error("identity resolver returned an invalid Identity"));
+  }
+  const resolvedAt = now();
+  if (!Number.isFinite(resolvedAt)) {
+    throw new RangeError("credential clock must return finite milliseconds");
+  }
+  if (verified.expiresAt <= resolvedAt) throw unauthenticated();
   return Object.freeze({
-    kind: principal.kind,
-    issuer: principal.issuer,
-    subject: principal.subject,
-    claims: principal.claims,
-    expiresAt: principal.expiresAt,
-    tokenId: principal.tokenId,
+    kind: "user",
+    identity,
+    issuer: verified.issuer,
+    subject: verified.subject,
+    claims: verified.claims,
+    expiresAt: verified.expiresAt,
+    tokenId: verified.tokenId,
   });
 }
 
@@ -413,7 +507,7 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
   return Object.freeze({
     revocationBound: Object.freeze({ kind: "token-expiration" as const }),
     subscribeInvalidation: (_listener: (invalidation: PrincipalInvalidation) => void) => () => {},
-    verify: async (credential: string): Promise<VerifiedPrincipal> => {
+    verify: async (credential: string): Promise<VerifiedCredential> => {
       if (
         typeof credential !== "string" ||
         credential.length === 0 ||

@@ -1,0 +1,7 @@
+node_modules/
+.canvazz/
+.tanstack/
+.output/
+dist/
+*.log
+.DS_Store

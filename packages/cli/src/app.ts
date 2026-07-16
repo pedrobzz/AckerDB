@@ -93,7 +93,6 @@ export async function startApp(
   const server = new DbzzServer({
     limits: PRODUCTION_LIMITS,
     port: config.port,
-    ...(verifier === undefined ? {} : { verifier }),
     statusScope: config.statusScope,
   });
 
@@ -182,6 +181,7 @@ export async function startApp(
     runtime = new Runtime({
       engine: ownedEngine,
       registry,
+      ...(verifier === undefined ? {} : { verifier }),
       telemetry: config.telemetry === "disabled" ? false : undefined,
     });
     server.activate(runtime);

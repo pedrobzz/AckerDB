@@ -1635,11 +1635,18 @@ export class BoundedSseProducer {
     this.closedWaiter = null;
     this.clearStall();
     if (terminateStream) {
+      // A DbzzError reason (other than the caller canceling its own request)
+      // is a server-decided outcome the consumer may still observe. Anything
+      // else is the transport reporting that the consumer is already gone
+      // (e.g. Bun aborts request.signal with a DOMException on disconnect);
+      // erroring the detached response stream then only manufactures
+      // unhandled rejections inside the HTTP server, so close it instead —
+      // dbzz clients treat a close without sse_done as truncation anyway.
       const canceledRequest = isDbzzError(reason) &&
         reason.code === "unavailable" &&
         reason.resource === "operation";
-      if (canceledRequest) this.controller.close();
-      else this.controller.error(reason ?? error);
+      if (canceledRequest || !isDbzzError(reason)) this.controller.close();
+      else this.controller.error(reason);
     }
     this.releaseAll("unavailable");
     this.finishClosedState();
