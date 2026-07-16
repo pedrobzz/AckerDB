@@ -173,6 +173,7 @@ export interface TelemetryEventInput {
 
 export interface TelemetryMetricLabels {
   readonly operation?: TelemetryOperation;
+  readonly stage?: TelemetryStage;
   readonly functionName?: string;
   readonly outcome?: TelemetryOutcome;
   readonly resource?: TelemetryResource;
@@ -184,6 +185,13 @@ export interface TelemetryMetricInput {
   readonly value: number;
   readonly unit: TelemetryMetricUnit;
   readonly labels?: TelemetryMetricLabels;
+  /**
+   * Also deliver this metric through the local sink. Metrics stay off the
+   * local output by default so periodic samples cannot flood the console;
+   * rare diagnostic summaries opt in to remain observable without an
+   * exporter.
+   */
+  readonly local?: boolean;
 }
 
 interface TelemetryRecordContext {
@@ -242,6 +250,7 @@ export interface TelemetryMetricRecord {
   readonly unit: TelemetryMetricUnit;
   readonly labels: Readonly<{
     operation?: TelemetryOperation;
+    stage?: TelemetryStage;
     function?: string;
     outcome?: TelemetryOutcome;
     resource?: TelemetryResource;
@@ -489,6 +498,8 @@ interface TelemetryState {
   intervalHandle?: unknown;
   localPumpHandle?: unknown;
   localPumpScheduled: boolean;
+  exportPumpScheduled: boolean;
+  exportPumpSuspended: boolean;
   exporting?: Promise<void>;
   localInFlight?: Promise<void>;
   draining?: Promise<void>;
@@ -1000,6 +1011,8 @@ export class Telemetry {
       localHead: 0,
       localBytes: 0,
       localPumpScheduled: false,
+      exportPumpScheduled: false,
+      exportPumpSuspended: false,
       stopped: false,
       aggregateDirty: false,
       aggregateExportInFlight: false,
@@ -1359,13 +1372,14 @@ export class Telemetry {
       operation: isMember(TELEMETRY_OPERATIONS, input.labels?.operation)
         ? input.labels.operation
         : undefined,
+      stage: isMember(TELEMETRY_STAGES, input.labels?.stage) ? input.labels.stage : undefined,
       function: safeName(input.labels?.functionName),
       outcome: isMember(TELEMETRY_OUTCOMES, input.labels?.outcome) ? input.labels.outcome : undefined,
       resource: isMember(TELEMETRY_RESOURCES, input.labels?.resource)
         ? input.labels.resource
         : undefined,
     });
-    const seriesKey = `${name}|${input.unit}|${labels.operation ?? ""}|${labels.function ?? ""}|${labels.outcome ?? ""}|${labels.resource ?? ""}`;
+    const seriesKey = `${name}|${input.unit}|${labels.operation ?? ""}|${labels.stage ?? ""}|${labels.function ?? ""}|${labels.outcome ?? ""}|${labels.resource ?? ""}`;
     if (
       !state.metricSeries.has(seriesKey) &&
       (state.metricSeries.has(OVERFLOW_SERIES) ||
@@ -1394,7 +1408,7 @@ export class Telemetry {
       unit: input.unit,
       labels,
     });
-    const retained = this.retain(record, false);
+    const retained = this.retain(record, input.local === true);
     if (retained) state.metricSeries.add(seriesKey);
     return retained;
   }
@@ -1409,6 +1423,7 @@ export class Telemetry {
       .catch(() => this.observeExportFailure(state))
       .then(() => {
         if (state.exporting === attempt) state.exporting = undefined;
+        this.scheduleExportPressure(state);
       });
     state.exporting = attempt;
     return attempt;
@@ -1545,6 +1560,18 @@ export class Telemetry {
     trace: MutableTraceRetention,
     span: SanitizedTelemetrySpan,
   ): void {
+    // A promoted trace materializes its whole staged tail synchronously into
+    // the bounded export queue, so one trace may stage at most one export
+    // batch: a high-fanout operation could otherwise accumulate the entire
+    // queue's worth of delivery spans and evict every other retained record
+    // the moment it turns slow. The bound is per trace; the global caps below
+    // still govern the staging pool as a whole.
+    if (trace.staged.length >= state.limits.maxBatchRecords) {
+      state.traceHealth.dropped.stagedOverflow = boundedCount(
+        state.traceHealth.dropped.stagedOverflow,
+      );
+      return;
+    }
     const bytes = stagedSpanBytes(span);
     while (
       (state.stagedTraceRecords >= state.limits.maxRecords ||
@@ -1796,7 +1823,53 @@ export class Telemetry {
     }
     state.records.push({ record, bytes, retainedAtMs: now });
     state.queuedBytes += bytes;
+    this.scheduleExportPressure(state);
     return true;
+  }
+
+  /**
+   * Export ahead of the batch clock whenever a full batch (or half the byte
+   * budget) is already queued. The interval tick alone caps sustained export
+   * throughput at maxBatchRecords per batchIntervalMs, so a record burst
+   * would overflow the bounded queue while a healthy exporter sat idle.
+   * The pump is a microtask rather than a timer because the largest bursts
+   * are themselves microtask cascades (per-sink delivery-observation drains
+   * during mass disconnect and fanout failure) that retain thousands of
+   * records before any timer can fire; a microtask interleaves with the
+   * storm, so an exporter that settles promptly bounds the queue by its own
+   * speed instead of the calendar. Record producers never execute exporter
+   * code on their own stack, a flush already in flight defers rescheduling
+   * to its completion, and any failed or degraded attempt suspends the pump
+   * until an export succeeds again so an unhealthy exporter falls back to
+   * the fail-open interval-and-overflow policy instead of being hammered.
+   */
+  private scheduleExportPressure(state: TelemetryState): void {
+    if (
+      !state.exporter ||
+      state.stopped ||
+      state.exportPumpScheduled ||
+      state.exportPumpSuspended ||
+      state.exporting !== undefined ||
+      (state.records.length - state.head < state.limits.maxBatchRecords &&
+        state.queuedBytes * 2 < state.limits.maxBytes)
+    ) {
+      return;
+    }
+    state.exportPumpScheduled = true;
+    try {
+      queueMicrotask(() => {
+        state.exportPumpScheduled = false;
+        if (state.stopped) return;
+        try {
+          void this.flush();
+        } catch {
+          this.observeExportFailure(state);
+        }
+      });
+    } catch {
+      state.exportPumpScheduled = false;
+      this.observeExportFailure(state);
+    }
   }
 
   private aggregateSpan(state: TelemetryState, span: SanitizedTelemetrySpan): void {
@@ -1989,6 +2062,7 @@ export class Telemetry {
     if (observedFinish === undefined) state.drops.invalid++;
     const finishedAtMs = observedFinish ?? startedAtMs;
     state.exportHealth.lastDurationMs = Math.max(0, finishedAtMs - startedAtMs);
+    state.exportPumpSuspended = exported.result !== TASK_OK || exported.schedulerFailed;
 
     if (exported.result === TASK_OK) {
       state.exportHealth.exportedRecords += batch.length;

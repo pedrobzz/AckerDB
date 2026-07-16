@@ -676,6 +676,220 @@ describe("Telemetry", () => {
     expect(scheduler.intervals.size).toBe(0);
   });
 
+  test("exports a queued burst under pressure without waiting for the batch clock", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, exporter } = exporterBatches();
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: { maxRecords: 8, maxBatchRecords: 2, maxBytes: 64 * 1024 },
+    });
+
+    // A same-turn burst of more than two full batches: no interval tick and
+    // no manual flush may be required for the healthy exporter to absorb it.
+    for (let index = 0; index < 5; index++) {
+      telemetry.recordMetric({ name: `runtime.sample_${index}`, value: index, unit: "gauge" });
+    }
+    expect(batches).toHaveLength(0);
+    await settleAsyncWork();
+    await settleAsyncWork();
+
+    // The pump drains full batches and leaves the sub-batch remainder for
+    // the clock instead of degrading into per-record exports.
+    expect(batches.map((batch) => batch.length)).toEqual([2, 2]);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 1,
+      dropped: { overflow: 0 },
+      exporter: { attempts: 2, failures: 0, exportedRecords: 4 },
+    });
+    telemetry.stop();
+    expect(scheduler.timeouts.size).toBe(0);
+  });
+
+  test("never executes the exporter synchronously on a record-producing call stack", async () => {
+    const scheduler = new ManualScheduler();
+    let recording = false;
+    let exportedDuringRecord = 0;
+    let exportedRecords = 0;
+    const telemetry = new Telemetry({
+      exporter: {
+        export: (records) => {
+          if (recording) exportedDuringRecord += records.length;
+          exportedRecords += records.length;
+          return Promise.resolve();
+        },
+      },
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: { maxRecords: 4, maxBatchRecords: 1, maxBytes: 64 * 1024 },
+    });
+
+    for (let index = 0; index < 8; index++) {
+      recording = true;
+      telemetry.recordMetric({ name: `runtime.sample_${index}`, value: index, unit: "gauge" });
+      recording = false;
+      await settleAsyncWork();
+      await settleAsyncWork();
+    }
+
+    expect(exportedDuringRecord).toBe(0);
+    expect(exportedRecords).toBe(8);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      dropped: { overflow: 0, exporter: 0 },
+    });
+    telemetry.stop();
+  });
+
+  test("drains a same-turn multi-batch burst through an immediately resolving async exporter", async () => {
+    const scheduler = new ManualScheduler();
+    const batches: TelemetryRecord[][] = [];
+    const telemetry = new Telemetry({
+      exporter: {
+        export: (records) => {
+          batches.push([...records]);
+          return Promise.resolve();
+        },
+      },
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: { maxRecords: 8, maxBatchRecords: 4, maxBytes: 64 * 1024 },
+    });
+
+    // The whole bounded queue fills inside one turn; without any interval
+    // tick or manual flush the pump must run export cycles back to back
+    // until the backlog is gone, and the promise-based exporter must yield
+    // the same accounting the benchmark gate validates.
+    for (let index = 0; index < 8; index++) {
+      telemetry.recordMetric({ name: `runtime.sample_${index}`, value: index, unit: "gauge" });
+    }
+    for (let settle = 0; settle < 4; settle++) await settleAsyncWork();
+
+    expect(batches.map((batch) => batch.length)).toEqual([4, 4]);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      dropped: { overflow: 0, exporter: 0 },
+      exporter: { attempts: 2, failures: 0, exportedRecords: 8, inFlight: false },
+    });
+    telemetry.stop();
+  });
+
+  test("echoes only local-flagged metrics through the local sink", async () => {
+    const scheduler = new ManualScheduler();
+    const localLines: string[] = [];
+    const telemetry = new Telemetry({
+      scheduler,
+      now: () => 0,
+      localSink: (line) => {
+        localLines.push(line);
+      },
+    });
+
+    telemetry.recordMetric({ name: "runtime.sample", value: 1, unit: "gauge" });
+    expect(telemetry.snapshot().localSink.pendingRecords).toBe(0);
+
+    telemetry.recordMetric({
+      name: "delivery.failures_coalesced",
+      value: 7,
+      unit: "count",
+      labels: { operation: "subscription", stage: "delivery", outcome: "unavailable", resource: "outbound" },
+      local: true,
+    });
+    await deliverNextLocalLine(scheduler);
+    expect(localLines).toHaveLength(1);
+    expect(JSON.parse(localLines[0]!)).toMatchObject({
+      kind: "metric",
+      name: "delivery.failures_coalesced",
+      value: 7,
+      labels: { operation: "subscription", stage: "delivery" },
+    });
+    telemetry.stop();
+  });
+
+  test("bounds one trace's staged tail to a single export batch", () => {
+    const scheduler = new ManualScheduler();
+    const telemetry = new Telemetry({
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: { maxBatchRecords: 2, slowOperationMs: 100 },
+    });
+
+    // A high-fanout operation stages one span per delivery; promotion dumps
+    // that tail synchronously, so a single trace must never stage more than
+    // the export path moves in one batch.
+    expect(telemetry.beginTrace({ traceId: "trace_fanout" })).toBe(true);
+    for (let index = 0; index < 5; index++) {
+      expect(telemetry.recordSpan({
+        context: { traceId: "trace_fanout", spanId: `span_delivery_${index}` },
+        operation: "subscription",
+        stage: "delivery",
+        outcome: "ok",
+        durationMs: 1,
+      })).toBe(true);
+    }
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      stagedRecords: 2,
+      dropped: { stagedOverflow: 3 },
+    });
+
+    // Turning slow promotes only the bounded tail plus the triggering span.
+    expect(telemetry.recordSpan({
+      context: { traceId: "trace_fanout", spanId: "span_slow_handler" },
+      operation: "subscription",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 150,
+    })).toBe(true);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 3,
+      traceRetention: { stagedRecords: 0, promotedTraces: 1 },
+    });
+    telemetry.stop();
+  });
+
+  test("suspends the pressure pump after a failed export until the exporter recovers", async () => {
+    const scheduler = new ManualScheduler();
+    let fail = true;
+    let calls = 0;
+    const telemetry = new Telemetry({
+      exporter: {
+        export: () => {
+          calls++;
+          if (fail) throw new Error("exporter failure");
+        },
+      },
+      scheduler,
+      localSink: false,
+      now: () => 0,
+      limits: { maxRecords: 8, maxBatchRecords: 1, maxBytes: 64 * 1024 },
+    });
+
+    telemetry.recordMetric({ name: "runtime.sample_0", value: 0, unit: "gauge" });
+    await settleAsyncWork();
+    const afterFailure = calls;
+    expect(afterFailure).toBe(1);
+
+    // A degraded exporter must fall back to interval pacing instead of the
+    // pump hammering it once per retained record (each failure also retains
+    // an exporter_degraded event, which must not re-trigger the pump).
+    telemetry.recordMetric({ name: "runtime.sample_1", value: 1, unit: "gauge" });
+    await settleAsyncWork();
+    expect(calls).toBe(afterFailure);
+
+    // The next interval flush retries; success re-enables pressure exports.
+    fail = false;
+    await telemetry.flush();
+    telemetry.recordMetric({ name: "runtime.sample_2", value: 2, unit: "gauge" });
+    for (let settle = 0; settle < 4; settle++) await settleAsyncWork();
+    expect(telemetry.snapshot()).toMatchObject({ queuedRecords: 0 });
+    telemetry.stop();
+  });
+
   test("exports changed cumulative aggregates even when fast success retains no record", async () => {
     const scheduler = new ManualScheduler();
     const { batches, aggregates, exporter } = exporterBatches();

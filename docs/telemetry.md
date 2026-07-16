@@ -54,7 +54,8 @@ fast successful operation spans update aggregates immediately, but their
 individual diagnostic records are printed or exported only if their tracked
 trace is later promoted. Changed cumulative aggregates remain externally
 visible through protected status and configured exporters. Metrics are
-retained/exportable but not printed.
+retained/exportable but not printed, except the rare diagnostic summaries
+recorded with `local: true` (currently `delivery.failures_coalesced`).
 `localSink: false` suppresses local lines. No remote exporter is installed by
 the CLI, so production export requires a programmatic `TelemetryExporter`
 whose `export(records)` method may target the backend of the operator's choice.
@@ -117,12 +118,14 @@ Events and metrics enter ordinary retention independently of the trace
 threshold, and metrics additionally use the cardinality bound.
 
 Active and completed trace states together are capped at `maxRecords`; staged
-spans are separately capped at `maxRecords` and `maxBytes`. A new trace first
-evicts an older completed decision under capacity pressure; `activeOverflow`
-is recorded only when no completed slot can be reclaimed. Staging pressure
-likewise prefers releasing an older completed trace's staged diagnostics before
-dropping the new staged span. Completed decisions also expire after
-`retentionMs`.
+spans are separately capped at `maxRecords` and `maxBytes`, and one trace may
+stage at most `maxBatchRecords` spans so a single promoted high-fanout
+operation dumps at most one export batch into the bounded retained queue
+instead of evicting every other retained record. A new trace first evicts an
+older completed decision under capacity pressure; `activeOverflow` is recorded
+only when no completed slot can be reclaimed. Staging pressure likewise prefers
+releasing an older completed trace's staged diagnostics before dropping the new
+staged span. Completed decisions also expire after `retentionMs`.
 
 `Telemetry.snapshot().traceRetention` exposes the effective trace/staging
 limits, current active/completed/staged counts and bytes, promotion and discard
@@ -391,6 +394,20 @@ before its microtask drain. Overflow is summarized by the exact
 `delivery.observations_dropped` metric (labeled as `subscription`/`outbound` or
 `sse`/`sse`) on the next retained observation. Delivery never awaits the
 observer, and observer throws or rejected promises do not affect delivery.
+
+Failed delivery observations (a non-ok observation outcome, or a terminal
+encoding observation carrying a failed `terminalOutcome`) are additionally
+volume-bounded before they become individual records: per operation, stage,
+outcome, and resource, at most 8 observations per sampler interval are retained
+as exemplar spans and terminal failure events. A mass disconnect or
+fanout-failure storm beyond that budget is counted into the exact
+`delivery.failures_coalesced` metric (labeled with the operation, stage,
+outcome, and resource) flushed on the next sampler tick, at runtime drain, or
+immediately once a single summary reaches 4,096 observations. Coalesced
+observations therefore appear in that count rather than as individual spans,
+events, or aggregate rows, and unlike other metrics the summary is also
+delivered through the local sink so the magnitude stays visible on the default
+console-only profile.
 
 ### Periodic runtime metrics
 

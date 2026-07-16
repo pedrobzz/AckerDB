@@ -148,6 +148,19 @@ export interface RuntimeHooks {
 }
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
+/** Individually retained non-ok delivery observations per summary key per sampler interval. */
+const DELIVERY_FAILURE_EXEMPLARS_PER_INTERVAL = 8;
+/** Early flush bound so an unsampled storm cannot defer its summary indefinitely. */
+const DELIVERY_FAILURE_SUMMARY_FLUSH_THRESHOLD = 4_096;
+
+interface DeliveryFailureSummary {
+  readonly operation: TelemetryOperation;
+  readonly stage: TelemetryStage;
+  readonly outcome: TelemetryOutcome;
+  readonly resource: TelemetryResource;
+  exemplars: number;
+  summarized: number;
+}
 
 export interface RuntimeOptions {
   readonly engine: Engine;
@@ -433,29 +446,71 @@ export class Runtime implements RuntimePort {
     const fallbackOperation: TelemetryOperation = observation.transport === "sse"
       ? "sse"
       : "subscription";
+    const resource: TelemetryResource = observation.transport === "sse" ? "sse" : "outbound";
     if (observation.droppedObservations !== undefined) {
       this.telemetry.recordMetric({
         name: "delivery.observations_dropped",
         value: observation.droppedObservations,
         unit: "count",
-        labels: {
-          operation: fallbackOperation,
-          resource: observation.transport === "sse" ? "sse" : "outbound",
-        },
+        labels: { operation: fallbackOperation, resource },
       });
     }
-    this.traceSpan({
-      stage: observation.stage,
-      outcome,
-      resource: observation.transport === "sse" ? "sse" : "outbound",
-      durationMs: observation.durationMs,
-      sizeBytes: observation.bytes,
-    }, fallbackOperation);
-    if (
-      observation.source === "terminal" &&
+    // Mass disconnect and fanout backpressure can fail thousands of queued
+    // frames inside one event-loop turn. Per-frame failure records at that
+    // rate carry no more signal than a count and can outrun any bounded
+    // asynchronous exporter, so beyond a per-interval exemplar budget the
+    // remainder is summarized into delivery.failures_coalesced instead of
+    // being individually retained. A successfully encoded terminal error
+    // frame reports outcome "ok" while carrying the actual failure in
+    // terminalOutcome, so that shape budgets by the terminal outcome.
+    const terminalFailure = observation.source === "terminal" &&
       observation.stage === "encoding" &&
-      observation.terminalOutcome !== undefined
-    ) {
+      observation.terminalOutcome !== undefined;
+    const failureOutcome: TelemetryOutcome | undefined = outcome !== "ok"
+      ? outcome
+      : terminalFailure
+        ? observation.terminalOutcome
+        : undefined;
+    let summarizedFailure = false;
+    if (failureOutcome !== undefined && this.telemetry.enabled) {
+      const operation = this.trace.getStore()?.operation ?? fallbackOperation;
+      const key = `${operation}|${observation.stage}|${failureOutcome}|${resource}`;
+      let summary = this.deliveryFailureSummaries.get(key);
+      if (summary === undefined) {
+        summary = {
+          operation,
+          stage: observation.stage,
+          outcome: failureOutcome,
+          resource,
+          exemplars: 0,
+          summarized: 0,
+        };
+        this.deliveryFailureSummaries.set(key, summary);
+      }
+      if (summary.exemplars >= DELIVERY_FAILURE_EXEMPLARS_PER_INTERVAL) {
+        summarizedFailure = true;
+        summary.summarized++;
+        if (summary.summarized >= DELIVERY_FAILURE_SUMMARY_FLUSH_THRESHOLD) {
+          this.flushDeliveryFailureSummary(summary);
+        }
+      } else {
+        summary.exemplars++;
+      }
+    }
+    // A summarized observation emits no span at all: even its ok-outcome
+    // encoding span would be individually retained under slowOperationMs 0
+    // or once an exemplar failure event has promoted the ambient trace,
+    // which would reopen the storm this budget exists to bound.
+    if (!summarizedFailure) {
+      this.traceSpan({
+        stage: observation.stage,
+        outcome,
+        resource,
+        durationMs: observation.durationMs,
+        sizeBytes: observation.bytes,
+      }, fallbackOperation);
+    }
+    if (terminalFailure && !summarizedFailure) {
       const scope = this.trace.getStore();
       this.telemetry.recordEvent({
         name: "failure",
@@ -463,7 +518,7 @@ export class Runtime implements RuntimePort {
         operation: scope?.operation ?? fallbackOperation,
         stage: "delivery",
         outcome: observation.terminalOutcome,
-        resource: observation.transport === "sse" ? "sse" : "outbound",
+        resource,
         context: this.observationContext(),
       });
     }
@@ -480,6 +535,7 @@ export class Runtime implements RuntimePort {
   private readonly sseProducers = new Map<string, BoundedSseProducer>();
   private readonly externalOperations = new Map<string, number>();
   private readonly activeWaiters = new Set<() => void>();
+  private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
   private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
   private readonly ownsTelemetry: boolean;
   private lifecycle: RuntimeLifecycleState = "ready";
@@ -1419,6 +1475,7 @@ export class Runtime implements RuntimePort {
       // A core that outlives the Runtime deadline must not start a detached
       // telemetry tail after drain has already failed.
       if (deadlineReached) return;
+      this.flushDeliveryFailureSummaries();
       this.telemetry.recordEvent({
         name: "lifecycle",
         level: "info",
@@ -2806,6 +2863,36 @@ export class Runtime implements RuntimePort {
       ["runtime.event_loop_drift", eventLoopDrift, "milliseconds"],
     ];
     for (const [name, value, unit] of metrics) this.telemetry.recordMetric({ name, value, unit });
+    this.flushDeliveryFailureSummaries();
+  }
+
+  /** Emit and reset one coalesced non-ok delivery observation summary. */
+  private flushDeliveryFailureSummary(summary: DeliveryFailureSummary): void {
+    if (summary.summarized > 0) {
+      this.telemetry.recordMetric({
+        name: "delivery.failures_coalesced",
+        value: summary.summarized,
+        unit: "count",
+        labels: {
+          operation: summary.operation,
+          stage: summary.stage,
+          outcome: summary.outcome,
+          resource: summary.resource,
+        },
+        // The count must stay observable on the default local-console
+        // profile, where the summarized per-frame records no longer appear.
+        local: true,
+      });
+    }
+    summary.summarized = 0;
+  }
+
+  /** Flush every summary and reset exemplar budgets for the next interval. */
+  private flushDeliveryFailureSummaries(): void {
+    for (const summary of this.deliveryFailureSummaries.values()) {
+      this.flushDeliveryFailureSummary(summary);
+    }
+    this.deliveryFailureSummaries.clear();
   }
 
   private readNow(): number {
