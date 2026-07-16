@@ -1,9 +1,10 @@
-# `@dbzz/client-react` for React, Expo, and AI SDK streaming — issue breakdown
+# Provider-neutral Identity and `@dbzz/client-react` — issue breakdown
 
-- Parent PRD: `PRD: @dbzz/client-react for React, Expo, and AI SDK streaming`
-- Source PRD: `.workflow/react-client-prd/final-report.md`
+- Parent PRD: `PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming`
+- Source PRDs: `.workflow/react-client-prd/final-report.md` and the approved provider-neutral Identity extension published in parent issue #3
 - Parent GitHub issue: [#3](https://github.com/pedrobzz/dbzz/issues/3)
 - Date generated: 2026-07-15
+- Identity extension added: 2026-07-16
 
 | ID | GitHub | Title | Type | Blocked by | User stories |
 | --- | --- | --- | --- | --- | --- |
@@ -20,8 +21,13 @@
 | ISSUE-11 | [#14](https://github.com/pedrobzz/dbzz/issues/14) | Query-safe Expo suspension and immediate recovery | AFK | ISSUE-02, ISSUE-03, ISSUE-08, ISSUE-10 | 49–54, 59–62, 65, 70 |
 | ISSUE-12 | [#15](https://github.com/pedrobzz/dbzz/issues/15) | Foreground mutation and event convergence | AFK | ISSUE-04, ISSUE-07, ISSUE-08, ISSUE-11 | 53, 55–56, 58–61 |
 | ISSUE-13 | [#16](https://github.com/pedrobzz/dbzz/issues/16) | Settle procedures, SSE, and AI streams during suspension | AFK | ISSUE-05, ISSUE-06, ISSUE-09, ISSUE-11 | 57, 61 |
-| ISSUE-14 | [#17](https://github.com/pedrobzz/dbzz/issues/17) | Physical-device lifecycle acceptance and hardening | HITL | ISSUE-11, ISSUE-12, ISSUE-13 | 49, 51–65 |
-| ISSUE-15 | [#18](https://github.com/pedrobzz/dbzz/issues/18) | Publish-ready cross-runtime package | AFK | ISSUE-03 through ISSUE-14 | 1–4, 45–48, 63, 67–70 |
+| ISSUE-14 | [#17](https://github.com/pedrobzz/dbzz/issues/17) | Physical-device lifecycle acceptance and hardening | HITL | ISSUE-11, ISSUE-12, ISSUE-13, ISSUE-18 | 49, 51–65, 90 |
+| ISSUE-15 | [#18](https://github.com/pedrobzz/dbzz/issues/18) | Publish-ready cross-runtime package | AFK | ISSUE-03 through ISSUE-14, ISSUE-16 through ISSUE-20 | 1–4, 45–48, 63, 67–90 |
+| ISSUE-16 | [#21](https://github.com/pedrobzz/dbzz/issues/21) | Durable Identity from first login to row ownership | AFK | None | 71–73, 75–80 |
+| ISSUE-17 | [#22](https://github.com/pedrobzz/dbzz/issues/22) | Exact-account convergence across configured providers | AFK | ISSUE-16 | 74–75, 81–82, 86 |
+| ISSUE-18 | [#23](https://github.com/pedrobzz/dbzz/issues/23) | Identity-aware client and React authentication lifecycle | AFK | ISSUE-08, ISSUE-11, ISSUE-16, ISSUE-17 | 71, 73–74, 79, 90 |
+| ISSUE-19 | [#24](https://github.com/pedrobzz/dbzz/issues/24) | Opt-in cross-provider account linking | AFK | ISSUE-16, ISSUE-17 | 83–88 |
+| ISSUE-20 | [#25](https://github.com/pedrobzz/dbzz/issues/25) | Safe external-account unlinking | AFK | ISSUE-19 | 85, 89 |
 
 ## ISSUE-01: Installable browser provider and connection state
 
@@ -736,6 +742,7 @@ Simulated lifecycle events cannot prove operating-system timer, socket, and proc
 - [ ] A reachable server receives the first attempt in the activation event turn and reaches ready within the handshake deadline and ten-second ceiling.
 - [ ] Server unavailable/restart, airplane mode, Wi-Fi/cellular transitions, Android forced Doze, and App Standby all recover automatically when connectivity/server returns.
 - [ ] Credential expiry, query resume/reset, mutation convergence, event reset, and procedure/SSE/AI settlement match their issue contracts.
+- [ ] Foreground reauthentication may refresh credential provenance but preserves the same durable DBZZ Identity before authenticated work resumes.
 - [ ] Rapid repeated cycles and suspension during handshake, authentication, subscription application, mutation response, SSE acknowledgement, and AI streaming create no parallel sockets, leaks, duplicate effects, or stale delivery.
 - [ ] The test record distinguishes process-alive recovery from expected fresh launch after OS process termination.
 
@@ -744,6 +751,7 @@ Simulated lifecycle events cannot prove operating-system timer, socket, and proc
 - Maintain a repeatable physical-device matrix with device/OS/build mode, duration, transition, expected state sequence, timings, and result.
 - Use custom Expo builds only; do not start a new development server before checking for and reusing an existing one.
 - Fix root causes in lifecycle/generation ownership, not by adding retry delays or masking stale state.
+- Capture durable Identity and credential-provenance transitions alongside connection generations during authentication recovery.
 - Update the reconnect lifecycle wiki when device evidence changes a decision.
 
 ## Blocked by
@@ -751,15 +759,17 @@ Simulated lifecycle events cannot prove operating-system timer, socket, and proc
 - `ISSUE-11`
 - `ISSUE-12`
 - `ISSUE-13`
+- `ISSUE-18`
 
 ## User stories addressed
 
-- User stories 49 and 51–65
+- User stories 49, 51–65, and 90
 
 ### Test plan
 
 - Execute the full PRD physical-device duration, network, server, authentication, operation-boundary, and repeated-cycle matrix in both build modes and both operating systems.
 - Capture connection-state timelines, generation identifiers, server-side mutation counts, event reset boundaries, stream settlement, listener/socket counts, and recovery timing.
+- Assert that credential refresh during foreground recovery does not replace the application Identity.
 - Repeat any flaky or timing-sensitive failure until its deterministic boundary is understood and fixed.
 
 ### Out of scope
@@ -791,8 +801,9 @@ Individual hooks are not a product until real consumers can install the exact ar
 - [ ] Packed clean browser and Expo consumers resolve the correct exports, peers, raw TypeScript/types, and optional `/ai` subpath.
 - [ ] Browser output contains no Expo/React Native code; the Expo fixture uses Expo fetch/crypto and passes Metro resolution.
 - [ ] Root typecheck/test workflows cover all hooks, generated references, runtime conditions, and AI integration.
+- [ ] Packed server/client/React consumers agree on the provider-neutral principal, durable Identity, credential-provenance, and account-linking contracts.
 - [ ] The final full dbzz/Convex/SpacetimeDB benchmark shows no consistent regression, particularly in metrics dbzz already wins.
-- [ ] User-facing documentation covers supported versions, Expo requirement, provider/hooks, query states, SSE/AI usage, mobile recovery guarantees, and explicit out-of-scope behavior.
+- [ ] User-facing documentation covers durable Identity, provider-account linking boundaries, supported versions, Expo requirements, hooks, query states, SSE/AI usage, mobile recovery guarantees, and explicit out-of-scope behavior.
 - [ ] Wiki index/link/lint checks pass and research decisions remain discoverable.
 
 ### Implementation notes
@@ -805,14 +816,16 @@ Individual hooks are not a product until real consumers can install the exact ar
 ## Blocked by
 
 - `ISSUE-03` through `ISSUE-14`
+- `ISSUE-16` through `ISSUE-20`
 
 ## User stories addressed
 
-- User stories 1–4, 45–48, 63, and 67–70
+- User stories 1–4, 45–48, 63, and 67–90
 
 ### Test plan
 
 - Run the complete unit, integration, compile, React Strict Mode, browser fixture, Expo physical-device, and AI SDK suites from a clean checkout.
+- Run the complete first-login, provider-convergence, linking/unlinking, principal, client-authentication, and secret-absence suites.
 - Pack and install exact artifacts into clean consumers, then run browser production build and Expo Metro/release builds.
 - Exercise the local bump, merge-guard, interrupted publish/resume, exact install, and version-drift failure paths.
 - Run the full comparative benchmark, rerun noisy regressions, and compare every headline metric with the baseline.
@@ -820,3 +833,267 @@ Individual hooks are not a product until real consumers can install the exact ar
 ### Out of scope
 
 - npm publication, backward compatibility, new features beyond the parent PRD, and persistence/background services.
+
+## ISSUE-16: Durable Identity from first login to row ownership
+
+### Type
+
+AFK
+
+### Parent PRD
+
+`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+
+## What to build
+
+Deliver the minimum complete provider-neutral Identity path: after a configured external user credential is cryptographically verified, DBZZ transactionally resolves or provisions an immutable internal Identity, constructs a typed user principal containing that Identity, and lets a normal authenticated mutation store and retrieve application rows keyed by it. Workload, system, and anonymous principals remain distinct.
+
+### Why this slice exists
+
+Every provider-neutral and MCP capability depends on a durable application user rather than an issuer-specific subject. Storage without principal construction would be unusable, while principal typing without durable storage would preserve the original problem; this slice proves both together.
+
+## Acceptance criteria
+
+- [ ] A first verified external-user login atomically creates one internal Identity and one exact issuer/subject account link before the application principal is constructed.
+- [ ] The authenticated user principal exposes a typed, non-null DBZZ Identity that can be stored in and compared against application `userId` columns.
+- [ ] Identity and link records use reserved internal storage and are absent from application schema declarations, generated table APIs, and raw client subscriptions.
+- [ ] Identity values are immutable, monotonically allocated, and never reused.
+- [ ] Provider claims remain current credential provenance and are not copied into durable Identity records or treated as application ownership authority.
+- [ ] Concurrent first authentication for the same exact issuer/subject converges on one Identity.
+- [ ] Workload, system, and anonymous principals cannot accidentally acquire or own a user Identity.
+
+### Implementation notes
+
+- Integrate identity records with the Engine's existing internal-schema ownership and transactional writer instead of creating a side database.
+- Resolve Identity inside the shared authentication lifecycle after credential verification, never as a hidden write inside a query handler.
+- Refactor the existing principal contract directly; do not retain a compatibility principal keyed by issuer/subject.
+- Run the full comparative benchmark before and after the structural authentication and internal-schema change.
+
+## Blocked by
+
+None — can start immediately.
+
+## User stories addressed
+
+- User stories 71–73 and 75–80
+
+### Test plan
+
+- Authenticate a new external user, write a row owned by the resulting Identity, reconnect, and read the same row through the same principal.
+- Race concurrent first logins and assert one durable Identity/link pair.
+- Restart the server and prove Identity durability and non-reuse.
+- Compile-check user versus workload/system/anonymous principal narrowing and confirm internal tables are inaccessible through generated client APIs.
+
+### Out of scope
+
+- Multiple-provider convergence, explicit account linking/unlinking, React authentication state, user profiles, and MCP tokens.
+
+## ISSUE-17: Exact-account convergence across configured providers
+
+### Type
+
+AFK
+
+### Parent PRD
+
+`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+
+## What to build
+
+Extend the first-login tracer bullet across the complete exact-account matrix. Repeated and concurrent authentication for one issuer/subject must converge after restart; provider-managed Clerk login methods that emit the same issuer/subject must remain one DBZZ Identity; distinct configured OIDC/JWT issuers and subjects must remain separate unless explicitly linked later.
+
+### Why this slice exists
+
+The first slice proves one credential path. This slice proves the provider-neutral invariant without introducing account-management APIs or provider-specific server packages.
+
+## Acceptance criteria
+
+- [ ] Repeated, refreshed, concurrent, and post-restart authentication for one exact issuer/subject always resolves the original Identity.
+- [ ] Several Clerk-managed login methods producing the same Clerk issuer/subject resolve one DBZZ account link.
+- [ ] Better Auth, Auth0, WorkOS, Keycloak, and custom OIDC/JWT-style fixtures use the same verification-to-Identity contract without provider SDK branches.
+- [ ] The same subject under different issuers and different subjects under one issuer remain distinct.
+- [ ] Matching email, phone, display name, or another mutable claim never causes automatic linking.
+- [ ] Identity allocation remains durable and never reused across all provider fixtures.
+
+### Implementation notes
+
+- Use controlled OIDC/JWKS fixtures to verify issuer, audience, algorithm, token type, expiry, and claims before Identity resolution.
+- Provider neutrality lives at the verified credential boundary; do not model a provider's internal email/social/passkey connection records.
+- Keep explicit cross-provider linking in ISSUE-19.
+
+## Blocked by
+
+- `ISSUE-16`
+
+## User stories addressed
+
+- User stories 74–75, 81–82, and 86
+
+### Test plan
+
+- Exercise the complete issuer/subject collision matrix, concurrent login, refresh, and restart behavior.
+- Verify Clerk-style linked methods and at least one Better Auth/custom JWKS fixture.
+- Present identical unverified email claims from distinct issuers and assert separate Identities.
+
+### Out of scope
+
+- User-directed cross-provider linking, unlinking, provider UI, and React authentication state.
+
+## ISSUE-18: Identity-aware client and React authentication lifecycle
+
+### Type
+
+AFK
+
+### Parent PRD
+
+`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+
+## What to build
+
+Carry the new principal contract through the authentication wire state, base client, and `useAuthentication` so authenticated state exposes durable Identity separately from current credential provenance. Refresh, reconnect, sign-out, and Expo foreground authentication must preserve or clear those fields coherently without changing the existing connection-lifecycle guarantees.
+
+### Why this slice exists
+
+Server Identity is not a complete application feature until clients can use it without reading provider identifiers. This slice is separately demoable through the existing browser and Expo authentication flows and can proceed in parallel with optional account linking.
+
+## Acceptance criteria
+
+- [ ] Authenticated client and React states expose a typed, non-null Identity and discriminated current credential provenance as separate fields.
+- [ ] Credential refresh and reconnect may replace provenance while preserving the same Identity.
+- [ ] Expo foreground reauthentication preserves Identity before restoring authenticated work.
+- [ ] Sign-out clears both Identity and credential provenance coherently in authentication and connection state.
+- [ ] No raw provider token, MCP token, or secret appears in client state.
+- [ ] Existing Strict Mode, authentication-blocked, reconnect, and foreground-recovery behavior remains intact.
+- [ ] Compile-time fixtures distinguish external-user Identity from workload, system, and anonymous states.
+
+### Implementation notes
+
+- Extend the existing authentication observable rather than introducing a second identity store.
+- Update only tests and types genuinely invalidated by the approved principal refactor; preserve existing React, SSE, Expo, and AI transport guarantees.
+- Existing physical-device ISSUE-14 must depend on this slice.
+
+## Blocked by
+
+- `ISSUE-08`
+- `ISSUE-11`
+- `ISSUE-16`
+- `ISSUE-17`
+
+## User stories addressed
+
+- User stories 71, 73–74, 79, and 90
+
+### Test plan
+
+- Render `useAuthentication` through initial login, credential refresh, reconnect, sign-out, and foreground recovery while asserting Identity/provenance transitions.
+- Refresh with a new credential for the same exact account and assert stable Identity.
+- Compile-check exhaustive state narrowing and absence of secrets.
+
+### Out of scope
+
+- Account linking/unlinking UI or operations, durable disk sessions, MCP token management, and changes to query ownership semantics beyond the principal type.
+
+## ISSUE-19: Opt-in cross-provider account linking
+
+### Type
+
+AFK
+
+### Parent PRD
+
+`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+
+## What to build
+
+Provide an opt-in server primitive that lets an already authenticated external user prove a second configured-provider credential and atomically attach its exact issuer/subject account to the current Identity. A sample application mutation must demonstrate that either credential subsequently reaches the same owned data.
+
+### Why this slice exists
+
+Cross-provider continuity is valuable but security-sensitive and optional. Keeping it after exact-account resolution produces a narrow, reviewable capability without blocking ordinary authentication or client Identity work.
+
+## Acceptance criteria
+
+- [ ] Linking requires a current authenticated external user and successful verification of the second configured-provider credential.
+- [ ] The new exact issuer/subject is attached atomically to the current Identity.
+- [ ] Authenticating with either linked account reaches the same application-owned rows.
+- [ ] Email, phone, display name, or another claim cannot substitute for proof of the second credential.
+- [ ] Linking fails without mutation/transaction authority or when the account is already owned by another Identity.
+- [ ] DBZZ never performs a generic merge or rewrites application-owned rows after a conflict.
+- [ ] Applications choose whether and through which mutation to expose linking.
+
+### Implementation notes
+
+- Reuse the configured credential-verifier registry and one transactional identity-directory operation.
+- Treat cross-Identity migration as explicit application logic outside this primitive.
+- Do not expose a provider-specific client or UI flow.
+
+## Blocked by
+
+- `ISSUE-16`
+- `ISSUE-17`
+
+## User stories addressed
+
+- User stories 83–88
+
+### Test plan
+
+- Link accounts from two controlled issuers and authenticate through both to the same row ownership.
+- Reject unauthenticated linking, invalid credentials, claim-only matches, and an account already owned by another Identity.
+- Roll back a forced transactional failure and assert no partial link.
+
+### Out of scope
+
+- Generic Identity merging, application-row migration, unlinking, provider UI, and automatic linking.
+
+## ISSUE-20: Safe external-account unlinking
+
+### Type
+
+AFK
+
+### Parent PRD
+
+`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+
+## What to build
+
+Add the destructive inverse of linking as an opt-in server primitive. An authenticated application mutation can remove a secondary external account link, but cannot remove the final valid account or delete/reassign the durable Identity.
+
+### Why this slice exists
+
+Unlinking has a distinct lockout and revocation risk. Isolating it produces a small, independently reviewable operation instead of complicating the successful linking path.
+
+## Acceptance criteria
+
+- [ ] An authenticated owner can unlink one secondary exact issuer/subject account through an application-exposed mutation.
+- [ ] The final remaining external account cannot be unlinked.
+- [ ] The removed credential no longer resolves to the previous Identity for new authentication.
+- [ ] The durable Identity and application-owned rows remain unchanged.
+- [ ] Unlinking another Identity's account and unauthenticated unlinking fail without revealing account existence.
+- [ ] Application-specific deletion and erasure policy is not inferred from unlinking.
+
+### Implementation notes
+
+- Perform ownership, last-link, and delete checks in one transaction.
+- Publish any authentication invalidation only after commit.
+- Keep full Identity deletion and application data erasure out of the framework primitive.
+
+## Blocked by
+
+- `ISSUE-19`
+
+## User stories addressed
+
+- User stories 85 and 89
+
+### Test plan
+
+- Link two accounts, unlink one, and prove the retained account still owns the same data while the removed account no longer resolves to it.
+- Reject last-link removal, cross-owner removal, and rollback failures.
+- Restart after unlinking and verify durable results.
+
+### Out of scope
+
+- Identity deletion, account recovery, provider-side credential deletion, application-data erasure, and generic merges.
