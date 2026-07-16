@@ -28,8 +28,8 @@ const DbzzContext = createContext<DbzzContextValue | null>(null);
 
 // Value identity for the immutable configuration surface: equal values continue
 // the current lifetime, different values close the old client and start a new
-// one. Injected capabilities (clock, random, createWebSocket, fetch) are
-// captured when a lifetime starts and do not participate in identity.
+// one. Injected capabilities (clock, random, createWebSocket, fetch, lifecycle)
+// are captured when a lifetime starts and do not participate in identity.
 function lifetimeKey(config: DbzzProviderConfig): string {
   const limits = config.limits;
   const reconnect = config.reconnect;
