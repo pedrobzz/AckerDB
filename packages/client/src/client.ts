@@ -1000,16 +1000,25 @@ export class DbzzClient {
       responseBody = response.body ?? undefined;
       if (cleanupStarted) {
         cancelOwnedResponse();
-        throw localError("unavailable", "SSE response was canceled", "sse");
+        throw cancellationError;
       }
       if (!response.ok) {
         responseBody = undefined;
-        const text = await this.readBoundedResponse(
-          response,
-          this.limits.maxFrameBytes,
-          fetchControl.controller.signal,
-          "sse",
-        );
+        let text: string;
+        try {
+          text = await this.readBoundedResponse(
+            response,
+            this.limits.maxFrameBytes,
+            fetchControl.controller.signal,
+            "sse",
+          );
+        } catch (error) {
+          // A failure that follows the request's abort settles with the
+          // stream's one cancellation outcome (suspension-marked when the
+          // lifecycle owned the abort), like every other post-abort path.
+          if (cleanupStarted || fetchControl.controller.signal.aborted) throw cancellationError;
+          throw error;
+        }
         let parsed: ServerMessage;
         try {
           parsed = parseServerMessage(decode(text));

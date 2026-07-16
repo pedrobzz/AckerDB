@@ -470,6 +470,69 @@ describe("suspension settlement through the native entry against a real server",
     expect(chat!.status).toBe("ready");
   });
 
+  test("backgrounding while the server's error body is still streaming settles as abort", async () => {
+    // The stream request was rejected (503) but its error body is still
+    // arriving when the app backgrounds: the AI SDK must settle the
+    // generation as cancellation, never as an error it reports to the user.
+    let rejectedBodyDispatched = false;
+    const scriptedFetch: DbzzFetch = (url, init) => {
+      if (new URL(url).pathname === "/api/sse") {
+        rejectedBodyDispatched = true;
+        return Promise.resolve(
+          new Response(new ReadableStream<Uint8Array>({ start: () => {} }), { status: 503 }),
+        );
+      }
+      return fetch(url, init);
+    };
+    let phase = "";
+    let chat: ReturnType<typeof useChat<UIMessage>> | undefined;
+    const errors: Error[] = [];
+    const finishes: Settled[] = [];
+
+    function Probe(): ReactNode {
+      phase = useConnectionState().phase;
+      const transport = useChatTransport({ $ref: "ai.holdBeforeFirst" } as StandardRef);
+      chat = useChat<UIMessage>({
+        id: "native-error-body",
+        transport,
+        onError: (error) => errors.push(error),
+        onFinish: ({ isAbort, isError, isDisconnect }) =>
+          finishes.push({ isAbort, isError, isDisconnect }),
+      });
+      return null;
+    }
+
+    const root = createRoot(mountPoint());
+    roots.push(root);
+    root.render(
+      <DbzzProvider
+        config={{
+          url: app.base,
+          credential: { kind: "anonymous" },
+          createWebSocket: (url: string) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+          fetch: scriptedFetch,
+        }}
+      >
+        <Probe />
+      </DbzzProvider>,
+    );
+    await until(() => phase === "ready", "the provider to reach ready");
+
+    void chat!.sendMessage({ text: "rejected slowly" });
+    await until(() => rejectedBodyDispatched, "the rejected stream request");
+    await Bun.sleep(10);
+
+    setAppState("background");
+    await until(() => finishes.length === 1, "the generation to settle");
+    expect(finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
+    expect(errors).toEqual([]);
+    expect(chat!.error).toBeUndefined();
+
+    setAppState("active");
+    await until(() => phase === "ready", "foreground recovery");
+    expect(chat!.status).toBe("ready");
+  });
+
   test("backgrounding during a pending pull settles the generic stream once with the marked outcome", async () => {
     const log: string[] = [];
     let phase = "";

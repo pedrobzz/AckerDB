@@ -687,6 +687,29 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     client.close();
   });
 
+  test("during a non-OK response body read: the marked outcome, not a plain read cancellation", async () => {
+    // The server rejected the stream (503) but its error body is still
+    // arriving when the app backgrounds: settlement must carry the
+    // suspension marker exactly like every other boundary.
+    const errorBody = openBody({ status: 503 });
+    const { client, port } = harness({ sse: () => errorBody.response });
+
+    const iterator = client.sse("stream.hold", {})[Symbol.asyncIterator]();
+    const first = iterator.next().catch((error) => error);
+    await Bun.sleep(0);
+
+    port.suspend();
+    expectSuspensionOutcome(await first, {
+      code: "unavailable",
+      message: "SSE stream was interrupted by suspension",
+      resource: "sse",
+    });
+    await Bun.sleep(0);
+    expect(errorBody.cancels).toHaveLength(1);
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    client.close();
+  });
+
   test("a source failure landing after suspension cannot produce a second outcome", async () => {
     const scripted = openSse();
     const { client, port } = harness({ sse: () => scripted.response });
