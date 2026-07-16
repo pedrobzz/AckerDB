@@ -421,6 +421,55 @@ describe("suspension settlement through the native entry against a real server",
     expect(log.filter((entry) => entry === "sse")).toEqual(["sse"]);
   });
 
+  test("a chat message sent while suspended settles as abort without dispatching any request", async () => {
+    const log: string[] = [];
+    let phase = "";
+    let chat: ReturnType<typeof useChat<UIMessage>> | undefined;
+    const errors: Error[] = [];
+    const finishes: Settled[] = [];
+
+    function Probe(): ReactNode {
+      phase = useConnectionState().phase;
+      const transport = useChatTransport({ $ref: "ai.holdBeforeFirst" } as StandardRef);
+      chat = useChat<UIMessage>({
+        id: "native-send-suspended",
+        transport,
+        onError: (error) => errors.push(error),
+        onFinish: ({ isAbort, isError, isDisconnect }) =>
+          finishes.push({ isAbort, isError, isDisconnect }),
+      });
+      return null;
+    }
+
+    const root = createRoot(mountPoint());
+    roots.push(root);
+    root.render(
+      <DbzzProvider config={providerConfig(log)}>
+        <Probe />
+      </DbzzProvider>,
+    );
+    await until(() => phase === "ready", "the provider to reach ready");
+
+    setAppState("background");
+    await until(() => phase === "suspended", "the suspended phase");
+
+    // The suspended client refuses the non-resumable generation promptly and
+    // determinately; the AI SDK settles it as cancellation, never an error.
+    void chat!.sendMessage({ text: "sent from the background" });
+    await until(() => finishes.length === 1, "the refused generation to settle");
+    expect(finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
+    expect(errors).toEqual([]);
+    expect(chat!.error).toBeUndefined();
+    expect(log).toEqual([]);
+
+    // Activation restarts nothing: the send was settled, not queued.
+    setAppState("active");
+    await until(() => phase === "ready", "foreground recovery");
+    await Bun.sleep(20);
+    expect(log).toEqual([]);
+    expect(chat!.status).toBe("ready");
+  });
+
   test("backgrounding during a pending pull settles the generic stream once with the marked outcome", async () => {
     const log: string[] = [];
     let phase = "";

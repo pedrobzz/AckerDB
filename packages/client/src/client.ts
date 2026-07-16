@@ -881,6 +881,15 @@ export class DbzzClient {
    * Acknowledged SSE stream: `Chunk` is the ref's server-validated yield
    * type. Chunk N's receiver credit is sent when the consumer requests chunk
    * N+1, so iteration pace is the backpressure signal end to end.
+   *
+   * The stream is lazy: calling this creates a description of work, and the
+   * work itself — reservation, fetch, everything — starts at the first pull.
+   * Suspension ownership keys on that same moment, mirroring procedure()'s
+   * call-time check: a first pull while suspended settles with the marked
+   * suspension refusal, while a stream whose first pull happens while active
+   * is fresh demand-driven foreground work regardless of when the generator
+   * object was created — a never-pulled stream holds no state, hangs no one,
+   * and has nothing for activation to restart.
    */
   async *sse<A, Chunk = unknown>(
     ref: SseRef<A, Chunk> | string,

@@ -381,6 +381,49 @@ describe("non-resumable work started while suspended", () => {
     client.close();
   });
 
+  test("suspension ownership keys on the first pull: a stream created while suspended but first pulled while active is fresh foreground work", async () => {
+    // The lazy-stream twin of the refusal contract, pinned deliberately: the
+    // generator object is a description of work, and the work itself starts
+    // at the first pull — exactly procedure()'s call-time rule. A stream
+    // never pulled during the gap holds no state, hangs no caller, and has
+    // nothing for activation to restart, so its first pull while active is
+    // ordinary demand-driven work, never a phantom suspension outcome.
+    const scripted = openSse();
+    const { client, port, journal } = harness({ sse: () => scripted.response });
+
+    port.suspend();
+    const createdSuspended = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    // Nothing dispatched, nothing reserved, nothing pending: no work exists.
+    expect(journal.dispatches).toEqual([]);
+    port.resume();
+
+    scripted.chunk(1, { tick: 0 });
+    expect(await createdSuspended.next()).toEqual({ done: false, value: { tick: 0 } });
+    expect(journal.dispatches).toEqual([{ path: "/api/sse", id: expect.any(Number) }]);
+    await createdSuspended.return(undefined);
+    client.close();
+  });
+
+  test("a stream that crosses a suspension unpulled starts fresh after activation", async () => {
+    const scripted = openSse();
+    const { client, port, journal } = harness({ sse: () => scripted.response });
+
+    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    port.suspend();
+    expect(journal.dispatches).toEqual([]);
+    port.resume();
+
+    scripted.chunk(1, { tick: 0 });
+    expect(await iterator.next()).toEqual({ done: false, value: { tick: 0 } });
+    expect(journal.dispatches).toHaveLength(1);
+    await iterator.return(undefined);
+    client.close();
+  });
+
   test("a caller's pre-aborted signal outranks the suspension refusal", async () => {
     const { client, port } = harness({});
     port.suspend();
