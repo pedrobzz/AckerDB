@@ -90,6 +90,48 @@ function standardChatArgs<UI_MESSAGE extends UIMessage>(
   };
 }
 
+/**
+ * Re-reports cancellation the AI SDK cannot see. An aborted dbzz request
+ * fails its stream with the client's typed cancellation, but the SDK
+ * classifies stream failures as errors (status "error", `onError`,
+ * `onFinish({ isError: true })`) unless its own per-request signal fired or
+ * the failure is named `AbortError` — and the hook's unmount lifetime is
+ * invisible to both. This pull-through keeps dbzz's semantics exact — lazy
+ * start on the first pull, one chunk per pull, cancel propagation, and the
+ * identical error object for real failures — and only failures that follow
+ * the request's own abort surface as `AbortError`, which the SDK settles as
+ * cancellation (`isAbort: true`, no error callbacks).
+ */
+function abortAwareStream<Chunk>(
+  stream: ReadableStream<Chunk>,
+  aborted: AbortSignal,
+): ReadableStream<Chunk> {
+  let reader: ReadableStreamDefaultReader<Chunk> | undefined;
+  return new ReadableStream<Chunk>(
+    {
+      pull: async (controller) => {
+        reader ??= stream.getReader();
+        let part: Awaited<ReturnType<(typeof reader)["read"]>>;
+        try {
+          part = await reader.read();
+        } catch (error) {
+          if (!aborted.aborted) throw error;
+          // Cancellation owns the outcome; `Error` (not DOMException) keeps
+          // the transport free of DOM globals, and the SDK only reads the
+          // name.
+          const cancellation = new Error("the chat request was aborted");
+          cancellation.name = "AbortError";
+          throw cancellation;
+        }
+        if (part.done) controller.close();
+        else controller.enqueue(part.value);
+      },
+      cancel: (reason) => (reader === undefined ? stream.cancel(reason) : reader.cancel(reason)),
+    },
+    { highWaterMark: 0 },
+  );
+}
+
 // Per-hook-instance mutable state shared between renders and the stable
 // transport. The transport reads the latest committed callable and mapper
 // through it, so its identity never changes across renders, client arrival,
@@ -160,7 +202,7 @@ function createCell<A, UI_MESSAGE extends UIMessage>(
         // SDK's first read. Chunks are the server-validated values
         // themselves; no second SSE encoding exists on this path.
         return Promise.resolve<ReadableStream<UIMessageChunk>>(
-          cell.call(args, { signal: owned.signal }),
+          abortAwareStream(cell.call(args, { signal: owned.signal }), owned.signal),
         );
       },
       // dbzz SSE procedures are non-resumable by contract: report "no active

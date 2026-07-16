@@ -307,11 +307,19 @@ function standardRef(address: string): StandardRef {
 
 type Chat = ReturnType<typeof useChat<UIMessage>>;
 
+/** How the AI SDK settled one request, as reported through onFinish. */
+interface Settled {
+  readonly isAbort: boolean;
+  readonly isError: boolean;
+  readonly isDisconnect: boolean;
+}
+
 interface Mounted {
   readonly chat: Chat;
   readonly transports: ChatTransport<UIMessage>[];
   readonly errors: Error[];
   readonly dataParts: unknown[];
+  readonly finishes: Settled[];
   rerender(): void;
   unmount(): void;
 }
@@ -326,6 +334,7 @@ async function mountChat(base: string, options: MountOptions): Promise<Mounted> 
   const transports: ChatTransport<UIMessage>[] = [];
   const errors: Error[] = [];
   const dataParts: unknown[] = [];
+  const finishes: Settled[] = [];
   let chat: Chat | undefined;
   let phase = "";
   let bump: () => void = () => {};
@@ -339,6 +348,8 @@ async function mountChat(base: string, options: MountOptions): Promise<Mounted> 
       transport,
       onError: (error) => errors.push(error),
       onData: (part) => dataParts.push(part),
+      onFinish: ({ isAbort, isError, isDisconnect }) =>
+        finishes.push({ isAbort, isError, isDisconnect }),
     });
     const [, setTick] = useState(0);
     bump = () => setTick((tick) => tick + 1);
@@ -368,6 +379,7 @@ async function mountChat(base: string, options: MountOptions): Promise<Mounted> 
     transports,
     errors,
     dataParts,
+    finishes,
     rerender: () => bump(),
     unmount: () => root.unmount(),
   };
@@ -551,6 +563,8 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     // Stopping is not an error: the AI SDK settles the request as aborted.
     expect(mounted.chat.error).toBeUndefined();
     expect(mounted.errors).toEqual([]);
+    await until(() => mounted.finishes.length === 1, "the aborted request to report finish");
+    expect(mounted.finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
   });
 
   test("stop mid-stream cancels the dbzz stream and keeps the streamed tokens", async () => {
@@ -577,6 +591,9 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
       text: "partial",
       state: "streaming",
     });
+    await until(() => mounted.finishes.length === 1, "the aborted request to report finish");
+    expect(mounted.finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
+    expect(mounted.errors).toEqual([]);
   });
 
   test("a malformed chunk surfaces the exact dbzz validation error", async () => {
@@ -656,6 +673,8 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     };
     let phase = "";
     let chat: Chat | undefined;
+    const errors: Error[] = [];
+    const finishes: Settled[] = [];
 
     function Phase(): ReactNode {
       phase = useConnectionState().phase;
@@ -663,7 +682,13 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     }
     function ChatProbe(): ReactNode {
       const transport = useChatTransport(standardRef("ai.holdMidStream"));
-      chat = useChat<UIMessage>({ id: "chat-orphan", transport });
+      chat = useChat<UIMessage>({
+        id: "chat-orphan",
+        transport,
+        onError: (error) => errors.push(error),
+        onFinish: ({ isAbort, isError, isDisconnect }) =>
+          finishes.push({ isAbort, isError, isDisconnect }),
+      });
       return null;
     }
     function Harness({ showChat }: { showChat: boolean }): ReactNode {
@@ -692,6 +717,11 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
       await midStreamHoldReleased.promise;
       await until(() => app.runtime.status().activeSse === 0, "the server stream to settle");
       expect(phase).toBe("ready");
+      // The unmount settles as cancellation, not as a failure: no error
+      // callback, no false error telemetry from a user navigating away.
+      await until(() => finishes.length === 1, "the aborted request to report finish");
+      expect(finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
+      expect(errors).toEqual([]);
     } finally {
       root.unmount();
     }
