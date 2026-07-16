@@ -101,9 +101,10 @@ The remaining single-node and product limitations are listed explicitly in
 
 All `.zdb.config.json` fields are optional. The path defaults are
 `./schema.ts`, `./functions`, `./_generated`, and `./.zdb`; the default port is
-`3211`. External identity providers and the protected status scope are also
-configured there. Durability and telemetry profiles are exact environment
-switches:
+`3211`. Authentication can select either built-in `oidc` providers or one
+application `credentialVerifier` module path (resolved from the app directory),
+never both. The protected status scope is configured there too. Durability and
+telemetry profiles are exact environment switches:
 
 ```sh
 DBZZ_DURABILITY=production DBZZ_TELEMETRY=enabled dbz start ./apps/server

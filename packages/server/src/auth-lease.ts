@@ -108,6 +108,28 @@ export function validateCredentialVerifierRevocation(
   }
 }
 
+/** Validate an untrusted application verifier before any Runtime owns it. */
+export function assertCredentialVerifier(
+  value: unknown,
+  revocationDeadlineMs: number,
+  label = "credential verifier",
+): asserts value is CredentialVerifier {
+  if (typeof value !== "object" || value === null) {
+    throw new TypeError(`${label} must be a CredentialVerifier object`);
+  }
+  const verifier = value as Partial<CredentialVerifier>;
+  if (typeof verifier.verify !== "function") {
+    throw new TypeError(`${label} must implement verify(credential)`);
+  }
+  if (typeof verifier.subscribeInvalidation !== "function") {
+    throw new TypeError(`${label} must implement subscribeInvalidation(listener)`);
+  }
+  if (typeof verifier.revocationBound !== "object" || verifier.revocationBound === null) {
+    throw new TypeError(`${label} must declare revocationBound`);
+  }
+  validateCredentialVerifierRevocation(verifier as CredentialVerifier, revocationDeadlineMs);
+}
+
 /** Owns credential validity for exactly one HTTP operation or SSE stream. */
 export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promise<AuthLease> {
   const callerSignal = options.signal;

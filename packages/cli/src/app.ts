@@ -11,7 +11,9 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
+  assertCredentialVerifier,
   createOidcVerifier,
+  type CredentialVerifier,
   type EngineCloseDisposition,
   reconcile,
   Schema,
@@ -77,6 +79,60 @@ export interface RunningApp {
 
 export type StartupPreparation = (config: AppConfig) => Promise<unknown>;
 
+export interface StartAppOptions {
+  /** Work that must finish before application modules are loaded, normally codegen. */
+  prepare?: StartupPreparation;
+  /** Programmatic auth authority. Cannot be combined with a configured verifier or OIDC. */
+  credentialVerifier?: CredentialVerifier;
+}
+
+type CredentialVerifierLoader = () => Promise<CredentialVerifier | undefined>;
+
+async function importCredentialVerifier(path: string): Promise<CredentialVerifier> {
+  if (!existsSync(path)) throw new Error(`credential verifier not found at ${path}`);
+  let module: { default?: unknown };
+  try {
+    module = (await import(pathToFileURL(path).href)) as { default?: unknown };
+  } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : "";
+    throw new Error(`failed to import credential verifier at ${path}${detail}`, { cause: error });
+  }
+  assertCredentialVerifier(
+    module.default,
+    PRODUCTION_LIMITS.auth.revocationDeadlineMs,
+    `credential verifier default export from ${path}`,
+  );
+  return module.default;
+}
+
+function credentialVerifierLoader(
+  config: AppConfig,
+  injected: CredentialVerifier | undefined,
+): CredentialVerifierLoader {
+  if (injected !== undefined && config.authentication !== undefined) {
+    throw new Error(
+      "startApp credentialVerifier cannot be combined with configured oidc or credentialVerifier",
+    );
+  }
+  if (injected !== undefined) {
+    assertCredentialVerifier(
+      injected,
+      PRODUCTION_LIMITS.auth.revocationDeadlineMs,
+      "startApp credentialVerifier",
+    );
+    return async () => injected;
+  }
+  const authentication = config.authentication;
+  switch (authentication?.kind) {
+    case "oidc":
+      return async () => createOidcVerifier(authentication.options);
+    case "credential-verifier-module":
+      return async () => importCredentialVerifier(authentication.path);
+    case undefined:
+      return async () => undefined;
+  }
+}
+
 export class StartupInterruptedError extends Error {
   override readonly name = "StartupInterruptedError";
 
@@ -87,9 +143,9 @@ export class StartupInterruptedError extends Error {
 
 export async function startApp(
   config: AppConfig,
-  prepare?: StartupPreparation,
+  options: StartAppOptions = {},
 ): Promise<RunningApp> {
-  const verifier = config.oidc === undefined ? undefined : createOidcVerifier(config.oidc);
+  const loadCredentialVerifier = credentialVerifierLoader(config, options.credentialVerifier);
   const server = new DbzzServer({
     limits: PRODUCTION_LIMITS,
     port: config.port,
@@ -157,15 +213,18 @@ export async function startApp(
   process.once("SIGTERM", onSignal);
 
   try {
-    if (prepare !== undefined) {
+    if (options.prepare !== undefined) {
       server.advanceStartup("codegen");
-      await awaitStartup(prepare(config));
+      await awaitStartup(options.prepare(config));
       requireStartupOwnership();
     }
 
     server.advanceStartup("loading");
-    const schema = await awaitStartup(importSchema(config));
-    const modules = await awaitStartup(importFunctionModules(config));
+    const [verifier, schema, modules] = await awaitStartup(Promise.all([
+      loadCredentialVerifier(),
+      importSchema(config),
+      importFunctionModules(config),
+    ]));
     requireStartupOwnership();
 
     server.advanceStartup("opening-storage");

@@ -9,6 +9,16 @@ import type { OidcVerifierOptions } from "@dbzz/server";
 
 export type TelemetryMode = "enabled" | "disabled";
 
+export type AuthenticationConfig =
+  | {
+      readonly kind: "oidc";
+      readonly options: Omit<OidcVerifierOptions, "fetch">;
+    }
+  | {
+      readonly kind: "credential-verifier-module";
+      readonly path: string;
+    };
+
 export interface AppConfig {
   appDir: string;
   /** The schema module (default export = defineSchema(...)). */
@@ -22,8 +32,8 @@ export interface AppConfig {
   port: number;
   durability: DurabilityPolicy;
   telemetry: TelemetryMode;
-  /** Optional external identity providers. Bearer credentials fail closed when omitted. */
-  oidc?: Omit<OidcVerifierOptions, "fetch">;
+  /** The application's one configured authentication authority. Bearer credentials fail closed when omitted. */
+  authentication?: AuthenticationConfig;
   /** Workload-principal OAuth scope required by the operational status endpoint. */
   statusScope: string;
 }
@@ -35,6 +45,7 @@ interface RawConfig {
   db?: string;
   port?: number;
   oidc?: Omit<OidcVerifierOptions, "fetch">;
+  credentialVerifier?: string;
   statusScope?: string;
 }
 
@@ -54,6 +65,14 @@ function listenerPort(value: unknown): number {
     throw new Error("port must be an integer from 1 through 65535");
   }
   return port;
+}
+
+function optionalModulePath(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error("credentialVerifier must be a non-empty module path");
+  }
+  return value;
 }
 
 function exactProfile<const T extends string>(
@@ -79,7 +98,16 @@ export function loadConfig(
   if (existsSync(configPath)) {
     raw = JSON.parse(readFileSync(configPath, "utf8")) as RawConfig;
   }
+  if (raw.oidc !== undefined && raw.credentialVerifier !== undefined) {
+    throw new Error("oidc and credentialVerifier are mutually exclusive authentication sources");
+  }
   const abs = (p: string) => (isAbsolute(p) ? p : resolve(dir, p));
+  const credentialVerifier = optionalModulePath(raw.credentialVerifier);
+  const authentication: AuthenticationConfig | undefined = raw.oidc !== undefined
+    ? { kind: "oidc", options: raw.oidc }
+    : credentialVerifier === undefined
+      ? undefined
+      : { kind: "credential-verifier-module", path: abs(credentialVerifier) };
   return {
     appDir: dir,
     schemaPath: abs(raw.schema ?? "./schema.ts"),
@@ -89,7 +117,7 @@ export function loadConfig(
     port: listenerPort(raw.port),
     durability: exactProfile(env, "DBZZ_DURABILITY", ["production", "balanced"], "production"),
     telemetry: exactProfile(env, "DBZZ_TELEMETRY", ["enabled", "disabled"], "enabled"),
-    ...(raw.oidc === undefined ? {} : { oidc: raw.oidc }),
+    ...(authentication === undefined ? {} : { authentication }),
     statusScope: statusScope(raw.statusScope),
   };
 }

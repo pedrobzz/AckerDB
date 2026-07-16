@@ -106,6 +106,59 @@ later with the removed credential follows normal first-login resolution and
 may provision a new Identity. This primitive is not full-user deletion,
 provider-side revocation, or application-data erasure.
 
+## Application-defined credential verifier
+
+An application can make its own `CredentialVerifier` the CLI server's single
+authentication authority by setting a module path in `.zdb.config.json`:
+
+```json
+{
+  "credentialVerifier": "./auth/credential-verifier.ts"
+}
+```
+
+The path is resolved relative to the application directory. The module must
+default-export the verifier object itself—not a factory or promise:
+
+```ts
+import type { CredentialVerifier } from "@dbzz/server";
+import { verifyApplicationToken } from "./tokens.ts";
+
+const verifier = {
+  revocationBound: { kind: "token-expiration" },
+  verify: verifyApplicationToken,
+  subscribeInvalidation: () => () => {},
+} satisfies CredentialVerifier;
+
+export default verifier;
+```
+
+`dbz dev` and `dbz start` load that default export through the same Runtime
+pipeline as the built-in OIDC verifier. `dbz codegen` never imports or executes
+the verifier module; during `dbz start`, codegen finishes before application
+modules and the verifier are loaded.
+
+`oidc` and `credentialVerifier` are mutually exclusive because one Runtime has
+one credential authority. Programmatic startup follows the same rule and can
+inject an already-constructed verifier without a parallel server path:
+
+```ts
+import { loadConfig, runCodegen, startApp } from "@dbzz/cli";
+import credentialVerifier from "./auth/credential-verifier.ts";
+
+await startApp(loadConfig("."), {
+  prepare: runCodegen,
+  credentialVerifier,
+});
+```
+
+The programmatic `credentialVerifier` option cannot be combined with either
+configured source. Application verifiers own token parsing, cryptographic
+verification, issuer and audience policy, expiry, selected claims, and any
+advertised invalidation feed. DBZZ still validates returned credential evidence,
+resolves user `(issuer, subject)` pairs to durable Identities, and enforces the
+declared revocation bound before activation.
+
 ## Function access policies
 
 Every query, mutation, procedure, SSE procedure, and event subscription must

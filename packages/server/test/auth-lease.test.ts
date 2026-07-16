@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Credential } from "@dbzz/core";
 import {
   acquireAuthLease,
+  assertCredentialVerifier,
   MAX_REVOCATION_DEADLINE_MS,
   validateCredentialVerifierRevocation,
   type AuthLeaseClock,
@@ -219,6 +220,10 @@ describe("auth lease", () => {
   });
 
   test("validates missing, malformed, and excessive verifier guarantees", async () => {
+    expect(() => assertCredentialVerifier({}, 5_000)).toThrow(
+      "credential verifier must implement verify(credential)",
+    );
+
     const missing = new FakeVerifier(user(1_000)) as CredentialVerifier & { revocationBound?: RevocationBound };
     Object.defineProperty(missing, "revocationBound", { value: undefined });
     expect(() => validateCredentialVerifierRevocation(missing, 5_000))

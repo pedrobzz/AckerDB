@@ -174,7 +174,7 @@ try {
     case "start": {
       requireArgumentCount(args, 0, 1);
       const config = loadConfig(resolve(args[0] ?? "."));
-      await startApp(config, runCodegen);
+      await startApp(config, { prepare: runCodegen });
       break;
     }
     case "__serve": {

@@ -91,6 +91,7 @@ export {
   type VerifiedUserCredential,
   type WorkloadPrincipal,
 } from "./auth.ts";
+export { assertCredentialVerifier } from "./auth-lease.ts";
 export {
   DbzzError,
   isDbzzError,
