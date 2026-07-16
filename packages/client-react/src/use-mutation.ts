@@ -22,7 +22,9 @@ export function useMutation<Args, Result>(
     (cell) =>
       (args: Args): Promise<Result> => {
         const target = cell.ref; // the mutation named at call time
-        return callThroughCell(cell, (client) => client.mutation<Args, Result>(target, args));
+        return callThroughCell(cell, args, (client, value) =>
+          client.mutation<Args, Result>(target, value),
+        );
       },
   );
 }

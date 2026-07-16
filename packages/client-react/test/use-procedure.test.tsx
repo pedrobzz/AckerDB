@@ -519,6 +519,62 @@ describe("useProcedure against a real dbzz server", () => {
     await unmount(root);
   });
 
+  test("an abort racing the arrival drain settles its call exactly once and never dispatches it", async () => {
+    // Two calls queued before the client exists; the first one's dispatch
+    // reaches the injected fetch synchronously inside the arrival drain and
+    // aborts the second — after the queue was cleared, before the second
+    // dispatch runs. Exactly one owner must settle the aborted call, and its
+    // request must never reach the network.
+    const controller = new AbortController();
+    let dispatches = 0;
+    const config = app.config({
+      fetch: (url, init) => {
+        if (url.endsWith("/api/call")) {
+          dispatches++;
+          controller.abort();
+        }
+        return fetch(url, init);
+      },
+    });
+
+    const settlements: Array<{ kind: "ok"; value: string } | { kind: "error"; error: unknown }> =
+      [];
+    function RaceOnMount(): ReactNode {
+      const echo = useProcedure(api.tools.echo);
+      useEffect(() => {
+        echo({ value: "first" }).then(
+          (value) => settlements.push({ kind: "ok", value }),
+          (error) => settlements.push({ kind: "error", error }),
+        );
+        echo({ value: "second" }, { signal: controller.signal }).then(
+          (value) => settlements.push({ kind: "ok", value }),
+          (error) => settlements.push({ kind: "error", error }),
+        );
+      }, [echo]);
+      return null;
+    }
+
+    const container = mountPoint();
+    const root = createRoot(container);
+    root.render(
+      <DbzzProvider config={config}>
+        <RaceOnMount />
+      </DbzzProvider>,
+    );
+    await until(() => settlements.length === 2, "both racing settlements");
+
+    expect(dispatches).toBe(1);
+    expect(settlements).toContainEqual({ kind: "ok", value: "FIRST" });
+    const canceled = settlements.find((entry) => entry.kind === "error");
+    expect(canceled && "error" in canceled ? canceled.error : null).toMatchObject({
+      name: "DbzzClientError",
+      code: "unavailable",
+      message: "procedure request was canceled",
+      resource: "operation",
+    });
+    await unmount(root);
+  });
+
   test("useProcedure outside a provider fails loudly", async () => {
     let caught: unknown;
     class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {

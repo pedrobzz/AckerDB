@@ -1,4 +1,5 @@
 import { DbzzClientError, type DbzzClient } from "@dbzz/client";
+import { decode, encode } from "@dbzz/core";
 import { useEffect, useInsertionEffect, useState } from "react";
 import { useProviderClient } from "./provider.tsx";
 
@@ -51,6 +52,19 @@ function drain(waiters: Set<Waiter>): Waiter[] {
   return drained;
 }
 
+// The base client encodes arguments synchronously at call time; a queued call
+// defers that encoding to dispatch, so the wire value is frozen here instead —
+// a caller that mutates its argument object while the call waits must not
+// change what it asked for. Unencodable values pass through untouched: the
+// client sees them at dispatch and reports its own typed validation outcome.
+function snapshotWireValue<A>(args: A): A {
+  try {
+    return decode(encode(args)) as A;
+  } catch {
+    return args;
+  }
+}
+
 /**
  * The one optional third settlement owner of a queued call: the caller's
  * abort signal. Procedures have one — `client.procedure` takes a signal, so a
@@ -66,27 +80,30 @@ export interface QueueAbort {
 
 /**
  * One call against the cell: straight through the committed client when it
- * exists (the returned promise is the client's own, unwrapped), queued until
- * arrival otherwise. `dispatch` must capture its reference and arguments at
- * call time so a queued call still names what the caller asked for; it runs
- * at most once.
+ * exists (the returned promise is the client's own, unwrapped, and `args` the
+ * caller's own object), queued until arrival otherwise. `dispatch` must
+ * capture its reference at call time so a queued call still names what the
+ * caller asked for; it runs at most once, with the call-time wire value of
+ * `args`.
  */
-export function callThroughCell<Ref, R>(
+export function callThroughCell<Ref, A, R>(
   cell: LifetimeCell<Ref>,
-  dispatch: (client: DbzzClient) => Promise<R>,
+  args: A,
+  dispatch: (client: DbzzClient, args: A) => Promise<R>,
   abort?: QueueAbort,
 ): Promise<R> {
   // Ownership ends with the hook: a callable retained past unmount (by a
   // timer or external listener) settles locally and never dispatches.
   if (cell.ended) return Promise.reject(hookError("client closed"));
-  if (cell.client !== null) return dispatch(cell.client);
+  if (cell.client !== null) return dispatch(cell.client, args);
   if (abort?.signal.aborted) return Promise.reject(hookError(abort.canceled));
+  const snapshot = snapshotWireValue(args);
   return new Promise<R>((resolve, reject) => {
     let detach: (() => void) | undefined;
     const waiter: Waiter = {
       dispatch(readyClient) {
         detach?.();
-        dispatch(readyClient).then(resolve, reject);
+        dispatch(readyClient, snapshot).then(resolve, reject);
       },
       discard(error) {
         detach?.();
@@ -96,7 +113,11 @@ export function callThroughCell<Ref, R>(
     if (abort !== undefined) {
       const { signal, canceled } = abort;
       const onAbort = (): void => {
-        cell.waiters.delete(waiter);
+        // Settle only a waiter still in the queue: once another owner has
+        // drained it, its settlement is already decided — an imminent
+        // dispatch hands the aborted signal to the client, whose own
+        // pre-dispatch check reports the same typed cancellation.
+        if (!cell.waiters.delete(waiter)) return;
         reject(hookError(canceled));
       };
       signal.addEventListener("abort", onAbort, { once: true });

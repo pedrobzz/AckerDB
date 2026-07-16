@@ -559,6 +559,46 @@ describe("useMutation", () => {
     });
   });
 
+  test("a queued call transmits its call-time argument values, not later mutations", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    let result: Promise<bigint> | null = null;
+    function SendOnMount(): ReactNode {
+      const send = useMutation(todosAdd());
+      useEffect(() => {
+        // The base client encodes arguments synchronously at call time; the
+        // queue must freeze the same wire value, so mutating the argument
+        // object while the call waits changes nothing.
+        const args = { text: "call-time" };
+        result = send(args);
+        args.text = "mutated-while-queued";
+      }, [send]);
+      return null;
+    }
+
+    await render(
+      root,
+      <DbzzProvider config={harness.config()}>
+        <SendOnMount />
+      </DbzzProvider>,
+    );
+    const socket = harness.sockets.at(-1)!;
+    await act(async () => {
+      socket.welcome(SESSION);
+    });
+
+    const frames = mutationFrames(socket);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.args).toEqual({ text: "call-time" });
+    socket.receive(mutationOk(frames[0]!, 9n));
+    expect(await result!).toBe(9n);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   test("unmount before the client arrives settles a queued call with the typed discard", async () => {
     const harness = createHarness();
     const container = mountPoint();

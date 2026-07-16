@@ -20,7 +20,8 @@ export function useProcedure<A, R>(ref: ProcedureRef<A, R>): DbzzProcedure<A, R>
         const target = cell.ref; // the procedure named at call time
         return callThroughCell(
           cell,
-          (client) => client.procedure<A, R>(target, args, options),
+          args,
+          (client, value) => client.procedure<A, R>(target, value, options),
           // Procedures own a caller abort signal, so a queued call must honor
           // it too; once dispatched the signal settles the call through the
           // client's own fetch abort path instead.
