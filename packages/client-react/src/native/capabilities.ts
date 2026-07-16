@@ -2,11 +2,13 @@ import { fetch as expoFetch, type FetchRequestInit } from "expo/fetch";
 import { getRandomValues } from "expo-crypto";
 import type { DbzzFetch, DbzzWebSocket, DbzzWebSocketFactory } from "@dbzz/client";
 import type { DbzzProviderConfig } from "../provider.tsx";
+import { appStateLifecycle } from "./lifecycle.ts";
 
 /**
- * Expo implementations for the dbzz client capability seams. This module is
- * the only one that imports Expo packages, and it is reachable only from the
- * `react-native` conditional entry — browser bundles never resolve it.
+ * Expo implementations for the dbzz client capability seams. This module
+ * (with ./lifecycle.ts) is the only place that imports Expo or React Native
+ * packages, and it is reachable only from the `react-native` conditional
+ * entry — browser bundles never resolve it.
  *
  * `expo` and `expo-crypto` are optional peers at the manifest level (npm
  * cannot express a platform-conditional requirement), but they are mandatory
@@ -56,5 +58,6 @@ export function withExpoCapabilities(config: DbzzProviderConfig): DbzzProviderCo
     fetch: config.fetch ?? nativeFetch,
     random: config.random ?? nativeRandom,
     createWebSocket: config.createWebSocket ?? nativeCreateWebSocket,
+    lifecycle: config.lifecycle ?? appStateLifecycle,
   };
 }

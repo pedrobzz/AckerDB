@@ -4,11 +4,13 @@ import { describe, expect, mock, test } from "bun:test";
 // one process and React initializes against the globals it first sees.
 import "./support/dom.ts";
 
-// The real Expo modules only run inside a React Native app, so the native
-// entry is exercised here with module mocks standing in for the two Expo
-// imports. What matters — and is asserted — is the composition seam: which
-// module the capabilities call, what they forward, and that the native entry
-// exposes exactly the shared public surface.
+// The real Expo and React Native modules only run inside a React Native app,
+// so the native entry is exercised here with module mocks standing in for the
+// three platform imports. What matters — and is asserted — is the composition
+// seam: which module the capabilities call, what they forward, and that the
+// native entry exposes exactly the shared public surface.
+
+import { FakeAppState } from "./support/app-state.ts";
 
 const expoFetchCalls: unknown[][] = [];
 const expoFetchResponse = { ok: true };
@@ -24,6 +26,7 @@ mock.module("expo-crypto", () => ({
     return array;
   },
 }));
+mock.module("react-native", () => ({ AppState: FakeAppState }));
 
 const nativeEntry = await import("../src/index.native.ts");
 const browserEntry = await import("../src/index.ts");
@@ -65,16 +68,23 @@ describe("withExpoCapabilities", () => {
     expect(typeof withExpoCapabilities(config).createWebSocket).toBe("function");
   });
 
+  test("defaults the lifecycle source to the AppState observer", () => {
+    expect(typeof withExpoCapabilities(config).lifecycle).toBe("function");
+  });
+
   test("explicitly configured capabilities win over the Expo defaults", () => {
     const explicitFetch = (() => Promise.reject(new Error("unused"))) as never;
     const explicitRandom = () => 0.25;
+    const explicitLifecycle = () => () => {};
     const composed = withExpoCapabilities({
       ...config,
       fetch: explicitFetch,
       random: explicitRandom,
+      lifecycle: explicitLifecycle,
     });
     expect(composed.fetch).toBe(explicitFetch);
     expect(composed.random).toBe(explicitRandom);
+    expect(composed.lifecycle).toBe(explicitLifecycle);
   });
 
   test("own properties holding undefined still receive the Expo defaults", () => {
@@ -83,10 +93,12 @@ describe("withExpoCapabilities", () => {
       fetch: undefined,
       random: undefined,
       createWebSocket: undefined,
+      lifecycle: undefined,
     });
     expect(typeof composed.fetch).toBe("function");
     expect(composed.random!()).toBe(0.5);
     expect(typeof composed.createWebSocket).toBe("function");
+    expect(typeof composed.lifecycle).toBe("function");
   });
 
   test("does not disturb the configuration values that key the provider lifetime", () => {

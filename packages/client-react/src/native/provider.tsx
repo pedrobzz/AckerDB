@@ -5,9 +5,9 @@ import { withExpoCapabilities } from "./capabilities.ts";
 /**
  * Native `DbzzProvider`: the same public contract as the shared provider. It
  * only fills the client's capability seams (`fetch`, `random`,
- * `createWebSocket`) with the Expo implementations before delegating, the
- * same way the base client fills them with browser globals. Capabilities the
- * caller injected explicitly still win.
+ * `createWebSocket`, `lifecycle`) with the Expo implementations before
+ * delegating, the same way the base client fills them with browser globals.
+ * Capabilities the caller injected explicitly still win.
  *
  * Capability functions do not participate in lifetime identity (see
  * `lifetimeKey` in ../provider.tsx), so wrapping the configuration object

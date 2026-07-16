@@ -9,6 +9,7 @@
     "src/**/*.tsx",
     "test/**/*.ts",
     "test/**/*.tsx",
+    "types/**/*.d.ts",
     "../../fixtures/react-web/**/*.ts",
     "../../fixtures/react-web/**/*.tsx"
   ],
