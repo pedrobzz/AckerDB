@@ -193,6 +193,13 @@ export default function OrderScreen() {
         </View>
         <Text style={styles.tax}>Taxes included</Text>
       </View>
+      <ActionButton
+        label={
+          order.items.length === 0 ? "Browse menu  +" : "Order more items  +"
+        }
+        variant="dark"
+        onPress={() => router.navigate("/menu")}
+      />
       {canClose ? (
         <ActionButton
           label={
@@ -203,26 +210,20 @@ export default function OrderScreen() {
           variant="danger"
           loading={closing}
           onPress={close}
+          style={styles.secondaryAction}
         />
       ) : (
-        <>
-          <ActionButton
-            label="Order more items  +"
-            variant="dark"
-            onPress={() => router.navigate("/menu")}
-          />
-          <ActionButton
-            label={
-              order.readyToPay
-                ? "Request bill"
-                : "Pay when every item is served"
-            }
-            variant={order.readyToPay ? "primary" : "secondary"}
-            disabled={!order.readyToPay}
-            onPress={() => router.navigate("/bill")}
-            style={styles.secondaryAction}
-          />
-        </>
+        <ActionButton
+          label={
+            order.readyToPay
+              ? "Request bill"
+              : "Pay when every item is served"
+          }
+          variant={order.readyToPay ? "primary" : "secondary"}
+          disabled={!order.readyToPay}
+          onPress={() => router.navigate("/bill")}
+          style={styles.secondaryAction}
+        />
       )}
     </AppScreen>
   );
