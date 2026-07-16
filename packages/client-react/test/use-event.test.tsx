@@ -15,7 +15,7 @@ import type {
   DbzzWebSocket,
   EventRef,
 } from "@dbzz/client";
-import { Component, StrictMode, act, type ReactNode } from "react";
+import { Component, StrictMode, act, useLayoutEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { DbzzProvider, useEvent, type DbzzProviderConfig } from "@dbzz/client-react";
 
@@ -178,6 +178,17 @@ async function render(root: Root, element: ReactNode): Promise<void> {
   await act(async () => {
     root.render(element);
   });
+}
+
+// Runs `fire` in the commit's layout phase: after every insertion effect has
+// installed the new committed identity, before any passive effect has released
+// the superseded subscription. This is the exact window where socket traffic
+// races React in production.
+function Injector({ fire }: { readonly fire: (() => void) | null }): ReactNode {
+  useLayoutEffect(() => {
+    fire?.();
+  }, [fire]);
+  return null;
 }
 
 function cursor(sequence: bigint, generation = "g1"): {
@@ -406,6 +417,173 @@ describe("useEvent lifecycle", () => {
       root.unmount();
     });
     expect(harness.clock.taskCount).toBe(0);
+  });
+
+  test("reordered argument keys keep the canonical subscription identity", async () => {
+    const scoped = { $ref: "events.scoped" } as EventRef<{ a: bigint; b: string }, PingRow>;
+    function ScopedProbe({ args }: { readonly args: { a: bigint; b: string } }): ReactNode {
+      useEvent(scoped, args, () => {});
+      return null;
+    }
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const view = (args: { a: bigint; b: string }): ReactNode => (
+      <StrictMode>
+        <DbzzProvider config={harness.config()}>
+          <ScopedProbe args={args} />
+        </DbzzProvider>
+      </StrictMode>
+    );
+
+    await render(root, view({ a: 1n, b: "x" }));
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    expect(socket.framesOf("sub")).toHaveLength(1);
+
+    // Same values, different insertion order: still the same subscription.
+    await render(root, view({ b: "x", a: 1n }));
+    expect(socket.framesOf("sub")).toHaveLength(1);
+    expect(socket.framesOf("unsub")).toHaveLength(0);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("an argument change fences in-flight deliveries from the superseded subscription", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const first: DbzzLiveEvent<PingRow>[] = [];
+    const second: DbzzLiveEvent<PingRow>[] = [];
+    const tree = (
+      min: bigint,
+      sink: DbzzLiveEvent<PingRow>[],
+      fire: (() => void) | null,
+    ): ReactNode => (
+      <>
+        <DbzzProvider config={harness.config()}>
+          <Probe min={min} onEvent={(event) => sink.push(event)} />
+        </DbzzProvider>
+        <Injector fire={fire} />
+      </>
+    );
+
+    await render(root, tree(1n, first, null));
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    const firstId = socket.framesOf("sub")[0]!.id;
+    await act(async () => {
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id: firstId,
+        event: { kind: "reset", cursor: cursor(0n) },
+      });
+    });
+    expect(first.map((event) => event.kind)).toEqual(["reset"]);
+
+    // Deliver from the superseded subscription mid-commit: the new arguments
+    // are committed but the passive cleanup has not yet unsubscribed, and the
+    // row must reach neither the old nor the new callback.
+    let unsubsAtFire = -1;
+    let secondAtFire = -1;
+    await render(
+      root,
+      tree(2n, second, () => {
+        unsubsAtFire = socket.framesOf("unsub").length;
+        socket.receive({
+          v: PROTOCOL_VERSION,
+          t: "event",
+          id: firstId,
+          event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },
+        });
+        secondAtFire = second.length;
+      }),
+    );
+    expect(unsubsAtFire).toBe(0);
+    expect(secondAtFire).toBe(0);
+    expect(first.map((event) => event.kind)).toEqual(["reset"]);
+    expect(second).toHaveLength(0);
+
+    // The passive phase then swaps the subscription, which delivers normally.
+    expect(socket.framesOf("unsub")).toEqual([{ v: PROTOCOL_VERSION, t: "unsub", id: firstId }]);
+    const secondId = socket.framesOf("sub")[1]!.id;
+    await act(async () => {
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id: secondId,
+        event: { kind: "reset", cursor: cursor(0n, "g2") },
+      });
+    });
+    expect(second.map((event) => event.kind)).toEqual(["reset"]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("deletion fences deliveries that beat the passive cleanup", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const events: DbzzLiveEvent<PingRow>[] = [];
+    const view = (mounted: boolean, fire: (() => void) | null): ReactNode => (
+      <>
+        {mounted ? (
+          <DbzzProvider config={harness.config()}>
+            <Probe min={1n} onEvent={(event) => events.push(event)} />
+          </DbzzProvider>
+        ) : null}
+        <Injector fire={fire} />
+      </>
+    );
+
+    await render(root, view(true, null));
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    const id = socket.framesOf("sub")[0]!.id;
+    await act(async () => {
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id,
+        event: { kind: "reset", cursor: cursor(0n) },
+      });
+    });
+    expect(events.map((event) => event.kind)).toEqual(["reset"]);
+
+    // Deleting the subtree runs the insertion cleanup in the mutation phase,
+    // while the client (and its subscription) release later in the passive
+    // phase: rows racing that window reach nobody.
+    let liveAtFire = -1;
+    let eventsAtFire = -1;
+    await render(
+      root,
+      view(false, () => {
+        liveAtFire = harness.live().length;
+        socket.receive({
+          v: PROTOCOL_VERSION,
+          t: "event",
+          id,
+          event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },
+        });
+        eventsAtFire = events.length;
+      }),
+    );
+    expect(liveAtFire).toBe(1);
+    expect(eventsAtFire).toBe(1);
+    expect(events.map((event) => event.kind)).toEqual(["reset"]);
+    expect(harness.live()).toHaveLength(0);
+
+    await act(async () => {
+      root.unmount();
+    });
   });
 
   test("useEvent outside a provider fails loudly", async () => {
