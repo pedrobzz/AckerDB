@@ -946,15 +946,9 @@ describe("DbzzClient protocol 2 ownership", () => {
       "the first jitter delay",
     );
     const refresh = client.refreshCredential({ kind: "bearer", token: "current-token" });
+    // The dialed hello presents the refreshed credential, so the welcome
+    // resolves the attempt without a separate auth round-trip.
     welcome(client, sockets[0]!, "user");
-    const auth = lastFrame(sockets[0]!, "auth");
-    sockets[0]!.receive({
-      v: 2,
-      t: "auth",
-      attemptId: auth.attemptId,
-      authEpoch: 1,
-      principal: "user",
-    });
     await refresh;
     expect(clock.nextDueIn()).toBe(50);
     clock.advance(49);
@@ -1991,25 +1985,25 @@ describe("DbzzClient connection state", () => {
     expect(client.currentConnectionState.phase).toBe("reconnecting");
     const second = sockets[1]!;
     second.open();
+    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
       v: 2,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
-      principal: "anonymous",
+      principal: "user",
     });
-    expect(client.currentConnectionState.phase).toBe("ready");
-    const auth = lastFrame(second, "auth");
-    second.receive({ v: 2, t: "auth", attemptId: auth.attemptId, authEpoch: 2, principal: "user" });
-    expect(await refresh).toEqual({ authEpoch: 2, principal: "user" });
+    // The hello presented the refreshed credential, so this welcome is its
+    // verification: the attempt resolves without a second auth round-trip.
+    expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await refresh).toEqual({ authEpoch: 1, principal: "user" });
     const upgraded = client.currentConnectionState;
     if (upgraded.phase !== "ready") throw new Error(`unexpected ${upgraded.phase}`);
-    expect(upgraded.authentication).toEqual({ authEpoch: 2, principal: "user" });
+    expect(upgraded.authentication).toEqual({ authEpoch: 1, principal: "user" });
     expect(states.map((state) => state.phase)).toEqual([
       "ready",
       "authentication-blocked",
       "reconnecting",
-      "ready",
       "ready",
     ]);
     client.close();
@@ -2379,6 +2373,74 @@ describe("DbzzClient authentication state", () => {
     client.close();
   });
 
+  test("coalesces an identical in-flight credential into a single attempt", async () => {
+    const { client, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    const first = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    const second = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    expect(second).toBe(first);
+    expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(1);
+    const attempt = lastFrame(sockets[0]!, "auth");
+    sockets[0]!.receive({
+      v: 2,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: 1,
+      principal: "user",
+    });
+    expect(await first).toEqual({ authEpoch: 1, principal: "user" });
+
+    // A doubled sign-out joins the in-flight attempt instead of rejecting the
+    // first caller with auth_stale.
+    const signOutFirst = client.refreshCredential({ kind: "anonymous" });
+    const signOutSecond = client.refreshCredential({ kind: "anonymous" });
+    expect(signOutSecond).toBe(signOutFirst);
+    expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(2);
+    const signOutAttempt = lastFrame(sockets[0]!, "auth");
+    sockets[0]!.receive({
+      v: 2,
+      t: "auth",
+      attemptId: signOutAttempt.attemptId,
+      authEpoch: 2,
+      principal: "anonymous",
+    });
+    expect(await signOutFirst).toEqual({ authEpoch: 2, principal: "anonymous" });
+    client.close();
+  });
+
+  test("a refresh in flight across a reconnect resolves from the replayed hello's welcome", async () => {
+    const { client, clock, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    welcome(client, sockets[0]!, "user");
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    sockets[0]!.drop();
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    clock.advance(100);
+    const second = sockets[1]!;
+    second.open();
+    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
+    second.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 3,
+      principal: "user",
+    });
+    // One verification: the hello carried the pending credential, so no
+    // second auth frame follows the welcome.
+    expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await refresh).toEqual({ authEpoch: 3, principal: "user" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticated",
+      authentication: { authEpoch: 3, principal: "user" },
+    });
+    client.close();
+  });
+
   test("reports refresh-required with the exact error shared with the connection state", async () => {
     const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
     client.connect();
@@ -2406,21 +2468,20 @@ describe("DbzzClient authentication state", () => {
     });
     const second = sockets[1]!;
     second.open();
+    // The reconnect hello presents the refreshed credential, so its welcome
+    // is the verification: one round-trip, no separate auth frame.
     second.receive({
       v: 2,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 0,
-      principal: "anonymous",
+      principal: "user",
     });
-    // Welcome alone does not confirm the refreshed credential.
-    expect(client.currentAuthenticationState.phase).toBe("authenticating");
-    const auth = lastFrame(second, "auth");
-    second.receive({ v: 2, t: "auth", attemptId: auth.attemptId, authEpoch: 1, principal: "user" });
-    expect(await refresh).toEqual({ authEpoch: 1, principal: "user" });
+    expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await refresh).toEqual({ authEpoch: 0, principal: "user" });
     expect(client.currentAuthenticationState).toEqual({
       phase: "authenticated",
-      authentication: { authEpoch: 1, principal: "user" },
+      authentication: { authEpoch: 0, principal: "user" },
     });
     client.close();
   });

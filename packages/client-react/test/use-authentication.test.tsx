@@ -16,7 +16,7 @@ import type {
   DbzzClientError,
   DbzzWebSocket,
 } from "@dbzz/client";
-import { StrictMode, act, type ReactNode } from "react";
+import { StrictMode, act, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   DbzzProvider,
@@ -208,6 +208,18 @@ function ConnectionProbe(): ReactNode {
   return <span>|{state.phase}</span>;
 }
 
+// An operation initiated from an effect: Strict Mode replays the effect, so
+// this is the doubled-invocation scenario single-flight must absorb.
+const effectSignOuts: Promise<DbzzAuthentication>[] = [];
+
+function AutoSignOut(): ReactNode {
+  const { signOut } = useAuthentication();
+  useEffect(() => {
+    effectSignOuts.push(signOut());
+  }, [signOut]);
+  return null;
+}
+
 function app(config: DbzzProviderConfig): ReactNode {
   return (
     <StrictMode>
@@ -304,6 +316,52 @@ describe("useAuthentication", () => {
 
     // Every committed render of this lifetime observed the same callable.
     expect(new Set(operationIdentities).size).toBe(1);
+    await act(async () => {
+      root.unmount();
+    });
+    expect(harness.clock.taskCount).toBe(0);
+  });
+
+  test("a Strict Mode-replayed effect sign-out coalesces into one protocol attempt", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const config = harness.config({ kind: "bearer", token: "token-a" });
+    const tree = (auto: boolean): ReactNode => (
+      <StrictMode>
+        <DbzzProvider config={config}>
+          <AuthProbe />
+          <ConnectionProbe />
+          {auto ? <AutoSignOut /> : null}
+        </DbzzProvider>
+      </StrictMode>
+    );
+    await render(root, tree(false));
+    await act(async () => {
+      welcome(harness.live(), "user");
+    });
+    expect(container.textContent).toBe("authenticated:user@0|ready");
+
+    effectSignOuts.length = 0;
+    await render(root, tree(true));
+    // Strict Mode ran the effect twice; both invocations joined one attempt
+    // and one auth frame, with no auth_stale rejection for the first caller.
+    expect(effectSignOuts).toHaveLength(2);
+    expect(effectSignOuts[1]).toBe(effectSignOuts[0]!);
+    expect(harness.authFrames()).toHaveLength(1);
+    const attempt = lastAuthFrame(harness.live());
+    expect(attempt.credential).toEqual({ kind: "anonymous" });
+    await act(async () => {
+      harness.live().receive({
+        v: PROTOCOL_VERSION,
+        t: "auth",
+        attemptId: attempt.attemptId,
+        authEpoch: 1,
+        principal: "anonymous",
+      });
+    });
+    expect(await effectSignOuts[0]).toEqual({ authEpoch: 1, principal: "anonymous" });
+    expect(container.textContent).toBe("unauthenticated@1|ready");
     await act(async () => {
       root.unmount();
     });
@@ -434,21 +492,16 @@ describe("useAuthentication", () => {
     expect(container.textContent).toBe("authenticating:bearer|reconnecting");
     const recovered = harness.live();
     await act(async () => {
-      welcome(recovered);
+      welcome(recovered, "user");
     });
-    const attempt = lastAuthFrame(recovered);
-    expect(attempt.credential).toEqual({ kind: "bearer", token: "token-fresh" });
-    await act(async () => {
-      recovered.receive({
-        v: PROTOCOL_VERSION,
-        t: "auth",
-        attemptId: attempt.attemptId,
-        authEpoch: 1,
-        principal: "user",
-      });
-    });
-    expect(await refresh).toEqual({ authEpoch: 1, principal: "user" });
-    expect(container.textContent).toBe("authenticated:user@1|ready");
+    // The recovery hello presented the fresh credential, so its welcome is
+    // the verification: one round-trip, no separate auth frame.
+    const hello = recovered.frames().find((frame) => frame.t === "hello");
+    if (hello?.t !== "hello") throw new Error("expected a hello frame");
+    expect(hello.credential).toEqual({ kind: "bearer", token: "token-fresh" });
+    expect(recovered.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await refresh).toEqual({ authEpoch: 0, principal: "user" });
+    expect(container.textContent).toBe("authenticated:user@0|ready");
     await act(async () => {
       root.unmount();
     });

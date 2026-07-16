@@ -630,14 +630,11 @@ describe("useQuery state transitions", () => {
     // the query returns to fresh authoritative data.
     const refreshed = client.refreshCredential({ kind: "bearer", token: "token-b" });
     const second = harness.live();
+    // The recovery hello presents the refreshed credential, so the welcome
+    // resolves the attempt itself: no second auth round-trip precedes the
+    // resubscription flush.
     second.welcome(SESSION);
-    second.receive({
-      v: PROTOCOL_VERSION,
-      t: "auth",
-      attemptId: second.framesOf("auth")[0]!.attemptId,
-      authEpoch: 1,
-      principal: "user",
-    });
+    expect(second.framesOf("auth")).toHaveLength(0);
     await refreshed;
     const resubscribed = second.framesOf("sub");
     expect(resubscribed).toHaveLength(1);

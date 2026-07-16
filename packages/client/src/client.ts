@@ -239,6 +239,7 @@ interface PendingRequest {
 interface AuthAttempt {
   readonly id: number;
   readonly credential: Credential;
+  readonly result: Promise<DbzzAuthentication>;
   readonly resolve: (authentication: DbzzAuthentication) => void;
   readonly reject: (error: DbzzClientError) => void;
   expiryHandle?: unknown;
@@ -340,6 +341,12 @@ function freezeCredential(credential: Credential): Credential {
   return parsed.kind === "anonymous"
     ? Object.freeze({ kind: "anonymous" })
     : Object.freeze({ kind: "bearer", token: parsed.token });
+}
+
+function sameCredential(left: Credential, right: Credential): boolean {
+  return left.kind === "anonymous"
+    ? right.kind === "anonymous"
+    : right.kind === "bearer" && left.token === right.token;
 }
 
 function sameCursor(left: SubscriptionCursor | undefined, right: SubscriptionCursor | null): boolean {
@@ -461,6 +468,8 @@ export class DbzzClient {
   private readonly activeFetches = new Set<AbortController>();
 
   private credential: Credential;
+  /** The exact credential object the current connection's hello presented. */
+  private helloCredential?: Credential;
   private socket: DbzzWebSocket | null = null;
   private socketOpen = false;
   private ready = false;
@@ -555,6 +564,13 @@ export class DbzzClient {
     this.ensureConnected();
   }
 
+  /**
+   * Presents a credential for this session: the server verifies it, retires
+   * the current auth epoch, and confirms the new principal. Presenting the
+   * anonymous credential is the protocol's sign-out. Single-flight: a call
+   * with the credential already in flight joins that attempt; a different
+   * credential supersedes it with an `auth_stale` rejection.
+   */
   refreshCredential(credential: Credential): Promise<DbzzAuthentication> {
     if (this.closed) throw localError("unavailable", "client is closed", "connection");
     if (this.permanentFailure) {
@@ -562,6 +578,9 @@ export class DbzzClient {
     }
     const nextCredential = freezeCredential(credential);
     if (this.authAttempt) {
+      if (sameCredential(this.authAttempt.credential, nextCredential)) {
+        return this.authAttempt.result;
+      }
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.reject(localError("auth_stale", "authentication attempt was superseded", "connection"));
     }
@@ -575,7 +594,7 @@ export class DbzzClient {
       resolve = promiseResolve;
       reject = promiseReject;
     });
-    const attempt: AuthAttempt = { id, credential: nextCredential, resolve, reject };
+    const attempt: AuthAttempt = { id, credential: nextCredential, result, resolve, reject };
     attempt.expiryHandle = this.clock.setTimeout(() => {
       if (this.authAttempt !== attempt) return;
       this.authAttempt = undefined;
@@ -1165,6 +1184,7 @@ export class DbzzClient {
   private handleOpen(socket: DbzzWebSocket): void {
     if (this.socket !== socket || this.closed) return;
     this.socketOpen = true;
+    this.helloCredential = this.credential;
     try {
       this.sendFrame({
         v: PROTOCOL_VERSION,
@@ -1224,7 +1244,17 @@ export class DbzzClient {
         this.ready = true;
         this.everReady = true;
         this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
-        if (this.authAttempt) this.sendAuth(this.authAttempt);
+        if (this.authAttempt) {
+          // A hello that presented this attempt's exact credential was just
+          // verified by this welcome; a second auth round-trip would re-verify
+          // the same token and retire the epoch it created. Only a credential
+          // that changed after the hello still needs its own transition.
+          if (this.authAttempt.credential === this.helloCredential) {
+            this.resolveAuth(this.authAttempt, this.authentication);
+          } else {
+            this.sendAuth(this.authAttempt);
+          }
+        }
         this.flushState();
         this.startConnectionTimers();
         // Published last: a listener may reenter close(), which must find the
