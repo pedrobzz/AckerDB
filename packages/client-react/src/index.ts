@@ -14,6 +14,8 @@ export type {
   DbzzClientError,
   DbzzClientLimits,
   DbzzConnectionState,
+  DbzzLifecyclePort,
+  DbzzLifecycleSource,
   DbzzLiveEvent,
   DbzzReconnectOptions,
   EventRef,
