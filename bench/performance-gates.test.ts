@@ -121,6 +121,14 @@ describe("frozen performance acceptance", () => {
         frozenNearTieWins: 22,
         convexFloorChecks: 126,
       },
+      sharedFixedRate: {
+        offeredUpdatesPerSec: 20,
+        offeredUpdates: 100,
+        completedUpdates: 100,
+        expectedDeliveries: 50_000,
+        observedDeliveries: 50_000,
+        passed: true,
+      },
       partitionedFixedRate: {
         offeredUpdatesPerSec: 100,
         offeredUpdates: 500,
@@ -269,8 +277,12 @@ describe("frozen performance acceptance", () => {
 
   test("a near-tie win flipped within the noise floor passes and stays visible in evidence and the drift table", () => {
     const after = copy();
+    // delivery throughput may flip the ranking only inside the hard offered-rate floor
     const spacetimeDelivery = subscription(after, "spacetimedb", "shared").deliveryThroughputPerSec;
-    subscription(after, "dbzz", "shared").deliveryThroughputPerSec = spacetimeDelivery * 0.9;
+    subscription(after, "dbzz", "shared").deliveryThroughputPerSec = spacetimeDelivery * 0.995;
+    // setup has no offered-rate floor, so it can use the full envelope
+    const spacetimeSetup = subscription(after, "spacetimedb", "partitioned").setupMs;
+    subscription(after, "dbzz", "partitioned").setupMs = spacetimeSetup * 1.1;
     const spacetimeIdle = after.systems.spacetimedb!.resources.server.phases["connections:500:idle"]!.cpuCores;
     after.systems.dbzz!.resources.server.phases["connections:500:idle"]!.cpuCores = spacetimeIdle + 0.02;
 
@@ -289,9 +301,21 @@ describe("frozen performance acceptance", () => {
 
     const table = nearTieDriftTable(evidence.frozenDbzzSpacetimeWins);
     expect(table).toContain("subscriptions/shared/fixed-rate/deliveryThroughputPerSec");
+    expect(table).toContain("subscriptions/partitioned/fixed-rate/setupMs");
     expect(table).toContain("-10.0%");
     expect(table).toContain("connections/500/resources/server/idle/cpuCores");
     expect(table.split("\n")).toHaveLength(1 + 22);
+  });
+
+  test("a shared fixed-rate delivery sag below the offered target fails even with exact delivery counts inside the envelope", () => {
+    const after = copy();
+    const shared = subscription(after, "dbzz", "shared");
+    // 10% below the 10,000/s offered target: exact counts, within the near-tie
+    // envelope and above the Convex floor, so only the offered-rate gate trips
+    shared.deliveryThroughputPerSec = 9_000;
+    expect(() => assertPerformanceAcceptance(after, baselineJson)).toThrow(
+      "shared fixed-rate offered target failed: 9000/s, expected at least 9900/s with exact completion",
+    );
   });
 
   test("a near-tie win reversed beyond the noise floor fails on both the relative and the absolute cpu envelope", () => {

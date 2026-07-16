@@ -102,6 +102,18 @@ export interface FloorEvidence {
   passed: true;
 }
 
+export interface FixedRateEvidence {
+  offeredUpdatesPerSec: number;
+  offeredUpdates: number;
+  completedUpdates: number;
+  expectedDeliveries: number;
+  observedDeliveries: number;
+  deliveryTargetPerSec: number;
+  deliveryThroughputPerSec: number;
+  minimumMeasuredDeliveryPerSec: number;
+  passed: true;
+}
+
 export interface PerformanceAcceptanceEvidence {
   schemaVersion: 2;
   passed: true;
@@ -124,17 +136,8 @@ export interface PerformanceAcceptanceEvidence {
   };
   frozenDbzzSpacetimeWins: FrozenWinEvidence[];
   convexFloors: FloorEvidence[];
-  partitionedFixedRate: {
-    offeredUpdatesPerSec: number;
-    offeredUpdates: number;
-    completedUpdates: number;
-    expectedDeliveries: number;
-    observedDeliveries: number;
-    deliveryTargetPerSec: number;
-    deliveryThroughputPerSec: number;
-    minimumMeasuredDeliveryPerSec: number;
-    passed: true;
-  };
+  sharedFixedRate: FixedRateEvidence;
+  partitionedFixedRate: FixedRateEvidence;
   exclusions: readonly { metric: string; reason: string }[];
 }
 
@@ -234,6 +237,45 @@ function capacityComplete(result: SubscriptionCapacityResult): boolean {
   return result.correctness.ok &&
     result.failed === 0 &&
     result.attempted === result.completedInWindow + result.completedAfterWindow;
+}
+
+/**
+ * Both fixed-rate patterns must complete the offered workload at the offered
+ * rate. This hard floor is what keeps the fixed-rate throughput near-ties
+ * honest: the noise envelope tolerates a bounded ranking flip against
+ * SpacetimeDB, never a failure to sustain the offered load itself.
+ */
+function assertFixedRateOfferedTarget(
+  system: MeasuredSystem,
+  pattern: "shared" | "partitioned",
+): FixedRateEvidence {
+  const result = system.workload.subscriptions.find((item) => item.pattern === pattern);
+  if (result === undefined) throw new Error(`DBZZ after-run omits ${pattern} fixed-rate subscriptions`);
+  const config = system.workload.config.subscriptions;
+  const offeredPerSec = pattern === "shared" ? config.sharedUpdatesPerSec : config.partitionedUpdatesPerSec;
+  const offeredUpdates = (config.durationMs / 1_000) * offeredPerSec;
+  const deliveryTarget = result.expectedDeliveries / (config.durationMs / 1_000);
+  const minimumDelivery = deliveryTarget * 0.99;
+  if (
+    !fixedRateComplete(result, config.durationMs, offeredPerSec) ||
+    result.updateThroughputPerSec < offeredPerSec ||
+    result.deliveryThroughputPerSec < minimumDelivery
+  ) {
+    throw new Error(
+      `${pattern} fixed-rate offered target failed: ${result.deliveryThroughputPerSec}/s, expected at least ${minimumDelivery}/s with exact completion`,
+    );
+  }
+  return {
+    offeredUpdatesPerSec: offeredPerSec,
+    offeredUpdates,
+    completedUpdates: result.updates,
+    expectedDeliveries: result.expectedDeliveries,
+    observedDeliveries: result.observedDeliveries,
+    deliveryTargetPerSec: deliveryTarget,
+    deliveryThroughputPerSec: result.deliveryThroughputPerSec,
+    minimumMeasuredDeliveryPerSec: minimumDelivery,
+    passed: true,
+  };
 }
 
 export function extractComparableMetrics(system: MeasuredSystem): ComparableMetric[] {
@@ -666,21 +708,8 @@ export function assertPerformanceAcceptance(
       floorCheck(floors, metric, convex, "<=50% comparable server RSS", 0.5);
     }
   }
-  const partitioned = afterSystems.dbzz.workload.subscriptions.find((item) => item.pattern === "partitioned");
-  if (partitioned === undefined) throw new Error("DBZZ after-run omits partitioned fixed-rate subscriptions");
-  const config = afterSystems.dbzz.workload.config.subscriptions;
-  const offeredUpdates = (config.durationMs / 1_000) * config.partitionedUpdatesPerSec;
-  const deliveryTarget = partitioned.expectedDeliveries / (config.durationMs / 1_000);
-  const minimumDelivery = deliveryTarget * 0.99;
-  if (
-    !fixedRateComplete(partitioned, config.durationMs, config.partitionedUpdatesPerSec) ||
-    partitioned.updateThroughputPerSec < config.partitionedUpdatesPerSec ||
-    partitioned.deliveryThroughputPerSec < minimumDelivery
-  ) {
-    throw new Error(
-      `partitioned fixed-rate offered target failed: ${partitioned.deliveryThroughputPerSec}/s, expected at least ${minimumDelivery}/s with exact completion`,
-    );
-  }
+  const sharedFixedRate = assertFixedRateOfferedTarget(afterSystems.dbzz, "shared");
+  const partitionedFixedRate = assertFixedRateOfferedTarget(afterSystems.dbzz, "partitioned");
   if (floors.length !== FROZEN_CONVEX_FLOORS) {
     throw new Error(`after-run evaluated ${floors.length} Convex floors; expected ${FROZEN_CONVEX_FLOORS}`);
   }
@@ -715,17 +744,8 @@ export function assertPerformanceAcceptance(
     },
     frozenDbzzSpacetimeWins: frozenWins,
     convexFloors: floors,
-    partitionedFixedRate: {
-      offeredUpdatesPerSec: config.partitionedUpdatesPerSec,
-      offeredUpdates,
-      completedUpdates: partitioned.updates,
-      expectedDeliveries: partitioned.expectedDeliveries,
-      observedDeliveries: partitioned.observedDeliveries,
-      deliveryTargetPerSec: deliveryTarget,
-      deliveryThroughputPerSec: partitioned.deliveryThroughputPerSec,
-      minimumMeasuredDeliveryPerSec: minimumDelivery,
-      passed: true,
-    },
+    sharedFixedRate,
+    partitionedFixedRate,
     exclusions: PERFORMANCE_EXCLUSIONS,
   };
 }

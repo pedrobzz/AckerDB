@@ -129,9 +129,9 @@ resolution and move ~12 milli-cores per system between identical runs:
   behind current SpacetimeDB — a bounded, non-compounding worst case of
   roughly its baseline margin plus the floor — before the gate fails. The
   fixed-rate throughput near-ties are additionally backstopped regardless of
-  the envelope: delivery-completeness correctness, the partitioned
-  offered-load completion gate, and the shared Convex delivery floor all
-  reject a failure to deliver the offered work.
+  the envelope: delivery-completeness correctness, the offered-load
+  completion gates on both fixed-rate patterns, and the shared Convex
+  delivery floor all reject a failure to deliver the offered work.
 
 The near-tie classification is derived from the digest-pinned frozen baseline
 only, so it can never grow, and the near-tie count is itself frozen. This is a
@@ -152,12 +152,12 @@ The after-run must also pass exactly 126 DBZZ-versus-Convex floors:
   Startup, seeded-idle, and pre-connection/subscription baseline RSS are not
   part of this Convex floor.
 
-Finally, DBZZ's partitioned fixed-rate case must complete the offered workload
-before save: correctness must pass; completed updates must equal
-`duration × configured updates/s`; observed deliveries must equal expected
-deliveries with none missing; update throughput must reach the configured
-offered rate; and delivery throughput must reach at least 99% of expected
-deliveries divided by the offered duration. Missing metric paths, a changed
+Finally, DBZZ's shared and partitioned fixed-rate cases must each complete
+the offered workload before save: correctness must pass; completed updates
+must equal `duration × configured updates/s`; observed deliveries must equal
+expected deliveries with none missing; update throughput must reach the
+configured offered rate; and delivery throughput must reach at least 99% of
+expected deliveries divided by the offered duration. Missing metric paths, a changed
 floor count, or any failed condition rejects the run without creating a result
 file.
 
