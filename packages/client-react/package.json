@@ -6,19 +6,38 @@
     "src"
   ],
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "react-native": "./src/index.native.ts",
+      "default": "./src/index.ts"
+    }
   },
   "dependencies": {
     "@dbzz/client": "workspace:0.1.1",
     "@dbzz/core": "workspace:0.1.1"
   },
   "peerDependencies": {
-    "react": "^19.2.7"
+    "react": "^19.2.3",
+    "react-native": "^0.86.0",
+    "expo": "^57.0.0",
+    "expo-crypto": "^57.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react-native": {
+      "optional": true
+    },
+    "expo": {
+      "optional": true
+    },
+    "expo-crypto": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.10.6",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "expo": "~57.0.6",
+    "expo-crypto": "~57.0.1",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   }

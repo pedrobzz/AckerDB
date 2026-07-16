@@ -232,8 +232,13 @@ interface CancelableResponse {
 }
 
 interface SseResponseReader extends CancelableResponse {
+  // The done branch admits `value?: Uint8Array` (never read here) because
+  // that is the WHATWG `ReadableStreamReadDoneResult` shape: consumers
+  // typechecking this source against the DOM lib must be able to assign
+  // `response.body.getReader()` directly. Bun's stricter reader type remains
+  // assignable to the wider target.
   read(): Promise<
-    | { readonly done: true; readonly value?: undefined }
+    | { readonly done: true; readonly value?: Uint8Array }
     | { readonly done: false; readonly value: Uint8Array }
   >;
   releaseLock(): void;

@@ -1,0 +1,15 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    // Explicit although expo/tsconfig.base already asserts it: this is the
+    // load-bearing setting that makes TypeScript pick the package's
+    // `react-native` conditional entry.
+    "customConditions": ["react-native"],
+    // dbzz packages ship raw TypeScript with extensionful relative imports,
+    // so consumers whose tsc walks into them need this (expo's base already
+    // sets the required "noEmit").
+    "allowImportingTsExtensions": true
+  },
+  "include": ["index.ts", "App.tsx"]
+}
