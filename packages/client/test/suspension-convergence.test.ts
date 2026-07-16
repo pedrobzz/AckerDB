@@ -1295,14 +1295,29 @@ describe("mutation boundaries against a real dbzz server", () => {
         // The server admitted the mutation and its handler is executing.
         await withDeadline(gate.entered, "the gated handler entry");
 
+        const framesBeforeResume = app.proxy.serverFrames.length;
         port.suspend();
         port.resume();
         // The dangerous interval: activation while the original executes. The
         // server's session admission is the in-flight idempotency boundary —
         // no second session for this clientSessionId exists until the
         // original's operation drains, so no replay can reach an executing
-        // mutation. The client cycles in ordinary reconnect meanwhile.
-        await Bun.sleep(300);
+        // mutation. The protocol-level barrier proving the overlap was
+        // actually challenged: a recovery hello reached server admission and
+        // was refused with the session conflict while the handler is still
+        // gated (only recovery attempts can produce it — the original
+        // connection was admitted cleanly).
+        const conflictRejections = (): number =>
+          app.proxy.serverFrames
+            .slice(framesBeforeResume)
+            .filter(
+              ({ message, forwardedBytes }) =>
+                forwardedBytes !== undefined &&
+                message.t === "err" &&
+                message.id === null &&
+                message.outcome.code === "conflict",
+            ).length;
+        await until(() => conflictRejections() >= 1, "a refused recovery admission");
         const forwardedWhileExecuting = app.proxy.clientFrames.filter(
           ({ message, forwardedBytes }) =>
             forwardedBytes !== undefined &&
