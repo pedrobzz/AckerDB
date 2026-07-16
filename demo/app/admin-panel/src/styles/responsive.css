@@ -1,0 +1,219 @@
+@media (max-width: 1200px) {
+  .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .overview-grid {
+    grid-template-columns: 1fr;
+  }
+  .table-mini-grid {
+    grid-template-columns: repeat(4, minmax(130px, 1fr));
+    overflow-x: auto;
+  }
+  .menu-card-grid,
+  .table-card-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .orders-layout,
+  .guests-layout {
+    grid-template-columns: minmax(290px, 0.72fr) minmax(440px, 1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .mobile-menu-button {
+    position: fixed;
+    z-index: 24;
+    top: 14px;
+    left: 14px;
+    display: inline-flex;
+    width: 42px;
+    height: 42px;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 12px;
+    background: var(--forest-900);
+    color: white;
+    box-shadow: var(--shadow);
+  }
+  .sidebar {
+    transform: translateX(-105%);
+    visibility: hidden;
+    transition:
+      transform 0.2s ease,
+      visibility 0s linear 0.2s;
+  }
+  .sidebar--open {
+    transform: translateX(0);
+    visibility: visible;
+    transition-delay: 0s;
+  }
+  .sidebar__close.icon-button {
+    display: inline-flex;
+  }
+  .sidebar-scrim {
+    position: fixed;
+    z-index: 29;
+    inset: 0;
+    display: block;
+    border: 0;
+    background: rgb(16 42 36 / 48%);
+  }
+  .admin-main {
+    width: 100%;
+    margin-left: 0;
+  }
+  .page {
+    padding: 72px 20px 30px;
+  }
+  .orders-layout,
+  .guests-layout {
+    min-height: auto;
+    grid-template-columns: 1fr;
+  }
+  .order-list {
+    max-height: 420px;
+  }
+  .guest-list {
+    max-height: 380px;
+  }
+  .menu-layout {
+    grid-template-columns: 1fr;
+  }
+  .category-panel {
+    min-height: auto;
+  }
+  .category-list {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .live-note {
+    margin-top: 14px;
+  }
+  .menu-card-grid,
+  .table-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding-inline: 14px;
+  }
+  .page-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .page-header__actions,
+  .page-header__actions .button {
+    width: 100%;
+  }
+  .metric-grid {
+    grid-template-columns: 1fr;
+  }
+  .table-mini-grid {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+    overflow: visible;
+  }
+  .recent-order-row {
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+  .menu-card-grid,
+  .table-card-grid {
+    grid-template-columns: 1fr;
+  }
+  .menu-toolbar,
+  .kitchen-toolbar,
+  .capacity-banner,
+  .filter-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .menu-toolbar .search-field,
+  .kitchen-toolbar .search-field {
+    max-width: none;
+  }
+  .capacity-banner dl {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .category-list {
+    grid-template-columns: 1fr;
+  }
+  .order-detail__actions,
+  .dialog-actions {
+    flex-direction: column-reverse;
+  }
+  .order-detail__actions > *,
+  .dialog-actions .button {
+    width: 100%;
+  }
+  .order-item-row {
+    flex-wrap: wrap;
+  }
+  .order-item-row > div {
+    min-width: 150px;
+  }
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+  .guest-metrics {
+    grid-template-columns: 1fr;
+  }
+  .active-order-card {
+    flex-wrap: wrap;
+  }
+  .history-list .status-pill {
+    display: none;
+  }
+  .toast-region {
+    top: 12px;
+    right: 12px;
+    width: calc(100vw - 24px);
+  }
+  .modal-backdrop {
+    align-items: end;
+    padding: 0;
+  }
+  .modal {
+    max-height: 92vh;
+    border-radius: 20px 20px 0 0;
+  }
+}
+
+@media print {
+  .sidebar,
+  .mobile-menu-button,
+  .page-header,
+  .kitchen-toolbar,
+  .toast-region {
+    display: none !important;
+  }
+  .admin-main {
+    width: 100%;
+    margin: 0;
+  }
+  .page {
+    max-width: none;
+    padding: 0;
+  }
+  .kitchen-board {
+    grid-template-columns: repeat(5, 1fr);
+    overflow: visible;
+  }
+  .kitchen-ticket {
+    break-inside: avoid;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

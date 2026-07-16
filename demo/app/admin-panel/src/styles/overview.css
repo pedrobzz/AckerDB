@@ -1,0 +1,231 @@
+/* Overview */
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 13px;
+  margin-bottom: 20px;
+}
+.metric-card {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+  padding: 19px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--white);
+}
+.metric-card > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--ink-500);
+  font-size: 11px;
+  font-weight: 650;
+}
+.metric-card i {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: var(--sage-100);
+  color: var(--forest-800);
+  font-style: normal;
+}
+.metric-card i svg {
+  width: 16px;
+  height: 16px;
+}
+.metric-card > strong {
+  font-size: 27px;
+  letter-spacing: -0.04em;
+}
+.metric-card > small {
+  color: var(--forest-800);
+  font-size: 10px;
+  font-weight: 650;
+}
+.metric-card--clay i {
+  background: var(--clay-100);
+  color: var(--clay-500);
+}
+.metric-card--clay > small {
+  color: var(--clay-500);
+}
+.metric-card--sky i {
+  background: var(--sky-100);
+  color: var(--sky-500);
+}
+.metric-card--sky > small {
+  color: var(--sky-500);
+}
+.metric-card--violet i {
+  background: var(--violet-100);
+  color: var(--violet-500);
+}
+.metric-card--violet > small {
+  color: var(--violet-500);
+}
+.overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.8fr);
+  gap: 20px;
+}
+.overview-tables,
+.kitchen-pulse,
+.recent-orders {
+  padding: 20px;
+}
+.table-mini-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.table-mini {
+  min-height: 112px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--cream-50);
+}
+.table-mini--occupied {
+  border-color: var(--clay-500);
+  background: var(--clay-100);
+}
+.table-mini > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 5px;
+}
+.table-mini > div > strong {
+  font: 700 20px/1 var(--display);
+}
+.table-mini .status-pill {
+  padding: 4px 6px;
+  font-size: 7px;
+}
+.table-mini p {
+  margin-top: 24px;
+  overflow: hidden;
+  color: var(--ink-500);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.table-mini > b {
+  display: block;
+  margin-top: 4px;
+  color: var(--forest-800);
+  font-size: 10px;
+}
+.table-mini--occupied > b {
+  color: var(--clay-500);
+}
+.pulse-list {
+  display: flex;
+  flex-direction: column;
+}
+.pulse-list article {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+.pulse-list article:last-child {
+  border-bottom: 0;
+}
+.table-token {
+  display: inline-flex;
+  width: 39px;
+  height: 39px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 11px;
+  background: var(--cream-100);
+  color: var(--forest-900);
+  font: 700 12px/1 var(--display);
+}
+.pulse-list article > div:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+}
+.pulse-list strong,
+.pulse-list small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pulse-list strong {
+  font-size: 10px;
+}
+.pulse-list small {
+  margin-top: 3px;
+  color: var(--ink-500);
+  font-size: 8px;
+}
+.pulse-list__status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+.pulse-list__status > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--ink-500);
+  font-size: 8px;
+}
+.recent-orders {
+  margin-top: 20px;
+}
+.recent-order-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  gap: 9px;
+  overflow-x: auto;
+}
+.recent-order-row > a {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 9px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+}
+.recent-order-row > a:hover {
+  background: var(--cream-50);
+}
+.recent-order-row div {
+  min-width: 0;
+}
+.recent-order-row strong,
+.recent-order-row small {
+  display: block;
+}
+.recent-order-row strong {
+  font-size: 10px;
+}
+.recent-order-row small {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--ink-500);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-order-row .status-pill {
+  font-size: 7px;
+}
+.recent-order-row b {
+  text-align: right;
+  font-size: 10px;
+}
