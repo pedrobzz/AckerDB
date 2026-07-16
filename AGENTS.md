@@ -2,7 +2,7 @@ When researching any topic, Do not forget to use the [LLM Wiki Skill](.agents/sk
 
 
 # Benchmarks
-**important**: Always run benchmarks before and after any structural changes to the codebase to ensure performance is not degraded.
+**important**: Run benchmarks before and after changes to the dbzz packages only when those changes can plausibly impact runtime performance. Changes limited to docs, tooling, demos, tests, release plumbing, or other non-runtime code do not require benchmarks.
 
 We always benchmark agains convex and spacetimeDB on the same machine, same workload, to see if our changes keep the same level of performance or increases it.
 
@@ -25,8 +25,9 @@ Details, prerequisites, and fairness notes: `bench/README.md`.
 
 Instructions for next runs:
 
-1. Before a structural change, run `bun bench/run.ts` on a clean tree to get a
-   fresh baseline record (skip if there is already a recent record for HEAD).
+1. Before a performance-relevant change to a dbzz package, run `bun bench/run.ts`
+   on a clean tree to get a fresh baseline record (skip if there is already a
+   recent record for HEAD).
 2. After the change, run it again and read the "vs previous run" delta.
 3. Latency percentiles are noisy (±15% run-to-run is normal). Rerun before
    believing a regression; a real one shows a consistent direction across
