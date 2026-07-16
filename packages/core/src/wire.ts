@@ -8,9 +8,118 @@
  * `undefined` fields are dropped (matching dbzz's "undefined = absent" write
  * semantics). Non-finite numbers are rejected: they are not representable in
  * JSON and `dbz.number()` only admits finite values.
+ *
+ * This module runs on every dbzz runtime — Bun servers, browsers, and React
+ * Native's Hermes engine — so it is written against bare ECMAScript plus
+ * `Uint8Array`: no Node `Buffer`, no `btoa`/`atob`, no text codec globals.
  */
 
 export class WireError extends Error {}
+
+// ---------------------------------------------------------------------------
+// Base64 over Uint8Array, platform-neutral and strict.
+//
+// Bytes travel as standard padded base64 (RFC 4648 alphabet). Both directions
+// only ever see strings this encoder produced, so the decoder is strict: it
+// requires canonical 4-char groups with at most two trailing `=` and rejects
+// every character outside the alphabet (including whitespace). Corruption
+// surfaces as a WireError instead of being silently skipped.
+//
+// Encoding is the pair-table technique: a lazily built table maps every
+// 12-bit value to its two-character base64 string, so each 3-byte group costs
+// two table reads and one string append. Decoding writes straight into the
+// exact-size output array. The tables are built on the first byte value seen;
+// pure-JSON traffic never pays for them.
+
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const BASE64_PAD = 0x3d; // "="
+
+interface Base64Tables {
+  /** 12-bit value -> its two base64 characters. */
+  readonly pairs: readonly string[];
+  /** ASCII code -> 6-bit value, -1 for characters outside the alphabet. */
+  readonly codes: Int8Array;
+}
+
+let base64Tables: Base64Tables | null = null;
+
+function buildBase64Tables(): Base64Tables {
+  const pairs = new Array<string>(4096);
+  for (let i = 0; i < 4096; i++) {
+    pairs[i] = BASE64_ALPHABET[i >> 6]! + BASE64_ALPHABET[i & 63]!;
+  }
+  const codes = new Int8Array(128).fill(-1);
+  for (let i = 0; i < 64; i++) codes[BASE64_ALPHABET.charCodeAt(i)] = i;
+  base64Tables = { pairs, codes };
+  return base64Tables;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const { pairs } = base64Tables ?? buildBase64Tables();
+  const length = bytes.length;
+  const full = length - (length % 3);
+  let out = "";
+  for (let i = 0; i < full; i += 3) {
+    const group = (bytes[i]! << 16) | (bytes[i + 1]! << 8) | bytes[i + 2]!;
+    out += pairs[group >> 12]! + pairs[group & 0xfff]!;
+  }
+  const remaining = length - full;
+  if (remaining === 1) {
+    // 8 data bits left-packed into 12: the pair covers both characters.
+    out += pairs[bytes[full]! << 4]! + "==";
+  } else if (remaining === 2) {
+    // 16 data bits left-packed into 18: a pair plus one single character.
+    const group = ((bytes[full]! << 8) | bytes[full + 1]!) << 2;
+    out += pairs[group >> 6]! + BASE64_ALPHABET[group & 63]! + "=";
+  }
+  return out;
+}
+
+function base64Code(codes: Int8Array, text: string, index: number): number {
+  const charCode = text.charCodeAt(index);
+  const value = charCode < 128 ? codes[charCode]! : -1;
+  if (value < 0) throw new WireError("invalid base64 in wire bytes value");
+  return value;
+}
+
+function base64ToBytes(text: string): Uint8Array {
+  const { codes } = base64Tables ?? buildBase64Tables();
+  const length = text.length;
+  if (length % 4 !== 0) throw new WireError("invalid base64 in wire bytes value");
+  let dataEnd = length;
+  if (length > 0 && text.charCodeAt(length - 1) === BASE64_PAD) {
+    dataEnd -= text.charCodeAt(length - 2) === BASE64_PAD ? 2 : 1;
+  }
+  const out = new Uint8Array((length >> 2) * 3 - (length - dataEnd));
+  let outIndex = 0;
+  let i = 0;
+  const fullEnd = dataEnd & ~3;
+  for (; i < fullEnd; i += 4) {
+    const group =
+      (base64Code(codes, text, i) << 18) |
+      (base64Code(codes, text, i + 1) << 12) |
+      (base64Code(codes, text, i + 2) << 6) |
+      base64Code(codes, text, i + 3);
+    out[outIndex++] = group >> 16;
+    out[outIndex++] = (group >> 8) & 0xff;
+    out[outIndex++] = group & 0xff;
+  }
+  const tail = dataEnd - fullEnd;
+  if (tail === 2) {
+    out[outIndex] = ((base64Code(codes, text, i) << 6) | base64Code(codes, text, i + 1)) >> 4;
+  } else if (tail === 3) {
+    const group =
+      (base64Code(codes, text, i) << 12) |
+      (base64Code(codes, text, i + 1) << 6) |
+      base64Code(codes, text, i + 2);
+    out[outIndex++] = group >> 10;
+    out[outIndex] = (group >> 2) & 0xff;
+  } else if (tail !== 0) {
+    // A lone data character cannot carry a whole byte ("a===" style input).
+    throw new WireError("invalid base64 in wire bytes value");
+  }
+  return out;
+}
 
 function toWire(value: unknown): unknown {
   switch (typeof value) {
@@ -30,7 +139,7 @@ function toWire(value: unknown): unknown {
       throw new WireError(`cannot encode value of type ${typeof value}`);
   }
   if (value === null) return null;
-  if (value instanceof Uint8Array) return { $: "x", v: Buffer.from(value).toString("base64") };
+  if (value instanceof Uint8Array) return { $: "x", v: bytesToBase64(value) };
   if (Array.isArray(value)) return value.map((v) => (v === undefined ? null : toWire(v)));
   const source = value as Record<string, unknown>;
   const out: Record<string, unknown> = {};
@@ -49,8 +158,11 @@ function fromWire(value: unknown): unknown {
     switch (obj["$"]) {
       case "b":
         return BigInt(obj["v"] as string);
-      case "x":
-        return new Uint8Array(Buffer.from(obj["v"] as string, "base64"));
+      case "x": {
+        const raw = obj["v"];
+        if (typeof raw !== "string") throw new WireError("wire bytes value must be a string");
+        return base64ToBytes(raw);
+      }
       case "o": {
         // The wrapped object had a literal "$" key: rebuild it field by field
         // without re-interpreting the object itself as an escape.
