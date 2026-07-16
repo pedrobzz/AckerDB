@@ -319,12 +319,12 @@ export async function runConnectionScale(
       if (needed === 1) {
         // A level that adds one connection would otherwise report a single connect draw as its
         // whole readiness distribution, and one post-idle draw has a heavy scheduling tail on
-        // macOS. Sample connect → ready → close sequentially instead, each sample preceded by
-        // the same idle gap the ladder applies before this level (the caller's baseline idle
-        // covers the first sample), so every draw still measures post-idle readiness against a
-        // server with no live benchmark connections. The last sample's connection is kept as
-        // the cohort member. This is shared workload code: the protocol is identical for every
-        // benchmarked system.
+        // macOS. Sample connect → ready → close sequentially instead, with an idle gap before
+        // every draw (at the standard 1-client first level, the caller's baseline idle covers
+        // the first sample), so each draw still measures post-idle readiness with no benchmark
+        // traffic in flight during the gap. The last sample's connection is kept as the cohort
+        // member, leaving the earlier gaps free of extra live connections. This is shared
+        // workload code: the protocol is identical for every benchmarked system.
         for (let sample = 0; sample < READINESS_SAMPLES; sample++) {
           if (sample > 0) await Bun.sleep(config.resources.idleMs);
           const opened = await openConnections(adapter, 1, nextNonce, config.connections.timeoutMs);
