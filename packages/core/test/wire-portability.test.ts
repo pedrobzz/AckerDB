@@ -75,6 +75,8 @@ describe("wire codec without Node Buffer", () => {
     expect(() => decode(wire("A==="))).toThrow(WireError); // over-padded group
     expect(() => decode(wire("=AAA"))).toThrow(WireError); // pad inside data
     expect(() => decode(wire("AAAAÿÿÿÿ"))).toThrow(WireError); // non-ASCII
+    expect(() => decode(wire("AR=="))).toThrow(WireError); // non-canonical trailing bits (2-char tail)
+    expect(() => decode(wire("AAB="))).toThrow(WireError); // non-canonical trailing bits (3-char tail)
     expect(() => decode(wire(42))).toThrow(WireError); // non-string payload
   });
 });

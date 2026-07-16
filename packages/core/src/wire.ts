@@ -104,14 +104,19 @@ function base64ToBytes(text: string): Uint8Array {
     out[outIndex++] = (group >> 8) & 0xff;
     out[outIndex++] = group & 0xff;
   }
+  // Trailing groups must be canonical: bits beyond the encoded bytes are
+  // required to be zero, so every byte value has exactly one wire encoding.
   const tail = dataEnd - fullEnd;
   if (tail === 2) {
-    out[outIndex] = ((base64Code(codes, text, i) << 6) | base64Code(codes, text, i + 1)) >> 4;
+    const group = (base64Code(codes, text, i) << 6) | base64Code(codes, text, i + 1);
+    if ((group & 0xf) !== 0) throw new WireError("invalid base64 in wire bytes value");
+    out[outIndex] = group >> 4;
   } else if (tail === 3) {
     const group =
       (base64Code(codes, text, i) << 12) |
       (base64Code(codes, text, i + 1) << 6) |
       base64Code(codes, text, i + 2);
+    if ((group & 0x3) !== 0) throw new WireError("invalid base64 in wire bytes value");
     out[outIndex++] = group >> 10;
     out[outIndex] = (group >> 2) & 0xff;
   } else if (tail !== 0) {
