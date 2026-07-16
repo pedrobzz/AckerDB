@@ -211,6 +211,7 @@ type UnexpectedExports = AssertNever<
   Exclude<
     PublicExports,
     | "DbzzProvider"
+    | "useAuthentication"
     | "useConnectionState"
     | "useEvent"
     | "useMutation"
