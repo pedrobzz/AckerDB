@@ -35,63 +35,23 @@ export const PENDING_STATE: { readonly status: "pending" } = Object.freeze({
 const RETRY_BASE_MS = 100;
 const RETRY_MAX_MS = 3_000;
 
-// Snapshots promise immutability, so delivered rows must not be mutable
-// through the snapshot either: a consumer sort(), push(), or byte write would
-// silently corrupt the retained data every later state is built from. This is
-// the same contract as the server's validated-value freezer
-// (packages/server/src/immutable.ts); typed arrays cannot be frozen, so byte
-// leaves become read-only proxies over a private copy.
-const BYTE_MUTATORS = new Set<PropertyKey>([
-  "copyWithin",
-  "fill",
-  "reverse",
-  "set",
-  "sort",
-]);
-
-function readonlyBytes(bytes: Uint8Array): Uint8Array {
-  const target = new Uint8Array(bytes);
-  return new Proxy(target, {
-    defineProperty: () => false,
-    deleteProperty: () => false,
-    set: () => false,
-    get(current, property) {
-      if (property === "buffer") return current.buffer.slice(0);
-      const value = Reflect.get(current, property, current) as unknown;
-      if (typeof value !== "function") return value;
-      if (BYTE_MUTATORS.has(property)) {
-        return () => {
-          throw new TypeError("query snapshot bytes are immutable");
-        };
-      }
-      // Typed-array methods reject Proxy receivers. Run reads against a copy,
-      // which also prevents callbacks and returned views from exposing target.
-      return (...args: unknown[]) => Reflect.apply(value, new Uint8Array(current), args);
-    },
-  });
-}
-
-/** Deep-freeze one delivered value without recursing forever through cycles. */
+// Snapshots promise immutability, so delivered container structure is frozen:
+// a consumer sort() or push() would silently corrupt the retained data every
+// later state is built from. Binary leaves stay genuine mutable Uint8Arrays.
+// The platform has no immutable typed array, and every read-only wrapper
+// stops being a real ArrayBuffer view — TextDecoder and Web Crypto reject it
+// and Blob/Response mis-serialize it — which breaks correct consumers to
+// guard against incorrect ones. Each delivery decodes a fresh byte array, so
+// the only possible writer is the consumer itself.
 function deepFreeze<T>(value: T): T {
-  const seen = new Map<object, object>();
-  const visit = (current: unknown): unknown => {
-    if (typeof current !== "object" || current === null) return current;
-    const known = seen.get(current);
-    if (known !== undefined) return known;
-    if (current instanceof Uint8Array) {
-      const bytes = readonlyBytes(current);
-      seen.set(current, bytes);
-      return bytes;
-    }
-    if (ArrayBuffer.isView(current)) return current;
-    seen.set(current, current);
-    for (const [key, child] of Object.entries(current)) {
-      const immutable = visit(child);
-      if (immutable !== child) Reflect.set(current, key, immutable);
-    }
-    return Object.freeze(current);
+  const visit = (current: unknown): void => {
+    if (typeof current !== "object" || current === null) return;
+    if (ArrayBuffer.isView(current) || Object.isFrozen(current)) return;
+    Object.freeze(current);
+    for (const child of Object.values(current)) visit(child);
   };
-  return visit(value) as T;
+  visit(value);
+  return value;
 }
 
 /**

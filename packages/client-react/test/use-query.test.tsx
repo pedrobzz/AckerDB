@@ -658,7 +658,7 @@ describe("useQuery state transitions", () => {
     client.close();
   });
 
-  test("binary row payloads are immutable through the snapshot", () => {
+  test("binary row payloads stay genuine platform typed arrays inside frozen rows", async () => {
     const harness = createHarness();
     const client = new DbzzClient(harness.config);
     client.connect();
@@ -676,23 +676,23 @@ describe("useQuery state transitions", () => {
         kind: "reset",
         from: null,
         to: cursor(1n),
-        value: [{ name: "a", blob: new Uint8Array([1, 2, 3]) }],
+        value: [{ name: "a", blob: new Uint8Array([104, 105]) }],
       },
     });
     const state = entry.snapshot();
     if (state.status !== "success") throw new Error("expected success");
     const row = state.data[0]!;
+    // The container structure is frozen, but byte leaves must remain real
+    // ArrayBuffer views the platform accepts — no read-only wrapper survives
+    // TextDecoder, Web Crypto, or Blob serialization.
     expect(Object.isFrozen(state.data)).toBe(true);
     expect(Object.isFrozen(row)).toBe(true);
-    expect([...row.blob]).toEqual([1, 2, 3]);
-    expect(() => {
-      (row.blob as Uint8Array)[0] = 9;
-    }).toThrow(TypeError);
-    expect(() => row.blob.fill(0)).toThrow(TypeError);
-    expect(() => row.blob.set([9])).toThrow(TypeError);
-    // The buffer escape hatch hands out a copy, never the retained storage.
-    new Uint8Array(row.blob.buffer)[0] = 9;
-    expect(row.blob[0]).toBe(1);
+    expect(row.blob).toBeInstanceOf(Uint8Array);
+    expect(ArrayBuffer.isView(row.blob)).toBe(true);
+    expect([...row.blob]).toEqual([104, 105]);
+    expect(new TextDecoder().decode(row.blob)).toBe("hi");
+    const blob = new Blob([row.blob as Uint8Array<ArrayBuffer>]);
+    expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([104, 105]));
     stopListening();
     client.close();
   });
