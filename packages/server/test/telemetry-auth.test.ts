@@ -132,6 +132,7 @@ function fixture(
   const runtime = new Runtime({
     engine,
     registry: new Registry(functions),
+    verifier,
     ...(limits === undefined ? {} : { limits }),
     telemetry: telemetryEnabled
       ? {
@@ -156,7 +157,7 @@ function fixture(
         }
       : false,
   });
-  const server = serve({ runtime, verifier, port: 0 });
+  const server = serve({ runtime, port: 0 });
   return {
     directory,
     engine,

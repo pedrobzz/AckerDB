@@ -4,9 +4,14 @@ import {
   defineSchema,
   defineTable,
   mutation,
+  procedure,
   type Identity,
   type MutationBuilder,
+  type MutationCtx,
   type Principal,
+  type ProcedureBuilder,
+  type QueryCtx,
+  type TxCtx,
   type UserPrincipal,
   type VerifiedUserCredential,
 } from "@dbzz/server";
@@ -20,6 +25,7 @@ const schema = defineSchema({
 });
 
 const typedMutation = mutation as MutationBuilder<typeof schema>;
+const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 
 export const _writeOwnedRow = typedMutation({
   args: { value: dbz.string() },
@@ -32,6 +38,22 @@ export const _writeOwnedRow = typedMutation({
     return ctx.db.owned.insert({ userId: identity, value: args.value });
   },
 });
+
+export const _linkAccount = typedProcedure({
+  args: { rawBearerToken: dbz.string() },
+  access: (ctx) => ctx.auth.kind === "user",
+  handler: (ctx, args) => ctx.linkAccount(args.rawBearerToken),
+});
+
+declare const queryCtx: QueryCtx<typeof schema>;
+declare const mutationCtx: MutationCtx<typeof schema>;
+declare const txCtx: TxCtx<typeof schema>;
+// @ts-expect-error linking performs external verification and is unavailable to queries
+void queryCtx.linkAccount;
+// @ts-expect-error linking performs external verification and is unavailable to mutations
+void mutationCtx.linkAccount;
+// @ts-expect-error exact account attachment is owned by the procedure capability
+void txCtx.linkAccount;
 
 declare const principal: Principal;
 if (principal.kind === "user") {

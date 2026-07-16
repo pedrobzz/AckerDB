@@ -199,13 +199,14 @@ describe("HTTP and SSE credential leases", () => {
     directory = mkdtempSync(join(tmpdir(), "dbzz-serve-auth-lease-"));
     engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
+    verifier = new LeaseVerifier();
     runtime = new Runtime({
       engine,
       registry: new Registry(functions),
+      verifier,
       telemetry: false,
     });
-    verifier = new LeaseVerifier();
-    server = serve({ runtime, verifier, port: 0 });
+    server = serve({ runtime, port: 0 });
     base = `http://127.0.0.1:${server.port}`;
     requestId = 0;
   });
@@ -235,12 +236,17 @@ describe("HTTP and SSE credential leases", () => {
       }),
     });
 
-  test("validates the verifier before opening another HTTP listener", () => {
+  test("validates the Runtime-owned verifier before serving", () => {
     const invalid = Object.create(verifier) as LeaseVerifier;
     Object.defineProperty(invalid, "revocationBound", {
       value: { kind: "invalidation", deadlineMs: 5_001 },
     });
-    expect(() => serve({ runtime, verifier: invalid, port: 0 })).toThrow(
+    expect(() => new Runtime({
+      engine,
+      registry: new Registry(functions),
+      verifier: invalid,
+      telemetry: false,
+    })).toThrow(
       "verifier invalidation deadlineMs cannot exceed revocationDeadlineMs",
     );
   });

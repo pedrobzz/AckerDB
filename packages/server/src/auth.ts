@@ -280,14 +280,19 @@ export function credentialFromAuthorization(value: string | null): Credential {
   }
 }
 
-/** One fail-closed credential path shared by WebSocket, HTTP, and SSE. */
-export async function verifyClientCredential(
-  credential: Credential,
+/** Verify one raw bearer token into immutable external credential evidence. */
+export async function verifyBearerCredential(
+  rawBearerToken: string,
   verifier: CredentialVerifier | undefined,
-  resolveIdentity: IdentityResolver,
   now: () => number = Date.now,
-): Promise<ClientPrincipal> {
-  if (credential.kind === "anonymous") return ANONYMOUS_PRINCIPAL;
+): Promise<VerifiedCredential> {
+  let credential: Credential;
+  try {
+    credential = parseCredential({ kind: "bearer", token: rawBearerToken });
+  } catch (error) {
+    throw unauthenticated(error);
+  }
+  if (credential.kind !== "bearer") throw unauthenticated();
   if (verifier === undefined) throw unauthenticated();
   let candidate: VerifiedCredential;
   try {
@@ -311,6 +316,29 @@ export async function verifyClientCredential(
   const timestamp = now();
   if (!Number.isFinite(timestamp)) throw new RangeError("credential clock must return finite milliseconds");
   if (verified.expiresAt <= timestamp) throw unauthenticated();
+  return verified;
+}
+
+/** Verify that a raw bearer token proves one configured external user account. */
+export async function verifyUserBearerCredential(
+  rawBearerToken: string,
+  verifier: CredentialVerifier | undefined,
+  now: () => number = Date.now,
+): Promise<VerifiedUserCredential> {
+  const verified = await verifyBearerCredential(rawBearerToken, verifier, now);
+  if (verified.kind !== "user") throw unauthenticated();
+  return verified;
+}
+
+/** One fail-closed credential path shared by WebSocket, HTTP, and SSE. */
+export async function verifyClientCredential(
+  credential: Credential,
+  verifier: CredentialVerifier | undefined,
+  resolveIdentity: IdentityResolver,
+  now: () => number = Date.now,
+): Promise<ClientPrincipal> {
+  if (credential.kind === "anonymous") return ANONYMOUS_PRINCIPAL;
+  const verified = await verifyBearerCredential(credential.token, verifier, now);
   if (verified.kind === "workload") {
     return Object.freeze({
       kind: "workload",

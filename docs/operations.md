@@ -39,7 +39,7 @@ shape and its cross-field invariants; it does not accept a partial object.
 | Publication handoff | 4,096 items, 32 MiB |
 | Scheduled handlers per batch | 100 |
 | Mutation replay | 24 h, 1 MiB/result, 1,000,000 records, 4 GiB |
-| Remote credential invalidation guarantee | Verifier `deadlineMs` must be positive, finite, and no greater than configured `revocationDeadlineMs` (5 s default and maximum); Session and `DbzzServer` construction validate it, matching callbacks initiate immediate fail-closed session/lease abort, and the verifier owns feed propagation within its advertised bound |
+| Remote credential invalidation guarantee | Verifier `deadlineMs` must be positive, finite, and no greater than configured `revocationDeadlineMs` (5 s default and maximum); Runtime construction validates its single verifier before activation, matching callbacks initiate immediate fail-closed session/lease abort, and the verifier owns feed propagation within its advertised bound |
 | Graceful shutdown deadline | 10 s |
 | Telemetry retention/export | See [Telemetry](telemetry.md#default-bounds) |
 
