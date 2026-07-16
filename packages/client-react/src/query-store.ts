@@ -54,19 +54,30 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
+/** What useQuery observes: an immutable snapshot plus a counted listener slot. */
+export interface QuerySource<Rows> {
+  snapshot(): DbzzQueryState<Rows>;
+  listen(listener: () => void): () => void;
+}
+
 /**
  * One live-query external-store entry: a client subscription plus a
  * connection-state observer folded into a single immutable snapshot. The
- * client subscription starts with the first listener and is released with the
- * last one, so entries are inert until React commits — skipped queries and
- * discarded renders never start work, and Strict Mode subscribe/cleanup
- * cycles map one-to-one onto client subscriptions. The listener-count
- * lifecycle is deliberately the sharing contract ISSUE-03's registry keys
- * entries by; this module stays single-consumer.
+ * client subscription starts with the first listener and is released after
+ * the last one leaves, so entries are inert until React commits — skipped
+ * queries and discarded renders never start work. The release is deferred by
+ * one microtask: React replaces listeners as cleanup-then-setup inside one
+ * synchronous effects pass (Strict Mode replays, same-commit consumer
+ * handoffs), so the zero-listener instant those create is not lost demand. A
+ * listener returning within the window continues the live subscription and
+ * its authoritative snapshot, and because socket events arrive as macrotasks,
+ * nothing can be delivered while the release is pending.
  */
-export class QueryStoreEntry<Rows> {
+export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
   private readonly listeners = new Set<() => void>();
   private state: DbzzQueryState<Rows> = PENDING_STATE;
+  private started = false;
+  private releaseScheduled = false;
   private stopQuery: (() => void) | null = null;
   private stopConnectionState: (() => void) | null = null;
   private retryHandle: ReturnType<typeof setTimeout> | null = null;
@@ -77,6 +88,7 @@ export class QueryStoreEntry<Rows> {
     private readonly client: DbzzClient,
     private readonly address: string,
     private readonly args: unknown,
+    private readonly onRelease?: () => void,
   ) {}
 
   /** Immutable snapshot; the same object is returned until the next transition. */
@@ -86,29 +98,32 @@ export class QueryStoreEntry<Rows> {
 
   listen(listener: () => void): () => void {
     this.listeners.add(listener);
-    if (this.listeners.size === 1) this.start();
+    if (!this.started) {
+      this.started = true;
+      this.start();
+    }
     let active = true;
     return () => {
       if (!active) return;
       active = false;
       this.listeners.delete(listener);
-      if (this.listeners.size === 0) this.stop();
+      if (this.listeners.size === 0) this.scheduleRelease();
     };
   }
 
+  private scheduleRelease(): void {
+    if (this.releaseScheduled) return;
+    this.releaseScheduled = true;
+    queueMicrotask(() => {
+      this.releaseScheduled = false;
+      if (this.listeners.size > 0 || !this.started) return;
+      this.started = false;
+      this.stop();
+      this.onRelease?.();
+    });
+  }
+
   private start(): void {
-    // A restarted entry (Strict Mode re-subscribe) keeps retained rows as
-    // stale until the new subscription's authoritative delivery, and retries
-    // after an error that belonged to the released subscription.
-    if (this.state.status === "error") {
-      this.replace(
-        this.state.staleData === undefined
-          ? PENDING_STATE
-          : { status: "success", data: this.state.staleData, stale: true },
-      );
-    } else if (this.state.status === "success" && !this.state.stale) {
-      this.replace({ status: "success", data: this.state.data, stale: true });
-    }
     this.stopConnectionState = this.client.subscribeConnectionState((connection) =>
       this.onConnectionState(connection),
     );
@@ -241,4 +256,65 @@ export class QueryStoreEntry<Rows> {
     this.state = Object.freeze(state);
     for (const listener of [...this.listeners]) listener();
   }
+}
+
+/**
+ * Shared live-query registry for one client lifetime. Consumers addressing
+ * the same query with canonically equal arguments observe one entry — one
+ * client subscription and one snapshot object — while different addresses or
+ * argument values never share. Entries are created only when a listener
+ * commits and evicted when their deferred release actually runs, so discarded
+ * React renders never register anything, same-pass listener handoffs adopt
+ * the live entry, and a key whose subscription was truly released starts one
+ * clean new query lifetime.
+ */
+export class QueryRegistry {
+  private readonly entries = new Map<string, QueryStoreEntry<unknown>>();
+
+  constructor(private readonly client: DbzzClient) {}
+
+  /**
+   * The observation surface for one (address, canonical arguments) pair.
+   * Reading the snapshot never creates an entry; without one the state is the
+   * shared pending constant a fresh entry would report anyway.
+   */
+  source<Rows>(address: string, argsKey: string, args: unknown): QuerySource<Rows> {
+    // argsKey is stableEncode output — JSON, whose strings escape control
+    // characters — so neither half can contain a literal NUL and structurally
+    // similar (address, args) pairs cannot forge each other's key.
+    const key = `${address}\u0000${argsKey}`;
+    return {
+      snapshot: () =>
+        (this.entries.get(key)?.snapshot() ?? PENDING_STATE) as DbzzQueryState<Rows>,
+      listen: (listener) => {
+        const entry = this.entries.get(key) ?? this.register(key, address, args);
+        return entry.listen(listener);
+      },
+    };
+  }
+
+  private register(key: string, address: string, args: unknown): QueryStoreEntry<unknown> {
+    const entry = new QueryStoreEntry<unknown>(this.client, address, args, () => {
+      // The entry's release ran with no surviving listeners: its client
+      // subscription is gone, so the key must read as a clean lifetime again.
+      // The identity check keeps a stale release from evicting a successor.
+      if (this.entries.get(key) === entry) this.entries.delete(key);
+    });
+    this.entries.set(key, entry);
+    return entry;
+  }
+}
+
+// One registry per client, resolved by client identity: the provider replaces
+// the client on reconfiguration, so a new lifetime can never observe the
+// previous lifetime's entries, and each registry is released with its client.
+const registries = new WeakMap<DbzzClient, QueryRegistry>();
+
+export function queryRegistryFor(client: DbzzClient): QueryRegistry {
+  let registry = registries.get(client);
+  if (registry === undefined) {
+    registry = new QueryRegistry(client);
+    registries.set(client, registry);
+  }
+  return registry;
 }
