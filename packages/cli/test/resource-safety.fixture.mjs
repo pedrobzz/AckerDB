@@ -156,10 +156,11 @@ reconcile(engine);
 const runtime = new Runtime({
   engine,
   registry: new Registry(functions),
+  verifier,
   limits,
   telemetry: false,
 });
-const server = serve({ runtime, verifier, port });
+const server = serve({ runtime, port });
 
 let shutdown;
 const drain = () => shutdown ??= server.drain().then(
