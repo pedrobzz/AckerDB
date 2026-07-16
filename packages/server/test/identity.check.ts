@@ -6,11 +6,13 @@ import {
   mutation,
   procedure,
   type Identity,
+  type ExternalAccount,
   type MutationBuilder,
   type MutationCtx,
   type Principal,
   type ProcedureBuilder,
   type QueryCtx,
+  type SseCtx,
   type TxCtx,
   type UserPrincipal,
   type VerifiedUserCredential,
@@ -45,15 +47,31 @@ export const _linkAccount = typedProcedure({
   handler: (ctx, args) => ctx.linkAccount(args.rawBearerToken),
 });
 
+export const _unlinkAccount = typedProcedure({
+  args: { issuer: dbz.string(), subject: dbz.string() },
+  access: (ctx) => ctx.auth.kind === "user",
+  handler: (ctx, account) => ctx.unlinkAccount(account),
+});
+
 declare const queryCtx: QueryCtx<typeof schema>;
 declare const mutationCtx: MutationCtx<typeof schema>;
 declare const txCtx: TxCtx<typeof schema>;
+declare const sseCtx: SseCtx<typeof schema>;
+declare const account: ExternalAccount;
+const unlinkFromSse: Promise<void> = sseCtx.unlinkAccount(account);
+void unlinkFromSse;
 // @ts-expect-error linking performs external verification and is unavailable to queries
 void queryCtx.linkAccount;
 // @ts-expect-error linking performs external verification and is unavailable to mutations
 void mutationCtx.linkAccount;
 // @ts-expect-error exact account attachment is owned by the procedure capability
 void txCtx.linkAccount;
+// @ts-expect-error unlinking is unavailable to queries
+void queryCtx.unlinkAccount;
+// @ts-expect-error unlinking is unavailable to mutations
+void mutationCtx.unlinkAccount;
+// @ts-expect-error exact account detachment is owned by the procedure capability
+void txCtx.unlinkAccount;
 
 declare const principal: Principal;
 if (principal.kind === "user") {

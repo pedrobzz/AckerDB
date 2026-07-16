@@ -6,7 +6,7 @@
  * callable for server-side composition, but every call enters `invokeFunction`
  * so nested calls cannot skip argument validation or the callee's policy.
  */
-import type { Principal } from "./auth.ts";
+import type { ExternalAccount, Principal } from "./auth.ts";
 import {
   type Expand,
   type InferShape,
@@ -42,6 +42,8 @@ export interface ProcedureCtx<S extends Schema = Schema> extends InvocationConte
   readonly abortSignal: AbortSignal;
   /** Prove and attach another user account using its raw bearer token, not an Authorization header. */
   linkAccount(rawBearerToken: string): Promise<void>;
+  /** Remove one exact owned account while retaining the durable application Identity. */
+  unlinkAccount(account: ExternalAccount): Promise<void>;
   /** Open a transaction: atomic, consistent, no external calls inside. */
   tx<T>(fn: (tx: TxCtx<S>) => T | Promise<T>): Promise<T>;
 }

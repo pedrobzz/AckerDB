@@ -50,7 +50,10 @@ export type VerifiedCredential = VerifiedUserCredential | WorkloadPrincipal;
 export type AuthenticatedPrincipal = UserPrincipal | WorkloadPrincipal;
 export type ClientPrincipal = AnonymousPrincipal | AuthenticatedPrincipal;
 export type Principal = AnonymousPrincipal | UserPrincipal | WorkloadPrincipal | SystemPrincipal;
-export type IdentityResolver = (account: ExternalAccount) => Promise<Identity>;
+export type IdentityResolver = (
+  account: ExternalAccount,
+  signal?: AbortSignal,
+) => Promise<Identity>;
 
 export const ANONYMOUS_PRINCIPAL: AnonymousPrincipal = Object.freeze({ kind: "anonymous" });
 export const SYSTEM_PRINCIPAL: SystemPrincipal = Object.freeze({ kind: "system" });

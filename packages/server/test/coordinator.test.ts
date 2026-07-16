@@ -140,6 +140,46 @@ describe("CommitCoordinator", () => {
     await Promise.all([first, second]);
   });
 
+  test("hands committed framework state off before admitting the next writer turn", async () => {
+    const { coordinator, engine } = fixture();
+    const order: string[] = [];
+    const first = coordinator.transactFramework({
+      fairnessKey: "first",
+      requestBytes: 1,
+      work: () => {
+        engine.writer.query("INSERT INTO notes (body) VALUES (?)").run("first");
+        return "first";
+      },
+      afterCommit: (value) => {
+        order.push(`handoff:${value}`);
+      },
+    });
+    const second = coordinator.transactFramework({
+      fairnessKey: "second",
+      requestBytes: 1,
+      work: () => {
+        order.push("next-writer");
+        return engine.writer.query("INSERT INTO notes (body) VALUES (?)").run("second");
+      },
+    });
+
+    await Promise.all([first, second]);
+    expect(order).toEqual(["handoff:first", "next-writer"]);
+  });
+
+  test("reports a failed framework handoff as committed", async () => {
+    const { coordinator, engine } = fixture();
+    await expect(coordinator.transactFramework({
+      fairnessKey: "connection-1",
+      requestBytes: 1,
+      work: () => engine.writer.query("INSERT INTO notes (body) VALUES (?)").run("committed"),
+      afterCommit: () => {
+        throw new Error("handoff failed");
+      },
+    })).rejects.toMatchObject({ code: "convergence_unavailable", committed: true });
+    expect(engine.reader.query("SELECT body FROM notes").all()).toEqual([{ body: "committed" }]);
+  });
+
   test("gives a cold connection a writer turn before one hot connection drains its queue", async () => {
     const { coordinator } = fixture();
     const release = deferred();

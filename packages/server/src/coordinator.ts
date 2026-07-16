@@ -132,6 +132,8 @@ export interface FrameworkTransactionRequest<T> {
   readonly requestBytes: number;
   readonly signal?: AbortSignal;
   readonly work: () => T | Promise<T>;
+  /** Synchronous committed-state handoff before the single writer admits its next turn. */
+  readonly afterCommit?: (value: T) => void;
 }
 
 export interface CommitTelemetryEvent {
@@ -346,6 +348,15 @@ export class CommitCoordinator<Publication> {
         const value = await transaction.run(true, request.work);
         this.engine.writer.exec("COMMIT");
         open = false;
+        try {
+          request.afterCommit?.(value);
+        } catch (cause) {
+          throw new DbzzError(
+            "convergence_unavailable",
+            "framework transaction committed but its post-commit handoff failed",
+            { committed: true, cause },
+          );
+        }
         return value;
       } catch (error) {
         if (open) {

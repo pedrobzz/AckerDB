@@ -91,6 +91,21 @@ conflict without revealing its owner. DBZZ never allocates a new Identity,
 auto-links by mutable claims, merges Identities, or rewrites application rows
 through this primitive.
 
+### Explicit account unlinking
+
+Applications may opt in to the inverse operation from a procedure or SSE
+procedure with `ctx.unlinkAccount({ issuer, subject })`. The current user must
+own that exact account, and the same transaction refuses to remove the
+Identity's final account. A successful unlink deletes only the directory link:
+the durable Identity and every application row owned by it remain unchanged.
+
+After commit, DBZZ publishes an exact-account invalidation through the
+Runtime's canonical authentication boundary, so matching sessions and remote
+credential leases fail closed; rollback publishes nothing. Authenticating
+later with the removed credential follows normal first-login resolution and
+may provision a new Identity. This primitive is not full-user deletion,
+provider-side revocation, or application-data erasure.
+
 ## Function access policies
 
 Every query, mutation, procedure, SSE procedure, and event subscription must

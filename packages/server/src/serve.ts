@@ -633,7 +633,7 @@ export class DbzzServer {
     return acquireAuthLease({
       credential,
       verifier: runtime.credentialVerifier,
-      resolveIdentity: (account) => runtime.resolveIdentity(account, request.signal),
+      resolveIdentity: (account, signal) => runtime.resolveIdentity(account, signal),
       signal: request.signal,
       revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
     });
@@ -672,7 +672,7 @@ export class DbzzServer {
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,
-      }, bytes, externalTrace);
+      }, bytes, externalTrace, lease.invalidationScope);
       if (sse) {
         const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;

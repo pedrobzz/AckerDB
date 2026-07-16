@@ -1,4 +1,5 @@
 import type { ExternalHttpTrace } from "./external-trace.ts";
+import type { AuthInvalidationScope } from "./auth-invalidation.ts";
 
 const HTTP_REQUEST_PROVENANCE: unique symbol = Symbol("dbzz.httpRequestProvenance");
 const trustedProvenance = new WeakSet<object>();
@@ -11,16 +12,19 @@ interface HttpRequestProvenanceCarrier {
 export interface HttpRequestProvenance {
   readonly bytes: number;
   readonly trace?: ExternalHttpTrace;
+  readonly invalidationScope?: AuthInvalidationScope;
 }
 
 export function carryHttpRequestProvenance<T extends object>(
   value: T,
   bytes: number,
   trace: ExternalHttpTrace | undefined,
+  invalidationScope?: AuthInvalidationScope,
 ): T {
   const provenance = Object.freeze({
     bytes,
     ...(trace === undefined ? {} : { trace }),
+    ...(invalidationScope === undefined ? {} : { invalidationScope }),
   });
   trustedProvenance.add(provenance);
   Object.assign(value, { [HTTP_REQUEST_PROVENANCE]: provenance });
