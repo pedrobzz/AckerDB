@@ -1138,11 +1138,31 @@ export class DbzzClient {
     this.suspended = true;
     this.resuming = false;
     this.clearReconnectTimer();
-    this.clearConnectionTimers();
     if (this.authAttempt !== undefined) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.expiryHandle = undefined;
     }
+    this.retireConnection(1001, "client suspended");
+    for (const controller of this.activeFetches) controller.abort();
+    this.activeFetches.clear();
+    this.publishConnectionState();
+  }
+
+  /**
+   * Synchronously ends the current physical connection's generation. The
+   * socket is detached before close() is issued because socket close is
+   * asynchronous on real transports: every late callback the retired socket
+   * still owns must already fail the identity proof, or a delayed welcome or
+   * auth frame could mutate the state the caller is about to publish.
+   * Connection-owned timers stop with their generation and live-event
+   * cursors reset to their next boundary, exactly as an observed close would
+   * have done. Callers own the resulting flags and their state publication.
+   * Every path that blocks authentication retires the connection through
+   * here, so `authBlocked` implies no socket exists — which is why sends
+   * need no separate blocked check.
+   */
+  private retireConnection(code: number, reason: string): void {
+    this.clearConnectionTimers();
     const socket = this.socket;
     this.socket = null;
     this.socketOpen = false;
@@ -1153,10 +1173,7 @@ export class DbzzClient {
     for (const subscription of this.subscriptions.values()) {
       if (subscription.kind === "event") subscription.cursor = undefined;
     }
-    socket?.close(1001, "client suspended");
-    for (const controller of this.activeFetches) controller.abort();
-    this.activeFetches.clear();
-    this.publishConnectionState();
+    socket?.close(code, reason);
   }
 
   /**
@@ -1191,12 +1208,12 @@ export class DbzzClient {
       }
     }
     if (!this.permanentFailure && !this.authBlocked && this.hasReconnectWork()) {
-      if (this.serverRetryNotBeforeMs > this.now()) {
-        this.scheduleReconnect();
-      } else {
-        this.resuming = true;
-        this.ensureConnected();
-      }
+      // ensureConnected is the single enforcement point for the server's
+      // Retry-After deadline: an unelapsed one defers this dial to the
+      // ordinary reconnect policy (which clears `resuming` again), everything
+      // else dials inside this event turn.
+      this.resuming = true;
+      this.ensureConnected();
     }
     this.publishConnectionState();
   }
@@ -1215,7 +1232,7 @@ export class DbzzClient {
     const error = localError("auth_unavailable", "authentication timed out", "connection");
     this.blockingError = error;
     attempt.reject(error);
-    this.socket?.close(1008, "authentication timed out");
+    this.retireConnection(1008, "authentication timed out");
     this.publishConnectionState();
   }
 
@@ -1358,6 +1375,15 @@ export class DbzzClient {
 
   private ensureConnected(): void {
     if (this.closed || this.permanentFailure || this.authBlocked || this.suspended || this.socket) {
+      return;
+    }
+    // Server admission control is enforced at the one physical dial boundary:
+    // no demand path — new work, connect(), a credential refresh, or a
+    // lifecycle activation — may open a socket before the server's
+    // Retry-After deadline. The bounded reconnect policy holds the remainder
+    // (an already-scheduled timer is preserved; scheduling clears `resuming`).
+    if (this.serverRetryNotBeforeMs > this.now()) {
+      this.scheduleReconnect();
       return;
     }
     this.clearReconnectTimer();
@@ -1802,7 +1828,7 @@ export class DbzzClient {
     }
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
-    this.socket?.close(1008, "authentication failed");
+    this.retireConnection(1008, "authentication failed");
     this.publishConnectionState();
   }
 
@@ -1823,7 +1849,7 @@ export class DbzzClient {
       this.releasePersistent(subscription.bytes);
     }
     this.subscriptions.clear();
-    this.socket?.close(1002, "protocol failure");
+    this.retireConnection(1002, "protocol failure");
     this.publishConnectionState();
   }
 

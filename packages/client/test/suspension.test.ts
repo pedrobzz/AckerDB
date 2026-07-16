@@ -106,6 +106,8 @@ class FakeSocket implements DbzzWebSocket {
   onerror: (() => void) | null = null;
   readonly sent: string[] = [];
   readonly closes: Array<{ code?: number; reason?: string }> = [];
+  /** Real socket close is asynchronous; set this to hold the close event back. */
+  deferClose = false;
   private closed = false;
 
   send(data: string): void {
@@ -118,7 +120,7 @@ class FakeSocket implements DbzzWebSocket {
     if (this.closed) return;
     this.closed = true;
     this.closes.push({ code, reason });
-    this.onclose?.();
+    if (!this.deferClose) this.onclose?.();
   }
 
   open(): void {
@@ -700,6 +702,119 @@ describe("DbzzClient activation", () => {
     expect(client.currentConnectionState.phase).toBe("resuming");
     welcome(client, sockets[1]!);
     expect(client.currentConnectionState.phase).toBe("ready");
+    client.close();
+  });
+
+  test("new demand during a Retry-After window defers to the deadline instead of dialing", () => {
+    const { client, clock, sockets } = harness();
+    client.subscribe("todos.list", { list: 1n }, () => {});
+    welcome(client, sockets[0]!);
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: null,
+      outcome: {
+        code: "overloaded",
+        retryable: true,
+        retryAfterMs: 5_000,
+        message: "connection admission is full",
+        resource: "connection",
+      },
+    });
+    expect(clock.nextDueIn()).toBe(5_000);
+    clock.advance(2_000);
+
+    // Every demand path funnels through the same dial boundary: none of them
+    // may open a socket before the server's admission deadline, and the
+    // already-scheduled floor timer is preserved rather than restarted.
+    client.subscribe("todos.list", { list: 2n }, () => {});
+    expect(sockets).toHaveLength(1);
+    expect(clock.nextDueIn()).toBe(3_000);
+    client.connect();
+    expect(sockets).toHaveLength(1);
+    void client.mutation("todos.add", { text: "milk" }).catch(() => {});
+    expect(sockets).toHaveLength(1);
+    expect(clock.nextDueIn()).toBe(3_000);
+
+    clock.advance(3_000);
+    expect(sockets).toHaveLength(2);
+    welcome(client, sockets[1]!);
+    expect(sockets[1]!.frames().filter((frame) => frame.t === "sub")).toHaveLength(2);
+    client.close();
+  });
+
+  test("late frames after an authentication timeout cannot revive or terminally fail the client", async () => {
+    const { client, clock, sockets, phases } = harness({
+      credential: { kind: "bearer", token: "token-a" },
+    });
+    client.subscribe("todos.list", { list: 1n }, () => {});
+    const socket = sockets[0]!;
+    welcome(client, socket);
+    // Real transports close asynchronously: queued frames can still arrive
+    // after the client issued close().
+    socket.deferClose = true;
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
+    clock.advance(30_000);
+    const rejection = (await refresh) as DbzzClientError;
+    expect(rejection.code).toBe("auth_unavailable");
+    expect(socket.closes).toEqual([{ code: 1008, reason: "authentication timed out" }]);
+    expect(client.currentConnectionState.phase).toBe("authentication-blocked");
+    const blocked = client.currentConnectionState;
+    const sentBefore = socket.sent.length;
+
+    // The retired generation delivers everything it had queued: a welcome, an
+    // auth confirmation, data, and finally its close event. None of it may
+    // mutate the blocked client, flush retained work, or fail it permanently.
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 7,
+      principal: "user",
+    });
+    socket.receive({ v: PROTOCOL_VERSION, t: "auth", attemptId: 2, authEpoch: 7, principal: "user" });
+    socket.receive(transition(1, cursor(9n), ["late"]));
+    socket.onclose?.();
+    expect(client.currentConnectionState).toBe(blocked);
+    expect(socket.sent.length).toBe(sentBefore);
+    expect(sockets).toHaveLength(1);
+    expect(clock.taskCount).toBe(0);
+
+    // A new credential still recovers the ordinary way.
+    const recovered = client.refreshCredential({ kind: "bearer", token: "token-c" });
+    welcome(client, sockets[1]!, 2);
+    expect(await recovered).toEqual({ authEpoch: 2, principal: "anonymous" });
+    expect(phases.at(-1)).toBe("ready");
+    client.close();
+  });
+
+  test("late frames after a server credential rejection stay inert until the deferred close lands", () => {
+    const { client, sockets } = harness({
+      credential: { kind: "bearer", token: "token-a" },
+    });
+    client.subscribe("todos.list", { list: 1n }, () => {});
+    const socket = sockets[0]!;
+    welcome(client, socket);
+    socket.deferClose = true;
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: null,
+      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
+    });
+    expect(client.currentConnectionState.phase).toBe("authentication-blocked");
+    const blocked = client.currentConnectionState;
+
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 9,
+      principal: "user",
+    });
+    socket.onclose?.();
+    expect(client.currentConnectionState).toBe(blocked);
+    expect(sockets).toHaveLength(1);
     client.close();
   });
 
