@@ -16,7 +16,9 @@ import {
   decode,
   encode,
   parseClientMessage,
+  type AuthenticationDescriptor,
   type ClientMessage,
+  type Identity,
   type LiveEventCursor,
   type ServerMessage,
   type SubscriptionCursor,
@@ -30,6 +32,7 @@ import {
   type DbzzLiveEvent,
   type DbzzWebSocket,
 } from "@dbzz/client";
+
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -48,6 +51,12 @@ import {
   FrameProxy,
   assertTcpPortReleased,
 } from "../../server/test/support/frame-proxy.ts";
+
+const USER_AUTHENTICATION = {
+  principal: "user",
+  identity: 1n as Identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-1" },
+} satisfies AuthenticationDescriptor;
 
 interface ClockTask {
   at: number;
@@ -510,7 +519,7 @@ describe("mutation convergence across suspension", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     // Welcome verified token-a while token-b is pending: only the credential
     // presentation may be on the wire — no subscription, no mutation.
@@ -523,9 +532,9 @@ describe("mutation convergence across suspension", () => {
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 2,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
-    expect(await refresh).toEqual({ authEpoch: 2, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 2, ...USER_AUTHENTICATION });
     // Confirmed authentication released the retained families, subscriptions
     // first, and the mutation kept its original identity.
     expect(second.frames().map((frame) => frame.t)).toEqual(["hello", "auth", "sub", "m"]);
@@ -879,7 +888,7 @@ describe("event convergence across suspension", () => {
           t: "welcome",
           clientSessionId: client.clientSessionId,
           authEpoch: 9,
-          principal: "user",
+          ...USER_AUTHENTICATION,
         });
         retired.receive(mutationOk(issued, 99n));
         retired.receive(
@@ -900,7 +909,7 @@ describe("event convergence across suspension", () => {
           t: "auth",
           attemptId: 99,
           authEpoch: 9,
-          principal: "user",
+          ...USER_AUTHENTICATION,
         });
         retired.onclose?.();
       }

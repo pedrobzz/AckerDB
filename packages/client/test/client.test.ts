@@ -6,8 +6,10 @@ import {
   parseCallRequest,
   parseClientMessage,
   parseSseAckRequest,
+  type AuthenticationDescriptor,
   type ClientMessage,
   type Credential,
+  type Identity,
   type ServerMessage,
   type SseAckRequest,
   type SubscriptionCursor,
@@ -22,6 +24,17 @@ import {
   type DbzzConnectionState,
   type DbzzWebSocket,
 } from "@dbzz/client";
+
+const USER_AUTHENTICATION = {
+  principal: "user",
+  identity: 1n as Identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-1" },
+} satisfies AuthenticationDescriptor;
+const REFRESHED_USER_AUTHENTICATION = {
+  principal: "user",
+  identity: USER_AUTHENTICATION.identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-1-refreshed" },
+} satisfies AuthenticationDescriptor;
 
 interface ClockTask {
   at: number;
@@ -156,12 +169,14 @@ function harness(
 
 function welcome(client: DbzzClient, socket: FakeSocket, principal: "anonymous" | "user" = "anonymous"): void {
   socket.open();
+  const descriptor: AuthenticationDescriptor =
+    principal === "user" ? USER_AUTHENTICATION : { principal: "anonymous" };
   socket.receive({
     v: PROTOCOL_VERSION,
     t: "welcome",
     clientSessionId: client.clientSessionId,
     authEpoch: 0,
-    principal,
+    ...descriptor,
   });
 }
 
@@ -301,7 +316,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       t: "welcome",
       clientSessionId: "stable-session",
       authEpoch: 4,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     expect(first.frames().some((frame) => frame.t === "q")).toBe(true);
 
@@ -372,7 +387,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     const auth = lastFrame(socket, "auth");
     expect(auth.credential).toEqual({ kind: "bearer", token: "token-b" });
@@ -382,9 +397,9 @@ describe("DbzzClient protocol 2 ownership", () => {
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 2,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
-    expect(await refresh).toEqual({ authEpoch: 2, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 2, ...USER_AUTHENTICATION });
     expect(socket.frames().some((frame) => frame.t === "q")).toBe(true);
 
     client.close();
@@ -1991,15 +2006,15 @@ describe("DbzzClient connection state", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     // The hello presented the refreshed credential, so this welcome is its
     // verification: the attempt resolves without a second auth round-trip.
     expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
-    expect(await refresh).toEqual({ authEpoch: 1, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
     const upgraded = client.currentConnectionState;
     if (upgraded.phase !== "ready") throw new Error(`unexpected ${upgraded.phase}`);
-    expect(upgraded.authentication).toEqual({ authEpoch: 1, principal: "user" });
+    expect(upgraded.authentication).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
     expect(states.map((state) => state.phase)).toEqual([
       "ready",
       "authentication-blocked",
@@ -2272,7 +2287,11 @@ describe("DbzzClient authentication state", () => {
     expect(client.currentAuthenticationState).toBe(confirmed);
     // Both surfaces publish from one transition and share the confirmation.
     const ready = client.currentConnectionState;
-    if (ready.phase !== "ready" || confirmed.phase !== "unauthenticated") {
+    if (
+      ready.phase !== "ready" ||
+      ready.authentication.principal !== "anonymous" ||
+      confirmed.phase !== "unauthenticated"
+    ) {
       throw new Error("expected a confirmed anonymous session");
     }
     expect(confirmed.authentication).toBe(ready.authentication);
@@ -2300,12 +2319,45 @@ describe("DbzzClient authentication state", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 4,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     expect(client.currentAuthenticationState).toEqual({
       phase: "authenticated",
-      authentication: { authEpoch: 4, principal: "user" },
+      authentication: { authEpoch: 4, ...USER_AUTHENTICATION },
     });
+    client.close();
+  });
+
+  test("replaces provenance atomically while preserving durable Identity", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    welcome(client, sockets[0]!, "user");
+    const before = client.currentAuthentication;
+    expect(before).toEqual({ authEpoch: 0, ...USER_AUTHENTICATION });
+
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-refreshed" });
+    const attempt = lastFrame(sockets[0]!, "auth");
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: attempt.attemptId,
+      authEpoch: 1,
+      ...REFRESHED_USER_AUTHENTICATION,
+    });
+
+    const after = await refresh;
+    expect(after).toEqual({ authEpoch: 1, ...REFRESHED_USER_AUTHENTICATION });
+    if (after.principal !== "user") throw new Error(`unexpected ${after.principal}`);
+    expect(before).toEqual({ authEpoch: 0, ...USER_AUTHENTICATION });
+    expect(Object.isFrozen(after)).toBe(true);
+    expect(Object.isFrozen(after.provenance)).toBe(true);
+    const ready = client.currentConnectionState;
+    if (ready.phase !== "ready") throw new Error(`unexpected ${ready.phase}`);
+    const authenticationState = client.currentAuthenticationState;
+    if (authenticationState.phase !== "authenticated") {
+      throw new Error(`unexpected ${authenticationState.phase}`);
+    }
+    expect(ready.authentication).toBe(authenticationState.authentication);
     client.close();
   });
 
@@ -2356,12 +2408,12 @@ describe("DbzzClient authentication state", () => {
       t: "auth",
       attemptId: refreshFrame.attemptId,
       authEpoch: 2,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
-    expect(await refresh).toEqual({ authEpoch: 2, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 2, ...USER_AUTHENTICATION });
     expect(client.currentAuthenticationState).toEqual({
       phase: "authenticated",
-      authentication: { authEpoch: 2, principal: "user" },
+      authentication: { authEpoch: 2, ...USER_AUTHENTICATION },
     });
     expect(states.map((state) => state.phase)).toEqual([
       "authenticated",
@@ -2387,9 +2439,9 @@ describe("DbzzClient authentication state", () => {
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
-    expect(await first).toEqual({ authEpoch: 1, principal: "user" });
+    expect(await first).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
 
     // A doubled sign-out joins the in-flight attempt instead of rejecting the
     // first caller with auth_stale.
@@ -2422,10 +2474,10 @@ describe("DbzzClient authentication state", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 2,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
-    expect(await refresh).toEqual({ authEpoch: 2, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 2, ...USER_AUTHENTICATION });
     client.close();
   });
 
@@ -2441,13 +2493,13 @@ describe("DbzzClient authentication state", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     expect(await detour).toMatchObject({ code: "auth_stale" });
     // The surviving attempt's value is what the hello presented, so the
     // welcome resolves it without an auth frame.
     expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
-    expect(await back).toEqual({ authEpoch: 1, principal: "user" });
+    expect(await back).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
     client.close();
   });
 
@@ -2497,15 +2549,15 @@ describe("DbzzClient authentication state", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 3,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     // One verification: the hello carried the pending credential, so no
     // second auth frame follows the welcome.
     expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
-    expect(await refresh).toEqual({ authEpoch: 3, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 3, ...USER_AUTHENTICATION });
     expect(client.currentAuthenticationState).toEqual({
       phase: "authenticated",
-      authentication: { authEpoch: 3, principal: "user" },
+      authentication: { authEpoch: 3, ...USER_AUTHENTICATION },
     });
     client.close();
   });
@@ -2544,13 +2596,13 @@ describe("DbzzClient authentication state", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 0,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
-    expect(await refresh).toEqual({ authEpoch: 0, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 0, ...USER_AUTHENTICATION });
     expect(client.currentAuthenticationState).toEqual({
       phase: "authenticated",
-      authentication: { authEpoch: 0, principal: "user" },
+      authentication: { authEpoch: 0, ...USER_AUTHENTICATION },
     });
     client.close();
   });

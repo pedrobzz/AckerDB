@@ -22,4 +22,9 @@ export type {
   ProcedureRef,
   QueryRef,
 } from "@dbzz/client";
-export type { Credential } from "@dbzz/core";
+export type {
+  AuthenticationDescriptor,
+  Credential,
+  CredentialProvenance,
+  Identity,
+} from "@dbzz/core";

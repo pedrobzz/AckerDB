@@ -7,7 +7,9 @@ import {
   decode,
   encode,
   parseClientMessage,
+  type AuthenticationDescriptor,
   type ClientMessage,
+  type Identity,
   type ServerMessage,
   type SubscriptionCursor,
 } from "@dbzz/core";
@@ -31,6 +33,12 @@ import {
   reconcile,
   serve,
 } from "@dbzz/server";
+
+const USER_AUTHENTICATION = {
+  principal: "user",
+  identity: 1n as Identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-1" },
+} satisfies AuthenticationDescriptor;
 
 interface ClockTask {
   at: number;
@@ -405,12 +413,12 @@ describe("DbzzClient suspension", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     // The fresh hello presented the refreshed credential, so the welcome
     // resolves the attempt without a second auth round-trip.
     expect(second.frames().some((frame) => frame.t === "auth")).toBe(false);
-    expect(await refresh).toEqual({ authEpoch: 1, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
     expect(clock.taskCount).toBe(2); // only the fresh connection's timers remain
     client.close();
   });
@@ -550,7 +558,7 @@ describe("DbzzClient activation", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 9,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     first.receive(transition(subscription.id, cursor(3n), ["evil"], cursor(2n)));
     first.receive({
@@ -559,7 +567,13 @@ describe("DbzzClient activation", () => {
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "stale" },
     });
-    first.receive({ v: PROTOCOL_VERSION, t: "auth", attemptId: 99, authEpoch: 9, principal: "user" });
+    first.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: 99,
+      authEpoch: 9,
+      ...USER_AUTHENTICATION,
+    });
     first.onclose?.();
     first.onerror?.();
 
@@ -770,9 +784,15 @@ describe("DbzzClient activation", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 7,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
-    socket.receive({ v: PROTOCOL_VERSION, t: "auth", attemptId: 2, authEpoch: 7, principal: "user" });
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: 2,
+      authEpoch: 7,
+      ...USER_AUTHENTICATION,
+    });
     socket.receive(transition(1, cursor(9n), ["late"]));
     socket.onclose?.();
     expect(client.currentConnectionState).toBe(blocked);
@@ -810,7 +830,7 @@ describe("DbzzClient activation", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 9,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
     socket.onclose?.();
     expect(client.currentConnectionState).toBe(blocked);
@@ -852,9 +872,9 @@ describe("DbzzClient activation", () => {
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
-      principal: "user",
+      ...USER_AUTHENTICATION,
     });
-    expect(await refresh!).toEqual({ authEpoch: 1, principal: "user" });
+    expect(await refresh!).toEqual({ authEpoch: 1, ...USER_AUTHENTICATION });
     expect(client.currentConnectionState.phase).toBe("ready");
     // The rejected socket's deferred close event stays inert.
     first.onclose?.();
