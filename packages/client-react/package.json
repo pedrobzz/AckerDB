@@ -9,7 +9,8 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@dbzz/client": "workspace:0.1.1"
+    "@dbzz/client": "workspace:0.1.1",
+    "@dbzz/core": "workspace:0.1.1"
   },
   "peerDependencies": {
     "react": "^19.2.7"

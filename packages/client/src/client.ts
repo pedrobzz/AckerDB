@@ -115,6 +115,19 @@ export interface DbzzCallOptions {
   readonly signal?: AbortSignal;
 }
 
+export interface DbzzSubscribeOptions {
+  /**
+   * Fires when the server authoritatively confirms the already-held value
+   * without redelivering it: applied `resume` and `checkpoint` transitions,
+   * and deliveries landing exactly on the held cursor. Together with
+   * `onUpdate` this makes "the held data is current on this connection"
+   * observable, which is what reconnect-aware consumers (the React binding's
+   * stale/fresh distinction) need. Value deliveries keep flowing through
+   * `onUpdate`; this never carries data.
+   */
+  readonly onCursorConfirmed?: () => void;
+}
+
 export const DBZZ_CLIENT_LIMITS: DbzzClientLimits = Object.freeze({
   maxPendingItems: 4_096,
   maxPendingBytes: 16 * 1024 * 1024,
@@ -158,6 +171,7 @@ interface QuerySubscription {
   readonly args: unknown;
   readonly onUpdate: (value: unknown) => void;
   readonly onError?: (error: DbzzClientError) => void;
+  readonly onCursorConfirmed?: () => void;
   cursor?: SubscriptionCursor;
   resetRequested: boolean;
   frame: string;
@@ -534,6 +548,7 @@ export class DbzzClient {
     args: A,
     onUpdate: (value: R) => void,
     onError?: (error: DbzzClientError) => void,
+    options: DbzzSubscribeOptions = {},
   ): () => void {
     this.assertUsable();
     const id = this.allocateId();
@@ -547,6 +562,7 @@ export class DbzzClient {
       args,
       onUpdate: onUpdate as (value: unknown) => void,
       onError,
+      onCursorConfirmed: options.onCursorConfirmed,
       resetRequested: false,
       frame,
       bytes,
@@ -1137,6 +1153,10 @@ export class DbzzClient {
     if (sameCursor(subscription.cursor, transition.to)) {
       if (transition.kind === "reset") subscription.resetRequested = false;
       this.advanceConvergence(id, transition.to.commitVersion);
+      // A delivery landing exactly on the held cursor (typically the resume
+      // acknowledgment after reconnect) authoritatively confirms the held
+      // value — unless the client is still demanding a reset.
+      if (!subscription.resetRequested) subscription.onCursorConfirmed?.();
       return;
     }
     if (subscription.resetRequested && transition.kind !== "reset") return;
@@ -1163,6 +1183,7 @@ export class DbzzClient {
         break;
       case "checkpoint":
       case "resume":
+        subscription.onCursorConfirmed?.();
         break;
     }
   }

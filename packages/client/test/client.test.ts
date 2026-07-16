@@ -1992,3 +1992,124 @@ describe("DbzzClient connection state", () => {
     unsubscribe();
   });
 });
+
+describe("subscription cursor confirmations", () => {
+  test("confirms applied resume and checkpoint transitions but never value deliveries", () => {
+    const { client, clock, sockets } = harness();
+    const updates: unknown[] = [];
+    let confirmations = 0;
+    client.subscribe(
+      "todos.list",
+      { list: 1n },
+      (value) => updates.push(value),
+      undefined,
+      { onCursorConfirmed: () => confirmations++ },
+    );
+    const first = sockets[0]!;
+    welcome(client, first);
+    const subscription = lastFrame(first, "sub");
+    const c1 = cursor(1n);
+    const c2 = cursor(2n);
+
+    // Value deliveries keep flowing through onUpdate alone.
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: c1, value: ["one"] },
+    });
+    expect(updates).toEqual([["one"]]);
+    expect(confirmations).toBe(0);
+
+    // A checkpoint silently advances the cursor and confirms the held value.
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "checkpoint", from: c1, to: c2 },
+    });
+    expect(confirmations).toBe(1);
+    expect(updates).toEqual([["one"]]);
+
+    // Reconnect resumes from the retained cursor; the server's positive
+    // resume lands exactly on the held cursor and confirms it.
+    first.drop();
+    clock.advance(100);
+    const second = sockets[1]!;
+    welcome(client, second);
+    expect(lastFrame(second, "sub").cursor).toEqual(c2);
+    second.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "resume", from: c2, to: c2 },
+    });
+    expect(confirmations).toBe(2);
+    expect(updates).toEqual([["one"]]);
+    client.close();
+  });
+
+  test("withholds held-cursor confirmation while a reset is demanded", () => {
+    const { client, sockets } = harness();
+    const updates: unknown[] = [];
+    let confirmations = 0;
+    client.subscribe(
+      "todos.list",
+      { list: 1n },
+      (value) => updates.push(value),
+      undefined,
+      { onCursorConfirmed: () => confirmations++ },
+    );
+    const first = sockets[0]!;
+    welcome(client, first);
+    const subscription = lastFrame(first, "sub");
+    const c0 = cursor(0n);
+    const c1 = cursor(1n);
+    const c2 = cursor(2n);
+    const c3 = cursor(3n);
+
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: c1, value: ["one"] },
+    });
+
+    // A mismatched predecessor makes the client demand a reset; deliveries
+    // landing on the held cursor are no longer trusted as confirmations.
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
+    });
+    expect(lastFrame(first, "reset")).toEqual({ v: 2, t: "reset", id: subscription.id, cursor: c1 });
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "update", from: c0, to: c1, value: ["one-too-late"] },
+    });
+    expect(confirmations).toBe(0);
+
+    // The authoritative reset delivers through onUpdate; a duplicate of it
+    // landing on the now-held cursor confirms again.
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
+    });
+    expect(updates).toEqual([["one"], ["three-authoritative"]]);
+    expect(confirmations).toBe(0);
+    first.receive({
+      v: 2,
+      t: "transition",
+      id: subscription.id,
+      transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
+    });
+    expect(confirmations).toBe(1);
+    expect(updates).toEqual([["one"], ["three-authoritative"]]);
+    client.close();
+  });
+});
