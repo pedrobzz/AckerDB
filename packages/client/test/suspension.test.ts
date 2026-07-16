@@ -818,6 +818,51 @@ describe("DbzzClient activation", () => {
     client.close();
   });
 
+  test("a synchronous refreshCredential from onError dials a replacement in the same turn", async () => {
+    const { client, sockets } = harness({
+      credential: { kind: "bearer", token: "token-a" },
+    });
+    let refresh: Promise<unknown> | undefined;
+    client.subscribe(
+      "todos.list",
+      { list: 1n },
+      () => {},
+      () => {
+        // The application reacts to the auth rejection inside the callback
+        // itself — the rejected socket must already be retired so this
+        // recovery dial can happen.
+        refresh ??= client.refreshCredential({ kind: "bearer", token: "token-b" });
+      },
+    );
+    const first = sockets[0]!;
+    welcome(client, first);
+    first.deferClose = true;
+    first.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: null,
+      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
+    });
+    expect(sockets).toHaveLength(2);
+    const second = sockets[1]!;
+    second.open();
+    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
+    second.receive({
+      v: PROTOCOL_VERSION,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 1,
+      principal: "user",
+    });
+    expect(await refresh!).toEqual({ authEpoch: 1, principal: "user" });
+    expect(client.currentConnectionState.phase).toBe("ready");
+    // The rejected socket's deferred close event stays inert.
+    first.onclose?.();
+    expect(client.currentConnectionState.phase).toBe("ready");
+    expect(second.isClosed()).toBe(false);
+    client.close();
+  });
+
   test("activation without demand leaves the client idle", () => {
     const { client, sockets, port, phases } = harness();
     port.suspend();

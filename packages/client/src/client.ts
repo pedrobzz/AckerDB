@@ -1826,9 +1826,12 @@ export class DbzzClient {
       this.authAttempt.reject(error);
       this.authAttempt = undefined;
     }
+    // Retired before any externally owned callback runs: an onError handler
+    // may reenter refreshCredential in the same turn, and its recovery dial
+    // must find the rejected socket already detached or it would never dial.
+    this.retireConnection(1008, "authentication failed");
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
-    this.retireConnection(1008, "authentication failed");
     this.publishConnectionState();
   }
 
