@@ -1,4 +1,5 @@
 import { DbzzClient, type DbzzClientOptions } from "@dbzz/client";
+import type { Credential } from "@dbzz/core";
 import {
   createContext,
   useContext,
@@ -19,6 +20,8 @@ export interface DbzzProviderProps {
 
 interface DbzzContextValue {
   readonly client: DbzzClient | null;
+  /** The rendering configuration's credential kind, known before the client exists. */
+  readonly credential: Credential["kind"];
 }
 
 const DbzzContext = createContext<DbzzContextValue | null>(null);
@@ -80,7 +83,8 @@ export function DbzzProvider({ config, children }: DbzzProviderProps): ReactElem
   // configuration, so no committed render can pair a new configuration with
   // the previous lifetime's state.
   const client = lifetime !== null && lifetime.key === key ? lifetime.client : null;
-  const value = useMemo<DbzzContextValue>(() => ({ client }), [client]);
+  const credential = config.credential.kind;
+  const value = useMemo<DbzzContextValue>(() => ({ client, credential }), [client, credential]);
   return <DbzzContext.Provider value={value}>{children}</DbzzContext.Provider>;
 }
 
@@ -89,4 +93,11 @@ export function useProviderClient(hook: string): DbzzClient | null {
   const value = useContext(DbzzContext);
   if (value === null) throw new Error(`${hook} requires a <DbzzProvider> ancestor`);
   return value.client;
+}
+
+/** Module-internal: the configured credential kind for deterministic pre-client snapshots. */
+export function useProviderCredentialKind(hook: string): Credential["kind"] {
+  const value = useContext(DbzzContext);
+  if (value === null) throw new Error(`${hook} requires a <DbzzProvider> ancestor`);
+  return value.credential;
 }
