@@ -1992,3 +1992,29 @@ describe("DbzzClient connection state", () => {
     unsubscribe();
   });
 });
+
+describe("DbzzClient close-time mutation settlement", () => {
+  test("close settles sent mutations as indeterminate and unsent mutations as unavailable", async () => {
+    const { client, sockets } = harness();
+    const sent = client.mutation("todos.add", { text: "sent" }).catch((error) => error);
+    welcome(client, sockets[0]!);
+    expect(lastFrame(sockets[0]!, "m").args).toEqual({ text: "sent" });
+
+    // Written to a connection that dropped: the server may have committed.
+    sockets[0]!.drop();
+    // Created while disconnected: provably never reached the server.
+    const unsent = client.mutation("todos.add", { text: "unsent" }).catch((error) => error);
+
+    client.close();
+    expect(await sent).toMatchObject({
+      code: "indeterminate",
+      resource: "idempotency",
+      message: "mutation completion is unknown",
+    });
+    expect(await unsent).toMatchObject({
+      code: "unavailable",
+      resource: "operation",
+      message: "client closed",
+    });
+  });
+});
