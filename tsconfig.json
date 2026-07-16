@@ -15,8 +15,10 @@
     "paths": {
       "@dbzz/core": ["./packages/core/src/index.ts"],
       "@dbzz/server": ["./packages/server/src/index.ts"],
-      "@dbzz/client": ["./packages/client/src/index.ts"]
+      "@dbzz/client": ["./packages/client/src/index.ts"],
+      "@dbzz/client-react": ["./packages/client-react/src/index.ts"]
     }
   },
-  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"]
+  "include": ["packages/*/src/**/*.ts", "packages/*/test/**/*.ts"],
+  "exclude": ["packages/client-react"]
 }
