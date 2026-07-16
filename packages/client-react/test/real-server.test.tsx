@@ -108,7 +108,9 @@ describe("DbzzProvider against a real dbzz server", () => {
       </StrictMode>,
     );
 
-    await until(() => container.textContent === "connecting:-", "the connecting snapshot");
+    // The pre-ready "connecting:-" snapshot is too transient to poll for once
+    // the process is warm (an in-process handshake completes between polls);
+    // its deterministic coverage lives in the lifecycle and SSR suites.
     await until(() => container.textContent === "ready:anonymous", "the ready state");
     expect(sockets.filter((socket) => socket.readyState === WebSocket.OPEN)).toHaveLength(1);
 
