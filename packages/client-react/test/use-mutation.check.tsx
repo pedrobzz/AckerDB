@@ -45,6 +45,7 @@ const exportChannel = generatedProcedure({
 
 const streamChannel = generatedSse({
   args: { channelId: dbz.bigint() },
+  yields: dbz.string(),
   access: "public",
   handler: async function* () {
     yield "chunk";
