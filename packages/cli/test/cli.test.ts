@@ -135,6 +135,9 @@ describe("dbz CLI", () => {
     )).toBe(1n);
     expect(await client.query<unknown, unknown[]>("messages.list", { channelId: 1n })).toHaveLength(1);
     expect(await client.query<Record<never, never>, number>("admin.users.count", {})).toBe(1);
+    const chunks: unknown[] = [];
+    for await (const chunk of client.sse("messages.tail", { channelId: 1n })) chunks.push(chunk);
+    expect(chunks).toEqual([{ body: "channel 1" }]);
     client.close();
 
     started.child.kill("SIGTERM");
