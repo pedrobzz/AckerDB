@@ -501,6 +501,71 @@ describe("shared query registry", () => {
     await render(root, <></>);
   });
 
+  test("Strict Mode mounting a sole consumer on a ready client never releases the query", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+
+    // The socket is live before the consumer exists, so any zero-listener
+    // release would reach the wire immediately.
+    await render(root, app(harness, [], true));
+    await ready(harness);
+
+    // Strict Mode replays the sole consumer's subscribe/cleanup/subscribe
+    // against the ready client; the deferred release bridges the replay, so
+    // the wire sees one subscription and no churn.
+    await render(root, app(harness, [{ id: "a", args: { list: 1n } }], true));
+    const subs = harness.subFrames("sub");
+    expect(subs).toHaveLength(1);
+    expect(harness.subFrames("unsub")).toHaveLength(0);
+
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id: subs[0]!.id,
+      transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
+    });
+    expect(container.textContent).toBe("a=fresh:one;");
+    await render(root, <></>);
+  });
+
+  test("replacing the sole consumer in one commit hands the live entry over without regression", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+
+    await render(root, app(harness, [{ id: "a", args: { list: 1n } }]));
+    await ready(harness);
+    const id = harness.subFrames("sub")[0]!.id;
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id,
+      transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
+    });
+    expect(container.textContent).toBe("a=fresh:one;");
+    const before = observed.get("a")!;
+
+    // a unmounts and b mounts in the same commit: b adopts the live entry
+    // and its authoritative snapshot with no unsubscribe, no new
+    // subscription, and no success-to-pending regression.
+    await render(root, app(harness, [{ id: "b", args: { list: 1n } }]));
+    expect(container.textContent).toBe("b=fresh:one;");
+    expect(observed.get("b")!).toBe(before);
+    expect(harness.subFrames("sub")).toHaveLength(1);
+    expect(harness.subFrames("unsub")).toHaveLength(0);
+
+    // Updates keep flowing to the adopting consumer.
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id,
+      transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
+    });
+    expect(container.textContent).toBe("b=fresh:one,two;");
+    await render(root, <></>);
+  });
+
   test("Strict Mode mounting a consumer into a live shared entry neither closes nor duplicates it", async () => {
     const harness = createHarness();
     const container = mountPoint();
@@ -685,14 +750,51 @@ describe("shared query registry", () => {
     stopSource();
     expect(harness.subFrames("unsub")).toHaveLength(0);
     stopSibling();
+    // The last release is deferred one microtask to bridge same-pass
+    // listener handoffs; once it runs the subscription and entry are gone.
+    await Bun.sleep(0);
     expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([id]);
-    // The entry is gone with its last listener: the key reads pending again
-    // and a new listener starts a clean subscription.
     expect(source.snapshot()).toMatchObject({ status: "pending" });
+    // A new listener after the release starts a clean subscription.
     const stopAgain = source.listen(() => {});
     expect(harness.subFrames("sub")).toHaveLength(2);
     expect(harness.subFrames("sub")[1]!.cursor).toBeUndefined();
     stopAgain();
+    client.close();
+  });
+
+  test("a listener returning within the release window continues the live subscription", async () => {
+    const harness = createHarness();
+    const client = new DbzzClient(harness.config);
+    client.connect();
+    harness.live().welcome(SESSION);
+    const registry = queryRegistryFor(client);
+    const argsKey = stableEncode({ list: 1n });
+    const source = registry.source<string[]>("todos.list", argsKey, { list: 1n });
+
+    const stopFirst = source.listen(() => {});
+    const id = harness.subFrames("sub")[0]!.id;
+    harness.live().receive({
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id,
+      transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
+    });
+    const delivered = source.snapshot();
+
+    // Cleanup-then-setup in one synchronous pass, exactly as React replays
+    // effects: the entry, its subscription, and its authoritative snapshot
+    // survive the zero-listener instant untouched.
+    stopFirst();
+    const stopSecond = source.listen(() => {});
+    await Bun.sleep(0);
+    expect(harness.subFrames("sub")).toHaveLength(1);
+    expect(harness.subFrames("unsub")).toHaveLength(0);
+    expect(source.snapshot()).toBe(delivered);
+
+    stopSecond();
+    await Bun.sleep(0);
+    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([id]);
     client.close();
   });
 

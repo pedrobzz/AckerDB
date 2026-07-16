@@ -63,16 +63,21 @@ export interface QuerySource<Rows> {
 /**
  * One live-query external-store entry: a client subscription plus a
  * connection-state observer folded into a single immutable snapshot. The
- * client subscription starts with the first listener and is released with the
- * last one, so entries are inert until React commits — skipped queries and
- * discarded renders never start work, and Strict Mode subscribe/cleanup
- * cycles map one-to-one onto client subscriptions. The registry evicts an
- * entry the moment its subscription releases, so each entry lives exactly one
- * first-listener-to-last-listener cycle.
+ * client subscription starts with the first listener and is released after
+ * the last one leaves, so entries are inert until React commits — skipped
+ * queries and discarded renders never start work. The release is deferred by
+ * one microtask: React replaces listeners as cleanup-then-setup inside one
+ * synchronous effects pass (Strict Mode replays, same-commit consumer
+ * handoffs), so the zero-listener instant those create is not lost demand. A
+ * listener returning within the window continues the live subscription and
+ * its authoritative snapshot, and because socket events arrive as macrotasks,
+ * nothing can be delivered while the release is pending.
  */
 export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
   private readonly listeners = new Set<() => void>();
   private state: DbzzQueryState<Rows> = PENDING_STATE;
+  private started = false;
+  private releaseScheduled = false;
   private stopQuery: (() => void) | null = null;
   private stopConnectionState: (() => void) | null = null;
   private retryHandle: ReturnType<typeof setTimeout> | null = null;
@@ -83,6 +88,7 @@ export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
     private readonly client: DbzzClient,
     private readonly address: string,
     private readonly args: unknown,
+    private readonly onRelease?: () => void,
   ) {}
 
   /** Immutable snapshot; the same object is returned until the next transition. */
@@ -90,21 +96,31 @@ export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
     return this.state;
   }
 
-  /** Whether any listener still holds this entry live (registry eviction). */
-  hasListeners(): boolean {
-    return this.listeners.size > 0;
-  }
-
   listen(listener: () => void): () => void {
     this.listeners.add(listener);
-    if (this.listeners.size === 1) this.start();
+    if (!this.started) {
+      this.started = true;
+      this.start();
+    }
     let active = true;
     return () => {
       if (!active) return;
       active = false;
       this.listeners.delete(listener);
-      if (this.listeners.size === 0) this.stop();
+      if (this.listeners.size === 0) this.scheduleRelease();
     };
+  }
+
+  private scheduleRelease(): void {
+    if (this.releaseScheduled) return;
+    this.releaseScheduled = true;
+    queueMicrotask(() => {
+      this.releaseScheduled = false;
+      if (this.listeners.size > 0 || !this.started) return;
+      this.started = false;
+      this.stop();
+      this.onRelease?.();
+    });
   }
 
   private start(): void {
@@ -247,9 +263,10 @@ export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
  * the same query with canonically equal arguments observe one entry — one
  * client subscription and one snapshot object — while different addresses or
  * argument values never share. Entries are created only when a listener
- * commits and evicted with the last listener's release, so discarded React
- * renders never register anything and a re-subscribed key starts one clean
- * new query lifetime.
+ * commits and evicted when their deferred release actually runs, so discarded
+ * React renders never register anything, same-pass listener handoffs adopt
+ * the live entry, and a key whose subscription was truly released starts one
+ * clean new query lifetime.
  */
 export class QueryRegistry {
   private readonly entries = new Map<string, QueryStoreEntry<unknown>>();
@@ -271,24 +288,18 @@ export class QueryRegistry {
         (this.entries.get(key)?.snapshot() ?? PENDING_STATE) as DbzzQueryState<Rows>,
       listen: (listener) => {
         const entry = this.entries.get(key) ?? this.register(key, address, args);
-        const release = entry.listen(listener);
-        return () => {
-          release();
-          // The last listener leaving already released the client
-          // subscription; drop the registry entry with it so the next
-          // listener starts a clean lifetime instead of adopting retained
-          // state. The identity check keeps a stale double-release from
-          // evicting a successor entry under the same key.
-          if (!entry.hasListeners() && this.entries.get(key) === entry) {
-            this.entries.delete(key);
-          }
-        };
+        return entry.listen(listener);
       },
     };
   }
 
   private register(key: string, address: string, args: unknown): QueryStoreEntry<unknown> {
-    const entry = new QueryStoreEntry<unknown>(this.client, address, args);
+    const entry = new QueryStoreEntry<unknown>(this.client, address, args, () => {
+      // The entry's release ran with no surviving listeners: its client
+      // subscription is gone, so the key must read as a clean lifetime again.
+      // The identity check keeps a stale release from evicting a successor.
+      if (this.entries.get(key) === entry) this.entries.delete(key);
+    });
     this.entries.set(key, entry);
     return entry;
   }
