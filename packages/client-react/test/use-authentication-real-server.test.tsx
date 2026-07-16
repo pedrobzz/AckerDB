@@ -52,7 +52,7 @@ const listRef = anyApi.notes.list as QueryRef<
   readonly { id: bigint; body: string }[]
 >;
 
-// The serve-level lease fixture: every bearer token verifies as a user whose
+// The Runtime-owned lease fixture: every bearer token verifies as a user whose
 // lease expires at the token's configured deadline.
 class LeaseVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "invalidation", deadlineMs: 1 } as const;
@@ -97,9 +97,15 @@ function createApp(): App {
       }),
     },
   });
-  const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
   const verifier = new LeaseVerifier();
-  const server = serve({ runtime, verifier, port: 0 });
+  const runtime = new Runtime({
+    engine,
+    registry,
+    verifier,
+    limits: PRODUCTION_LIMITS,
+    telemetry: false,
+  });
+  const server = serve({ runtime, port: 0 });
   return {
     base: `http://127.0.0.1:${server.port}`,
     verifier,
@@ -234,7 +240,7 @@ describe("useAuthentication against a real dbzz server", () => {
   }, 15_000);
 
   test("server-side lease expiry blocks the session until a fresh credential arrives", async () => {
-    app.verifier.expirations.set("expiring", Date.now() + 250);
+    app.verifier.expirations.set("expiring", Date.now() + 1_000);
     const root = mount(app, { kind: "bearer", token: "expiring" });
     await until(
       () => captured.text === "authenticated:user@0|ready" && captured.query === "success",
