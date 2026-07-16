@@ -46,7 +46,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
-import type { Descriptor, Validator } from "./dbz.ts";
+import type { Descriptor, Identity, Validator } from "./dbz.ts";
 import type { IndexDef, Schema, TableDef } from "./schema.ts";
 import { snapshotOf, type SchemaSnapshot } from "./snapshot.ts";
 
@@ -151,7 +151,7 @@ export type NewStoredMutation = Omit<StoredMutation, "completedAt"> & { complete
 export class IncompatibleDatabaseError extends Error {}
 export class CorruptDatabaseError extends Error {}
 
-const ENGINE_SCHEMA_VERSION = 2;
+const ENGINE_SCHEMA_VERSION = 3;
 const LOCK_SUFFIX = ".dbzz.lock";
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
@@ -219,6 +219,29 @@ const INTERNAL_OBJECTS: StoredObject[] = [
     name: "ix__dbz_mutations_completed_at",
     table: "_dbz_mutations",
     sql: "CREATE INDEX ix__dbz_mutations_completed_at ON _dbz_mutations (completed_at)",
+  },
+  {
+    type: "table",
+    name: "_dbz_identities",
+    table: "_dbz_identities",
+    sql: "CREATE TABLE _dbz_identities (identity INTEGER PRIMARY KEY AUTOINCREMENT)",
+  },
+  {
+    type: "table",
+    name: "_dbz_identity_accounts",
+    table: "_dbz_identity_accounts",
+    sql: `CREATE TABLE _dbz_identity_accounts (
+      issuer TEXT NOT NULL CHECK (length(issuer) > 0),
+      subject TEXT NOT NULL CHECK (length(subject) > 0),
+      identity INTEGER NOT NULL REFERENCES _dbz_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      PRIMARY KEY (issuer, subject)
+    )`,
+  },
+  {
+    type: "index",
+    name: "ix__dbz_identity_accounts_identity",
+    table: "_dbz_identity_accounts",
+    sql: "CREATE INDEX ix__dbz_identity_accounts_identity ON _dbz_identity_accounts (identity)",
   },
 ];
 
@@ -930,6 +953,19 @@ export class Engine {
     if (invalidTag !== null || invalidTagGroup !== null) {
       throw new CorruptDatabaseError("DBZZ tag assignments are invalid");
     }
+    const invalidIdentity = connection
+      .query(
+        "SELECT 1 FROM _dbz_identities WHERE typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
+      )
+      .get();
+    const invalidAccount = connection
+      .query(
+        "SELECT 1 FROM _dbz_identity_accounts WHERE typeof(issuer) <> 'text' OR length(issuer) = 0 OR typeof(subject) <> 'text' OR length(subject) = 0 OR typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
+      )
+      .get();
+    if (invalidIdentity !== null || invalidAccount !== null) {
+      throw new CorruptDatabaseError("DBZZ identity directory is invalid");
+    }
   }
 
   commitVersion(connection: Database = this.writer): bigint {
@@ -1031,6 +1067,28 @@ export class Engine {
       .query("UPDATE _dbz_state SET commit_version = commit_version + 1 WHERE singleton = 1 RETURNING commit_version")
       .get() as { commit_version: bigint };
     return row.commit_version;
+  }
+
+  /** Look up one exact external account on any Engine-owned connection. */
+  identityForAccount(connection: Database, issuer: string, subject: string): Identity | null {
+    const account = connection
+      .query("SELECT identity FROM _dbz_identity_accounts WHERE issuer = ? AND subject = ?")
+      .get(issuer, subject) as { identity: bigint } | null;
+    return account === null ? null : account.identity as Identity;
+  }
+
+  /** Resolve or provision one exact account. The caller must own the writer transaction. */
+  resolveIdentity(issuer: string, subject: string): Identity {
+    const existing = this.identityForAccount(this.writer, issuer, subject);
+    if (existing !== null) return existing;
+
+    const created = this.writer
+      .query("INSERT INTO _dbz_identities DEFAULT VALUES RETURNING identity")
+      .get() as { identity: bigint };
+    this.writer
+      .query("INSERT INTO _dbz_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
+      .run(issuer, subject, created.identity);
+    return created.identity as Identity;
   }
 
   schemaFingerprint(): string {

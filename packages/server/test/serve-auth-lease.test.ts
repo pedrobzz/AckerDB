@@ -13,7 +13,7 @@ import {
 import type {
   CredentialVerifier,
   PrincipalInvalidation,
-  VerifiedPrincipal,
+  VerifiedCredential,
 } from "../src/auth.ts";
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
@@ -159,7 +159,7 @@ class LeaseVerifier implements CredentialVerifier {
     return this.listeners.size;
   }
 
-  async verify(token: string): Promise<VerifiedPrincipal> {
+  async verify(token: string): Promise<VerifiedCredential> {
     return {
       kind: "user",
       issuer: "https://issuer.example",

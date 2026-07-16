@@ -8,10 +8,12 @@ import {
 } from "../src/auth-lease.ts";
 import {
   ANONYMOUS_PRINCIPAL,
+  type AuthenticatedPrincipal,
   type CredentialVerifier,
+  type IdentityResolver,
   type PrincipalInvalidation,
   type RevocationBound,
-  type VerifiedPrincipal,
+  type VerifiedCredential,
 } from "../src/auth.ts";
 import { DbzzError } from "../src/errors.ts";
 
@@ -31,7 +33,7 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
-function user(expiresAt: number): VerifiedPrincipal {
+function user(expiresAt: number): VerifiedCredential {
   return {
     kind: "user",
     issuer: "https://issuer.example",
@@ -141,7 +143,7 @@ class TrackingSignal {
   }
 }
 
-type Verification = VerifiedPrincipal | Error | Promise<VerifiedPrincipal>;
+type Verification = VerifiedCredential | Error | Promise<VerifiedCredential>;
 
 class FakeVerifier implements CredentialVerifier {
   readonly events: string[] = [];
@@ -157,7 +159,7 @@ class FakeVerifier implements CredentialVerifier {
     this.verification = verification;
   }
 
-  async verify(credential: string): Promise<VerifiedPrincipal> {
+  async verify(credential: string): Promise<VerifiedCredential> {
     this.events.push(`verify:${credential}`);
     const verification = this.verification;
     if (verification instanceof Error) throw verification;
@@ -185,10 +187,12 @@ function options(
   clock: AuthLeaseClock,
   signal?: AbortSignal,
 ) {
+  const resolveIdentity: IdentityResolver = async () => 1n as Awaited<ReturnType<IdentityResolver>>;
   return {
     credential: BEARER,
     verifier,
     clock,
+    resolveIdentity,
     revocationDeadlineMs: MAX_REVOCATION_DEADLINE_MS,
     ...(signal === undefined ? {} : { signal }),
   };
@@ -260,7 +264,7 @@ describe("auth lease", () => {
     expect(clock.pendingTimers).toBe(1);
     expect(Object.isFrozen(lease)).toBe(true);
     expect(Object.isFrozen(lease.principal)).toBe(true);
-    expect(Object.isFrozen((lease.principal as VerifiedPrincipal).claims)).toBe(true);
+    expect(Object.isFrozen((lease.principal as AuthenticatedPrincipal).claims)).toBe(true);
 
     lease.release();
     lease.release();
@@ -274,7 +278,7 @@ describe("auth lease", () => {
   });
 
   test("any invalidation racing verification fails closed and cleans the pending lease", async () => {
-    const pendingVerification = deferred<VerifiedPrincipal>();
+    const pendingVerification = deferred<VerifiedCredential>();
     const clock = new ManualClock();
     const verifier = new FakeVerifier(pendingVerification.promise);
     const pendingLease = acquireAuthLease(options(verifier, clock));

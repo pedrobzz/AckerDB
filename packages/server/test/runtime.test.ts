@@ -69,9 +69,19 @@ function request<Message>(message: Message, bytes = Buffer.byteLength(encode(mes
   return { message, bytes };
 }
 
+const userIdentities = new Map<string, UserPrincipal["identity"]>();
+let nextUserIdentity = 0n;
+
 function user(subject: string): UserPrincipal {
+  let identity = userIdentities.get(subject);
+  if (identity === undefined) {
+    identity = ++nextUserIdentity as UserPrincipal["identity"];
+    userIdentities.set(subject, identity);
+  }
+
   return Object.freeze({
     kind: "user",
+    identity,
     issuer: "https://issuer.example",
     subject,
     claims: Object.freeze({ role: "member" }),

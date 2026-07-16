@@ -27,6 +27,7 @@ import {
   verifyClientCredential,
   type ClientPrincipal,
   type CredentialVerifier,
+  type ExternalAccount,
   type Principal,
   type PrincipalInvalidation,
 } from "./auth.ts";
@@ -43,6 +44,7 @@ import { DbzzError, isDbzzError } from "./errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "./limits.ts";
 import { outcomeFromError } from "./outcome.ts";
+import type { Identity } from "./dbz.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
 export type SessionApplicationMessage =
@@ -190,6 +192,7 @@ export function claimRuntimeRequestBytes(request: RuntimeRequest<unknown>): numb
 
 /** Transport-independent adapter implemented by the database runtime. */
 export interface RuntimePort {
+  resolveIdentity(account: ExternalAccount, signal?: AbortSignal): Promise<Identity>;
   openSession(context: SessionRuntimeContext): Promise<void>;
   transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch>;
   subscribe(context: SessionRuntimeContext, request: RuntimeRequest<SubscribeMessage>): Promise<void>;
@@ -496,7 +499,7 @@ export class Session {
     }
     let principal: ClientPrincipal;
     try {
-      principal = await this.verifyCredential(credential);
+      principal = await this.verifyCredential(credential, this.epochController.signal);
     } catch (error) {
       const failure = verifierError(error);
       if (observationOwner !== undefined) {
@@ -514,6 +517,7 @@ export class Session {
       this.paused = true;
       this.epochController = new AbortController();
       this.scheduleExpiry(principal, this.authEpoch);
+      if (this.isClosed()) return;
       const context = this.createRuntimeContext(principal, this.authEpoch, this.epochController);
       this.context = context;
       await this.runtime.openSession(context);
@@ -565,7 +569,7 @@ export class Session {
         });
     this.setPendingAuthObservation(transitionController, observation);
 
-    void this.verifyCredential(message.credential).then(
+    void this.verifyCredential(message.credential, transitionController.signal).then(
       (principal) => {
         this.finishPendingAuthObservation(transitionController);
         this.queueAuthCompletion(message, transitionController, principal);
@@ -777,8 +781,16 @@ export class Session {
     }
   }
 
-  private async verifyCredential(credential: Credential): Promise<ClientPrincipal> {
-    return verifyClientCredential(credential, this.verifier, () => this.readNow());
+  private async verifyCredential(
+    credential: Credential,
+    signal?: AbortSignal,
+  ): Promise<ClientPrincipal> {
+    return verifyClientCredential(
+      credential,
+      this.verifier,
+      (account) => this.runtime.resolveIdentity(account, signal),
+      () => this.readNow(),
+    );
   }
 
   private beginAuthObservation(

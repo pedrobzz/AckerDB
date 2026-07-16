@@ -4,6 +4,7 @@ import {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
   createOidcVerifier,
+  isPrincipal,
   SYSTEM_PRINCIPAL,
   verifyClientCredential,
   type CredentialVerifier,
@@ -22,6 +23,7 @@ const AUDIENCE = "dbzz-test";
 function userPrincipal(subject = "user-1"): UserPrincipal {
   return Object.freeze({
     kind: "user",
+    identity: 1n as UserPrincipal["identity"],
     issuer: ISSUER,
     subject,
     claims: Object.freeze(Object.create(null) as Record<string, unknown>),
@@ -67,13 +69,93 @@ describe("principals and invocation access", () => {
     const principal = await verifyClientCredential(
       credentialFromAuthorization("bearer token-value"),
       verifier,
+      async () => 7n as UserPrincipal["identity"],
       () => 1_000,
     );
     expect(principal.kind).toBe("user");
+    if (principal.kind !== "user") throw new Error("expected user principal");
+    expect(principal.identity as bigint).toBe(7n);
     expect(Object.isFrozen(principal)).toBe(true);
     expect(Object.isFrozen(mutableClaims.roles)).toBe(true);
     await expectDbzzError(
-      verifyClientCredential({ kind: "bearer", token: "token-value" }, verifier, () => 2_000),
+      verifyClientCredential(
+        { kind: "bearer", token: "token-value" },
+        verifier,
+        async () => 7n as UserPrincipal["identity"],
+        () => 2_000,
+      ),
+      "unauthenticated",
+    );
+  });
+
+  test("snapshots verified evidence before awaiting Identity resolution", async () => {
+    const evidence: {
+      kind: "user";
+      issuer: string;
+      subject: string;
+      claims: Record<string, unknown>;
+      expiresAt: number;
+      tokenId: string | null;
+    } = {
+      kind: "user",
+      issuer: ISSUER,
+      subject: "alice",
+      claims: { role: "member" },
+      expiresAt: 2_000,
+      tokenId: "alice-token",
+    };
+    const verifier: CredentialVerifier = {
+      revocationBound: { kind: "token-expiration" },
+      subscribeInvalidation: () => () => {},
+      verify: async () => evidence,
+    };
+    let resolvedAccount: { readonly issuer: string; readonly subject: string } | undefined;
+    const principal = await verifyClientCredential(
+      { kind: "bearer", token: "mutable-evidence" },
+      verifier,
+      async (account) => {
+        resolvedAccount = account;
+        evidence.issuer = "https://attacker.example/";
+        evidence.subject = "mallory";
+        evidence.tokenId = "mallory-token";
+        return 41n as UserPrincipal["identity"];
+      },
+      () => 1_000,
+    );
+    expect(resolvedAccount).toEqual({ issuer: ISSUER, subject: "alice" });
+    expect(principal).toMatchObject({
+      kind: "user",
+      identity: 41n,
+      issuer: ISSUER,
+      subject: "alice",
+      tokenId: "alice-token",
+    });
+  });
+
+  test("rechecks credential expiry after Identity resolution", async () => {
+    let now = 1_000;
+    const verifier: CredentialVerifier = {
+      revocationBound: { kind: "token-expiration" },
+      subscribeInvalidation: () => () => {},
+      verify: async () => ({
+        kind: "user",
+        issuer: ISSUER,
+        subject: "alice",
+        claims: {},
+        expiresAt: 2_000,
+        tokenId: null,
+      }),
+    };
+    await expectDbzzError(
+      verifyClientCredential(
+        { kind: "bearer", token: "expires-during-resolution" },
+        verifier,
+        async () => {
+          now = 2_000;
+          return 42n as UserPrincipal["identity"];
+        },
+        () => now,
+      ),
       "unauthenticated",
     );
   });
@@ -95,6 +177,16 @@ describe("principals and invocation access", () => {
     expect(SYSTEM_PRINCIPAL).toEqual({ kind: "system" });
     expect(Object.isFrozen(ANONYMOUS_PRINCIPAL)).toBe(true);
     expect(Object.isFrozen(SYSTEM_PRINCIPAL)).toBe(true);
+    expect(isPrincipal({ ...ANONYMOUS_PRINCIPAL, identity: 1n })).toBe(false);
+    expect(isPrincipal({
+      kind: "workload",
+      identity: 1n,
+      issuer: ISSUER,
+      subject: "service",
+      claims: {},
+      expiresAt: Date.now() + 1_000,
+      tokenId: null,
+    })).toBe(false);
   });
 
   test("registration requires an explicit access policy at runtime", () => {

@@ -25,9 +25,10 @@ import {
 import {
   ANONYMOUS_PRINCIPAL,
   SYSTEM_PRINCIPAL,
+  type ExternalAccount,
   type Principal,
 } from "./auth.ts";
-import { callerFairnessKey, transportSource } from "./caller.ts";
+import { callerFairnessKey, externalAccountFairnessKey, transportSource } from "./caller.ts";
 import {
   CommitCoordinator,
   withFetchObserver,
@@ -38,7 +39,7 @@ import {
   type CommitWaitHook,
   type FetchObservation,
 } from "./coordinator.ts";
-import { ValidationError } from "./dbz.ts";
+import { ValidationError, type Identity } from "./dbz.ts";
 import {
   makeDbReader,
   type DbStatementObservation,
@@ -625,6 +626,49 @@ export class Runtime implements RuntimePort {
   kindOf(address: string): string | null {
     if (address.startsWith("events.")) return "event";
     return this.registry.kindOf(address) ?? null;
+  }
+
+  async resolveIdentity(
+    account: ExternalAccount,
+    signal?: AbortSignal,
+  ): Promise<Identity> {
+    const requestBytes = this.admittedRequestBytes(account);
+    const operationSignal = this.operationSignal(signal);
+    const fairnessKey = externalAccountFairnessKey(account);
+    return this.runOperation(
+      null,
+      "transaction",
+      undefined,
+      requestBytes,
+      async () => {
+        const existing = await this.submitRead(
+          (connection) => this.engine.identityForAccount(
+            connection,
+            account.issuer,
+            account.subject,
+          ),
+          {
+            operation: "transaction",
+            bytes: requestBytes,
+            fairnessKey,
+            signal: operationSignal,
+          },
+          false,
+        );
+        if (existing !== null) return existing;
+        return this.coordinator.transactFramework({
+          fairnessKey,
+          requestBytes,
+          signal: operationSignal,
+          work: () => this.engine.resolveIdentity(account.issuer, account.subject),
+        });
+      },
+      {},
+      false,
+      undefined,
+      undefined,
+      fairnessKey,
+    );
   }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {

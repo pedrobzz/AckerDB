@@ -21,7 +21,10 @@ HTTP parsing is intentionally strict:
   values produce `unauthenticated`.
 
 All transports then use `verifyClientCredential`. A bearer credential without
-a configured verifier fails closed as `unauthenticated`.
+a configured verifier fails closed as `unauthenticated`. A verified user result
+is credential evidence, not yet an application principal: DBZZ snapshots that
+evidence, then transactionally resolves its exact `(issuer, subject)` through
+the Engine-owned identity directory before constructing the user principal.
 
 ### Trust boundary
 
@@ -50,22 +53,26 @@ declaration before a session or HTTP listener opens. Sessions and remote
 credential leases enforce expiry and react immediately to matching callbacks,
 but DBZZ neither creates nor measures the external invalidation feed or its
 upstream propagation latency. Delivering invalidations within the advertised
-bound remains the verifier's responsibility. `verifyClientCredential` still
-rejects an invalid principal shape or expired result, freezes the returned
-principal and claims, and maps unexpected verifier failures to retryable
-`auth_unavailable`. Applications should authorize only from the resulting
-principal and explicitly selected claims, never from an unverified token body.
+bound remains the verifier's responsibility. `verifyClientCredential` rejects
+invalid evidence and results that expire before or during Identity resolution,
+deeply freezes selected claims, and maps unexpected verifier or resolver
+failures to retryable `auth_unavailable`. Claims remain current credential
+provenance and are never copied into the durable identity directory.
+Applications should authorize only from the resulting principal and explicitly
+selected claims, never from an unverified token body.
 
 | Principal | Fields and meaning |
 | --- | --- |
 | `anonymous` | No external identity. Public policies may admit it. |
-| `user` | `issuer`, `subject`, deeply frozen selected `claims`, `expiresAt` in Unix milliseconds, and nullable `tokenId`. |
-| `workload` | The same verified fields, for service-to-service authority and protected operational status. |
+| `user` | Non-null branded `identity`, plus `issuer`, `subject`, deeply frozen selected `claims`, `expiresAt` in Unix milliseconds, and nullable `tokenId`. `identity` is the durable provider-neutral key for application rows. |
+| `workload` | The verified issuer/subject fields, for service-to-service authority and protected operational status. Workloads have no application Identity. |
 | `system` | Local runtime authority used by scheduled handlers. A remote session cannot become `system`. |
 
-`ctx.auth`, selected claims, and validated arguments are frozen. Direct nested
-query and mutation calls inherit the original principal; a nested call cannot
-replace it with a more privileged context.
+`ctx.auth`, selected claims, and validated arguments are frozen. After narrowing
+`ctx.auth.kind === "user"`, `ctx.auth.identity` is the typed non-null Identity to
+store in application ownership columns. Direct nested query and mutation calls
+inherit the original principal; a nested call cannot replace it with a more
+privileged context.
 
 ## Function access policies
 
