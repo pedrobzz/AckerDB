@@ -119,7 +119,7 @@ export async function runClosedLoop<T>(options: ClosedLoopOptions<T>): Promise<C
 
   try {
     await withTimeout(
-      Promise.all(workers),
+      workers.length === 0 ? Bun.sleep(options.durationMs) : Promise.all(workers).then(() => undefined),
       options.durationMs + options.drainTimeoutMs,
       `phase ${options.phaseId}`,
     );

@@ -13,7 +13,7 @@ connections, and reactive delivery through each product's current client SDK.
 ## Run it
 
 ```sh
-bun bench/run.ts                              # default all-system acceptance; saves only if every gate passes
+bun bench/run.ts                              # default all-system run; saves passed or correctness-failed evidence
 BENCH_COMPARISON=current bun bench/run.ts     # same-host comparison only; skips historical acceptance and save
 BENCH_PROFILE=quick bun bench/run.ts          # profiled all-system smoke diagnostic; never saves
 BENCH_PROFILE=stress bun bench/run.ts         # profiled all-system stress diagnostic; never saves
@@ -31,16 +31,17 @@ diagnostics: with the literal `Runtime` telemetry default (the constructor
 option is omitted), with that same default plus an explicit in-process exporter
 callback, and with `telemetry: false`. `systems.dbzz` remains the exact default
 profile used in the three-system tables. The exporter and disabled results plus
-their deltas are separate schema-v5 evidence, not extra databases. Partial runs
+their deltas are separate schema-v6 evidence, not extra databases. Partial runs
 execute only the selected systems and one default-enabled DBZZ profile.
 
 `BENCH_COMPARISON=current` keeps the complete default workload, DBZZ's literal
 runtime-default telemetry profile, correctness checks, telemetry validation,
 and same-host DBZZ/Convex/SpacetimeDB tables. It skips the exporter and disabled
 DBZZ cost legs because they do not affect the three-system margin question,
-then exits successfully without evaluating the historical machine-bound gate
-or saving a result. This is the intended mode for comparing the current systems
-on a different machine.
+then exits without evaluating the historical machine-bound gate or saving a
+result. A measured correctness failure is still printed and returns a failing
+exit status. This is the intended mode for comparing the current systems on a
+different machine.
 
 All DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`. The
 `runtime-default` profile uses the production retention/queue limits, built-in
@@ -83,22 +84,34 @@ must deliver output without failure or timeout in both enabled legs. The three
 profile positions rotate between saved runs and are preserved in
 `executionOrder`.
 
-## Save-blocking schema-v5 performance gate
+## Schema-v6 measured-failure record and integrity gate
 
 Only an all-system run with `BENCH_PROFILE=default` (or no `BENCH_PROFILE`) can
 enter performance acceptance and write
 `bench/results/<timestamp>-<gitsha>.json`. Quick, stress, and partial runs print
 the same diagnostic result tables, then finish with an explicit
-acceptance-skipped/result-not-saved message. The result file is written only
-after every correctness, telemetry, comparability, and performance check has
-passed.
+acceptance-skipped/result-not-saved message. The result file is written when
+the harness produced structurally comparable, correctly accounted output, even
+when the measurements fail acceptance.
+Measured operation, connection, and subscription correctness failures are an
+immutable top-level `validation` section with an overall `passed` or `failed`
+status and per-case errors. A failed validation skips performance acceptance,
+is saved with `performanceAcceptance.status = "not-evaluated"`, and returns a
+failing exit status only after reporting and persistence. Ordinary performance
+regressions are likewise saved with `performanceAcceptance.status = "failed"`,
+structured per-gate failures, complete evidence, and a failing exit status only
+after persistence. Harness-integrity
+failures such as config/case-shape mismatches or broken attempted/completed/
+failed accounting remain fatal because the resulting metrics are not
+meaningful. Telemetry-integrity failures remain fatal for the same reason.
 
 Acceptance is anchored to the immutable schema-v3 baseline
 `results/2026-07-13T15-34-33Z-74d8554.json`. Its exact SHA-256 is
 `ab78ada0d9d16576b7aca175c1230c456064bcf5b4a80e66b5e1c55a4528a474`, and its
-identity must remain schema version 3 at Git commit `74d8554`. The after-run
-must be schema v5 and must exactly match the baseline's complete machine
-object, 250 ms server-sampling interval, and workload identity for DBZZ,
+identity must remain schema version 3 at Git commit `74d8554`. A correctness-
+passing after-run entering performance acceptance must be schema v6 and must
+exactly match the baseline's complete machine object, 250 ms server-sampling
+interval, and workload identity for DBZZ,
 Convex, and SpacetimeDB. Workload identity includes the dataset seed, operation
 and concurrency shapes, connection levels, subscription population/rates/
 patterns/capacity points, and setup behavior. Measurement effort—warmup,
@@ -152,14 +165,16 @@ The after-run must also pass exactly 126 DBZZ-versus-Convex floors:
   Startup, seeded-idle, and pre-connection/subscription baseline RSS are not
   part of this Convex floor.
 
-Finally, DBZZ's shared and partitioned fixed-rate cases must each complete
-the offered workload before save: correctness must pass; completed updates
-must equal `duration × configured updates/s`; observed deliveries must equal
-expected deliveries with none missing; update throughput must reach the
+Finally, a correctness-passing DBZZ run must complete each shared and
+partitioned fixed-rate offered workload before performance acceptance:
+completed updates must equal `duration × configured updates/s`; observed
+deliveries must equal expected deliveries with none missing; update throughput must reach the
 configured offered rate; and delivery throughput must reach at least 99% of
-expected deliveries divided by the offered duration. Missing metric paths, a changed
-floor count, or any failed condition rejects the run without creating a result
-file.
+expected deliveries divided by the offered duration. Missing metric paths or a
+changed floor count remain fatal harness-integrity failures. An evaluated
+performance failure is recorded, saved, and then returns a failing status.
+Delivery correctness failures instead follow the schema-v6 failed-validation
+path above and are saved without evaluating these performance claims.
 
 Prerequisites:
 
@@ -192,10 +207,11 @@ never use benchmark-side request batching.
 
 Every query and compute response is validated by nonce, shape, payload, and
 checksum. Mutations are checked outside the timed window against a client-side
-model of every account, not merely total balance. A run is rejected instead of
-saved if any request fails, request accounting does not balance, a connection
-target is missed, configs/case shapes differ, or any subscription delivery is
-missing, duplicated, unexpected, or corrupt.
+model of every account, not merely total balance. Request failures, missed
+connection targets, and missing, duplicated, unexpected, or corrupt
+subscription deliveries are recorded as measured correctness failures.
+Unbalanced request accounting or mismatched configs/case shapes abort because
+the result is malformed or incomparable.
 
 SpacetimeDB 2.6's TypeScript SDK has no public one-off query method. Its query
 case therefore uses the native read-only procedure API plus `ctx.withTx`; using
@@ -382,9 +398,10 @@ with SpacetimeDB's official benchmarks; it demonstrates that this benchmark is
 measuring a different, explicitly defined workload.
 
 The displayed result is the last schema-v3 run and intentionally remains in
-place until a post-change full schema-v5 run exists. Schema-v2 predates the
+place until a post-change full passing schema-v6 run exists. Schema-v2 predates the
 subscription-capacity sweep; schema-v3 predates paired telemetry and
-server-confirmed durability modes. Neither is delta-comparable with schema v5.
+server-confirmed durability modes. Earlier schemas do not contain the explicit
+correctness outcome and are not delta-comparable with schema v6.
 Treat small latency/RSS differences as ranges and rerun; the large
 dbzz-vs-Convex gaps and the SpacetimeDB saturated-write advantage have repeated
 across the retained runs.

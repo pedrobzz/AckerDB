@@ -8,6 +8,7 @@ import {
   type SystemName,
 } from "./benchmark.ts";
 import type { ProcessTreeWindowSummary } from "./process-tree.ts";
+import type { BenchmarkValidation } from "./result-validation.ts";
 
 export const FROZEN_BASELINE_PATH = "bench/results/2026-07-13T15-34-33Z-74d8554.json";
 export const FROZEN_BASELINE_SHA256 = "ab78ada0d9d16576b7aca175c1230c456064bcf5b4a80e66b5e1c55a4528a474";
@@ -91,7 +92,7 @@ export interface FrozenWinEvidence {
   afterSpacetime: number;
   /** Deficit versus current SpacetimeDB this path may show before failing: 0 for solid wins (strict), the noise envelope for near-ties. */
   noiseAllowance: number;
-  passed: true;
+  passed: boolean;
 }
 
 export interface FloorEvidence {
@@ -100,7 +101,7 @@ export interface FloorEvidence {
   dbzz: number;
   convex: number;
   limit: number;
-  passed: true;
+  passed: boolean;
 }
 
 export interface FixedRateEvidence {
@@ -112,12 +113,12 @@ export interface FixedRateEvidence {
   deliveryTargetPerSec: number;
   deliveryThroughputPerSec: number;
   minimumMeasuredDeliveryPerSec: number;
-  passed: true;
+  passed: boolean;
 }
 
 export interface PerformanceAcceptanceEvidence {
-  schemaVersion: 2;
-  passed: true;
+  schemaVersion: 3;
+  passed: boolean;
   baseline: {
     path: typeof FROZEN_BASELINE_PATH;
     sha256: string;
@@ -135,12 +136,26 @@ export interface PerformanceAcceptanceEvidence {
     frozenNearTieWins: number;
     convexFloorChecks: number;
   };
-  frozenDbzzSpacetimeWins: FrozenWinEvidence[];
-  convexFloors: FloorEvidence[];
+  frozenDbzzSpacetimeWins: readonly FrozenWinEvidence[];
+  convexFloors: readonly FloorEvidence[];
   sharedFixedRate: FixedRateEvidence;
   partitionedFixedRate: FixedRateEvidence;
   exclusions: readonly { metric: string; reason: string }[];
 }
+
+export interface PerformanceAcceptanceFailure {
+  readonly kind: "frozen-win" | "convex-floor" | "fixed-rate";
+  readonly path: string;
+  readonly message: string;
+}
+
+export type PerformanceAcceptanceResult =
+  | {
+      readonly status: "passed" | "failed";
+      readonly evidence: PerformanceAcceptanceEvidence;
+      readonly failures: readonly PerformanceAcceptanceFailure[];
+    }
+  | { readonly status: "not-evaluated"; readonly reason: "correctness-failed" };
 
 export const PERFORMANCE_EXCLUSIONS = Object.freeze([
   {
@@ -157,7 +172,7 @@ export const PERFORMANCE_EXCLUSIONS = Object.freeze([
   },
   {
     metric: "attempt, completion, delivery, and error counters",
-    reason: "assertValidResults gates these as correctness before performance acceptance, so they are not directional performance metrics",
+    reason: "benchmark validation records these as correctness before performance acceptance, so they are not directional performance metrics",
   },
   {
     metric: "process-count peaks and RSS deltas",
@@ -245,9 +260,10 @@ function capacityComplete(result: SubscriptionCapacityResult): boolean {
  * honest: the noise envelope tolerates a bounded ranking flip against
  * SpacetimeDB, never a failure to sustain the offered load itself.
  */
-function assertFixedRateOfferedTarget(
+function evaluateFixedRateOfferedTarget(
   system: MeasuredSystem,
   pattern: "shared" | "partitioned",
+  failures: PerformanceAcceptanceFailure[],
 ): FixedRateEvidence {
   const result = system.workload.subscriptions.find((item) => item.pattern === pattern);
   if (result === undefined) throw new Error(`DBZZ after-run omits ${pattern} fixed-rate subscriptions`);
@@ -260,14 +276,18 @@ function assertFixedRateOfferedTarget(
   const realizedOfferedPerSec = offeredUpdates / (config.durationMs / 1_000);
   const deliveryTarget = result.expectedDeliveries / (config.durationMs / 1_000);
   const minimumDelivery = deliveryTarget * 0.99;
-  if (
+  const failed =
     !fixedRateComplete(result, config.durationMs, offeredPerSec) ||
     result.updateThroughputPerSec < realizedOfferedPerSec ||
-    result.deliveryThroughputPerSec < minimumDelivery
-  ) {
-    throw new Error(
-      `${pattern} fixed-rate offered target failed: ${result.deliveryThroughputPerSec}/s, expected at least ${minimumDelivery}/s with exact completion`,
-    );
+    result.deliveryThroughputPerSec < minimumDelivery;
+  if (failed) {
+    failures.push(Object.freeze({
+      kind: "fixed-rate",
+      path: `subscriptions/${pattern}/fixed-rate`,
+      message:
+        `${pattern} fixed-rate offered target failed: ${result.deliveryThroughputPerSec}/s, ` +
+        `expected at least ${minimumDelivery}/s with exact completion`,
+    }));
   }
   return {
     offeredUpdatesPerSec: offeredPerSec,
@@ -278,7 +298,7 @@ function assertFixedRateOfferedTarget(
     deliveryTargetPerSec: deliveryTarget,
     deliveryThroughputPerSec: result.deliveryThroughputPerSec,
     minimumMeasuredDeliveryPerSec: minimumDelivery,
-    passed: true,
+    passed: !failed,
   };
 }
 
@@ -590,25 +610,43 @@ function assertComparableRun(baseline: BenchmarkRecordLike, after: BenchmarkReco
 
 function floorCheck(
   evidence: FloorEvidence[],
+  failures: PerformanceAcceptanceFailure[],
   dbzz: ComparableMetric,
   convex: ComparableMetric,
   rule: string,
   factor: number,
+  comparable = true,
 ): void {
   const limit = convex.value * factor;
+  if (!comparable) {
+    failures.push(Object.freeze({
+      kind: "convex-floor",
+      path: dbzz.path,
+      message: `Convex floor could not be evaluated at ${dbzz.path}: offered work was incomplete`,
+    }));
+    evidence.push({ path: dbzz.path, rule, dbzz: dbzz.value, convex: convex.value, limit, passed: false });
+    return;
+  }
   const passed = dbzz.direction === "higher" ? dbzz.value >= limit : dbzz.value <= limit;
   if (!passed) {
-    throw new Error(
-      `Convex floor failed at ${dbzz.path}: DBZZ ${dbzz.value} must be ${dbzz.direction === "higher" ? ">=" : "<="} ${limit} (${rule})`,
-    );
+    failures.push(Object.freeze({
+      kind: "convex-floor",
+      path: dbzz.path,
+      message:
+        `Convex floor failed at ${dbzz.path}: DBZZ ${dbzz.value} must be ` +
+        `${dbzz.direction === "higher" ? ">=" : "<="} ${limit} (${rule})`,
+    }));
   }
-  evidence.push({ path: dbzz.path, rule, dbzz: dbzz.value, convex: convex.value, limit, passed: true });
+  evidence.push({ path: dbzz.path, rule, dbzz: dbzz.value, convex: convex.value, limit, passed });
 }
 
-export function assertPerformanceAcceptance(
+function evaluateMeasuredPerformance(
   after: BenchmarkRecordLike,
   frozenBaselineJson: string,
-): PerformanceAcceptanceEvidence {
+): {
+  readonly evidence: PerformanceAcceptanceEvidence;
+  readonly failures: readonly PerformanceAcceptanceFailure[];
+} {
   const baselineDigest = sha256(frozenBaselineJson);
   if (baselineDigest !== FROZEN_BASELINE_SHA256) {
     throw new Error(`frozen benchmark baseline digest is ${baselineDigest}; expected ${FROZEN_BASELINE_SHA256}`);
@@ -623,7 +661,7 @@ export function assertPerformanceAcceptance(
   if (baseline.schemaVersion !== 3 || baseline.git?.commit !== "74d8554") {
     throw new Error("frozen benchmark baseline identity is invalid");
   }
-  if (after.schemaVersion !== 5) throw new Error("performance acceptance requires an after-run schema-v5 record");
+  if (after.schemaVersion !== 6) throw new Error("performance acceptance requires an after-run schema-v6 record");
   assertComparableRun(baseline, after);
   const baselineSystems = requireSystems(baseline);
   const afterSystems = requireSystems(after);
@@ -646,6 +684,7 @@ export function assertPerformanceAcceptance(
   const afterDbzz = indexMetrics(afterMetrics.dbzz);
   const afterSpacetime = indexMetrics(afterMetrics.spacetimedb);
   const frozenWins: FrozenWinEvidence[] = [];
+  const failures: PerformanceAcceptanceFailure[] = [];
   for (const [path, dbzz] of baselineDbzz) {
     const spacetime = baselineSpacetime.get(path)!;
     if (!strictWin(dbzz, spacetime)) continue;
@@ -653,16 +692,18 @@ export function assertPerformanceAcceptance(
     const currentSpacetime = afterSpacetime.get(path)!;
     const classification = classifyFrozenWin(dbzz, spacetime);
     const allowance = classification === "near-tie" ? noiseAllowance(dbzz.family, currentSpacetime.value) : 0;
-    if (classification === "solid" && !strictWin(currentDbzz, currentSpacetime)) {
-      throw new Error(
-        `frozen DBZZ-over-SpacetimeDB win lost at ${path}: ${currentDbzz.value} vs ${currentSpacetime.value}`,
-      );
-    }
-    if (classification === "near-tie" && signedAdvantage(currentDbzz, currentSpacetime) < -allowance) {
-      throw new Error(
-        `frozen near-tie DBZZ-over-SpacetimeDB win reversed beyond the noise floor at ${path}: ` +
-          `${currentDbzz.value} vs ${currentSpacetime.value} (allowed deficit ${allowance})`,
-      );
+    const passed = classification === "solid"
+      ? strictWin(currentDbzz, currentSpacetime)
+      : signedAdvantage(currentDbzz, currentSpacetime) >= -allowance;
+    if (!passed) {
+      failures.push(Object.freeze({
+        kind: "frozen-win",
+        path,
+        message: classification === "solid"
+          ? `frozen DBZZ-over-SpacetimeDB win lost at ${path}: ${currentDbzz.value} vs ${currentSpacetime.value}`
+          : `frozen near-tie DBZZ-over-SpacetimeDB win reversed beyond the noise floor at ${path}: ` +
+            `${currentDbzz.value} vs ${currentSpacetime.value} (allowed deficit ${allowance})`,
+      }));
     }
     frozenWins.push({
       path,
@@ -673,7 +714,7 @@ export function assertPerformanceAcceptance(
       afterDbzz: currentDbzz.value,
       afterSpacetime: currentSpacetime.value,
       noiseAllowance: allowance,
-      passed: true,
+      passed,
     });
   }
   if (frozenWins.length !== FROZEN_DBZZ_SPACETIME_WINS) {
@@ -693,34 +734,40 @@ export function assertPerformanceAcceptance(
   for (const metric of afterMetrics.dbzz) {
     const convex = convexByPath.get(metric.path)!;
     if (metric.family === "operation.throughput" || metric.family === "connection.work.throughput") {
-      floorCheck(floors, metric, convex, ">=5x throughput", 5);
+      floorCheck(floors, failures, metric, convex, ">=5x throughput", 5);
     } else if (metric.family === "operation.latency.p95" || metric.family === "connection.work.latency.p95") {
-      floorCheck(floors, metric, convex, "<=50% p95 latency", 0.5);
+      floorCheck(floors, failures, metric, convex, "<=50% p95 latency", 0.5);
     } else if (
       metric.family === "subscription.fixed.delivery.throughput" &&
       metric.path.startsWith("subscriptions/shared/")
     ) {
-      floorCheck(floors, metric, convex, ">=1.25x shared fixed-rate delivery throughput", 1.25);
+      floorCheck(floors, failures, metric, convex, ">=1.25x shared fixed-rate delivery throughput", 1.25);
     } else if (
-      (metric.family === "subscription.fixed.delivery.p95" ||
-        metric.family === "subscription.capacity.delivery.p95") &&
-      metric.offeredWorkComplete === true &&
-      convex.offeredWorkComplete === true
+      metric.family === "subscription.fixed.delivery.p95" ||
+      metric.family === "subscription.capacity.delivery.p95"
     ) {
-      floorCheck(floors, metric, convex, "<=50% delivery p95 with complete offered work", 0.5);
+      floorCheck(
+        floors,
+        failures,
+        metric,
+        convex,
+        "<=50% delivery p95 with complete offered work",
+        0.5,
+        metric.offeredWorkComplete === true && convex.offeredWorkComplete === true,
+      );
     } else if (metric.family === "resource.rss" && metric.convexRssFloor === true) {
-      floorCheck(floors, metric, convex, "<=50% comparable server RSS", 0.5);
+      floorCheck(floors, failures, metric, convex, "<=50% comparable server RSS", 0.5);
     }
   }
-  const sharedFixedRate = assertFixedRateOfferedTarget(afterSystems.dbzz, "shared");
-  const partitionedFixedRate = assertFixedRateOfferedTarget(afterSystems.dbzz, "partitioned");
+  const sharedFixedRate = evaluateFixedRateOfferedTarget(afterSystems.dbzz, "shared", failures);
+  const partitionedFixedRate = evaluateFixedRateOfferedTarget(afterSystems.dbzz, "partitioned", failures);
   if (floors.length !== FROZEN_CONVEX_FLOORS) {
     throw new Error(`after-run evaluated ${floors.length} Convex floors; expected ${FROZEN_CONVEX_FLOORS}`);
   }
 
-  return {
-    schemaVersion: 2,
-    passed: true,
+  const evidence = Object.freeze({
+    schemaVersion: 3,
+    passed: failures.length === 0,
     baseline: {
       path: FROZEN_BASELINE_PATH,
       sha256: baselineDigest,
@@ -746,10 +793,27 @@ export function assertPerformanceAcceptance(
       frozenNearTieWins: nearTieWins,
       convexFloorChecks: floors.length,
     },
-    frozenDbzzSpacetimeWins: frozenWins,
-    convexFloors: floors,
+    frozenDbzzSpacetimeWins: Object.freeze(frozenWins.map((win) => Object.freeze(win))),
+    convexFloors: Object.freeze(floors.map((floor) => Object.freeze(floor))),
     sharedFixedRate,
     partitionedFixedRate,
     exclusions: PERFORMANCE_EXCLUSIONS,
-  };
+  } satisfies PerformanceAcceptanceEvidence);
+  return Object.freeze({ evidence, failures: Object.freeze(failures) });
+}
+
+export function evaluatePerformanceAcceptance(
+  after: BenchmarkRecordLike,
+  frozenBaselineJson: string,
+  validation: BenchmarkValidation,
+): PerformanceAcceptanceResult {
+  if (validation.status === "failed") {
+    return Object.freeze({ status: "not-evaluated", reason: "correctness-failed" });
+  }
+  const { evidence, failures } = evaluateMeasuredPerformance(after, frozenBaselineJson);
+  return Object.freeze({
+    status: failures.length === 0 ? "passed" : "failed",
+    evidence,
+    failures,
+  });
 }

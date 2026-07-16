@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
-  assertPerformanceAcceptance,
   classifyFrozenWin,
+  evaluatePerformanceAcceptance,
   extractComparableMetrics,
   FROZEN_BASELINE_PATH,
   FROZEN_BASELINE_SHA256,
@@ -15,14 +17,34 @@ import {
   type BenchmarkRecordLike,
   type ComparableMetric,
 } from "./performance-gates.ts";
+import { persistBenchmarkOutcome } from "./result-persistence.ts";
 
 const baselineJson = readFileSync(new URL(`../${FROZEN_BASELINE_PATH}`, import.meta.url), "utf8");
 const baseline = JSON.parse(baselineJson) as BenchmarkRecordLike;
 const copy = () => {
   const record = structuredClone(baseline);
-  record.schemaVersion = 5;
+  record.schemaVersion = 6;
   return record;
 };
+const passedValidation = Object.freeze({ status: "passed", failures: Object.freeze([]) } as const);
+
+function performance(record: BenchmarkRecordLike, source = baselineJson) {
+  return evaluatePerformanceAcceptance(record, source, passedValidation);
+}
+
+function passingEvidence(record: BenchmarkRecordLike) {
+  const result = performance(record);
+  expect(result.status).toBe("passed");
+  if (result.status !== "passed") throw new Error(`expected passing performance evidence`);
+  return result.evidence;
+}
+
+function failedPerformance(record: BenchmarkRecordLike) {
+  const result = performance(record);
+  expect(result.status).toBe("failed");
+  if (result.status !== "failed") throw new Error(`expected failed performance evidence`);
+  return result;
+}
 
 function operation(record: BenchmarkRecordLike, system: "dbzz" | "convex", name = "query", profile = "latency") {
   return record.systems[system]!.workload.operations.find(
@@ -83,7 +105,7 @@ describe("complete benchmark metric extraction", () => {
 
     const omittedCase = copy();
     omittedCase.systems.dbzz!.workload.operations.pop();
-    expect(() => assertPerformanceAcceptance(omittedCase, baselineJson)).toThrow("comparable metric count");
+    expect(() => performance(omittedCase)).toThrow("comparable metric count");
 
     const duplicate = copy();
     duplicate.systems.dbzz!.workload.operations.push(structuredClone(duplicate.systems.dbzz!.workload.operations[0]!));
@@ -98,16 +120,28 @@ describe("complete benchmark metric extraction", () => {
 });
 
 describe("frozen performance acceptance", () => {
-  test("requires the exporter-cost schema-v5 after record", () => {
+  test("requires the correctness-aware schema-v6 after record", () => {
     const oldAfter = copy();
-    oldAfter.schemaVersion = 4;
-    expect(() => assertPerformanceAcceptance(oldAfter, baselineJson)).toThrow("after-run schema-v5");
+    oldAfter.schemaVersion = 5;
+    expect(() => performance(oldAfter)).toThrow("after-run schema-v6");
+  });
+
+  test("does not evaluate performance when measured correctness failed", () => {
+    expect(evaluatePerformanceAcceptance(copy(), "not a baseline", {
+      status: "failed",
+      failures: [{
+        target: "dbzz",
+        kind: "operation",
+        case: "query/latency/trial-0",
+        errors: ["checksum mismatch"],
+      }],
+    })).toEqual({ status: "not-evaluated", reason: "correctness-failed" });
   });
 
   test("the immutable baseline passes its own complete wins and margin floors", () => {
-    const evidence = assertPerformanceAcceptance(copy(), baselineJson);
+    const evidence = passingEvidence(copy());
     expect(evidence).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       passed: true,
       baseline: {
         path: FROZEN_BASELINE_PATH,
@@ -146,7 +180,7 @@ describe("frozen performance acceptance", () => {
   });
 
   test("classifies exactly the frozen near-tie wins, keeping every other win a strict solid obligation", () => {
-    const evidence = assertPerformanceAcceptance(copy(), baselineJson);
+    const evidence = passingEvidence(copy());
     const nearTies = evidence.frozenDbzzSpacetimeWins.filter((win) => win.classification === "near-tie");
     const solids = evidence.frozenDbzzSpacetimeWins.filter((win) => win.classification === "solid");
     expect(nearTies).toHaveLength(FROZEN_NEAR_TIE_WINS);
@@ -235,7 +269,7 @@ describe("frozen performance acceptance", () => {
         }
       }
     }
-    const evidence = assertPerformanceAcceptance(after, baselineJson);
+    const evidence = passingEvidence(after);
     expect(evidence.sharedFixedRate).toMatchObject({ offeredUpdates: 39, completedUpdates: 39, passed: true });
     expect(evidence.partitionedFixedRate).toMatchObject({ offeredUpdates: 199, completedUpdates: 199, passed: true });
   });
@@ -260,13 +294,13 @@ describe("frozen performance acceptance", () => {
         result.missingDeliveries = 0;
       }
     }
-    expect(assertPerformanceAcceptance(after, baselineJson).passed).toBe(true);
+    expect(passingEvidence(after).passed).toBe(true);
   });
 
   test("rejects current-system measurement drift and frozen workload drift", () => {
     const currentDrift = copy();
     currentDrift.systems.convex!.workload.config.operation.steadyMs = 2_000;
-    expect(() => assertPerformanceAcceptance(currentDrift, baselineJson)).toThrow(
+    expect(() => performance(currentDrift)).toThrow(
       "convex after-run config does not match the current DBZZ config",
     );
 
@@ -274,7 +308,7 @@ describe("frozen performance acceptance", () => {
     for (const system of ["dbzz", "convex", "spacetimedb"] as const) {
       workloadDrift.systems[system]!.workload.config.connections.levels = [1, 100, 500];
     }
-    expect(() => assertPerformanceAcceptance(workloadDrift, baselineJson)).toThrow(
+    expect(() => performance(workloadDrift)).toThrow(
       "after-run workload identity does not match the frozen baseline",
     );
   });
@@ -282,7 +316,7 @@ describe("frozen performance acceptance", () => {
   test("rejects any mutation of the immutable baseline source", () => {
     const tampered = baselineJson.replace('"dirty": true', '"dirty": false');
     expect(tampered).not.toBe(baselineJson);
-    expect(() => assertPerformanceAcceptance(copy(), tampered)).toThrow(
+    expect(() => performance(copy(), tampered)).toThrow(
       "frozen benchmark baseline digest",
     );
   });
@@ -290,18 +324,54 @@ describe("frozen performance acceptance", () => {
   test("fails if any prior strict DBZZ-over-SpacetimeDB path is no longer a strict win", () => {
     const after = copy();
     after.systems.dbzz!.startupIdle.window.rssMb.p50 = after.systems.spacetimedb!.startupIdle.window.rssMb.p50;
-    expect(() => assertPerformanceAcceptance(after, baselineJson)).toThrow(
-      "frozen DBZZ-over-SpacetimeDB win lost at resources/startup-idle/rssMb/p50",
-    );
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "resources/startup-idle/rssMb/p50",
+      message: expect.stringContaining("frozen DBZZ-over-SpacetimeDB win lost"),
+    }));
+  });
+
+  test("persists an ordinary measured performance regression as failed evidence", async () => {
+    const after = copy();
+    after.systems.dbzz!.startupIdle.window.rssMb.p50 = after.systems.spacetimedb!.startupIdle.window.rssMb.p50;
+    const performanceAcceptance = failedPerformance(after);
+    const directory = mkdtempSync(join(tmpdir(), "dbzz-bench-failure-"));
+    const path = join(directory, "result.json");
+    try {
+      const outcome = await persistBenchmarkOutcome(path, {
+        ...after,
+        schemaVersion: 6,
+        validation: passedValidation,
+        performanceAcceptance,
+      });
+      const saved = JSON.parse(readFileSync(path, "utf8")) as {
+        performanceAcceptance: { status: string; failures: Array<{ path: string }> };
+      };
+
+      expect(outcome.status).toBe("failed");
+      expect(saved.performanceAcceptance).toMatchObject({
+        status: "failed",
+        failures: [{ path: "resources/startup-idle/rssMb/p50" }],
+      });
+      expect(Object.isFrozen(performanceAcceptance)).toBe(true);
+      expect(Object.isFrozen(performanceAcceptance.failures)).toBe(true);
+      expect(Object.isFrozen(performanceAcceptance.failures[0])).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("a solid win that slips behind by less than the noise floor still fails: the floor never loosens strict obligations", () => {
     const after = copy();
     const spacetime = after.systems.spacetimedb!.resources.server.phases["connections:100:work"]!.cpuCores;
     after.systems.dbzz!.resources.server.phases["connections:100:work"]!.cpuCores = spacetime * 1.01;
-    expect(() => assertPerformanceAcceptance(after, baselineJson)).toThrow(
-      "frozen DBZZ-over-SpacetimeDB win lost at connections/100/resources/server/work/cpuCores",
-    );
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "connections/100/resources/server/work/cpuCores",
+      message: expect.stringContaining("frozen DBZZ-over-SpacetimeDB win lost"),
+    }));
   });
 
   test("a near-tie win flipped within the noise floor passes and stays visible in evidence and the drift table", () => {
@@ -315,7 +385,7 @@ describe("frozen performance acceptance", () => {
     const spacetimeIdle = after.systems.spacetimedb!.resources.server.phases["connections:500:idle"]!.cpuCores;
     after.systems.dbzz!.resources.server.phases["connections:500:idle"]!.cpuCores = spacetimeIdle + 0.02;
 
-    const evidence = assertPerformanceAcceptance(after, baselineJson);
+    const evidence = passingEvidence(after);
     expect(evidence.metricCounts.frozenNearTieWins).toBe(22);
     const delivery = evidence.frozenDbzzSpacetimeWins.find(
       (win) => win.path === "subscriptions/shared/fixed-rate/deliveryThroughputPerSec",
@@ -342,25 +412,34 @@ describe("frozen performance acceptance", () => {
     // 10% below the 10,000/s offered target: exact counts, within the near-tie
     // envelope and above the Convex floor, so only the offered-rate gate trips
     shared.deliveryThroughputPerSec = 9_000;
-    expect(() => assertPerformanceAcceptance(after, baselineJson)).toThrow(
-      "shared fixed-rate offered target failed: 9000/s, expected at least 9900/s with exact completion",
-    );
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual({
+      kind: "fixed-rate",
+      path: "subscriptions/shared/fixed-rate",
+      message: "shared fixed-rate offered target failed: 9000/s, expected at least 9900/s with exact completion",
+    });
   });
 
   test("a near-tie win reversed beyond the noise floor fails on both the relative and the absolute cpu envelope", () => {
     const relative = copy();
     subscription(relative, "dbzz", "shared").deliveryThroughputPerSec =
       subscription(relative, "spacetimedb", "shared").deliveryThroughputPerSec * 0.8;
-    expect(() => assertPerformanceAcceptance(relative, baselineJson)).toThrow(
-      "frozen near-tie DBZZ-over-SpacetimeDB win reversed beyond the noise floor at subscriptions/shared/fixed-rate/deliveryThroughputPerSec",
-    );
+    const relativeResult = failedPerformance(relative);
+    expect(relativeResult.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "subscriptions/shared/fixed-rate/deliveryThroughputPerSec",
+      message: expect.stringContaining("reversed beyond the noise floor"),
+    }));
 
     const absolute = copy();
     const spacetimeIdle = absolute.systems.spacetimedb!.resources.server.phases["connections:500:idle"]!.cpuCores;
     absolute.systems.dbzz!.resources.server.phases["connections:500:idle"]!.cpuCores = spacetimeIdle + 0.03;
-    expect(() => assertPerformanceAcceptance(absolute, baselineJson)).toThrow(
-      "frozen near-tie DBZZ-over-SpacetimeDB win reversed beyond the noise floor at connections/500/resources/server/idle/cpuCores",
-    );
+    const absoluteResult = failedPerformance(absolute);
+    expect(absoluteResult.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "connections/500/resources/server/idle/cpuCores",
+      message: expect.stringContaining("reversed beyond the noise floor"),
+    }));
   });
 
   test("a coherent setup slowdown that lands beyond the floor fails even though both setup paths are near-ties", () => {
@@ -373,9 +452,12 @@ describe("frozen performance acceptance", () => {
     expect(factor).toBeGreaterThan(1);
     dbzzSetup.setupMs *= factor;
     dbzzSetup.setupConnectionsPerSec /= factor;
-    expect(() => assertPerformanceAcceptance(after, baselineJson)).toThrow(
-      "frozen near-tie DBZZ-over-SpacetimeDB win reversed beyond the noise floor at subscriptions/partitioned/fixed-rate/setupMs",
-    );
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual(expect.objectContaining({
+      kind: "frozen-win",
+      path: "subscriptions/partitioned/fixed-rate/setupMs",
+      message: expect.stringContaining("reversed beyond the noise floor"),
+    }));
   });
 
   test("rejects every frozen Convex floor group adversarially", () => {
@@ -440,15 +522,22 @@ describe("frozen performance acceptance", () => {
     for (const entry of cases) {
       const after = copy();
       entry.mutate(after);
-      expect(() => assertPerformanceAcceptance(after, baselineJson), entry.name).toThrow("Convex floor failed");
+      const result = failedPerformance(after);
+      expect(
+        result.failures.some((failure) => failure.kind === "convex-floor" && failure.message.includes("Convex floor failed")),
+        entry.name,
+      ).toBe(true);
     }
   });
 
   test("requires partitioned fixed-rate to complete the exact offered workload", () => {
     const after = copy();
     subscription(after, "dbzz", "partitioned").updates--;
-    expect(() => assertPerformanceAcceptance(after, baselineJson)).toThrow(
-      "partitioned fixed-rate offered target failed",
-    );
+    const result = failedPerformance(after);
+    expect(result.failures).toContainEqual(expect.objectContaining({
+      kind: "fixed-rate",
+      path: "subscriptions/partitioned/fixed-rate",
+      message: expect.stringContaining("partitioned fixed-rate offered target failed"),
+    }));
   });
 });

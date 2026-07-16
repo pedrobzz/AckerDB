@@ -625,7 +625,7 @@ independent failure domain.
 
 ### Acceptance gaps and evidence debt
 
-1. **No accepted schema-v5 result exists.** Story 45's telemetry-on/off cost is
+1. **No accepted schema-v6 result exists.** Story 45's telemetry-on/off cost is
    not measured post-change; story 46 has a strong current-host diagnostic but
    not the frozen default acceptance workload; story 47's 273 historical
    SpacetimeDB wins remain explicitly deferred to the Apple M2 host. This keeps
@@ -721,7 +721,7 @@ for zero users.
 3. **Bump the four packages in lockstep before merge.** Follow the existing
    release workflow; do not merge/publish/tag until the branch is clean.
 
-Keep schema-v5/Apple M2 acceptance and raw-log preservation explicitly deferred
+Keep schema-v6/Apple M2 acceptance and raw-log preservation explicitly deferred
 unless Pedro chooses literal PRD closure; neither is required to make the
 zero-user alpha usable without becoming a liability.
 
@@ -778,7 +778,7 @@ DBZZ ownership in production.
 | Stories | Status | Evidence/remaining work |
 | --- | --- | --- |
 | 1–44 | Implementation and behavioral proof complete | Public/fault tests cover identity, ordering, overload, lifecycle, durability, recovery, telemetry, and privacy boundaries. |
-| 45 | Benchmark machinery complete; empirical acceptance pending | Default/exporter/disabled DBZZ legs and exact cost reporting exist, but no accepted post-change schema-v5 result has been saved. |
+| 45 | Benchmark machinery complete; empirical acceptance pending | Default/exporter/disabled DBZZ legs and exact cost reporting exist, but no accepted post-change schema-v6 result has been saved. |
 | 46 | Strong current-host diagnostic; frozen acceptance pending | Hetzner proves a decisive local-Convex margin on the reduced valid shape; it is not the default frozen acceptance workload. |
 | 47 | Explicitly deferred | Requires the shortened full run on the frozen Apple M2 host to preserve all 273 prior DBZZ-over-SpacetimeDB wins. |
 | 48–50 | Complete | Return inference is proved, speculative runtime output schemas were excluded, and remaining production limitations are documented. |
