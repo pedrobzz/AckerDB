@@ -20,7 +20,7 @@ import {
 import type {
   CredentialVerifier,
   PrincipalInvalidation,
-  VerifiedPrincipal,
+  VerifiedUserCredential,
 } from "../../server/src/auth.ts";
 import { StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -59,7 +59,7 @@ class LeaseVerifier implements CredentialVerifier {
   readonly expirations = new Map<string, number>();
   private readonly listeners = new Set<(invalidation: PrincipalInvalidation) => void>();
 
-  async verify(token: string): Promise<VerifiedPrincipal> {
+  async verify(token: string): Promise<VerifiedUserCredential> {
     return {
       kind: "user",
       issuer: "https://issuer.example",

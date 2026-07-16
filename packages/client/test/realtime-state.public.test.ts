@@ -32,8 +32,8 @@ import {
   type CredentialVerifier,
   type PrincipalInvalidation,
   type RuntimeHooks,
-  type UserPrincipal,
-  type VerifiedPrincipal,
+  type VerifiedCredential,
+  type VerifiedUserCredential,
 } from "@dbzz/server";
 import {
   FrameProxy,
@@ -273,7 +273,7 @@ class TestVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
   private readonly expiresAt = Date.now() + 60_000;
 
-  async verify(token: string): Promise<VerifiedPrincipal> {
+  async verify(token: string): Promise<VerifiedCredential> {
     const common = {
       issuer: "https://issuer.example/",
       subject: token,
@@ -281,7 +281,7 @@ class TestVerifier implements CredentialVerifier {
       tokenId: `token-${token}`,
     } as const;
     if (token === "alice" || token === "bob") {
-      return { ...common, kind: "user", claims: { role: "member" } } satisfies UserPrincipal;
+      return { ...common, kind: "user", claims: { role: "member" } } satisfies VerifiedUserCredential;
     }
     if (token === "status") {
       return { ...common, kind: "workload", claims: { scope: "dbzz:status" } };

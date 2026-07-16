@@ -33,7 +33,7 @@ import {
   type TelemetryRecord,
   type TelemetrySpanRecord,
   type ServiceLimits,
-  type VerifiedPrincipal,
+  type VerifiedCredential,
 } from "@dbzz/server";
 
 const VALID_PROCEDURE_TOKEN = "valid-procedure-token-canary";
@@ -89,9 +89,9 @@ class AuthTelemetryVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
   readonly verified: string[] = [];
 
-  async verify(token: string): Promise<VerifiedPrincipal> {
+  async verify(token: string): Promise<VerifiedCredential> {
     this.verified.push(token);
-    if (token === HANGING_WS_TOKEN) return new Promise<VerifiedPrincipal>(() => {});
+    if (token === HANGING_WS_TOKEN) return new Promise<VerifiedCredential>(() => {});
     if (!token.startsWith("valid-")) throw new Error(PRIVATE_VERIFIER_ERROR);
     return {
       kind: "user",

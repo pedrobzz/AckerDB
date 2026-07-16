@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { stableEncode } from "@dbzz/core";
-import type { Principal } from "./auth.ts";
+import type { ExternalAccount, Principal } from "./auth.ts";
 
 /** Network identity used only to group anonymous transport work fairly. */
 export interface TransportSource {
@@ -26,14 +26,24 @@ export function transportSource(source: TransportSource | null): TransportSource
   return Object.freeze({ family: source.family, address: source.address });
 }
 
-/** Fixed-width, non-sensitive ownership key shared by every external transport. */
-export function callerFairnessKey(principal: Principal, source: TransportSource): string {
-  const owner = principal.kind === "user" || principal.kind === "workload"
-    ? ["principal", principal.kind, principal.issuer, principal.subject]
-    : principal.kind === "anonymous"
-      ? ["source", source.family, source.address]
-      : ["system"];
+function fairnessKey(owner: unknown): string {
   return createHash("sha256")
     .update(stableEncode(["caller-fairness-v1", owner]))
     .digest("base64url");
+}
+
+/** Fixed-width ownership for verified credential work before application Identity exists. */
+export function externalAccountFairnessKey(account: ExternalAccount): string {
+  return fairnessKey(["external-account", account.issuer, account.subject]);
+}
+
+/** Fixed-width, non-sensitive ownership key shared by every external transport. */
+export function callerFairnessKey(principal: Principal, source: TransportSource): string {
+  return fairnessKey(principal.kind === "user"
+    ? ["identity", principal.identity]
+    : principal.kind === "workload"
+      ? ["principal", principal.kind, principal.issuer, principal.subject]
+      : principal.kind === "anonymous"
+        ? ["source", source.family, source.address]
+        : ["system"]);
 }

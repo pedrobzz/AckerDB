@@ -8,7 +8,7 @@ import { encode, WireError } from "@dbzz/core";
 
 export class ValidationError extends Error {}
 
-/** Branded bigint: only `ctx.auth.userId` (or another Identity) satisfies it. */
+/** Branded bigint: only `ctx.auth.identity` (or another Identity) satisfies it. */
 export type Identity = bigint & { readonly __dbzzIdentity: unique symbol };
 
 /** JSON-serializable description of a validator, used for schema snapshots. */

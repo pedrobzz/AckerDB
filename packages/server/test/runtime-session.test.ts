@@ -20,7 +20,7 @@ import {
 import {
   type CredentialVerifier,
   type PrincipalInvalidation,
-  type UserPrincipal,
+  type VerifiedUserCredential,
 } from "../src/auth.ts";
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
@@ -131,7 +131,7 @@ class ReconnectClock implements DbzzClientClock {
 class UserVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
 
-  async verify(token: string): Promise<UserPrincipal> {
+  async verify(token: string): Promise<VerifiedUserCredential> {
     if (token !== "alice" && token !== "bob") throw new Error("unknown test credential");
     return {
       kind: "user",

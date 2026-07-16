@@ -17,7 +17,7 @@ import {
 import type {
   CredentialVerifier,
   PrincipalInvalidation,
-  VerifiedPrincipal,
+  VerifiedCredential,
 } from "../src/auth.ts";
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
@@ -153,7 +153,20 @@ const functions = {
     identity: procedure({
       access: "authenticated",
       args: {},
-      handler: (ctx: Ctx) => ({ kind: ctx.auth.kind, subject: ctx.auth.subject }),
+      handler: (ctx: Ctx) => ({
+        kind: ctx.auth.kind,
+        subject: ctx.auth.subject,
+        identity: ctx.auth.kind === "user" ? ctx.auth.identity : null,
+      }),
+    }),
+    identityQuery: query({
+      access: "authenticated",
+      args: {},
+      handler: (ctx: Ctx) => ({
+        kind: ctx.auth.kind,
+        subject: ctx.auth.subject,
+        identity: ctx.auth.kind === "user" ? ctx.auth.identity : null,
+      }),
     }),
     conflict: procedure({
       access: "public",
@@ -225,7 +238,7 @@ class TestVerifier implements CredentialVerifier {
   readonly revocationBound = { kind: "token-expiration" } as const;
   readonly verified: string[] = [];
 
-  async verify(token: string): Promise<VerifiedPrincipal> {
+  async verify(token: string): Promise<VerifiedCredential> {
     this.verified.push(token);
     const common = {
       issuer: "https://issuer.example",
@@ -649,10 +662,39 @@ describe("Protocol-2 HTTP procedures", () => {
         t: "ok",
         id: 2,
         kind: "procedure",
-        value: { kind: "user", subject: "user-token" },
+        value: { kind: "user", subject: "user-token", identity: 1n },
       },
     });
     expect(verifier.verified).toEqual(["user-token"]);
+  });
+
+  test("resolves one durable Identity for the same user over HTTP and WebSocket", async () => {
+    const http = await call("notes.identity", {}, "Bearer user-token");
+    expect(http.status).toBe(200);
+    if (http.frame.t !== "ok") throw new Error("expected HTTP procedure success");
+
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`, {
+      kind: "bearer",
+      token: "user-token",
+    });
+    client.send({ v: PROTOCOL_VERSION, t: "q", id: 1, ref: "notes.identityQuery", args: {} });
+    const websocket = await within(client.next());
+    expect(websocket).toMatchObject({ t: "ok", id: 1, kind: "query" });
+    if (websocket.t !== "ok") throw new Error("expected WebSocket query success");
+
+    expect(websocket.value).toEqual(http.frame.value);
+    expect(http.frame.value).toEqual({
+      kind: "user",
+      subject: "user-token",
+      identity: 1n,
+    });
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_identities").get())
+      .toEqual({ count: 1n });
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_identity_accounts").get())
+      .toEqual({ count: 1n });
+
+    client.socket.close();
+    await within(client.closed());
   });
 
   test("is procedure-only and maps every outcome through its exact HTTP status", async () => {

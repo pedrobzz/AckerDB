@@ -639,11 +639,13 @@ export class DbzzServer {
 
   private async authenticate(request: Request): Promise<AuthLease> {
     const credential = credentialFromAuthorization(request.headers.get("authorization"));
+    const runtime = this.requireRuntime();
     return acquireAuthLease({
       credential,
       verifier: this.verifier,
+      resolveIdentity: (account) => runtime.resolveIdentity(account, request.signal),
       signal: request.signal,
-      revocationDeadlineMs: this.requireRuntime().limits.auth.revocationDeadlineMs,
+      revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
     });
   }
 
