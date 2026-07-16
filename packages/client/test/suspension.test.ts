@@ -640,6 +640,69 @@ describe("DbzzClient activation", () => {
     client.close();
   });
 
+  test("a server retry hint outlives suspension: activation honors the remaining pushback", () => {
+    const { client, clock, sockets, port, phases } = harness();
+    client.subscribe("todos.list", { list: 1n }, () => {});
+    welcome(client, sockets[0]!);
+    // The server sheds load with an explicit admission deadline.
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: null,
+      outcome: {
+        code: "overloaded",
+        retryable: true,
+        retryAfterMs: 5_000,
+        message: "connection admission is full",
+        resource: "connection",
+      },
+    });
+    expect(clock.nextDueIn()).toBe(5_000);
+
+    port.suspend();
+    expect(clock.taskCount).toBe(0);
+    clock.advance(2_000);
+    port.resume();
+    // A lifecycle transition cannot bypass admission control: no immediate
+    // dial, the ordinary reconnect policy holds the remaining three seconds.
+    expect(sockets).toHaveLength(1);
+    expect(client.currentConnectionState.phase).toBe("reconnecting");
+    expect(clock.nextDueIn()).toBe(3_000);
+    clock.advance(3_000);
+    expect(sockets).toHaveLength(2);
+    welcome(client, sockets[1]!);
+    expect(phases).toEqual(["ready", "reconnecting", "suspended", "reconnecting", "ready"]);
+    client.close();
+  });
+
+  test("a server retry hint that elapsed during suspension no longer delays activation", () => {
+    const { client, clock, sockets, port } = harness();
+    client.subscribe("todos.list", { list: 1n }, () => {});
+    welcome(client, sockets[0]!);
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: null,
+      outcome: {
+        code: "overloaded",
+        retryable: true,
+        retryAfterMs: 5_000,
+        message: "connection admission is full",
+        resource: "connection",
+      },
+    });
+    port.suspend();
+    clock.advance(6_000);
+    port.resume();
+    // The admission deadline expired by clock while suspended: the first
+    // attempt begins in the activation turn as usual.
+    expect(sockets).toHaveLength(2);
+    expect(client.currentConnectionState.phase).toBe("resuming");
+    welcome(client, sockets[1]!);
+    expect(client.currentConnectionState.phase).toBe("ready");
+    client.close();
+  });
+
   test("activation without demand leaves the client idle", () => {
     const { client, sockets, port, phases } = harness();
     port.suspend();

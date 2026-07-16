@@ -528,7 +528,13 @@ export class DbzzClient {
   private connectionGeneration = 0;
   private nextId = 1;
   private reconnectAttempt = 0;
-  private serverRetryFloorMs = 0;
+  /**
+   * Absolute clock time before which the server asked this client not to
+   * reconnect (a retryable session error's Retry-After hint). An admission
+   * deadline, not client backoff: it expires by clock, never by lifecycle —
+   * suspension retains it and activation honors any remainder.
+   */
+  private serverRetryNotBeforeMs = 0;
   private pendingItems = 0;
   private pendingBytes = 0;
   private authAttempt?: AuthAttempt;
@@ -1133,8 +1139,6 @@ export class DbzzClient {
     this.resuming = false;
     this.clearReconnectTimer();
     this.clearConnectionTimers();
-    // A pre-suspension server retry hint measures time the process never saw.
-    this.serverRetryFloorMs = 0;
     if (this.authAttempt !== undefined) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.expiryHandle = undefined;
@@ -1161,7 +1165,10 @@ export class DbzzClient {
    * suspended expires now, never by waiting for a stale pre-suspension timer.
    * When logical demand exists the fresh authenticated connection begins in
    * this same event turn: the reconnect timer was cleared at suspension, so
-   * no stale backoff can delay the first attempt. Demand is exactly
+   * no stale client backoff can delay the first attempt. The one thing that
+   * can is a server-directed Retry-After deadline that has not elapsed —
+   * admission control that a lifecycle transition must not bypass; the
+   * ordinary bounded reconnect policy holds the remainder. Demand is exactly
    * {@link hasReconnectWork} — live subscriptions, pending requests, an
    * in-flight credential presentation, or standing connect() demand;
    * suspension cleared none of it. With no demand the client stays idle
@@ -1184,8 +1191,12 @@ export class DbzzClient {
       }
     }
     if (!this.permanentFailure && !this.authBlocked && this.hasReconnectWork()) {
-      this.resuming = true;
-      this.ensureConnected();
+      if (this.serverRetryNotBeforeMs > this.now()) {
+        this.scheduleReconnect();
+      } else {
+        this.resuming = true;
+        this.ensureConnected();
+      }
     }
     this.publishConnectionState();
   }
@@ -1594,9 +1605,9 @@ export class DbzzClient {
   private applyError(id: number | null, error: DbzzClientError): void {
     if (id === null) {
       if (error.retryable) {
-        this.serverRetryFloorMs = Math.max(
-          this.serverRetryFloorMs,
-          Math.min(error.retryAfterMs ?? 0, MAX_RETRY_AFTER_MS),
+        this.serverRetryNotBeforeMs = Math.max(
+          this.serverRetryNotBeforeMs,
+          this.now() + Math.min(error.retryAfterMs ?? 0, MAX_RETRY_AFTER_MS),
         );
         this.socket?.close(1013, "retry later");
       } else if (
@@ -1833,14 +1844,18 @@ export class DbzzClient {
       this.failPermanently(localError("internal", "client random source is invalid", "connection"));
       return;
     }
-    const floor = Math.min(this.serverRetryFloorMs, MAX_RETRY_AFTER_MS);
+    // The server's admission deadline floors the delay by whatever of it
+    // remains; once elapsed it is naturally inert, so it is never cleared.
+    const floor = Math.min(
+      Math.max(0, this.serverRetryNotBeforeMs - this.now()),
+      MAX_RETRY_AFTER_MS,
+    );
     const minimum = Math.max(this.reconnect.baseDelayMs, floor);
     const ceiling = Math.max(minimum, windowMs);
     const delay = Math.min(
       MAX_RETRY_AFTER_MS,
       minimum + Math.floor(random * (ceiling - minimum + 1)),
     );
-    this.serverRetryFloorMs = 0;
     this.reconnectAttempt++;
     this.reconnectHandle = this.clock.setTimeout(() => {
       this.reconnectHandle = undefined;
