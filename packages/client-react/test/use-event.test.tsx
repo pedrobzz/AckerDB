@@ -1,0 +1,617 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { actEnvironment, mountPoint } from "./support/dom.ts";
+import {
+  PROTOCOL_VERSION,
+  decode,
+  encode,
+  parseClientMessage,
+  type ClientMessage,
+  type ServerMessage,
+} from "@dbzz/core";
+import type {
+  DbzzClientClock,
+  DbzzClientError,
+  DbzzLiveEvent,
+  DbzzWebSocket,
+  EventRef,
+} from "@dbzz/client";
+import { Component, StrictMode, act, useLayoutEffect, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { DbzzProvider, useEvent, type DbzzProviderConfig } from "@dbzz/client-react";
+
+interface ClockTask {
+  at: number;
+  callback: () => void;
+  intervalMs?: number;
+}
+
+class ManualClock implements DbzzClientClock {
+  private nextId = 0;
+  private readonly tasks = new Map<number, ClockTask>();
+  private time = 0;
+
+  now(): number {
+    return this.time;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback });
+    return id;
+  }
+
+  clearTimeout(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  setInterval(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
+    return id;
+  }
+
+  clearInterval(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  advance(ms: number): void {
+    const target = this.time + ms;
+    for (;;) {
+      let next: [number, ClockTask] | undefined;
+      for (const entry of this.tasks) {
+        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
+      }
+      if (!next) break;
+      const [id, task] = next;
+      this.time = task.at;
+      if (task.intervalMs === undefined) this.tasks.delete(id);
+      else task.at += task.intervalMs;
+      task.callback();
+    }
+    this.time = target;
+  }
+
+  get taskCount(): number {
+    return this.tasks.size;
+  }
+}
+
+class FakeSocket implements DbzzWebSocket {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  readonly sent: ClientMessage[] = [];
+  closed = false;
+
+  send(data: string): void {
+    if (this.closed) throw new Error("socket is closed");
+    this.sent.push(parseClientMessage(decode(data)));
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.onclose?.();
+  }
+
+  welcome(clientSessionId: string): void {
+    this.onopen?.();
+    this.receive({
+      v: PROTOCOL_VERSION,
+      t: "welcome",
+      clientSessionId,
+      authEpoch: 0,
+      principal: "anonymous",
+    });
+  }
+
+  receive(frame: ServerMessage): void {
+    this.onmessage?.({ data: encode(frame) });
+  }
+
+  framesOf<T extends ClientMessage["t"]>(t: T): Extract<ClientMessage, { t: T }>[] {
+    return this.sent.filter((frame) => frame.t === t) as Extract<ClientMessage, { t: T }>[];
+  }
+}
+
+interface Harness {
+  readonly clock: ManualClock;
+  readonly sockets: FakeSocket[];
+  config(overrides?: Partial<DbzzProviderConfig>): DbzzProviderConfig;
+  live(): FakeSocket[];
+}
+
+function createHarness(): Harness {
+  const clock = new ManualClock();
+  const sockets: FakeSocket[] = [];
+  return {
+    clock,
+    sockets,
+    config(overrides = {}) {
+      return {
+        url: "http://events.test",
+        credential: { kind: "anonymous" },
+        clientSessionId: "react-event-session",
+        clock,
+        random: () => 0,
+        createWebSocket: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+        ...overrides,
+      };
+    },
+    live() {
+      return sockets.filter((socket) => !socket.closed);
+    },
+  };
+}
+
+type PingRow = { readonly id: bigint; readonly n: number };
+const pings = { $ref: "events.pings" } as EventRef<{ min: bigint }, PingRow>;
+
+interface ProbeProps {
+  readonly config: DbzzProviderConfig;
+  readonly min: bigint;
+  readonly onEvent: (event: DbzzLiveEvent<PingRow>) => void;
+  readonly onError?: (error: DbzzClientError) => void;
+}
+
+function Probe({ min, onEvent, onError }: Omit<ProbeProps, "config">): ReactNode {
+  useEvent(pings, { min }, onEvent, onError);
+  return null;
+}
+
+function app({ config, ...probe }: ProbeProps): ReactNode {
+  return (
+    <StrictMode>
+      <DbzzProvider config={config}>
+        <Probe {...probe} />
+      </DbzzProvider>
+    </StrictMode>
+  );
+}
+
+async function render(root: Root, element: ReactNode): Promise<void> {
+  await act(async () => {
+    root.render(element);
+  });
+}
+
+// Runs `fire` in the commit's layout phase: after every insertion effect has
+// installed the new committed identity, before any passive effect has released
+// the superseded subscription. This is the exact window where socket traffic
+// races React in production.
+function Injector({ fire }: { readonly fire: (() => void) | null }): ReactNode {
+  useLayoutEffect(() => {
+    fire?.();
+  }, [fire]);
+  return null;
+}
+
+function cursor(sequence: bigint, generation = "g1"): {
+  generation: string;
+  commitVersion: bigint;
+  sequence: bigint;
+} {
+  return { generation, commitVersion: sequence, sequence };
+}
+
+beforeAll(() => actEnvironment(true));
+afterAll(() => actEnvironment(false));
+
+describe("useEvent lifecycle", () => {
+  test("delivers the live union to the latest callback without churning the subscription", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const config = harness.config();
+    const first: DbzzLiveEvent<PingRow>[] = [];
+    const second: DbzzLiveEvent<PingRow>[] = [];
+
+    await render(root, app({ config, min: 1n, onEvent: (event) => first.push(event) }));
+    // Strict Mode: two provider clients, one live; its single event
+    // subscription is flushed once on welcome.
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    const subs = socket.framesOf("sub");
+    expect(subs).toHaveLength(1);
+    expect(subs[0]).toMatchObject({ ref: "events.pings", args: { min: 1n } });
+    const id = subs[0]!.id;
+
+    await act(async () => {
+      socket.receive({ v: PROTOCOL_VERSION, t: "event", id, event: { kind: "reset", cursor: cursor(0n) } });
+    });
+    expect(first.map((event) => event.kind)).toEqual(["reset"]);
+
+    // A new callback identity swaps delivery without any new frames.
+    await render(root, app({ config, min: 1n, onEvent: (event) => second.push(event) }));
+    expect(socket.framesOf("sub")).toHaveLength(1);
+    expect(socket.framesOf("unsub")).toHaveLength(0);
+
+    await act(async () => {
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id,
+        event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },
+      });
+      // Skipping sequence 2 surfaces the client's honest gap marker.
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id,
+        event: { kind: "row", cursor: cursor(3n), row: { id: 3n, n: 3 } },
+      });
+    });
+    expect(first.map((event) => event.kind)).toEqual(["reset"]);
+    expect(second.map((event) => event.kind)).toEqual(["row", "gap"]);
+    expect(second[0]).toMatchObject({ kind: "row", row: { id: 1n, n: 1 } });
+
+    // Unmount deletes parent-first: the provider closes the client (releasing
+    // every subscription) before the hook's cleanup runs, so that cleanup must
+    // be a frame-free no-op rather than a second release.
+    await act(async () => {
+      root.unmount();
+    });
+    expect(socket.framesOf("unsub")).toHaveLength(0);
+    expect(harness.live()).toHaveLength(0);
+    expect(harness.clock.taskCount).toBe(0);
+
+    // Late frames after shutdown reach nobody.
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "event",
+      id,
+      event: { kind: "row", cursor: cursor(4n), row: { id: 4n, n: 4 } },
+    });
+    expect(second.map((event) => event.kind)).toEqual(["row", "gap"]);
+  });
+
+  test("equal-valued arguments keep the subscription; changed values replace it", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const config = harness.config();
+    const onEvent = (): void => {};
+
+    await render(root, app({ config, min: 1n, onEvent }));
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    expect(socket.framesOf("sub")).toHaveLength(1);
+    const firstId = socket.framesOf("sub")[0]!.id;
+
+    // A rerender rebuilding an equal-valued args object is not a new identity.
+    await render(root, app({ config, min: 1n, onEvent }));
+    expect(socket.framesOf("sub")).toHaveLength(1);
+    expect(socket.framesOf("unsub")).toHaveLength(0);
+
+    await render(root, app({ config, min: 2n, onEvent }));
+    expect(socket.framesOf("unsub")).toEqual([{ v: PROTOCOL_VERSION, t: "unsub", id: firstId }]);
+    const subs = socket.framesOf("sub");
+    expect(subs).toHaveLength(2);
+    expect(subs[1]).toMatchObject({ ref: "events.pings", args: { min: 2n } });
+    expect(subs[1]!.id).not.toBe(firstId);
+
+    await act(async () => {
+      root.unmount();
+    });
+    // Shutdown released the second subscription through close(), not a frame.
+    expect(socket.framesOf("unsub")).toHaveLength(1);
+    expect(harness.live()).toHaveLength(0);
+  });
+
+  test("reconnect re-establishes the subscription and delivers one fresh reset boundary", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const events: DbzzLiveEvent<PingRow>[] = [];
+
+    await render(root, app({ config: harness.config(), min: 1n, onEvent: (event) => events.push(event) }));
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    const id = socket.framesOf("sub")[0]!.id;
+    await act(async () => {
+      socket.receive({ v: PROTOCOL_VERSION, t: "event", id, event: { kind: "reset", cursor: cursor(0n) } });
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id,
+        event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },
+      });
+    });
+
+    // Connection loss delivers nothing by itself: no synthesized events.
+    await act(async () => {
+      socket.close();
+    });
+    expect(events.map((event) => event.kind)).toEqual(["reset", "row"]);
+
+    await act(async () => {
+      harness.clock.advance(100);
+    });
+    const next = harness.live()[0]!;
+    expect(next).not.toBe(socket);
+    await act(async () => {
+      next.welcome("react-event-session");
+    });
+    // The client re-sends the same subscription without any cursor: it never
+    // asks the server to replay missed transient events.
+    expect(next.framesOf("sub")).toMatchObject([{ id, ref: "events.pings" }]);
+    expect(next.framesOf("sub")[0]!.cursor).toBeUndefined();
+
+    await act(async () => {
+      next.receive({ v: PROTOCOL_VERSION, t: "event", id, event: { kind: "reset", cursor: cursor(0n, "g2") } });
+      next.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id,
+        event: { kind: "row", cursor: cursor(1n, "g2"), row: { id: 9n, n: 9 } },
+      });
+    });
+    expect(events.map((event) => event.kind)).toEqual(["reset", "row", "reset", "row"]);
+    expect(events[3]).toMatchObject({ kind: "row", row: { id: 9n, n: 9 } });
+
+    await act(async () => {
+      root.unmount();
+    });
+    expect(harness.clock.taskCount).toBe(0);
+  });
+
+  test("provider reconfiguration releases the old subscription exactly once", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const onEvent = (): void => {};
+
+    await render(root, app({ config: harness.config(), min: 1n, onEvent }));
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    expect(socket.framesOf("sub")).toHaveLength(1);
+
+    // Replacing the client lifetime: the old socket sees exactly one unsub
+    // before its close, and the new lifetime carries exactly one subscription.
+    await render(root, app({ config: harness.config({ url: "http://two.test" }), min: 1n, onEvent }));
+    expect(socket.closed).toBe(true);
+    expect(socket.framesOf("unsub")).toHaveLength(1);
+
+    const next = harness.live()[0]!;
+    await act(async () => {
+      next.welcome("react-event-session");
+    });
+    expect(next.framesOf("sub")).toHaveLength(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+    expect(next.framesOf("unsub")).toHaveLength(0);
+    expect(harness.live()).toHaveLength(0);
+    expect(harness.clock.taskCount).toBe(0);
+  });
+
+  test("a client that cannot accept subscriptions reports the exact error as a value", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const events: DbzzLiveEvent<PingRow>[] = [];
+    const errors: DbzzClientError[] = [];
+
+    await render(
+      root,
+      app({
+        config: harness.config({ limits: { maxPendingBytes: 1 } }),
+        min: 1n,
+        onEvent: (event) => events.push(event),
+        onError: (error) => errors.push(error),
+      }),
+    );
+    expect(events).toHaveLength(0);
+    expect(errors.map((error) => error.code)).toEqual(["overloaded"]);
+
+    await act(async () => {
+      root.unmount();
+    });
+    expect(harness.clock.taskCount).toBe(0);
+  });
+
+  test("reordered argument keys keep the canonical subscription identity", async () => {
+    const scoped = { $ref: "events.scoped" } as EventRef<{ a: bigint; b: string }, PingRow>;
+    function ScopedProbe({ args }: { readonly args: { a: bigint; b: string } }): ReactNode {
+      useEvent(scoped, args, () => {});
+      return null;
+    }
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const view = (args: { a: bigint; b: string }): ReactNode => (
+      <StrictMode>
+        <DbzzProvider config={harness.config()}>
+          <ScopedProbe args={args} />
+        </DbzzProvider>
+      </StrictMode>
+    );
+
+    await render(root, view({ a: 1n, b: "x" }));
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    expect(socket.framesOf("sub")).toHaveLength(1);
+
+    // Same values, different insertion order: still the same subscription.
+    await render(root, view({ b: "x", a: 1n }));
+    expect(socket.framesOf("sub")).toHaveLength(1);
+    expect(socket.framesOf("unsub")).toHaveLength(0);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("an argument change fences in-flight deliveries from the superseded subscription", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const first: DbzzLiveEvent<PingRow>[] = [];
+    const second: DbzzLiveEvent<PingRow>[] = [];
+    const tree = (
+      min: bigint,
+      sink: DbzzLiveEvent<PingRow>[],
+      fire: (() => void) | null,
+    ): ReactNode => (
+      <>
+        <DbzzProvider config={harness.config()}>
+          <Probe min={min} onEvent={(event) => sink.push(event)} />
+        </DbzzProvider>
+        <Injector fire={fire} />
+      </>
+    );
+
+    await render(root, tree(1n, first, null));
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    const firstId = socket.framesOf("sub")[0]!.id;
+    await act(async () => {
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id: firstId,
+        event: { kind: "reset", cursor: cursor(0n) },
+      });
+    });
+    expect(first.map((event) => event.kind)).toEqual(["reset"]);
+
+    // Deliver from the superseded subscription mid-commit: the new arguments
+    // are committed but the passive cleanup has not yet unsubscribed, and the
+    // row must reach neither the old nor the new callback.
+    let unsubsAtFire = -1;
+    let secondAtFire = -1;
+    await render(
+      root,
+      tree(2n, second, () => {
+        unsubsAtFire = socket.framesOf("unsub").length;
+        socket.receive({
+          v: PROTOCOL_VERSION,
+          t: "event",
+          id: firstId,
+          event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },
+        });
+        secondAtFire = second.length;
+      }),
+    );
+    expect(unsubsAtFire).toBe(0);
+    expect(secondAtFire).toBe(0);
+    expect(first.map((event) => event.kind)).toEqual(["reset"]);
+    expect(second).toHaveLength(0);
+
+    // The passive phase then swaps the subscription, which delivers normally.
+    expect(socket.framesOf("unsub")).toEqual([{ v: PROTOCOL_VERSION, t: "unsub", id: firstId }]);
+    const secondId = socket.framesOf("sub")[1]!.id;
+    await act(async () => {
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id: secondId,
+        event: { kind: "reset", cursor: cursor(0n, "g2") },
+      });
+    });
+    expect(second.map((event) => event.kind)).toEqual(["reset"]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("deletion fences deliveries that beat the passive cleanup", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const events: DbzzLiveEvent<PingRow>[] = [];
+    const view = (mounted: boolean, fire: (() => void) | null): ReactNode => (
+      <>
+        {mounted ? (
+          <DbzzProvider config={harness.config()}>
+            <Probe min={1n} onEvent={(event) => events.push(event)} />
+          </DbzzProvider>
+        ) : null}
+        <Injector fire={fire} />
+      </>
+    );
+
+    await render(root, view(true, null));
+    const socket = harness.live()[0]!;
+    await act(async () => {
+      socket.welcome("react-event-session");
+    });
+    const id = socket.framesOf("sub")[0]!.id;
+    await act(async () => {
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "event",
+        id,
+        event: { kind: "reset", cursor: cursor(0n) },
+      });
+    });
+    expect(events.map((event) => event.kind)).toEqual(["reset"]);
+
+    // Deleting the subtree runs the insertion cleanup in the mutation phase,
+    // while the client (and its subscription) release later in the passive
+    // phase: rows racing that window reach nobody.
+    let liveAtFire = -1;
+    let eventsAtFire = -1;
+    await render(
+      root,
+      view(false, () => {
+        liveAtFire = harness.live().length;
+        socket.receive({
+          v: PROTOCOL_VERSION,
+          t: "event",
+          id,
+          event: { kind: "row", cursor: cursor(1n), row: { id: 1n, n: 1 } },
+        });
+        eventsAtFire = events.length;
+      }),
+    );
+    expect(liveAtFire).toBe(1);
+    expect(eventsAtFire).toBe(1);
+    expect(events.map((event) => event.kind)).toEqual(["reset"]);
+    expect(harness.live()).toHaveLength(0);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("useEvent outside a provider fails loudly", async () => {
+    const root = createRoot(mountPoint());
+    let caught: unknown;
+
+    class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+      override state = { failed: false };
+      static getDerivedStateFromError(): { failed: boolean } {
+        return { failed: true };
+      }
+      override componentDidCatch(error: unknown): void {
+        caught = error;
+      }
+      override render(): ReactNode {
+        return this.state.failed ? "failed" : this.props.children;
+      }
+    }
+
+    await render(
+      root,
+      <Boundary>
+        <Probe min={1n} onEvent={() => {}} />
+      </Boundary>,
+    );
+    expect(String(caught)).toContain("useEvent requires a <DbzzProvider> ancestor");
+    await act(async () => {
+      root.unmount();
+    });
+  });
+});

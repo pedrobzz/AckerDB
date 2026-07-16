@@ -709,6 +709,41 @@ describe("DbzzClient protocol 2 ownership", () => {
     client.close();
   });
 
+  test("releases an event subscription exactly once across repeated unsubscribe and close", () => {
+    const { client, sockets } = harness();
+    const events: DbzzLiveEvent<{ x: number }>[] = [];
+    const unsubscribe = client.subscribeEvent<Record<never, never>, { x: number }>(
+      "events.cursor",
+      {},
+      (event) => events.push(event),
+    );
+    welcome(client, sockets[0]!);
+    const id = lastFrame(sockets[0]!, "sub").id;
+    unsubscribe();
+    unsubscribe();
+    expect(
+      sockets[0]!.frames().filter((frame) => frame.t === "unsub"),
+    ).toEqual([{ v: 2, t: "unsub", id }]);
+    sockets[0]!.receive({
+      v: 2,
+      t: "event",
+      id,
+      event: { kind: "reset", cursor: { generation: "g", commitVersion: 0n, sequence: 0n } },
+    });
+    expect(events).toHaveLength(0);
+
+    // close() releases surviving subscriptions itself; a hook cleanup running
+    // afterwards must find nothing left to release and send nothing.
+    const second = harness();
+    const release = second.client.subscribeEvent("events.cursor", {}, () => {});
+    welcome(second.client, second.sockets[0]!);
+    second.client.close();
+    expect(() => release()).not.toThrow();
+    expect(
+      second.sockets[0]!.frames().filter((frame) => frame.t === "unsub"),
+    ).toHaveLength(0);
+  });
+
   test("uses strict authenticated HTTP procedure envelopes", async () => {
     let authorization: string | null = null;
     const fetcher: DbzzClientOptions["fetch"] = async (url, init) => {

@@ -3,8 +3,11 @@
 import {
   DbzzProvider,
   useConnectionState,
+  useEvent,
   type DbzzConnectionState,
+  type DbzzLiveEvent,
   type DbzzProviderConfig,
+  type EventRef,
 } from "@dbzz/client-react";
 import type { ReactElement, ReactNode } from "react";
 
@@ -112,6 +115,66 @@ declare const ready: Extract<DbzzConnectionState, { phase: "ready" }>;
 // @ts-expect-error the ready state carries no error
 ready.error;
 
+// --- typed event subscriptions ----------------------------------------------
+
+declare const pingEvents: EventRef<{ min: number }, { id: bigint; n: number }>;
+
+function EventConsumer(): ReactNode {
+  // The reference infers the argument and row payload types end to end, and
+  // the live union is exactly what the wire protocol carries: row, gap, reset.
+  useEvent(pingEvents, { min: 1 }, (event) => {
+    switch (event.kind) {
+      case "row": {
+        const n: number = event.row.n;
+        const id: bigint = event.row.id;
+        void [n, id, event.cursor.sequence];
+        return;
+      }
+      case "gap": {
+        // @ts-expect-error a gap dropped its rows; only the cursor survives
+        void event.row;
+        return;
+      }
+      case "reset":
+        void event.cursor.generation;
+        return;
+      default:
+        return assertNever(event);
+    }
+  });
+  return null;
+}
+
+function MistypedEventConsumers(): ReactNode {
+  // @ts-expect-error arguments are inferred from the event reference
+  useEvent(pingEvents, { min: "low" }, () => {});
+  useEvent(pingEvents, { min: 1 }, (event) => {
+    // @ts-expect-error dbzz event streams are append-only: the protocol
+    // carries no insert/update/delete kinds to compare against
+    void (event.kind === "delete");
+    if (event.kind === "row") {
+      // @ts-expect-error the row payload is exactly the event table's columns
+      void event.row.missing;
+    }
+  });
+  useEvent(pingEvents, { min: 1 }, () => {}, (error) => {
+    error.code satisfies string;
+    error.retryable satisfies boolean;
+  });
+  return null;
+}
+
+function ignoresGap(event: DbzzLiveEvent<{ n: number }>): string {
+  switch (event.kind) {
+    case "row":
+    case "reset":
+      return event.kind;
+    default:
+      // @ts-expect-error gap events make this handling non-exhaustive
+      return assertNever(event);
+  }
+}
+
 // --- forbidden imperative escape hatches ------------------------------------
 
 type PublicExports = keyof typeof import("@dbzz/client-react");
@@ -120,7 +183,7 @@ type AssertNever<T extends never> = T;
 // The value surface is exactly the provider and its hooks: no client getter,
 // no close hook, no client class re-export.
 type UnexpectedExports = AssertNever<
-  Exclude<PublicExports, "DbzzProvider" | "useConnectionState" | "useMutation">
+  Exclude<PublicExports, "DbzzProvider" | "useConnectionState" | "useEvent" | "useMutation">
 >;
 type NoImperativeEscape = AssertNever<
   Extract<PublicExports, "useDbzzClient" | "useClient" | "useClose" | "close" | "DbzzClient">
@@ -128,10 +191,13 @@ type NoImperativeEscape = AssertNever<
 
 export {
   Consumer,
+  EventConsumer,
+  MistypedEventConsumers,
   badReconnect,
   bare,
   clientProp,
   describePhase,
+  ignoresGap,
   missesNativePhases,
   missingConfig,
   missingCredential,
