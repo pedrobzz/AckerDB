@@ -1101,6 +1101,21 @@ export class Engine {
     return true;
   }
 
+  /** Detach one owned account inside the caller-owned writer transaction. */
+  detachIdentityAccount(
+    identity: Identity,
+    issuer: string,
+    subject: string,
+  ): "removed" | "not_owned" | "last_account" {
+    if (this.identityForAccount(this.writer, issuer, subject) !== identity) return "not_owned";
+    const removed = this.writer
+      .query(`DELETE FROM _dbz_identity_accounts
+        WHERE issuer = ? AND subject = ? AND identity = ?
+          AND 1 < (SELECT COUNT(*) FROM _dbz_identity_accounts WHERE identity = ?)`)
+      .run(issuer, subject, identity, identity);
+    return removed.changes === 1 ? "removed" : "last_account";
+  }
+
   schemaFingerprint(): string {
     return createHash("sha256").update(JSON.stringify(snapshotOf(this.schema))).digest("hex");
   }

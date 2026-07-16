@@ -30,6 +30,10 @@ import {
   type ExternalAccount,
   type Principal,
 } from "./auth.ts";
+import {
+  AuthInvalidationBoundary,
+  type AuthInvalidationScope,
+} from "./auth-invalidation.ts";
 import { validateCredentialVerifierRevocation } from "./auth-lease.ts";
 import { callerFairnessKey, externalAccountFairnessKey, transportSource } from "./caller.ts";
 import {
@@ -531,6 +535,7 @@ export class Runtime implements RuntimePort {
   };
 
   private readonly now: () => number;
+  private readonly authInvalidation: AuthInvalidationBoundary;
   private readonly reader: BoundedExecutor;
   private readonly availableReaders: Database[];
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
@@ -560,7 +565,8 @@ export class Runtime implements RuntimePort {
     this.engine = options.engine;
     this.registry = options.registry;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
-    this.credentialVerifier = options.verifier;
+    this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
+    this.credentialVerifier = this.authInvalidation.verifier;
     validateCredentialVerifierRevocation(
       this.credentialVerifier,
       this.limits.auth.revocationDeadlineMs,
@@ -715,6 +721,50 @@ export class Runtime implements RuntimePort {
         }
       },
     });
+  }
+
+  private async unlinkAccount(
+    principal: Principal,
+    candidate: ExternalAccount,
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+    accountUnlinked: (account: ExternalAccount) => void,
+  ): Promise<void> {
+    if (principal.kind !== "user") {
+      throw new DbzzError("unauthorized", "account unlinking requires ownership");
+    }
+    if (
+      typeof candidate !== "object" ||
+      candidate === null ||
+      typeof candidate.issuer !== "string" ||
+      candidate.issuer.length === 0 ||
+      typeof candidate.subject !== "string" ||
+      candidate.subject.length === 0
+    ) {
+      throw new DbzzError("validation", "external account must have an issuer and subject");
+    }
+    const account = Object.freeze({ issuer: candidate.issuer, subject: candidate.subject });
+    aborted(signal);
+    const result = await this.coordinator.transactFramework({
+      fairnessKey,
+      requestBytes,
+      signal,
+      work: () => this.engine.detachIdentityAccount(
+        principal.identity,
+        account.issuer,
+        account.subject,
+      ),
+      afterCommit: (committed) => {
+        if (committed === "removed") accountUnlinked(account);
+      },
+    });
+    if (result === "not_owned") {
+      throw new DbzzError("unauthorized", "account unlinking requires ownership");
+    }
+    if (result === "last_account") {
+      throw new DbzzError("conflict", "cannot unlink the final external account");
+    }
   }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {
@@ -978,6 +1028,26 @@ export class Runtime implements RuntimePort {
       request.principal,
       DIRECT_RUNTIME_SOURCE,
     );
+    const originScope = provenance?.invalidationScope;
+    const invalidations = new Map<string, Map<string, ExternalAccount>>();
+    const publishInvalidation = (account: ExternalAccount): void => {
+      const selfScope =
+        request.principal.kind === "user" &&
+        request.principal.issuer === account.issuer &&
+        request.principal.subject === account.subject
+          ? originScope
+          : undefined;
+      if (!this.authInvalidation.publishAccount(account, selfScope)) return;
+      let subjects = invalidations.get(account.issuer);
+      if (subjects === undefined) invalidations.set(account.issuer, (subjects = new Map()));
+      subjects.set(account.subject, account);
+    };
+    const publishOriginInvalidations = (scope: AuthInvalidationScope): void => {
+      for (const subjects of invalidations.values()) {
+        for (const account of subjects.values()) this.authInvalidation.publishAccountTo(account, scope);
+      }
+      invalidations.clear();
+    };
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
@@ -989,13 +1059,19 @@ export class Runtime implements RuntimePort {
           fairnessKey,
           signal,
           requestBytes,
+          publishInvalidation,
         ),
         request.args,
       );
       aborted(signal);
       return value;
-    }, { requestId: String(request.id) }, true, (outcome) =>
-      this.respondProcedure(request, outcome), claimedTrace, fairnessKey);
+    }, { requestId: String(request.id) }, true, (outcome) => {
+      try {
+        return this.respondProcedure(request, outcome);
+      } finally {
+        if (originScope !== undefined) publishOriginInvalidations(originScope);
+      }
+    }, claimedTrace, fairnessKey);
   }
 
   private respondProcedure(
@@ -1259,6 +1335,7 @@ export class Runtime implements RuntimePort {
               fairnessKey,
               producer.signal,
               requestBytes,
+              (account) => this.authInvalidation.publishAccount(account),
             ),
             abortSignal: producer.signal,
           }) as SseCtx,
@@ -2143,6 +2220,7 @@ export class Runtime implements RuntimePort {
     fairnessKey: string,
     signal: AbortSignal,
     requestBytes: number,
+    accountUnlinked: (account: ExternalAccount) => void,
   ): ProcedureCtx {
     return Object.freeze({
       auth: principal,
@@ -2153,6 +2231,14 @@ export class Runtime implements RuntimePort {
         fairnessKey,
         signal,
         requestBytes,
+      ),
+      unlinkAccount: (account: ExternalAccount) => this.unlinkAccount(
+        principal,
+        account,
+        fairnessKey,
+        signal,
+        requestBytes,
+        accountUnlinked,
       ),
       tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
         const execute = async (): Promise<T> => {

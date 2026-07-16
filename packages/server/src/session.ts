@@ -497,7 +497,9 @@ export class Session {
   }
 
   private async open(clientSessionId: string, credential: Credential): Promise<void> {
-    const observationOwner = this.observeAuth === undefined ? undefined : {};
+    const authController = new AbortController();
+    this.pendingAuthController = authController;
+    const observationOwner = this.observeAuth === undefined ? undefined : authController;
     if (observationOwner !== undefined) {
       this.setPendingAuthObservation(
         observationOwner,
@@ -506,15 +508,17 @@ export class Session {
     }
     let principal: ClientPrincipal;
     try {
-      principal = await this.verifyCredential(credential, this.epochController.signal);
+      principal = await this.verifyCredential(credential, authController.signal);
     } catch (error) {
       const failure = verifierError(error);
+      if (this.pendingAuthController === authController) this.pendingAuthController = null;
       if (observationOwner !== undefined) {
         this.finishPendingAuthObservation(observationOwner, failure);
       }
       void this.terminate(failure);
       return;
     }
+    if (this.pendingAuthController === authController) this.pendingAuthController = null;
     if (observationOwner !== undefined) this.finishPendingAuthObservation(observationOwner);
     if (this.isClosed()) return;
     try {
@@ -792,12 +796,14 @@ export class Session {
     credential: Credential,
     signal?: AbortSignal,
   ): Promise<ClientPrincipal> {
-    return verifyClientCredential(
+    const principal = await verifyClientCredential(
       credential,
       this.runtime.credentialVerifier,
       (account) => this.runtime.resolveIdentity(account, signal),
       () => this.readNow(),
     );
+    if (signal?.aborted) throw signal.reason;
+    return principal;
   }
 
   private beginAuthObservation(
@@ -871,6 +877,12 @@ export class Session {
   }
 
   private onInvalidation(invalidation: PrincipalInvalidation): void {
+    const error = new DbzzError("unauthenticated", "credential revoked");
+    if (this.pendingAuthController !== null) {
+      aborted(this.pendingAuthController, error);
+      void this.terminate(error);
+      return;
+    }
     const principal = this.principal;
     if (
       this.phase === "closed" ||
@@ -884,7 +896,7 @@ export class Session {
     }
     // Immediate fail-closed is stronger than the configured maximum deadline
     // and uses the sink's reserved control path.
-    void this.terminate(new DbzzError("unauthenticated", "credential revoked"));
+    void this.terminate(error);
   }
 
   private terminate(error: DbzzError): Promise<void> {
