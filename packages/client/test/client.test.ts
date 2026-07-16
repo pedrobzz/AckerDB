@@ -15,6 +15,7 @@ import {
 import {
   DbzzClient,
   DbzzClientError,
+  type DbzzAuthenticationState,
   type DbzzClientClock,
   type DbzzClientOptions,
   type DbzzLiveEvent,
@@ -2252,5 +2253,233 @@ describe("DbzzClient close-time mutation settlement", () => {
       resource: "operation",
       message: "client closed",
     });
+  });
+});
+
+describe("DbzzClient authentication state", () => {
+  test("publishes authenticating, unauthenticated, and closed with stable snapshots", () => {
+    const { client, sockets } = harness();
+    const phases: string[] = [];
+    const unsubscribe = client.subscribeAuthenticationState((state) => phases.push(state.phase));
+
+    const initial = client.currentAuthenticationState;
+    expect(initial).toEqual({ phase: "authenticating", credential: "anonymous" });
+    expect(client.currentAuthenticationState).toBe(initial);
+
+    client.connect();
+    expect(client.currentAuthenticationState).toBe(initial);
+
+    welcome(client, sockets[0]!);
+    const confirmed = client.currentAuthenticationState;
+    expect(confirmed).toEqual({
+      phase: "unauthenticated",
+      authentication: { authEpoch: 0, principal: "anonymous" },
+    });
+    expect(client.currentAuthenticationState).toBe(confirmed);
+    // Both surfaces publish from one transition and share the confirmation.
+    const ready = client.currentConnectionState;
+    if (ready.phase !== "ready" || confirmed.phase !== "unauthenticated") {
+      throw new Error("expected a confirmed anonymous session");
+    }
+    expect(confirmed.authentication).toBe(ready.authentication);
+
+    // A reconnect re-presents the stored credential before any confirmation.
+    sockets[0]!.drop();
+    expect(client.currentAuthenticationState).toBe(initial);
+
+    client.close();
+    expect(client.currentAuthenticationState).toEqual({ phase: "closed" });
+    expect(phases).toEqual(["unauthenticated", "authenticating", "closed"]);
+    unsubscribe();
+  });
+
+  test("confirms a bearer connection as authenticated with the welcome principal", () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    client.connect();
+    sockets[0]!.open();
+    sockets[0]!.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 4,
+      principal: "user",
+    });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticated",
+      authentication: { authEpoch: 4, principal: "user" },
+    });
+    client.close();
+  });
+
+  test("tracks refresh and sign-out through the pending credential kind", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    const states: DbzzAuthenticationState[] = [];
+    client.subscribeAuthenticationState((state) => states.push(state));
+    client.connect();
+    welcome(client, sockets[0]!, "user");
+
+    // An anonymous presentation on a live session is the protocol's sign-out.
+    const signOut = client.refreshCredential({ kind: "anonymous" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "anonymous",
+    });
+    // The transport session stays ready while the credential is re-verified;
+    // only the authentication surface reports the in-flight presentation.
+    expect(client.currentConnectionState.phase).toBe("ready");
+    const signOutFrame = lastFrame(sockets[0]!, "auth");
+    expect(signOutFrame.credential).toEqual({ kind: "anonymous" });
+    sockets[0]!.receive({
+      v: 2,
+      t: "auth",
+      attemptId: signOutFrame.attemptId,
+      authEpoch: 1,
+      principal: "anonymous",
+    });
+    expect(await signOut).toEqual({ authEpoch: 1, principal: "anonymous" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "unauthenticated",
+      authentication: { authEpoch: 1, principal: "anonymous" },
+    });
+
+    // A superseded refresh rejects with auth_stale and the state reports the
+    // newest pending credential kind until its confirmation arrives.
+    const superseded = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-c" });
+    expect(await superseded).toMatchObject({ code: "auth_stale" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    const refreshFrame = lastFrame(sockets[0]!, "auth");
+    expect(refreshFrame.credential).toEqual({ kind: "bearer", token: "token-c" });
+    sockets[0]!.receive({
+      v: 2,
+      t: "auth",
+      attemptId: refreshFrame.attemptId,
+      authEpoch: 2,
+      principal: "user",
+    });
+    expect(await refresh).toEqual({ authEpoch: 2, principal: "user" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticated",
+      authentication: { authEpoch: 2, principal: "user" },
+    });
+    expect(states.map((state) => state.phase)).toEqual([
+      "authenticated",
+      "authenticating",
+      "unauthenticated",
+      "authenticating",
+      "authenticated",
+    ]);
+    client.close();
+  });
+
+  test("reports refresh-required with the exact error shared with the connection state", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    welcome(client, sockets[0]!, "user");
+    sockets[0]!.receive({
+      v: 2,
+      t: "err",
+      id: null,
+      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
+    });
+    const blocked = client.currentAuthenticationState;
+    if (blocked.phase !== "refresh-required") throw new Error(`unexpected ${blocked.phase}`);
+    expect(blocked.error).toBeInstanceOf(DbzzClientError);
+    expect(blocked.error.code).toBe("unauthenticated");
+    expect(client.currentAuthenticationState).toBe(blocked);
+    const connection = client.currentConnectionState;
+    if (connection.phase !== "authentication-blocked") throw new Error(`unexpected ${connection.phase}`);
+    expect(connection.error).toBe(blocked.error);
+
+    // A new credential leaves the blocked state and replays the handshake.
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    const second = sockets[1]!;
+    second.open();
+    second.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 0,
+      principal: "anonymous",
+    });
+    // Welcome alone does not confirm the refreshed credential.
+    expect(client.currentAuthenticationState.phase).toBe("authenticating");
+    const auth = lastFrame(second, "auth");
+    second.receive({ v: 2, t: "auth", attemptId: auth.attemptId, authEpoch: 1, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 1, principal: "user" });
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticated",
+      authentication: { authEpoch: 1, principal: "user" },
+    });
+    client.close();
+  });
+
+  test("a refresh timeout blocks with auth_unavailable and rejects the attempt", async () => {
+    const { client, clock, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
+    expect(client.currentAuthenticationState).toEqual({
+      phase: "authenticating",
+      credential: "bearer",
+    });
+    clock.advance(30_000);
+    const error = await refresh;
+    expect(error).toMatchObject({ code: "auth_unavailable", message: "authentication timed out" });
+    const blocked = client.currentAuthenticationState;
+    if (blocked.phase !== "refresh-required") throw new Error(`unexpected ${blocked.phase}`);
+    expect(blocked.error).toBe(error as DbzzClientError);
+    client.close();
+  });
+
+  test("failed mirrors the terminal connection error and close notifies once", () => {
+    const { client, sockets } = harness();
+    let notified = 0;
+    client.subscribeAuthenticationState(() => notified++);
+    client.connect();
+    welcome(client, sockets[0]!);
+    sockets[0]!.receiveRaw("not json");
+    const failed = client.currentAuthenticationState;
+    if (failed.phase !== "failed") throw new Error(`unexpected ${failed.phase}`);
+    const terminal = client.currentConnectionState;
+    if (terminal.phase !== "terminal-error") throw new Error(`unexpected ${terminal.phase}`);
+    expect(failed.error).toBe(terminal.error);
+    expect(client.currentAuthenticationState).toBe(failed);
+
+    client.close();
+    client.close();
+    expect(client.currentAuthenticationState).toEqual({ phase: "closed" });
+    expect(notified).toBe(3);
+    let late = 0;
+    const unsubscribe = client.subscribeAuthenticationState(() => late++);
+    expect(late).toBe(0);
+    unsubscribe();
+  });
+
+  test("an authentication listener that reenters close never observes stale state", () => {
+    const { client, clock, sockets } = harness();
+    const observed: string[] = [];
+    client.subscribeAuthenticationState((state) => {
+      if (state.phase === "unauthenticated") client.close();
+    });
+    client.subscribeAuthenticationState((state) => observed.push(state.phase));
+    client.subscribeConnectionState((state) => observed.push(`connection:${state.phase}`));
+    client.connect();
+    welcome(client, sockets[0]!);
+    expect(observed).toEqual(["closed", "connection:closed"]);
+    expect(client.currentAuthenticationState).toEqual({ phase: "closed" });
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(clock.taskCount).toBe(0);
   });
 });

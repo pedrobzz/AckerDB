@@ -107,6 +107,31 @@ export type DbzzConnectionState =
   | { readonly phase: "suspended" }
   | { readonly phase: "resuming" };
 
+/**
+ * Public authentication lifecycle, derived from the same protocol facts as
+ * {@link DbzzConnectionState} and published in the same transition turns.
+ *
+ * - `authenticating`: a credential presentation is in flight — the connect
+ *   handshake (`hello`/`welcome`) or an explicit `refreshCredential` attempt.
+ *   `credential` is the kind being presented; the server treats an anonymous
+ *   presentation on an established session as a sign-out.
+ * - `unauthenticated`: the server confirmed an anonymous session principal.
+ * - `authenticated`: the server confirmed a verified session principal.
+ * - `refresh-required`: the server rejected the credential or an attempt timed
+ *   out; the client will not reconnect until `refreshCredential` supplies a
+ *   new credential. The same error is the connection state's
+ *   `authentication-blocked` error.
+ * - `failed`: the client stopped permanently; no credential can recover it.
+ * - `closed`: the client was closed.
+ */
+export type DbzzAuthenticationState =
+  | { readonly phase: "authenticating"; readonly credential: Credential["kind"] }
+  | { readonly phase: "unauthenticated"; readonly authentication: DbzzAuthentication }
+  | { readonly phase: "authenticated"; readonly authentication: DbzzAuthentication }
+  | { readonly phase: "refresh-required"; readonly error: DbzzClientError }
+  | { readonly phase: "failed"; readonly error: DbzzClientError }
+  | { readonly phase: "closed" };
+
 export type DbzzLiveEvent<Row> =
   | { readonly kind: "row"; readonly cursor: LiveEventCursor; readonly row: Row }
   | { readonly kind: "gap"; readonly cursor: LiveEventCursor }
@@ -400,6 +425,16 @@ const CONNECTING_STATE: DbzzConnectionState = Object.freeze({ phase: "connecting
 const RECONNECTING_STATE: DbzzConnectionState = Object.freeze({ phase: "reconnecting" });
 const CLOSED_STATE: DbzzConnectionState = Object.freeze({ phase: "closed" });
 
+const AUTHENTICATING_ANONYMOUS: DbzzAuthenticationState = Object.freeze({
+  phase: "authenticating",
+  credential: "anonymous",
+});
+const AUTHENTICATING_BEARER: DbzzAuthenticationState = Object.freeze({
+  phase: "authenticating",
+  credential: "bearer",
+});
+const CLOSED_AUTHENTICATION_STATE: DbzzAuthenticationState = Object.freeze({ phase: "closed" });
+
 const SYSTEM_SOCKET_FACTORY: DbzzWebSocketFactory = (url) =>
   new WebSocket(url) as unknown as DbzzWebSocket;
 const SYSTEM_FETCH: DbzzFetch = (url, init) => fetch(url, init);
@@ -445,6 +480,8 @@ export class DbzzClient {
   private authentication?: DbzzAuthentication;
   private connectionState: DbzzConnectionState = CONNECTING_STATE;
   private readonly connectionStateListeners = new Set<(state: DbzzConnectionState) => void>();
+  private authenticationState: DbzzAuthenticationState;
+  private readonly authenticationStateListeners = new Set<(state: DbzzAuthenticationState) => void>();
   private connectRequested = false;
   private everReady = false;
   private blockingError?: DbzzClientError;
@@ -459,6 +496,8 @@ export class DbzzClient {
     this.createWebSocket = options.createWebSocket ?? SYSTEM_SOCKET_FACTORY;
     this.fetcher = options.fetch ?? SYSTEM_FETCH;
     this.credential = freezeCredential(options.credential);
+    this.authenticationState =
+      this.credential.kind === "anonymous" ? AUTHENTICATING_ANONYMOUS : AUTHENTICATING_BEARER;
     this.limits = Object.freeze({ ...DBZZ_CLIENT_LIMITS, ...options.limits });
     this.reconnect = Object.freeze({ ...DBZZ_RECONNECT_DEFAULTS, ...options.reconnect });
     for (const [name, value] of Object.entries(this.limits)) positiveInteger(value, name);
@@ -490,6 +529,19 @@ export class DbzzClient {
     this.connectionStateListeners.add(listener);
     return () => {
       this.connectionStateListeners.delete(listener);
+    };
+  }
+
+  /** Immutable snapshot; the same object is returned until the next transition. */
+  get currentAuthenticationState(): DbzzAuthenticationState {
+    return this.authenticationState;
+  }
+
+  /** Notifies on authentication-state transitions only; read the snapshot for the current value. */
+  subscribeAuthenticationState(listener: (state: DbzzAuthenticationState) => void): () => void {
+    this.authenticationStateListeners.add(listener);
+    return () => {
+      this.authenticationStateListeners.delete(listener);
     };
   }
 
@@ -959,6 +1011,7 @@ export class DbzzClient {
     socket?.close(1000, "client closed");
     this.publishConnectionState();
     this.connectionStateListeners.clear();
+    this.authenticationStateListeners.clear();
   }
 
   private request(kind: "query" | "mutation", ref: string, args: unknown): Promise<unknown> {
@@ -1018,15 +1071,28 @@ export class DbzzClient {
   }
 
   private publishConnectionState(): void {
-    const current = this.connectionState;
-    const next = this.deriveConnectionState(current);
-    if (next === current) return;
-    this.connectionState = next;
+    // Both snapshots are derived from the same transition before either
+    // listener set runs, so no listener can observe them disagreeing.
+    const authenticationBefore = this.authenticationState;
+    const authenticationAfter = this.deriveAuthenticationState(authenticationBefore);
+    this.authenticationState = authenticationAfter;
+    const connectionBefore = this.connectionState;
+    const connectionAfter = this.deriveConnectionState(connectionBefore);
+    this.connectionState = connectionAfter;
+    if (authenticationAfter !== authenticationBefore) {
+      for (const listener of [...this.authenticationStateListeners]) {
+        // A reentrant transition already notified every listener with the
+        // newer state; delivering the superseded one would reorder time.
+        if (this.authenticationState !== authenticationAfter) return;
+        listener(authenticationAfter);
+      }
+    }
+    if (connectionAfter === connectionBefore) return;
     for (const listener of [...this.connectionStateListeners]) {
       // A reentrant transition already notified every listener with the newer
       // state; delivering the superseded one afterwards would reorder time.
-      if (this.connectionState !== next) return;
-      listener(next);
+      if (this.connectionState !== connectionAfter) return;
+      listener(connectionAfter);
     }
   }
 
@@ -1048,6 +1114,34 @@ export class DbzzClient {
         : Object.freeze({ phase: "ready" as const, authentication: this.authentication! });
     }
     return this.everReady ? RECONNECTING_STATE : CONNECTING_STATE;
+  }
+
+  private deriveAuthenticationState(current: DbzzAuthenticationState): DbzzAuthenticationState {
+    if (this.closed) return CLOSED_AUTHENTICATION_STATE;
+    if (this.permanentFailure) {
+      return current.phase === "failed" && current.error === this.terminalError
+        ? current
+        : Object.freeze({ phase: "failed" as const, error: this.terminalError! });
+    }
+    if (this.authBlocked) {
+      return current.phase === "refresh-required" && current.error === this.blockingError
+        ? current
+        : Object.freeze({ phase: "refresh-required" as const, error: this.blockingError! });
+    }
+    // A pending refresh attempt outranks a live session: the server already
+    // retired the previous epoch when the attempt reached it, and this client
+    // withholds operations until the presented credential is confirmed.
+    const pending = this.authAttempt;
+    if (pending !== undefined || !this.ready) {
+      return (pending?.credential ?? this.credential).kind === "anonymous"
+        ? AUTHENTICATING_ANONYMOUS
+        : AUTHENTICATING_BEARER;
+    }
+    const phase =
+      this.authentication!.principal === "anonymous" ? ("unauthenticated" as const) : ("authenticated" as const);
+    return current.phase === phase && current.authentication === this.authentication
+      ? current
+      : Object.freeze({ phase, authentication: this.authentication! });
   }
 
   private ensureConnected(): void {
