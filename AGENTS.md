@@ -42,7 +42,7 @@ Instructions for next runs:
 
 # Local Publishing
 
-We do not publish to npm. Releases go to a local Verdaccio registry at `http://localhost:4873`, so real projects on this machine can install `@dbzz/*` like normal npm packages — pinned, with every old version still installable.
+We do not publish to npm. Releases go to a local Verdaccio registry at `http://127.0.0.1:4873`, so real projects on this machine can install `@dbzz/*` like normal npm packages — pinned, with every old version still installable.
 
 The five packages (`@dbzz/core`, `@dbzz/server`, `@dbzz/client`, `@dbzz/client-react`, `@dbzz/cli`) share **one version, always in lockstep**. Bumping one bumps all five (`bun run bump` writes all of them; the merge guard rejects drift). Each published version is also a git tag (`v0.2.0`), so old published code is always recoverable with `git checkout v0.2.0`.
 
@@ -51,7 +51,7 @@ The five packages (`@dbzz/core`, `@dbzz/server`, `@dbzz/client`, `@dbzz/client-r
 ```bash
 bun install                                  # "prepare" installs the git hooks + no-ff merges on main
 bun run registry                             # starts Verdaccio (keep it running in its own terminal)
-bunx npm adduser --registry http://localhost:4873   # any username/password; token lands in ~/.npmrc
+bunx npm adduser --registry http://127.0.0.1:4873   # any username/password; token lands in ~/.npmrc
 ```
 
 The committed repo-root `.npmrc` routes the `@dbzz` scope to the local registry — that line is what `bun publish` uses to pick the target registry (and to find the adduser token in `~/.npmrc`). The release scripts read the same line, so `.npmrc` is the single place the registry URL lives.
@@ -88,7 +88,7 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
 In the consumer project, scope `@dbzz` to the local registry — `.npmrc` in the project root:
 
 ```ini
-@dbzz:registry=http://localhost:4873
+@dbzz:registry=http://127.0.0.1:4873
 ```
 
 Then install exact (pinned) versions:
@@ -108,6 +108,6 @@ Consumers must run Bun — packages ship raw TypeScript from `src/`.
 - Prefer plain `git merge` (merge commits) — the merge hooks give clearer errors than the backstop, and history stays legible.
 - Never `npm publish` here (it does not rewrite `workspace:*`) and never pass `--registry` to `bun publish` (it bypasses `.npmrc` and loses the auth token). Always `bun run publish:local`.
 - If a publish is interrupted midway, just re-run `bun run publish:local` — it skips packages already in the registry at the current version and finishes the rest (then tags).
-- To unpublish a broken version: `bunx npm unpublish --force @dbzz/<pkg>@X.Y.Z --registry http://localhost:4873` (do it for all 5, then delete the tag).
+- To unpublish a broken version: `bunx npm unpublish --force @dbzz/<pkg>@X.Y.Z --registry http://127.0.0.1:4873` (do it for all 5, then delete the tag).
 
 Release plumbing lives in `scripts/` (`bump.ts`, `merge-guard.ts`, `publish-local.ts`, shared `lib.ts`), hooks in `.githooks/`, registry config in `registry/config.yaml`, scope routing in the repo-root `.npmrc`.
