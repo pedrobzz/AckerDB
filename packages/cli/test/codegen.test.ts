@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Registry } from "@dbzz/server";
 import { importFunctionModules, loadConfig, runCodegen } from "@dbzz/cli";
@@ -92,5 +92,25 @@ describe("codegen", () => {
         }
       }
     }
+  });
+
+  test("does not import the configured credential verifier", async () => {
+    const dir = fixture();
+    const marker = join(dir, "verifier-imported");
+    const verifierPath = join(dir, "credential-verifier.ts");
+    writeFileSync(
+      verifierPath,
+      `import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(marker)}, "imported");
+export default {};
+`,
+    );
+    writeFileSync(
+      join(dir, ".zdb.config.json"),
+      JSON.stringify({ credentialVerifier: "./credential-verifier.ts" }),
+    );
+
+    await runCodegen(loadConfig(dir));
+    expect(existsSync(marker)).toBe(false);
   });
 });

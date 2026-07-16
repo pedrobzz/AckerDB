@@ -5,7 +5,9 @@ import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
 import { DbzzClient } from "@dbzz/client";
+import type { CredentialVerifier } from "@dbzz/server";
 import { startApp } from "../src/app.ts";
+import { runCodegen } from "../src/codegen.ts";
 import { loadConfig } from "../src/config.ts";
 import { FIXTURE_ADMIN_USERS, FIXTURE_MESSAGES, FIXTURE_SCHEMA, makeFixture } from "./fixture.ts";
 
@@ -97,6 +99,62 @@ const clientFor = (port: number) => new DbzzClient({
   credential: { kind: "anonymous" },
 });
 
+const IDENTITY_PROCEDURE = `
+import { procedure } from "../_generated/server.ts";
+
+export const current = procedure({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => {
+    if (ctx.auth.kind !== "user") throw new Error("user identity required");
+    return ctx.auth.identity;
+  },
+});
+`;
+
+const CREDENTIAL_VERIFIER_MODULE = `
+import type { CredentialVerifier } from "@dbzz/server";
+
+const verifier = {
+  revocationBound: { kind: "token-expiration" },
+  verify: async (credential: string) => {
+    if (credential !== "accepted-token") throw new Error("credential rejected");
+    return {
+      kind: "user" as const,
+      issuer: "https://identity.example.test/",
+      subject: "durable-user",
+      claims: {},
+      expiresAt: Date.now() + 60 * 60 * 1_000,
+      tokenId: null,
+    };
+  },
+  subscribeInvalidation: () => () => {},
+} satisfies CredentialVerifier;
+
+export default verifier;
+`;
+
+const verifierFor = (subject: string): CredentialVerifier => ({
+  revocationBound: { kind: "token-expiration" },
+  verify: async (credential) => {
+    if (credential !== "accepted-token") throw new Error("credential rejected");
+    return {
+      kind: "user",
+      issuer: "https://identity.example.test/",
+      subject,
+      claims: {},
+      expiresAt: Date.now() + 60 * 60 * 1_000,
+      tokenId: null,
+    };
+  },
+  subscribeInvalidation: () => () => {},
+});
+
+const authenticatedClientFor = (port: number) => new DbzzClient({
+  url: `http://127.0.0.1:${port}`,
+  credential: { kind: "bearer", token: "accepted-token" },
+});
+
 function shutdownMarker(dir: string): bigint {
   const db = new Database(join(dir, ".zdb", "data.db"), { readonly: true, safeIntegers: true });
   try {
@@ -118,6 +176,104 @@ function within<T>(work: Promise<T>, label: string): Promise<T> {
 }
 
 describe("dbz CLI", () => {
+  test("start loads a configured verifier and preserves the bearer user's durable Identity", async () => {
+    const port = freePort();
+    const dir = makeFixture({
+      "schema.ts": FIXTURE_SCHEMA,
+      "functions/identity.ts": IDENTITY_PROCEDURE,
+      "functions/messages.ts": FIXTURE_MESSAGES,
+      "credential-verifier.ts": CREDENTIAL_VERIFIER_MODULE,
+      ".zdb.config.json": JSON.stringify({
+        port,
+        credentialVerifier: "./credential-verifier.ts",
+      }),
+    });
+    dirs.push(dir);
+
+    const first = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    await first.waitFor("ready on");
+    const firstClient = authenticatedClientFor(port);
+    const firstIdentity = await firstClient.procedure<Record<string, never>, bigint>(
+      "identity.current",
+      {},
+    );
+    firstClient.close();
+    first.child.kill("SIGTERM");
+    expect(await first.child.exited).toBe(0);
+
+    const second = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    await second.waitFor("ready on");
+    const secondClient = authenticatedClientFor(port);
+    expect(await secondClient.procedure<Record<string, never>, bigint>(
+      "identity.current",
+      {},
+    )).toBe(firstIdentity);
+    secondClient.close();
+    second.child.kill("SIGTERM");
+    expect(await second.child.exited).toBe(0);
+  }, 20_000);
+
+  test("startApp accepts one programmatic verifier alongside preparation and rejects competition", async () => {
+    const port = freePort();
+    const dir = makeFixture({
+      "schema.ts": FIXTURE_SCHEMA,
+      "functions/identity.ts": IDENTITY_PROCEDURE,
+      "functions/messages.ts": FIXTURE_MESSAGES,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+    const config = loadConfig(dir, { DBZZ_TELEMETRY: "disabled" });
+    const credentialVerifier = verifierFor("injected-user");
+    const app = await startApp(config, { prepare: runCodegen, credentialVerifier });
+    try {
+      const client = authenticatedClientFor(port);
+      expect(await client.procedure<Record<string, never>, bigint>(
+        "identity.current",
+        {},
+      )).toBe(1n);
+      client.close();
+    } finally {
+      await app.drain();
+    }
+
+    await expect(startApp(
+      {
+        ...config,
+        authentication: {
+          kind: "credential-verifier-module",
+          path: join(dir, "credential-verifier.ts"),
+        },
+      },
+      { credentialVerifier },
+    )).rejects.toThrow(
+      "startApp credentialVerifier cannot be combined with configured oidc or credentialVerifier",
+    );
+  }, 20_000);
+
+  test("startApp rejects a malformed verifier default export before activation", async () => {
+    const port = freePort();
+    const dir = makeFixture({
+      "schema.ts": FIXTURE_SCHEMA,
+      "credential-verifier.ts": "export default { revocationBound: { kind: 'token-expiration' } };",
+      ".zdb.config.json": JSON.stringify({
+        port,
+        credentialVerifier: "./credential-verifier.ts",
+      }),
+    });
+    dirs.push(dir);
+
+    await expect(startApp(loadConfig(dir, { DBZZ_TELEMETRY: "disabled" }))).rejects.toThrow(
+      "must implement verify(credential)",
+    );
+
+    const rebound = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      fetch: () => new Response("ok"),
+    });
+    await rebound.stop(true);
+  });
+
   test("start: codegen + serve, functions callable, reset wipes the db", async () => {
     const port = freePort();
     const dir = fixture(port);

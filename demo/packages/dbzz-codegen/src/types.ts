@@ -6,4 +6,42 @@ import type { EventArgsOf, Identity, RowOf } from "@dbzz/server";
 
 export type { Identity };
 
-export type Task = RowOf<typeof schema, "tasks">;
+export type ItemStatus = "ORDERED" | "PREPARING" | "PREPARED" | "SERVED" | "CANCELLED";
+export const ItemStatus = {
+  ORDERED: "ORDERED",
+  PREPARING: "PREPARING",
+  PREPARED: "PREPARED",
+  SERVED: "SERVED",
+  CANCELLED: "CANCELLED",
+} as const;
+
+export type OrderEventKind = "ITEM_STATUS" | "ORDER_STATUS";
+export const OrderEventKind = {
+  ITEM_STATUS: "ITEM_STATUS",
+  ORDER_STATUS: "ORDER_STATUS",
+} as const;
+
+export type OrderStatus = "OPEN" | "PAID" | "CANCELLED";
+export const OrderStatus = {
+  OPEN: "OPEN",
+  PAID: "PAID",
+  CANCELLED: "CANCELLED",
+} as const;
+
+export type StaffEventKind = "KITCHEN_REMINDER";
+export const StaffEventKind = {
+  KITCHEN_REMINDER: "KITCHEN_REMINDER",
+} as const;
+
+export type KitchenReminder = RowOf<typeof schema, "kitchenReminders">;
+export type MenuCategory = RowOf<typeof schema, "menuCategories">;
+export type MenuItem = RowOf<typeof schema, "menuItems">;
+export type OrderEvent = RowOf<typeof schema, "orderEvents">;
+export type OrderItem = RowOf<typeof schema, "orderItems">;
+export type Order = RowOf<typeof schema, "orders">;
+export type RestaurantTable = RowOf<typeof schema, "restaurantTables">;
+export type SetupState = RowOf<typeof schema, "setupState">;
+export type StaffEvent = RowOf<typeof schema, "staffEvents">;
+export type User = RowOf<typeof schema, "users">;
+export type OrderEventArgs = EventArgsOf<typeof schema, "orderEvents">;
+export type StaffEventArgs = EventArgsOf<typeof schema, "staffEvents">;

@@ -3,12 +3,30 @@
 
 import { anyApi } from "@dbzz/core";
 import type { ApiFromModules, EventRef } from "@dbzz/core";
-import type * as m_tasks from "../../../app/server/functions/tasks.ts";
+import type * as m_auth from "../../../app/server/functions/auth.ts";
+import type * as m_dashboard from "../../../app/server/functions/dashboard.ts";
+import type * as m_kitchen from "../../../app/server/functions/kitchen.ts";
+import type * as m_menu from "../../../app/server/functions/menu.ts";
+import type * as m_orders from "../../../app/server/functions/orders.ts";
+import type * as m_reminders from "../../../app/server/functions/reminders.ts";
+import type * as m_setup from "../../../app/server/functions/setup.ts";
+import type * as m_tables from "../../../app/server/functions/tables.ts";
+import type * as m_users from "../../../app/server/functions/users.ts";
 
 export const api = anyApi as unknown as ApiFromModules<{
-  tasks: typeof m_tasks;
+  auth: typeof m_auth;
+  dashboard: typeof m_dashboard;
+  kitchen: typeof m_kitchen;
+  menu: typeof m_menu;
+  orders: typeof m_orders;
+  reminders: typeof m_reminders;
+  setup: typeof m_setup;
+  tables: typeof m_tables;
+  users: typeof m_users;
 }> & {
   events: {
+    orderEvents: EventRef<import("./types.ts").OrderEventArgs, import("./types.ts").OrderEvent>;
+    staffEvents: EventRef<import("./types.ts").StaffEventArgs, import("./types.ts").StaffEvent>;
   };
 };
 

@@ -34,7 +34,7 @@ import {
   AuthInvalidationBoundary,
   type AuthInvalidationScope,
 } from "./auth-invalidation.ts";
-import { validateCredentialVerifierRevocation } from "./auth-lease.ts";
+import { assertCredentialVerifier } from "./auth-lease.ts";
 import { callerFairnessKey, externalAccountFairnessKey, transportSource } from "./caller.ts";
 import {
   CommitCoordinator,
@@ -565,12 +565,11 @@ export class Runtime implements RuntimePort {
     this.engine = options.engine;
     this.registry = options.registry;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
+    if (options.verifier !== undefined) {
+      assertCredentialVerifier(options.verifier, this.limits.auth.revocationDeadlineMs);
+    }
     this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
     this.credentialVerifier = this.authInvalidation.verifier;
-    validateCredentialVerifierRevocation(
-      this.credentialVerifier,
-      this.limits.auth.revocationDeadlineMs,
-    );
     this.now = options.now ?? Date.now;
     this.scheduled = options.registry.resolveScheduled(options.engine.schema);
     this.ownsTelemetry = !(options.telemetry instanceof Telemetry);

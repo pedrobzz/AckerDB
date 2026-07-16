@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadConfig } from "../src/config.ts";
 
 describe("production profile configuration", () => {
@@ -54,13 +54,56 @@ describe("production profile configuration", () => {
 
       expect(loadConfig(dir, {})).toMatchObject({
         statusScope: "ops:read",
-        oidc: {
-          providers: [{
-            issuer: "https://identity.example.test",
-            principalKind: "workload",
-          }],
+        authentication: {
+          kind: "oidc",
+          options: {
+            providers: [{
+              issuer: "https://identity.example.test",
+              principalKind: "workload",
+            }],
+          },
         },
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("resolves an application credential verifier relative to the app directory", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    try {
+      writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({
+        credentialVerifier: "./auth/credential-verifier.ts",
+      }));
+
+      expect(loadConfig(dir, {})).toMatchObject({
+        authentication: {
+          kind: "credential-verifier-module",
+          path: resolve(dir, "auth/credential-verifier.ts"),
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects competing or malformed custom authentication configuration", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    try {
+      writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({
+        oidc: { providers: [] },
+        credentialVerifier: "./auth.ts",
+      }));
+      expect(() => loadConfig(dir, {})).toThrow(
+        "oidc and credentialVerifier are mutually exclusive authentication sources",
+      );
+
+      for (const credentialVerifier of ["", 42, null]) {
+        writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({ credentialVerifier }));
+        expect(() => loadConfig(dir, {})).toThrow(
+          "credentialVerifier must be a non-empty module path",
+        );
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
