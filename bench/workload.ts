@@ -6,6 +6,7 @@ import {
   DOCUMENT_PARTITIONS,
   DOCUMENTS_PER_PARTITION,
   FNV_OFFSET,
+  OPERATION_NAMES,
   PROCEDURE_PAYLOAD_BYTES,
   benchmarkConfigFromEnv,
   channelChecksum,
@@ -148,22 +149,28 @@ async function openConnections(
   const connections: BenchConnection[] = [];
   const latencies: number[] = [];
   const errors: string[] = [];
-  await withTimeout(
-    Promise.all(
-      Array.from({ length: count }, async () => {
-        const startedAt = performance.now();
-        try {
-          const connection = await adapter.connect(nonce(), true);
-          latencies.push(performance.now() - startedAt);
-          connections.push(connection);
-        } catch (error) {
-          if (errors.length < 8) errors.push(errorMessage(error));
-        }
-      }),
-    ),
-    timeoutMs,
-    `opening ${count} connections`,
-  );
+  let accepting = true;
+  const attempts = Array.from({ length: count }, async () => {
+    const startedAt = performance.now();
+    try {
+      const connection = await adapter.connect(nonce(), true);
+      if (!accepting) {
+        await connection.close();
+        return;
+      }
+      latencies.push(performance.now() - startedAt);
+      connections.push(connection);
+    } catch (error) {
+      if (accepting && errors.length < 8) errors.push(errorMessage(error));
+    }
+  });
+  try {
+    await withTimeout(Promise.all(attempts), timeoutMs, `opening ${count} connections`);
+  } catch (error) {
+    if (errors.length < 8) errors.push(errorMessage(error));
+  } finally {
+    accepting = false;
+  }
   return { connections, latencies, errors };
 }
 
@@ -388,7 +395,6 @@ export async function runConnectionScale(
         work: { ...work, phaseId },
         errors,
       });
-      if (cohort.length !== target) break;
     }
   } finally {
     await closeAll(cohort);
@@ -410,6 +416,24 @@ interface PendingDelivery {
   done: Promise<void>;
 }
 
+async function waitForDeliveryDrain(probes: readonly PendingDelivery[], timeoutMs: number): Promise<boolean> {
+  const incomplete = probes.filter((probe) => probe.observedCount !== probe.expectedCount);
+  if (incomplete.length === 0) return true;
+  const remainingMs = Math.max(...incomplete.map((probe) => probe.sentAt + timeoutMs)) - performance.now();
+  if (remainingMs <= 0) return false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.all(incomplete.map((probe) => probe.done)).then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), remainingMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function expectedChannels(pattern: SubscriptionPattern, user: number, users: number, queries: number): number[] {
   if (pattern === "shared") return Array.from({ length: queries }, (_, channel) => channel);
   return Array.from({ length: queries }, (_, query) => queries + user * queries + query).filter(
@@ -417,7 +441,7 @@ function expectedChannels(pattern: SubscriptionPattern, user: number, users: num
   );
 }
 
-async function runSubscriptionCase(
+export async function runSubscriptionCase(
   adapter: BenchAdapter,
   pattern: SubscriptionPattern,
   config: BenchmarkConfig,
@@ -507,6 +531,7 @@ async function runSubscriptionCase(
     const updateCount = offeredFixedRateUpdates(config.subscriptions.durationMs, rate);
     const ackLatencies: number[] = [];
     const probes: PendingDelivery[] = [];
+    const errors: string[] = [];
     for (let update = 0; update < updateCount; update++) {
       const scheduledAt = phaseStartedAt + (update * 1_000) / rate;
       const delay = scheduledAt - performance.now();
@@ -516,7 +541,7 @@ async function runSubscriptionCase(
       const previousVersion = versions.get(channel) ?? 0;
       if (previousVersion > 0) {
         const previous = pending.get(`${channel}:${previousVersion}`);
-        if (previous) await withTimeout(previous.done, drainTimeoutMs, `channel ${channel} delivery`);
+        if (previous) await waitForDeliveryDrain([previous], drainTimeoutMs);
       }
       const version = previousVersion + 1;
       versions.set(channel, version);
@@ -544,21 +569,28 @@ async function runSubscriptionCase(
       pending.set(`${channel}:${version}`, probe);
       probes.push(probe);
       const ackStartedAt = performance.now();
-      await writers[0]!.updateChannel(channel, nonce);
-      ackLatencies.push(performance.now() - ackStartedAt);
+      try {
+        await writers[0]!.updateChannel(channel, nonce);
+        ackLatencies.push(performance.now() - ackStartedAt);
+      } catch (error) {
+        if (errors.length < 8) {
+          errors.push(`channel ${channel} version ${version} update: ${errorMessage(error)}`);
+        }
+      }
     }
     const sendEndedAt = performance.now();
     const remainingWindowMs = phaseStartedAt + config.subscriptions.durationMs - performance.now();
     if (remainingWindowMs > 0) await Bun.sleep(remainingWindowMs);
-    await withTimeout(Promise.all(probes.map((probe) => probe.done)), drainTimeoutMs, `${pattern} delivery drain`);
+    await waitForDeliveryDrain(probes, drainTimeoutMs);
     measuring = false;
     const phaseEndedAt = phaseEnd(phaseId);
     const deliveryLatencies = probes.flatMap((probe) => probe.latencies);
-    const timeToAll = probes.map((probe) => Math.max(...probe.latencies));
+    const timeToAll = probes.flatMap((probe) =>
+      probe.observedCount === probe.expectedCount ? [Math.max(...probe.latencies)] : []
+    );
     const expectedDeliveries = probes.reduce((total, probe) => total + probe.expectedCount, 0);
     const observedDeliveries = probes.reduce((total, probe) => total + probe.observedCount, 0);
     const missingDeliveries = expectedDeliveries - observedDeliveries;
-    const errors: string[] = [];
     if (subscribers.length !== users) errors.push(`ready users ${subscribers.length}/${users}`);
     if (missingDeliveries !== 0) errors.push(`missing ${missingDeliveries}/${expectedDeliveries} deliveries`);
     if (duplicates !== 0) errors.push(`${duplicates} duplicate deliveries`);
@@ -619,7 +651,10 @@ async function runSubscriptionCase(
           const ackStartedAt = performance.now();
           await writers[slot]!.updateChannel(channel, nonce);
           const ackLatency = performance.now() - ackStartedAt;
-          await cancellation.wait(probe.done);
+          const delivered = await cancellation.wait(waitForDeliveryDrain([probe], drainTimeoutMs));
+          if (!delivered) {
+            throw new Error(`channel ${channel} version ${version} delivery timed out after ${drainTimeoutMs}ms`);
+          }
           return { probe, ackLatency };
         },
         validate: ({ probe, ackLatency }) => {
@@ -708,8 +743,7 @@ export async function runWorkload(adapter: BenchAdapter): Promise<DriverResult> 
     balances: Array<number>(ACCOUNT_COUNT).fill(ACCOUNT_BALANCE),
     versions: Array<number>(ACCOUNT_COUNT).fill(0),
   };
-  const operationNames: OperationName[] = ["query", "mutation-uncontended", "mutation-contended", "procedure"];
-  for (const operation of operationNames) {
+  for (const operation of OPERATION_NAMES) {
     for (const profile of config.operation.profiles) {
       operations.push(await runOperationCase(adapter, operation, profile, config, nextNonce, accountModel));
     }

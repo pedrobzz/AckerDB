@@ -34,6 +34,27 @@ describe("latency statistics", () => {
 });
 
 describe("closed-loop accounting", () => {
+  test("keeps a zero-slot measurement window open for its configured duration", async () => {
+    const durationMs = 20;
+    const startedAt = performance.now();
+    const result = await runClosedLoop({
+      phaseId: "zero-slot-window",
+      durationMs,
+      slots: 0,
+      drainTimeoutMs: 100,
+      cancel: () => {
+        throw new Error("zero-slot work must not cancel");
+      },
+      operation: async () => {
+        throw new Error("zero-slot work must not execute");
+      },
+    });
+
+    expect(performance.now() - startedAt).toBeGreaterThanOrEqual(durationMs - 1);
+    expect(result.windowEndedAtMs - result.windowStartedAtMs).toBe(durationMs);
+    expect(result.attempted).toBe(0);
+  });
+
   test("accounts for every attempted request and exposes an exact epoch window", async () => {
     let emittedStart = 0;
     const signals = new Set<AbortSignal>();

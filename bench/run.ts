@@ -31,11 +31,11 @@ import {
 } from "./process-tree.ts";
 import { withTimeout } from "./load-engine.ts";
 import {
-  assertPerformanceAcceptance,
+  evaluatePerformanceAcceptance,
   extractComparableMetrics,
   FROZEN_BASELINE_PATH,
   nearTieDriftTable,
-  type PerformanceAcceptanceEvidence,
+  type PerformanceAcceptanceResult,
 } from "./performance-gates.ts";
 import {
   activePhaseIds,
@@ -45,6 +45,13 @@ import {
   stopSubprocess,
   type BenchmarkFailurePart,
 } from "./process-lifecycle.ts";
+import {
+  formatBenchmarkValidation,
+  validateBenchmarkResults,
+  type BenchmarkValidation,
+  type BenchmarkValidationTarget,
+} from "./result-validation.ts";
+import { persistBenchmarkOutcome, type PersistedBenchmarkOutcome } from "./result-persistence.ts";
 
 const BENCH = import.meta.dir;
 const REPO = join(BENCH, "..");
@@ -80,7 +87,7 @@ type SystemResults = Partial<Record<SystemName, MeasuredDriverResult>> & {
 };
 
 interface RunRecord {
-  schemaVersion: 5;
+  schemaVersion: 6;
   timestamp: string;
   git: { commit: string; dirty: boolean; sourceHash: string };
   machine: {
@@ -109,7 +116,8 @@ interface RunRecord {
   dbzzExporterProfile: DbzzMeasuredDriverResult;
   dbzzTelemetryCost: ProfileComparisonMetric[];
   dbzzExporterCost: ProfileComparisonMetric[];
-  performanceAcceptance: PerformanceAcceptanceEvidence;
+  validation: BenchmarkValidation;
+  performanceAcceptance: PerformanceAcceptanceResult;
 }
 
 interface ComparableMetric {
@@ -668,7 +676,7 @@ function savedCurrentCount(): number {
           schemaVersion?: number;
           dbzzExporterProfile?: unknown;
         };
-        return result.schemaVersion === 5 && result.dbzzExporterProfile !== undefined;
+        return result.schemaVersion === 6 && result.dbzzExporterProfile !== undefined;
       } catch {
         return false;
       }
@@ -734,7 +742,9 @@ function latestComparable(record: RunRecord): RunRecord | undefined {
     try {
       const candidate = JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as RunRecord;
       if (
-        candidate.schemaVersion !== 5 ||
+        candidate.schemaVersion !== 6 ||
+        candidate.validation.status !== "passed" ||
+        candidate.performanceAcceptance.status !== "passed" ||
         !candidate.dbzzTelemetryDisabled ||
         !candidate.dbzzExporterProfile ||
         !ALL_SYSTEMS.every((system) => candidate.systems[system])
@@ -759,7 +769,7 @@ function comparisonMetrics(system: MeasuredDriverResult): ComparableMetric[] {
 
 function printComparableDelta(record: RunRecord, previous: RunRecord | undefined): void {
   if (!previous) {
-    console.log("\nNo previous schema-v5 result has the same machine and benchmark config; delta skipped.");
+    console.log("\nNo previous passing schema-v6 result has the same machine and benchmark config; delta skipped.");
     return;
   }
   console.log(`\nVs comparable run ${previous.timestamp} (⚠ = regression greater than 15%)`);
@@ -859,17 +869,6 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
     }
     console.log(`| ${reference.operation}/${reference.profile.name} | ${cells.join(" | ")} |`);
   }
-  for (const name of names) {
-    for (const result of systems[name]!.workload.operations) {
-      const invalid = result.trials.filter((trial) => !trial.correctness.ok);
-      if (invalid.length > 0) {
-        console.log(
-          `  INVALID ${name} ${result.operation}/${result.profile.name}: ${invalid.flatMap((trial) => trial.correctness.errors).join("; ")}`,
-        );
-      }
-    }
-  }
-
   console.log("\nServer resources at idle (timed windows with no requests)");
   console.log("| system | state | RSS p50 MB | RSS peak MB | CPU cores | processes peak |");
   console.log("|---|---|---:|---:|---:|---:|");
@@ -911,16 +910,6 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
       );
     }
   }
-  for (const name of names) {
-    for (const result of systems[name]!.workload.connections) {
-      if (result.work.failed > 0 || result.errors.length > 0) {
-        console.log(
-          `  INVALID ${name} connections/${result.targetConnections}: ${[...result.errors, ...result.work.errors].join("; ")}`,
-        );
-      }
-    }
-  }
-
   console.log("\nServer resources across connection plateaus");
   console.log("| system | connections | baseline RSS MB | connected RSS MB | RSS delta MB | idle CPU cores | work RSS peak MB | work CPU cores | loadgen CPU cores |");
   console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|");
@@ -950,9 +939,6 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
       console.log(
         `| ${result.pattern} | ${name} | ${result.logicalSubscriptions} | ${fmt(result.setupMs / 1_000)} | ${fmt(result.updateThroughputPerSec)} | ${fmt(result.deliveryThroughputPerSec, 0)} | ${fmt(result.deliveryLatency.p95Ms)} | ${result.missingDeliveries} | ${baseline ? fmt(baseline.rssMb.p50, 1) : "—"} | ${idle ? fmt(idle.rssMb.p50, 1) : "—"} | ${baseline && idle ? fmt(idle.rssMb.p50 - baseline.rssMb.p50, 1) : "—"} | ${idle ? fmt(idle.cpuCores) : "—"} | ${resources ? fmt(resources.rssMb.peak, 1) : "—"} | ${resources ? fmt(resources.cpuCores) : "—"} | ${load ? fmt(load.cpuCores) : "—"} |`,
       );
-      if (!result.correctness.ok) {
-        console.log(`  INVALID ${name} subscriptions/${result.pattern}: ${result.correctness.errors.join("; ")}`);
-      }
     }
   }
 
@@ -968,78 +954,9 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
         console.log(
           `| ${subscription.pattern} | ${name} | ${capacity.slots} | ${fmt(capacity.throughputPerSec, 1)} | ${fmt(capacity.deliveryThroughputPerSec, 0)} | ${fmt(capacity.updateAckLatency.p95Ms)} | ${fmt(capacity.deliveryLatency.p95Ms)} | ${fmt(capacity.latency.p95Ms)} | ${fmt(resources.rssMb.peak, 1)} | ${fmt(resources.cpuCores)} | ${fmt(load.cpuCores)} |`,
         );
-        if (!capacity.correctness.ok) {
-          console.log(`  INVALID ${name} subscriptions/${subscription.pattern}/capacity-${capacity.slots}: ${capacity.correctness.errors.join("; ")}`);
-        }
       }
     }
   }
-}
-
-function assertValidResults(
-  systems: Partial<Record<SystemName, MeasuredDriverResult>>,
-  expectedWorkload?: DriverResult,
-): void {
-  const errors: string[] = [];
-  const entries = Object.entries(systems) as Array<[SystemName, MeasuredDriverResult]>;
-  const reference = expectedWorkload ?? entries[0]?.[1].workload;
-  const referenceConfig = reference ? JSON.stringify(reference.config) : "";
-  const operationShape = reference?.operations.map((item) => `${item.operation}/${item.profile.name}`).join(",");
-  const connectionShape = reference?.connections.map((item) => item.targetConnections).join(",");
-  const subscriptionShape = reference?.subscriptions
-    .map((item) => `${item.pattern}:${item.capacity.map((capacity) => capacity.slots).join("/")}`)
-    .join(",");
-  for (const [name, system] of entries) {
-    if (system.workload.system !== name) errors.push(`${name}: workload identified itself as ${system.workload.system}`);
-    if (JSON.stringify(system.workload.config) !== referenceConfig) errors.push(`${name}: workload config differs`);
-    if (system.workload.operations.map((item) => `${item.operation}/${item.profile.name}`).join(",") !== operationShape) {
-      errors.push(`${name}: operation case shape differs`);
-    }
-    if (system.workload.connections.map((item) => item.targetConnections).join(",") !== connectionShape) {
-      errors.push(`${name}: connection ladder differs`);
-    }
-    if (
-      system.workload.subscriptions
-        .map((item) => `${item.pattern}:${item.capacity.map((capacity) => capacity.slots).join("/")}`)
-        .join(",") !== subscriptionShape
-    ) {
-      errors.push(`${name}: subscription case shape differs`);
-    }
-    for (const operation of system.workload.operations) {
-      for (const trial of operation.trials) {
-        if (!trial.correctness.ok) {
-          errors.push(`${name} ${operation.operation}/${operation.profile.name}: ${trial.correctness.errors.join("; ")}`);
-        }
-        if (trial.attempted !== trial.completedInWindow + trial.completedAfterWindow + trial.failed) {
-          errors.push(`${name} ${operation.operation}/${operation.profile.name}: request accounting mismatch`);
-        }
-      }
-    }
-    for (const level of system.workload.connections) {
-      if (level.connected !== level.targetConnections) {
-        errors.push(`${name} connections/${level.targetConnections}: connected ${level.connected}`);
-      }
-      if (level.errors.length > 0 || level.work.failed > 0) {
-        errors.push(`${name} connections/${level.targetConnections}: ${[...level.errors, ...level.work.errors].join("; ")}`);
-      }
-    }
-    for (const subscription of system.workload.subscriptions) {
-      if (!subscription.correctness.ok) {
-        errors.push(`${name} subscriptions/${subscription.pattern}: ${subscription.correctness.errors.join("; ")}`);
-      }
-      for (const capacity of subscription.capacity) {
-        if (!capacity.correctness.ok) {
-          errors.push(
-            `${name} subscriptions/${subscription.pattern}/capacity-${capacity.slots}: ${capacity.correctness.errors.join("; ")}`,
-          );
-        }
-        if (capacity.attempted !== capacity.completedInWindow + capacity.completedAfterWindow + capacity.failed) {
-          errors.push(`${name} subscriptions/${subscription.pattern}/capacity-${capacity.slots}: request accounting mismatch`);
-        }
-      }
-    }
-  }
-  if (errors.length > 0) throw new Error(`benchmark produced invalid results:\n${errors.join("\n")}`);
 }
 
 const requested = process.argv.slice(2) as SystemName[];
@@ -1088,9 +1005,31 @@ for (let index = 0; index < executionOrder.length; index++) {
   if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
 }
 
-assertValidResults(systems);
 let dbzzTelemetryCost: ProfileComparisonMetric[] | undefined;
 let dbzzExporterCost: ProfileComparisonMetric[] | undefined;
+const validationTargets: BenchmarkValidationTarget[] = ALL_SYSTEMS.flatMap((name) => {
+  const system = systems[name];
+  return system === undefined
+    ? []
+    : [{ label: name === "dbzz" ? "dbzz/runtime-default" : name, system: name, workload: system.workload }];
+});
+if (dbzzExporterProfile !== undefined) {
+  validationTargets.push({
+    label: "dbzz/benchmark-exporter",
+    system: "dbzz",
+    workload: dbzzExporterProfile.workload,
+  });
+}
+if (dbzzTelemetryDisabled !== undefined) {
+  validationTargets.push({
+    label: "dbzz/disabled",
+    system: "dbzz",
+    workload: dbzzTelemetryDisabled.workload,
+  });
+}
+const validation = validateBenchmarkResults(validationTargets);
+let persistedOutcome: PersistedBenchmarkOutcome | undefined;
+
 if (runPolicy.profiledDbzz) {
   if (
     systems.dbzz === undefined ||
@@ -1099,8 +1038,6 @@ if (runPolicy.profiledDbzz) {
   ) {
     throw new Error("all-system benchmark requires default, exporter, and disabled DBZZ telemetry profiles");
   }
-  assertValidResults({ dbzz: dbzzTelemetryDisabled }, systems.dbzz.workload);
-  assertValidResults({ dbzz: dbzzExporterProfile }, systems.dbzz.workload);
   dbzzTelemetryCost = compareProfileMetrics(
     "runtime-default",
     comparisonMetrics(systems.dbzz),
@@ -1115,6 +1052,7 @@ if (runPolicy.profiledDbzz) {
   );
 }
 printResults(systems);
+console.log(`\n${formatBenchmarkValidation(validation)}`);
 if (dbzzTelemetryCost !== undefined) {
   printDbzzProfileCost("DBZZ default telemetry cost", dbzzTelemetryCost);
 }
@@ -1139,7 +1077,7 @@ if (runPolicy.acceptAndSave) {
   }
   const cliVersion = spacetimeVersion!;
   const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     timestamp: new Date().toISOString(),
     git: {
       commit: git(["rev-parse", "--short", "HEAD"]),
@@ -1184,20 +1122,46 @@ if (runPolicy.acceptAndSave) {
     dbzzExporterProfile,
     dbzzTelemetryCost,
     dbzzExporterCost,
+    validation,
   };
   const frozenBaselineJson = readFileSync(join(REPO, FROZEN_BASELINE_PATH), "utf8");
-  const performanceAcceptance = assertPerformanceAcceptance(recordWithoutAcceptance, frozenBaselineJson);
-  const record: RunRecord = { ...recordWithoutAcceptance, performanceAcceptance };
-  console.log(
-    `\nperformance acceptance passed: ${performanceAcceptance.metricCounts.frozenDbzzSpacetimeWins} frozen SpacetimeDB wins (${performanceAcceptance.metricCounts.frozenNearTieWins} near-tie), ${performanceAcceptance.metricCounts.convexFloorChecks} Convex floors, ${performanceAcceptance.metricCounts.afterPerSystem.dbzz} comparable metrics/system`,
+  const performanceAcceptance = evaluatePerformanceAcceptance(
+    recordWithoutAcceptance,
+    frozenBaselineJson,
+    validation,
   );
-  console.log(`\n${nearTieDriftTable(performanceAcceptance.frozenDbzzSpacetimeWins)}`);
-  const previous = latestComparable(record);
+  const record: RunRecord = { ...recordWithoutAcceptance, performanceAcceptance };
+  if (performanceAcceptance.status === "passed") {
+    const evidence = performanceAcceptance.evidence;
+    console.log(
+      `\nperformance acceptance passed: ${evidence.metricCounts.frozenDbzzSpacetimeWins} frozen SpacetimeDB wins (${evidence.metricCounts.frozenNearTieWins} near-tie), ${evidence.metricCounts.convexFloorChecks} Convex floors, ${evidence.metricCounts.afterPerSystem.dbzz} comparable metrics/system`,
+    );
+    console.log(`\n${nearTieDriftTable(evidence.frozenDbzzSpacetimeWins)}`);
+  } else if (performanceAcceptance.status === "failed") {
+    console.log(
+      `\nperformance acceptance FAILED (${performanceAcceptance.failures.length} ` +
+        `gate${performanceAcceptance.failures.length === 1 ? "" : "s"})`,
+    );
+    for (const failure of performanceAcceptance.failures) {
+      console.log(`  - ${failure.path} [${failure.kind}]: ${failure.message}`);
+    }
+  } else {
+    console.log("\nperformance acceptance not evaluated: benchmark correctness validation failed");
+  }
+  const previous = performanceAcceptance.status === "passed" ? latestComparable(record) : undefined;
   mkdirSync(RESULTS_DIR, { recursive: true });
   const filename = `${record.timestamp.replace(/:/g, "-").replace(/\.\d+Z$/, "Z")}-${record.git.commit}.json`;
-  await Bun.write(join(RESULTS_DIR, filename), `${JSON.stringify(record, null, 2)}\n`);
+  persistedOutcome = await persistBenchmarkOutcome(join(RESULTS_DIR, filename), record);
   console.log(`\nsaved bench/results/${filename}`);
-  printComparableDelta(record, previous);
+  if (performanceAcceptance.status === "passed") {
+    printComparableDelta(record, previous);
+  } else if (performanceAcceptance.status === "failed") {
+    console.log("\nComparable delta skipped because performance acceptance failed.");
+  } else {
+    console.log("\nComparable delta skipped because benchmark correctness validation failed.");
+  }
 } else {
   console.log(`\n${runPolicy.diagnosticMessage}`);
 }
+
+if (validation.status === "failed" || persistedOutcome?.status === "failed") process.exitCode = 1;

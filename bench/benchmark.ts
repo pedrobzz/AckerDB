@@ -2,6 +2,13 @@ export type SystemName = "dbzz" | "convex" | "spacetimedb";
 export type OperationName = "query" | "mutation-uncontended" | "mutation-contended" | "procedure";
 export type SubscriptionPattern = "shared" | "partitioned";
 
+export const OPERATION_NAMES = Object.freeze([
+  "query",
+  "mutation-uncontended",
+  "mutation-contended",
+  "procedure",
+] as const satisfies readonly OperationName[]);
+
 export const DOCUMENT_PARTITIONS = 64;
 export const DOCUMENTS_PER_PARTITION = 128;
 export const DOCUMENT_COUNT = DOCUMENT_PARTITIONS * DOCUMENTS_PER_PARTITION;
