@@ -1964,6 +1964,20 @@ describe("DbzzClient connection state", () => {
     expect(await refresh).toBeInstanceOf(DbzzClientError);
   });
 
+  test("a nested close during notification never delivers stale state", () => {
+    const { client, clock, sockets } = harness();
+    const observed: string[] = [];
+    client.subscribeConnectionState((state) => {
+      if (state.phase === "ready") client.close();
+    });
+    client.subscribeConnectionState((state) => observed.push(state.phase));
+    client.connect();
+    welcome(client, sockets[0]!);
+    expect(observed).toEqual(["closed"]);
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(clock.taskCount).toBe(0);
+  });
+
   test("close notifies once and later subscriptions stay silent", () => {
     const { client } = harness();
     let notified = 0;

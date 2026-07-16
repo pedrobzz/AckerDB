@@ -986,7 +986,12 @@ export class DbzzClient {
     const next = this.deriveConnectionState(current);
     if (next === current) return;
     this.connectionState = next;
-    for (const listener of [...this.connectionStateListeners]) listener(next);
+    for (const listener of [...this.connectionStateListeners]) {
+      // A reentrant transition already notified every listener with the newer
+      // state; delivering the superseded one afterwards would reorder time.
+      if (this.connectionState !== next) return;
+      listener(next);
+    }
   }
 
   private deriveConnectionState(current: DbzzConnectionState): DbzzConnectionState {
