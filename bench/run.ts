@@ -682,6 +682,22 @@ function balancedOrder(savedRuns: number): SystemName[] {
   return [...ALL_SYSTEMS.slice(rotation), ...ALL_SYSTEMS.slice(0, rotation)];
 }
 
+/**
+ * The connection-readiness sampling protocol, derived from the record's own data: the number
+ * of readiness draws taken at each ladder level that added a single connection (null for
+ * batched levels). Records taken before multi-sample readiness landed report one draw per
+ * single-add level; comparing their readiness setup/percentile values against multi-sample
+ * records would print misleading deltas, so the protocol is part of the comparison identity.
+ */
+function readinessProtocol(record: RunRecord): Array<Array<number | null> | null> {
+  return ALL_SYSTEMS.map(
+    (name) =>
+      record.systems[name]?.workload.connections.map((level) =>
+        level.addedConnections === 1 ? level.readyLatency.count : null,
+      ) ?? null,
+  );
+}
+
 function comparisonFingerprint(record: RunRecord): string {
   return JSON.stringify({
     machine: {
@@ -692,6 +708,7 @@ function comparisonFingerprint(record: RunRecord): string {
       memGb: record.machine.memGb,
     },
     configs: ALL_SYSTEMS.map((name) => record.systems[name]?.workload.config ?? null),
+    readinessProtocol: readinessProtocol(record),
     dbzzTelemetryDisabledConfig: record.dbzzTelemetryDisabled.workload.config,
     dbzzExporterProfileConfig: record.dbzzExporterProfile.workload.config,
     dbzzModes: [
