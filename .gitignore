@@ -1,13 +1,13 @@
 # local research / docs workspace (not part of the published repo)
-GOAL.md
-raw
-wiki
-opensrc
-.wiki
-.research
-.agents
-.claude
-skills-lock.json
+/GOAL.md
+/raw/
+/wiki/
+/opensrc/
+/.wiki/
+/.research/
+/.agents/
+/.claude/
+/skills-lock.json
 
 # deps / build
 node_modules
