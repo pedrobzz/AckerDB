@@ -43,11 +43,25 @@ export class WireError extends Error {}
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const BASE64_PAD = 0x3d; // "="
 
-// Feature-detected once at load; both members are from the same proposal, so
-// they are either both present or both absent.
+// Feature-detected and captured once at load. The structural casts keep this
+// module independent of ambient lib typings: dbzz ships raw TypeScript, and a
+// consumer's tsc must not need a lib that already declares the ES Uint8Array
+// base64 API (as of TS 5.9 only the Bun type augmentations carry it).
+const NATIVE_TO_BASE64 = (
+  Uint8Array.prototype as unknown as { toBase64?: (this: Uint8Array) => string }
+).toBase64;
+const NATIVE_FROM_BASE64 = (
+  Uint8Array as unknown as {
+    fromBase64?: (
+      text: string,
+      options?: { readonly lastChunkHandling?: "loose" | "strict" | "stop-before-partial" },
+    ) => Uint8Array;
+  }
+).fromBase64;
+// Both members ship together (one proposal), but require both anyway so a
+// partial polyfill can never split the codec across implementations.
 const NATIVE_BASE64 =
-  typeof Uint8Array.prototype.toBase64 === "function" &&
-  typeof Uint8Array.fromBase64 === "function";
+  typeof NATIVE_TO_BASE64 === "function" && typeof NATIVE_FROM_BASE64 === "function";
 
 interface Base64Tables {
   /** 12-bit value -> its two base64 characters. */
@@ -72,7 +86,7 @@ function buildBase64Tables(): Base64Tables {
 function bytesToBase64(bytes: Uint8Array): string {
   // Standard padded base64 is the native default, byte-identical to the
   // fallback below.
-  if (NATIVE_BASE64) return bytes.toBase64();
+  if (NATIVE_BASE64) return NATIVE_TO_BASE64!.call(bytes);
   const { pairs } = base64Tables ?? buildBase64Tables();
   const length = bytes.length;
   const full = length - (length % 3);
@@ -111,7 +125,7 @@ function base64ToBytes(text: string): Uint8Array {
   if (NATIVE_BASE64) {
     let out: Uint8Array;
     try {
-      out = Uint8Array.fromBase64(text, { lastChunkHandling: "strict" });
+      out = NATIVE_FROM_BASE64!(text, { lastChunkHandling: "strict" });
     } catch {
       throw new WireError("invalid base64 in wire bytes value");
     }
