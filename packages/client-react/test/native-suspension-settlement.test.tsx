@@ -421,6 +421,77 @@ describe("suspension settlement through the native entry against a real server",
     expect(log.filter((entry) => entry === "sse")).toEqual(["sse"]);
   });
 
+  test("a replacement generation sent immediately after activation is owned by itself, not the settled predecessor", async () => {
+    const log: string[] = [];
+    let phase = "";
+    let chat: ReturnType<typeof useChat<UIMessage>> | undefined;
+    const errors: Error[] = [];
+    const finishes: Settled[] = [];
+
+    function Probe(): ReactNode {
+      phase = useConnectionState().phase;
+      const transport = useChatTransport({ $ref: "ai.holdMidStream" } as StandardRef);
+      chat = useChat<UIMessage>({
+        id: "native-replacement",
+        transport,
+        onError: (error) => errors.push(error),
+        onFinish: ({ isAbort, isError, isDisconnect }) =>
+          finishes.push({ isAbort, isError, isDisconnect }),
+      });
+      return null;
+    }
+
+    const root = createRoot(mountPoint());
+    roots.push(root);
+    root.render(
+      <DbzzProvider config={providerConfig(log)}>
+        <Probe />
+      </DbzzProvider>,
+    );
+    await until(() => phase === "ready", "the provider to reach ready");
+
+    void chat!.sendMessage({ text: "first" });
+    await until(() => {
+      const last = chat!.messages.at(-1);
+      return (
+        last?.role === "assistant" &&
+        last.parts.some((part) => part.type === "text" && part.text === "partial")
+      );
+    }, "the first generation to stream");
+
+    // The tightest deterministic race: background, activate, and send the
+    // replacement in one turn — the predecessor's settlement is still
+    // propagating when the replacement dispatches.
+    setAppState("background");
+    setAppState("active");
+    void chat!.sendMessage({ text: "second" });
+
+    // The replacement starts as its own fresh generation on the server...
+    await until(() => aiMidReleases.length === 2, "the replacement generation to start");
+    // ...while the predecessor settles exactly once, as cancellation.
+    await until(() => finishes.length === 1, "the predecessor to settle");
+    expect(finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
+    await aiMidReleases[0]!.promise;
+
+    // The predecessor's settlement did not settle or corrupt the replacement:
+    // it is still streaming and still cancellable on its own terms.
+    await until(() => {
+      const last = chat!.messages.at(-1);
+      return (
+        last?.role === "assistant" &&
+        last.parts.some((part) => part.type === "text" && part.text === "partial")
+      );
+    }, "the replacement to stream its own chunks");
+    await chat!.stop();
+    await aiMidReleases[1]!.promise;
+    await until(() => finishes.length === 2, "the replacement to settle by its own stop");
+    expect(finishes[1]).toEqual({ isAbort: true, isError: false, isDisconnect: false });
+    expect(errors).toEqual([]);
+    expect(chat!.error).toBeUndefined();
+    await until(() => app.runtime.status().activeSse === 0, "all server streams to settle");
+    expect(log.filter((entry) => entry === "sse")).toEqual(["sse", "sse"]);
+  });
+
   test("a chat message sent while suspended settles as abort without dispatching any request", async () => {
     const log: string[] = [];
     let phase = "";
