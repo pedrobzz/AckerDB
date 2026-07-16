@@ -36,17 +36,62 @@ const RETRY_BASE_MS = 100;
 const RETRY_MAX_MS = 3_000;
 
 // Snapshots promise immutability, so delivered rows must not be mutable
-// through the snapshot either: a consumer sort() or push() would silently
-// corrupt the retained data every later state is built from. Wire values are
-// trees of plain objects, arrays, primitives, and binary payloads; typed
-// arrays cannot be frozen and stay as delivered.
-function deepFreeze(value: unknown): void {
-  if (value === null || typeof value !== "object" || Object.isFrozen(value)) return;
-  if (value instanceof Uint8Array) return;
-  Object.freeze(value);
-  for (const key of Object.keys(value)) {
-    deepFreeze((value as Record<string, unknown>)[key]);
-  }
+// through the snapshot either: a consumer sort(), push(), or byte write would
+// silently corrupt the retained data every later state is built from. This is
+// the same contract as the server's validated-value freezer
+// (packages/server/src/immutable.ts); typed arrays cannot be frozen, so byte
+// leaves become read-only proxies over a private copy.
+const BYTE_MUTATORS = new Set<PropertyKey>([
+  "copyWithin",
+  "fill",
+  "reverse",
+  "set",
+  "sort",
+]);
+
+function readonlyBytes(bytes: Uint8Array): Uint8Array {
+  const target = new Uint8Array(bytes);
+  return new Proxy(target, {
+    defineProperty: () => false,
+    deleteProperty: () => false,
+    set: () => false,
+    get(current, property) {
+      if (property === "buffer") return current.buffer.slice(0);
+      const value = Reflect.get(current, property, current) as unknown;
+      if (typeof value !== "function") return value;
+      if (BYTE_MUTATORS.has(property)) {
+        return () => {
+          throw new TypeError("query snapshot bytes are immutable");
+        };
+      }
+      // Typed-array methods reject Proxy receivers. Run reads against a copy,
+      // which also prevents callbacks and returned views from exposing target.
+      return (...args: unknown[]) => Reflect.apply(value, new Uint8Array(current), args);
+    },
+  });
+}
+
+/** Deep-freeze one delivered value without recursing forever through cycles. */
+function deepFreeze<T>(value: T): T {
+  const seen = new Map<object, object>();
+  const visit = (current: unknown): unknown => {
+    if (typeof current !== "object" || current === null) return current;
+    const known = seen.get(current);
+    if (known !== undefined) return known;
+    if (current instanceof Uint8Array) {
+      const bytes = readonlyBytes(current);
+      seen.set(current, bytes);
+      return bytes;
+    }
+    if (ArrayBuffer.isView(current)) return current;
+    seen.set(current, current);
+    for (const [key, child] of Object.entries(current)) {
+      const immutable = visit(child);
+      if (immutable !== child) Reflect.set(current, key, immutable);
+    }
+    return Object.freeze(current);
+  };
+  return visit(value) as T;
 }
 
 /**
@@ -66,6 +111,7 @@ export class QueryStoreEntry<Rows> {
   private stopConnectionState: (() => void) | null = null;
   private retryHandle: ReturnType<typeof setTimeout> | null = null;
   private retryAttempt = 0;
+  private retryDeferred = false;
 
   constructor(
     private readonly client: DbzzClient,
@@ -130,6 +176,7 @@ export class QueryStoreEntry<Rows> {
 
   private stop(): void {
     this.clearRetry();
+    this.retryDeferred = false;
     this.stopQuery?.();
     this.stopQuery = null;
     this.stopConnectionState?.();
@@ -140,8 +187,7 @@ export class QueryStoreEntry<Rows> {
     // Applied reset/update deliveries are authoritative on the live
     // connection: delivered data is always fresh.
     this.settleRetries();
-    deepFreeze(data);
-    this.replace({ status: "success", data, stale: false });
+    this.replace({ status: "success", data: deepFreeze(data), stale: false });
   }
 
   private onCursorConfirmed(): void {
@@ -180,11 +226,14 @@ export class QueryStoreEntry<Rows> {
 
   private resubscribe(): void {
     if (this.listeners.size === 0) return;
-    // Blocked, failed, and closed clients own their subscriptions' fate: a
-    // blocked client retains them for refreshCredential() recovery, and a
-    // resubscribe here would discard that retained state.
     const phase = this.client.currentConnectionState.phase;
-    if (phase === "authentication-blocked" || phase === "terminal-error" || phase === "closed") {
+    // Failed and closed clients never accept work again for this lifetime.
+    if (phase === "terminal-error" || phase === "closed") return;
+    // A blocked client rejects new subscriptions until refreshCredential()
+    // recovers it; hold the demand and resubscribe on that recovery instead
+    // of consuming the retry here.
+    if (phase === "authentication-blocked") {
+      this.retryDeferred = true;
       return;
     }
     this.stopQuery?.();
@@ -196,6 +245,7 @@ export class QueryStoreEntry<Rows> {
     // An authoritative delivery proves the subscription healthy: cancel any
     // scheduled resubscribe and restart the backoff shape.
     this.retryAttempt = 0;
+    this.retryDeferred = false;
     this.clearRetry();
   }
 
@@ -207,6 +257,17 @@ export class QueryStoreEntry<Rows> {
   }
 
   private onConnectionState(connection: DbzzConnectionState): void {
+    // A deferred retry fires once the client leaves its blocked state, e.g.
+    // when refreshCredential() installs new credentials.
+    if (
+      this.retryDeferred &&
+      connection.phase !== "authentication-blocked" &&
+      connection.phase !== "terminal-error" &&
+      connection.phase !== "closed"
+    ) {
+      this.retryDeferred = false;
+      this.resubscribe();
+    }
     // Leaving ready means held rows can no longer be assumed current. Ready
     // itself proves nothing for this query — freshness returns only through
     // the subscription's own resume/reset confirmation.

@@ -9,7 +9,7 @@ import {
   type ServerMessage,
   type SubscriptionCursor,
 } from "@dbzz/core";
-import type { DbzzClientClock, DbzzWebSocket, QueryRef } from "@dbzz/client";
+import { DbzzClient, type DbzzClientClock, type DbzzWebSocket, type QueryRef } from "@dbzz/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
@@ -19,6 +19,7 @@ import {
   type DbzzProviderConfig,
   type DbzzQueryState,
 } from "@dbzz/client-react";
+import { QueryStoreEntry } from "../src/query-store.ts";
 
 interface ClockTask {
   at: number;
@@ -585,6 +586,115 @@ describe("useQuery state transitions", () => {
     );
     expect(live.framesOf("unsub").map((frame) => frame.id)).toEqual([subs[0]!.id]);
     await render(root, <></>);
+  });
+
+  // Driven through the store entry directly: authentication recovery has no
+  // hook until ISSUE-08, and refreshCredential() lives on the private client.
+  test("a deferred retry survives authentication blocking and resubscribes after recovery", async () => {
+    const harness = createHarness();
+    const client = new DbzzClient(harness.config);
+    client.connect();
+    const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
+    const stopListening = entry.listen(() => {});
+    const first = harness.live();
+    first.welcome(SESSION);
+    const id = first.framesOf("sub")[0]!.id;
+    first.receive({
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id,
+      transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
+    });
+    expect(entry.snapshot()).toMatchObject({ status: "success", stale: false });
+
+    // The subscription is rejected retryably, then the credential expires
+    // before the scheduled retry fires.
+    first.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id,
+      outcome: { code: "overloaded", retryable: true, retryAfterMs: 10, message: "rejected" },
+    });
+    first.receive({
+      v: PROTOCOL_VERSION,
+      t: "err",
+      id: null,
+      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
+    });
+    expect(client.currentConnectionState.phase).toBe("authentication-blocked");
+    await Bun.sleep(300);
+    // The retry deferred against the blocked client instead of dying.
+    expect(harness.subFrames("sub")).toHaveLength(1);
+
+    // New credentials recover the client; the held demand resubscribes and
+    // the query returns to fresh authoritative data.
+    const refreshed = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    const second = harness.live();
+    second.welcome(SESSION);
+    second.receive({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: second.framesOf("auth")[0]!.attemptId,
+      authEpoch: 1,
+      principal: "user",
+    });
+    await refreshed;
+    const resubscribed = second.framesOf("sub");
+    expect(resubscribed).toHaveLength(1);
+    expect(resubscribed[0]!.args).toEqual({ list: 1n });
+    second.receive({
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id: resubscribed[0]!.id,
+      transition: { kind: "reset", from: null, to: cursor(2n), value: ["one", "two"] },
+    });
+    expect(entry.snapshot()).toMatchObject({
+      status: "success",
+      stale: false,
+      data: ["one", "two"],
+    });
+
+    stopListening();
+    client.close();
+  });
+
+  test("binary row payloads are immutable through the snapshot", () => {
+    const harness = createHarness();
+    const client = new DbzzClient(harness.config);
+    client.connect();
+    type BlobRow = { readonly name: string; readonly blob: Uint8Array };
+    const entry = new QueryStoreEntry<BlobRow[]>(client, "todos.blobs", {});
+    const stopListening = entry.listen(() => {});
+    const first = harness.live();
+    first.welcome(SESSION);
+    const id = first.framesOf("sub")[0]!.id;
+    first.receive({
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id,
+      transition: {
+        kind: "reset",
+        from: null,
+        to: cursor(1n),
+        value: [{ name: "a", blob: new Uint8Array([1, 2, 3]) }],
+      },
+    });
+    const state = entry.snapshot();
+    if (state.status !== "success") throw new Error("expected success");
+    const row = state.data[0]!;
+    expect(Object.isFrozen(state.data)).toBe(true);
+    expect(Object.isFrozen(row)).toBe(true);
+    expect([...row.blob]).toEqual([1, 2, 3]);
+    expect(() => {
+      (row.blob as Uint8Array)[0] = 9;
+    }).toThrow(TypeError);
+    expect(() => row.blob.fill(0)).toThrow(TypeError);
+    expect(() => row.blob.set([9])).toThrow(TypeError);
+    // The buffer escape hatch hands out a copy, never the retained storage.
+    new Uint8Array(row.blob.buffer)[0] = 9;
+    expect(row.blob[0]).toBe(1);
+    stopListening();
+    client.close();
   });
 
   test("delivered rows are immutable through the snapshot", async () => {
