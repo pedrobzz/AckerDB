@@ -17,7 +17,14 @@ import {
   reconcile,
   serve,
 } from "@dbzz/server";
-import { Component, StrictMode, useEffect, useState, type ReactNode } from "react";
+import {
+  Component,
+  StrictMode,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
   DbzzProvider,
@@ -412,6 +419,59 @@ describe("useProcedure against a real dbzz server", () => {
     await until(() => renders > rendersBeforeReconfigure, "the reconfigured render");
 
     expect(identities.size).toBe(1);
+    await unmount(root);
+  });
+
+  test("a layout-effect call during reconfiguration never dispatches through the retired client", async () => {
+    // Tag each lifetime with its own fetch recorder so the dispatching client
+    // is observable per request.
+    const dispatches: string[] = [];
+    const tagged = (tag: string, sessionId: string): DbzzProviderConfig =>
+      app.config({
+        clientSessionId: sessionId,
+        fetch: (url, init) => {
+          if (url.endsWith("/api/call")) dispatches.push(tag);
+          return nativeFetch(url, init);
+        },
+      });
+
+    let settled: unknown = null;
+    function LayoutCaller({ fire }: { fire: boolean }): ReactNode {
+      const echo = useProcedure(api.tools.echo);
+      useLayoutEffect(() => {
+        if (!fire) return;
+        // Fires inside the reconfiguration commit, before the provider's
+        // passive effects have replaced the client.
+        echo({ value: "layout" }).then(
+          (value) => {
+            settled = value;
+          },
+          (error) => {
+            settled = error;
+          },
+        );
+      }, [fire, echo]);
+      return null;
+    }
+
+    const container = mountPoint();
+    const root = createRoot(container);
+    root.render(
+      <DbzzProvider config={tagged("retired", "procedure-layout-1")}>
+        <LayoutCaller fire={false} />
+      </DbzzProvider>,
+    );
+    await until(() => dispatches.length === 0 && container !== null, "the first commit");
+
+    root.render(
+      <DbzzProvider config={tagged("replacement", "procedure-layout-2")}>
+        <LayoutCaller fire={true} />
+      </DbzzProvider>,
+    );
+    await until(() => settled !== null, "the layout-effect call to settle");
+
+    expect(settled).toBe("LAYOUT");
+    expect(dispatches).toEqual(["replacement"]);
     await unmount(root);
   });
 

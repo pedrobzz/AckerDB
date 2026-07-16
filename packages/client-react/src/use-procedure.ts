@@ -4,8 +4,15 @@ import {
   type DbzzClient,
   type ProcedureRef,
 } from "@dbzz/client";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { useProviderClient } from "./provider.tsx";
+
+// The cell must reflect the committed provider client before any caller in the
+// same commit can run (a layout-effect caller during a provider
+// reconfiguration must not dispatch through the retired client), so the hook
+// synchronizes in the layout phase. Server rendering runs no effects; the
+// fallback only silences React's server-side useLayoutEffect warning.
+const useCommitEffect = typeof document === "undefined" ? useEffect : useLayoutEffect;
 
 /** The stable callable returned by {@link useProcedure}. */
 export type DbzzProcedure<A, R> = (args: A, options?: DbzzCallOptions) => Promise<R>;
@@ -101,11 +108,11 @@ export function useProcedure<A, R>(ref: ProcedureRef<A, R>): DbzzProcedure<A, R>
   // Generated references are proxies with fresh identity per render; track the
   // latest one each commit so the stable callable always names the procedure
   // the caller most recently rendered with.
-  useEffect(() => {
+  useCommitEffect(() => {
     cell.ref = ref;
   });
 
-  useEffect(() => {
+  useCommitEffect(() => {
     cell.ended = false;
     cell.client = client;
     if (client === null) return;
@@ -114,7 +121,7 @@ export function useProcedure<A, R>(ref: ProcedureRef<A, R>): DbzzProcedure<A, R>
 
   // The hook's lifetime ends with its component (provider shutdown unmounts
   // consumers too): settle queued calls instead of leaving them pending.
-  useEffect(
+  useCommitEffect(
     () => () => {
       cell.ended = true;
       const error = hookError("client closed");

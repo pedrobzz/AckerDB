@@ -1819,6 +1819,39 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(calls).toBe(1);
     client.close();
   });
+
+  test("settles a procedure whose fetch ignores its abort signal, on abort and on close", async () => {
+    for (const shutdown of ["abort", "close"] as const) {
+      const abort = new AbortController();
+      const hanging = deferred<Response>();
+      let lateCancellations = 0;
+      const { client } = harness({
+        // A hostile transport: never settles until released, ignores the signal.
+        fetch: async () => hanging.promise,
+      });
+      const completion = client
+        .procedure("procedure.hanging-fetch", {}, { signal: abort.signal })
+        .catch((error) => error);
+      await Promise.resolve();
+
+      if (shutdown === "abort") abort.abort();
+      else client.close();
+      await settlesPromptly(completion, `${shutdown} of a signal-ignoring procedure fetch`);
+      expect(await completion).toMatchObject({ code: "indeterminate", resource: "operation" });
+
+      hanging.resolve(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            cancel() {
+              lateCancellations++;
+            },
+          }),
+        ),
+      );
+      await eventually(() => lateCancellations === 1, `${shutdown} late response disposal`);
+      client.close();
+    }
+  });
 });
 
 describe("DbzzClient connection state", () => {
