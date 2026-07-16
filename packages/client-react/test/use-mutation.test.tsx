@@ -599,6 +599,54 @@ describe("useMutation", () => {
     });
   });
 
+  test("a queued dispatch that throws synchronously rejects its own calls and spares the rest", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    // A runtime-malformed reference: the client's getRef throws synchronously
+    // at dispatch, before any request exists.
+    const malformed = { $ref: "" } as unknown as MutationRef<TodoArgs, bigint>;
+    let poisonedFirst: Promise<unknown> | null = null;
+    let poisonedSecond: Promise<unknown> | null = null;
+    let result: Promise<bigint> | null = null;
+    function SendOnMount(): ReactNode {
+      const poison = useMutation(malformed);
+      const send = useMutation(todosAdd());
+      useEffect(() => {
+        poisonedFirst = poison({ text: "poison-1" }).catch((error) => error);
+        poisonedSecond = poison({ text: "poison-2" }).catch((error) => error);
+        result = send({ text: "fine" });
+      }, [poison, send]);
+      return null;
+    }
+
+    await render(
+      root,
+      <DbzzProvider config={harness.config()}>
+        <SendOnMount />
+      </DbzzProvider>,
+    );
+    const socket = harness.sockets.at(-1)!;
+    await act(async () => {
+      socket.welcome(SESSION);
+    });
+
+    // Both malformed dispatches rejected their own calls, both from the same
+    // drained queue...
+    expect(String(await poisonedFirst!)).toContain("not a dbzz function reference");
+    expect(String(await poisonedSecond!)).toContain("not a dbzz function reference");
+    // ...and the healthy queued call still dispatched and resolves.
+    const frames = mutationFrames(socket);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.args).toEqual({ text: "fine" });
+    socket.receive(mutationOk(frames[0]!, 5n));
+    expect(await result!).toBe(5n);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   test("unmount before the client arrives settles a queued call with the typed discard", async () => {
     const harness = createHarness();
     const container = mountPoint();

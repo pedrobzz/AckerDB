@@ -20,6 +20,7 @@ import {
 import {
   Component,
   StrictMode,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useState,
@@ -572,6 +573,59 @@ describe("useProcedure against a real dbzz server", () => {
       message: "procedure request was canceled",
       resource: "operation",
     });
+    await unmount(root);
+  });
+
+  test("an abort fired while encoding a queued call still settles it with the typed cancellation", async () => {
+    // The argument getter aborts the caller's own signal mid-snapshot — after
+    // the pre-queue abort check would have passed. The call must settle as
+    // canceled rather than as a lifetime discard, even though the component
+    // unmounts (via the layout-phase state update) before any client arrives.
+    const controller = new AbortController();
+    const args = {
+      get value(): string {
+        controller.abort();
+        return "poison";
+      },
+    };
+    let settled: unknown = null;
+    function CallAndVanish({ vanish }: { readonly vanish: () => void }): ReactNode {
+      const echo = useProcedure(api.tools.echo);
+      useLayoutEffect(() => {
+        echo(args, { signal: controller.signal }).then(
+          (value) => {
+            settled = value;
+          },
+          (error) => {
+            settled = error;
+          },
+        );
+        vanish();
+      }, [echo, vanish]);
+      return null;
+    }
+    function Gate(): ReactNode {
+      const [mounted, setMounted] = useState(true);
+      const vanish = useCallback(() => setMounted(false), []);
+      return mounted ? <CallAndVanish vanish={vanish} /> : null;
+    }
+
+    const callsBefore = app.calls.length;
+    const container = mountPoint();
+    const root = createRoot(container);
+    root.render(
+      <DbzzProvider config={app.config()}>
+        <Gate />
+      </DbzzProvider>,
+    );
+    await until(() => settled !== null, "the canceled call to settle");
+    expect(settled).toMatchObject({
+      name: "DbzzClientError",
+      code: "unavailable",
+      message: "procedure request was canceled",
+      resource: "operation",
+    });
+    expect(app.calls.length).toBe(callsBefore);
     await unmount(root);
   });
 

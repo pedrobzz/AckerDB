@@ -96,14 +96,24 @@ export function callThroughCell<Ref, A, R>(
   // timer or external listener) settles locally and never dispatches.
   if (cell.ended) return Promise.reject(hookError("client closed"));
   if (cell.client !== null) return dispatch(cell.client, args);
-  if (abort?.signal.aborted) return Promise.reject(hookError(abort.canceled));
+  // Snapshot before the abort check: encoding runs caller getters, which may
+  // abort the signal mid-snapshot, and an AbortSignal never replays its event
+  // for a listener attached afterwards.
   const snapshot = snapshotWireValue(args);
+  if (abort?.signal.aborted) return Promise.reject(hookError(abort.canceled));
   return new Promise<R>((resolve, reject) => {
     let detach: (() => void) | undefined;
     const waiter: Waiter = {
       dispatch(readyClient) {
         detach?.();
-        dispatch(readyClient, snapshot).then(resolve, reject);
+        // A synchronous dispatch throw (a runtime-malformed reference) must
+        // fail only its own call: the arrival drain runs inside a commit-phase
+        // effect, and later waiters still need their dispatch.
+        try {
+          dispatch(readyClient, snapshot).then(resolve, reject);
+        } catch (error) {
+          reject(error);
+        }
       },
       discard(error) {
         detach?.();
