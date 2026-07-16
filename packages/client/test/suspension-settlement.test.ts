@@ -1,0 +1,988 @@
+/**
+ * ISSUE-13: settlement of non-resumable work (procedures and SSE streams)
+ * across mobile suspension. Suspension must settle every in-flight procedure
+ * and SSE stream promptly with its exact suspension-marked typed outcome,
+ * release readers/reservations/acknowledgement machinery, refuse (never
+ * queue) non-resumable work started while suspended, and keep activation
+ * from silently restarting or being corrupted by any of it. Resumable work
+ * (queries, mutations) recovering independently is proven alongside.
+ */
+import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  PROTOCOL_VERSION,
+  decode,
+  encode,
+  parseCallRequest,
+  parseClientMessage,
+  parseSseAckRequest,
+  type ClientMessage,
+  type ServerMessage,
+  type SseAckRequest,
+  type SubscriptionCursor,
+} from "@dbzz/core";
+import {
+  DbzzClient,
+  DbzzClientError,
+  type DbzzClientClock,
+  type DbzzClientOptions,
+  type DbzzFetch,
+  type DbzzLifecyclePort,
+  type DbzzWebSocket,
+} from "@dbzz/client";
+import {
+  Engine,
+  PRODUCTION_LIMITS,
+  Registry,
+  Runtime,
+  dbz,
+  defineSchema,
+  procedure,
+  reconcile,
+  serve,
+  sseProcedure,
+  type SseCtx,
+} from "@dbzz/server";
+
+interface ClockTask {
+  at: number;
+  callback: () => void;
+  intervalMs?: number;
+}
+
+class ManualClock implements DbzzClientClock {
+  private nextId = 0;
+  private readonly tasks = new Map<number, ClockTask>();
+
+  constructor(private time = 0) {}
+
+  now(): number {
+    return this.time;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback });
+    return id;
+  }
+
+  clearTimeout(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  setInterval(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
+    return id;
+  }
+
+  clearInterval(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  advance(ms: number): void {
+    const target = this.time + ms;
+    for (;;) {
+      let next: [number, ClockTask] | undefined;
+      for (const entry of this.tasks) {
+        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
+      }
+      if (!next) break;
+      const [id, task] = next;
+      this.time = task.at;
+      if (task.intervalMs === undefined) this.tasks.delete(id);
+      else task.at += task.intervalMs;
+      task.callback();
+    }
+    this.time = target;
+  }
+
+  get taskCount(): number {
+    return this.tasks.size;
+  }
+}
+
+class FakeSocket implements DbzzWebSocket {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  readonly sent: string[] = [];
+  private closed = false;
+
+  send(data: string): void {
+    if (this.closed) throw new Error("socket is closed");
+    parseClientMessage(decode(data));
+    this.sent.push(data);
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.onclose?.();
+  }
+
+  frames(): ClientMessage[] {
+    return this.sent.map((text) => parseClientMessage(decode(text)));
+  }
+}
+
+const encoder = new TextEncoder();
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
+/** A scripted HTTP exchange journal shared by every fake-fetch harness. */
+interface HttpJournal {
+  /** Chronological `/api/call` and `/api/sse` dispatches with their request ids. */
+  readonly dispatches: Array<{ readonly path: string; readonly id: number }>;
+  /** Every `/api/sse/ack` request the client issued, parsed. */
+  readonly acknowledgments: SseAckRequest[];
+}
+
+type Route = (id: number, init: RequestInit | undefined) => Promise<Response> | Response;
+
+interface Harness {
+  readonly client: DbzzClient;
+  readonly clock: ManualClock;
+  readonly sockets: FakeSocket[];
+  readonly port: DbzzLifecyclePort;
+  readonly journal: HttpJournal;
+}
+
+function harness(
+  routes: { readonly call?: Route; readonly sse?: Route },
+  overrides: Partial<DbzzClientOptions> = {},
+): Harness {
+  const clock = new ManualClock();
+  const sockets: FakeSocket[] = [];
+  let port: DbzzLifecyclePort | undefined;
+  const journal: HttpJournal = { dispatches: [], acknowledgments: [] };
+  const fetcher: DbzzFetch = (url, init) => {
+    const path = new URL(url).pathname;
+    if (path === "/api/sse/ack") {
+      journal.acknowledgments.push(parseSseAckRequest(decode(String(init?.body))));
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    const request = parseCallRequest(decode(String(init?.body)));
+    journal.dispatches.push({ path, id: request.id });
+    const route = path === "/api/call" ? routes.call : routes.sse;
+    if (!route) throw new Error(`no scripted route for ${path}`);
+    return Promise.resolve(route(request.id, init));
+  };
+  const client = new DbzzClient({
+    url: "http://dbzz.test",
+    credential: { kind: "anonymous" },
+    clientSessionId: "settlement-session",
+    clock,
+    random: () => 0,
+    fetch: fetcher,
+    createWebSocket: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      return socket;
+    },
+    lifecycle: (livePort) => {
+      port = livePort;
+      return () => {};
+    },
+    ...overrides,
+  });
+  return {
+    client,
+    clock,
+    sockets,
+    get port(): DbzzLifecyclePort {
+      if (!port) throw new Error("the lifecycle source was overridden");
+      return port;
+    },
+    journal,
+  };
+}
+
+function procedureOk(id: number, value: unknown): Response {
+  return new Response(encode({ v: PROTOCOL_VERSION, t: "ok", id, kind: "procedure", value }), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+/** A response body whose delivery and cancellation the test controls exactly. */
+interface OpenBody {
+  readonly response: Response;
+  /** Enqueue raw bytes; reports whether the stream could still accept them. */
+  push(text: string): boolean;
+  error(reason: unknown): void;
+  /** Every reason `cancel()` reached the underlying source with. */
+  readonly cancels: unknown[];
+}
+
+function openBody(init: ResponseInit): OpenBody {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const cancels: unknown[] = [];
+  const body = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      controller = streamController;
+    },
+    cancel(reason) {
+      cancels.push(reason);
+    },
+  });
+  return {
+    response: new Response(body, init),
+    push(text) {
+      try {
+        controller.enqueue(encoder.encode(text));
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    error(reason) {
+      try {
+        controller.error(reason);
+      } catch {
+        // The stream may already be past erroring; the test asserts effects.
+      }
+    },
+    cancels,
+  };
+}
+
+function openSse(stream = "stream-1"): OpenBody & { chunk(seq: number, value: unknown): boolean } {
+  const open = openBody({
+    status: 200,
+    headers: {
+      "content-type": "text/event-stream",
+      "x-dbzz-sse-stream": stream,
+      "x-dbzz-sse-max-stall-ms": "5000",
+    },
+  });
+  return {
+    ...open,
+    chunk(seq, value) {
+      return open.push(
+        `data: ${encode({ v: PROTOCOL_VERSION, t: "sse_chunk", seq, proof: `proof-${seq}`, value })}\n\n`,
+      );
+    },
+  };
+}
+
+/** The exact suspension-marked settlement shape. */
+function expectSuspensionOutcome(
+  error: unknown,
+  expected: { code: string; message: string; resource: string },
+): void {
+  expect(error).toBeInstanceOf(DbzzClientError);
+  const settled = error as DbzzClientError;
+  expect(settled.code).toBe(expected.code as DbzzClientError["code"]);
+  expect(settled.message).toBe(expected.message);
+  expect(settled.resource).toBe(expected.resource as DbzzClientError["resource"]);
+  expect(settled.retryable).toBe(false);
+  expect(settled.interruption).toBe("suspension");
+}
+
+function welcome(client: DbzzClient, socket: FakeSocket): void {
+  socket.onopen?.();
+  socket.onmessage?.({
+    data: encode({
+      v: PROTOCOL_VERSION,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 0,
+      principal: "anonymous",
+    } satisfies ServerMessage),
+  });
+}
+
+function cursor(commitVersion: bigint): SubscriptionCursor {
+  return {
+    generation: "generation-1",
+    commitVersion,
+    authEpoch: 0,
+    identity: "todos.list:{list:1}",
+  };
+}
+
+describe("non-resumable work started while suspended", () => {
+  test("a procedure settles determinately with the marked refusal and never dispatches", async () => {
+    const { client, clock, sockets, port, journal } = harness({
+      call: (id) => procedureOk(id, "late"),
+    });
+    port.suspend();
+
+    const refusal = await client.procedure("tools.echo", {}).catch((error) => error);
+    expectSuspensionOutcome(refusal, {
+      code: "unavailable",
+      message: "client is suspended",
+      resource: "operation",
+    });
+    expect(journal.dispatches).toEqual([]);
+    expect(clock.taskCount).toBe(0);
+
+    // Activation restarts nothing: the refused call was settled, not queued.
+    port.resume();
+    clock.advance(60_000);
+    expect(journal.dispatches).toEqual([]);
+    expect(sockets).toHaveLength(0);
+
+    // The client itself is fully usable again after activation.
+    expect(await client.procedure<Record<never, never>, string>("tools.echo", {})).toBe("late");
+    expect(journal.dispatches).toEqual([{ path: "/api/call", id: expect.any(Number) }]);
+    client.close();
+  });
+
+  test("an SSE stream first pulled while suspended settles determinately and never dispatches", async () => {
+    const { client, clock, port, journal } = harness({
+      sse: () => {
+        const scripted = openSse();
+        scripted.chunk(1, { tick: 0 });
+        return scripted.response;
+      },
+    });
+    port.suspend();
+
+    const iterator = client.sse("stream.ticks", {})[Symbol.asyncIterator]();
+    const refusal = await iterator.next().catch((error) => error);
+    expectSuspensionOutcome(refusal, {
+      code: "unavailable",
+      message: "client is suspended",
+      resource: "sse",
+    });
+    // Exactly one terminal outcome: the finished generator only reports done.
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    expect(journal.dispatches).toEqual([]);
+    expect(journal.acknowledgments).toEqual([]);
+    expect(clock.taskCount).toBe(0);
+
+    port.resume();
+    clock.advance(60_000);
+    expect(journal.dispatches).toEqual([]);
+
+    // A fresh stream after activation is ordinary work.
+    const fresh = client.sse<Record<never, never>, { tick: number }>("stream.ticks", {})[
+      Symbol.asyncIterator
+    ]();
+    expect(await fresh.next()).toEqual({ done: false, value: { tick: 0 } });
+    expect(journal.dispatches).toEqual([{ path: "/api/sse", id: expect.any(Number) }]);
+    await fresh.return(undefined);
+    client.close();
+  });
+
+  test("suspension ownership keys on the first pull: a stream created while suspended but first pulled while active is fresh foreground work", async () => {
+    // The lazy-stream twin of the refusal contract, pinned deliberately: the
+    // generator object is a description of work, and the work itself starts
+    // at the first pull — exactly procedure()'s call-time rule. A stream
+    // never pulled during the gap holds no state, hangs no caller, and has
+    // nothing for activation to restart, so its first pull while active is
+    // ordinary demand-driven work, never a phantom suspension outcome.
+    const scripted = openSse();
+    const { client, port, journal } = harness({ sse: () => scripted.response });
+
+    port.suspend();
+    const createdSuspended = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    // Nothing dispatched, nothing reserved, nothing pending: no work exists.
+    expect(journal.dispatches).toEqual([]);
+    port.resume();
+
+    scripted.chunk(1, { tick: 0 });
+    expect(await createdSuspended.next()).toEqual({ done: false, value: { tick: 0 } });
+    expect(journal.dispatches).toEqual([{ path: "/api/sse", id: expect.any(Number) }]);
+    await createdSuspended.return(undefined);
+    client.close();
+  });
+
+  test("a stream that crosses a suspension unpulled starts fresh after activation", async () => {
+    const scripted = openSse();
+    const { client, port, journal } = harness({ sse: () => scripted.response });
+
+    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    port.suspend();
+    expect(journal.dispatches).toEqual([]);
+    port.resume();
+
+    scripted.chunk(1, { tick: 0 });
+    expect(await iterator.next()).toEqual({ done: false, value: { tick: 0 } });
+    expect(journal.dispatches).toHaveLength(1);
+    await iterator.return(undefined);
+    client.close();
+  });
+
+  test("a caller's pre-aborted signal outranks the suspension refusal", async () => {
+    const { client, port } = harness({});
+    port.suspend();
+    const controller = new AbortController();
+    controller.abort();
+
+    const procedureOutcome = (await client
+      .procedure("tools.echo", {}, { signal: controller.signal })
+      .catch((error) => error)) as DbzzClientError;
+    expect(procedureOutcome.message).toBe("procedure request was canceled");
+    expect(procedureOutcome.interruption).toBeUndefined();
+
+    const sseOutcome = (await client
+      .sse("stream.ticks", {}, { signal: controller.signal })
+      .next()
+      .catch((error) => error)) as DbzzClientError;
+    expect(sseOutcome.message).toBe("SSE request was canceled");
+    expect(sseOutcome.interruption).toBeUndefined();
+    client.close();
+  });
+});
+
+describe("suspension settles in-flight procedures", () => {
+  test("during response acquisition the outcome is marked; caller aborts and close stay unmarked", async () => {
+    const abortable = new AbortController();
+    const { client, clock, port, journal } = harness({
+      call: () => new Promise<Response>(() => {}),
+    });
+
+    // A caller abort before suspension keeps the plain indeterminate outcome.
+    const canceled = client
+      .procedure("tools.echo", {}, { signal: abortable.signal })
+      .catch((error) => error);
+    abortable.abort();
+    const callerOutcome = (await canceled) as DbzzClientError;
+    expect(callerOutcome.code).toBe("indeterminate");
+    expect(callerOutcome.message).toBe("procedure completion is unknown");
+    expect(callerOutcome.interruption).toBeUndefined();
+
+    const suspended = client.procedure("tools.echo", {}).catch((error) => error);
+    expect(journal.dispatches).toHaveLength(2);
+    port.suspend();
+    expectSuspensionOutcome(await suspended, {
+      code: "indeterminate",
+      message: "procedure completion is unknown",
+      resource: "operation",
+    });
+    // Settlement released the request's own deadline timer with it.
+    expect(clock.taskCount).toBe(0);
+    client.close();
+
+    // close() on a fresh client settles the same boundary without the marker.
+    const closing = harness({ call: () => new Promise<Response>(() => {}) });
+    const closed = closing.client.procedure("tools.echo", {}).catch((error) => error);
+    closing.client.close();
+    const closedOutcome = (await closed) as DbzzClientError;
+    expect(closedOutcome.code).toBe("indeterminate");
+    expect(closedOutcome.interruption).toBeUndefined();
+  });
+
+  test("during the response body read the outcome is marked and the body is canceled", async () => {
+    const body = openBody({ status: 200, headers: { "content-type": "application/json" } });
+    const { client, clock, port } = harness({ call: () => body.response });
+
+    const call = client.procedure("tools.echo", {}).catch((error) => error);
+    // Let the fetch resolve and the bounded body read begin.
+    await Bun.sleep(0);
+    body.push('{"partial":');
+    await Bun.sleep(0);
+
+    port.suspend();
+    expectSuspensionOutcome(await call, {
+      code: "indeterminate",
+      message: "procedure response was interrupted",
+      resource: "operation",
+    });
+    // Cancellation reached the response source carrying the marked reason.
+    await Bun.sleep(0);
+    expect(body.cancels).toHaveLength(1);
+    expect((body.cancels[0] as DbzzClientError).interruption).toBe("suspension");
+    expect(clock.taskCount).toBe(0);
+    client.close();
+  });
+
+  test("a stale response resolving after resume settles nothing and its body is canceled", async () => {
+    const stale = deferred<Response>();
+    let dispatches = 0;
+    const { client, port, journal } = harness({
+      call: (id) => (++dispatches === 1 ? stale.promise : procedureOk(id, "fresh")),
+    });
+
+    const interrupted = client.procedure("tools.echo", {}).catch((error) => error);
+    port.suspend();
+    expectSuspensionOutcome(await interrupted, {
+      code: "indeterminate",
+      message: "procedure completion is unknown",
+      resource: "operation",
+    });
+
+    port.resume();
+    const replacement = client.procedure("tools.echo", {});
+
+    // The retired generation's response arrives late, carrying a live body.
+    const staleBody = openBody({ status: 200, headers: { "content-type": "application/json" } });
+    stale.resolve(staleBody.response);
+    expect(await replacement).toBe("fresh");
+    await Bun.sleep(0);
+
+    // The stale response settled nothing and its body was released.
+    expect(staleBody.cancels).toHaveLength(1);
+    expect(journal.dispatches).toHaveLength(2);
+    client.close();
+  });
+});
+
+describe("suspension settles in-flight SSE streams at every boundary", () => {
+  test("before the first chunk: prompt marked settlement, late response canceled, no acknowledgement", async () => {
+    const pending = deferred<Response>();
+    const { client, clock, port, journal } = harness({ sse: () => pending.promise });
+
+    const iterator = client.sse("stream.hold", {})[Symbol.asyncIterator]();
+    const first = iterator.next().catch((error) => error);
+    await Bun.sleep(0);
+    expect(journal.dispatches).toEqual([{ path: "/api/sse", id: expect.any(Number) }]);
+
+    port.suspend();
+    expectSuspensionOutcome(await first, {
+      code: "unavailable",
+      message: "SSE stream was interrupted by suspension",
+      resource: "sse",
+    });
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    expect(clock.taskCount).toBe(0);
+
+    // The retired generation's response resolves after activation: its body
+    // is released with the marked reason and nothing is acknowledged.
+    port.resume();
+    const late = openSse();
+    pending.resolve(late.response);
+    await Bun.sleep(0);
+    expect(late.cancels).toHaveLength(1);
+    expect((late.cancels[0] as DbzzClientError).interruption).toBe("suspension");
+    expect(journal.acknowledgments).toEqual([]);
+    expect(journal.dispatches).toHaveLength(1);
+    client.close();
+  });
+
+  test("parked between chunks with the chunk unacknowledged: source released, phantom delivery impossible", async () => {
+    const scripted = openSse();
+    const { client, clock, port, journal } = harness({ sse: () => scripted.response });
+
+    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    scripted.chunk(1, { tick: 0 });
+    expect(await iterator.next()).toEqual({ done: false, value: { tick: 0 } });
+    // Chunk 1's credit is only sent by the next pull: it is outstanding now.
+    expect(journal.acknowledgments).toEqual([]);
+
+    port.suspend();
+    await Bun.sleep(0);
+    // Cancellation reached the source reader promptly — the server-side
+    // release signal — carrying the marked reason.
+    expect(scripted.cancels).toHaveLength(1);
+    expect((scripted.cancels[0] as DbzzClientError).interruption).toBe("suspension");
+    // A phantom chunk can no longer be delivered through the retired stream.
+    expect(scripted.chunk(2, { tick: 1 })).toBe(false);
+
+    // The next pull observes the one terminal outcome; the outstanding
+    // acknowledgement is released, never sent late.
+    expectSuspensionOutcome(await iterator.next().catch((error) => error), {
+      code: "unavailable",
+      message: "SSE stream was interrupted by suspension",
+      resource: "sse",
+    });
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    expect(journal.acknowledgments).toEqual([]);
+    expect(clock.taskCount).toBe(0);
+
+    port.resume();
+    clock.advance(60_000);
+    expect(journal.dispatches).toHaveLength(1);
+    expect(journal.acknowledgments).toEqual([]);
+    client.close();
+  });
+
+  test("during a downstream pull: the pending pull settles promptly with the marked outcome", async () => {
+    const scripted = openSse();
+    const { client, clock, port, journal } = harness({ sse: () => scripted.response });
+
+    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    scripted.chunk(1, { tick: 0 });
+    expect(await iterator.next()).toEqual({ done: false, value: { tick: 0 } });
+
+    // The second pull acknowledges chunk 1, then parks on the source read.
+    const second = iterator.next().catch((error) => error);
+    await Bun.sleep(0);
+    expect(journal.acknowledgments).toEqual([
+      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
+    ]);
+
+    port.suspend();
+    expectSuspensionOutcome(await second, {
+      code: "unavailable",
+      message: "SSE stream was interrupted by suspension",
+      resource: "sse",
+    });
+    expect(scripted.cancels).toHaveLength(1);
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    expect(journal.acknowledgments).toHaveLength(1);
+    expect(clock.taskCount).toBe(0);
+    client.close();
+  });
+
+  test("during an in-flight acknowledgement: marked settlement and the ack machinery fully stops", async () => {
+    const scripted = openSse();
+    const clock = new ManualClock();
+    let heldAcks = 0;
+    const journalAcks: SseAckRequest[] = [];
+    const { client, port } = harness(
+      { sse: () => scripted.response },
+      {
+        clock,
+        fetch: (url, init) => {
+          const path = new URL(url).pathname;
+          if (path === "/api/sse/ack") {
+            heldAcks++;
+            journalAcks.push(parseSseAckRequest(decode(String(init?.body))));
+            return new Promise<Response>(() => {});
+          }
+          return Promise.resolve(scripted.response);
+        },
+      },
+    );
+
+    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    scripted.chunk(1, { tick: 0 });
+    expect(await iterator.next()).toEqual({ done: false, value: { tick: 0 } });
+
+    // The second pull is parked inside the chunk-1 acknowledgement.
+    const second = iterator.next().catch((error) => error);
+    await Bun.sleep(0);
+    expect(heldAcks).toBe(1);
+
+    port.suspend();
+    expectSuspensionOutcome(await second, {
+      code: "unavailable",
+      message: "SSE stream was interrupted by suspension",
+      resource: "sse",
+    });
+    // The acknowledgement deadline timer and retry loop died with the stream.
+    expect(clock.taskCount).toBe(0);
+    port.resume();
+    clock.advance(60_000);
+    expect(heldAcks).toBe(1);
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    client.close();
+  });
+
+  test("during a non-OK response body read: the marked outcome, not a plain read cancellation", async () => {
+    // The server rejected the stream (503) but its error body is still
+    // arriving when the app backgrounds: settlement must carry the
+    // suspension marker exactly like every other boundary.
+    const errorBody = openBody({ status: 503 });
+    const { client, port } = harness({ sse: () => errorBody.response });
+
+    const iterator = client.sse("stream.hold", {})[Symbol.asyncIterator]();
+    const first = iterator.next().catch((error) => error);
+    await Bun.sleep(0);
+
+    port.suspend();
+    expectSuspensionOutcome(await first, {
+      code: "unavailable",
+      message: "SSE stream was interrupted by suspension",
+      resource: "sse",
+    });
+    await Bun.sleep(0);
+    expect(errorBody.cancels).toHaveLength(1);
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    client.close();
+  });
+
+  test("a source failure landing after suspension cannot produce a second outcome", async () => {
+    const scripted = openSse();
+    const { client, port } = harness({ sse: () => scripted.response });
+
+    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    scripted.chunk(1, { tick: 0 });
+    expect(await iterator.next()).toEqual({ done: false, value: { tick: 0 } });
+    const second = iterator.next().catch((error) => error);
+    await Bun.sleep(0);
+
+    port.suspend();
+    // The disconnecting source errors after the abort has already settled
+    // ownership: cancellation owns the outcome.
+    scripted.error(new Error("connection reset"));
+    expectSuspensionOutcome(await second, {
+      code: "unavailable",
+      message: "SSE stream was interrupted by suspension",
+      resource: "sse",
+    });
+    expect(await iterator.next()).toEqual({ done: true, value: undefined });
+    client.close();
+  });
+
+  test("a stale SSE response resolving after resume cannot deliver into replacement work", async () => {
+    const stale = deferred<Response>();
+    const replacement = openSse("stream-2");
+    let dispatches = 0;
+    const { client, port, journal } = harness({
+      sse: () => (++dispatches === 1 ? stale.promise : replacement.response),
+    });
+
+    const interrupted = client.sse("stream.hold", {})[Symbol.asyncIterator]();
+    const first = interrupted.next().catch((error) => error);
+    await Bun.sleep(0);
+    port.suspend();
+    expectSuspensionOutcome(await first, {
+      code: "unavailable",
+      message: "SSE stream was interrupted by suspension",
+      resource: "sse",
+    });
+    port.resume();
+
+    // Replacement stream on the fresh generation.
+    const fresh = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    replacement.chunk(1, { tick: 7 });
+    expect(await fresh.next()).toEqual({ done: false, value: { tick: 7 } });
+
+    // The retired generation's response arrives now, carrying chunks.
+    const staleBody = openSse("stream-1");
+    staleBody.chunk(1, { tick: 666 });
+    stale.resolve(staleBody.response);
+    await Bun.sleep(0);
+    expect(staleBody.cancels).toHaveLength(1);
+
+    // The replacement stream runs to completion undisturbed, and every credit
+    // the client sends names the replacement stream, never the retired one.
+    replacement.chunk(2, { tick: 8 });
+    expect(await fresh.next()).toEqual({ done: false, value: { tick: 8 } });
+    replacement.push(
+      `data: ${encode({ v: PROTOCOL_VERSION, t: "sse_done", seq: 3, proof: "proof-3" })}\n\n`,
+    );
+    expect(await fresh.next()).toEqual({ done: true, value: undefined });
+    expect(journal.acknowledgments.map((acknowledgment) => acknowledgment.stream)).toEqual([
+      "stream-2",
+      "stream-2",
+      "stream-2",
+    ]);
+    expect(journal.acknowledgments.map((acknowledgment) => acknowledgment.seq)).toEqual([1, 2, 3]);
+    client.close();
+  });
+});
+
+describe("resumable recovery stays independent of terminal settlement", () => {
+  test("suspension settles the SSE stream while the mounted query resumes from its exact cursor", async () => {
+    const scripted = openSse();
+    const { client, sockets, port, journal } = harness({ sse: () => scripted.response });
+    const updates: unknown[] = [];
+    client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
+    welcome(client, sockets[0]!);
+    const subscription = sockets[0]!.frames().find((frame) => frame.t === "sub")!;
+    sockets[0]!.onmessage?.({
+      data: encode({
+        v: PROTOCOL_VERSION,
+        t: "transition",
+        id: subscription.id,
+        transition: { kind: "reset", from: null, to: cursor(5n), value: ["one"] },
+      } satisfies ServerMessage),
+    });
+    expect(updates).toEqual([["one"]]);
+
+    const iterator = client.sse<Record<never, never>, { tick: number }>("stream.hold", {})[
+      Symbol.asyncIterator
+    ]();
+    scripted.chunk(1, { tick: 0 });
+    expect(await iterator.next()).toEqual({ done: false, value: { tick: 0 } });
+    const pull = iterator.next().catch((error) => error);
+    await Bun.sleep(0);
+
+    port.suspend();
+    // The non-resumable stream terminates...
+    expectSuspensionOutcome(await pull, {
+      code: "unavailable",
+      message: "SSE stream was interrupted by suspension",
+      resource: "sse",
+    });
+
+    // ...while the query recovers on activation from its exact held cursor.
+    port.resume();
+    expect(sockets).toHaveLength(2);
+    welcome(client, sockets[1]!);
+    const resumed = sockets[1]!.frames().find((frame) => frame.t === "sub")!;
+    expect(resumed.id).toBe(subscription.id);
+    expect(resumed.cursor).toEqual(cursor(5n));
+    // The settled stream never redialed: one SSE dispatch total.
+    expect(journal.dispatches.filter((dispatch) => dispatch.path === "/api/sse")).toHaveLength(1);
+    client.close();
+  });
+});
+
+const WAIT_DEADLINE_MS = 5_000;
+
+function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), WAIT_DEADLINE_MS);
+    timer.unref?.();
+  });
+  return Promise.race([promise, deadline]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+async function until(predicate: () => boolean, description: string): Promise<void> {
+  const deadline = Date.now() + WAIT_DEADLINE_MS;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await Bun.sleep(5);
+  }
+  throw new Error(`Timed out waiting for ${description}`);
+}
+
+function waitForAbort(signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) resolve();
+    else signal.addEventListener("abort", () => resolve(), { once: true });
+  });
+}
+
+describe("suspension settlement against a real dbzz server", () => {
+  test("mid-stream suspension releases the server iterator and settles the client stream once", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "dbzz-settlement-real-"));
+    const engine = new Engine(defineSchema({}), join(directory, "data.db"));
+    reconcile(engine);
+    const holdReleased = deferred<void>();
+    const procedureStarted = deferred<void>();
+    const procedureGate = deferred<void>();
+    const registry = new Registry({
+      stream: {
+        holdAfterFirst: sseProcedure({
+          access: "public",
+          args: {},
+          yields: dbz.object({ phase: dbz.string() }),
+          handler: async function* (ctx: SseCtx) {
+            try {
+              yield { phase: "one" };
+              await waitForAbort(ctx.abortSignal);
+            } finally {
+              holdReleased.resolve(undefined);
+            }
+          },
+        }),
+        ticks: sseProcedure({
+          access: "public",
+          args: {},
+          yields: dbz.object({ tick: dbz.number() }),
+          handler: async function* () {
+            yield { tick: 0 };
+          },
+        }),
+      },
+      tools: {
+        hold: procedure({
+          access: "public",
+          args: {},
+          handler: async () => {
+            procedureStarted.resolve(undefined);
+            await procedureGate.promise;
+            return "late";
+          },
+        }),
+      },
+    });
+    const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
+    const server = serve({ runtime, port: 0 });
+    // A fake clock against the real server: settlement reaching the caller
+    // proves the whole progression runs on abort events alone — no timers.
+    const clock = new ManualClock(Date.now());
+    let port: DbzzLifecyclePort | undefined;
+    const requests: string[] = [];
+    const client = new DbzzClient({
+      url: `http://127.0.0.1:${server.port}`,
+      credential: { kind: "anonymous" },
+      clock,
+      fetch: (url, init) => {
+        const path = new URL(url).pathname;
+        if (path !== "/api/sse/ack") requests.push(path);
+        return fetch(url, init);
+      },
+      lifecycle: (livePort) => {
+        port = livePort;
+        return () => {};
+      },
+    });
+    try {
+      const iterator = client.sse<Record<never, never>, { phase: string }>(
+        "stream.holdAfterFirst",
+        {},
+      )[Symbol.asyncIterator]();
+      expect(await withDeadline(iterator.next(), "the first chunk")).toEqual({
+        done: false,
+        value: { phase: "one" },
+      });
+      const pull = iterator.next().catch((error) => error);
+      await until(() => runtime.status().activeSse === 1, "the server stream to register");
+
+      // A real procedure held open on the server at the same moment.
+      const held = client.procedure("tools.hold", {}).catch((error) => error);
+      await withDeadline(procedureStarted.promise, "the held procedure to start");
+
+      port!.suspend();
+      expectSuspensionOutcome(await withDeadline(pull, "the marked stream settlement"), {
+        code: "unavailable",
+        message: "SSE stream was interrupted by suspension",
+        resource: "sse",
+      });
+      expectSuspensionOutcome(await withDeadline(held, "the marked procedure settlement"), {
+        code: "indeterminate",
+        message: "procedure completion is unknown",
+        resource: "operation",
+      });
+      // Cancellation reached the source iterator on the server, and the
+      // server released the stream's acknowledgement state.
+      await withDeadline(holdReleased.promise, "the handler finally block");
+      await until(() => runtime.status().activeSse === 0, "the server stream to settle");
+      expect(await iterator.next()).toEqual({ done: true, value: undefined });
+
+      // The held procedure completing on the server after settlement is inert.
+      procedureGate.resolve(undefined);
+      await Bun.sleep(10);
+
+      // Activation restarts nothing, and fresh work flows normally.
+      const dispatched = requests.length;
+      port!.resume();
+      await Bun.sleep(10);
+      expect(requests.length).toBe(dispatched);
+      const fresh = client.sse<Record<never, never>, { tick: number }>("stream.ticks", {})[
+        Symbol.asyncIterator
+      ]();
+      expect(await withDeadline(fresh.next(), "the fresh stream's chunk")).toEqual({
+        done: false,
+        value: { tick: 0 },
+      });
+      await fresh.return(undefined);
+      await until(() => runtime.status().activeSse === 0, "the fresh stream to settle");
+    } finally {
+      client.close();
+      await server.drain();
+      engine.close("clean");
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
