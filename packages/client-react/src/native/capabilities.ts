@@ -1,0 +1,58 @@
+import { fetch as expoFetch, type FetchRequestInit } from "expo/fetch";
+import { getRandomValues } from "expo-crypto";
+import type { DbzzFetch, DbzzWebSocket, DbzzWebSocketFactory } from "@dbzz/client";
+import type { DbzzProviderConfig } from "../provider.tsx";
+
+/**
+ * Expo implementations for the dbzz client capability seams. This module is
+ * the only one that imports Expo packages, and it is reachable only from the
+ * `react-native` conditional entry — browser bundles never resolve it.
+ *
+ * `expo` and `expo-crypto` are optional peers at the manifest level (npm
+ * cannot express a platform-conditional requirement), but they are mandatory
+ * on native: when they are missing, Metro fails this module's imports at
+ * bundle time — a clear resolution error, never a late transport failure.
+ */
+
+// The named `expo/fetch` export, not the React Native global: it is the
+// implementation with true byte `ReadableStream` response bodies, which dbzz
+// procedures and SSE acknowledgement depend on (stock RN fetch only buffers
+// whole responses). Importing it by name stays correct even when the
+// application opts its global fetch back to the stock implementation. The
+// client only ever passes `method`/`headers`/`body`/`signal` — all inside
+// Expo's accepted init shape — and consumes the WHATWG response subset
+// (`ok`, `status`, `body` streaming, `json`) that `FetchResponse` implements,
+// so the two narrowing casts below are sound.
+const nativeFetch: DbzzFetch = (url, init) =>
+  expoFetch(url, init as FetchRequestInit) as unknown as Promise<Response>;
+
+// UUIDv7 session and mutation identities need cryptographic randomness, and
+// Hermes has no Web Crypto global. Expo Crypto is the platform source; the
+// [0, 1) construction matches the client's own SYSTEM_RANDOM exactly. Never
+// Math.random — mutation replay identity must not be guessable or collide.
+const nativeRandom = (): number => {
+  const value = new Uint32Array(1);
+  getRandomValues(value);
+  return value[0]! / 0x1_0000_0000;
+};
+
+// React Native's global WebSocket is the platform transport (a documented RN
+// networking API backed by native sockets); Expo has no separate named
+// WebSocket module. It is injected explicitly so the native choice is pinned
+// here rather than inherited from the client's browser-oriented default.
+const nativeCreateWebSocket: DbzzWebSocketFactory = (url) =>
+  new WebSocket(url) as unknown as DbzzWebSocket;
+
+/**
+ * Default the capability seams to the Expo implementations. Spread order
+ * mirrors the base client's `options.x ?? SYSTEM_X` defaulting: explicitly
+ * configured capabilities override the native ones.
+ */
+export function withExpoCapabilities(config: DbzzProviderConfig): DbzzProviderConfig {
+  return {
+    fetch: nativeFetch,
+    random: nativeRandom,
+    createWebSocket: nativeCreateWebSocket,
+    ...config,
+  };
+}
