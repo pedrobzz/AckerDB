@@ -9,11 +9,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dbzz/server": "link:@dbzz/server",
+    "@dbzz/server": "0.2.0",
     "@demo/dbzz-codegen": "workspace:*"
   },
   "devDependencies": {
-    "@dbzz/cli": "link:@dbzz/cli",
+    "@dbzz/cli": "0.2.0",
     "@types/bun": "^1.2.0",
     "typescript": "^5.9.0"
   }
