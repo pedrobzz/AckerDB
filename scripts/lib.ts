@@ -34,9 +34,14 @@ export function fail(message: string): never {
   process.exit(1);
 }
 
-// All 4 packages move in lockstep — return the one synced version or fail loudly.
-export function syncedVersion(read: (pkg: string) => string): string {
-  const parsed = PACKAGES.map((pkg) => {
+// The supplied release package set moves in lockstep; callers normally use all
+// published packages, while the merge guard may inspect an older pre-addition set.
+export function syncedVersion(
+  read: (pkg: string) => string,
+  packages: readonly string[] = PACKAGES,
+): string {
+  if (packages.length === 0) fail("release package set cannot be empty");
+  const parsed = packages.map((pkg) => {
     const json = JSON.parse(read(pkg));
     if (typeof json.version !== "string") fail(`no "version" field in ${pkgJsonPath(pkg)}`);
     return { pkg, json, version: json.version as string };
@@ -45,7 +50,7 @@ export function syncedVersion(read: (pkg: string) => string): string {
   if (parsed.some((p) => p.version !== version)) {
     fail(
       `package versions are out of sync: ${parsed.map((p) => `${p.pkg}=${p.version}`).join(" ")}\n` +
-        `  Fix them to a single version (bun run bump always writes all ${PACKAGES.length} together).`,
+        `  Fix them to a single version (bun run bump writes the complete release set together).`,
     );
   }
   // Inter-deps must stay pinned to the lockstep version: bun publish rewrites
