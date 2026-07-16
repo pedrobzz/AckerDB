@@ -13,6 +13,7 @@
     "server:start": "bun run --cwd app/server start",
     "codegen": "dbz codegen app/server",
     "design:dev": "bun run --cwd app/design dev",
+    "seed": "bun scripts/seed.ts",
     "smoke": "bun scripts/smoke.ts",
     "typecheck": "bun run codegen && tsc -p scripts/tsconfig.json && bun run --cwd app/server typecheck && bun run --cwd packages/dbzz-codegen typecheck && bun run --cwd app/admin-panel typecheck && bun run --cwd app/design typecheck"
   },

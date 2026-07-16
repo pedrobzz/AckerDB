@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "@dbzz/server": "0.2.0",
-    "@demo/dbzz-codegen": "workspace:*"
+    "@demo/dbzz-codegen": "workspace:*",
+    "jose": "^6.1.3"
   },
   "devDependencies": {
     "@dbzz/cli": "0.2.0",

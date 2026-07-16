@@ -1,0 +1,90 @@
+import { SignJWT, jwtVerify } from "jose";
+import {
+  DbzzError,
+  type VerifiedUserCredential,
+  type WorkloadPrincipal,
+} from "@dbzz/server";
+import { cleanName, normalizeEmail } from "./domain.ts";
+
+const ISSUER = "https://demo.dbzz.local/";
+const AUDIENCE = "dbzz-demo";
+const GUEST_TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
+const secret = new TextEncoder().encode(
+  process.env.DBZZ_DEMO_SIGNING_SECRET ??
+    "dbzz-demo-local-signing-secret-change-me",
+);
+
+export interface GuestTokenResult {
+  token: string;
+  expiresAt: number;
+  name: string;
+  email: string;
+}
+
+export async function issueGuestToken(input: {
+  name: string;
+  email: string;
+}): Promise<GuestTokenResult> {
+  const name = cleanName(input.name);
+  const email = normalizeEmail(input.email);
+  const nowSeconds = Math.floor(Date.now() / 1_000);
+  const expiresAtSeconds = nowSeconds + GUEST_TOKEN_LIFETIME_SECONDS;
+  const token = await new SignJWT({ role: "guest", email, name })
+    .setProtectedHeader({ alg: "HS256", typ: "JWT" })
+    .setIssuer(ISSUER)
+    .setAudience(AUDIENCE)
+    .setSubject(`guest:${email}`)
+    .setIssuedAt(nowSeconds)
+    .setExpirationTime(expiresAtSeconds)
+    .setJti(crypto.randomUUID())
+    .sign(secret);
+  return { token, expiresAt: expiresAtSeconds * 1_000, name, email };
+}
+
+export async function verifyDemoCredential(
+  credential: string,
+): Promise<VerifiedUserCredential | WorkloadPrincipal> {
+  const staffToken = process.env.DBZZ_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
+  if (credential === staffToken) {
+    return {
+      kind: "workload",
+      issuer: ISSUER,
+      subject: "staff:amelia",
+      claims: { role: "staff", name: "Amelia Morgan" },
+      expiresAt: Date.now() + 24 * 60 * 60 * 1_000,
+      tokenId: null,
+    };
+  }
+
+  try {
+    const { payload } = await jwtVerify(credential, secret, {
+      algorithms: ["HS256"],
+      issuer: ISSUER,
+      audience: AUDIENCE,
+      typ: "JWT",
+    });
+    if (
+      payload.role !== "guest" ||
+      typeof payload.sub !== "string" ||
+      !payload.sub.startsWith("guest:") ||
+      typeof payload.email !== "string" ||
+      typeof payload.name !== "string" ||
+      typeof payload.exp !== "number"
+    ) {
+      throw new Error("invalid guest claims");
+    }
+    const email = normalizeEmail(payload.email);
+    if (payload.sub !== `guest:${email}`)
+      throw new Error("subject does not match email");
+    return {
+      kind: "user",
+      issuer: ISSUER,
+      subject: payload.sub,
+      claims: { role: "guest", email, name: cleanName(payload.name) },
+      expiresAt: payload.exp * 1_000,
+      tokenId: typeof payload.jti === "string" ? payload.jti : null,
+    };
+  } catch {
+    throw new DbzzError("unauthenticated", "Invalid demo credential");
+  }
+}
