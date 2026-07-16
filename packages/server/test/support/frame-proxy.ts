@@ -106,6 +106,12 @@ export interface HeldServerFrame {
   drop(): void;
 }
 
+export interface HeldClientFrame {
+  readonly frame: ProxiedClientFrame;
+  forward(): void;
+  drop(): void;
+}
+
 interface FrameCut<Message, Frame> {
   readonly predicate: (message: Message) => boolean;
   readonly phase: "before" | "after";
@@ -115,6 +121,11 @@ interface FrameCut<Message, Frame> {
 interface FrameHold {
   readonly predicate: (message: ServerMessage) => boolean;
   readonly matched: PromiseWithResolvers<HeldServerFrame>;
+}
+
+interface ClientFrameHold {
+  readonly predicate: (message: ClientMessage) => boolean;
+  readonly matched: PromiseWithResolvers<HeldClientFrame>;
 }
 
 interface Pair {
@@ -130,6 +141,7 @@ interface Pair {
   serverClosed: boolean;
   faulted: boolean;
   heldServer?: { readonly frame: ProxiedServerFrame; readonly bytes: Buffer };
+  heldClient?: { readonly frame: ProxiedClientFrame; readonly bytes: Buffer };
 }
 
 /**
@@ -150,6 +162,7 @@ export class FrameProxy {
   private clientCut?: FrameCut<ClientMessage, ProxiedClientFrame>;
   private serverCut?: FrameCut<ServerMessage, ProxiedServerFrame>;
   private serverHold?: FrameHold;
+  private clientHold?: ClientFrameHold;
   private failure: unknown;
   private _port = 0;
 
@@ -193,10 +206,23 @@ export class FrameProxy {
     predicate: (message: ClientMessage) => boolean,
     phase: "before" | "after" = "before",
   ): Promise<ProxiedClientFrame> {
-    if (this.clientCut !== undefined) throw new Error("a client-frame cut is already armed");
+    if (this.clientCut !== undefined || this.clientHold !== undefined) {
+      throw new Error("a client-frame fault is already armed");
+    }
     const matched = Promise.withResolvers<ProxiedClientFrame>();
     this.clientCut = { predicate, phase, matched };
     return withDeadline(matched.promise, "client-frame cut");
+  }
+
+  holdNextClientFrame(
+    predicate: (message: ClientMessage) => boolean,
+  ): Promise<HeldClientFrame> {
+    if (this.clientCut !== undefined || this.clientHold !== undefined) {
+      throw new Error("a client-frame fault is already armed");
+    }
+    const matched = Promise.withResolvers<HeldClientFrame>();
+    this.clientHold = { predicate, matched };
+    return withDeadline(matched.promise, "held client frame");
   }
 
   cutNextServerFrame(
@@ -276,9 +302,11 @@ export class FrameProxy {
     this.clientCut?.matched.reject(error);
     this.serverCut?.matched.reject(error);
     this.serverHold?.matched.reject(error);
+    this.clientHold?.matched.reject(error);
     this.clientCut = undefined;
     this.serverCut = undefined;
     this.serverHold = undefined;
+    this.clientHold = undefined;
     const active = [...this.pairs.values()];
     for (const pair of active) this.drop(pair);
     try {
@@ -363,7 +391,7 @@ export class FrameProxy {
 
   private drainClientFrames(pair: Pair): void {
     try {
-      while (!pair.faulted) {
+      while (!pair.faulted && pair.heldClient === undefined) {
         const parsed = readWebSocketFrame(pair.clientBuffer);
         if (parsed === undefined) return;
         pair.clientBuffer = pair.clientBuffer.subarray(parsed.bytes.byteLength);
@@ -385,6 +413,21 @@ export class FrameProxy {
           receivedBytes: parsed.bytes,
         };
         this.clientFrames.push(frame);
+
+        const hold = this.clientHold;
+        if (hold !== undefined && hold.predicate(message)) {
+          this.clientHold = undefined;
+          pair.heldClient = { frame, bytes: parsed.bytes };
+          const held: HeldClientFrame = {
+            frame,
+            forward: () => this.releaseHeldClient(pair, true),
+            drop: () => this.releaseHeldClient(pair, false),
+          };
+          hold.matched.resolve(held);
+          this.changed();
+          return;
+        }
+
         const cut = this.clientCut;
         if (cut !== undefined && cut.predicate(message)) {
           this.clientCut = undefined;
@@ -506,6 +549,20 @@ export class FrameProxy {
     this.drainServerFrames(pair);
   }
 
+  private releaseHeldClient(pair: Pair, forward: boolean): void {
+    const held = pair.heldClient;
+    if (held === undefined) throw new Error("client frame is no longer held");
+    pair.heldClient = undefined;
+    if (!forward) {
+      this.drop(pair);
+      return;
+    }
+    held.frame.forwardedBytes = Buffer.from(held.bytes);
+    pair.upstream.write(held.bytes);
+    this.changed();
+    this.drainClientFrames(pair);
+  }
+
   private drop(pair: Pair): void {
     if (pair.faulted && pair.downstream.destroyed && pair.upstream.destroyed) return;
     pair.faulted = true;
@@ -518,6 +575,7 @@ export class FrameProxy {
     this.clientCut?.matched.reject(error);
     this.serverCut?.matched.reject(error);
     this.serverHold?.matched.reject(error);
+    this.clientHold?.matched.reject(error);
     this.drop(pair);
   }
 
