@@ -140,6 +140,9 @@ function registry(): Registry {
           }
         },
       }),
+      // Holds mid-generation inside a streaming tool invocation, so
+      // backgrounding lands in the middle of an AI tool flow — the chunk
+      // family the settlement path must be indifferent to.
       holdMidStream: sseProcedure({
         access: "public",
         args: standardArgs,
@@ -151,6 +154,9 @@ function registry(): Registry {
             yield { type: "start" };
             yield { type: "text-start", id: "h1" };
             yield { type: "text-delta", id: "h1", delta: "partial" };
+            yield { type: "text-end", id: "h1" };
+            yield { type: "tool-input-start", toolCallId: "call1", toolName: "search" };
+            yield { type: "tool-input-delta", toolCallId: "call1", inputTextDelta: '{"q":' };
             await waitForAbort(ctx.abortSignal);
           } finally {
             released.resolve(undefined);
@@ -321,15 +327,17 @@ describe("suspension settlement through the native entry against a real server",
     );
     await until(() => phase === "ready" && queryText === "fresh:one", "ready with fresh data");
 
-    // A generation is mid-stream while the query is live.
+    // A generation is mid-stream — parked inside a streaming tool
+    // invocation — while the query is live.
     void chat!.sendMessage({ text: "go" });
     await until(() => {
       const last = chat!.messages.at(-1);
       return (
         last?.role === "assistant" &&
-        last.parts.some((part) => part.type === "text" && part.text === "partial")
+        last.parts.some((part) => part.type === "text" && part.text === "partial") &&
+        last.parts.some((part) => part.type === "tool-search")
       );
-    }, "the partial text to stream");
+    }, "the partial text and tool flow to stream");
     expect(log.filter((entry) => entry === "sse")).toEqual(["sse"]);
 
     setAppState("background");
