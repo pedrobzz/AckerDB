@@ -2409,6 +2409,75 @@ describe("DbzzClient authentication state", () => {
     client.close();
   });
 
+  test("a same-value refresh between hello and welcome resolves without a second verification", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+    // The refresh presents the value the in-flight hello already carries; the
+    // welcome verifies that value once for both.
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-a" });
+    socket.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 2,
+      principal: "user",
+    });
+    expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await refresh).toEqual({ authEpoch: 2, principal: "user" });
+    client.close();
+  });
+
+  test("an A-B-A refresh interleaving matches the hello by value and supersedes the detour", async () => {
+    const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
+    client.connect();
+    const socket = sockets[0]!;
+    socket.open();
+    const detour = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
+    const back = client.refreshCredential({ kind: "bearer", token: "token-a" });
+    socket.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 1,
+      principal: "user",
+    });
+    expect(await detour).toMatchObject({ code: "auth_stale" });
+    // The surviving attempt's value is what the hello presented, so the
+    // welcome resolves it without an auth frame.
+    expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
+    expect(await back).toEqual({ authEpoch: 1, principal: "user" });
+    client.close();
+  });
+
+  test("a refresh whose auth frame exceeds the client limit rejects without installing an attempt", () => {
+    const { client, clock, sockets } = harness({ limits: { maxFrameBytes: 256 } });
+    client.connect();
+    welcome(client, sockets[0]!);
+    const confirmed = client.currentAuthenticationState;
+    const timers = clock.taskCount;
+
+    let caught: unknown;
+    try {
+      client.refreshCredential({ kind: "bearer", token: "t".repeat(300) });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(DbzzClientError);
+    expect(caught).toMatchObject({ code: "overloaded", resource: "connection" });
+    // Nothing was installed: no attempt, no expiry timer, no state change,
+    // and operations still flow on the untouched session.
+    expect(clock.taskCount).toBe(timers);
+    expect(client.currentAuthenticationState).toBe(confirmed);
+    expect(client.currentConnectionState.phase).toBe("ready");
+    const query = client.query("todos.list", {}).catch(() => {});
+    expect(sockets[0]!.frames().some((frame) => frame.t === "q")).toBe(true);
+    void query;
+    client.close();
+    expect(clock.taskCount).toBe(0);
+  });
+
   test("a refresh in flight across a reconnect resolves from the replayed hello's welcome", async () => {
     const { client, clock, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
     client.connect();

@@ -468,7 +468,7 @@ export class DbzzClient {
   private readonly activeFetches = new Set<AbortController>();
 
   private credential: Credential;
-  /** The exact credential object the current connection's hello presented. */
+  /** The credential the current connection's hello presented. */
   private helloCredential?: Credential;
   private socket: DbzzWebSocket | null = null;
   private socketOpen = false;
@@ -577,17 +577,24 @@ export class DbzzClient {
       throw localError("unavailable", "client stopped after a protocol failure", "connection");
     }
     const nextCredential = freezeCredential(credential);
+    if (this.authAttempt && sameCredential(this.authAttempt.credential, nextCredential)) {
+      return this.authAttempt.result;
+    }
+    const id = this.allocateId();
+    // The auth frame is validated against the wire and frame limits before
+    // any state changes, so an unencodable credential rejects here instead of
+    // installing an attempt whose frame can never be sent.
+    this.frameBytes(
+      this.encodeClient({ v: PROTOCOL_VERSION, t: "auth", attemptId: id, credential: nextCredential }),
+      "connection",
+    );
     if (this.authAttempt) {
-      if (sameCredential(this.authAttempt.credential, nextCredential)) {
-        return this.authAttempt.result;
-      }
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.reject(localError("auth_stale", "authentication attempt was superseded", "connection"));
     }
     this.credential = nextCredential;
     this.authBlocked = false;
     this.blockingError = undefined;
-    const id = this.allocateId();
     let resolve!: (authentication: DbzzAuthentication) => void;
     let reject!: (error: DbzzClientError) => void;
     const result = new Promise<DbzzAuthentication>((promiseResolve, promiseReject) => {
@@ -1245,11 +1252,14 @@ export class DbzzClient {
         this.everReady = true;
         this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
         if (this.authAttempt) {
-          // A hello that presented this attempt's exact credential was just
+          // A hello that presented this attempt's credential value was just
           // verified by this welcome; a second auth round-trip would re-verify
           // the same token and retire the epoch it created. Only a credential
           // that changed after the hello still needs its own transition.
-          if (this.authAttempt.credential === this.helloCredential) {
+          if (
+            this.helloCredential !== undefined &&
+            sameCredential(this.authAttempt.credential, this.helloCredential)
+          ) {
             this.resolveAuth(this.authAttempt, this.authentication);
           } else {
             this.sendAuth(this.authAttempt);
