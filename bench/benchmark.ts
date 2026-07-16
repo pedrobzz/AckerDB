@@ -281,6 +281,16 @@ export function benchmarkConfigFromEnv(): BenchmarkConfig {
   };
 }
 
+/**
+ * Discrete offered fixed-rate update count for one measurement window. The
+ * workload emits exactly this many updates and acceptance requires exactly
+ * this many back, so the offered-work contract has a single source of truth
+ * even when durationMs is not a whole number of seconds.
+ */
+export function offeredFixedRateUpdates(durationMs: number, updatesPerSec: number): number {
+  return Math.max(1, Math.floor((durationMs / 1_000) * updatesPerSec));
+}
+
 export function subscriptionCapacitySlots(
   config: BenchmarkConfig["subscriptions"],
   pattern: SubscriptionPattern,

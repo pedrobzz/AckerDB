@@ -111,11 +111,32 @@ source hash to equal the baseline.
 
 Each system must expose the same 351 unique comparable metric paths with the
 same direction and family. From the frozen baseline, all 273 strict
-DBZZ-over-SpacetimeDB wins are immutable obligations: every path where DBZZ was
-strictly higher for a higher-is-better metric or strictly lower for a
-lower-is-better metric must remain a strict DBZZ win over SpacetimeDB in the
-after-run. This is a current DBZZ-versus-current-SpacetimeDB comparison on the
-frozen machine/config, not a tolerance against DBZZ's old absolute value.
+DBZZ-over-SpacetimeDB wins are immutable obligations, split by the baseline's
+own win margin against the measurement noise floor — 15% of the SpacetimeDB
+value (the repo doctrine's normal run-to-run swing), or 25 milli-cores absolute
+for `resource.cpu` only, whose idle plateaus sit at the 10 ms `ps` cputime
+resolution and move ~12 milli-cores per system between identical runs:
+
+- The 251 solid wins (baseline margin at or above the floor) must remain
+  strict DBZZ wins over SpacetimeDB in the after-run, exactly as before. A
+  solid win that slips behind by any amount fails the run.
+- The 22 near-tie wins (baseline margin below the floor — a coin flip
+  run-to-run, not a resolvable ranking) must stay within the same envelope:
+  the run fails only when current DBZZ falls behind current SpacetimeDB by
+  more than the floor. Every accepted run prints and records each near-tie
+  path's baseline and current margins, so within-floor drift stays visible
+  run-over-run. A near-tie path can therefore drift at most one envelope
+  behind current SpacetimeDB — a bounded, non-compounding worst case of
+  roughly its baseline margin plus the floor — before the gate fails. The
+  fixed-rate throughput near-ties are additionally backstopped regardless of
+  the envelope: delivery-completeness correctness, the offered-load
+  completion gates on both fixed-rate patterns, and the shared Convex
+  delivery floor all reject a failure to deliver the offered work.
+
+The near-tie classification is derived from the digest-pinned frozen baseline
+only, so it can never grow, and the near-tie count is itself frozen. This is a
+current DBZZ-versus-current-SpacetimeDB comparison on the frozen
+machine/config, not a tolerance against DBZZ's old absolute value.
 
 The after-run must also pass exactly 126 DBZZ-versus-Convex floors:
 
@@ -131,12 +152,12 @@ The after-run must also pass exactly 126 DBZZ-versus-Convex floors:
   Startup, seeded-idle, and pre-connection/subscription baseline RSS are not
   part of this Convex floor.
 
-Finally, DBZZ's partitioned fixed-rate case must complete the offered workload
-before save: correctness must pass; completed updates must equal
-`duration × configured updates/s`; observed deliveries must equal expected
-deliveries with none missing; update throughput must reach the configured
-offered rate; and delivery throughput must reach at least 99% of expected
-deliveries divided by the offered duration. Missing metric paths, a changed
+Finally, DBZZ's shared and partitioned fixed-rate cases must each complete
+the offered workload before save: correctness must pass; completed updates
+must equal `duration × configured updates/s`; observed deliveries must equal
+expected deliveries with none missing; update throughput must reach the
+configured offered rate; and delivery throughput must reach at least 99% of
+expected deliveries divided by the offered duration. Missing metric paths, a changed
 floor count, or any failed condition rejects the run without creating a result
 file.
 

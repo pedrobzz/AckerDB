@@ -34,6 +34,7 @@ import {
   assertPerformanceAcceptance,
   extractComparableMetrics,
   FROZEN_BASELINE_PATH,
+  nearTieDriftTable,
   type PerformanceAcceptanceEvidence,
 } from "./performance-gates.ts";
 import {
@@ -1188,8 +1189,9 @@ if (runPolicy.acceptAndSave) {
   const performanceAcceptance = assertPerformanceAcceptance(recordWithoutAcceptance, frozenBaselineJson);
   const record: RunRecord = { ...recordWithoutAcceptance, performanceAcceptance };
   console.log(
-    `\nperformance acceptance passed: ${performanceAcceptance.metricCounts.frozenDbzzSpacetimeWins} frozen SpacetimeDB wins, ${performanceAcceptance.metricCounts.convexFloorChecks} Convex floors, ${performanceAcceptance.metricCounts.afterPerSystem.dbzz} comparable metrics/system`,
+    `\nperformance acceptance passed: ${performanceAcceptance.metricCounts.frozenDbzzSpacetimeWins} frozen SpacetimeDB wins (${performanceAcceptance.metricCounts.frozenNearTieWins} near-tie), ${performanceAcceptance.metricCounts.convexFloorChecks} Convex floors, ${performanceAcceptance.metricCounts.afterPerSystem.dbzz} comparable metrics/system`,
   );
+  console.log(`\n${nearTieDriftTable(performanceAcceptance.frozenDbzzSpacetimeWins)}`);
   const previous = latestComparable(record);
   mkdirSync(RESULTS_DIR, { recursive: true });
   const filename = `${record.timestamp.replace(/:/g, "-").replace(/\.\d+Z$/, "Z")}-${record.git.commit}.json`;

@@ -16,6 +16,7 @@ import {
   emitBenchEvent,
   fixedPayload,
   mix,
+  offeredFixedRateUpdates,
   searchChecksum,
   subscriptionCapacitySlots,
   type AccountState,
@@ -503,7 +504,7 @@ async function runSubscriptionCase(
     const phaseStartedAt = phaseStart(phaseId);
     measuring = true;
     const rate = pattern === "shared" ? config.subscriptions.sharedUpdatesPerSec : config.subscriptions.partitionedUpdatesPerSec;
-    const updateCount = Math.max(1, Math.floor((config.subscriptions.durationMs / 1_000) * rate));
+    const updateCount = offeredFixedRateUpdates(config.subscriptions.durationMs, rate);
     const ackLatencies: number[] = [];
     const probes: PendingDelivery[] = [];
     for (let update = 0; update < updateCount; update++) {
