@@ -77,6 +77,18 @@ describe("withExpoCapabilities", () => {
     expect(composed.random).toBe(explicitRandom);
   });
 
+  test("own properties holding undefined still receive the Expo defaults", () => {
+    const composed = withExpoCapabilities({
+      ...config,
+      fetch: undefined,
+      random: undefined,
+      createWebSocket: undefined,
+    });
+    expect(typeof composed.fetch).toBe("function");
+    expect(composed.random!()).toBe(0.5);
+    expect(typeof composed.createWebSocket).toBe("function");
+  });
+
   test("does not disturb the configuration values that key the provider lifetime", () => {
     const composed = withExpoCapabilities(config);
     expect(composed.url).toBe(config.url);

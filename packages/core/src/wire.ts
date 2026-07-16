@@ -21,18 +21,33 @@ export class WireError extends Error {}
 //
 // Bytes travel as standard padded base64 (RFC 4648 alphabet). Both directions
 // only ever see strings this encoder produced, so the decoder is strict: it
-// requires canonical 4-char groups with at most two trailing `=` and rejects
-// every character outside the alphabet (including whitespace). Corruption
-// surfaces as a WireError instead of being silently skipped.
+// requires canonical 4-char groups with at most two trailing `=`, zero
+// trailing bits, and rejects every character outside the alphabet (including
+// whitespace). Corruption surfaces as a WireError, never a silent skip.
 //
-// Encoding is the pair-table technique: a lazily built table maps every
-// 12-bit value to its two-character base64 string, so each 3-byte group costs
-// two table reads and one string append. Decoding writes straight into the
-// exact-size output array. The tables are built on the first byte value seen;
-// pure-JSON traffic never pays for them.
+// Two implementations with identical observable behavior:
+//
+//   - Engines with the ES `Uint8Array` base64 API (Bun/JSC, V8) use the
+//     native `toBase64`/`fromBase64({ lastChunkHandling: "strict" })` — this
+//     is the server hot path, and it matches the removed Buffer conversion's
+//     throughput. Native strict decoding still skips ASCII whitespace, which
+//     this codec forbids; the shared length pre-checks plus the decoded
+//     length assertion below close that gap without rescanning the string.
+//   - Engines without it (React Native's Hermes) fall back to pure
+//     ECMAScript: encoding via a lazily built table mapping every 12-bit
+//     value to its two base64 characters (two reads and one append per three
+//     bytes), decoding straight into the exact-size output array. The tables
+//     are built on the first byte value seen; pure-JSON traffic never pays
+//     for them.
 
 const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const BASE64_PAD = 0x3d; // "="
+
+// Feature-detected once at load; both members are from the same proposal, so
+// they are either both present or both absent.
+const NATIVE_BASE64 =
+  typeof Uint8Array.prototype.toBase64 === "function" &&
+  typeof Uint8Array.fromBase64 === "function";
 
 interface Base64Tables {
   /** 12-bit value -> its two base64 characters. */
@@ -55,6 +70,9 @@ function buildBase64Tables(): Base64Tables {
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
+  // Standard padded base64 is the native default, byte-identical to the
+  // fallback below.
+  if (NATIVE_BASE64) return bytes.toBase64();
   const { pairs } = base64Tables ?? buildBase64Tables();
   const length = bytes.length;
   const full = length - (length % 3);
@@ -83,14 +101,28 @@ function base64Code(codes: Int8Array, text: string, index: number): number {
 }
 
 function base64ToBytes(text: string): Uint8Array {
-  const { codes } = base64Tables ?? buildBase64Tables();
   const length = text.length;
   if (length % 4 !== 0) throw new WireError("invalid base64 in wire bytes value");
   let dataEnd = length;
   if (length > 0 && text.charCodeAt(length - 1) === BASE64_PAD) {
     dataEnd -= text.charCodeAt(length - 2) === BASE64_PAD ? 2 : 1;
   }
-  const out = new Uint8Array((length >> 2) * 3 - (length - dataEnd));
+  const byteLength = (length >> 2) * 3 - (length - dataEnd);
+  if (NATIVE_BASE64) {
+    let out: Uint8Array;
+    try {
+      out = Uint8Array.fromBase64(text, { lastChunkHandling: "strict" });
+    } catch {
+      throw new WireError("invalid base64 in wire bytes value");
+    }
+    // Native strict decoding still skips ASCII whitespace; any skipped
+    // character makes the decoded length disagree with the length computed
+    // from the raw string above, so this assertion closes the gap.
+    if (out.length !== byteLength) throw new WireError("invalid base64 in wire bytes value");
+    return out;
+  }
+  const { codes } = base64Tables ?? buildBase64Tables();
+  const out = new Uint8Array(byteLength);
   let outIndex = 0;
   let i = 0;
   const fullEnd = dataEnd & ~3;

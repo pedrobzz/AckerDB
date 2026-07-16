@@ -44,15 +44,17 @@ const nativeCreateWebSocket: DbzzWebSocketFactory = (url) =>
   new WebSocket(url) as unknown as DbzzWebSocket;
 
 /**
- * Default the capability seams to the Expo implementations. Spread order
- * mirrors the base client's `options.x ?? SYSTEM_X` defaulting: explicitly
- * configured capabilities override the native ones.
+ * Default the capability seams to the Expo implementations, mirroring the
+ * base client's `options.x ?? SYSTEM_X` defaulting: an explicitly configured
+ * capability wins, but an own property holding `undefined` (a common
+ * config-builder shape) still receives the Expo default — the client's
+ * browser-oriented system fallbacks must never engage on native.
  */
 export function withExpoCapabilities(config: DbzzProviderConfig): DbzzProviderConfig {
   return {
-    fetch: nativeFetch,
-    random: nativeRandom,
-    createWebSocket: nativeCreateWebSocket,
     ...config,
+    fetch: config.fetch ?? nativeFetch,
+    random: config.random ?? nativeRandom,
+    createWebSocket: config.createWebSocket ?? nativeCreateWebSocket,
   };
 }
