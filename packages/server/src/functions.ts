@@ -40,6 +40,8 @@ export interface ProcedureCtx<S extends Schema = Schema> extends InvocationConte
   readonly auth: AuthCtx;
   /** Fires when the request, credential lease, or Runtime shuts down. */
   readonly abortSignal: AbortSignal;
+  /** Prove and attach another user account using its raw bearer token, not an Authorization header. */
+  linkAccount(rawBearerToken: string): Promise<void>;
   /** Open a transaction: atomic, consistent, no external calls inside. */
   tx<T>(fn: (tx: TxCtx<S>) => T | Promise<T>): Promise<T>;
 }

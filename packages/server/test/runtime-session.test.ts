@@ -520,7 +520,15 @@ async function reconnectTransitionEvidence(
       }),
     },
   });
-  const runtime = new Runtime({ engine, registry, limits, telemetry: false, now: () => NOW });
+  const verifier = new UserVerifier();
+  const runtime = new Runtime({
+    engine,
+    registry,
+    verifier,
+    limits,
+    telemetry: false,
+    now: () => NOW,
+  });
   const writerSink = new DeterministicSink();
   const writer = new Session({
     runtime,
@@ -528,7 +536,6 @@ async function reconnectTransitionEvidence(
     source: TEST_SOURCE,
     clock: new FixedClock(),
   });
-  const verifier = new UserVerifier();
   const clock = new ReconnectClock();
   const sockets: SessionSocket[] = [];
   const client = new DbzzClient({
@@ -544,7 +551,6 @@ async function reconnectTransitionEvidence(
         runtime,
         sink: new SessionSocketSink(socket, true),
         source: TEST_SOURCE,
-        verifier,
         clock: new FixedClock(),
       });
       sockets.push(socket);
@@ -797,13 +803,18 @@ describe("Session + Runtime integration", () => {
         }),
       },
     });
-    const runtime = new Runtime({ engine, registry, telemetry: false, now: () => NOW });
+    const runtime = new Runtime({
+      engine,
+      registry,
+      verifier: new UserVerifier(),
+      telemetry: false,
+      now: () => NOW,
+    });
     const sink = new DeterministicSink();
     const session = new Session({
       runtime,
       sink,
       source: TEST_SOURCE,
-      verifier: new UserVerifier(),
       clock: new FixedClock(),
     });
 
@@ -958,7 +969,13 @@ describe("Session + Runtime integration", () => {
         }),
       },
     });
-    const runtime = new Runtime({ engine, registry, telemetry: false, now: () => NOW });
+    const runtime = new Runtime({
+      engine,
+      registry,
+      verifier: new UserVerifier(),
+      telemetry: false,
+      now: () => NOW,
+    });
     const clock = new FixedClock();
     let socket!: SessionSocket;
     const client = new DbzzClient({
@@ -973,7 +990,6 @@ describe("Session + Runtime integration", () => {
           runtime,
           sink: new SessionSocketSink(socket),
           source: TEST_SOURCE,
-          verifier: new UserVerifier(),
           clock,
         });
         queueMicrotask(() => socket.open());
@@ -1079,13 +1095,19 @@ describe("Session + Runtime integration", () => {
         }),
       },
     });
-    const runtime = new Runtime({ engine, registry, telemetry: false, now: () => NOW });
     const verifier = new UserVerifier();
+    const runtime = new Runtime({
+      engine,
+      registry,
+      verifier,
+      telemetry: false,
+      now: () => NOW,
+    });
     const slowSink = new DeterministicSink();
     const targetSink = new DeterministicSink();
     const callerSink = new DeterministicSink();
-    const slow = new Session({ runtime, sink: slowSink, source: TEST_SOURCE, verifier, clock: new FixedClock() });
-    const target = new Session({ runtime, sink: targetSink, source: TEST_SOURCE, verifier, clock: new FixedClock() });
+    const slow = new Session({ runtime, sink: slowSink, source: TEST_SOURCE, clock: new FixedClock() });
+    const target = new Session({ runtime, sink: targetSink, source: TEST_SOURCE, clock: new FixedClock() });
     const caller = new Session({ runtime, sink: callerSink, source: TEST_SOURCE, clock: new FixedClock() });
 
     try {

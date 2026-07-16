@@ -373,9 +373,15 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "dbzz-serve-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
-  runtime = new Runtime({ engine, registry: new Registry(functions), limits, telemetry: false });
   verifier = new TestVerifier();
-  server = serve({ runtime, verifier, port: 0 });
+  runtime = new Runtime({
+    engine,
+    registry: new Registry(functions),
+    verifier,
+    limits,
+    telemetry: false,
+  });
+  server = serve({ runtime, port: 0 });
   base = `http://127.0.0.1:${server.port}`;
   requestId = 0;
 });
@@ -464,7 +470,7 @@ function acknowledgeSse(
 
 describe("health and protected status", () => {
   test("owns its port through explicit startup phases and atomically activates one Runtime", async () => {
-    const early = new DbzzServer({ limits, verifier, port: 0 });
+    const early = new DbzzServer({ limits, port: 0 });
     const earlyBase = `http://127.0.0.1:${early.port}`;
     const earlyDir = mkdtempSync(join(tmpdir(), "dbzz-serve-startup-"));
     let earlyEngine: Engine | undefined;
@@ -531,6 +537,7 @@ describe("health and protected status", () => {
       earlyRuntime = new Runtime({
         engine: earlyEngine,
         registry: new Registry(functions),
+        verifier,
         limits,
         telemetry: false,
       });
@@ -606,15 +613,15 @@ describe("health and protected status", () => {
   });
 
   test("validates configured status scope", () => {
-    expect(() => serve({ runtime, verifier, port: 0, statusScope: "" })).toThrow(TypeError);
-    expect(() => serve({ runtime, verifier, port: 0, statusScope: "two scopes" })).toThrow(TypeError);
-    expect(() => serve({ runtime, verifier, port: 0, statusScope: "x".repeat(129) })).toThrow(TypeError);
+    expect(() => serve({ runtime, port: 0, statusScope: "" })).toThrow(TypeError);
+    expect(() => serve({ runtime, port: 0, statusScope: "two scopes" })).toThrow(TypeError);
+    expect(() => serve({ runtime, port: 0, statusScope: "x".repeat(129) })).toThrow(TypeError);
 
     const unsafeRuntime = Object.create(runtime) as Runtime;
     Object.defineProperty(unsafeRuntime, "limits", {
       value: { ...runtime.limits, maxRequestBytes: Number.MAX_SAFE_INTEGER },
     });
-    expect(() => serve({ runtime: unsafeRuntime, verifier, port: 0 })).toThrow(
+    expect(() => serve({ runtime: unsafeRuntime, port: 0 })).toThrow(
       "maxRequestBytes + 1 must be a safe integer",
     );
     expect(() => new DbzzServer({
@@ -843,9 +850,11 @@ describe("Protocol-2 HTTP procedures", () => {
     const fairDirectory = mkdtempSync(join(tmpdir(), "dbzz-http-fairness-"));
     const fairEngine = new Engine(schema, join(fairDirectory, "data.db"));
     reconcile(fairEngine);
+    const fairVerifier = new TestVerifier();
     const fairRuntime = new Runtime({
       engine: fairEngine,
       registry: new Registry(functions),
+      verifier: fairVerifier,
       limits: defineServiceLimits({
         ...limits,
         maxOperationsPerCaller: 1,
@@ -853,8 +862,7 @@ describe("Protocol-2 HTTP procedures", () => {
       }),
       telemetry: false,
     });
-    const fairVerifier = new TestVerifier();
-    const fairServer = serve({ runtime: fairRuntime, verifier: fairVerifier, port: 0 });
+    const fairServer = serve({ runtime: fairRuntime, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const sourceController = new AbortController();
     const sseController = new AbortController();
@@ -1373,10 +1381,11 @@ describe("WebSocket Session transport", () => {
     const fairRuntime = new Runtime({
       engine: fairEngine,
       registry: new Registry(functions),
+      verifier: new TestVerifier(),
       limits: fairLimits,
       telemetry: false,
     });
-    const fairServer = serve({ runtime: fairRuntime, verifier: new TestVerifier(), port: 0 });
+    const fairServer = serve({ runtime: fairRuntime, port: 0 });
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const wsUrl = `ws://127.0.0.1:${fairServer.port}/ws`;
     const clients: WsClient[] = [];

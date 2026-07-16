@@ -48,9 +48,9 @@ responsible for authenticating the credential, validating issuer/audience and
 any deployment-specific claims. It must expose `revocationBound` metadata and
 an invalidation subscription. An invalidation-based verifier must advertise a
 positive finite `deadlineMs` no greater than the configured
-`revocationDeadlineMs`; Session and `DbzzServer` construction validate that
-declaration before a session or HTTP listener opens. Sessions and remote
-credential leases enforce expiry and react immediately to matching callbacks,
+`revocationDeadlineMs`; the Runtime owns the single configured verifier and
+validates that declaration before application traffic is activated. Sessions
+and remote credential leases enforce expiry and react immediately to matching callbacks,
 but DBZZ neither creates nor measures the external invalidation feed or its
 upstream propagation latency. Delivering invalidations within the advertised
 bound remains the verifier's responsibility. `verifyClientCredential` rejects
@@ -73,6 +73,23 @@ selected claims, never from an unverified token body.
 store in application ownership columns. Direct nested query and mutation calls
 inherit the original principal; a nested call cannot replace it with a more
 privileged context.
+
+### Explicit account linking
+
+Applications may opt in to cross-provider continuity by exporting a procedure
+that calls `ctx.linkAccount(rawBearerToken)`. The argument is the second
+account's raw bearer token, not an `Authorization` header. The capability exists
+only on procedure and SSE contexts; query, mutation, and transaction contexts
+cannot invoke it.
+
+DBZZ first verifies the token through the Runtime's same configured verifier,
+with no writer transaction open. It then enters the canonical writer and
+atomically attaches the verified exact `(issuer, subject)` to the current
+user's durable Identity. Linking is idempotent when that account already belongs
+to the same Identity. An account owned by another Identity returns a generic
+conflict without revealing its owner. DBZZ never allocates a new Identity,
+auto-links by mutable claims, merges Identities, or rewrites application rows
+through this primitive.
 
 ## Function access policies
 
@@ -210,7 +227,7 @@ A custom `CredentialVerifier` can instead declare
 optionally subject or token ID. `deadlineMs` must be positive and finite and
 cannot exceed the Session `revocationDeadlineMs` ceiling (5 seconds by default
 and at most); DBZZ rejects a missing, malformed, or over-ceiling advertisement
-before a session or `DbzzServer` listener opens. Matching connected sessions
+before the Runtime is activated. Matching connected sessions
 begin their reserved fail-closed path immediately when the callback fires. The
 advertisement is the verifier's integration contract: the deployment remains
 responsible for the invalidation source and for delivering its callback to

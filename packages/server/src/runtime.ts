@@ -25,9 +25,12 @@ import {
 import {
   ANONYMOUS_PRINCIPAL,
   SYSTEM_PRINCIPAL,
+  verifyUserBearerCredential,
+  type CredentialVerifier,
   type ExternalAccount,
   type Principal,
 } from "./auth.ts";
+import { validateCredentialVerifierRevocation } from "./auth-lease.ts";
 import { callerFairnessKey, externalAccountFairnessKey, transportSource } from "./caller.ts";
 import {
   CommitCoordinator,
@@ -166,6 +169,7 @@ interface DeliveryFailureSummary {
 export interface RuntimeOptions {
   readonly engine: Engine;
   readonly registry: Registry;
+  readonly verifier?: CredentialVerifier;
   readonly limits?: ServiceLimits;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
   readonly hooks?: RuntimeHooks;
@@ -437,6 +441,7 @@ function observationOutcome(
 export class Runtime implements RuntimePort {
   readonly engine: Engine;
   readonly registry: Registry;
+  readonly credentialVerifier: CredentialVerifier | undefined;
   readonly limits: ServiceLimits;
   readonly telemetry: Telemetry;
   readonly reactive: OrderedReactive<ReactiveContext>;
@@ -555,6 +560,11 @@ export class Runtime implements RuntimePort {
     this.engine = options.engine;
     this.registry = options.registry;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
+    this.credentialVerifier = options.verifier;
+    validateCredentialVerifierRevocation(
+      this.credentialVerifier,
+      this.limits.auth.revocationDeadlineMs,
+    );
     this.now = options.now ?? Date.now;
     this.scheduled = options.registry.resolveScheduled(options.engine.schema);
     this.ownsTelemetry = !(options.telemetry instanceof Telemetry);
@@ -669,6 +679,42 @@ export class Runtime implements RuntimePort {
       undefined,
       fairnessKey,
     );
+  }
+
+  private async linkAccount(
+    principal: Principal,
+    rawBearerToken: string,
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+  ): Promise<void> {
+    if (principal.kind !== "user") {
+      throw new DbzzError("unauthorized", "account linking requires a user identity");
+    }
+    aborted(signal);
+    const account = await verifyUserBearerCredential(
+      rawBearerToken,
+      this.credentialVerifier,
+      this.now,
+    );
+    aborted(signal);
+    await this.coordinator.transactFramework({
+      fairnessKey,
+      requestBytes,
+      signal,
+      work: () => {
+        if (account.expiresAt <= this.readNow()) {
+          throw new DbzzError("unauthenticated", "invalid credential");
+        }
+        if (!this.engine.attachIdentityAccount(
+          principal.identity,
+          account.issuer,
+          account.subject,
+        )) {
+          throw new DbzzError("conflict", "external account is already linked");
+        }
+      },
+    });
   }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {
@@ -2101,6 +2147,13 @@ export class Runtime implements RuntimePort {
     return Object.freeze({
       auth: principal,
       abortSignal: signal,
+      linkAccount: (rawBearerToken: string) => this.linkAccount(
+        principal,
+        rawBearerToken,
+        fairnessKey,
+        signal,
+        requestBytes,
+      ),
       tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
         const execute = async (): Promise<T> => {
           aborted(signal);

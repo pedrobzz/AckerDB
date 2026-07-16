@@ -201,6 +201,7 @@ export function claimRuntimeRequestBytes(request: RuntimeRequest<unknown>): numb
 
 /** Transport-independent adapter implemented by the database runtime. */
 export interface RuntimePort {
+  readonly credentialVerifier: CredentialVerifier | undefined;
   resolveIdentity(account: ExternalAccount, signal?: AbortSignal): Promise<Identity>;
   openSession(context: SessionRuntimeContext): Promise<void>;
   transitionAuth(transition: RuntimeAuthTransition): Promise<RuntimePublicationBatch>;
@@ -235,7 +236,6 @@ export interface SessionOptions {
   readonly sink: SessionSink;
   /** Actual peer address captured by the transport; forwarded headers are not trusted. */
   readonly source: TransportSource;
-  readonly verifier?: CredentialVerifier;
   readonly clock?: SessionClock;
   readonly revocationDeadlineMs?: number;
   /** Per-session serialized ingress, request, and transport-frame limits. */
@@ -303,7 +303,6 @@ export class Session {
 
   private readonly runtime: RuntimePort;
   private readonly sink: SessionSink;
-  private readonly verifier: CredentialVerifier | undefined;
   private readonly observeAuth: SessionAuthObserver | undefined;
   private readonly clock: SessionClock;
   private readonly source: TransportSource;
@@ -328,10 +327,9 @@ export class Session {
 
   constructor(options: SessionOptions) {
     const revocationDeadlineMs = options.revocationDeadlineMs ?? MAX_REVOCATION_DEADLINE_MS;
-    validateCredentialVerifierRevocation(options.verifier, revocationDeadlineMs);
+    validateCredentialVerifierRevocation(options.runtime.credentialVerifier, revocationDeadlineMs);
     this.runtime = options.runtime;
     this.sink = options.sink;
-    this.verifier = options.verifier;
     this.observeAuth = (options as SessionOptions & InternalSessionOptions)[SESSION_AUTH_OBSERVER];
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.source = transportSource(options.source);
@@ -347,8 +345,8 @@ export class Session {
       now: () => this.readNow(),
     });
     this.revocationDeadlineMs = revocationDeadlineMs;
-    if (this.verifier !== undefined) {
-      this.unsubscribeInvalidation = this.verifier.subscribeInvalidation((invalidation) => {
+    if (this.runtime.credentialVerifier !== undefined) {
+      this.unsubscribeInvalidation = this.runtime.credentialVerifier.subscribeInvalidation((invalidation) => {
         this.onInvalidation(invalidation);
       });
     }
@@ -796,7 +794,7 @@ export class Session {
   ): Promise<ClientPrincipal> {
     return verifyClientCredential(
       credential,
-      this.verifier,
+      this.runtime.credentialVerifier,
       (account) => this.runtime.resolveIdentity(account, signal),
       () => this.readNow(),
     );

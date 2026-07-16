@@ -1091,6 +1091,16 @@ export class Engine {
     return created.identity as Identity;
   }
 
+  /** Attach one exact account inside the caller-owned writer transaction. */
+  attachIdentityAccount(identity: Identity, issuer: string, subject: string): boolean {
+    const existing = this.identityForAccount(this.writer, issuer, subject);
+    if (existing !== null) return existing === identity;
+    this.writer
+      .query("INSERT INTO _dbz_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
+      .run(issuer, subject, identity);
+    return true;
+  }
+
   schemaFingerprint(): string {
     return createHash("sha256").update(JSON.stringify(snapshotOf(this.schema))).digest("hex");
   }

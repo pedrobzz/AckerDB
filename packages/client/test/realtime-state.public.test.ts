@@ -383,8 +383,15 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
       if (stage === "commit" && context.operation === "mutation") return commitGate.pause();
     },
   };
-  const runtime = new Runtime({ engine, registry, limits, telemetry: false, hooks });
-  const server = serve({ runtime, verifier: new TestVerifier(), port: 0 });
+  const runtime = new Runtime({
+    engine,
+    registry,
+    verifier: new TestVerifier(),
+    limits,
+    telemetry: false,
+    hooks,
+  });
+  const server = serve({ runtime, port: 0 });
   const base = `http://127.0.0.1:${server.port}`;
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
   const clock = new ReconnectClock();
