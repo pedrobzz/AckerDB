@@ -78,6 +78,7 @@ demo/
 ├── app/
 │   ├── design/        # Canvazz UI (Admin + Customer artboards)
 │   ├── admin-panel/   # Runnable admin client
+│   ├── mobile/        # Expo development-build customer app
 │   └── server/        # dbzz backend (schema + functions)
 ├── packages/          # Shared demo packages (e.g. codegen)
 └── scripts/           # Smoke / tooling
@@ -126,6 +127,7 @@ From `demo/`:
 | --- | --- |
 | `bun run design:dev` | Open the Canvazz design project |
 | `bun run admin:dev` | Run the Admin Panel |
+| `bun run mobile:dev` | Start Metro for the installed Expo development build |
 | `bun run server:dev` | Run the dbzz server |
 | `bun run codegen` | Regenerate client types from the server |
 | `bun run typecheck` | Typecheck the workspace |
@@ -172,3 +174,9 @@ item/order transitions, payment, owner-isolated events, and the real schedule
 table path. Its scheduler case advances a test-local clock and invokes the
 runtime scheduler directly, while production continues to use the fixed
 two-minute delay.
+
+The mobile client defaults to `http://127.0.0.1:3212`. Set
+`EXPO_PUBLIC_DBZZ_URL` to the machine-reachable backend URL when running a
+development build on a physical device. Create that native development build
+from `app/mobile` with `bunx expo run:ios` or `bunx expo run:android`; the app
+is not configured as an Expo Go workflow.
