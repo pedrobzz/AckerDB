@@ -1794,6 +1794,31 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(attempts).toBe(8);
     client.close();
   });
+
+  test("skips the procedure fetch when its signal is already aborted", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    let calls = 0;
+    const { client } = harness({
+      fetch: async (_url, init) => {
+        calls++;
+        const request = parseCallRequest(decode(String(init?.body)));
+        return new Response(
+          encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+        );
+      },
+    });
+    const completion = client
+      .procedure("procedure.pre-aborted", {}, { signal: abort.signal })
+      .catch((error) => error);
+
+    await settlesPromptly(completion, "pre-aborted procedure completion");
+    expect(await completion).toMatchObject({ code: "unavailable", resource: "operation" });
+    expect(calls).toBe(0);
+    expect(await client.procedure<{}, string>("procedure.after-pre-abort", {})).toBe("available");
+    expect(calls).toBe(1);
+    client.close();
+  });
 });
 
 describe("DbzzClient connection state", () => {

@@ -597,6 +597,9 @@ export class DbzzClient {
     options: DbzzCallOptions = {},
   ): Promise<R> {
     this.assertUsable();
+    if (options.signal?.aborted) {
+      throw localError("unavailable", "procedure request was canceled", "operation");
+    }
     const id = this.allocateId();
     const body = this.encodeCall(id, getRef(ref as FunctionReference | string), args);
     const release = this.reserveTransient(body, "operation");
