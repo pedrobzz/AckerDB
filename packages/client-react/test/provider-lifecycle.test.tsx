@@ -1,0 +1,287 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { actEnvironment, mountPoint } from "./support/dom.ts";
+import {
+  PROTOCOL_VERSION,
+  decode,
+  encode,
+  parseClientMessage,
+  type ServerMessage,
+} from "@dbzz/core";
+import type {
+  DbzzClientClock,
+  DbzzConnectionState,
+  DbzzWebSocket,
+} from "@dbzz/client";
+import { Component, StrictMode, act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { DbzzProvider, useConnectionState, type DbzzProviderConfig } from "@dbzz/client-react";
+
+interface ClockTask {
+  at: number;
+  callback: () => void;
+  intervalMs?: number;
+}
+
+class ManualClock implements DbzzClientClock {
+  private nextId = 0;
+  private readonly tasks = new Map<number, ClockTask>();
+  private time = 0;
+
+  now(): number {
+    return this.time;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback });
+    return id;
+  }
+
+  clearTimeout(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  setInterval(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
+    return id;
+  }
+
+  clearInterval(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  get taskCount(): number {
+    return this.tasks.size;
+  }
+}
+
+class FakeSocket implements DbzzWebSocket {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  closed = false;
+
+  send(data: string): void {
+    if (this.closed) throw new Error("socket is closed");
+    parseClientMessage(decode(data));
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.onclose?.();
+  }
+
+  welcome(clientSessionId: string): void {
+    this.onopen?.();
+    const frame: ServerMessage = {
+      v: PROTOCOL_VERSION,
+      t: "welcome",
+      clientSessionId,
+      authEpoch: 0,
+      principal: "anonymous",
+    };
+    this.onmessage?.({ data: encode(frame) });
+  }
+}
+
+interface Harness {
+  readonly clock: ManualClock;
+  readonly sockets: FakeSocket[];
+  config(url: string): DbzzProviderConfig;
+  live(): FakeSocket[];
+}
+
+function createHarness(): Harness {
+  const clock = new ManualClock();
+  const sockets: FakeSocket[] = [];
+  return {
+    clock,
+    sockets,
+    config(url) {
+      return {
+        url,
+        credential: { kind: "anonymous" },
+        clientSessionId: "react-lifecycle-session",
+        clock,
+        random: () => 0,
+        createWebSocket: () => {
+          const socket = new FakeSocket();
+          sockets.push(socket);
+          return socket;
+        },
+      };
+    },
+    live() {
+      return sockets.filter((socket) => !socket.closed);
+    },
+  };
+}
+
+const phaseLog: string[] = [];
+
+function ConnectionPhase(): ReactNode {
+  const state = useConnectionState();
+  phaseLog.push(state.phase);
+  return <span>{state.phase}</span>;
+}
+
+function AuthenticationBadge(): ReactNode {
+  const state = useConnectionState();
+  return <span>{state.phase === "ready" ? state.authentication.principal : "-"}</span>;
+}
+
+async function render(root: Root, element: ReactNode): Promise<void> {
+  await act(async () => {
+    root.render(element);
+  });
+}
+
+beforeAll(() => actEnvironment(true));
+afterAll(() => actEnvironment(false));
+
+describe("DbzzProvider lifecycle", () => {
+  test("Strict Mode mount and unmount leave one live client and no timers or sockets", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    await render(
+      root,
+      <StrictMode>
+        <DbzzProvider config={harness.config("http://one.test")}>
+          <ConnectionPhase />
+        </DbzzProvider>
+      </StrictMode>,
+    );
+
+    // Strict Mode runs effect setup, cleanup, setup: two clients constructed,
+    // the first fully closed, exactly one live connection remains.
+    expect(harness.sockets).toHaveLength(2);
+    expect(harness.live()).toHaveLength(1);
+    expect(harness.clock.taskCount).toBe(0);
+    expect(container.textContent).toBe("connecting");
+
+    const live = harness.live()[0]!;
+    await act(async () => {
+      live.welcome("react-lifecycle-session");
+    });
+    expect(container.textContent).toBe("ready");
+    expect(harness.clock.taskCount).toBe(2);
+
+    await act(async () => {
+      root.unmount();
+    });
+    expect(harness.live()).toHaveLength(0);
+    expect(harness.clock.taskCount).toBe(0);
+  });
+
+  test("equal-valued reconfiguration keeps the lifetime; changed values replace the client", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const app = (url: string): ReactNode => (
+      <StrictMode>
+        <DbzzProvider config={harness.config(url)}>
+          <ConnectionPhase />
+        </DbzzProvider>
+      </StrictMode>
+    );
+
+    await render(root, app("http://one.test"));
+    expect(harness.sockets).toHaveLength(2);
+    const first = harness.live()[0]!;
+    await act(async () => {
+      first.welcome("react-lifecycle-session");
+    });
+    expect(container.textContent).toBe("ready");
+
+    // A new config object with equal values continues the current lifetime.
+    await render(root, app("http://one.test"));
+    expect(harness.sockets).toHaveLength(2);
+    expect(harness.live()).toEqual([first]);
+    expect(container.textContent).toBe("ready");
+
+    // A changed value closes the old client and starts exactly one new one.
+    await render(root, app("http://two.test"));
+    expect(harness.sockets).toHaveLength(3);
+    expect(first.closed).toBe(true);
+    expect(harness.live()).toHaveLength(1);
+    expect(harness.clock.taskCount).toBe(0);
+    expect(container.textContent).toBe("connecting");
+
+    await act(async () => {
+      harness.live()[0]!.welcome("react-lifecycle-session");
+    });
+    expect(container.textContent).toBe("ready");
+
+    await act(async () => {
+      root.unmount();
+    });
+    expect(harness.live()).toHaveLength(0);
+    expect(harness.clock.taskCount).toBe(0);
+  });
+
+  test("consumers observe transitions through the external store without extra renders when idle", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    await render(
+      root,
+      <DbzzProvider config={harness.config("http://one.test")}>
+        <ConnectionPhase />
+        <AuthenticationBadge />
+      </DbzzProvider>,
+    );
+    expect(container.textContent).toBe("connecting-");
+    const live = harness.live()[0]!;
+    await act(async () => {
+      live.welcome("react-lifecycle-session");
+    });
+    expect(container.textContent).toBe("readyanonymous");
+
+    phaseLog.length = 0;
+    await act(async () => {
+      live.close();
+    });
+    expect(container.textContent).toBe("reconnecting-");
+    // One store transition produces one committed render for the consumer.
+    expect(phaseLog).toEqual(["reconnecting"]);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("useConnectionState outside a provider fails loudly", async () => {
+    const container = mountPoint();
+    const root = createRoot(container);
+    let caught: unknown;
+
+    class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+      override state = { failed: false };
+      static getDerivedStateFromError(): { failed: boolean } {
+        return { failed: true };
+      }
+      override componentDidCatch(error: unknown): void {
+        caught = error;
+      }
+      override render(): ReactNode {
+        return this.state.failed ? "failed" : this.props.children;
+      }
+    }
+
+    await render(
+      root,
+      <Boundary>
+        <ConnectionPhase />
+      </Boundary>,
+    );
+    expect(container.textContent).toBe("failed");
+    expect(String(caught)).toContain("useConnectionState requires a <DbzzProvider> ancestor");
+    await act(async () => {
+      root.unmount();
+    });
+  });
+});

@@ -2,11 +2,12 @@
   "name": "dbzz",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "fixtures/*"
   ],
   "scripts": {
-    "test": "bun test packages/core/test packages/server/test packages/client/test packages/cli/test",
-    "typecheck": "bunx tsc -p tsconfig.json --noEmit",
+    "test": "bun test packages/core/test packages/server/test packages/client/test packages/cli/test && bun test packages/client-react/test",
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit && bunx tsc -p packages/client-react/tsconfig.json --noEmit",
     "typecheck:bench": "bunx tsc -p bench/tsconfig.json --noEmit",
     "registry": "bunx verdaccio --config registry/config.yaml",
     "bump": "bun scripts/bump.ts",
