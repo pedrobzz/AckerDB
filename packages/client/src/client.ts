@@ -597,6 +597,9 @@ export class DbzzClient {
     options: DbzzCallOptions = {},
   ): Promise<R> {
     this.assertUsable();
+    if (options.signal?.aborted) {
+      throw localError("unavailable", "procedure request was canceled", "operation");
+    }
     const id = this.allocateId();
     const body = this.encodeCall(id, getRef(ref as FunctionReference | string), args);
     const release = this.reserveTransient(body, "operation");
@@ -604,12 +607,23 @@ export class DbzzClient {
     try {
       let response: Response;
       try {
-        response = await this.fetcher(`${this.httpUrl}/api/call`, {
-          method: "POST",
-          headers: this.httpHeaders(),
-          body,
-          signal: fetchControl.controller.signal,
-        });
+        // Response acquisition must settle through the owned controller even
+        // when the injected fetch ignores its signal, so abort and close()
+        // cannot leave the caller or its transient reservation pending.
+        response = await raceWithAbort(
+          (async () =>
+            this.fetcher(`${this.httpUrl}/api/call`, {
+              method: "POST",
+              headers: this.httpHeaders(),
+              body,
+              signal: fetchControl.controller.signal,
+            }))(),
+          fetchControl.controller.signal,
+          localError("indeterminate", "procedure completion is unknown", "operation"),
+          (late) => {
+            if (late.body) cancelWithoutWaiting(late.body, fetchControl.controller.signal.reason);
+          },
+        );
       } catch {
         throw localError("indeterminate", "procedure completion is unknown", "operation");
       }

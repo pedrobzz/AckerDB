@@ -2,12 +2,15 @@ export { DbzzProvider, type DbzzProviderConfig, type DbzzProviderProps } from ".
 export { useConnectionState } from "./use-connection-state.ts";
 export { useEvent } from "./use-event.ts";
 export { useMutation } from "./use-mutation.ts";
+export { useProcedure, type DbzzProcedure } from "./use-procedure.ts";
 export type {
   DbzzAuthentication,
+  DbzzCallOptions,
   DbzzClientError,
   DbzzClientLimits,
   DbzzConnectionState,
   DbzzLiveEvent,
   DbzzReconnectOptions,
   EventRef,
+  ProcedureRef,
 } from "@dbzz/client";
