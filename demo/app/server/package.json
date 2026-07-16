@@ -1,0 +1,20 @@
+{
+  "name": "@demo/server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "dbz dev .",
+    "start": "dbz start .",
+    "codegen": "dbz codegen .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@dbzz/server": "link:@dbzz/server",
+    "@demo/dbzz-codegen": "workspace:*"
+  },
+  "devDependencies": {
+    "@dbzz/cli": "link:@dbzz/cli",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.9.0"
+  }
+}

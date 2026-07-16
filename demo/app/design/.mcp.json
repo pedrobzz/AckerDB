@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "canvazz": {
+      "type": "stdio",
+      "command": "bun",
+      "args": ["run", "canvazz-mcp", "--project", "."]
+    }
+  }
+}

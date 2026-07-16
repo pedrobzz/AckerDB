@@ -22,9 +22,7 @@ dist
 registry/storage/
 registry/htpasswd
 
-# local demo monorepo (kept out of the repo on purpose)
 sandbox/
-demo/
 
 # benchmark artifacts (local backend state, generated bindings)
 # bench/results/ is tracked on purpose: it is the cross-run comparison history
