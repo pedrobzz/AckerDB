@@ -22,11 +22,15 @@ import { createDbzzTelemetryReport } from "./dbzz-telemetry.ts";
 
 let exportedAggregateSnapshot: TelemetryAggregateSnapshot | undefined;
 const BENCHMARK_EXPORTER: TelemetryExporter = Object.freeze({
+  // Promise-based like a production exporter so the zero-drop gate exercises
+  // the asynchronous export path rather than a synchronous special case; it
+  // still resolves immediately so the leg measures only DBZZ's handoff cost.
   export(
     _records: readonly TelemetryRecord[],
     aggregates?: TelemetryAggregateSnapshot,
-  ) {
+  ): Promise<void> {
     if (aggregates !== undefined) exportedAggregateSnapshot = aggregates;
+    return Promise.resolve();
   },
 });
 

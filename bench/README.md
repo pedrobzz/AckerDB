@@ -45,10 +45,11 @@ on a different machine.
 All DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`. The
 `runtime-default` profile uses the production retention/queue limits, built-in
 console local sink, and no exporter. The `benchmark-exporter` profile changes
-only the explicit `TelemetryExporter` callback; its synchronous in-process
-handoff discards the batch after DBZZ has delivered it, measuring the minimum
-framework queue/batch/export cost without pretending to represent a particular
-network backend. The `disabled` profile configures neither an exporter nor a
+only the explicit `TelemetryExporter` callback; its immediately resolving
+promise-based in-process handoff discards the batch after DBZZ has delivered
+it, exercising the production asynchronous export path while measuring the
+minimum framework queue/batch/export cost without pretending to represent a
+particular network backend. The `disabled` profile configures neither an exporter nor a
 local sink. The runner confirms these choices through `DBZZ_TELEMETRY` and the
 benchmark-private `DBZZ_BENCH_EXPORTER` selector.
 
