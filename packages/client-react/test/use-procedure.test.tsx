@@ -182,8 +182,9 @@ describe("useProcedure against a real dbzz server", () => {
       const [text, setText] = useState("pending");
       useEffect(() => {
         // Issued before the provider's effect constructs the client. Strict
-        // Mode's simulated remount discards the first lifetime's queued call
-        // with a typed outcome; the second resolves against the real server.
+        // Mode runs this effect twice; both queued calls wait through the
+        // simulated remount (which closes the first client before either
+        // could dispatch) and resolve once against the surviving lifetime.
         echo({ value: "hi" }).then(
           (value) => {
             settlements.push({ kind: "ok", value });
@@ -210,18 +211,14 @@ describe("useProcedure against a real dbzz server", () => {
 
     await until(() => container.textContent === "HI", "the mount-effect procedure result");
     await until(() => settlements.length === 2, "both Strict Mode call settlements");
-    expect(settlements.filter((entry) => entry.kind === "ok")).toEqual([
+    // Each of the two Strict Mode effect invocations settles its own call
+    // exactly once, through exactly one dispatch — never the closed first
+    // client, never a duplicate.
+    expect(settlements).toEqual([
+      { kind: "ok", value: "HI" },
       { kind: "ok", value: "HI" },
     ]);
-    const discarded = settlements.find((entry) => entry.kind === "error");
-    expect(discarded && discarded.kind === "error" ? discarded.error : null).toMatchObject({
-      name: "DbzzClientError",
-      code: "unavailable",
-      message: "client closed",
-      resource: "operation",
-    });
-    // The discarded first-lifetime call was never dispatched: one request total.
-    expect(app.calls.length - callsBefore).toBe(1);
+    expect(app.calls.length - callsBefore).toBe(2);
     await unmount(root);
   });
 
@@ -374,16 +371,49 @@ describe("useProcedure against a real dbzz server", () => {
       resource: "operation",
     });
 
-    // A stale callable after shutdown reports the client's own closed outcome.
+    // A stale callable after shutdown settles locally in the hook: its
+    // ownership ended with the component, so nothing dispatches.
+    const callsBefore = app.calls.length;
     const stale = await echo!({ value: "late" }).catch((error) => error);
     expect(stale).toMatchObject({
       name: "DbzzClientError",
       code: "unavailable",
-      message: "client is closed",
-      resource: "connection",
+      message: "client closed",
+      resource: "operation",
     });
+    expect(app.calls.length).toBe(callsBefore);
 
     blockRelease.resolve();
+  });
+
+  test("a callable retained past its consumer's unmount settles locally while the provider lives on", async () => {
+    let echo: DbzzProcedure<{ value: string }, string> | null = null;
+    function Capture(): ReactNode {
+      echo = useProcedure(api.tools.echo);
+      return null;
+    }
+    function Host({ mounted }: { mounted: boolean }): ReactNode {
+      return <DbzzProvider config={app.config()}>{mounted ? <Capture /> : null}</DbzzProvider>;
+    }
+
+    const container = mountPoint();
+    const root = createRoot(container);
+    root.render(<Host mounted={true} />);
+    await until(() => echo !== null, "the captured callable");
+    expect(await echo!({ value: "alive" })).toBe("ALIVE");
+
+    root.render(<Host mounted={false} />);
+    await Bun.sleep(20); // the consumer's unmount commit, provider untouched
+    const callsBefore = app.calls.length;
+    const stale = await echo!({ value: "late" }).catch((error) => error);
+    expect(stale).toMatchObject({
+      name: "DbzzClientError",
+      code: "unavailable",
+      message: "client closed",
+      resource: "operation",
+    });
+    expect(app.calls.length).toBe(callsBefore);
+    await unmount(root);
   });
 
   test("the callable identity survives renders, client arrival, and provider reconfiguration", async () => {
@@ -435,14 +465,20 @@ describe("useProcedure against a real dbzz server", () => {
         },
       });
 
+    // The owning parent passes the callable down; the child's layout effect
+    // runs before every ancestor effect in the reconfiguration commit, which
+    // is the earliest a caller can legally observe the new configuration.
     let settled: unknown = null;
-    function LayoutCaller({ fire }: { fire: boolean }): ReactNode {
-      const echo = useProcedure(api.tools.echo);
+    function LayoutCaller({
+      fire,
+      run,
+    }: {
+      fire: boolean;
+      run: DbzzProcedure<{ value: string }, string>;
+    }): ReactNode {
       useLayoutEffect(() => {
         if (!fire) return;
-        // Fires inside the reconfiguration commit, before the provider's
-        // passive effects have replaced the client.
-        echo({ value: "layout" }).then(
+        run({ value: "layout" }).then(
           (value) => {
             settled = value;
           },
@@ -450,22 +486,26 @@ describe("useProcedure against a real dbzz server", () => {
             settled = error;
           },
         );
-      }, [fire, echo]);
+      }, [fire, run]);
       return null;
+    }
+    function Owner({ fire }: { fire: boolean }): ReactNode {
+      const echo = useProcedure(api.tools.echo);
+      return <LayoutCaller fire={fire} run={echo} />;
     }
 
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
       <DbzzProvider config={tagged("retired", "procedure-layout-1")}>
-        <LayoutCaller fire={false} />
+        <Owner fire={false} />
       </DbzzProvider>,
     );
     await until(() => dispatches.length === 0 && container !== null, "the first commit");
 
     root.render(
       <DbzzProvider config={tagged("replacement", "procedure-layout-2")}>
-        <LayoutCaller fire={true} />
+        <Owner fire={true} />
       </DbzzProvider>,
     );
     await until(() => settled !== null, "the layout-effect call to settle");

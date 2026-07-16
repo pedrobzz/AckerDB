@@ -4,15 +4,17 @@ import {
   type DbzzClient,
   type ProcedureRef,
 } from "@dbzz/client";
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useInsertionEffect, useState } from "react";
 import { useProviderClient } from "./provider.tsx";
 
 // The cell must reflect the committed provider client before any caller in the
-// same commit can run (a layout-effect caller during a provider
-// reconfiguration must not dispatch through the retired client), so the hook
-// synchronizes in the layout phase. Server rendering runs no effects; the
-// fallback only silences React's server-side useLayoutEffect warning.
-const useCommitEffect = typeof document === "undefined" ? useEffect : useLayoutEffect;
+// same commit can run: a layout-effect caller during a provider
+// reconfiguration must not dispatch through the retired client, and because
+// descendant layout effects run before their ancestors', only the insertion
+// phase (which the whole tree completes before any layout effect) closes that
+// window for callables passed down to children. Server rendering runs no
+// effects; the fallback only silences React's server-side warning.
+const useCommitEffect = typeof document === "undefined" ? useEffect : useInsertionEffect;
 
 /** The stable callable returned by {@link useProcedure}. */
 export type DbzzProcedure<A, R> = (args: A, options?: DbzzCallOptions) => Promise<R>;
@@ -65,9 +67,11 @@ function createCell<A, R>(initialRef: ProcedureRef<A, R>): Cell<A, R> {
     ended: false,
     waiters: new Set(),
     call(args, options) {
+      // Ownership ends with the hook: a callable retained past unmount (by a
+      // timer or external listener) settles locally and never dispatches.
+      if (cell.ended) return Promise.reject(hookError("client closed"));
       const client = cell.client;
       if (client !== null) return client.procedure<A, R>(cell.ref, args, options);
-      if (cell.ended) return Promise.reject(hookError("client closed"));
       const signal = options?.signal;
       if (signal?.aborted) return Promise.reject(hookError("procedure request was canceled"));
       return new Promise<R>((resolve, reject) => {
@@ -120,10 +124,12 @@ export function useProcedure<A, R>(ref: ProcedureRef<A, R>): DbzzProcedure<A, R>
   }, [cell, client]);
 
   // The hook's lifetime ends with its component (provider shutdown unmounts
-  // consumers too): settle queued calls instead of leaving them pending.
+  // consumers too): settle queued calls instead of leaving them pending, and
+  // drop the client so nothing dispatches through the ended cell.
   useCommitEffect(
     () => () => {
       cell.ended = true;
+      cell.client = null;
       const error = hookError("client closed");
       for (const waiter of drain(cell.waiters)) waiter.discard(error);
     },
