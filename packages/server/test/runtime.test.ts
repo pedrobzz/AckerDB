@@ -134,7 +134,7 @@ let revalidationEntered: Deferred<void> | null = null;
 let externalProcedureStarted: Deferred<void> | null = null;
 let externalProcedureRelease: Deferred<void> | null = null;
 let externalSseStarted: Deferred<void> | null = null;
-let externalSseRelease: Deferred<void> | null = null;
+let externalSseReturned: Deferred<void> | null = null;
 let scheduledAttempts = 0;
 let mutationResultReads = 0;
 let mutationResultValue: object = {};
@@ -299,22 +299,40 @@ const functions = {
     stream: sseProcedure({
       access: "public",
       args: { count: dbz.number() },
-      handler: async (ctx: Ctx, args: Ctx) => {
+      yields: dbz.jsonb(),
+      handler: async function* (ctx: Ctx, args: Ctx) {
         for (let index = 0; index < args.count; index++) {
-          ctx.stream.write({ type: "delta", value: index });
+          yield { type: "delta", value: index };
         }
-        ctx.stream.merge(new ReadableStream({
+        yield { type: "merged" };
+        await ctx.tx((tx: Ctx) => tx.db.log.insert({ line: "streamed" }));
+      },
+    }),
+    streamed: sseProcedure({
+      access: "public",
+      args: {},
+      yields: dbz.jsonb(),
+      handler: () =>
+        new ReadableStream({
           start(controller) {
             controller.enqueue({ type: "merged" });
             controller.close();
           },
-        }));
-        await ctx.tx((tx: Ctx) => tx.db.log.insert({ line: "streamed" }));
+        }),
+    }),
+    invalidChunk: sseProcedure({
+      access: "public",
+      args: {},
+      yields: dbz.object({ value: dbz.string() }),
+      handler: async function* () {
+        yield { value: "first" };
+        yield { value: 2 as unknown as string };
       },
     }),
     failingStream: sseProcedure({
       access: "public",
       args: {},
+      yields: dbz.jsonb(),
       handler: () => {
         throw new Error("stream failed");
       },
@@ -322,8 +340,9 @@ const functions = {
     waitForAbort: sseProcedure({
       access: "public",
       args: {},
-      handler: async (ctx: Ctx) => {
-        ctx.stream.write({ phase: "started" });
+      yields: dbz.jsonb(),
+      handler: async function* (ctx: Ctx) {
+        yield { phase: "started" };
         if (ctx.abortSignal.aborted) return;
         await new Promise<void>((resolve) => {
           ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
@@ -333,10 +352,15 @@ const functions = {
     holdSse: sseProcedure({
       access: "public",
       args: {},
-      handler: async (ctx: Ctx) => {
-        ctx.stream.write({ phase: "held" });
-        externalSseStarted?.resolve(undefined);
-        await externalSseRelease?.promise;
+      yields: dbz.jsonb(),
+      handler: async function* () {
+        try {
+          externalSseStarted?.resolve(undefined);
+          yield { phase: "held" };
+          yield { phase: "unreachable without acknowledgment" };
+        } finally {
+          externalSseReturned?.resolve(undefined);
+        }
       },
     }),
   },
@@ -513,7 +537,7 @@ beforeEach(() => {
   externalProcedureStarted = null;
   externalProcedureRelease = null;
   externalSseStarted = null;
-  externalSseRelease = null;
+  externalSseReturned = null;
   scheduledAttempts = 0;
   mutationResultReads = 0;
   mutationResultValue = Object.defineProperty({}, "payload", {
@@ -1016,7 +1040,7 @@ describe("procedures and bounded SSE", () => {
     expect(parseCallResponse(decode(body))).toEqual(fallback);
   });
 
-  test("streams data, merged data, and a terminal marker", async () => {
+  test("streams generator chunks receiver-credited and a terminal marker", async () => {
     const response = await runtime.runSse({
       id: 1,
       address: "ops.stream",
@@ -1025,42 +1049,35 @@ describe("procedures and bounded SSE", () => {
     });
     expect(response.streamId).toMatch(/^[A-Za-z0-9_-]{22}$/);
     const messages = await collectSse(response, (message) => {
-      if (message.seq === 1) return;
-      if (message.seq !== 2) {
-        if (message.t !== "sse_chunk") expect(runtime.status().activeSse).toBe(1);
+      // The producer is receiver-credited: exactly one unacknowledged frame.
+      expect(runtime.sseSnapshot(response.streamId)?.unackedFrames).toBe(1);
+      if (message.seq === 2) {
+        const before = runtime.status().sseBudget.bytes;
+        expect(runtime.status().activeSse).toBe(1);
+        expect(runtime.ackSse({
+          v: PROTOCOL_VERSION,
+          t: "sse_ack",
+          stream: "AAAAAAAAAAAAAAAAAAAAAA",
+          seq: message.seq,
+          proof: message.proof,
+        })).toBe(false);
         expect(runtime.ackSse({
           v: PROTOCOL_VERSION,
           t: "sse_ack",
           stream: response.streamId,
           seq: message.seq,
+          proof: `${message.proof}x`,
+        })).toBe(false);
+        expect(runtime.ackSse({
+          v: PROTOCOL_VERSION,
+          t: "sse_ack",
+          stream: response.streamId,
+          seq: message.seq + 100,
           proof: message.proof,
-        })).toBe(true);
-        return;
+        })).toBe(false);
+        expect(runtime.status().sseBudget.bytes).toBe(before);
       }
-      const before = runtime.status().sseBudget.bytes;
-      expect(runtime.status().activeSse).toBe(1);
-      expect(runtime.ackSse({
-        v: PROTOCOL_VERSION,
-        t: "sse_ack",
-        stream: "AAAAAAAAAAAAAAAAAAAAAA",
-        seq: message.seq,
-        proof: message.proof,
-      })).toBe(false);
-      expect(runtime.ackSse({
-        v: PROTOCOL_VERSION,
-        t: "sse_ack",
-        stream: response.streamId,
-        seq: message.seq,
-        proof: `${message.proof}x`,
-      })).toBe(false);
-      expect(runtime.ackSse({
-        v: PROTOCOL_VERSION,
-        t: "sse_ack",
-        stream: response.streamId,
-        seq: message.seq + 100,
-        proof: message.proof,
-      })).toBe(false);
-      expect(runtime.status().sseBudget.bytes).toBe(before);
+      if (message.t !== "sse_chunk") expect(runtime.status().activeSse).toBe(1);
       expect(runtime.ackSse({
         v: PROTOCOL_VERSION,
         t: "sse_ack",
@@ -1084,6 +1101,34 @@ describe("procedures and bounded SSE", () => {
     })).toBe(false);
     expect(runtime.status().activeSse).toBe(0);
     expect(runtime.status().sseBudget.bytes).toBe(0);
+  });
+
+  test("streams a handler-returned ReadableStream to completion", async () => {
+    const response = await runtime.runSse({
+      id: 1,
+      address: "ops.streamed",
+      args: {},
+      principal: ANONYMOUS_PRINCIPAL,
+    });
+    const messages = await collectSse(response);
+    expect(messages.map((message) => message.t)).toEqual(["sse_chunk", "sse_done"]);
+    expect(messages[0]).toMatchObject({ value: { type: "merged" } });
+  });
+
+  test("fails a stream on the first invalid chunk with the exact validation error", async () => {
+    const response = await runtime.runSse({
+      id: 1,
+      address: "ops.invalidChunk",
+      args: {},
+      principal: ANONYMOUS_PRINCIPAL,
+    });
+    const messages = await collectSse(response);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toMatchObject({ t: "sse_chunk", value: { value: "first" } });
+    expect(messages[1]).toMatchObject({
+      t: "sse_error",
+      outcome: { code: "validation", message: "chunk.value: expected string, got number" },
+    });
   });
 
   test("turns a post-start SSE failure into a terminal dbzz-error event", async () => {
@@ -1268,6 +1313,7 @@ describe("scheduler and lifecycle", () => {
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     });
+    await eventually(() => runtime.sseSnapshot(response.streamId)?.unackedFrames === 1);
 
     const [messages] = await Promise.all([collectSse(response), runtime.drain()]);
     expect(messages[0]).toMatchObject({ t: "sse_chunk", value: { phase: "started" } });
@@ -1275,17 +1321,15 @@ describe("scheduler and lifecycle", () => {
     expect(runtime.status()).toMatchObject({ state: "stopped", activeSse: 0, activeOperations: 0 });
   });
 
-  test("expires capabilities independently while held SSE handlers keep operation admission", async () => {
+  test("stall and cancel release the handler's iterator, capability, and admission together", async () => {
     await restart(limits({
       sse: { ...PRODUCTION_LIMITS.sse, maxStallMs: 100 },
     }));
-    const heldReleases: Deferred<void>[] = [];
     const beginHeld = async (id: number) => {
       const started = deferred<void>();
-      const release = deferred<void>();
-      heldReleases.push(release);
+      const returned = deferred<void>();
       externalSseStarted = started;
-      externalSseRelease = release;
+      externalSseReturned = returned;
       const response = await runtime.runSse({
         id,
         address: "ops.holdSse",
@@ -1293,67 +1337,65 @@ describe("scheduler and lifecycle", () => {
         principal: ANONYMOUS_PRINCIPAL,
       });
       await started.promise;
-      return { response, release };
+      return { response, returned };
     };
 
-    try {
-      const acknowledged = await beginHeld(90);
-      const acknowledgedReader = acknowledged.response.stream.getReader();
-      expect(sseMessage((await acknowledgedReader.read()).value!)).toMatchObject({
-        t: "sse_chunk",
-        value: { phase: "held" },
-      });
-      const acknowledgedTerminal = sseMessage((await acknowledgedReader.read()).value!);
-      expect(acknowledgedTerminal).toMatchObject({
-        t: "sse_error",
-        outcome: { code: "slow_consumer" },
-      });
-      expect(runtime.status()).toMatchObject({ activeSse: 1, activeOperations: 1 });
-      expect(runtime.ackSse({
-        v: PROTOCOL_VERSION,
-        t: "sse_ack",
-        stream: acknowledged.response.streamId,
-        seq: acknowledgedTerminal.seq,
-        proof: acknowledgedTerminal.proof,
-      })).toBe(true);
-      expect((await acknowledgedReader.read()).done).toBe(true);
-      acknowledgedReader.releaseLock();
-      await eventually(() => runtime.status().activeSse === 0);
-      expect(runtime.status().activeOperations).toBe(1);
-      acknowledged.release.resolve(undefined);
-      await eventually(() => runtime.status().activeOperations === 0);
+    // An unacknowledged chunk stalls out; the terminal ACK closes the stream,
+    // returns the suspended generator, and releases operation admission.
+    const acknowledged = await beginHeld(90);
+    const acknowledgedReader = acknowledged.response.stream.getReader();
+    expect(sseMessage((await acknowledgedReader.read()).value!)).toMatchObject({
+      t: "sse_chunk",
+      value: { phase: "held" },
+    });
+    const acknowledgedTerminal = sseMessage((await acknowledgedReader.read()).value!);
+    expect(acknowledgedTerminal).toMatchObject({
+      t: "sse_error",
+      outcome: { code: "slow_consumer" },
+    });
+    expect(runtime.status()).toMatchObject({ activeSse: 1, activeOperations: 1 });
+    expect(runtime.ackSse({
+      v: PROTOCOL_VERSION,
+      t: "sse_ack",
+      stream: acknowledged.response.streamId,
+      seq: acknowledgedTerminal.seq,
+      proof: acknowledgedTerminal.proof,
+    })).toBe(true);
+    expect((await acknowledgedReader.read()).done).toBe(true);
+    acknowledgedReader.releaseLock();
+    await acknowledged.returned.promise;
+    await eventually(() => runtime.status().activeSse === 0);
+    await eventually(() => runtime.status().activeOperations === 0);
 
-      const forced = await beginHeld(91);
-      const forcedReader = forced.response.stream.getReader();
-      expect(sseMessage((await forcedReader.read()).value!).t).toBe("sse_chunk");
-      const forcedTerminal = sseMessage((await forcedReader.read()).value!);
-      expect(forcedTerminal.t).toBe("sse_error");
-      expect(runtime.status()).toMatchObject({ activeSse: 1, activeOperations: 1 });
-      await expect(forcedReader.read()).rejects.toMatchObject({ code: "slow_consumer" });
-      forcedReader.releaseLock();
-      await eventually(() => runtime.status().activeSse === 0);
-      expect(runtime.status().activeOperations).toBe(1);
-      expect(runtime.ackSse({
-        v: PROTOCOL_VERSION,
-        t: "sse_ack",
-        stream: forced.response.streamId,
-        seq: forcedTerminal.seq,
-        proof: forcedTerminal.proof,
-      })).toBe(false);
-      forced.release.resolve(undefined);
-      await eventually(() => runtime.status().activeOperations === 0);
+    // A terminal frame that never gets credited force-closes on the second
+    // stall; the stream capability is expired afterwards.
+    const forced = await beginHeld(91);
+    const forcedReader = forced.response.stream.getReader();
+    expect(sseMessage((await forcedReader.read()).value!).t).toBe("sse_chunk");
+    const forcedTerminal = sseMessage((await forcedReader.read()).value!);
+    expect(forcedTerminal.t).toBe("sse_error");
+    expect(runtime.status()).toMatchObject({ activeSse: 1, activeOperations: 1 });
+    await expect(forcedReader.read()).rejects.toMatchObject({ code: "slow_consumer" });
+    forcedReader.releaseLock();
+    await forced.returned.promise;
+    await eventually(() => runtime.status().activeSse === 0);
+    await eventually(() => runtime.status().activeOperations === 0);
+    expect(runtime.ackSse({
+      v: PROTOCOL_VERSION,
+      t: "sse_ack",
+      stream: forced.response.streamId,
+      seq: forcedTerminal.seq,
+      proof: forcedTerminal.proof,
+    })).toBe(false);
 
-      const canceled = await beginHeld(92);
-      const canceledReader = canceled.response.stream.getReader();
-      expect(sseMessage((await canceledReader.read()).value!).t).toBe("sse_chunk");
-      await canceledReader.cancel("consumer stopped");
-      await eventually(() => runtime.status().activeSse === 0);
-      expect(runtime.status().activeOperations).toBe(1);
-      canceled.release.resolve(undefined);
-      await eventually(() => runtime.status().activeOperations === 0);
-    } finally {
-      for (const release of heldReleases) release.resolve(undefined);
-    }
+    // Consumer cancellation between chunks settles the same way, promptly.
+    const canceled = await beginHeld(92);
+    const canceledReader = canceled.response.stream.getReader();
+    expect(sseMessage((await canceledReader.read()).value!).t).toBe("sse_chunk");
+    await canceledReader.cancel("consumer stopped");
+    await canceled.returned.promise;
+    await eventually(() => runtime.status().activeSse === 0);
+    await eventually(() => runtime.status().activeOperations === 0);
   });
 
   test("owns a finite deadline across stalled active reader and publication work", async () => {

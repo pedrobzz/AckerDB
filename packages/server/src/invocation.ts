@@ -247,16 +247,17 @@ export async function invokeFunction<
   A extends ObjectShape,
   Ctx extends InvocationContext,
   R,
+  H,
 >(
-  fn: Registered<K, A, Ctx, R>,
+  fn: Registered<K, A, Ctx, R, H>,
   ctx: Ctx,
   rawArgs: unknown,
   options: InvocationOptions<Ctx, Expand<InferShape<A>>> = {},
-): Promise<Awaited<R>> {
+): Promise<Awaited<H>> {
   const instrumentation = invocationInstrumentation.getStore();
   if (instrumentation === undefined) {
     const { ctx: safeCtx, args } = await authorizeInvocation(fn, ctx, rawArgs);
-    return runHandler(fn, safeCtx, args, options) as Promise<Awaited<R>>;
+    return runHandler(fn, safeCtx, args, options) as Promise<Awaited<H>>;
   }
 
   const state: InvocationInstrumentationState = {
@@ -275,5 +276,5 @@ export async function invokeFunction<
       enforceAccess(fn.access, invocation.ctx, invocation.args));
     return observePhase(state, observedFn, "handler", () =>
       runHandler(fn, invocation.ctx, invocation.args, options));
-  }) as Promise<Awaited<R>>;
+  }) as Promise<Awaited<H>>;
 }

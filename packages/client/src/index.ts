@@ -1,5 +1,5 @@
 export * from "./client.ts";
-export { anyApi, stableEncode } from "@dbzz/core";
+export { anyApi, getRef, stableEncode } from "@dbzz/core";
 export type {
   ApiFromModules,
   EventRef,

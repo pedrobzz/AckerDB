@@ -10,9 +10,11 @@ import {
   mutation,
   procedure,
   query,
+  sseProcedure,
   type MutationBuilder,
   type ProcedureBuilder,
   type QueryBuilder,
+  type SseBuilder,
 } from "@dbzz/server";
 
 const schema = defineSchema({
@@ -83,4 +85,65 @@ export const _readOnly = typedQuery({
 typedQuery({
   args: {},
   handler: () => null,
+});
+
+// --- SSE declarations: required yields validator, chunk-typed sources --------
+
+const typedSse = sseProcedure as SseBuilder<S>;
+
+export const _ticker = typedSse({
+  args: { key: dbz.string() },
+  yields: dbz.object({ key: dbz.string(), value: dbz.number() }),
+  access: "public",
+  handler: async function* (ctx, args) {
+    const row = await ctx.tx((tx) => getCounter(tx, { key: args.key }));
+    yield { key: args.key, value: row?.value ?? 0 };
+  },
+});
+
+// The registered phantom is the validated chunk type, never the completion.
+type TickerChunk = NonNullable<(typeof _ticker)["_retType"]>;
+const _tickerChunk: TickerChunk = { key: "k", value: 1 };
+// @ts-expect-error the chunk shape follows the yields validator exactly
+const _wrongTickerChunk: TickerChunk = { key: "k", value: "1" };
+
+// @ts-expect-error SSE declarations require a yields chunk validator
+typedSse({
+  args: {},
+  access: "public",
+  handler: async function* () {},
+});
+
+typedSse({
+  args: {},
+  yields: dbz.number(),
+  access: "public",
+  // @ts-expect-error yielded values must satisfy the yields validator
+  handler: async function* () {
+    yield "not a number";
+  },
+});
+
+// A handler may return a ReadableStream of the declared chunks directly.
+export const _streamed = typedSse({
+  args: {},
+  yields: dbz.number(),
+  access: "public",
+  handler: () => new ReadableStream<number>(),
+});
+
+typedSse({
+  args: {},
+  yields: dbz.number(),
+  access: "public",
+  // @ts-expect-error a stream of the wrong chunk type is rejected
+  handler: () => new ReadableStream<string>(),
+});
+
+typedSse({
+  args: {},
+  yields: dbz.number(),
+  access: "public",
+  // @ts-expect-error SSE handlers must return a chunk source, not a bare value
+  handler: () => 1,
 });

@@ -677,6 +677,11 @@ export class DbzzClient {
     }
   }
 
+  /**
+   * Acknowledged SSE stream: `Chunk` is the ref's server-validated yield
+   * type. Chunk N's receiver credit is sent when the consumer requests chunk
+   * N+1, so iteration pace is the backpressure signal end to end.
+   */
   async *sse<A, Chunk = unknown>(
     ref: SseRef<A, Chunk> | string,
     args: A,
@@ -1768,9 +1773,28 @@ export class DbzzClient {
             throw cancellationError;
           }
           if (response.status === 204) {
-            if (response.body === null) return null;
-            cancelWithoutWaiting(response.body);
-            throw localError("malformed", "SSE acknowledgment 204 response must not have a body", "sse");
+            // Spec fetches model No Content as a null body; Bun's native
+            // fetch models it as an empty stream. Both are exact — anything
+            // that actually delivers bytes is not.
+            const body = response.body;
+            if (body === null) return null;
+            const reader = body.getReader();
+            let empty = false;
+            try {
+              const part = await raceWithAbort(
+                (async () => reader.read())(),
+                attemptSignal,
+                cancellationError,
+              );
+              if (!part.done) {
+                throw localError("malformed", "SSE acknowledgment 204 response must not have a body", "sse");
+              }
+              empty = true;
+              return null;
+            } finally {
+              if (!empty) cancelWithoutWaiting(reader, attemptSignal.reason);
+              releaseReaderLock(reader);
+            }
           }
 
           const text = await this.readBoundedResponse(

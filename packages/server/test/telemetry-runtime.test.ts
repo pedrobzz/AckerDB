@@ -191,12 +191,13 @@ const functions = {
     stream: sseProcedure({
       access: "public",
       args: { payload: dbz.string() },
-      handler: async (ctx: Ctx, args: Ctx) => {
-        ctx.stream.write({ payload: args.payload });
+      yields: dbz.object({ payload: dbz.string() }),
+      handler: async function* (ctx: Ctx, args: Ctx) {
         if (operatorSseGate !== null) {
           operatorSseEntered?.();
           await operatorSseGate;
         }
+        yield { payload: args.payload };
         await ctx.tx((tx: Ctx) => tx.db.audit.insert({ line: "sse:complete" }));
       },
     }),
@@ -631,6 +632,12 @@ describe("Runtime telemetry acceptance", () => {
     const body = collectSse(app.runtime, stream);
     releaseSse();
     expect(await body).toContain('"t":"sse_done"');
+    // The lifecycle settles a few microtasks after the terminal credit closes
+    // the body stream.
+    for (let turn = 0; app.runtime.telemetry.snapshot().traceRetention.activeTraces !== 0; turn++) {
+      if (turn === 100) break;
+      await Bun.sleep(0);
+    }
     expect(app.runtime.telemetry.snapshot().traceRetention).toMatchObject({
       activeTraces: 0,
       completedDecisions: 1,

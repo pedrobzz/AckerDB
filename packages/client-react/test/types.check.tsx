@@ -1,13 +1,16 @@
 // Compile-time contract for the public @dbzz/client-react surface. This file
 // is typechecked (see the package tsconfig) and never executed.
+import type { SseRef } from "@dbzz/client";
 import {
   DbzzProvider,
   useConnectionState,
   useEvent,
+  useSseProcedure,
   type DbzzConnectionState,
   type DbzzLiveEvent,
   type DbzzProviderConfig,
   type EventRef,
+  type SseProcedureCall,
 } from "@dbzz/client-react";
 import type { ReactElement, ReactNode } from "react";
 
@@ -175,6 +178,28 @@ function ignoresGap(event: DbzzLiveEvent<{ n: number }>): string {
   }
 }
 
+// --- SSE procedure hook: ref-driven argument and chunk inference -------------
+
+declare const chatRef: SseRef<{ prompt: string }, { delta: string }>;
+
+function StreamConsumer(): ReactNode {
+  const start = useSseProcedure(chatRef);
+  const _call: SseProcedureCall<{ prompt: string }, { delta: string }> = start;
+  const stream: ReadableStream<{ delta: string }> = start({ prompt: "hi" });
+  const withSignal: ReadableStream<{ delta: string }> = start(
+    { prompt: "hi" },
+    { signal: new AbortController().signal },
+  );
+  // @ts-expect-error arguments are inferred from the generated reference
+  start({ prompt: 1 });
+  // @ts-expect-error the chunk type is the server-validated yield type
+  const wrongChunks: ReadableStream<number> = start({ prompt: "hi" });
+  // Raw addresses remain usable but infer nothing.
+  const untyped: ReadableStream<unknown> = useSseProcedure("chat.stream")({});
+  void [stream, withSignal, wrongChunks, untyped, _call];
+  return null;
+}
+
 // --- forbidden imperative escape hatches ------------------------------------
 
 type PublicExports = keyof typeof import("@dbzz/client-react");
@@ -185,7 +210,14 @@ type AssertNever<T extends never> = T;
 type UnexpectedExports = AssertNever<
   Exclude<
     PublicExports,
-    "DbzzProvider" | "useConnectionState" | "useEvent" | "useMutation" | "useProcedure" | "useQuery" | "skip"
+    | "DbzzProvider"
+    | "useConnectionState"
+    | "useEvent"
+    | "useMutation"
+    | "useProcedure"
+    | "useQuery"
+    | "skip"
+    | "useSseProcedure"
   >
 >;
 type NoImperativeEscape = AssertNever<
@@ -196,6 +228,7 @@ export {
   Consumer,
   EventConsumer,
   MistypedEventConsumers,
+  StreamConsumer,
   badReconnect,
   bare,
   clientProp,
