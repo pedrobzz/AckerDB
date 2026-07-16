@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import type {
-  DriverResult,
-  LatencyStats,
-  SubscriptionCapacityResult,
-  SubscriptionResult,
-  SystemName,
+import {
+  offeredFixedRateUpdates,
+  type DriverResult,
+  type LatencyStats,
+  type SubscriptionCapacityResult,
+  type SubscriptionResult,
+  type SystemName,
 } from "./benchmark.ts";
 import type { ProcessTreeWindowSummary } from "./process-tree.ts";
 
@@ -226,9 +227,8 @@ function addLatency(
 }
 
 function fixedRateComplete(result: SubscriptionResult, durationMs: number, offeredUpdatesPerSec: number): boolean {
-  const offeredUpdates = (durationMs / 1_000) * offeredUpdatesPerSec;
   return result.correctness.ok &&
-    result.updates === offeredUpdates &&
+    result.updates === offeredFixedRateUpdates(durationMs, offeredUpdatesPerSec) &&
     result.observedDeliveries === result.expectedDeliveries &&
     result.missingDeliveries === 0;
 }
@@ -253,12 +253,16 @@ function assertFixedRateOfferedTarget(
   if (result === undefined) throw new Error(`DBZZ after-run omits ${pattern} fixed-rate subscriptions`);
   const config = system.workload.config.subscriptions;
   const offeredPerSec = pattern === "shared" ? config.sharedUpdatesPerSec : config.partitionedUpdatesPerSec;
-  const offeredUpdates = (config.durationMs / 1_000) * offeredPerSec;
+  const offeredUpdates = offeredFixedRateUpdates(config.durationMs, offeredPerSec);
+  // the realized offered rate: the discrete update count the workload emits
+  // over the exact window, which equals the configured rate whenever the
+  // window is a whole number of seconds
+  const realizedOfferedPerSec = offeredUpdates / (config.durationMs / 1_000);
   const deliveryTarget = result.expectedDeliveries / (config.durationMs / 1_000);
   const minimumDelivery = deliveryTarget * 0.99;
   if (
     !fixedRateComplete(result, config.durationMs, offeredPerSec) ||
-    result.updateThroughputPerSec < offeredPerSec ||
+    result.updateThroughputPerSec < realizedOfferedPerSec ||
     result.deliveryThroughputPerSec < minimumDelivery
   ) {
     throw new Error(

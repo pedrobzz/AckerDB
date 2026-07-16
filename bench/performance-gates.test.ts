@@ -211,6 +211,35 @@ describe("frozen performance acceptance", () => {
     );
   });
 
+  test("accepts a shorter window that is not a whole number of seconds at its realized offered rate", () => {
+    const after = copy();
+    for (const system of ["dbzz", "convex", "spacetimedb"] as const) {
+      const config = after.systems[system]!.workload.config;
+      config.subscriptions.durationMs = 1_999;
+      for (const result of after.systems[system]!.workload.subscriptions) {
+        const rate = result.pattern === "shared"
+          ? config.subscriptions.sharedUpdatesPerSec
+          : config.subscriptions.partitionedUpdatesPerSec;
+        // the workload floors the offered count, so an on-time run reports
+        // a measured rate below the nominal configured rate (39/1.999 < 20/s)
+        result.updates = Math.floor((config.subscriptions.durationMs / 1_000) * rate);
+        result.expectedDeliveries = result.updates * (result.pattern === "shared" ? result.users : 1);
+        result.observedDeliveries = result.expectedDeliveries;
+        result.missingDeliveries = 0;
+        if (system !== "convex") {
+          // Convex keeps its frozen measured rates so its 1.25x delivery
+          // floor margin is untouched; only DBZZ and SpacetimeDB report the
+          // on-time realized rates the gate must accept
+          result.updateThroughputPerSec = result.updates / (config.subscriptions.durationMs / 1_000);
+          result.deliveryThroughputPerSec = result.observedDeliveries / (config.subscriptions.durationMs / 1_000);
+        }
+      }
+    }
+    const evidence = assertPerformanceAcceptance(after, baselineJson);
+    expect(evidence.sharedFixedRate).toMatchObject({ offeredUpdates: 39, completedUpdates: 39, passed: true });
+    expect(evidence.partitionedFixedRate).toMatchObject({ offeredUpdates: 199, completedUpdates: 199, passed: true });
+  });
+
   test("allows shorter measurement effort without changing the workload identity", () => {
     const after = copy();
     for (const system of ["dbzz", "convex", "spacetimedb"] as const) {
