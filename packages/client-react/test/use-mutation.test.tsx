@@ -16,7 +16,16 @@ import {
   type DbzzWebSocket,
   type MutationRef,
 } from "@dbzz/client";
-import { Component, StrictMode, act, type ReactNode } from "react";
+import {
+  Component,
+  StrictMode,
+  act,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { DbzzProvider, useConnectionState, useMutation, type DbzzProviderConfig } from "@dbzz/client-react";
 
@@ -152,10 +161,14 @@ type SendTodo = (args: TodoArgs) => Promise<bigint>;
 // must key its identity on the reference address, not the object.
 const todosAdd = (): MutationRef<TodoArgs, bigint> => anyApi.todos.add as MutationRef<TodoArgs, bigint>;
 
+function mutationFrames(socket: FakeSocket): Extract<ClientMessage, { t: "m" }>[] {
+  return socket.frames().flatMap((frame) => (frame.t === "m" ? [frame] : []));
+}
+
 function lastMutationFrame(socket: FakeSocket): Extract<ClientMessage, { t: "m" }> {
-  const frame = socket.frames().findLast((candidate) => candidate.t === "m");
+  const frame = mutationFrames(socket).at(-1);
   if (!frame) throw new Error("No mutation frame");
-  return frame as Extract<ClientMessage, { t: "m" }>;
+  return frame;
 }
 
 function mutationOk(
@@ -222,47 +235,46 @@ beforeAll(() => actEnvironment(true));
 afterAll(() => actEnvironment(false));
 
 describe("useMutation", () => {
-  test("returns one callable per lifetime across renders, fresh reference objects, and Strict Mode", async () => {
+  test("returns one callable per hook instance across renders, client arrival, and reconfiguration", async () => {
     const harness = createHarness();
     const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
     const app = (url: string, tick: number): ReactNode => (
-      <StrictMode>
-        <DbzzProvider config={harness.config(url)}>
-          <probe.Component tick={tick} />
-        </DbzzProvider>
-      </StrictMode>
+      <DbzzProvider config={harness.config(url)}>
+        <probe.Component tick={tick} />
+      </DbzzProvider>
     );
 
     await render(root, app("http://one.test", 0));
     await act(async () => {
       harness.sockets.at(-1)!.welcome(SESSION);
     });
-    const bound = probe.latest();
     expect(container.textContent).toBe("ready:0");
 
-    // Re-renders keep the identical callable even though every render builds a
-    // fresh reference proxy object for the same address.
+    // Re-renders build a fresh reference proxy object for the same address
+    // every time; the callable never changes.
     await render(root, app("http://one.test", 1));
     await render(root, app("http://one.test", 2));
     expect(container.textContent).toBe("ready:2");
-    expect(probe.latest()).toBe(bound);
 
-    // A reconfigured provider is a new lifetime with a new bound callable.
+    // A reconfigured provider replaces the client but not the callable.
     await render(root, app("http://two.test", 3));
     await act(async () => {
       harness.sockets.at(-1)!.welcome(SESSION);
     });
     expect(container.textContent).toBe("ready:3");
-    expect(probe.latest()).not.toBe(bound);
+
+    // Every render handed out the identical callable: the first committed
+    // render before any client existed, arrival, and the reconfiguration.
+    expect(new Set(probe.callables).size).toBe(1);
 
     await act(async () => {
       root.unmount();
     });
   });
 
-  test("a changed reference address produces a differently bound callable", async () => {
+  test("a changed reference address redirects the same callable to the new target", async () => {
     const harness = createHarness();
     const probe = createProbe();
     const container = mountPoint();
@@ -277,11 +289,15 @@ describe("useMutation", () => {
     await act(async () => {
       harness.sockets.at(-1)!.welcome(SESSION);
     });
-    const first = probe.latest();
+    const send = probe.latest();
+    void send({ text: "x" }).catch(() => {});
+    expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("addTodo");
 
+    // The callable's identity belongs to the hook instance, not the
+    // reference; the commit-phase ref sync redirects it to the new address.
     await render(root, app("removeTodo"));
-    expect(probe.latest()).not.toBe(first);
-    void probe.latest()({ text: "x" }).catch(() => {});
+    expect(probe.latest()).toBe(send);
+    void send({ text: "x" }).catch(() => {});
     expect(lastMutationFrame(harness.sockets.at(-1)!).ref).toBe("removeTodo");
 
     await act(async () => {
@@ -505,29 +521,136 @@ describe("useMutation", () => {
     });
   });
 
-  test("the pre-lifetime callable rejects deterministically and is replaced once the client exists", async () => {
+  test("a mount-effect call issued before the client exists dispatches exactly once on arrival", async () => {
     const harness = createHarness();
-    const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
+    let result: Promise<bigint> | null = null;
+    function SendOnMount(): ReactNode {
+      const send = useMutation(todosAdd());
+      useEffect(() => {
+        // Runs before the provider's effect constructs the client (child
+        // effects precede their ancestors'): the call waits in the hook's
+        // queue instead of rejecting.
+        result = send({ text: "early" });
+      }, [send]);
+      return null;
+    }
+
     await render(
       root,
       <DbzzProvider config={harness.config()}>
-        <probe.Component />
+        <SendOnMount />
       </DbzzProvider>,
     );
+    const socket = harness.sockets.at(-1)!;
+    await act(async () => {
+      socket.welcome(SESSION);
+    });
 
-    // The first committed render precedes the provider's client-constructing
-    // effect; its callable rejects without touching the network.
-    const detached = probe.callables[0]!;
-    expect(probe.latest()).not.toBe(detached);
-    expect(await detached({ text: "early" }).catch((error) => error)).toMatchObject({
+    const frames = mutationFrames(socket);
+    expect(frames).toHaveLength(1);
+    expect(frames[0]!.args).toEqual({ text: "early" });
+    socket.receive(mutationOk(frames[0]!, 7n));
+    expect(await result!).toBe(7n);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("unmount before the client arrives settles a queued call with the typed discard", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    let settlement: Promise<unknown> | null = null;
+    function SendAndVanish({ vanish }: { readonly vanish: () => void }): ReactNode {
+      const send = useMutation(todosAdd());
+      useLayoutEffect(() => {
+        // Queue a call and unmount within the same commit: the layout-phase
+        // state update below deletes this component before the provider's
+        // passive effect can construct a client, so the hook's lifetime end
+        // is the only owner left to settle the call.
+        settlement = send({ text: "never" }).catch((error) => error);
+        vanish();
+      }, [send, vanish]);
+      return null;
+    }
+    function Gate(): ReactNode {
+      const [mounted, setMounted] = useState(true);
+      const vanish = useCallback(() => setMounted(false), []);
+      return mounted ? <SendAndVanish vanish={vanish} /> : null;
+    }
+
+    await render(
+      root,
+      <DbzzProvider config={harness.config()}>
+        <Gate />
+      </DbzzProvider>,
+    );
+    const failure = await settlement!;
+    expect(failure).toBeInstanceOf(DbzzClientError);
+    expect(failure).toMatchObject({
       code: "unavailable",
       retryable: false,
-      resource: "connection",
-      message: "the provider has not constructed its client yet",
+      resource: "operation",
+      message: "client closed",
     });
-    expect(harness.sockets.at(-1)!.sent).toHaveLength(0);
+
+    // The discarded call never dispatches: even once the provider's client
+    // connects, no mutation frame exists.
+    await act(async () => {
+      harness.sockets.at(-1)!.welcome(SESSION);
+    });
+    expect(harness.sockets.flatMap((socket) => mutationFrames(socket))).toHaveLength(0);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  test("Strict Mode mount-effect calls each dispatch exactly once through the surviving lifetime", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const results: Promise<bigint>[] = [];
+    function SendOnMount(): ReactNode {
+      const send = useMutation(todosAdd());
+      useEffect(() => {
+        // Strict Mode runs this mount effect twice; both calls queue before
+        // any client exists, wait through the simulated remount (which closes
+        // the first client), and dispatch once each on the surviving one.
+        results.push(send({ text: "early" }));
+      }, [send]);
+      return null;
+    }
+
+    await render(
+      root,
+      <StrictMode>
+        <DbzzProvider config={harness.config()}>
+          <SendOnMount />
+        </DbzzProvider>
+      </StrictMode>,
+    );
+    // Strict Mode's simulated remount constructed and closed a first client.
+    expect(harness.sockets).toHaveLength(2);
+    expect(harness.sockets[0]!.closed).toBe(true);
+    const survivor = harness.sockets.at(-1)!;
+    await act(async () => {
+      survivor.welcome(SESSION);
+    });
+
+    // Exactly two dispatches — one per effect invocation — and every one
+    // through the surviving client; the retired one sent nothing.
+    expect(results).toHaveLength(2);
+    expect(mutationFrames(harness.sockets[0]!)).toHaveLength(0);
+    const frames = mutationFrames(survivor);
+    expect(frames).toHaveLength(2);
+    for (const [index, frame] of frames.entries()) {
+      survivor.receive(mutationOk(frame, BigInt(index + 1)));
+    }
+    expect(await Promise.all(results)).toEqual([1n, 2n]);
 
     await act(async () => {
       root.unmount();

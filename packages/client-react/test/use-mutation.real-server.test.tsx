@@ -18,7 +18,7 @@ import {
   reconcile,
   serve,
 } from "@dbzz/server";
-import { StrictMode, type ReactNode } from "react";
+import { StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { DbzzProvider, useConnectionState, useMutation } from "@dbzz/client-react";
 import { FrameProxy, assertTcpPortReleased } from "../../server/test/support/frame-proxy.ts";
@@ -249,4 +249,60 @@ describe("useMutation against a real dbzz server", () => {
     },
     15_000,
   );
+
+  test("a Strict Mode mount-effect call waits for the client and each lifetime commits exactly once", async () => {
+    const settlements: Array<{ kind: "ok"; value: bigint } | { kind: "error"; error: unknown }> =
+      [];
+    function SendOnMount(): ReactNode {
+      const send = useMutation(sendRef);
+      useEffect(() => {
+        // Issued before the provider's effect constructs the client. Strict
+        // Mode runs this effect twice; both queued calls wait through the
+        // simulated remount (which closes the first client before either
+        // could dispatch) and commit once each on the surviving lifetime.
+        send({ channelId: 2n, body: "queued" }).then(
+          (value) => settlements.push({ kind: "ok", value }),
+          (error) => settlements.push({ kind: "error", error }),
+        );
+      }, [send]);
+      return null;
+    }
+
+    const container = mountPoint();
+    const root = createRoot(container);
+    root.render(
+      <StrictMode>
+        <DbzzProvider
+          config={{
+            url: app.proxy.url,
+            credential: { kind: "anonymous" },
+            createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+          }}
+        >
+          <SendOnMount />
+        </DbzzProvider>
+      </StrictMode>,
+    );
+    const deadline = Date.now() + WAIT_DEADLINE_MS;
+    while (settlements.length < 2) {
+      if (Date.now() > deadline) throw new Error("Timed out waiting for both mount-effect settlements");
+      await Bun.sleep(10);
+    }
+
+    // Each of the two Strict Mode effect invocations dispatched its own
+    // mutation exactly once — two distinct identities, never a duplicate.
+    const requests = mutationRequests(app, "queued");
+    expect(requests).toHaveLength(2);
+    expect(new Set(requests.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(2);
+
+    // Exactly one server effect per call, and the resolutions name the rows.
+    const rows = await app.observer.query(listRef, { channelId: 2n });
+    const committed = rows.filter(({ body }) => body === "queued");
+    expect(committed).toHaveLength(2);
+    expect(settlements.map(({ kind }) => kind)).toEqual(["ok", "ok"]);
+    const resolved = settlements.flatMap((entry) => (entry.kind === "ok" ? [entry.value] : []));
+    expect(new Set(resolved)).toEqual(new Set(committed.map(({ id }) => id)));
+
+    root.unmount();
+  });
 });
