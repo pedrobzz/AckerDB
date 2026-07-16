@@ -430,6 +430,7 @@ export class DbzzClient {
   private authentication?: DbzzAuthentication;
   private connectionState: DbzzConnectionState = CONNECTING_STATE;
   private readonly connectionStateListeners = new Set<(state: DbzzConnectionState) => void>();
+  private connectRequested = false;
   private everReady = false;
   private blockingError?: DbzzClientError;
   private terminalError?: DbzzClientError;
@@ -477,8 +478,13 @@ export class DbzzClient {
     };
   }
 
-  /** Starts connecting without waiting for an operation. No-op when closed, failed, blocked, or connected. */
+  /**
+   * Establishes standing connection demand: the client dials now and keeps
+   * reconnecting after drops until close(), even with no operations in flight.
+   * No-op when closed, failed, blocked, or connected.
+   */
   connect(): void {
+    this.connectRequested = true;
     this.ensureConnected();
   }
 
@@ -1493,7 +1499,12 @@ export class DbzzClient {
   }
 
   private hasReconnectWork(): boolean {
-    return this.subscriptions.size > 0 || this.pending.size > 0 || this.authAttempt !== undefined;
+    return (
+      this.connectRequested ||
+      this.subscriptions.size > 0 ||
+      this.pending.size > 0 ||
+      this.authAttempt !== undefined
+    );
   }
 
   private canSendOperations(): boolean {

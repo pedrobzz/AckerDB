@@ -1838,6 +1838,21 @@ describe("DbzzClient connection state", () => {
     unsubscribe();
   });
 
+  test("connect establishes standing demand that survives drops without operations", () => {
+    const { client, clock, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    sockets[0]!.drop();
+    expect(client.currentConnectionState.phase).toBe("reconnecting");
+    expect(sockets).toHaveLength(1);
+    clock.advance(100);
+    expect(sockets).toHaveLength(2);
+    welcome(client, sockets[1]!);
+    expect(client.currentConnectionState.phase).toBe("ready");
+    client.close();
+    expect(clock.taskCount).toBe(0);
+  });
+
   test("keeps the connecting snapshot when the first attempt drops before welcome", () => {
     const { client, sockets } = harness();
     const phases: string[] = [];
