@@ -37,6 +37,7 @@ import { latencyStats, median, runClosedLoop, withTimeout } from "./load-engine.
 
 const COMPUTE_ROUNDS = 8;
 const TRANSFER_AMOUNT = 1;
+export const READINESS_SAMPLES = 20;
 
 interface AccountModel {
   balances: number[];
@@ -299,7 +300,7 @@ async function runOperationCase(
   }
 }
 
-async function runConnectionScale(
+export async function runConnectionScale(
   adapter: BenchAdapter,
   config: BenchmarkConfig,
   nextNonce: () => number,
@@ -309,21 +310,47 @@ async function runConnectionScale(
   try {
     for (const target of config.connections.levels) {
       const needed = target - cohort.length;
+      const cohortBefore = cohort.length;
       const setupStartedAt = performance.now();
       const connectLatencies: number[] = [];
       const errors: string[] = [];
       const rampPhaseId = `connections:${target}:ramp`;
       phaseStart(rampPhaseId);
-      for (let remaining = needed; remaining > 0; remaining -= config.connections.batchSize) {
-        const count = Math.min(config.connections.batchSize, remaining);
-        const opened = await openConnections(adapter, count, nextNonce, config.connections.timeoutMs);
-        cohort.push(...opened.connections);
-        connectLatencies.push(...opened.latencies);
-        errors.push(...opened.errors);
-        if (opened.connections.length !== count) break;
+      if (needed === 1) {
+        // A level that adds one connection would otherwise report a single connect draw as its
+        // whole readiness distribution, and one post-idle draw has a heavy scheduling tail on
+        // macOS. Sample connect → ready → close sequentially instead, each sample preceded by
+        // the same idle gap the ladder applies before this level (the caller's baseline idle
+        // covers the first sample), so every draw still measures post-idle readiness against a
+        // server with no live benchmark connections. The last sample's connection is kept as
+        // the cohort member. This is shared workload code: the protocol is identical for every
+        // benchmarked system.
+        for (let sample = 0; sample < READINESS_SAMPLES; sample++) {
+          if (sample > 0) await Bun.sleep(config.resources.idleMs);
+          const opened = await openConnections(adapter, 1, nextNonce, config.connections.timeoutMs);
+          connectLatencies.push(...opened.latencies);
+          errors.push(...opened.errors);
+          if (opened.connections.length !== 1) break;
+          if (sample === READINESS_SAMPLES - 1) cohort.push(...opened.connections);
+          else await closeAll(opened.connections);
+        }
+      } else {
+        for (let remaining = needed; remaining > 0; remaining -= config.connections.batchSize) {
+          const count = Math.min(config.connections.batchSize, remaining);
+          const opened = await openConnections(adapter, count, nextNonce, config.connections.timeoutMs);
+          cohort.push(...opened.connections);
+          connectLatencies.push(...opened.latencies);
+          errors.push(...opened.errors);
+          if (opened.connections.length !== count) break;
+        }
       }
       phaseEnd(rampPhaseId);
-      const setupMs = performance.now() - setupStartedAt;
+      // Sampled levels report aggregate measured connect time; the deliberate idle gaps and
+      // closes are sampling protocol, not setup work. Batched levels keep ramp wall time,
+      // which contains no deliberate gaps.
+      const setupMs = needed === 1 && connectLatencies.length > 0
+        ? connectLatencies.reduce((total, latency) => total + latency, 0)
+        : performance.now() - setupStartedAt;
       const connectedSnapshotId = `connections:${target}:connected`;
       const connectedIdlePhaseId = `connections:${target}:idle`;
       phaseStart(connectedIdlePhaseId);
@@ -351,7 +378,7 @@ async function runConnectionScale(
       results.push({
         targetConnections: target,
         connected: cohort.length,
-        addedConnections: connectLatencies.length,
+        addedConnections: cohort.length - cohortBefore,
         setupMs,
         readyConnectionsPerSec: connectLatencies.length / (setupMs / 1_000),
         readyLatency: latencyStats(connectLatencies),

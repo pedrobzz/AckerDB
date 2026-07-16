@@ -102,7 +102,8 @@ object, 250 ms server-sampling interval, and workload identity for DBZZ,
 Convex, and SpacetimeDB. Workload identity includes the dataset seed, operation
 and concurrency shapes, connection levels, subscription population/rates/
 patterns/capacity points, and setup behavior. Measurement effort—warmup,
-steady-window length, trial count, idle plateau length, and connection/
+steady-window length, trial count, idle plateau length, single-client
+readiness sample count, and connection/
 subscription window duration—may change, but must remain identical across the
 three current systems. The gate records the baseline source hash, machine
 fingerprint, and config SHA in its evidence; it does not require the changed
@@ -209,6 +210,17 @@ probe, then every active connection keeps exactly one indexed query in flight
 for one second. The stress profile adds 5,000 and 10,000. This is end-to-end
 SDK + client event loop + server capacity; load-generator CPU is reported
 separately so a client-side ceiling is visible.
+
+A level that adds exactly one connection (the 1-client level) measures
+readiness as 20 sequential connect → ready → close samples, each preceded by
+the same idle gap the ladder applies before that level, with the last sample
+kept as the cohort member. Its readiness percentiles are computed across those
+samples and its setup time and connections/s over the aggregate measured
+connect time (the deliberate idle gaps are protocol, not setup work), because
+one post-idle connect draw has a heavy scheduling tail on macOS and is not a
+distribution. Levels that add many connections already aggregate across their
+concurrent connects and are unchanged. The sampling protocol lives in the
+shared workload code and is identical for all three systems.
 
 The default subscription cases both use 500 independent client connections and
 50 query arguments per user (25,000 logical subscriptions):

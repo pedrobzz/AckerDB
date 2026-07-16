@@ -1,7 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { subscriptionCapacitySlots, type BenchmarkConfig } from "./benchmark.ts";
+import {
+  documentPayload,
+  documentScore,
+  searchChecksum,
+  subscriptionCapacitySlots,
+  type BenchAdapter,
+  type BenchConnection,
+  type BenchmarkConfig,
+  type SearchRow,
+} from "./benchmark.ts";
 import { latencyStats, median, runClosedLoop } from "./load-engine.ts";
 import { ProcessTreeMonitor, parseProcessTable, parsePsDuration, readProcessTable } from "./process-tree.ts";
+import { READINESS_SAMPLES, runConnectionScale } from "./workload.ts";
 
 describe("latency statistics", () => {
   test("uses exact nearest-rank percentiles without mutating input", () => {
@@ -151,6 +161,98 @@ describe("subscription saturation profiles", () => {
 
     expect(subscriptionCapacitySlots(config, "shared")).toEqual([1, 5]);
     expect(subscriptionCapacitySlots(config, "partitioned")).toEqual([1, 8, 10]);
+  });
+});
+
+describe("connection readiness sampling", () => {
+  test("single-add levels sample connect→ready→close repeatedly; batched levels are unchanged", async () => {
+    const idleMs = 25;
+    const config: BenchmarkConfig = {
+      profile: "quick",
+      seed: 1,
+      operation: { warmupMs: 10, steadyMs: 10, trials: 1, drainTimeoutMs: 1_000, profiles: [] },
+      connections: { levels: [1, 3], batchSize: 100, workMs: 10, timeoutMs: 1_000 },
+      subscriptions: {
+        users: 1,
+        queriesPerUser: 1,
+        durationMs: 10,
+        sharedUpdatesPerSec: 1,
+        partitionedUpdatesPerSec: 1,
+        capacityDurationMs: 10,
+        capacitySlots: [1],
+        setupTimeoutMs: 1_000,
+        drainTimeoutMs: 1_000,
+        patterns: ["shared"],
+      },
+      resources: { idleMs },
+      seedBatchSize: 256,
+    };
+    const searchRows = (partition: number): SearchRow[] =>
+      Array.from({ length: 20 }, (_, rank) => ({
+        rank,
+        score: documentScore(partition, rank),
+        payload: documentPayload(partition, rank),
+      }));
+    const events: string[] = [];
+    let connects = 0;
+    const unsupported = () => Promise.reject(new Error("not used by the connection ladder"));
+    const adapter: BenchAdapter = {
+      system: "dbzz",
+      connect: async (): Promise<BenchConnection> => {
+        const id = connects++;
+        events.push(`connect:${id}`);
+        return {
+          search: async (partition, nonce) => {
+            const rows = searchRows(partition);
+            return { nonce, checksum: searchChecksum(nonce, rows), rows };
+          },
+          transfer: unsupported,
+          accountState: unsupported,
+          compute: unsupported,
+          updateChannel: unsupported,
+          subscribeChannels: unsupported,
+          seedDocuments: unsupported,
+          seedAccounts: unsupported,
+          seedChannels: unsupported,
+          close: async () => {
+            events.push(`close:${id}`);
+          },
+        };
+      },
+    };
+    let nonce = 0;
+
+    const results = await runConnectionScale(adapter, config, () => nonce++);
+
+    const [single, batched] = results;
+    expect(results).toHaveLength(2);
+    // Level 1 is a distribution of READINESS_SAMPLES sequential post-idle draws.
+    expect(single!.targetConnections).toBe(1);
+    expect(single!.connected).toBe(1);
+    expect(single!.addedConnections).toBe(1);
+    expect(single!.errors).toEqual([]);
+    expect(single!.readyLatency.count).toBe(READINESS_SAMPLES);
+    // Setup time aggregates the measured connects only; the ramp wall time here is
+    // dominated by (READINESS_SAMPLES - 1) idle gaps, which must be excluded.
+    expect(single!.setupMs).toBeGreaterThan(0);
+    expect(single!.setupMs).toBeLessThan((READINESS_SAMPLES - 1) * idleMs);
+    expect(single!.readyConnectionsPerSec).toBeCloseTo(READINESS_SAMPLES / (single!.setupMs / 1_000), 6);
+    expect(single!.work.failed).toBe(0);
+    // Every sample but the last closes before the next post-idle draw; the last joins the cohort.
+    for (let sample = 0; sample < READINESS_SAMPLES - 1; sample++) {
+      expect(events[sample * 2]).toBe(`connect:${sample}`);
+      expect(events[sample * 2 + 1]).toBe(`close:${sample}`);
+    }
+    expect(events[(READINESS_SAMPLES - 1) * 2]).toBe(`connect:${READINESS_SAMPLES - 1}`);
+    // Levels that add several connections keep the batched ramp and per-connection latencies.
+    expect(batched!.targetConnections).toBe(3);
+    expect(batched!.connected).toBe(3);
+    expect(batched!.addedConnections).toBe(2);
+    expect(batched!.readyLatency.count).toBe(2);
+    expect(batched!.errors).toEqual([]);
+    // The whole ladder is closed at the end: every opened connection has a matching close.
+    expect(connects).toBe(READINESS_SAMPLES + 2);
+    expect(events.filter((event) => event.startsWith("close:"))).toHaveLength(connects);
   });
 });
 
