@@ -469,6 +469,7 @@ describe("useProcedure against a real dbzz server", () => {
     // runs before every ancestor effect in the reconfiguration commit, which
     // is the earliest a caller can legally observe the new configuration.
     let settled: unknown = null;
+    let echo: DbzzProcedure<{ value: string }, string> | null = null;
     function LayoutCaller({
       fire,
       run,
@@ -490,7 +491,7 @@ describe("useProcedure against a real dbzz server", () => {
       return null;
     }
     function Owner({ fire }: { fire: boolean }): ReactNode {
-      const echo = useProcedure(api.tools.echo);
+      echo = useProcedure(api.tools.echo);
       return <LayoutCaller fire={fire} run={echo} />;
     }
 
@@ -501,7 +502,10 @@ describe("useProcedure against a real dbzz server", () => {
         <Owner fire={false} />
       </DbzzProvider>,
     );
-    await until(() => dispatches.length === 0 && container !== null, "the first commit");
+    // Prove the first lifetime committed and dispatches before retiring it.
+    await until(() => echo !== null, "the captured callable");
+    expect(await echo!({ value: "warm" })).toBe("WARM");
+    expect(dispatches).toEqual(["retired"]);
 
     root.render(
       <DbzzProvider config={tagged("replacement", "procedure-layout-2")}>
@@ -511,7 +515,7 @@ describe("useProcedure against a real dbzz server", () => {
     await until(() => settled !== null, "the layout-effect call to settle");
 
     expect(settled).toBe("LAYOUT");
-    expect(dispatches).toEqual(["replacement"]);
+    expect(dispatches).toEqual(["retired", "replacement"]);
     await unmount(root);
   });
 
