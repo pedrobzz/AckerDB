@@ -13,6 +13,8 @@ import {
   parseCredential,
   parseServerMessage,
   parseSseMessage,
+  type AuthenticatedMessage,
+  type AuthenticationDescriptor,
   type ClientMessage,
   type Credential,
   type EventRef,
@@ -23,7 +25,6 @@ import {
   type MutationRef,
   type Outcome,
   type OutcomeCode,
-  type PrincipalKind,
   type ProcedureRef,
   type QueryRef,
   type ResourceClass,
@@ -35,6 +36,7 @@ import {
   type SseRef,
   type SubscriptionCursor,
   type SubscriptionTransition,
+  type WelcomeMessage,
 } from "@dbzz/core";
 
 export interface DbzzClientLimits {
@@ -112,10 +114,8 @@ export interface DbzzClientOptions {
   readonly lifecycle?: DbzzLifecycleSource;
 }
 
-export interface DbzzAuthentication {
-  readonly authEpoch: number;
-  readonly principal: PrincipalKind;
-}
+/** Server-confirmed, secret-free principal descriptor for one auth epoch. */
+export type DbzzAuthentication = AuthenticationDescriptor & { readonly authEpoch: number };
 
 /**
  * Public connection lifecycle. `suspended` and `resuming` are produced by the
@@ -142,7 +142,9 @@ export type DbzzConnectionState =
  *   `credential` is the kind being presented; the server treats an anonymous
  *   presentation on an established session as a sign-out.
  * - `unauthenticated`: the server confirmed an anonymous session principal.
- * - `authenticated`: the server confirmed a verified session principal.
+ * - `authenticated`: the server confirmed a user or workload principal. User
+ *   descriptors carry durable Identity separately from exact credential
+ *   provenance; workload descriptors carry provenance but no user Identity.
  * - `refresh-required`: the server rejected the credential or an attempt timed
  *   out; the client will not reconnect until `refreshCredential` supplies a
  *   new credential. The same error is the connection state's
@@ -152,8 +154,14 @@ export type DbzzConnectionState =
  */
 export type DbzzAuthenticationState =
   | { readonly phase: "authenticating"; readonly credential: Credential["kind"] }
-  | { readonly phase: "unauthenticated"; readonly authentication: DbzzAuthentication }
-  | { readonly phase: "authenticated"; readonly authentication: DbzzAuthentication }
+  | {
+      readonly phase: "unauthenticated";
+      readonly authentication: Extract<DbzzAuthentication, { principal: "anonymous" }>;
+    }
+  | {
+      readonly phase: "authenticated";
+      readonly authentication: Exclude<DbzzAuthentication, { principal: "anonymous" }>;
+    }
   | { readonly phase: "refresh-required"; readonly error: DbzzClientError }
   | { readonly phase: "failed"; readonly error: DbzzClientError }
   | { readonly phase: "closed" };
@@ -514,6 +522,23 @@ const AUTHENTICATING_BEARER: DbzzAuthenticationState = Object.freeze({
   credential: "bearer",
 });
 const CLOSED_AUTHENTICATION_STATE: DbzzAuthenticationState = Object.freeze({ phase: "closed" });
+
+function authenticationFromFrame(
+  frame: WelcomeMessage | AuthenticatedMessage,
+): DbzzAuthentication {
+  if (frame.principal === "anonymous") {
+    return Object.freeze({ authEpoch: frame.authEpoch, principal: "anonymous" });
+  }
+  const provenance = Object.freeze({ ...frame.provenance });
+  return frame.principal === "user"
+    ? Object.freeze({
+        authEpoch: frame.authEpoch,
+        principal: "user",
+        identity: frame.identity,
+        provenance,
+      })
+    : Object.freeze({ authEpoch: frame.authEpoch, principal: "workload", provenance });
+}
 
 const SYSTEM_SOCKET_FACTORY: DbzzWebSocketFactory = (url) =>
   new WebSocket(url) as unknown as DbzzWebSocket;
@@ -1474,11 +1499,15 @@ export class DbzzClient {
         ? AUTHENTICATING_ANONYMOUS
         : AUTHENTICATING_BEARER;
     }
-    const phase =
-      this.authentication!.principal === "anonymous" ? ("unauthenticated" as const) : ("authenticated" as const);
-    return current.phase === phase && current.authentication === this.authentication
+    const authentication = this.authentication!;
+    if (authentication.principal === "anonymous") {
+      return current.phase === "unauthenticated" && current.authentication === authentication
+        ? current
+        : Object.freeze({ phase: "unauthenticated" as const, authentication });
+    }
+    return current.phase === "authenticated" && current.authentication === authentication
       ? current
-      : Object.freeze({ phase, authentication: this.authentication! });
+      : Object.freeze({ phase: "authenticated" as const, authentication });
   }
 
   private ensureConnected(): void {
@@ -1578,7 +1607,7 @@ export class DbzzClient {
         // The fresh handshake completed: a foreground recovery attempt ends
         // in ready exactly like any other successful connection.
         this.resuming = false;
-        this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
+        this.authentication = authenticationFromFrame(frame);
         if (this.authAttempt) {
           // A hello that presented this attempt's credential value was just
           // verified by this welcome; a second auth round-trip would re-verify
@@ -1602,7 +1631,7 @@ export class DbzzClient {
       case "auth": {
         const attempt = this.authAttempt;
         if (!attempt || attempt.id !== frame.attemptId) return;
-        this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
+        this.authentication = authenticationFromFrame(frame);
         this.resolveAuth(attempt, this.authentication);
         this.flushState();
         this.publishConnectionState();

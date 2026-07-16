@@ -5,6 +5,8 @@ import { join } from "node:path";
 import {
   PROTOCOL_VERSION,
   encode,
+  type AuthenticationDescriptor,
+  type Identity,
   type MutationOkMessage,
   type Outcome,
   type SubscriptionTransition,
@@ -39,6 +41,17 @@ import {
   type SessionSink,
 } from "../src/session.ts";
 import type { TelemetryRecord, TelemetrySpanRecord } from "../src/telemetry.ts";
+
+const ALICE_AUTHENTICATION = {
+  principal: "user",
+  identity: 1n as Identity,
+  provenance: { issuer: "https://issuer.example/", subject: "alice" },
+} satisfies AuthenticationDescriptor;
+const BOB_AUTHENTICATION = {
+  principal: "user",
+  identity: 2n as Identity,
+  provenance: { issuer: "https://issuer.example/", subject: "bob" },
+} satisfies AuthenticationDescriptor;
 
 const NOW = 1_720_000_000_000;
 const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime-session" });
@@ -806,7 +819,7 @@ describe("Session + Runtime integration", () => {
         t: "welcome",
         clientSessionId: "integration-client",
         authEpoch: 0,
-        principal: "user",
+        ...ALICE_AUTHENTICATION,
       }]);
 
       await handle(session, {
@@ -1008,7 +1021,7 @@ describe("Session + Runtime integration", () => {
 
       const refresh = client.refreshCredential({ kind: "bearer", token: "bob" });
       await socket.settle();
-      expect(await refresh).toEqual({ authEpoch: 1, principal: "user" });
+      expect(await refresh).toEqual({ authEpoch: 1, ...BOB_AUTHENTICATION });
       expect(privateErrors).toHaveLength(0);
       expect(privateOne.filter((event) => event.kind === "reset")).toHaveLength(2);
 

@@ -199,6 +199,14 @@ describe("useAuthentication against a real dbzz server", () => {
       () => captured.text === "authenticated:user@0|ready" && captured.query === "success",
       "the authenticated ready state with live data",
     );
+    const initial = operations().state;
+    if (initial.phase !== "authenticated" || initial.authentication.principal !== "user") {
+      throw new Error(`unexpected ${initial.phase}`);
+    }
+    expect(initial.authentication.provenance).toEqual({
+      issuer: "https://issuer.example",
+      subject: "user-a",
+    });
 
     // Sign-out is a server-observed auth transition to the anonymous principal.
     const signedOut: DbzzAuthentication = await operations().signOut();
@@ -211,7 +219,13 @@ describe("useAuthentication against a real dbzz server", () => {
     await until(() => captured.query === "error", "the revoked authenticated query");
 
     const refreshed = await operations().refresh({ kind: "bearer", token: "user-b" });
-    expect(refreshed).toEqual({ authEpoch: 2, principal: "user" });
+    expect(refreshed).toMatchObject({
+      authEpoch: 2,
+      principal: "user",
+      provenance: { issuer: "https://issuer.example", subject: "user-b" },
+    });
+    if (refreshed.principal !== "user") throw new Error("expected user authentication");
+    expect(refreshed.identity).not.toBe(initial.authentication.identity);
     await until(
       () => captured.text === "authenticated:user@2|ready",
       "the refreshed authenticated state",

@@ -4,6 +4,7 @@ import {
   decode,
   encode,
   parseClientMessage,
+  type AuthenticationDescriptor,
   type AuthenticatedMessage,
   type ClientAuthMessage,
   type ClientMessage,
@@ -91,6 +92,14 @@ export interface RuntimePublicationBatch {
   release(): void;
 }
 export type SessionControlMessage = WelcomeMessage | AuthenticatedMessage | PongMessage | ErrorMessage;
+
+function authenticationDescriptor(principal: ClientPrincipal): AuthenticationDescriptor {
+  if (principal.kind === "anonymous") return Object.freeze({ principal: "anonymous" });
+  const provenance = Object.freeze({ issuer: principal.issuer, subject: principal.subject });
+  return principal.kind === "user"
+    ? Object.freeze({ principal: "user", identity: principal.identity, provenance })
+    : Object.freeze({ principal: "workload", provenance });
+}
 
 /**
  * A bounded transport queue. Control writes use reserved capacity, while
@@ -527,7 +536,7 @@ export class Session {
         t: "welcome",
         clientSessionId,
         authEpoch: this.authEpoch,
-        principal: principal.kind,
+        ...authenticationDescriptor(principal),
       });
       if (this.isClosed()) return;
       this.paused = false;
@@ -669,7 +678,7 @@ export class Session {
           t: "auth",
           attemptId: message.attemptId,
           authEpoch: nextEpoch,
-          principal: result.kind,
+          ...authenticationDescriptor(result),
         };
         await this.sendControl(ack);
         if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;

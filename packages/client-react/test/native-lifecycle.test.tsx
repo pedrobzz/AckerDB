@@ -13,14 +13,21 @@ import {
   decode,
   encode,
   parseClientMessage,
+  type AuthenticationDescriptor,
   type ClientMessage,
+  type Credential,
+  type Identity,
   type ServerMessage,
   type SubscriptionCursor,
 } from "@dbzz/core";
 import type { DbzzClientClock, DbzzWebSocket, QueryRef } from "@dbzz/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { DbzzProviderConfig, DbzzQueryState } from "@dbzz/client-react";
+import type {
+  DbzzAuthenticationState,
+  DbzzProviderConfig,
+  DbzzQueryState,
+} from "@dbzz/client-react";
 
 // The native entry composes the Expo/React Native platform modules, which
 // only exist inside a React Native app; mocks stand in for all three. The
@@ -37,7 +44,20 @@ mock.module("expo-crypto", () => ({
   },
 }));
 
-const { DbzzProvider, useConnectionState, useQuery } = await import("../src/index.native.ts");
+const { DbzzProvider, useAuthentication, useConnectionState, useQuery } = await import(
+  "../src/index.native.ts"
+);
+
+const USER_AUTHENTICATION = {
+  principal: "user",
+  identity: 7n as Identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-before" },
+} satisfies AuthenticationDescriptor;
+const FOREGROUND_AUTHENTICATION = {
+  principal: "user",
+  identity: USER_AUTHENTICATION.identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-after" },
+} satisfies AuthenticationDescriptor;
 
 interface ClockTask {
   at: number;
@@ -118,14 +138,17 @@ class FakeSocket implements DbzzWebSocket {
     this.onclose?.();
   }
 
-  welcome(clientSessionId: string): void {
+  welcome(
+    clientSessionId: string,
+    descriptor: AuthenticationDescriptor = { principal: "anonymous" },
+  ): void {
     this.onopen?.();
     this.receive({
       v: PROTOCOL_VERSION,
       t: "welcome",
       clientSessionId,
       authEpoch: 0,
-      principal: "anonymous",
+      ...descriptor,
     });
   }
 
@@ -155,7 +178,7 @@ interface Harness {
   live(): FakeSocket;
 }
 
-function createHarness(): Harness {
+function createHarness(credential: Credential = { kind: "anonymous" }): Harness {
   const clock = new ManualClock();
   const sockets: FakeSocket[] = [];
   // Socket closes are recorded into the shared AppState log so listener
@@ -167,7 +190,7 @@ function createHarness(): Harness {
     closeOrder,
     config: {
       url: "http://native-lifecycle.test",
-      credential: { kind: "anonymous" },
+      credential,
       clientSessionId: SESSION,
       clock,
       random: () => 0,
@@ -220,6 +243,19 @@ function Report(): ReactNode {
   );
 }
 
+function describeAuthentication(state: DbzzAuthenticationState): string {
+  if (state.phase === "authenticated" && state.authentication.principal === "user") {
+    return `${state.authentication.identity}:${state.authentication.provenance.subject}`;
+  }
+  return state.phase;
+}
+
+function AuthenticationReport(): ReactNode {
+  const authentication = useAuthentication();
+  const connection = useConnectionState();
+  return <span>{connection.phase}/{describeAuthentication(authentication.state)}</span>;
+}
+
 async function render(root: Root, element: ReactNode): Promise<void> {
   await act(async () => {
     root.render(element);
@@ -233,6 +269,46 @@ async function platform(state: Parameters<typeof setAppState>[0]): Promise<void>
 }
 
 describe("native AppState lifecycle through the provider", () => {
+  test("foreground reauthentication restores the same Identity before ready", async () => {
+    actEnvironment(true);
+    appStateLog.length = 0;
+    setAppState("active");
+    const harness = createHarness({ kind: "bearer", token: "token-a" });
+    const container = mountPoint();
+    const root = createRoot(container);
+    await render(
+      root,
+      <StrictMode>
+        <DbzzProvider config={harness.config}>
+          <AuthenticationReport />
+        </DbzzProvider>
+      </StrictMode>,
+    );
+
+    await act(async () => {
+      harness.live().welcome(SESSION, USER_AUTHENTICATION);
+    });
+    expect(container.textContent).toBe("ready/7:user-before");
+
+    await platform("background");
+    expect(container.textContent).toBe("suspended/authenticating");
+    await platform("active");
+    expect(container.textContent).toBe("resuming/authenticating");
+    const replacement = harness.live();
+    await act(async () => {
+      replacement.welcome(SESSION, FOREGROUND_AUTHENTICATION);
+    });
+    expect(container.textContent).toBe("ready/7:user-after");
+    expect(replacement.framesOf("hello")[0]?.credential).toEqual({
+      kind: "bearer",
+      token: "token-a",
+    });
+
+    await act(async () => root.unmount());
+    expect(appStateListenerCount()).toBe(0);
+    actEnvironment(false);
+  });
+
   test("a mounted query survives background suspension with one replacement socket", async () => {
     actEnvironment(true);
     appStateLog.length = 0;

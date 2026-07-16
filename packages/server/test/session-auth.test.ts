@@ -831,6 +831,25 @@ describe("Session Protocol-2 ownership", () => {
       "application:transition:1",
       "control:auth:2",
     ]);
+    const accepted = messagesOfType(sink.controls, "auth")[0]!;
+    expect(accepted).toEqual({
+      v: PROTOCOL_VERSION,
+      t: "auth",
+      attemptId: 2,
+      authEpoch: 1,
+      principal: "user",
+      identity: 1n as Identity,
+      provenance: { issuer: "https://issuer.example/", subject: "second" },
+    });
+    expect(Object.keys(accepted).sort()).toEqual([
+      "attemptId",
+      "authEpoch",
+      "identity",
+      "principal",
+      "provenance",
+      "t",
+      "v",
+    ]);
 
     first.resolve(principal("first"));
     await settle();

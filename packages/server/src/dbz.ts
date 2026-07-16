@@ -4,12 +4,11 @@
  * value in a dbzz app. They compose like Zod: any validator nests inside
  * `array`, `object`, `union` and `nullable`.
  */
-import { encode, WireError } from "@dbzz/core";
+import { encode, WireError, type Identity } from "@dbzz/core";
+
+export type { Identity } from "@dbzz/core";
 
 export class ValidationError extends Error {}
-
-/** Branded bigint: only `ctx.auth.identity` (or another Identity) satisfies it. */
-export type Identity = bigint & { readonly __dbzzIdentity: unique symbol };
 
 /** JSON-serializable description of a validator, used for schema snapshots. */
 export type Descriptor = { k: string } & Record<string, unknown>;

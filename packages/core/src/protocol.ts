@@ -1,3 +1,5 @@
+import type { Identity } from "./identity.ts";
+
 /**
  * Protocol 2 is the executable client/server envelope contract. Application
  * arguments, results, and event rows remain opaque and keep their inferred
@@ -15,6 +17,8 @@ const MAX_REFERENCE_LENGTH = 512;
 const MAX_CURSOR_PART_LENGTH = 512;
 const MAX_SAFE_MESSAGE_LENGTH = 512;
 const MAX_SSE_TOKEN_LENGTH = 128;
+const MAX_PROVENANCE_PART_LENGTH = MAX_CREDENTIAL_BYTES;
+const MAX_IDENTITY = 2n ** 63n - 1n;
 
 export const OUTCOME_CODES = [
   "malformed",
@@ -60,6 +64,25 @@ export type DurabilityPolicy = (typeof DURABILITY_POLICIES)[number];
 
 export const PRINCIPAL_KINDS = ["anonymous", "user", "workload", "system"] as const;
 export type PrincipalKind = (typeof PRINCIPAL_KINDS)[number];
+
+/** Exact external account that produced the currently accepted credential. */
+export interface CredentialProvenance {
+  readonly issuer: string;
+  readonly subject: string;
+}
+
+/**
+ * Secret-free client view of the accepted principal. System principals are
+ * local-only and therefore intentionally absent from this wire contract.
+ */
+export type AuthenticationDescriptor =
+  | { readonly principal: "anonymous" }
+  | {
+      readonly principal: "user";
+      readonly identity: Identity;
+      readonly provenance: CredentialProvenance;
+    }
+  | { readonly principal: "workload"; readonly provenance: CredentialProvenance };
 
 export interface Outcome {
   code: OutcomeCode;
@@ -187,17 +210,15 @@ export type ClientMessage =
   | MutationMessage
   | PingMessage;
 
-export interface WelcomeMessage extends Frame<"welcome"> {
+export type WelcomeMessage = Frame<"welcome"> & AuthenticationDescriptor & {
   clientSessionId: string;
   authEpoch: number;
-  principal: PrincipalKind;
-}
+};
 
-export interface AuthenticatedMessage extends Frame<"auth"> {
+export type AuthenticatedMessage = Frame<"auth"> & AuthenticationDescriptor & {
   attemptId: number;
   authEpoch: number;
-  principal: PrincipalKind;
-}
+};
 
 export interface TransitionMessage extends Frame<"transition"> {
   id: number;
@@ -292,7 +313,6 @@ type ObjectValue = Record<string, unknown>;
 const outcomeCodes = new Set<string>(OUTCOME_CODES);
 const resourceClasses = new Set<string>(RESOURCE_CLASSES);
 const durabilityPolicies = new Set<string>(DURABILITY_POLICIES);
-const principalKinds = new Set<string>(PRINCIPAL_KINDS);
 const uuidV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Extract the embedded Unix-millisecond timestamp from a validated UUIDv7. */
@@ -393,6 +413,42 @@ export function parseCredential(value: unknown): Credential {
     return result as unknown as Credential;
   }
   return malformed("unknown credential kind");
+}
+
+function parseCredentialProvenance(value: unknown): CredentialProvenance {
+  const result = object(value, "credential provenance");
+  exact(result, ["issuer", "subject"]);
+  string(result.issuer, "credential provenance issuer", MAX_PROVENANCE_PART_LENGTH);
+  string(result.subject, "credential provenance subject", MAX_PROVENANCE_PART_LENGTH);
+  return result as unknown as CredentialProvenance;
+}
+
+function parseAuthenticationDescriptor(
+  result: ObjectValue,
+  frameFields: readonly string[],
+): void {
+  switch (result.principal) {
+    case "anonymous":
+      exact(result, [...frameFields, "principal"]);
+      return;
+    case "user":
+      exact(result, [...frameFields, "principal", "identity", "provenance"]);
+      if (
+        typeof result.identity !== "bigint" ||
+        result.identity <= 0n ||
+        result.identity > MAX_IDENTITY
+      ) {
+        malformed("identity must be a positive signed 64-bit bigint");
+      }
+      parseCredentialProvenance(result.provenance);
+      return;
+    case "workload":
+      exact(result, [...frameFields, "principal", "provenance"]);
+      parseCredentialProvenance(result.provenance);
+      return;
+    default:
+      malformed("unknown client principal kind");
+  }
 }
 
 export function parseOutcome(value: unknown): Outcome {
@@ -607,16 +663,14 @@ export function parseServerMessage(value: unknown): ServerMessage {
   const result = frame(value);
   switch (result.t) {
     case "welcome":
-      exact(result, ["v", "t", "clientSessionId", "authEpoch", "principal"]);
+      parseAuthenticationDescriptor(result, ["v", "t", "clientSessionId", "authEpoch"]);
       string(result.clientSessionId, "clientSessionId", MAX_SESSION_ID_LENGTH);
       nonNegativeInteger(result.authEpoch, "authEpoch");
-      enumValue<PrincipalKind>(result.principal, "principal kind", principalKinds);
       break;
     case "auth":
-      exact(result, ["v", "t", "attemptId", "authEpoch", "principal"]);
+      parseAuthenticationDescriptor(result, ["v", "t", "attemptId", "authEpoch"]);
       protocolId(result.attemptId, "attemptId");
       nonNegativeInteger(result.authEpoch, "authEpoch");
-      enumValue<PrincipalKind>(result.principal, "principal kind", principalKinds);
       break;
     case "transition":
       exact(result, ["v", "t", "id", "transition"]);

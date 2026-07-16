@@ -5,6 +5,7 @@ import {
   type Credential,
   type DbzzAuthentication,
   type DbzzAuthenticationState,
+  type Identity,
   type UseAuthenticationResult,
 } from "@dbzz/client-react";
 import type { ReactNode } from "react";
@@ -47,6 +48,39 @@ function missesBlockedPhases(state: DbzzAuthenticationState): string {
   }
 }
 
+function describeConfirmed(authentication: DbzzAuthentication): string {
+  switch (authentication.principal) {
+    case "anonymous":
+      // @ts-expect-error anonymous state cannot carry a user Identity
+      void authentication.identity;
+      // @ts-expect-error anonymous state has no credential provenance
+      void authentication.provenance;
+      return "anonymous";
+    case "user": {
+      const identity: Identity = authentication.identity;
+      const issuer: string = authentication.provenance.issuer;
+      const subject: string = authentication.provenance.subject;
+      // @ts-expect-error accepted client state never exposes bearer credentials
+      void authentication.token;
+      // @ts-expect-error selected provider claims stay server-side
+      void authentication.claims;
+      // @ts-expect-error token identifiers stay server-side
+      void authentication.tokenId;
+      return `${identity}:${issuer}:${subject}`;
+    }
+    case "workload":
+      // @ts-expect-error workload principals structurally have no user Identity
+      void authentication.identity;
+      return `${authentication.provenance.issuer}:${authentication.provenance.subject}`;
+    default:
+      return assertNever(authentication);
+  }
+}
+
+// @ts-expect-error system principals are local-only and cannot enter client state
+const systemAuthentication: DbzzAuthentication = { authEpoch: 0, principal: "system" };
+void systemAuthentication;
+
 // --- per-phase payloads -------------------------------------------------------
 
 declare const authenticating: Extract<DbzzAuthenticationState, { phase: "authenticating" }>;
@@ -58,9 +92,18 @@ authenticating.authentication;
 
 declare const authenticated: Extract<DbzzAuthenticationState, { phase: "authenticated" }>;
 authenticated.authentication.authEpoch satisfies number;
-authenticated.authentication.principal satisfies string;
+authenticated.authentication.principal satisfies "user" | "workload";
+// @ts-expect-error an authenticated phase can never carry the anonymous descriptor
+authenticated.authentication satisfies Extract<DbzzAuthentication, { principal: "anonymous" }>;
 // @ts-expect-error a confirmed principal carries no error
 authenticated.error;
+
+declare const unauthenticated: Extract<DbzzAuthenticationState, { phase: "unauthenticated" }>;
+unauthenticated.authentication.principal satisfies "anonymous";
+// @ts-expect-error an anonymous phase never exposes user Identity
+void unauthenticated.authentication.identity;
+// @ts-expect-error an anonymous phase never exposes credential provenance
+void unauthenticated.authentication.provenance;
 
 declare const blocked: Extract<DbzzAuthenticationState, { phase: "refresh-required" }>;
 blocked.error.code satisfies string;
@@ -93,4 +136,4 @@ function Operations(): ReactNode {
   return null;
 }
 
-export { Operations, describeAuthentication, missesBlockedPhases };
+export { Operations, describeAuthentication, describeConfirmed, missesBlockedPhases };

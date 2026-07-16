@@ -5,8 +5,10 @@ import {
   decode,
   encode,
   parseClientMessage,
+  type AuthenticationDescriptor,
   type ClientMessage,
   type Credential,
+  type Identity,
   type ServerMessage,
 } from "@dbzz/core";
 import type {
@@ -27,6 +29,16 @@ import {
 } from "@dbzz/client-react";
 
 const SESSION_ID = "react-auth-session";
+const USER_AUTHENTICATION = {
+  principal: "user",
+  identity: 42n as Identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-1" },
+} satisfies AuthenticationDescriptor;
+const REFRESHED_USER_AUTHENTICATION = {
+  principal: "user",
+  identity: USER_AUTHENTICATION.identity,
+  provenance: { issuer: "https://issuer.example", subject: "user-1-refreshed" },
+} satisfies AuthenticationDescriptor;
 
 interface ClockTask {
   at: number;
@@ -169,9 +181,19 @@ function createHarness(): Harness {
   };
 }
 
-function welcome(socket: FakeSocket, principal: "anonymous" | "user" = "anonymous", authEpoch = 0): void {
+function welcome(
+  socket: FakeSocket,
+  descriptor: AuthenticationDescriptor = { principal: "anonymous" },
+  authEpoch = 0,
+): void {
   socket.open();
-  socket.receive({ v: PROTOCOL_VERSION, t: "welcome", clientSessionId: SESSION_ID, authEpoch, principal });
+  socket.receive({
+    v: PROTOCOL_VERSION,
+    t: "welcome",
+    clientSessionId: SESSION_ID,
+    authEpoch,
+    ...descriptor,
+  });
 }
 
 function describeAuthentication(state: DbzzAuthenticationState): string {
@@ -273,7 +295,7 @@ describe("useAuthentication", () => {
     expect(container.textContent).toBe("authenticating:bearer|connecting");
 
     await act(async () => {
-      welcome(harness.live(), "user", 3);
+      welcome(harness.live(), USER_AUTHENTICATION, 3);
     });
     expect(container.textContent).toBe("authenticated:user@3|ready");
     await act(async () => {
@@ -287,7 +309,7 @@ describe("useAuthentication", () => {
     const root = createRoot(container);
     await render(root, app(harness.config({ kind: "bearer", token: "token-a" })));
     await act(async () => {
-      welcome(harness.live(), "user");
+      welcome(harness.live(), USER_AUTHENTICATION);
     });
 
     operationIdentities.length = 0;
@@ -308,10 +330,22 @@ describe("useAuthentication", () => {
         t: "auth",
         attemptId: attempt.attemptId,
         authEpoch: 5,
-        principal: "user",
+        ...REFRESHED_USER_AUTHENTICATION,
       });
     });
-    expect(await refresh).toEqual({ authEpoch: 5, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 5, ...REFRESHED_USER_AUTHENTICATION });
+    const state = operations().state;
+    if (state.phase !== "authenticated" || state.authentication.principal !== "user") {
+      throw new Error(`unexpected ${state.phase}`);
+    }
+    expect(state.authentication.identity).toBe(USER_AUTHENTICATION.identity);
+    expect(state.authentication.provenance).toEqual(REFRESHED_USER_AUTHENTICATION.provenance);
+    expect(Object.keys(state.authentication).sort()).toEqual([
+      "authEpoch",
+      "identity",
+      "principal",
+      "provenance",
+    ]);
     expect(container.textContent).toBe("authenticated:user@5|ready");
 
     // Every committed render of this lifetime observed the same callable.
@@ -338,7 +372,7 @@ describe("useAuthentication", () => {
     );
     await render(root, tree(false));
     await act(async () => {
-      welcome(harness.live(), "user");
+      welcome(harness.live(), USER_AUTHENTICATION);
     });
     expect(container.textContent).toBe("authenticated:user@0|ready");
 
@@ -374,7 +408,7 @@ describe("useAuthentication", () => {
     const root = createRoot(container);
     await render(root, app(harness.config({ kind: "bearer", token: "token-a" })));
     await act(async () => {
-      welcome(harness.live(), "user");
+      welcome(harness.live(), USER_AUTHENTICATION);
     });
 
     let refresh!: Promise<unknown>;
@@ -410,7 +444,7 @@ describe("useAuthentication", () => {
     const root = createRoot(container);
     await render(root, app(harness.config({ kind: "bearer", token: "token-a" })));
     await act(async () => {
-      welcome(harness.live(), "user");
+      welcome(harness.live(), USER_AUTHENTICATION);
     });
     expect(container.textContent).toBe("authenticated:user@0|ready");
 
@@ -432,6 +466,10 @@ describe("useAuthentication", () => {
     });
     expect(await signOut).toEqual({ authEpoch: 1, principal: "anonymous" });
     expect(container.textContent).toBe("unauthenticated@1|ready");
+    const signedOut = operations().state;
+    if (signedOut.phase !== "unauthenticated") throw new Error(`unexpected ${signedOut.phase}`);
+    expect("identity" in signedOut.authentication).toBe(false);
+    expect("provenance" in signedOut.authentication).toBe(false);
 
     // The stored credential is now anonymous: the reconnect handshake presents
     // it before any authenticated work is restored.
@@ -461,7 +499,7 @@ describe("useAuthentication", () => {
     const root = createRoot(container);
     await render(root, app(harness.config({ kind: "bearer", token: "token-expired" })));
     await act(async () => {
-      welcome(harness.live(), "user");
+      welcome(harness.live(), USER_AUTHENTICATION);
     });
 
     await act(async () => {
@@ -492,7 +530,7 @@ describe("useAuthentication", () => {
     expect(container.textContent).toBe("authenticating:bearer|reconnecting");
     const recovered = harness.live();
     await act(async () => {
-      welcome(recovered, "user");
+      welcome(recovered, USER_AUTHENTICATION);
     });
     // The recovery hello presented the fresh credential, so its welcome is
     // the verification: one round-trip, no separate auth frame.
@@ -500,7 +538,7 @@ describe("useAuthentication", () => {
     if (hello?.t !== "hello") throw new Error("expected a hello frame");
     expect(hello.credential).toEqual({ kind: "bearer", token: "token-fresh" });
     expect(recovered.frames().some((frame) => frame.t === "auth")).toBe(false);
-    expect(await refresh).toEqual({ authEpoch: 0, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 0, ...USER_AUTHENTICATION });
     expect(container.textContent).toBe("authenticated:user@0|ready");
     await act(async () => {
       root.unmount();
@@ -514,7 +552,7 @@ describe("useAuthentication", () => {
     const root = createRoot(container);
     await render(root, app(harness.config({ kind: "bearer", token: "token-a" })));
     await act(async () => {
-      welcome(harness.live(), "user");
+      welcome(harness.live(), USER_AUTHENTICATION);
     });
     expect(container.textContent).toBe("authenticated:user@0|ready");
     const firstLifetime = harness.live();

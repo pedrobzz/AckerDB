@@ -17,6 +17,8 @@ import {
   parseSseMessage,
   parseSubscriptionTransition,
   uuidV7Timestamp,
+  type AuthenticatedMessage,
+  type Identity,
   type SubscriptionCursor,
   type TransitionMessage,
 } from "@dbzz/core";
@@ -293,9 +295,16 @@ describe("live events and operation results", () => {
         principal: "anonymous",
       }).t,
     ).toBe("welcome");
-    expect(
-      parseServerMessage({ v: 2, t: "auth", attemptId: 2, authEpoch: 1, principal: "user" }).t,
-    ).toBe("auth");
+    const userAuthentication = {
+      v: 2,
+      t: "auth",
+      attemptId: 2,
+      authEpoch: 1,
+      principal: "user",
+      identity: 7n as Identity,
+      provenance: { issuer: "https://issuer.example", subject: "user-7" },
+    } satisfies AuthenticatedMessage;
+    expect(parseServerMessage(decode(encode(userAuthentication)))).toEqual(userAuthentication);
     expect(
       parseServerMessage({
         v: 2,
@@ -304,6 +313,53 @@ describe("live events and operation results", () => {
         outcome: { code: "unauthenticated", retryable: false, message: "authentication required" },
       }).t,
     ).toBe("err");
+  });
+
+  test("validates the exact secret-free authentication descriptor union", () => {
+    expect(
+      parseServerMessage({
+        v: 2,
+        t: "welcome",
+        clientSessionId: "client-1",
+        authEpoch: 0,
+        principal: "workload",
+        provenance: { issuer: "https://issuer.example", subject: "worker-1" },
+      }),
+    ).toMatchObject({ principal: "workload" });
+
+    for (const descriptor of [
+      { principal: "user" },
+      {
+        principal: "user",
+        identity: 0n,
+        provenance: { issuer: "https://issuer.example", subject: "user-1" },
+      },
+      {
+        principal: "user",
+        identity: 1n,
+        provenance: { issuer: "https://issuer.example", subject: "user-1" },
+        claims: { role: "admin" },
+      },
+      {
+        principal: "workload",
+        identity: 1n,
+        provenance: { issuer: "https://issuer.example", subject: "worker-1" },
+      },
+      { principal: "anonymous", provenance: { issuer: "x", subject: "y" } },
+      { principal: "system" },
+    ]) {
+      expectProtocolError(
+        () =>
+          parseServerMessage({
+            v: 2,
+            t: "auth",
+            attemptId: 1,
+            authEpoch: 1,
+            ...descriptor,
+          }),
+        "malformed",
+      );
+    }
   });
 
   test("models live-only rows, gaps, and resets", () => {
