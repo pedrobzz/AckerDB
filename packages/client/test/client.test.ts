@@ -18,6 +18,7 @@ import {
   type DbzzClientClock,
   type DbzzClientOptions,
   type DbzzLiveEvent,
+  type DbzzConnectionState,
   type DbzzWebSocket,
 } from "@dbzz/client";
 
@@ -1792,5 +1793,141 @@ describe("DbzzClient protocol 2 ownership", () => {
     });
     expect(attempts).toBe(8);
     client.close();
+  });
+});
+
+describe("DbzzClient connection state", () => {
+  test("publishes connecting, ready, reconnecting, and closed with stable snapshots", () => {
+    const { client, sockets } = harness();
+    const phases: string[] = [];
+    const unsubscribe = client.subscribeConnectionState((state) => phases.push(state.phase));
+
+    const initial = client.currentConnectionState;
+    expect(initial).toEqual({ phase: "connecting" });
+    expect(client.currentConnectionState).toBe(initial);
+
+    client.connect();
+    expect(sockets).toHaveLength(1);
+    expect(client.currentConnectionState).toBe(initial);
+    client.connect();
+    expect(sockets).toHaveLength(1);
+
+    welcome(client, sockets[0]!);
+    const ready = client.currentConnectionState;
+    expect(ready).toEqual({
+      phase: "ready",
+      authentication: { authEpoch: 0, principal: "anonymous" },
+    });
+    expect(client.currentConnectionState).toBe(ready);
+
+    sockets[0]!.drop();
+    expect(client.currentConnectionState).toEqual({ phase: "reconnecting" });
+    expect(sockets).toHaveLength(1);
+
+    client.connect();
+    expect(sockets).toHaveLength(2);
+    expect(client.currentConnectionState.phase).toBe("reconnecting");
+    welcome(client, sockets[1]!);
+    expect(client.currentConnectionState.phase).toBe("ready");
+
+    client.close();
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    client.connect();
+    expect(sockets).toHaveLength(2);
+    expect(phases).toEqual(["ready", "reconnecting", "ready", "closed"]);
+    unsubscribe();
+  });
+
+  test("keeps the connecting snapshot when the first attempt drops before welcome", () => {
+    const { client, sockets } = harness();
+    const phases: string[] = [];
+    client.subscribeConnectionState((state) => phases.push(state.phase));
+    const initial = client.currentConnectionState;
+    client.connect();
+    sockets[0]!.drop();
+    expect(client.currentConnectionState).toBe(initial);
+    expect(phases).toEqual([]);
+    client.close();
+    expect(phases).toEqual(["closed"]);
+  });
+
+  test("reports authentication-blocked with the exact error and recovers through refreshCredential", async () => {
+    const { client, sockets } = harness();
+    const states: DbzzConnectionState[] = [];
+    client.subscribeConnectionState((state) => states.push(state));
+    client.connect();
+    welcome(client, sockets[0]!);
+
+    const blocking = new DbzzClientError({
+      code: "unauthenticated",
+      retryable: false,
+      message: "credential expired",
+    });
+    sockets[0]!.receive({
+      v: 2,
+      t: "err",
+      id: null,
+      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
+    });
+    const blocked = client.currentConnectionState;
+    if (blocked.phase !== "authentication-blocked") throw new Error(`unexpected ${blocked.phase}`);
+    expect(blocked.error).toBeInstanceOf(DbzzClientError);
+    expect(blocked.error.code).toBe(blocking.code);
+    expect(client.currentConnectionState).toBe(blocked);
+
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
+    expect(client.currentConnectionState.phase).toBe("reconnecting");
+    const second = sockets[1]!;
+    second.open();
+    second.receive({
+      v: 2,
+      t: "welcome",
+      clientSessionId: client.clientSessionId,
+      authEpoch: 1,
+      principal: "anonymous",
+    });
+    expect(client.currentConnectionState.phase).toBe("ready");
+    const auth = lastFrame(second, "auth");
+    second.receive({ v: 2, t: "auth", attemptId: auth.attemptId, authEpoch: 2, principal: "user" });
+    expect(await refresh).toEqual({ authEpoch: 2, principal: "user" });
+    const upgraded = client.currentConnectionState;
+    if (upgraded.phase !== "ready") throw new Error(`unexpected ${upgraded.phase}`);
+    expect(upgraded.authentication).toEqual({ authEpoch: 2, principal: "user" });
+    expect(states.map((state) => state.phase)).toEqual([
+      "ready",
+      "authentication-blocked",
+      "reconnecting",
+      "ready",
+      "ready",
+    ]);
+    client.close();
+  });
+
+  test("reports terminal-error with the failure that stopped the client", () => {
+    const { client, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    sockets[0]!.receiveRaw("not json");
+    const terminal = client.currentConnectionState;
+    if (terminal.phase !== "terminal-error") throw new Error(`unexpected ${terminal.phase}`);
+    expect(terminal.error).toBeInstanceOf(DbzzClientError);
+    expect(terminal.error.code).toBe("malformed");
+    expect(client.currentConnectionState).toBe(terminal);
+    client.close();
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+  });
+
+  test("close notifies once and later subscriptions stay silent", () => {
+    const { client } = harness();
+    let notified = 0;
+    client.subscribeConnectionState(() => notified++);
+    client.close();
+    client.close();
+    expect(notified).toBe(1);
+    let late = 0;
+    const unsubscribe = client.subscribeConnectionState(() => late++);
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(late).toBe(0);
+    unsubscribe();
   });
 });

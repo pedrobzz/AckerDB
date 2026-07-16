@@ -92,6 +92,20 @@ export interface DbzzAuthentication {
   readonly principal: PrincipalKind;
 }
 
+/**
+ * Public connection lifecycle. `suspended` and `resuming` are reserved for the
+ * native runtime adapter and are never produced by this client today.
+ */
+export type DbzzConnectionState =
+  | { readonly phase: "connecting" }
+  | { readonly phase: "ready"; readonly authentication: DbzzAuthentication }
+  | { readonly phase: "reconnecting" }
+  | { readonly phase: "authentication-blocked"; readonly error: DbzzClientError }
+  | { readonly phase: "terminal-error"; readonly error: DbzzClientError }
+  | { readonly phase: "closed" }
+  | { readonly phase: "suspended" }
+  | { readonly phase: "resuming" };
+
 export type DbzzLiveEvent<Row> =
   | { readonly kind: "row"; readonly cursor: LiveEventCursor; readonly row: Row }
   | { readonly kind: "gap"; readonly cursor: LiveEventCursor }
@@ -367,6 +381,10 @@ const SYSTEM_CLOCK: DbzzClientClock = {
   clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
 };
 
+const CONNECTING_STATE: DbzzConnectionState = Object.freeze({ phase: "connecting" });
+const RECONNECTING_STATE: DbzzConnectionState = Object.freeze({ phase: "reconnecting" });
+const CLOSED_STATE: DbzzConnectionState = Object.freeze({ phase: "closed" });
+
 const SYSTEM_SOCKET_FACTORY: DbzzWebSocketFactory = (url) =>
   new WebSocket(url) as unknown as DbzzWebSocket;
 const SYSTEM_FETCH: DbzzFetch = (url, init) => fetch(url, init);
@@ -410,6 +428,11 @@ export class DbzzClient {
   private stableHandle?: unknown;
   private pingHandle?: unknown;
   private authentication?: DbzzAuthentication;
+  private connectionState: DbzzConnectionState = CONNECTING_STATE;
+  private readonly connectionStateListeners = new Set<(state: DbzzConnectionState) => void>();
+  private everReady = false;
+  private blockingError?: DbzzClientError;
+  private terminalError?: DbzzClientError;
 
   constructor(options: DbzzClientOptions) {
     this.httpUrl = options.url.replace(/\/$/, "");
@@ -441,6 +464,24 @@ export class DbzzClient {
     return this.authentication === undefined ? undefined : Object.freeze({ ...this.authentication });
   }
 
+  /** Immutable snapshot; the same object is returned until the next transition. */
+  get currentConnectionState(): DbzzConnectionState {
+    return this.connectionState;
+  }
+
+  /** Notifies on connection-state transitions only; read the snapshot for the current value. */
+  subscribeConnectionState(listener: (state: DbzzConnectionState) => void): () => void {
+    this.connectionStateListeners.add(listener);
+    return () => {
+      this.connectionStateListeners.delete(listener);
+    };
+  }
+
+  /** Starts connecting without waiting for an operation. No-op when closed, failed, blocked, or connected. */
+  connect(): void {
+    this.ensureConnected();
+  }
+
   refreshCredential(credential: Credential): Promise<DbzzAuthentication> {
     if (this.closed) throw localError("unavailable", "client is closed", "connection");
     if (this.permanentFailure) {
@@ -453,6 +494,8 @@ export class DbzzClient {
     }
     this.credential = nextCredential;
     this.authBlocked = false;
+    this.blockingError = undefined;
+    this.publishConnectionState();
     const id = this.allocateId();
     let resolve!: (authentication: DbzzAuthentication) => void;
     let reject!: (error: DbzzClientError) => void;
@@ -466,8 +509,11 @@ export class DbzzClient {
       this.authAttempt = undefined;
       this.authBlocked = true;
       this.ready = false;
-      attempt.reject(localError("auth_unavailable", "authentication timed out", "connection"));
+      const error = localError("auth_unavailable", "authentication timed out", "connection");
+      this.blockingError = error;
+      attempt.reject(error);
       this.socket?.close(1008, "authentication timed out");
+      this.publishConnectionState();
     }, this.limits.maxQueryAgeMs);
     this.authAttempt = attempt;
     if (this.ready) this.sendAuth(attempt);
@@ -867,6 +913,8 @@ export class DbzzClient {
     this.ready = false;
     this.socketOpen = false;
     socket?.close(1000, "client closed");
+    this.publishConnectionState();
+    this.connectionStateListeners.clear();
   }
 
   private request(kind: "query" | "mutation", ref: string, args: unknown): Promise<unknown> {
@@ -925,6 +973,34 @@ export class DbzzClient {
     }
   }
 
+  private publishConnectionState(): void {
+    const current = this.connectionState;
+    const next = this.deriveConnectionState(current);
+    if (next === current) return;
+    this.connectionState = next;
+    for (const listener of [...this.connectionStateListeners]) listener(next);
+  }
+
+  private deriveConnectionState(current: DbzzConnectionState): DbzzConnectionState {
+    if (this.closed) return CLOSED_STATE;
+    if (this.permanentFailure) {
+      return current.phase === "terminal-error" && current.error === this.terminalError
+        ? current
+        : Object.freeze({ phase: "terminal-error" as const, error: this.terminalError! });
+    }
+    if (this.authBlocked) {
+      return current.phase === "authentication-blocked" && current.error === this.blockingError
+        ? current
+        : Object.freeze({ phase: "authentication-blocked" as const, error: this.blockingError! });
+    }
+    if (this.ready) {
+      return current.phase === "ready" && current.authentication === this.authentication
+        ? current
+        : Object.freeze({ phase: "ready" as const, authentication: this.authentication! });
+    }
+    return this.everReady ? RECONNECTING_STATE : CONNECTING_STATE;
+  }
+
   private ensureConnected(): void {
     if (this.closed || this.permanentFailure || this.authBlocked || this.socket) return;
     this.clearReconnectTimer();
@@ -971,6 +1047,7 @@ export class DbzzClient {
     if (!this.closed && !this.permanentFailure && !this.authBlocked && this.hasReconnectWork()) {
       this.scheduleReconnect();
     }
+    this.publishConnectionState();
   }
 
   private handleIncoming(socket: DbzzWebSocket, data: unknown): void {
@@ -1002,7 +1079,9 @@ export class DbzzClient {
         }
         if (this.ready) return;
         this.ready = true;
+        this.everReady = true;
         this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
+        this.publishConnectionState();
         if (this.authAttempt) this.sendAuth(this.authAttempt);
         this.flushState();
         this.startConnectionTimers();
@@ -1012,6 +1091,7 @@ export class DbzzClient {
         if (!attempt || attempt.id !== frame.attemptId) return;
         this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
         this.resolveAuth(attempt, this.authentication);
+        this.publishConnectionState();
         this.flushState();
         return;
       }
@@ -1329,6 +1409,7 @@ export class DbzzClient {
   private blockAuthentication(error: DbzzClientError): void {
     this.authBlocked = true;
     this.ready = false;
+    this.blockingError = error;
     if (this.authAttempt) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.reject(error);
@@ -1337,11 +1418,13 @@ export class DbzzClient {
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
     this.socket?.close(1008, "authentication failed");
+    this.publishConnectionState();
   }
 
   private failPermanently(error: DbzzClientError): void {
     if (this.permanentFailure || this.closed) return;
     this.permanentFailure = true;
+    this.terminalError = error;
     this.clearReconnectTimer();
     if (this.authAttempt) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
@@ -1355,6 +1438,7 @@ export class DbzzClient {
     }
     this.subscriptions.clear();
     this.socket?.close(1002, "protocol failure");
+    this.publishConnectionState();
   }
 
   private scheduleReconnect(): void {
