@@ -645,6 +645,58 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     expect(mounted.errors).toEqual([]);
   });
 
+  test("unmounting only the chat component cancels its active dbzz stream", async () => {
+    // useChat never aborts an active response on unmount, so the hook owns
+    // this boundary. The provider stays mounted: only the hook's own
+    // lifetime can release the stream here.
+    const config = {
+      url: app.base,
+      credential: { kind: "anonymous" } as const,
+      createWebSocket: (url: string) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+    };
+    let phase = "";
+    let chat: Chat | undefined;
+
+    function Phase(): ReactNode {
+      phase = useConnectionState().phase;
+      return null;
+    }
+    function ChatProbe(): ReactNode {
+      const transport = useChatTransport(standardRef("ai.holdMidStream"));
+      chat = useChat<UIMessage>({ id: "chat-orphan", transport });
+      return null;
+    }
+    function Harness({ showChat }: { showChat: boolean }): ReactNode {
+      return (
+        <DbzzProvider config={config}>
+          <Phase />
+          {showChat ? <ChatProbe /> : null}
+        </DbzzProvider>
+      );
+    }
+
+    const root: Root = createRoot(mountPoint());
+    try {
+      root.render(<Harness showChat={true} />);
+      await until(() => phase === "ready", "the provider to reach ready");
+      void chat!.sendMessage({ text: "orphan me" });
+      await until(() => {
+        const last = chat!.messages.at(-1);
+        return (
+          last?.role === "assistant" &&
+          last.parts.some((part) => part.type === "text" && part.text === "partial")
+        );
+      }, "the partial text to stream");
+
+      root.render(<Harness showChat={false} />);
+      await midStreamHoldReleased.promise;
+      await until(() => app.runtime.status().activeSse === 0, "the server stream to settle");
+      expect(phase).toBe("ready");
+    } finally {
+      root.unmount();
+    }
+  });
+
   test("the transport identity is stable across rerenders", async () => {
     const mounted = await mount({
       id: "chat-stable",

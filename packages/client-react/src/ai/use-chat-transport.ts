@@ -97,6 +97,11 @@ function standardChatArgs<UI_MESSAGE extends UIMessage>(
 interface Cell<A, UI_MESSAGE extends UIMessage> {
   call: SseProcedureCall<A, InferUIMessageChunk<UI_MESSAGE>>;
   prepareArgs: ((request: DbzzChatRequest<UI_MESSAGE>) => A) | undefined;
+  // AI SDK v7's useChat never aborts its active response on unmount, so the
+  // hook owns that boundary: unmounting aborts this lifetime, which cancels
+  // every request still streaming through the cell (and any send a retained
+  // transport issues afterwards) with the client's typed cancellation.
+  lifetime: AbortController;
   readonly transport: ChatTransport<UI_MESSAGE>;
 }
 
@@ -107,6 +112,7 @@ function createCell<A, UI_MESSAGE extends UIMessage>(
   const cell: Cell<A, UI_MESSAGE> = {
     call,
     prepareArgs,
+    lifetime: new AbortController(),
     transport: {
       sendMessages: ({ trigger, chatId, messageId, messages, abortSignal, headers, body, metadata }) => {
         const request: DbzzChatRequest<UI_MESSAGE> = {
@@ -125,13 +131,36 @@ function createCell<A, UI_MESSAGE extends UIMessage>(
           cell.prepareArgs === undefined
             ? (standardChatArgs(request) as unknown as A)
             : cell.prepareArgs(request);
+        // One owned controller per request: the AI SDK's abort (useChat's
+        // stop) and the hook's unmount lifetime both funnel through it into
+        // the dbzz call, which aborts the request and releases the server
+        // iterator. The SDK's signal is per-request, so its listener dies
+        // with the request; on the hook-lived lifetime signal one inert
+        // closure per completed request remains until unmount — bounded by
+        // the conversation and released with the hook.
+        const owned = new AbortController();
+        const lifetime = cell.lifetime.signal;
+        if (lifetime.aborted) owned.abort(lifetime.reason);
+        else {
+          lifetime.addEventListener("abort", () => owned.abort(lifetime.reason), {
+            once: true,
+            signal: owned.signal,
+          });
+        }
+        if (abortSignal !== undefined) {
+          if (abortSignal.aborted) owned.abort(abortSignal.reason);
+          else {
+            abortSignal.addEventListener("abort", () => owned.abort(abortSignal.reason), {
+              once: true,
+              signal: owned.signal,
+            });
+          }
+        }
         // The stream is lazy — nothing reaches the server before the AI
-        // SDK's first read — and `abortSignal` (useChat's stop/unmount)
-        // aborts the underlying dbzz request, which releases the server
-        // iterator. Chunks are the server-validated values themselves; no
-        // second SSE encoding exists on this path.
+        // SDK's first read. Chunks are the server-validated values
+        // themselves; no second SSE encoding exists on this path.
         return Promise.resolve<ReadableStream<UIMessageChunk>>(
-          cell.call(args, { signal: abortSignal }),
+          cell.call(args, { signal: owned.signal }),
         );
       },
       // dbzz SSE procedures are non-resumable by contract: report "no active
@@ -149,8 +178,10 @@ function createCell<A, UI_MESSAGE extends UIMessage>(
  * procedure's arguments — directly when the procedure declares the standard
  * {@link DbzzChatArgs} shape, through a typed `prepareArgs` mapper otherwise
  * — and the server's validated `UIMessageChunk` values flow out as the
- * stream the AI SDK consumes. Stopping generation aborts the dbzz request;
- * stream reconnection is explicitly unsupported.
+ * stream the AI SDK consumes. Stopping generation aborts the dbzz request,
+ * unmounting the hook aborts every stream it started (useChat leaves
+ * responses running on unmount), and stream reconnection is explicitly
+ * unsupported.
  *
  * The returned transport's identity is stable for the hook instance's
  * lifetime; each request uses the callable and mapper from the latest
@@ -176,5 +207,12 @@ export function useChatTransport<UI_MESSAGE extends UIMessage, A>(
     cell.call = call;
     cell.prepareArgs = prepareArgs;
   });
+  // The hook's lifetime bounds every stream it started: unmount aborts them
+  // (useChat itself never stops an active response on unmount), and a
+  // Strict Mode remount starts a fresh lifetime for the same cell.
+  useCommitEffect(() => {
+    if (cell.lifetime.signal.aborted) cell.lifetime = new AbortController();
+    return () => cell.lifetime.abort();
+  }, [cell]);
   return cell.transport;
 }
