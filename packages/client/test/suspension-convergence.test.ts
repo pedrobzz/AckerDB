@@ -1004,6 +1004,40 @@ const realSchema = defineSchema({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ctx = any;
 
+/**
+ * A test-controlled pause inside the real `messages.send` handler, keyed by
+ * message body: the one deterministic way to background a client while its
+ * mutation is admitted but not yet committed. `entries` counts handler
+ * executions — the direct observation that a replay arriving during the
+ * original's execution cannot run the handler twice.
+ */
+interface SendGate {
+  readonly entered: Promise<void>;
+  release(): void;
+  entries(): number;
+}
+
+const sendGates = new Map<
+  string,
+  { signalEntered: () => void; blocked: Promise<void>; entries: number }
+>();
+
+function armSendGate(body: string): SendGate {
+  const entered = Promise.withResolvers<void>();
+  const blocked = Promise.withResolvers<void>();
+  const state = {
+    signalEntered: () => entered.resolve(undefined),
+    blocked: blocked.promise,
+    entries: 0,
+  };
+  sendGates.set(body, state);
+  return {
+    entered: entered.promise,
+    release: () => blocked.resolve(undefined),
+    entries: () => state.entries,
+  };
+}
+
 function realRegistry(): Registry {
   return new Registry({
     messages: {
@@ -1018,7 +1052,15 @@ function realRegistry(): Registry {
       send: mutation({
         access: "public",
         args: { channelId: dbz.bigint(), body: dbz.string() },
-        handler: async (ctx: Ctx, args: Ctx) => await ctx.db.messages.insert(args),
+        handler: async (ctx: Ctx, args: Ctx) => {
+          const gate = sendGates.get(args.body);
+          if (gate) {
+            gate.entries++;
+            gate.signalEntered();
+            await gate.blocked;
+          }
+          return await ctx.db.messages.insert(args);
+        },
       }),
     },
     pings: {
@@ -1090,9 +1132,13 @@ interface SuspendableClient {
  * A real client whose lifecycle notifications the test drives and whose
  * timers are all inert (a manual clock that is never advanced): every
  * recovery this section observes runs on lifecycle notifications and socket
- * events alone.
+ * events alone. Tests that need the ordinary reconnect policy to run
+ * override the clock through `overrides`.
  */
-function suspendableClient(url: string): SuspendableClient {
+function suspendableClient(
+  url: string,
+  overrides: Partial<DbzzClientOptions> = {},
+): SuspendableClient {
   let port: DbzzLifecyclePort | undefined;
   const clientFrames: ClientMessage[] = [];
   const client = new DbzzClient({
@@ -1112,6 +1158,7 @@ function suspendableClient(url: string): SuspendableClient {
       port = livePort;
       return () => {};
     },
+    ...overrides,
   });
   return {
     client,
@@ -1123,8 +1170,8 @@ function suspendableClient(url: string): SuspendableClient {
   };
 }
 
-function proxiedMutations(app: RealApp, body: string): Extract<ClientMessage, { t: "m" }>[] {
-  return app.proxy.clientFrames.flatMap(({ message }) =>
+function proxiedMutations(proxy: FrameProxy, body: string): Extract<ClientMessage, { t: "m" }>[] {
+  return proxy.clientFrames.flatMap(({ message }) =>
     message.t === "m" && (message.args as { body?: unknown }).body === body ? [message] : [],
   );
 }
@@ -1157,11 +1204,11 @@ describe("mutation boundaries against a real dbzz server", () => {
         return value;
       });
     await Bun.sleep(20);
-    expect(proxiedMutations(app, "before-send")).toHaveLength(0);
+    expect(proxiedMutations(app.proxy, "before-send")).toHaveLength(0);
 
     port.resume();
     const id = await withDeadline(result, "the before-send settlement");
-    const requests = proxiedMutations(app, "before-send");
+    const requests = proxiedMutations(app.proxy, "before-send");
     expect(requests).toHaveLength(1);
     expect(await committedRows(app, 10n, "before-send")).toEqual([
       { id: id as bigint, channelId: 10n, body: "before-send" },
@@ -1193,7 +1240,7 @@ describe("mutation boundaries against a real dbzz server", () => {
     port.resume();
     const id = await withDeadline(result, "the held-send settlement");
 
-    const requests = proxiedMutations(app, "held-send");
+    const requests = proxiedMutations(app.proxy, "held-send");
     expect(requests).toHaveLength(2);
     expect(new Set(requests.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(1);
     expect(new Set(requests.map(({ issuedAt }) => issuedAt)).size).toBe(1);
@@ -1223,6 +1270,86 @@ describe("mutation boundaries against a real dbzz server", () => {
     client.close();
   });
 
+  test(
+    "background while the original is still executing: activation cannot be admitted past it, and one effect settles once it drains",
+    async () => {
+      // The ordinary reconnect policy must run here: the server refuses a
+      // second session for this clientSessionId until the original's
+      // in-flight work drains, so recovery goes through real retries.
+      const { client, port } = suspendableClient(app.proxy.url, {
+        clock: undefined,
+        reconnect: { baseDelayMs: 10, maxDelayMs: 40, stableOpenMs: 10_000 },
+      });
+      client.connect();
+      await waitForPhase(client, "ready");
+
+      const gate = armSendGate("in-flight");
+      try {
+        let settlements = 0;
+        const result = client
+          .mutation("messages.send", { channelId: 15n, body: "in-flight" })
+          .then((value) => {
+            settlements++;
+            return value;
+          });
+        // The server admitted the mutation and its handler is executing.
+        await withDeadline(gate.entered, "the gated handler entry");
+
+        port.suspend();
+        port.resume();
+        // The dangerous interval: activation while the original executes. The
+        // server's session admission is the in-flight idempotency boundary —
+        // no second session for this clientSessionId exists until the
+        // original's operation drains, so no replay can reach an executing
+        // mutation. The client cycles in ordinary reconnect meanwhile.
+        await Bun.sleep(300);
+        const forwardedWhileExecuting = app.proxy.clientFrames.filter(
+          ({ message, forwardedBytes }) =>
+            forwardedBytes !== undefined &&
+            message.t === "m" &&
+            (message.args as { body?: unknown }).body === "in-flight",
+        );
+        expect(forwardedWhileExecuting).toHaveLength(1);
+        expect(gate.entries()).toBe(1);
+        expect(settlements).toBe(0);
+
+        // The original drains: it commits, its receipt dies with its session,
+        // the next reconnect attempt is admitted, and the replay settles from
+        // the durable record.
+        gate.release();
+        const id = await withDeadline(result, "the in-flight settlement");
+
+        const requests = proxiedMutations(app.proxy, "in-flight");
+        expect(requests).toHaveLength(2);
+        expect(new Set(requests.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(1);
+        // One handler execution ever: the replay settled from the record.
+        expect(gate.entries()).toBe(1);
+        const forwardedReceipts = app.proxy.serverFrames.filter(
+          ({ message, forwardedBytes }) =>
+            forwardedBytes !== undefined &&
+            message.t === "ok" &&
+            message.kind === "mutation" &&
+            message.receipt.mutationRequestId === requests[0]!.mutationRequestId,
+        );
+        expect(forwardedReceipts).toHaveLength(1);
+        const receipt = forwardedReceipts[0]!.message;
+        if (receipt.t !== "ok" || receipt.kind !== "mutation") {
+          throw new Error("expected a mutation receipt");
+        }
+        expect(receipt.receipt.replay).toBe("replayed");
+        expect(await committedRows(app, 15n, "in-flight")).toEqual([
+          { id: id as bigint, channelId: 15n, body: "in-flight" },
+        ]);
+        expect(settlements).toBe(1);
+      } finally {
+        // A failure above must not leave the shared app's writer gated.
+        gate.release();
+      }
+      client.close();
+    },
+    15_000,
+  );
+
   test("background mid-response: the committed receipt is lost, the replay dedupes to one effect", async () => {
     const { client, port } = suspendableClient(app.proxy.url);
     client.connect();
@@ -1233,7 +1360,7 @@ describe("mutation boundaries against a real dbzz server", () => {
         message.t === "ok" &&
         message.kind === "mutation" &&
         message.receipt.mutationRequestId ===
-          proxiedMutations(app, "held-receipt")[0]?.mutationRequestId,
+          proxiedMutations(app.proxy, "held-receipt")[0]?.mutationRequestId,
     );
     let settlements = 0;
     const result = client
@@ -1253,7 +1380,7 @@ describe("mutation boundaries against a real dbzz server", () => {
     port.resume();
     const id = await withDeadline(result, "the held-receipt settlement");
 
-    const requests = proxiedMutations(app, "held-receipt");
+    const requests = proxiedMutations(app.proxy, "held-receipt");
     expect(requests).toHaveLength(2);
     expect(new Set(requests.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(1);
     const requestId = requests[0]!.mutationRequestId;
@@ -1307,7 +1434,7 @@ describe("mutation boundaries against a real dbzz server", () => {
     port.resume();
     const id = await withDeadline(result, "the mid-convergence settlement");
 
-    const requests = proxiedMutations(app, "converge");
+    const requests = proxiedMutations(app.proxy, "converge");
     expect(requests).toHaveLength(2);
     expect(new Set(requests.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(1);
     expect(await committedRows(app, 14n, "converge")).toEqual([
@@ -1336,7 +1463,7 @@ describe("mutation boundaries against a real dbzz server", () => {
         return value;
       });
     const id = await withDeadline(result, "the settled mutation");
-    expect(proxiedMutations(app, "settled")).toHaveLength(1);
+    expect(proxiedMutations(app.proxy, "settled")).toHaveLength(1);
 
     port.suspend();
     port.resume();
@@ -1344,7 +1471,7 @@ describe("mutation boundaries against a real dbzz server", () => {
     // A round-trip through the recovered connection is the barrier proving
     // the recovery flush finished without replaying the settled identity.
     await withDeadline(client.query("messages.list", { channelId: 13n }), "the barrier query");
-    expect(proxiedMutations(app, "settled")).toHaveLength(1);
+    expect(proxiedMutations(app.proxy, "settled")).toHaveLength(1);
     expect(await committedRows(app, 13n, "settled")).toEqual([
       { id: id as bigint, channelId: 13n, body: "settled" },
     ]);
@@ -1540,6 +1667,146 @@ describe("server unavailable at activation against a real dbzz server", () => {
         }
       } finally {
         client.close();
+        if (restarted) {
+          await restarted.server.drain();
+          restarted.engine.close("clean");
+        }
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    20_000,
+  );
+
+  test(
+    "a mutation committed before the restart replays from the durable record with its recorded result",
+    async () => {
+      const directory = mkdtempSync(join(tmpdir(), "dbzz-convergence-durable-"));
+      const database = join(directory, "data.db");
+      const engine = new Engine(realSchema, database);
+      reconcile(engine);
+      const runtime = new Runtime({
+        engine,
+        registry: realRegistry(),
+        limits: PRODUCTION_LIMITS,
+        telemetry: false,
+      });
+      const server = serve({ runtime, port: 0 });
+      const upstreamPort = server.port;
+      const proxy = await FrameProxy.listen({ upstreamPort });
+      const { client, port } = suspendableClient(proxy.url);
+      let restarted: { server: ReturnType<typeof serve>; engine: Engine } | undefined;
+      try {
+        const events: DbzzLiveEvent<{ id: bigint; n: number }>[] = [];
+        const kinds = (): string[] => events.map((event) => event.kind);
+        client.subscribeEvent<{ min: number }, { id: bigint; n: number }>(
+          "events.pings",
+          { min: 400 },
+          (event) => events.push(event),
+        );
+        await waitForPhase(client, "ready");
+        await until(() => kinds().length === 1, "the initial reset boundary");
+
+        // The server commits and acknowledges; the acknowledgment never
+        // reaches the client, and the application backgrounds.
+        const held = proxy.holdNextServerFrame(
+          (message) => message.t === "ok" && message.kind === "mutation",
+        );
+        let settlements = 0;
+        const result = client
+          .mutation("messages.send", { channelId: 40n, body: "durable" })
+          .then((value) => {
+            settlements++;
+            return value;
+          });
+        const captured = await held;
+        port.suspend();
+        captured.drop();
+        await settled();
+        expect(settlements).toBe(0);
+
+        // The commit is durable on the original server.
+        const observerBefore = new DbzzClient({
+          url: `http://127.0.0.1:${upstreamPort}`,
+          credential: { kind: "anonymous" },
+        });
+        let committedId: bigint;
+        try {
+          const rows = (await observerBefore.query("messages.list", {
+            channelId: 40n,
+          })) as MessageRow[];
+          expect(rows.filter(({ body }) => body === "durable")).toHaveLength(1);
+          committedId = rows.find(({ body }) => body === "durable")!.id;
+        } finally {
+          observerBefore.close();
+        }
+
+        // The server restarts from the same database while the application
+        // stays backgrounded (a deploy through the background gap).
+        await server.drain();
+        engine.close("clean");
+        await assertTcpPortReleased(upstreamPort);
+        const engine2 = new Engine(realSchema, database);
+        reconcile(engine2);
+        const runtime2 = new Runtime({
+          engine: engine2,
+          registry: realRegistry(),
+          limits: PRODUCTION_LIMITS,
+          telemetry: false,
+        });
+        restarted = { server: serve({ runtime: runtime2, port: upstreamPort }), engine: engine2 };
+
+        port.resume();
+        const id = await withDeadline(result, "the durable replay settlement");
+        // The replay settled from the durable record: the recorded result of
+        // the pre-restart commit, not a fresh execution's.
+        expect(id).toBe(committedId);
+        expect(settlements).toBe(1);
+
+        const requests = proxiedMutations(proxy, "durable");
+        expect(requests).toHaveLength(2);
+        expect(new Set(requests.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(1);
+        expect(new Set(requests.map(({ issuedAt }) => issuedAt)).size).toBe(1);
+        // The only receipt that reached the client is the restarted server's,
+        // and it names the durable replay.
+        const forwardedReceipts = proxy.serverFrames.filter(
+          ({ message, forwardedBytes }) =>
+            forwardedBytes !== undefined &&
+            message.t === "ok" &&
+            message.kind === "mutation" &&
+            message.receipt.mutationRequestId === requests[0]!.mutationRequestId,
+        );
+        expect(forwardedReceipts).toHaveLength(1);
+        const receipt = forwardedReceipts[0]!.message;
+        if (receipt.t !== "ok" || receipt.kind !== "mutation") {
+          throw new Error("expected a mutation receipt");
+        }
+        expect(receipt.receipt.replay).toBe("replayed");
+
+        // Exactly one effect survived the restart, and the event family
+        // recovered behind exactly one fresh boundary.
+        const observerAfter = new DbzzClient({
+          url: `http://127.0.0.1:${upstreamPort}`,
+          credential: { kind: "anonymous" },
+        });
+        try {
+          const rows = (await observerAfter.query("messages.list", {
+            channelId: 40n,
+          })) as MessageRow[];
+          expect(rows.filter(({ body }) => body === "durable")).toEqual([
+            { id: committedId, channelId: 40n, body: "durable" },
+          ]);
+          await until(() => kinds().length === 2, "the post-restart reset boundary");
+          expect(kinds()).toEqual(["reset", "reset"]);
+          await observerAfter.mutation("pings.emit", { n: 401 });
+          await until(() => kinds().length === 3, "the first row after the durable replay");
+          expect(kinds()).toEqual(["reset", "reset", "row"]);
+        } finally {
+          observerAfter.close();
+        }
+      } finally {
+        client.close();
+        proxy.assertBytePreserving();
+        await proxy.close();
         if (restarted) {
           await restarted.server.drain();
           restarted.engine.close("clean");
