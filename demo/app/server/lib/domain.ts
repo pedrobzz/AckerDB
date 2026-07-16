@@ -237,6 +237,59 @@ export async function emitOrderEvent(
   });
 }
 
+export async function cancelOrderItem(
+  db: DatabaseWriter,
+  order: Order,
+  item: OrderItem,
+  message: string,
+): Promise<bigint> {
+  if (item.status !== "ORDERED")
+    conflict("Only a newly ordered item can be cancelled");
+  const now = Date.now();
+  await db.orderItems.patch(item.id, {
+    status: "CANCELLED",
+    statusChangedAt: now,
+  });
+  await clearReminder(db, item.id);
+  await db.orders.patch(order.id, {
+    totalCents: Math.max(
+      0,
+      order.totalCents - item.unitPriceCents * item.quantity,
+    ),
+  });
+  await emitOrderEvent(db, order, {
+    orderItemId: item.id,
+    kind: "ITEM_STATUS",
+    status: "CANCELLED",
+    message,
+    occurredAt: now,
+  });
+  return item.id;
+}
+
+export async function closeOrder(
+  db: DatabaseWriter,
+  order: Order,
+  status: "PAID" | "CANCELLED",
+  totalCents: number,
+  message: string,
+): Promise<void> {
+  const now = Date.now();
+  await db.orders.patch(order.id, {
+    status,
+    totalCents,
+    openUserId: null,
+    openTableId: null,
+    closedAt: now,
+  });
+  await emitOrderEvent(db, order, {
+    kind: "ORDER_STATUS",
+    status,
+    message,
+    occurredAt: now,
+  });
+}
+
 export async function clearReminder(
   db: DatabaseWriter,
   orderItemId: bigint,

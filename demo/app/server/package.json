@@ -6,6 +6,7 @@
     "dev": "dbz dev .",
     "start": "dbz start .",
     "codegen": "dbz codegen .",
+    "test": "bun test ../../scripts/backend.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -2,7 +2,7 @@ import { dbz } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { isStaff } from "../lib/access.ts";
 import {
-  clearReminder,
+  cancelOrderItem,
   conflict,
   emitOrderEvent,
   nextItemStatus,
@@ -84,27 +84,11 @@ export const cancel = mutation({
       (await ctx.db.orderItems.get(args.orderItemId)) ??
       notFound("Order item not found");
     const order = await requireOpenOrder(ctx.db, item.orderId);
-    if (item.status !== "ORDERED")
-      conflict("Only a newly ordered item can be cancelled");
-    const now = Date.now();
-    await ctx.db.orderItems.patch(item.id, {
-      status: "CANCELLED",
-      statusChangedAt: now,
-    });
-    await clearReminder(ctx.db, item.id);
-    await ctx.db.orders.patch(order.id, {
-      totalCents: Math.max(
-        0,
-        order.totalCents - item.unitPriceCents * item.quantity,
-      ),
-    });
-    await emitOrderEvent(ctx.db, order, {
-      orderItemId: item.id,
-      kind: "ITEM_STATUS",
-      status: "CANCELLED",
-      message: `${item.name} was cancelled by the kitchen`,
-      occurredAt: now,
-    });
-    return item.id;
+    return cancelOrderItem(
+      ctx.db,
+      order,
+      item,
+      `${item.name} was cancelled by the kitchen`,
+    );
   },
 });
