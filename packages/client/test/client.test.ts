@@ -1124,12 +1124,15 @@ describe("DbzzClient protocol 2 ownership", () => {
       let streamCancellations = 0;
       const fake204 = {
         status: 204,
-        body: {
+        body: new ReadableStream<Uint8Array>({
+          pull(controller) {
+            controller.enqueue(sseUtf8.encode("not empty"));
+          },
           cancel() {
             acknowledgmentCancellations++;
             return adversarialCancellation(behavior);
           },
-        },
+        }),
         headers: new Headers(),
       } as unknown as Response;
       const { client } = harness({
