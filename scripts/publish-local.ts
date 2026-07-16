@@ -1,5 +1,5 @@
 // bun run publish:local
-// Publishes all 4 packages at their (synced) pinned version to the local
+// Publishes every package at its synced pinned version to the local
 // Verdaccio registry, then tags the release commit as v<version>.
 import { PACKAGES, fail, git, pkgJsonPath, registryUrl, syncedVersion, tryGit } from "./lib";
 
@@ -82,4 +82,4 @@ for (const pkg of PACKAGES) {
 if (!tagCommit) git("tag", tag);
 console.log(`\n✔ published ${published.join(", ")} at ${version} and tagged ${tag}`);
 console.log(`\nUse it in a project (with @dbzz scoped to ${REGISTRY} in its .npmrc):`);
-console.log(`  bun add --exact @dbzz/server@${version}`);
+console.log(`  bun add --exact @dbzz/server@${version} @dbzz/client-react@${version}`);

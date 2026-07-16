@@ -1,5 +1,5 @@
 // Shared helpers for the local release scripts (bump, merge-guard, publish-local).
-export const PACKAGES = ["core", "server", "client", "cli"] as const;
+export const PACKAGES = ["core", "server", "client", "client-react", "cli"] as const;
 
 // The repo-root .npmrc is the single source of truth for the registry:
 // `bun publish` resolves the @dbzz scope from it (a --registry flag would
@@ -45,7 +45,7 @@ export function syncedVersion(read: (pkg: string) => string): string {
   if (parsed.some((p) => p.version !== version)) {
     fail(
       `package versions are out of sync: ${parsed.map((p) => `${p.pkg}=${p.version}`).join(" ")}\n` +
-        `  Fix them to a single version (bun run bump always writes all 4 together).`,
+        `  Fix them to a single version (bun run bump always writes all ${PACKAGES.length} together).`,
     );
   }
   // Inter-deps must stay pinned to the lockstep version: bun publish rewrites

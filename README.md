@@ -21,6 +21,7 @@ backups are verified by restoring them before they are accepted.
 | `@dbzz/core` | Protocol 2 envelopes, wire encoding, outcomes, cursors, and typed function references. |
 | `@dbzz/server` | Schema DSL, SQLite engine, function runtime, authentication, reactivity, transport, limits, and telemetry. |
 | `@dbzz/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, reconnect, and credential refresh. |
+| `@dbzz/client-react` | React and Expo provider/hooks for live queries, mutations, procedures, events, SSE, authentication, and optional AI SDK chat transport. |
 | `@dbzz/cli` | `dbz dev`, `start`, `codegen`, `reset`, `status`, `backup`, and `restore`. |
 
 ## Application shape
