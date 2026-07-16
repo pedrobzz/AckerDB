@@ -223,6 +223,50 @@ describe("DbzzProvider lifecycle", () => {
     expect(harness.clock.taskCount).toBe(0);
   });
 
+  test("a committed reconfiguration never exposes the previous lifetime", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const renderLog: string[] = [];
+
+    function LifetimeProbe({ url }: { url: string }): ReactNode {
+      const state = useConnectionState();
+      renderLog.push(`${url}:${state.phase}`);
+      return (
+        <span>
+          {url}:{state.phase}
+        </span>
+      );
+    }
+
+    const app = (url: string): ReactNode => (
+      <DbzzProvider config={harness.config(url)}>
+        <LifetimeProbe url={url} />
+      </DbzzProvider>
+    );
+
+    await render(root, app("http://one.test"));
+    await act(async () => {
+      harness.live()[0]!.welcome("react-lifecycle-session");
+    });
+    expect(container.textContent).toBe("http://one.test:ready");
+
+    // No render — committed or otherwise — may pair the new configuration
+    // with the previous client's ready state.
+    renderLog.length = 0;
+    await render(root, app("http://two.test"));
+    expect(renderLog).not.toContain("http://two.test:ready");
+    expect(container.textContent).toBe("http://two.test:connecting");
+
+    await act(async () => {
+      harness.live()[0]!.welcome("react-lifecycle-session");
+    });
+    expect(container.textContent).toBe("http://two.test:ready");
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   test("consumers observe transitions through the external store without extra renders when idle", async () => {
     const harness = createHarness();
     const container = mountPoint();

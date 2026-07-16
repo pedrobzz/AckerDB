@@ -501,7 +501,6 @@ export class DbzzClient {
     this.credential = nextCredential;
     this.authBlocked = false;
     this.blockingError = undefined;
-    this.publishConnectionState();
     const id = this.allocateId();
     let resolve!: (authentication: DbzzAuthentication) => void;
     let reject!: (error: DbzzClientError) => void;
@@ -524,6 +523,9 @@ export class DbzzClient {
     this.authAttempt = attempt;
     if (this.ready) this.sendAuth(attempt);
     else this.ensureConnected();
+    // Published last: a listener may reenter close(), which must find the
+    // installed attempt and its expiry timer so it can release them.
+    this.publishConnectionState();
     return result;
   }
 
@@ -1087,18 +1089,20 @@ export class DbzzClient {
         this.ready = true;
         this.everReady = true;
         this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
-        this.publishConnectionState();
         if (this.authAttempt) this.sendAuth(this.authAttempt);
         this.flushState();
         this.startConnectionTimers();
+        // Published last: a listener may reenter close(), which must find the
+        // connection timers already installed so it can release them.
+        this.publishConnectionState();
         return;
       case "auth": {
         const attempt = this.authAttempt;
         if (!attempt || attempt.id !== frame.attemptId) return;
         this.authentication = Object.freeze({ authEpoch: frame.authEpoch, principal: frame.principal });
         this.resolveAuth(attempt, this.authentication);
-        this.publishConnectionState();
         this.flushState();
+        this.publishConnectionState();
         return;
       }
       case "transition":

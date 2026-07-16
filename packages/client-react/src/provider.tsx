@@ -55,22 +55,31 @@ function lifetimeKey(config: DbzzProviderConfig): string {
  * configuration lifetime. The client is created in a commit-phase effect, so
  * server rendering never constructs it or touches runtime globals.
  */
+interface DbzzLifetime {
+  readonly key: string;
+  readonly client: DbzzClient;
+}
+
 export function DbzzProvider({ config, children }: DbzzProviderProps): ReactElement {
   const key = lifetimeKey(config);
-  const [client, setClient] = useState<DbzzClient | null>(null);
+  const [lifetime, setLifetime] = useState<DbzzLifetime | null>(null);
 
   useEffect(() => {
     const instance = new DbzzClient(config);
     instance.connect();
-    setClient(instance);
+    setLifetime({ key, client: instance });
     return () => {
-      setClient((current) => (current === instance ? null : current));
+      setLifetime((current) => (current !== null && current.client === instance ? null : current));
       instance.close();
     };
     // The key covers every configured value; capability functions are captured.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
+  // The stored client is exposed only while its key matches the rendering
+  // configuration, so no committed render can pair a new configuration with
+  // the previous lifetime's state.
+  const client = lifetime !== null && lifetime.key === key ? lifetime.client : null;
   const value = useMemo<DbzzContextValue>(() => ({ client }), [client]);
   return <DbzzContext.Provider value={value}>{children}</DbzzContext.Provider>;
 }

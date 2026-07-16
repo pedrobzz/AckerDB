@@ -1932,6 +1932,38 @@ describe("DbzzClient connection state", () => {
     expect(client.currentConnectionState).toEqual({ phase: "closed" });
   });
 
+  test("a ready listener that reenters close releases every timer", () => {
+    const { client, clock, sockets } = harness();
+    client.subscribeConnectionState((state) => {
+      if (state.phase === "ready") client.close();
+    });
+    client.connect();
+    welcome(client, sockets[0]!);
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(clock.taskCount).toBe(0);
+    expect(sockets[0]!.closes).toHaveLength(1);
+  });
+
+  test("a recovery listener that reenters close releases the authentication attempt", async () => {
+    const { client, clock, sockets } = harness();
+    client.connect();
+    welcome(client, sockets[0]!);
+    sockets[0]!.receive({
+      v: 2,
+      t: "err",
+      id: null,
+      outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
+    });
+    client.subscribeConnectionState((state) => {
+      if (state.phase === "reconnecting") client.close();
+    });
+    const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
+    expect(client.currentConnectionState).toEqual({ phase: "closed" });
+    expect(clock.taskCount).toBe(0);
+    expect(sockets.filter((socket) => socket.closes.length === 0)).toHaveLength(0);
+    expect(await refresh).toBeInstanceOf(DbzzClientError);
+  });
+
   test("close notifies once and later subscriptions stay silent", () => {
     const { client } = harness();
     let notified = 0;
