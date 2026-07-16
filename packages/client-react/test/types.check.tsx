@@ -183,7 +183,10 @@ type AssertNever<T extends never> = T;
 // The value surface is exactly the provider and its hooks: no client getter,
 // no close hook, no client class re-export.
 type UnexpectedExports = AssertNever<
-  Exclude<PublicExports, "DbzzProvider" | "useConnectionState" | "useEvent" | "useMutation" | "useProcedure">
+  Exclude<
+    PublicExports,
+    "DbzzProvider" | "useConnectionState" | "useEvent" | "useMutation" | "useProcedure" | "useQuery" | "skip"
+  >
 >;
 type NoImperativeEscape = AssertNever<
   Extract<PublicExports, "useDbzzClient" | "useClient" | "useClose" | "close" | "DbzzClient">

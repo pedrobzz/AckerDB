@@ -3,6 +3,8 @@ export { useConnectionState } from "./use-connection-state.ts";
 export { useEvent } from "./use-event.ts";
 export { useMutation } from "./use-mutation.ts";
 export { useProcedure, type DbzzProcedure } from "./use-procedure.ts";
+export { skip, useQuery } from "./use-query.ts";
+export type { DbzzQueryState } from "./query-store.ts";
 export type {
   DbzzAuthentication,
   DbzzCallOptions,
@@ -13,4 +15,5 @@ export type {
   DbzzReconnectOptions,
   EventRef,
   ProcedureRef,
+  QueryRef,
 } from "@dbzz/client";
