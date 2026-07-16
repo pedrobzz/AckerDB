@@ -6,19 +6,28 @@
     "src"
   ],
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./ai": "./src/ai/index.ts"
   },
   "dependencies": {
     "@dbzz/client": "workspace:0.1.1",
     "@dbzz/core": "workspace:0.1.1"
   },
   "peerDependencies": {
+    "ai": "^7.0.0",
     "react": "^19.2.7"
   },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@ai-sdk/react": "4.0.32",
     "@happy-dom/global-registrator": "^20.10.6",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "ai": "7.0.29",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   }
