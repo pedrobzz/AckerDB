@@ -23,7 +23,7 @@ const baselineJson = readFileSync(new URL(`../${FROZEN_BASELINE_PATH}`, import.m
 const baseline = JSON.parse(baselineJson) as BenchmarkRecordLike;
 const copy = () => {
   const record = structuredClone(baseline);
-  record.schemaVersion = 6;
+  record.schemaVersion = 7;
   return record;
 };
 const passedValidation = Object.freeze({ status: "passed", failures: Object.freeze([]) } as const);
@@ -46,13 +46,22 @@ function failedPerformance(record: BenchmarkRecordLike) {
   return result;
 }
 
-function operation(record: BenchmarkRecordLike, system: "dbzz" | "convex", name = "query", profile = "latency") {
+function operation(
+  record: BenchmarkRecordLike,
+  system: "dbzz" | "convex",
+  name = "query",
+  profile = "latency",
+ ) {
   return record.systems[system]!.workload.operations.find(
     (item) => item.operation === name && item.profile.name === profile,
   )!;
 }
 
-function connection(record: BenchmarkRecordLike, system: "dbzz" | "convex", target = 1) {
+function connection(
+  record: BenchmarkRecordLike,
+  system: "dbzz" | "convex",
+  target = 1,
+ ) {
   return record.systems[system]!.workload.connections.find((item) => item.targetConnections === target)!;
 }
 
@@ -60,8 +69,12 @@ function subscription(
   record: BenchmarkRecordLike,
   system: "dbzz" | "convex" | "spacetimedb",
   pattern: "shared" | "partitioned",
-) {
+ ) {
   return record.systems[system]!.workload.subscriptions.find((item) => item.pattern === pattern)!;
+}
+
+function capacity(result: ReturnType<typeof subscription>, index = 0) {
+  return result.capacity[index]!;
 }
 
 describe("complete benchmark metric extraction", () => {
@@ -117,13 +130,32 @@ describe("complete benchmark metric extraction", () => {
       "miswired phase operation:query:latency:trial-1; expected operation:query:latency:trial-0",
     );
   });
+
+  test("never extracts performance metrics from an explicit failed case", () => {
+    const failed = copy();
+    const measured = operation(failed, "dbzz");
+    failed.systems.dbzz!.workload.operations.shift();
+    failed.systems.dbzz!.workload.failures = [{
+      kind: "operation",
+      operation: measured.operation,
+      profile: measured.profile,
+      stage: "setup",
+      message: "connection refused",
+      terminal: false,
+      completedTrials: [],
+    }];
+
+    expect(() => extractComparableMetrics(failed.systems.dbzz!)).toThrow(
+      "cannot extract performance metrics from a failed workload",
+    );
+  });
 });
 
 describe("frozen performance acceptance", () => {
-  test("requires the correctness-aware schema-v6 after record", () => {
+  test("requires the correctness-aware schema-v7 after record", () => {
     const oldAfter = copy();
     oldAfter.schemaVersion = 5;
-    expect(() => performance(oldAfter)).toThrow("after-run schema-v6");
+    expect(() => performance(oldAfter)).toThrow("after-run schema-v7");
   });
 
   test("does not evaluate performance when measured correctness failed", () => {
@@ -136,6 +168,27 @@ describe("frozen performance acceptance", () => {
         errors: ["checksum mismatch"],
       }],
     })).toEqual({ status: "not-evaluated", reason: "correctness-failed" });
+  });
+
+  test("persists a correctness-passing current-host record without historical acceptance", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "dbzz-current-host-bench-"));
+    const path = join(directory, "result.json");
+    try {
+      const outcome = await persistBenchmarkOutcome(path, {
+        schemaVersion: 7,
+        validation: passedValidation,
+        performanceAcceptance: { status: "not-evaluated", reason: "current-host-comparison" },
+      });
+
+      expect(outcome).toEqual({ status: "passed" });
+      expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({
+        schemaVersion: 7,
+        validation: { status: "passed" },
+        performanceAcceptance: { status: "not-evaluated", reason: "current-host-comparison" },
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("the immutable baseline passes its own complete wins and margin floors", () => {
@@ -341,7 +394,7 @@ describe("frozen performance acceptance", () => {
     try {
       const outcome = await persistBenchmarkOutcome(path, {
         ...after,
-        schemaVersion: 6,
+        schemaVersion: 7,
         validation: passedValidation,
         performanceAcceptance,
       });
@@ -503,8 +556,8 @@ describe("frozen performance acceptance", () => {
       {
         name: "capacity delivery p95",
         mutate(record) {
-          const dbzz = subscription(record, "dbzz", "shared").capacity[0]!;
-          subscription(record, "convex", "shared").capacity[0]!.deliveryLatency.p95Ms = dbzz.deliveryLatency.p95Ms * 1.9;
+          const dbzz = capacity(subscription(record, "dbzz", "shared"));
+          capacity(subscription(record, "convex", "shared")).deliveryLatency.p95Ms = dbzz.deliveryLatency.p95Ms * 1.9;
         },
       },
       {

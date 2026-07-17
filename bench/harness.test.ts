@@ -86,7 +86,7 @@ describe("closed-loop accounting", () => {
     expect([...signals][0]!.aborted).toBe(false);
   });
 
-  test("aborts timed-out operations and settles every closed-loop worker", async () => {
+  test("records timed-out operations with exact accounting and releases owned workers", async () => {
     let active = 0;
     let finished = 0;
     let attempts = 0;
@@ -95,73 +95,91 @@ describe("closed-loop accounting", () => {
       release = resolve;
     });
     const signals = new Set<AbortSignal>();
-    let thrown: unknown;
+    const result = await runClosedLoop({
+      phaseId: "subscriptions:partitioned:capacity-500",
+      durationMs: 10,
+      slots: 3,
+      drainTimeoutMs: 10,
+      cancel: () => release(),
+      operation: async (_slot, _sequence, cancellation) => {
+        attempts++;
+        active++;
+        signals.add(cancellation.signal);
+        try {
+          await gate;
+        } finally {
+          active--;
+          finished++;
+        }
+      },
+    });
 
-    try {
-      await runClosedLoop({
-        phaseId: "subscriptions:partitioned:capacity-500",
-        durationMs: 10,
-        slots: 3,
-        drainTimeoutMs: 10,
-        cancel: () => release(),
-        operation: async (_slot, _sequence, cancellation) => {
-          attempts++;
-          active++;
-          signals.add(cancellation.signal);
-          try {
-            await gate;
-          } finally {
-            active--;
-            finished++;
-          }
-        },
-      });
-    } catch (error) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(Error);
-    expect((thrown as Error).message).toBe(
+    const reason =
       "phase subscriptions:partitioned:capacity-500 exceeded 10ms window + 10ms drain: " +
-        "3 attempted, 0 settled, 3 in flight",
-    );
+        "3 attempted, 0 settled, 3 in flight";
+    expect(result).toMatchObject({
+      attempted: 3,
+      completedInWindow: 0,
+      completedAfterWindow: 0,
+      failed: 3,
+      errors: [reason],
+      interruption: { reason, resourcesReleased: true },
+    });
     expect({ active, attempts, finished }).toEqual({ active: 0, attempts: 3, finished: 3 });
     expect(signals.size).toBe(1);
     const [signal] = signals;
     expect(signal!.aborted).toBe(true);
-    expect(signal!.reason).toBe(thrown);
+    expect(signal!.reason).toBeInstanceOf(Error);
+    expect((signal!.reason as Error).message).toBe(reason);
   });
 
   test("aborts benchmark-owned delivery waits without detaching the operation", async () => {
     let active = 0;
     let signal: AbortSignal | undefined;
-    let thrown: unknown;
+    const result = await runClosedLoop({
+      phaseId: "subscriptions:shared:capacity-50",
+      durationMs: 10,
+      slots: 1,
+      drainTimeoutMs: 10,
+      cancel: () => {},
+      operation: async (_slot, _sequence, cancellation) => {
+        signal = cancellation.signal;
+        active++;
+        try {
+          await cancellation.wait(new Promise<never>(() => {}));
+        } finally {
+          active--;
+        }
+      },
+    });
 
-    try {
-      await runClosedLoop({
-        phaseId: "subscriptions:shared:capacity-50",
-        durationMs: 10,
-        slots: 1,
-        drainTimeoutMs: 10,
-        cancel: () => {},
-        operation: async (_slot, _sequence, cancellation) => {
-          signal = cancellation.signal;
-          active++;
-          try {
-            await cancellation.wait(new Promise<never>(() => {}));
-          } finally {
-            active--;
-          }
-        },
-      });
-    } catch (error) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(Error);
+    expect(result).toMatchObject({
+      attempted: 1,
+      failed: 1,
+      interruption: { resourcesReleased: true },
+    });
     expect(active).toBe(0);
     expect(signal?.aborted).toBe(true);
-    expect(signal?.reason).toBe(thrown);
+    expect(signal?.reason).toBeInstanceOf(Error);
+  });
+
+  test("returns a terminal failure when cancellation cannot reclaim an operation", async () => {
+    const result = await runClosedLoop({
+      phaseId: "unreclaimed",
+      durationMs: 1,
+      slots: 1,
+      drainTimeoutMs: 1,
+      cancel: () => new Promise<void>(() => {}),
+      operation: () => new Promise<void>(() => {}),
+    });
+
+    expect(result.attempted).toBe(1);
+    expect(result.failed).toBe(1);
+    expect(result.attempted).toBe(
+      result.completedInWindow + result.completedAfterWindow + result.failed,
+    );
+    expect(result.interruption).toMatchObject({ resourcesReleased: false });
+    expect(result.errors.at(-1)).toContain("phase cancellation did not settle");
   });
 });
 
@@ -243,22 +261,26 @@ describe("connection readiness sampling", () => {
     };
     let nonce = 0;
 
-    const results = await runConnectionScale(adapter, config, () => nonce++);
+    const { measurements: results, failures } = await runConnectionScale(adapter, config, () => nonce++);
 
     const [single, batched] = results;
     expect(results).toHaveLength(2);
+    if (single === undefined || batched === undefined) {
+      throw new Error("connection readiness fixture unexpectedly failed");
+    }
+    expect(failures).toEqual([]);
     // Level 1 is a distribution of READINESS_SAMPLES sequential post-idle draws.
-    expect(single!.targetConnections).toBe(1);
-    expect(single!.connected).toBe(1);
-    expect(single!.addedConnections).toBe(1);
-    expect(single!.errors).toEqual([]);
-    expect(single!.readyLatency.count).toBe(READINESS_SAMPLES);
+    expect(single.targetConnections).toBe(1);
+    expect(single.connected).toBe(1);
+    expect(single.addedConnections).toBe(1);
+    expect(single.errors).toEqual([]);
+    expect(single.readyLatency.count).toBe(READINESS_SAMPLES);
     // Setup time aggregates the measured connects only; the ramp wall time here is
     // dominated by (READINESS_SAMPLES - 1) idle gaps, which must be excluded.
-    expect(single!.setupMs).toBeGreaterThan(0);
-    expect(single!.setupMs).toBeLessThan((READINESS_SAMPLES - 1) * idleMs);
-    expect(single!.readyConnectionsPerSec).toBeCloseTo(READINESS_SAMPLES / (single!.setupMs / 1_000), 6);
-    expect(single!.work.failed).toBe(0);
+    expect(single.setupMs).toBeGreaterThan(0);
+    expect(single.setupMs).toBeLessThan((READINESS_SAMPLES - 1) * idleMs);
+    expect(single.readyConnectionsPerSec).toBeCloseTo(READINESS_SAMPLES / (single.setupMs / 1_000), 6);
+    expect(single.work.failed).toBe(0);
     // Every sample but the last closes before the next post-idle draw; the last joins the cohort.
     for (let sample = 0; sample < READINESS_SAMPLES - 1; sample++) {
       expect(events[sample * 2]).toBe(`connect:${sample}`);
@@ -266,11 +288,11 @@ describe("connection readiness sampling", () => {
     }
     expect(events[(READINESS_SAMPLES - 1) * 2]).toBe(`connect:${READINESS_SAMPLES - 1}`);
     // Levels that add several connections keep the batched ramp and per-connection latencies.
-    expect(batched!.targetConnections).toBe(3);
-    expect(batched!.connected).toBe(3);
-    expect(batched!.addedConnections).toBe(2);
-    expect(batched!.readyLatency.count).toBe(2);
-    expect(batched!.errors).toEqual([]);
+    expect(batched.targetConnections).toBe(3);
+    expect(batched.connected).toBe(3);
+    expect(batched.addedConnections).toBe(2);
+    expect(batched.readyLatency.count).toBe(2);
+    expect(batched.errors).toEqual([]);
     // The whole ladder is closed at the end: every opened connection has a matching close.
     expect(connects).toBe(READINESS_SAMPLES + 2);
     expect(events.filter((event) => event.startsWith("close:"))).toHaveLength(connects);

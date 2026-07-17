@@ -379,6 +379,8 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
+const releaseNothing = (): void => {};
+
 function quoted(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
@@ -634,6 +636,7 @@ export class Runtime implements RuntimePort {
   private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
   private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
   private readonly ownsTelemetry: boolean;
+  private readonly hasMcpCapabilities: boolean;
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
   private schedulerGeneration = 0;
@@ -649,6 +652,7 @@ export class Runtime implements RuntimePort {
   constructor(options: RuntimeOptions) {
     this.engine = options.engine;
     this.registry = options.registry;
+    this.hasMcpCapabilities = this.registry.mcps.size > 0;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
     const mcpToolCounts = new Map<string, number>();
     for (const tool of this.registry.mcpTools.values()) {
@@ -699,11 +703,15 @@ export class Runtime implements RuntimePort {
       engine: this.engine,
       limits: this.limits,
       reservePublication: (bytes) => this.reactive.publication.reserve(bytes),
-      afterCommit: (writes) => {
-        for (const invalidation of takeMcpTokenInvalidations(writes)) {
-          this.mcpTokenInvalidation.publish(invalidation);
-        }
-      },
+      ...(this.hasMcpCapabilities
+        ? {
+            afterCommit: (writes: WriteCollector) => {
+              for (const invalidation of takeMcpTokenInvalidations(writes)) {
+                this.mcpTokenInvalidation.publish(invalidation);
+              }
+            },
+          }
+        : {}),
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
       now: this.now,
     });
@@ -1153,17 +1161,17 @@ export class Runtime implements RuntimePort {
           functionRef: message.ref,
           argsFingerprint: digest(message.args),
         },
-        work: (db, writes) => this.withMcpTokenContext(
-          { db, auth: context.principal },
-          this.engine.writer,
-          null,
-          writes,
-          (ctx) => invokeFunction(
+        work: this.hasMcpCapabilities
+          ? (db, writes) => withMcpTokenCapability(
+            { db, auth: context.principal },
+            this.mcpTokenCapability(context.principal, this.engine.writer, null, writes),
+            (ctx) => invokeFunction(fn, ctx, message.args),
+          )
+          : (db) => invokeFunction(
             fn,
-            ctx,
+            Object.freeze({ db, auth: context.principal }),
             message.args,
           ),
-        ),
         publication: (_version, writes) => {
           scheduledTouched = writes.scheduledTouched;
           return this.publicationFor(writes, state.subscriber);
@@ -1833,13 +1841,15 @@ export class Runtime implements RuntimePort {
               if (raw === null) throw STALE_SCHEDULED_CANDIDATE;
               row = this.engine.rowFromSql(plan, raw);
               const fn = this.expect(candidate.address, "mutation");
-              await this.withMcpTokenContext(
-                { db, auth: SYSTEM_PRINCIPAL },
-                this.engine.writer,
-                null,
-                writes,
-                (ctx) => invokeFunction(fn, ctx, row),
-              );
+              if (this.hasMcpCapabilities) {
+                await withMcpTokenCapability(
+                  { db, auth: SYSTEM_PRINCIPAL },
+                  this.mcpTokenCapability(SYSTEM_PRINCIPAL, this.engine.writer, null, writes),
+                  (ctx) => invokeFunction(fn, ctx, row),
+                );
+              } else {
+                await invokeFunction(fn, Object.freeze({ db, auth: SYSTEM_PRINCIPAL }), row);
+              }
             },
             finalize: (writes) => {
               const scheduledRow = row;
@@ -2392,13 +2402,13 @@ export class Runtime implements RuntimePort {
           recorder,
           this.telemetry.enabled ? this.observeStatement : undefined,
         );
-        const value = await this.withMcpTokenContext(
-          { db, auth: principal },
-          connection,
-          recorder,
-          null,
-          (ctx) => invokeFunction(fn, ctx, args),
-        );
+        const value = this.hasMcpCapabilities
+          ? await withMcpTokenCapability(
+            { db, auth: principal },
+            this.mcpTokenCapability(principal, connection, recorder, null),
+            (ctx) => invokeFunction(fn, ctx, args),
+          )
+          : await invokeFunction(fn, Object.freeze({ db, auth: principal }), args);
         throwIfAborted(signal);
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
         try {
@@ -2601,13 +2611,13 @@ export class Runtime implements RuntimePort {
               : {}),
             admissionSignal: signal,
             transactionSignal: signal,
-            work: (db, writes) => this.withMcpTokenContext(
-              { db, auth: principal },
-              this.engine.writer,
-              null,
-              writes,
-              work,
-            ),
+            work: this.hasMcpCapabilities
+              ? (db, writes) => withMcpTokenCapability(
+                { db, auth: principal },
+                this.mcpTokenCapability(principal, this.engine.writer, null, writes),
+                work,
+              )
+              : (db) => work(Object.freeze({ db, auth: principal })),
             publication: (_version, writes) => {
               scheduledTouched = writes.scheduledTouched;
               return this.publicationFor(writes);
@@ -2649,10 +2659,12 @@ export class Runtime implements RuntimePort {
         accountUnlinked,
       ),
     });
-    const release = bindMcpAiContext(
-      value,
-      this.mcpAiCapability(value, fairnessKey, requestBytes),
-    );
+    const release = this.hasMcpCapabilities
+      ? bindMcpAiContext(
+        value,
+        this.mcpAiCapability(value, fairnessKey, requestBytes),
+      )
+      : releaseNothing;
     return Object.freeze({ value, release });
   }
 
@@ -2681,22 +2693,22 @@ export class Runtime implements RuntimePort {
     } satisfies McpAiRuntimeCapability);
   }
 
-  private withMcpTokenContext<T extends { readonly auth: Principal }, R>(
-    context: T,
+  /** Construct token authority only from an MCP-enabled invocation branch. */
+  private mcpTokenCapability(
+    principal: Principal,
     connection: Database,
     reads: ReadRecorder | null,
     writes: WriteCollector | null,
-    work: (ctx: T) => R | Promise<R>,
-  ): Promise<Awaited<R>> {
-    return withMcpTokenCapability(context, {
+  ) {
+    return {
       engine: this.engine,
       connection,
-      principal: context.auth,
+      principal,
       reads,
       writes,
       limits: this.limits.mcp,
       now: this.now,
-    }, work);
+    };
   }
 
   private publicationFor(writes: WriteCollector, caller?: Subscriber): ReactiveCommit {

@@ -5,7 +5,13 @@ import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { join, relative } from "node:path";
 import { runCodegen } from "../packages/cli/src/codegen.ts";
 import { loadConfig } from "../packages/cli/src/config.ts";
-import { benchmarkConfigFromEnv, type DriverResult, type SystemName } from "./benchmark.ts";
+import {
+  benchmarkConfigFromEnv,
+  OPERATION_NAMES,
+  subscriptionCapacitySlots,
+  type DriverResult,
+  type SystemName,
+} from "./benchmark.ts";
 import {
   assertDbzzStartup,
   benchmarkExecutionOrder,
@@ -87,7 +93,8 @@ type SystemResults = Partial<Record<SystemName, MeasuredDriverResult>> & {
 };
 
 interface RunRecord {
-  schemaVersion: 6;
+  schemaVersion: 7;
+  comparison: "frozen" | "current";
   timestamp: string;
   git: { commit: string; dirty: boolean; sourceHash: string };
   machine: {
@@ -114,8 +121,8 @@ interface RunRecord {
   systems: SystemResults;
   dbzzTelemetryDisabled: DbzzMeasuredDriverResult;
   dbzzExporterProfile: DbzzMeasuredDriverResult;
-  dbzzTelemetryCost: ProfileComparisonMetric[];
-  dbzzExporterCost: ProfileComparisonMetric[];
+  dbzzTelemetryCost: ProfileComparisonMetric[] | null;
+  dbzzExporterCost: ProfileComparisonMetric[] | null;
   validation: BenchmarkValidation;
   performanceAcceptance: PerformanceAcceptanceResult;
 }
@@ -263,7 +270,7 @@ async function runMeasuredClient(
     }, RESOURCE_SAMPLE_MS);
     child.stdin.write(BENCHMARK_START_SIGNAL);
     child.stdin.end();
-    for await (const chunk of child.stdout) {
+    clientOutput: for await (const chunk of child.stdout) {
       stdoutTail.write(chunk);
       buffer += stdoutDecoder.decode(chunk, { stream: true });
       for (;;) {
@@ -282,25 +289,31 @@ async function runMeasuredClient(
             workload = result;
           },
         );
+        if (workload?.failures.some((failure) => failure.terminal)) break clientOutput;
       }
     }
-    buffer += stdoutDecoder.decode();
-    if (buffer.trim() !== "") {
-      parseClientLine(
-        buffer,
-        sampleResources,
-        phaseStarts,
-        phaseBounds,
-        serverSnapshots,
-        loadSnapshots,
-        (result) => {
-          workload = result;
-        },
-      );
+    if (workload?.failures.some((failure) => failure.terminal)) {
+      await stopSubprocess(child, 1_000);
+      childExited = true;
+    } else {
+      buffer += stdoutDecoder.decode();
+      if (buffer.trim() !== "") {
+        parseClientLine(
+          buffer,
+          sampleResources,
+          phaseStarts,
+          phaseBounds,
+          serverSnapshots,
+          loadSnapshots,
+          (result) => {
+            workload = result;
+          },
+        );
+      }
+      const exitCode = await child.exited;
+      childExited = true;
+      if (exitCode !== 0) throw new Error(`benchmark client failed with exit code ${exitCode}`);
     }
-    const exitCode = await child.exited;
-    childExited = true;
-    if (exitCode !== 0) throw new Error(`benchmark client failed with exit code ${exitCode}`);
     if (!workload) throw new Error(`benchmark client produced no result`);
     if (resourceFailure) throw resourceFailure;
   } catch (error) {
@@ -676,7 +689,8 @@ function savedCurrentCount(): number {
           schemaVersion?: number;
           dbzzExporterProfile?: unknown;
         };
-        return result.schemaVersion === 6 && result.dbzzExporterProfile !== undefined;
+        return (result.schemaVersion === 6 || result.schemaVersion === 7) &&
+          result.dbzzExporterProfile !== undefined;
       } catch {
         return false;
       }
@@ -691,19 +705,9 @@ function balancedOrder(savedRuns: number): SystemName[] {
   return [...ALL_SYSTEMS.slice(rotation), ...ALL_SYSTEMS.slice(0, rotation)];
 }
 
-/**
- * The connection-readiness sampling protocol, derived from the record's own data: the number
- * of readiness draws taken at each ladder level that added a single connection (null for
- * batched levels). Records taken before multi-sample readiness landed report one draw per
- * single-add level; comparing their readiness setup/percentile values against multi-sample
- * records would print misleading deltas, so the protocol is part of the comparison identity.
- */
-function readinessProtocol(record: RunRecord): Array<Array<number | null> | null> {
-  return ALL_SYSTEMS.map(
-    (name) =>
-      record.systems[name]?.workload.connections.map((level) =>
-        level.addedConnections === 1 ? level.readyLatency.count : null,
-      ) ?? null,
+function readinessProtocol(system: MeasuredDriverResult): Array<number | null> {
+  return system.workload.connections.map((level) =>
+    level.addedConnections === 1 ? level.readyLatency.count : null
   );
 }
 
@@ -717,7 +721,6 @@ function comparisonFingerprint(record: RunRecord): string {
       memGb: record.machine.memGb,
     },
     configs: ALL_SYSTEMS.map((name) => record.systems[name]?.workload.config ?? null),
-    readinessProtocol: readinessProtocol(record),
     dbzzTelemetryDisabledConfig: record.dbzzTelemetryDisabled.workload.config,
     dbzzExporterProfileConfig: record.dbzzExporterProfile.workload.config,
     dbzzModes: [
@@ -742,9 +745,10 @@ function latestComparable(record: RunRecord): RunRecord | undefined {
     try {
       const candidate = JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as RunRecord;
       if (
-        candidate.schemaVersion !== 6 ||
-        candidate.validation.status !== "passed" ||
-        candidate.performanceAcceptance.status !== "passed" ||
+        candidate.schemaVersion !== 7 ||
+        (record.comparison === "frozen" &&
+          (candidate.validation.status !== "passed" || candidate.performanceAcceptance.status !== "passed")) ||
+        (candidate.comparison ?? "frozen") !== record.comparison ||
         !candidate.dbzzTelemetryDisabled ||
         !candidate.dbzzExporterProfile ||
         !ALL_SYSTEMS.every((system) => candidate.systems[system])
@@ -767,13 +771,32 @@ function comparisonMetrics(system: MeasuredDriverResult): ComparableMetric[] {
   }));
 }
 
+function validationTargetIsSystem(target: string, system: SystemName): boolean {
+  return target === system || target.startsWith(`${system}/`);
+}
+
+function systemPassedValidation(record: RunRecord, system: SystemName): boolean {
+  return !record.validation.failures.some((failure) => validationTargetIsSystem(failure.target, system));
+}
+
 function printComparableDelta(record: RunRecord, previous: RunRecord | undefined): void {
   if (!previous) {
-    console.log("\nNo previous passing schema-v6 result has the same machine and benchmark config; delta skipped.");
+    console.log("\nNo previous comparable schema-v7 result has the same machine and benchmark config; delta skipped.");
     return;
   }
   console.log(`\nVs comparable run ${previous.timestamp} (⚠ = regression greater than 15%)`);
   for (const name of ALL_SYSTEMS) {
+    if (!systemPassedValidation(record, name) || !systemPassedValidation(previous, name)) {
+      console.log(`\n${name}: delta skipped because one paired run failed correctness validation.`);
+      continue;
+    }
+    if (
+      JSON.stringify(readinessProtocol(record.systems[name]!)) !==
+      JSON.stringify(readinessProtocol(previous.systems[name]!))
+    ) {
+      console.log(`\n${name}: delta skipped because the paired runs used different readiness protocols.`);
+      continue;
+    }
     const oldByLabel = new Map(comparisonMetrics(previous.systems[name]!).map((metric) => [metric.label, metric]));
     console.log(`\n${name}`);
     console.log("| metric | current | previous | delta |");
@@ -859,15 +882,27 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
   console.log("\nOperation throughput and latency (median of steady-state trials)");
   console.log(`| operation/profile | ${names.flatMap((name) => [`${name} TPS`, `${name} p95 ms`]).join(" | ")} |`);
   console.log(`|---|${names.flatMap(() => ["---:", "---:"]).join("|")}|`);
-  for (const reference of first.operations) {
-    const cells: string[] = [];
-    for (const name of names) {
-      const result = systems[name]!.workload.operations.find(
-        (item) => item.operation === reference.operation && item.profile.name === reference.profile.name,
-      );
-      cells.push(result ? fmt(result.medianThroughputPerSec, 0) : "—", result ? fmt(result.medianLatencyP95Ms) : "—");
+  for (const operation of OPERATION_NAMES) {
+    for (const profile of first.config.operation.profiles) {
+      const cells: string[] = [];
+      for (const name of names) {
+        const workload = systems[name]!.workload;
+        const result = workload.operations.find(
+          (item) => item.operation === operation && item.profile.name === profile.name,
+        );
+        const failed = workload.failures.some(
+          (failure) =>
+            failure.kind === "operation" &&
+            failure.operation === operation &&
+            failure.profile.name === profile.name,
+        );
+        cells.push(
+          failed ? "FAIL" : result === undefined ? "—" : fmt(result.medianThroughputPerSec, 0),
+          failed || result === undefined ? "—" : fmt(result.medianLatencyP95Ms),
+        );
+      }
+      console.log(`| ${operation}/${profile.name} | ${cells.join(" | ")} |`);
     }
-    console.log(`| ${reference.operation}/${reference.profile.name} | ${cells.join(" | ")} |`);
   }
   console.log("\nServer resources at idle (timed windows with no requests)");
   console.log("| system | state | RSS p50 MB | RSS peak MB | CPU cores | processes peak |");
@@ -905,9 +940,16 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
   for (const level of levels) {
     for (const name of names) {
       const result = systems[name]!.workload.connections.find((item) => item.targetConnections === level);
-      console.log(
-        `| ${name} | ${level} | ${result ? result.connected : "—"} | ${result ? fmt(result.readyConnectionsPerSec, 0) : "—"} | ${result ? fmt(result.readyLatency.p95Ms) : "—"} | ${result ? fmt(result.work.throughputPerSec, 0) : "—"} | ${result ? fmt(result.work.latency.p95Ms) : "—"} |`,
+      const failed = systems[name]!.workload.failures.some(
+        (failure) => failure.kind === "connection" && failure.targetConnections === level,
       );
+      if (result === undefined) {
+        console.log(`| ${name} | ${level} | ${failed ? "FAIL" : "—"} | — | — | — | — |`);
+      } else {
+        console.log(
+          `| ${name} | ${level} | ${result.connected} | ${fmt(result.readyConnectionsPerSec, 0)} | ${fmt(result.readyLatency.p95Ms)} | ${fmt(result.work.throughputPerSec, 0)} | ${fmt(result.work.latency.p95Ms)} |`,
+        );
+      }
     }
   }
   console.log("\nServer resources across connection plateaus");
@@ -915,13 +957,16 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
   console.log("|---|---:|---:|---:|---:|---:|---:|---:|---:|");
   for (const name of names) {
     const system = systems[name]!;
-    const baseline = resourceWindow(system, system.workload.snapshots.connectionBaselineIdlePhaseId);
+    const hasMeasuredConnections = system.workload.connections.length > 0;
+    const baseline = hasMeasuredConnections
+      ? resourceWindow(system, system.workload.snapshots.connectionBaselineIdlePhaseId)
+      : undefined;
     for (const result of system.workload.connections) {
       const idle = resourceWindow(system, result.connectedIdlePhaseId);
       const work = resourceWindow(system, result.work.phaseId);
       const load = resourceWindow(system, result.work.phaseId, "loadGenerator");
       console.log(
-        `| ${name} | ${result.connected} | ${fmt(baseline.rssMb.p50, 1)} | ${fmt(idle.rssMb.p50, 1)} | ${fmt(idle.rssMb.p50 - baseline.rssMb.p50, 1)} | ${fmt(idle.cpuCores)} | ${fmt(work.rssMb.peak, 1)} | ${fmt(work.cpuCores)} | ${fmt(load.cpuCores)} |`,
+        `| ${name} | ${result.connected} | ${fmt(baseline!.rssMb.p50, 1)} | ${fmt(idle.rssMb.p50, 1)} | ${fmt(idle.rssMb.p50 - baseline!.rssMb.p50, 1)} | ${fmt(idle.cpuCores)} | ${fmt(work.rssMb.peak, 1)} | ${fmt(work.cpuCores)} | ${fmt(load.cpuCores)} |`,
       );
     }
   }
@@ -931,7 +976,15 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
   console.log("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
   for (const name of names) {
     const system = systems[name]!;
-    for (const result of system.workload.subscriptions) {
+    for (const pattern of system.workload.config.subscriptions.patterns) {
+      const result = system.workload.subscriptions.find((subscription) => subscription.pattern === pattern);
+      const failed = system.workload.failures.some(
+        (failure) => failure.kind === "subscription" && failure.pattern === pattern,
+      );
+      if (result === undefined) {
+        console.log(`| ${pattern} | ${name} | ${failed ? "FAIL" : "—"} | — | — | — | — | — | — | — | — | — | — | — | — |`);
+        continue;
+      }
       const resources = system.resources.server.phases[result.phaseId];
       const baseline = system.resources.server.phases[result.baselineIdlePhaseId];
       const idle = system.resources.server.phases[result.subscribedIdlePhaseId];
@@ -947,12 +1000,22 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
   console.log("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
   for (const name of names) {
     const system = systems[name]!;
-    for (const subscription of system.workload.subscriptions) {
-      for (const capacity of subscription.capacity) {
+    for (const pattern of system.workload.config.subscriptions.patterns) {
+      const subscription = system.workload.subscriptions.find((result) => result.pattern === pattern);
+      for (const slots of subscriptionCapacitySlots(system.workload.config.subscriptions, pattern)) {
+        const capacity = subscription?.capacity.find((result) => result.slots === slots);
+        const failed = system.workload.failures.some((failure) =>
+          (failure.kind === "subscription" && failure.pattern === pattern) ||
+          (failure.kind === "subscription-capacity" && failure.pattern === pattern && failure.slots === slots)
+        );
+        if (capacity === undefined) {
+          console.log(`| ${pattern} | ${name} | ${slots} | ${failed ? "FAIL" : "—"} | — | — | — | — | — | — | — |`);
+          continue;
+        }
         const resources = resourceWindow(system, capacity.phaseId);
         const load = resourceWindow(system, capacity.phaseId, "loadGenerator");
         console.log(
-          `| ${subscription.pattern} | ${name} | ${capacity.slots} | ${fmt(capacity.throughputPerSec, 1)} | ${fmt(capacity.deliveryThroughputPerSec, 0)} | ${fmt(capacity.updateAckLatency.p95Ms)} | ${fmt(capacity.deliveryLatency.p95Ms)} | ${fmt(capacity.latency.p95Ms)} | ${fmt(resources.rssMb.peak, 1)} | ${fmt(resources.cpuCores)} | ${fmt(load.cpuCores)} |`,
+          `| ${pattern} | ${name} | ${capacity.slots} | ${fmt(capacity.throughputPerSec, 1)} | ${fmt(capacity.deliveryThroughputPerSec, 0)} | ${fmt(capacity.updateAckLatency.p95Ms)} | ${fmt(capacity.deliveryLatency.p95Ms)} | ${fmt(capacity.latency.p95Ms)} | ${fmt(resources.rssMb.peak, 1)} | ${fmt(resources.cpuCores)} | ${fmt(load.cpuCores)} |`,
         );
       }
     }
@@ -1005,8 +1068,8 @@ for (let index = 0; index < executionOrder.length; index++) {
   if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
 }
 
-let dbzzTelemetryCost: ProfileComparisonMetric[] | undefined;
-let dbzzExporterCost: ProfileComparisonMetric[] | undefined;
+let dbzzTelemetryCost: ProfileComparisonMetric[] | null = null;
+let dbzzExporterCost: ProfileComparisonMetric[] | null = null;
 const validationTargets: BenchmarkValidationTarget[] = ALL_SYSTEMS.flatMap((name) => {
   const system = systems[name];
   return system === undefined
@@ -1038,25 +1101,28 @@ if (runPolicy.profiledDbzz) {
   ) {
     throw new Error("all-system benchmark requires default, exporter, and disabled DBZZ telemetry profiles");
   }
-  dbzzTelemetryCost = compareProfileMetrics(
-    "runtime-default",
-    comparisonMetrics(systems.dbzz),
-    "disabled",
-    comparisonMetrics(dbzzTelemetryDisabled),
-  );
-  dbzzExporterCost = compareProfileMetrics(
-    "benchmark-exporter",
-    comparisonMetrics(dbzzExporterProfile),
-    "runtime-default",
-    comparisonMetrics(systems.dbzz),
-  );
+  const dbzzFailed = validation.failures.some((failure) => validationTargetIsSystem(failure.target, "dbzz"));
+  if (!dbzzFailed) {
+    dbzzTelemetryCost = compareProfileMetrics(
+      "runtime-default",
+      comparisonMetrics(systems.dbzz),
+      "disabled",
+      comparisonMetrics(dbzzTelemetryDisabled),
+    );
+    dbzzExporterCost = compareProfileMetrics(
+      "benchmark-exporter",
+      comparisonMetrics(dbzzExporterProfile),
+      "runtime-default",
+      comparisonMetrics(systems.dbzz),
+    );
+  }
 }
 printResults(systems);
 console.log(`\n${formatBenchmarkValidation(validation)}`);
-if (dbzzTelemetryCost !== undefined) {
+if (dbzzTelemetryCost !== null) {
   printDbzzProfileCost("DBZZ default telemetry cost", dbzzTelemetryCost);
 }
-if (dbzzExporterCost !== undefined) {
+if (dbzzExporterCost !== null) {
   printDbzzProfileCost("DBZZ exporter handoff cost", dbzzExporterCost);
 }
 if (systems.dbzz !== undefined) {
@@ -1066,18 +1132,18 @@ if (systems.dbzz !== undefined) {
     ...(dbzzTelemetryDisabled === undefined ? [] : [dbzzTelemetryDisabled]),
   ]);
 }
-if (runPolicy.acceptAndSave) {
+if (runPolicy.persist) {
   if (
     dbzzTelemetryDisabled === undefined ||
     dbzzExporterProfile === undefined ||
-    dbzzTelemetryCost === undefined ||
-    dbzzExporterCost === undefined
+    systems.dbzz === undefined
   ) {
     throw new Error("default acceptance benchmark DBZZ profile measurements are missing");
   }
   const cliVersion = spacetimeVersion!;
   const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
-    schemaVersion: 6,
+    schemaVersion: 7,
+    comparison,
     timestamp: new Date().toISOString(),
     git: {
       commit: git(["rev-parse", "--short", "HEAD"]),
@@ -1124,14 +1190,23 @@ if (runPolicy.acceptAndSave) {
     dbzzExporterCost,
     validation,
   };
-  const frozenBaselineJson = readFileSync(join(REPO, FROZEN_BASELINE_PATH), "utf8");
-  const performanceAcceptance = evaluatePerformanceAcceptance(
-    recordWithoutAcceptance,
-    frozenBaselineJson,
-    validation,
-  );
+  const performanceAcceptance: PerformanceAcceptanceResult = validation.status === "failed"
+    ? { status: "not-evaluated", reason: "correctness-failed" }
+    : runPolicy.historicalAcceptance
+      ? evaluatePerformanceAcceptance(
+          recordWithoutAcceptance,
+          readFileSync(join(REPO, FROZEN_BASELINE_PATH), "utf8"),
+          validation,
+        )
+      : { status: "not-evaluated", reason: "current-host-comparison" };
   const record: RunRecord = { ...recordWithoutAcceptance, performanceAcceptance };
-  if (performanceAcceptance.status === "passed") {
+  if (performanceAcceptance.status === "not-evaluated") {
+    console.log(
+      performanceAcceptance.reason === "correctness-failed"
+        ? "\nperformance acceptance not evaluated: benchmark correctness validation failed"
+        : "\nhistorical performance acceptance not evaluated: current-host comparison",
+    );
+  } else if (performanceAcceptance.status === "passed") {
     const evidence = performanceAcceptance.evidence;
     console.log(
       `\nperformance acceptance passed: ${evidence.metricCounts.frozenDbzzSpacetimeWins} frozen SpacetimeDB wins (${evidence.metricCounts.frozenNearTieWins} near-tie), ${evidence.metricCounts.convexFloorChecks} Convex floors, ${evidence.metricCounts.afterPerSystem.dbzz} comparable metrics/system`,
@@ -1145,15 +1220,16 @@ if (runPolicy.acceptAndSave) {
     for (const failure of performanceAcceptance.failures) {
       console.log(`  - ${failure.path} [${failure.kind}]: ${failure.message}`);
     }
-  } else {
-    console.log("\nperformance acceptance not evaluated: benchmark correctness validation failed");
   }
-  const previous = performanceAcceptance.status === "passed" ? latestComparable(record) : undefined;
+  const previous =
+    performanceAcceptance.status === "passed" || comparison === "current"
+      ? latestComparable(record)
+      : undefined;
   mkdirSync(RESULTS_DIR, { recursive: true });
   const filename = `${record.timestamp.replace(/:/g, "-").replace(/\.\d+Z$/, "Z")}-${record.git.commit}.json`;
   persistedOutcome = await persistBenchmarkOutcome(join(RESULTS_DIR, filename), record);
   console.log(`\nsaved bench/results/${filename}`);
-  if (performanceAcceptance.status === "passed") {
+  if (performanceAcceptance.status === "passed" || comparison === "current") {
     printComparableDelta(record, previous);
   } else if (performanceAcceptance.status === "failed") {
     console.log("\nComparable delta skipped because performance acceptance failed.");
