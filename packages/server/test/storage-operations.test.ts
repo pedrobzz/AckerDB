@@ -22,6 +22,7 @@ import {
   IncompatibleDatabaseError,
   reconcile,
 } from "@dbzz/server";
+import { mutationReplayOwner } from "../src/mutation-replay.ts";
 
 const roots: string[] = [];
 const fresh = () => {
@@ -136,7 +137,7 @@ describe("durability and internal state", () => {
     reconcile(engine);
     engine.close("clean");
     const db = new Database(database);
-    db.exec("DROP INDEX ix__dbz_mutations_completed_at");
+    db.exec("ALTER TABLE _dbz_mutations ADD COLUMN unexpected TEXT");
     db.close();
     const before = ownedState(database);
     expect(() => new Engine(schema, database)).toThrow(IncompatibleDatabaseError);
@@ -238,8 +239,9 @@ describe("durability and internal state", () => {
     const { database } = fresh();
     const engine = new Engine(schema, database);
     reconcile(engine);
+    expect(engine.writer.query("PRAGMA index_list('_dbz_mutations')").all()).toEqual([]);
     engine.writer.exec("BEGIN IMMEDIATE");
-    const commitVersion = engine.insertStoredMutation({
+    const staged = engine[mutationReplayOwner].stage({
       sessionId: "session-a",
       requestId: "request-a",
       issuedAt: 10,
@@ -249,19 +251,156 @@ describe("durability and internal state", () => {
       result: "{\"value\":1}",
       resultBytes: 11,
       durability: "production",
-      completedAt: 20,
-    });
+    }, 20);
     engine.writer.exec("COMMIT");
-    expect(engine.storedMutation("session-a", "request-a")).toMatchObject({
+    engine[mutationReplayOwner].committed(staged);
+    expect(staged.commitVersion).toBe(1n);
+    expect(engine[mutationReplayOwner].lookup("session-a", "request-a")).toMatchObject({
       functionRef: "records.create",
       commitVersion: 1n,
       durability: "production",
     });
     expect(engine.status()).toMatchObject({ mutationRecords: 1, mutationResultBytes: 11 });
-    expect(engine.pruneStoredMutations(20)).toBe(0);
-    expect(engine.pruneStoredMutations(21)).toBe(1);
+    expect(engine[mutationReplayOwner].prune(20)).toBe(0);
+    expect(engine[mutationReplayOwner].prune(21)).toBe(1);
     expect(engine.status()).toMatchObject({ mutationRecords: 0, mutationResultBytes: 0 });
     engine.close("clean");
+  });
+
+  test("publishes replay index entries only after commit and rebuilds them on restart", () => {
+    const { database } = fresh();
+    const engine = new Engine(schema, database);
+    reconcile(engine);
+    const base = {
+      sessionId: "session-a",
+      issuedAt: 10,
+      principalFingerprint: "principal",
+      functionRef: "records.create",
+      result: "null",
+      resultBytes: 4,
+      durability: "production" as const,
+    };
+    engine.writer.exec("BEGIN IMMEDIATE");
+    const rolledBack = engine[mutationReplayOwner].stage({
+      ...base,
+      requestId: "rolled-back",
+      argsFingerprint: "rolled-back",
+    }, 20);
+    engine.writer.exec("ROLLBACK");
+    expect(engine[mutationReplayOwner].lookup("session-a", "rolled-back")).toBeNull();
+
+    engine.writer.exec("BEGIN IMMEDIATE");
+    const committed = engine[mutationReplayOwner].stage({
+      ...base,
+      requestId: "committed",
+      argsFingerprint: "committed",
+    }, 20);
+    engine.writer.exec("COMMIT");
+    engine[mutationReplayOwner].committed(committed);
+    engine.close("clean");
+
+    const reopened = new Engine(schema, database);
+    expect(reopened[mutationReplayOwner].lookup("session-a", "rolled-back")).toBeNull();
+    expect(reopened[mutationReplayOwner].lookup("session-a", "committed")).toEqual(committed);
+    reopened.close("clean");
+  });
+
+  test("prunes one bounded expired prefix and keeps counters and cache exact", () => {
+    const { database } = fresh();
+    const engine = new Engine(schema, database);
+    reconcile(engine);
+    engine.writer.exec("BEGIN IMMEDIATE");
+    const staged = Array.from({ length: 1_002 }, (_, index) => engine[mutationReplayOwner].stage({
+      sessionId: `session-${index % 3}`,
+      requestId: `request-${index}`,
+      issuedAt: index,
+      principalFingerprint: "principal",
+      functionRef: "records.create",
+      argsFingerprint: String(index),
+      result: "0",
+      resultBytes: 1,
+      durability: "production",
+    }, index + 1));
+    engine.writer.exec("COMMIT");
+    for (const receipt of staged) engine[mutationReplayOwner].committed(receipt);
+
+    expect(engine[mutationReplayOwner].prune(1_001)).toBe(1_000);
+    expect(engine[mutationReplayOwner].prune(1_001)).toBe(0);
+    expect(engine[mutationReplayOwner].lookup("session-0", "request-0")).toBeNull();
+    expect(engine[mutationReplayOwner].lookup("session-1", "request-1000")).not.toBeNull();
+    expect(engine.status()).toMatchObject({ mutationRecords: 2, mutationResultBytes: 2 });
+    engine.close("clean");
+  });
+
+  test("clamps a backward clock so newer receipts remain in the ordered retention prefix", () => {
+    const { database } = fresh();
+    const engine = new Engine(schema, database);
+    reconcile(engine);
+    const append = (requestId: string, now: number) => {
+      engine.writer.exec("BEGIN IMMEDIATE");
+      const staged = engine[mutationReplayOwner].stage({
+        sessionId: "session",
+        requestId,
+        issuedAt: now,
+        principalFingerprint: "principal",
+        functionRef: "records.create",
+        argsFingerprint: requestId,
+        result: "0",
+        resultBytes: 1,
+        durability: "production",
+      }, now);
+      engine.writer.exec("COMMIT");
+      engine[mutationReplayOwner].committed(staged);
+      return staged;
+    };
+    expect(append("first", 100).completedAt).toBe(100);
+    expect(append("clock-went-back", 50).completedAt).toBe(100);
+    expect(engine[mutationReplayOwner].prune(100)).toBe(0);
+    expect(engine[mutationReplayOwner].prune(101)).toBe(2);
+    engine.close("clean");
+  });
+
+  test("rejects duplicate scopes, future versions, and nonmonotonic completion order", () => {
+    const corrupt = (
+      mutate: (database: Database) => void,
+      expected: string,
+    ) => {
+      const { database } = fresh();
+      const engine = new Engine(schema, database);
+      reconcile(engine);
+      engine.writer.exec("BEGIN IMMEDIATE");
+      const staged = [1, 2].map((version) => engine[mutationReplayOwner].stage({
+        sessionId: "session",
+        requestId: `request-${version}`,
+        issuedAt: version,
+        principalFingerprint: "principal",
+        functionRef: "records.create",
+        argsFingerprint: String(version),
+        result: "0",
+        resultBytes: 1,
+        durability: "production",
+      }, version));
+      engine.writer.exec("COMMIT");
+      for (const receipt of staged) engine[mutationReplayOwner].committed(receipt);
+      engine.close("clean");
+      const databaseHandle = new Database(database, { safeIntegers: true });
+      mutate(databaseHandle);
+      databaseHandle.close();
+      expect(() => new Engine(schema, database)).toThrow(expected);
+    };
+
+    corrupt(
+      (database) => database.query("UPDATE _dbz_mutations SET request_id = 'request-1' WHERE commit_version = 2").run(),
+      "duplicate scoped request",
+    );
+    corrupt(
+      (database) => database.query("UPDATE _dbz_state SET commit_version = 1 WHERE singleton = 1").run(),
+      "invalid commit order",
+    );
+    corrupt(
+      (database) => database.query("UPDATE _dbz_mutations SET completed_at = 0 WHERE commit_version = 2").run(),
+      "completion time is not monotonic",
+    );
   });
 
   test("detects an unclean prior process without deleting WAL state", async () => {
