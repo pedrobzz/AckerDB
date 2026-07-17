@@ -1,9 +1,12 @@
 import type { RegisteredServerOnly } from "@dbzz/core";
 import {
+  dbz,
   type Expand,
   type InferShape,
+  type InferValidator,
   type ObjectShape,
-  type Validator,
+  type ObjectValidator,
+  ValidationError,
 } from "./dbz.ts";
 import type { Invocable } from "./functions.ts";
 import { validateArgsShape } from "./functions.ts";
@@ -18,6 +21,7 @@ import {
 } from "./mcp-token-context.ts";
 import type { Schema } from "./schema.ts";
 import type { ProcedureCtx } from "./functions.ts";
+import { mcpObjectSchema, type JsonObjectSchema } from "./standard-schema.ts";
 
 const MCP_IDENTITY = Symbol.for("@dbzz/server/Mcp/v1");
 const MCP_TOOL_IDENTITY = Symbol.for("@dbzz/server/McpTool/v1");
@@ -59,6 +63,7 @@ export interface McpTextContent {
 /** Text-only result for the first tools tracer; later content kinds extend this union. */
 export interface McpToolResult {
   readonly content: readonly McpTextContent[];
+  readonly structuredContent?: Readonly<Record<string, unknown>>;
   readonly isError?: boolean;
 }
 
@@ -67,34 +72,45 @@ export type McpToolCtx<S extends Schema = Schema> = Pick<
   "auth" | "abortSignal" | "tx"
 >;
 
-export interface McpInputSchema extends Readonly<Record<string, unknown>> {
-  readonly type: "object";
-  readonly properties: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
-  readonly required?: readonly string[];
-  readonly additionalProperties: false;
-}
+export type McpInputSchema = JsonObjectSchema;
+export type McpOutputSchema = JsonObjectSchema;
 
-interface McpToolDefinition<A extends ObjectShape, S extends Schema> {
+interface McpToolDefinitionBase<A extends ObjectShape> {
   readonly name: string;
   readonly description: string;
   readonly access?: "public" | "authenticated";
   readonly args: A;
+}
+
+interface McpToolDefinition<
+  A extends ObjectShape,
+  O extends ObjectValidator | undefined,
+  S extends Schema,
+> extends McpToolDefinitionBase<A> {
+  readonly output?: O;
   readonly handler: (
     ctx: McpToolCtx<S>,
     args: Expand<InferShape<A>>,
-  ) => McpToolResult | Promise<McpToolResult>;
+  ) => McpHandlerResult<O> | Promise<McpHandlerResult<O>>;
 }
+
+type McpHandlerResult<O extends ObjectValidator | undefined> =
+  O extends ObjectValidator ? Expand<InferValidator<O>> : McpToolResult;
 
 export interface RegisteredMcpTool<
   A extends ObjectShape = ObjectShape,
+  O extends ObjectValidator | undefined = ObjectValidator | undefined,
   S extends Schema = Schema,
 > extends RegisteredServerOnly,
-    Invocable<"mcp-tool", A, McpToolCtx<S>, McpToolResult> {
+    Invocable<"mcp-tool", A, McpToolCtx<S>, McpToolResult, McpHandlerResult<O>> {
   readonly serverKind: "mcp-tool";
   readonly name: string;
   readonly description: string;
   readonly mcp: McpDeclaration<string, S>;
+  readonly inputValidator: ObjectValidator<A>;
   readonly inputSchema: McpInputSchema;
+  readonly outputValidator: O;
+  readonly outputSchema: O extends ObjectValidator ? McpOutputSchema : undefined;
 }
 
 export interface McpDeclaration<
@@ -108,7 +124,9 @@ export interface McpDeclaration<
   readonly instructions?: string;
   readonly metadata: McpEndpointMetadata;
   readonly tokens: McpTokenOperations<S>;
-  tool<A extends ObjectShape>(definition: McpToolDefinition<A, S>): RegisteredMcpTool<A, S>;
+  tool<A extends ObjectShape, O extends ObjectValidator | undefined = undefined>(
+    definition: McpToolDefinition<A, O, S>,
+  ): RegisteredMcpTool<A, O, S>;
 }
 
 export interface McpBuilder<S extends Schema> {
@@ -162,73 +180,7 @@ function endpointMetadata(value: unknown): McpEndpointMetadata {
   return Object.freeze(metadata);
 }
 
-function propertySchema(validator: Validator<unknown, string>, where: string): Record<string, unknown> {
-  switch (validator.kind) {
-    case "string":
-      return { type: "string" };
-    case "number":
-      return { type: "number" };
-    case "boolean":
-      return { type: "boolean" };
-    case "jsonb":
-      return {};
-    case "enum":
-      return {
-        type: "string",
-        enum: [...(validator as Validator & { readonly values: readonly string[] }).values],
-      };
-    case "literal": {
-      const value = validator.descriptor()["v"];
-      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-        return { const: value };
-      }
-      break;
-    }
-    case "array":
-      return {
-        type: "array",
-        items: propertySchema(
-          (validator as Validator & { readonly element: Validator }).element,
-          `${where}[]`,
-        ),
-      };
-    case "object":
-      return objectSchema(
-        (validator as Validator & { readonly shape: ObjectShape }).shape,
-        where,
-      );
-    case "nullable":
-      return {
-        anyOf: [
-          propertySchema(
-            (validator as Validator & { readonly inner: Validator }).inner,
-            where,
-          ),
-          { type: "null" },
-        ],
-      };
-  }
-  throw new Error(
-    `${where}: dbz.${validator.kind}() does not yet have a lossless standard-JSON MCP representation`,
-  );
-}
-
-function objectSchema(shape: ObjectShape, where: string): McpInputSchema {
-  const properties: Record<string, Record<string, unknown>> = {};
-  const required: string[] = [];
-  for (const [name, validator] of Object.entries(shape)) {
-    properties[name] = propertySchema(validator, `${where}.${name}`);
-    if (validator.kind !== "nullable") required.push(name);
-  }
-  return Object.freeze({
-    type: "object" as const,
-    properties: Object.freeze(properties),
-    ...(required.length === 0 ? {} : { required: Object.freeze(required) }),
-    additionalProperties: false as const,
-  });
-}
-
-export function validateMcpToolResult(value: unknown): McpToolResult {
+function validateMcpContentResult(value: unknown): McpToolResult {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new TypeError("MCP tool handlers must return an MCP content result");
   }
@@ -250,6 +202,40 @@ export function validateMcpToolResult(value: unknown): McpToolResult {
     throw new TypeError("MCP tool result isError must be a boolean");
   }
   return value as McpToolResult;
+}
+
+function assertStandardJson(value: unknown, path: string): void {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number" && Number.isFinite(value)) return;
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      assertStandardJson(value[index], `${path}[${index}]`);
+    }
+    return;
+  }
+  if (typeof value === "object" && !(value instanceof Uint8Array)) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype === Object.prototype || prototype === null) {
+      for (const [key, field] of Object.entries(value)) {
+        assertStandardJson(field, `${path}.${key}`);
+      }
+      return;
+    }
+  }
+  throw new ValidationError(`${path}: expected a standard JSON value`);
+}
+
+/** Validate and normalize the handler result once before either adapter consumes it. */
+export function finalizeMcpToolResult(tool: AnyRegisteredMcpTool, value: unknown): McpToolResult {
+  if (tool.outputValidator === undefined) return validateMcpContentResult(value);
+  const structuredContent = tool.outputValidator.check(value, "output") as Readonly<
+    Record<string, unknown>
+  >;
+  assertStandardJson(structuredContent, "output");
+  return {
+    content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+    structuredContent,
+  };
 }
 
 export function createMcp<const Name extends string>(
@@ -302,7 +288,11 @@ export function createMcp(
     ...(instructions === undefined ? {} : { instructions }),
     metadata,
     tokens,
-    tool<A extends ObjectShape>(definition: McpToolDefinition<A, Schema>): RegisteredMcpTool<A> {
+    tool(definition: McpToolDefinition<
+      ObjectShape,
+      ObjectValidator | undefined,
+      Schema
+    >): RegisteredMcpTool {
       if (definition === null || typeof definition !== "object") {
         throw new TypeError("MCP tool definition is required");
       }
@@ -323,6 +313,11 @@ export function createMcp(
         throw new TypeError(`MCP tool "${definition.name}" access must be public or authenticated`);
       }
       validateArgsShape(definition.args, `MCP tool ${definition.name} args`);
+      if (definition.output !== undefined && definition.output.kind !== "object") {
+        throw new TypeError(`MCP tool "${definition.name}" output must be dbz.object(...)`);
+      }
+      const inputValidator = dbz.object(definition.args);
+      const outputValidator = definition.output;
       const tool = {
         isDbzzServerOnly: true as const,
         serverKind: "mcp-tool" as const,
@@ -331,13 +326,18 @@ export function createMcp(
         description: definition.description,
         mcp: declaration,
         args: definition.args,
-        inputSchema: objectSchema(definition.args, `MCP tool ${definition.name} args`),
+        inputValidator,
+        inputSchema: mcpObjectSchema(inputValidator, "input"),
+        outputValidator,
+        outputSchema: outputValidator === undefined
+          ? undefined
+          : mcpObjectSchema(outputValidator, "output"),
         access: definition.access ?? "public",
         handler: definition.handler,
       };
       brand(tool, MCP_TOOL_IDENTITY);
       compileInvocation(tool);
-      return Object.freeze(tool) as RegisteredMcpTool<A>;
+      return Object.freeze(tool) as RegisteredMcpTool;
     },
   };
   brand(value, MCP_IDENTITY);
@@ -353,7 +353,11 @@ export function isRegisteredMcpTool(value: unknown): value is RegisteredMcpTool 
   return hasBrand(value, MCP_TOOL_IDENTITY);
 }
 
-export type AnyRegisteredMcpTool = RegisteredMcpTool<ObjectShape, Schema>;
+export type AnyRegisteredMcpTool = RegisteredMcpTool<
+  ObjectShape,
+  ObjectValidator | undefined,
+  Schema
+>;
 
 export type {
   CreatedMcpToken,
