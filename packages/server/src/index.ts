@@ -191,6 +191,9 @@ export {
   type DefaultMcpConfig,
   type McpBuilder,
   type McpAudioContent,
+  type McpAiModelOutput,
+  type McpAiTool,
+  type McpAiToolSet,
   type McpBlobResourceContents,
   type McpContentAnnotations,
   type McpContentBlock,
@@ -224,6 +227,7 @@ export {
 } from "./mcp.ts";
 export {
   type StandardJsonCodec,
+  type StandardJsonProtocolSchema,
   type StandardJsonSchemaOptions,
   type StandardSchemaIssue,
   type StandardSchemaOptions,
