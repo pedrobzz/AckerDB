@@ -246,6 +246,8 @@ interface HttpAdmissionLease {
 /** One bounded HTTP slot whose fair-share owner changes after authentication. */
 class HttpAdmission {
   private readonly callers = new Map<string, number>();
+  private readonly drainWaiters = new Set<() => void>();
+  private accepting = true;
   private active = 0;
   private globalRejections = 0;
   private fairShareRejections = 0;
@@ -256,6 +258,13 @@ class HttpAdmission {
   ) {}
 
   admit(fairnessKey: string): HttpAdmissionLease {
+    if (!this.accepting) {
+      throw new DbzzError("draining", "HTTP ingress is draining", {
+        retryable: true,
+        retryAfterMs: DRAIN_RETRY_AFTER_MS,
+        resource: "connection",
+      });
+    }
     if ((this.callers.get(fairnessKey) ?? 0) >= this.maxOperationsPerCaller) {
       this.fairShareRejections = Math.min(Number.MAX_SAFE_INTEGER, this.fairShareRejections + 1);
       throw new DbzzError("overloaded", "HTTP source capacity is full", {
@@ -297,8 +306,18 @@ class HttpAdmission {
         owned = false;
         this.active--;
         this.decrement(currentKey);
+        if (this.active === 0) {
+          for (const resolve of this.drainWaiters) resolve();
+          this.drainWaiters.clear();
+        }
       },
     });
+  }
+
+  closeAndDrain(): Promise<void> {
+    this.accepting = false;
+    if (this.active === 0) return Promise.resolve();
+    return new Promise((resolve) => this.drainWaiters.add(resolve));
   }
 
   snapshot(): HttpAdmissionSnapshot {
@@ -997,13 +1016,18 @@ export class DbzzServer {
       return Promise.resolve();
     });
     const runtimeDrain = runtime?.drain(deadlineAtMs) ?? Promise.resolve();
-    const graceful = Promise.all([runtimeDrain, ...sessions]).then(async () => {
-      // Bun leaves the awaited force-stop pending on active keep-alive/SSE
-      // transports unless listener admission is closed first. Both calls stay
-      // after application drain so /live remains reachable throughout it.
-      void listener.stop(false).catch(() => {});
-      await listener.stop(true);
-    });
+    const graceful = Promise.all([runtimeDrain, ...sessions])
+      // Receiver credit remains admissible while Runtime closes SSE. Once
+      // application ownership settles, close ingress and own every accepted
+      // response handoff before stopping the listener.
+      .then(() => this.httpAdmission.closeAndDrain())
+      .then(async () => {
+        // Bun leaves the awaited force-stop pending on active keep-alive/SSE
+        // transports unless listener admission is closed first. Both calls stay
+        // after application drain so /live remains reachable throughout it.
+        void listener.stop(false).catch(() => {});
+        await listener.stop(true);
+      });
 
     const deadlineError = new DbzzError("deadline_exceeded", "graceful shutdown deadline exceeded", {
       resource: "connection",
@@ -1026,6 +1050,7 @@ export class DbzzServer {
     } catch (error) {
       if (timeout !== undefined) clearTimeout(timeout);
       this.lifecycle = "failed";
+      void this.httpAdmission.closeAndDrain();
       for (const connection of this.connections) connection.socket?.terminate();
       // Initiate the force close but do not await Bun's listener promise: Bun
       // keeps that promise pending for a handler that ignores cancellation,

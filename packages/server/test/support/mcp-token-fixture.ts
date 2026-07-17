@@ -21,11 +21,11 @@ import {
   type ProcedureBuilder,
   type QueryBuilder,
 } from "../../src/functions.ts";
-import { PRODUCTION_LIMITS } from "../../src/limits.ts";
+import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/limits.ts";
 import { createMcp, type McpBuilder } from "../../src/mcp.ts";
 import { reconcile } from "../../src/reconcile.ts";
 import { Registry } from "../../src/registry.ts";
-import { Runtime } from "../../src/runtime.ts";
+import { Runtime, type RuntimeOptions } from "../../src/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema.ts";
 import type {
   RuntimePublication,
@@ -43,9 +43,9 @@ const schema = defineSchema({
 });
 
 export const typedMutation = mutation as MutationBuilder<typeof schema>;
-const typedQuery = query as QueryBuilder<typeof schema>;
+export const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
+export const typedMcp = createMcp as McpBuilder<typeof schema>;
 const invalidUpdateKind = dbz.enum("InvalidMcpTokenUpdateKind", ["empty", "undefined"]);
 
 export const agentMcp = typedMcp({ name: "agent", path: "/agent/mcp" });
@@ -267,6 +267,11 @@ export interface McpTokenFixture {
   close(): Promise<void>;
 }
 
+export interface McpTokenFixtureOptions {
+  readonly limits?: ServiceLimits;
+  readonly telemetry?: RuntimeOptions["telemetry"];
+}
+
 export function databasePath(prefix: string): string {
   const directory = mkdtempSync(join(tmpdir(), prefix));
   directories.push(directory);
@@ -277,6 +282,7 @@ export function fixture(
   path: string,
   verifier?: CredentialVerifier,
   extraModules: Record<string, Record<string, unknown>> = {},
+  options: McpTokenFixtureOptions = {},
 ): McpTokenFixture {
   const engine = new Engine(schema, path);
   reconcile(engine);
@@ -284,8 +290,8 @@ export function fixture(
     engine,
     registry: new Registry({ ...modules, ...extraModules }),
     verifier,
-    telemetry: false,
-    limits: {
+    telemetry: options.telemetry ?? false,
+    limits: options.limits ?? {
       ...PRODUCTION_LIMITS,
       mcp: { ...PRODUCTION_LIMITS.mcp, maxTokensPerIdentity: 2 },
     },

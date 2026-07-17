@@ -809,14 +809,13 @@ export class Runtime implements RuntimePort {
         controller.abort(new DbzzError("unauthenticated", "credential revoked"));
       }
     });
-    const leaseSignal = this.operationSignal(
-      signal === undefined
-        ? controller.signal
-        : AbortSignal.any([signal, controller.signal]),
-    );
+    const leaseSignal = signal === undefined
+      ? controller.signal
+      : AbortSignal.any([signal, controller.signal]);
+    const verificationSignal = this.operationSignal(leaseSignal);
     try {
-      const principal = await this.verifyMcpToken(mcp, parsed, fairnessKey, leaseSignal);
-      throwIfAborted(leaseSignal);
+      const principal = await this.verifyMcpToken(mcp, parsed, fairnessKey, verificationSignal);
+      throwIfAborted(verificationSignal);
       let active = true;
       return Object.freeze({
         principal,

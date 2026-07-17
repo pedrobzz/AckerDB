@@ -1601,6 +1601,78 @@ describe("lifecycle drain", () => {
     });
   });
 
+  test("closes admission after Runtime drain and bounds an already-admitted slow ACK", async () => {
+    const slowDirectory = mkdtempSync(join(tmpdir(), "dbzz-slow-ack-drain-"));
+    const slowEngine = new Engine(schema, join(slowDirectory, "data.db"));
+    reconcile(slowEngine);
+    const slowLimits = defineServiceLimits({
+      ...limits,
+      readQueue: { ...limits.readQueue, maxAgeMs: 500 },
+    });
+    const slowRuntime = new Runtime({
+      engine: slowEngine,
+      registry: new Registry(functions),
+      limits: slowLimits,
+      telemetry: false,
+    });
+    const slowServer = serve({ runtime: slowRuntime, port: 0 });
+    const slowBase = `http://127.0.0.1:${slowServer.port}`;
+    const stalledCreditController = new AbortController();
+    try {
+      longSseStarted = deferred<void>();
+      const response = await fetch(`${slowBase}/api/sse`, {
+        method: "POST",
+        body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "notes.stayOpen", args: {} }),
+      });
+      await within(longSseStarted.promise);
+      const sse = readSse(response);
+      const started = await within(sse.next());
+      expect((await acknowledgeSse(slowBase, sse.streamId, started!)).status).toBe(204);
+
+      const startedAt = performance.now();
+      const drain = slowServer.drain();
+      const terminal = await within(sse.next());
+      expect(terminal).toMatchObject({ t: "sse_error", outcome: { code: "draining" } });
+      const stalledCredit = fetch(`${slowBase}/api/sse/ack`, {
+        method: "POST",
+        body: stalledBody(),
+        signal: stalledCreditController.signal,
+      }).catch(() => undefined);
+      await eventually(() => slowServer.status().httpIngress === 1);
+
+      expect((await acknowledgeSse(slowBase, sse.streamId, terminal!)).status).toBe(204);
+      expect(await sse.next()).toBeNull();
+      await eventually(() => slowRuntime.status().state === "stopped");
+      expect(slowServer.state).toBe("draining");
+      expect(slowServer.status()).toMatchObject({ httpIngress: 1, httpFairnessKeys: 1 });
+
+      const refusedCredit = await acknowledgeSse(slowBase, sse.streamId, terminal!);
+      expect(refusedCredit.status).toBe(503);
+      const failure = await drain.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const elapsed = performance.now() - startedAt;
+      expect(failure).toMatchObject({
+        code: "deadline_exceeded",
+        message: "graceful shutdown deadline exceeded",
+        resource: "connection",
+      });
+      expect(elapsed).toBeGreaterThanOrEqual(slowLimits.gracefulShutdownMs - 15);
+      expect(elapsed).toBeLessThan(slowLimits.gracefulShutdownMs + 500);
+      expect(slowServer.state).toBe("failed");
+      expect(slowRuntime.status().state).toBe("stopped");
+      await within(stalledCredit);
+      await eventually(() => slowServer.status().httpIngress === 0);
+    } finally {
+      stalledCreditController.abort("slow ACK test complete");
+      await slowServer.drain().catch(() => {});
+      await slowRuntime.drain().catch(() => {});
+      slowEngine.close("unclean");
+      rmSync(slowDirectory, { recursive: true, force: true });
+    }
+  });
+
   test("force closes and preserves unclean storage when an admitted operation stalls", async () => {
     blockedProcedureStarted = deferred<void>();
     blockedProcedureRelease = deferred<void>();
