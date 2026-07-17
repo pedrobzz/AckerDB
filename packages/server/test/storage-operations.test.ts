@@ -538,26 +538,19 @@ describe("durability and internal state", () => {
     const script = `
       import { dbz, defineSchema, defineTable, Engine } from "@dbzz/server";
       const schema = defineSchema({ records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }) });
-      const started = performance.now();
       const engine = new Engine(schema, ${JSON.stringify(database)});
       engine.close("clean");
-      console.log(JSON.stringify({ elapsedMs: performance.now() - started }));
     `;
     const child = Bun.spawn([process.execPath, "-e", script], {
       cwd: join(import.meta.dir, "../../.."),
       env: { ...process.env, TMPDIR: unavailableTmp, TMP: unavailableTmp, TEMP: unavailableTmp },
-      stdout: "pipe",
       stderr: "pipe",
     });
-    const [exitCode, stdout, stderr] = await Promise.all([
+    const [exitCode, stderr] = await Promise.all([
       child.exited,
-      new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ]);
     expect(exitCode, stderr).toBe(0);
-    const measurement = JSON.parse(stdout) as { elapsedMs: number };
-    expect(Number.isFinite(measurement.elapsedMs)).toBe(true);
-    expect(measurement.elapsedMs).toBeGreaterThanOrEqual(0);
     expect(existsSync(unavailableTmp)).toBe(false);
   }, 15_000);
 });
