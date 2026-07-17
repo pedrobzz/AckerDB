@@ -142,6 +142,9 @@ export interface ReactiveSnapshot {
   readonly queryListeners: number;
   readonly eventListeners: number;
   readonly dormantEntries: number;
+  readonly dependencyKeys: number;
+  readonly dependencyEdges: number;
+  readonly multiOwnerDependencyKeys: number;
   readonly resultBytes: number;
   readonly historyTransitions: number;
   readonly historyBytes: number;
@@ -208,6 +211,8 @@ interface QueryEntry<C> {
   removed: boolean;
 }
 
+type DependencyOwners<C> = QueryEntry<C> | Set<QueryEntry<C>>;
+
 interface HistoryRecord<C> {
   readonly entry: QueryEntry<C>;
   readonly fromVersion: bigint;
@@ -247,7 +252,7 @@ export class OrderedReactive<C = unknown> {
   private readonly observer?: ReactiveObserver;
   private readonly revalidation: BoundedExecutor;
   private readonly entries = new Map<string, QueryEntry<C>>();
-  private readonly byReadKey = new Map<string, Set<QueryEntry<C>>>();
+  private readonly byReadKey = new Map<string, DependencyOwners<C>>();
   private readonly bySubscriber = new Map<Subscriber, Map<number, Binding<C>>>();
   private readonly eventStates = new Map<string, EventState<C>>();
   private historyHead?: HistoryRecord<C>;
@@ -257,6 +262,8 @@ export class OrderedReactive<C = unknown> {
   private resultBytes = 0;
   private historyBytes = 0;
   private historyTransitions = 0;
+  private dependencyEdges = 0;
+  private multiOwnerDependencyKeys = 0;
   private eventTail: Promise<void> = Promise.resolve();
 
   constructor(options: OrderedReactiveOptions<C>) {
@@ -533,6 +540,9 @@ export class OrderedReactive<C = unknown> {
       queryListeners: this.queryListeners,
       eventListeners: this.eventListeners,
       dormantEntries,
+      dependencyKeys: this.byReadKey.size,
+      dependencyEdges: this.dependencyEdges,
+      multiOwnerDependencyKeys: this.multiOwnerDependencyKeys,
       resultBytes: this.resultBytes,
       historyTransitions: this.historyTransitions,
       historyBytes: this.historyBytes,
@@ -1052,7 +1062,12 @@ export class OrderedReactive<C = unknown> {
   private affectedEntries(writeKeys: ReadonlySet<string>): Set<QueryEntry<C>> {
     const affected = new Set<QueryEntry<C>>();
     for (const key of writeKeys) {
-      for (const entry of this.byReadKey.get(key) ?? []) affected.add(entry);
+      const owners = this.byReadKey.get(key);
+      if (owners instanceof Set) {
+        for (const entry of owners) affected.add(entry);
+      } else if (owners) {
+        affected.add(owners);
+      }
     }
     return affected;
   }
@@ -1060,17 +1075,46 @@ export class OrderedReactive<C = unknown> {
   private replaceReadSet(entry: QueryEntry<C>, next: ReadonlySet<string>): void {
     for (const key of entry.readSet) {
       if (next.has(key)) continue;
-      const entries = this.byReadKey.get(key);
-      entries?.delete(entry);
-      if (entries?.size === 0) this.byReadKey.delete(key);
+      this.removeReadOwner(key, entry);
     }
     for (const key of next) {
       if (entry.readSet.has(key)) continue;
-      let entries = this.byReadKey.get(key);
-      if (!entries) this.byReadKey.set(key, (entries = new Set()));
-      entries.add(entry);
+      this.addReadOwner(key, entry);
     }
     entry.readSet = new Set(next);
+  }
+
+  private addReadOwner(key: string, entry: QueryEntry<C>): void {
+    const owners = this.byReadKey.get(key);
+    if (!owners) {
+      this.byReadKey.set(key, entry);
+      this.dependencyEdges++;
+      return;
+    }
+    if (owners === entry) return;
+    if (owners instanceof Set) {
+      if (owners.has(entry)) return;
+      owners.add(entry);
+      this.dependencyEdges++;
+      return;
+    }
+    this.byReadKey.set(key, new Set([owners, entry]));
+    this.dependencyEdges++;
+    this.multiOwnerDependencyKeys++;
+  }
+
+  private removeReadOwner(key: string, entry: QueryEntry<C>): void {
+    const owners = this.byReadKey.get(key);
+    if (owners === entry) {
+      this.byReadKey.delete(key);
+      this.dependencyEdges--;
+      return;
+    }
+    if (!(owners instanceof Set) || !owners.delete(entry)) return;
+    this.dependencyEdges--;
+    if (owners.size !== 1) return;
+    this.byReadKey.set(key, owners.values().next().value!);
+    this.multiOwnerDependencyKeys--;
   }
 
   private retainHistory(entry: QueryEntry<C>, record: HistoryRecord<C>): boolean {
@@ -1175,11 +1219,7 @@ export class OrderedReactive<C = unknown> {
     this.entries.delete(entry.key);
     this.resultBytes -= entry.resultBytes;
     this.clearHistory(entry);
-    for (const key of entry.readSet) {
-      const entries = this.byReadKey.get(key);
-      entries?.delete(entry);
-      if (entries?.size === 0) this.byReadKey.delete(key);
-    }
+    for (const key of entry.readSet) this.removeReadOwner(key, entry);
     for (const listener of [...entry.listeners]) this.detach(listener);
   }
 
