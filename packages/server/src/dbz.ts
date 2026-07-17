@@ -31,7 +31,6 @@ export type Descriptor = { k: string } & Record<string, unknown>;
 
 export interface Validator<T = unknown, K extends string = string, Input = T> {
   readonly kind: K;
-  readonly description?: string;
   /** Phantom: the TypeScript type this validator admits. Never set at runtime. */
   readonly _type?: T;
   /** Phantom: the value accepted before validation and normalization. */
@@ -42,6 +41,12 @@ export interface Validator<T = unknown, K extends string = string, Input = T> {
   tsType(): string;
   /** JSON descriptor, for schema snapshots and diffing. */
   descriptor(): Descriptor;
+}
+
+/** A dbz validator that can also describe its wire shape to external tools. */
+export interface StandardValidator<T = unknown, K extends string = string, Input = T>
+  extends Validator<T, K, Input> {
+  readonly description?: string;
   /** Return an equivalent validator carrying human guidance for generated schemas. */
   describe(description: string): this;
   /** Dependency-free Standard Schema + Standard JSON Schema v1 contract. */
@@ -89,11 +94,11 @@ function makeValidator<
   kind: K,
   impl: Pick<Validator<T, K, Input>, "check" | "tsType" | "descriptor">,
   extra?: Extra,
-): Validator<T, K, Input> & Extra {
-  const validator = { kind, ...impl, ...extra } as Validator<T, K, Input> & Extra;
+): StandardValidator<T, K, Input> & Extra {
+  const validator = { kind, ...impl, ...extra } as StandardValidator<T, K, Input> & Extra;
   Object.defineProperties(validator, {
     describe: {
-      value(this: Validator<T, K, Input> & Extra, description: string) {
+      value(this: StandardValidator<T, K, Input> & Extra, description: string) {
         if (typeof description !== "string" || description.trim() === "") {
           throw new ValidationError("validator description must be a non-empty string");
         }
@@ -116,7 +121,7 @@ function makeValidator<
   return validator;
 }
 
-function primaryKey(): Validator<bigint, "pk"> {
+function primaryKey(): StandardValidator<bigint, "pk"> {
   return makeValidator("pk", {
     check(value, path) {
       if (typeof value !== "bigint") fail(path, "bigint (primary key)", value);
@@ -127,7 +132,7 @@ function primaryKey(): Validator<bigint, "pk"> {
   });
 }
 
-function string(): Validator<string, "string"> {
+function string(): StandardValidator<string, "string"> {
   return makeValidator("string", {
     check(value, path) {
       if (typeof value !== "string") fail(path, "string", value);
@@ -138,7 +143,7 @@ function string(): Validator<string, "string"> {
   });
 }
 
-function number(): Validator<number, "number"> {
+function number(): StandardValidator<number, "number"> {
   return makeValidator("number", {
     check(value, path) {
       if (typeof value !== "number" || !Number.isFinite(value)) fail(path, "finite number", value);
@@ -157,7 +162,7 @@ function checkI64(value: unknown, path: string, expected: string): bigint {
   return value;
 }
 
-function bigint(): Validator<bigint, "bigint"> {
+function bigint(): StandardValidator<bigint, "bigint"> {
   return makeValidator("bigint", {
     check: (value, path) => checkI64(value, path, "bigint"),
     tsType: () => "bigint",
@@ -165,7 +170,7 @@ function bigint(): Validator<bigint, "bigint"> {
   });
 }
 
-function identity(): Validator<Identity, "identity"> {
+function identity(): StandardValidator<Identity, "identity"> {
   return makeValidator("identity", {
     check: (value, path) => checkI64(value, path, "Identity (bigint)") as Identity,
     tsType: () => "Identity",
@@ -173,7 +178,7 @@ function identity(): Validator<Identity, "identity"> {
   });
 }
 
-function boolean(): Validator<boolean, "boolean"> {
+function boolean(): StandardValidator<boolean, "boolean"> {
   return makeValidator("boolean", {
     check(value, path) {
       if (typeof value !== "boolean") fail(path, "boolean", value);
@@ -184,7 +189,7 @@ function boolean(): Validator<boolean, "boolean"> {
   });
 }
 
-function bytes(): Validator<Uint8Array, "bytes"> {
+function bytes(): StandardValidator<Uint8Array, "bytes"> {
   return makeValidator("bytes", {
     check(value, path) {
       if (!(value instanceof Uint8Array)) fail(path, "Uint8Array", value);
@@ -195,7 +200,7 @@ function bytes(): Validator<Uint8Array, "bytes"> {
   });
 }
 
-function scheduleAt(): Validator<number, "scheduleAt"> {
+function scheduleAt(): StandardValidator<number, "scheduleAt"> {
   return makeValidator("scheduleAt", {
     check(value, path) {
       if (typeof value !== "number" || !Number.isFinite(value)) {
@@ -213,9 +218,11 @@ function parenthesize(ts: string): string {
   return ts.includes("|") || ts.includes("&") ? `(${ts})` : ts;
 }
 
-function array<V extends Validator<unknown, string>>(
+function array<V extends StandardValidator<unknown, string>>(
   element: V,
-): Validator<InferValidator<V>[], "array", InferValidatorInput<V>[]> & { readonly element: V } {
+): StandardValidator<InferValidator<V>[], "array", InferValidatorInput<V>[]> & {
+  readonly element: V;
+} {
   return makeValidator<
     InferValidator<V>[],
     "array",
@@ -235,7 +242,7 @@ function array<V extends Validator<unknown, string>>(
   );
 }
 
-export type ObjectShape = Record<string, Validator<unknown, string>>;
+export type ObjectShape = Record<string, StandardValidator<unknown, string>>;
 export type InferShape<S extends ObjectShape> = { [K in keyof S]: InferValidator<S[K]> };
 type NullableShapeKey<S extends ObjectShape> = {
   [K in keyof S]: S[K] extends Validator<unknown, "nullable", unknown> ? K : never;
@@ -269,7 +276,7 @@ export function checkShape<S extends ObjectShape>(
 }
 
 export interface ObjectValidator<S extends ObjectShape = ObjectShape>
-  extends Validator<InferShape<S>, "object", InferInputShape<S>> {
+  extends StandardValidator<InferShape<S>, "object", InferInputShape<S>> {
   readonly shape: S;
 }
 
@@ -298,7 +305,7 @@ function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
 }
 
 export interface EnumValidator<V extends string = string>
-  extends Validator<V, "enum"> {
+  extends StandardValidator<V, "enum"> {
   readonly name: string;
   readonly values: readonly V[];
 }
@@ -335,7 +342,7 @@ function enum_<const V extends readonly [string, ...string[]]>(
 
 type LiteralValue = string | number | boolean | bigint;
 
-function literal<const V extends LiteralValue>(value: V): Validator<V, "literal"> {
+function literal<const V extends LiteralValue>(value: V): StandardValidator<V, "literal"> {
   return makeValidator("literal", {
     check(input, path) {
       if (input !== value) fail(path, literalTs(value), input);
@@ -351,7 +358,7 @@ function literalTs(value: LiteralValue): string {
   return typeof value === "string" ? JSON.stringify(value) : String(value);
 }
 
-function tag(): Validator<null, "tag"> {
+function tag(): StandardValidator<null, "tag"> {
   return makeValidator("tag", {
     check(value, path) {
       if (value !== null && value !== undefined) fail(path, "null (payload-less variant)", value);
@@ -362,7 +369,7 @@ function tag(): Validator<null, "tag"> {
   });
 }
 
-export type UnionMembers = Record<string, Validator<unknown, string>>;
+export type UnionMembers = Record<string, StandardValidator<unknown, string>>;
 
 export type UnionValue<M extends UnionMembers> = {
   [K in keyof M & string]: { tag: K; value: InferValidator<M[K]> };
@@ -383,7 +390,7 @@ export type UnionNamespace<M extends UnionMembers> = {
 };
 
 export interface UnionValidator<M extends UnionMembers = UnionMembers>
-  extends Validator<UnionValue<M>, "union", UnionInput<M>> {
+  extends StandardValidator<UnionValue<M>, "union", UnionInput<M>> {
   readonly name: string;
   readonly members: M;
   /** Runtime variant constructors: `MessagePayload.text("hi")`. */
@@ -450,7 +457,7 @@ function union<M extends UnionMembers>(name: string, members: M): UnionValidator
   );
 }
 
-function jsonb<T>(): Validator<T, "jsonb"> {
+function jsonb<T>(): StandardValidator<T, "jsonb"> {
   return makeValidator("jsonb", {
     check(value, path) {
       if (value === undefined) fail(path, "JSON value", value);
@@ -471,8 +478,10 @@ function jsonb<T>(): Validator<T, "jsonb"> {
   });
 }
 
-export interface NullableValidator<V extends Validator<unknown, string> = Validator<unknown, string>>
-  extends Validator<
+export interface NullableValidator<
+  V extends StandardValidator<unknown, string> = StandardValidator<unknown, string>,
+>
+  extends StandardValidator<
     InferValidator<V> | null,
     "nullable",
     InferValidatorInput<V> | null | undefined
@@ -480,7 +489,7 @@ export interface NullableValidator<V extends Validator<unknown, string> = Valida
   readonly inner: V;
 }
 
-function nullable<V extends Validator<unknown, string>>(inner: V): NullableValidator<V> {
+function nullable<V extends StandardValidator<unknown, string>>(inner: V): NullableValidator<V> {
   if (inner.kind === "nullable") throw new ValidationError("nullable(nullable(...)) is redundant");
   if (inner.kind === "pk" || inner.kind === "scheduleAt" || inner.kind === "tag") {
     throw new ValidationError(`nullable(${inner.kind}) is not allowed`);

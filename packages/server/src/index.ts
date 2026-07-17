@@ -12,6 +12,7 @@ export {
   type ObjectShape,
   type ObjectValidator,
   type InferShape,
+  type StandardValidator,
   type Validator,
   type EnumValidator,
   type UnionValidator,

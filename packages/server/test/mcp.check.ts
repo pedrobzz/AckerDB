@@ -8,6 +8,7 @@ import {
   mutation,
   type McpBuilder,
   type MutationBuilder,
+  type Validator,
 } from "@dbzz/server";
 
 const schema = defineSchema({
@@ -115,6 +116,26 @@ const missingStandardInput: StandardInput<typeof summaryInput> = {};
 const missingStandardOutput: StandardOutput<typeof summaryInput> = { body: "hello" };
 void missingStandardInput;
 void missingStandardOutput;
+
+const runtimeOnlyValidator: Validator<string, "runtime-only"> = {
+  kind: "runtime-only",
+  check(value) {
+    if (typeof value !== "string") throw new TypeError("expected string");
+    return value;
+  },
+  tsType: () => "string",
+  descriptor: () => ({ k: "runtime-only" }),
+};
+
+agentMcp.tool({
+  name: "runtime_only_input",
+  description: "Prove MCP fields have an honest schema.",
+  args: {
+    // @ts-expect-error runtime-only validators cannot be advertised as MCP schemas
+    value: runtimeOnlyValidator,
+  },
+  handler: () => ({ content: [{ type: "text", text: "never" }] }),
+});
 
 // @ts-expect-error declarations require an explicit stable name
 typedMcp();

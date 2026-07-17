@@ -2,8 +2,8 @@ import type {
   EnumValidator,
   ObjectShape,
   ObjectValidator,
+  StandardValidator,
   UnionValidator,
-  Validator,
 } from "./dbz.ts";
 import { deepFreeze } from "./immutable.ts";
 
@@ -53,7 +53,7 @@ export interface JsonObjectSchema extends Readonly<Record<string, unknown>> {
 type SchemaMode = "input" | "output";
 
 function described(
-  validator: Validator,
+  validator: StandardValidator,
   schema: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
   return validator.description === undefined
@@ -103,7 +103,7 @@ function unionFragment(
 }
 
 function schemaFragment(
-  validator: Validator,
+  validator: StandardValidator,
   mode: SchemaMode,
   where: string,
 ): Readonly<Record<string, unknown>> {
@@ -139,7 +139,7 @@ function schemaFragment(
       schema = {
         type: "array",
         items: schemaFragment(
-          (validator as Validator & { readonly element: Validator }).element,
+          (validator as StandardValidator & { readonly element: StandardValidator }).element,
           mode,
           `${where}[]`,
         ),
@@ -155,7 +155,7 @@ function schemaFragment(
       schema = {
         anyOf: [
           schemaFragment(
-            (validator as Validator & { readonly inner: Validator }).inner,
+            (validator as StandardValidator & { readonly inner: StandardValidator }).inner,
             mode,
             where,
           ),
@@ -178,7 +178,7 @@ function schemaUri(options: StandardJsonSchemaOptions): string {
 }
 
 function jsonSchema(
-  validator: Validator,
+  validator: StandardValidator,
   mode: SchemaMode,
   options: StandardJsonSchemaOptions,
 ): Readonly<Record<string, unknown>> {
@@ -189,7 +189,7 @@ function jsonSchema(
 }
 
 export function createStandardSchemaProperties<Input, Output>(
-  validator: Validator<Output, string, Input>,
+  validator: StandardValidator<Output, string, Input>,
   isValidationError: (value: unknown) => value is Error,
 ): StandardSchemaProperties<Input, Output> {
   return Object.freeze({
