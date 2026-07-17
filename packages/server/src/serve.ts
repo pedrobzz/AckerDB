@@ -54,6 +54,7 @@ import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
 import { carryHttpRequestProvenance } from "./request-provenance.ts";
 import {
   CAPTURE_DELIVERY_OBSERVER,
+  type McpCredentialLease,
   type Runtime,
   type RuntimeStatus,
 } from "./runtime.ts";
@@ -775,6 +776,7 @@ export class DbzzServer {
   ): Promise<Response> {
     const runtime = this.requireRuntime();
     let admission: HttpAdmissionLease | undefined;
+    let credentialLease: McpCredentialLease | undefined;
     let principal: Principal = ANONYMOUS_PRINCIPAL;
     try {
       if (this.lifecycle !== "ready" || runtime.state !== "ready") {
@@ -786,14 +788,15 @@ export class DbzzServer {
         runtime.limits.maxRequestBytes,
         runtime.limits.readQueue.maxAgeMs,
       );
-      const rawToken = mcpCredentialFromAuthorization(request.headers.get("authorization"));
-      if (rawToken !== null) {
-        principal = await runtime.authenticateMcpToken(
+      const credential = mcpCredentialFromAuthorization(request.headers.get("authorization"));
+      if (credential !== null) {
+        credentialLease = await runtime.acquireMcpTokenLease(
           mcp.name,
-          rawToken,
+          credential,
           callerFairnessKey(ANONYMOUS_PRINCIPAL, source),
           request.signal,
         );
+        principal = credentialLease.principal;
       }
       const fairnessKey = callerFairnessKey(principal, source);
       admission.transfer(fairnessKey);
@@ -805,7 +808,7 @@ export class DbzzServer {
         mcp,
         runtime,
         principal,
-        signal: request.signal,
+        signal: credentialLease?.signal ?? request.signal,
         fairnessKey,
       }), cors);
     } catch (error) {
@@ -814,6 +817,7 @@ export class DbzzServer {
         credentialPresented: request.headers.has("authorization"),
       });
     } finally {
+      credentialLease?.release();
       admission?.release();
     }
   }
