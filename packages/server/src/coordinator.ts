@@ -114,7 +114,10 @@ export interface CommitRequest<T, Publication> {
   readonly fairnessKey: string;
   readonly requestBytes: number;
   readonly deadlineMs?: number;
-  readonly signal?: AbortSignal;
+  /** Cancels this work only while it is waiting for the single writer. */
+  readonly admissionSignal?: AbortSignal;
+  /** Cancels a request-owned transaction before BEGIN or COMMIT. */
+  readonly transactionSignal?: AbortSignal;
   readonly telemetry?: CommitTelemetryObserver;
   readonly statementTelemetry?: DbStatementObserver;
   /** Restore the request owner's async instrumentation while its writer turn runs. */
@@ -136,7 +139,10 @@ export interface CommitRequest<T, Publication> {
 export interface FrameworkTransactionRequest<T> {
   readonly fairnessKey: string;
   readonly requestBytes: number;
-  readonly signal?: AbortSignal;
+  /** Cancels this work only while it is waiting for the single writer. */
+  readonly admissionSignal?: AbortSignal;
+  /** Cancels a request-owned transaction before BEGIN or COMMIT. */
+  readonly transactionSignal?: AbortSignal;
   readonly work: () => T | Promise<T>;
   /** Synchronous committed-state handoff before the single writer admits its next turn. */
   readonly afterCommit?: (value: T) => void;
@@ -298,7 +304,9 @@ export class CommitCoordinator<Publication> {
           bytes: request.requestBytes,
           fairnessKey: request.fairnessKey,
           ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
-          ...(request.signal === undefined ? {} : { signal: request.signal }),
+          ...(request.admissionSignal === undefined
+            ? {}
+            : { signal: request.admissionSignal }),
         },
       );
     } catch (error) {
@@ -348,9 +356,11 @@ export class CommitCoordinator<Publication> {
     return this.writer.submit(async () => {
       let open = false;
       try {
+        throwIfAborted(request.transactionSignal);
         this.engine.writer.exec("BEGIN IMMEDIATE");
         open = true;
         const value = await transaction.run(true, request.work);
+        throwIfAborted(request.transactionSignal);
         this.engine.writer.exec("COMMIT");
         open = false;
         try {
@@ -379,7 +389,9 @@ export class CommitCoordinator<Publication> {
       operation: "transaction",
       bytes: request.requestBytes,
       fairnessKey: request.fairnessKey,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.admissionSignal === undefined
+        ? {}
+        : { signal: request.admissionSignal }),
     });
   }
 
@@ -489,6 +501,7 @@ export class CommitCoordinator<Publication> {
     let publication: Publication | undefined;
     const storageAt = performance.now();
     try {
+      throwIfAborted(request.transactionSignal);
       this.engine.writer.exec("BEGIN IMMEDIATE");
       transactionOpen = true;
       const executionAt = request.telemetry === undefined ? undefined : performance.now();
@@ -636,7 +649,7 @@ export class CommitCoordinator<Publication> {
       storageObserved = true;
       const commitAt = performance.now();
       try {
-        throwIfAborted(request.signal);
+        throwIfAborted(request.transactionSignal);
         this.engine.writer.exec("COMMIT");
       } catch (error) {
         observeCommit(request, {

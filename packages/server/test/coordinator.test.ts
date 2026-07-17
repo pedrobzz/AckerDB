@@ -91,6 +91,55 @@ describe("CommitCoordinator", () => {
     expect(published).toEqual([1n]);
   });
 
+  test("separates writer admission cancellation from transaction ownership", async () => {
+    const { coordinator, engine } = fixture();
+    const admitted = deferred();
+    const release = deferred();
+    const disconnected = new AbortController();
+    const durable = coordinator.execute({
+      operation: "mutation",
+      fairnessKey: "session-1",
+      requestBytes: 1,
+      admissionSignal: disconnected.signal,
+      idempotency: identity,
+      work: async (db: any) => {
+        await db.notes.insert({ body: "durable" });
+        admitted.resolve();
+        await release.promise;
+        return "committed";
+      },
+      publication: (version) => ({ version }),
+    });
+    await admitted.promise;
+    disconnected.abort(new Error("transport disconnected"));
+    release.resolve();
+
+    await expect(durable).resolves.toMatchObject({ replay: "executed", value: "committed" });
+
+    const executing = deferred();
+    const finish = deferred();
+    const canceled = new AbortController();
+    const requestOwned = coordinator.execute({
+      operation: "transaction",
+      fairnessKey: "request-1",
+      requestBytes: 1,
+      admissionSignal: canceled.signal,
+      transactionSignal: canceled.signal,
+      work: async (db: any) => {
+        await db.notes.insert({ body: "rolled back" });
+        executing.resolve();
+        await finish.promise;
+      },
+      publication: (version) => ({ version }),
+    });
+    await executing.promise;
+    canceled.abort(new Error("request canceled"));
+    finish.resolve();
+
+    await expect(requestOwned).rejects.toMatchObject({ code: "unavailable" });
+    expect(engine.reader.query("SELECT body FROM notes").all()).toEqual([{ body: "durable" }]);
+  });
+
   test("releases the writer turn after handoff while ordered publication is pending", async () => {
     const dir = mkdtempSync(join(tmpdir(), "dbzz-coordinator-handoff-"));
     dirs.push(dir);
@@ -179,6 +228,30 @@ describe("CommitCoordinator", () => {
       },
     })).rejects.toMatchObject({ code: "convergence_unavailable", committed: true });
     expect(engine.reader.query("SELECT body FROM notes").all()).toEqual([{ body: "committed" }]);
+  });
+
+  test("rolls back a canceled request-owned framework transaction", async () => {
+    const { coordinator, engine } = fixture();
+    const executing = deferred();
+    const finish = deferred();
+    const canceled = new AbortController();
+    const request = coordinator.transactFramework({
+      fairnessKey: "request-1",
+      requestBytes: 1,
+      admissionSignal: canceled.signal,
+      transactionSignal: canceled.signal,
+      work: async () => {
+        engine.writer.query("INSERT INTO notes (body) VALUES (?)").run("rolled back");
+        executing.resolve();
+        await finish.promise;
+      },
+    });
+    await executing.promise;
+    canceled.abort(new Error("request canceled"));
+    finish.resolve();
+
+    await expect(request).rejects.toMatchObject({ code: "unavailable" });
+    expect(engine.reader.query("SELECT body FROM notes").all()).toEqual([]);
   });
 
   test("gives a cold connection a writer turn before one hot connection drains its queue", async () => {

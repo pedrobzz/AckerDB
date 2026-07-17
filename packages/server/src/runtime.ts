@@ -774,7 +774,8 @@ export class Runtime implements RuntimePort {
         return this.coordinator.transactFramework({
           fairnessKey,
           requestBytes,
-          signal: operationSignal,
+          admissionSignal: operationSignal,
+          transactionSignal: operationSignal,
           work: () => this.engine.resolveIdentity(account.issuer, account.subject),
         });
       },
@@ -887,7 +888,8 @@ export class Runtime implements RuntimePort {
     await this.coordinator.transactFramework({
       fairnessKey,
       requestBytes,
-      signal,
+      admissionSignal: signal,
+      transactionSignal: signal,
       work: () => {
         if (account.expiresAt <= this.readNow()) {
           throw new DbzzError("unauthenticated", "invalid credential");
@@ -929,7 +931,8 @@ export class Runtime implements RuntimePort {
     const result = await this.coordinator.transactFramework({
       fairnessKey,
       requestBytes,
-      signal,
+      admissionSignal: signal,
+      transactionSignal: signal,
       work: () => this.engine.detachIdentityAccount(
         principal.identity,
         account.issuer,
@@ -1134,7 +1137,7 @@ export class Runtime implements RuntimePort {
         operation: "mutation",
         fairnessKey: context.fairnessKey,
         requestBytes,
-        signal,
+        admissionSignal: signal,
         ...(this.telemetry.enabled
           ? {
               telemetry: this.observeCommit,
@@ -1810,7 +1813,7 @@ export class Runtime implements RuntimePort {
             operation: "scheduled",
             fairnessKey: "system:scheduler",
             requestBytes: 1,
-            signal: this.shutdownController.signal,
+            admissionSignal: this.shutdownController.signal,
             ...(this.telemetry.enabled
               ? {
                   telemetry: this.observeCommit,
@@ -2596,7 +2599,8 @@ export class Runtime implements RuntimePort {
                   run: AsyncLocalStorage.snapshot(),
                 }
               : {}),
-            signal,
+            admissionSignal: signal,
+            transactionSignal: signal,
             work: (db, writes) => this.withMcpTokenContext(
               { db, auth: principal },
               this.engine.writer,
