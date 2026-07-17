@@ -647,6 +647,51 @@ describe("Identity-bound MCP owner tokens", () => {
     )).toEqual(["authenticated_status", "public_status"]);
   });
 
+  test("preserves same-timestamp creation order across restart", async () => {
+    const path = databasePath("dbzz-mcp-token-order-");
+    const timestamp = Date.now();
+    const now = () => timestamp;
+    const first = fixture(path, undefined, {}, { now });
+    const alice = await user(first.runtime, "creation-order-alice");
+    const firstSession = session(alice, "creation-order-first-session");
+    await first.runtime.openSession(firstSession);
+    const firstCreated = (await first.runtime.mutation(
+      firstSession,
+      request(mutationMessage(1, "1", { name: "First", metadata: {} })),
+    )).value as { readonly id: string };
+    const secondCreated = (await first.runtime.mutation(
+      firstSession,
+      request(mutationMessage(2, "2", { name: "Second", metadata: {} })),
+    )).value as { readonly id: string };
+    const firstId = "z".repeat(22);
+    const secondId = "A".repeat(22);
+    first.engine.writer.query("UPDATE _dbz_mcp_tokens SET token_id = ? WHERE token_id = ?")
+      .run(firstId, firstCreated.id);
+    first.engine.writer.query("UPDATE _dbz_mcp_tokens SET token_id = ? WHERE token_id = ?")
+      .run(secondId, secondCreated.id);
+    expect(first.engine.reader.query(
+      "SELECT creation_seq, token_id FROM _dbz_mcp_tokens ORDER BY creation_seq",
+    ).all()).toEqual([
+      { creation_seq: 1n, token_id: firstId },
+      { creation_seq: 2n, token_id: secondId },
+    ]);
+    await first.close();
+
+    const second = fixture(path, undefined, {}, { now });
+    const reopenedAlice = await user(second.runtime, "creation-order-alice");
+    const secondSession = session(reopenedAlice, "creation-order-second-session");
+    await second.runtime.openSession(secondSession);
+    const listed = await second.runtime.query(secondSession, request(queryMessage(3))) as readonly {
+      readonly id: string;
+      readonly name: string;
+      readonly createdAt: number;
+    }[];
+    expect(listed).toEqual([
+      expect.objectContaining({ id: firstId, name: "First", createdAt: timestamp }),
+      expect.objectContaining({ id: secondId, name: "Second", createdAt: timestamp }),
+    ]);
+  });
+
   test("survives restart, authenticates only its bound endpoint, and cannot self-administer", async () => {
     const path = databasePath("dbzz-mcp-token-auth-");
     const verifierCalls: string[] = [];
