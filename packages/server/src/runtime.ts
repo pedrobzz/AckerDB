@@ -96,8 +96,8 @@ import {
 import {
   finalizeMcpToolResult,
   type McpToolCtx,
-  type McpToolResult,
 } from "./mcp.ts";
+import type { McpCallToolResult } from "./mcp-content.ts";
 import { withMcpTokenContext as withMcpTokenCapability } from "./mcp-token-context.ts";
 import { mcpTokenVaultOwner } from "./mcp-token-vault.ts";
 import { emitWriteKeys } from "./keys.ts";
@@ -1217,7 +1217,7 @@ export class Runtime implements RuntimePort {
   }
 
   /** The single deep MCP execution path used by every present and future adapter. */
-  async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpToolResult> {
+  async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpCallToolResult> {
     if (request.principal.kind === "mcp" && request.principal.mcp !== request.mcp) {
       throw new DbzzError("unauthorized", "MCP credential is bound to another endpoint");
     }

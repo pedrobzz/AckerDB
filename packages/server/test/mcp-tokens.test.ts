@@ -86,8 +86,20 @@ const writeOwnedRecord = agentMcp.tool({
   handler: async (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const identity = ctx.auth.identity;
-    await ctx.tx((tx) => tx.db.records.insert({ owner: identity, value: args.value }));
-    return { content: [{ type: "text", text: `${ctx.auth.kind}:${identity}` }] };
+    const id = await ctx.tx((tx) => tx.db.records.insert({ owner: identity, value: args.value }));
+    return {
+      content: [
+        { type: "text", text: `${ctx.auth.kind}:${identity}` },
+        {
+          type: "resource_link",
+          uri: `dbzz://records/${id}`,
+          name: `record-${id}`,
+          annotations: { audience: ["assistant"], priority: 0.8 },
+          _meta: { owner: identity.toString() },
+        },
+      ],
+      _meta: { tokenId: ctx.auth.tokenId },
+    };
   },
 });
 
@@ -392,7 +404,19 @@ describe("Identity-bound MCP owner tokens", () => {
     }, created.token);
     expect(called.status).toBe(200);
     expect(await called.json()).toMatchObject({
-      result: { content: [{ type: "text", text: `mcp:${firstAlice.identity}` }] },
+      result: {
+        content: [
+          { type: "text", text: `mcp:${firstAlice.identity}` },
+          {
+            type: "resource_link",
+            uri: "dbzz://records/1",
+            name: "record-1",
+            annotations: { audience: ["assistant"], priority: 0.8 },
+            _meta: { owner: firstAlice.identity.toString() },
+          },
+        ],
+        _meta: { tokenId: created.id },
+      },
     });
     const secondCalled = await rpc(base, "/agent/mcp", "tools/call", {
       name: "write_owned_record",
