@@ -13,10 +13,12 @@ import { brand, hasBrand } from "./identity.ts";
 import { compileInvocation } from "./invocation.ts";
 import {
   createMcpTokenOperations,
+  createSystemMcpTokenOperations,
   type CreatedMcpToken,
   type McpTokenCreateInput,
   type McpTokenDescriptor,
   type McpTokenOperations,
+  type SystemMcpTokenOperations,
 } from "./mcp-token-context.ts";
 import {
   createMcpScopeDescriptor,
@@ -184,6 +186,7 @@ export interface McpEndpointDeclaration<
 
 type McpDeclarationOperations<S extends Schema, Scope extends string> = {
   readonly tokens: McpTokenOperations<S, Scope>;
+  readonly systemTokens: SystemMcpTokenOperations<S, Scope>;
   tool<A extends ObjectShape, O extends ObjectValidator | undefined = undefined>(
     definition: McpToolDefinition<A, O, S, Scope>,
   ): RegisteredMcpTool<A, O, S>;
@@ -370,6 +373,7 @@ export function createMcp(
   const metadata = endpointMetadata(config.metadata);
   const scopeDescriptor = createMcpScopeDescriptor(config.name, config.scopes);
   const tokens = createMcpTokenOperations(config.name, scopeDescriptor);
+  const systemTokens = createSystemMcpTokenOperations(config.name, scopeDescriptor);
 
   let declaration!: AnyMcpDeclaration;
   const value = {
@@ -381,6 +385,7 @@ export function createMcp(
     metadata,
     ...(scopeDescriptor === undefined ? {} : { scopes: scopeDescriptor }),
     tokens,
+    systemTokens,
     tool(definition: McpToolDefinition<
       ObjectShape,
       ObjectValidator | undefined,
@@ -467,6 +472,7 @@ export type {
   McpTokenCreateInput,
   McpTokenDescriptor,
   McpTokenOperations,
+  SystemMcpTokenOperations,
 };
 export type {
   McpScopeDescriptor,
