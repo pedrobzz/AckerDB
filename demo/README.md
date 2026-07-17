@@ -136,7 +136,7 @@ From `demo/`:
 
 ### Backend setup
 
-The demo consumes the exact published `@dbzz/*@0.2.1` artifacts from the
+The demo consumes the exact published `@dbzz/*@0.2.4` artifacts from the
 local registry at `http://127.0.0.1:4873`. From `demo/`:
 
 ```sh
@@ -167,7 +167,7 @@ Run the focused backend gate without touching the development server:
 bun run --cwd app/server test
 ```
 
-It starts the real app through the installed `@dbzz/cli@0.2.1` on ephemeral
+It starts the real app through the installed `@dbzz/cli@0.2.4` on ephemeral
 ports and temporary durable databases. The suite covers durable Identity
 across restart, authorization, atomic seating conflicts, price snapshots,
 item/order transitions, payment, owner-isolated events, and the real schedule
