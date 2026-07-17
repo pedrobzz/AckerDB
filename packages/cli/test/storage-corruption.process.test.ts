@@ -501,7 +501,7 @@ describe("fresh-process storage corruption rejection", () => {
       .map((artifact) => [artifact, readFileSync(artifact)] as const);
     expect(artifacts.some(([artifact]) => artifact.endsWith("-wal"))).toBe(true);
 
-    await assertFailedStartup(dir, port, "mutation ledger counters do not match stored records");
+    await assertFailedStartup(dir, port, "mutation replay ledger counters do not match stored records");
 
     for (const [artifact, before] of artifacts) {
       expect(existsSync(artifact), artifact).toBe(true);
@@ -545,7 +545,7 @@ describe("fresh-process storage corruption rejection", () => {
     await assertFailedStartup(
       corruptDir,
       corruptPort,
-      "mutation ledger counters do not match stored records",
+      "mutation replay ledger counters do not match stored records",
     );
     for (const [artifact, before] of artifacts) {
       expect(existsSync(artifact), artifact).toBe(true);
