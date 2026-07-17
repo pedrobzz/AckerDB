@@ -7,7 +7,7 @@ import {
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
 import type { Principal } from "./auth.ts";
-import type { McpDeclaration } from "./mcp.ts";
+import type { McpEndpointDeclaration } from "./mcp.ts";
 import { outcomeFromError } from "./outcome.ts";
 import { carryHttpRequestProvenance } from "./request-provenance.ts";
 import type { Runtime } from "./runtime.ts";
@@ -20,7 +20,7 @@ export interface McpPostOptions {
   readonly request: Request;
   readonly body: unknown;
   readonly bytes: number;
-  readonly mcp: McpDeclaration;
+  readonly mcp: McpEndpointDeclaration;
   readonly runtime: Runtime;
   readonly principal: Principal;
   readonly signal: AbortSignal;

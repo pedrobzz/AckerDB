@@ -5,6 +5,11 @@ import type { Identity } from "./dbz.ts";
 import { CorruptDatabaseError, DbzzError } from "./errors.ts";
 import { deepFreeze } from "./immutable.ts";
 import { MCP_TOKEN_PREFIX, parseMcpToken } from "./mcp-credential.ts";
+import {
+  isMcpScopeGrant,
+  normalizeMcpScopeGrant,
+  type McpScopeDescriptor,
+} from "./mcp-scopes.ts";
 
 export const mcpTokenVaultOwner = Symbol("dbzz.mcpTokenVault");
 
@@ -20,6 +25,7 @@ export const MCP_TOKEN_INTERNAL_OBJECTS = [
       secret_digest BLOB NOT NULL CHECK (length(secret_digest) = 32),
       name TEXT NOT NULL CHECK (length(name) > 0),
       metadata TEXT NOT NULL,
+      scopes TEXT NOT NULL,
       created_at REAL NOT NULL,
       updated_at REAL NOT NULL CHECK (updated_at >= created_at)
     )`,
@@ -38,12 +44,17 @@ export interface McpTokenLimits {
   readonly maxMetadataBytes: number;
 }
 
-export interface McpTokenCreateInput {
+interface McpTokenCreateInputBase {
   readonly name: string;
   readonly metadata?: Readonly<Record<string, unknown>>;
 }
 
-export interface McpTokenDescriptor {
+export type McpTokenCreateInput<Scope extends string = never> = McpTokenCreateInputBase &
+  ([Scope] extends [never]
+    ? { readonly scopes?: never }
+    : { readonly scopes: readonly Scope[] });
+
+interface McpTokenDescriptorBase {
   readonly id: string;
   readonly mcp: string;
   readonly name: string;
@@ -52,10 +63,13 @@ export interface McpTokenDescriptor {
   readonly updatedAt: number;
 }
 
-export interface CreatedMcpToken extends McpTokenDescriptor {
+export type McpTokenDescriptor<Scope extends string = never> = McpTokenDescriptorBase &
+  ([Scope] extends [never] ? object : { readonly scopes: readonly Scope[] });
+
+export type CreatedMcpToken<Scope extends string = never> = McpTokenDescriptor<Scope> & {
   /** Returned only from create; no descriptor read can recover this value. */
   readonly token: string;
-}
+};
 
 interface StoredTokenRow {
   readonly token_id: string;
@@ -64,6 +78,7 @@ interface StoredTokenRow {
   readonly secret_digest: Uint8Array;
   readonly name: string;
   readonly metadata: string;
+  readonly scopes: string;
   readonly created_at: number;
   readonly updated_at: number;
 }
@@ -94,17 +109,46 @@ function metadata(value: unknown, maxBytes: number): {
   return { encoded, value: deepFreeze(decode(encoded) as Record<string, unknown>) };
 }
 
-function descriptor(row: Pick<StoredTokenRow,
-  "token_id" | "mcp" | "name" | "metadata" | "created_at" | "updated_at"
->): McpTokenDescriptor {
+function storedScopes(encoded: string): readonly string[] {
+  let value: unknown;
+  try {
+    value = decode(encoded);
+  } catch {
+    throw new CorruptDatabaseError("DBZZ MCP token scope grant is invalid");
+  }
+  if (!isMcpScopeGrant(value)) {
+    throw new CorruptDatabaseError("DBZZ MCP token scope grant is invalid");
+  }
+  return Object.freeze([...value]);
+}
+
+function descriptor<Scope extends string>(
+  row: Pick<StoredTokenRow,
+    "token_id" | "mcp" | "name" | "metadata" | "scopes" | "created_at" | "updated_at"
+  >,
+  scopeDescriptor: McpScopeDescriptor<Scope> | undefined,
+): McpTokenDescriptor<Scope> {
+  const grant = storedScopes(row.scopes);
+  if (scopeDescriptor === undefined && grant.length !== 0) {
+    throw new CorruptDatabaseError("scope-free MCP token contains a scope grant");
+  }
+  let scopes: readonly Scope[] | undefined;
+  if (scopeDescriptor !== undefined) {
+    try {
+      scopes = normalizeMcpScopeGrant(scopeDescriptor, grant, "stored MCP token scopes");
+    } catch {
+      throw new CorruptDatabaseError("DBZZ MCP token scope grant is invalid for its endpoint");
+    }
+  }
   return Object.freeze({
     id: row.token_id,
     mcp: row.mcp,
     name: row.name,
     metadata: deepFreeze(decode(row.metadata) as Record<string, unknown>),
+    ...(scopes === undefined ? {} : { scopes }),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-  });
+  }) as McpTokenDescriptor<Scope>;
 }
 
 function invalidCredential(): DbzzError {
@@ -113,7 +157,7 @@ function invalidCredential(): DbzzError {
 
 export function verifyMcpTokenVaultState(connection: Database): void {
   const rows = connection.query(
-    "SELECT token_id, identity, mcp, secret_digest, name, metadata, created_at, updated_at FROM _dbz_mcp_tokens",
+    "SELECT token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _dbz_mcp_tokens",
   );
   for (const row of rows.iterate() as IterableIterator<StoredTokenRow>) {
     if (
@@ -128,6 +172,7 @@ export function verifyMcpTokenVaultState(connection: Database): void {
       typeof row.name !== "string" ||
       row.name.length === 0 ||
       typeof row.metadata !== "string" ||
+      typeof row.scopes !== "string" ||
       !Number.isFinite(row.created_at) ||
       !Number.isFinite(row.updated_at) ||
       row.updated_at < row.created_at
@@ -140,6 +185,7 @@ export function verifyMcpTokenVaultState(connection: Database): void {
     } catch {
       throw new CorruptDatabaseError("DBZZ MCP token vault metadata is invalid");
     }
+    storedScopes(row.scopes);
   }
 }
 
@@ -147,18 +193,19 @@ export function verifyMcpTokenVaultState(connection: Database): void {
 export class McpTokenVault {
   constructor(private readonly writer: Database) {}
 
-  create(
+  create<Scope extends string>(
     identity: Identity,
     mcp: string,
-    input: McpTokenCreateInput,
+    input: McpTokenCreateInput<Scope>,
+    scopeDescriptor: McpScopeDescriptor<Scope> | undefined,
     limits: McpTokenLimits,
     now: number,
-  ): CreatedMcpToken {
+  ): CreatedMcpToken<Scope> {
     if (input === null || typeof input !== "object" || Array.isArray(input)) {
       throw new DbzzError("validation", "MCP token create input must be an object");
     }
     for (const key of Object.keys(input)) {
-      if (key !== "name" && key !== "metadata") {
+      if (key !== "name" && key !== "metadata" && !(key === "scopes" && scopeDescriptor !== undefined)) {
         throw new DbzzError("validation", `unknown MCP token field "${key}"`);
       }
     }
@@ -170,6 +217,9 @@ export class McpTokenVault {
       throw new DbzzError("validation", `MCP token name exceeds ${limits.maxNameBytes} UTF-8 bytes`);
     }
     const normalizedMetadata = metadata(input.metadata ?? {}, limits.maxMetadataBytes);
+    const scopes = scopeDescriptor === undefined
+      ? Object.freeze([])
+      : normalizeMcpScopeGrant(scopeDescriptor, input.scopes, "MCP token scopes");
     if (!Number.isFinite(now) || now < 0) throw new RangeError("MCP token clock must be finite and non-negative");
     const count = this.writer
       .query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens WHERE identity = ? AND mcp = ?")
@@ -182,43 +232,86 @@ export class McpTokenVault {
     const secret = randomBytes(32).toString("base64url");
     this.writer.query(
       `INSERT INTO _dbz_mcp_tokens
-        (token_id, identity, mcp, secret_digest, name, metadata, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).run(id, identity, mcp, digest(secret), name, normalizedMetadata.encoded, now, now);
+        (token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(id, identity, mcp, digest(secret), name, normalizedMetadata.encoded, encode(scopes), now, now);
     return Object.freeze({
       id,
       mcp,
       name,
       metadata: normalizedMetadata.value,
+      ...(scopeDescriptor === undefined ? {} : { scopes }),
       createdAt: now,
       updatedAt: now,
       token: `${MCP_TOKEN_PREFIX}${id}.${secret}`,
-    });
+    }) as CreatedMcpToken<Scope>;
   }
 
-  list(connection: Database, identity: Identity, mcp: string): readonly McpTokenDescriptor[] {
+  list<Scope extends string>(
+    connection: Database,
+    identity: Identity,
+    mcp: string,
+    scopeDescriptor: McpScopeDescriptor<Scope> | undefined,
+  ): readonly McpTokenDescriptor<Scope>[] {
     const rows = connection.query(
-      `SELECT token_id, mcp, name, metadata, created_at, updated_at
+      `SELECT token_id, mcp, name, metadata, scopes, created_at, updated_at
         FROM _dbz_mcp_tokens
         WHERE identity = ? AND mcp = ?
         ORDER BY created_at, token_id`,
     ).all(identity, mcp) as StoredTokenRow[];
-    return Object.freeze(rows.map(descriptor));
+    return Object.freeze(rows.map((row) => descriptor(row, scopeDescriptor)));
+  }
+
+  updateScopes<Scope extends string>(
+    identity: Identity,
+    mcp: string,
+    tokenId: string,
+    value: unknown,
+    scopeDescriptor: McpScopeDescriptor<Scope>,
+    now: number,
+  ): void {
+    if (typeof tokenId !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(tokenId)) {
+      throw new DbzzError("validation", "MCP token ID is invalid");
+    }
+    const scopes = normalizeMcpScopeGrant(scopeDescriptor, value, "MCP token scopes");
+    const result = this.writer.query(
+      `UPDATE _dbz_mcp_tokens
+        SET scopes = ?, updated_at = ?
+        WHERE token_id = ? AND identity = ? AND mcp = ?`,
+    ).run(encode(scopes), now, tokenId, identity, mcp);
+    if (result.changes === 0) throw new DbzzError("not_found", "MCP token not found");
   }
 
   authenticate(
     connection: Database,
     expectedMcp: string,
     rawToken: string,
-  ): Readonly<{ identity: Identity; tokenId: string }> {
+    scopeDescriptor: McpScopeDescriptor | undefined,
+  ): Readonly<{ identity: Identity; tokenId: string; scopes: readonly string[] }> {
     const parsed = parseMcpToken(rawToken);
     if (parsed === null) throw invalidCredential();
     const row = connection.query(
-      "SELECT identity, mcp, secret_digest FROM _dbz_mcp_tokens WHERE token_id = ?",
-    ).get(parsed.id) as Pick<StoredTokenRow, "identity" | "mcp" | "secret_digest"> | null;
+      "SELECT identity, mcp, secret_digest, scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
+    ).get(parsed.id) as Pick<StoredTokenRow, "identity" | "mcp" | "secret_digest" | "scopes"> | null;
     const expected = row?.secret_digest ?? DUMMY_DIGEST;
     const matches = expected.byteLength === 32 && timingSafeEqual(digest(parsed.secret), expected);
     if (!matches || row === null || row.mcp !== expectedMcp) throw invalidCredential();
-    return Object.freeze({ identity: row.identity as Identity, tokenId: parsed.id });
+    const storedGrant = storedScopes(row.scopes);
+    let scopes: readonly string[];
+    try {
+      if (scopeDescriptor === undefined) {
+        if (storedGrant.length !== 0) throw invalidCredential();
+        scopes = storedGrant;
+      } else {
+        scopes = normalizeMcpScopeGrant(scopeDescriptor, storedGrant, "stored MCP token scopes");
+      }
+    } catch {
+      throw invalidCredential();
+    }
+    return Object.freeze({
+      identity: row.identity as Identity,
+      tokenId: parsed.id,
+      scopes,
+    });
   }
 }

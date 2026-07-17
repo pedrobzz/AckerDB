@@ -11,6 +11,7 @@ import type { Identity } from "./dbz.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import { deepFreeze } from "./immutable.ts";
 import { hasMcpTokenPrefix } from "./mcp-credential.ts";
+import { isMcpScopeGrant } from "./mcp-scopes.ts";
 
 export interface AnonymousPrincipal {
   readonly kind: "anonymous";
@@ -53,6 +54,7 @@ export interface McpPrincipal {
   readonly identity: Identity;
   readonly mcp: string;
   readonly tokenId: string;
+  readonly scopes: readonly string[];
 }
 
 export type VerifiedCredential = VerifiedUserCredential | WorkloadPrincipal;
@@ -100,7 +102,8 @@ export function isPrincipal(value: unknown): value is Principal {
       typeof principal.mcp === "string" &&
       principal.mcp.length > 0 &&
       typeof principal.tokenId === "string" &&
-      principal.tokenId.length > 0
+      principal.tokenId.length > 0 &&
+      isMcpScopeGrant(principal.scopes)
     );
   }
   if (!isExternalPrincipal(value)) return false;

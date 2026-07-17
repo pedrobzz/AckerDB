@@ -32,10 +32,41 @@ const addNote = typedMutation({
 });
 
 const agentMcp = typedMcp({ name: "agent" });
+const scopedMcp = typedMcp({
+  name: "scoped_agent",
+  path: "/scoped/mcp",
+  scopes: ["orders.all", "orders.get", "reports.all"] as const,
+});
+type AgentScope = NonNullable<typeof scopedMcp.scopes._type>;
+const exactScope: AgentScope = "orders.get";
+const scopeValidator: Validator<AgentScope> = scopedMcp.scopes;
+void exactScope;
+void scopeValidator;
+// @ts-expect-error the descriptor exposes only the declaration's literal union
+const unknownScope: AgentScope = "orders.create";
+void unknownScope;
+// @ts-expect-error a scope-free declaration has no scope descriptor
+void agentMcp.scopes;
 const createAgentToken = typedMutation({
   access: "authenticated",
   args: { name: dbz.string() },
   handler: (ctx, args) => agentMcp.tokens.create(ctx, { name: args.name }),
+});
+const createScopedToken = typedMutation({
+  access: "authenticated",
+  args: {
+    name: dbz.string(),
+    scopes: dbz.array(scopedMcp.scopes),
+  },
+  handler: (ctx, args) => scopedMcp.tokens.create(ctx, args),
+});
+const updateScopedToken = typedMutation({
+  access: "authenticated",
+  args: {
+    tokenId: dbz.string(),
+    scopes: dbz.array(scopedMcp.scopes),
+  },
+  handler: (ctx, args) => scopedMcp.tokens.updateScopes(ctx, args.tokenId, args.scopes),
 });
 const listAgentTokens = typedQuery({
   access: "authenticated",
@@ -44,10 +75,15 @@ const listAgentTokens = typedQuery({
 });
 const createdToken: string = createAgentToken._retType!.token;
 const listedTokenId: string = listAgentTokens._retType![0]!.id;
+const createdScope: AgentScope = createScopedToken._retType!.scopes[0]!;
 // @ts-expect-error listing descriptors never recover the plaintext secret
 void listAgentTokens._retType![0]!.token;
+// @ts-expect-error scope-free descriptors do not expose a grant
+void listAgentTokens._retType![0]!.scopes;
 void createdToken;
 void listedTokenId;
+void createdScope;
+void updateScopedToken;
 const renamedEndpoint = typedMcp({
   name: "stable_name",
   path: "/renamed/export",
@@ -73,6 +109,64 @@ const writeNote = agentMcp.tool({
     agentMcp.tokens.create(ctx, { name: "forbidden" });
     await ctx.tx((tx) => addNote(tx, { body: args.body }));
     return { content: [{ type: "text", text: `${authKind}:${signal.aborted}` }] };
+  },
+});
+
+scopedMcp.tool({
+  name: "read_orders",
+  description: "Read orders with either exact capability.",
+  access: { anyOf: ["orders.all", "orders.get"] },
+  args: {},
+  handler: () => ({ content: [] }),
+});
+
+scopedMcp.tool({
+  name: "read_reports",
+  description: "Require both exact capabilities.",
+  access: { allOf: ["orders.get", "reports.all"] },
+  args: {},
+  handler: () => ({ content: [] }),
+});
+
+scopedMcp.tool({
+  name: "invalid_scope_policy",
+  description: "Reject undeclared policy values.",
+  // @ts-expect-error tool policies accept only the declaration's exact scope union
+  access: { anyOf: ["orders.create"] },
+  args: {},
+  handler: () => ({ content: [] }),
+});
+
+scopedMcp.tool({
+  name: "ambiguous_scope_policy",
+  description: "Reject ambiguous bare arrays.",
+  // @ts-expect-error scope policies must explicitly choose anyOf or allOf
+  access: ["orders.get"],
+  args: {},
+  handler: () => ({ content: [] }),
+});
+
+agentMcp.tool({
+  name: "scope_free_policy",
+  description: "Reject scope policies when the declaration has no scopes.",
+  // @ts-expect-error scope-free declarations expose only public/authenticated policies
+  access: { anyOf: ["orders.get"] },
+  args: {},
+  handler: () => ({ content: [] }),
+});
+
+typedMutation({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => {
+    // @ts-expect-error scope-free token creation cannot accept a scope value
+    agentMcp.tokens.create(ctx, { name: "invalid", scopes: [] });
+    // @ts-expect-error scope-free token operations omit the scope update method
+    agentMcp.tokens.updateScopes(ctx, "token", []);
+    // @ts-expect-error scope-enabled token creation requires an explicit grant
+    scopedMcp.tokens.create(ctx, { name: "invalid" });
+    // @ts-expect-error token grants accept only exact declared values
+    scopedMcp.tokens.create(ctx, { name: "invalid", scopes: ["orders.create"] });
   },
 });
 
