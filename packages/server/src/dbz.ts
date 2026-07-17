@@ -5,26 +5,14 @@
  * `array`, `object`, `union` and `nullable`.
  */
 import { encode, WireError, type Identity } from "@dbzz/core";
-import { brand, hasBrand } from "./identity.ts";
 import {
   createStandardSchemaProperties,
   type StandardSchemaProperties,
 } from "./standard-schema.ts";
+import { isValidationError, ValidationError } from "./validation-error.ts";
 
 export type { Identity } from "@dbzz/core";
-
-const VALIDATION_ERROR_IDENTITY = Symbol.for("@dbzz/server/ValidationError/v1");
-
-export class ValidationError extends Error {
-  constructor(message?: string) {
-    super(message);
-    brand(this, VALIDATION_ERROR_IDENTITY);
-  }
-}
-
-export function isValidationError(value: unknown): value is ValidationError {
-  return hasBrand(value, VALIDATION_ERROR_IDENTITY);
-}
+export { isValidationError, ValidationError } from "./validation-error.ts";
 
 /** JSON-serializable description of a validator, used for schema snapshots. */
 export type Descriptor = { k: string } & Record<string, unknown>;
@@ -342,15 +330,24 @@ function enum_<const V extends readonly [string, ...string[]]>(
 
 type LiteralValue = string | number | boolean | bigint;
 
-function literal<const V extends LiteralValue>(value: V): StandardValidator<V, "literal"> {
-  return makeValidator("literal", {
-    check(input, path) {
-      if (input !== value) fail(path, literalTs(value), input);
-      return value;
+export interface LiteralValidator<V extends LiteralValue = LiteralValue>
+  extends StandardValidator<V, "literal"> {
+  readonly value: V;
+}
+
+function literal<const V extends LiteralValue>(value: V): LiteralValidator<V> {
+  return makeValidator<V, "literal", { readonly value: V }>(
+    "literal",
+    {
+      check(input, path) {
+        if (input !== value) fail(path, literalTs(value), input);
+        return value;
+      },
+      tsType: () => literalTs(value),
+      descriptor: () => ({ k: "literal", v: JSON.parse(encode(value)) }),
     },
-    tsType: () => literalTs(value),
-    descriptor: () => ({ k: "literal", v: JSON.parse(encode(value)) }),
-  });
+    { value },
+  );
 }
 
 function literalTs(value: LiteralValue): string {

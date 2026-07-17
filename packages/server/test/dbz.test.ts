@@ -156,10 +156,14 @@ describe("Standard Schema contract", () => {
     expect(() => plain.describe("  ")).toThrow("non-empty");
   });
 
-  test("rejects DBZZ-native values until their protocol encoding is declared", () => {
+  test("keeps runtime-native Standard Schema honest until a protocol codec is compiled", () => {
     expect(() => dbz.bigint()["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
-      .toThrow("lossless standard-JSON representation");
+      .toThrow("requires a standard-JSON protocol codec");
+    expect(() => dbz.identity()["~standard"].jsonSchema.output({ target: "draft-2020-12" }))
+      .toThrow("requires a standard-JSON protocol codec");
+    expect(() => dbz.bytes()["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
+      .toThrow("requires a standard-JSON protocol codec");
     expect(() => dbz.literal(1n)["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
-      .toThrow("not standard-JSON representable");
+      .toThrow("requires a standard-JSON protocol codec");
   });
 });
