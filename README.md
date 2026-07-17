@@ -94,7 +94,8 @@ client.close();
   durable Identity, native recovery, and current platform limitations.
 - [MCP release gates](docs/mcp-conformance.md) documents the pinned official
   conformance scenarios, retained raw protocol/security cases, clean packed
-  consumer, unsupported optional capabilities, and benchmark contract.
+  consumer, real Codex and Claude Code host acceptance, unsupported optional
+  capabilities, and benchmark contract.
 - [Production-readiness report](docs/production-readiness-report.md) records the
   full issue #1 implementation and decision history, verification and benchmark
   evidence, remaining release blockers, and the operational gap versus Convex
@@ -141,6 +142,8 @@ bun install
 bun run test
 bun run test:mcp:conformance
 bun run test:mcp:package
+# Requires locally installed and authenticated Codex and Claude Code hosts:
+bun run test:mcp:hosts
 bun run typecheck
 bun run typecheck:bench
 ```

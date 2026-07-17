@@ -72,6 +72,24 @@ transitive `@dbzz/*` versions at the five local tarballs because this project
 does not publish them to npm. The packed manifests themselves remain unchanged
 and are asserted after installation.
 
+## Real host acceptance
+
+The optional HITL gate connects the packed endpoint to the real current Codex
+and Claude Code CLIs:
+
+```sh
+bun run test:mcp:hosts
+```
+
+It requires both hosts to be installed and authenticated locally, so it is not
+part of `bun run test`. The script creates fresh bearer tokens inside a
+temporary packed consumer, passes them to each host only through an environment
+variable, and removes the consumer when the run ends. It covers initialization
+instructions, anonymous public access, least-privilege discovery,
+authenticated/structured/rich calls, a live scope reduction, and live
+revocation. See [the reproducible host record](mcp-host-acceptance.md) for the
+exact versions, configuration, assertions, and current host limitations.
+
 ## Comparative performance
 
 Runtime MCP changes retain the repository-wide same-machine comparison:
