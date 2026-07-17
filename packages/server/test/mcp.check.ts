@@ -7,6 +7,7 @@ import {
   defineTable,
   mutation,
   type McpBuilder,
+  type McpToolResult,
   type MutationBuilder,
   type Validator,
 } from "@dbzz/server";
@@ -50,6 +51,55 @@ const writeNote = agentMcp.tool({
     await ctx.tx((tx) => addNote(tx, { body: args.body }));
     return { content: [{ type: "text", text: `${authKind}:${signal.aborted}` }] };
   },
+});
+
+const richResult = {
+  content: [{
+    type: "text",
+    text: "hello",
+    annotations: { audience: ["assistant"], priority: 0.8 },
+    _meta: { source: "compile-fixture" },
+  }, {
+    type: "image",
+    data: "AQID",
+    mimeType: "image/png",
+  }, {
+    type: "audio",
+    data: "BAUG",
+    mimeType: "audio/wav",
+  }, {
+    type: "resource",
+    resource: { uri: "dbzz://notes/1", mimeType: "text/plain", text: "note" },
+  }, {
+    type: "resource",
+    resource: {
+      uri: "dbzz://notes/2",
+      mimeType: "application/octet-stream",
+      blob: "AQID",
+    },
+  }, {
+    type: "resource_link",
+    uri: "https://dbzz.dev/notes/1",
+    name: "note-one",
+    title: "Note one",
+    size: 3,
+    icons: [{ src: "https://dbzz.dev/note.png", sizes: ["48x48"], theme: "light" }],
+  }],
+  _meta: { request: { id: 1 } },
+} satisfies McpToolResult;
+
+agentMcp.tool({
+  name: "render_note",
+  title: "Render note",
+  description: "Prove every rich result block is typed.",
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+  args: {},
+  handler: () => richResult,
 });
 
 const summarizeNote = agentMcp.tool({
@@ -147,6 +197,63 @@ agentMcp.tool({
   // @ts-expect-error tool results are explicit MCP content results
   handler: () => "not MCP content",
 });
+
+agentMcp.tool({
+  name: "invalid_annotation",
+  description: "Prove tool hints are booleans.",
+  annotations: {
+    // @ts-expect-error tool annotation hints are booleans
+    readOnlyHint: "yes",
+  },
+  args: {},
+  handler: () => ({ content: [] }),
+});
+
+agentMcp.tool({
+  name: "invalid_content",
+  description: "Prove content blocks are a closed union.",
+  args: {},
+  handler: () => ({
+    content: [{
+      // @ts-expect-error video is not a supported MCP content block
+      type: "video",
+      data: "AQID",
+      mimeType: "video/mp4",
+    }],
+  }),
+});
+
+agentMcp.tool({
+  name: "invalid_metadata",
+  description: "Prove metadata is standard JSON.",
+  args: {},
+  handler: () => ({
+    content: [],
+    _meta: {
+      // @ts-expect-error metadata cannot contain runtime objects
+      createdAt: new Date(),
+    },
+  }),
+});
+
+const invalidRichMode = {
+  content: [],
+  // @ts-expect-error unstructured handlers cannot smuggle structured content
+  structuredContent: { value: "undeclared" },
+} satisfies McpToolResult;
+void invalidRichMode;
+
+const invalidAudience = {
+  content: [{
+    type: "text",
+    text: "bad",
+    annotations: {
+      // @ts-expect-error content audiences are user or assistant
+      audience: ["model"],
+    },
+  }],
+} satisfies McpToolResult;
+void invalidAudience;
 
 agentMcp.tool({
   name: "scalar_args",

@@ -95,8 +95,8 @@ import {
 import {
   finalizeMcpToolResult,
   type McpToolCtx,
-  type McpToolResult,
 } from "./mcp.ts";
+import type { McpCallToolResult } from "./mcp-content.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
@@ -1171,7 +1171,7 @@ export class Runtime implements RuntimePort {
   }
 
   /** The single deep MCP execution path used by every present and future adapter. */
-  async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpToolResult> {
+  async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpCallToolResult> {
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
       jsonrpc: "2.0",
