@@ -93,7 +93,7 @@ import {
   type InvocationTelemetryContext,
 } from "./invocation.ts";
 import {
-  validateMcpToolResult,
+  finalizeMcpToolResult,
   type McpToolCtx,
   type McpToolResult,
 } from "./mcp.ts";
@@ -1203,7 +1203,7 @@ export class Runtime implements RuntimePort {
         request.args,
       );
       aborted(signal);
-      return validateMcpToolResult(value);
+      return finalizeMcpToolResult(tool, value);
     }, {
       identifiers: { requestId: String(request.id) },
       claimedTrace,

@@ -50,6 +50,7 @@ const insertNote = typedMutation({
 
 const agentMcp = typedMcp({ name: "agent" });
 let handlerCalls = 0;
+let summaryHandlerCalls = 0;
 let lastHandlerContext: { readonly auth: string; readonly aborted: boolean } | undefined;
 
 const writeNote = agentMcp.tool({
@@ -69,9 +70,30 @@ const writeNote = agentMcp.tool({
   },
 });
 
+const writeNoteSummary = agentMcp.tool({
+  name: "summarize_note",
+  description: "Summarize one note as structured data.",
+  args: {
+    body: dbz.string().describe("The note text to summarize."),
+    label: dbz.nullable(dbz.string()).describe("An optional human label."),
+  },
+  output: dbz.object({
+    body: dbz.string().describe("The original note text."),
+    length: dbz.number().describe("The number of UTF-16 code units."),
+    label: dbz.nullable(dbz.string()).describe("The normalized label."),
+  }),
+  handler: (_ctx, args) => {
+    summaryHandlerCalls++;
+    if (args.body === "invalid-output") {
+      return { body: args.body, length: "wrong", label: args.label } as never;
+    }
+    return { body: args.body, length: args.body.length, label: args.label };
+  },
+});
+
 const modules = {
   agent: { agentMcp },
-  notes: { insertNote, listNotes, writeNote },
+  notes: { insertNote, listNotes, writeNote, writeNoteSummary },
 };
 
 interface Harness {
@@ -138,6 +160,7 @@ function noteCount(): bigint {
 
 beforeEach(() => {
   handlerCalls = 0;
+  summaryHandlerCalls = 0;
   lastHandlerContext = undefined;
   harness = startHarness();
 });
@@ -154,6 +177,7 @@ describe("public stateless MCP endpoint", () => {
     expect([...harness.registry.serverOnly.keys()]).toEqual([
       "agent.agentMcp",
       "notes.writeNote",
+      "notes.writeNoteSummary",
     ]);
     expect(harness.registry.addressOf(writeNote)).toBe("notes.writeNote");
 
@@ -194,9 +218,40 @@ describe("public stateless MCP endpoint", () => {
           name: "write_note",
           description: "Write one note and report the committed note count.",
           inputSchema: {
+            $schema: "https://json-schema.org/draft/2020-12/schema",
             type: "object",
             properties: { body: { type: "string" } },
             required: ["body"],
+            additionalProperties: false,
+          },
+        }, {
+          name: "summarize_note",
+          description: "Summarize one note as structured data.",
+          inputSchema: {
+            $schema: "https://json-schema.org/draft/2020-12/schema",
+            type: "object",
+            properties: {
+              body: { type: "string", description: "The note text to summarize." },
+              label: {
+                anyOf: [{ type: "string" }, { type: "null" }],
+                description: "An optional human label.",
+              },
+            },
+            required: ["body"],
+            additionalProperties: false,
+          },
+          outputSchema: {
+            $schema: "https://json-schema.org/draft/2020-12/schema",
+            type: "object",
+            properties: {
+              body: { type: "string", description: "The original note text." },
+              length: { type: "number", description: "The number of UTF-16 code units." },
+              label: {
+                anyOf: [{ type: "string" }, { type: "null" }],
+                description: "The normalized label.",
+              },
+            },
+            required: ["body", "length", "label"],
             additionalProperties: false,
           },
         }],
@@ -249,6 +304,44 @@ describe("public stateless MCP endpoint", () => {
     expect(noteCount()).toBe(1n);
   });
 
+  test("validates and emits declared structured output with canonical JSON text", async () => {
+    const invalidInput = await rpc("tools/call", {
+      name: "summarize_note",
+      arguments: { body: 42 },
+    });
+    expect(await invalidInput.json()).toMatchObject({ result: { isError: true } });
+    expect(summaryHandlerCalls).toBe(0);
+
+    const valid = await rpc("tools/call", {
+      name: "summarize_note",
+      arguments: { body: "tea" },
+    }, 2);
+    expect(await valid.json()).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        content: [{
+          type: "text",
+          text: '{"body":"tea","length":3,"label":null}',
+        }],
+        structuredContent: { body: "tea", length: 3, label: null },
+      },
+    });
+    expect(summaryHandlerCalls).toBe(1);
+
+    const invalidOutput = await rpc("tools/call", {
+      name: "summarize_note",
+      arguments: { body: "invalid-output", label: "bad" },
+    }, 3);
+    expect(await invalidOutput.json()).toMatchObject({
+      result: {
+        content: [{ text: "output.length: expected finite number, got string" }],
+        isError: true,
+      },
+    });
+    expect(summaryHandlerCalls).toBe(2);
+  });
+
   test("works through the official SDK client without an HTTP session", async () => {
     const client = new Client({ name: "sdk-test", version: "1" });
     const transport = new StreamableHTTPClientTransport(new URL(`${harness.base}/mcp`));
@@ -256,7 +349,10 @@ describe("public stateless MCP endpoint", () => {
       await client.connect(transport);
       expect(transport.sessionId).toBeUndefined();
       expect(await client.ping()).toEqual({});
-      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["write_note"]);
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+        "write_note",
+        "summarize_note",
+      ]);
       expect(await client.callTool({
         name: "write_note",
         arguments: { body: "sdk" },

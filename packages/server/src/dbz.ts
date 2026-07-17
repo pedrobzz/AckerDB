@@ -6,6 +6,10 @@
  */
 import { encode, WireError, type Identity } from "@dbzz/core";
 import { brand, hasBrand } from "./identity.ts";
+import {
+  createStandardSchemaProperties,
+  type StandardSchemaProperties,
+} from "./standard-schema.ts";
 
 export type { Identity } from "@dbzz/core";
 
@@ -25,19 +29,27 @@ export function isValidationError(value: unknown): value is ValidationError {
 /** JSON-serializable description of a validator, used for schema snapshots. */
 export type Descriptor = { k: string } & Record<string, unknown>;
 
-export interface Validator<T = unknown, K extends string = string> {
+export interface Validator<T = unknown, K extends string = string, Input = T> {
   readonly kind: K;
+  readonly description?: string;
   /** Phantom: the TypeScript type this validator admits. Never set at runtime. */
   readonly _type?: T;
+  /** Phantom: the value accepted before validation and normalization. */
+  readonly _inputType?: Input;
   /** Validate + normalize `value`; throws ValidationError mentioning `path`. */
   check(value: unknown, path: string): T;
   /** Literal TypeScript type text, for codegen. */
   tsType(): string;
   /** JSON descriptor, for schema snapshots and diffing. */
   descriptor(): Descriptor;
+  /** Return an equivalent validator carrying human guidance for generated schemas. */
+  describe(description: string): this;
+  /** Dependency-free Standard Schema + Standard JSON Schema v1 contract. */
+  readonly "~standard": StandardSchemaProperties<Input, T>;
 }
 
-export type InferValidator<V> = V extends Validator<infer T, string> ? T : never;
+export type InferValidator<V> = V extends Validator<infer T, string, unknown> ? T : never;
+export type InferValidatorInput<V> = V extends Validator<unknown, string, infer T> ? T : never;
 
 /**
  * Force TypeScript to *evaluate* computed types instead of displaying the
@@ -68,11 +80,40 @@ function fail(path: string, expected: string, value: unknown): never {
 const I64_MIN = -(2n ** 63n);
 const I64_MAX = 2n ** 63n - 1n;
 
-function makeValidator<T, K extends string>(
+function makeValidator<
+  T,
+  K extends string,
+  Extra extends object = object,
+  Input = T,
+>(
   kind: K,
-  impl: Omit<Validator<T, K>, "kind" | "_type">,
-): Validator<T, K> {
-  return { kind, ...impl };
+  impl: Pick<Validator<T, K, Input>, "check" | "tsType" | "descriptor">,
+  extra?: Extra,
+): Validator<T, K, Input> & Extra {
+  const validator = { kind, ...impl, ...extra } as Validator<T, K, Input> & Extra;
+  Object.defineProperties(validator, {
+    describe: {
+      value(this: Validator<T, K, Input> & Extra, description: string) {
+        if (typeof description !== "string" || description.trim() === "") {
+          throw new ValidationError("validator description must be a non-empty string");
+        }
+        const copy = { ...this, description: description.trim() };
+        return makeValidator<T, K, Extra, Input>(
+          copy.kind,
+          {
+            check: copy.check,
+            tsType: copy.tsType,
+            descriptor: copy.descriptor,
+          },
+          copy,
+        );
+      },
+    },
+    "~standard": {
+      value: createStandardSchemaProperties<Input, T>(validator, isValidationError),
+    },
+  });
+  return validator;
 }
 
 function primaryKey(): Validator<bigint, "pk"> {
@@ -174,22 +215,36 @@ function parenthesize(ts: string): string {
 
 function array<V extends Validator<unknown, string>>(
   element: V,
-): Validator<InferValidator<V>[], "array"> & { readonly element: V } {
-  return {
-    ...makeValidator<InferValidator<V>[], "array">("array", {
+): Validator<InferValidator<V>[], "array", InferValidatorInput<V>[]> & { readonly element: V } {
+  return makeValidator<
+    InferValidator<V>[],
+    "array",
+    { readonly element: V },
+    InferValidatorInput<V>[]
+  >(
+    "array",
+    {
       check(value, path) {
         if (!Array.isArray(value)) fail(path, "array", value);
         return value.map((item, i) => element.check(item, `${path}[${i}]`)) as InferValidator<V>[];
       },
       tsType: () => `${parenthesize(element.tsType())}[]`,
       descriptor: () => ({ k: "array", el: element.descriptor() }),
-    }),
-    element,
-  };
+    },
+    { element },
+  );
 }
 
 export type ObjectShape = Record<string, Validator<unknown, string>>;
 export type InferShape<S extends ObjectShape> = { [K in keyof S]: InferValidator<S[K]> };
+type NullableShapeKey<S extends ObjectShape> = {
+  [K in keyof S]: S[K] extends Validator<unknown, "nullable", unknown> ? K : never;
+}[keyof S];
+export type InferInputShape<S extends ObjectShape> = {
+  [K in Exclude<keyof S, NullableShapeKey<S>>]: InferValidatorInput<S[K]>;
+} & {
+  [K in NullableShapeKey<S>]?: Exclude<InferValidatorInput<S[K]>, undefined>;
+};
 
 /** Shared by dbz.object and args validation: strict keys, nullable -> null. */
 export function checkShape<S extends ObjectShape>(
@@ -213,11 +268,20 @@ export function checkShape<S extends ObjectShape>(
   return out as InferShape<S>;
 }
 
-function object<S extends ObjectShape>(
-  shape: S,
-): Validator<InferShape<S>, "object"> & { readonly shape: S } {
-  return {
-    ...makeValidator<InferShape<S>, "object">("object", {
+export interface ObjectValidator<S extends ObjectShape = ObjectShape>
+  extends Validator<InferShape<S>, "object", InferInputShape<S>> {
+  readonly shape: S;
+}
+
+function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
+  return makeValidator<
+    InferShape<S>,
+    "object",
+    { readonly shape: S },
+    InferInputShape<S>
+  >(
+    "object",
+    {
       check: (value, path) => checkShape(shape, value, path),
       tsType() {
         const fields = Object.keys(shape).map((k) => `${k}: ${shape[k]!.tsType()}`);
@@ -228,9 +292,9 @@ function object<S extends ObjectShape>(
         for (const key of Object.keys(shape)) fields[key] = shape[key]!.descriptor();
         return { k: "object", shape: fields };
       },
-    }),
-    shape,
-  };
+    },
+    { shape },
+  );
 }
 
 export interface EnumValidator<V extends string = string>
@@ -246,8 +310,13 @@ function enum_<const V extends readonly [string, ...string[]]>(
   if (new Set(values).size !== values.length) {
     throw new ValidationError(`enum ${name}: duplicate variants`);
   }
-  return {
-    ...makeValidator<V[number], "enum">("enum", {
+  return makeValidator<
+    V[number],
+    "enum",
+    { readonly name: string; readonly values: readonly V[number][] }
+  >(
+    "enum",
+    {
       check(value, path) {
         if (typeof value !== "string" || !values.includes(value)) {
           const got = typeof value === "string" ? JSON.stringify(value) : describe(value);
@@ -259,10 +328,9 @@ function enum_<const V extends readonly [string, ...string[]]>(
       },
       tsType: () => name,
       descriptor: () => ({ k: "enum", name, values: [...values] }),
-    }),
-    name,
-    values,
-  };
+    },
+    { name, values },
+  );
 }
 
 type LiteralValue = string | number | boolean | bigint;
@@ -300,6 +368,14 @@ export type UnionValue<M extends UnionMembers> = {
   [K in keyof M & string]: { tag: K; value: InferValidator<M[K]> };
 }[keyof M & string];
 
+export type UnionInput<M extends UnionMembers> = {
+  [K in keyof M & string]: M[K] extends Validator<unknown, "tag", unknown>
+    ? { tag: K; value?: null }
+    : M[K] extends Validator<unknown, "nullable", unknown>
+      ? { tag: K; value?: Exclude<InferValidatorInput<M[K]>, undefined> }
+      : { tag: K; value: InferValidatorInput<M[K]> };
+}[keyof M & string];
+
 export type UnionNamespace<M extends UnionMembers> = {
   [K in keyof M & string]: M[K] extends Validator<null, "tag">
     ? () => { tag: K; value: null }
@@ -307,7 +383,7 @@ export type UnionNamespace<M extends UnionMembers> = {
 };
 
 export interface UnionValidator<M extends UnionMembers = UnionMembers>
-  extends Validator<UnionValue<M>, "union"> {
+  extends Validator<UnionValue<M>, "union", UnionInput<M>> {
   readonly name: string;
   readonly members: M;
   /** Runtime variant constructors: `MessagePayload.text("hi")`. */
@@ -326,8 +402,19 @@ function union<M extends UnionMembers>(name: string, members: M): UnionValidator
         ? () => ({ tag: variant, value: null })
         : (value: unknown) => ({ tag: variant, value });
   }
-  return {
-    ...makeValidator<UnionValue<M>, "union">("union", {
+  return makeValidator<
+    UnionValue<M>,
+    "union",
+    {
+      readonly name: string;
+      readonly members: M;
+      readonly union: UnionNamespace<M>;
+      readonly type: UnionValue<M>;
+    },
+    UnionInput<M>
+  >(
+    "union",
+    {
       check(value, path) {
         if (value === null || typeof value !== "object" || Array.isArray(value)) {
           fail(path, `${name} ({ tag, value })`, value);
@@ -353,12 +440,14 @@ function union<M extends UnionMembers>(name: string, members: M): UnionValidator
         for (const variant of variantNames) memberDesc[variant] = members[variant]!.descriptor();
         return { k: "union", name, members: memberDesc };
       },
-    }),
-    name,
-    members,
-    union: namespace as UnionNamespace<M>,
-    type: undefined as unknown as UnionValue<M>,
-  };
+    },
+    {
+      name,
+      members,
+      union: namespace as UnionNamespace<M>,
+      type: undefined as unknown as UnionValue<M>,
+    },
+  );
 }
 
 function jsonb<T>(): Validator<T, "jsonb"> {
@@ -383,7 +472,11 @@ function jsonb<T>(): Validator<T, "jsonb"> {
 }
 
 export interface NullableValidator<V extends Validator<unknown, string> = Validator<unknown, string>>
-  extends Validator<InferValidator<V> | null, "nullable"> {
+  extends Validator<
+    InferValidator<V> | null,
+    "nullable",
+    InferValidatorInput<V> | null | undefined
+  > {
   readonly inner: V;
 }
 
@@ -392,17 +485,23 @@ function nullable<V extends Validator<unknown, string>>(inner: V): NullableValid
   if (inner.kind === "pk" || inner.kind === "scheduleAt" || inner.kind === "tag") {
     throw new ValidationError(`nullable(${inner.kind}) is not allowed`);
   }
-  return {
-    ...makeValidator<InferValidator<V> | null, "nullable">("nullable", {
+  return makeValidator<
+    InferValidator<V> | null,
+    "nullable",
+    { readonly inner: V },
+    InferValidatorInput<V> | null | undefined
+  >(
+    "nullable",
+    {
       check(value, path) {
         if (value === null || value === undefined) return null;
         return inner.check(value, path) as InferValidator<V>;
       },
       tsType: () => `${inner.tsType()} | null`,
       descriptor: () => ({ k: "nullable", inner: inner.descriptor() }),
-    }),
-    inner,
-  };
+    },
+    { inner },
+  );
 }
 
 export const dbz = {

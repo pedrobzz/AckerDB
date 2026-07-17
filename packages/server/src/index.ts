@@ -6,8 +6,11 @@ export {
   type Descriptor,
   type Expand,
   type Identity,
+  type InferInputShape,
   type InferValidator,
+  type InferValidatorInput,
   type ObjectShape,
+  type ObjectValidator,
   type InferShape,
   type Validator,
   type EnumValidator,
@@ -182,11 +185,19 @@ export {
   type McpBuilder,
   type McpDeclaration,
   type McpInputSchema,
+  type McpOutputSchema,
   type McpTextContent,
   type McpToolCtx,
   type McpToolResult,
   type RegisteredMcpTool,
 } from "./mcp.ts";
+export {
+  type StandardJsonSchemaOptions,
+  type StandardSchemaIssue,
+  type StandardSchemaOptions,
+  type StandardSchemaProperties,
+  type StandardSchemaResult,
+} from "./standard-schema.ts";
 export { Registry } from "./registry.ts";
 export {
   BoundedSseProducer,

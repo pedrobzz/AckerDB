@@ -50,6 +50,7 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
+      ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
     })),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (call, extra) => {
@@ -65,6 +66,9 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
       }, options.bytes, undefined));
       return {
         content: result.content.map(({ type, text }) => ({ type, text })),
+        ...(result.structuredContent === undefined
+          ? {}
+          : { structuredContent: result.structuredContent }),
         ...(result.isError === undefined ? {} : { isError: result.isError }),
       } satisfies CallToolResult;
     } catch (error) {

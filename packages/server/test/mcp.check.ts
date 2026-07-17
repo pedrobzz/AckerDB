@@ -42,6 +42,71 @@ const writeNote = agentMcp.tool({
   },
 });
 
+const summarizeNote = agentMcp.tool({
+  name: "summarize_note",
+  description: "Return a typed summary.",
+  args: {
+    body: dbz.string().describe("The note body."),
+    label: dbz.nullable(dbz.string()),
+  },
+  output: dbz.object({
+    length: dbz.number(),
+    label: dbz.nullable(dbz.string()),
+  }),
+  handler: (_ctx, args) => {
+    const body: string = args.body;
+    const label: string | null = args.label;
+    return { length: body.length, label };
+  },
+});
+void summarizeNote;
+
+type StandardInput<V extends { readonly "~standard": { readonly types?: unknown } }> =
+  NonNullable<V["~standard"]["types"]> extends { readonly input: infer Input }
+    ? Input
+    : never;
+type StandardOutput<V extends { readonly "~standard": { readonly types?: unknown } }> =
+  NonNullable<V["~standard"]["types"]> extends { readonly output: infer Output }
+    ? Output
+    : never;
+interface NeutralStandard<Input, Output> {
+  readonly "~standard": {
+    readonly version: 1;
+    readonly vendor: string;
+    readonly validate: (
+      value: unknown,
+      options?: { readonly libraryOptions?: Record<string, unknown> },
+    ) =>
+      | { readonly value: Output; readonly issues?: undefined }
+      | { readonly issues: readonly { readonly message: string }[] }
+      | Promise<unknown>;
+    readonly types?: { readonly input: Input; readonly output: Output };
+    readonly jsonSchema: {
+      readonly input: (options: { readonly target: string }) => Record<string, unknown>;
+      readonly output: (options: { readonly target: string }) => Record<string, unknown>;
+    };
+  };
+}
+const summaryInput = dbz.object({
+  body: dbz.string(),
+  label: dbz.nullable(dbz.string()),
+});
+const validStandardInput: StandardInput<typeof summaryInput> = { body: "hello" };
+const validStandardOutput: StandardOutput<typeof summaryInput> = { body: "hello", label: null };
+const neutralStandard: NeutralStandard<
+  StandardInput<typeof summaryInput>,
+  StandardOutput<typeof summaryInput>
+> = summaryInput;
+void validStandardInput;
+void validStandardOutput;
+void neutralStandard;
+// @ts-expect-error Standard input inference keeps required fields required
+const missingStandardInput: StandardInput<typeof summaryInput> = {};
+// @ts-expect-error Standard output inference includes normalized nullable fields
+const missingStandardOutput: StandardOutput<typeof summaryInput> = { body: "hello" };
+void missingStandardInput;
+void missingStandardOutput;
+
 // @ts-expect-error declarations require an explicit stable name
 typedMcp();
 
@@ -51,6 +116,41 @@ agentMcp.tool({
   args: {},
   // @ts-expect-error tool results are explicit MCP content results
   handler: () => "not MCP content",
+});
+
+agentMcp.tool({
+  name: "scalar_args",
+  description: "Prove input roots are objects.",
+  // @ts-expect-error MCP inputs are argument shapes, never scalar roots
+  args: dbz.string(),
+  handler: () => ({ content: [{ type: "text", text: "never" }] }),
+});
+
+agentMcp.tool({
+  name: "scalar_output",
+  description: "Prove output roots are objects.",
+  args: {},
+  // @ts-expect-error advertised structured outputs require dbz.object(...)
+  output: dbz.string(),
+  handler: () => ({ content: [{ type: "text", text: "never" }] }),
+});
+
+agentMcp.tool({
+  name: "nullable_output",
+  description: "Prove nullable results use a named property.",
+  args: {},
+  // @ts-expect-error a nullable object is not an object-root output schema
+  output: dbz.nullable(dbz.object({ value: dbz.string() })),
+  handler: () => ({ content: [{ type: "text", text: "never" }] }),
+});
+
+agentMcp.tool({
+  name: "wrong_structured_result",
+  description: "Prove structured result inference.",
+  args: {},
+  output: dbz.object({ value: dbz.string() }),
+  // @ts-expect-error handlers must return the declared structured object
+  handler: () => ({ value: 1 }),
 });
 
 type GeneratedApi = ApiFromModules<{
