@@ -29,9 +29,12 @@ import {
 } from "./mcp-scopes.ts";
 import type { Schema } from "./schema.ts";
 import type { ProcedureCtx } from "./functions.ts";
-import { mcpObjectSchema, type JsonObjectSchema } from "./standard-schema.ts";
 import {
-  assertStandardJson,
+  compileMcpObjectCodec,
+  type JsonObjectSchema,
+  type StandardJsonCodec,
+} from "./standard-schema.ts";
+import {
   type McpCallToolResult,
   type McpToolResult,
   validateMcpContentResult,
@@ -159,8 +162,12 @@ export interface RegisteredMcpTool<
   readonly mcp: McpEndpointDeclaration<string>;
   readonly accessPolicy: NormalizedMcpToolAccessPolicy;
   readonly inputValidator: ObjectValidator<A>;
+  readonly inputCodec: StandardJsonCodec<Expand<InferShape<A>>>;
   readonly inputSchema: McpInputSchema;
   readonly outputValidator: O;
+  readonly outputCodec: O extends ObjectValidator
+    ? StandardJsonCodec<Expand<InferValidator<O>>>
+    : undefined;
   readonly outputSchema: O extends ObjectValidator ? McpOutputSchema : undefined;
 }
 
@@ -289,14 +296,13 @@ function toolAnnotations(value: unknown): McpToolAnnotations | undefined {
 
 /** Validate and normalize the handler result once before either adapter consumes it. */
 export function finalizeMcpToolResult(
-  tool: { readonly outputValidator: ObjectValidator | undefined },
+  tool: { readonly outputCodec: StandardJsonCodec<unknown> | undefined },
   value: unknown,
 ): McpCallToolResult {
-  if (tool.outputValidator === undefined) return validateMcpContentResult(value);
-  const structuredContent = tool.outputValidator.check(value, "output") as Readonly<
+  if (tool.outputCodec === undefined) return validateMcpContentResult(value);
+  const structuredContent = tool.outputCodec.encode(value, "output") as Readonly<
     Record<string, unknown>
   >;
-  assertStandardJson(structuredContent, "output");
   return {
     content: [{ type: "text", text: JSON.stringify(structuredContent) }],
     structuredContent,
@@ -408,6 +414,10 @@ export function createMcp(
       }
       const inputValidator = dbz.object(definition.args);
       const outputValidator = definition.output;
+      const inputCodec = compileMcpObjectCodec(inputValidator);
+      const outputCodec = outputValidator === undefined
+        ? undefined
+        : compileMcpObjectCodec(outputValidator);
       const tool = {
         isDbzzServerOnly: true as const,
         serverKind: "mcp-tool" as const,
@@ -420,16 +430,16 @@ export function createMcp(
         accessPolicy,
         args: definition.args,
         inputValidator,
-        inputSchema: mcpObjectSchema(inputValidator, "input"),
+        inputCodec,
+        inputSchema: inputCodec.inputSchema,
         outputValidator,
-        outputSchema: outputValidator === undefined
-          ? undefined
-          : mcpObjectSchema(outputValidator, "output"),
+        outputCodec,
+        outputSchema: outputCodec?.outputSchema,
         access: (ctx: McpToolCtx) => isMcpToolAuthorized(accessPolicy, ctx.auth),
         handler: definition.handler,
       };
       brand(tool, MCP_TOOL_IDENTITY);
-      compileInvocation(tool);
+      compileInvocation(tool, inputCodec.decode);
       return Object.freeze(tool) as RegisteredMcpTool;
     },
   };

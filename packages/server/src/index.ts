@@ -9,6 +9,7 @@ export {
   type InferInputShape,
   type InferValidator,
   type InferValidatorInput,
+  type LiteralValidator,
   type ObjectShape,
   type ObjectValidator,
   type InferShape,
@@ -221,6 +222,7 @@ export {
   type ScopedDefaultMcpConfig,
 } from "./mcp.ts";
 export {
+  type StandardJsonCodec,
   type StandardJsonSchemaOptions,
   type StandardSchemaIssue,
   type StandardSchemaOptions,

@@ -28,6 +28,8 @@ interface CompiledInvocation<Ctx, Args> {
   readonly enforceAccess: AccessEnforcer<Ctx, Args>;
 }
 
+type InvocationArgsDecoder<Args> = (rawArgs: unknown, path: string) => Args;
+
 export type InvocationPhase = "auth" | "policy" | "handler";
 export type InvocationOutcome = "ok" | Outcome["code"];
 
@@ -195,14 +197,17 @@ function scalarOutput(validator: Validator<unknown, string>): boolean {
 
 function buildInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
   definition: AuthorizationDefinition<A, Ctx>,
+  decoder?: InvocationArgsDecoder<Expand<InferShape<A>>>,
 ): CompiledInvocation<Ctx, Expand<InferShape<A>>> {
   const shape = definition.args;
   const enforceAccess = compileAccess(definition.access);
-  const check = (rawArgs: unknown) => checkShape(
-    shape,
-    rawArgs === undefined ? {} : rawArgs,
-    "args",
-  ) as Expand<InferShape<A>>;
+  const check = decoder === undefined
+    ? (rawArgs: unknown) => checkShape(
+      shape,
+      rawArgs === undefined ? {} : rawArgs,
+      "args",
+    ) as Expand<InferShape<A>>
+    : (rawArgs: unknown) => decoder(rawArgs === undefined ? {} : rawArgs, "args");
   const validateArgs = Object.values(shape).every(scalarOutput)
     ? (rawArgs: unknown) => Object.freeze(check(rawArgs)) as Expand<InferShape<A>>
     : (rawArgs: unknown) => deepFreeze(check(rawArgs));
@@ -212,10 +217,11 @@ function buildInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
 /** Compile static validation and policy work once when a function is registered. */
 export function compileInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
   definition: AuthorizationDefinition<A, Ctx>,
+  decoder?: InvocationArgsDecoder<Expand<InferShape<A>>>,
 ): void {
   compiledInvocations.set(
     definition,
-    buildInvocation(definition) as CompiledInvocation<InvocationContext, unknown>,
+    buildInvocation(definition, decoder) as CompiledInvocation<InvocationContext, unknown>,
   );
 }
 

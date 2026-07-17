@@ -1,10 +1,8 @@
-import { ValidationError } from "./dbz.ts";
+import { assertStandardJson } from "./standard-json.ts";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const ISO_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
 const ICON_SIZE = /^(?:any|[1-9]\d*x[1-9]\d*)$/;
-const MAX_JSON_DEPTH = 64;
-const MAX_JSON_NODES = 100_000;
 const MAX_METADATA_BYTES = 64 * 1_024;
 const utf8 = new TextEncoder();
 
@@ -175,42 +173,6 @@ function isoDateTime(value: unknown): boolean {
     offsetHour <= 23 &&
     offsetMinute <= 59
   );
-}
-
-interface JsonState {
-  nodes: number;
-  readonly active: WeakSet<object>;
-}
-
-function assertJson(value: unknown, path: string, state: JsonState, depth: number): void {
-  if (++state.nodes > MAX_JSON_NODES || depth > MAX_JSON_DEPTH) {
-    throw new ValidationError(`${path}: standard JSON value is too deeply nested or complex`);
-  }
-  if (value === null || typeof value === "string" || typeof value === "boolean") return;
-  if (typeof value === "number" && Number.isFinite(value)) return;
-  if (typeof value !== "object" || value instanceof Uint8Array) {
-    throw new ValidationError(`${path}: expected a standard JSON value`);
-  }
-  const prototype = Object.getPrototypeOf(value);
-  if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
-    throw new ValidationError(`${path}: expected a standard JSON value`);
-  }
-  if (state.active.has(value)) throw new ValidationError(`${path}: cyclic JSON value`);
-  state.active.add(value);
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index++) {
-      assertJson(value[index], `${path}[${index}]`, state, depth + 1);
-    }
-  } else {
-    for (const [key, field] of Object.entries(value)) {
-      assertJson(field, `${path}.${key}`, state, depth + 1);
-    }
-  }
-  state.active.delete(value);
-}
-
-export function assertStandardJson(value: unknown, path: string): void {
-  assertJson(value, path, { nodes: 0, active: new WeakSet() }, 0);
 }
 
 function metadata(value: unknown, where: string): void {
