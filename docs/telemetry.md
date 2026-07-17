@@ -92,10 +92,11 @@ Every valid span updates its bounded aggregate immediately. For a tracked
 Runtime operation with `slowOperationMs > 0`, an ordinary fast successful span
 is also sanitized and staged as a diagnostic record while the whole-trace
 decision remains open. A trace is promoted when any span fails, one span meets
-the threshold, the sum of its observed span durations meets the threshold, or
-the operation's wall-clock duration meets the threshold when the trace
-finishes. A `failure` event, any non-`info` event, a non-`ok` event outcome, or
-a failed lifecycle event also promotes its known trace.
+the threshold, or the operation's wall-clock duration meets the threshold when
+the trace finishes. Child durations are not added together because concurrent
+spans overlap and do not represent operation latency. A `failure` event, any
+non-`info` event, a non-`ok` event outcome, or a failed lifecycle event also
+promotes its known trace.
 
 Promotion moves every still-staged span into the normal retained/local path and
 retains later spans directly while that active/completed trace state remains

@@ -441,7 +441,6 @@ interface MutableTraceRetention {
   next?: MutableTraceRetention;
   completedAtMs?: number;
   pendingDeliveries?: number;
-  observedDurationMs: number;
   retained: boolean;
   stagedHead: number;
   stagedTail: number;
@@ -1728,9 +1727,8 @@ export class Telemetry {
       }
     }
     if (trace !== undefined) {
-      trace.observedDurationMs = boundedSum(trace.observedDurationMs, span.durationMs);
       if (trace.retained) return this.retain(materializeSpan(span), true);
-      if (retain || trace.observedDurationMs >= state.limits.slowOperationMs) {
+      if (retain) {
         this.promoteTrace(state, trace, span.timestampMs);
         return this.retain(materializeSpan(span), true);
       }
@@ -2028,7 +2026,6 @@ export class Telemetry {
       rootContext,
       operationTrace,
       phase: "active",
-      observedDurationMs: 0,
       retained: false,
       stagedHead: NO_SLOT,
       stagedTail: NO_SLOT,
@@ -2044,8 +2041,7 @@ export class Telemetry {
   ): void {
     if (
       !trace.retained &&
-      Math.max(completedAtMs - trace.startedAtMs, trace.observedDurationMs) >=
-        state.limits.slowOperationMs
+      completedAtMs - trace.startedAtMs >= state.limits.slowOperationMs
     ) {
       this.promoteTrace(state, trace, completedAtMs);
     }

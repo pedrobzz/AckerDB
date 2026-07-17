@@ -2229,7 +2229,7 @@ describe("Telemetry", () => {
     }
   });
 
-  test("promotes complete cumulative and wall-clock slow traces", async () => {
+  test("uses individual spans and wall clock, not cumulative child time, for slow traces", async () => {
     const scheduler = new ManualScheduler();
     const { batches, exporter } = exporterBatches();
     let now = 0;
@@ -2240,46 +2240,51 @@ describe("Telemetry", () => {
       now: () => now,
       limits: { slowOperationMs: 100 },
     });
-    expect(telemetry.beginTrace({ traceId: "trace_cumulative" })).toBe(true);
+    expect(telemetry.beginTrace({ traceId: "trace_parallel" })).toBe(true);
     for (const [spanId, stage, durationMs] of [
-      ["span_cumulative_1", "admission", 40],
-      ["span_cumulative_2", "handler", 40],
-      ["span_cumulative_3", "encoding", 20],
+      ["span_parallel_1", "admission", 40],
+      ["span_parallel_2", "handler", 40],
+      ["span_parallel_3", "encoding", 40],
     ] as const) {
       telemetry.recordSpan({
-        context: { traceId: "trace_cumulative", spanId },
+        context: { traceId: "trace_parallel", spanId },
         operation: "query",
         stage,
         outcome: "ok",
         durationMs,
       });
     }
-    expect(telemetry.finishTrace({ traceId: "trace_cumulative" })).toBe(true);
+    expect(telemetry.finishTrace({ traceId: "trace_parallel" })).toBe(true);
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      stagedRecords: 3,
+      promotedTraces: 0,
+    });
 
-    expect(telemetry.beginTrace({ traceId: "trace_wall" })).toBe(true);
+    expect(telemetry.beginTrace({ traceId: "trace_sequential" })).toBe(true);
     for (const [spanId, stage] of [
-      ["span_wall_1", "admission"],
-      ["span_wall_2", "handler"],
+      ["span_sequential_1", "admission"],
+      ["span_sequential_2", "handler"],
+      ["span_sequential_3", "encoding"],
     ] as const) {
       telemetry.recordSpan({
-        context: { traceId: "trace_wall", spanId },
+        context: { traceId: "trace_sequential", spanId },
         operation: "mutation",
         stage,
         outcome: "ok",
-        durationMs: 10,
+        durationMs: 40,
       });
+      now += 40;
     }
-    now = 100;
-    expect(telemetry.finishTrace({ traceId: "trace_wall" })).toBe(true);
+    expect(telemetry.finishTrace({ traceId: "trace_sequential" })).toBe(true);
     expect(telemetry.snapshot()).toMatchObject({
-      queuedRecords: 5,
-      traceRetention: { stagedRecords: 0, promotedTraces: 2 },
+      queuedRecords: 3,
+      traceRetention: { stagedRecords: 3, promotedTraces: 1 },
     });
 
     await telemetry.flush();
     const spans = batches.flat().filter((record) => record.kind === "span");
-    expect(spans.filter((span) => span.traceId === "trace_cumulative")).toHaveLength(3);
-    expect(spans.filter((span) => span.traceId === "trace_wall")).toHaveLength(2);
+    expect(spans.filter((span) => span.traceId === "trace_parallel")).toHaveLength(0);
+    expect(spans.filter((span) => span.traceId === "trace_sequential")).toHaveLength(3);
     telemetry.stop();
   });
 
