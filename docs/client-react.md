@@ -25,10 +25,10 @@ React 19.2.7, React Native 0.86.0, Expo 57.0.6, Expo Crypto 57.0.1, AI SDK
 7.0.29, and `@ai-sdk/react` 4.0.32.
 
 Install the React package at the same exact version as every other DBZZ
-package. For example, when the application pins DBZZ 0.2.3:
+package. For example, when the application pins DBZZ 0.2.4:
 
 ```sh
-bun add --exact @dbzz/client-react@0.2.3
+bun add --exact @dbzz/client-react@0.2.4
 ```
 
 An Expo 57 application also needs its native peers:
