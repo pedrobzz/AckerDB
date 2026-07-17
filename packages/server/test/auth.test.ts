@@ -236,6 +236,7 @@ describe("principals and invocation access", () => {
     expect(await invokeFunction(fn, context, { value: "allowed" }, {
       onAuthorized: (safeContext, args) => {
         expect(Object.isFrozen(safeContext)).toBe(true);
+        expect(safeContext).not.toBe(context);
         expect(Object.isFrozen(args)).toBe(true);
         order.push(`authorized:${args.value}`);
       },
@@ -246,6 +247,19 @@ describe("principals and invocation access", () => {
       onAuthorized: () => order.push("must-not-run"),
     })).rejects.toMatchObject({ code: "unauthorized" });
     expect(order).not.toContain("must-not-run");
+  });
+
+  test("reuses an already immutable data context", async () => {
+    const context = Object.freeze({ auth: userPrincipal(), db: Object.freeze({}) as never });
+    const fn = query({
+      args: {},
+      access: "public",
+      handler: () => "ok",
+    });
+
+    expect(await invokeFunction(fn, context, {}, {
+      onAuthorized: (safeContext) => expect(safeContext).toBe(context),
+    })).toBe("ok");
   });
 
   test("authorization cannot mutate validated byte inputs", async () => {
@@ -298,11 +312,23 @@ describe("principals and invocation access", () => {
       },
       handler: () => "unreachable",
     });
+    const asyncThrows = query({
+      args: {},
+      access: async () => {
+        throw new DbzzError("internal", "private async policy detail");
+      },
+      handler: () => "unreachable",
+    });
 
     await expectDbzzError(denied({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthenticated");
     await expectDbzzError(denied({ auth: userPrincipal() }, {}), "unauthorized");
     const error = await expectDbzzError(throws({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthorized");
     expect(error.message).toBe("access denied");
+    const asyncError = await expectDbzzError(
+      asyncThrows({ auth: ANONYMOUS_PRINCIPAL }, {}),
+      "unauthorized",
+    );
+    expect(asyncError.message).toBe("access denied");
   });
 
   test("nested calls reuse the exact parent principal and re-run callee policy", async () => {

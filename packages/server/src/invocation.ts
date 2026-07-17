@@ -1,7 +1,13 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Outcome } from "@dbzz/core";
 import { isPrincipal, type Principal } from "./auth.ts";
-import { checkShape, type Expand, type InferShape, type ObjectShape } from "./dbz.ts";
+import {
+  checkShape,
+  type Expand,
+  type InferShape,
+  type ObjectShape,
+  type Validator,
+} from "./dbz.ts";
 import { DbzzError } from "./errors.ts";
 import type { AccessPolicy, AnyRegistered, Registered } from "./functions.ts";
 import { deepFreeze } from "./immutable.ts";
@@ -13,6 +19,13 @@ export interface InvocationContext {
 
 interface InvocationState {
   readonly principal: Principal;
+}
+
+type AccessEnforcer<Ctx, Args> = (ctx: Ctx, args: Args) => void | Promise<void>;
+
+interface CompiledInvocation<Ctx, Args> {
+  readonly validateArgs: (rawArgs: unknown) => Args;
+  readonly enforceAccess: AccessEnforcer<Ctx, Args>;
 }
 
 export type InvocationPhase = "auth" | "policy" | "handler";
@@ -72,6 +85,7 @@ export interface AuthorizedInvocation<Ctx, Args> {
 
 const invocationState = new AsyncLocalStorage<InvocationState>();
 const invocationInstrumentation = new AsyncLocalStorage<InvocationInstrumentationState>();
+const compiledInvocations = new WeakMap<object, CompiledInvocation<InvocationContext, unknown>>();
 
 /** Install one isolated observer scope around a top-level invocation boundary. */
 export function withInvocationObserver<T>(
@@ -92,30 +106,103 @@ function denied(principal: Principal, cause?: unknown): DbzzError {
     : new DbzzError("unauthorized", "access denied", { cause });
 }
 
-async function enforceAccess<Ctx extends InvocationContext, Args>(
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+function compileAccess<Ctx extends InvocationContext, Args>(
   access: AccessPolicy<Ctx, Args>,
-  ctx: Ctx,
-  args: Args,
-): Promise<void> {
-  if (access === "public") return;
+): AccessEnforcer<Ctx, Args> {
+  if (access === "public") return () => {};
   if (access === "authenticated") {
-    if (ctx.auth.kind === "anonymous") throw denied(ctx.auth);
-    return;
+    return (ctx) => {
+      if (ctx.auth.kind === "anonymous") throw denied(ctx.auth);
+    };
   }
   if (access === "system") {
-    if (ctx.auth.kind !== "system") throw denied(ctx.auth);
-    return;
+    return (ctx) => {
+      if (ctx.auth.kind !== "system") throw denied(ctx.auth);
+    };
   }
-  let allowed: boolean;
-  try {
-    allowed = (await access(ctx, args)) === true;
-  } catch (error) {
-    throw new DbzzError("unauthorized", "access denied", { cause: error });
+  return async (ctx, args) => {
+    let allowed: boolean;
+    try {
+      allowed = (await access(ctx, args)) === true;
+    } catch (error) {
+      throw new DbzzError("unauthorized", "access denied", { cause: error });
+    }
+    if (!allowed) throw denied(ctx.auth);
+  };
+}
+
+const SCALAR_OUTPUT_KINDS = new Set([
+  "string",
+  "number",
+  "bigint",
+  "identity",
+  "boolean",
+  "enum",
+  "literal",
+]);
+
+function scalarOutput(validator: Validator<unknown, string>): boolean {
+  return SCALAR_OUTPUT_KINDS.has(validator.kind) || (
+    validator.kind === "nullable" &&
+    scalarOutput((validator as Validator & { readonly inner: Validator }).inner)
+  );
+}
+
+function buildInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
+  definition: AuthorizationDefinition<A, Ctx>,
+): CompiledInvocation<Ctx, Expand<InferShape<A>>> {
+  const shape = definition.args;
+  const enforceAccess = compileAccess(definition.access);
+  const check = (rawArgs: unknown) => checkShape(
+    shape,
+    rawArgs === undefined ? {} : rawArgs,
+    "args",
+  ) as Expand<InferShape<A>>;
+  const validateArgs = Object.values(shape).every(scalarOutput)
+    ? (rawArgs: unknown) => Object.freeze(check(rawArgs)) as Expand<InferShape<A>>
+    : (rawArgs: unknown) => deepFreeze(check(rawArgs));
+  return Object.freeze({ validateArgs, enforceAccess });
+}
+
+/** Compile static validation and policy work once when a function is registered. */
+export function compileInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
+  definition: AuthorizationDefinition<A, Ctx>,
+): void {
+  compiledInvocations.set(
+    definition,
+    buildInvocation(definition) as CompiledInvocation<InvocationContext, unknown>,
+  );
+}
+
+function compiledInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
+  definition: AuthorizationDefinition<A, Ctx>,
+): CompiledInvocation<Ctx, Expand<InferShape<A>>> {
+  let compiled = compiledInvocations.get(definition) as
+    | CompiledInvocation<Ctx, Expand<InferShape<A>>>
+    | undefined;
+  if (compiled === undefined) {
+    compiled = buildInvocation(definition);
+    compiledInvocations.set(
+      definition,
+      compiled as CompiledInvocation<InvocationContext, unknown>,
+    );
   }
-  if (!allowed) throw denied(ctx.auth);
+  return compiled;
 }
 
 function immutableContext<Ctx extends InvocationContext>(ctx: Ctx, principal: Principal): Ctx {
+  if (Object.isFrozen(ctx)) {
+    const auth = Object.getOwnPropertyDescriptor(ctx, "auth");
+    if (auth !== undefined && "value" in auth && auth.value === principal) return ctx;
+  }
   const descriptors: PropertyDescriptorMap = Object.getOwnPropertyDescriptors(ctx);
   descriptors.auth = {
     value: principal,
@@ -126,34 +213,36 @@ function immutableContext<Ctx extends InvocationContext>(ctx: Ctx, principal: Pr
   return Object.freeze(Object.create(Object.getPrototypeOf(ctx), descriptors) as Ctx);
 }
 
-function validateInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
-  definition: AuthorizationDefinition<A, Ctx>,
+function validateContext<Ctx extends InvocationContext>(
   ctx: Ctx,
-  rawArgs: unknown,
-): AuthorizedInvocation<Ctx, Expand<InferShape<A>>> {
-  const parent = invocationState.getStore();
+  parent: InvocationState | undefined,
+): Ctx {
   if (parent !== undefined && ctx.auth !== parent.principal) {
     throw new DbzzError("unauthorized", "access denied");
   }
   if (!isPrincipal(ctx.auth)) throw new DbzzError("internal", "invalid invocation context");
   const principal = parent?.principal ?? ctx.auth;
-  const args = deepFreeze(checkShape(
-    definition.args,
-    rawArgs === undefined ? {} : rawArgs,
-    "args",
-  )) as Expand<InferShape<A>>;
-  return Object.freeze({ ctx: immutableContext(ctx, principal), args });
+  return immutableContext(ctx, principal);
 }
 
 /** Validate and freeze caller input, bind an immutable principal, then enforce access. */
-export async function authorizeInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
+export function authorizeInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
   definition: AuthorizationDefinition<A, Ctx>,
   ctx: Ctx,
   rawArgs: unknown,
 ): Promise<AuthorizedInvocation<Ctx, Expand<InferShape<A>>>> {
-  const invocation = validateInvocation(definition, ctx, rawArgs);
-  await enforceAccess(definition.access, invocation.ctx, invocation.args);
-  return invocation;
+  try {
+    const compiled = compiledInvocation(definition);
+    const safeCtx = validateContext(ctx, invocationState.getStore());
+    const args = compiled.validateArgs(rawArgs);
+    const access = compiled.enforceAccess(safeCtx, args);
+    if (isPromiseLike(access)) {
+      return Promise.resolve(access).then(() => Object.freeze({ ctx: safeCtx, args }));
+    }
+    return Promise.resolve(Object.freeze({ ctx: safeCtx, args }));
+  } catch (error) {
+    return Promise.reject(error);
+  }
 }
 
 function safeOutcome(error: unknown): InvocationOutcome {
@@ -162,14 +251,6 @@ function safeOutcome(error: unknown): InvocationOutcome {
   } catch {
     return "internal";
   }
-}
-
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return (
-    (typeof value === "object" || typeof value === "function") &&
-    value !== null &&
-    typeof (value as { then?: unknown }).then === "function"
-  );
 }
 
 function emitObservation(
@@ -198,16 +279,28 @@ function emitObservation(
   }
 }
 
-async function observePhase<T>(
+function observePhase<T>(
   state: InvocationInstrumentationState,
   fn: AnyRegistered,
   phase: InvocationPhase,
   work: () => T | Promise<T>,
-): Promise<T> {
-  const run = async (): Promise<T> => {
+): T | Promise<T> {
+  const run = (): T | Promise<T> => {
     const startedAt = performance.now();
     try {
-      const value = await work();
+      const value = work();
+      if (isPromiseLike(value)) {
+        return Promise.resolve(value).then(
+          (settled) => {
+            emitObservation(state, fn, phase, startedAt, "ok");
+            return settled;
+          },
+          (error: unknown) => {
+            emitObservation(state, fn, phase, startedAt, safeOutcome(error));
+            throw error;
+          },
+        );
+      }
       emitObservation(state, fn, phase, startedAt, "ok");
       return value;
     } catch (error) {
@@ -232,17 +325,18 @@ function runHandler<Ctx extends InvocationContext, Args, R>(
   fn: { readonly handler: (ctx: Ctx, args: Args) => R | Promise<R> },
   ctx: Ctx,
   args: Args,
-  options: InvocationOptions<Ctx, Args>,
-): Promise<Awaited<R>> {
-  options.onAuthorized?.(ctx, args);
+  parent: InvocationState | undefined,
+  options: InvocationOptions<Ctx, Args> | undefined,
+): R | Promise<R> {
+  options?.onAuthorized?.(ctx, args);
+  if (parent !== undefined) return fn.handler(ctx, args);
   return invocationState.run(
     { principal: ctx.auth },
-    async () => fn.handler(ctx, args),
-  ) as Promise<Awaited<R>>;
+    () => fn.handler(ctx, args),
+  );
 }
 
-/** The only args → policy → handler path, shared by top-level and direct nested calls. */
-export async function invokeFunction<
+function invokeUnobserved<
   K extends string,
   A extends ObjectShape,
   Ctx extends InvocationContext,
@@ -252,12 +346,40 @@ export async function invokeFunction<
   fn: Registered<K, A, Ctx, R, H>,
   ctx: Ctx,
   rawArgs: unknown,
-  options: InvocationOptions<Ctx, Expand<InferShape<A>>> = {},
+  options: InvocationOptions<Ctx, Expand<InferShape<A>>> | undefined,
+): Promise<Awaited<H>> {
+  try {
+    const compiled = compiledInvocation(fn);
+    const parent = invocationState.getStore();
+    const safeCtx = validateContext(ctx, parent);
+    const args = compiled.validateArgs(rawArgs);
+    const access = compiled.enforceAccess(safeCtx, args);
+    if (isPromiseLike(access)) {
+      return Promise.resolve(access).then(() =>
+        runHandler(fn, safeCtx, args, parent, options)) as Promise<Awaited<H>>;
+    }
+    return Promise.resolve(runHandler(fn, safeCtx, args, parent, options)) as Promise<Awaited<H>>;
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+/** The only args → policy → handler path, shared by top-level and direct nested calls. */
+export function invokeFunction<
+  K extends string,
+  A extends ObjectShape,
+  Ctx extends InvocationContext,
+  R,
+  H,
+>(
+  fn: Registered<K, A, Ctx, R, H>,
+  ctx: Ctx,
+  rawArgs: unknown,
+  options?: InvocationOptions<Ctx, Expand<InferShape<A>>>,
 ): Promise<Awaited<H>> {
   const instrumentation = invocationInstrumentation.getStore();
   if (instrumentation === undefined) {
-    const { ctx: safeCtx, args } = await authorizeInvocation(fn, ctx, rawArgs);
-    return runHandler(fn, safeCtx, args, options) as Promise<Awaited<H>>;
+    return invokeUnobserved(fn, ctx, rawArgs, options);
   }
 
   const state: InvocationInstrumentationState = {
@@ -269,12 +391,30 @@ export async function invokeFunction<
     depth: instrumentation.depth + 1,
   };
   const observedFn = fn as unknown as AnyRegistered;
-  return invocationInstrumentation.run(state, async () => {
-    const invocation = await observePhase(state, observedFn, "auth", () =>
-      validateInvocation(fn, ctx, rawArgs));
-    await observePhase(state, observedFn, "policy", () =>
-      enforceAccess(fn.access, invocation.ctx, invocation.args));
-    return observePhase(state, observedFn, "handler", () =>
-      runHandler(fn, invocation.ctx, invocation.args, options));
-  }) as Promise<Awaited<H>>;
+  return invocationInstrumentation.run(state, () => {
+    try {
+      const compiled = compiledInvocation(fn);
+      const parent = invocationState.getStore();
+      let safeCtx!: Ctx;
+      let args!: Expand<InferShape<A>>;
+      const authenticate = observePhase(state, observedFn, "auth", () => {
+        safeCtx = validateContext(ctx, parent);
+        args = compiled.validateArgs(rawArgs);
+      });
+      const handle = (): H | Promise<H> =>
+        observePhase(state, observedFn, "handler", () =>
+          runHandler(fn, safeCtx, args, parent, options));
+      const authorize = (): H | Promise<H> => {
+        const access = observePhase(state, observedFn, "policy", () =>
+          compiled.enforceAccess(safeCtx, args));
+        return isPromiseLike(access) ? Promise.resolve(access).then(handle) : handle();
+      };
+      const result = isPromiseLike(authenticate)
+        ? Promise.resolve(authenticate).then(authorize)
+        : authorize();
+      return Promise.resolve(result) as Promise<Awaited<H>>;
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  });
 }
