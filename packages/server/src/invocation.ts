@@ -56,7 +56,8 @@ export interface InvocationPhaseRunner {
 }
 
 interface InvocationInstrumentationScope {
-  readonly observer: InvocationObserver;
+  readonly observer?: InvocationObserver;
+  readonly telemetryObserver?: InvocationTelemetryObserver;
   readonly runPhase?: InvocationPhaseRunner;
   nextInvocationId: number;
 }
@@ -66,7 +67,23 @@ interface InvocationInstrumentationState {
   readonly invocationId: number | null;
   readonly parentInvocationId?: number;
   readonly depth: number;
+  readonly parent?: InvocationInstrumentationState;
+  readonly fn?: AnyRegistered;
+  readonly phase?: InvocationPhase;
 }
+
+export interface InvocationTelemetryContext {
+  readonly invocationId: number;
+  readonly parent?: InvocationTelemetryContext;
+  readonly fn: AnyRegistered;
+  readonly phase: InvocationPhase;
+}
+
+export type InvocationTelemetryObserver = (
+  context: InvocationTelemetryContext,
+  durationMs: number,
+  outcome: InvocationOutcome,
+) => unknown;
 
 export interface InvocationOptions<Ctx, Args> {
   /** Runs after args and access pass, immediately before the handler starts. */
@@ -98,6 +115,26 @@ export function withInvocationObserver<T>(
     invocationId: null,
     depth: -1,
   }, work);
+}
+
+/** Package-internal low-allocation observer path for Runtime telemetry. */
+export function withInvocationTelemetry<T>(
+  observer: InvocationTelemetryObserver,
+  work: () => T,
+): T {
+  return invocationInstrumentation.run({
+    scope: { telemetryObserver: observer, nextInvocationId: 0 },
+    invocationId: null,
+    depth: -1,
+  }, work);
+}
+
+/** Returns the existing ambient invocation frame without allocating a public observation. */
+export function currentInvocationTelemetryContext(): InvocationTelemetryContext | undefined {
+  const state = invocationInstrumentation.getStore();
+  return state?.invocationId !== null && state?.fn !== undefined && state.phase !== undefined
+    ? state as InvocationTelemetryContext
+    : undefined;
 }
 
 function denied(principal: Principal, cause?: unknown): DbzzError {
@@ -260,19 +297,25 @@ function emitObservation(
   startedAt: number,
   outcome: InvocationOutcome,
 ): void {
-  const observation: InvocationObservation = Object.freeze({
-    fn,
-    invocationId: state.invocationId!,
-    ...(state.parentInvocationId === undefined
-      ? {}
-      : { parentInvocationId: state.parentInvocationId }),
-    depth: state.depth,
-    phase,
-    durationMs: Math.max(0, performance.now() - startedAt),
-    outcome,
-  });
+  const durationMs = Math.max(0, performance.now() - startedAt);
   try {
-    const result = invocationInstrumentation.exit(() => state.scope.observer(observation));
+    const result = invocationInstrumentation.exit(() => {
+      if (state.scope.telemetryObserver !== undefined) {
+        return state.scope.telemetryObserver(state as InvocationTelemetryContext, durationMs, outcome);
+      }
+      const observation: InvocationObservation = Object.freeze({
+        fn,
+        invocationId: state.invocationId!,
+        ...(state.parentInvocationId === undefined
+          ? {}
+          : { parentInvocationId: state.parentInvocationId }),
+        depth: state.depth,
+        phase,
+        durationMs,
+        outcome,
+      });
+      return state.scope.observer!(observation);
+    });
     if (isPromiseLike(result)) void Promise.resolve(result).catch(() => {});
   } catch {
     // Instrumentation is diagnostic and must never affect application work.
@@ -285,6 +328,10 @@ function observePhase<T>(
   phase: InvocationPhase,
   work: () => T | Promise<T>,
 ): T | Promise<T> {
+  const phaseState: InvocationInstrumentationState =
+    state.scope.telemetryObserver === undefined
+      ? state
+      : { ...state, phase };
   const run = (): T | Promise<T> => {
     const startedAt = performance.now();
     try {
@@ -292,33 +339,38 @@ function observePhase<T>(
       if (isPromiseLike(value)) {
         return Promise.resolve(value).then(
           (settled) => {
-            emitObservation(state, fn, phase, startedAt, "ok");
+            emitObservation(phaseState, fn, phase, startedAt, "ok");
             return settled;
           },
           (error: unknown) => {
-            emitObservation(state, fn, phase, startedAt, safeOutcome(error));
+            emitObservation(phaseState, fn, phase, startedAt, safeOutcome(error));
             throw error;
           },
         );
       }
-      emitObservation(state, fn, phase, startedAt, "ok");
+      emitObservation(phaseState, fn, phase, startedAt, "ok");
       return value;
     } catch (error) {
-      emitObservation(state, fn, phase, startedAt, safeOutcome(error));
+      emitObservation(phaseState, fn, phase, startedAt, safeOutcome(error));
       throw error;
     }
   };
-  const runPhase = state.scope.runPhase;
-  if (runPhase === undefined) return run();
-  return runPhase(Object.freeze({
-    fn,
-    invocationId: state.invocationId!,
-    ...(state.parentInvocationId === undefined
-      ? {}
-      : { parentInvocationId: state.parentInvocationId }),
-    depth: state.depth,
-    phase,
-  }), run);
+  const observed = (): T | Promise<T> => {
+    const runPhase = state.scope.runPhase;
+    if (runPhase === undefined) return run();
+    return runPhase(Object.freeze({
+      fn,
+      invocationId: state.invocationId!,
+      ...(state.parentInvocationId === undefined
+        ? {}
+        : { parentInvocationId: state.parentInvocationId }),
+      depth: state.depth,
+      phase,
+    }), run);
+  };
+  return phaseState === state
+    ? observed()
+    : invocationInstrumentation.run(phaseState, observed);
 }
 
 function runHandler<Ctx extends InvocationContext, Args, R>(
@@ -389,6 +441,8 @@ export function invokeFunction<
       ? {}
       : { parentInvocationId: instrumentation.invocationId }),
     depth: instrumentation.depth + 1,
+    ...(instrumentation.invocationId === null ? {} : { parent: instrumentation }),
+    fn: fn as unknown as AnyRegistered,
   };
   const observedFn = fn as unknown as AnyRegistered;
   return invocationInstrumentation.run(state, () => {

@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   CLAIM_DELIVERY_LEASE,
+  CLAIM_OPERATION_DELIVERY_LEASE,
   captureTelemetryLink,
   deriveTelemetryTraceContext,
+  FINISH_OPERATION_TRACE,
+  OPEN_OPERATION_TRACE,
+  OPERATION_INVOCATION_NODE,
   prepareTelemetryTraceContext,
+  RECORD_OPERATION_SPAN,
   RECORD_PREPARED_SPAN,
   RELEASE_DELIVERY_LEASE,
   Telemetry,
@@ -12,6 +17,7 @@ import {
   type TelemetryExporter,
   type TelemetryRecord,
   type TelemetryScheduler,
+  type TelemetrySpanRecord,
   type TelemetrySpanInput,
 } from "../src/telemetry.ts";
 
@@ -2561,6 +2567,232 @@ describe("Telemetry", () => {
         discardedRecords: 2,
         dropped: { drain: 2 },
       },
+    });
+  });
+
+  test("recycles operation journal slots without UUIDs or retained records on fast discard", () => {
+    let now = 0;
+    const telemetry = new Telemetry({
+      localSink: false,
+      now: () => ++now,
+      limits: {
+        maxRecords: 2,
+        maxBatchRecords: 2,
+        slowOperationMs: Number.MAX_SAFE_INTEGER,
+      },
+    });
+    const cryptoPrototype = Object.getPrototypeOf(crypto) as {
+      randomUUID: typeof crypto.randomUUID;
+    };
+    const originalRandomUUID = cryptoPrototype.randomUUID;
+    let generatedIds = 0;
+    cryptoPrototype.randomUUID = () => {
+      generatedIds++;
+      return originalRandomUUID.call(crypto);
+    };
+    try {
+      for (let index = 0; index < 64; index++) {
+        const trace = telemetry[OPEN_OPERATION_TRACE]({
+          operation: "query",
+          functionName: "items.list",
+        });
+        const lease = telemetry[CLAIM_OPERATION_DELIVERY_LEASE](trace);
+        expect(lease).toBeDefined();
+        expect(telemetry[RECORD_OPERATION_SPAN](trace, 0, 0, {
+          operation: "query",
+          stage: "admission",
+          outcome: "ok",
+          functionName: "items.list",
+          resource: "operation",
+          durationMs: 1,
+        })).toBe(true);
+        telemetry[FINISH_OPERATION_TRACE](trace);
+        if (index === 0) {
+          expect(telemetry.snapshot().traceRetention).toMatchObject({
+            activeTraces: 0,
+            completedDecisions: 1,
+            stagedRecords: 1,
+            discardedTraces: 0,
+          });
+        }
+        telemetry[RELEASE_DELIVERY_LEASE](lease!);
+      }
+    } finally {
+      cryptoPrototype.randomUUID = originalRandomUUID;
+    }
+    expect(generatedIds).toBe(0);
+    expect(telemetry.snapshot()).toMatchObject({
+      queuedRecords: 0,
+      traceRetention: {
+        activeTraces: 0,
+        completedDecisions: 0,
+        stagedRecords: 0,
+        stagedBytes: 0,
+        discardedTraces: 64,
+        discardedRecords: 64,
+        dropped: { stagedOverflow: 0 },
+      },
+    });
+    expect(telemetry.aggregateSnapshot().series).toContainEqual(expect.objectContaining({
+      operation: "query",
+      stage: "admission",
+      outcome: "ok",
+      function: "items.list",
+      count: 64,
+    }));
+  });
+
+  test("shares journal capacity and materialization across public and operation spans", async () => {
+    const scheduler = new ManualScheduler();
+    const { batches, exporter } = exporterBatches();
+    let now = 0;
+    const telemetry = new Telemetry({
+      exporter,
+      scheduler,
+      localSink: false,
+      now: () => now,
+      limits: {
+        maxRecords: 3,
+        maxBatchRecords: 3,
+        maxBytes: 64 * 1024,
+        slowOperationMs: 100,
+      },
+    });
+    const publicContext = { traceId: "trace_shared_public", spanId: "span_shared_public" };
+    expect(telemetry.beginTrace(publicContext)).toBe(true);
+    expect(telemetry.recordSpan({
+      context: publicContext,
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "items.public",
+      durationMs: 1,
+    })).toBe(true);
+
+    const operation = telemetry[OPEN_OPERATION_TRACE]({
+      operation: "query",
+      functionName: "items.list",
+      requestId: "operation_shared",
+    });
+    const lease = telemetry[CLAIM_OPERATION_DELIVERY_LEASE](operation);
+    const handler = telemetry[OPERATION_INVOCATION_NODE](operation, 1, "handler", 0);
+    const nested = telemetry[OPERATION_INVOCATION_NODE](operation, 2, "handler", handler);
+    expect(telemetry[RECORD_OPERATION_SPAN](operation, 0, 0, {
+      operation: "query",
+      stage: "admission",
+      outcome: "ok",
+      functionName: "items.list",
+      durationMs: 1,
+    })).toBe(true);
+    expect(telemetry[RECORD_OPERATION_SPAN](operation, handler, 0, {
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      functionName: "items.list",
+      durationMs: 1,
+    })).toBe(true);
+    expect(telemetry[RECORD_OPERATION_SPAN](operation, nested, handler, {
+      operation: "query",
+      stage: "statement",
+      outcome: "ok",
+      functionName: "items.child",
+      statement: "items.by_room.collect",
+      durationMs: 1,
+    })).toBe(true);
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      stagedRecords: 3,
+      dropped: { stagedOverflow: 1 },
+    });
+
+    now = 100;
+    expect(telemetry.finishTrace(publicContext)).toBe(true);
+    await telemetry.flush();
+    expect(telemetry[RECORD_OPERATION_SPAN](operation, nested, handler, {
+      operation: "query",
+      stage: "statement",
+      outcome: "ok",
+      functionName: "items.child",
+      statement: "items.by_room.collect",
+      durationMs: 1,
+    })).toBe(true);
+    const operationStagedBytes = telemetry.snapshot().traceRetention.stagedBytes;
+    now = 200;
+    telemetry[FINISH_OPERATION_TRACE](operation);
+    telemetry[RELEASE_DELIVERY_LEASE](lease!);
+    await telemetry.flush();
+
+    const records = batches.flat();
+    const operationSpans = records.filter((record): record is TelemetrySpanRecord =>
+      record.kind === "span" && record.requestId === "operation_shared"
+    );
+    expect(operationSpans.map((span) => span.stage)).toEqual([
+      "admission",
+      "handler",
+      "statement",
+    ]);
+    expect(operationSpans[1]!.parentSpanId).toBe(operationSpans[0]!.spanId);
+    expect(operationSpans[2]!.parentSpanId).toBe(operationSpans[1]!.spanId);
+    expect(new Set(operationSpans.map((span) => span.traceId)).size).toBe(1);
+    expect(operationStagedBytes).toBe(operationSpans.reduce(
+      (bytes, span) => bytes + new TextEncoder().encode(JSON.stringify(span)).byteLength,
+      0,
+    ));
+    expect(records).toContainEqual(expect.objectContaining({
+      kind: "span",
+      traceId: publicContext.traceId,
+      spanId: publicContext.spanId,
+    }));
+    expect(telemetry.snapshot().traceRetention).toMatchObject({
+      stagedRecords: 0,
+      stagedBytes: 0,
+      promotedTraces: 2,
+      dropped: { stagedOverflow: 1 },
+    });
+    expect(telemetry.aggregateSnapshot().series.reduce(
+      (count, series) => count + (series.operation === "query" ? series.count : 0),
+      0,
+    )).toBe(5);
+  });
+
+  test("admits an operation span at its exact byte limit and rejects one byte below", () => {
+    const stage = (maxBytes: number): ReturnType<Telemetry["snapshot"]> => {
+      const telemetry = new Telemetry({
+        localSink: false,
+        now: () => 42,
+        limits: {
+          maxRecords: 1,
+          maxBatchRecords: 1,
+          maxBytes,
+          slowOperationMs: Number.MAX_SAFE_INTEGER,
+        },
+      });
+      const trace = telemetry[OPEN_OPERATION_TRACE]({
+        operation: "query",
+        functionName: "items.list",
+        requestId: "exact_operation",
+      });
+      telemetry[RECORD_OPERATION_SPAN](trace, 0, 0, {
+        operation: "query",
+        stage: "admission",
+        outcome: "ok",
+        functionName: "items.list",
+        resource: "operation",
+        durationMs: 1,
+        sizeBytes: 64,
+      });
+      return telemetry.snapshot();
+    };
+    const bytes = stage(64 * 1024).traceRetention.stagedBytes;
+    expect(bytes).toBeGreaterThan(1);
+    expect(stage(bytes).traceRetention).toMatchObject({
+      stagedRecords: 1,
+      stagedBytes: bytes,
+      dropped: { stagedOverflow: 0 },
+    });
+    expect(stage(bytes - 1).traceRetention).toMatchObject({
+      stagedRecords: 0,
+      stagedBytes: 0,
+      dropped: { stagedOverflow: 1 },
     });
   });
 

@@ -86,11 +86,11 @@ import type {
 } from "./functions.ts";
 import {
   authorizeInvocation,
+  currentInvocationTelemetryContext,
   invokeFunction,
-  withInvocationObserver,
-  type InvocationObservation,
-  type InvocationPhaseRunner,
-  type InvocationPhaseScope,
+  withInvocationTelemetry,
+  type InvocationOutcome,
+  type InvocationTelemetryContext,
 } from "./invocation.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
@@ -107,14 +107,18 @@ import {
 } from "./reactive.ts";
 import type { Registry } from "./registry.ts";
 import {
-  CLAIM_DELIVERY_LEASE,
-  deriveTelemetryTraceContext,
+  CLAIM_OPERATION_DELIVERY_LEASE,
+  FINISH_OPERATION_TRACE,
+  OPEN_OPERATION_TRACE,
+  OPERATION_INVOCATION_NODE,
   prepareTelemetryTraceContext,
-  RECORD_PREPARED_SPAN,
+  RECORD_OPERATION_EVENT,
+  RECORD_OPERATION_SPAN,
   RELEASE_DELIVERY_LEASE,
   Telemetry,
   type TelemetryAggregateSnapshot,
-  type PreparedTelemetrySpanInput,
+  type TelemetryEventInput,
+  type OperationTraceHandle,
   type PreparedTelemetryTraceContext,
   type TelemetryOperation,
   type TelemetryOptions,
@@ -319,18 +323,16 @@ interface SessionOperationOptions<T> {
   readonly successPublication?: (value: T) => RuntimePublication;
 }
 
-interface InvocationTraceNode {
-  readonly parent: PreparedTelemetryTraceContext;
-  readonly handler: PreparedTelemetryTraceContext;
-}
-
 interface RuntimeTraceScope {
   readonly operation: TelemetryOperation;
   readonly rootFunction?: string;
-  readonly rootContext: PreparedTelemetryTraceContext;
-  readonly currentContext: PreparedTelemetryTraceContext;
-  readonly currentFunction?: string;
-  readonly invocations: Map<number, InvocationTraceNode>;
+  readonly trace: OperationTraceHandle;
+  invocations: number;
+}
+
+interface DetachedDeliveryTrace {
+  readonly operation: TelemetryOperation;
+  readonly context: PreparedTelemetryTraceContext;
 }
 
 function deferred<T>(): Deferred<T> {
@@ -474,6 +476,26 @@ export class Runtime implements RuntimePort {
   readonly telemetry: Telemetry;
   readonly reactive: OrderedReactive<ReactiveContext>;
   readonly deliveryObserver: DeliveryObserver = (observation): void => {
+    const ambient = this.trace.getStore();
+    if (ambient !== undefined) {
+      this.observeDelivery(
+        ambient,
+        this.invocationNode(ambient, currentInvocationTelemetryContext()),
+        observation,
+      );
+      return;
+    }
+    this.observeDelivery({
+      operation: observation.transport === "sse" ? "sse" : "subscription",
+      context: prepareTelemetryTraceContext(),
+    }, 0, observation);
+  };
+
+  private observeDelivery(
+    trace: RuntimeTraceScope | DetachedDeliveryTrace,
+    parentNode: number,
+    observation: DeliveryObservation,
+  ): void {
     const outcome: TelemetryOutcome = observation.outcome === "dropped"
       ? "unavailable"
       : observation.outcome;
@@ -507,7 +529,7 @@ export class Runtime implements RuntimePort {
         : undefined;
     let summarizedFailure = false;
     if (failureOutcome !== undefined && this.telemetry.enabled) {
-      const operation = this.trace.getStore()?.operation ?? fallbackOperation;
+      const operation = trace.operation;
       const key = `${operation}|${observation.stage}|${failureOutcome}|${resource}`;
       let summary = this.deliveryFailureSummaries.get(key);
       if (summary === undefined) {
@@ -536,27 +558,39 @@ export class Runtime implements RuntimePort {
     // or once an exemplar failure event has promoted the ambient trace,
     // which would reopen the storm this budget exists to bound.
     if (!summarizedFailure) {
-      this.traceSpan({
+      const span = {
         stage: observation.stage,
         outcome,
         resource,
         durationMs: observation.durationMs,
         sizeBytes: observation.bytes,
-      }, fallbackOperation);
+      } as const;
+      if ("trace" in trace) {
+        this.traceSpan(span, fallbackOperation, trace, parentNode);
+      } else {
+        this.telemetry.recordSpan({
+          ...span,
+          operation: trace.operation,
+          context: trace.context,
+        });
+      }
     }
     if (terminalFailure && !summarizedFailure) {
-      const scope = this.trace.getStore();
-      this.telemetry.recordEvent({
+      const event = {
         name: "failure",
         level: "error",
-        operation: scope?.operation ?? fallbackOperation,
+        operation: trace.operation,
         stage: "delivery",
         outcome: observation.terminalOutcome,
         resource,
-        context: this.observationContext(),
-      });
+      } as const;
+      if ("trace" in trace) {
+        this.traceEvent(event, trace, parentNode);
+      } else {
+        this.telemetry.recordEvent({ ...event, context: trace.context });
+      }
     }
-  };
+  }
 
   private readonly now: () => number;
   private readonly authInvalidation: AuthInvalidationBoundary;
@@ -1267,15 +1301,18 @@ export class Runtime implements RuntimePort {
   ): void {
     if (!this.telemetry.enabled) return;
     const scope = this.trace.getStore();
-    this.telemetry.recordEvent({
+    const invocation = currentInvocationTelemetryContext();
+    const functionName = invocation === undefined
+      ? scope?.rootFunction
+      : this.registry.addressOf(invocation.fn) ?? scope?.rootFunction;
+    this.traceEvent({
       name: "failure",
       level: "error",
       operation: "procedure",
       stage,
       outcome: outcomeFromError(error).code,
-      ...(scope?.currentFunction === undefined ? {} : { functionName: scope.currentFunction }),
+      ...(functionName === undefined ? {} : { functionName }),
       resource: "operation",
-      context: this.observationContext(),
       errorClass: error instanceof Error ? error.name : "UnknownError",
     });
   }
@@ -1308,48 +1345,54 @@ export class Runtime implements RuntimePort {
           claimedTrace?.context,
         )
       : undefined;
-    let traceOpened = claimedTrace === undefined &&
-      scope !== undefined &&
-      this.telemetry.beginTrace(scope.rootContext);
+    let traceFinished = false;
     const finishOperationTrace = (): void => {
+      if (traceFinished) return;
+      traceFinished = true;
       if (claimedTrace !== undefined) {
         finishClaimedHttpTrace(claimedTrace);
         return;
       }
-      if (!traceOpened) return;
-      traceOpened = false;
-      this.telemetry.finishTrace(scope!.rootContext);
+      if (scope !== undefined) this.telemetry[FINISH_OPERATION_TRACE](scope.trace);
     };
     const admittedAt = scope === undefined ? 0 : performance.now();
     let release: () => void;
     try {
       release = this.admitOperation(null, fairnessKey).release;
       if (scope !== undefined) {
-        this.telemetry[RECORD_PREPARED_SPAN]({
-          operation: "sse",
-          stage: "admission",
-          outcome: "ok",
-          functionName: request.address,
-          resource: "operation",
-          context: scope.rootContext,
-          durationMs: Math.max(0, performance.now() - admittedAt),
-          sizeBytes: requestBytes,
-        });
+        this.telemetry[RECORD_OPERATION_SPAN](
+          scope.trace,
+          0,
+          0,
+          {
+            operation: "sse",
+            stage: "admission",
+            outcome: "ok",
+            functionName: request.address,
+            resource: "operation",
+            durationMs: Math.max(0, performance.now() - admittedAt),
+            sizeBytes: requestBytes,
+          },
+        );
       }
     } catch (error) {
       const safeError = transportError(error);
       if (scope !== undefined) {
         const outcome = outcomeFromError(safeError).code;
-        this.telemetry[RECORD_PREPARED_SPAN]({
-          operation: "sse",
-          stage: "admission",
-          outcome,
-          functionName: request.address,
-          resource: "operation",
-          context: scope.rootContext,
-          durationMs: Math.max(0, performance.now() - admittedAt),
-          sizeBytes: requestBytes,
-        });
+        this.telemetry[RECORD_OPERATION_SPAN](
+          scope.trace,
+          0,
+          0,
+          {
+            operation: "sse",
+            stage: "admission",
+            outcome,
+            functionName: request.address,
+            resource: "operation",
+            durationMs: Math.max(0, performance.now() - admittedAt),
+            sizeBytes: requestBytes,
+          },
+        );
       }
       finishOperationTrace();
       throw safeError;
@@ -1424,15 +1467,14 @@ export class Runtime implements RuntimePort {
         lifecycle = completion.catch((error) => {
           if (scope !== undefined) {
             const safeError = transportError(error);
-            this.telemetry.recordEvent({
+            this.traceEvent({
               name: "failure",
               level: "error",
               operation: "sse",
               outcome: outcomeFromError(safeError).code,
               functionName: request.address,
-              context: this.observationContext(),
               errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-            });
+            }, scope);
           }
           throw error;
         }).finally(() => {
@@ -1466,7 +1508,7 @@ export class Runtime implements RuntimePort {
         const safeError = transportError(error);
         if (scope !== undefined) {
           const outcome = outcomeFromError(safeError).code;
-          if (scope.invocations.size === 0) {
+          if (scope.invocations === 0) {
             this.traceSpan({
               operation: "sse",
               stage: "handler",
@@ -1475,15 +1517,14 @@ export class Runtime implements RuntimePort {
               sizeBytes: requestBytes,
             }, "sse");
           }
-          this.telemetry.recordEvent({
+          this.traceEvent({
             name: outcome === "overloaded" ? "overload" : "failure",
             level: outcome === "overloaded" ? "warn" : "error",
             operation: "sse",
             outcome,
             functionName: request.address,
-            context: this.observationContext(),
             errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-          });
+          }, scope);
         }
         throw safeError;
       }
@@ -2235,18 +2276,15 @@ export class Runtime implements RuntimePort {
     const scope = this.trace.getStore();
     if (scope === undefined) {
       const evaluationScope = this.operationTrace(null, "subscription", input.address, {});
-      const traceOpened = this.telemetry.beginTrace(evaluationScope.rootContext);
       const evaluation = this.runTraced(evaluationScope, execute);
-      return traceOpened
-        ? evaluation.finally(() => {
-            this.telemetry.finishTrace(evaluationScope.rootContext);
-          })
-        : evaluation;
+      return evaluation.finally(() => {
+        this.telemetry[FINISH_OPERATION_TRACE](evaluationScope.trace);
+      });
     }
     return this.trace.run({
       ...scope,
       operation: "subscription",
-      currentFunction: input.address,
+      rootFunction: input.address,
     }, execute);
   }
 
@@ -2543,42 +2581,33 @@ export class Runtime implements RuntimePort {
     });
   }
 
-  private readonly observeInvocation = (observation: InvocationObservation): void => {
+  private readonly observeInvocation = (
+    invocation: InvocationTelemetryContext,
+    durationMs: number,
+    outcome: InvocationOutcome,
+  ): void => {
     const scope = this.trace.getStore();
     if (scope === undefined) return;
-    this.telemetry[RECORD_PREPARED_SPAN]({
-      operation: scope.operation,
-      stage: observation.phase,
-      outcome: observation.outcome,
-      functionName: this.registry.addressOf(observation.fn) ?? scope.currentFunction,
-      context: scope.currentContext,
-      durationMs: observation.durationMs,
-    });
-  };
-
-  private readonly runInvocationPhase: InvocationPhaseRunner = (
-    phase: Readonly<InvocationPhaseScope>,
-    work,
-  ) => {
-    const scope = this.trace.getStore();
-    if (scope === undefined) return work();
-    let node = scope.invocations.get(phase.invocationId);
-    if (node === undefined) {
-      const parent = phase.parentInvocationId === undefined
-        ? scope.rootContext
-        : scope.invocations.get(phase.parentInvocationId)?.handler ?? scope.rootContext;
-      node = Object.freeze({ parent, handler: deriveTelemetryTraceContext(parent) });
-      scope.invocations.set(phase.invocationId, node);
-    }
-    const context = phase.phase === "handler"
-      ? node.handler
-      : deriveTelemetryTraceContext(node.parent);
-    const functionName = this.registry.addressOf(phase.fn) ?? scope.currentFunction;
-    return this.trace.run({
-      ...scope,
-      currentContext: context,
-      ...(functionName === undefined ? {} : { currentFunction: functionName }),
-    }, work);
+    scope.invocations++;
+    const parent = this.invocationNode(scope, invocation.parent, "handler");
+    const node = this.telemetry[OPERATION_INVOCATION_NODE](
+      scope.trace,
+      invocation.invocationId,
+      invocation.phase,
+      parent,
+    );
+    this.telemetry[RECORD_OPERATION_SPAN](
+      scope.trace,
+      node,
+      parent,
+      {
+        operation: scope.operation,
+        stage: invocation.phase,
+        outcome,
+        functionName: this.registry.addressOf(invocation.fn) ?? scope.rootFunction,
+        durationMs,
+      },
+    );
   };
 
   private readonly observeFetch = (observation: Readonly<FetchObservation>): void => {
@@ -2654,7 +2683,7 @@ export class Runtime implements RuntimePort {
       ...(event.postCommit === undefined ? {} : { postCommit: event.postCommit }),
       ...(event.commitVersion === undefined
         ? {}
-        : { context: this.observationContext({ commitId: String(event.commitVersion) }) }),
+        : { commitId: String(event.commitVersion) }),
     }, event.operation);
   };
 
@@ -2662,21 +2691,19 @@ export class Runtime implements RuntimePort {
     observation: ReactiveObservation,
   ): void => {
     if (observation.phase === "failure") {
-      this.telemetry.recordEvent({
+      this.traceEvent({
         name: "failure",
         level: "error",
         operation: "subscription",
         outcome: observationOutcome(observation.outcome),
         ...(observation.address === undefined ? {} : { functionName: observation.address }),
         resource: "subscription",
-        context: this.observationContext({
-          ...(observation.subscriptionId === undefined
-            ? {}
-            : { subscriptionId: String(observation.subscriptionId) }),
-          ...(observation.commitVersion === undefined
-            ? {}
-            : { commitId: String(observation.commitVersion) }),
-        }),
+        ...(observation.subscriptionId === undefined
+          ? {}
+          : { subscriptionId: String(observation.subscriptionId) }),
+        ...(observation.commitVersion === undefined
+          ? {}
+          : { commitId: String(observation.commitVersion) }),
       });
       return;
     }
@@ -2696,27 +2723,46 @@ export class Runtime implements RuntimePort {
           observation.phase === "fanout"
         ? "outbound"
         : "subscription";
-    this.telemetry[RECORD_PREPARED_SPAN]({
-      operation: "subscription",
-      stage,
-      outcome: observationOutcome(observation.outcome),
-      resource,
-      durationMs: observation.durationMs,
-      ...(observation.address === undefined ? {} : { functionName: observation.address }),
-      ...(observation.resultCount === undefined ? {} : { resultCount: observation.resultCount }),
-      ...(observation.dependencyCount === undefined
-        ? {}
-        : { dependencyCount: observation.dependencyCount }),
-      ...(observation.byteCount === undefined ? {} : { sizeBytes: observation.byteCount }),
-      context: this.observationContext({
-        ...(observation.subscriptionId === undefined
-          ? {}
-          : { subscriptionId: String(observation.subscriptionId) }),
-        ...(observation.commitVersion === undefined
-          ? {}
-          : { commitId: String(observation.commitVersion) }),
-      }),
-    });
+    const scope = this.trace.getStore();
+    const subscriptionId = observation.subscriptionId === undefined
+      ? undefined
+      : String(observation.subscriptionId);
+    const commitId = observation.commitVersion === undefined
+      ? undefined
+      : String(observation.commitVersion);
+    if (scope === undefined) {
+      this.telemetry.recordSpan({
+        operation: "subscription",
+        stage,
+        outcome: observationOutcome(observation.outcome),
+        resource,
+        durationMs: observation.durationMs,
+        functionName: observation.address,
+        resultCount: observation.resultCount,
+        dependencyCount: observation.dependencyCount,
+        sizeBytes: observation.byteCount,
+        context: prepareTelemetryTraceContext({ subscriptionId, commitId }),
+      });
+      return;
+    }
+    this.telemetry[RECORD_OPERATION_SPAN](
+      scope.trace,
+      -1,
+      this.invocationNode(scope, currentInvocationTelemetryContext()),
+      {
+        operation: "subscription",
+        stage,
+        outcome: observationOutcome(observation.outcome),
+        functionName: observation.address,
+        resource,
+        durationMs: observation.durationMs,
+        sizeBytes: observation.byteCount,
+        resultCount: observation.resultCount,
+        dependencyCount: observation.dependencyCount,
+        commitId,
+        subscriptionId,
+      },
+    );
   };
 
   private operationTrace(
@@ -2726,53 +2772,117 @@ export class Runtime implements RuntimePort {
     identifiers: TraceIdentifiers,
     inheritedContext?: PreparedTelemetryTraceContext,
   ): RuntimeTraceScope {
-    const rootContext = inheritedContext ?? prepareTelemetryTraceContext({
-      ...(session === null
-        ? {}
-        : { connectionId: session.telemetryConnectionId }),
-      ...identifiers,
-    });
     return {
       operation,
       ...(functionName === undefined ? {} : { rootFunction: functionName }),
-      rootContext,
-      currentContext: rootContext,
-      ...(functionName === undefined ? {} : { currentFunction: functionName }),
-      invocations: new Map(),
+      trace: this.telemetry[OPEN_OPERATION_TRACE]({
+        operation,
+        ...(functionName === undefined ? {} : { functionName }),
+        ...(session?.telemetryConnectionId === undefined
+          ? {}
+          : { connectionId: session.telemetryConnectionId }),
+        ...identifiers,
+        ...(inheritedContext === undefined ? {} : { inheritedContext }),
+      }),
+      invocations: 0,
     };
   }
 
-  private observationContext(
-    identifiers: TraceIdentifiers = {},
-  ): PreparedTelemetryTraceContext {
-    const current = this.trace.getStore()?.currentContext;
-    return current === undefined
-      ? prepareTelemetryTraceContext(identifiers)
-      : deriveTelemetryTraceContext(current, identifiers);
+  private invocationNode(
+    scope: RuntimeTraceScope,
+    invocation: InvocationTelemetryContext | undefined,
+    phase: "auth" | "policy" | "handler" = invocation?.phase ?? "handler",
+  ): number {
+    if (invocation === undefined) return 0;
+    const parent = this.invocationNode(scope, invocation.parent, "handler");
+    return this.telemetry[OPERATION_INVOCATION_NODE](
+      scope.trace,
+      invocation.invocationId,
+      phase,
+      parent,
+    );
   }
 
   private traceSpan(
-    input: Omit<PreparedTelemetrySpanInput, "operation" | "context"> & {
+    input: {
       readonly operation?: TelemetryOperation;
-      readonly context?: PreparedTelemetryTraceContext;
+      readonly stage: TelemetryStage;
+      readonly outcome: TelemetryOutcome;
+      readonly functionName?: string;
+      readonly statement?: string;
+      readonly resource?: TelemetryResource;
+      readonly durationMs: number;
+      readonly sizeBytes?: number;
+      readonly rowCount?: number;
+      readonly resultCount?: number;
+      readonly replayed?: boolean;
+      readonly dependencyCount?: number;
+      readonly postCommit?: boolean;
+      readonly requestId?: string;
+      readonly connectionId?: string;
+      readonly mutationId?: string;
+      readonly commitId?: string;
+      readonly subscriptionId?: string;
     },
     fallbackOperation: TelemetryOperation,
+    capturedScope?: RuntimeTraceScope,
+    capturedParent?: number,
   ): void {
     if (!this.telemetry.enabled) return;
-    const scope = this.trace.getStore();
-    const context = input.context ?? this.observationContext();
-    this.telemetry[RECORD_PREPARED_SPAN]({
-      ...input,
-      operation: input.operation ?? scope?.operation ?? fallbackOperation,
-      context,
-      functionName: input.functionName ?? scope?.currentFunction ?? scope?.rootFunction,
-    });
+    const scope = capturedScope ?? this.trace.getStore();
+    if (scope === undefined) return;
+    const invocation = currentInvocationTelemetryContext();
+    const parent = capturedParent ?? this.invocationNode(scope, invocation);
+    const currentFunction = invocation === undefined
+      ? undefined
+      : this.registry.addressOf(invocation.fn);
+    this.telemetry[RECORD_OPERATION_SPAN](
+      scope.trace,
+      -1,
+      parent,
+      {
+        ...input,
+        operation: input.operation ?? scope.operation ?? fallbackOperation,
+        functionName: input.functionName ?? currentFunction ?? scope.rootFunction,
+      },
+    );
+  }
+
+  private traceEvent(
+    input: Omit<TelemetryEventInput, "context"> & TraceIdentifiers,
+    capturedScope?: RuntimeTraceScope,
+    capturedParent?: number,
+  ): void {
+    const scope = capturedScope ?? this.trace.getStore();
+    if (scope === undefined) return;
+    const parent = capturedParent ?? this.invocationNode(
+      scope,
+      currentInvocationTelemetryContext(),
+    );
+    const {
+      requestId,
+      connectionId,
+      mutationId,
+      commitId,
+      subscriptionId,
+      ...event
+    } = input;
+    this.telemetry[RECORD_OPERATION_EVENT](
+      scope.trace,
+      parent,
+      event,
+      requestId,
+      connectionId,
+      mutationId,
+      commitId,
+      subscriptionId,
+    );
   }
 
   private runTraced<T>(scope: RuntimeTraceScope, work: () => T): T {
     return this.trace.run(scope, () => withFetchObserver(
       this.observeFetch,
-      () => withInvocationObserver(this.observeInvocation, work, this.runInvocationPhase),
+      () => withInvocationTelemetry(this.observeInvocation, work),
     ));
   }
 
@@ -2781,22 +2891,27 @@ export class Runtime implements RuntimePort {
     clientSessionId?: string,
   ): DeliveryObserver | undefined => {
     if (!this.telemetry.enabled) return undefined;
-    const scope = this.trace.getStore() ?? this.operationTrace(
-      null,
-      lane === "control" ? "lifecycle" : "subscription",
-      undefined,
-      clientSessionId === undefined ? {} : { connectionId: digest(clientSessionId) },
-    );
+    const scope = this.trace.getStore();
+    if (scope === undefined) {
+      const detached: DetachedDeliveryTrace = {
+        operation: lane === "control" ? "lifecycle" : "subscription",
+        context: prepareTelemetryTraceContext(
+          clientSessionId === undefined ? {} : { connectionId: digest(clientSessionId) },
+        ),
+      };
+      return (observation) => this.observeDelivery(detached, 0, observation);
+    }
+    const parent = this.invocationNode(scope, currentInvocationTelemetryContext());
     const lease = scope.operation === "sse"
       ? undefined
-      : this.telemetry[CLAIM_DELIVERY_LEASE](scope.rootContext);
+      : this.telemetry[CLAIM_OPERATION_DELIVERY_LEASE](scope.trace);
     if (lease === undefined) {
-      return (observation) => this.trace.run(scope, () => this.deliveryObserver(observation));
+      return (observation) => this.observeDelivery(scope, parent, observation);
     }
     let released = false;
     return Object.assign(
       (observation: DeliveryObservation) =>
-        this.trace.run(scope, () => this.deliveryObserver(observation)),
+        this.observeDelivery(scope, parent, observation),
       {
         [FINALIZE_DELIVERY_OBSERVER]: () => {
           if (released) return;
@@ -2822,15 +2937,12 @@ export class Runtime implements RuntimePort {
     const scope = this.telemetry.enabled
       ? this.operationTrace(session, operation, functionName, identifiers, claimedTrace?.context)
       : undefined;
-    const traceOpened = claimedTrace === undefined &&
-      scope !== undefined &&
-      this.telemetry.beginTrace(scope.rootContext);
     const finishOperationTrace = <V>(result: Promise<V>): Promise<V> =>
       claimedTrace !== undefined
         ? result.finally(() => finishClaimedHttpTrace(claimedTrace))
-        : traceOpened
+        : scope !== undefined
           ? result.finally(() => {
-              this.telemetry.finishTrace(scope!.rootContext);
+              this.telemetry[FINISH_OPERATION_TRACE](scope.trace);
             })
           : result;
     const admittedAt = scope === undefined ? 0 : performance.now();
@@ -2844,32 +2956,40 @@ export class Runtime implements RuntimePort {
       this.assertRequestBytes(sizeBytes);
       admission = this.admitOperation(session, options.fairnessKey, options.sessionOrder);
       if (scope !== undefined) {
-        this.telemetry[RECORD_PREPARED_SPAN]({
-          operation,
-          stage: "admission",
-          outcome: "ok",
-          ...(functionName === undefined ? {} : { functionName }),
-          resource: "operation",
-          context: scope.rootContext,
-          durationMs: Math.max(0, performance.now() - admittedAt),
-          sizeBytes,
-        });
+        this.telemetry[RECORD_OPERATION_SPAN](
+          scope.trace,
+          0,
+          0,
+          {
+            operation,
+            stage: "admission",
+            outcome: "ok",
+            functionName,
+            resource: "operation",
+            durationMs: Math.max(0, performance.now() - admittedAt),
+            sizeBytes,
+          },
+        );
       }
     } catch (error) {
       const safeError = transportError(error);
       if (scope !== undefined) {
         const outcome = outcomeFromError(safeError).code;
-        this.telemetry[RECORD_PREPARED_SPAN]({
-          operation,
-          stage: "admission",
-          outcome,
-          ...(functionName === undefined ? {} : { functionName }),
-          resource: "operation",
-          context: scope.rootContext,
-          durationMs: Math.max(0, performance.now() - admittedAt),
-          sizeBytes,
-        });
-        this.telemetry.recordEvent({
+        this.telemetry[RECORD_OPERATION_SPAN](
+          scope.trace,
+          0,
+          0,
+          {
+            operation,
+            stage: "admission",
+            outcome,
+            functionName,
+            resource: "operation",
+            durationMs: Math.max(0, performance.now() - admittedAt),
+            sizeBytes,
+          },
+        );
+        this.traceEvent({
           name: outcome === "overloaded" ? "overload" : "failure",
           level: outcome === "overloaded" ? "warn" : "error",
           operation,
@@ -2877,9 +2997,8 @@ export class Runtime implements RuntimePort {
           outcome,
           ...(functionName === undefined ? {} : { functionName }),
           resource: "operation",
-          context: scope.rootContext,
           errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-        });
+        }, scope, 0);
       }
       const rejected = () => settle({ ok: false, error: safeError });
       return finishOperationTrace(
@@ -2893,7 +3012,7 @@ export class Runtime implements RuntimePort {
       : admission.predecessor.then(start))
       .then(
         (value): RuntimeOperationOutcome<T> => {
-          if (scope !== undefined && synthesizeHandler && scope.invocations.size === 0) {
+          if (scope !== undefined && synthesizeHandler && scope.invocations === 0) {
             this.traceSpan({
               stage: "handler",
               outcome: "ok",
@@ -2907,7 +3026,7 @@ export class Runtime implements RuntimePort {
           const safeError = transportError(error);
           if (scope !== undefined) {
             const outcome = outcomeFromError(safeError).code;
-            if (synthesizeHandler && scope.invocations.size === 0) {
+            if (synthesizeHandler && scope.invocations === 0) {
               this.traceSpan({
                 stage: "handler",
                 outcome,
@@ -2915,15 +3034,14 @@ export class Runtime implements RuntimePort {
                 sizeBytes,
               }, operation);
             }
-            this.telemetry.recordEvent({
+            this.traceEvent({
               name: outcome === "overloaded" ? "overload" : "failure",
               level: outcome === "overloaded" ? "warn" : "error",
               operation,
               outcome,
               ...(functionName === undefined ? {} : { functionName }),
-              context: this.observationContext(),
               errorClass: safeError instanceof Error ? safeError.name : "UnknownError",
-            });
+            }, scope);
           }
           return { ok: false, error: safeError };
         },
