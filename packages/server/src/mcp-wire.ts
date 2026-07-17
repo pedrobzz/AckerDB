@@ -3,7 +3,7 @@ import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
 
 type CorsHeaders = Readonly<Record<string, string>>;
 
-export interface McpBearerChallenge {
+interface McpBearerChallenge {
   readonly realm: string;
   readonly credentialPresented: boolean;
 }

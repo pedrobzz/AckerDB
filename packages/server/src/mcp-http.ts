@@ -4,6 +4,7 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv
 import {
   CallToolRequestSchema,
   isJSONRPCRequest,
+  JSONRPCMessageSchema,
   ListToolsRequestSchema,
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -37,6 +38,7 @@ function toolError(error: unknown): CallToolResult {
 
 function callNames(body: unknown): readonly string[] {
   const messages = Array.isArray(body) ? body : [body];
+  if (messages.some((message) => !JSONRPCMessageSchema.safeParse(message).success)) return [];
   const names: string[] = [];
   for (const message of messages) {
     if (!isJSONRPCRequest(message)) continue;

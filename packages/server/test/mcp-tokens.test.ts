@@ -685,6 +685,17 @@ describe("Identity-bound MCP owner tokens", () => {
     });
     expect(batchedCall.status).toBe(401);
     expect(await batchedCall.json()).toEqual(protectedBody);
+    const malformedBatch = await fetch(`${base}${scopedMcp.path}`, {
+      method: "POST",
+      headers: mcpHeaders(),
+      body: JSON.stringify([{
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "read_reports", arguments: {} },
+      }, { invalid: true }]),
+    });
+    expect(malformedBatch.status).toBe(400);
 
     const invalidToken = `dbzz_mcp.${"A".repeat(22)}.${"B".repeat(43)}`;
     const invalid = await rpc(base, scopedMcp.path, "tools/list", {}, invalidToken);
