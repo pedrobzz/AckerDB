@@ -3,6 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import {
   CallToolRequestSchema,
+  isJSONRPCRequest,
   ListToolsRequestSchema,
   type CallToolResult,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -34,8 +35,26 @@ function toolError(error: unknown): CallToolResult {
   };
 }
 
+function callNames(body: unknown): readonly string[] {
+  const messages = Array.isArray(body) ? body : [body];
+  const names: string[] = [];
+  for (const message of messages) {
+    if (!isJSONRPCRequest(message)) continue;
+    const call = CallToolRequestSchema.safeParse(message);
+    if (call.success) names.push(call.data.params.name);
+  }
+  return names;
+}
+
 /** One private official-SDK server/transport pair for exactly one stateless POST. */
 export async function handleMcpPost(options: McpPostOptions): Promise<Response> {
+  // The transport cannot attach HTTP auth status to a JSON-RPC handler result.
+  // Preflight only valid tools/call requests, then the dispatcher repeats this
+  // same decision as the authoritative execution boundary.
+  for (const name of callNames(options.body)) {
+    options.runtime.authorizeMcpTool(options.mcp.name, name, options.principal);
+  }
+
   const server = new Server(
     { name: options.mcp.name, version: "1", ...options.mcp.metadata },
     {
@@ -52,7 +71,7 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
   });
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: options.runtime.registry.toolsFor(options.mcp).map((tool) => ({
+    tools: options.runtime.registry.toolsFor(options.mcp, options.principal).map((tool) => ({
       name: tool.name,
       ...(tool.title === undefined ? {} : { title: tool.title }),
       description: tool.description,

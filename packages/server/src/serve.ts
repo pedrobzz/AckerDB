@@ -773,7 +773,10 @@ export class DbzzServer {
         fairnessKey,
       }), CORS);
     } catch (error) {
-      return mcpErrorResponse(error, CORS);
+      return mcpErrorResponse(error, CORS, {
+        realm: mcp.name,
+        credentialPresented: request.headers.has("authorization"),
+      });
     } finally {
       admission?.release();
     }

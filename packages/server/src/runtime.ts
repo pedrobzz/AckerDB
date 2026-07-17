@@ -95,9 +95,11 @@ import {
 } from "./invocation.ts";
 import {
   finalizeMcpToolResult,
+  type AnyRegisteredMcpTool,
   type McpToolCtx,
 } from "./mcp.ts";
 import type { McpCallToolResult } from "./mcp-content.ts";
+import { isMcpToolAuthorized } from "./mcp-scopes.ts";
 import { withMcpTokenContext as withMcpTokenCapability } from "./mcp-token-context.ts";
 import { mcpTokenVaultOwner } from "./mcp-token-vault.ts";
 import { emitWriteKeys } from "./keys.ts";
@@ -1227,9 +1229,6 @@ export class Runtime implements RuntimePort {
 
   /** The single deep MCP execution path used by every present and future adapter. */
   async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpCallToolResult> {
-    if (request.principal.kind === "mcp" && request.principal.mcp !== request.mcp) {
-      throw new DbzzError("unauthorized", "MCP credential is bound to another endpoint");
-    }
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
       jsonrpc: "2.0",
@@ -1249,10 +1248,7 @@ export class Runtime implements RuntimePort {
       DIRECT_RUNTIME_SOURCE,
     );
     return this.runOperation(null, "procedure", functionName, requestBytes, async () => {
-      const tool = this.registry.mcpTool(request.mcp, request.tool);
-      if (tool === undefined) {
-        throw new DbzzError("not_found", `unknown MCP tool "${request.tool}"`);
-      }
+      const tool = this.authorizeMcpTool(request.mcp, request.tool, request.principal);
       const signal = this.operationSignal(request.signal);
       aborted(signal);
       const value = await invokeFunction(
@@ -1267,6 +1263,20 @@ export class Runtime implements RuntimePort {
       claimedTrace,
       fairnessKey,
     });
+  }
+
+  /** Resolve one callable tool without trusting discovery or revealing inaccessible names. */
+  authorizeMcpTool(mcp: string, name: string, principal: Principal): AnyRegisteredMcpTool {
+    const endpointMatches = principal.kind !== "mcp" || principal.mcp === mcp;
+    const tool = endpointMatches ? this.registry.mcpTool(mcp, name) : undefined;
+    if (tool !== undefined && isMcpToolAuthorized(tool.accessPolicy, principal)) return tool;
+    if (principal.kind === "anonymous") {
+      throw new DbzzError("unauthenticated", "authentication required");
+    }
+    if (!endpointMatches || tool !== undefined) {
+      throw new DbzzError("unauthorized", "access denied");
+    }
+    throw new DbzzError("not_found", "MCP tool not found");
   }
 
   private respondProcedure(

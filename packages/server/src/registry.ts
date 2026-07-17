@@ -4,6 +4,7 @@
  * exactly mirroring what codegen puts on the generated `api` object.
  */
 import { getRef } from "@dbzz/core";
+import type { Principal } from "./auth.ts";
 import {
   isRegisteredFunction,
   type AnyRegistered,
@@ -15,6 +16,7 @@ import {
   type AnyRegisteredMcpTool,
   type McpEndpointDeclaration,
 } from "./mcp.ts";
+import { isMcpToolAuthorized } from "./mcp-scopes.ts";
 import { isDbzzHttpRoute } from "./http-routes.ts";
 import type { Schema, ScheduledHandler } from "./schema.ts";
 
@@ -124,8 +126,13 @@ export class Registry {
     return this.mcpByPath.get(path);
   }
 
-  toolsFor(mcp: McpEndpointDeclaration): readonly AnyRegisteredMcpTool[] {
-    return [...this.mcpTools.values()].filter((tool) => tool.mcp === mcp);
+  toolsFor(
+    mcp: McpEndpointDeclaration,
+    principal: Principal,
+  ): readonly AnyRegisteredMcpTool[] {
+    return [...this.mcpTools.values()].filter((tool) =>
+      tool.mcp === mcp && isMcpToolAuthorized(tool.accessPolicy, principal)
+    );
   }
 
   mcpTool(mcp: string, tool: string): AnyRegisteredMcpTool | undefined {
