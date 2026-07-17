@@ -1161,17 +1161,17 @@ export class Runtime implements RuntimePort {
           functionRef: message.ref,
           argsFingerprint: digest(message.args),
         },
-        work: (db, writes) => this.withMcpTokenContext(
-          { db, auth: context.principal },
-          this.engine.writer,
-          null,
-          writes,
-          (ctx) => invokeFunction(
+        work: this.hasMcpCapabilities
+          ? (db, writes) => withMcpTokenCapability(
+            { db, auth: context.principal },
+            this.mcpTokenCapability(context.principal, this.engine.writer, null, writes),
+            (ctx) => invokeFunction(fn, ctx, message.args),
+          )
+          : (db) => invokeFunction(
             fn,
-            ctx,
+            Object.freeze({ db, auth: context.principal }),
             message.args,
           ),
-        ),
         publication: (_version, writes) => {
           scheduledTouched = writes.scheduledTouched;
           return this.publicationFor(writes, state.subscriber);
@@ -1841,13 +1841,15 @@ export class Runtime implements RuntimePort {
               if (raw === null) throw STALE_SCHEDULED_CANDIDATE;
               row = this.engine.rowFromSql(plan, raw);
               const fn = this.expect(candidate.address, "mutation");
-              await this.withMcpTokenContext(
-                { db, auth: SYSTEM_PRINCIPAL },
-                this.engine.writer,
-                null,
-                writes,
-                (ctx) => invokeFunction(fn, ctx, row),
-              );
+              if (this.hasMcpCapabilities) {
+                await withMcpTokenCapability(
+                  { db, auth: SYSTEM_PRINCIPAL },
+                  this.mcpTokenCapability(SYSTEM_PRINCIPAL, this.engine.writer, null, writes),
+                  (ctx) => invokeFunction(fn, ctx, row),
+                );
+              } else {
+                await invokeFunction(fn, Object.freeze({ db, auth: SYSTEM_PRINCIPAL }), row);
+              }
             },
             finalize: (writes) => {
               const scheduledRow = row;
@@ -2400,13 +2402,13 @@ export class Runtime implements RuntimePort {
           recorder,
           this.telemetry.enabled ? this.observeStatement : undefined,
         );
-        const value = await this.withMcpTokenContext(
-          { db, auth: principal },
-          connection,
-          recorder,
-          null,
-          (ctx) => invokeFunction(fn, ctx, args),
-        );
+        const value = this.hasMcpCapabilities
+          ? await withMcpTokenCapability(
+            { db, auth: principal },
+            this.mcpTokenCapability(principal, connection, recorder, null),
+            (ctx) => invokeFunction(fn, ctx, args),
+          )
+          : await invokeFunction(fn, Object.freeze({ db, auth: principal }), args);
         throwIfAborted(signal);
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
         try {
@@ -2609,13 +2611,13 @@ export class Runtime implements RuntimePort {
               : {}),
             admissionSignal: signal,
             transactionSignal: signal,
-            work: (db, writes) => this.withMcpTokenContext(
-              { db, auth: principal },
-              this.engine.writer,
-              null,
-              writes,
-              work,
-            ),
+            work: this.hasMcpCapabilities
+              ? (db, writes) => withMcpTokenCapability(
+                { db, auth: principal },
+                this.mcpTokenCapability(principal, this.engine.writer, null, writes),
+                work,
+              )
+              : (db) => work(Object.freeze({ db, auth: principal })),
             publication: (_version, writes) => {
               scheduledTouched = writes.scheduledTouched;
               return this.publicationFor(writes);
@@ -2691,26 +2693,22 @@ export class Runtime implements RuntimePort {
     } satisfies McpAiRuntimeCapability);
   }
 
-  private withMcpTokenContext<T extends { readonly auth: Principal }, R>(
-    context: T,
+  /** Construct token authority only from an MCP-enabled invocation branch. */
+  private mcpTokenCapability(
+    principal: Principal,
     connection: Database,
     reads: ReadRecorder | null,
     writes: WriteCollector | null,
-    work: (ctx: T) => R,
-  ): R | Promise<Awaited<R>> {
-    // A Registry is complete before Runtime construction. With no exported MCP
-    // declaration, neither token administration nor zero-hop tools can own a
-    // capability, so ordinary DBZZ invocations keep their direct context path.
-    if (!this.hasMcpCapabilities) return work(Object.freeze(context));
-    return withMcpTokenCapability(context, {
+  ) {
+    return {
       engine: this.engine,
       connection,
-      principal: context.auth,
+      principal,
       reads,
       writes,
       limits: this.limits.mcp,
       now: this.now,
-    }, work);
+    };
   }
 
   private publicationFor(writes: WriteCollector, caller?: Subscriber): ReactiveCommit {
