@@ -1213,6 +1213,45 @@ describe("ordered reactive ownership", () => {
     expect(bounded.snapshot().sharedEntries).toBe(0);
   });
 
+  test("only prunes shared entries when a new entry reaches capacity", async () => {
+    class PruneCountingReactive extends OrderedReactive {
+      pruneCalls = 0;
+
+      override prune(now?: number): number {
+        this.pruneCalls++;
+        return super.prune(now);
+      }
+    }
+
+    const reactive = new PruneCountingReactive({
+      limits: testLimits({ maxSharedSubscriptions: 3 }),
+      now: () => 0,
+      generation: generationSequence(),
+      evaluate: async ({ address }) => evaluation(address, 0n, address),
+    });
+    const subscribers = Array.from({ length: 5 }, () => new RecordingSubscriber());
+    const subscribe = (index: number) => reactive.subscribeQuery({
+      address: `query-${index}`,
+      args: null,
+      policyScopeFingerprint: "public",
+      fairnessKey: "public",
+      context: undefined,
+      subscriber: subscribers[index]!,
+      id: 1,
+      authEpoch: 0,
+    });
+
+    await Promise.all([subscribe(0), subscribe(1), subscribe(2)]);
+    expect(reactive.pruneCalls).toBe(0);
+
+    reactive.disconnect(subscribers[0]!);
+    await subscribe(3);
+    expect(reactive.pruneCalls).toBe(1);
+
+    await expect(subscribe(4)).rejects.toMatchObject({ code: "overloaded" });
+    expect(reactive.pruneCalls).toBe(2);
+  });
+
   test("rejects a result larger than one frame before retaining or delivering it", async () => {
     const subscriber = new RecordingSubscriber();
     const reactive = new OrderedReactive({

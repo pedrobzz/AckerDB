@@ -1137,6 +1137,7 @@ export class OrderedReactive<C = unknown> {
   }
 
   private makeEntryCapacity(): void {
+    if (this.entries.size < this.limits.maxSharedSubscriptions) return;
     this.prune();
     while (this.entries.size >= this.limits.maxSharedSubscriptions) {
       const dormant = this.oldestDormant();
