@@ -76,14 +76,15 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     options.signal.throwIfAborted();
-    return { tools: options.runtime.registry.toolsFor(options.mcp, options.principal).map((tool) => ({
+    const tools = options.runtime.registry.toolsFor(options.mcp, options.principal).map((tool) => ({
       name: tool.name,
       ...(tool.title === undefined ? {} : { title: tool.title }),
       description: tool.description,
       inputSchema: tool.inputSchema,
       ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
       ...(tool.annotations === undefined ? {} : { annotations: tool.annotations }),
-    })) };
+    }));
+    return { tools };
   });
   server.setRequestHandler(CallToolRequestSchema, async (call, extra) => {
     try {

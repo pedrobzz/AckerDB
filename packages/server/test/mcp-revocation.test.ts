@@ -38,6 +38,7 @@ function deferred<T>(): Deferred<T> {
 }
 
 const gates = new Map<string, ToolGate>();
+const AGENT_ORIGIN = "https://agent.example";
 
 function openGate(key: string): ToolGate {
   const gate = {
@@ -200,12 +201,13 @@ const extraModules = {
   },
 };
 
-function headers(token: string): Record<string, string> {
+function headers(token: string, origin?: string): Record<string, string> {
   return {
     accept: "application/json, text/event-stream",
     authorization: `Bearer ${token}`,
     "content-type": "application/json",
     "mcp-protocol-version": "2025-11-25",
+    ...(origin === undefined ? {} : { origin }),
   };
 }
 
@@ -215,10 +217,11 @@ function rpc(
   method: string,
   params: unknown,
   token: string,
+  origin?: string,
 ): Promise<Response> {
   return fetch(`${base}${path}`, {
     method: "POST",
-    headers: headers(token),
+    headers: headers(token, origin),
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
 }
@@ -286,7 +289,11 @@ describe("bounded live MCP credential invalidation", () => {
         authorityChange === "revoke"
           ? await createAgentToken(runtime, owner, 1, "Target")
           : await createScopedToken(runtime, owner, 1, "Target");
-      const server = serve({ runtime, port: 0 });
+      const server = serve({
+        runtime,
+        port: 0,
+        mcpHttp: { allowedOrigins: [AGENT_ORIGIN] },
+      });
       trackCleanup(async () => server.drain());
       const base = `http://127.0.0.1:${server.port}`;
       const path =
@@ -323,6 +330,7 @@ describe("bounded live MCP credential invalidation", () => {
           arguments: { key: `${authorityChange}-active` },
         },
         target.token,
+        AGENT_ORIGIN,
       );
       await within(activeGate.started.promise);
 
@@ -351,6 +359,9 @@ describe("bounded live MCP credential invalidation", () => {
       );
       expect(activeGate.aborted).toBe(true);
       expect(activeResponse.status).toBe(401);
+      expect(activeResponse.headers.get("access-control-allow-origin")).toBe(
+        AGENT_ORIGIN,
+      );
       expect(queuedResponse.status).toBe(401);
       expect(runtime.status().writer.queue.queuedItems).toBe(0);
 
