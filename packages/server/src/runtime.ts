@@ -1246,10 +1246,11 @@ export class Runtime implements RuntimePort {
       }
       const signal = this.operationSignal(request.signal);
       aborted(signal);
+      const args = tool.inputCodec.decode(request.args, "args");
       const value = await invokeFunction(
         tool,
         this.transactionalContext(request.principal, fairnessKey, signal, requestBytes),
-        request.args,
+        args,
       );
       aborted(signal);
       return finalizeMcpToolResult(tool, value);

@@ -1,5 +1,5 @@
 /** Compile-time contract for schema-bound MCP tools and client API erasure. */
-import type { ApiFromModules } from "@dbzz/core";
+import type { ApiFromModules, Identity } from "@dbzz/core";
 import {
   createMcp,
   dbz,
@@ -93,6 +93,28 @@ const summarizeNote = agentMcp.tool({
   },
 });
 void summarizeNote;
+
+const echoNativeValues = agentMcp.tool({
+  name: "echo_native_values",
+  description: "Keep protocol strings out of the typed handler contract.",
+  args: {
+    count: dbz.bigint(),
+    identity: dbz.identity(),
+    bytes: dbz.bytes(),
+  },
+  output: dbz.object({
+    count: dbz.bigint(),
+    identity: dbz.identity(),
+    bytes: dbz.bytes(),
+  }),
+  handler: (_ctx, args) => {
+    const count: bigint = args.count;
+    const identity: Identity = args.identity;
+    const bytes: Uint8Array = args.bytes;
+    return { count, identity, bytes };
+  },
+});
+void echoNativeValues;
 
 type StandardInput<V extends { readonly "~standard": { readonly types?: unknown } }> =
   NonNullable<V["~standard"]["types"]> extends { readonly input: infer Input }

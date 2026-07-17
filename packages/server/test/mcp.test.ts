@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ANONYMOUS_PRINCIPAL } from "../src/auth.ts";
-import { dbz } from "../src/dbz.ts";
+import { dbz, type Identity } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
 import {
@@ -64,9 +64,19 @@ const operationsMcp = typedMcp({
   instructions: "Use the operations tools only for service status.",
   metadata: { title: "Operations Agent" },
 });
+const valuesMcp = typedMcp({ name: "values", path: "/mcp/values" });
 let handlerCalls = 0;
 let summaryHandlerCalls = 0;
+let valueHandlerCalls = 0;
 let lastHandlerContext: { readonly auth: string; readonly aborted: boolean } | undefined;
+let lastNativeValues: {
+  readonly minimum: bigint;
+  readonly maximum: bigint;
+  readonly negative: bigint;
+  readonly large: bigint;
+  readonly identity: Identity;
+  readonly bytes: readonly number[];
+} | undefined;
 
 const writeNote = agentMcp.tool({
   name: "write_note",
@@ -113,10 +123,62 @@ const readStatus = operationsMcp.tool({
   handler: () => ({ content: [{ type: "text", text: "ready" }] }),
 });
 
+const echoValues = valuesMcp.tool({
+  name: "echo_values",
+  description: "Round-trip DBZZ-native values without losing precision or bytes.",
+  args: {
+    minimum: dbz.bigint(),
+    maximum: dbz.bigint(),
+    negative: dbz.bigint(),
+    large: dbz.bigint(),
+    identity: dbz.identity(),
+    bytes: dbz.bytes(),
+    nested: dbz.array(dbz.nullable(dbz.bigint())),
+    literal: dbz.literal(7n),
+    opaque: dbz.jsonb<unknown>(),
+    poisonOutput: dbz.boolean(),
+  },
+  output: dbz.object({
+    minimum: dbz.bigint(),
+    maximum: dbz.bigint(),
+    negative: dbz.bigint(),
+    large: dbz.bigint(),
+    identity: dbz.identity(),
+    bytes: dbz.bytes(),
+    nested: dbz.array(dbz.nullable(dbz.bigint())),
+    literal: dbz.literal(7n),
+    opaque: dbz.jsonb<unknown>(),
+  }),
+  handler: (_ctx, args) => {
+    valueHandlerCalls++;
+    const identity: Identity = args.identity;
+    lastNativeValues = {
+      minimum: args.minimum,
+      maximum: args.maximum,
+      negative: args.negative,
+      large: args.large,
+      identity,
+      bytes: [...args.bytes],
+    };
+    return {
+      minimum: args.minimum,
+      maximum: args.maximum,
+      negative: args.negative,
+      large: args.large,
+      identity,
+      bytes: args.bytes,
+      nested: args.nested,
+      literal: args.literal,
+      opaque: args.poisonOutput ? 1n : args.opaque,
+    };
+  },
+});
+
 const modules = {
   agent: { agentMcp },
   notes: { insertNote, listNotes, writeNote, writeNoteSummary },
   operations: { readStatus, renamedEndpoint: operationsMcp },
+  values: { echoValues, valuesMcp },
 };
 
 interface Harness {
@@ -179,6 +241,22 @@ function rpcAt(path: string, method: string, params?: unknown, id = 1): Promise<
   });
 }
 
+function protocolValues(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    minimum: "-9223372036854775808",
+    maximum: "9223372036854775807",
+    negative: "-42",
+    large: "9007199254740993",
+    identity: "9223372036854775806",
+    bytes: "AAEC/v8=",
+    nested: ["0", null, "-1"],
+    literal: "7",
+    opaque: { $: "b", v: "5" },
+    poisonOutput: false,
+    ...overrides,
+  };
+}
+
 function noteCount(): bigint {
   return (harness.engine.reader.query('SELECT COUNT(*) AS count FROM "notes"').get() as {
     readonly count: bigint;
@@ -188,7 +266,9 @@ function noteCount(): bigint {
 beforeEach(() => {
   handlerCalls = 0;
   summaryHandlerCalls = 0;
+  valueHandlerCalls = 0;
   lastHandlerContext = undefined;
+  lastNativeValues = undefined;
   harness = startHarness();
 });
 
@@ -204,9 +284,11 @@ describe("public stateless MCP endpoint", () => {
     expect([...harness.registry.serverOnly.keys()]).toEqual([
       "agent.agentMcp",
       "operations.renamedEndpoint",
+      "values.valuesMcp",
       "notes.writeNote",
       "notes.writeNoteSummary",
       "operations.readStatus",
+      "values.echoValues",
     ]);
     expect(harness.registry.addressOf(writeNote)).toBe("notes.writeNote");
 
@@ -414,6 +496,109 @@ describe("public stateless MCP endpoint", () => {
     expect(summaryHandlerCalls).toBe(2);
   });
 
+  test("round-trips bigint, Identity, and bytes through one lossless protocol codec", async () => {
+    const listed = await rpcAt(valuesMcp.path, "tools/list", {}, 1);
+    const listedBody = await listed.json() as {
+      readonly result: {
+        readonly tools: readonly {
+          readonly inputSchema: { readonly properties: Record<string, unknown> };
+          readonly outputSchema: { readonly properties: Record<string, unknown> };
+        }[];
+      };
+    };
+    const discovered = listedBody.result.tools[0]!;
+    expect(discovered.inputSchema.properties.minimum).toEqual({
+      type: "string",
+      pattern: "^(?:0|-?[1-9][0-9]*)$",
+    });
+    expect(discovered.inputSchema.properties.identity).toEqual({
+      type: "string",
+      pattern: "^(?:0|-?[1-9][0-9]*)$",
+    });
+    expect(discovered.inputSchema.properties.bytes).toEqual({
+      type: "string",
+      pattern: "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+      contentEncoding: "base64",
+    });
+    expect(discovered.outputSchema.properties.maximum).toEqual(
+      discovered.inputSchema.properties.maximum,
+    );
+
+    const standardResult = echoValues.inputCodec["~standard"].validate(protocolValues());
+    expect(standardResult).toMatchObject({
+      value: {
+        minimum: -(2n ** 63n),
+        maximum: 2n ** 63n - 1n,
+        large: 9_007_199_254_740_993n,
+        identity: 9_223_372_036_854_775_806n,
+        literal: 7n,
+      },
+    });
+
+    const response = await rpcAt(valuesMcp.path, "tools/call", {
+      name: "echo_values",
+      arguments: protocolValues(),
+    }, 2);
+    const expected = {
+      minimum: "-9223372036854775808",
+      maximum: "9223372036854775807",
+      negative: "-42",
+      large: "9007199254740993",
+      identity: "9223372036854775806",
+      bytes: "AAEC/v8=",
+      nested: ["0", null, "-1"],
+      literal: "7",
+      opaque: { $: "b", v: "5" },
+    };
+    expect(await response.json()).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        content: [{ type: "text", text: JSON.stringify(expected) }],
+        structuredContent: expected,
+      },
+    });
+    expect(lastNativeValues).toEqual({
+      minimum: -(2n ** 63n),
+      maximum: 2n ** 63n - 1n,
+      negative: -42n,
+      large: 9_007_199_254_740_993n,
+      identity: 9_223_372_036_854_775_806n,
+      bytes: [0, 1, 2, 254, 255],
+    });
+  });
+
+  test("rejects malformed decimal/base64 and non-JSON opaque values", async () => {
+    for (const invalid of ["01", "+1", "-0", "9223372036854775808", 1]) {
+      expect(() => echoValues.inputCodec.decode(protocolValues({ minimum: invalid }), "args"))
+        .toThrow();
+    }
+    for (const invalid of ["AQI", "AQI===", "!!=="]) {
+      expect(() => echoValues.inputCodec.decode(protocolValues({ bytes: invalid }), "args"))
+        .toThrow("canonical base64");
+    }
+    expect(valueHandlerCalls).toBe(0);
+
+    const malformed = await rpcAt(valuesMcp.path, "tools/call", {
+      name: "echo_values",
+      arguments: protocolValues({ negative: "00" }),
+    }, 1);
+    expect(await malformed.json()).toMatchObject({ result: { isError: true } });
+    expect(valueHandlerCalls).toBe(0);
+
+    const poisoned = await rpcAt(valuesMcp.path, "tools/call", {
+      name: "echo_values",
+      arguments: protocolValues({ poisonOutput: true }),
+    }, 2);
+    expect(await poisoned.json()).toMatchObject({
+      result: {
+        content: [{ text: "output.opaque: expected a standard JSON value, got bigint" }],
+        isError: true,
+      },
+    });
+    expect(valueHandlerCalls).toBe(1);
+  });
+
   test("works through the official SDK client without an HTTP session", async () => {
     const client = new Client({ name: "sdk-test", version: "1" });
     const transport = new StreamableHTTPClientTransport(new URL(`${harness.base}/mcp`));
@@ -518,6 +703,34 @@ describe("public stateless MCP endpoint", () => {
 });
 
 describe("MCP startup invariants", () => {
+  test("rejects every unsupported or contradictory nested validator shape", () => {
+    const unsupported = { ...dbz.string(), kind: "custom" } as never;
+    const contradictoryArray = { ...dbz.string(), kind: "array" } as never;
+    const cases = [
+      [dbz.array(dbz.primaryKey()), "dbz.primaryKey() is not an MCP value"],
+      [dbz.array(dbz.scheduleAt()), "dbz.scheduleAt() is not an MCP value"],
+      [dbz.array(dbz.tag()), "dbz.tag() is valid only as a direct dbz.union() member"],
+      [unsupported, "dbz.custom() has no lossless standard-JSON protocol representation"],
+      [contradictoryArray, "dbz.array() has no element validator"],
+    ] as const;
+    for (const [value, message] of cases) {
+      expect(() => agentMcp.tool({
+        name: "invalid_shape",
+        description: "This declaration must fail before registration.",
+        args: { value },
+        handler: () => ({ content: [{ type: "text", text: "never" }] }),
+      })).toThrow(message);
+    }
+
+    expect(() => agentMcp.tool({
+      name: "invalid_output",
+      description: "Nested output validators compile at declaration time too.",
+      args: {},
+      output: dbz.object({ value: dbz.array(dbz.scheduleAt()) }),
+      handler: () => ({ value: [] }),
+    })).toThrow("$.value[]: dbz.scheduleAt() is not an MCP value");
+  });
+
   test("rejects duplicate tool names within one MCP", () => {
     const duplicate = agentMcp.tool({
       name: "write_note",

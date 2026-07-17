@@ -342,15 +342,24 @@ function enum_<const V extends readonly [string, ...string[]]>(
 
 type LiteralValue = string | number | boolean | bigint;
 
-function literal<const V extends LiteralValue>(value: V): StandardValidator<V, "literal"> {
-  return makeValidator("literal", {
-    check(input, path) {
-      if (input !== value) fail(path, literalTs(value), input);
-      return value;
+export interface LiteralValidator<V extends LiteralValue = LiteralValue>
+  extends StandardValidator<V, "literal"> {
+  readonly value: V;
+}
+
+function literal<const V extends LiteralValue>(value: V): LiteralValidator<V> {
+  return makeValidator<V, "literal", { readonly value: V }>(
+    "literal",
+    {
+      check(input, path) {
+        if (input !== value) fail(path, literalTs(value), input);
+        return value;
+      },
+      tsType: () => literalTs(value),
+      descriptor: () => ({ k: "literal", v: JSON.parse(encode(value)) }),
     },
-    tsType: () => literalTs(value),
-    descriptor: () => ({ k: "literal", v: JSON.parse(encode(value)) }),
-  });
+    { value },
+  );
 }
 
 function literalTs(value: LiteralValue): string {

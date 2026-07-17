@@ -6,7 +6,6 @@ import {
   type InferValidator,
   type ObjectShape,
   type ObjectValidator,
-  ValidationError,
 } from "./dbz.ts";
 import type { Invocable } from "./functions.ts";
 import { validateArgsShape } from "./functions.ts";
@@ -21,7 +20,11 @@ import {
 } from "./mcp-token-context.ts";
 import type { Schema } from "./schema.ts";
 import type { ProcedureCtx } from "./functions.ts";
-import { mcpObjectSchema, type JsonObjectSchema } from "./standard-schema.ts";
+import {
+  compileMcpObjectCodec,
+  type JsonObjectSchema,
+  type StandardJsonCodec,
+} from "./standard-schema.ts";
 
 const MCP_IDENTITY = Symbol.for("@dbzz/server/Mcp/v1");
 const MCP_TOOL_IDENTITY = Symbol.for("@dbzz/server/McpTool/v1");
@@ -108,8 +111,12 @@ export interface RegisteredMcpTool<
   readonly description: string;
   readonly mcp: McpDeclaration<string, S>;
   readonly inputValidator: ObjectValidator<A>;
+  readonly inputCodec: StandardJsonCodec<Expand<InferShape<A>>>;
   readonly inputSchema: McpInputSchema;
   readonly outputValidator: O;
+  readonly outputCodec: O extends ObjectValidator
+    ? StandardJsonCodec<Expand<InferValidator<O>>>
+    : undefined;
   readonly outputSchema: O extends ObjectValidator ? McpOutputSchema : undefined;
 }
 
@@ -204,34 +211,12 @@ function validateMcpContentResult(value: unknown): McpToolResult {
   return value as McpToolResult;
 }
 
-function assertStandardJson(value: unknown, path: string): void {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return;
-  if (typeof value === "number" && Number.isFinite(value)) return;
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index++) {
-      assertStandardJson(value[index], `${path}[${index}]`);
-    }
-    return;
-  }
-  if (typeof value === "object" && !(value instanceof Uint8Array)) {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype === Object.prototype || prototype === null) {
-      for (const [key, field] of Object.entries(value)) {
-        assertStandardJson(field, `${path}.${key}`);
-      }
-      return;
-    }
-  }
-  throw new ValidationError(`${path}: expected a standard JSON value`);
-}
-
 /** Validate and normalize the handler result once before either adapter consumes it. */
 export function finalizeMcpToolResult(tool: AnyRegisteredMcpTool, value: unknown): McpToolResult {
-  if (tool.outputValidator === undefined) return validateMcpContentResult(value);
-  const structuredContent = tool.outputValidator.check(value, "output") as Readonly<
+  if (tool.outputCodec === undefined) return validateMcpContentResult(value);
+  const structuredContent = tool.outputCodec.encode(value, "output") as Readonly<
     Record<string, unknown>
   >;
-  assertStandardJson(structuredContent, "output");
   return {
     content: [{ type: "text", text: JSON.stringify(structuredContent) }],
     structuredContent,
@@ -318,6 +303,10 @@ export function createMcp(
       }
       const inputValidator = dbz.object(definition.args);
       const outputValidator = definition.output;
+      const inputCodec = compileMcpObjectCodec(inputValidator);
+      const outputCodec = outputValidator === undefined
+        ? undefined
+        : compileMcpObjectCodec(outputValidator);
       const tool = {
         isDbzzServerOnly: true as const,
         serverKind: "mcp-tool" as const,
@@ -327,11 +316,11 @@ export function createMcp(
         mcp: declaration,
         args: definition.args,
         inputValidator,
-        inputSchema: mcpObjectSchema(inputValidator, "input"),
+        inputCodec,
+        inputSchema: inputCodec.inputSchema,
         outputValidator,
-        outputSchema: outputValidator === undefined
-          ? undefined
-          : mcpObjectSchema(outputValidator, "output"),
+        outputCodec,
+        outputSchema: outputCodec?.outputSchema,
         access: definition.access ?? "public",
         handler: definition.handler,
       };
