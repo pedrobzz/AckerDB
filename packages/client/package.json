@@ -1,6 +1,6 @@
 {
   "name": "@dbzz/client",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "files": [
     "src"
@@ -9,6 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:0.2.4"
+    "@dbzz/core": "workspace:0.2.5"
   }
 }
