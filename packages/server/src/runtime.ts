@@ -379,6 +379,8 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
+const releaseNothing = (): void => {};
+
 function quoted(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
@@ -634,6 +636,7 @@ export class Runtime implements RuntimePort {
   private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
   private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
   private readonly ownsTelemetry: boolean;
+  private readonly hasMcpCapabilities: boolean;
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
   private schedulerGeneration = 0;
@@ -649,6 +652,7 @@ export class Runtime implements RuntimePort {
   constructor(options: RuntimeOptions) {
     this.engine = options.engine;
     this.registry = options.registry;
+    this.hasMcpCapabilities = this.registry.mcps.size > 0;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
     const mcpToolCounts = new Map<string, number>();
     for (const tool of this.registry.mcpTools.values()) {
@@ -699,11 +703,15 @@ export class Runtime implements RuntimePort {
       engine: this.engine,
       limits: this.limits,
       reservePublication: (bytes) => this.reactive.publication.reserve(bytes),
-      afterCommit: (writes) => {
-        for (const invalidation of takeMcpTokenInvalidations(writes)) {
-          this.mcpTokenInvalidation.publish(invalidation);
-        }
-      },
+      ...(this.hasMcpCapabilities
+        ? {
+            afterCommit: (writes: WriteCollector) => {
+              for (const invalidation of takeMcpTokenInvalidations(writes)) {
+                this.mcpTokenInvalidation.publish(invalidation);
+              }
+            },
+          }
+        : {}),
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
       now: this.now,
     });
@@ -2649,10 +2657,12 @@ export class Runtime implements RuntimePort {
         accountUnlinked,
       ),
     });
-    const release = bindMcpAiContext(
-      value,
-      this.mcpAiCapability(value, fairnessKey, requestBytes),
-    );
+    const release = this.hasMcpCapabilities
+      ? bindMcpAiContext(
+        value,
+        this.mcpAiCapability(value, fairnessKey, requestBytes),
+      )
+      : releaseNothing;
     return Object.freeze({ value, release });
   }
 
@@ -2686,8 +2696,12 @@ export class Runtime implements RuntimePort {
     connection: Database,
     reads: ReadRecorder | null,
     writes: WriteCollector | null,
-    work: (ctx: T) => R | Promise<R>,
-  ): Promise<Awaited<R>> {
+    work: (ctx: T) => R,
+  ): R | Promise<Awaited<R>> {
+    // A Registry is complete before Runtime construction. With no exported MCP
+    // declaration, neither token administration nor zero-hop tools can own a
+    // capability, so ordinary DBZZ invocations keep their direct context path.
+    if (!this.hasMcpCapabilities) return work(Object.freeze(context));
     return withMcpTokenCapability(context, {
       engine: this.engine,
       connection,
