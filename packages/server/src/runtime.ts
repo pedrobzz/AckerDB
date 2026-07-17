@@ -28,6 +28,7 @@ import {
   verifyUserBearerCredential,
   type CredentialVerifier,
   type ExternalAccount,
+  type McpPrincipal,
   type Principal,
 } from "./auth.ts";
 import {
@@ -97,6 +98,8 @@ import {
   type McpToolCtx,
   type McpToolResult,
 } from "./mcp.ts";
+import { withMcpTokenContext as withMcpTokenCapability } from "./mcp-token-context.ts";
+import { mcpTokenVaultOwner } from "./mcp-token-vault.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
@@ -748,6 +751,34 @@ export class Runtime implements RuntimePort {
     );
   }
 
+  /** Resolve one endpoint-bound MCP bearer without consulting external identity providers. */
+  async authenticateMcpToken(
+    mcp: string,
+    rawToken: string,
+    fairnessKey: string,
+    signal?: AbortSignal,
+  ): Promise<McpPrincipal> {
+    this.assertReady();
+    const operationSignal = this.operationSignal(signal);
+    const credential = await this.submitRead(
+      (connection) => this.engine[mcpTokenVaultOwner].authenticate(connection, mcp, rawToken),
+      {
+        operation: "procedure",
+        bytes: Buffer.byteLength(rawToken),
+        fairnessKey,
+        signal: operationSignal,
+      },
+      false,
+    );
+    aborted(operationSignal);
+    return Object.freeze({
+      kind: "mcp",
+      identity: credential.identity,
+      mcp,
+      tokenId: credential.tokenId,
+    });
+  }
+
   private async linkAccount(
     principal: Principal,
     rawBearerToken: string,
@@ -831,7 +862,9 @@ export class Runtime implements RuntimePort {
   async openSession(context: SessionRuntimeContext): Promise<void> {
     this.assertReady();
     if (context.authEpoch !== 0) throw new DbzzError("validation", "new sessions must start at auth epoch 0");
-    if (context.principal.kind === "system") throw new DbzzError("unauthorized", "system identity is local only");
+    if (context.principal.kind === "system" || context.principal.kind === "mcp") {
+      throw new DbzzError("unauthorized", "principal cannot authenticate the DBZZ client API");
+    }
     if (this.sessions.has(context.clientSessionId)) {
       throw new DbzzError("conflict", "client session is already connected", {
         retryable: true,
@@ -1029,7 +1062,17 @@ export class Runtime implements RuntimePort {
           functionRef: message.ref,
           argsFingerprint: digest(message.args),
         },
-        work: (db) => invokeFunction(fn, Object.freeze({ db, auth: context.principal }), message.args),
+        work: (db, writes) => this.withMcpTokenContext(
+          { db, auth: context.principal },
+          this.engine.writer,
+          null,
+          writes,
+          (ctx) => invokeFunction(
+            fn,
+            ctx,
+            message.args,
+          ),
+        ),
         publication: (_version, writes) => {
           scheduledTouched = writes.scheduledTouched;
           return this.publicationFor(writes, state.subscriber);
@@ -1101,6 +1144,9 @@ export class Runtime implements RuntimePort {
   }
 
   async runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
+    if (request.principal.kind === "mcp") {
+      throw new DbzzError("unauthorized", "MCP credentials cannot call DBZZ procedures");
+    }
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
       v: PROTOCOL_VERSION,
@@ -1172,6 +1218,9 @@ export class Runtime implements RuntimePort {
 
   /** The single deep MCP execution path used by every present and future adapter. */
   async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpToolResult> {
+    if (request.principal.kind === "mcp" && request.principal.mcp !== request.mcp) {
+      throw new DbzzError("unauthorized", "MCP credential is bound to another endpoint");
+    }
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
       jsonrpc: "2.0",
@@ -1369,6 +1418,9 @@ export class Runtime implements RuntimePort {
   }
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
+    if (request.principal.kind === "mcp") {
+      throw new DbzzError("unauthorized", "MCP credentials cannot call DBZZ SSE procedures");
+    }
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
       v: PROTOCOL_VERSION,
@@ -1627,7 +1679,7 @@ export class Runtime implements RuntimePort {
                   run: AsyncLocalStorage.snapshot(),
                 }
               : {}),
-            work: async (db) => {
+            work: async (db, writes) => {
               const plan = this.engine.plan(candidate.table);
               const raw = this.measuredStatement("read", candidate.table, "scheduledGet", () =>
                 this.engine.writer.query(
@@ -1639,7 +1691,13 @@ export class Runtime implements RuntimePort {
               if (raw === null) throw STALE_SCHEDULED_CANDIDATE;
               row = this.engine.rowFromSql(plan, raw);
               const fn = this.expect(candidate.address, "mutation");
-              await invokeFunction(fn, Object.freeze({ db, auth: SYSTEM_PRINCIPAL }), row);
+              await this.withMcpTokenContext(
+                { db, auth: SYSTEM_PRINCIPAL },
+                this.engine.writer,
+                null,
+                writes,
+                (ctx) => invokeFunction(fn, ctx, row),
+              );
             },
             finalize: (writes) => {
               const scheduledRow = row;
@@ -2192,7 +2250,13 @@ export class Runtime implements RuntimePort {
           recorder,
           this.telemetry.enabled ? this.observeStatement : undefined,
         );
-        const value = await invokeFunction(fn, Object.freeze({ db, auth: principal }), args);
+        const value = await this.withMcpTokenContext(
+          { db, auth: principal },
+          connection,
+          recorder,
+          null,
+          (ctx) => invokeFunction(fn, ctx, args),
+        );
         aborted(signal);
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
         try {
@@ -2394,7 +2458,13 @@ export class Runtime implements RuntimePort {
                 }
               : {}),
             signal,
-            work: (db) => work(Object.freeze({ db, auth: principal })),
+            work: (db, writes) => this.withMcpTokenContext(
+              { db, auth: principal },
+              this.engine.writer,
+              null,
+              writes,
+              work,
+            ),
             publication: (_version, writes) => {
               scheduledTouched = writes.scheduledTouched;
               return this.publicationFor(writes);
@@ -2436,6 +2506,24 @@ export class Runtime implements RuntimePort {
         accountUnlinked,
       ),
     });
+  }
+
+  private withMcpTokenContext<T extends { readonly auth: Principal }, R>(
+    context: T,
+    connection: Database,
+    reads: ReadRecorder | null,
+    writes: WriteCollector | null,
+    work: (ctx: T) => R | Promise<R>,
+  ): Promise<Awaited<R>> {
+    return withMcpTokenCapability(context, {
+      engine: this.engine,
+      connection,
+      principal: context.auth,
+      reads,
+      writes,
+      limits: this.limits.mcp,
+      now: this.now,
+    }, work);
   }
 
   private publicationFor(writes: WriteCollector, caller?: Subscriber): ReactiveCommit {

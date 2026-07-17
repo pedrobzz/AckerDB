@@ -14,6 +14,7 @@ import {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
   type ClientPrincipal,
+  type Principal,
 } from "./auth.ts";
 import {
   acquireAuthLease,
@@ -37,6 +38,7 @@ import {
 import { defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { DBZZ_HTTP_ROUTES } from "./http-routes.ts";
 import type { McpDeclaration } from "./mcp.ts";
+import { mcpCredentialFromAuthorization } from "./mcp-credential.ts";
 import {
   mcpErrorResponse,
   mcpMethodNotAllowed,
@@ -737,7 +739,7 @@ export class DbzzServer {
   ): Promise<Response> {
     const runtime = this.requireRuntime();
     let admission: HttpAdmissionLease | undefined;
-    let lease: AuthLease | undefined;
+    let principal: Principal = ANONYMOUS_PRINCIPAL;
     try {
       if (this.lifecycle !== "ready" || runtime.state !== "ready") {
         throw unavailableWhile(this.lifecycle);
@@ -748,8 +750,16 @@ export class DbzzServer {
         runtime.limits.maxRequestBytes,
         runtime.limits.readQueue.maxAgeMs,
       );
-      lease = await this.authenticate(request);
-      const fairnessKey = callerFairnessKey(lease.principal, source);
+      const rawToken = mcpCredentialFromAuthorization(request.headers.get("authorization"));
+      if (rawToken !== null) {
+        principal = await runtime.authenticateMcpToken(
+          mcp.name,
+          rawToken,
+          callerFairnessKey(ANONYMOUS_PRINCIPAL, source),
+          request.signal,
+        );
+      }
+      const fairnessKey = callerFairnessKey(principal, source);
       admission.transfer(fairnessKey);
       const { handleMcpPost } = await import("./mcp-http.ts");
       return withMcpCors(await handleMcpPost({
@@ -758,14 +768,13 @@ export class DbzzServer {
         bytes,
         mcp,
         runtime,
-        principal: lease.principal,
-        signal: lease.signal,
+        principal,
+        signal: request.signal,
         fairnessKey,
       }), CORS);
     } catch (error) {
       return mcpErrorResponse(error, CORS);
     } finally {
-      lease?.release();
       admission?.release();
     }
   }

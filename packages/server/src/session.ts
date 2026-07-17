@@ -810,7 +810,11 @@ export class Session {
 
   private scheduleExpiry(principal: Principal, authEpoch: number): void {
     this.clearExpiry();
-    if (principal.kind === "anonymous" || principal.kind === "system") return;
+    if (
+      principal.kind === "anonymous" ||
+      principal.kind === "system" ||
+      principal.kind === "mcp"
+    ) return;
     const schedule = () => {
       if (this.phase === "closed" || this.authEpoch !== authEpoch || this.principal !== principal) return;
       const remaining = principal.expiresAt - this.readNow();

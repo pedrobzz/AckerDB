@@ -191,6 +191,8 @@ function rewriteWalHeader(wal: Buffer, offset: number, value: number): Buffer {
 describe("fresh-process storage corruption rejection", () => {
   test("never initializes over any pre-existing empty, foreign, or truncated main file", async () => {
     const clean = cleanDatabase();
+    const encodedPageSize = clean.readUInt16BE(16);
+    const pageSize = encodedPageSize === 1 ? 65_536 : encodedPageSize;
     const variants: Array<{
       name: string;
       diagnostic: string;
@@ -236,12 +238,12 @@ describe("fresh-process storage corruption rejection", () => {
       {
         name: "partial page",
         diagnostic: "database file is truncated between SQLite pages",
-        write: (path) => writeFileSync(path, clean.subarray(0, Math.floor(clean.byteLength / 2))),
+        write: (path) => writeFileSync(path, clean.subarray(0, pageSize + 1)),
       },
       {
         name: "missing whole page",
         diagnostic: "database file size does not match its SQLite header",
-        write: (path) => writeFileSync(path, clean.subarray(0, clean.byteLength - 4_096)),
+        write: (path) => writeFileSync(path, clean.subarray(0, clean.byteLength - pageSize)),
       },
     ];
 

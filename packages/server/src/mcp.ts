@@ -12,6 +12,13 @@ import type { Invocable } from "./functions.ts";
 import { validateArgsShape } from "./functions.ts";
 import { brand, hasBrand } from "./identity.ts";
 import { compileInvocation } from "./invocation.ts";
+import {
+  createMcpTokenOperations,
+  type CreatedMcpToken,
+  type McpTokenCreateInput,
+  type McpTokenDescriptor,
+  type McpTokenOperations,
+} from "./mcp-token-context.ts";
 import type { Schema } from "./schema.ts";
 import type { ProcedureCtx } from "./functions.ts";
 import { mcpObjectSchema, type JsonObjectSchema } from "./standard-schema.ts";
@@ -71,6 +78,7 @@ export type McpOutputSchema = JsonObjectSchema;
 interface McpToolDefinitionBase<A extends ObjectShape> {
   readonly name: string;
   readonly description: string;
+  readonly access?: "public" | "authenticated";
   readonly args: A;
 }
 
@@ -115,6 +123,7 @@ export interface McpDeclaration<
   readonly path: Path;
   readonly instructions?: string;
   readonly metadata: McpEndpointMetadata;
+  readonly tokens: McpTokenOperations<S>;
   tool<A extends ObjectShape, O extends ObjectValidator | undefined = undefined>(
     definition: McpToolDefinition<A, O, S>,
   ): RegisteredMcpTool<A, O, S>;
@@ -268,6 +277,7 @@ export function createMcp(
     );
   }
   const metadata = endpointMetadata(config.metadata);
+  const tokens = createMcpTokenOperations(config.name);
 
   let declaration!: McpDeclaration;
   const value = {
@@ -277,6 +287,7 @@ export function createMcp(
     path,
     ...(instructions === undefined ? {} : { instructions }),
     metadata,
+    tokens,
     tool(definition: McpToolDefinition<
       ObjectShape,
       ObjectValidator | undefined,
@@ -293,6 +304,13 @@ export function createMcp(
       }
       if (typeof definition.handler !== "function") {
         throw new TypeError(`MCP tool "${definition.name}" requires a handler`);
+      }
+      if (
+        definition.access !== undefined &&
+        definition.access !== "public" &&
+        definition.access !== "authenticated"
+      ) {
+        throw new TypeError(`MCP tool "${definition.name}" access must be public or authenticated`);
       }
       validateArgsShape(definition.args, `MCP tool ${definition.name} args`);
       if (definition.output !== undefined && definition.output.kind !== "object") {
@@ -314,7 +332,7 @@ export function createMcp(
         outputSchema: outputValidator === undefined
           ? undefined
           : mcpObjectSchema(outputValidator, "output"),
-        access: "public" as const,
+        access: definition.access ?? "public",
         handler: definition.handler,
       };
       brand(tool, MCP_TOOL_IDENTITY);
@@ -340,3 +358,10 @@ export type AnyRegisteredMcpTool = RegisteredMcpTool<
   ObjectValidator | undefined,
   Schema
 >;
+
+export type {
+  CreatedMcpToken,
+  McpTokenCreateInput,
+  McpTokenDescriptor,
+  McpTokenOperations,
+};

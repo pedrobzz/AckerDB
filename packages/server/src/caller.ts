@@ -39,7 +39,7 @@ export function externalAccountFairnessKey(account: ExternalAccount): string {
 
 /** Fixed-width, non-sensitive ownership key shared by every external transport. */
 export function callerFairnessKey(principal: Principal, source: TransportSource): string {
-  return fairnessKey(principal.kind === "user"
+  return fairnessKey(principal.kind === "user" || principal.kind === "mcp"
     ? ["identity", principal.identity]
     : principal.kind === "workload"
       ? ["principal", principal.kind, principal.issuer, principal.subject]

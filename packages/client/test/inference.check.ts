@@ -79,7 +79,7 @@ declare const client: DbzzClient;
 export async function _generatedClientInference(): Promise<void> {
   const queryResult = await client.query(api.generated.authorizationSummary, { label: "query" });
   const _queryLabel: string = queryResult.label;
-  const _principalKind: "anonymous" | "user" | "workload" | "system" = queryResult.kind;
+  const _principalKind: "anonymous" | "user" | "mcp" | "workload" | "system" = queryResult.kind;
   // @ts-expect-error query handler inference keeps label as string
   const _wrongQueryLabel: number = queryResult.label;
 
