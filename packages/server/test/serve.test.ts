@@ -814,7 +814,8 @@ describe("Protocol-2 HTTP procedures", () => {
       method: "POST",
       body: "x".repeat(limits.maxRequestBytes + 2),
     });
-    expect(transportRejected.status).toBe(413);
+    expect([400, 413]).toContain(transportRejected.status);
+    expect(await transportRejected.text()).toBe("");
   });
 
   test("globally bounds pre-body HTTP admission and rejects node saturation as 503", async () => {

@@ -1572,6 +1572,7 @@ export class Engine {
     for (const reader of this.additionalReaders) attempt(() => reader.close());
     this.additionalReaders.clear();
     if (this.reader !== this.writer) attempt(() => this.reader.close());
+    if (shutdown === "clean") attempt(() => this.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)"));
     attempt(() => this.writer.close());
     const processLock = this.processLock;
     if (processLock !== null) {
