@@ -31,17 +31,17 @@ diagnostics: with the literal `Runtime` telemetry default (the constructor
 option is omitted), with that same default plus an explicit in-process exporter
 callback, and with `telemetry: false`. `systems.dbzz` remains the exact default
 profile used in the three-system tables. The exporter and disabled results plus
-their deltas are separate schema-v6 evidence, not extra databases. Partial runs
+their deltas are separate schema-v7 evidence, not extra databases. Partial runs
 execute only the selected systems and one default-enabled DBZZ profile.
 
-`BENCH_COMPARISON=current` keeps the complete default workload, DBZZ's literal
-runtime-default telemetry profile, correctness checks, telemetry validation,
-and same-host DBZZ/Convex/SpacetimeDB tables. It skips the exporter and disabled
-DBZZ cost legs because they do not affect the three-system margin question,
-then exits without evaluating the historical machine-bound gate or saving a
-result. A measured correctness failure is still printed and returns a failing
-exit status. This is the intended mode for comparing the current systems on a
-different machine.
+`BENCH_COMPARISON=current` runs the complete default workload and all three DBZZ
+telemetry profiles, preserves a schema-v7 record, and compares it with the most
+recent schema-v7 current-host record on the same machine and configuration. It
+does not evaluate the historical machine-bound gate. Correctness-failed systems
+are excluded from delta claims, while their typed case failures and partial
+request accounting remain in the saved record; the command exits failing only
+after persistence. This is the intended paired mode for comparing current
+systems on a different machine.
 
 All DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`. The
 `runtime-default` profile uses the production retention/queue limits, built-in
@@ -84,15 +84,22 @@ must deliver output without failure or timeout in both enabled legs. The three
 profile positions rotate between saved runs and are preserved in
 `executionOrder`.
 
-## Schema-v6 measured-failure record and integrity gate
+## Schema-v7 measured-failure record and integrity gate
 
 Only an all-system run with `BENCH_PROFILE=default` (or no `BENCH_PROFILE`) can
-enter performance acceptance and write
+write
 `bench/results/<timestamp>-<gitsha>.json`. Quick, stress, and partial runs print
 the same diagnostic result tables, then finish with an explicit
 acceptance-skipped/result-not-saved message. The result file is written when
 the harness produced structurally comparable, correctly accounted output, even
 when the measurements fail acceptance.
+Cases that never reach a valid measurement are stored as their canonical
+operation/profile, connection level, subscription pattern, or capacity slot
+plus a typed failure—never invented zero throughput or latency. A closed-loop
+deadline preserves its observed completions and accounts every still-in-flight
+attempt as failed. When cancellation cannot reclaim the phase, the workload
+marks the system terminal, emits all remaining configured identities as failed,
+and the parent reclaims the client process before starting the next system.
 Measured operation, connection, and subscription correctness failures are an
 immutable top-level `validation` section with an overall `passed` or `failed`
 status and per-case errors. A failed validation skips performance acceptance,
@@ -173,7 +180,7 @@ configured offered rate; and delivery throughput must reach at least 99% of
 expected deliveries divided by the offered duration. Missing metric paths or a
 changed floor count remain fatal harness-integrity failures. An evaluated
 performance failure is recorded, saved, and then returns a failing status.
-Delivery correctness failures instead follow the schema-v6 failed-validation
+Delivery correctness failures instead follow the schema-v7 failed-validation
 path above and are saved without evaluating these performance claims.
 
 Prerequisites:
@@ -398,10 +405,11 @@ with SpacetimeDB's official benchmarks; it demonstrates that this benchmark is
 measuring a different, explicitly defined workload.
 
 The displayed result is the last schema-v3 run and intentionally remains in
-place until a post-change full passing schema-v6 run exists. Schema-v2 predates the
-subscription-capacity sweep; schema-v3 predates paired telemetry and
-server-confirmed durability modes. Earlier schemas do not contain the explicit
-correctness outcome and are not delta-comparable with schema v6.
+place until a post-change full passing schema-v7 run exists. Schema-v2 predates
+the subscription-capacity sweep; schema-v3 predates paired telemetry and
+server-confirmed durability modes; schema-v6 predates typed case failures and
+current-host comparison ownership. Earlier schemas are not delta-comparable
+with schema-v7.
 Treat small latency/RSS differences as ranges and rerun; the large
 dbzz-vs-Convex gaps and the SpacetimeDB saturated-write advantage have repeated
 across the retained runs.

@@ -71,7 +71,11 @@ function connection(overrides: Partial<BenchConnection> = {}): BenchConnection {
   };
 }
 
-function subscriptionWorkload(config: BenchmarkConfig, subscription: Awaited<ReturnType<typeof runSubscriptionCase>>): DriverResult {
+function subscriptionWorkload(
+  config: BenchmarkConfig,
+  subscription: NonNullable<Awaited<ReturnType<typeof runSubscriptionCase>>["measurement"]>,
+  failures: DriverResult["failures"] = [],
+): DriverResult {
   return {
     system: "dbzz",
     config,
@@ -83,10 +87,11 @@ function subscriptionWorkload(config: BenchmarkConfig, subscription: Awaited<Ret
     operations: [],
     connections: [],
     subscriptions: [subscription],
+    failures,
   };
 }
 
-function subscriptionAdapter(mode: "corrupt-fixed" | "drop-capacity" | "slow-drop-capacity"): BenchAdapter {
+function subscriptionAdapter(mode: "normal" | "corrupt-fixed" | "drop-capacity" | "slow-drop-capacity"): BenchAdapter {
   const listeners = new Set<{ channels: Set<number>; onUpdate: Parameters<BenchConnection["subscribeChannels"]>[1] }>();
   const versions = new Map<number, number>();
   let updates = 0;
@@ -140,7 +145,8 @@ describe("measured workload failures", () => {
     };
     let nonce = 0;
 
-    const connections = await runConnectionScale(adapter, benchmarkConfig, () => nonce++);
+    const outcome = await runConnectionScale(adapter, benchmarkConfig, () => nonce++);
+    const connections = outcome.measurements;
     const workload: DriverResult = {
       system: "dbzz",
       config: benchmarkConfig,
@@ -152,20 +158,24 @@ describe("measured workload failures", () => {
       operations: [],
       connections,
       subscriptions: [],
+      failures: outcome.failures,
     };
     const validation = validateBenchmarkResults([{ label: "dbzz", system: "dbzz", workload }]);
 
-    expect(connections.map((result) => result.targetConnections)).toEqual([1, 3]);
-    expect(connections[0]).toMatchObject({ connected: 0, errors: ["connection refused"] });
-    expect(connections[1]).toMatchObject({ connected: 3, errors: [] });
-    expect(connections[1]!.work.windowStartedAtMs).toBeGreaterThanOrEqual(
-      connections[0]!.work.windowEndedAtMs,
-    );
+    expect(connections.map((result) => result.targetConnections)).toEqual([3]);
+    expect(connections[0]).toMatchObject({ connected: 3, errors: [] });
+    expect(outcome.failures[0]).toMatchObject({
+      kind: "connection",
+      targetConnections: 1,
+      stage: "setup",
+      terminal: false,
+      message: "connected 0/1; connection refused",
+    });
     expect(validation.status).toBe("failed");
     expect(validation.failures[0]).toMatchObject({
       kind: "connection",
       case: "connections/1",
-      errors: ["connected 0/1", "connection refused"],
+      errors: ["connected 0/1; connection refused"],
     });
   });
 
@@ -182,12 +192,93 @@ describe("measured workload failures", () => {
       },
     };
 
-    const results = await runConnectionScale(adapter, benchmarkConfig, () => 1);
+    const outcome = await runConnectionScale(adapter, benchmarkConfig, () => 1);
     await Bun.sleep(15);
 
-    expect(results[0]).toMatchObject({ connected: 0 });
-    expect(results[0]!.errors[0]).toContain("opening 1 connections timed out after 1ms");
+    expect(outcome.measurements).toEqual([]);
+    expect(outcome.failures[0]).toMatchObject({
+      kind: "connection",
+      targetConnections: 1,
+      stage: "setup",
+      terminal: true,
+    });
+    expect(outcome.failures[0]!.message).toContain("opening 1 connections timed out after 1ms");
     expect(closed).toBe(1);
+  });
+
+  test("turns a hung connection release into a terminal ledger failure", async () => {
+    const benchmarkConfig = config();
+    benchmarkConfig.connections.levels = [1];
+    benchmarkConfig.operation.drainTimeoutMs = 2;
+    const adapter: BenchAdapter = {
+      system: "dbzz",
+      connect: async () => connection({ close: () => new Promise<void>(() => {}) }),
+    };
+
+    const outcome = await runConnectionScale(adapter, benchmarkConfig, () => 1);
+
+    expect(outcome.measurements).toEqual([]);
+    expect(outcome.failures[0]).toMatchObject({
+      kind: "connection",
+      targetConnections: 1,
+      stage: "setup",
+      terminal: true,
+    });
+    expect(outcome.failures[0]!.message).toContain("sample connection release timed out");
+  });
+
+  test("cleans a failed readiness batch and continues with the next subscription pattern", async () => {
+    const benchmarkConfig = config();
+    benchmarkConfig.subscriptions.patterns = ["shared", "partitioned"];
+    const listeners = new Set<{
+      channels: Set<number>;
+      onUpdate: Parameters<BenchConnection["subscribeChannels"]>[1];
+    }>();
+    const versions = new Map<number, number>();
+    let readinessAttempts = 0;
+    let closed = 0;
+    let unsubscribed = 0;
+    const adapter: BenchAdapter = {
+      system: "dbzz",
+      connect: async () => connection({
+        subscribeChannels: async (channels, onUpdate) => {
+          if (readinessAttempts++ === 0) throw new Error("readiness rejected");
+          const listener = { channels: new Set(channels), onUpdate };
+          listeners.add(listener);
+          return async () => {
+            unsubscribed++;
+            listeners.delete(listener);
+          };
+        },
+        updateChannel: async (channel, nonce) => {
+          const version = (versions.get(channel) ?? 0) + 1;
+          versions.set(channel, version);
+          const payload = channelPayload(channel, version, nonce);
+          const row = { channel, version, payload, checksum: channelChecksum(channel, version, nonce, payload) };
+          for (const listener of listeners) {
+            if (listener.channels.has(channel)) listener.onUpdate(row);
+          }
+        },
+        close: async () => { closed++; },
+      }),
+    };
+    let nonce = 1;
+    const failed = await runSubscriptionCase(adapter, "shared", benchmarkConfig, () => nonce++);
+    const measured = await runSubscriptionCase(adapter, "partitioned", benchmarkConfig, () => nonce++);
+
+    expect(failed).toMatchObject({
+      failures: [{
+        kind: "subscription",
+        pattern: "shared",
+        stage: "setup",
+        message: expect.stringContaining("readiness rejected"),
+        terminal: false,
+      }],
+    });
+    expect(measured.measurement).toMatchObject({ pattern: "partitioned" });
+    expect(measured.failures).toEqual([]);
+    expect(closed).toBeGreaterThanOrEqual(3);
+    expect(unsubscribed).toBeGreaterThanOrEqual(1);
   });
 
   test("persists corrupt fixed-rate delivery before returning a failing outcome", async () => {
@@ -195,16 +286,17 @@ describe("measured workload failures", () => {
     benchmarkConfig.subscriptions.patterns = ["shared"];
     let nonce = 1;
 
-    const subscription = await runSubscriptionCase(
+    const outcome = await runSubscriptionCase(
       subscriptionAdapter("corrupt-fixed"),
       "shared",
       benchmarkConfig,
       () => nonce++,
     );
+    const subscription = outcome.measurement!;
     const validation = validateBenchmarkResults([{
       label: "dbzz",
       system: "dbzz",
-      workload: subscriptionWorkload(benchmarkConfig, subscription),
+      workload: subscriptionWorkload(benchmarkConfig, subscription, outcome.failures),
     }]);
 
     expect(subscription).toMatchObject({ corruptDeliveries: 1, missingDeliveries: 1 });
@@ -215,7 +307,7 @@ describe("measured workload failures", () => {
     const path = join(directory, "result.json");
     try {
       const outcome = await persistBenchmarkOutcome(path, {
-        schemaVersion: 6,
+        schemaVersion: 7,
         validation,
         performanceAcceptance: { status: "not-evaluated", reason: "correctness-failed" },
       });
@@ -226,12 +318,60 @@ describe("measured workload failures", () => {
 
       expect(outcome.status).toBe("failed");
       expect(saved).toMatchObject({
-        schemaVersion: 6,
+        schemaVersion: 7,
         validation: { status: "failed", failures: [{ kind: "subscription" }] },
       });
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  test("records a capacity-writer setup failure and measures the next slot level", async () => {
+    const benchmarkConfig = config();
+    benchmarkConfig.subscriptions.users = 3;
+    benchmarkConfig.subscriptions.patterns = ["partitioned"];
+    benchmarkConfig.subscriptions.capacitySlots = [1, 2, 3];
+    const base = subscriptionAdapter("normal");
+    let connects = 0;
+    const adapter: BenchAdapter = {
+      system: "dbzz",
+      connect: async (nonce, seeded) => {
+        connects++;
+        if (connects === 5) throw new Error("capacity writer refused");
+        return base.connect(nonce, seeded);
+      },
+    };
+    let nonce = 1;
+
+    const outcome = await runSubscriptionCase(
+      adapter,
+      "partitioned",
+      benchmarkConfig,
+      () => nonce++,
+    );
+    const subscription = outcome.measurement!;
+    const validation = validateBenchmarkResults([{
+      label: "dbzz",
+      system: "dbzz",
+      workload: subscriptionWorkload(benchmarkConfig, subscription, outcome.failures),
+    }]);
+
+    expect(subscription.capacity.map((capacity) => capacity.slots)).toEqual([1, 3]);
+    expect(outcome.failures).toEqual([
+      expect.objectContaining({
+        kind: "subscription-capacity",
+        pattern: "partitioned",
+        slots: 2,
+        stage: "setup",
+        message: expect.stringContaining("capacity writer refused"),
+        terminal: false,
+      }),
+    ]);
+    expect(validation.status).toBe("failed");
+    expect(validation.failures[0]).toMatchObject({
+      kind: "subscription-capacity",
+      case: "subscriptions/partitioned/capacity-2",
+    });
   });
 
   test("returns slow-ack capacity delivery timeout before the outer phase deadline", async () => {
@@ -241,24 +381,25 @@ describe("measured workload failures", () => {
     benchmarkConfig.subscriptions.drainTimeoutMs = 30;
     let nonce = 1;
 
-    const subscription = await runSubscriptionCase(
+    const outcome = await runSubscriptionCase(
       subscriptionAdapter("slow-drop-capacity"),
       "shared",
       benchmarkConfig,
       () => nonce++,
     );
+    const subscription = outcome.measurement!;
     const validation = validateBenchmarkResults([{
       label: "dbzz",
       system: "dbzz",
-      workload: subscriptionWorkload(benchmarkConfig, subscription),
+      workload: subscriptionWorkload(benchmarkConfig, subscription, outcome.failures),
     }]);
 
-    expect(subscription.capacity[0]!.attempted).toBe(
-      subscription.capacity[0]!.completedInWindow +
-        subscription.capacity[0]!.completedAfterWindow +
-        subscription.capacity[0]!.failed,
+    const capacity = subscription.capacity[0]!;
+
+    expect(capacity.attempted).toBe(
+      capacity.completedInWindow + capacity.completedAfterWindow + capacity.failed,
     );
-    expect(subscription.capacity[0]!.failed).toBeGreaterThan(0);
+    expect(capacity.failed).toBeGreaterThan(0);
     expect(validation.status).toBe("failed");
     expect(validation.failures[0]).toMatchObject({
       kind: "subscription-capacity",

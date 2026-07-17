@@ -44,8 +44,13 @@ interface ClosedLoopOptions<T> {
   drainTimeoutMs: number;
   onWindowStart?(timestampMs: number): void;
   operation(slot: number, sequence: number, cancellation: ClosedLoopCancellation): Promise<T>;
-  cancel(): Promise<void> | void;
+  cancel(): Promise<void | ClosedLoopReleaseResult> | void | ClosedLoopReleaseResult;
   validate?(value: T, slot: number, sequence: number): void;
+}
+
+export interface ClosedLoopReleaseResult {
+  readonly released: boolean;
+  readonly errors: readonly string[];
 }
 
 interface ClosedLoopCancellation {
@@ -94,6 +99,8 @@ export async function runClosedLoop<T>(options: ClosedLoopOptions<T>): Promise<C
   let failed = 0;
   const errors: string[] = [];
   const latencies: number[] = [];
+  let sealed = false;
+  let interruption: ClosedLoopResult["interruption"] = null;
 
   const workers = Array.from({ length: options.slots }, async (_, slot) => {
     for (;;) {
@@ -103,14 +110,14 @@ export async function runClosedLoop<T>(options: ClosedLoopOptions<T>): Promise<C
       attempted++;
       try {
         const value = await options.operation(slot, currentSequence, cancellation);
-        if (controller.signal.aborted) return;
+        if (sealed) return;
         options.validate?.(value, slot, currentSequence);
         const completedAt = performance.now();
         latencies.push(completedAt - operationStartedAt);
         if (completedAt <= deadline) completedInWindow++;
         else completedAfterWindow++;
       } catch (error) {
-        if (controller.signal.aborted) return;
+        if (sealed) return;
         failed++;
         if (errors.length < 8) errors.push(error instanceof Error ? error.message : String(error));
       }
@@ -131,10 +138,13 @@ export async function runClosedLoop<T>(options: ClosedLoopOptions<T>): Promise<C
         `${attempted - settled} in flight`,
       { cause },
     );
+    sealed = true;
+    failed += attempted - settled;
+    errors.push(error.message);
     controller.abort(error);
-    let cleanup: PromiseSettledResult<void>[];
+    let resourcesReleased = false;
     try {
-      cleanup = await withTimeout(
+      const cleanup = await withTimeout(
         Promise.allSettled([
           Promise.resolve().then(() => options.cancel()),
           Promise.all(workers).then(() => undefined),
@@ -142,22 +152,24 @@ export async function runClosedLoop<T>(options: ClosedLoopOptions<T>): Promise<C
         Math.max(1, Math.min(options.drainTimeoutMs, 5_000)),
         `phase ${options.phaseId} cancellation`,
       );
+      const cleanupErrors = cleanup.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : []
+      );
+      const release = cleanup[0];
+      if (release?.status === "fulfilled" && release.value !== undefined) {
+        cleanupErrors.push(...release.value.errors);
+      }
+      resourcesReleased = cleanupErrors.length === 0 &&
+        (release?.status !== "fulfilled" || release.value === undefined || release.value.released);
+      for (const cleanupError of cleanupErrors) {
+        if (errors.length < 8) errors.push(`phase cancellation failed: ${errorMessage(cleanupError)}`);
+      }
     } catch (cleanupError) {
-      throw new AggregateError(
-        [error, cleanupError],
-        `${error.message}; phase cancellation did not settle`,
-      );
+      if (errors.length < 8) {
+        errors.push(`phase cancellation did not settle: ${errorMessage(cleanupError)}`);
+      }
     }
-    const cleanupErrors = cleanup.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : []
-    );
-    if (cleanupErrors.length > 0) {
-      throw new AggregateError(
-        [error, ...cleanupErrors],
-        `${error.message}; phase cancellation failed`,
-      );
-    }
-    throw error;
+    interruption = { reason: error.message, resourcesReleased };
   }
   return {
     windowStartedAtMs,
@@ -170,5 +182,10 @@ export async function runClosedLoop<T>(options: ClosedLoopOptions<T>): Promise<C
     throughputPerSec: completedInWindow / (options.durationMs / 1_000),
     latency: latencyStats(latencies),
     errors,
+    interruption,
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

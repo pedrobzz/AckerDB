@@ -121,17 +121,18 @@ describe("benchmark acceptance and persistence policy", () => {
   test("accepts and saves only the default all-system profile", () => {
     expect(benchmarkRunPolicy(allSystems, "default")).toEqual({
       profiledDbzz: true,
-      acceptAndSave: true,
+      persist: true,
+      historicalAcceptance: true,
       diagnosticMessage: null,
     });
   });
 
   test("runs the complete current-host comparison without historical acceptance", () => {
     expect(benchmarkRunPolicy(allSystems, "default", "current")).toEqual({
-      profiledDbzz: false,
-      acceptAndSave: false,
-      diagnosticMessage:
-        "current-host default comparison complete: historical acceptance skipped; result not saved",
+      profiledDbzz: true,
+      persist: true,
+      historicalAcceptance: false,
+      diagnosticMessage: null,
     });
   });
 
@@ -139,7 +140,8 @@ describe("benchmark acceptance and persistence policy", () => {
     for (const profile of ["quick", "stress"] as const) {
       expect(benchmarkRunPolicy(allSystems, profile)).toEqual({
         profiledDbzz: true,
-        acceptAndSave: false,
+        persist: false,
+        historicalAcceptance: false,
         diagnosticMessage:
           `${profile} all-system diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
       });
@@ -150,7 +152,8 @@ describe("benchmark acceptance and persistence policy", () => {
     for (const profile of ["quick", "default", "stress"] as const) {
       expect(benchmarkRunPolicy(["dbzz", "convex"], profile)).toEqual({
         profiledDbzz: false,
-        acceptAndSave: false,
+        persist: false,
+        historicalAcceptance: false,
         diagnosticMessage:
           `partial ${profile} diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
       });

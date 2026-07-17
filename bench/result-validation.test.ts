@@ -23,6 +23,22 @@ function workload(results: BenchmarkValidationTarget[], system: SystemName): Dri
   return results.find((result) => result.system === system)!.workload;
 }
 
+function operationAt(workload: DriverResult, index = 0) {
+  return workload.operations[index]!;
+}
+
+function connectionAt(workload: DriverResult, index = 0) {
+  return workload.connections[index]!;
+}
+
+function subscriptionAt(workload: DriverResult, index = 0) {
+  return workload.subscriptions[index]!;
+}
+
+function capacityAt(subscription: ReturnType<typeof subscriptionAt>, index = 0) {
+  return subscription.capacity[index]!;
+}
+
 describe("benchmark result validation", () => {
   test("returns immutable pass evidence for comparable correct results", () => {
     const validation = validateBenchmarkResults(targets());
@@ -35,21 +51,21 @@ describe("benchmark result validation", () => {
 
   test("records measured operation, connection, and subscription failures without throwing", () => {
     const results = targets();
-    const operation = workload(results, "dbzz").operations[0]!.trials[0]!;
+    const operation = operationAt(workload(results, "dbzz")).trials[0]!;
     operation.completedInWindow--;
     operation.failed++;
     operation.errors.push("query checksum mismatch");
     operation.correctness = { ok: false, errors: ["query checksum mismatch"] };
 
-    const connection = workload(results, "convex").connections[0]!;
+    const connection = connectionAt(workload(results, "convex"));
     connection.connected--;
     connection.errors.push("connection refused");
 
-    const subscription = workload(results, "spacetimedb").subscriptions[0]!;
+    const subscription = subscriptionAt(workload(results, "spacetimedb"));
     subscription.duplicateDeliveries++;
     subscription.correctness = { ok: false, errors: ["1 duplicate deliveries"] };
 
-    const capacity = workload(results, "dbzz").subscriptions[0]!.capacity[0]!;
+    const capacity = capacityAt(subscriptionAt(workload(results, "dbzz")));
     capacity.completedInWindow--;
     capacity.failed++;
     capacity.correctness = { ok: false, errors: ["delivery timeout"] };
@@ -88,12 +104,64 @@ describe("benchmark result validation", () => {
     expect(Object.isFrozen(validation.failures[0]!.errors)).toBe(true);
   });
 
+  test("accepts identity-only case failures without inventing metrics", () => {
+    const results = targets();
+    const dbzz = workload(results, "dbzz");
+    const measured = operationAt(dbzz);
+    dbzz.operations.shift();
+    dbzz.failures = [{
+      kind: "operation",
+      operation: measured.operation,
+      profile: measured.profile,
+      stage: "setup",
+      message: "opened 99/100 clients",
+      terminal: false,
+      completedTrials: [],
+    }];
+
+    const validation = validateBenchmarkResults(results);
+
+    expect(validation.status).toBe("failed");
+    expect(validation.failures[0]).toEqual({
+      target: "dbzz",
+      kind: "operation",
+      case: "query/latency",
+      errors: ["opened 99/100 clients"],
+    });
+    expect(dbzz.operations.some((operation) => operation.operation === measured.operation && operation.profile.name === measured.profile.name)).toBe(false);
+  });
+
+  test("keeps successful-arm trial and capacity shapes strict", () => {
+    const missingTrial = targets();
+    operationAt(workload(missingTrial, "dbzz")).trials.pop();
+    expect(() => validateBenchmarkResults(missingTrial)).toThrow("measured 2/3 trials");
+
+    const missingCapacity = targets();
+    subscriptionAt(workload(missingCapacity, "dbzz")).capacity.pop();
+    expect(() => validateBenchmarkResults(missingCapacity)).toThrow("capacity ladder differs");
+
+    const emptyFailure = targets();
+    const dbzz = workload(emptyFailure, "dbzz");
+    const measured = operationAt(dbzz);
+    dbzz.operations.shift();
+    dbzz.failures = [{
+      kind: "operation",
+      operation: measured.operation,
+      profile: measured.profile,
+      stage: "setup",
+      message: "",
+      terminal: false,
+      completedTrials: [],
+    }];
+    expect(() => validateBenchmarkResults(emptyFailure)).toThrow("failed operation case has no error message");
+  });
+
   test("keeps broken request accounting fatal for every closed-loop result family", () => {
     for (const mutate of [
-      (results: BenchmarkValidationTarget[]) => workload(results, "dbzz").operations[0]!.trials[0]!.attempted++,
-      (results: BenchmarkValidationTarget[]) => workload(results, "dbzz").connections[0]!.work.attempted++,
+      (results: BenchmarkValidationTarget[]) => operationAt(workload(results, "dbzz")).trials[0]!.attempted++,
+      (results: BenchmarkValidationTarget[]) => connectionAt(workload(results, "dbzz")).work.attempted++,
       (results: BenchmarkValidationTarget[]) =>
-        workload(results, "dbzz").subscriptions[0]!.capacity[0]!.attempted++,
+        capacityAt(subscriptionAt(workload(results, "dbzz"))).attempted++,
     ]) {
       const results = targets();
       mutate(results);
@@ -109,7 +177,7 @@ describe("benchmark result validation", () => {
       ["corruptDeliveries", "1 corrupt deliveries"],
     ] as const) {
       const results = targets();
-      const subscription = workload(results, "dbzz").subscriptions[0]!;
+      const subscription = subscriptionAt(workload(results, "dbzz"));
       subscription[field] = 1;
 
       const validation = validateBenchmarkResults(results);
@@ -138,9 +206,9 @@ describe("benchmark result validation", () => {
 
   test("cannot hide reported correctness errors behind an accidental ok flag", () => {
     const results = targets();
-    const trial = workload(results, "dbzz").operations[0]!.trials[0]!;
+    const trial = operationAt(workload(results, "dbzz")).trials[0]!;
     trial.correctness = { ok: true, errors: ["query payload mismatch"] };
-    const capacity = workload(results, "convex").subscriptions[0]!.capacity[0]!;
+    const capacity = capacityAt(subscriptionAt(workload(results, "convex")));
     capacity.correctness = { ok: true, errors: ["delivery checksum mismatch"] };
 
     const validation = validateBenchmarkResults(results);

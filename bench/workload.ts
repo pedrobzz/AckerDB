@@ -22,6 +22,7 @@ import {
   subscriptionCapacitySlots,
   type AccountState,
   type BenchAdapter,
+  type BenchmarkCaseFailure,
   type BenchConnection,
   type BenchmarkConfig,
   type ChannelRow,
@@ -31,11 +32,18 @@ import {
   type OperationName,
   type OperationProfile,
   type SearchResult,
+  type SubscriptionCapacityResult,
   type SubscriptionPattern,
   type SubscriptionResult,
   type TrialResult,
 } from "./benchmark.ts";
-import { latencyStats, median, runClosedLoop, withTimeout } from "./load-engine.ts";
+import {
+  latencyStats,
+  median,
+  runClosedLoop,
+  withTimeout,
+  type ClosedLoopReleaseResult,
+} from "./load-engine.ts";
 
 const COMPUTE_ROUNDS = 8;
 const TRANSFER_AMOUNT = 1;
@@ -74,8 +82,78 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function closeAll(connections: BenchConnection[]): Promise<void> {
-  await Promise.allSettled(connections.map((connection) => connection.close()));
+async function releaseResources(
+  label: string,
+  timeoutMs: number,
+  releases: readonly (() => Promise<void>)[],
+): Promise<ClosedLoopReleaseResult> {
+  try {
+    const results = await withTimeout(
+      Promise.allSettled(releases.map((release) => release())),
+      Math.max(1, Math.min(timeoutMs, 5_000)),
+      label,
+    );
+    const errors = results.flatMap((result) =>
+      result.status === "rejected" ? [errorMessage(result.reason)] : []
+    );
+    return { released: errors.length === 0, errors };
+  } catch (error) {
+    return { released: false, errors: [errorMessage(error)] };
+  }
+}
+
+function connectionReleases(connections: readonly BenchConnection[]): Array<() => Promise<void>> {
+  return connections.map((connection) => () => connection.close());
+}
+
+function failureDetails(
+  stage: BenchmarkCaseFailure["stage"],
+  message: string,
+  terminal = false,
+  partial?: BenchmarkCaseFailure["partial"],
+): Pick<BenchmarkCaseFailure, "stage" | "message" | "terminal" | "partial"> {
+  return {
+    stage,
+    message,
+    terminal,
+    ...(partial === undefined ? {} : { partial }),
+  };
+}
+
+function operationFailure(
+  operation: OperationName,
+  profile: OperationProfile,
+  details: ReturnType<typeof failureDetails>,
+  completedTrials: TrialResult[] = [],
+): BenchmarkCaseFailure {
+  return { kind: "operation", operation, profile, completedTrials, ...details };
+}
+
+function connectionFailure(
+  targetConnections: number,
+  details: ReturnType<typeof failureDetails>,
+): BenchmarkCaseFailure {
+  return { kind: "connection", targetConnections, ...details };
+}
+
+function subscriptionCapacityFailure(
+  pattern: SubscriptionPattern,
+  slots: number,
+  details: ReturnType<typeof failureDetails>,
+): BenchmarkCaseFailure {
+  return { kind: "subscription-capacity", pattern, slots, ...details };
+}
+
+function subscriptionFailure(
+  pattern: SubscriptionPattern,
+  details: ReturnType<typeof failureDetails>,
+): BenchmarkCaseFailure {
+  return { kind: "subscription", pattern, ...details };
+}
+
+interface SubscriptionCaseOutcome {
+  measurement?: SubscriptionResult;
+  failures: BenchmarkCaseFailure[];
 }
 
 async function seed(connection: BenchConnection, config: BenchmarkConfig): Promise<void> {
@@ -145,10 +223,11 @@ async function openConnections(
   count: number,
   nonce: () => number,
   timeoutMs: number,
-): Promise<{ connections: BenchConnection[]; latencies: number[]; errors: string[] }> {
+): Promise<{ connections: BenchConnection[]; latencies: number[]; errors: string[]; timedOut: boolean }> {
   const connections: BenchConnection[] = [];
   const latencies: number[] = [];
   const errors: string[] = [];
+  let timedOut = false;
   let accepting = true;
   const attempts = Array.from({ length: count }, async () => {
     const startedAt = performance.now();
@@ -167,11 +246,12 @@ async function openConnections(
   try {
     await withTimeout(Promise.all(attempts), timeoutMs, `opening ${count} connections`);
   } catch (error) {
+    timedOut = true;
     if (errors.length < 8) errors.push(errorMessage(error));
   } finally {
     accepting = false;
   }
-  return { connections, latencies, errors };
+  return { connections, latencies, errors, timedOut };
 }
 
 async function runOperationTrial(
@@ -199,7 +279,11 @@ async function runOperationTrial(
     slots,
     drainTimeoutMs: config.operation.drainTimeoutMs,
     onWindowStart: (timestampMs) => phaseStartAt(phaseId, timestampMs),
-    cancel: () => closeAll(connections),
+    cancel: () => releaseResources(
+      `${phaseId} connection release`,
+      config.operation.drainTimeoutMs,
+      connectionReleases(connections),
+    ),
     operation: async (slot) => {
       const connection = connections[Math.floor(slot / profile.inFlightPerConnection)]!;
       const nonce = nextNonce();
@@ -239,7 +323,7 @@ async function runOperationTrial(
   phaseEndAt(phaseId, result.windowEndedAtMs);
 
   correctnessErrors.push(...result.errors);
-  if (operation.startsWith("mutation")) {
+  if (operation.startsWith("mutation") && result.interruption === null) {
     const nonce = nextNonce();
     const stateAfter = await connections[0]!.accountState(nonce);
     correctnessErrors.push(...validateAccountState(stateAfter, expectedAccountState(accountModel, nonce), "after"));
@@ -258,19 +342,34 @@ async function runOperationCase(
   config: BenchmarkConfig,
   nextNonce: () => number,
   accountModel: AccountModel,
-): Promise<OperationCaseResult> {
+): Promise<OperationCaseResult | BenchmarkCaseFailure> {
   const opened = await openConnections(adapter, profile.connections, nextNonce, config.connections.timeoutMs);
   if (opened.connections.length !== profile.connections) {
-    await closeAll(opened.connections);
-    throw new Error(`opened ${opened.connections.length}/${profile.connections} clients: ${opened.errors.join("; ")}`);
+    const released = await releaseResources(
+      `${operation}/${profile.name} setup connection release`,
+      config.operation.drainTimeoutMs,
+      connectionReleases(opened.connections),
+    );
+    const errors = [...opened.errors, ...released.errors];
+    const message = `opened ${opened.connections.length}/${profile.connections} clients: ${errors.join("; ")}`;
+    return operationFailure(
+      operation,
+      profile,
+      failureDetails("setup", message, opened.timedOut || !released.released),
+    );
   }
+  const trials: TrialResult[] = [];
   try {
     const warmup = await runClosedLoop({
       phaseId: `operation:${operation}:${profile.name}:warmup`,
       durationMs: config.operation.warmupMs,
       slots: profile.connections * profile.inFlightPerConnection,
       drainTimeoutMs: config.operation.drainTimeoutMs,
-      cancel: () => closeAll(opened.connections),
+      cancel: () => releaseResources(
+        `${operation}/${profile.name} warmup connection release`,
+        config.operation.drainTimeoutMs,
+        connectionReleases(opened.connections),
+      ),
       operation: async (slot) => {
         const connection = opened.connections[Math.floor(slot / profile.inFlightPerConnection)]!;
         const nonce = nextNonce();
@@ -288,11 +387,54 @@ async function runOperationCase(
         applyTransfer(accountModel, pair, nonce & 1, TRANSFER_AMOUNT);
       },
     });
-    if (warmup.failed > 0) throw new Error(`warmup failed: ${warmup.errors.join("; ")}`);
+    if (warmup.failed > 0 || warmup.errors.length > 0) {
+      if (warmup.interruption !== null) opened.connections.length = 0;
+      return operationFailure(
+        operation,
+        profile,
+        failureDetails(
+          "warmup",
+          warmup.errors.join("; ") || `${warmup.failed} warmup request(s) failed`,
+          warmup.interruption?.resourcesReleased === false,
+          warmup,
+        ),
+      );
+    }
 
-    const trials: TrialResult[] = [];
     for (let trial = 0; trial < config.operation.trials; trial++) {
-      trials.push(await runOperationTrial(operation, profile, trial, opened.connections, config, nextNonce, accountModel));
+      try {
+        const result = await runOperationTrial(
+          operation,
+          profile,
+          trial,
+          opened.connections,
+          config,
+          nextNonce,
+          accountModel,
+        );
+        trials.push(result);
+        if (result.interruption !== null) {
+          opened.connections.length = 0;
+          return operationFailure(
+            operation,
+            profile,
+            failureDetails(
+              "phase",
+              result.interruption.reason,
+              !result.interruption.resourcesReleased,
+              result,
+            ),
+            trials,
+          );
+        }
+      } catch (error) {
+        return operationFailure(
+          operation,
+          profile,
+          failureDetails("phase", errorMessage(error)),
+          trials,
+        );
+      }
     }
     return {
       operation,
@@ -304,7 +446,19 @@ async function runOperationCase(
       medianLatencyP99Ms: median(trials.map((trial) => trial.latency.p99Ms)),
     };
   } finally {
-    await closeAll(opened.connections);
+    const released = await releaseResources(
+      `${operation}/${profile.name} connection release`,
+      config.operation.drainTimeoutMs,
+      connectionReleases(opened.connections),
+    );
+    if (!released.released) {
+      return operationFailure(
+        operation,
+        profile,
+        failureDetails("cleanup", released.errors.join("; "), true),
+        trials,
+      );
+    }
   }
 }
 
@@ -312,16 +466,23 @@ export async function runConnectionScale(
   adapter: BenchAdapter,
   config: BenchmarkConfig,
   nextNonce: () => number,
-): Promise<ConnectionLevelResult[]> {
+): Promise<{ measurements: ConnectionLevelResult[]; failures: BenchmarkCaseFailure[] }> {
   const cohort: BenchConnection[] = [];
   const results: ConnectionLevelResult[] = [];
+  const failures: BenchmarkCaseFailure[] = [];
+  let terminalFailure: ReturnType<typeof failureDetails> | undefined;
   try {
     for (const target of config.connections.levels) {
+      if (terminalFailure !== undefined) {
+        failures.push(connectionFailure(target, terminalFailure));
+        continue;
+      }
       const needed = target - cohort.length;
       const cohortBefore = cohort.length;
       const setupStartedAt = performance.now();
       const connectLatencies: number[] = [];
       const errors: string[] = [];
+      let setupTerminal = false;
       const rampPhaseId = `connections:${target}:ramp`;
       phaseStart(rampPhaseId);
       if (needed === 1) {
@@ -338,9 +499,23 @@ export async function runConnectionScale(
           const opened = await openConnections(adapter, 1, nextNonce, config.connections.timeoutMs);
           connectLatencies.push(...opened.latencies);
           errors.push(...opened.errors);
-          if (opened.connections.length !== 1) break;
+          if (opened.connections.length !== 1) {
+            setupTerminal = opened.timedOut;
+            break;
+          }
           if (sample === READINESS_SAMPLES - 1) cohort.push(...opened.connections);
-          else await closeAll(opened.connections);
+          else {
+            const released = await releaseResources(
+              `${rampPhaseId} sample connection release`,
+              config.operation.drainTimeoutMs,
+              connectionReleases(opened.connections),
+            );
+            errors.push(...released.errors);
+            if (!released.released) {
+              setupTerminal = true;
+              break;
+            }
+          }
         }
       } else {
         for (let remaining = needed; remaining > 0; remaining -= config.connections.batchSize) {
@@ -349,10 +524,23 @@ export async function runConnectionScale(
           cohort.push(...opened.connections);
           connectLatencies.push(...opened.latencies);
           errors.push(...opened.errors);
-          if (opened.connections.length !== count) break;
+          if (opened.connections.length !== count) {
+            setupTerminal = opened.timedOut;
+            break;
+          }
         }
       }
       phaseEnd(rampPhaseId);
+      if (cohort.length !== target) {
+        const details = failureDetails(
+          "setup",
+          [`connected ${cohort.length}/${target}`, ...errors].join("; "),
+          setupTerminal,
+        );
+        failures.push(connectionFailure(target, details));
+        if (setupTerminal) terminalFailure = details;
+        continue;
+      }
       // Sampled levels report aggregate measured connect time; the deliberate idle gaps and
       // closes are sampling protocol, not setup work. Batched levels keep ramp wall time,
       // which contains no deliberate gaps.
@@ -373,7 +561,11 @@ export async function runConnectionScale(
         slots: cohort.length,
         drainTimeoutMs: config.operation.drainTimeoutMs,
         onWindowStart: (timestampMs) => phaseStartAt(phaseId, timestampMs),
-        cancel: () => closeAll(cohort),
+        cancel: () => releaseResources(
+          `${phaseId} connection release`,
+          config.operation.drainTimeoutMs,
+          connectionReleases(cohort),
+        ),
         operation: async (slot) => {
           const nonce = nextNonce();
           const partition = nonce % DOCUMENT_PARTITIONS;
@@ -383,10 +575,11 @@ export async function runConnectionScale(
         validate: ({ nonce, partition, value }) => validateSearch(value, partition, nonce),
       });
       phaseEndAt(phaseId, work.windowEndedAtMs);
-      results.push({
+      const connected = cohort.length;
+      const measurement: ConnectionLevelResult = {
         targetConnections: target,
-        connected: cohort.length,
-        addedConnections: cohort.length - cohortBefore,
+        connected,
+        addedConnections: connected - cohortBefore,
         setupMs,
         readyConnectionsPerSec: connectLatencies.length / (setupMs / 1_000),
         readyLatency: latencyStats(connectLatencies),
@@ -394,12 +587,51 @@ export async function runConnectionScale(
         connectedIdlePhaseId,
         work: { ...work, phaseId },
         errors,
-      });
+      };
+      if (work.interruption !== null) {
+        const details = failureDetails(
+          work.interruption.resourcesReleased ? "phase" : "cleanup",
+          work.interruption.reason,
+          !work.interruption.resourcesReleased,
+          work,
+        );
+        failures.push(connectionFailure(target, details));
+        cohort.length = 0;
+        if (!work.interruption.resourcesReleased) {
+          terminalFailure = details;
+        }
+      } else {
+        results.push(measurement);
+      }
     }
   } finally {
-    await closeAll(cohort);
+    const released = await releaseResources(
+      "connection-scale release",
+      config.operation.drainTimeoutMs,
+      connectionReleases(cohort),
+    );
+    const target = config.connections.levels.at(-1);
+    if (!released.released && target !== undefined) {
+      const measured = results.find((result) => result.targetConnections === target);
+      const existing = failures.find(
+        (failure) => failure.kind === "connection" && failure.targetConnections === target,
+      );
+      const resultIndex = measured === undefined ? -1 : results.indexOf(measured);
+      if (resultIndex !== -1) results.splice(resultIndex, 1);
+      const failureIndex = existing === undefined ? -1 : failures.indexOf(existing);
+      if (failureIndex !== -1) failures.splice(failureIndex, 1);
+      failures.push(connectionFailure(
+        target,
+        failureDetails(
+          "cleanup",
+          [...(existing === undefined ? [] : [existing.message]), ...released.errors].join("; "),
+          true,
+          existing?.partial ?? measured?.work,
+        ),
+      ));
+    }
   }
-  return results;
+  return { measurements: results, failures };
 }
 
 interface PendingDelivery {
@@ -446,7 +678,7 @@ export async function runSubscriptionCase(
   pattern: SubscriptionPattern,
   config: BenchmarkConfig,
   nextNonce: () => number,
-): Promise<SubscriptionResult> {
+): Promise<SubscriptionCaseOutcome> {
   const { users, queriesPerUser, setupTimeoutMs, drainTimeoutMs } = config.subscriptions;
   const subscribers: BenchConnection[] = [];
   const writers: BenchConnection[] = [];
@@ -463,6 +695,7 @@ export async function runSubscriptionCase(
   phaseEnd(baselineIdlePhaseId);
   const setupPhaseId = `subscriptions:${pattern}:setup`;
   const setupStartedAt = phaseStart(setupPhaseId);
+  let acceptingSubscribers = true;
 
   const onUpdate = (user: number, row: ChannelRow) => {
     if (!measuring) return;
@@ -491,31 +724,85 @@ export async function runSubscriptionCase(
   };
 
   try {
-    await withTimeout(
-      (async () => {
-        for (let start = 0; start < users; start += Math.min(25, config.connections.batchSize)) {
-          const count = Math.min(25, users - start);
-          const batch = await Promise.all(
-            Array.from({ length: count }, async (_, offset) => {
-              const user = start + offset;
-              const connection = await adapter.connect(nextNonce(), true);
+    const readiness = (async () => {
+      for (let start = 0; start < users && acceptingSubscribers; start += Math.min(25, config.connections.batchSize)) {
+        const count = Math.min(25, users - start);
+        const batch = await Promise.allSettled(
+          Array.from({ length: count }, async (_, offset) => {
+            const user = start + offset;
+            const connection = await adapter.connect(nextNonce(), true);
+            if (!acceptingSubscribers) {
+              await connection.close();
+              return;
+            }
+            try {
               const unsubscribe = await connection.subscribeChannels(
                 expectedChannels(pattern, user, users, queriesPerUser),
                 (row) => onUpdate(user, row),
               );
-              return { connection, unsubscribe };
-            }),
+              if (!acceptingSubscribers) {
+                await Promise.allSettled([unsubscribe(), connection.close()]);
+                return;
+              }
+              subscribers.push(connection);
+              unsubscribes.push(unsubscribe);
+            } catch (error) {
+              await connection.close().catch(() => {});
+              throw error;
+            }
+          }),
+        );
+        const failures = batch.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+        if (failures.length > 0) {
+          throw new AggregateError(
+            failures,
+            `${failures.length} subscription connection(s) failed: ${failures.map(errorMessage).join("; ")}`,
           );
-          for (const item of batch) {
-            subscribers.push(item.connection);
-            unsubscribes.push(item.unsubscribe);
-          }
         }
-      })(),
-      setupTimeoutMs,
-      `${pattern} subscription readiness`,
+      }
+    })();
+    let readinessSettled = false;
+    void readiness.then(
+      () => { readinessSettled = true; },
+      () => { readinessSettled = true; },
     );
-    writers.push(await adapter.connect(nextNonce(), true));
+    try {
+      await withTimeout(readiness, setupTimeoutMs, `${pattern} subscription readiness`);
+    } catch (error) {
+      acceptingSubscribers = false;
+      phaseEnd(setupPhaseId);
+      return {
+        failures: [subscriptionFailure(
+          pattern,
+          failureDetails("setup", errorMessage(error), !readinessSettled),
+        )],
+      };
+    }
+
+    const openedWriter = await openConnections(adapter, 1, nextNonce, config.connections.timeoutMs);
+    if (openedWriter.connections.length !== 1) {
+      const released = await releaseResources(
+        `${pattern} writer setup release`,
+        drainTimeoutMs,
+        connectionReleases(openedWriter.connections),
+      );
+      acceptingSubscribers = false;
+      phaseEnd(setupPhaseId);
+      return {
+        failures: [subscriptionFailure(
+          pattern,
+          failureDetails(
+            "setup",
+            `opened ${openedWriter.connections.length}/1 subscription writers: ${[
+              ...openedWriter.errors,
+              ...released.errors,
+            ].join("; ")}`,
+            openedWriter.timedOut || !released.released,
+          ),
+        )],
+      };
+    }
+    writers.push(...openedWriter.connections);
     const setupEndedAt = phaseEnd(setupPhaseId);
     const subscribedSnapshotId = `subscriptions:${pattern}:subscribed`;
     const subscribedIdlePhaseId = `subscriptions:${pattern}:idle`;
@@ -599,16 +886,42 @@ export async function runSubscriptionCase(
 
     pending.clear();
     const levels = subscriptionCapacitySlots(config.subscriptions, pattern);
-    const capacity = [];
+    const capacity: SubscriptionCapacityResult[] = [];
+    const failures: BenchmarkCaseFailure[] = [];
+    let capacityTerminalFailure: ReturnType<typeof failureDetails> | undefined;
     for (const slots of levels) {
+      if (capacityTerminalFailure !== undefined) {
+        failures.push(subscriptionCapacityFailure(pattern, slots, capacityTerminalFailure));
+        continue;
+      }
+      let writerSetupFailure: ReturnType<typeof failureDetails> | undefined;
       for (let remaining = slots - writers.length; remaining > 0; remaining -= config.connections.batchSize) {
         const count = Math.min(config.connections.batchSize, remaining);
         const opened = await openConnections(adapter, count, nextNonce, config.connections.timeoutMs);
         if (opened.connections.length !== count) {
-          await closeAll(opened.connections);
-          throw new Error(`opened ${opened.connections.length}/${count} capacity writers: ${opened.errors.join("; ")}`);
+          const released = await releaseResources(
+            `${pattern} capacity-${slots} partial writer release`,
+            drainTimeoutMs,
+            connectionReleases(opened.connections),
+          );
+          writerSetupFailure = failureDetails(
+            "setup",
+            `opened ${opened.connections.length}/${count} capacity writers: ${[
+              ...opened.errors,
+              ...released.errors,
+            ].join("; ")}`,
+            opened.timedOut || !released.released,
+          );
+          break;
         }
         writers.push(...opened.connections);
+      }
+      if (writerSetupFailure !== undefined) {
+        failures.push(subscriptionCapacityFailure(pattern, slots, writerSetupFailure));
+        if (writerSetupFailure.terminal) {
+          capacityTerminalFailure = writerSetupFailure;
+        }
+        continue;
       }
       const capacityPhaseId = `subscriptions:${pattern}:capacity-${slots}`;
       const before = { duplicates, unexpected, corrupt };
@@ -621,7 +934,11 @@ export async function runSubscriptionCase(
         slots,
         drainTimeoutMs,
         onWindowStart: (timestampMs) => phaseStartAt(capacityPhaseId, timestampMs),
-        cancel: () => closeAll(writers),
+        cancel: () => releaseResources(
+          `${capacityPhaseId} writer release`,
+          drainTimeoutMs,
+          connectionReleases(writers),
+        ),
         operation: async (slot, _sequence, cancellation) => {
           const channel = pattern === "shared" ? slot : queriesPerUser + slot * queriesPerUser;
           const version = (versions.get(channel) ?? 0) + 1;
@@ -671,7 +988,7 @@ export async function runSubscriptionCase(
       if (duplicateDelta !== 0) capacityErrors.push(`${duplicateDelta} duplicate deliveries`);
       if (unexpectedDelta !== 0) capacityErrors.push(`${unexpectedDelta} unexpected deliveries`);
       if (corruptDelta !== 0) capacityErrors.push(`${corruptDelta} corrupt deliveries`);
-      capacity.push({
+      const capacityMeasurement: SubscriptionCapacityResult = {
         ...result,
         slots,
         phaseId: capacityPhaseId,
@@ -680,11 +997,26 @@ export async function runSubscriptionCase(
         updateAckLatency: latencyStats(capacityAckLatencies),
         deliveryLatency: latencyStats(capacityDeliveryLatencies),
         correctness: { ok: result.failed === 0 && capacityErrors.length === 0, errors: capacityErrors },
-      });
+      };
       pending.clear();
+      if (result.interruption !== null) {
+        const details = failureDetails(
+          result.interruption.resourcesReleased ? "phase" : "cleanup",
+          result.interruption.reason,
+          !result.interruption.resourcesReleased,
+          result,
+        );
+        failures.push(subscriptionCapacityFailure(pattern, slots, details));
+        writers.length = 0;
+        if (!result.interruption.resourcesReleased) {
+          capacityTerminalFailure = details;
+        }
+      } else {
+        capacity.push(capacityMeasurement);
+      }
     }
 
-    return {
+    return { measurement: {
       pattern,
       users,
       queriesPerUser,
@@ -711,12 +1043,27 @@ export async function runSubscriptionCase(
       timeToAll: latencyStats(timeToAll),
       capacity,
       correctness: { ok: errors.length === 0, errors },
-    };
+    }, failures };
   } finally {
+    acceptingSubscribers = false;
     measuring = false;
-    await Promise.allSettled(unsubscribes.map((unsubscribe) => unsubscribe()));
-    await closeAll(subscribers);
-    await closeAll(writers);
+    const released = await releaseResources(
+      `${pattern} subscription release`,
+      drainTimeoutMs,
+      [
+        ...unsubscribes,
+        ...connectionReleases(subscribers),
+        ...connectionReleases(writers),
+      ],
+    );
+    if (!released.released) {
+      return {
+        failures: [subscriptionFailure(
+          pattern,
+          failureDetails("cleanup", released.errors.join("; "), true),
+        )],
+      };
+    }
   }
 }
 
@@ -729,7 +1076,12 @@ export async function runWorkload(adapter: BenchAdapter): Promise<DriverResult> 
   try {
     await seed(seeder, config);
   } finally {
-    await seeder.close();
+    const released = await releaseResources(
+      "seeder connection release",
+      config.operation.drainTimeoutMs,
+      [() => seeder.close()],
+    );
+    if (!released.released) throw new Error(released.errors.join("; "));
   }
   const seededIdle = "server:seeded-idle";
   const seededIdlePhaseId = "server:seeded-idle-window";
@@ -739,24 +1091,62 @@ export async function runWorkload(adapter: BenchAdapter): Promise<DriverResult> 
   phaseEnd(seededIdlePhaseId);
 
   const operations: OperationCaseResult[] = [];
+  const failures: BenchmarkCaseFailure[] = [];
   const accountModel: AccountModel = {
     balances: Array<number>(ACCOUNT_COUNT).fill(ACCOUNT_BALANCE),
     versions: Array<number>(ACCOUNT_COUNT).fill(0),
   };
+  let terminalFailure: BenchmarkCaseFailure | undefined;
   for (const operation of OPERATION_NAMES) {
     for (const profile of config.operation.profiles) {
-      operations.push(await runOperationCase(adapter, operation, profile, config, nextNonce, accountModel));
+      if (terminalFailure !== undefined) {
+        failures.push(operationFailure(
+          operation,
+          profile,
+          failureDetails("cleanup", `not measured after terminal failure: ${terminalFailure.message}`),
+        ));
+        continue;
+      }
+      const result = await runOperationCase(adapter, operation, profile, config, nextNonce, accountModel);
+      if ("kind" in result) {
+        failures.push(result);
+        if (result.terminal) terminalFailure = result;
+      } else {
+        operations.push(result);
+      }
     }
   }
 
   const connectionBaselineIdlePhaseId = "connections:baseline-idle";
-  phaseStart(connectionBaselineIdlePhaseId);
-  await Bun.sleep(config.resources.idleMs);
-  phaseEnd(connectionBaselineIdlePhaseId);
-  const connections = await runConnectionScale(adapter, config, nextNonce);
+  let connections: ConnectionLevelResult[];
+  if (terminalFailure === undefined) {
+    phaseStart(connectionBaselineIdlePhaseId);
+    await Bun.sleep(config.resources.idleMs);
+    phaseEnd(connectionBaselineIdlePhaseId);
+    const outcome = await runConnectionScale(adapter, config, nextNonce);
+    connections = outcome.measurements;
+    failures.push(...outcome.failures);
+    terminalFailure = outcome.failures.find((failure) => failure.terminal);
+  } else {
+    connections = [];
+    failures.push(...config.connections.levels.map((target) => connectionFailure(
+      target,
+      failureDetails("cleanup", `not measured after terminal failure: ${terminalFailure!.message}`),
+    )));
+  }
   const subscriptions: SubscriptionResult[] = [];
   for (const pattern of config.subscriptions.patterns) {
-    subscriptions.push(await runSubscriptionCase(adapter, pattern, config, nextNonce));
+    if (terminalFailure !== undefined) {
+      failures.push(subscriptionFailure(
+        pattern,
+        failureDetails("cleanup", `not measured after terminal failure: ${terminalFailure.message}`),
+      ));
+      continue;
+    }
+    const outcome = await runSubscriptionCase(adapter, pattern, config, nextNonce);
+    if (outcome.measurement !== undefined) subscriptions.push(outcome.measurement);
+    failures.push(...outcome.failures);
+    terminalFailure = outcome.failures.find((failure) => failure.terminal);
   }
 
   return {
@@ -766,5 +1156,6 @@ export async function runWorkload(adapter: BenchAdapter): Promise<DriverResult> 
     operations,
     connections,
     subscriptions,
+    failures,
   };
 }
