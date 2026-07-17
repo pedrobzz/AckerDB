@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Principal } from "./auth.ts";
-import { DbzzError } from "./errors.ts";
+import { DbzzError, throwIfAborted } from "./errors.ts";
 import type { ProcedureCtx } from "./functions.ts";
 import type {
   AnyMcpDeclaration,
@@ -35,7 +35,10 @@ export interface McpAiTool {
   readonly description: string;
   readonly inputSchema: StandardJsonProtocolSchema;
   readonly outputSchema?: StandardJsonProtocolSchema;
-  readonly execute: (input: unknown, options?: unknown) => Promise<unknown>;
+  readonly execute: (
+    input: unknown,
+    options?: { readonly abortSignal?: AbortSignal },
+  ) => Promise<unknown>;
   readonly toModelOutput: (options: {
     readonly toolCallId: string;
     readonly input: unknown;
@@ -66,6 +69,7 @@ export interface McpAiRuntimeCapability {
     tool: AnyRegisteredMcpTool,
     args: unknown,
     scopes: readonly string[],
+    signal: AbortSignal,
   ) => Promise<McpCallToolResult>;
 }
 
@@ -244,11 +248,19 @@ export function createMcpAiTools(
       description: tool.description,
       inputSchema: tool.inputCodec.inputProtocolSchema,
       ...(structured ? { outputSchema: tool.outputCodec!.outputProtocolSchema } : {}),
-      execute(input: unknown): Promise<unknown> {
+      execute(
+        input: unknown,
+        execution?: { readonly abortSignal?: AbortSignal },
+      ): Promise<unknown> {
         return runInParent(async () => {
           capability.assertActive();
-          context.abortSignal.throwIfAborted();
-          const result = await capability.execute(mcp, tool, input, scopes);
+          const signal = AbortSignal.any([
+            context.abortSignal,
+            ...(execution?.abortSignal === undefined ? [] : [execution.abortSignal]),
+          ]);
+          throwIfAborted(signal);
+          const result = await capability.execute(mcp, tool, input, scopes, signal);
+          throwIfAborted(signal);
           return structured ? result.structuredContent! : result;
         });
       },
