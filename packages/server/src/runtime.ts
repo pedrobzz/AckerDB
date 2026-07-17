@@ -95,10 +95,12 @@ import {
 } from "./invocation.ts";
 import {
   finalizeMcpToolResult,
+  type AnyRegisteredMcpTool,
   type McpToolCtx,
 } from "./mcp.ts";
 import { bindMcpAiContext, type McpAiRuntimeCapability } from "./mcp-ai.ts";
 import type { McpCallToolResult } from "./mcp-content.ts";
+import { isMcpToolAuthorized } from "./mcp-scopes.ts";
 import { withMcpTokenContext as withMcpTokenCapability } from "./mcp-token-context.ts";
 import { mcpTokenVaultOwner } from "./mcp-token-vault.ts";
 import { emitWriteKeys } from "./keys.ts";
@@ -1267,17 +1269,27 @@ export class Runtime implements RuntimePort {
     });
   }
 
+  /** Resolve one callable tool without trusting discovery or revealing inaccessible names. */
+  authorizeMcpTool(mcp: string, name: string, principal: Principal): AnyRegisteredMcpTool {
+    const endpointMatches = principal.kind !== "mcp" || principal.mcp === mcp;
+    const tool = endpointMatches ? this.registry.mcpTool(mcp, name) : undefined;
+    if (tool !== undefined && isMcpToolAuthorized(tool.accessPolicy, principal)) return tool;
+    if (principal.kind === "anonymous") {
+      throw new DbzzError("unauthenticated", "authentication required");
+    }
+    if (!endpointMatches || tool !== undefined) {
+      throw new DbzzError("unauthorized", "access denied");
+    }
+    throw new DbzzError("not_found", "MCP tool not found");
+  }
+
   private async dispatchMcpTool(
     mcp: string,
     name: string,
     args: unknown,
     context: McpToolCtx,
   ): Promise<McpCallToolResult> {
-    if (context.auth.kind === "mcp" && context.auth.mcp !== mcp) {
-      throw new DbzzError("unauthorized", "MCP credential is bound to another endpoint");
-    }
-    const tool = this.registry.mcpTool(mcp, name);
-    if (tool === undefined) throw new DbzzError("not_found", `unknown MCP tool "${name}"`);
+    const tool = this.authorizeMcpTool(mcp, name, context.auth);
     aborted(context.abortSignal);
     const value = await invokeFunction(tool, context, args);
     aborted(context.abortSignal);
@@ -2535,7 +2547,7 @@ export class Runtime implements RuntimePort {
     });
     const release = bindMcpAiContext(value, Object.freeze({
       toolsFor: (mcp) => this.registry.mcps.get(mcp.name) === mcp
-        ? this.registry.toolsFor(mcp)
+        ? this.registry.toolsFor(mcp, value.auth)
         : undefined,
       execute: (mcp, tool, args) => this.dispatchMcpTool(
         mcp.name,

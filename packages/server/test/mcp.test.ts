@@ -590,7 +590,10 @@ describe("public stateless MCP endpoint", () => {
       name: "read_status",
       arguments: {},
     }, 4);
-    expect(await unavailableAcrossEndpoints.json()).toMatchObject({ result: { isError: true } });
+    expect(unavailableAcrossEndpoints.status).toBe(401);
+    expect(await unavailableAcrossEndpoints.json()).toMatchObject({
+      error: { message: "authentication required" },
+    });
   });
 
   test("validates before the handler and commits or rolls back normal transactions", async () => {
