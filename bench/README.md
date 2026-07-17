@@ -14,7 +14,7 @@ connections, and reactive delivery through each product's current client SDK.
 
 ```sh
 bun bench/run.ts                              # default all-system run; saves passed or correctness-failed evidence
-BENCH_COMPARISON=current bun bench/run.ts     # same-host comparison only; skips historical acceptance and save
+BENCH_COMPARISON=current bun bench/run.ts     # same-host comparison; skips historical acceptance and saves evidence
 BENCH_PROFILE=quick bun bench/run.ts          # profiled all-system smoke diagnostic; never saves
 BENCH_PROFILE=stress bun bench/run.ts         # profiled all-system stress diagnostic; never saves
 bun bench/run.ts dbzz convex                  # partial diagnostic; never saves
@@ -42,6 +42,32 @@ are excluded from delta claims, while their typed case failures and partial
 request accounting remain in the saved record; the command exits failing only
 after persistence. This is the intended paired mode for comparing current
 systems on a different machine.
+
+### Retained MCP paired run
+
+The first-class MCP change was measured on one Hetzner host with an identical
+schema-v7 harness applied to pre-MCP source and MCP source. The exact chronology
+is retained below; S/E/D/R/C means SpacetimeDB, DBZZ exporter, DBZZ disabled,
+DBZZ runtime-default, and Convex.
+
+| UTC result | Source role | Order | DBZZ failures R/E/D | Runtime-default shared delivery p99 |
+| --- | --- | --- | ---: | ---: |
+| [15:34:17](results/2026-07-17T15-34-17Z-2282dfa.json) | pre-MCP baseline A | S/E/D/R/C | 0/0/0 | 34.433 ms |
+| [15:45:59](results/2026-07-17T15-45-59Z-35f4c5b.json) | MCP before fast path | R/E/D/C/S | 0/0/0 | 40.183 ms |
+| [15:58:54](results/2026-07-17T15-58-54Z-35f4c5b.json) | MCP before fast path, matched order | S/E/D/R/C | 0/0/0 | 47.061 ms |
+| [16:10:15](results/2026-07-17T16-10-15Z-2282dfa.json) | pre-MCP baseline B, matched order | S/E/D/R/C | 0/0/0 | 32.089 ms |
+| [16:50:46](results/2026-07-17T16-50-46Z-452e23d.json) | first zero-MCP fast path | S/E/D/R/C | 0/0/0 | 45.133 ms |
+| [17:33:26](results/2026-07-17T17-33-26Z-5462d58.json) | structural zero-MCP fast path | S/E/D/R/C | 0/0/0 | 36.063 ms |
+
+The final record is clean-source evidence with exact 20,000/20,000 shared
+deliveries and zero DBZZ correctness failures in all three profiles. Its
+SHA-256 is
+`a91aedef0e529063be9de161f984d27e2ffa8f85f77936fc08cfc2210107a137`.
+Convex and SpacetimeDB subscription failures made global performance acceptance
+correctly `not-evaluated`; they were persisted rather than hidden. The two
+pre-MCP draws, raw distributions, paired deltas, controlled diagnosis, failure
+semantics, source/log hashes, and non-regression conclusion are in the
+[complete MCP paired evidence](results/2026-07-17T17-33-26Z-5462d58-mcp-paired.md).
 
 All DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`. The
 `runtime-default` profile uses the production retention/queue limits, built-in
