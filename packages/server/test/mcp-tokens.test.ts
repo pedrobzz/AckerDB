@@ -8,6 +8,7 @@ import {
   encode,
   type MutationMessage,
   type QueryMessage,
+  type SubscribeMessage,
 } from "@dbzz/core";
 import {
   ANONYMOUS_PRINCIPAL,
@@ -36,7 +37,12 @@ import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
 import { defineSchema, defineTable } from "../src/schema.ts";
 import { serve } from "../src/serve.ts";
-import type { RuntimeRequest, SessionRuntimeContext } from "../src/session.ts";
+import type {
+  RuntimeRequest,
+  RuntimePublication,
+  SessionApplicationMessage,
+  SessionRuntimeContext,
+} from "../src/session.ts";
 
 const schema = defineSchema({
   records: defineTable({
@@ -50,6 +56,7 @@ const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
+const invalidUpdateKind = dbz.enum("InvalidMcpTokenUpdateKind", ["empty", "undefined"]);
 
 const agentMcp = typedMcp({ name: "agent", path: "/agent/mcp" });
 const operationsMcp = typedMcp({ name: "operations", path: "/operations/mcp" });
@@ -76,6 +83,55 @@ const listAgentTokens = typedQuery({
   access: "authenticated",
   args: {},
   handler: (ctx) => agentMcp.tokens.list(ctx),
+});
+
+const renameAgentToken = typedMutation({
+  access: "authenticated",
+  args: { id: dbz.string(), name: dbz.string() },
+  handler: (ctx, args) => agentMcp.tokens.update(ctx, args.id, { name: args.name }),
+});
+
+const updateAgentTokenMetadata = typedMutation({
+  access: "authenticated",
+  args: {
+    id: dbz.string(),
+    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
+  },
+  handler: (ctx, args) => agentMcp.tokens.update(ctx, args.id, { metadata: args.metadata }),
+});
+
+const invalidAgentTokenUpdate = typedMutation({
+  access: "authenticated",
+  args: { id: dbz.string(), kind: invalidUpdateKind },
+  handler: (ctx, args) => agentMcp.tokens.update(
+    ctx,
+    args.id,
+    (args.kind === "empty" ? {} : { name: undefined }) as never,
+  ),
+});
+
+const revokeAgentToken = typedMutation({
+  access: "authenticated",
+  args: { id: dbz.string() },
+  handler: (ctx, args) => agentMcp.tokens.revoke(ctx, args.id),
+});
+
+const renameOperationsToken = typedMutation({
+  access: "authenticated",
+  args: { id: dbz.string(), name: dbz.string() },
+  handler: (ctx, args) => operationsMcp.tokens.update(ctx, args.id, { name: args.name }),
+});
+
+const revokeOperationsToken = typedMutation({
+  access: "authenticated",
+  args: { id: dbz.string() },
+  handler: (ctx, args) => operationsMcp.tokens.revoke(ctx, args.id),
+});
+
+const listOperationsTokens = typedQuery({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => operationsMcp.tokens.list(ctx),
 });
 
 const createScopedToken = typedMutation({
@@ -199,8 +255,15 @@ const modules = {
   tokens: {
     createAgentToken,
     createScopedToken,
+    invalidAgentTokenUpdate,
     listAgentTokens,
+    listOperationsTokens,
+    renameAgentToken,
+    renameOperationsToken,
+    revokeAgentToken,
+    revokeOperationsToken,
     listScopedTokens,
+    updateAgentTokenMetadata,
     updateScopedToken,
   },
 };
@@ -247,14 +310,21 @@ async function user(runtime: Runtime, subject: string): Promise<UserPrincipal> {
   });
 }
 
-function session(principal: UserPrincipal, name: string): SessionRuntimeContext {
+function session(
+  principal: UserPrincipal,
+  name: string,
+  publications?: SessionApplicationMessage[],
+): SessionRuntimeContext {
   return Object.freeze({
     clientSessionId: name,
     principal,
     fairnessKey: callerFairnessKey(principal, { family: "test", address: name }),
     authEpoch: 0,
     signal: new AbortController().signal,
-    publish: async () => true,
+    publish: async (publication: RuntimePublication) => {
+      publications?.push(publication.message);
+      return true;
+    },
   });
 }
 
@@ -282,6 +352,10 @@ function mutationMessage(
 
 function queryMessage(id: number, ref = "tokens.listAgentTokens"): QueryMessage {
   return { v: PROTOCOL_VERSION, t: "q", id, ref, args: {} };
+}
+
+function subscribeMessage(id: number, ref = "tokens.listAgentTokens"): SubscribeMessage {
+  return { v: PROTOCOL_VERSION, t: "sub", id, ref, args: {} };
 }
 
 function mcpHeaders(token?: string): Record<string, string> {
@@ -405,6 +479,142 @@ describe("Identity-bound MCP owner tokens", () => {
       name: "Over capacity",
       metadata: {},
     })))).rejects.toMatchObject({ code: "overloaded" });
+  });
+
+  test("reactively edits and revokes only the owner's endpoint-bound descriptor", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-token-lifecycle-"));
+    directories.push(directory);
+    const { engine, runtime } = fixture(join(directory, "data.db"));
+    const alice = await user(runtime, "lifecycle-alice");
+    const publications: SessionApplicationMessage[] = [];
+    const aliceSession = session(alice, "lifecycle-alice-session", publications);
+    await runtime.openSession(aliceSession);
+    await runtime.subscribe(aliceSession, request(subscribeMessage(100)));
+
+    const lifecycleTransitions = () => publications.filter((message) =>
+      message.t === "transition" && message.id === 100 &&
+      (message.transition.kind === "reset" || message.transition.kind === "update")
+    );
+    expect(lifecycleTransitions()).toHaveLength(1);
+    expect(lifecycleTransitions()[0]).toMatchObject({ transition: { kind: "reset", value: [] } });
+
+    const created = (await runtime.mutation(aliceSession, request(mutationMessage(101, "101", {
+      name: "Laptop",
+      metadata: { device: "mac" },
+    })))).value as { readonly id: string; readonly token: string };
+    expect(lifecycleTransitions()).toHaveLength(2);
+    expect(lifecycleTransitions().at(-1)).toMatchObject({
+      transition: { kind: "update", value: [{ id: created.id, name: "Laptop" }] },
+    });
+
+    const before = engine.reader.query(
+      "SELECT secret_digest, scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
+    ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
+    const active = await runtime.authenticateMcpToken("agent", created.token, "before-edit");
+
+    await runtime.mutation(aliceSession, request(mutationMessage(
+      102,
+      "102",
+      { id: created.id, name: "Personal Codex" },
+      "tokens.renameAgentToken",
+    )));
+    expect(lifecycleTransitions()).toHaveLength(3);
+    expect(lifecycleTransitions().at(-1)).toMatchObject({
+      transition: { kind: "update", value: [{ name: "Personal Codex", metadata: { device: "mac" } }] },
+    });
+
+    await runtime.mutation(aliceSession, request(mutationMessage(
+      103,
+      "103",
+      { id: created.id, metadata: { device: "mac", color: "blue", generation: 2n } },
+      "tokens.updateAgentTokenMetadata",
+    )));
+    expect(lifecycleTransitions()).toHaveLength(4);
+    expect(lifecycleTransitions().at(-1)).toMatchObject({
+      transition: {
+        kind: "update",
+        value: [{ name: "Personal Codex", metadata: { device: "mac", color: "blue", generation: 2n } }],
+      },
+    });
+
+    const after = engine.reader.query(
+      "SELECT secret_digest, scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
+    ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
+    expect(Buffer.from(after.secret_digest)).toEqual(Buffer.from(before.secret_digest));
+    expect(after.scopes).toBe(before.scopes);
+    expect(await runtime.authenticateMcpToken("agent", created.token, "after-edit"))
+      .toMatchObject({ identity: alice.identity, tokenId: created.id });
+    const activeResult = await runtime.runMcpTool({
+      id: "active-through-descriptor-edit",
+      mcp: "agent",
+      tool: "write_owned_record",
+      args: { value: "still-active" },
+      principal: active,
+    });
+    expect(activeResult.content[0]).toMatchObject({ text: `mcp:${alice.identity}` });
+
+    for (const [id, args, ref] of [
+      [104, { id: created.id, metadata: { value: "x".repeat(PRODUCTION_LIMITS.mcp.maxMetadataBytes) } }, "tokens.updateAgentTokenMetadata"],
+      [105, { id: created.id, kind: "empty" }, "tokens.invalidAgentTokenUpdate"],
+      [106, { id: created.id, kind: "undefined" }, "tokens.invalidAgentTokenUpdate"],
+    ] as const) {
+      await expect(runtime.mutation(aliceSession, request(mutationMessage(id, String(id), args, ref))))
+        .rejects.toMatchObject({ code: "validation" });
+    }
+    expect(lifecycleTransitions()).toHaveLength(4);
+
+    const bob = await user(runtime, "lifecycle-bob");
+    const bobSession = session(bob, "lifecycle-bob-session");
+    await runtime.openSession(bobSession);
+    expect(await runtime.query(bobSession, request(queryMessage(107)))).toEqual([]);
+    expect(await runtime.query(
+      aliceSession,
+      request(queryMessage(108, "tokens.listOperationsTokens")),
+    )).toEqual([]);
+    for (const [id, context, args, ref] of [
+      [109, bobSession, { id: created.id, name: "Stolen" }, "tokens.renameAgentToken"],
+      [110, bobSession, { id: created.id }, "tokens.revokeAgentToken"],
+      [111, aliceSession, { id: created.id, name: "Wrong endpoint" }, "tokens.renameOperationsToken"],
+      [112, aliceSession, { id: created.id }, "tokens.revokeOperationsToken"],
+    ] as const) {
+      await expect(runtime.mutation(context, request(mutationMessage(id, String(id), args, ref))))
+        .rejects.toMatchObject({ code: "not_found" });
+    }
+    expect(lifecycleTransitions()).toHaveLength(4);
+    const unchanged = await runtime.query(
+      aliceSession,
+      request(queryMessage(113)),
+    ) as readonly Record<string, unknown>[];
+    expect(unchanged).toMatchObject([{
+      id: created.id,
+      name: "Personal Codex",
+      metadata: { device: "mac", color: "blue", generation: 2n },
+    }]);
+    expect(unchanged[0]).not.toHaveProperty("token");
+    expect(await runtime.authenticateMcpToken("agent", created.token, "after-isolation-checks"))
+      .toMatchObject({ identity: alice.identity, tokenId: created.id });
+
+    await runtime.mutation(aliceSession, request(mutationMessage(
+      114,
+      "114",
+      { id: created.id },
+      "tokens.revokeAgentToken",
+    )));
+    expect(lifecycleTransitions()).toHaveLength(5);
+    expect(lifecycleTransitions().at(-1)).toMatchObject({ transition: { kind: "update", value: [] } });
+    await expect(runtime.authenticateMcpToken("agent", created.token, "after-revoke"))
+      .rejects.toMatchObject({ code: "unauthenticated" });
+
+    const server = serve({ runtime, port: 0 });
+    cleanups.push(async () => server.drain());
+    const response = await rpc(
+      `http://127.0.0.1:${server.port}`,
+      "/agent/mcp",
+      "ping",
+      {},
+      created.token,
+    );
+    expect(response.status).toBe(401);
   });
 
   test("stores exact immutable grants and enforces explicit authenticated, any-of, and all-of policy", async () => {
