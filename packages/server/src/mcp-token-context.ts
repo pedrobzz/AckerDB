@@ -35,13 +35,19 @@ interface McpTokenContextCapability {
 
 const capabilities = new WeakMap<object, McpTokenContextCapability>();
 
-/** Bind reserved Engine state to one exact Runtime-created invocation context. */
-export function bindMcpTokenContext<T extends object>(
-  ctx: T,
+/** Expose reserved Engine state only while one exact Runtime invocation is active. */
+export async function withMcpTokenContext<T extends object, R>(
+  context: T,
   capability: McpTokenContextCapability,
-): T {
+  work: (ctx: T) => R | Promise<R>,
+): Promise<Awaited<R>> {
+  const ctx = Object.freeze(context);
   capabilities.set(ctx, capability);
-  return ctx;
+  try {
+    return await work(ctx);
+  } finally {
+    capabilities.delete(ctx);
+  }
 }
 
 function capability(ctx: object, write: boolean): McpTokenContextCapability & {

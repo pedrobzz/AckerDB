@@ -98,7 +98,7 @@ import {
   type McpToolCtx,
   type McpToolResult,
 } from "./mcp.ts";
-import { bindMcpTokenContext } from "./mcp-token-context.ts";
+import { withMcpTokenContext as withMcpTokenCapability } from "./mcp-token-context.ts";
 import { mcpTokenVaultOwner } from "./mcp-token-vault.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
@@ -1062,15 +1062,16 @@ export class Runtime implements RuntimePort {
           functionRef: message.ref,
           argsFingerprint: digest(message.args),
         },
-        work: (db, writes) => invokeFunction(
-          fn,
-          this.mcpTokenContext(
-            { db, auth: context.principal },
-            this.engine.writer,
-            null,
-            writes,
+        work: (db, writes) => this.withMcpTokenContext(
+          { db, auth: context.principal },
+          this.engine.writer,
+          null,
+          writes,
+          (ctx) => invokeFunction(
+            fn,
+            ctx,
+            message.args,
           ),
-          message.args,
         ),
         publication: (_version, writes) => {
           scheduledTouched = writes.scheduledTouched;
@@ -1217,6 +1218,9 @@ export class Runtime implements RuntimePort {
 
   /** The single deep MCP execution path used by every present and future adapter. */
   async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpToolResult> {
+    if (request.principal.kind === "mcp" && request.principal.mcp !== request.mcp) {
+      throw new DbzzError("unauthorized", "MCP credential is bound to another endpoint");
+    }
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
       jsonrpc: "2.0",
@@ -1687,15 +1691,12 @@ export class Runtime implements RuntimePort {
               if (raw === null) throw STALE_SCHEDULED_CANDIDATE;
               row = this.engine.rowFromSql(plan, raw);
               const fn = this.expect(candidate.address, "mutation");
-              await invokeFunction(
-                fn,
-                this.mcpTokenContext(
-                  { db, auth: SYSTEM_PRINCIPAL },
-                  this.engine.writer,
-                  null,
-                  writes,
-                ),
-                row,
+              await this.withMcpTokenContext(
+                { db, auth: SYSTEM_PRINCIPAL },
+                this.engine.writer,
+                null,
+                writes,
+                (ctx) => invokeFunction(fn, ctx, row),
               );
             },
             finalize: (writes) => {
@@ -2249,10 +2250,12 @@ export class Runtime implements RuntimePort {
           recorder,
           this.telemetry.enabled ? this.observeStatement : undefined,
         );
-        const value = await invokeFunction(
-          fn,
-          this.mcpTokenContext({ db, auth: principal }, connection, recorder, null),
-          args,
+        const value = await this.withMcpTokenContext(
+          { db, auth: principal },
+          connection,
+          recorder,
+          null,
+          (ctx) => invokeFunction(fn, ctx, args),
         );
         aborted(signal);
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
@@ -2455,12 +2458,13 @@ export class Runtime implements RuntimePort {
                 }
               : {}),
             signal,
-            work: (db, writes) => work(this.mcpTokenContext(
+            work: (db, writes) => this.withMcpTokenContext(
               { db, auth: principal },
               this.engine.writer,
               null,
               writes,
-            )),
+              work,
+            ),
             publication: (_version, writes) => {
               scheduledTouched = writes.scheduledTouched;
               return this.publicationFor(writes);
@@ -2504,22 +2508,22 @@ export class Runtime implements RuntimePort {
     });
   }
 
-  private mcpTokenContext<T extends { readonly auth: Principal }>(
+  private withMcpTokenContext<T extends { readonly auth: Principal }, R>(
     context: T,
     connection: Database,
     reads: ReadRecorder | null,
     writes: WriteCollector | null,
-  ): T {
-    const frozen = Object.freeze(context);
-    return bindMcpTokenContext(frozen, {
+    work: (ctx: T) => R | Promise<R>,
+  ): Promise<Awaited<R>> {
+    return withMcpTokenCapability(context, {
       engine: this.engine,
       connection,
-      principal: frozen.auth,
+      principal: context.auth,
       reads,
       writes,
       limits: this.limits.mcp,
       now: this.now,
-    });
+    }, work);
   }
 
   private publicationFor(writes: WriteCollector, caller?: Subscriber): ReactiveCommit {

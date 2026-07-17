@@ -23,6 +23,7 @@ import {
   mutation,
   procedure,
   query,
+  type MutationCtx,
   type MutationBuilder,
   type ProcedureBuilder,
   type QueryBuilder,
@@ -51,6 +52,7 @@ const typedMcp = createMcp as McpBuilder<typeof schema>;
 
 const agentMcp = typedMcp({ name: "agent", path: "/agent/mcp" });
 const operationsMcp = typedMcp({ name: "operations", path: "/operations/mcp" });
+let retainedOwnerContext: MutationCtx<typeof schema> | null = null;
 
 const createAgentToken = typedMutation({
   access: "authenticated",
@@ -58,7 +60,10 @@ const createAgentToken = typedMutation({
     name: dbz.string(),
     metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
   },
-  handler: (ctx, args) => agentMcp.tokens.create(ctx, args),
+  handler: (ctx, args) => {
+    retainedOwnerContext = ctx;
+    return agentMcp.tokens.create(ctx, args);
+  },
 });
 
 const listAgentTokens = typedQuery({
@@ -109,6 +114,7 @@ const directories: string[] = [];
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
+  retainedOwnerContext = null;
   while (cleanups.length > 0) await cleanups.pop()!().catch(() => {});
   while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
 });
@@ -255,6 +261,12 @@ describe("Identity-bound MCP owner tokens", () => {
     expect(
       engine.writer.query("SELECT result_disposition, result, result_bytes FROM _dbz_mutations").get(),
     ).toEqual({ result_disposition: "one-time", result: null, result_bytes: 0n });
+    expect(() => agentMcp.tokens.create(retainedOwnerContext!, {
+      name: "Escaped context",
+      metadata: {},
+    })).toThrow("MCP token operations require a DBZZ invocation context");
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens").get())
+      .toEqual({ count: 1n });
 
     await expect(runtime.mutation(aliceSession, request(firstMessage))).rejects.toMatchObject({
       code: "conflict",
@@ -320,6 +332,10 @@ describe("Identity-bound MCP owner tokens", () => {
       firstSession,
       request(mutationMessage(1, "10", { name: "Codex", metadata: { host: "codex" } })),
     )).value as { readonly token: string; readonly id: string };
+    const secondCreated = (await first.runtime.mutation(
+      firstSession,
+      request(mutationMessage(2, "11", { name: "Claude", metadata: { host: "claude" } })),
+    )).value as { readonly token: string; readonly id: string };
     await first.runtime.drain();
     first.engine.close("clean");
     cleanups.pop();
@@ -338,6 +354,23 @@ describe("Identity-bound MCP owner tokens", () => {
       mcp: "agent",
       tokenId: created.id,
     });
+    expect(await second.runtime.authenticateMcpToken(
+      "agent",
+      secondCreated.token,
+      "test-second-mcp-auth",
+    )).toEqual({
+      kind: "mcp",
+      identity: firstAlice.identity,
+      mcp: "agent",
+      tokenId: secondCreated.id,
+    });
+    await expect(second.runtime.runMcpTool({
+      id: "wrong-endpoint",
+      mcp: "operations",
+      tool: "write_owned_record",
+      args: { value: "forbidden" },
+      principal,
+    })).rejects.toMatchObject({ code: "unauthorized" });
     await expect(second.runtime.runProcedure({
       id: 1,
       address: "security.normalProcedure",
@@ -355,16 +388,21 @@ describe("Identity-bound MCP owner tokens", () => {
     const base = `http://127.0.0.1:${server.port}`;
     const called = await rpc(base, "/agent/mcp", "tools/call", {
       name: "write_owned_record",
-      arguments: { value: "delegated" },
+      arguments: { value: "delegated-codex" },
     }, created.token);
     expect(called.status).toBe(200);
     expect(await called.json()).toMatchObject({
       result: { content: [{ type: "text", text: `mcp:${firstAlice.identity}` }] },
     });
-    expect(second.engine.reader.query("SELECT owner, value FROM records").get()).toEqual({
-      owner: firstAlice.identity,
-      value: "delegated",
-    });
+    const secondCalled = await rpc(base, "/agent/mcp", "tools/call", {
+      name: "write_owned_record",
+      arguments: { value: "delegated-claude" },
+    }, secondCreated.token);
+    expect(secondCalled.status).toBe(200);
+    expect(second.engine.reader.query("SELECT owner, value FROM records ORDER BY id").all()).toEqual([
+      { owner: firstAlice.identity, value: "delegated-codex" },
+      { owner: firstAlice.identity, value: "delegated-claude" },
+    ]);
 
     for (const [endpoint, token] of [
       ["/operations/mcp", created.token],
@@ -383,7 +421,7 @@ describe("Identity-bound MCP owner tokens", () => {
     }, created.token);
     expect(await selfAdmin.json()).toMatchObject({ result: { isError: true } });
     expect(second.engine.reader.query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens").get())
-      .toEqual({ count: 1n });
+      .toEqual({ count: 2n });
 
     const anonymous = await rpc(base, "/agent/mcp", "tools/call", {
       name: "write_owned_record",
