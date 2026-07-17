@@ -11,7 +11,13 @@ import type { Invocable } from "./functions.ts";
 import { validateArgsShape } from "./functions.ts";
 import { brand, hasBrand } from "./identity.ts";
 import { compileInvocation } from "./invocation.ts";
-import { createMcpAiTools, type McpAiToolSet } from "./mcp-ai.ts";
+import {
+  createMcpAiTools,
+  mcpLocalGrant,
+  type McpAiContext,
+  type McpAiToolsOptions,
+  type McpAiToolSet,
+} from "./mcp-ai.ts";
 import {
   createMcpTokenOperations,
   createSystemMcpTokenOperations,
@@ -59,7 +65,13 @@ export type {
   McpTextResourceContents,
   McpToolResult,
 } from "./mcp-content.ts";
-export type { McpAiModelOutput, McpAiTool, McpAiToolSet } from "./mcp-ai.ts";
+export type {
+  McpAiContext,
+  McpAiModelOutput,
+  McpAiToolsOptions,
+  McpAiTool,
+  McpAiToolSet,
+} from "./mcp-ai.ts";
 
 const MCP_IDENTITY = Symbol.for("@dbzz/server/Mcp/v1");
 const MCP_TOOL_IDENTITY = Symbol.for("@dbzz/server/McpTool/v1");
@@ -189,7 +201,10 @@ export interface McpEndpointDeclaration<
 type McpDeclarationOperations<S extends Schema, Scope extends string> = {
   readonly tokens: McpTokenOperations<S, Scope>;
   readonly systemTokens: SystemMcpTokenOperations<S, Scope>;
-  aiTools(ctx: ProcedureCtx<S>): McpAiToolSet;
+  aiTools(
+    ctx: McpAiContext<S>,
+    options?: McpAiToolsOptions<Scope>,
+  ): McpAiToolSet;
   tool<A extends ObjectShape, O extends ObjectValidator | undefined = undefined>(
     definition: McpToolDefinition<A, O, S, Scope>,
   ): RegisteredMcpTool<A, O, S>;
@@ -389,8 +404,11 @@ export function createMcp(
     ...(scopeDescriptor === undefined ? {} : { scopes: scopeDescriptor }),
     tokens,
     systemTokens,
-    aiTools(context: ProcedureCtx<Schema>): McpAiToolSet {
-      return createMcpAiTools(declaration, context);
+    aiTools(
+      context: McpAiContext,
+      options?: McpAiToolsOptions<string>,
+    ): McpAiToolSet {
+      return createMcpAiTools(declaration, context, options);
     },
     tool(definition: McpToolDefinition<
       ObjectShape,
@@ -446,7 +464,11 @@ export function createMcp(
         outputValidator,
         outputCodec,
         outputSchema: outputCodec?.outputSchema,
-        access: (ctx: McpToolCtx) => isMcpToolAuthorized(accessPolicy, ctx.auth),
+        access: (ctx: McpToolCtx) => isMcpToolAuthorized(
+          accessPolicy,
+          ctx.auth,
+          mcpLocalGrant(ctx.auth, declaration),
+        ),
         handler: definition.handler,
       };
       brand(tool, MCP_TOOL_IDENTITY);

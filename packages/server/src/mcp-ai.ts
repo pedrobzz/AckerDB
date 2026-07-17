@@ -1,13 +1,21 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { Principal } from "./auth.ts";
+import { DbzzError } from "./errors.ts";
 import type { ProcedureCtx } from "./functions.ts";
 import type {
   AnyMcpDeclaration,
   AnyRegisteredMcpTool,
+  McpEndpointDeclaration,
 } from "./mcp.ts";
 import type {
   McpCallToolResult,
   McpJsonValue,
 } from "./mcp-content.ts";
+import {
+  isMcpToolAuthorized,
+  normalizeMcpScopeGrant,
+} from "./mcp-scopes.ts";
+import type { Schema } from "./schema.ts";
 import type { StandardJsonProtocolSchema } from "./standard-schema.ts";
 
 type McpAiContent =
@@ -37,6 +45,18 @@ export interface McpAiTool {
 
 export type McpAiToolSet = Readonly<Record<string, McpAiTool>>;
 
+export type McpAiContext<S extends Schema = Schema> = Pick<
+  ProcedureCtx<S>,
+  "auth" | "abortSignal" | "tx"
+>;
+
+export type McpAiToolsOptions<Scope extends string = never> = Readonly<
+  { readonly includeUnavailable?: boolean } &
+    ([Scope] extends [never]
+      ? { readonly scopes?: never }
+      : { readonly scopes?: readonly Scope[] })
+>;
+
 export interface McpAiRuntimeCapability {
   readonly toolsFor: (
     mcp: AnyMcpDeclaration,
@@ -45,6 +65,7 @@ export interface McpAiRuntimeCapability {
     mcp: AnyMcpDeclaration,
     tool: AnyRegisteredMcpTool,
     args: unknown,
+    scopes: readonly string[],
   ) => Promise<McpCallToolResult>;
 }
 
@@ -52,11 +73,19 @@ interface BoundMcpAiCapability extends McpAiRuntimeCapability {
   readonly assertActive: () => void;
 }
 
-const capabilities = new WeakMap<ProcedureCtx, BoundMcpAiCapability>();
+interface McpLocalAuthority {
+  readonly principal: Principal;
+  readonly mcp: AnyMcpDeclaration;
+  readonly scopes: readonly string[];
+}
 
-/** Bind same-process MCP authority to one Runtime-owned procedure lifecycle. */
+const EMPTY_SCOPES: readonly string[] = Object.freeze([]);
+const capabilities = new WeakMap<McpAiContext, BoundMcpAiCapability>();
+const localAuthority = new AsyncLocalStorage<McpLocalAuthority>();
+
+/** Bind same-process MCP authority to one Runtime-owned server-function lifecycle. */
 export function bindMcpAiContext(
-  context: ProcedureCtx,
+  context: McpAiContext,
   capability: McpAiRuntimeCapability,
 ): () => void {
   if (capabilities.has(context)) {
@@ -77,6 +106,93 @@ export function bindMcpAiContext(
   };
 }
 
+/** Run one local call with an immutable grant bound to its exact parent and MCP. */
+export function withMcpLocalAuthority<T>(
+  principal: Principal,
+  mcp: AnyMcpDeclaration,
+  scopes: readonly string[],
+  work: () => T,
+): T {
+  return localAuthority.run(Object.freeze({ principal, mcp, scopes }), work);
+}
+
+/** Resolve the local grant without allowing it to leak to another context or endpoint. */
+export function mcpLocalGrant(
+  principal: Principal,
+  mcp: McpEndpointDeclaration,
+): readonly string[] | undefined {
+  const authority = localAuthority.getStore();
+  if (authority === undefined) return undefined;
+  return authority.principal === principal && authority.mcp === mcp
+    ? authority.scopes
+    : EMPTY_SCOPES;
+}
+
+interface NormalizedMcpAiToolsOptions {
+  readonly includeUnavailable: boolean;
+  readonly scopes: readonly string[];
+}
+
+function normalizeOptions(
+  mcp: AnyMcpDeclaration,
+  value: McpAiToolsOptions<string> | undefined,
+): NormalizedMcpAiToolsOptions {
+  if (value === undefined) {
+    return Object.freeze({ includeUnavailable: false, scopes: EMPTY_SCOPES });
+  }
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("MCP AI tools options must be an object");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError("MCP AI tools options must be a plain object");
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== "scopes" && key !== "includeUnavailable") {
+      throw new TypeError(`unknown MCP AI tools option ${JSON.stringify(key)}`);
+    }
+  }
+  if (
+    value.includeUnavailable !== undefined &&
+    typeof value.includeUnavailable !== "boolean"
+  ) {
+    throw new TypeError("MCP AI tools includeUnavailable must be a boolean");
+  }
+  if (!("scopes" in mcp)) {
+    if ("scopes" in value) {
+      throw new TypeError(`MCP "${mcp.name}" declares no scopes`);
+    }
+    return Object.freeze({
+      includeUnavailable: value.includeUnavailable ?? false,
+      scopes: EMPTY_SCOPES,
+    });
+  }
+  let scopes: readonly string[];
+  try {
+    scopes = normalizeMcpScopeGrant(
+      mcp.scopes,
+      value.scopes ?? EMPTY_SCOPES,
+      `MCP "${mcp.name}" local scopes`,
+    );
+  } catch (error) {
+    if (error instanceof DbzzError) throw new TypeError(error.message);
+    throw error;
+  }
+  return Object.freeze({
+    includeUnavailable: value.includeUnavailable ?? false,
+    scopes,
+  });
+}
+
+function effectiveGrant(
+  principal: Principal,
+  requested: readonly string[],
+): readonly string[] {
+  if (principal.kind === "user") return requested;
+  if (principal.kind !== "mcp") return EMPTY_SCOPES;
+  return Object.freeze(requested.filter((scope) => principal.scopes.includes(scope)));
+}
+
 function richModelOutput(result: McpCallToolResult): McpAiModelOutput {
   return {
     type: "content",
@@ -94,10 +210,11 @@ function richModelOutput(result: McpCallToolResult): McpAiModelOutput {
   };
 }
 
-/** Materialize only the public, registry-owned tools visible to this Runtime. */
+/** Materialize the registry-owned tools available under one explicit local delegation. */
 export function createMcpAiTools(
   mcp: AnyMcpDeclaration,
-  context: ProcedureCtx,
+  context: McpAiContext,
+  options?: McpAiToolsOptions<string>,
 ): McpAiToolSet {
   const capability = capabilities.get(context);
   if (capability === undefined) {
@@ -108,11 +225,19 @@ export function createMcpAiTools(
   if (registered === undefined) {
     throw new TypeError(`MCP "${mcp.name}" is not exported by this Runtime`);
   }
+  const normalized = normalizeOptions(mcp, options);
+  const scopes = effectiveGrant(context.auth, normalized.scopes);
+  const endpointAvailable = context.auth.kind !== "mcp" || context.auth.mcp === mcp.name;
 
   const runInParent = AsyncLocalStorage.snapshot();
   const tools: Record<string, McpAiTool> = Object.create(null) as Record<string, McpAiTool>;
   for (const tool of registered) {
-    if (tool.accessPolicy.kind !== "public") continue;
+    const available = endpointAvailable && isMcpToolAuthorized(
+      tool.accessPolicy,
+      context.auth,
+      scopes,
+    );
+    if (!available && !normalized.includeUnavailable) continue;
     const structured = tool.outputCodec !== undefined;
     tools[tool.name] = Object.freeze({
       ...(tool.title === undefined ? {} : { title: tool.title }),
@@ -123,7 +248,7 @@ export function createMcpAiTools(
         return runInParent(async () => {
           capability.assertActive();
           context.abortSignal.throwIfAborted();
-          const result = await capability.execute(mcp, tool, input);
+          const result = await capability.execute(mcp, tool, input, scopes);
           return structured ? result.structuredContent! : result;
         });
       },
