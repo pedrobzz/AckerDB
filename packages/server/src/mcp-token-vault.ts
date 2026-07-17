@@ -90,6 +90,24 @@ function digest(secret: string): Uint8Array {
   return createHash("sha256").update(secret).digest();
 }
 
+function validateIdentity(identity: unknown): asserts identity is Identity {
+  if (typeof identity !== "bigint" || identity <= 0n) {
+    throw new DbzzError("validation", "MCP token Identity must be a positive bigint");
+  }
+}
+
+function requireIdentity(connection: Database, identity: Identity): void {
+  if (connection.query("SELECT 1 FROM _dbz_identities WHERE identity = ?").get(identity) === null) {
+    throw new DbzzError("not_found", "Identity not found");
+  }
+}
+
+function validateTokenId(tokenId: unknown): asserts tokenId is string {
+  if (typeof tokenId !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(tokenId)) {
+    throw new DbzzError("validation", "MCP token ID is invalid");
+  }
+}
+
 function metadata(value: unknown, maxBytes: number): {
   readonly encoded: string;
   readonly value: Readonly<Record<string, unknown>>;
@@ -201,6 +219,7 @@ export class McpTokenVault {
     limits: McpTokenLimits,
     now: number,
   ): CreatedMcpToken<Scope> {
+    validateIdentity(identity);
     if (input === null || typeof input !== "object" || Array.isArray(input)) {
       throw new DbzzError("validation", "MCP token create input must be an object");
     }
@@ -221,6 +240,7 @@ export class McpTokenVault {
       ? Object.freeze([])
       : normalizeMcpScopeGrant(scopeDescriptor, input.scopes, "MCP token scopes");
     if (!Number.isFinite(now) || now < 0) throw new RangeError("MCP token clock must be finite and non-negative");
+    requireIdentity(this.writer, identity);
     const count = this.writer
       .query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens WHERE identity = ? AND mcp = ?")
       .get(identity, mcp) as { readonly count: bigint };
@@ -253,6 +273,8 @@ export class McpTokenVault {
     mcp: string,
     scopeDescriptor: McpScopeDescriptor<Scope> | undefined,
   ): readonly McpTokenDescriptor<Scope>[] {
+    validateIdentity(identity);
+    requireIdentity(connection, identity);
     const rows = connection.query(
       `SELECT token_id, mcp, name, metadata, scopes, created_at, updated_at
         FROM _dbz_mcp_tokens
@@ -270,15 +292,24 @@ export class McpTokenVault {
     scopeDescriptor: McpScopeDescriptor<Scope>,
     now: number,
   ): void {
-    if (typeof tokenId !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(tokenId)) {
-      throw new DbzzError("validation", "MCP token ID is invalid");
-    }
+    validateIdentity(identity);
+    validateTokenId(tokenId);
     const scopes = normalizeMcpScopeGrant(scopeDescriptor, value, "MCP token scopes");
     const result = this.writer.query(
       `UPDATE _dbz_mcp_tokens
         SET scopes = ?, updated_at = ?
         WHERE token_id = ? AND identity = ? AND mcp = ?`,
     ).run(encode(scopes), now, tokenId, identity, mcp);
+    if (result.changes === 0) throw new DbzzError("not_found", "MCP token not found");
+  }
+
+  revoke(identity: Identity, mcp: string, tokenId: string): void {
+    validateIdentity(identity);
+    validateTokenId(tokenId);
+    requireIdentity(this.writer, identity);
+    const result = this.writer.query(
+      "DELETE FROM _dbz_mcp_tokens WHERE token_id = ? AND identity = ? AND mcp = ?",
+    ).run(tokenId, identity, mcp);
     if (result.changes === 0) throw new DbzzError("not_found", "MCP token not found");
   }
 
