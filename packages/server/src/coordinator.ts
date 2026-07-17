@@ -23,6 +23,7 @@ import {
   type StoredMutation,
 } from "./mutation-replay.ts";
 import { outcomeFromError } from "./outcome.ts";
+import { isOneTimeResult } from "./one-time-result.ts";
 import type { PublicationReservation } from "./publication.ts";
 import type { Schema } from "./schema.ts";
 
@@ -119,7 +120,7 @@ export interface CommitRequest<T, Publication> {
   /** Restore the request owner's async instrumentation while its writer turn runs. */
   readonly run?: <R>(work: () => R) => R;
   readonly idempotency?: IdempotencyIdentity;
-  readonly work: (db: DbWriter<Schema>) => T | Promise<T>;
+  readonly work: (db: DbWriter<Schema>, writes: WriteCollector) => T | Promise<T>;
   /** Additional storage work, such as deleting a due row, in the same transaction. */
   readonly finalize?: (writes: WriteCollector) => void | Promise<void>;
   readonly publication: (version: bigint, writes: WriteCollector) => Publication;
@@ -412,6 +413,9 @@ export class CommitCoordinator<Publication> {
           if (!sameIdentity(stored, idempotency)) {
             throw conflict("mutation request ID was already used with different semantics");
           }
+          if (stored.resultDisposition === "one-time") {
+            throw conflict("mutation committed, but its one-time result is no longer available");
+          }
           observeCommit(request, {
             stage: "storage",
             outcome: "ok",
@@ -423,7 +427,7 @@ export class CommitCoordinator<Publication> {
           replayObserved = true;
           return {
             result: {
-              value: decode(stored.result) as T,
+              value: decode(stored.result!) as T,
               commitVersion: stored.commitVersion,
               durability: stored.durability,
               replay: "replayed",
@@ -487,7 +491,7 @@ export class CommitCoordinator<Publication> {
       let value: T;
       try {
         value = await transaction.run(true, async () => {
-          const result = await request.work(db);
+          const result = await request.work(db, writes);
           await request.finalize?.(writes);
           return result;
         });
@@ -535,7 +539,8 @@ export class CommitCoordinator<Publication> {
       }
       const encodingAt = performance.now();
       let result: string | undefined;
-      if (idempotency) {
+      const resultDisposition = isOneTimeResult(writes) ? "one-time" : "replayable";
+      if (idempotency && resultDisposition === "replayable") {
         try {
           result = encode(value);
         } catch (error) {
@@ -575,10 +580,11 @@ export class CommitCoordinator<Publication> {
       }
       let stagedMutation: StagedMutation | undefined;
       let commitVersion: bigint;
-      if (idempotency && result !== undefined) {
+      if (idempotency) {
         stagedMutation = this.engine[mutationReplayOwner].stage({
           ...idempotency,
-          result,
+          resultDisposition,
+          result: result ?? null,
           resultBytes,
           durability: this.engine.durability,
         }, this.readNow());

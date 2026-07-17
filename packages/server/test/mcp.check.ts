@@ -6,9 +6,11 @@ import {
   defineSchema,
   defineTable,
   mutation,
+  query,
   type McpBuilder,
   type McpToolResult,
   type MutationBuilder,
+  type QueryBuilder,
   type Validator,
 } from "@dbzz/server";
 
@@ -20,6 +22,7 @@ const schema = defineSchema({
 });
 
 const typedMutation = mutation as MutationBuilder<typeof schema>;
+const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
 
 const addNote = typedMutation({
@@ -29,6 +32,22 @@ const addNote = typedMutation({
 });
 
 const agentMcp = typedMcp({ name: "agent" });
+const createAgentToken = typedMutation({
+  access: "authenticated",
+  args: { name: dbz.string() },
+  handler: (ctx, args) => agentMcp.tokens.create(ctx, { name: args.name }),
+});
+const listAgentTokens = typedQuery({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => agentMcp.tokens.list(ctx),
+});
+const createdToken: string = createAgentToken._retType!.token;
+const listedTokenId: string = listAgentTokens._retType![0]!.id;
+// @ts-expect-error listing descriptors never recover the plaintext secret
+void listAgentTokens._retType![0]!.token;
+void createdToken;
+void listedTokenId;
 const renamedEndpoint = typedMcp({
   name: "stable_name",
   path: "/renamed/export",
@@ -43,11 +62,15 @@ const writeNote = agentMcp.tool({
   description: "Write a note.",
   args: { body: dbz.string() },
   handler: async (ctx, args) => {
-    const authKind: "anonymous" | "user" | "workload" | "system" = ctx.auth.kind;
+    const authKind: "anonymous" | "user" | "mcp" | "workload" | "system" = ctx.auth.kind;
     const signal: AbortSignal = ctx.abortSignal;
     // Tools need an explicit transaction before they can reach the database.
     // @ts-expect-error MCP tool contexts do not expose a database directly
     void ctx.db;
+    // @ts-expect-error delegated MCP principals cannot administer owner tokens
+    agentMcp.tokens.list(ctx);
+    // @ts-expect-error token minting requires an application mutation or transaction context
+    agentMcp.tokens.create(ctx, { name: "forbidden" });
     await ctx.tx((tx) => addNote(tx, { body: args.body }));
     return { content: [{ type: "text", text: `${authKind}:${signal.aborted}` }] };
   },

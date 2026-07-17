@@ -244,6 +244,7 @@ describe("CommitCoordinator", () => {
     engine.writer.exec("BEGIN IMMEDIATE");
     const staged = engine[mutationReplayOwner].stage({
       ...identity,
+      resultDisposition: "replayable",
       result: "1",
       resultBytes: 1,
       durability: "balanced",

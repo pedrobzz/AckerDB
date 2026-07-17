@@ -10,6 +10,7 @@ import { parseCredential, type Credential } from "@dbzz/core";
 import type { Identity } from "./dbz.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import { deepFreeze } from "./immutable.ts";
+import { hasMcpTokenPrefix } from "./mcp-credential.ts";
 
 export interface AnonymousPrincipal {
   readonly kind: "anonymous";
@@ -46,10 +47,23 @@ export interface UserPrincipal extends ExternalPrincipal {
   readonly identity: Identity;
 }
 
+/** Non-expiring delegated MCP authority bound directly to one durable Identity and endpoint. */
+export interface McpPrincipal {
+  readonly kind: "mcp";
+  readonly identity: Identity;
+  readonly mcp: string;
+  readonly tokenId: string;
+}
+
 export type VerifiedCredential = VerifiedUserCredential | WorkloadPrincipal;
 export type AuthenticatedPrincipal = UserPrincipal | WorkloadPrincipal;
 export type ClientPrincipal = AnonymousPrincipal | AuthenticatedPrincipal;
-export type Principal = AnonymousPrincipal | UserPrincipal | WorkloadPrincipal | SystemPrincipal;
+export type Principal =
+  | AnonymousPrincipal
+  | UserPrincipal
+  | McpPrincipal
+  | WorkloadPrincipal
+  | SystemPrincipal;
 export type IdentityResolver = (
   account: ExternalAccount,
   signal?: AbortSignal,
@@ -79,6 +93,16 @@ export function isPrincipal(value: unknown): value is Principal {
   if (typeof value !== "object" || value === null || !("kind" in value)) return false;
   const principal = value as Partial<Principal>;
   if (principal.kind === "anonymous" || principal.kind === "system") return !("identity" in value);
+  if (principal.kind === "mcp") {
+    return (
+      typeof principal.identity === "bigint" &&
+      principal.identity > 0n &&
+      typeof principal.mcp === "string" &&
+      principal.mcp.length > 0 &&
+      typeof principal.tokenId === "string" &&
+      principal.tokenId.length > 0
+    );
+  }
   if (!isExternalPrincipal(value)) return false;
   const identity = (value as { readonly identity?: unknown }).identity;
   return principal.kind === "workload"
@@ -289,6 +313,9 @@ export async function verifyBearerCredential(
   verifier: CredentialVerifier | undefined,
   now: () => number = Date.now,
 ): Promise<VerifiedCredential> {
+  // MCP credentials have a separate Engine-backed authority path and can never
+  // fall through to a custom OIDC/external credential verifier.
+  if (hasMcpTokenPrefix(rawBearerToken)) throw unauthenticated();
   let credential: Credential;
   try {
     credential = parseCredential({ kind: "bearer", token: rawBearerToken });

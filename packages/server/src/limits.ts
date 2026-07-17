@@ -66,6 +66,12 @@ export interface ServiceLimits {
   readonly auth: {
     readonly revocationDeadlineMs: number;
   };
+  readonly mcp: {
+    /** Applied independently to each Identity and named MCP endpoint. */
+    readonly maxTokensPerIdentity: number;
+    readonly maxNameBytes: number;
+    readonly maxMetadataBytes: number;
+  };
   readonly telemetry: TelemetryLimits;
   readonly gracefulShutdownMs: number;
 }
@@ -140,6 +146,9 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     ["mutationReplay.maxRecords", limits.mutationReplay.maxRecords],
     ["mutationReplay.maxBytes", limits.mutationReplay.maxBytes],
     ["auth.revocationDeadlineMs", limits.auth.revocationDeadlineMs],
+    ["mcp.maxTokensPerIdentity", limits.mcp.maxTokensPerIdentity],
+    ["mcp.maxNameBytes", limits.mcp.maxNameBytes],
+    ["mcp.maxMetadataBytes", limits.mcp.maxMetadataBytes],
     ["gracefulShutdownMs", limits.gracefulShutdownMs],
   ];
   for (const [path, value] of scalarLimits) positiveInteger(value, path);
@@ -184,6 +193,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     resume: Object.freeze({ ...limits.resume }),
     mutationReplay: Object.freeze({ ...limits.mutationReplay }),
     auth: Object.freeze({ ...limits.auth }),
+    mcp: Object.freeze({ ...limits.mcp }),
   });
 }
 
@@ -219,6 +229,11 @@ export const PRODUCTION_LIMITS = defineServiceLimits({
     maxBytes: 4 * GiB,
   },
   auth: { revocationDeadlineMs: 5_000 },
+  mcp: {
+    maxTokensPerIdentity: 64,
+    maxNameBytes: 128,
+    maxMetadataBytes: 16 * KiB,
+  },
   telemetry: {
     maxRecords: 2_048,
     maxBytes: 4 * MiB,
