@@ -37,8 +37,14 @@ function toolError(error: unknown): CallToolResult {
 /** One private official-SDK server/transport pair for exactly one stateless POST. */
 export async function handleMcpPost(options: McpPostOptions): Promise<Response> {
   const server = new Server(
-    { name: options.mcp.name, version: "1" },
-    { capabilities: { tools: {} }, jsonSchemaValidator },
+    { name: options.mcp.name, version: "1", ...options.mcp.metadata },
+    {
+      capabilities: { tools: {} },
+      jsonSchemaValidator,
+      ...(options.mcp.instructions === undefined
+        ? {}
+        : { instructions: options.mcp.instructions }),
+    },
   );
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,

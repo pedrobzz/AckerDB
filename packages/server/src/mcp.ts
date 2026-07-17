@@ -19,7 +19,34 @@ import { mcpObjectSchema, type JsonObjectSchema } from "./standard-schema.ts";
 const MCP_IDENTITY = Symbol.for("@dbzz/server/Mcp/v1");
 const MCP_TOOL_IDENTITY = Symbol.for("@dbzz/server/McpTool/v1");
 const MCP_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const MCP_PATH = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
 const TOOL_NAME = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+const DEFAULT_MCP_PATH = "/mcp";
+const MAX_MCP_PATH_BYTES = 256;
+const MAX_MCP_INSTRUCTIONS_BYTES = 16 * 1_024;
+const MAX_MCP_METADATA_BYTES = 4 * 1_024;
+const utf8 = new TextEncoder();
+
+export interface McpEndpointMetadata {
+  readonly title?: string;
+  readonly description?: string;
+  readonly websiteUrl?: string;
+}
+
+interface McpConfigBase<Name extends string> {
+  readonly name: Name;
+  readonly instructions?: string;
+  readonly metadata?: McpEndpointMetadata;
+}
+
+export interface DefaultMcpConfig<Name extends string> extends McpConfigBase<Name> {
+  readonly path?: undefined;
+}
+
+export interface CustomMcpConfig<Name extends string, Path extends string>
+  extends McpConfigBase<Name> {
+  readonly path: Path;
+}
 
 export interface McpTextContent {
   readonly type: "text";
@@ -81,18 +108,68 @@ export interface RegisteredMcpTool<
 export interface McpDeclaration<
   Name extends string = string,
   S extends Schema = Schema,
+  Path extends string = string,
 > extends RegisteredServerOnly {
   readonly serverKind: "mcp";
   readonly name: Name;
-  readonly path: "/mcp";
+  readonly path: Path;
+  readonly instructions?: string;
+  readonly metadata: McpEndpointMetadata;
   tool<A extends ObjectShape, O extends ObjectValidator | undefined = undefined>(
     definition: McpToolDefinition<A, O, S>,
   ): RegisteredMcpTool<A, O, S>;
 }
 
-export type McpBuilder<S extends Schema> = <const Name extends string>(config: {
-  readonly name: Name;
-}) => McpDeclaration<Name, S>;
+export interface McpBuilder<S extends Schema> {
+  <const Name extends string>(config: DefaultMcpConfig<Name>): McpDeclaration<Name, S, "/mcp">;
+  <const Name extends string, const Path extends string>(
+    config: CustomMcpConfig<Name, Path>,
+  ): McpDeclaration<Name, S, Path>;
+}
+
+function byteLength(value: string): number {
+  return utf8.encode(value).byteLength;
+}
+
+function nonEmptyString(value: unknown, where: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new TypeError(`${where} must be a non-empty string`);
+  }
+  return value;
+}
+
+function endpointMetadata(value: unknown): McpEndpointMetadata {
+  if (value === undefined) return Object.freeze({});
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("MCP metadata must be an object");
+  }
+  const input = value as Record<string, unknown>;
+  for (const key of Object.keys(input)) {
+    if (key !== "title" && key !== "description" && key !== "websiteUrl") {
+      throw new TypeError(`unknown MCP metadata field "${key}"`);
+    }
+  }
+
+  const metadata: { title?: string; description?: string; websiteUrl?: string } = {};
+  if (input.title !== undefined) {
+    metadata.title = nonEmptyString(input.title, "MCP metadata title");
+  }
+  if (input.description !== undefined) {
+    metadata.description = nonEmptyString(input.description, "MCP metadata description");
+  }
+  if (input.websiteUrl !== undefined) {
+    metadata.websiteUrl = nonEmptyString(input.websiteUrl, "MCP metadata websiteUrl");
+    try {
+      new URL(metadata.websiteUrl);
+    } catch {
+      throw new TypeError("MCP metadata websiteUrl must be an absolute URL");
+    }
+  }
+  if (byteLength(JSON.stringify(metadata)) > MAX_MCP_METADATA_BYTES) {
+    throw new TypeError(`MCP metadata must be at most ${MAX_MCP_METADATA_BYTES} UTF-8 bytes`);
+  }
+  return Object.freeze(metadata);
+}
 
 function validateMcpContentResult(value: unknown): McpToolResult {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -152,22 +229,54 @@ export function finalizeMcpToolResult(tool: AnyRegisteredMcpTool, value: unknown
   };
 }
 
-export function createMcp<const Name extends string>(config: {
-  readonly name: Name;
-}): McpDeclaration<Name> {
+export function createMcp<const Name extends string>(
+  config: DefaultMcpConfig<Name>,
+): McpDeclaration<Name, Schema, "/mcp">;
+export function createMcp<const Name extends string, const Path extends string>(
+  config: CustomMcpConfig<Name, Path>,
+): McpDeclaration<Name, Schema, Path>;
+export function createMcp(
+  config: DefaultMcpConfig<string> | CustomMcpConfig<string, string>,
+): McpDeclaration {
   if (config === null || typeof config !== "object") {
     throw new TypeError("createMcp config is required");
+  }
+  for (const key of Object.keys(config).sort()) {
+    if (key !== "name" && key !== "path" && key !== "instructions" && key !== "metadata") {
+      throw new TypeError(`unknown MCP config field "${key}"`);
+    }
   }
   if (typeof config.name !== "string" || !MCP_NAME.test(config.name)) {
     throw new TypeError("MCP name must start with a letter and contain at most 64 letters, digits, _ or -");
   }
+  const path = config.path === undefined ? DEFAULT_MCP_PATH : config.path;
+  if (
+    typeof path !== "string" ||
+    !MCP_PATH.test(path) ||
+    byteLength(path) > MAX_MCP_PATH_BYTES
+  ) {
+    throw new TypeError(
+      `MCP path must be an absolute static path of at most ${MAX_MCP_PATH_BYTES} UTF-8 bytes`,
+    );
+  }
+  const instructions = config.instructions === undefined
+    ? undefined
+    : nonEmptyString(config.instructions, "MCP instructions");
+  if (instructions !== undefined && byteLength(instructions) > MAX_MCP_INSTRUCTIONS_BYTES) {
+    throw new TypeError(
+      `MCP instructions must be at most ${MAX_MCP_INSTRUCTIONS_BYTES} UTF-8 bytes`,
+    );
+  }
+  const metadata = endpointMetadata(config.metadata);
 
-  let declaration!: McpDeclaration<Name>;
+  let declaration!: McpDeclaration;
   const value = {
     isDbzzServerOnly: true as const,
     serverKind: "mcp" as const,
     name: config.name,
-    path: "/mcp" as const,
+    path,
+    ...(instructions === undefined ? {} : { instructions }),
+    metadata,
     tool(definition: McpToolDefinition<
       ObjectShape,
       ObjectValidator | undefined,
@@ -214,7 +323,7 @@ export function createMcp<const Name extends string>(config: {
     },
   };
   brand(value, MCP_IDENTITY);
-  declaration = Object.freeze(value) as McpDeclaration<Name>;
+  declaration = Object.freeze(value) as McpDeclaration;
   return declaration;
 }
 

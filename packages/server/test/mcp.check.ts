@@ -27,6 +27,15 @@ const addNote = typedMutation({
 });
 
 const agentMcp = typedMcp({ name: "agent" });
+const renamedEndpoint = typedMcp({
+  name: "stable_name",
+  path: "/renamed/export",
+  instructions: "Stable declaration identity is explicit.",
+});
+const stableName: "stable_name" = renamedEndpoint.name;
+const stablePath: "/renamed/export" = renamedEndpoint.path;
+void stableName;
+void stablePath;
 const writeNote = agentMcp.tool({
   name: "write_note",
   description: "Write a note.",
