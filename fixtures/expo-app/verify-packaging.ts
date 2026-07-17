@@ -11,12 +11,15 @@
 //      `customConditions: ["react-native"]`, and the browser entry without it
 //      (checked via `--traceResolution`), with `tsc --noEmit` passing.
 //   3. A browser bundle (`bun build --target=browser`) of the packed package
-//      contains no Expo or React Native module code.
-//   4. Removing a mandatory native peer (`expo-crypto`) fails the next Metro
+//      contains no AI SDK, Expo, or React Native module code.
+//   4. The optional `@dbzz/client-react/ai` subpath resolves from the packed
+//      artifact, typechecks against the supported AI SDK, bundles for the
+//      browser, and retains the same runtime import isolation.
+//   5. Removing a mandatory native peer (`expo-crypto`) fails the next Metro
 //      bundle with a clear resolution error naming the module.
 //
 // Usage, from the repo root:  bun fixtures/expo-app/verify-packaging.ts
-// (network required: the throwaway consumer installs Expo from npm)
+// (network required: the throwaway consumer installs Expo and AI SDK from npm)
 
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +29,11 @@ const repoRoot = new URL("../..", import.meta.url).pathname;
 const fixtureDir = join(repoRoot, "fixtures/expo-app");
 const work = mkdtempSync(join(tmpdir(), "dbzz-expo-packaging-"));
 console.log(`work dir: ${work}`);
+
+const clientReactManifest = JSON.parse(
+  readFileSync(join(repoRoot, "packages/client-react/package.json"), "utf8"),
+) as { devDependencies: { ai: string } };
+const supportedAiVersion = clientReactManifest.devDependencies.ai;
 
 let failures = 0;
 function check(label: string, ok: boolean, detail = ""): void {
@@ -79,6 +87,7 @@ manifest.dependencies["@dbzz/client-react"] = `file:${packed["client-react"]}`;
 // Root-level file: entries satisfy the tarball's pinned @dbzz/* version ranges.
 manifest.dependencies["@dbzz/client"] = `file:${packed["client"]}`;
 manifest.dependencies["@dbzz/core"] = `file:${packed["core"]}`;
+manifest.dependencies["ai"] = supportedAiVersion;
 manifest.devDependencies["typescript"] = "~5.9.0";
 writeFileSync(join(consumer, "package.json"), JSON.stringify(manifest, null, 2));
 
@@ -87,6 +96,16 @@ writeFileSync(join(consumer, "package.json"), JSON.stringify(manifest, null, 2))
 // public registry, where dbzz is intentionally not published.
 await run(["npm", "install", "--no-audit", "--no-fund"], consumer);
 console.log("consumer installed");
+const installedAiVersion = (
+  JSON.parse(readFileSync(join(consumer, "node_modules/ai/package.json"), "utf8")) as {
+    version: string;
+  }
+).version;
+check(
+  "the supported optional AI SDK peer is installed",
+  installedAiVersion === supportedAiVersion,
+  installedAiVersion,
+);
 
 // --- 2. Metro proof: headless expo export selects the native entry ------------
 
@@ -114,9 +133,10 @@ for (const map of maps) {
 
 // --- 3. TypeScript resolution proof -------------------------------------------
 
-function packageResolution(traceOutput: string): string {
+function packageResolution(traceOutput: string, specifier = "@dbzz/client-react"): string {
+  const escaped = specifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const resolved = traceOutput.matchAll(
-    /Module name '@dbzz\/client-react' was successfully resolved to '([^']+)'/g,
+    new RegExp(`Module name '${escaped}' was successfully resolved to '([^']+)'`, "g"),
   );
   return [...resolved].map((match) => match[1]).join("\n");
 }
@@ -135,6 +155,18 @@ writeFileSync(
   `import * as dbzz from "@dbzz/client-react";\nconsole.log(Object.keys(dbzz).length);\n`,
 );
 writeFileSync(
+  join(consumer, "ai-check.ts"),
+  [
+    `import type { SseRef } from "@dbzz/client";`,
+    `import { useChatTransport, type DbzzChatArgs } from "@dbzz/client-react/ai";`,
+    `import type { ChatTransport, UIMessage, UIMessageChunk } from "ai";`,
+    `declare const chat: SseRef<DbzzChatArgs<UIMessage>, UIMessageChunk>;`,
+    `const transport: ChatTransport<UIMessage> = useChatTransport(chat);`,
+    `console.log(useChatTransport.name, transport);`,
+    "",
+  ].join("\n"),
+);
+writeFileSync(
   join(consumer, "tsconfig.browser.json"),
   JSON.stringify(
     {
@@ -149,7 +181,7 @@ writeFileSync(
         skipLibCheck: true,
         allowImportingTsExtensions: true,
       },
-      include: ["browser-check.ts"],
+      include: ["browser-check.ts", "ai-check.ts"],
     },
     null,
     2,
@@ -161,6 +193,10 @@ check("tsc --noEmit passes for the browser consumer", browserTrace.exitCode === 
 check(
   "TS resolves @dbzz/client-react to the browser entry without the condition",
   browserResolution.includes("src/index.ts") && !browserResolution.includes("index.native.ts"),
+);
+check(
+  "TS resolves @dbzz/client-react/ai from the packed artifact",
+  packageResolution(browserTrace.output, "@dbzz/client-react/ai").includes("src/ai/index.ts"),
 );
 
 // --- 4. Browser bundle purity proof --------------------------------------------
@@ -177,7 +213,16 @@ const bundle = await run(
 );
 check("bun build --target=browser succeeds", bundle.exitCode === 0);
 const bundleText = readFileSync(join(consumer, "dist-browser/bundle.js"), "utf8");
-for (const marker of ["expo/fetch", "expo-crypto", "react-native", "index.native", "withExpoCapabilities"]) {
+const isolatedRuntimeMarkers = [
+  "node_modules/ai/",
+  "@ai-sdk/",
+  "expo/fetch",
+  "expo-crypto",
+  "react-native",
+  "index.native",
+  "withExpoCapabilities",
+];
+for (const marker of isolatedRuntimeMarkers) {
   check(`browser bundle contains no "${marker}"`, !bundleText.includes(marker));
 }
 check(
@@ -185,7 +230,23 @@ check(
   bundleText.includes("requires a <DbzzProvider> ancestor"),
 );
 
-// --- 5. Missing mandatory native peer fails at bundle resolution ----------------
+// --- 5. Packed AI subpath proof --------------------------------------------------
+
+const aiBundle = await run(
+  ["bun", "build", "ai-check.ts", "--target=browser", "--outfile", "dist-ai/bundle.js"],
+  consumer,
+);
+check("packed @dbzz/client-react/ai browser bundle succeeds", aiBundle.exitCode === 0);
+const aiBundleText = readFileSync(join(consumer, "dist-ai/bundle.js"), "utf8");
+check(
+  "packed AI bundle contains useChatTransport",
+  aiBundleText.includes("useChatTransport"),
+);
+for (const marker of isolatedRuntimeMarkers) {
+  check(`packed AI bundle contains no "${marker}"`, !aiBundleText.includes(marker));
+}
+
+// --- 6. Missing mandatory native peer fails at bundle resolution ----------------
 
 rmSync(join(consumer, "node_modules/expo-crypto"), { recursive: true, force: true });
 const broken = await run(

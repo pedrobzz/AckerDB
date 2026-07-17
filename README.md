@@ -89,6 +89,9 @@ client.close();
   tuning and disabling, bounded whole-operation tail retention and fail-open
   export, schema version 1 records, correlated auth/operation/receiver-delivery
   coverage, CLI backup/restore spans, and runtime/storage health metrics.
+- [React, Expo, and AI SDK client](docs/client-react.md) is the canonical guide
+  to `@dbzz/client-react`: supported versions, provider lifetime, every hook,
+  durable Identity, native recovery, and current platform limitations.
 - [Production-readiness report](docs/production-readiness-report.md) records the
   full issue #1 implementation and decision history, verification and benchmark
   evidence, remaining release blockers, and the operational gap versus Convex

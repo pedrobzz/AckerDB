@@ -1,0 +1,171 @@
+/* Kitchen */
+.kitchen-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  min-height: 52px;
+  margin-bottom: 15px;
+  padding: 7px 15px;
+}
+.kitchen-toolbar .search-field {
+  max-width: 300px;
+}
+.live-indicator {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.live-indicator svg {
+  width: 13px;
+  height: 13px;
+  color: var(--sage-500);
+}
+.live-indicator strong {
+  color: var(--forest-800);
+  font-size: 10px;
+}
+.live-indicator span {
+  color: var(--ink-500);
+  font-size: 9px;
+}
+.kitchen-board {
+  display: grid;
+  min-height: 680px;
+  flex: 1;
+  grid-template-columns: repeat(5, minmax(205px, 1fr));
+  gap: 11px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.kitchen-lane {
+  min-width: 205px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: var(--cream-100);
+}
+.kitchen-lane > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 3px 11px;
+}
+.kitchen-lane > header > span:last-child {
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--white);
+  color: var(--ink-500);
+  font-size: 9px;
+  font-weight: 800;
+}
+.kitchen-lane__items {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.lane-empty {
+  display: grid;
+  min-height: 100px;
+  place-items: center;
+  border: 1px dashed #d8dbd7;
+  border-radius: 12px;
+  color: var(--ink-300);
+  font-size: 9px;
+}
+.kitchen-ticket {
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--white);
+}
+.kitchen-ticket__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+.kitchen-ticket__meta strong {
+  color: var(--clay-500);
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.kitchen-ticket__meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--ink-500);
+  font-size: 8px;
+}
+.kitchen-ticket h2 {
+  margin-top: 10px;
+  font-size: 11px;
+  line-height: 1.3;
+}
+.kitchen-ticket > p {
+  margin-top: 4px;
+  color: var(--ink-500);
+  font-size: 8px;
+}
+.kitchen-ticket blockquote {
+  margin: 8px 0 0;
+  padding: 7px 8px;
+  border-left: 2px solid var(--amber-500);
+  background: var(--amber-100);
+  color: var(--amber-500);
+  font-size: 8px;
+  line-height: 1.4;
+}
+.ticket-action {
+  display: flex;
+  width: 100%;
+  min-height: 33px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 12px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--forest-900);
+  color: white;
+  font-size: 8px;
+  font-weight: 800;
+}
+.kitchen-lane--ordered .ticket-action {
+  background: var(--clay-500);
+}
+.kitchen-lane--preparing .ticket-action {
+  background: var(--amber-500);
+}
+.kitchen-lane--prepared .ticket-action {
+  background: var(--sky-500);
+}
+.ticket-cancel {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--rose-500);
+  font-size: 8px;
+  font-weight: 700;
+}
+.ticket-final {
+  display: block;
+  margin-top: 12px;
+  padding: 8px;
+  border-radius: 9px;
+  background: var(--cream-100);
+  color: var(--ink-500);
+  font-size: 8px;
+  font-weight: 700;
+  text-align: center;
+}

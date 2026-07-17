@@ -19,10 +19,12 @@ import {
 
 class RecordingSubscriber implements Subscriber {
   readonly transitions: Array<{ id: number; transition: SubscriptionTransition }> = [];
+  readonly transitionAttempts: number[] = [];
   readonly events: Array<{ id: number; event: LiveEvent }> = [];
   readonly errors: Array<{ id: number; outcome: Outcome }> = [];
   readonly failNextTransition = new Set<number>();
   readonly failNextEvent = new Set<number>();
+  private nextTransitionHook?: () => void;
   private nextTransitionGate?: {
     readonly id: number;
     readonly entered: () => void;
@@ -30,6 +32,10 @@ class RecordingSubscriber implements Subscriber {
   };
 
   async sendTransition(id: number, transition: SubscriptionTransition): Promise<void> {
+    this.transitionAttempts.push(id);
+    const hook = this.nextTransitionHook;
+    this.nextTransitionHook = undefined;
+    hook?.();
     const gate = this.nextTransitionGate;
     if (gate?.id === id) {
       this.nextTransitionGate = undefined;
@@ -60,6 +66,10 @@ class RecordingSubscriber implements Subscriber {
     const release = deferred();
     this.nextTransitionGate = { id, entered: entered.resolve, release: release.promise };
     return { entered: entered.promise, release: release.resolve };
+  }
+
+  runOnNextTransition(hook: () => void): void {
+    this.nextTransitionHook = hook;
   }
 }
 
@@ -148,6 +158,117 @@ function queuedBytes(address: string, args: unknown, scope: string): number {
 }
 
 describe("ordered reactive ownership", () => {
+  test("stores 25k unique dependency owners without multi-owner buckets", async () => {
+    const dependencyCount = 25_000;
+    const subscriber: Subscriber = {
+      async sendTransition() {},
+      async sendEvent() {},
+      async sendError() {},
+    };
+    const reactive = new OrderedReactive({
+      limits: defineServiceLimits({
+        ...PRODUCTION_LIMITS,
+        maxSubscriptionsPerConnection: dependencyCount,
+      }),
+      generation: generationSequence(),
+      evaluate: async ({ address }) => evaluation(null, 0n, `read:${address}`),
+    });
+
+    for (let id = 1; id <= dependencyCount; id++) {
+      await reactive.subscribeQuery({
+        address: `query-${id}`,
+        args: null,
+        policyScopeFingerprint: "public",
+        fairnessKey: "owner",
+        context: undefined,
+        subscriber,
+        id,
+        authEpoch: 0,
+      });
+    }
+
+    expect(reactive.snapshot()).toMatchObject({
+      sharedEntries: dependencyCount,
+      queryListeners: dependencyCount,
+      dependencyKeys: dependencyCount,
+      dependencyEdges: dependencyCount,
+      multiOwnerDependencyKeys: 0,
+    });
+    await reactive.close();
+  });
+
+  test("promotes, invalidates, and demotes shared dependency owners exactly once", async () => {
+    let now = 0;
+    let version = 0n;
+    const readKeys = new Map([
+      ["first", "shared"],
+      ["second", "shared"],
+    ]);
+    const evaluations = new Map<string, number>();
+    const reactive = new OrderedReactive({
+      limits: testLimits({ maxHistoryAgeMs: 10 }),
+      now: () => now,
+      generation: generationSequence(),
+      evaluate: async ({ address }) => {
+        evaluations.set(address, (evaluations.get(address) ?? 0) + 1);
+        return evaluation(address, version, readKeys.get(address)!);
+      },
+    });
+    const subscriber = new RecordingSubscriber();
+    for (const [id, address] of [[1, "first"], [2, "second"]] as const) {
+      await reactive.subscribeQuery({
+        address,
+        args: null,
+        policyScopeFingerprint: "public",
+        fairnessKey: "owner",
+        context: undefined,
+        subscriber,
+        id,
+        authEpoch: 0,
+      });
+    }
+
+    expect(reactive.snapshot()).toMatchObject({
+      dependencyKeys: 1,
+      dependencyEdges: 2,
+      multiOwnerDependencyKeys: 1,
+    });
+    evaluations.clear();
+    readKeys.set("second", "second-only");
+    await publish(reactive, new Set(["shared"]), (nextVersion) => {
+      version = nextVersion;
+    });
+    expect(Object.fromEntries(evaluations)).toEqual({ first: 1, second: 1 });
+    expect(reactive.snapshot()).toMatchObject({
+      dependencyKeys: 2,
+      dependencyEdges: 2,
+      multiOwnerDependencyKeys: 0,
+    });
+
+    evaluations.clear();
+    await publish(reactive, new Set(["shared", "second-only"]), (nextVersion) => {
+      version = nextVersion;
+    });
+    expect(Object.fromEntries(evaluations)).toEqual({ first: 1, second: 1 });
+    expect(reactive.snapshot()).toMatchObject({
+      dependencyKeys: 2,
+      dependencyEdges: 2,
+      multiOwnerDependencyKeys: 0,
+    });
+
+    reactive.disconnect(subscriber);
+    now = 11;
+    expect(reactive.prune()).toBe(2);
+    expect(reactive.snapshot()).toMatchObject({
+      sharedEntries: 0,
+      queryListeners: 0,
+      dependencyKeys: 0,
+      dependencyEdges: 0,
+      multiOwnerDependencyKeys: 0,
+    });
+    await reactive.close();
+  });
+
   test("uses the immutable caller obligations captured before publication", async () => {
     let version = 0n;
     const reactive = new OrderedReactive({
@@ -965,6 +1086,95 @@ describe("ordered reactive ownership", () => {
     expect(calls).toEqual(new Map([["rooms", 3], ["messages", 3]]));
   });
 
+  test("starts idle delivery immediately and serializes later work for the same listener", async () => {
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async () => evaluation("value", 0n, "messages"),
+    });
+    const subscriber = new RecordingSubscriber();
+    await reactive.subscribeQuery({
+      address: "messages.list",
+      args: null,
+      policyScopeFingerprint: "public",
+      fairnessKey: "public",
+      context: undefined,
+      subscriber,
+      id: 1,
+      authEpoch: 0,
+    });
+
+    const cursor = subscriber.cursor(1);
+    const idle = reactive.reset(subscriber, 1, cursor);
+    expect(subscriber.transitionAttempts).toEqual([1, 1]);
+    await idle;
+
+    const gate = subscriber.gateNextTransition(1);
+    let reentered: Promise<void> | undefined;
+    subscriber.runOnNextTransition(() => {
+      reentered = reactive.reset(subscriber, 1, subscriber.cursor(1));
+    });
+    const first = reactive.reset(subscriber, 1, subscriber.cursor(1));
+    await gate.entered;
+    expect(subscriber.transitionAttempts).toEqual([1, 1, 1]);
+
+    gate.release();
+    await first;
+    await reentered;
+    expect(subscriber.transitionAttempts).toEqual([1, 1, 1, 1]);
+  });
+
+  test("issues shared listeners independently but converges in listener order", async () => {
+    let version = 0n;
+    let value = "initial";
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async () => evaluation(value, version, "messages"),
+    });
+    const first = new RecordingSubscriber();
+    const second = new RecordingSubscriber();
+    const options = {
+      address: "messages.list",
+      args: null,
+      policyScopeFingerprint: "public",
+      fairnessKey: "public",
+      context: undefined,
+      authEpoch: 0,
+    };
+    await reactive.subscribeQuery({ ...options, subscriber: first, id: 1 });
+    await reactive.subscribeQuery({ ...options, subscriber: second, id: 2 });
+
+    const gate = first.gateNextTransition(1);
+    first.failNextTransition.add(1);
+    second.failNextTransition.add(2);
+    const slot = reactive.publication.reserve(64);
+    version = slot.version;
+    value = "changed";
+    const commit = new ReactiveCommit(new Set(["messages"]));
+    slot.commit(commit);
+    await gate.entered;
+
+    expect(second.transitionAttempts).toEqual([2, 2]);
+    let converged = false;
+    void slot.completion.then(() => {
+      converged = true;
+    });
+    await Promise.resolve();
+    expect(converged).toBe(false);
+
+    gate.release();
+    await slot.completion;
+    expect(commit.result?.deliveryFailures.map(({ subscriptionId }) => subscriptionId))
+      .toEqual([1, 2]);
+
+    const recovered = await publish(reactive, new Set(["messages"]), (commitVersion) => {
+      version = commitVersion;
+      value = "recovered";
+    });
+    expect(recovered.deliveryFailures).toEqual([]);
+    expect(first.cursor(1).commitVersion).toBe(version);
+    expect(second.cursor(2).commitVersion).toBe(version);
+  });
+
   test("reports convergence failure and revokes auth failures even when notification succeeds", async () => {
     let version = 0n;
     let authFailure = false;
@@ -1122,10 +1332,10 @@ describe("ordered reactive ownership", () => {
       fairnessKey: "user:1",
       subscriber,
     };
-    await reactive.subscribeQuery({ ...base, context: "old-context", id: 1, authEpoch: 1 });
+    await reactive.subscribeQuery({ ...base, context: "old-context", id: 2, authEpoch: 1 });
     await reactive.subscribeEvent({
       subscriber,
-      id: 2,
+      id: 1,
       table: "messages",
       authEpoch: 1,
       args: {},
@@ -1133,7 +1343,13 @@ describe("ordered reactive ownership", () => {
     });
 
     const rotated = await reactive.rotateAuth(subscriber, 2);
-    expect(rotated).toMatchObject({ queryIds: [1], eventIds: [2], deliveryFailures: [] });
+    expect(rotated).toMatchObject({
+      subscriptions: [
+        { id: 1, address: "events.messages", args: {} },
+        { id: 2, address: "messages.list", args: null },
+      ],
+      deliveryFailures: [],
+    });
     expect(subscriber.transitions.at(-1)?.transition).toMatchObject({
       kind: "revoked",
       outcome: { code: "auth_stale" },
@@ -1211,6 +1427,45 @@ describe("ordered reactive ownership", () => {
     now = 10;
     expect(bounded.prune()).toBe(1);
     expect(bounded.snapshot().sharedEntries).toBe(0);
+  });
+
+  test("only prunes shared entries when a new entry reaches capacity", async () => {
+    class PruneCountingReactive extends OrderedReactive {
+      pruneCalls = 0;
+
+      override prune(now?: number): number {
+        this.pruneCalls++;
+        return super.prune(now);
+      }
+    }
+
+    const reactive = new PruneCountingReactive({
+      limits: testLimits({ maxSharedSubscriptions: 3 }),
+      now: () => 0,
+      generation: generationSequence(),
+      evaluate: async ({ address }) => evaluation(address, 0n, address),
+    });
+    const subscribers = Array.from({ length: 5 }, () => new RecordingSubscriber());
+    const subscribe = (index: number) => reactive.subscribeQuery({
+      address: `query-${index}`,
+      args: null,
+      policyScopeFingerprint: "public",
+      fairnessKey: "public",
+      context: undefined,
+      subscriber: subscribers[index]!,
+      id: 1,
+      authEpoch: 0,
+    });
+
+    await Promise.all([subscribe(0), subscribe(1), subscribe(2)]);
+    expect(reactive.pruneCalls).toBe(0);
+
+    reactive.disconnect(subscribers[0]!);
+    await subscribe(3);
+    expect(reactive.pruneCalls).toBe(1);
+
+    await expect(subscribe(4)).rejects.toMatchObject({ code: "overloaded" });
+    expect(reactive.pruneCalls).toBe(2);
   });
 
   test("rejects a result larger than one frame before retaining or delivering it", async () => {

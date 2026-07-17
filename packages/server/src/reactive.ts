@@ -142,6 +142,9 @@ export interface ReactiveSnapshot {
   readonly queryListeners: number;
   readonly eventListeners: number;
   readonly dormantEntries: number;
+  readonly dependencyKeys: number;
+  readonly dependencyEdges: number;
+  readonly multiOwnerDependencyKeys: number;
   readonly resultBytes: number;
   readonly historyTransitions: number;
   readonly historyBytes: number;
@@ -150,8 +153,11 @@ export interface ReactiveSnapshot {
 }
 
 export interface AuthRotationResult {
-  readonly queryIds: readonly number[];
-  readonly eventIds: readonly number[];
+  readonly subscriptions: readonly {
+    readonly id: number;
+    readonly address: string;
+    readonly args: unknown;
+  }[];
   readonly deliveryFailures: readonly DeliveryFailure[];
 }
 
@@ -163,7 +169,7 @@ interface QueryListener<C> {
   readonly fairnessKey: string;
   authEpoch: number;
   cursor?: SubscriptionCursor;
-  tail: Promise<void>;
+  delivery?: Promise<void>;
 }
 
 interface EventListener<C> {
@@ -176,7 +182,7 @@ interface EventListener<C> {
   authEpoch: number;
   cursor: LiveEventCursor;
   gapped: boolean;
-  tail: Promise<void>;
+  delivery?: Promise<void>;
 }
 
 type Binding<C> = QueryListener<C> | EventListener<C>;
@@ -207,6 +213,8 @@ interface QueryEntry<C> {
   dormantAtMs?: number;
   removed: boolean;
 }
+
+type DependencyOwners<C> = QueryEntry<C> | Set<QueryEntry<C>>;
 
 interface HistoryRecord<C> {
   readonly entry: QueryEntry<C>;
@@ -247,7 +255,7 @@ export class OrderedReactive<C = unknown> {
   private readonly observer?: ReactiveObserver;
   private readonly revalidation: BoundedExecutor;
   private readonly entries = new Map<string, QueryEntry<C>>();
-  private readonly byReadKey = new Map<string, Set<QueryEntry<C>>>();
+  private readonly byReadKey = new Map<string, DependencyOwners<C>>();
   private readonly bySubscriber = new Map<Subscriber, Map<number, Binding<C>>>();
   private readonly eventStates = new Map<string, EventState<C>>();
   private historyHead?: HistoryRecord<C>;
@@ -257,6 +265,8 @@ export class OrderedReactive<C = unknown> {
   private resultBytes = 0;
   private historyBytes = 0;
   private historyTransitions = 0;
+  private dependencyEdges = 0;
+  private multiOwnerDependencyKeys = 0;
   private eventTail: Promise<void> = Promise.resolve();
 
   constructor(options: OrderedReactiveOptions<C>) {
@@ -303,7 +313,6 @@ export class OrderedReactive<C = unknown> {
             fairnessKey: options.fairnessKey,
             authEpoch: options.authEpoch,
             cursor: options.cursor,
-            tail: Promise.resolve(),
           };
           this.attach(listener);
         });
@@ -347,7 +356,6 @@ export class OrderedReactive<C = unknown> {
         sequence: 0n,
       },
       gapped: false,
-      tail: Promise.resolve(),
     };
     this.attach(listener);
     try {
@@ -450,13 +458,15 @@ export class OrderedReactive<C = unknown> {
     this.assertAuthEpoch(nextAuthEpoch);
     const bindings = [...(this.bySubscriber.get(subscriber)?.values() ?? [])];
     this.assertNewAuthEpoch(bindings, nextAuthEpoch);
-    const queryIds: number[] = [];
-    const eventIds: number[] = [];
+    const subscriptions = bindings.map((binding) => Object.freeze({
+      id: binding.id,
+      address: binding.kind === "query" ? binding.entry.address : `events.${binding.state.table}`,
+      args: binding.kind === "query" ? decode(binding.entry.encodedArgs) : binding.args,
+    })).sort((left, right) => left.id - right.id);
     const failures: DeliveryFailure[] = [];
     for (const binding of bindings) {
       this.detach(binding);
       if (binding.kind === "query") {
-        queryIds.push(binding.id);
         try {
           await this.sendRevocation(
             binding,
@@ -467,15 +477,13 @@ export class OrderedReactive<C = unknown> {
           failures.push(failure(binding, error));
         }
       } else {
-        eventIds.push(binding.id);
         // Detach is immediate, but an already-snapshotted publication may still
-        // own this tail. Drain it before a new-epoch binding is installed.
-        await binding.tail;
+        // own this delivery. Drain it before a new-epoch binding is installed.
+        await binding.delivery;
       }
     }
     return Object.freeze({
-      queryIds: Object.freeze(queryIds.sort((a, b) => a - b)),
-      eventIds: Object.freeze(eventIds.sort((a, b) => a - b)),
+      subscriptions: Object.freeze(subscriptions),
       deliveryFailures: Object.freeze(failures),
     });
   }
@@ -535,6 +543,9 @@ export class OrderedReactive<C = unknown> {
       queryListeners: this.queryListeners,
       eventListeners: this.eventListeners,
       dormantEntries,
+      dependencyKeys: this.byReadKey.size,
+      dependencyEdges: this.dependencyEdges,
+      multiOwnerDependencyKeys: this.multiOwnerDependencyKeys,
       resultBytes: this.resultBytes,
       historyTransitions: this.historyTransitions,
       historyBytes: this.historyBytes,
@@ -841,14 +852,16 @@ export class OrderedReactive<C = unknown> {
     if (installed.previousVersion === undefined) return [];
     const listeners = [...installed.entry.listeners];
     const startedAt = this.observer ? this.observationNow() : undefined;
-    const failures: DeliveryFailure[] = [];
-    for (const listener of listeners) {
+    const deliveries = listeners.map(async (listener) => {
       try {
         await this.deliverQuery(listener, false, installed.forceReset);
+        return undefined;
       } catch (error) {
-        failures.push(failure(listener, error));
+        return failure(listener, error);
       }
-    }
+    });
+    const failures = (await Promise.all(deliveries))
+      .filter((result): result is DeliveryFailure => result !== undefined);
     if (this.observer) {
       this.observe(startedAt, {
         kind: "query",
@@ -1052,7 +1065,12 @@ export class OrderedReactive<C = unknown> {
   private affectedEntries(writeKeys: ReadonlySet<string>): Set<QueryEntry<C>> {
     const affected = new Set<QueryEntry<C>>();
     for (const key of writeKeys) {
-      for (const entry of this.byReadKey.get(key) ?? []) affected.add(entry);
+      const owners = this.byReadKey.get(key);
+      if (owners instanceof Set) {
+        for (const entry of owners) affected.add(entry);
+      } else if (owners) {
+        affected.add(owners);
+      }
     }
     return affected;
   }
@@ -1060,17 +1078,46 @@ export class OrderedReactive<C = unknown> {
   private replaceReadSet(entry: QueryEntry<C>, next: ReadonlySet<string>): void {
     for (const key of entry.readSet) {
       if (next.has(key)) continue;
-      const entries = this.byReadKey.get(key);
-      entries?.delete(entry);
-      if (entries?.size === 0) this.byReadKey.delete(key);
+      this.removeReadOwner(key, entry);
     }
     for (const key of next) {
       if (entry.readSet.has(key)) continue;
-      let entries = this.byReadKey.get(key);
-      if (!entries) this.byReadKey.set(key, (entries = new Set()));
-      entries.add(entry);
+      this.addReadOwner(key, entry);
     }
     entry.readSet = new Set(next);
+  }
+
+  private addReadOwner(key: string, entry: QueryEntry<C>): void {
+    const owners = this.byReadKey.get(key);
+    if (!owners) {
+      this.byReadKey.set(key, entry);
+      this.dependencyEdges++;
+      return;
+    }
+    if (owners === entry) return;
+    if (owners instanceof Set) {
+      if (owners.has(entry)) return;
+      owners.add(entry);
+      this.dependencyEdges++;
+      return;
+    }
+    this.byReadKey.set(key, new Set([owners, entry]));
+    this.dependencyEdges++;
+    this.multiOwnerDependencyKeys++;
+  }
+
+  private removeReadOwner(key: string, entry: QueryEntry<C>): void {
+    const owners = this.byReadKey.get(key);
+    if (owners === entry) {
+      this.byReadKey.delete(key);
+      this.dependencyEdges--;
+      return;
+    }
+    if (!(owners instanceof Set) || !owners.delete(entry)) return;
+    this.dependencyEdges--;
+    if (owners.size !== 1) return;
+    this.byReadKey.set(key, owners.values().next().value!);
+    this.multiOwnerDependencyKeys--;
   }
 
   private retainHistory(entry: QueryEntry<C>, record: HistoryRecord<C>): boolean {
@@ -1137,6 +1184,7 @@ export class OrderedReactive<C = unknown> {
   }
 
   private makeEntryCapacity(): void {
+    if (this.entries.size < this.limits.maxSharedSubscriptions) return;
     this.prune();
     while (this.entries.size >= this.limits.maxSharedSubscriptions) {
       const dormant = this.oldestDormant();
@@ -1174,11 +1222,7 @@ export class OrderedReactive<C = unknown> {
     this.entries.delete(entry.key);
     this.resultBytes -= entry.resultBytes;
     this.clearHistory(entry);
-    for (const key of entry.readSet) {
-      const entries = this.byReadKey.get(key);
-      entries?.delete(entry);
-      if (entries?.size === 0) this.byReadKey.delete(key);
-    }
+    for (const key of entry.readSet) this.removeReadOwner(key, entry);
     for (const listener of [...entry.listeners]) this.detach(listener);
   }
 
@@ -1260,36 +1304,19 @@ export class OrderedReactive<C = unknown> {
     send: () => Promise<void>,
     commitVersion?: bigint,
   ): Promise<void> {
-    if (!this.observer) {
-      const delivery = binding.tail.then(send);
-      binding.tail = delivery.catch(() => {});
-      return delivery;
-    }
-    const queuedAt = this.observationNow();
-    const address = binding.kind === "query" ? binding.entry.address : binding.state.table;
-    const version = commitVersion ?? (binding.kind === "query"
-      ? binding.entry.commitVersion
-      : binding.cursor.commitVersion);
-    const dependencyCount = binding.kind === "query" ? binding.entry.readSet.size : undefined;
-    const byteCount = binding.kind === "query" ? binding.entry.resultBytes : undefined;
-    const delivery = binding.tail.then(async () => {
-      this.observe(queuedAt, {
-        kind: binding.kind,
-        phase: "listener_queue",
-        outcome: "ok",
-        address,
-        subscriptionId: binding.id,
-        commitVersion: version,
-        dependencyCount,
-        resultCount: 1,
-        byteCount,
-      });
-      const deliveredAt = this.observationNow();
-      try {
-        await send();
-        this.observe(deliveredAt, {
+    let deliver = send;
+    if (this.observer) {
+      const queuedAt = this.observationNow();
+      const address = binding.kind === "query" ? binding.entry.address : binding.state.table;
+      const version = commitVersion ?? (binding.kind === "query"
+        ? binding.entry.commitVersion
+        : binding.cursor.commitVersion);
+      const dependencyCount = binding.kind === "query" ? binding.entry.readSet.size : undefined;
+      const byteCount = binding.kind === "query" ? binding.entry.resultBytes : undefined;
+      deliver = async () => {
+        this.observe(queuedAt, {
           kind: binding.kind,
-          phase: "delivery",
+          phase: "listener_queue",
           outcome: "ok",
           address,
           subscriptionId: binding.id,
@@ -1298,23 +1325,56 @@ export class OrderedReactive<C = unknown> {
           resultCount: 1,
           byteCount,
         });
+        const deliveredAt = this.observationNow();
+        try {
+          await send();
+          this.observe(deliveredAt, {
+            kind: binding.kind,
+            phase: "delivery",
+            outcome: "ok",
+            address,
+            subscriptionId: binding.id,
+            commitVersion: version,
+            dependencyCount,
+            resultCount: 1,
+            byteCount,
+          });
+        } catch (error) {
+          const outcome = observationOutcome(error);
+          const metadata = {
+            kind: binding.kind,
+            address,
+            subscriptionId: binding.id,
+            commitVersion: version,
+            dependencyCount,
+            resultCount: 0,
+            byteCount,
+          };
+          this.observe(deliveredAt, { ...metadata, phase: "delivery", outcome });
+          this.observe(deliveredAt, { ...metadata, phase: "failure", outcome });
+          throw error;
+        }
+      };
+    }
+
+    const previous = binding.delivery;
+    const reserved = Promise.withResolvers<void>();
+    binding.delivery = reserved.promise;
+    let delivery: Promise<void>;
+    if (previous) {
+      delivery = previous.then(deliver);
+    } else {
+      try {
+        delivery = deliver();
       } catch (error) {
-        const outcome = observationOutcome(error);
-        const metadata = {
-          kind: binding.kind,
-          address,
-          subscriptionId: binding.id,
-          commitVersion: version,
-          dependencyCount,
-          resultCount: 0,
-          byteCount,
-        };
-        this.observe(deliveredAt, { ...metadata, phase: "delivery", outcome });
-        this.observe(deliveredAt, { ...metadata, phase: "failure", outcome });
-        throw error;
+        delivery = Promise.reject(error);
       }
-    });
-    binding.tail = delivery.catch(() => {});
+    }
+    const release = () => {
+      reserved.resolve();
+      if (binding.delivery === reserved.promise) binding.delivery = undefined;
+    };
+    void delivery.then(release, release);
     return delivery;
   }
 

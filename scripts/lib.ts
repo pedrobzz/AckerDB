@@ -1,6 +1,20 @@
 // Shared helpers for the local release scripts (bump, merge-guard, publish-local).
 export const PACKAGES = ["core", "server", "client", "client-react", "cli"] as const;
 
+type BunLock = {
+  readonly workspaces: Record<string, Record<string, unknown>>;
+  readonly packages: Record<string, unknown>;
+};
+
+const WORKSPACE_FIELDS = [
+  "name",
+  "version",
+  "bin",
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+] as const;
+
 // The repo-root .npmrc is the single source of truth for the registry:
 // `bun publish` resolves the @dbzz scope from it (a --registry flag would
 // bypass .npmrc auth entirely), so the scripts read the same line.
@@ -14,6 +28,42 @@ export async function registryUrl(): Promise<string> {
 
 export function pkgJsonPath(pkg: string): string {
   return `packages/${pkg}/package.json`;
+}
+
+export async function readBunLock(): Promise<BunLock> {
+  let parsed: unknown;
+  try {
+    parsed = Bun.JSONC.parse(await Bun.file("bun.lock").text());
+  } catch (error) {
+    fail(`cannot parse bun.lock: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const lock = parsed as Partial<BunLock>;
+  if (!lock.workspaces || !lock.packages) fail("bun.lock is missing its workspace or package graph");
+  return lock as BunLock;
+}
+
+export function assertWorkspaceLock(lock: BunLock, read: (pkg: string) => string): void {
+  for (const pkg of PACKAGES) {
+    const manifest = JSON.parse(read(pkg)) as Record<string, unknown>;
+    const expected: Record<string, unknown> = {};
+    for (const field of WORKSPACE_FIELDS) {
+      if (manifest[field] !== undefined) expected[field] = manifest[field];
+    }
+    const optionalPeers = Object.entries(
+      (manifest.peerDependenciesMeta ?? {}) as Record<string, { optional?: boolean }>,
+    )
+      .filter(([, metadata]) => metadata.optional)
+      .map(([name]) => name)
+      .sort();
+    if (optionalPeers.length > 0) expected.optionalPeers = optionalPeers;
+
+    if (!Bun.deepEquals(lock.workspaces[`packages/${pkg}`], expected)) {
+      fail(
+        `bun.lock workspace snapshot for @dbzz/${pkg} does not match ${pkgJsonPath(pkg)}\n` +
+          `  Run bun run bump so the release manifests and lock graph move together.`,
+      );
+    }
+  }
 }
 
 export function git(...args: string[]): string {

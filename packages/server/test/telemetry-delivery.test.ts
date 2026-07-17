@@ -388,11 +388,12 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
     await runtime.telemetry.flush();
 
     expect([...socket.activeOperationsAtApplicationSend.entries()]).toEqual([
-      [41, 0],
-      [42, 0],
-      [43, 0],
-      [44, 0],
+      [41, 1],
+      [42, 1],
+      [43, 1],
+      [44, 1],
     ]);
+    expect(runtime.status().activeOperations).toBe(0);
     const errorFrames = socket.frames
       .map((text) => decode(text) as ServerMessage)
       .filter((frame) => frame.t === "err" && frame.id === 43);
@@ -575,7 +576,7 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
   }
 });
 
-test("DbzzServer correlates bounded procedure encoding and Response handoff after operation release", async () => {
+test("DbzzServer correlates bounded procedure encoding and Response handoff inside operation ownership", async () => {
   const directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-procedure-delivery-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -681,14 +682,14 @@ test("DbzzServer correlates bounded procedure encoding and Response handoff afte
     ] as const) {
       const handoff = runtime.procedureHandoffs.get(id);
       expect(handoff).toBeDefined();
-      expect(handoff!.activeOperations).toBe(0);
+      expect(handoff!.activeOperations).toBe(1);
       expect(handoff!.body).toBe(publicResponse.body);
       expect(handoff!.bytes).toBe(encoder.encode(publicResponse.body).byteLength);
       expect(handoff!.bytes).toBeLessThanOrEqual(runtime.limits.maxFrameBytes);
       expect(handoff!.status).toBe(publicResponse.status);
     }
     const failedHandoff = runtime.procedureHandoffs.get(54);
-    expect(failedHandoff).toMatchObject({ activeOperations: 0, status: 200 });
+    expect(failedHandoff).toMatchObject({ activeOperations: 1, status: 200 });
     expect(failedHandoff!.bytes).toBe(encoder.encode(failedHandoff!.body).byteLength);
     expect(runtime.status().activeOperations).toBe(0);
     expect(runtime.status().telemetry.traceRetention.activeTraces).toBe(0);

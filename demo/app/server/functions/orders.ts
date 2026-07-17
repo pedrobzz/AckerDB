@@ -3,9 +3,10 @@ import { mutation, query } from "@demo/dbzz-codegen/server";
 import { isStaff, requireUser } from "../lib/access.ts";
 import {
   addOrderItems,
+  cancelOrderItem,
   clearReminder,
+  closeOrder,
   conflict,
-  emitOrderEvent,
   isFinal,
   notFound,
   openOrderForTable,
@@ -115,28 +116,7 @@ export const cancelItem = mutation({
       (await ctx.db.orderItems.get(args.orderItemId)) ??
       notFound("Order item not found");
     if (item.orderId !== order.id) notFound("Order item not found");
-    if (item.status !== "ORDERED")
-      conflict("Only a newly ordered item can be cancelled");
-    const now = Date.now();
-    await ctx.db.orderItems.patch(item.id, {
-      status: "CANCELLED",
-      statusChangedAt: now,
-    });
-    await clearReminder(ctx.db, item.id);
-    await ctx.db.orders.patch(order.id, {
-      totalCents: Math.max(
-        0,
-        order.totalCents - item.unitPriceCents * item.quantity,
-      ),
-    });
-    await emitOrderEvent(ctx.db, order, {
-      orderItemId: item.id,
-      kind: "ITEM_STATUS",
-      status: "CANCELLED",
-      message: `${item.name} was cancelled`,
-      occurredAt: now,
-    });
-    return item.id;
+    return cancelOrderItem(ctx.db, order, item, `${item.name} was cancelled`);
   },
 });
 
@@ -158,20 +138,7 @@ export const closeCancelled = mutation({
         "Only an empty or all-cancelled order can be closed without payment",
       );
     }
-    const now = Date.now();
-    await ctx.db.orders.patch(order.id, {
-      status: "CANCELLED",
-      totalCents: 0,
-      openUserId: null,
-      openTableId: null,
-      closedAt: now,
-    });
-    await emitOrderEvent(ctx.db, order, {
-      kind: "ORDER_STATUS",
-      status: "CANCELLED",
-      message: "Your order was closed",
-      occurredAt: now,
-    });
+    await closeOrder(ctx.db, order, "CANCELLED", 0, "Your order was closed");
     return order.id;
   },
 });
@@ -196,21 +163,14 @@ export const pay = mutation({
     ) {
       conflict("The bill is available after every item is served or cancelled");
     }
-    const now = Date.now();
     const totalCents = payableCents(items);
-    await ctx.db.orders.patch(order.id, {
-      status: "PAID",
+    await closeOrder(
+      ctx.db,
+      order,
+      "PAID",
       totalCents,
-      openUserId: null,
-      openTableId: null,
-      closedAt: now,
-    });
-    await emitOrderEvent(ctx.db, order, {
-      kind: "ORDER_STATUS",
-      status: "PAID",
-      message: "Payment complete — thank you",
-      occurredAt: now,
-    });
+      "Payment complete — thank you",
+    );
     return { orderId: order.id, totalCents };
   },
 });
@@ -279,20 +239,13 @@ export const cancel = mutation({
       .byOrder((q) => q.eq("orderId", order.id))
       .collect();
     for (const item of items) await clearReminder(ctx.db, item.id);
-    const now = Date.now();
-    await ctx.db.orders.patch(order.id, {
-      status: "CANCELLED",
-      totalCents: 0,
-      openUserId: null,
-      openTableId: null,
-      closedAt: now,
-    });
-    await emitOrderEvent(ctx.db, order, {
-      kind: "ORDER_STATUS",
-      status: "CANCELLED",
-      message: "The restaurant cancelled this order",
-      occurredAt: now,
-    });
+    await closeOrder(
+      ctx.db,
+      order,
+      "CANCELLED",
+      0,
+      "The restaurant cancelled this order",
+    );
     return order.id;
   },
 });

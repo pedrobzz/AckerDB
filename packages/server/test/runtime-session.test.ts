@@ -367,16 +367,9 @@ class SessionSocket implements DbzzWebSocket {
 }
 
 class SessionSocketSink implements SessionSink {
-  constructor(
-    private readonly socket: SessionSocket,
-    private readonly remoteControlHandoff = false,
-  ) {}
+  constructor(private readonly socket: SessionSocket) {}
 
   async sendControl(message: SessionControlMessage): Promise<void> {
-    if (!this.remoteControlHandoff) {
-      this.socket.receive(message);
-      return;
-    }
     // A transport handoff completes before the remote peer can react to it.
     // Two turns put Session's post-await state transition ahead of loopback delivery.
     queueMicrotask(() => queueMicrotask(() => this.socket.receive(message)));
@@ -549,7 +542,7 @@ async function reconnectTransitionEvidence(
       const socket = new SessionSocket();
       socket.session = new Session({
         runtime,
-        sink: new SessionSocketSink(socket, true),
+        sink: new SessionSocketSink(socket),
         source: TEST_SOURCE,
         clock: new FixedClock(),
       });

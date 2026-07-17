@@ -1,0 +1,116 @@
+→ convex: fresh local backend
+→ spacetimedb 2.6.1: fresh standalone server
+→ dbzz: fresh server (telemetry=enabled, profile=runtime-default, durability=balanced)
+
+Operation throughput and latency (median of steady-state trials)
+| operation/profile | dbzz TPS | dbzz p95 ms | convex TPS | convex p95 ms | spacetimedb TPS | spacetimedb p95 ms |
+|---|---:|---:|---:|---:|---:|---:|
+| query/latency | 2884 | 0.50 | 160 | 8.86 | 526 | 2.68 |
+| query/pipeline | 5461 | 2.30 | 318 | 32.57 | 3940 | 3.08 |
+| query/concurrent | 5770 | 9.46 | 391 | 113.69 | 5530 | 10.53 |
+| query/saturation | 5550 | 26.85 | 402 | 362.16 | 5676 | 30.43 |
+| mutation-uncontended/latency | 1299 | 1.45 | 99 | 12.61 | 668 | 2.37 |
+| mutation-uncontended/pipeline | 1625 | 9.32 | 117 | 81.09 | 3098 | 3.77 |
+| mutation-uncontended/concurrent | 1664 | 33.31 | 178 | 210.79 | 12495 | 3.82 |
+| mutation-uncontended/saturation | 1704 | 85.89 | 184 | 787.10 | 33017 | 5.86 |
+| mutation-contended/latency | 1309 | 1.37 | 107 | 11.99 | 670 | 2.49 |
+| mutation-contended/pipeline | 1688 | 7.92 | 110 | 81.80 | 2967 | 4.38 |
+| mutation-contended/concurrent | 1720 | 31.45 | 102 | 2421.49 | 10393 | 5.43 |
+| mutation-contended/saturation | 1698 | 87.07 | 98 | 4319.50 | 33060 | 5.67 |
+| procedure/latency | 1592 | 1.26 | 303 | 5.27 | 786 | 1.59 |
+| procedure/pipeline | 3255 | 5.82 | 564 | 26.32 | 4819 | 2.47 |
+| procedure/concurrent | 3300 | 17.35 | 489 | 152.17 | 14311 | 3.80 |
+| procedure/saturation | 3220 | 46.05 | 512 | 415.10 | 12652 | 16.53 |
+
+Server resources at idle (timed windows with no requests)
+| system | state | RSS p50 MB | RSS peak MB | CPU cores | processes peak |
+|---|---|---:|---:|---:|---:|
+| dbzz | empty/no clients | 57.7 | 57.8 | 0.00 | 1 |
+| dbzz | seeded/no clients | 88.2 | 93.3 | 0.00 | 1 |
+| convex | empty/no clients | 91.0 | 91.0 | 0.00 | 1 |
+| convex | seeded/no clients | 142.9 | 142.9 | 0.00 | 1 |
+| spacetimedb | empty/no clients | 91.4 | 91.4 | 0.00 | 1 |
+| spacetimedb | seeded/no clients | 109.4 | 109.4 | 0.00 | 1 |
+
+Server resources under operation load (highest default concurrency)
+| system | operation/profile | server RSS p50 MB | server RSS peak MB | server CPU cores | loadgen CPU cores |
+|---|---|---:|---:|---:|---:|
+| dbzz | query/saturation | 149.4 | 150.6 | 1.00 | 0.50 |
+| dbzz | mutation-uncontended/saturation | 144.5 | 145.9 | 1.00 | 0.00 |
+| dbzz | mutation-contended/saturation | 142.2 | 144.2 | 1.00 | 0.50 |
+| dbzz | procedure/saturation | 167.0 | 170.2 | 1.11 | 1.00 |
+| convex | query/saturation | 502.2 | 513.0 | 3.00 | 0.00 |
+| convex | mutation-uncontended/saturation | 643.6 | 654.7 | 1.50 | 0.00 |
+| convex | mutation-contended/saturation | 752.8 | 757.0 | 1.04 | 0.00 |
+| convex | procedure/saturation | 1477.5 | 1589.4 | 2.84 | 0.00 |
+| spacetimedb | query/saturation | 144.6 | 144.8 | 1.50 | 1.00 |
+| spacetimedb | mutation-uncontended/saturation | 144.7 | 144.7 | 1.00 | 0.50 |
+| spacetimedb | mutation-contended/saturation | 144.4 | 144.5 | 0.52 | 0.50 |
+| spacetimedb | procedure/saturation | 145.5 | 147.0 | 1.94 | 0.50 |
+
+Connection scale (ready = socket/client plus one validated indexed probe)
+| system | target | connected | ready/s | ready p95 ms | query TPS | query p95 ms |
+|---|---:|---:|---:|---:|---:|---:|
+| dbzz | 1 | 1 | 401 | 3.42 | 2673 | 0.61 |
+| convex | 1 | 1 | 152 | 9.88 | 154 | 11.56 |
+| spacetimedb | 1 | 1 | 247 | 6.03 | 451 | 3.33 |
+| dbzz | 100 | 100 | 1791 | 48.09 | 4494 | 25.71 |
+| convex | 100 | 100 | 480 | 183.80 | 311 | 379.03 |
+| spacetimedb | 100 | 100 | 1163 | 79.57 | 5101 | 33.00 |
+| dbzz | 500 | 500 | 1879 | 57.09 | 4463 | 126.30 |
+| convex | 500 | 500 | 437 | 213.09 | 319 | 1493.20 |
+| spacetimedb | 500 | 500 | 2057 | 47.15 | 4522 | 143.02 |
+
+Server resources across connection plateaus
+| system | connections | baseline RSS MB | connected RSS MB | RSS delta MB | idle CPU cores | work RSS peak MB | work CPU cores | loadgen CPU cores |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| dbzz | 1 | 142.5 | 106.0 | -36.5 | 0.00 | 112.4 | 1.00 | 0.00 |
+| dbzz | 100 | 142.5 | 112.4 | -30.1 | 0.00 | 119.2 | 1.00 | 0.04 |
+| dbzz | 500 | 142.5 | 113.9 | -28.6 | 0.00 | 139.2 | 1.00 | 1.00 |
+| convex | 1 | 1638.0 | 1636.1 | -1.8 | 0.00 | 1636.5 | 1.00 | 0.00 |
+| convex | 100 | 1638.0 | 1679.1 | 41.1 | 0.00 | 1692.0 | 2.00 | 0.00 |
+| convex | 500 | 1638.0 | 1912.1 | 274.2 | 0.00 | 1941.7 | 2.65 | 1.00 |
+| spacetimedb | 1 | 144.3 | 143.5 | -0.8 | 0.00 | 143.9 | 0.00 | 0.00 |
+| spacetimedb | 100 | 144.3 | 157.9 | 13.5 | 0.00 | 161.7 | 2.00 | 1.00 |
+| spacetimedb | 500 | 144.3 | 233.2 | 88.9 | 0.00 | 236.8 | 1.00 | 1.81 |
+
+Fixed-rate subscription load
+| pattern | system | logical queries | setup s | updates/s | deliveries/s | delivery p95 ms | missing | base RSS MB | subscribed RSS MB | RSS delta MB | idle CPU cores | work peak RSS MB | work CPU cores | loadgen CPU cores |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| shared | dbzz | 2000 | 0.29 | 20.00 | 1999 | 14.59 | 0 | 123.9 | 128.2 | 4.3 | 0.00 | 129.5 | 0.00 | 0.00 |
+| partitioned | dbzz | 2000 | 0.70 | 100.00 | 100 | 2.68 | 0 | 150.0 | 146.1 | -3.8 | 0.00 | 143.0 | 0.00 | 0.00 |
+| shared | convex | 2000 | 0.41 | 20.00 | 2000 | 43.54 | 0 | 1984.3 | 2013.6 | 29.3 | 0.00 | 2072.5 | 1.00 | 0.00 |
+| partitioned | convex | 2000 | 3.39 | 99.38 | 99 | 18.84 | 0 | 2143.6 | 2187.3 | 43.7 | 0.00 | 2189.4 | 1.49 | 0.00 |
+| shared | spacetimedb | 2000 | 0.14 | 20.00 | 2000 | 12.24 | 0 | 236.9 | 236.0 | -0.9 | 0.00 | 236.5 | 0.50 | 0.00 |
+| partitioned | spacetimedb | 2000 | 0.15 | 100.00 | 100 | 2.83 | 0 | 170.7 | 176.2 | 5.5 | 0.00 | 176.4 | 0.50 | 0.50 |
+
+Subscription end-to-end saturation (an update completes only after every intended delivery)
+| pattern | system | writer slots | updates/s | deliveries/s | ack p95 ms | delivery p95 ms | all p95 ms | server RSS peak MB | server CPU cores | loadgen CPU cores |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| shared | dbzz | 1 | 146.0 | 14600 | 9.54 | 7.38 | 9.56 | 136.5 | 1.38 | 1.00 |
+| shared | dbzz | 8 | 183.0 | 18300 | 73.53 | 70.82 | 73.56 | 150.1 | 1.00 | 0.50 |
+| shared | dbzz | 20 | 175.0 | 17500 | 137.34 | 135.41 | 137.35 | 150.2 | 1.00 | 1.00 |
+| partitioned | dbzz | 1 | 880.0 | 880 | 1.92 | 1.76 | 1.94 | 147.4 | 1.00 | 0.50 |
+| partitioned | dbzz | 8 | 1022.0 | 1022 | 14.23 | 14.03 | 14.24 | 159.3 | 1.00 | 0.00 |
+| partitioned | dbzz | 32 | 1054.0 | 1054 | 40.18 | 40.01 | 40.18 | 165.2 | 1.00 | 0.50 |
+| shared | convex | 1 | 26.0 | 2600 | 16.32 | 43.01 | 48.33 | 2086.1 | 1.87 | 0.50 |
+| shared | convex | 8 | 38.5 | 3850 | 121.64 | 282.80 | 342.93 | 2115.4 | 2.00 | 0.50 |
+| shared | convex | 20 | 49.0 | 4900 | 206.07 | 609.64 | 617.30 | 2137.3 | 2.00 | 0.00 |
+| partitioned | convex | 1 | 74.5 | 75 | 12.89 | 17.04 | 17.07 | 2190.1 | 1.00 | 0.50 |
+| partitioned | convex | 8 | 128.5 | 129 | 61.66 | 81.56 | 81.58 | 2193.7 | 1.50 | 0.00 |
+| partitioned | convex | 32 | 118.5 | 119 | 237.02 | 353.70 | 353.85 | 2201.4 | 1.50 | 0.00 |
+| shared | spacetimedb | 1 | 183.5 | 18350 | 5.92 | 5.85 | 7.22 | 236.4 | 0.48 | 1.00 |
+| shared | spacetimedb | 8 | 325.0 | 32500 | 28.51 | 32.85 | 38.17 | 201.8 | 0.00 | 1.44 |
+| shared | spacetimedb | 20 | 408.5 | 40850 | 52.66 | 57.94 | 75.50 | 175.0 | 0.50 | 1.00 |
+| partitioned | spacetimedb | 1 | 587.0 | 587 | 2.78 | 2.82 | 2.87 | 176.5 | 0.00 | 0.00 |
+| partitioned | spacetimedb | 8 | 2823.5 | 2824 | 4.20 | 4.22 | 4.30 | 176.6 | 0.50 | 0.50 |
+| partitioned | spacetimedb | 32 | 7044.0 | 7044 | 6.67 | 6.70 | 7.00 | 175.2 | 1.00 | 0.50 |
+
+Benchmark correctness validation: PASSED
+
+DBZZ default-local telemetry validation and bounded retention status
+| profile | local records | serialized MB | retained before drain | exported during drain | drain drops | overflow drops | query queue count/mean ms | mutation queue count/mean ms | procedure admission | subscription queue count/mean ms | trace promoted/discarded | exporter records |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| runtime-default | 372 | 0.14 | 2048 | 0 | 2048 | 5524 | 123266/0.01 | 192901/0.01 | 28454 | 140353/0.00 | 0/138041 | 0 |
+
+current-host default comparison complete: historical acceptance skipped; result not saved

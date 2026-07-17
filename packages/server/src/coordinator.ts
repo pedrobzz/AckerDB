@@ -13,10 +13,15 @@ import {
   type WriteCollector,
 } from "./db.ts";
 import type { DbWriter } from "./dbtypes.ts";
-import type { Engine, StoredMutation } from "./engine.ts";
+import type { Engine } from "./engine.ts";
 import { DbzzError } from "./errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
 import type { ServiceLimits } from "./limits.ts";
+import {
+  mutationReplayOwner,
+  type StagedMutation,
+  type StoredMutation,
+} from "./mutation-replay.ts";
 import { outcomeFromError } from "./outcome.ts";
 import type { PublicationReservation } from "./publication.ts";
 import type { Schema } from "./schema.ts";
@@ -240,8 +245,6 @@ export class CommitCoordinator<Publication> {
   private readonly wait: CommitWaitHook | undefined;
   private readonly eventSequences = new Map<string, bigint>();
   private readonly encoder = new TextEncoder();
-  private mutationRecords: number;
-  private mutationResultBytes: number;
   private nextPruneAtMs = 0;
 
   constructor(options: CommitCoordinatorOptions<Publication>) {
@@ -251,9 +254,6 @@ export class CommitCoordinator<Publication> {
     this.reservePublication = options.reservePublication;
     this.now = options.now ?? Date.now;
     this.wait = options.wait;
-    const storage = options.engine.status();
-    this.mutationRecords = storage.mutationRecords;
-    this.mutationResultBytes = storage.mutationResultBytes;
     this.writer = new BoundedExecutor({
       concurrency: 1,
       discipline: "round-robin",
@@ -404,7 +404,10 @@ export class CommitCoordinator<Publication> {
           });
         }
         this.pruneExpiredMutations();
-        const stored = this.engine.storedMutation(idempotency.sessionId, idempotency.requestId);
+        const stored = this.engine[mutationReplayOwner].lookup(
+          idempotency.sessionId,
+          idempotency.requestId,
+        );
         if (stored) {
           if (!sameIdentity(stored, idempotency)) {
             throw conflict("mutation request ID was already used with different semantics");
@@ -437,7 +440,7 @@ export class CommitCoordinator<Publication> {
         if (requestCreatedAt < now - this.limits.mutationReplay.maxAgeMs) {
           throw conflict("mutation request is outside the retained replay window");
         }
-        if (this.mutationRecords >= this.limits.mutationReplay.maxRecords) {
+        if (this.engine[mutationReplayOwner].records >= this.limits.mutationReplay.maxRecords) {
           throw new DbzzError("overloaded", "mutation replay capacity is full", {
             retryable: true,
             retryAfterMs: 1_000,
@@ -560,7 +563,8 @@ export class CommitCoordinator<Publication> {
         });
       }
       if (idempotency) {
-        const available = this.limits.mutationReplay.maxBytes - this.mutationResultBytes;
+        const available = this.limits.mutationReplay.maxBytes -
+          this.engine[mutationReplayOwner].resultBytes;
         if (resultBytes > available) {
           throw new DbzzError("overloaded", "mutation replay capacity is full", {
             retryable: true,
@@ -569,7 +573,19 @@ export class CommitCoordinator<Publication> {
           });
         }
       }
-      const commitVersion = this.engine.allocateCommitVersion();
+      let stagedMutation: StagedMutation | undefined;
+      let commitVersion: bigint;
+      if (idempotency && result !== undefined) {
+        stagedMutation = this.engine[mutationReplayOwner].stage({
+          ...idempotency,
+          result,
+          resultBytes,
+          durability: this.engine.durability,
+        }, this.readNow());
+        commitVersion = stagedMutation.commitVersion;
+      } else {
+        commitVersion = this.engine.allocateCommitVersion();
+      }
       if (commitVersion !== reservation.version) {
         throw new DbzzError("internal", "storage and publication versions diverged");
       }
@@ -598,15 +614,6 @@ export class CommitCoordinator<Publication> {
         });
         throw error;
       }
-      if (idempotency && result !== undefined) {
-        this.engine.insertStoredMutation({
-          ...idempotency,
-          result,
-          resultBytes,
-          commitVersion,
-          durability: this.engine.durability,
-        });
-      }
       observeCommit(request, {
         stage: "storage",
         outcome: "ok",
@@ -620,15 +627,6 @@ export class CommitCoordinator<Publication> {
       const commitAt = performance.now();
       try {
         this.engine.writer.exec("COMMIT");
-        transactionOpen = false;
-        observeCommit(request, {
-          stage: "commit",
-          outcome: "ok",
-          durationMs: Math.max(0, performance.now() - commitAt),
-          sizeBytes: resultBytes,
-          dependencyCount: writes.keys.size,
-          commitVersion,
-        });
       } catch (error) {
         observeCommit(request, {
           stage: "commit",
@@ -640,7 +638,19 @@ export class CommitCoordinator<Publication> {
         });
         throw error;
       }
+      transactionOpen = false;
       committed = true;
+      if (stagedMutation !== undefined) {
+        this.engine[mutationReplayOwner].committed(stagedMutation);
+      }
+      observeCommit(request, {
+        stage: "commit",
+        outcome: "ok",
+        durationMs: Math.max(0, performance.now() - commitAt),
+        sizeBytes: resultBytes,
+        dependencyCount: writes.keys.size,
+        commitVersion,
+      });
       if (this.wait !== undefined) {
         try {
           await this.wait("commit", Object.freeze({
@@ -651,10 +661,6 @@ export class CommitCoordinator<Publication> {
         } catch {
           // Fault gates are diagnostic and never own committed publication.
         }
-      }
-      if (idempotency) {
-        this.mutationRecords++;
-        this.mutationResultBytes += resultBytes;
       }
       reservation.commit(publication);
       return {
@@ -717,12 +723,9 @@ export class CommitCoordinator<Publication> {
     this.nextPruneAtMs = now + 60_000;
     const before = now - this.limits.mutationReplay.maxAgeMs;
     for (;;) {
-      const removed = this.engine.pruneStoredMutations(before, 1_000);
+      const removed = this.engine[mutationReplayOwner].prune(before, 1_000);
       if (removed < 1_000) break;
     }
-    const storage = this.engine.status();
-    this.mutationRecords = storage.mutationRecords;
-    this.mutationResultBytes = storage.mutationResultBytes;
   }
 
   private publicationBytes(writes: WriteCollector): number {

@@ -13,6 +13,7 @@ import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits } from "../src/limits.ts";
+import { mutationReplayOwner } from "../src/mutation-replay.ts";
 import { OrderedPublication } from "../src/publication.ts";
 import { reconcile } from "../src/reconcile.ts";
 import { defineSchema, defineTable } from "../src/schema.ts";
@@ -241,17 +242,14 @@ describe("CommitCoordinator", () => {
   test("replays the durability persisted with the original mutation", async () => {
     const { coordinator, engine } = fixture();
     engine.writer.exec("BEGIN IMMEDIATE");
-    engine.insertStoredMutation({
+    const staged = engine[mutationReplayOwner].stage({
       ...identity,
       result: "1",
       resultBytes: 1,
-      commitVersion: 1n,
       durability: "balanced",
     });
-    engine.writer.query(
-      "UPDATE _dbz_state SET commit_version = 1, mutation_records = 1, mutation_result_bytes = 1 WHERE singleton = 1",
-    ).run();
     engine.writer.exec("COMMIT");
+    engine[mutationReplayOwner].committed(staged);
 
     const replay = await coordinator.execute({
       operation: "mutation",
@@ -322,6 +320,50 @@ describe("CommitCoordinator", () => {
     expect(engine.commitVersion()).toBe(0n);
     expect(engine.writer.query('SELECT COUNT(*) AS n FROM "notes"').get()).toEqual({ n: 0n });
     expect(publication.snapshot()).toMatchObject({ items: 0, highWater: 0n });
+  });
+
+  test("keeps replay cache empty after validation and COMMIT rollback, then commits one retry", async () => {
+    const { coordinator, engine } = fixture();
+    let executions = 0;
+    const request = {
+      operation: "mutation" as const,
+      fairnessKey: "session-1",
+      requestBytes: 1,
+      idempotency: identity,
+      work: (db: any) => {
+        executions++;
+        return db.notes.insert({ body: "exactly one committed row" });
+      },
+      publication: (version: bigint) => ({ version }),
+    };
+    await expect(coordinator.execute({
+      ...request,
+      validate: () => {
+        throw new DbzzError("overloaded", "response is too large", { resource: "operation" });
+      },
+    })).rejects.toMatchObject({ code: "overloaded" });
+    expect(engine[mutationReplayOwner].lookup(identity.sessionId, identity.requestId)).toBeNull();
+    expect(engine.status()).toMatchObject({ commitVersion: 0n, mutationRecords: 0 });
+
+    const originalExec = engine.writer.exec;
+    engine.writer.exec = ((sql: string) => {
+      if (sql === "COMMIT") throw new Error("injected COMMIT failure");
+      return originalExec.call(engine.writer, sql);
+    }) as typeof engine.writer.exec;
+    try {
+      await expect(coordinator.execute(request)).rejects.toThrow("injected COMMIT failure");
+    } finally {
+      engine.writer.exec = originalExec;
+    }
+    expect(engine[mutationReplayOwner].lookup(identity.sessionId, identity.requestId)).toBeNull();
+    expect(engine.status()).toMatchObject({ commitVersion: 0n, mutationRecords: 0 });
+
+    await expect(coordinator.execute(request)).resolves.toMatchObject({ replay: "executed" });
+    await expect(coordinator.execute(request)).resolves.toMatchObject({ replay: "replayed" });
+    expect(executions).toBe(3);
+    expect(engine.writer.query("SELECT body FROM notes").all()).toEqual([
+      { body: "exactly one committed row" },
+    ]);
   });
 
   test("fetch and nested transactions are rejected at the owning boundary", async () => {

@@ -78,6 +78,7 @@ demo/
 ├── app/
 │   ├── design/        # Canvazz UI (Admin + Customer artboards)
 │   ├── admin-panel/   # Runnable admin client
+│   ├── mobile/        # Expo development-build customer app
 │   └── server/        # dbzz backend (schema + functions)
 ├── packages/          # Shared demo packages (e.g. codegen)
 └── scripts/           # Smoke / tooling
@@ -126,7 +127,56 @@ From `demo/`:
 | --- | --- |
 | `bun run design:dev` | Open the Canvazz design project |
 | `bun run admin:dev` | Run the Admin Panel |
+| `bun run mobile:dev` | Start Metro for the installed Expo development build |
 | `bun run server:dev` | Run the dbzz server |
 | `bun run codegen` | Regenerate client types from the server |
 | `bun run typecheck` | Typecheck the workspace |
 | `bun run smoke` | Smoke test |
+| `bun run --cwd app/server test` | Isolated backend acceptance gate |
+
+### Backend setup
+
+The demo consumes the exact published `@dbzz/*@0.2.1` artifacts from the
+local registry at `http://127.0.0.1:4873`. From `demo/`:
+
+```sh
+bun install --frozen-lockfile
+bun run server:start
+```
+
+The normal `dbz start` path loads `app/server/credential-verifier.ts`, opens
+the durable database under `app/server/.zdb`, and listens on
+`http://127.0.0.1:3212`. In another terminal, create the idempotent restaurant
+dataset:
+
+```sh
+bun run seed
+```
+
+Guest login is intentionally passwordless for this local product demo. The
+login procedure issues a signed bearer credential whose stable issuer and
+subject resolve to a durable dbzz `Identity`; the application `users` row is
+then linked to that Identity. Staff operations require
+`DBZZ_DEMO_STAFF_TOKEN` (default `savoria-demo-staff`). Set
+`DBZZ_DEMO_SIGNING_SECRET` and `DBZZ_DEMO_STAFF_TOKEN` before exposing the demo
+outside a local development machine.
+
+Run the focused backend gate without touching the development server:
+
+```sh
+bun run --cwd app/server test
+```
+
+It starts the real app through the installed `@dbzz/cli@0.2.1` on ephemeral
+ports and temporary durable databases. The suite covers durable Identity
+across restart, authorization, atomic seating conflicts, price snapshots,
+item/order transitions, payment, owner-isolated events, and the real schedule
+table path. Its scheduler case advances a test-local clock and invokes the
+runtime scheduler directly, while production continues to use the fixed
+two-minute delay.
+
+The mobile client defaults to `http://127.0.0.1:3212`. Set
+`EXPO_PUBLIC_DBZZ_URL` to the machine-reachable backend URL when running a
+development build on a physical device. Create that native development build
+from `app/mobile` with `bunx expo run:ios` or `bunx expo run:android`; the app
+is not configured as an Expo Go workflow.

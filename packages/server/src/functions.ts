@@ -15,7 +15,11 @@ import {
   type Validator,
 } from "./dbz.ts";
 import type { DbReader, DbWriter } from "./dbtypes.ts";
-import { invokeFunction, type InvocationContext } from "./invocation.ts";
+import {
+  compileInvocation,
+  invokeFunction,
+  type InvocationContext,
+} from "./invocation.ts";
 import type { InsertShape, Schema } from "./schema.ts";
 
 export type AuthCtx = Principal;
@@ -183,6 +187,7 @@ function register<K extends string>(kind: K) {
       access: def.access,
       handler: def.handler,
     }) as unknown as Registered<K, A, Ctx, Awaited<R>>;
+    compileInvocation(registered);
     return registered;
   };
 }
@@ -232,7 +237,7 @@ export function sseProcedure<
   const callable = () => {
     throw new Error("sses cannot be called in-process — they exist at the transport boundary");
   };
-  return Object.assign(callable, {
+  const registered = Object.assign(callable, {
     isDbzz: true as const,
     kind: "sse" as const,
     args: def.args,
@@ -240,6 +245,8 @@ export function sseProcedure<
     access: def.access,
     handler: def.handler,
   }) as unknown as RegisteredSse<A, Expand<InferValidator<Y>>, Schema>;
+  compileInvocation(registered);
+  return registered;
 }
 
 export type QueryBuilder<S extends Schema> = <A extends ObjectShape, R>(def: {

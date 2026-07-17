@@ -64,7 +64,13 @@ describe("engine storage", () => {
       expect(engine.reader).not.toBe(engine.writer);
       engine.writer.exec("BEGIN IMMEDIATE");
       engine.writer.query('INSERT INTO "notes" ("body") VALUES (?)').run("uncommitted");
-      expect(() => engine.reader.query('SELECT * FROM "notes"').all()).toThrow("locked");
+      let rows: unknown[] | undefined;
+      try {
+        rows = engine.reader.query('SELECT * FROM "notes"').all();
+      } catch (error) {
+        expect(error).toMatchObject({ code: "SQLITE_LOCKED_SHAREDCACHE" });
+      }
+      expect(rows ?? []).toEqual([]);
       engine.writer.exec("ROLLBACK");
       expect(engine.reader.query('SELECT * FROM "notes"').all()).toEqual([]);
     } finally {

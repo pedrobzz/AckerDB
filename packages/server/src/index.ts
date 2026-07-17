@@ -28,8 +28,6 @@ export {
   type EngineOptions,
   type EngineStatus,
   type IntegrityReport,
-  type NewStoredMutation,
-  type StoredMutation,
   type TablePlan,
   type TagMap,
 } from "./engine.ts";

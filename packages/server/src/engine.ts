@@ -47,9 +47,17 @@ import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
 import type { Descriptor, Identity, Validator } from "./dbz.ts";
+import {
+  MutationReplayLedger,
+  mutationReplayOwner,
+  scanMutationReplay,
+  type MutationReplaySnapshot,
+} from "./mutation-replay.ts";
+import { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
 import type { IndexDef, Schema, TableDef } from "./schema.ts";
 import { snapshotOf, type SchemaSnapshot } from "./snapshot.ts";
 
+export { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
 export interface TagMap {
   toTag: Map<string, number>;
   toName: Map<number, string>;
@@ -132,26 +140,7 @@ export interface BackupManifest {
   verifiedAt: number;
 }
 
-export interface StoredMutation {
-  sessionId: string;
-  requestId: string;
-  issuedAt: number;
-  principalFingerprint: string;
-  functionRef: string;
-  argsFingerprint: string;
-  result: string;
-  resultBytes: number;
-  commitVersion: bigint;
-  durability: DurabilityPolicy;
-  completedAt: number;
-}
-
-export type NewStoredMutation = Omit<StoredMutation, "completedAt"> & { completedAt?: number };
-
-export class IncompatibleDatabaseError extends Error {}
-export class CorruptDatabaseError extends Error {}
-
-const ENGINE_SCHEMA_VERSION = 3;
+const ENGINE_SCHEMA_VERSION = 4;
 const LOCK_SUFFIX = ".dbzz.lock";
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
@@ -200,6 +189,7 @@ const INTERNAL_OBJECTS: StoredObject[] = [
     name: "_dbz_mutations",
     table: "_dbz_mutations",
     sql: `CREATE TABLE _dbz_mutations (
+      commit_version INTEGER PRIMARY KEY CHECK (commit_version > 0),
       session_id TEXT NOT NULL,
       request_id TEXT NOT NULL,
       issued_at REAL NOT NULL,
@@ -208,17 +198,9 @@ const INTERNAL_OBJECTS: StoredObject[] = [
       args_fingerprint TEXT NOT NULL,
       result TEXT NOT NULL,
       result_bytes INTEGER NOT NULL CHECK (result_bytes >= 0),
-      commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
       durability TEXT NOT NULL CHECK (durability IN ('production', 'balanced')),
-      completed_at REAL NOT NULL,
-      PRIMARY KEY (session_id, request_id)
+      completed_at REAL NOT NULL
     )`,
-  },
-  {
-    type: "index",
-    name: "ix__dbz_mutations_completed_at",
-    table: "_dbz_mutations",
-    sql: "CREATE INDEX ix__dbz_mutations_completed_at ON _dbz_mutations (completed_at)",
   },
   {
     type: "table",
@@ -688,22 +670,7 @@ function inspectArtifact(path: string): Pick<BackupManifest, "format" | "schemaF
     if (version?.value !== String(ENGINE_SCHEMA_VERSION)) {
       throw new IncompatibleDatabaseError("artifact has an incompatible DBZZ engine schema");
     }
-    const state = db
-      .query("SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbz_state WHERE singleton = 1")
-      .get() as
-      | { commit_version: bigint; mutation_records: bigint; mutation_result_bytes: bigint }
-      | null;
-    if (state === null) throw new CorruptDatabaseError("artifact is missing DBZZ state");
-    const ledger = db
-      .query("SELECT COUNT(*) AS records, COALESCE(SUM(result_bytes), 0) AS bytes, COALESCE(MAX(commit_version), 0) AS max_version FROM _dbz_mutations")
-      .get() as { records: bigint; bytes: bigint; max_version: bigint };
-    if (
-      ledger.records !== state.mutation_records ||
-      ledger.bytes !== state.mutation_result_bytes ||
-      ledger.max_version > state.commit_version
-    ) {
-      throw new CorruptDatabaseError("artifact mutation ledger is inconsistent");
-    }
+    const mutationReplay = scanMutationReplay(db);
     const snapshot = db
       .query("SELECT value FROM _dbz_meta WHERE key = 'schema'")
       .get() as { value: string } | null;
@@ -711,7 +678,7 @@ function inspectArtifact(path: string): Pick<BackupManifest, "format" | "schemaF
     return {
       format: 1,
       schemaFingerprint: createHash("sha256").update(snapshot.value).digest("hex"),
-      commitVersion: state.commit_version,
+      commitVersion: mutationReplay.commitVersion,
     };
   } finally {
     db.close();
@@ -722,6 +689,7 @@ export class Engine {
   readonly schema: Schema;
   readonly writer: Database;
   readonly reader: Database;
+  readonly [mutationReplayOwner]: MutationReplayLedger;
   readonly path: string;
   readonly durability: DurabilityPolicy;
   readonly recoveredFromCrash: boolean;
@@ -747,17 +715,26 @@ export class Engine {
     this.sqlitePath = sqlitePath;
     let writer: Database | null = null;
     let reader: Database | null = null;
+    let mutationReplay: MutationReplaySnapshot | null = null;
     try {
       if (path !== ":memory:") removeStaleInitializationArtifacts(path);
       const bootstrap = path === ":memory:" || publishMissingDatabase(path);
       if (path !== ":memory:" && !bootstrap) {
-        this.validateExistingStorage(path, busyTimeoutMs, options.integrityCheck ?? "quick");
+        mutationReplay = this.validateExistingStorage(
+          path,
+          busyTimeoutMs,
+          options.integrityCheck ?? "quick",
+        );
       }
       writer = new Database(sqlitePath, { create: path === ":memory:", safeIntegers: true });
       writer.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
       writer.exec("PRAGMA foreign_keys = ON");
       this.writer = writer;
-      if (bootstrap) this.validateStorage(writer, options.integrityCheck ?? "quick", true);
+      if (bootstrap) {
+        mutationReplay = this.validateStorage(writer, options.integrityCheck ?? "quick", true);
+      }
+      if (mutationReplay === null) throw new Error("mutation replay ledger was not loaded");
+      this[mutationReplayOwner] = new MutationReplayLedger(writer, mutationReplay);
       this.internTags();
       this.buildPlans();
       writer.exec("PRAGMA journal_mode = WAL");
@@ -807,7 +784,7 @@ export class Engine {
     path: string,
     busyTimeoutMs: number,
     integrityCheck: "quick" | "full",
-  ): void {
+  ): MutationReplaySnapshot {
     const walPageSize = existingWalPageSize(path);
     const needsRecoveryCopy = ["-wal", "-journal"].some((suffix) => {
       const sidecar = `${path}${suffix}`;
@@ -834,11 +811,12 @@ export class Engine {
       });
       database.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
       database.exec("PRAGMA foreign_keys = ON");
-      this.validateStorage(database, integrityCheck, false);
+      const mutationReplay = this.validateStorage(database, integrityCheck, false);
       const databasePageSize = recoveryFreePageSize ?? existingDatabasePageSize(validationPath);
       if (walPageSize !== null && walPageSize !== databasePageSize) {
         throw new CorruptDatabaseError("database WAL page size does not match its main file");
       }
+      return mutationReplay;
     } finally {
       database?.close(false);
       if (directory !== null) rmSync(directory, { recursive: true, force: true });
@@ -849,12 +827,14 @@ export class Engine {
     connection: Database,
     integrityCheck: "quick" | "full",
     bootstrap: boolean,
-  ): void {
+  ): MutationReplaySnapshot {
     this.initializeInternalSchema(bootstrap, connection);
     const integrity = this.integrity(integrityCheck, connection);
     if (!integrity.ok) throw new CorruptDatabaseError(integrity.errors.join("; "));
     this.verifyInternalState(connection);
+    const mutationReplay = scanMutationReplay(connection);
     this.loadSnapshot(connection);
+    return mutationReplay;
   }
 
   private initializeInternalSchema(bootstrap: boolean, connection: Database = this.writer): void {
@@ -925,21 +905,6 @@ export class Engine {
       .query("SELECT COUNT(*) AS count FROM _dbz_state")
       .get() as { count: bigint };
     if (stateRows.count !== 1n) throw new CorruptDatabaseError("DBZZ state must contain exactly one singleton row");
-    const state = connection
-      .query("SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbz_state WHERE singleton = 1")
-      .get() as
-      | { commit_version: bigint; mutation_records: bigint; mutation_result_bytes: bigint }
-      | null;
-    if (state === null) throw new CorruptDatabaseError("missing DBZZ state singleton");
-    const actual = connection
-      .query("SELECT COUNT(*) AS records, COALESCE(SUM(result_bytes), 0) AS bytes, COALESCE(MAX(commit_version), 0) AS max_version FROM _dbz_mutations")
-      .get() as { records: bigint; bytes: bigint; max_version: bigint };
-    if (state.mutation_records !== actual.records || state.mutation_result_bytes !== actual.bytes) {
-      throw new CorruptDatabaseError("mutation ledger counters do not match stored records");
-    }
-    if (actual.max_version > state.commit_version) {
-      throw new CorruptDatabaseError("mutation ledger references a future commit version");
-    }
     const invalidTag = connection
       .query(
         "SELECT 1 FROM _dbz_tags WHERE typeof(type) <> 'text' OR length(type) = 0 OR typeof(variant) <> 'text' OR length(variant) = 0 OR typeof(tag) <> 'integer' OR tag < 0 LIMIT 1",
@@ -975,93 +940,7 @@ export class Engine {
     return row.commit_version;
   }
 
-  storedMutation(sessionId: string, requestId: string): StoredMutation | null {
-    const row = this.writer
-      .query(
-        "SELECT session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result, result_bytes, commit_version, durability, completed_at FROM _dbz_mutations WHERE session_id = ? AND request_id = ?",
-      )
-      .get(sessionId, requestId) as
-      | {
-          session_id: string;
-          request_id: string;
-          issued_at: number;
-          principal_fingerprint: string;
-          function_ref: string;
-          args_fingerprint: string;
-          result: string;
-          result_bytes: bigint;
-          commit_version: bigint;
-          durability: DurabilityPolicy;
-          completed_at: number;
-        }
-      | null;
-    return row === null
-      ? null
-      : {
-          sessionId: row.session_id,
-          requestId: row.request_id,
-          issuedAt: row.issued_at,
-          principalFingerprint: row.principal_fingerprint,
-          functionRef: row.function_ref,
-          argsFingerprint: row.args_fingerprint,
-          result: row.result,
-          resultBytes: Number(row.result_bytes),
-          commitVersion: row.commit_version,
-          durability: row.durability,
-          completedAt: row.completed_at,
-        };
-  }
-
-  /** Persist a successful mutation receipt. The caller must own the writer transaction. */
-  insertStoredMutation(record: NewStoredMutation): void {
-    const completedAt = record.completedAt ?? Date.now();
-    this.writer
-      .query(
-        "INSERT INTO _dbz_mutations (session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result, result_bytes, commit_version, durability, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run(
-        record.sessionId,
-        record.requestId,
-        record.issuedAt,
-        record.principalFingerprint,
-        record.functionRef,
-        record.argsFingerprint,
-        record.result,
-        record.resultBytes,
-        record.commitVersion,
-        record.durability,
-        completedAt,
-      );
-    this.writer
-      .query("UPDATE _dbz_state SET mutation_records = mutation_records + 1, mutation_result_bytes = mutation_result_bytes + ? WHERE singleton = 1")
-      .run(record.resultBytes);
-  }
-
-  pruneStoredMutations(completedBefore: number, limit = 1_000): number {
-    positiveInt(limit, "mutation prune limit");
-    const rows = this.writer
-      .query("SELECT session_id, request_id, result_bytes FROM _dbz_mutations WHERE completed_at < ? ORDER BY completed_at LIMIT ?")
-      .all(completedBefore, limit) as { session_id: string; request_id: string; result_bytes: bigint }[];
-    if (rows.length === 0) return 0;
-    const bytes = rows.reduce((sum, row) => sum + row.result_bytes, 0n);
-    this.writer.exec("BEGIN IMMEDIATE");
-    try {
-      const remove = this.writer.query(
-        "DELETE FROM _dbz_mutations WHERE session_id = ? AND request_id = ?",
-      );
-      for (const row of rows) remove.run(row.session_id, row.request_id);
-      this.writer
-        .query("UPDATE _dbz_state SET mutation_records = mutation_records - ?, mutation_result_bytes = mutation_result_bytes - ? WHERE singleton = 1")
-        .run(rows.length, bytes);
-      this.writer.exec("COMMIT");
-      return rows.length;
-    } catch (error) {
-      this.writer.exec("ROLLBACK");
-      throw error;
-    }
-  }
-
-  /** Allocate the next version. The caller must already own an open writer transaction. */
+  /** Allocate the next non-replay version. The caller must own an open writer transaction. */
   allocateCommitVersion(): bigint {
     const row = this.writer
       .query("UPDATE _dbz_state SET commit_version = commit_version + 1 WHERE singleton = 1 RETURNING commit_version")
@@ -1572,6 +1451,7 @@ export class Engine {
     for (const reader of this.additionalReaders) attempt(() => reader.close());
     this.additionalReaders.clear();
     if (this.reader !== this.writer) attempt(() => this.reader.close());
+    if (shutdown === "clean") attempt(() => this.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)"));
     attempt(() => this.writer.close());
     const processLock = this.processLock;
     if (processLock !== null) {

@@ -1,0 +1,12 @@
+620 |       join(BENCH, "spacetime-app", "spacetimedb", "node_modules", "spacetimedb", "package.json"),
+621 |     ),
+622 |   };
+623 |   for (const [component, version] of Object.entries(versions)) {
+624 |     if (version !== REQUIRED_SPACETIME_VERSION) {
+625 |       throw new Error(
+                      ^
+error: SpacetimeDB client is unknown; this benchmark requires every component to be 2.6.1
+      at assertSpacetimeVersionAlignment (/root/benchmarks/dbzz-issue15-idle-d738c88-20260717T0628Z/repo/bench/run.ts:625:17)
+      at /root/benchmarks/dbzz-issue15-idle-d738c88-20260717T0628Z/repo/bench/run.ts:979:61
+
+Bun v1.3.14 (Linux x64)

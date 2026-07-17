@@ -1,5 +1,8 @@
 import type { OutcomeCode, ResourceClass } from "@dbzz/core";
 
+export class IncompatibleDatabaseError extends Error {}
+export class CorruptDatabaseError extends Error {}
+
 export type DbzzErrorCode = OutcomeCode;
 export type { ResourceClass } from "@dbzz/core";
 

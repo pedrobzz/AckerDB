@@ -13,6 +13,7 @@ import { encode } from "@dbzz/core";
 import { Engine, reconcile, type TelemetryRecord } from "@dbzz/server";
 import { importSchema } from "../src/app.ts";
 import { loadConfig } from "../src/config.ts";
+import { mutationReplayOwner } from "../../server/src/mutation-replay.ts";
 import {
   backupManifestPath,
   parseBackupManifest,
@@ -64,14 +65,20 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
           "INSERT INTO messages (channelId, body, role, payload, payload__p) VALUES (?, ?, ?, ?, ?)",
         )
         .run(7n, "preserved", role, payload, encode(null));
-      const commitVersion = engine.allocateCommitVersion();
-      expect(commitVersion).toBe(1n);
-      engine.insertStoredMutation({
-        ...replayRecord,
-        commitVersion,
+      const staged = engine[mutationReplayOwner].stage({
+        sessionId: replayRecord.sessionId,
+        requestId: replayRecord.requestId,
+        issuedAt: replayRecord.issuedAt,
+        principalFingerprint: replayRecord.principalFingerprint,
+        functionRef: replayRecord.functionRef,
+        argsFingerprint: replayRecord.argsFingerprint,
+        result: replayRecord.result,
+        resultBytes: replayRecord.resultBytes,
         durability,
-      });
+      }, replayRecord.completedAt);
+      expect(staged.commitVersion).toBe(1n);
       engine.writer.exec("COMMIT");
+      engine[mutationReplayOwner].committed(staged);
     } catch (error) {
       engine.writer.exec("ROLLBACK");
       throw error;
@@ -207,7 +214,7 @@ describe("dbz backup, restore, and status", () => {
         durability: "production" as const,
       };
       expect(
-        restored.storedMutation(replayRecord.sessionId, replayRecord.requestId),
+        restored[mutationReplayOwner].lookup(replayRecord.sessionId, replayRecord.requestId),
       ).toEqual(expectedReplay);
       expect(restored.status()).toMatchObject({
         commitVersion: 1n,
@@ -219,7 +226,7 @@ describe("dbz backup, restore, and status", () => {
       restored.writer.exec("COMMIT");
       expect(restored.commitVersion()).toBe(2n);
       expect(
-        restored.storedMutation(replayRecord.sessionId, replayRecord.requestId),
+        restored[mutationReplayOwner].lookup(replayRecord.sessionId, replayRecord.requestId),
       ).toEqual(expectedReplay);
     } finally {
       restored.close("clean");

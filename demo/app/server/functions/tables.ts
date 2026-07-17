@@ -20,7 +20,10 @@ export const available = query({
   handler: async (ctx) => {
     const principal = requireUser(ctx.auth);
     await requireCurrentUser(ctx.db, principal.identity);
-    const tables = await ctx.db.restaurantTables.scan().order("asc").collect();
+    const tables = await ctx.db.restaurantTables
+      .byNumber((q) => q)
+      .order("asc")
+      .collect();
     return Promise.all(
       tables
         .filter((table) => table.active)
@@ -38,7 +41,10 @@ export const list = query({
   access: staffAccess,
   args: {},
   handler: async (ctx) => {
-    const tables = await ctx.db.restaurantTables.scan().order("asc").collect();
+    const tables = await ctx.db.restaurantTables
+      .byNumber((q) => q)
+      .order("asc")
+      .collect();
     return Promise.all(
       tables
         .filter((table) => table.active)

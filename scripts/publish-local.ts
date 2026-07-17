@@ -1,23 +1,36 @@
 // bun run publish:local
 // Publishes every package at its synced pinned version to the local
 // Verdaccio registry, then tags the release commit as v<version>.
-import { PACKAGES, fail, git, pkgJsonPath, registryUrl, syncedVersion, tryGit } from "./lib";
+import {
+  PACKAGES,
+  assertWorkspaceLock,
+  fail,
+  git,
+  pkgJsonPath,
+  readBunLock,
+  registryUrl,
+  syncedVersion,
+  tryGit,
+} from "./lib";
 
 const REGISTRY = await registryUrl();
 const branch = tryGit("symbolic-ref", "--short", "HEAD");
 if (branch !== "main") fail("publish from main only — merge your branch first.");
 if (git("status", "--porcelain") !== "") fail("working tree is dirty — commit or stash before publishing.");
 
-// bun publish packs workspace:* deps from bun.lock — refresh it and refuse to
-// publish if it was stale (versions edited without `bun run bump`).
-Bun.spawnSync(["bun", "install"], { stdout: "pipe", stderr: "pipe" });
-if (git("status", "--porcelain") !== "") {
-  fail("bun.lock was stale — commit the refreshed lockfile (DBZZ_ALLOW_MAIN=1 git commit ...) and retry.");
-}
-
 const sources = new Map<string, string>();
 for (const pkg of PACKAGES) sources.set(pkg, await Bun.file(pkgJsonPath(pkg)).text());
 const version = syncedVersion((pkg) => sources.get(pkg)!);
+assertWorkspaceLock(await readBunLock(), (pkg) => sources.get(pkg)!);
+
+// Publishing from an existing checkout must not inherit Bun's pre-bump
+// installed workspace graph. The frozen lock keeps this a reinstall, never an
+// opportunistic dependency update.
+const install = Bun.spawnSync(["bun", "install", "--force", "--frozen-lockfile"], {
+  stdout: "pipe",
+  stderr: "pipe",
+});
+if (install.exitCode !== 0) fail(`bun install failed before publish:\n${install.stderr.toString().trim()}`);
 const tag = `v${version}`;
 
 const tagCommit = tryGit("rev-parse", "-q", "--verify", `refs/tags/${tag}^{commit}`);

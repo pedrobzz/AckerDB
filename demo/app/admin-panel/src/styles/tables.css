@@ -1,0 +1,157 @@
+/* Tables */
+.capacity-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 18px;
+}
+.capacity-banner > span {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: var(--sage-100);
+  color: var(--forest-800);
+}
+.capacity-banner > div {
+  min-width: 0;
+  flex: 1;
+}
+.capacity-banner strong {
+  font-size: 11px;
+}
+.capacity-banner p {
+  margin-top: 4px;
+  color: var(--ink-500);
+  font-size: 9px;
+}
+.capacity-banner dl {
+  display: flex;
+  gap: 24px;
+}
+.capacity-banner dl div {
+  text-align: right;
+}
+.capacity-banner dt {
+  color: var(--ink-500);
+  font-size: 8px;
+}
+.capacity-banner dd {
+  margin-top: 2px;
+  font: 600 20px/1 var(--display);
+}
+.filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 15px 0 12px;
+}
+.filter-row > span {
+  color: var(--ink-500);
+  font-size: 9px;
+}
+.segmented-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.segmented-control button {
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--white);
+  color: var(--ink-500);
+  font-size: 9px;
+}
+.segmented-control button.active {
+  border-color: var(--forest-900);
+  background: var(--forest-900);
+  color: white;
+  font-weight: 750;
+}
+.table-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.table-card {
+  display: flex;
+  min-height: 184px;
+  flex-direction: column;
+  padding: 17px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--white);
+}
+.table-card--occupied {
+  border-color: var(--clay-500);
+  background: var(--clay-100);
+}
+.table-card > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+.table-card > header div > span {
+  display: block;
+  color: var(--ink-500);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+.table-card > header div > strong {
+  display: block;
+  font: 600 28px/1 var(--display);
+}
+.table-card > p {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 15px;
+  color: var(--ink-500);
+  font-size: 9px;
+}
+.table-card > p svg {
+  width: 13px;
+  height: 13px;
+}
+.table-card > footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: auto;
+  padding-top: 13px;
+  border-top: 1px solid var(--line);
+}
+.table-card--occupied > footer {
+  border-top-color: #eec8b9;
+}
+.table-card > footer span,
+.table-card > footer strong {
+  display: block;
+}
+.table-card > footer span {
+  color: var(--ink-500);
+  font-size: 8px;
+}
+.table-card > footer strong {
+  margin-top: 3px;
+  color: var(--clay-500);
+  font-size: 10px;
+}
+.table-card__actions {
+  display: flex;
+  gap: 6px;
+}
+.table-card__actions .icon-button {
+  width: 31px;
+  height: 31px;
+}
