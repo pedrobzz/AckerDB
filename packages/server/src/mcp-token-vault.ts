@@ -19,7 +19,8 @@ export const MCP_TOKEN_INTERNAL_OBJECTS = [
     name: "_dbz_mcp_tokens",
     table: "_dbz_mcp_tokens",
     sql: `CREATE TABLE _dbz_mcp_tokens (
-      token_id TEXT PRIMARY KEY CHECK (length(token_id) = 22),
+      creation_seq INTEGER PRIMARY KEY,
+      token_id TEXT NOT NULL UNIQUE CHECK (length(token_id) = 22),
       identity INTEGER NOT NULL REFERENCES _dbz_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
       mcp TEXT NOT NULL CHECK (length(mcp) > 0),
       secret_digest BLOB NOT NULL CHECK (length(secret_digest) = 32),
@@ -34,7 +35,7 @@ export const MCP_TOKEN_INTERNAL_OBJECTS = [
     type: "index" as const,
     name: "ix__dbz_mcp_tokens_owner",
     table: "_dbz_mcp_tokens",
-    sql: "CREATE INDEX ix__dbz_mcp_tokens_owner ON _dbz_mcp_tokens (identity, mcp, created_at, token_id)",
+    sql: "CREATE INDEX ix__dbz_mcp_tokens_owner ON _dbz_mcp_tokens (identity, mcp, creation_seq)",
   },
 ] as const;
 
@@ -82,6 +83,7 @@ export type CreatedMcpToken<Scope extends string = never> = McpTokenDescriptor<S
 };
 
 interface StoredTokenRow {
+  readonly creation_seq: bigint;
   readonly token_id: string;
   readonly identity: bigint;
   readonly mcp: string;
@@ -92,6 +94,10 @@ interface StoredTokenRow {
   readonly created_at: number;
   readonly updated_at: number;
 }
+
+type StoredTokenDescriptorRow = Pick<StoredTokenRow,
+  "creation_seq" | "token_id" | "mcp" | "name" | "metadata" | "scopes" | "created_at" | "updated_at"
+>;
 
 const utf8 = new TextEncoder();
 const DUMMY_DIGEST = new Uint8Array(32);
@@ -196,10 +202,12 @@ function invalidCredential(): DbzzError {
 
 export function verifyMcpTokenVaultState(connection: Database): void {
   const rows = connection.query(
-    "SELECT token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _dbz_mcp_tokens",
+    "SELECT creation_seq, token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _dbz_mcp_tokens",
   );
   for (const row of rows.iterate() as IterableIterator<StoredTokenRow>) {
     if (
+      typeof row.creation_seq !== "bigint" ||
+      row.creation_seq <= 0n ||
       typeof row.token_id !== "string" ||
       !/^[A-Za-z0-9_-]{22}$/.test(row.token_id) ||
       typeof row.identity !== "bigint" ||
@@ -293,11 +301,11 @@ export class McpTokenVault {
     validateIdentity(identity);
     requireIdentity(connection, identity);
     const rows = connection.query(
-      `SELECT token_id, mcp, name, metadata, scopes, created_at, updated_at
+      `SELECT creation_seq, token_id, mcp, name, metadata, scopes, created_at, updated_at
         FROM _dbz_mcp_tokens
         WHERE identity = ? AND mcp = ?
-        ORDER BY created_at, token_id`,
-    ).all(identity, mcp) as StoredTokenRow[];
+        ORDER BY creation_seq`,
+    ).all(identity, mcp) as StoredTokenDescriptorRow[];
     return Object.freeze(rows.map((row) => descriptor(row, scopeDescriptor)));
   }
 

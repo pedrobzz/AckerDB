@@ -269,6 +269,7 @@ export interface McpTokenFixture {
 
 export interface McpTokenFixtureOptions {
   readonly limits?: ServiceLimits;
+  readonly now?: RuntimeOptions["now"];
   readonly telemetry?: RuntimeOptions["telemetry"];
 }
 
@@ -291,6 +292,7 @@ export function fixture(
     registry: new Registry({ ...modules, ...extraModules }),
     verifier,
     telemetry: options.telemetry ?? false,
+    ...(options.now === undefined ? {} : { now: options.now }),
     limits: options.limits ?? {
       ...PRODUCTION_LIMITS,
       mcp: { ...PRODUCTION_LIMITS.mcp, maxTokensPerIdentity: 2 },
