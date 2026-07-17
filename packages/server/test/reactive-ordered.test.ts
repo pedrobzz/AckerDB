@@ -1332,10 +1332,10 @@ describe("ordered reactive ownership", () => {
       fairnessKey: "user:1",
       subscriber,
     };
-    await reactive.subscribeQuery({ ...base, context: "old-context", id: 1, authEpoch: 1 });
+    await reactive.subscribeQuery({ ...base, context: "old-context", id: 2, authEpoch: 1 });
     await reactive.subscribeEvent({
       subscriber,
-      id: 2,
+      id: 1,
       table: "messages",
       authEpoch: 1,
       args: {},
@@ -1343,7 +1343,13 @@ describe("ordered reactive ownership", () => {
     });
 
     const rotated = await reactive.rotateAuth(subscriber, 2);
-    expect(rotated).toMatchObject({ queryIds: [1], eventIds: [2], deliveryFailures: [] });
+    expect(rotated).toMatchObject({
+      subscriptions: [
+        { id: 1, address: "events.messages", args: {} },
+        { id: 2, address: "messages.list", args: null },
+      ],
+      deliveryFailures: [],
+    });
     expect(subscriber.transitions.at(-1)?.transition).toMatchObject({
       kind: "revoked",
       outcome: { code: "auth_stale" },

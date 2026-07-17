@@ -153,8 +153,11 @@ export interface ReactiveSnapshot {
 }
 
 export interface AuthRotationResult {
-  readonly queryIds: readonly number[];
-  readonly eventIds: readonly number[];
+  readonly subscriptions: readonly {
+    readonly id: number;
+    readonly address: string;
+    readonly args: unknown;
+  }[];
   readonly deliveryFailures: readonly DeliveryFailure[];
 }
 
@@ -455,13 +458,15 @@ export class OrderedReactive<C = unknown> {
     this.assertAuthEpoch(nextAuthEpoch);
     const bindings = [...(this.bySubscriber.get(subscriber)?.values() ?? [])];
     this.assertNewAuthEpoch(bindings, nextAuthEpoch);
-    const queryIds: number[] = [];
-    const eventIds: number[] = [];
+    const subscriptions = bindings.map((binding) => Object.freeze({
+      id: binding.id,
+      address: binding.kind === "query" ? binding.entry.address : `events.${binding.state.table}`,
+      args: binding.kind === "query" ? decode(binding.entry.encodedArgs) : binding.args,
+    })).sort((left, right) => left.id - right.id);
     const failures: DeliveryFailure[] = [];
     for (const binding of bindings) {
       this.detach(binding);
       if (binding.kind === "query") {
-        queryIds.push(binding.id);
         try {
           await this.sendRevocation(
             binding,
@@ -472,15 +477,13 @@ export class OrderedReactive<C = unknown> {
           failures.push(failure(binding, error));
         }
       } else {
-        eventIds.push(binding.id);
         // Detach is immediate, but an already-snapshotted publication may still
         // own this delivery. Drain it before a new-epoch binding is installed.
         await binding.delivery;
       }
     }
     return Object.freeze({
-      queryIds: Object.freeze(queryIds.sort((a, b) => a - b)),
-      eventIds: Object.freeze(eventIds.sort((a, b) => a - b)),
+      subscriptions: Object.freeze(subscriptions),
       deliveryFailures: Object.freeze(failures),
     });
   }

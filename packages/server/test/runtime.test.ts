@@ -1059,6 +1059,71 @@ describe("ordered convergence", () => {
     const signedIn = await session.rotate(user("bob"));
     expect(signedIn).toEqual([]);
   });
+
+  test("reattaches the reactive-owned query and event definitions in id order", async () => {
+    await session.open(user("alice"));
+    await runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 32,
+      ref: "messages.secure",
+      args: {},
+    }));
+    await expect(runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 32,
+      ref: "events.privateTyping",
+      args: { channelId: 8n },
+    }))).rejects.toMatchObject({ code: "conflict" });
+    await runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 31,
+      ref: "events.privateTyping",
+      args: { channelId: 7n },
+    }));
+
+    expect(await session.rotate(user("bob"))).toMatchObject([
+      { t: "transition", id: 32, transition: { kind: "revoked" } },
+      { t: "event", id: 31, event: { kind: "reset" } },
+      { t: "transition", id: 32, transition: { kind: "reset", value: { subject: "bob" } } },
+    ]);
+    expect(runtime.status().reactive).toMatchObject({ queryListeners: 1, eventListeners: 1 });
+
+    expect(await session.rotate(ANONYMOUS_PRINCIPAL)).toMatchObject([
+      { t: "transition", id: 32, transition: { kind: "revoked" } },
+      { t: "err", id: 31, outcome: { code: "unauthenticated" } },
+      { t: "err", id: 32, outcome: { code: "unauthenticated" } },
+    ]);
+    expect(runtime.status().reactive).toMatchObject({ queryListeners: 0, eventListeners: 0 });
+    expect(await session.rotate(user("carol"))).toEqual([]);
+  });
+
+  test("disconnect releases query and event ownership at the reactive boundary", async () => {
+    await session.open(user("alice"));
+    await runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 33,
+      ref: "messages.secure",
+      args: {},
+    }));
+    await runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 34,
+      ref: "events.privateTyping",
+      args: { channelId: 9n },
+    }));
+
+    await session.close();
+
+    expect(runtime.status()).toMatchObject({
+      connections: 0,
+      reactive: { queryListeners: 0, eventListeners: 0 },
+    });
+  });
 });
 
 describe("procedures and bounded SSE", () => {

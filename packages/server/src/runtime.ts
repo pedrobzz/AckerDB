@@ -236,12 +236,6 @@ interface ReactiveContext {
   readonly principal: Principal;
 }
 
-interface RuntimeSubscription {
-  readonly address: string;
-  readonly args: unknown;
-  readonly cursor?: SubscribeMessage["cursor"];
-}
-
 interface QueryExecution {
   readonly value: unknown;
   readonly readSet: ReadonlySet<string>;
@@ -262,7 +256,6 @@ interface RuntimeSession {
   readonly contexts: WeakSet<SessionRuntimeContext>;
   subscriber: Subscriber;
   readonly telemetryConnectionId?: string;
-  readonly subscriptions: Map<number, RuntimeSubscription>;
   readonly subscriptionControlTails: Map<number, Promise<void>>;
   subscriptionControlFrontier: Promise<void>;
   pendingSubscriptionControls: number;
@@ -848,7 +841,6 @@ export class Runtime implements RuntimePort {
       ...(this.telemetry.enabled
         ? { telemetryConnectionId: digest(context.clientSessionId) }
         : {}),
-      subscriptions: new Map(),
       subscriptionControlTails: new Map(),
       subscriptionControlFrontier: Promise.resolve(),
       pendingSubscriptionControls: 0,
@@ -899,15 +891,19 @@ export class Runtime implements RuntimePort {
         state.subscriber = this.makeSubscriber(() => state, transition.to.authEpoch);
         captured.phase = "reattaching";
         captured.authEpoch = transition.to.authEpoch;
-        for (const [id, definition] of [...state.subscriptions].sort(([left], [right]) => left - right)) {
+        for (const definition of rotation.subscriptions) {
           try {
-            await this.attachSubscription(state, id, definition, false);
+            await this.attachSubscription(
+              state,
+              definition.id,
+              definition.address,
+              definition.args,
+            );
           } catch (error) {
-            state.subscriptions.delete(id);
             this.captureFrame(captured, this.prepareFrame({
               v: PROTOCOL_VERSION,
               t: "err",
-              id,
+              id: definition.id,
               outcome: outcomeFromError(transportError(error)),
             }, "subscription frame", "subscription"));
           }
@@ -931,12 +927,13 @@ export class Runtime implements RuntimePort {
   async subscribe(context: SessionRuntimeContext, request: RuntimeRequest<SubscribeMessage>): Promise<void> {
     const { message } = request;
     await this.runSessionOperation(context, request, "subscription", message.ref, async (state) => {
-      const definition: RuntimeSubscription = Object.freeze({
-        address: message.ref,
-        args: snapshotValue(message.args),
-        ...(message.cursor === undefined ? {} : { cursor: Object.freeze({ ...message.cursor }) }),
-      });
-      await this.attachSubscription(state, message.id, definition, true);
+      await this.attachSubscription(
+        state,
+        message.id,
+        message.ref,
+        snapshotValue(message.args),
+        message.cursor === undefined ? undefined : Object.freeze({ ...message.cursor }),
+      );
     }, { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } });
   }
 
@@ -944,7 +941,6 @@ export class Runtime implements RuntimePort {
     const { message } = request;
     await this.runSessionOperation(context, request, "subscription", undefined, (state) => {
       this.reactive.unsubscribe(state.subscriber, message.id);
-      state.subscriptions.delete(message.id);
     }, { identifiers: { requestId: String(message.id), subscriptionId: String(message.id) } });
   }
 
@@ -1080,7 +1076,6 @@ export class Runtime implements RuntimePort {
     state.capture = null;
     if (capture !== null) this.releaseCapture(capture);
     this.reactive.disconnect(state.subscriber);
-    state.subscriptions.clear();
     if (this.sessions.get(state.context.clientSessionId) === state) {
       this.sessions.delete(state.context.clientSessionId);
       this.telemetry.recordMetric({ name: "runtime.connections", value: this.sessions.size, unit: "gauge" });
@@ -2041,12 +2036,12 @@ export class Runtime implements RuntimePort {
   private async attachSubscription(
     state: RuntimeSession,
     id: number,
-    definition: RuntimeSubscription,
-    remember: boolean,
+    address: string,
+    args: unknown,
+    cursor?: SubscribeMessage["cursor"],
   ): Promise<void> {
-    let remembered = definition;
-    if (definition.address.startsWith("events.")) {
-      const table = definition.address.slice("events.".length);
+    if (address.startsWith("events.")) {
+      const table = address.slice("events.".length);
       const tableDefinition = this.engine.schema.tables[table];
       if (tableDefinition?.kind !== "event") {
         throw new DbzzError("not_found", `unknown event table "${table}"`);
@@ -2058,13 +2053,13 @@ export class Runtime implements RuntimePort {
         authorized = await authorizeInvocation(
           subscription,
           { auth: state.context.principal },
-          definition.args,
+          args,
         );
         if (this.telemetry.enabled) {
           this.traceSpan({
             stage: "policy",
             outcome: "ok",
-            functionName: definition.address,
+            functionName: address,
             resource: "subscription",
             durationMs: Math.max(0, performance.now() - policyAt),
           }, "subscription");
@@ -2074,7 +2069,7 @@ export class Runtime implements RuntimePort {
           this.traceSpan({
             stage: "policy",
             outcome: outcomeFromError(transportError(error)).code,
-            functionName: definition.address,
+            functionName: address,
             resource: "subscription",
             durationMs: Math.max(0, performance.now() - policyAt),
           }, "subscription");
@@ -2089,24 +2084,22 @@ export class Runtime implements RuntimePort {
         args: authorized.args,
         matches: subscription.matches as (row: unknown, args: unknown) => boolean,
       });
-      remembered = Object.freeze({ ...definition, args: authorized.args });
     } else {
-      this.expect(definition.address, "query");
+      this.expect(address, "query");
       await this.reactive.subscribeQuery({
         subscriber: state.subscriber,
         id,
-        address: definition.address,
-        args: definition.args,
+        address,
+        args,
         policyScopeFingerprint: digest(state.context.principal),
         fairnessKey: state.context.fairnessKey,
         context: {
           principal: state.context.principal,
         },
         authEpoch: state.context.authEpoch,
-        ...(!remember || definition.cursor === undefined ? {} : { cursor: definition.cursor }),
+        ...(cursor === undefined ? {} : { cursor }),
       });
     }
-    if (remember) state.subscriptions.set(id, remembered);
   }
 
   private executeQuery(
