@@ -98,7 +98,13 @@ import {
   type AnyRegisteredMcpTool,
   type McpToolCtx,
 } from "./mcp.ts";
-import { bindMcpAiContext, type McpAiRuntimeCapability } from "./mcp-ai.ts";
+import {
+  bindMcpAiContext,
+  mcpLocalGrant,
+  withMcpLocalAuthority,
+  type McpAiContext,
+  type McpAiRuntimeCapability,
+} from "./mcp-ai.ts";
 import type { McpCallToolResult } from "./mcp-content.ts";
 import { isMcpToolAuthorized } from "./mcp-scopes.ts";
 import { withMcpTokenContext as withMcpTokenCapability } from "./mcp-token-context.ts";
@@ -1273,7 +1279,14 @@ export class Runtime implements RuntimePort {
   authorizeMcpTool(mcp: string, name: string, principal: Principal): AnyRegisteredMcpTool {
     const endpointMatches = principal.kind !== "mcp" || principal.mcp === mcp;
     const tool = endpointMatches ? this.registry.mcpTool(mcp, name) : undefined;
-    if (tool !== undefined && isMcpToolAuthorized(tool.accessPolicy, principal)) return tool;
+    if (
+      tool !== undefined &&
+      isMcpToolAuthorized(
+        tool.accessPolicy,
+        principal,
+        mcpLocalGrant(principal, tool.mcp),
+      )
+    ) return tool;
     if (principal.kind === "anonymous") {
       throw new DbzzError("unauthenticated", "authentication required");
     }
@@ -1289,11 +1302,21 @@ export class Runtime implements RuntimePort {
     args: unknown,
     context: McpToolCtx,
   ): Promise<McpCallToolResult> {
-    const tool = this.authorizeMcpTool(mcp, name, context.auth);
-    aborted(context.abortSignal);
-    const value = await invokeFunction(tool, context, args);
-    aborted(context.abortSignal);
-    return finalizeMcpToolResult(tool, value);
+    const toolContext = Object.freeze({
+      auth: context.auth,
+      abortSignal: context.abortSignal,
+      tx: context.tx,
+    });
+    const release = bindMcpAiContext(toolContext, this.mcpAiCapability(toolContext));
+    try {
+      const tool = this.authorizeMcpTool(mcp, name, toolContext.auth);
+      aborted(toolContext.abortSignal);
+      const value = await invokeFunction(tool, toolContext, args);
+      aborted(toolContext.abortSignal);
+      return finalizeMcpToolResult(tool, value);
+    } finally {
+      release();
+    }
   }
 
   private respondProcedure(
@@ -2545,18 +2568,27 @@ export class Runtime implements RuntimePort {
         accountUnlinked,
       ),
     });
-    const release = bindMcpAiContext(value, Object.freeze({
-      toolsFor: (mcp) => this.registry.mcps.get(mcp.name) === mcp
-        ? this.registry.toolsFor(mcp, value.auth)
-        : undefined,
-      execute: (mcp, tool, args) => this.dispatchMcpTool(
-        mcp.name,
-        tool.name,
-        args,
-        value,
-      ),
-    } satisfies McpAiRuntimeCapability));
+    const release = bindMcpAiContext(value, this.mcpAiCapability(value));
     return Object.freeze({ value, release });
+  }
+
+  private mcpAiCapability(context: McpAiContext): McpAiRuntimeCapability {
+    return Object.freeze({
+      toolsFor: (mcp) => this.registry.mcps.get(mcp.name) === mcp
+        ? this.registry.registeredToolsFor(mcp)
+        : undefined,
+      execute: (mcp, tool, args, scopes) => withMcpLocalAuthority(
+        context.auth,
+        mcp,
+        scopes,
+        () => this.dispatchMcpTool(
+          mcp.name,
+          tool.name,
+          args,
+          context,
+        ),
+      ),
+    } satisfies McpAiRuntimeCapability);
   }
 
   private withMcpTokenContext<T extends { readonly auth: Principal }, R>(

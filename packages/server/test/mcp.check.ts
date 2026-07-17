@@ -6,10 +6,12 @@ import {
   defineSchema,
   defineTable,
   mutation,
+  procedure,
   query,
   type McpBuilder,
   type McpToolResult,
   type MutationBuilder,
+  type ProcedureBuilder,
   type QueryBuilder,
   type Validator,
 } from "@dbzz/server";
@@ -22,6 +24,7 @@ const schema = defineSchema({
 });
 
 const typedMutation = mutation as MutationBuilder<typeof schema>;
+const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
 
@@ -115,6 +118,26 @@ const revokeSystemAgentToken = typedMutation({
   args: { identity: dbz.identity(), tokenId: dbz.string() },
   handler: (ctx, args) => agentMcp.systemTokens.revoke(ctx, args.identity, args.tokenId),
 });
+const localAiTools = typedProcedure({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => {
+    scopedMcp.aiTools(ctx);
+    scopedMcp.aiTools(ctx, {
+      scopes: ["orders.get", "reports.all"],
+      includeUnavailable: true,
+    });
+    agentMcp.aiTools(ctx, { includeUnavailable: true });
+    // @ts-expect-error local grants accept only the declaration's exact scope union
+    scopedMcp.aiTools(ctx, { scopes: ["orders.create"] });
+    // @ts-expect-error scope-free MCPs erase local scope grants
+    agentMcp.aiTools(ctx, { scopes: ["orders.get"] });
+    // @ts-expect-error Identity is inherited from ctx.auth and cannot be supplied
+    scopedMcp.aiTools(ctx, { scopes: ["orders.get"], identity: 1n as Identity });
+    // @ts-expect-error includeUnavailable is an explicit boolean mode
+    scopedMcp.aiTools(ctx, { includeUnavailable: "yes" });
+  },
+});
 const createdToken: string = createAgentToken._retType!.token;
 const createdSystemToken: string = createSystemAgentToken._retType!.token;
 const listedTokenId: string = listAgentTokens._retType![0]!.id;
@@ -135,6 +158,7 @@ void updateAgentToken;
 void revokeAgentToken;
 void updateScopedToken;
 void revokeSystemAgentToken;
+void localAiTools;
 const renamedEndpoint = typedMcp({
   name: "stable_name",
   path: "/renamed/export",
@@ -160,6 +184,8 @@ const writeNote = agentMcp.tool({
     agentMcp.tokens.create(ctx, { name: "forbidden" });
     // @ts-expect-error MCP tools cannot invoke the system-administration facade
     agentMcp.systemTokens.list(ctx, 1n as Identity);
+    const nestedTools = agentMcp.aiTools(ctx);
+    void nestedTools;
     await ctx.tx((tx) => addNote(tx, { body: args.body }));
     return { content: [{ type: "text", text: `${authKind}:${signal.aborted}` }] };
   },
