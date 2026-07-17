@@ -98,6 +98,9 @@
         "@modelcontextprotocol/sdk": "1.29.0",
         "jose": "6.2.3",
       },
+      "devDependencies": {
+        "ai": "7.0.29",
+      },
     },
   },
   "packages": {

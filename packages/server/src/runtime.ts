@@ -98,6 +98,7 @@ import {
   type AnyRegisteredMcpTool,
   type McpToolCtx,
 } from "./mcp.ts";
+import { bindMcpAiContext, type McpAiRuntimeCapability } from "./mcp-ai.ts";
 import type { McpCallToolResult } from "./mcp-content.ts";
 import { isMcpToolAuthorized } from "./mcp-scopes.ts";
 import { withMcpTokenContext as withMcpTokenCapability } from "./mcp-token-context.ts";
@@ -231,6 +232,11 @@ export interface RuntimeSseRequest extends RuntimeExternalRequest {}
 export interface RuntimeSseResponse {
   readonly stream: ReadableStream<Uint8Array>;
   readonly streamId: string;
+}
+
+interface OwnedProcedureContext {
+  readonly value: ProcedureCtx;
+  readonly release: () => void;
 }
 
 export interface RuntimeStatus {
@@ -1200,19 +1206,20 @@ export class Runtime implements RuntimePort {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
       aborted(signal);
-      const value = await invokeFunction(
-        fn,
-        this.procedureContext(
-          request.principal,
-          fairnessKey,
-          signal,
-          requestBytes,
-          publishInvalidation,
-        ),
-        request.args,
+      const context = this.procedureContext(
+        request.principal,
+        fairnessKey,
+        signal,
+        requestBytes,
+        publishInvalidation,
       );
-      aborted(signal);
-      return value;
+      try {
+        const value = await invokeFunction(fn, context.value, request.args);
+        aborted(signal);
+        return value;
+      } finally {
+        context.release();
+      }
     }, {
       identifiers: { requestId: String(request.id) },
       finalize: (outcome) => {
@@ -1248,16 +1255,13 @@ export class Runtime implements RuntimePort {
       DIRECT_RUNTIME_SOURCE,
     );
     return this.runOperation(null, "procedure", functionName, requestBytes, async () => {
-      const tool = this.authorizeMcpTool(request.mcp, request.tool, request.principal);
       const signal = this.operationSignal(request.signal);
-      aborted(signal);
-      const value = await invokeFunction(
-        tool,
-        this.transactionalContext(request.principal, fairnessKey, signal, requestBytes),
+      return this.dispatchMcpTool(
+        request.mcp,
+        request.tool,
         request.args,
+        this.transactionalContext(request.principal, fairnessKey, signal, requestBytes),
       );
-      aborted(signal);
-      return finalizeMcpToolResult(tool, value);
     }, {
       identifiers: { requestId: String(request.id) },
       claimedTrace,
@@ -1277,6 +1281,19 @@ export class Runtime implements RuntimePort {
       throw new DbzzError("unauthorized", "access denied");
     }
     throw new DbzzError("not_found", "MCP tool not found");
+  }
+
+  private async dispatchMcpTool(
+    mcp: string,
+    name: string,
+    args: unknown,
+    context: McpToolCtx,
+  ): Promise<McpCallToolResult> {
+    const tool = this.authorizeMcpTool(mcp, name, context.auth);
+    aborted(context.abortSignal);
+    const value = await invokeFunction(tool, context, args);
+    aborted(context.abortSignal);
+    return finalizeMcpToolResult(tool, value);
   }
 
   private respondProcedure(
@@ -1524,6 +1541,7 @@ export class Runtime implements RuntimePort {
       let producer: BoundedSseProducer | null = null;
       let streamId: string | null = null;
       let lifecycle: Promise<void> | null = null;
+      let procedure: OwnedProcedureContext | null = null;
       let deliveryObserver: DeliveryObserver | undefined;
       try {
         const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
@@ -1544,18 +1562,16 @@ export class Runtime implements RuntimePort {
         void producer.finished.then(() => this.removeSseProducer(streamId!, producer!));
         const authorized = deferred<void>();
         let handlerContext: <T>(work: () => T) => T = (work) => work();
+        procedure = this.procedureContext(
+          request.principal,
+          fairnessKey,
+          producer.signal,
+          requestBytes,
+          (account) => this.authInvalidation.publishAccount(account),
+        );
         const handler = invokeFunction(
           fn,
-          Object.freeze({
-            ...this.procedureContext(
-              request.principal,
-              fairnessKey,
-              producer.signal,
-              requestBytes,
-              (account) => this.authInvalidation.publishAccount(account),
-            ),
-            abortSignal: producer.signal,
-          }) as SseCtx,
+          procedure.value as SseCtx,
           request.args,
           {
             onAuthorized: () => {
@@ -1600,6 +1616,8 @@ export class Runtime implements RuntimePort {
           }
           throw error;
         }).finally(() => {
+          procedure!.release();
+          procedure = null;
           release();
           finishOperationTrace();
         });
@@ -1624,6 +1642,8 @@ export class Runtime implements RuntimePort {
         }
         if (lifecycle !== null) await lifecycle.catch(() => {});
         else {
+          procedure?.release();
+          procedure = null;
           release();
           finishOperationTrace();
         }
@@ -2506,8 +2526,8 @@ export class Runtime implements RuntimePort {
     signal: AbortSignal,
     requestBytes: number,
     accountUnlinked: (account: ExternalAccount) => void,
-  ): ProcedureCtx {
-    return Object.freeze({
+  ): OwnedProcedureContext {
+    const value = Object.freeze({
       ...this.transactionalContext(principal, fairnessKey, signal, requestBytes),
       linkAccount: (rawBearerToken: string) => this.linkAccount(
         principal,
@@ -2525,6 +2545,18 @@ export class Runtime implements RuntimePort {
         accountUnlinked,
       ),
     });
+    const release = bindMcpAiContext(value, Object.freeze({
+      toolsFor: (mcp) => this.registry.mcps.get(mcp.name) === mcp
+        ? this.registry.toolsFor(mcp, value.auth)
+        : undefined,
+      execute: (mcp, tool, args) => this.dispatchMcpTool(
+        mcp.name,
+        tool.name,
+        args,
+        value,
+      ),
+    } satisfies McpAiRuntimeCapability));
+    return Object.freeze({ value, release });
   }
 
   private withMcpTokenContext<T extends { readonly auth: Principal }, R>(
