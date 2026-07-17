@@ -6,10 +6,12 @@
     "src"
   ],
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./mcp": "./src/mcp.ts"
   },
   "dependencies": {
     "@dbzz/core": "workspace:0.2.5",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "jose": "6.2.3"
   }
 }

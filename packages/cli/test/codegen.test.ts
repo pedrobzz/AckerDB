@@ -64,6 +64,38 @@ describe("codegen", () => {
     );
   });
 
+  test("binds MCP declarations to the schema while keeping them server-only", async () => {
+    const dir = makeFixture({
+      "schema.ts": FIXTURE_SCHEMA,
+      "functions/agent.ts": `
+import { dbz } from "@dbzz/server";
+import { createMcp } from "../_generated/server.ts";
+
+export const agentMcp = createMcp({ name: "agent" });
+export const echo = agentMcp.tool({
+  name: "echo_text",
+  description: "Echo text.",
+  args: { text: dbz.string() },
+  handler: (_ctx, args) => ({ content: [{ type: "text", text: args.text }] }),
+});
+`,
+    });
+    dirs.push(dir);
+    const config = loadConfig(dir);
+    await runCodegen(config);
+
+    const generatedServer = readFileSync(join(config.generatedDir, "server.ts"), "utf8");
+    expect(generatedServer).toContain("createMcp as createMcpGeneric");
+    expect(generatedServer).toContain("export const createMcp = createMcpGeneric as McpBuilder<Schema>;");
+
+    const registry = new Registry(await importFunctionModules(config));
+    expect([...registry.functions.keys()]).toEqual([]);
+    expect([...registry.serverOnly.keys()]).toEqual([
+      "agent.agentMcp",
+      "agent.echo",
+    ]);
+  });
+
   test("types.ts carries enum namespaces, union constructors and row types", async () => {
     const dir = fixture();
     const config = loadConfig(dir);

@@ -70,12 +70,21 @@ export interface RegisteredFunction<K extends FunctionKind = FunctionKind, A = u
 }
 
 /**
+ * Marker for declarations that belong to the server module graph but are not
+ * remotely callable DBZZ functions. Generated client APIs erase these keys.
+ */
+export interface RegisteredServerOnly {
+  readonly isDbzzServerOnly: true;
+}
+
+/**
  * Maps a record of module namespaces (arbitrarily nested) to the typed `api`
  * shape. Function files should export only dbzz functions (same convention as
  * Convex); other exports produce unusable branches, not errors.
  */
 export type ApiFromModules<T> = {
-  [K in keyof T]: T[K] extends RegisteredFunction<infer Kd, infer A, infer R>
+  [K in keyof T as T[K] extends RegisteredServerOnly ? never : K]:
+  T[K] extends RegisteredFunction<infer Kd, infer A, infer R>
     ? FunctionReference<Kd, A, R>
     : ApiFromModules<T[K]>;
 };

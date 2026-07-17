@@ -154,8 +154,10 @@ export {
   isRegisteredFunction,
   type AccessPolicy,
   type AnyRegistered,
+  type AnyInvocable,
   type ArgsInput,
   type AuthCtx,
+  type Invocable,
   type MutationBuilder,
   type MutationCtx,
   type ProcedureBuilder,
@@ -172,6 +174,19 @@ export {
   type SseSource,
   type TxCtx,
 } from "./functions.ts";
+export {
+  createMcp,
+  isMcpDeclaration,
+  isRegisteredMcpTool,
+  type AnyRegisteredMcpTool,
+  type McpBuilder,
+  type McpDeclaration,
+  type McpInputSchema,
+  type McpTextContent,
+  type McpToolCtx,
+  type McpToolResult,
+  type RegisteredMcpTool,
+} from "./mcp.ts";
 export { Registry } from "./registry.ts";
 export {
   BoundedSseProducer,
@@ -239,6 +254,7 @@ export {
   type RuntimeHooks,
   type RuntimeHookStage,
   type RuntimeLifecycleState,
+  type RuntimeMcpToolRequest,
   type RuntimeOptions,
   type RuntimeProcedureRequest,
   type RuntimeProcedureResponder,
