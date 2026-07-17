@@ -73,17 +73,56 @@ const listAgentTokens = typedQuery({
   args: {},
   handler: (ctx) => agentMcp.tokens.list(ctx),
 });
+const createSystemAgentToken = typedMutation({
+  access: "system",
+  args: { identity: dbz.identity(), name: dbz.string() },
+  handler: (ctx, args) => agentMcp.systemTokens.create(
+    ctx,
+    args.identity,
+    { name: args.name },
+  ),
+});
+const createSystemScopedToken = typedMutation({
+  access: "system",
+  args: {
+    identity: dbz.identity(),
+    name: dbz.string(),
+    scopes: dbz.array(scopedMcp.scopes),
+  },
+  handler: (ctx, args) => scopedMcp.systemTokens.create(
+    ctx,
+    args.identity,
+    { name: args.name, scopes: args.scopes },
+  ),
+});
+const listSystemAgentTokens = typedQuery({
+  access: "system",
+  args: { identity: dbz.identity() },
+  handler: (ctx, args) => agentMcp.systemTokens.list(ctx, args.identity),
+});
+const revokeSystemAgentToken = typedMutation({
+  access: "system",
+  args: { identity: dbz.identity(), tokenId: dbz.string() },
+  handler: (ctx, args) => agentMcp.systemTokens.revoke(ctx, args.identity, args.tokenId),
+});
 const createdToken: string = createAgentToken._retType!.token;
+const createdSystemToken: string = createSystemAgentToken._retType!.token;
 const listedTokenId: string = listAgentTokens._retType![0]!.id;
 const createdScope: AgentScope = createScopedToken._retType!.scopes[0]!;
+const createdSystemScope: AgentScope = createSystemScopedToken._retType!.scopes[0]!;
 // @ts-expect-error listing descriptors never recover the plaintext secret
 void listAgentTokens._retType![0]!.token;
+// @ts-expect-error system listing descriptors never recover the plaintext secret
+void listSystemAgentTokens._retType![0]!.token;
 // @ts-expect-error scope-free descriptors do not expose a grant
 void listAgentTokens._retType![0]!.scopes;
 void createdToken;
+void createdSystemToken;
 void listedTokenId;
 void createdScope;
+void createdSystemScope;
 void updateScopedToken;
+void revokeSystemAgentToken;
 const renamedEndpoint = typedMcp({
   name: "stable_name",
   path: "/renamed/export",
@@ -107,6 +146,8 @@ const writeNote = agentMcp.tool({
     agentMcp.tokens.list(ctx);
     // @ts-expect-error token minting requires an application mutation or transaction context
     agentMcp.tokens.create(ctx, { name: "forbidden" });
+    // @ts-expect-error MCP tools cannot invoke the system-administration facade
+    agentMcp.systemTokens.list(ctx, 1n as Identity);
     await ctx.tx((tx) => addNote(tx, { body: args.body }));
     return { content: [{ type: "text", text: `${authKind}:${signal.aborted}` }] };
   },
@@ -167,6 +208,17 @@ typedMutation({
     scopedMcp.tokens.create(ctx, { name: "invalid" });
     // @ts-expect-error token grants accept only exact declared values
     scopedMcp.tokens.create(ctx, { name: "invalid", scopes: ["orders.create"] });
+    // @ts-expect-error owner token operations never accept a selected Identity
+    agentMcp.tokens.create(ctx, 1n as Identity, { name: "escalation" });
+    // @ts-expect-error scope-free system token creation cannot accept a scope value
+    agentMcp.systemTokens.create(ctx, 1n as Identity, { name: "invalid", scopes: [] });
+    // @ts-expect-error scoped system token creation requires an explicit grant
+    scopedMcp.systemTokens.create(ctx, 1n as Identity, { name: "invalid" });
+    scopedMcp.systemTokens.create(ctx, 1n as Identity, {
+      name: "invalid",
+      // @ts-expect-error system grants accept only exact declared values
+      scopes: ["orders.create"],
+    });
   },
 });
 
