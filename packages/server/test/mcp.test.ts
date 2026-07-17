@@ -15,7 +15,12 @@ import {
   type QueryBuilder,
 } from "../src/functions.ts";
 import { DBZZ_HTTP_ROUTES } from "../src/http-routes.ts";
-import { createMcp, type McpBuilder } from "../src/mcp.ts";
+import {
+  createMcp,
+  finalizeMcpToolResult,
+  type McpBuilder,
+  type McpToolResult,
+} from "../src/mcp.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
 import { reconcile } from "../src/reconcile.ts";
 import { Registry } from "../src/registry.ts";
@@ -65,6 +70,7 @@ const operationsMcp = typedMcp({
   metadata: { title: "Operations Agent" },
 });
 const valuesMcp = typedMcp({ name: "values", path: "/mcp/values" });
+const contentMcp = typedMcp({ name: "content", path: "/mcp/content" });
 let handlerCalls = 0;
 let summaryHandlerCalls = 0;
 let valueHandlerCalls = 0;
@@ -174,8 +180,179 @@ const echoValues = valuesMcp.tool({
   },
 });
 
+function richContentResult(kind: string, auth: string): McpToolResult {
+  switch (kind) {
+    case "text":
+      return {
+        content: [{
+          type: "text",
+          text: "hello agent",
+          annotations: {
+            audience: ["assistant"],
+            priority: 0.75,
+            lastModified: "2026-07-17T09:30:00Z",
+          },
+          _meta: { source: "notes" },
+        }],
+      };
+    case "image":
+      return {
+        content: [{
+          type: "image",
+          data: "AQID",
+          mimeType: "image/png",
+          annotations: { audience: ["user"] },
+          _meta: { width: 1, height: 1 },
+        }],
+      };
+    case "audio":
+      return {
+        content: [{
+          type: "audio",
+          data: "BAUG",
+          mimeType: "audio/wav",
+          annotations: { priority: 0.5 },
+          _meta: { seconds: 1 },
+        }],
+      };
+    case "resource_text":
+      return {
+        content: [{
+          type: "resource",
+          resource: {
+            uri: "dbzz://notes/1",
+            mimeType: "text/plain",
+            text: "embedded note",
+            _meta: { encoding: "utf-8" },
+          },
+          annotations: { audience: ["assistant", "user"] },
+          _meta: { embedded: true },
+        }],
+      };
+    case "resource_blob":
+      return {
+        content: [{
+          type: "resource",
+          resource: {
+            uri: "dbzz://notes/2",
+            mimeType: "application/octet-stream",
+            blob: "AQID",
+            _meta: { checksum: "010203" },
+          },
+        }],
+      };
+    case "resource_link":
+      return {
+        content: [{
+          type: "resource_link",
+          uri: "https://dbzz.dev/notes/1",
+          name: "note-one",
+          title: "Note one",
+          description: "The first durable note.",
+          mimeType: "text/plain",
+          size: 13,
+          icons: [{
+            src: "https://dbzz.dev/note.png",
+            mimeType: "image/png",
+            sizes: ["48x48", "any"],
+            theme: "light",
+          }],
+          annotations: { priority: 1, lastModified: "2026-07-17T09:30:00+00:00" },
+          _meta: { durable: true },
+        }],
+      };
+    case "mixed":
+      return {
+        content: [{ type: "text", text: "mixed" }, {
+          type: "image",
+          data: "AQID",
+          mimeType: "image/png",
+        }, {
+          type: "resource_link",
+          uri: "dbzz://notes/1",
+          name: "note-one",
+        }],
+        _meta: { auth, nested: { values: [true, 1, null] } },
+      };
+    case "error":
+      return {
+        content: [{ type: "text", text: "The note could not be rendered." }],
+        isError: true,
+        _meta: { reason: "unsupported_note" },
+      };
+    default:
+      throw new Error(`unknown rich content fixture ${kind}`);
+  }
+}
+
+function invalidContentValue(kind: string): unknown {
+  switch (kind) {
+    case "arbitrary":
+      return { value: "not a content result" };
+    case "base64":
+      return { content: [{ type: "image", data: "not base64!", mimeType: "image/png" }] };
+    case "annotations":
+      return { content: [{ type: "text", text: "bad", annotations: { priority: 2 } }] };
+    case "annotations_audience":
+      return { content: [{ type: "text", text: "bad", annotations: { audience: ["model"] } }] };
+    case "annotations_date":
+      return {
+        content: [{
+          type: "text",
+          text: "bad",
+          annotations: { lastModified: "not-a-date" },
+        }],
+      };
+    case "annotations_calendar":
+      return {
+        content: [{
+          type: "text",
+          text: "bad",
+          annotations: { lastModified: "2026-02-31T09:30:00Z" },
+        }],
+      };
+    case "metadata":
+      return { content: [], _meta: { invalid: 1n } };
+    case "resource":
+      return { content: [{ type: "resource_link", uri: "relative", name: "bad" }] };
+    case "resource_shape":
+      return {
+        content: [{
+          type: "resource",
+          resource: { uri: "dbzz://notes/1", text: "text", blob: "AQID" },
+        }],
+      };
+    case "unknown_field":
+      return { content: [{ type: "text", text: "bad", arbitrary: true }] };
+    default:
+      throw new Error(`unknown invalid content fixture ${kind}`);
+  }
+}
+
+const renderContent = contentMcp.tool({
+  name: "render_content",
+  title: "Render rich content",
+  description: "Return one stable MCP rich-content fixture.",
+  annotations: {
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
+  },
+  args: { kind: dbz.string() },
+  handler: (ctx, args) => richContentResult(args.kind, ctx.auth.kind),
+});
+
+const invalidResult = contentMcp.tool({
+  name: "invalid_result",
+  description: "Exercise runtime rejection of arbitrary results.",
+  args: { kind: dbz.string() },
+  handler: (_ctx, args) => invalidContentValue(args.kind) as never,
+});
+
 const modules = {
   agent: { agentMcp },
+  content: { contentMcp, invalidResult, renderContent },
   notes: { insertNote, listNotes, writeNote, writeNoteSummary },
   operations: { readStatus, renamedEndpoint: operationsMcp },
   values: { echoValues, valuesMcp },
@@ -283,8 +460,11 @@ describe("public stateless MCP endpoint", () => {
     expect(harness.registry.functions.has("notes.writeNote")).toBe(false);
     expect([...harness.registry.serverOnly.keys()]).toEqual([
       "agent.agentMcp",
+      "content.contentMcp",
       "operations.renamedEndpoint",
       "values.valuesMcp",
+      "content.invalidResult",
+      "content.renderContent",
       "notes.writeNote",
       "notes.writeNoteSummary",
       "operations.readStatus",
@@ -563,7 +743,7 @@ describe("public stateless MCP endpoint", () => {
       maximum: 2n ** 63n - 1n,
       negative: -42n,
       large: 9_007_199_254_740_993n,
-      identity: 9_223_372_036_854_775_806n,
+      identity: 9_223_372_036_854_775_806n as Identity,
       bytes: [0, 1, 2, 254, 255],
     });
   });
@@ -592,11 +772,117 @@ describe("public stateless MCP endpoint", () => {
     }, 2);
     expect(await poisoned.json()).toMatchObject({
       result: {
-        content: [{ text: "output.opaque: expected a standard JSON value, got bigint" }],
+        content: [{ text: "output.opaque: expected a standard JSON value" }],
         isError: true,
       },
     });
     expect(valueHandlerCalls).toBe(1);
+  });
+
+  test("advertises tool titles and host hints without treating them as authorization", async () => {
+    const listed = await rpcAt(contentMcp.path, "tools/list", {});
+    const body = await listed.json() as {
+      readonly result: { readonly tools: readonly Record<string, unknown>[] };
+    };
+    expect(body.result.tools).toHaveLength(2);
+    expect(body.result.tools[0]).toMatchObject({
+      name: "invalid_result",
+      description: "Exercise runtime rejection of arbitrary results.",
+    });
+    expect(body.result.tools[1]).toMatchObject({
+      name: "render_content",
+      title: "Render rich content",
+      description: "Return one stable MCP rich-content fixture.",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    });
+
+    const anonymousCall = await rpcAt(contentMcp.path, "tools/call", {
+      name: "render_content",
+      arguments: { kind: "mixed" },
+    }, 2);
+    expect(await anonymousCall.json()).toMatchObject({ result: { _meta: { auth: "anonymous" } } });
+  });
+
+  test("preserves every rich content block, mixed content, metadata, and intentional errors", async () => {
+    const kinds = [
+      "text",
+      "image",
+      "audio",
+      "resource_text",
+      "resource_blob",
+      "resource_link",
+      "mixed",
+      "error",
+    ] as const;
+    for (let index = 0; index < kinds.length; index++) {
+      const kind = kinds[index]!;
+      const response = await rpcAt(contentMcp.path, "tools/call", {
+        name: "render_content",
+        arguments: { kind },
+      }, index + 1);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({
+        jsonrpc: "2.0",
+        id: index + 1,
+        result: richContentResult(kind, "anonymous"),
+      });
+    }
+
+    const malformed = await fetch(`${harness.base}${contentMcp.path}`, {
+      method: "POST",
+      headers: mcpHeaders(),
+      body: "{",
+    });
+    const malformedBody = await malformed.json();
+    expect(malformedBody).toMatchObject({ jsonrpc: "2.0", error: {}, id: null });
+    expect(malformedBody).not.toHaveProperty("result");
+  });
+
+  test("rejects arbitrary rich results and invalid annotations at compile-independent runtime boundaries", async () => {
+    const invalid = [
+      ["arbitrary", "unknown field"],
+      ["base64", "base64-encoded data"],
+      ["annotations", "priority must be between 0 and 1"],
+      ["annotations_audience", "audience must contain only user or assistant"],
+      ["annotations_date", "lastModified must be an ISO 8601 date-time"],
+      ["annotations_calendar", "lastModified must be an ISO 8601 date-time"],
+      ["metadata", "expected a standard JSON value"],
+      ["resource", "must be an absolute URI"],
+      ["resource_shape", "must contain exactly one of text or blob"],
+      ["unknown_field", "unknown field"],
+    ] as const;
+    for (let index = 0; index < invalid.length; index++) {
+      const [kind, message] = invalid[index]!;
+      expect(() => finalizeMcpToolResult(invalidResult, invalidContentValue(kind)))
+        .toThrow(message);
+
+      const response = await rpcAt(contentMcp.path, "tools/call", {
+        name: "invalid_result",
+        arguments: { kind },
+      }, index + 1);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ result: { isError: true } });
+    }
+
+    expect(() => contentMcp.tool({
+      name: "invalid_hint",
+      description: "Invalid runtime fixture.",
+      args: {},
+      annotations: { readOnlyHint: "yes" } as never,
+      handler: () => ({ content: [] }),
+    })).toThrow("MCP tool annotation readOnlyHint must be a boolean");
+    expect(() => contentMcp.tool({
+      name: "unknown_hint",
+      description: "Invalid runtime fixture.",
+      args: {},
+      annotations: { authorization: true } as never,
+      handler: () => ({ content: [] }),
+    })).toThrow('unknown MCP tool annotation "authorization"');
   });
 
   test("works through the official SDK client without an HTTP session", async () => {

@@ -25,6 +25,28 @@ import {
   type JsonObjectSchema,
   type StandardJsonCodec,
 } from "./standard-schema.ts";
+import {
+  type McpCallToolResult,
+  type McpToolResult,
+  validateMcpContentResult,
+} from "./mcp-content.ts";
+
+export type {
+  McpAudioContent,
+  McpBlobResourceContents,
+  McpContentAnnotations,
+  McpContentBlock,
+  McpContentRole,
+  McpEmbeddedResourceContent,
+  McpIcon,
+  McpImageContent,
+  McpJsonValue,
+  McpMetadata,
+  McpResourceLinkContent,
+  McpTextContent,
+  McpTextResourceContents,
+  McpToolResult,
+} from "./mcp-content.ts";
 
 const MCP_IDENTITY = Symbol.for("@dbzz/server/Mcp/v1");
 const MCP_TOOL_IDENTITY = Symbol.for("@dbzz/server/McpTool/v1");
@@ -58,16 +80,11 @@ export interface CustomMcpConfig<Name extends string, Path extends string>
   readonly path: Path;
 }
 
-export interface McpTextContent {
-  readonly type: "text";
-  readonly text: string;
-}
-
-/** Text-only result for the first tools tracer; later content kinds extend this union. */
-export interface McpToolResult {
-  readonly content: readonly McpTextContent[];
-  readonly structuredContent?: Readonly<Record<string, unknown>>;
-  readonly isError?: boolean;
+export interface McpToolAnnotations {
+  readonly readOnlyHint?: boolean;
+  readonly destructiveHint?: boolean;
+  readonly idempotentHint?: boolean;
+  readonly openWorldHint?: boolean;
 }
 
 export type McpToolCtx<S extends Schema = Schema> = Pick<
@@ -80,7 +97,9 @@ export type McpOutputSchema = JsonObjectSchema;
 
 interface McpToolDefinitionBase<A extends ObjectShape> {
   readonly name: string;
+  readonly title?: string;
   readonly description: string;
+  readonly annotations?: McpToolAnnotations;
   readonly access?: "public" | "authenticated";
   readonly args: A;
 }
@@ -105,10 +124,12 @@ export interface RegisteredMcpTool<
   O extends ObjectValidator | undefined = ObjectValidator | undefined,
   S extends Schema = Schema,
 > extends RegisteredServerOnly,
-    Invocable<"mcp-tool", A, McpToolCtx<S>, McpToolResult, McpHandlerResult<O>> {
+    Invocable<"mcp-tool", A, McpToolCtx<S>, McpCallToolResult, McpHandlerResult<O>> {
   readonly serverKind: "mcp-tool";
   readonly name: string;
+  readonly title?: string;
   readonly description: string;
+  readonly annotations?: McpToolAnnotations;
   readonly mcp: McpDeclaration<string, S>;
   readonly inputValidator: ObjectValidator<A>;
   readonly inputCodec: StandardJsonCodec<Expand<InferShape<A>>>;
@@ -187,32 +208,43 @@ function endpointMetadata(value: unknown): McpEndpointMetadata {
   return Object.freeze(metadata);
 }
 
-function validateMcpContentResult(value: unknown): McpToolResult {
+function toolAnnotations(value: unknown): McpToolAnnotations | undefined {
+  if (value === undefined) return undefined;
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("MCP tool handlers must return an MCP content result");
+    throw new TypeError("MCP tool annotations must be an object");
   }
-  const result = value as { readonly content?: unknown; readonly isError?: unknown };
-  if (!Array.isArray(result.content)) {
-    throw new TypeError("MCP tool result content must be an array");
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError("MCP tool annotations must be a plain object");
   }
-  for (const item of result.content) {
-    if (
-      item === null ||
-      typeof item !== "object" ||
-      (item as { readonly type?: unknown }).type !== "text" ||
-      typeof (item as { readonly text?: unknown }).text !== "string"
-    ) {
-      throw new TypeError("MCP tool result content currently supports only text items");
+  const input = value as Record<string, unknown>;
+  const fields = [
+    "readOnlyHint",
+    "destructiveHint",
+    "idempotentHint",
+    "openWorldHint",
+  ] as const;
+  for (const key of Object.keys(input)) {
+    if (!fields.includes(key as typeof fields[number])) {
+      throw new TypeError(`unknown MCP tool annotation "${key}"`);
     }
   }
-  if (result.isError !== undefined && typeof result.isError !== "boolean") {
-    throw new TypeError("MCP tool result isError must be a boolean");
+  const result: Partial<Record<typeof fields[number], boolean>> = {};
+  for (const field of fields) {
+    if (input[field] === undefined) continue;
+    if (typeof input[field] !== "boolean") {
+      throw new TypeError(`MCP tool annotation ${field} must be a boolean`);
+    }
+    result[field] = input[field];
   }
-  return value as McpToolResult;
+  return Object.freeze(result);
 }
 
 /** Validate and normalize the handler result once before either adapter consumes it. */
-export function finalizeMcpToolResult(tool: AnyRegisteredMcpTool, value: unknown): McpToolResult {
+export function finalizeMcpToolResult(
+  tool: { readonly outputCodec: StandardJsonCodec<unknown> | undefined },
+  value: unknown,
+): McpCallToolResult {
   if (tool.outputCodec === undefined) return validateMcpContentResult(value);
   const structuredContent = tool.outputCodec.encode(value, "output") as Readonly<
     Record<string, unknown>
@@ -287,6 +319,10 @@ export function createMcp(
       if (typeof definition.description !== "string" || definition.description.trim() === "") {
         throw new TypeError(`MCP tool "${definition.name}" requires a description`);
       }
+      const title = definition.title === undefined
+        ? undefined
+        : nonEmptyString(definition.title, `MCP tool "${definition.name}" title`);
+      const annotations = toolAnnotations(definition.annotations);
       if (typeof definition.handler !== "function") {
         throw new TypeError(`MCP tool "${definition.name}" requires a handler`);
       }
@@ -312,7 +348,9 @@ export function createMcp(
         serverKind: "mcp-tool" as const,
         kind: "mcp-tool" as const,
         name: definition.name,
+        ...(title === undefined ? {} : { title }),
         description: definition.description,
+        ...(annotations === undefined ? {} : { annotations }),
         mcp: declaration,
         args: definition.args,
         inputValidator,

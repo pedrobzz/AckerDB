@@ -54,9 +54,11 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: options.runtime.registry.toolsFor(options.mcp).map((tool) => ({
       name: tool.name,
+      ...(tool.title === undefined ? {} : { title: tool.title }),
       description: tool.description,
       inputSchema: tool.inputSchema,
       ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
+      ...(tool.annotations === undefined ? {} : { annotations: tool.annotations }),
     })),
   }));
   server.setRequestHandler(CallToolRequestSchema, async (call, extra) => {
@@ -71,11 +73,12 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
         fairnessKey: options.fairnessKey,
       }, options.bytes, undefined));
       return {
-        content: result.content.map(({ type, text }) => ({ type, text })),
+        content: result.content,
         ...(result.structuredContent === undefined
           ? {}
           : { structuredContent: result.structuredContent }),
         ...(result.isError === undefined ? {} : { isError: result.isError }),
+        ...(result._meta === undefined ? {} : { _meta: result._meta }),
       } satisfies CallToolResult;
     } catch (error) {
       return toolError(error);
