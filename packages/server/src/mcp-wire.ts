@@ -76,6 +76,18 @@ export function mcpMethodNotAllowed(cors: CorsHeaders): Response {
   }, cors, 405, { allow: "POST" });
 }
 
+/** Generic HTTP-boundary rejection that never reflects the rejected value. */
+export function mcpBoundaryRejected(
+  status: 403 | 431,
+  cors: CorsHeaders,
+): Response {
+  return mcpJson({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "MCP request rejected." },
+    id: null,
+  }, cors, status);
+}
+
 export function withMcpCors(response: Response, cors: CorsHeaders): Response {
   const headers = new Headers(response.headers);
   for (const [name, value] of Object.entries(cors)) headers.set(name, value);

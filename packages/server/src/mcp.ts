@@ -70,6 +70,9 @@ const DEFAULT_MCP_PATH = "/mcp";
 const MAX_MCP_PATH_BYTES = 256;
 const MAX_MCP_INSTRUCTIONS_BYTES = 16 * 1_024;
 const MAX_MCP_METADATA_BYTES = 4 * 1_024;
+const MAX_MCP_TOOL_NAME_BYTES = 63;
+const MAX_MCP_TOOL_TITLE_BYTES = 256;
+const MAX_MCP_TOOL_DESCRIPTION_BYTES = 4 * 1_024;
 const utf8 = new TextEncoder();
 
 export interface McpEndpointMetadata {
@@ -401,15 +404,31 @@ export function createMcp(
       if (definition === null || typeof definition !== "object") {
         throw new TypeError("MCP tool definition is required");
       }
-      if (typeof definition.name !== "string" || !TOOL_NAME.test(definition.name)) {
-        throw new TypeError("MCP tool names must be lower_snake_case");
+      if (
+        typeof definition.name !== "string" ||
+        !TOOL_NAME.test(definition.name) ||
+        byteLength(definition.name) > MAX_MCP_TOOL_NAME_BYTES
+      ) {
+        throw new TypeError(
+          `MCP tool names must be lower_snake_case of at most ${MAX_MCP_TOOL_NAME_BYTES} UTF-8 bytes`,
+        );
       }
       if (typeof definition.description !== "string" || definition.description.trim() === "") {
         throw new TypeError(`MCP tool "${definition.name}" requires a description`);
       }
+      if (byteLength(definition.description) > MAX_MCP_TOOL_DESCRIPTION_BYTES) {
+        throw new TypeError(
+          `MCP tool "${definition.name}" description exceeds ${MAX_MCP_TOOL_DESCRIPTION_BYTES} UTF-8 bytes`,
+        );
+      }
       const title = definition.title === undefined
         ? undefined
         : nonEmptyString(definition.title, `MCP tool "${definition.name}" title`);
+      if (title !== undefined && byteLength(title) > MAX_MCP_TOOL_TITLE_BYTES) {
+        throw new TypeError(
+          `MCP tool "${definition.name}" title exceeds ${MAX_MCP_TOOL_TITLE_BYTES} UTF-8 bytes`,
+        );
+      }
       const annotations = toolAnnotations(definition.annotations);
       if (typeof definition.handler !== "function") {
         throw new TypeError(`MCP tool "${definition.name}" requires a handler`);
