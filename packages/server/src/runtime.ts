@@ -660,6 +660,16 @@ export class Runtime implements RuntimePort {
     this.engine = options.engine;
     this.registry = options.registry;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
+    const mcpToolCounts = new Map<string, number>();
+    for (const tool of this.registry.mcpTools.values()) {
+      const count = (mcpToolCounts.get(tool.mcp.name) ?? 0) + 1;
+      if (count > this.limits.mcp.maxToolsPerEndpoint) {
+        throw new RangeError(
+          `MCP "${tool.mcp.name}" exceeds mcp.maxToolsPerEndpoint`,
+        );
+      }
+      mcpToolCounts.set(tool.mcp.name, count);
+    }
     if (options.verifier !== undefined) {
       assertCredentialVerifier(options.verifier, this.limits.auth.revocationDeadlineMs);
     }
@@ -1315,7 +1325,10 @@ export class Runtime implements RuntimePort {
       method: "tools/call",
       params: { name: request.tool, arguments: request.args },
     }, provenance?.bytes);
-    const functionName = `${request.mcp}/${request.tool}`;
+    const registeredTool = this.registry.mcpTool(request.mcp, request.tool);
+    const functionName = registeredTool === undefined
+      ? "mcp.unknown"
+      : `${registeredTool.mcp.name}:${registeredTool.name}`;
     const claimedTrace = claimHttpTrace(
       provenance?.trace,
       "procedure",

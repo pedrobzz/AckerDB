@@ -320,6 +320,7 @@ export {
   type DbzzServerState,
   type DbzzServerStatus,
   type DbzzStartupPhase,
+  type McpHttpOptions,
   type ServeOptions,
 } from "./serve.ts";
 export {

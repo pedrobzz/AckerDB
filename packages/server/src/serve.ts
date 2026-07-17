@@ -40,6 +40,11 @@ import { DBZZ_HTTP_ROUTES } from "./http-routes.ts";
 import type { McpEndpointDeclaration } from "./mcp.ts";
 import { mcpCredentialFromAuthorization } from "./mcp-credential.ts";
 import {
+  McpHttpBoundary,
+  type McpHttpOptions,
+} from "./mcp-http-boundary.ts";
+import {
+  mcpBoundaryRejected,
   mcpErrorResponse,
   mcpMethodNotAllowed,
   parseMcpJson,
@@ -67,6 +72,7 @@ export interface DbzzServerOptions {
   readonly limits: ServiceLimits;
   readonly port: number;
   readonly hostname?: string;
+  readonly mcpHttp?: McpHttpOptions;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
 }
@@ -75,9 +81,12 @@ export interface ServeOptions {
   readonly runtime: Runtime;
   readonly port: number;
   readonly hostname?: string;
+  readonly mcpHttp?: McpHttpOptions;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
 }
+
+export type { McpHttpOptions } from "./mcp-http-boundary.ts";
 
 export interface DbzzServerStatus {
   readonly state: DbzzServerState;
@@ -441,6 +450,7 @@ export class DbzzServer {
   private readonly connections = new Set<WsData>();
   private readonly outbound: OutboundBudget;
   private readonly httpAdmission: HttpAdmission;
+  private readonly mcpHttp: McpHttpBoundary;
   private listener: Server<WsData> | null = null;
   private activeRuntime: Runtime | null = null;
   private lifecycle: DbzzServerState = "starting";
@@ -455,6 +465,7 @@ export class DbzzServer {
     this.limits = defineServiceLimits(options.limits);
     this.hostname = options.hostname ?? "127.0.0.1";
     this.statusScope = configuredStatusScope(options.statusScope);
+    this.mcpHttp = new McpHttpBoundary(this.hostname, options.mcpHttp);
     this.outbound = new OutboundBudget(
       this.limits.webSocket.maxBytes,
       this.limits.maxFrameBytes,
@@ -552,6 +563,14 @@ export class DbzzServer {
     if (stableEncode(runtime.limits) !== stableEncode(this.limits)) {
       throw new Error("Runtime limits must match listener limits");
     }
+    try {
+      this.mcpHttp.assertCanServe(runtime.registry.mcps.size > 0);
+    } catch (error) {
+      this.startup = null;
+      this.lifecycle = "stopped";
+      void this.listener?.stop(true).catch(() => {});
+      throw error;
+    }
     this.activeRuntime = runtime;
     this.startup = null;
     this.lifecycle = "ready";
@@ -592,6 +611,27 @@ export class DbzzServer {
         ...(this.startup === null ? {} : { phase: this.startup }),
       }, ready ? 200 : 503);
     }
+    const mcp = this.activeRuntime?.registry.mcpAtPath(url.pathname);
+    if (mcp !== undefined) {
+      const boundary = this.mcpHttp.inspect(
+        request,
+        this.port,
+        this.limits.mcp.maxHeaderBytes,
+      );
+      if (boundary.rejectionStatus !== undefined) {
+        return mcpBoundaryRejected(boundary.rejectionStatus, boundary.cors);
+      }
+      if (request.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: boundary.cors });
+      }
+      if (request.method !== "POST") return mcpMethodNotAllowed(boundary.cors);
+      return this.mcp(
+        request,
+        mcp,
+        this.requestSource(request, listener),
+        boundary.cors,
+      );
+    }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === DBZZ_HTTP_ROUTES.sseAck) {
       if (request.method !== "POST") {
@@ -602,11 +642,6 @@ export class DbzzServer {
       }
       const source = this.requestSource(request, listener);
       return this.acknowledgeSse(request, callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
-    }
-    const mcp = this.activeRuntime?.registry.mcpAtPath(url.pathname);
-    if (mcp !== undefined) {
-      if (request.method !== "POST") return mcpMethodNotAllowed(CORS);
-      return this.mcp(request, mcp, this.requestSource(request, listener));
     }
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
       return protocolError(unavailableWhile(this.lifecycle));
@@ -737,6 +772,7 @@ export class DbzzServer {
     request: Request,
     mcp: McpEndpointDeclaration,
     source: TransportSource,
+    cors: Readonly<Record<string, string>>,
   ): Promise<Response> {
     const runtime = this.requireRuntime();
     let admission: HttpAdmissionLease | undefined;
@@ -774,9 +810,9 @@ export class DbzzServer {
         principal,
         signal: credentialLease?.signal ?? request.signal,
         fairnessKey,
-      }), CORS);
+      }), cors);
     } catch (error) {
-      return mcpErrorResponse(error, CORS, {
+      return mcpErrorResponse(error, cors, {
         realm: mcp.name,
         credentialPresented: request.headers.has("authorization"),
       });
@@ -1008,6 +1044,7 @@ export function serve(options: ServeOptions): DbzzServer {
     limits: options.runtime.limits,
     port: options.port,
     ...(options.hostname === undefined ? {} : { hostname: options.hostname }),
+    ...(options.mcpHttp === undefined ? {} : { mcpHttp: options.mcpHttp }),
     ...(options.statusScope === undefined ? {} : { statusScope: options.statusScope }),
   });
   server.activate(options.runtime);

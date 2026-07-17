@@ -71,6 +71,10 @@ export interface ServiceLimits {
     readonly maxTokensPerIdentity: number;
     readonly maxNameBytes: number;
     readonly maxMetadataBytes: number;
+    /** Maximum normalized request-header bytes accepted by an MCP route. */
+    readonly maxHeaderBytes: number;
+    /** Maximum explicitly registered tools on one named MCP endpoint. */
+    readonly maxToolsPerEndpoint: number;
   };
   readonly telemetry: TelemetryLimits;
   readonly gracefulShutdownMs: number;
@@ -149,6 +153,8 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     ["mcp.maxTokensPerIdentity", limits.mcp.maxTokensPerIdentity],
     ["mcp.maxNameBytes", limits.mcp.maxNameBytes],
     ["mcp.maxMetadataBytes", limits.mcp.maxMetadataBytes],
+    ["mcp.maxHeaderBytes", limits.mcp.maxHeaderBytes],
+    ["mcp.maxToolsPerEndpoint", limits.mcp.maxToolsPerEndpoint],
     ["gracefulShutdownMs", limits.gracefulShutdownMs],
   ];
   for (const [path, value] of scalarLimits) positiveInteger(value, path);
@@ -233,6 +239,8 @@ export const PRODUCTION_LIMITS = defineServiceLimits({
     maxTokensPerIdentity: 64,
     maxNameBytes: 128,
     maxMetadataBytes: 16 * KiB,
+    maxHeaderBytes: 32 * KiB,
+    maxToolsPerEndpoint: 256,
   },
   telemetry: {
     maxRecords: 2_048,
