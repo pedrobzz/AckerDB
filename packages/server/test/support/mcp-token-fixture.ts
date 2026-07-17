@@ -42,7 +42,7 @@ const schema = defineSchema({
   }),
 });
 
-const typedMutation = mutation as MutationBuilder<typeof schema>;
+export const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
@@ -273,12 +273,16 @@ export function databasePath(prefix: string): string {
   return join(directory, "data.db");
 }
 
-export function fixture(path: string, verifier?: CredentialVerifier): McpTokenFixture {
+export function fixture(
+  path: string,
+  verifier?: CredentialVerifier,
+  extraModules: Record<string, Record<string, unknown>> = {},
+): McpTokenFixture {
   const engine = new Engine(schema, path);
   reconcile(engine);
   const runtime = new Runtime({
     engine,
-    registry: new Registry(modules),
+    registry: new Registry({ ...modules, ...extraModules }),
     verifier,
     telemetry: false,
     limits: {

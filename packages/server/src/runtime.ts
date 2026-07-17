@@ -106,8 +106,13 @@ import {
   type McpAiRuntimeCapability,
 } from "./mcp-ai.ts";
 import type { McpCallToolResult } from "./mcp-content.ts";
+import { parseMcpToken, type ParsedMcpToken } from "./mcp-credential.ts";
 import { isMcpToolAuthorized } from "./mcp-scopes.ts";
 import { withMcpTokenContext as withMcpTokenCapability } from "./mcp-token-context.ts";
+import {
+  McpTokenInvalidationBoundary,
+  takeMcpTokenInvalidations,
+} from "./mcp-token-invalidation.ts";
 import { mcpTokenVaultOwner } from "./mcp-token-vault.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
@@ -218,6 +223,12 @@ export interface RuntimeMcpToolRequest {
   readonly principal: Principal;
   readonly signal?: AbortSignal;
   readonly fairnessKey?: string;
+}
+
+export interface McpCredentialLease {
+  readonly principal: McpPrincipal;
+  readonly signal: AbortSignal;
+  release(): void;
 }
 
 export interface RuntimeProcedureResponse {
@@ -619,6 +630,7 @@ export class Runtime implements RuntimePort {
 
   private readonly now: () => number;
   private readonly authInvalidation: AuthInvalidationBoundary;
+  private readonly mcpTokenInvalidation = new McpTokenInvalidationBoundary();
   private readonly reader: BoundedExecutor;
   private readonly availableReaders: Database[];
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
@@ -687,6 +699,11 @@ export class Runtime implements RuntimePort {
       engine: this.engine,
       limits: this.limits,
       reservePublication: (bytes) => this.reactive.publication.reserve(bytes),
+      afterCommit: (writes) => {
+        for (const invalidation of takeMcpTokenInvalidations(writes)) {
+          this.mcpTokenInvalidation.publish(invalidation);
+        }
+      },
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
       now: this.now,
     });
@@ -772,8 +789,57 @@ export class Runtime implements RuntimePort {
     fairnessKey: string,
     signal?: AbortSignal,
   ): Promise<McpPrincipal> {
-    this.assertReady();
+    const parsed = parseMcpToken(rawToken);
+    if (parsed === null) throw new DbzzError("unauthenticated", "invalid MCP credential");
     const operationSignal = this.operationSignal(signal);
+    return this.verifyMcpToken(mcp, parsed, fairnessKey, operationSignal);
+  }
+
+  /** Own one exact non-expiring MCP credential from verification through HTTP completion. */
+  async acquireMcpTokenLease(
+    mcp: string,
+    parsed: ParsedMcpToken,
+    fairnessKey: string,
+    signal?: AbortSignal,
+  ): Promise<McpCredentialLease> {
+    this.assertReady();
+    const controller = new AbortController();
+    const unsubscribe = this.mcpTokenInvalidation.subscribe(mcp, parsed.id, () => {
+      if (!controller.signal.aborted) {
+        controller.abort(new DbzzError("unauthenticated", "credential revoked"));
+      }
+    });
+    const leaseSignal = this.operationSignal(
+      signal === undefined
+        ? controller.signal
+        : AbortSignal.any([signal, controller.signal]),
+    );
+    try {
+      const principal = await this.verifyMcpToken(mcp, parsed, fairnessKey, leaseSignal);
+      aborted(leaseSignal);
+      let active = true;
+      return Object.freeze({
+        principal,
+        signal: leaseSignal,
+        release: () => {
+          if (!active) return;
+          active = false;
+          unsubscribe();
+        },
+      });
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
+  }
+
+  private async verifyMcpToken(
+    mcp: string,
+    parsed: ParsedMcpToken,
+    fairnessKey: string,
+    signal: AbortSignal,
+  ): Promise<McpPrincipal> {
+    this.assertReady();
     const declaration = this.registry.mcps.get(mcp);
     if (declaration === undefined) throw new DbzzError("not_found", `unknown MCP "${mcp}"`);
     const scopeDescriptor = "scopes" in declaration ? declaration.scopes : undefined;
@@ -781,18 +847,18 @@ export class Runtime implements RuntimePort {
       (connection) => this.engine[mcpTokenVaultOwner].authenticate(
         connection,
         mcp,
-        rawToken,
+        parsed,
         scopeDescriptor,
       ),
       {
         operation: "procedure",
-        bytes: Buffer.byteLength(rawToken),
+        bytes: parsed.bytes,
         fairnessKey,
-        signal: operationSignal,
+        signal,
       },
       false,
     );
-    aborted(operationSignal);
+    aborted(signal);
     return Object.freeze({
       kind: "mcp",
       identity: credential.identity,

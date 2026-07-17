@@ -10,6 +10,7 @@ const MCP_TOKEN = new RegExp(
 export interface ParsedMcpToken {
   readonly id: string;
   readonly secret: string;
+  readonly bytes: number;
 }
 
 export function hasMcpTokenPrefix(value: string): boolean {
@@ -18,15 +19,18 @@ export function hasMcpTokenPrefix(value: string): boolean {
 
 export function parseMcpToken(value: string): ParsedMcpToken | null {
   const match = MCP_TOKEN.exec(value);
-  return match === null ? null : Object.freeze({ id: match[1]!, secret: match[2]! });
+  return match === null
+    ? null
+    : Object.freeze({ id: match[1]!, secret: match[2]!, bytes: value.length });
 }
 
-/** MCP HTTP accepts either no credential or one exact DBZZ MCP bearer. */
-export function mcpCredentialFromAuthorization(value: string | null): string | null {
+/** MCP HTTP accepts either no credential or one exact parsed DBZZ MCP bearer. */
+export function mcpCredentialFromAuthorization(value: string | null): ParsedMcpToken | null {
   if (value === null) return null;
   const match = /^Bearer ([^\s,]+)$/i.exec(value);
-  if (match === null || parseMcpToken(match[1]!) === null) {
+  const parsed = match === null ? null : parseMcpToken(match[1]!);
+  if (parsed === null) {
     throw new DbzzError("unauthenticated", "invalid MCP credential");
   }
-  return match[1]!;
+  return parsed;
 }
