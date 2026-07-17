@@ -146,7 +146,7 @@ export interface BackupManifest {
   verifiedAt: number;
 }
 
-const ENGINE_SCHEMA_VERSION = 5;
+const ENGINE_SCHEMA_VERSION = 6;
 const LOCK_SUFFIX = ".dbzz.lock";
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;

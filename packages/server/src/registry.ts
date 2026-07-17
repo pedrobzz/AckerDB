@@ -11,13 +11,14 @@ import {
 import {
   isMcpDeclaration,
   isRegisteredMcpTool,
+  type AnyMcpDeclaration,
   type AnyRegisteredMcpTool,
-  type McpDeclaration,
+  type McpEndpointDeclaration,
 } from "./mcp.ts";
 import { isDbzzHttpRoute } from "./http-routes.ts";
 import type { Schema, ScheduledHandler } from "./schema.ts";
 
-type ServerOnlyExport = McpDeclaration | AnyRegisteredMcpTool;
+type ServerOnlyExport = AnyMcpDeclaration | AnyRegisteredMcpTool;
 
 interface ModuleExport {
   readonly address: string;
@@ -27,9 +28,9 @@ interface ModuleExport {
 export class Registry {
   readonly functions = new Map<string, AnyRegistered>();
   readonly serverOnly = new Map<string, ServerOnlyExport>();
-  readonly mcps = new Map<string, McpDeclaration>();
+  readonly mcps = new Map<string, AnyMcpDeclaration>();
   readonly mcpTools = new Map<string, AnyRegisteredMcpTool>();
-  private readonly mcpByPath = new Map<string, McpDeclaration>();
+  private readonly mcpByPath = new Map<string, AnyMcpDeclaration>();
   private readonly addressByObject = new Map<object, string>();
 
   /** `modules` is keyed by dot path: functions/messages.ts -> "messages". */
@@ -119,11 +120,11 @@ export class Registry {
     return `${mcp}\u0000${tool}`;
   }
 
-  mcpAtPath(path: string): McpDeclaration | undefined {
+  mcpAtPath(path: string): AnyMcpDeclaration | undefined {
     return this.mcpByPath.get(path);
   }
 
-  toolsFor(mcp: McpDeclaration): readonly AnyRegisteredMcpTool[] {
+  toolsFor(mcp: McpEndpointDeclaration): readonly AnyRegisteredMcpTool[] {
     return [...this.mcpTools.values()].filter((tool) => tool.mcp === mcp);
   }
 

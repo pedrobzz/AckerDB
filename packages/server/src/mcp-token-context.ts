@@ -13,15 +13,30 @@ import {
   type McpTokenDescriptor,
   type McpTokenLimits,
 } from "./mcp-token-vault.ts";
+import type { McpScopeDescriptor } from "./mcp-scopes.ts";
 import { markOneTimeResult } from "./one-time-result.ts";
 import type { Schema } from "./schema.ts";
 
 export type { CreatedMcpToken, McpTokenCreateInput, McpTokenDescriptor };
 
-export interface McpTokenOperations<S extends Schema = Schema> {
-  create(ctx: MutationCtx<S> | TxCtx<S>, input: McpTokenCreateInput): CreatedMcpToken;
-  list(ctx: QueryCtx<S> | MutationCtx<S> | TxCtx<S>): readonly McpTokenDescriptor[];
-}
+export type McpTokenOperations<
+  S extends Schema = Schema,
+  Scope extends string = never,
+> = {
+  create(
+    ctx: MutationCtx<S> | TxCtx<S>,
+    input: McpTokenCreateInput<Scope>,
+  ): CreatedMcpToken<Scope>;
+  list(
+    ctx: QueryCtx<S> | MutationCtx<S> | TxCtx<S>,
+  ): readonly McpTokenDescriptor<Scope>[];
+} & ([Scope] extends [never] ? object : {
+  updateScopes(
+    ctx: MutationCtx<S> | TxCtx<S>,
+    tokenId: string,
+    scopes: readonly Scope[],
+  ): void;
+});
 
 interface McpTokenContextCapability {
   readonly engine: Engine;
@@ -61,7 +76,7 @@ function capability(ctx: object, write: boolean): McpTokenContextCapability & {
     throw new DbzzError("unauthorized", "MCP token administration requires an external user identity");
   }
   if (write && found.writes === null) {
-    throw new DbzzError("validation", "MCP token creation requires a mutation or transaction");
+    throw new DbzzError("validation", "MCP token writes require a mutation or transaction");
   }
   return found as McpTokenContextCapability & {
     readonly principal: Principal & { readonly kind: "user"; readonly identity: Identity };
@@ -72,14 +87,21 @@ function ownerKey(identity: Identity, mcp: string): string {
   return `internal:mcp-tokens:${stableEncode([identity, mcp])}`;
 }
 
-export function createMcpTokenOperations<S extends Schema>(mcp: string): McpTokenOperations<S> {
-  return Object.freeze({
-    create(ctx: MutationCtx<S> | TxCtx<S>, input: McpTokenCreateInput): CreatedMcpToken {
+export function createMcpTokenOperations<S extends Schema, Scope extends string = never>(
+  mcp: string,
+  scopeDescriptor: McpScopeDescriptor<Scope> | undefined,
+): McpTokenOperations<S, Scope> {
+  const operations = {
+    create(
+      ctx: MutationCtx<S> | TxCtx<S>,
+      input: McpTokenCreateInput<Scope>,
+    ): CreatedMcpToken<Scope> {
       const owner = capability(ctx, true);
       const created = owner.engine[mcpTokenVaultOwner].create(
         owner.principal.identity,
         mcp,
         input,
+        scopeDescriptor,
         owner.limits,
         owner.now(),
       );
@@ -87,14 +109,36 @@ export function createMcpTokenOperations<S extends Schema>(mcp: string): McpToke
       markOneTimeResult(owner.writes!);
       return created;
     },
-    list(ctx: QueryCtx<S> | MutationCtx<S> | TxCtx<S>): readonly McpTokenDescriptor[] {
+    list(
+      ctx: QueryCtx<S> | MutationCtx<S> | TxCtx<S>,
+    ): readonly McpTokenDescriptor<Scope>[] {
       const owner = capability(ctx, false);
       owner.reads?.add(ownerKey(owner.principal.identity, mcp));
       return owner.engine[mcpTokenVaultOwner].list(
         owner.connection,
         owner.principal.identity,
         mcp,
+        scopeDescriptor,
       );
     },
-  });
+    ...(scopeDescriptor === undefined ? {} : {
+      updateScopes(
+        ctx: MutationCtx<S> | TxCtx<S>,
+        tokenId: string,
+        scopes: readonly Scope[],
+      ): void {
+        const owner = capability(ctx, true);
+        owner.engine[mcpTokenVaultOwner].updateScopes(
+          owner.principal.identity,
+          mcp,
+          tokenId,
+          scopes,
+          scopeDescriptor,
+          owner.now(),
+        );
+        owner.writes!.keys.add(ownerKey(owner.principal.identity, mcp));
+      },
+    }),
+  };
+  return Object.freeze(operations) as McpTokenOperations<S, Scope>;
 }
