@@ -19,10 +19,12 @@ import {
 
 class RecordingSubscriber implements Subscriber {
   readonly transitions: Array<{ id: number; transition: SubscriptionTransition }> = [];
+  readonly transitionAttempts: number[] = [];
   readonly events: Array<{ id: number; event: LiveEvent }> = [];
   readonly errors: Array<{ id: number; outcome: Outcome }> = [];
   readonly failNextTransition = new Set<number>();
   readonly failNextEvent = new Set<number>();
+  private nextTransitionHook?: () => void;
   private nextTransitionGate?: {
     readonly id: number;
     readonly entered: () => void;
@@ -30,6 +32,10 @@ class RecordingSubscriber implements Subscriber {
   };
 
   async sendTransition(id: number, transition: SubscriptionTransition): Promise<void> {
+    this.transitionAttempts.push(id);
+    const hook = this.nextTransitionHook;
+    this.nextTransitionHook = undefined;
+    hook?.();
     const gate = this.nextTransitionGate;
     if (gate?.id === id) {
       this.nextTransitionGate = undefined;
@@ -60,6 +66,10 @@ class RecordingSubscriber implements Subscriber {
     const release = deferred();
     this.nextTransitionGate = { id, entered: entered.resolve, release: release.promise };
     return { entered: entered.promise, release: release.resolve };
+  }
+
+  runOnNextTransition(hook: () => void): void {
+    this.nextTransitionHook = hook;
   }
 }
 
@@ -963,6 +973,95 @@ describe("ordered reactive ownership", () => {
     expect(subscriber.cursor(1).commitVersion).toBe(version);
     expect(subscriber.cursor(2).commitVersion).toBe(version);
     expect(calls).toEqual(new Map([["rooms", 3], ["messages", 3]]));
+  });
+
+  test("starts idle delivery immediately and serializes later work for the same listener", async () => {
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async () => evaluation("value", 0n, "messages"),
+    });
+    const subscriber = new RecordingSubscriber();
+    await reactive.subscribeQuery({
+      address: "messages.list",
+      args: null,
+      policyScopeFingerprint: "public",
+      fairnessKey: "public",
+      context: undefined,
+      subscriber,
+      id: 1,
+      authEpoch: 0,
+    });
+
+    const cursor = subscriber.cursor(1);
+    const idle = reactive.reset(subscriber, 1, cursor);
+    expect(subscriber.transitionAttempts).toEqual([1, 1]);
+    await idle;
+
+    const gate = subscriber.gateNextTransition(1);
+    let reentered: Promise<void> | undefined;
+    subscriber.runOnNextTransition(() => {
+      reentered = reactive.reset(subscriber, 1, subscriber.cursor(1));
+    });
+    const first = reactive.reset(subscriber, 1, subscriber.cursor(1));
+    await gate.entered;
+    expect(subscriber.transitionAttempts).toEqual([1, 1, 1]);
+
+    gate.release();
+    await first;
+    await reentered;
+    expect(subscriber.transitionAttempts).toEqual([1, 1, 1, 1]);
+  });
+
+  test("issues shared listeners independently but converges in listener order", async () => {
+    let version = 0n;
+    let value = "initial";
+    const reactive = new OrderedReactive({
+      generation: generationSequence(),
+      evaluate: async () => evaluation(value, version, "messages"),
+    });
+    const first = new RecordingSubscriber();
+    const second = new RecordingSubscriber();
+    const options = {
+      address: "messages.list",
+      args: null,
+      policyScopeFingerprint: "public",
+      fairnessKey: "public",
+      context: undefined,
+      authEpoch: 0,
+    };
+    await reactive.subscribeQuery({ ...options, subscriber: first, id: 1 });
+    await reactive.subscribeQuery({ ...options, subscriber: second, id: 2 });
+
+    const gate = first.gateNextTransition(1);
+    first.failNextTransition.add(1);
+    second.failNextTransition.add(2);
+    const slot = reactive.publication.reserve(64);
+    version = slot.version;
+    value = "changed";
+    const commit = new ReactiveCommit(new Set(["messages"]));
+    slot.commit(commit);
+    await gate.entered;
+
+    expect(second.transitionAttempts).toEqual([2, 2]);
+    let converged = false;
+    void slot.completion.then(() => {
+      converged = true;
+    });
+    await Promise.resolve();
+    expect(converged).toBe(false);
+
+    gate.release();
+    await slot.completion;
+    expect(commit.result?.deliveryFailures.map(({ subscriptionId }) => subscriptionId))
+      .toEqual([1, 2]);
+
+    const recovered = await publish(reactive, new Set(["messages"]), (commitVersion) => {
+      version = commitVersion;
+      value = "recovered";
+    });
+    expect(recovered.deliveryFailures).toEqual([]);
+    expect(first.cursor(1).commitVersion).toBe(version);
+    expect(second.cursor(2).commitVersion).toBe(version);
   });
 
   test("reports convergence failure and revokes auth failures even when notification succeeds", async () => {

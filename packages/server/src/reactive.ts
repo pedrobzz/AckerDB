@@ -163,7 +163,7 @@ interface QueryListener<C> {
   readonly fairnessKey: string;
   authEpoch: number;
   cursor?: SubscriptionCursor;
-  tail: Promise<void>;
+  delivery?: Promise<void>;
 }
 
 interface EventListener<C> {
@@ -176,7 +176,7 @@ interface EventListener<C> {
   authEpoch: number;
   cursor: LiveEventCursor;
   gapped: boolean;
-  tail: Promise<void>;
+  delivery?: Promise<void>;
 }
 
 type Binding<C> = QueryListener<C> | EventListener<C>;
@@ -303,7 +303,6 @@ export class OrderedReactive<C = unknown> {
             fairnessKey: options.fairnessKey,
             authEpoch: options.authEpoch,
             cursor: options.cursor,
-            tail: Promise.resolve(),
           };
           this.attach(listener);
         });
@@ -347,7 +346,6 @@ export class OrderedReactive<C = unknown> {
         sequence: 0n,
       },
       gapped: false,
-      tail: Promise.resolve(),
     };
     this.attach(listener);
     try {
@@ -469,8 +467,8 @@ export class OrderedReactive<C = unknown> {
       } else {
         eventIds.push(binding.id);
         // Detach is immediate, but an already-snapshotted publication may still
-        // own this tail. Drain it before a new-epoch binding is installed.
-        await binding.tail;
+        // own this delivery. Drain it before a new-epoch binding is installed.
+        await binding.delivery;
       }
     }
     return Object.freeze({
@@ -841,14 +839,16 @@ export class OrderedReactive<C = unknown> {
     if (installed.previousVersion === undefined) return [];
     const listeners = [...installed.entry.listeners];
     const startedAt = this.observer ? this.observationNow() : undefined;
-    const failures: DeliveryFailure[] = [];
-    for (const listener of listeners) {
+    const deliveries = listeners.map(async (listener) => {
       try {
         await this.deliverQuery(listener, false, installed.forceReset);
+        return undefined;
       } catch (error) {
-        failures.push(failure(listener, error));
+        return failure(listener, error);
       }
-    }
+    });
+    const failures = (await Promise.all(deliveries))
+      .filter((result): result is DeliveryFailure => result !== undefined);
     if (this.observer) {
       this.observe(startedAt, {
         kind: "query",
@@ -1261,36 +1261,19 @@ export class OrderedReactive<C = unknown> {
     send: () => Promise<void>,
     commitVersion?: bigint,
   ): Promise<void> {
-    if (!this.observer) {
-      const delivery = binding.tail.then(send);
-      binding.tail = delivery.catch(() => {});
-      return delivery;
-    }
-    const queuedAt = this.observationNow();
-    const address = binding.kind === "query" ? binding.entry.address : binding.state.table;
-    const version = commitVersion ?? (binding.kind === "query"
-      ? binding.entry.commitVersion
-      : binding.cursor.commitVersion);
-    const dependencyCount = binding.kind === "query" ? binding.entry.readSet.size : undefined;
-    const byteCount = binding.kind === "query" ? binding.entry.resultBytes : undefined;
-    const delivery = binding.tail.then(async () => {
-      this.observe(queuedAt, {
-        kind: binding.kind,
-        phase: "listener_queue",
-        outcome: "ok",
-        address,
-        subscriptionId: binding.id,
-        commitVersion: version,
-        dependencyCount,
-        resultCount: 1,
-        byteCount,
-      });
-      const deliveredAt = this.observationNow();
-      try {
-        await send();
-        this.observe(deliveredAt, {
+    let deliver = send;
+    if (this.observer) {
+      const queuedAt = this.observationNow();
+      const address = binding.kind === "query" ? binding.entry.address : binding.state.table;
+      const version = commitVersion ?? (binding.kind === "query"
+        ? binding.entry.commitVersion
+        : binding.cursor.commitVersion);
+      const dependencyCount = binding.kind === "query" ? binding.entry.readSet.size : undefined;
+      const byteCount = binding.kind === "query" ? binding.entry.resultBytes : undefined;
+      deliver = async () => {
+        this.observe(queuedAt, {
           kind: binding.kind,
-          phase: "delivery",
+          phase: "listener_queue",
           outcome: "ok",
           address,
           subscriptionId: binding.id,
@@ -1299,23 +1282,56 @@ export class OrderedReactive<C = unknown> {
           resultCount: 1,
           byteCount,
         });
+        const deliveredAt = this.observationNow();
+        try {
+          await send();
+          this.observe(deliveredAt, {
+            kind: binding.kind,
+            phase: "delivery",
+            outcome: "ok",
+            address,
+            subscriptionId: binding.id,
+            commitVersion: version,
+            dependencyCount,
+            resultCount: 1,
+            byteCount,
+          });
+        } catch (error) {
+          const outcome = observationOutcome(error);
+          const metadata = {
+            kind: binding.kind,
+            address,
+            subscriptionId: binding.id,
+            commitVersion: version,
+            dependencyCount,
+            resultCount: 0,
+            byteCount,
+          };
+          this.observe(deliveredAt, { ...metadata, phase: "delivery", outcome });
+          this.observe(deliveredAt, { ...metadata, phase: "failure", outcome });
+          throw error;
+        }
+      };
+    }
+
+    const previous = binding.delivery;
+    const reserved = Promise.withResolvers<void>();
+    binding.delivery = reserved.promise;
+    let delivery: Promise<void>;
+    if (previous) {
+      delivery = previous.then(deliver);
+    } else {
+      try {
+        delivery = deliver();
       } catch (error) {
-        const outcome = observationOutcome(error);
-        const metadata = {
-          kind: binding.kind,
-          address,
-          subscriptionId: binding.id,
-          commitVersion: version,
-          dependencyCount,
-          resultCount: 0,
-          byteCount,
-        };
-        this.observe(deliveredAt, { ...metadata, phase: "delivery", outcome });
-        this.observe(deliveredAt, { ...metadata, phase: "failure", outcome });
-        throw error;
+        delivery = Promise.reject(error);
       }
-    });
-    binding.tail = delivery.catch(() => {});
+    }
+    const release = () => {
+      reserved.resolve();
+      if (binding.delivery === reserved.promise) binding.delivery = undefined;
+    };
+    void delivery.then(release, release);
     return delivery;
   }
 
