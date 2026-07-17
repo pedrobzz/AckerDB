@@ -14,7 +14,7 @@ import {
 } from "./db.ts";
 import type { DbWriter } from "./dbtypes.ts";
 import type { Engine } from "./engine.ts";
-import { DbzzError } from "./errors.ts";
+import { DbzzError, throwIfAborted } from "./errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
 import type { ServiceLimits } from "./limits.ts";
 import {
@@ -636,6 +636,7 @@ export class CommitCoordinator<Publication> {
       storageObserved = true;
       const commitAt = performance.now();
       try {
+        throwIfAborted(request.signal);
         this.engine.writer.exec("COMMIT");
       } catch (error) {
         observeCommit(request, {

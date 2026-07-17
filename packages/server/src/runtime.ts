@@ -66,7 +66,7 @@ import {
   type SseDeliverySnapshot,
 } from "./delivery.ts";
 import type { Engine } from "./engine.ts";
-import { DbzzError, isDbzzError } from "./errors.ts";
+import { DbzzError, isDbzzError, throwIfAborted } from "./errors.ts";
 import {
   claimHttpTrace,
   finishClaimedHttpTrace,
@@ -403,16 +403,6 @@ function transportError(error: unknown): unknown {
   return isValidationError(error)
     ? new DbzzError("validation", error.message, { cause: error })
     : error;
-}
-
-function aborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) return;
-  throw isDbzzError(signal.reason)
-    ? signal.reason
-    : new DbzzError("unavailable", "operation was canceled", {
-        resource: "operation",
-        cause: signal.reason,
-      });
 }
 
 interface SseChunkIterator {
@@ -826,7 +816,7 @@ export class Runtime implements RuntimePort {
     );
     try {
       const principal = await this.verifyMcpToken(mcp, parsed, fairnessKey, leaseSignal);
-      aborted(leaseSignal);
+      throwIfAborted(leaseSignal);
       let active = true;
       return Object.freeze({
         principal,
@@ -868,7 +858,7 @@ export class Runtime implements RuntimePort {
       },
       false,
     );
-    aborted(signal);
+    throwIfAborted(signal);
     return Object.freeze({
       kind: "mcp",
       identity: credential.identity,
@@ -888,13 +878,13 @@ export class Runtime implements RuntimePort {
     if (principal.kind !== "user") {
       throw new DbzzError("unauthorized", "account linking requires a user identity");
     }
-    aborted(signal);
+    throwIfAborted(signal);
     const account = await verifyUserBearerCredential(
       rawBearerToken,
       this.credentialVerifier,
       this.now,
     );
-    aborted(signal);
+    throwIfAborted(signal);
     await this.coordinator.transactFramework({
       fairnessKey,
       requestBytes,
@@ -936,7 +926,7 @@ export class Runtime implements RuntimePort {
       throw new DbzzError("validation", "external account must have an issuer and subject");
     }
     const account = Object.freeze({ issuer: candidate.issuer, subject: candidate.subject });
-    aborted(signal);
+    throwIfAborted(signal);
     const result = await this.coordinator.transactFramework({
       fairnessKey,
       requestBytes,
@@ -1009,7 +999,7 @@ export class Runtime implements RuntimePort {
       ) {
         throw new DbzzError("validation", "authentication transition is not monotonic");
       }
-      aborted(transition.to.signal);
+      throwIfAborted(transition.to.signal);
       const captured: AuthTransitionCapture = {
         phase: "revoking",
         authEpoch: transition.from.authEpoch,
@@ -1287,7 +1277,7 @@ export class Runtime implements RuntimePort {
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
-      aborted(signal);
+      throwIfAborted(signal);
       const context = this.procedureContext(
         request.principal,
         fairnessKey,
@@ -1297,7 +1287,7 @@ export class Runtime implements RuntimePort {
       );
       try {
         const value = await invokeFunction(fn, context.value, request.args);
-        aborted(signal);
+        throwIfAborted(signal);
         return value;
       } finally {
         context.release();
@@ -1346,6 +1336,8 @@ export class Runtime implements RuntimePort {
         request.tool,
         request.args,
         this.transactionalContext(request.principal, fairnessKey, signal, requestBytes),
+        fairnessKey,
+        requestBytes,
       );
     }, {
       identifiers: { requestId: String(request.id) },
@@ -1380,19 +1372,26 @@ export class Runtime implements RuntimePort {
     name: string,
     args: unknown,
     context: McpToolCtx,
+    fairnessKey: string,
+    requestBytes: number,
   ): Promise<McpCallToolResult> {
     const toolContext = Object.freeze({
       auth: context.auth,
       abortSignal: context.abortSignal,
       tx: context.tx,
     });
-    const release = bindMcpAiContext(toolContext, this.mcpAiCapability(toolContext));
+    const release = bindMcpAiContext(
+      toolContext,
+      this.mcpAiCapability(toolContext, fairnessKey, requestBytes),
+    );
     try {
       const tool = this.authorizeMcpTool(mcp, name, toolContext.auth);
-      aborted(toolContext.abortSignal);
+      throwIfAborted(toolContext.abortSignal);
       const value = await invokeFunction(tool, toolContext, args);
-      aborted(toolContext.abortSignal);
-      return finalizeMcpToolResult(tool, value);
+      throwIfAborted(toolContext.abortSignal);
+      const result = finalizeMcpToolResult(tool, value);
+      throwIfAborted(toolContext.abortSignal);
+      return result;
     } finally {
       release();
     }
@@ -1651,7 +1650,7 @@ export class Runtime implements RuntimePort {
           throw new DbzzError("internal", `sse "${request.address}" has no yields validator`);
         }
         const signal = this.operationSignal(request.signal);
-        aborted(signal);
+        throwIfAborted(signal);
         producer = new BoundedSseProducer({
           budget: this.sseBudget,
           limits: this.limits,
@@ -2066,7 +2065,7 @@ export class Runtime implements RuntimePort {
     const state = this.matchingSession(context);
     if (state === null) throw new DbzzError("auth_stale", "authentication state changed");
     if (state.phase !== "open") throw new DbzzError("auth_stale", "session is closing");
-    if (!allowAborted) aborted(context.signal);
+    if (!allowAborted) throwIfAborted(context.signal);
     return state;
   }
 
@@ -2088,7 +2087,7 @@ export class Runtime implements RuntimePort {
     const state = this.matchingSession(context);
     const execute = () => {
       if (state === null) throw new DbzzError("auth_stale", "authentication state changed");
-      aborted(context.signal);
+      throwIfAborted(context.signal);
       return work(state, requestBytes);
     };
     const sessionOrder: SessionOperationOrder | undefined = operation === "subscription"
@@ -2368,7 +2367,7 @@ export class Runtime implements RuntimePort {
   ): Promise<QueryExecution> {
     const fn = this.expect(address, "query");
     return this.submitRead(async (connection) => {
-      aborted(signal);
+      throwIfAborted(signal);
       let transactionOpen = false;
       const beginAt = this.telemetry.enabled ? performance.now() : 0;
       try {
@@ -2398,7 +2397,7 @@ export class Runtime implements RuntimePort {
           null,
           (ctx) => invokeFunction(fn, ctx, args),
         );
-        aborted(signal);
+        throwIfAborted(signal);
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
         try {
           connection.exec("COMMIT");
@@ -2585,7 +2584,7 @@ export class Runtime implements RuntimePort {
       abortSignal: signal,
       tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
         const execute = async (): Promise<T> => {
-          aborted(signal);
+          throwIfAborted(signal);
           let scheduledTouched = false;
           const result = await this.coordinator.execute({
             operation: "transaction",
@@ -2647,16 +2646,23 @@ export class Runtime implements RuntimePort {
         accountUnlinked,
       ),
     });
-    const release = bindMcpAiContext(value, this.mcpAiCapability(value));
+    const release = bindMcpAiContext(
+      value,
+      this.mcpAiCapability(value, fairnessKey, requestBytes),
+    );
     return Object.freeze({ value, release });
   }
 
-  private mcpAiCapability(context: McpAiContext): McpAiRuntimeCapability {
+  private mcpAiCapability(
+    context: McpAiContext,
+    fairnessKey: string,
+    requestBytes: number,
+  ): McpAiRuntimeCapability {
     return Object.freeze({
       toolsFor: (mcp) => this.registry.mcps.get(mcp.name) === mcp
         ? this.registry.registeredToolsFor(mcp)
         : undefined,
-      execute: (mcp, tool, args, scopes) => withMcpLocalAuthority(
+      execute: (mcp, tool, args, scopes, signal) => withMcpLocalAuthority(
         context.auth,
         mcp,
         scopes,
@@ -2664,7 +2670,9 @@ export class Runtime implements RuntimePort {
           mcp.name,
           tool.name,
           args,
-          context,
+          this.transactionalContext(context.auth, fairnessKey, signal, requestBytes),
+          fairnessKey,
+          requestBytes,
         ),
       ),
     } satisfies McpAiRuntimeCapability);
