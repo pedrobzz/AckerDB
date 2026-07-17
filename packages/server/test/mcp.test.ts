@@ -375,7 +375,11 @@ function startHarness(limits?: ServiceLimits): Harness {
   reconcile(engine);
   const registry = new Registry(modules);
   const runtime = new Runtime({ engine, registry, limits, telemetry: false });
-  const server = serve({ runtime, port: 0 });
+  const server = serve({
+    runtime,
+    port: 0,
+    mcpHttp: { allowedOrigins: ["https://agent.example"] },
+  });
   return {
     directory,
     engine,
@@ -947,7 +951,7 @@ describe("public stateless MCP endpoint", () => {
       },
     });
     expect(preflight.status).toBe(204);
-    expect(preflight.headers.get("access-control-allow-methods")).toBe("GET, POST, OPTIONS");
+    expect(preflight.headers.get("access-control-allow-methods")).toBe("POST, OPTIONS");
     expect(preflight.headers.get("access-control-allow-headers")).toContain("mcp-protocol-version");
 
     for (const method of ["GET", "DELETE"]) {
