@@ -982,6 +982,16 @@ describe("public stateless MCP endpoint", () => {
     expect(handlerCalls).toBe(0);
   });
 
+  test("returns JSON-RPC method-not-found for unsupported methods", async () => {
+    const unsupported = await rpc("resources/list");
+    expect(unsupported.status).toBe(200);
+    expect(await unsupported.json()).toEqual({
+      jsonrpc: "2.0",
+      error: { code: -32601, message: "Method not found" },
+      id: 1,
+    });
+  });
+
   test("rejects malformed JSON without using DBZZ's tagged wire codec", async () => {
     const malformed = await fetch(`${harness.base}/mcp`, {
       method: "POST",

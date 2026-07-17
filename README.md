@@ -92,6 +92,9 @@ client.close();
 - [React, Expo, and AI SDK client](docs/client-react.md) is the canonical guide
   to `@dbzz/client-react`: supported versions, provider lifetime, every hook,
   durable Identity, native recovery, and current platform limitations.
+- [MCP release gates](docs/mcp-conformance.md) documents the pinned official
+  conformance scenarios, retained raw protocol/security cases, clean packed
+  consumer, unsupported optional capabilities, and benchmark contract.
 - [Production-readiness report](docs/production-readiness-report.md) records the
   full issue #1 implementation and decision history, verification and benchmark
   evidence, remaining release blockers, and the operational gap versus Convex
@@ -136,6 +139,8 @@ dbz restore <artifact> [app-dir]
 ```sh
 bun install
 bun run test
+bun run test:mcp:conformance
+bun run test:mcp:package
 bun run typecheck
 bun run typecheck:bench
 ```
