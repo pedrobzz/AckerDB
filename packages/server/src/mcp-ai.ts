@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ProcedureCtx } from "./functions.ts";
 import type {
+  AnyMcpDeclaration,
   AnyRegisteredMcpTool,
-  McpDeclaration,
 } from "./mcp.ts";
 import type {
   McpCallToolResult,
@@ -39,10 +39,10 @@ export type McpAiToolSet = Readonly<Record<string, McpAiTool>>;
 
 export interface McpAiRuntimeCapability {
   readonly toolsFor: (
-    mcp: McpDeclaration,
+    mcp: AnyMcpDeclaration,
   ) => readonly AnyRegisteredMcpTool[] | undefined;
   readonly execute: (
-    mcp: McpDeclaration,
+    mcp: AnyMcpDeclaration,
     tool: AnyRegisteredMcpTool,
     args: unknown,
   ) => Promise<McpCallToolResult>;
@@ -96,7 +96,7 @@ function richModelOutput(result: McpCallToolResult): McpAiModelOutput {
 
 /** Materialize only the public, registry-owned tools visible to this Runtime. */
 export function createMcpAiTools(
-  mcp: McpDeclaration,
+  mcp: AnyMcpDeclaration,
   context: ProcedureCtx,
 ): McpAiToolSet {
   const capability = capabilities.get(context);
@@ -112,7 +112,7 @@ export function createMcpAiTools(
   const runInParent = AsyncLocalStorage.snapshot();
   const tools: Record<string, McpAiTool> = Object.create(null) as Record<string, McpAiTool>;
   for (const tool of registered) {
-    if (tool.access !== "public") continue;
+    if (tool.accessPolicy.kind !== "public") continue;
     const structured = tool.outputCodec !== undefined;
     tools[tool.name] = Object.freeze({
       ...(tool.title === undefined ? {} : { title: tool.title }),

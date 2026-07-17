@@ -766,8 +766,16 @@ export class Runtime implements RuntimePort {
   ): Promise<McpPrincipal> {
     this.assertReady();
     const operationSignal = this.operationSignal(signal);
+    const declaration = this.registry.mcps.get(mcp);
+    if (declaration === undefined) throw new DbzzError("not_found", `unknown MCP "${mcp}"`);
+    const scopeDescriptor = "scopes" in declaration ? declaration.scopes : undefined;
     const credential = await this.submitRead(
-      (connection) => this.engine[mcpTokenVaultOwner].authenticate(connection, mcp, rawToken),
+      (connection) => this.engine[mcpTokenVaultOwner].authenticate(
+        connection,
+        mcp,
+        rawToken,
+        scopeDescriptor,
+      ),
       {
         operation: "procedure",
         bytes: Buffer.byteLength(rawToken),
@@ -782,6 +790,7 @@ export class Runtime implements RuntimePort {
       identity: credential.identity,
       mcp,
       tokenId: credential.tokenId,
+      scopes: credential.scopes,
     });
   }
 

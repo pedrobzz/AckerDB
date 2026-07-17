@@ -37,7 +37,7 @@ import {
 } from "./external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { DBZZ_HTTP_ROUTES } from "./http-routes.ts";
-import type { McpDeclaration } from "./mcp.ts";
+import type { McpEndpointDeclaration } from "./mcp.ts";
 import { mcpCredentialFromAuthorization } from "./mcp-credential.ts";
 import {
   mcpErrorResponse,
@@ -734,7 +734,7 @@ export class DbzzServer {
 
   private async mcp(
     request: Request,
-    mcp: McpDeclaration,
+    mcp: McpEndpointDeclaration,
     source: TransportSource,
   ): Promise<Response> {
     const runtime = this.requireRuntime();
