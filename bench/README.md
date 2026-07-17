@@ -14,7 +14,7 @@ connections, and reactive delivery through each product's current client SDK.
 
 ```sh
 bun bench/run.ts                              # default all-system run; saves passed or correctness-failed evidence
-BENCH_COMPARISON=current bun bench/run.ts     # same-host comparison only; skips historical acceptance and save
+BENCH_COMPARISON=current bun bench/run.ts     # same-host comparison; skips historical acceptance and saves evidence
 BENCH_PROFILE=quick bun bench/run.ts          # profiled all-system smoke diagnostic; never saves
 BENCH_PROFILE=stress bun bench/run.ts         # profiled all-system stress diagnostic; never saves
 bun bench/run.ts dbzz convex                  # partial diagnostic; never saves
@@ -31,17 +31,43 @@ diagnostics: with the literal `Runtime` telemetry default (the constructor
 option is omitted), with that same default plus an explicit in-process exporter
 callback, and with `telemetry: false`. `systems.dbzz` remains the exact default
 profile used in the three-system tables. The exporter and disabled results plus
-their deltas are separate schema-v6 evidence, not extra databases. Partial runs
+their deltas are separate schema-v7 evidence, not extra databases. Partial runs
 execute only the selected systems and one default-enabled DBZZ profile.
 
-`BENCH_COMPARISON=current` keeps the complete default workload, DBZZ's literal
-runtime-default telemetry profile, correctness checks, telemetry validation,
-and same-host DBZZ/Convex/SpacetimeDB tables. It skips the exporter and disabled
-DBZZ cost legs because they do not affect the three-system margin question,
-then exits without evaluating the historical machine-bound gate or saving a
-result. A measured correctness failure is still printed and returns a failing
-exit status. This is the intended mode for comparing the current systems on a
-different machine.
+`BENCH_COMPARISON=current` runs the complete default workload and all three DBZZ
+telemetry profiles, preserves a schema-v7 record, and compares it with the most
+recent schema-v7 current-host record on the same machine and configuration. It
+does not evaluate the historical machine-bound gate. Correctness-failed systems
+are excluded from delta claims, while their typed case failures and partial
+request accounting remain in the saved record; the command exits failing only
+after persistence. This is the intended paired mode for comparing current
+systems on a different machine.
+
+### Retained MCP paired run
+
+The first-class MCP change was measured on one Hetzner host with an identical
+schema-v7 harness applied to pre-MCP source and MCP source. The exact chronology
+is retained below; S/E/D/R/C means SpacetimeDB, DBZZ exporter, DBZZ disabled,
+DBZZ runtime-default, and Convex.
+
+| UTC result | Source role | Order | DBZZ failures R/E/D | Runtime-default shared delivery p99 |
+| --- | --- | --- | ---: | ---: |
+| [15:34:17](results/2026-07-17T15-34-17Z-2282dfa.json) | pre-MCP baseline A | S/E/D/R/C | 0/0/0 | 34.433 ms |
+| [15:45:59](results/2026-07-17T15-45-59Z-35f4c5b.json) | MCP before fast path | R/E/D/C/S | 0/0/0 | 40.183 ms |
+| [15:58:54](results/2026-07-17T15-58-54Z-35f4c5b.json) | MCP before fast path, matched order | S/E/D/R/C | 0/0/0 | 47.061 ms |
+| [16:10:15](results/2026-07-17T16-10-15Z-2282dfa.json) | pre-MCP baseline B, matched order | S/E/D/R/C | 0/0/0 | 32.089 ms |
+| [16:50:46](results/2026-07-17T16-50-46Z-452e23d.json) | first zero-MCP fast path | S/E/D/R/C | 0/0/0 | 45.133 ms |
+| [17:33:26](results/2026-07-17T17-33-26Z-5462d58.json) | structural zero-MCP fast path | S/E/D/R/C | 0/0/0 | 36.063 ms |
+
+The final record is clean-source evidence with exact 20,000/20,000 shared
+deliveries and zero DBZZ correctness failures in all three profiles. Its
+SHA-256 is
+`a91aedef0e529063be9de161f984d27e2ffa8f85f77936fc08cfc2210107a137`.
+Convex and SpacetimeDB subscription failures made global performance acceptance
+correctly `not-evaluated`; they were persisted rather than hidden. The two
+pre-MCP draws, raw distributions, paired deltas, controlled diagnosis, failure
+semantics, source/log hashes, and non-regression conclusion are in the
+[complete MCP paired evidence](results/2026-07-17T17-33-26Z-5462d58-mcp-paired.md).
 
 All DBZZ legs explicitly select `DBZZ_DURABILITY=balanced`. The
 `runtime-default` profile uses the production retention/queue limits, built-in
@@ -84,15 +110,22 @@ must deliver output without failure or timeout in both enabled legs. The three
 profile positions rotate between saved runs and are preserved in
 `executionOrder`.
 
-## Schema-v6 measured-failure record and integrity gate
+## Schema-v7 measured-failure record and integrity gate
 
 Only an all-system run with `BENCH_PROFILE=default` (or no `BENCH_PROFILE`) can
-enter performance acceptance and write
+write
 `bench/results/<timestamp>-<gitsha>.json`. Quick, stress, and partial runs print
 the same diagnostic result tables, then finish with an explicit
 acceptance-skipped/result-not-saved message. The result file is written when
 the harness produced structurally comparable, correctly accounted output, even
 when the measurements fail acceptance.
+Cases that never reach a valid measurement are stored as their canonical
+operation/profile, connection level, subscription pattern, or capacity slot
+plus a typed failure—never invented zero throughput or latency. A closed-loop
+deadline preserves its observed completions and accounts every still-in-flight
+attempt as failed. When cancellation cannot reclaim the phase, the workload
+marks the system terminal, emits all remaining configured identities as failed,
+and the parent reclaims the client process before starting the next system.
 Measured operation, connection, and subscription correctness failures are an
 immutable top-level `validation` section with an overall `passed` or `failed`
 status and per-case errors. A failed validation skips performance acceptance,
@@ -173,7 +206,7 @@ configured offered rate; and delivery throughput must reach at least 99% of
 expected deliveries divided by the offered duration. Missing metric paths or a
 changed floor count remain fatal harness-integrity failures. An evaluated
 performance failure is recorded, saved, and then returns a failing status.
-Delivery correctness failures instead follow the schema-v6 failed-validation
+Delivery correctness failures instead follow the schema-v7 failed-validation
 path above and are saved without evaluating these performance claims.
 
 Prerequisites:
@@ -398,10 +431,11 @@ with SpacetimeDB's official benchmarks; it demonstrates that this benchmark is
 measuring a different, explicitly defined workload.
 
 The displayed result is the last schema-v3 run and intentionally remains in
-place until a post-change full passing schema-v6 run exists. Schema-v2 predates the
-subscription-capacity sweep; schema-v3 predates paired telemetry and
-server-confirmed durability modes. Earlier schemas do not contain the explicit
-correctness outcome and are not delta-comparable with schema v6.
+place until a post-change full passing schema-v7 run exists. Schema-v2 predates
+the subscription-capacity sweep; schema-v3 predates paired telemetry and
+server-confirmed durability modes; schema-v6 predates typed case failures and
+current-host comparison ownership. Earlier schemas are not delta-comparable
+with schema-v7.
 Treat small latency/RSS differences as ranges and rerun; the large
 dbzz-vs-Convex gaps and the SpacetimeDB saturated-write advantage have repeated
 across the retained runs.

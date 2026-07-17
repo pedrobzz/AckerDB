@@ -55,3 +55,14 @@ export class DbzzError extends Error {
 export function isDbzzError(value: unknown): value is DbzzError {
   return hasBrand(value, DBZZ_ERROR_IDENTITY);
 }
+
+/** Preserve framework abort reasons and normalize every external cancellation. */
+export function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw isDbzzError(signal.reason)
+    ? signal.reason
+    : new DbzzError("unavailable", "operation was canceled", {
+        resource: "operation",
+        cause: signal.reason,
+      });
+}

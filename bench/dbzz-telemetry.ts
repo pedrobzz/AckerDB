@@ -717,7 +717,10 @@ export function workloadTelemetryLowerBounds(workload: DriverResult): Readonly<R
     query: attempts("query"),
     mutation: attempts("mutation-uncontended") + attempts("mutation-contended"),
     procedure: attempts("procedure"),
-    subscription: workload.subscriptions.reduce((sum, result) => sum + result.distinctQueryArguments, 0),
+    subscription: workload.subscriptions.reduce(
+      (sum, result) => sum + result.distinctQueryArguments,
+      0,
+    ),
   });
 }
 

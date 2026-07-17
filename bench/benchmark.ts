@@ -138,12 +138,35 @@ export interface ClosedLoopResult {
   throughputPerSec: number;
   latency: LatencyStats;
   errors: string[];
+  interruption: null | {
+    reason: string;
+    resourcesReleased: boolean;
+  };
 }
 
 export interface TrialResult extends ClosedLoopResult {
   phaseId: string;
   correctness: { ok: boolean; errors: string[] };
 }
+
+interface BenchmarkCaseFailureDetails {
+  stage: "setup" | "warmup" | "phase" | "cleanup";
+  message: string;
+  terminal: boolean;
+  partial?: ClosedLoopResult;
+}
+
+export type BenchmarkCaseFailure = BenchmarkCaseFailureDetails & (
+  | {
+      kind: "operation";
+      operation: OperationName;
+      profile: OperationProfile;
+      completedTrials: TrialResult[];
+    }
+  | { kind: "connection"; targetConnections: number }
+  | { kind: "subscription"; pattern: SubscriptionPattern }
+  | { kind: "subscription-capacity"; pattern: SubscriptionPattern; slots: number }
+);
 
 export interface OperationCaseResult {
   operation: OperationName;
@@ -213,6 +236,7 @@ export interface DriverResult {
   operations: OperationCaseResult[];
   connections: ConnectionLevelResult[];
   subscriptions: SubscriptionResult[];
+  failures: BenchmarkCaseFailure[];
 }
 
 function positiveInt(name: string, fallback: number): number {

@@ -1,15 +1,20 @@
 {
   "name": "@dbzz/server",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "type": "module",
   "files": [
     "src"
   ],
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./mcp": "./src/mcp.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:0.2.5",
+    "@dbzz/core": "workspace:0.3.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "jose": "6.2.3"
+  },
+  "devDependencies": {
+    "ai": "7.0.29"
   }
 }

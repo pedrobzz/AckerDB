@@ -46,6 +46,7 @@ function serverTs(config: AppConfig): string {
   const schemaImport = relImport(config.generatedDir, config.schemaPath);
   return `${HEADER}
 import {
+  createMcp as createMcpGeneric,
   mutation as mutationGeneric,
   procedure as procedureGeneric,
   query as queryGeneric,
@@ -54,6 +55,8 @@ import {
 import type {
   DbReader,
   DbWriter,
+  McpBuilder,
+  McpToolCtx as GenericMcpToolCtx,
   MutationBuilder,
   MutationCtx as GenericMutationCtx,
   ProcedureBuilder,
@@ -71,11 +74,13 @@ export const query = queryGeneric as QueryBuilder<Schema>;
 export const mutation = mutationGeneric as MutationBuilder<Schema>;
 export const procedure = procedureGeneric as ProcedureBuilder<Schema>;
 export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema>;
+export const createMcp = createMcpGeneric as McpBuilder<Schema>;
 
 export type QueryCtx = GenericQueryCtx<Schema>;
 export type MutationCtx = GenericMutationCtx<Schema>;
 export type ProcedureCtx = GenericProcedureCtx<Schema>;
 export type SseCtx = GenericSseCtx<Schema>;
+export type McpToolCtx = GenericMcpToolCtx<Schema>;
 export type DatabaseReader = DbReader<Schema>;
 export type DatabaseWriter = DbWriter<Schema>;
 `;

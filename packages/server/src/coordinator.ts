@@ -14,7 +14,7 @@ import {
 } from "./db.ts";
 import type { DbWriter } from "./dbtypes.ts";
 import type { Engine } from "./engine.ts";
-import { DbzzError } from "./errors.ts";
+import { DbzzError, throwIfAborted } from "./errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
 import type { ServiceLimits } from "./limits.ts";
 import {
@@ -23,6 +23,7 @@ import {
   type StoredMutation,
 } from "./mutation-replay.ts";
 import { outcomeFromError } from "./outcome.ts";
+import { isOneTimeResult } from "./one-time-result.ts";
 import type { PublicationReservation } from "./publication.ts";
 import type { Schema } from "./schema.ts";
 
@@ -113,13 +114,16 @@ export interface CommitRequest<T, Publication> {
   readonly fairnessKey: string;
   readonly requestBytes: number;
   readonly deadlineMs?: number;
-  readonly signal?: AbortSignal;
+  /** Cancels this work only while it is waiting for the single writer. */
+  readonly admissionSignal?: AbortSignal;
+  /** Cancels a request-owned transaction before BEGIN or COMMIT. */
+  readonly transactionSignal?: AbortSignal;
   readonly telemetry?: CommitTelemetryObserver;
   readonly statementTelemetry?: DbStatementObserver;
   /** Restore the request owner's async instrumentation while its writer turn runs. */
   readonly run?: <R>(work: () => R) => R;
   readonly idempotency?: IdempotencyIdentity;
-  readonly work: (db: DbWriter<Schema>) => T | Promise<T>;
+  readonly work: (db: DbWriter<Schema>, writes: WriteCollector) => T | Promise<T>;
   /** Additional storage work, such as deleting a due row, in the same transaction. */
   readonly finalize?: (writes: WriteCollector) => void | Promise<void>;
   readonly publication: (version: bigint, writes: WriteCollector) => Publication;
@@ -135,7 +139,10 @@ export interface CommitRequest<T, Publication> {
 export interface FrameworkTransactionRequest<T> {
   readonly fairnessKey: string;
   readonly requestBytes: number;
-  readonly signal?: AbortSignal;
+  /** Cancels this work only while it is waiting for the single writer. */
+  readonly admissionSignal?: AbortSignal;
+  /** Cancels a request-owned transaction before BEGIN or COMMIT. */
+  readonly transactionSignal?: AbortSignal;
   readonly work: () => T | Promise<T>;
   /** Synchronous committed-state handoff before the single writer admits its next turn. */
   readonly afterCommit?: (value: T) => void;
@@ -190,6 +197,8 @@ export interface CommitCoordinatorOptions<Publication> {
   readonly engine: Engine;
   readonly limits: ServiceLimits;
   readonly reservePublication: (bytes: number) => PublicationReservation<Publication>;
+  /** Synchronous Runtime-owned state handoff after COMMIT and before the writer turn releases. */
+  readonly afterCommit?: (writes: WriteCollector) => void;
   readonly now?: () => number;
   readonly wait?: CommitWaitHook;
 }
@@ -241,6 +250,7 @@ export class CommitCoordinator<Publication> {
   private readonly limits: ServiceLimits;
   private readonly writer: BoundedExecutor;
   private readonly reservePublication: CommitCoordinatorOptions<Publication>["reservePublication"];
+  private readonly afterCommit: CommitCoordinatorOptions<Publication>["afterCommit"];
   private readonly now: () => number;
   private readonly wait: CommitWaitHook | undefined;
   private readonly eventSequences = new Map<string, bigint>();
@@ -252,6 +262,7 @@ export class CommitCoordinator<Publication> {
     this.engine = options.engine;
     this.limits = options.limits;
     this.reservePublication = options.reservePublication;
+    this.afterCommit = options.afterCommit;
     this.now = options.now ?? Date.now;
     this.wait = options.wait;
     this.writer = new BoundedExecutor({
@@ -293,7 +304,9 @@ export class CommitCoordinator<Publication> {
           bytes: request.requestBytes,
           fairnessKey: request.fairnessKey,
           ...(request.deadlineMs === undefined ? {} : { deadlineMs: request.deadlineMs }),
-          ...(request.signal === undefined ? {} : { signal: request.signal }),
+          ...(request.admissionSignal === undefined
+            ? {}
+            : { signal: request.admissionSignal }),
         },
       );
     } catch (error) {
@@ -343,9 +356,11 @@ export class CommitCoordinator<Publication> {
     return this.writer.submit(async () => {
       let open = false;
       try {
+        throwIfAborted(request.transactionSignal);
         this.engine.writer.exec("BEGIN IMMEDIATE");
         open = true;
         const value = await transaction.run(true, request.work);
+        throwIfAborted(request.transactionSignal);
         this.engine.writer.exec("COMMIT");
         open = false;
         try {
@@ -374,7 +389,9 @@ export class CommitCoordinator<Publication> {
       operation: "transaction",
       bytes: request.requestBytes,
       fairnessKey: request.fairnessKey,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
+      ...(request.admissionSignal === undefined
+        ? {}
+        : { signal: request.admissionSignal }),
     });
   }
 
@@ -412,6 +429,9 @@ export class CommitCoordinator<Publication> {
           if (!sameIdentity(stored, idempotency)) {
             throw conflict("mutation request ID was already used with different semantics");
           }
+          if (stored.resultDisposition === "one-time") {
+            throw conflict("mutation committed, but its one-time result is no longer available");
+          }
           observeCommit(request, {
             stage: "storage",
             outcome: "ok",
@@ -423,7 +443,7 @@ export class CommitCoordinator<Publication> {
           replayObserved = true;
           return {
             result: {
-              value: decode(stored.result) as T,
+              value: decode(stored.result!) as T,
               commitVersion: stored.commitVersion,
               durability: stored.durability,
               replay: "replayed",
@@ -481,13 +501,14 @@ export class CommitCoordinator<Publication> {
     let publication: Publication | undefined;
     const storageAt = performance.now();
     try {
+      throwIfAborted(request.transactionSignal);
       this.engine.writer.exec("BEGIN IMMEDIATE");
       transactionOpen = true;
       const executionAt = request.telemetry === undefined ? undefined : performance.now();
       let value: T;
       try {
         value = await transaction.run(true, async () => {
-          const result = await request.work(db);
+          const result = await request.work(db, writes);
           await request.finalize?.(writes);
           return result;
         });
@@ -535,7 +556,8 @@ export class CommitCoordinator<Publication> {
       }
       const encodingAt = performance.now();
       let result: string | undefined;
-      if (idempotency) {
+      const resultDisposition = isOneTimeResult(writes) ? "one-time" : "replayable";
+      if (idempotency && resultDisposition === "replayable") {
         try {
           result = encode(value);
         } catch (error) {
@@ -575,10 +597,11 @@ export class CommitCoordinator<Publication> {
       }
       let stagedMutation: StagedMutation | undefined;
       let commitVersion: bigint;
-      if (idempotency && result !== undefined) {
+      if (idempotency) {
         stagedMutation = this.engine[mutationReplayOwner].stage({
           ...idempotency,
-          result,
+          resultDisposition,
+          result: result ?? null,
           resultBytes,
           durability: this.engine.durability,
         }, this.readNow());
@@ -626,6 +649,7 @@ export class CommitCoordinator<Publication> {
       storageObserved = true;
       const commitAt = performance.now();
       try {
+        throwIfAborted(request.transactionSignal);
         this.engine.writer.exec("COMMIT");
       } catch (error) {
         observeCommit(request, {
@@ -640,6 +664,7 @@ export class CommitCoordinator<Publication> {
       }
       transactionOpen = false;
       committed = true;
+      this.afterCommit?.(writes);
       if (stagedMutation !== undefined) {
         this.engine[mutationReplayOwner].committed(stagedMutation);
       }

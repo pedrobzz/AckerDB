@@ -29,37 +29,42 @@ export interface BenchmarkValidation {
 
 function operationShape(workload: DriverResult): string {
   return JSON.stringify(
-    workload.operations.map((operation) => [operation.operation, operation.profile, operation.trials.length]),
+    [
+      ...workload.operations.map((operation) => [operation.operation, operation.profile]),
+      ...(workload.failures ?? []).flatMap((failure) =>
+        failure.kind === "operation" ? [[failure.operation, failure.profile]] : []
+      ),
+    ].sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
   );
 }
 
 function expectedOperationShape(config: BenchmarkConfig): string {
   return JSON.stringify(
     OPERATION_NAMES.flatMap((operation) =>
-      config.operation.profiles.map((profile) => [operation, profile, config.operation.trials]),
-    ),
+      config.operation.profiles.map((profile) => [operation, profile]),
+    ).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right))),
   );
 }
 
 function connectionShape(workload: DriverResult): string {
-  return JSON.stringify(workload.connections.map((connection) => connection.targetConnections));
+  return JSON.stringify([
+    ...workload.connections.map((connection) => connection.targetConnections),
+    ...(workload.failures ?? []).flatMap((failure) =>
+      failure.kind === "connection" ? [failure.targetConnections] : []
+    ),
+  ].sort((left, right) => left - right));
 }
 
 function subscriptionShape(workload: DriverResult): string {
-  return JSON.stringify(
-    workload.subscriptions.map((subscription) => [
-      subscription.pattern,
-      subscription.capacity.map((capacity) => capacity.slots),
-    ]),
-  );
+  return JSON.stringify([
+    ...workload.subscriptions.map((subscription) => subscription.pattern),
+    ...(workload.failures ?? []).flatMap((failure) => failure.kind === "subscription" ? [failure.pattern] : []),
+  ].sort());
 }
 
 function expectedSubscriptionShape(config: BenchmarkConfig): string {
   return JSON.stringify(
-    config.subscriptions.patterns.map((pattern) => [
-      pattern,
-      subscriptionCapacitySlots(config.subscriptions, pattern),
-    ]),
+    [...config.subscriptions.patterns].sort(),
   );
 }
 
@@ -153,6 +158,12 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
     }
 
     for (const operation of workload.operations) {
+      const operationCase = `${operation.operation}/${operation.profile.name}`;
+      if (operation.trials.length !== workload.config.operation.trials) {
+        integrityErrors.push(
+          `${target.label} ${operationCase}: measured ${operation.trials.length}/${workload.config.operation.trials} trials`,
+        );
+      }
       for (const [trialIndex, trial] of operation.trials.entries()) {
         const benchmarkCase = `${operation.operation}/${operation.profile.name}/trial-${trialIndex}`;
         assertRequestAccounting(integrityErrors, `${target.label} ${benchmarkCase}`, trial);
@@ -194,6 +205,18 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
 
     for (const subscription of workload.subscriptions) {
       const benchmarkCase = `subscriptions/${subscription.pattern}`;
+      const expectedCapacity = JSON.stringify(subscriptionCapacitySlots(workload.config.subscriptions, subscription.pattern));
+      const actualCapacity = JSON.stringify([
+        ...subscription.capacity.map((capacity) => capacity.slots),
+        ...(workload.failures ?? []).flatMap((failure) =>
+          failure.kind === "subscription-capacity" && failure.pattern === subscription.pattern
+            ? [failure.slots]
+            : []
+        ),
+      ].sort((left, right) => left - right));
+      if (actualCapacity !== expectedCapacity) {
+        integrityErrors.push(`${target.label} ${benchmarkCase}: capacity ladder differs`);
+      }
       const errors = [
         ...subscription.correctness.errors,
         ...(subscription.missingDeliveries === 0
@@ -228,6 +251,39 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
           );
         }
       }
+    }
+
+    for (const failure of workload.failures ?? []) {
+      if (failure.message.length === 0) {
+        integrityErrors.push(`${target.label}: failed ${failure.kind} case has no error message`);
+      }
+      if (failure.partial !== undefined) {
+        assertRequestAccounting(integrityErrors, `${target.label} ${failure.kind}/partial`, failure.partial);
+      }
+      if (failure.kind === "operation") {
+        for (const [trialIndex, trial] of failure.completedTrials.entries()) {
+          assertRequestAccounting(
+            integrityErrors,
+            `${target.label} ${failure.operation}/${failure.profile.name}/trial-${trialIndex}`,
+            trial,
+          );
+        }
+      }
+      const benchmarkCase = failure.kind === "operation"
+        ? `${failure.operation}/${failure.profile.name}`
+        : failure.kind === "connection"
+          ? `connections/${failure.targetConnections}`
+          : failure.kind === "subscription"
+            ? `subscriptions/${failure.pattern}`
+            : `subscriptions/${failure.pattern}/capacity-${failure.slots}`;
+      addFailure(
+        failures,
+        target.label,
+        failure.kind,
+        benchmarkCase,
+        [failure.message, ...(failure.partial?.errors ?? [])],
+        failure.partial?.failed ?? 0,
+      );
     }
   }
 

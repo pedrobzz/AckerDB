@@ -102,3 +102,68 @@ describe("tsType text", () => {
     expect(dbz.identity().tsType()).toBe("Identity");
   });
 });
+
+describe("Standard Schema contract", () => {
+  const request = dbz.object({
+    query: dbz.string().describe("Words to find."),
+    limit: dbz.nullable(dbz.number()).describe("Maximum results, or null for the default."),
+    filters: dbz.jsonb<Record<string, unknown>>().describe("Opaque application filters."),
+  });
+
+  test("validates and normalizes through the dependency-free standard interface", () => {
+    expect(request["~standard"]).toMatchObject({ version: 1, vendor: "dbzz" });
+    expect(request["~standard"].validate({ query: "tea", filters: {} })).toEqual({
+      value: { query: "tea", limit: null, filters: {} },
+    });
+    expect(request["~standard"].validate({ query: 42, filters: {} })).toEqual({
+      issues: [{ message: "$input.query: expected string, got number" }],
+    });
+  });
+
+  test("generates honest draft-2020-12 input and normalized output schemas", () => {
+    expect(request["~standard"].jsonSchema.input({ target: "draft-2020-12" })).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Words to find." },
+        limit: {
+          anyOf: [{ type: "number" }, { type: "null" }],
+          description: "Maximum results, or null for the default.",
+        },
+        filters: { description: "Opaque application filters." },
+      },
+      required: ["query", "filters"],
+      additionalProperties: false,
+    });
+    expect(request["~standard"].jsonSchema.output({ target: "draft-2020-12" })).toMatchObject({
+      required: ["query", "limit", "filters"],
+    });
+    expect(request["~standard"].jsonSchema.input({ target: "draft-07" })).toMatchObject({
+      $schema: "http://json-schema.org/draft-07/schema#",
+      type: "object",
+    });
+    expect(() => request["~standard"].jsonSchema.input({ target: "openapi-3.0" })).toThrow(
+      "draft-2020-12 and draft-07",
+    );
+  });
+
+  test("descriptions are immutable guidance and opaque JSON stays unconstrained", () => {
+    const plain = dbz.string();
+    const described = plain.describe("A label.");
+    expect(plain.description).toBeUndefined();
+    expect(described.description).toBe("A label.");
+    expect(described.descriptor()).toEqual({ k: "string" });
+    expect(() => plain.describe("  ")).toThrow("non-empty");
+  });
+
+  test("keeps runtime-native Standard Schema honest until a protocol codec is compiled", () => {
+    expect(() => dbz.bigint()["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
+      .toThrow("requires a standard-JSON protocol codec");
+    expect(() => dbz.identity()["~standard"].jsonSchema.output({ target: "draft-2020-12" }))
+      .toThrow("requires a standard-JSON protocol codec");
+    expect(() => dbz.bytes()["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
+      .toThrow("requires a standard-JSON protocol codec");
+    expect(() => dbz.literal(1n)["~standard"].jsonSchema.input({ target: "draft-2020-12" }))
+      .toThrow("requires a standard-JSON protocol codec");
+  });
+});

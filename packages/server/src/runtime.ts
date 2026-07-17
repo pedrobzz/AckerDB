@@ -28,6 +28,7 @@ import {
   verifyUserBearerCredential,
   type CredentialVerifier,
   type ExternalAccount,
+  type McpPrincipal,
   type Principal,
 } from "./auth.ts";
 import {
@@ -65,7 +66,7 @@ import {
   type SseDeliverySnapshot,
 } from "./delivery.ts";
 import type { Engine } from "./engine.ts";
-import { DbzzError, isDbzzError } from "./errors.ts";
+import { DbzzError, isDbzzError, throwIfAborted } from "./errors.ts";
 import {
   claimHttpTrace,
   finishClaimedHttpTrace,
@@ -92,6 +93,27 @@ import {
   type InvocationOutcome,
   type InvocationTelemetryContext,
 } from "./invocation.ts";
+import {
+  finalizeMcpToolResult,
+  type AnyRegisteredMcpTool,
+  type McpToolCtx,
+} from "./mcp.ts";
+import {
+  bindMcpAiContext,
+  mcpLocalGrant,
+  withMcpLocalAuthority,
+  type McpAiContext,
+  type McpAiRuntimeCapability,
+} from "./mcp-ai.ts";
+import type { McpCallToolResult } from "./mcp-content.ts";
+import { parseMcpToken, type ParsedMcpToken } from "./mcp-credential.ts";
+import { isMcpToolAuthorized } from "./mcp-scopes.ts";
+import { withMcpTokenContext as withMcpTokenCapability } from "./mcp-token-context.ts";
+import {
+  McpTokenInvalidationBoundary,
+  takeMcpTokenInvalidations,
+} from "./mcp-token-invalidation.ts";
+import { mcpTokenVaultOwner } from "./mcp-token-vault.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
@@ -193,6 +215,22 @@ interface RuntimeExternalRequest {
   readonly fairnessKey?: string;
 }
 
+export interface RuntimeMcpToolRequest {
+  readonly id: string | number;
+  readonly mcp: string;
+  readonly tool: string;
+  readonly args: unknown;
+  readonly principal: Principal;
+  readonly signal?: AbortSignal;
+  readonly fairnessKey?: string;
+}
+
+export interface McpCredentialLease {
+  readonly principal: McpPrincipal;
+  readonly signal: AbortSignal;
+  release(): void;
+}
+
 export interface RuntimeProcedureResponse {
   readonly body: string;
   readonly bytes: number;
@@ -211,6 +249,11 @@ export interface RuntimeSseRequest extends RuntimeExternalRequest {}
 export interface RuntimeSseResponse {
   readonly stream: ReadableStream<Uint8Array>;
   readonly streamId: string;
+}
+
+interface OwnedProcedureContext {
+  readonly value: ProcedureCtx;
+  readonly release: () => void;
 }
 
 export interface RuntimeStatus {
@@ -336,6 +379,8 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
+const releaseNothing = (): void => {};
+
 function quoted(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
@@ -360,16 +405,6 @@ function transportError(error: unknown): unknown {
   return isValidationError(error)
     ? new DbzzError("validation", error.message, { cause: error })
     : error;
-}
-
-function aborted(signal: AbortSignal | undefined): void {
-  if (!signal?.aborted) return;
-  throw isDbzzError(signal.reason)
-    ? signal.reason
-    : new DbzzError("unavailable", "operation was canceled", {
-        resource: "operation",
-        cause: signal.reason,
-      });
 }
 
 interface SseChunkIterator {
@@ -587,6 +622,7 @@ export class Runtime implements RuntimePort {
 
   private readonly now: () => number;
   private readonly authInvalidation: AuthInvalidationBoundary;
+  private readonly mcpTokenInvalidation = new McpTokenInvalidationBoundary();
   private readonly reader: BoundedExecutor;
   private readonly availableReaders: Database[];
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
@@ -600,6 +636,7 @@ export class Runtime implements RuntimePort {
   private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
   private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
   private readonly ownsTelemetry: boolean;
+  private readonly hasMcpCapabilities: boolean;
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
   private schedulerGeneration = 0;
@@ -615,7 +652,18 @@ export class Runtime implements RuntimePort {
   constructor(options: RuntimeOptions) {
     this.engine = options.engine;
     this.registry = options.registry;
+    this.hasMcpCapabilities = this.registry.mcps.size > 0;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
+    const mcpToolCounts = new Map<string, number>();
+    for (const tool of this.registry.mcpTools.values()) {
+      const count = (mcpToolCounts.get(tool.mcp.name) ?? 0) + 1;
+      if (count > this.limits.mcp.maxToolsPerEndpoint) {
+        throw new RangeError(
+          `MCP "${tool.mcp.name}" exceeds mcp.maxToolsPerEndpoint`,
+        );
+      }
+      mcpToolCounts.set(tool.mcp.name, count);
+    }
     if (options.verifier !== undefined) {
       assertCredentialVerifier(options.verifier, this.limits.auth.revocationDeadlineMs);
     }
@@ -655,6 +703,15 @@ export class Runtime implements RuntimePort {
       engine: this.engine,
       limits: this.limits,
       reservePublication: (bytes) => this.reactive.publication.reserve(bytes),
+      ...(this.hasMcpCapabilities
+        ? {
+            afterCommit: (writes: WriteCollector) => {
+              for (const invalidation of takeMcpTokenInvalidations(writes)) {
+                this.mcpTokenInvalidation.publish(invalidation);
+              }
+            },
+          }
+        : {}),
       ...(options.hooks?.wait === undefined ? {} : { wait: options.hooks.wait }),
       now: this.now,
     });
@@ -725,12 +782,98 @@ export class Runtime implements RuntimePort {
         return this.coordinator.transactFramework({
           fairnessKey,
           requestBytes,
-          signal: operationSignal,
+          admissionSignal: operationSignal,
+          transactionSignal: operationSignal,
           work: () => this.engine.resolveIdentity(account.issuer, account.subject),
         });
       },
       { synthesizeHandler: false, fairnessKey },
     );
+  }
+
+  /** Resolve one endpoint-bound MCP bearer without consulting external identity providers. */
+  async authenticateMcpToken(
+    mcp: string,
+    rawToken: string,
+    fairnessKey: string,
+    signal?: AbortSignal,
+  ): Promise<McpPrincipal> {
+    const parsed = parseMcpToken(rawToken);
+    if (parsed === null) throw new DbzzError("unauthenticated", "invalid MCP credential");
+    const operationSignal = this.operationSignal(signal);
+    return this.verifyMcpToken(mcp, parsed, fairnessKey, operationSignal);
+  }
+
+  /** Own one exact non-expiring MCP credential from verification through HTTP completion. */
+  async acquireMcpTokenLease(
+    mcp: string,
+    parsed: ParsedMcpToken,
+    fairnessKey: string,
+    signal?: AbortSignal,
+  ): Promise<McpCredentialLease> {
+    this.assertReady();
+    const controller = new AbortController();
+    const unsubscribe = this.mcpTokenInvalidation.subscribe(mcp, parsed.id, () => {
+      if (!controller.signal.aborted) {
+        controller.abort(new DbzzError("unauthenticated", "credential revoked"));
+      }
+    });
+    const leaseSignal = signal === undefined
+      ? controller.signal
+      : AbortSignal.any([signal, controller.signal]);
+    const verificationSignal = this.operationSignal(leaseSignal);
+    try {
+      const principal = await this.verifyMcpToken(mcp, parsed, fairnessKey, verificationSignal);
+      throwIfAborted(verificationSignal);
+      let active = true;
+      return Object.freeze({
+        principal,
+        signal: leaseSignal,
+        release: () => {
+          if (!active) return;
+          active = false;
+          unsubscribe();
+        },
+      });
+    } catch (error) {
+      unsubscribe();
+      throw error;
+    }
+  }
+
+  private async verifyMcpToken(
+    mcp: string,
+    parsed: ParsedMcpToken,
+    fairnessKey: string,
+    signal: AbortSignal,
+  ): Promise<McpPrincipal> {
+    this.assertReady();
+    const declaration = this.registry.mcps.get(mcp);
+    if (declaration === undefined) throw new DbzzError("not_found", `unknown MCP "${mcp}"`);
+    const scopeDescriptor = "scopes" in declaration ? declaration.scopes : undefined;
+    const credential = await this.submitRead(
+      (connection) => this.engine[mcpTokenVaultOwner].authenticate(
+        connection,
+        mcp,
+        parsed,
+        scopeDescriptor,
+      ),
+      {
+        operation: "procedure",
+        bytes: parsed.bytes,
+        fairnessKey,
+        signal,
+      },
+      false,
+    );
+    throwIfAborted(signal);
+    return Object.freeze({
+      kind: "mcp",
+      identity: credential.identity,
+      mcp,
+      tokenId: credential.tokenId,
+      scopes: credential.scopes,
+    });
   }
 
   private async linkAccount(
@@ -743,17 +886,18 @@ export class Runtime implements RuntimePort {
     if (principal.kind !== "user") {
       throw new DbzzError("unauthorized", "account linking requires a user identity");
     }
-    aborted(signal);
+    throwIfAborted(signal);
     const account = await verifyUserBearerCredential(
       rawBearerToken,
       this.credentialVerifier,
       this.now,
     );
-    aborted(signal);
+    throwIfAborted(signal);
     await this.coordinator.transactFramework({
       fairnessKey,
       requestBytes,
-      signal,
+      admissionSignal: signal,
+      transactionSignal: signal,
       work: () => {
         if (account.expiresAt <= this.readNow()) {
           throw new DbzzError("unauthenticated", "invalid credential");
@@ -791,11 +935,12 @@ export class Runtime implements RuntimePort {
       throw new DbzzError("validation", "external account must have an issuer and subject");
     }
     const account = Object.freeze({ issuer: candidate.issuer, subject: candidate.subject });
-    aborted(signal);
+    throwIfAborted(signal);
     const result = await this.coordinator.transactFramework({
       fairnessKey,
       requestBytes,
-      signal,
+      admissionSignal: signal,
+      transactionSignal: signal,
       work: () => this.engine.detachIdentityAccount(
         principal.identity,
         account.issuer,
@@ -816,7 +961,9 @@ export class Runtime implements RuntimePort {
   async openSession(context: SessionRuntimeContext): Promise<void> {
     this.assertReady();
     if (context.authEpoch !== 0) throw new DbzzError("validation", "new sessions must start at auth epoch 0");
-    if (context.principal.kind === "system") throw new DbzzError("unauthorized", "system identity is local only");
+    if (context.principal.kind === "system" || context.principal.kind === "mcp") {
+      throw new DbzzError("unauthorized", "principal cannot authenticate the DBZZ client API");
+    }
     if (this.sessions.has(context.clientSessionId)) {
       throw new DbzzError("conflict", "client session is already connected", {
         retryable: true,
@@ -862,7 +1009,7 @@ export class Runtime implements RuntimePort {
       ) {
         throw new DbzzError("validation", "authentication transition is not monotonic");
       }
-      aborted(transition.to.signal);
+      throwIfAborted(transition.to.signal);
       const captured: AuthTransitionCapture = {
         phase: "revoking",
         authEpoch: transition.from.authEpoch,
@@ -998,7 +1145,7 @@ export class Runtime implements RuntimePort {
         operation: "mutation",
         fairnessKey: context.fairnessKey,
         requestBytes,
-        signal,
+        admissionSignal: signal,
         ...(this.telemetry.enabled
           ? {
               telemetry: this.observeCommit,
@@ -1014,7 +1161,17 @@ export class Runtime implements RuntimePort {
           functionRef: message.ref,
           argsFingerprint: digest(message.args),
         },
-        work: (db) => invokeFunction(fn, Object.freeze({ db, auth: context.principal }), message.args),
+        work: this.hasMcpCapabilities
+          ? (db, writes) => withMcpTokenCapability(
+            { db, auth: context.principal },
+            this.mcpTokenCapability(context.principal, this.engine.writer, null, writes),
+            (ctx) => invokeFunction(fn, ctx, message.args),
+          )
+          : (db) => invokeFunction(
+            fn,
+            Object.freeze({ db, auth: context.principal }),
+            message.args,
+          ),
         publication: (_version, writes) => {
           scheduledTouched = writes.scheduledTouched;
           return this.publicationFor(writes, state.subscriber);
@@ -1086,6 +1243,9 @@ export class Runtime implements RuntimePort {
   }
 
   async runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
+    if (request.principal.kind === "mcp") {
+      throw new DbzzError("unauthorized", "MCP credentials cannot call DBZZ procedures");
+    }
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
       v: PROTOCOL_VERSION,
@@ -1127,20 +1287,21 @@ export class Runtime implements RuntimePort {
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
-      aborted(signal);
-      const value = await invokeFunction(
-        fn,
-        this.procedureContext(
-          request.principal,
-          fairnessKey,
-          signal,
-          requestBytes,
-          publishInvalidation,
-        ),
-        request.args,
+      throwIfAborted(signal);
+      const context = this.procedureContext(
+        request.principal,
+        fairnessKey,
+        signal,
+        requestBytes,
+        publishInvalidation,
       );
-      aborted(signal);
-      return value;
+      try {
+        const value = await invokeFunction(fn, context.value, request.args);
+        throwIfAborted(signal);
+        return value;
+      } finally {
+        context.release();
+      }
     }, {
       identifiers: { requestId: String(request.id) },
       finalize: (outcome) => {
@@ -1153,6 +1314,97 @@ export class Runtime implements RuntimePort {
       claimedTrace,
       fairnessKey,
     });
+  }
+
+  /** The single deep MCP execution path used by every present and future adapter. */
+  async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpCallToolResult> {
+    const provenance = claimHttpRequestProvenance(request);
+    const requestBytes = this.admittedRequestBytes({
+      jsonrpc: "2.0",
+      id: request.id,
+      method: "tools/call",
+      params: { name: request.tool, arguments: request.args },
+    }, provenance?.bytes);
+    const registeredTool = this.registry.mcpTool(request.mcp, request.tool);
+    const functionName = registeredTool === undefined
+      ? "mcp.unknown"
+      : `${registeredTool.mcp.name}:${registeredTool.name}`;
+    const claimedTrace = claimHttpTrace(
+      provenance?.trace,
+      "procedure",
+      functionName,
+      String(request.id),
+    );
+    const fairnessKey = request.fairnessKey ?? callerFairnessKey(
+      request.principal,
+      DIRECT_RUNTIME_SOURCE,
+    );
+    return this.runOperation(null, "procedure", functionName, requestBytes, async () => {
+      const signal = this.operationSignal(request.signal);
+      return this.dispatchMcpTool(
+        request.mcp,
+        request.tool,
+        request.args,
+        this.transactionalContext(request.principal, fairnessKey, signal, requestBytes),
+        fairnessKey,
+        requestBytes,
+      );
+    }, {
+      identifiers: { requestId: String(request.id) },
+      claimedTrace,
+      fairnessKey,
+    });
+  }
+
+  /** Resolve one callable tool without trusting discovery or revealing inaccessible names. */
+  authorizeMcpTool(mcp: string, name: string, principal: Principal): AnyRegisteredMcpTool {
+    const endpointMatches = principal.kind !== "mcp" || principal.mcp === mcp;
+    const tool = endpointMatches ? this.registry.mcpTool(mcp, name) : undefined;
+    if (
+      tool !== undefined &&
+      isMcpToolAuthorized(
+        tool.accessPolicy,
+        principal,
+        mcpLocalGrant(principal, tool.mcp),
+      )
+    ) return tool;
+    if (principal.kind === "anonymous") {
+      throw new DbzzError("unauthenticated", "authentication required");
+    }
+    if (!endpointMatches || tool !== undefined) {
+      throw new DbzzError("unauthorized", "access denied");
+    }
+    throw new DbzzError("not_found", "MCP tool not found");
+  }
+
+  private async dispatchMcpTool(
+    mcp: string,
+    name: string,
+    args: unknown,
+    context: McpToolCtx,
+    fairnessKey: string,
+    requestBytes: number,
+  ): Promise<McpCallToolResult> {
+    const toolContext = Object.freeze({
+      auth: context.auth,
+      abortSignal: context.abortSignal,
+      tx: context.tx,
+    });
+    const release = bindMcpAiContext(
+      toolContext,
+      this.mcpAiCapability(toolContext, fairnessKey, requestBytes),
+    );
+    try {
+      const tool = this.authorizeMcpTool(mcp, name, toolContext.auth);
+      throwIfAborted(toolContext.abortSignal);
+      const value = await invokeFunction(tool, toolContext, args);
+      throwIfAborted(toolContext.abortSignal);
+      const result = finalizeMcpToolResult(tool, value);
+      throwIfAborted(toolContext.abortSignal);
+      return result;
+    } finally {
+      release();
+    }
   }
 
   private respondProcedure(
@@ -1313,6 +1565,9 @@ export class Runtime implements RuntimePort {
   }
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
+    if (request.principal.kind === "mcp") {
+      throw new DbzzError("unauthorized", "MCP credentials cannot call DBZZ SSE procedures");
+    }
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
       v: PROTOCOL_VERSION,
@@ -1397,6 +1652,7 @@ export class Runtime implements RuntimePort {
       let producer: BoundedSseProducer | null = null;
       let streamId: string | null = null;
       let lifecycle: Promise<void> | null = null;
+      let procedure: OwnedProcedureContext | null = null;
       let deliveryObserver: DeliveryObserver | undefined;
       try {
         const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
@@ -1404,7 +1660,7 @@ export class Runtime implements RuntimePort {
           throw new DbzzError("internal", `sse "${request.address}" has no yields validator`);
         }
         const signal = this.operationSignal(request.signal);
-        aborted(signal);
+        throwIfAborted(signal);
         producer = new BoundedSseProducer({
           budget: this.sseBudget,
           limits: this.limits,
@@ -1417,18 +1673,16 @@ export class Runtime implements RuntimePort {
         void producer.finished.then(() => this.removeSseProducer(streamId!, producer!));
         const authorized = deferred<void>();
         let handlerContext: <T>(work: () => T) => T = (work) => work();
+        procedure = this.procedureContext(
+          request.principal,
+          fairnessKey,
+          producer.signal,
+          requestBytes,
+          (account) => this.authInvalidation.publishAccount(account),
+        );
         const handler = invokeFunction(
           fn,
-          Object.freeze({
-            ...this.procedureContext(
-              request.principal,
-              fairnessKey,
-              producer.signal,
-              requestBytes,
-              (account) => this.authInvalidation.publishAccount(account),
-            ),
-            abortSignal: producer.signal,
-          }) as SseCtx,
+          procedure.value as SseCtx,
           request.args,
           {
             onAuthorized: () => {
@@ -1473,6 +1727,8 @@ export class Runtime implements RuntimePort {
           }
           throw error;
         }).finally(() => {
+          procedure!.release();
+          procedure = null;
           release();
           finishOperationTrace();
         });
@@ -1497,6 +1753,8 @@ export class Runtime implements RuntimePort {
         }
         if (lifecycle !== null) await lifecycle.catch(() => {});
         else {
+          procedure?.release();
+          procedure = null;
           release();
           finishOperationTrace();
         }
@@ -1563,7 +1821,7 @@ export class Runtime implements RuntimePort {
             operation: "scheduled",
             fairnessKey: "system:scheduler",
             requestBytes: 1,
-            signal: this.shutdownController.signal,
+            admissionSignal: this.shutdownController.signal,
             ...(this.telemetry.enabled
               ? {
                   telemetry: this.observeCommit,
@@ -1571,7 +1829,7 @@ export class Runtime implements RuntimePort {
                   run: AsyncLocalStorage.snapshot(),
                 }
               : {}),
-            work: async (db) => {
+            work: async (db, writes) => {
               const plan = this.engine.plan(candidate.table);
               const raw = this.measuredStatement("read", candidate.table, "scheduledGet", () =>
                 this.engine.writer.query(
@@ -1583,7 +1841,15 @@ export class Runtime implements RuntimePort {
               if (raw === null) throw STALE_SCHEDULED_CANDIDATE;
               row = this.engine.rowFromSql(plan, raw);
               const fn = this.expect(candidate.address, "mutation");
-              await invokeFunction(fn, Object.freeze({ db, auth: SYSTEM_PRINCIPAL }), row);
+              if (this.hasMcpCapabilities) {
+                await withMcpTokenCapability(
+                  { db, auth: SYSTEM_PRINCIPAL },
+                  this.mcpTokenCapability(SYSTEM_PRINCIPAL, this.engine.writer, null, writes),
+                  (ctx) => invokeFunction(fn, ctx, row),
+                );
+              } else {
+                await invokeFunction(fn, Object.freeze({ db, auth: SYSTEM_PRINCIPAL }), row);
+              }
             },
             finalize: (writes) => {
               const scheduledRow = row;
@@ -1811,7 +2077,7 @@ export class Runtime implements RuntimePort {
     const state = this.matchingSession(context);
     if (state === null) throw new DbzzError("auth_stale", "authentication state changed");
     if (state.phase !== "open") throw new DbzzError("auth_stale", "session is closing");
-    if (!allowAborted) aborted(context.signal);
+    if (!allowAborted) throwIfAborted(context.signal);
     return state;
   }
 
@@ -1833,7 +2099,7 @@ export class Runtime implements RuntimePort {
     const state = this.matchingSession(context);
     const execute = () => {
       if (state === null) throw new DbzzError("auth_stale", "authentication state changed");
-      aborted(context.signal);
+      throwIfAborted(context.signal);
       return work(state, requestBytes);
     };
     const sessionOrder: SessionOperationOrder | undefined = operation === "subscription"
@@ -2113,7 +2379,7 @@ export class Runtime implements RuntimePort {
   ): Promise<QueryExecution> {
     const fn = this.expect(address, "query");
     return this.submitRead(async (connection) => {
-      aborted(signal);
+      throwIfAborted(signal);
       let transactionOpen = false;
       const beginAt = this.telemetry.enabled ? performance.now() : 0;
       try {
@@ -2136,8 +2402,14 @@ export class Runtime implements RuntimePort {
           recorder,
           this.telemetry.enabled ? this.observeStatement : undefined,
         );
-        const value = await invokeFunction(fn, Object.freeze({ db, auth: principal }), args);
-        aborted(signal);
+        const value = this.hasMcpCapabilities
+          ? await withMcpTokenCapability(
+            { db, auth: principal },
+            this.mcpTokenCapability(principal, connection, recorder, null),
+            (ctx) => invokeFunction(fn, ctx, args),
+          )
+          : await invokeFunction(fn, Object.freeze({ db, auth: principal }), args);
+        throwIfAborted(signal);
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
         try {
           connection.exec("COMMIT");
@@ -2313,16 +2585,64 @@ export class Runtime implements RuntimePort {
     }
   }
 
+  private transactionalContext(
+    principal: Principal,
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+  ): McpToolCtx {
+    return Object.freeze({
+      auth: principal,
+      abortSignal: signal,
+      tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
+        const execute = async (): Promise<T> => {
+          throwIfAborted(signal);
+          let scheduledTouched = false;
+          const result = await this.coordinator.execute({
+            operation: "transaction",
+            fairnessKey,
+            requestBytes,
+            ...(this.telemetry.enabled
+              ? {
+                  telemetry: this.observeCommit,
+                  statementTelemetry: this.observeStatement,
+                  run: AsyncLocalStorage.snapshot(),
+                }
+              : {}),
+            admissionSignal: signal,
+            transactionSignal: signal,
+            work: this.hasMcpCapabilities
+              ? (db, writes) => withMcpTokenCapability(
+                { db, auth: principal },
+                this.mcpTokenCapability(principal, this.engine.writer, null, writes),
+                work,
+              )
+              : (db) => work(Object.freeze({ db, auth: principal })),
+            publication: (_version, writes) => {
+              scheduledTouched = writes.scheduledTouched;
+              return this.publicationFor(writes);
+            },
+          });
+          if (scheduledTouched) this.armScheduler();
+          return result.value;
+        };
+        const scope = this.trace.getStore();
+        return scope === undefined
+          ? execute()
+          : this.trace.run({ ...scope, operation: "transaction" }, execute);
+      },
+    });
+  }
+
   private procedureContext(
     principal: Principal,
     fairnessKey: string,
     signal: AbortSignal,
     requestBytes: number,
     accountUnlinked: (account: ExternalAccount) => void,
-  ): ProcedureCtx {
-    return Object.freeze({
-      auth: principal,
-      abortSignal: signal,
+  ): OwnedProcedureContext {
+    const value = Object.freeze({
+      ...this.transactionalContext(principal, fairnessKey, signal, requestBytes),
       linkAccount: (rawBearerToken: string) => this.linkAccount(
         principal,
         rawBearerToken,
@@ -2338,37 +2658,57 @@ export class Runtime implements RuntimePort {
         requestBytes,
         accountUnlinked,
       ),
-      tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
-        const execute = async (): Promise<T> => {
-          aborted(signal);
-          let scheduledTouched = false;
-          const result = await this.coordinator.execute({
-            operation: "transaction",
-            fairnessKey,
-            requestBytes,
-            ...(this.telemetry.enabled
-              ? {
-                  telemetry: this.observeCommit,
-                  statementTelemetry: this.observeStatement,
-                  run: AsyncLocalStorage.snapshot(),
-                }
-              : {}),
-            signal,
-            work: (db) => work(Object.freeze({ db, auth: principal })),
-            publication: (_version, writes) => {
-              scheduledTouched = writes.scheduledTouched;
-              return this.publicationFor(writes);
-            },
-          });
-          if (scheduledTouched) this.armScheduler();
-          return result.value;
-        };
-        const scope = this.trace.getStore();
-        return scope === undefined
-          ? execute()
-          : this.trace.run({ ...scope, operation: "transaction" }, execute);
-      },
     });
+    const release = this.hasMcpCapabilities
+      ? bindMcpAiContext(
+        value,
+        this.mcpAiCapability(value, fairnessKey, requestBytes),
+      )
+      : releaseNothing;
+    return Object.freeze({ value, release });
+  }
+
+  private mcpAiCapability(
+    context: McpAiContext,
+    fairnessKey: string,
+    requestBytes: number,
+  ): McpAiRuntimeCapability {
+    return Object.freeze({
+      toolsFor: (mcp) => this.registry.mcps.get(mcp.name) === mcp
+        ? this.registry.registeredToolsFor(mcp)
+        : undefined,
+      execute: (mcp, tool, args, scopes, signal) => withMcpLocalAuthority(
+        context.auth,
+        mcp,
+        scopes,
+        () => this.dispatchMcpTool(
+          mcp.name,
+          tool.name,
+          args,
+          this.transactionalContext(context.auth, fairnessKey, signal, requestBytes),
+          fairnessKey,
+          requestBytes,
+        ),
+      ),
+    } satisfies McpAiRuntimeCapability);
+  }
+
+  /** Construct token authority only from an MCP-enabled invocation branch. */
+  private mcpTokenCapability(
+    principal: Principal,
+    connection: Database,
+    reads: ReadRecorder | null,
+    writes: WriteCollector | null,
+  ) {
+    return {
+      engine: this.engine,
+      connection,
+      principal,
+      reads,
+      writes,
+      limits: this.limits.mcp,
+      now: this.now,
+    };
   }
 
   private publicationFor(writes: WriteCollector, caller?: Subscriber): ReactiveCommit {

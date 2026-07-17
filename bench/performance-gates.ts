@@ -3,8 +3,8 @@ import {
   offeredFixedRateUpdates,
   type DriverResult,
   type LatencyStats,
-  type SubscriptionCapacityResult,
   type SubscriptionResult,
+  type SubscriptionCapacityResult,
   type SystemName,
 } from "./benchmark.ts";
 import type { ProcessTreeWindowSummary } from "./process-tree.ts";
@@ -155,7 +155,10 @@ export type PerformanceAcceptanceResult =
       readonly evidence: PerformanceAcceptanceEvidence;
       readonly failures: readonly PerformanceAcceptanceFailure[];
     }
-  | { readonly status: "not-evaluated"; readonly reason: "correctness-failed" };
+  | {
+      readonly status: "not-evaluated";
+      readonly reason: "correctness-failed" | "current-host-comparison";
+    };
 
 export const PERFORMANCE_EXCLUSIONS = Object.freeze([
   {
@@ -305,6 +308,9 @@ function evaluateFixedRateOfferedTarget(
 export function extractComparableMetrics(system: MeasuredSystem): ComparableMetric[] {
   const metrics = new MetricCollector();
   const workload = system.workload;
+  if ((workload.failures ?? []).length > 0) {
+    throw new Error("cannot extract performance metrics from a failed workload");
+  }
   addResources(metrics, "resources/startup-idle", system.startupIdle.window);
   addResources(
     metrics,
@@ -661,7 +667,7 @@ function evaluateMeasuredPerformance(
   if (baseline.schemaVersion !== 3 || baseline.git?.commit !== "74d8554") {
     throw new Error("frozen benchmark baseline identity is invalid");
   }
-  if (after.schemaVersion !== 6) throw new Error("performance acceptance requires an after-run schema-v6 record");
+  if (after.schemaVersion !== 7) throw new Error("performance acceptance requires an after-run schema-v7 record");
   assertComparableRun(baseline, after);
   const baselineSystems = requireSystems(baseline);
   const afterSystems = requireSystems(after);

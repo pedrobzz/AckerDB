@@ -53,6 +53,12 @@ import {
   scanMutationReplay,
   type MutationReplaySnapshot,
 } from "./mutation-replay.ts";
+import {
+  MCP_TOKEN_INTERNAL_OBJECTS,
+  McpTokenVault,
+  mcpTokenVaultOwner,
+  verifyMcpTokenVaultState,
+} from "./mcp-token-vault.ts";
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
 import type { IndexDef, Schema, TableDef } from "./schema.ts";
 import { snapshotOf, type SchemaSnapshot } from "./snapshot.ts";
@@ -140,7 +146,7 @@ export interface BackupManifest {
   verifiedAt: number;
 }
 
-const ENGINE_SCHEMA_VERSION = 4;
+const ENGINE_SCHEMA_VERSION = 7;
 const LOCK_SUFFIX = ".dbzz.lock";
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
@@ -196,10 +202,15 @@ const INTERNAL_OBJECTS: StoredObject[] = [
       principal_fingerprint TEXT NOT NULL,
       function_ref TEXT NOT NULL,
       args_fingerprint TEXT NOT NULL,
-      result TEXT NOT NULL,
+      result_disposition TEXT NOT NULL CHECK (result_disposition IN ('replayable', 'one-time')),
+      result TEXT,
       result_bytes INTEGER NOT NULL CHECK (result_bytes >= 0),
       durability TEXT NOT NULL CHECK (durability IN ('production', 'balanced')),
-      completed_at REAL NOT NULL
+      completed_at REAL NOT NULL,
+      CHECK (
+        (result_disposition = 'replayable' AND result IS NOT NULL) OR
+        (result_disposition = 'one-time' AND result IS NULL AND result_bytes = 0)
+      )
     )`,
   },
   {
@@ -225,6 +236,7 @@ const INTERNAL_OBJECTS: StoredObject[] = [
     table: "_dbz_identity_accounts",
     sql: "CREATE INDEX ix__dbz_identity_accounts_identity ON _dbz_identity_accounts (identity)",
   },
+  ...MCP_TOKEN_INTERNAL_OBJECTS,
 ];
 
 const INTERNAL_OBJECT_NAMES = new Set(INTERNAL_OBJECTS.map((object) => object.name));
@@ -690,6 +702,7 @@ export class Engine {
   readonly writer: Database;
   readonly reader: Database;
   readonly [mutationReplayOwner]: MutationReplayLedger;
+  readonly [mcpTokenVaultOwner]: McpTokenVault;
   readonly path: string;
   readonly durability: DurabilityPolicy;
   readonly recoveredFromCrash: boolean;
@@ -735,6 +748,7 @@ export class Engine {
       }
       if (mutationReplay === null) throw new Error("mutation replay ledger was not loaded");
       this[mutationReplayOwner] = new MutationReplayLedger(writer, mutationReplay);
+      this[mcpTokenVaultOwner] = new McpTokenVault(writer);
       this.internTags();
       this.buildPlans();
       writer.exec("PRAGMA journal_mode = WAL");
@@ -931,6 +945,7 @@ export class Engine {
     if (invalidIdentity !== null || invalidAccount !== null) {
       throw new CorruptDatabaseError("DBZZ identity directory is invalid");
     }
+    verifyMcpTokenVaultState(connection);
   }
 
   commitVersion(connection: Database = this.writer): bigint {

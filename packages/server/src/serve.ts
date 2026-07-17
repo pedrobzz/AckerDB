@@ -14,6 +14,7 @@ import {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
   type ClientPrincipal,
+  type Principal,
 } from "./auth.ts";
 import {
   acquireAuthLease,
@@ -35,10 +36,25 @@ import {
   recordHttpTraceFailure,
 } from "./external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "./limits.ts";
+import { DBZZ_HTTP_ROUTES } from "./http-routes.ts";
+import type { McpEndpointDeclaration } from "./mcp.ts";
+import { mcpCredentialFromAuthorization } from "./mcp-credential.ts";
+import {
+  McpHttpBoundary,
+  type McpHttpOptions,
+} from "./mcp-http-boundary.ts";
+import {
+  mcpBoundaryRejected,
+  mcpErrorResponse,
+  mcpMethodNotAllowed,
+  parseMcpJson,
+  withMcpCors,
+} from "./mcp-wire.ts";
 import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
 import { carryHttpRequestProvenance } from "./request-provenance.ts";
 import {
   CAPTURE_DELIVERY_OBSERVER,
+  type McpCredentialLease,
   type Runtime,
   type RuntimeStatus,
 } from "./runtime.ts";
@@ -56,6 +72,7 @@ export interface DbzzServerOptions {
   readonly limits: ServiceLimits;
   readonly port: number;
   readonly hostname?: string;
+  readonly mcpHttp?: McpHttpOptions;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
 }
@@ -64,9 +81,12 @@ export interface ServeOptions {
   readonly runtime: Runtime;
   readonly port: number;
   readonly hostname?: string;
+  readonly mcpHttp?: McpHttpOptions;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
 }
+
+export type { McpHttpOptions } from "./mcp-http-boundary.ts";
 
 export interface DbzzServerStatus {
   readonly state: DbzzServerState;
@@ -98,7 +118,7 @@ const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 const CORS = Object.freeze({
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type, authorization",
+  "access-control-allow-headers": "content-type, authorization, mcp-protocol-version",
   "access-control-expose-headers": "x-dbzz-sse-stream, x-dbzz-sse-max-stall-ms",
 });
 
@@ -226,6 +246,8 @@ interface HttpAdmissionLease {
 /** One bounded HTTP slot whose fair-share owner changes after authentication. */
 class HttpAdmission {
   private readonly callers = new Map<string, number>();
+  private readonly drainWaiters = new Set<() => void>();
+  private accepting = true;
   private active = 0;
   private globalRejections = 0;
   private fairShareRejections = 0;
@@ -236,6 +258,13 @@ class HttpAdmission {
   ) {}
 
   admit(fairnessKey: string): HttpAdmissionLease {
+    if (!this.accepting) {
+      throw new DbzzError("draining", "HTTP ingress is draining", {
+        retryable: true,
+        retryAfterMs: DRAIN_RETRY_AFTER_MS,
+        resource: "connection",
+      });
+    }
     if ((this.callers.get(fairnessKey) ?? 0) >= this.maxOperationsPerCaller) {
       this.fairShareRejections = Math.min(Number.MAX_SAFE_INTEGER, this.fairShareRejections + 1);
       throw new DbzzError("overloaded", "HTTP source capacity is full", {
@@ -277,8 +306,18 @@ class HttpAdmission {
         owned = false;
         this.active--;
         this.decrement(currentKey);
+        if (this.active === 0) {
+          for (const resolve of this.drainWaiters) resolve();
+          this.drainWaiters.clear();
+        }
       },
     });
+  }
+
+  closeAndDrain(): Promise<void> {
+    this.accepting = false;
+    if (this.active === 0) return Promise.resolve();
+    return new Promise((resolve) => this.drainWaiters.add(resolve));
   }
 
   snapshot(): HttpAdmissionSnapshot {
@@ -382,6 +421,15 @@ async function parseHttpBody<T>(
   return { value: parse(decoded), bytes: body.bytes };
 }
 
+async function parseJsonHttpBody(
+  request: Request,
+  maxBytes: number,
+  maxAgeMs: number,
+): Promise<ParsedHttpBody<unknown>> {
+  const body = await readBoundedBody(request, maxBytes, maxAgeMs);
+  return { value: parseMcpJson(body.text), bytes: body.bytes };
+}
+
 function configuredStatusScope(value: string | undefined): string {
   const scope = value ?? DEFAULT_STATUS_SCOPE;
   if (typeof scope !== "string" || !STATUS_SCOPE_TOKEN.test(scope)) {
@@ -421,6 +469,7 @@ export class DbzzServer {
   private readonly connections = new Set<WsData>();
   private readonly outbound: OutboundBudget;
   private readonly httpAdmission: HttpAdmission;
+  private readonly mcpHttp: McpHttpBoundary;
   private listener: Server<WsData> | null = null;
   private activeRuntime: Runtime | null = null;
   private lifecycle: DbzzServerState = "starting";
@@ -435,6 +484,7 @@ export class DbzzServer {
     this.limits = defineServiceLimits(options.limits);
     this.hostname = options.hostname ?? "127.0.0.1";
     this.statusScope = configuredStatusScope(options.statusScope);
+    this.mcpHttp = new McpHttpBoundary(this.hostname, options.mcpHttp);
     this.outbound = new OutboundBudget(
       this.limits.webSocket.maxBytes,
       this.limits.maxFrameBytes,
@@ -532,6 +582,14 @@ export class DbzzServer {
     if (stableEncode(runtime.limits) !== stableEncode(this.limits)) {
       throw new Error("Runtime limits must match listener limits");
     }
+    try {
+      this.mcpHttp.assertCanServe(runtime.registry.mcps.size > 0);
+    } catch (error) {
+      this.startup = null;
+      this.lifecycle = "stopped";
+      void this.listener?.stop(true).catch(() => {});
+      throw error;
+    }
     this.activeRuntime = runtime;
     this.startup = null;
     this.lifecycle = "ready";
@@ -555,11 +613,11 @@ export class DbzzServer {
   private async fetch(request: Request, listener: Server<WsData>): Promise<Response | undefined> {
     const url = new URL(request.url);
 
-    if (url.pathname === "/live" && request.method === "GET") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.live && request.method === "GET") {
       const live = this.lifecycle !== "failed" && this.lifecycle !== "stopped";
       return json({ version: 1, live }, live ? 200 : 503);
     }
-    if (url.pathname === "/ready" && request.method === "GET") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.ready && request.method === "GET") {
       const runtimeState = this.activeRuntime?.status().state;
       const ready = this.lifecycle === "ready" && runtimeState === "ready";
       const state = this.lifecycle === "ready" && runtimeState !== "ready"
@@ -572,8 +630,29 @@ export class DbzzServer {
         ...(this.startup === null ? {} : { phase: this.startup }),
       }, ready ? 200 : 503);
     }
+    const mcp = this.activeRuntime?.registry.mcpAtPath(url.pathname);
+    if (mcp !== undefined) {
+      const boundary = this.mcpHttp.inspect(
+        request,
+        this.port,
+        this.limits.mcp.maxHeaderBytes,
+      );
+      if (boundary.rejectionStatus !== undefined) {
+        return mcpBoundaryRejected(boundary.rejectionStatus, boundary.cors);
+      }
+      if (request.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: boundary.cors });
+      }
+      if (request.method !== "POST") return mcpMethodNotAllowed(boundary.cors);
+      return this.mcp(
+        request,
+        mcp,
+        this.requestSource(request, listener),
+        boundary.cors,
+      );
+    }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-    if (url.pathname === "/api/sse/ack") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.sseAck) {
       if (request.method !== "POST") {
         return new Response("method not allowed", {
           status: 405,
@@ -586,7 +665,7 @@ export class DbzzServer {
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
       return protocolError(unavailableWhile(this.lifecycle));
     }
-    if (url.pathname === "/status" && request.method === "GET") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.status && request.method === "GET") {
       let admission: HttpAdmissionLease | undefined;
       let lease: AuthLease | undefined;
       try {
@@ -603,21 +682,21 @@ export class DbzzServer {
         admission?.release();
       }
     }
-    if (url.pathname === "/ws") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.websocket) {
       return this.upgradeWebSocket(request, listener);
     }
-    if (url.pathname === "/api/call" && request.method === "POST") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.call && request.method === "POST") {
       return this.call(request, false, this.requestSource(request, listener));
     }
-    if (url.pathname === "/api/sse" && request.method === "POST") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.sse && request.method === "POST") {
       return this.call(request, true, this.requestSource(request, listener));
     }
     if (
-      url.pathname === "/live" ||
-      url.pathname === "/ready" ||
-      url.pathname === "/status" ||
-      url.pathname === "/api/call" ||
-      url.pathname === "/api/sse"
+      url.pathname === DBZZ_HTTP_ROUTES.live ||
+      url.pathname === DBZZ_HTTP_ROUTES.ready ||
+      url.pathname === DBZZ_HTTP_ROUTES.status ||
+      url.pathname === DBZZ_HTTP_ROUTES.call ||
+      url.pathname === DBZZ_HTTP_ROUTES.sse
     ) {
       return new Response("method not allowed", {
         status: 405,
@@ -704,6 +783,60 @@ export class DbzzServer {
     } finally {
       finishHttpTrace(externalTrace);
       lease?.release();
+      admission?.release();
+    }
+  }
+
+  private async mcp(
+    request: Request,
+    mcp: McpEndpointDeclaration,
+    source: TransportSource,
+    cors: Readonly<Record<string, string>>,
+  ): Promise<Response> {
+    const runtime = this.requireRuntime();
+    let admission: HttpAdmissionLease | undefined;
+    let credentialLease: McpCredentialLease | undefined;
+    let principal: Principal = ANONYMOUS_PRINCIPAL;
+    try {
+      if (this.lifecycle !== "ready" || runtime.state !== "ready") {
+        throw unavailableWhile(this.lifecycle);
+      }
+      admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
+      const { value, bytes } = await parseJsonHttpBody(
+        request,
+        runtime.limits.maxRequestBytes,
+        runtime.limits.readQueue.maxAgeMs,
+      );
+      const credential = mcpCredentialFromAuthorization(request.headers.get("authorization"));
+      if (credential !== null) {
+        credentialLease = await runtime.acquireMcpTokenLease(
+          mcp.name,
+          credential,
+          callerFairnessKey(ANONYMOUS_PRINCIPAL, source),
+          request.signal,
+        );
+        principal = credentialLease.principal;
+      }
+      const fairnessKey = callerFairnessKey(principal, source);
+      admission.transfer(fairnessKey);
+      const { handleMcpPost } = await import("./mcp-http.ts");
+      return withMcpCors(await handleMcpPost({
+        request,
+        body: value,
+        bytes,
+        mcp,
+        runtime,
+        principal,
+        signal: credentialLease?.signal ?? request.signal,
+        fairnessKey,
+      }), cors);
+    } catch (error) {
+      return mcpErrorResponse(error, cors, {
+        realm: mcp.name,
+        credentialPresented: request.headers.has("authorization"),
+      });
+    } finally {
+      credentialLease?.release();
       admission?.release();
     }
   }
@@ -883,13 +1016,18 @@ export class DbzzServer {
       return Promise.resolve();
     });
     const runtimeDrain = runtime?.drain(deadlineAtMs) ?? Promise.resolve();
-    const graceful = Promise.all([runtimeDrain, ...sessions]).then(async () => {
-      // Bun leaves the awaited force-stop pending on active keep-alive/SSE
-      // transports unless listener admission is closed first. Both calls stay
-      // after application drain so /live remains reachable throughout it.
-      void listener.stop(false).catch(() => {});
-      await listener.stop(true);
-    });
+    const graceful = Promise.all([runtimeDrain, ...sessions])
+      // Receiver credit remains admissible while Runtime closes SSE. Once
+      // application ownership settles, close ingress and own every accepted
+      // response handoff before stopping the listener.
+      .then(() => this.httpAdmission.closeAndDrain())
+      .then(async () => {
+        // Bun leaves the awaited force-stop pending on active keep-alive/SSE
+        // transports unless listener admission is closed first. Both calls stay
+        // after application drain so /live remains reachable throughout it.
+        void listener.stop(false).catch(() => {});
+        await listener.stop(true);
+      });
 
     const deadlineError = new DbzzError("deadline_exceeded", "graceful shutdown deadline exceeded", {
       resource: "connection",
@@ -912,6 +1050,7 @@ export class DbzzServer {
     } catch (error) {
       if (timeout !== undefined) clearTimeout(timeout);
       this.lifecycle = "failed";
+      void this.httpAdmission.closeAndDrain();
       for (const connection of this.connections) connection.socket?.terminate();
       // Initiate the force close but do not await Bun's listener promise: Bun
       // keeps that promise pending for a handler that ignores cancellation,
@@ -930,6 +1069,7 @@ export function serve(options: ServeOptions): DbzzServer {
     limits: options.runtime.limits,
     port: options.port,
     ...(options.hostname === undefined ? {} : { hostname: options.hostname }),
+    ...(options.mcpHttp === undefined ? {} : { mcpHttp: options.mcpHttp }),
     ...(options.statusScope === undefined ? {} : { statusScope: options.statusScope }),
   });
   server.activate(options.runtime);
