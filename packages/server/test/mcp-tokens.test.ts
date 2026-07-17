@@ -657,6 +657,12 @@ describe("Identity-bound MCP owner tokens", () => {
       protectedCall.headers.get("www-authenticate"),
     );
     expect(await unknownCall.json()).toEqual(protectedBody);
+    const malformedProtectedCall = await rpc(base, scopedMcp.path, "tools/call", {
+      name: "read_reports",
+      arguments: "invalid",
+    });
+    expect(malformedProtectedCall.status).toBe(401);
+    expect(await malformedProtectedCall.json()).toEqual(protectedBody);
 
     const notification = await fetch(`${base}${scopedMcp.path}`, {
       method: "POST",

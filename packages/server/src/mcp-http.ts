@@ -42,8 +42,9 @@ function callNames(body: unknown): readonly string[] {
   const names: string[] = [];
   for (const message of messages) {
     if (!isJSONRPCRequest(message)) continue;
-    const call = CallToolRequestSchema.safeParse(message);
-    if (call.success) names.push(call.data.params.name);
+    if (message.method === "tools/call" && typeof message.params?.name === "string") {
+      names.push(message.params.name);
+    }
   }
   return names;
 }
