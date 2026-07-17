@@ -72,6 +72,7 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
         principalFingerprint: replayRecord.principalFingerprint,
         functionRef: replayRecord.functionRef,
         argsFingerprint: replayRecord.argsFingerprint,
+        resultDisposition: "replayable",
         result: replayRecord.result,
         resultBytes: replayRecord.resultBytes,
         durability,
@@ -210,6 +211,7 @@ describe("dbz backup, restore, and status", () => {
       ).toEqual({ channelId: 7n, body: "preserved" });
       const expectedReplay = {
         ...replayRecord,
+        resultDisposition: "replayable" as const,
         commitVersion: 1n,
         durability: "production" as const,
       };

@@ -12,7 +12,8 @@ export interface StoredMutation {
   principalFingerprint: string;
   functionRef: string;
   argsFingerprint: string;
-  result: string;
+  resultDisposition: "replayable" | "one-time";
+  result: string | null;
   resultBytes: number;
   commitVersion: bigint;
   durability: DurabilityPolicy;
@@ -44,7 +45,8 @@ interface StoredRow extends IndexRow {
   principal_fingerprint: string;
   function_ref: string;
   args_fingerprint: string;
-  result: string;
+  result_disposition: "replayable" | "one-time";
+  result: string | null;
   durability: DurabilityPolicy;
 }
 
@@ -56,6 +58,7 @@ function toStoredMutation(row: StoredRow): StoredMutation {
     principalFingerprint: row.principal_fingerprint,
     functionRef: row.function_ref,
     argsFingerprint: row.args_fingerprint,
+    resultDisposition: row.result_disposition,
     result: row.result,
     resultBytes: Number(row.result_bytes),
     commitVersion: row.commit_version,
@@ -132,7 +135,8 @@ export class MutationReplayLedger {
     string,
     string,
     string,
-    string,
+    "replayable" | "one-time",
+    string | null,
     number,
     DurabilityPolicy,
     number,
@@ -151,7 +155,7 @@ export class MutationReplayLedger {
       mutation_records = mutation_records + 1,
       mutation_result_bytes = mutation_result_bytes + ?
       WHERE singleton = 1 RETURNING commit_version`);
-    this.append = connection.query("INSERT INTO _dbz_mutations (commit_version, session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result, result_bytes, durability, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    this.append = connection.query("INSERT INTO _dbz_mutations (commit_version, session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, durability, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     this.recordCount = snapshot.records;
     this.byteCount = snapshot.resultBytes;
     this.lastCompletedAt = snapshot.lastCompletedAt;
@@ -169,7 +173,7 @@ export class MutationReplayLedger {
     const commitVersion = this.index.get(sessionId)?.get(requestId);
     if (commitVersion === undefined) return null;
     const row = this.connection
-      .query("SELECT session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result, result_bytes, commit_version, durability, completed_at FROM _dbz_mutations WHERE commit_version = ?")
+      .query("SELECT session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, commit_version, durability, completed_at FROM _dbz_mutations WHERE commit_version = ?")
       .get(commitVersion) as StoredRow | null;
     if (row === null || row.session_id !== sessionId || row.request_id !== requestId) {
       throw new CorruptDatabaseError("mutation replay index does not match its durable ledger");
@@ -183,6 +187,12 @@ export class MutationReplayLedger {
       throw new RangeError("mutation resultBytes must be a non-negative safe integer");
     }
     if (!Number.isFinite(now)) throw new RangeError("mutation completion time must be finite");
+    if (
+      (record.resultDisposition === "replayable" && typeof record.result !== "string") ||
+      (record.resultDisposition === "one-time" && (record.result !== null || record.resultBytes !== 0))
+    ) {
+      throw new TypeError("mutation result does not match its replay disposition");
+    }
     if (this.index.get(record.sessionId)?.has(record.requestId) === true) {
       throw new Error("mutation replay request is already stored");
     }
@@ -196,6 +206,7 @@ export class MutationReplayLedger {
       record.principalFingerprint,
       record.functionRef,
       record.argsFingerprint,
+      record.resultDisposition,
       record.result,
       record.resultBytes,
       record.durability,
