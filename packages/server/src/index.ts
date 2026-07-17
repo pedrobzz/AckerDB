@@ -210,6 +210,7 @@ export {
   type McpTokenCreateInput,
   type McpTokenDescriptor,
   type McpTokenOperations,
+  type SystemMcpTokenOperations,
   type McpOutputSchema,
   type McpResourceLinkContent,
   type McpScopeDescriptor,
