@@ -14,6 +14,7 @@ import {
   type AnyRegisteredMcpTool,
   type McpDeclaration,
 } from "./mcp.ts";
+import { isDbzzHttpRoute } from "./http-routes.ts";
 import type { Schema, ScheduledHandler } from "./schema.ts";
 
 type ServerOnlyExport = McpDeclaration | AnyRegisteredMcpTool;
@@ -59,6 +60,9 @@ export class Registry {
       const existing = this.mcps.get(value.name);
       if (existing !== undefined) {
         throw new Error(`duplicate MCP name "${value.name}"`);
+      }
+      if (isDbzzHttpRoute(value.path)) {
+        throw new Error(`MCP "${value.name}" path "${value.path}" collides with a DBZZ route`);
       }
       const pathOwner = this.mcpByPath.get(value.path);
       if (pathOwner !== undefined) {

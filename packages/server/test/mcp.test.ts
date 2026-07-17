@@ -14,6 +14,7 @@ import {
   type MutationBuilder,
   type QueryBuilder,
 } from "../src/functions.ts";
+import { DBZZ_HTTP_ROUTES } from "../src/http-routes.ts";
 import { createMcp, type McpBuilder } from "../src/mcp.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
 import { reconcile } from "../src/reconcile.ts";
@@ -48,7 +49,21 @@ const insertNote = typedMutation({
   handler: (ctx, args) => ctx.db.notes.insert(args),
 });
 
-const agentMcp = typedMcp({ name: "agent" });
+const agentMcp = typedMcp({
+  name: "agent",
+  instructions: "Use the note tools for durable user notes.",
+  metadata: {
+    title: "Notes Agent",
+    description: "A focused notes endpoint.",
+    websiteUrl: "https://dbzz.dev/agents/notes",
+  },
+});
+const operationsMcp = typedMcp({
+  name: "operations",
+  path: "/agents/operations",
+  instructions: "Use the operations tools only for service status.",
+  metadata: { title: "Operations Agent" },
+});
 let handlerCalls = 0;
 let lastHandlerContext: { readonly auth: string; readonly aborted: boolean } | undefined;
 
@@ -69,9 +84,17 @@ const writeNote = agentMcp.tool({
   },
 });
 
+const readStatus = operationsMcp.tool({
+  name: "read_status",
+  description: "Read the current service status.",
+  args: {},
+  handler: () => ({ content: [{ type: "text", text: "ready" }] }),
+});
+
 const modules = {
   agent: { agentMcp },
   notes: { insertNote, listNotes, writeNote },
+  operations: { readStatus, renamedEndpoint: operationsMcp },
 };
 
 interface Harness {
@@ -118,7 +141,11 @@ function mcpHeaders(): Record<string, string> {
 }
 
 function rpc(method: string, params?: unknown, id = 1): Promise<Response> {
-  return fetch(`${harness.base}/mcp`, {
+  return rpcAt(agentMcp.path, method, params, id);
+}
+
+function rpcAt(path: string, method: string, params?: unknown, id = 1): Promise<Response> {
+  return fetch(`${harness.base}${path}`, {
     method: "POST",
     headers: mcpHeaders(),
     body: JSON.stringify({
@@ -153,7 +180,9 @@ describe("public stateless MCP endpoint", () => {
     expect(harness.registry.functions.has("notes.writeNote")).toBe(false);
     expect([...harness.registry.serverOnly.keys()]).toEqual([
       "agent.agentMcp",
+      "operations.renamedEndpoint",
       "notes.writeNote",
+      "operations.readStatus",
     ]);
     expect(harness.registry.addressOf(writeNote)).toBe("notes.writeNote");
 
@@ -170,7 +199,14 @@ describe("public stateless MCP endpoint", () => {
       result: {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "agent", version: "1" },
+        serverInfo: {
+          name: "agent",
+          title: "Notes Agent",
+          version: "1",
+          description: "A focused notes endpoint.",
+          websiteUrl: "https://dbzz.dev/agents/notes",
+        },
+        instructions: "Use the note tools for durable user notes.",
       },
     });
 
@@ -202,6 +238,42 @@ describe("public stateless MCP endpoint", () => {
         }],
       },
     });
+  });
+
+  test("routes independently named endpoints by path without coupling identity to exports", async () => {
+    expect(agentMcp.path).toBe("/mcp");
+    expect(operationsMcp.path).toBe("/agents/operations");
+    expect(operationsMcp.name).toBe("operations");
+    expect(harness.registry.addressOf(operationsMcp)).toBe("operations.renamedEndpoint");
+    expect(harness.registry.mcps.get("operations")).toBe(operationsMcp);
+
+    const initialized = await rpcAt(operationsMcp.path, "initialize", {
+      protocolVersion: PROTOCOL_VERSION,
+      capabilities: {},
+      clientInfo: { name: "route-test", version: "1" },
+    });
+    expect(await initialized.json()).toMatchObject({
+      result: {
+        serverInfo: { name: "operations", title: "Operations Agent", version: "1" },
+        instructions: "Use the operations tools only for service status.",
+      },
+    });
+
+    const agentTools = await rpcAt(agentMcp.path, "tools/list", {}, 2);
+    expect((await agentTools.json() as {
+      readonly result: { readonly tools: readonly { readonly name: string }[] };
+    }).result.tools.map(({ name }) => name)).toEqual(["write_note"]);
+
+    const operationsTools = await rpcAt(operationsMcp.path, "tools/list", {}, 3);
+    expect((await operationsTools.json() as {
+      readonly result: { readonly tools: readonly { readonly name: string }[] };
+    }).result.tools.map(({ name }) => name)).toEqual(["read_status"]);
+
+    const unavailableAcrossEndpoints = await rpcAt(agentMcp.path, "tools/call", {
+      name: "read_status",
+      arguments: {},
+    }, 4);
+    expect(await unavailableAcrossEndpoints.json()).toMatchObject({ result: { isError: true } });
   });
 
   test("validates before the handler and commits or rolls back normal transactions", async () => {
@@ -369,5 +441,65 @@ describe("MCP startup invariants", () => {
     expect(() => new Registry({ agent: { agentMcp }, other: { other } })).toThrow(
       'both use path "/mcp"',
     );
+  });
+
+  test("rejects duplicate stable names independently of paths and export order", () => {
+    const duplicateName = createMcp({ name: "agent", path: "/other" });
+    expect(() => new Registry({ z: { duplicateName }, agent: { agentMcp } })).toThrow(
+      'duplicate MCP name "agent"',
+    );
+  });
+
+  test("rejects duplicate custom paths deterministically", () => {
+    const alpha = createMcp({ name: "alpha", path: "/shared/mcp" });
+    const zeta = createMcp({ name: "zeta", path: "/shared/mcp" });
+    expect(() => new Registry({ z: { zeta }, a: { alpha } })).toThrow(
+      'MCP "zeta" and "alpha" both use path "/shared/mcp"',
+    );
+  });
+
+  test("rejects every path owned by the DBZZ listener", () => {
+    for (const path of Object.values(DBZZ_HTTP_ROUTES)) {
+      const collision = createMcp({ name: "collision", path });
+      expect(() => new Registry({ endpoint: { collision } })).toThrow(
+        `MCP "collision" path "${path}" collides with a DBZZ route`,
+      );
+    }
+  });
+
+  test("rejects non-canonical paths and bounds declaration guidance", () => {
+    for (const path of ["mcp", "/", "//mcp", "/mcp/", "/mcp?mode=1", "/mcp tools", "/a/../mcp"]) {
+      expect(() => createMcp({ name: "invalid", path })).toThrow(
+        "MCP path must be an absolute static path",
+      );
+    }
+    expect(() => createMcp({ name: "invalid", path: `/${"a".repeat(257)}` })).toThrow(
+      "MCP path must be an absolute static path",
+    );
+    expect(() => createMcp({ name: "invalid", path: null } as never)).toThrow(
+      "MCP path must be an absolute static path",
+    );
+    expect(() => createMcp({ name: "invalid", pth: "/custom" } as never)).toThrow(
+      'unknown MCP config field "pth"',
+    );
+    expect(() => createMcp({
+      name: "invalid",
+      instructions: "x".repeat(16 * 1_024 + 1),
+    })).toThrow("MCP instructions must be at most 16384 UTF-8 bytes");
+    expect(() => createMcp({
+      name: "invalid",
+      metadata: { description: "x".repeat(4 * 1_024) },
+    })).toThrow("MCP metadata must be at most 4096 UTF-8 bytes");
+    expect(() => createMcp({
+      name: "invalid",
+      metadata: { websiteUrl: "relative/path" },
+    })).toThrow("MCP metadata websiteUrl must be an absolute URL");
+  });
+
+  test("keeps stable identity independent from path changes", () => {
+    const original = createMcp({ name: "stable", path: "/first" });
+    const moved = createMcp({ name: "stable", path: "/second" });
+    expect(original.name).toBe(moved.name);
+    expect(original.path).not.toBe(moved.path);
   });
 });
