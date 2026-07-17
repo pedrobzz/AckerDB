@@ -569,7 +569,7 @@ export class Session {
     result: ClientPrincipal | DbzzError,
   ): Promise<void> {
     if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
-    if (result instanceof DbzzError) {
+    if (isDbzzError(result)) {
       void this.terminate(result);
       return;
     }

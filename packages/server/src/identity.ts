@@ -1,0 +1,12 @@
+/** Package-copy identity only; never treat this cooperative marker as authorization. */
+export function brand(value: object, identity: symbol): void {
+  Object.defineProperty(value, identity, { value: identity });
+}
+
+export function hasBrand(value: unknown, identity: symbol): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.getOwnPropertyDescriptor(value, identity)?.value === identity
+  );
+}

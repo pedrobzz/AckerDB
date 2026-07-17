@@ -1,4 +1,7 @@
 import type { OutcomeCode, ResourceClass } from "@dbzz/core";
+import { brand, hasBrand } from "./identity.ts";
+
+const DBZZ_ERROR_IDENTITY = Symbol.for("@dbzz/server/DbzzError/v1");
 
 export class IncompatibleDatabaseError extends Error {}
 export class CorruptDatabaseError extends Error {}
@@ -45,9 +48,10 @@ export class DbzzError extends Error {
     this.retryAfterMs = options.retryAfterMs;
     this.resource = options.resource;
     this.committed = options.committed;
+    brand(this, DBZZ_ERROR_IDENTITY);
   }
 }
 
 export function isDbzzError(value: unknown): value is DbzzError {
-  return value instanceof DbzzError;
+  return hasBrand(value, DBZZ_ERROR_IDENTITY);
 }
