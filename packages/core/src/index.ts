@@ -11,6 +11,7 @@ export {
   type SseRef,
   type EventRef,
   type RegisteredFunction,
+  type RegisteredServerOnly,
   type ApiFromModules,
 } from "./refs.ts";
 export * from "./protocol.ts";

@@ -82,6 +82,22 @@ interface FunctionDef<A extends ObjectShape, Ctx extends InvocationContext, R> {
   readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => R;
 }
 
+/** Marker-neutral execution contract shared by functions and server-only tools. */
+export interface Invocable<
+  K extends string,
+  A extends ObjectShape,
+  Ctx extends InvocationContext,
+  R,
+  H = R,
+> {
+  readonly kind: K;
+  readonly args: A;
+  readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
+  readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => H | Promise<H>;
+  readonly _argsType?: ArgsInput<A>;
+  readonly _retType?: R;
+}
+
 /**
  * `R` is the phantom clients consume through generated references; `H` is
  * what the handler actually produces. They coincide everywhere except SSE,
@@ -94,15 +110,8 @@ export interface Registered<
   Ctx extends InvocationContext,
   R,
   H = R,
-> {
+> extends Invocable<K, A, Ctx, R, H> {
   readonly isDbzz: true;
-  readonly kind: K;
-  readonly args: A;
-  readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
-  readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => H | Promise<H>;
-  /** Phantoms consumed by ApiFromModules via type-only imports. */
-  readonly _argsType?: ArgsInput<A>;
-  readonly _retType?: R;
 }
 
 export type RegisteredQuery<A extends ObjectShape, R, S extends Schema = Schema> = Registered<
@@ -282,6 +291,10 @@ export type SseBuilder<S extends Schema> = <A extends ObjectShape, Y extends Val
 // Runtime registries deliberately erase each function's concrete context.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyRegistered = Registered<string, ObjectShape, any, any, any>;
+
+// Invocation registries deliberately erase each declaration's concrete context.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type AnyInvocable = Invocable<string, ObjectShape, any, any, any>;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type AnyRegisteredSse = RegisteredSse<ObjectShape, any, any>;

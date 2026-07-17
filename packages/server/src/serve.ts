@@ -35,6 +35,13 @@ import {
   recordHttpTraceFailure,
 } from "./external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "./limits.ts";
+import type { McpDeclaration } from "./mcp.ts";
+import {
+  mcpErrorResponse,
+  mcpMethodNotAllowed,
+  parseMcpJson,
+  withMcpCors,
+} from "./mcp-wire.ts";
 import { outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
 import { carryHttpRequestProvenance } from "./request-provenance.ts";
 import {
@@ -98,7 +105,7 @@ const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 const CORS = Object.freeze({
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
-  "access-control-allow-headers": "content-type, authorization",
+  "access-control-allow-headers": "content-type, authorization, mcp-protocol-version",
   "access-control-expose-headers": "x-dbzz-sse-stream, x-dbzz-sse-max-stall-ms",
 });
 
@@ -382,6 +389,15 @@ async function parseHttpBody<T>(
   return { value: parse(decoded), bytes: body.bytes };
 }
 
+async function parseJsonHttpBody(
+  request: Request,
+  maxBytes: number,
+  maxAgeMs: number,
+): Promise<ParsedHttpBody<unknown>> {
+  const body = await readBoundedBody(request, maxBytes, maxAgeMs);
+  return { value: parseMcpJson(body.text), bytes: body.bytes };
+}
+
 function configuredStatusScope(value: string | undefined): string {
   const scope = value ?? DEFAULT_STATUS_SCOPE;
   if (typeof scope !== "string" || !STATUS_SCOPE_TOKEN.test(scope)) {
@@ -583,6 +599,11 @@ export class DbzzServer {
       const source = this.requestSource(request, listener);
       return this.acknowledgeSse(request, callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
     }
+    const mcp = this.activeRuntime?.registry.mcpAtPath(url.pathname);
+    if (mcp !== undefined) {
+      if (request.method !== "POST") return mcpMethodNotAllowed(CORS);
+      return this.mcp(request, mcp, this.requestSource(request, listener));
+    }
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
       return protocolError(unavailableWhile(this.lifecycle));
     }
@@ -703,6 +724,46 @@ export class DbzzServer {
       return protocolError(error, id);
     } finally {
       finishHttpTrace(externalTrace);
+      lease?.release();
+      admission?.release();
+    }
+  }
+
+  private async mcp(
+    request: Request,
+    mcp: McpDeclaration,
+    source: TransportSource,
+  ): Promise<Response> {
+    const runtime = this.requireRuntime();
+    let admission: HttpAdmissionLease | undefined;
+    let lease: AuthLease | undefined;
+    try {
+      if (this.lifecycle !== "ready" || runtime.state !== "ready") {
+        throw unavailableWhile(this.lifecycle);
+      }
+      admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
+      const { value, bytes } = await parseJsonHttpBody(
+        request,
+        runtime.limits.maxRequestBytes,
+        runtime.limits.readQueue.maxAgeMs,
+      );
+      lease = await this.authenticate(request);
+      const fairnessKey = callerFairnessKey(lease.principal, source);
+      admission.transfer(fairnessKey);
+      const { handleMcpPost } = await import("./mcp-http.ts");
+      return withMcpCors(await handleMcpPost({
+        request,
+        body: value,
+        bytes,
+        mcp,
+        runtime,
+        principal: lease.principal,
+        signal: lease.signal,
+        fairnessKey,
+      }), CORS);
+    } catch (error) {
+      return mcpErrorResponse(error, CORS);
+    } finally {
       lease?.release();
       admission?.release();
     }

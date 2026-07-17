@@ -9,7 +9,7 @@ import {
   type Validator,
 } from "./dbz.ts";
 import { DbzzError } from "./errors.ts";
-import type { AccessPolicy, AnyRegistered, Registered } from "./functions.ts";
+import type { AccessPolicy, AnyInvocable, Invocable } from "./functions.ts";
 import { deepFreeze } from "./immutable.ts";
 import { outcomeFromError } from "./outcome.ts";
 
@@ -32,7 +32,7 @@ export type InvocationPhase = "auth" | "policy" | "handler";
 export type InvocationOutcome = "ok" | Outcome["code"];
 
 export interface InvocationObservation {
-  readonly fn: AnyRegistered;
+  readonly fn: AnyInvocable;
   readonly invocationId: number;
   readonly parentInvocationId?: number;
   readonly depth: number;
@@ -44,7 +44,7 @@ export interface InvocationObservation {
 export type InvocationObserver = (observation: InvocationObservation) => unknown;
 
 export interface InvocationPhaseScope {
-  readonly fn: AnyRegistered;
+  readonly fn: AnyInvocable;
   readonly invocationId: number;
   readonly parentInvocationId?: number;
   readonly depth: number;
@@ -68,14 +68,14 @@ interface InvocationInstrumentationState {
   readonly parentInvocationId?: number;
   readonly depth: number;
   readonly parent?: InvocationInstrumentationState;
-  readonly fn?: AnyRegistered;
+  readonly fn?: AnyInvocable;
   readonly phase?: InvocationPhase;
 }
 
 export interface InvocationTelemetryContext {
   readonly invocationId: number;
   readonly parent?: InvocationTelemetryContext;
-  readonly fn: AnyRegistered;
+  readonly fn: AnyInvocable;
   readonly phase: InvocationPhase;
 }
 
@@ -292,7 +292,7 @@ function safeOutcome(error: unknown): InvocationOutcome {
 
 function emitObservation(
   state: InvocationInstrumentationState,
-  fn: AnyRegistered,
+  fn: AnyInvocable,
   phase: InvocationPhase,
   startedAt: number,
   outcome: InvocationOutcome,
@@ -324,7 +324,7 @@ function emitObservation(
 
 function observePhase<T>(
   state: InvocationInstrumentationState,
-  fn: AnyRegistered,
+  fn: AnyInvocable,
   phase: InvocationPhase,
   work: () => T | Promise<T>,
 ): T | Promise<T> {
@@ -395,7 +395,7 @@ function invokeUnobserved<
   R,
   H,
 >(
-  fn: Registered<K, A, Ctx, R, H>,
+  fn: Invocable<K, A, Ctx, R, H>,
   ctx: Ctx,
   rawArgs: unknown,
   options: InvocationOptions<Ctx, Expand<InferShape<A>>> | undefined,
@@ -424,7 +424,7 @@ export function invokeFunction<
   R,
   H,
 >(
-  fn: Registered<K, A, Ctx, R, H>,
+  fn: Invocable<K, A, Ctx, R, H>,
   ctx: Ctx,
   rawArgs: unknown,
   options?: InvocationOptions<Ctx, Expand<InferShape<A>>>,
@@ -442,9 +442,9 @@ export function invokeFunction<
       : { parentInvocationId: instrumentation.invocationId }),
     depth: instrumentation.depth + 1,
     ...(instrumentation.invocationId === null ? {} : { parent: instrumentation }),
-    fn: fn as unknown as AnyRegistered,
+    fn: fn as unknown as AnyInvocable,
   };
-  const observedFn = fn as unknown as AnyRegistered;
+  const observedFn = fn as unknown as AnyInvocable;
   return invocationInstrumentation.run(state, () => {
     try {
       const compiled = compiledInvocation(fn);

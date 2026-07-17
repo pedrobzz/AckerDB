@@ -92,6 +92,11 @@ import {
   type InvocationOutcome,
   type InvocationTelemetryContext,
 } from "./invocation.ts";
+import {
+  validateMcpToolResult,
+  type McpToolCtx,
+  type McpToolResult,
+} from "./mcp.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
@@ -187,6 +192,16 @@ export interface RuntimeOptions {
 interface RuntimeExternalRequest {
   readonly id: number;
   readonly address: string;
+  readonly args: unknown;
+  readonly principal: Principal;
+  readonly signal?: AbortSignal;
+  readonly fairnessKey?: string;
+}
+
+export interface RuntimeMcpToolRequest {
+  readonly id: string | number;
+  readonly mcp: string;
+  readonly tool: string;
   readonly args: unknown;
   readonly principal: Principal;
   readonly signal?: AbortSignal;
@@ -1150,6 +1165,47 @@ export class Runtime implements RuntimePort {
           if (originScope !== undefined) publishOriginInvalidations(originScope);
         }
       },
+      claimedTrace,
+      fairnessKey,
+    });
+  }
+
+  /** The single deep MCP execution path used by every present and future adapter. */
+  async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpToolResult> {
+    const provenance = claimHttpRequestProvenance(request);
+    const requestBytes = this.admittedRequestBytes({
+      jsonrpc: "2.0",
+      id: request.id,
+      method: "tools/call",
+      params: { name: request.tool, arguments: request.args },
+    }, provenance?.bytes);
+    const functionName = `${request.mcp}/${request.tool}`;
+    const claimedTrace = claimHttpTrace(
+      provenance?.trace,
+      "procedure",
+      functionName,
+      String(request.id),
+    );
+    const fairnessKey = request.fairnessKey ?? callerFairnessKey(
+      request.principal,
+      DIRECT_RUNTIME_SOURCE,
+    );
+    return this.runOperation(null, "procedure", functionName, requestBytes, async () => {
+      const tool = this.registry.mcpTool(request.mcp, request.tool);
+      if (tool === undefined) {
+        throw new DbzzError("not_found", `unknown MCP tool "${request.tool}"`);
+      }
+      const signal = this.operationSignal(request.signal);
+      aborted(signal);
+      const value = await invokeFunction(
+        tool,
+        this.transactionalContext(request.principal, fairnessKey, signal, requestBytes),
+        request.args,
+      );
+      aborted(signal);
+      return validateMcpToolResult(value);
+    }, {
+      identifiers: { requestId: String(request.id) },
       claimedTrace,
       fairnessKey,
     });
@@ -2313,31 +2369,15 @@ export class Runtime implements RuntimePort {
     }
   }
 
-  private procedureContext(
+  private transactionalContext(
     principal: Principal,
     fairnessKey: string,
     signal: AbortSignal,
     requestBytes: number,
-    accountUnlinked: (account: ExternalAccount) => void,
-  ): ProcedureCtx {
+  ): McpToolCtx {
     return Object.freeze({
       auth: principal,
       abortSignal: signal,
-      linkAccount: (rawBearerToken: string) => this.linkAccount(
-        principal,
-        rawBearerToken,
-        fairnessKey,
-        signal,
-        requestBytes,
-      ),
-      unlinkAccount: (account: ExternalAccount) => this.unlinkAccount(
-        principal,
-        account,
-        fairnessKey,
-        signal,
-        requestBytes,
-        accountUnlinked,
-      ),
       tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
         const execute = async (): Promise<T> => {
           aborted(signal);
@@ -2368,6 +2408,33 @@ export class Runtime implements RuntimePort {
           ? execute()
           : this.trace.run({ ...scope, operation: "transaction" }, execute);
       },
+    });
+  }
+
+  private procedureContext(
+    principal: Principal,
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+    accountUnlinked: (account: ExternalAccount) => void,
+  ): ProcedureCtx {
+    return Object.freeze({
+      ...this.transactionalContext(principal, fairnessKey, signal, requestBytes),
+      linkAccount: (rawBearerToken: string) => this.linkAccount(
+        principal,
+        rawBearerToken,
+        fairnessKey,
+        signal,
+        requestBytes,
+      ),
+      unlinkAccount: (account: ExternalAccount) => this.unlinkAccount(
+        principal,
+        account,
+        fairnessKey,
+        signal,
+        requestBytes,
+        accountUnlinked,
+      ),
     });
   }
 
