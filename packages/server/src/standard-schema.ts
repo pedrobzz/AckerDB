@@ -69,14 +69,23 @@ export interface StandardJsonCodec<Output> {
   readonly outputSchema: Readonly<Record<string, unknown>>;
   readonly decode: (value: unknown, path?: string) => Output;
   readonly encode: (value: unknown, path?: string) => unknown;
+  /** Validate canonical model input JSON without converting the exposed value. */
+  readonly inputProtocolSchema: StandardJsonProtocolSchema;
+  /** Validate canonical structured output JSON without converting the exposed value. */
+  readonly outputProtocolSchema: StandardJsonProtocolSchema;
   readonly "~standard": StandardSchemaProperties<unknown, Output>;
+}
+
+/** Standard Schema view consumed by JSON-native model/tool runtimes. */
+export interface StandardJsonProtocolSchema {
+  readonly "~standard": StandardSchemaProperties<unknown, unknown>;
 }
 
 type SchemaMode = "input" | "output";
 
 interface ProtocolNode {
   readonly schema: (mode: SchemaMode) => Readonly<Record<string, unknown>>;
-  readonly decode: (value: unknown, path: string) => unknown;
+  readonly decode: (value: unknown, path: string, mode: SchemaMode) => unknown;
   readonly preflight?: (value: unknown, path: string) => void;
   readonly encode: (value: unknown, path: string) => unknown;
 }
@@ -158,14 +167,17 @@ function compileObject(
         additionalProperties: false,
       });
     },
-    decode(value, path) {
+    decode(value, path, mode) {
       if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) {
         return value;
       }
       const input = value as Record<string, unknown>;
       const decoded: Record<string, unknown> = { ...input };
       for (const [name, , node] of fields) {
-        decoded[name] = node.decode(input[name], `${path}.${name}`);
+        if (mode === "output" && !Object.hasOwn(input, name)) {
+          throw new ValidationError(`${path}.${name}: required output field is missing`);
+        }
+        decoded[name] = node.decode(input[name], `${path}.${name}`, mode);
       }
       return decoded;
     },
@@ -224,18 +236,21 @@ function compileUnion(
         })),
       });
     },
-    decode(value, path) {
+    decode(value, path, mode) {
       if (value === null || typeof value !== "object" || Array.isArray(value)) {
         return value;
       }
       const input = value as Record<string, unknown>;
       const member = typeof input.tag === "string" ? members.get(input.tag) : undefined;
       if (member === undefined) return value;
+      if (mode === "output" && !Object.hasOwn(input, "value")) {
+        throw new ValidationError(`${path}.value: required output field is missing`);
+      }
       return {
         ...input,
         value: member.node === undefined
           ? input.value
-          : member.node.decode(input.value, `${path}.value`),
+          : member.node.decode(input.value, `${path}.value`, mode),
       };
     },
     preflight(value, path) {
@@ -352,9 +367,9 @@ function compileNode(
       const node = compileNode(element, `${where}[]`, protocol);
       return {
         schema: (mode) => described(validator, { type: "array", items: node.schema(mode) }),
-        decode(value, path) {
+        decode(value, path, mode) {
           if (!Array.isArray(value)) return value;
-          return value.map((item, index) => node.decode(item, `${path}[${index}]`));
+          return value.map((item, index) => node.decode(item, `${path}[${index}]`, mode));
         },
         preflight(value, path) {
           if (!Array.isArray(value)) return;
@@ -382,10 +397,10 @@ function compileNode(
         schema: (mode) => described(validator, {
           anyOf: [node.schema(mode), { type: "null" }],
         }),
-        decode(value, path) {
+        decode(value, path, mode) {
           return value === null || value === undefined
             ? value
-            : node.decode(value, path);
+            : node.decode(value, path, mode);
         },
         preflight(value, path) {
           if (value !== null && value !== undefined) node.preflight?.(value, path);
@@ -463,16 +478,38 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
   const inputSchema = schemaFor(node, "input", { target: "draft-2020-12" });
   const outputSchema = schemaFor(node, "output", { target: "draft-2020-12" });
   const decode = (value: unknown, path = "$input") =>
-    validator.check(node.decode(value, path), path) as InferValidator<V>;
+    validator.check(node.decode(value, path, "input"), path) as InferValidator<V>;
   const encode = (value: unknown, path = "$output") => {
     node.preflight?.(value, path);
     return node.encode(validator.check(value, path), path);
   };
+  const protocolSchema = (mode: SchemaMode): StandardJsonProtocolSchema => Object.freeze({
+    "~standard": Object.freeze({
+      version: 1 as const,
+      vendor: "dbzz" as const,
+      validate(value: unknown): StandardSchemaResult<unknown> {
+        const path = mode === "input" ? "$input" : "$output";
+        try {
+          validator.check(node.decode(value, path, mode), path);
+          return { value };
+        } catch (error) {
+          if (!isValidationError(error)) throw error;
+          return { issues: [{ message: error.message }] };
+        }
+      },
+      jsonSchema: Object.freeze({
+        input: (options: StandardJsonSchemaOptions) => schemaFor(node, mode, options),
+        output: (options: StandardJsonSchemaOptions) => schemaFor(node, mode, options),
+      }),
+    }),
+  });
   const codec: StandardJsonCodec<InferValidator<V>> = {
     inputSchema,
     outputSchema,
     decode,
     encode,
+    inputProtocolSchema: protocolSchema("input"),
+    outputProtocolSchema: protocolSchema("output"),
     "~standard": Object.freeze({
       version: 1 as const,
       vendor: "dbzz" as const,
