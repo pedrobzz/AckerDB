@@ -29,6 +29,7 @@ type Gate = ReturnType<typeof Promise.withResolvers<void>>;
 interface ExecutionControllers {
   readonly active: AbortController;
   readonly canceled: AbortController;
+  readonly committed: AbortController;
   readonly encoding: AbortController;
   readonly nested: AbortController;
   readonly parent: AbortController;
@@ -45,6 +46,9 @@ let released: Map<string, Gate>;
 let observedSignals: Map<string, AbortSignal>;
 let parentSignal: AbortSignal | undefined;
 let requestId: number;
+let pauseAfterCommit: boolean;
+let commitReached: Gate;
+let releaseCommit: Gate;
 
 function resetGate(key: string): void {
   entered.set(key, Promise.withResolvers());
@@ -103,6 +107,17 @@ const activeTransaction = agentMcp.tool({
       await tx.db.records.insert({ label: "active" });
       await gate("active", ctx.abortSignal);
     });
+    return { done: true };
+  },
+});
+
+const committedTransaction = agentMcp.tool({
+  name: "committed_transaction",
+  description: "Commit before cancellation suppresses the local result.",
+  args: {},
+  output: dbz.object({ done: dbz.boolean() }),
+  handler: async (ctx) => {
+    await ctx.tx((tx) => tx.db.records.insert({ label: "committed" }));
     return { done: true };
   },
 });
@@ -179,6 +194,13 @@ const runLocal = typedProcedure({
             { abortSignal: executionControllers.active.signal },
           ),
         ]).then(([result]) => result!));
+      case "committed":
+        return outcome(await Promise.allSettled([
+          tools.committed_transaction!.execute(
+            {},
+            { abortSignal: executionControllers.committed.signal },
+          ),
+        ]).then(([result]) => result!));
       case "queued": {
         const holder = tools.hold_writer!.execute({});
         await entered.get("holder")!.promise;
@@ -211,6 +233,7 @@ const modules = {
   mcp: { agentMcp },
   tools: {
     activeTransaction,
+    committedTransaction,
     encodingCancellation,
     holdWriter,
     nestedWait,
@@ -223,10 +246,25 @@ beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-cancellation-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
-  runtime = new Runtime({ engine, registry: new Registry(modules), telemetry: false });
+  pauseAfterCommit = false;
+  commitReached = Promise.withResolvers();
+  releaseCommit = Promise.withResolvers();
+  runtime = new Runtime({
+    engine,
+    registry: new Registry(modules),
+    telemetry: false,
+    hooks: {
+      wait: async () => {
+        if (!pauseAfterCommit) return;
+        commitReached.resolve();
+        await releaseCommit.promise;
+      },
+    },
+  });
   executionControllers = {
     active: new AbortController(),
     canceled: new AbortController(),
+    committed: new AbortController(),
     encoding: new AbortController(),
     nested: new AbortController(),
     parent: new AbortController(),
@@ -245,6 +283,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const release of released.values()) release.resolve();
+  releaseCommit.resolve();
   await runtime.drain().catch(() => {});
   engine.close("clean");
   rmSync(directory, { recursive: true, force: true });
@@ -315,6 +354,18 @@ describe("MCP local cancellation ownership", () => {
     released.get("active")!.resolve();
     expect(await active).toEqual({ status: "rejected" });
     expect(labels()).toEqual([]);
+    expect(engine.writer.inTransaction).toBe(false);
+  });
+
+  test("keeps a durable COMMIT but suppresses its canceled local result", async () => {
+    pauseAfterCommit = true;
+    const call = callProcedure("committed");
+    await commitReached.promise;
+    executionControllers.committed.abort(new Error("generation canceled after commit"));
+    releaseCommit.resolve();
+
+    expect(await call).toEqual({ status: "rejected" });
+    expect(labels()).toEqual(["committed"]);
     expect(engine.writer.inTransaction).toBe(false);
   });
 
