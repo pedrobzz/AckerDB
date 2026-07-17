@@ -20,11 +20,11 @@
     "typecheck": "bun run codegen && tsc -p scripts/tsconfig.json && bun run --cwd app/server typecheck && bun run --cwd packages/dbzz-codegen typecheck && bun run --cwd app/admin-panel typecheck && bun run --cwd app/mobile typecheck && bun run --cwd app/design typecheck"
   },
   "dependencies": {
-    "@dbzz/cli": "0.2.4",
-    "@dbzz/client": "0.2.4",
-    "@dbzz/client-react": "0.2.4",
-    "@dbzz/core": "0.2.4",
-    "@dbzz/server": "0.2.4"
+    "@dbzz/cli": "0.2.5",
+    "@dbzz/client": "0.2.5",
+    "@dbzz/client-react": "0.2.5",
+    "@dbzz/core": "0.2.5",
+    "@dbzz/server": "0.2.5"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",
