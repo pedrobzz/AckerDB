@@ -130,9 +130,13 @@ export class Registry {
     mcp: McpEndpointDeclaration,
     principal: Principal,
   ): readonly AnyRegisteredMcpTool[] {
-    return [...this.mcpTools.values()].filter((tool) =>
-      tool.mcp === mcp && isMcpToolAuthorized(tool.accessPolicy, principal)
+    return this.registeredToolsFor(mcp).filter((tool) =>
+      isMcpToolAuthorized(tool.accessPolicy, principal)
     );
+  }
+
+  registeredToolsFor(mcp: McpEndpointDeclaration): readonly AnyRegisteredMcpTool[] {
+    return [...this.mcpTools.values()].filter((tool) => tool.mcp === mcp);
   }
 
   mcpTool(mcp: string, tool: string): AnyRegisteredMcpTool | undefined {
