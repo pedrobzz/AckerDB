@@ -1,7 +1,5 @@
 import { Buffer } from "node:buffer";
 import {
-  isValidationError,
-  ValidationError,
   type EnumValidator,
   type InferValidator,
   type LiteralValidator,
@@ -11,6 +9,8 @@ import {
   type UnionValidator,
 } from "./dbz.ts";
 import { deepFreeze } from "./immutable.ts";
+import { assertStandardJson } from "./standard-json.ts";
+import { isValidationError, ValidationError } from "./validation-error.ts";
 
 const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
 const JSON_SCHEMA_DRAFT_07 = "http://json-schema.org/draft-07/schema#";
@@ -74,9 +74,10 @@ export interface StandardJsonCodec<Output> {
 
 type SchemaMode = "input" | "output";
 
-interface ProtocolNode<Output = unknown> {
+interface ProtocolNode {
   readonly schema: (mode: SchemaMode) => Readonly<Record<string, unknown>>;
-  readonly decode: (value: unknown, path: string) => Output;
+  readonly decode: (value: unknown, path: string) => unknown;
+  readonly preflight?: (value: unknown, path: string) => void;
   readonly encode: (value: unknown, path: string) => unknown;
 }
 
@@ -118,42 +119,14 @@ function canonicalBytes(value: unknown, path: string): Uint8Array {
   return new Uint8Array(decoded);
 }
 
-function assertStandardJson(
-  value: unknown,
-  path: string,
-  ancestors = new Set<object>(),
-): void {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return;
-  if (typeof value === "number" && Number.isFinite(value)) return;
-  if (typeof value !== "object" || value instanceof Uint8Array) {
-    protocolError(path, "a standard JSON value", value);
-  }
-  if (ancestors.has(value)) throw new ValidationError(`${path}: cyclic JSON value`);
-  ancestors.add(value);
-  if (Array.isArray(value)) {
-    for (let index = 0; index < value.length; index++) {
-      assertStandardJson(value[index], `${path}[${index}]`, ancestors);
-    }
-  } else {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) {
-      protocolError(path, "a standard JSON object", value);
-    }
-    for (const [key, field] of Object.entries(value)) {
-      assertStandardJson(field, `${path}.${key}`, ancestors);
-    }
-  }
-  ancestors.delete(value);
-}
-
 function checkedNode(
   validator: StandardValidator,
   fragment: Readonly<Record<string, unknown>>,
 ): ProtocolNode {
   return {
     schema: () => described(validator, fragment),
-    decode: (value, path) => validator.check(value, path),
-    encode: (value, path) => validator.check(value, path),
+    decode: (value) => value,
+    encode: (value) => value,
   };
 }
 
@@ -187,17 +160,26 @@ function compileObject(
     },
     decode(value, path) {
       if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) {
-        return validator.check(value, path);
+        return value;
       }
       const input = value as Record<string, unknown>;
       const decoded: Record<string, unknown> = { ...input };
       for (const [name, , node] of fields) {
         decoded[name] = node.decode(input[name], `${path}.${name}`);
       }
-      return validator.check(decoded, path);
+      return decoded;
+    },
+    preflight(value, path) {
+      if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) {
+        return;
+      }
+      const input = value as Record<string, unknown>;
+      for (const [name, , node] of fields) {
+        node.preflight?.(input[name], `${path}.${name}`);
+      }
     },
     encode(value, path) {
-      const checked = validator.check(value, path) as Record<string, unknown>;
+      const checked = value as Record<string, unknown>;
       const encoded: Record<string, unknown> = {};
       for (const [name, , node] of fields) {
         encoded[name] = node.encode(checked[name], `${path}.${name}`);
@@ -244,20 +226,26 @@ function compileUnion(
     },
     decode(value, path) {
       if (value === null || typeof value !== "object" || Array.isArray(value)) {
-        return validator.check(value, path);
+        return value;
       }
       const input = value as Record<string, unknown>;
       const member = typeof input.tag === "string" ? members.get(input.tag) : undefined;
-      if (member === undefined) return validator.check(value, path);
-      return validator.check({
+      if (member === undefined) return value;
+      return {
         ...input,
         value: member.node === undefined
           ? input.value
           : member.node.decode(input.value, `${path}.value`),
-      }, path);
+      };
+    },
+    preflight(value, path) {
+      if (value === null || typeof value !== "object" || Array.isArray(value)) return;
+      const input = value as Record<string, unknown>;
+      const member = typeof input.tag === "string" ? members.get(input.tag) : undefined;
+      member?.node?.preflight?.(input.value, `${path}.value`);
     },
     encode(value, path) {
-      const checked = validator.check(value, path) as { readonly tag: string; readonly value: unknown };
+      const checked = value as { readonly tag: string; readonly value: unknown };
       const member = members.get(checked.tag)!;
       return {
         tag: checked.tag,
@@ -291,10 +279,10 @@ function compileNode(
       return {
         schema: () => described(validator, { type: "string", pattern: DECIMAL_PATTERN }),
         decode(value, path) {
-          return validator.check(canonicalDecimal(value, path), path);
+          return canonicalDecimal(value, path);
         },
-        encode(value, path) {
-          return (validator.check(value, path) as bigint).toString();
+        encode(value) {
+          return (value as bigint).toString();
         },
       };
     case "bytes":
@@ -308,10 +296,10 @@ function compileNode(
           contentEncoding: "base64",
         }),
         decode(value, path) {
-          return validator.check(canonicalBytes(value, path), path);
+          return canonicalBytes(value, path);
         },
-        encode(value, path) {
-          const bytes = validator.check(value, path) as Uint8Array;
+        encode(value) {
+          const bytes = value as Uint8Array;
           return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
         },
       };
@@ -320,13 +308,10 @@ function compileNode(
         schema: () => described(validator, {}),
         decode(value, path) {
           assertStandardJson(value, path);
-          return validator.check(value, path);
+          return value;
         },
-        encode(value, path) {
-          const checked = validator.check(value, path);
-          assertStandardJson(checked, path);
-          return checked;
-        },
+        preflight: assertStandardJson,
+        encode: (value) => value,
       };
     case "enum": {
       const values = (validator as EnumValidator).values;
@@ -346,12 +331,9 @@ function compileNode(
           schema: () => described(validator, { const: protocolValue }),
           decode(input, path) {
             if (input !== protocolValue) protocolError(path, JSON.stringify(protocolValue), input);
-            return validator.check(value, path);
+            return value;
           },
-          encode(input, path) {
-            validator.check(input, path);
-            return protocolValue;
-          },
+          encode: () => protocolValue,
         };
       }
       if (
@@ -371,14 +353,17 @@ function compileNode(
       return {
         schema: (mode) => described(validator, { type: "array", items: node.schema(mode) }),
         decode(value, path) {
-          if (!Array.isArray(value)) return validator.check(value, path);
-          return validator.check(
-            value.map((item, index) => node.decode(item, `${path}[${index}]`)),
-            path,
-          );
+          if (!Array.isArray(value)) return value;
+          return value.map((item, index) => node.decode(item, `${path}[${index}]`));
+        },
+        preflight(value, path) {
+          if (!Array.isArray(value)) return;
+          for (let index = 0; index < value.length; index++) {
+            node.preflight?.(value[index], `${path}[${index}]`);
+          }
         },
         encode(value, path) {
-          const checked = validator.check(value, path) as unknown[];
+          const checked = value as unknown[];
           return checked.map((item, index) => node.encode(item, `${path}[${index}]`));
         },
       };
@@ -399,12 +384,14 @@ function compileNode(
         }),
         decode(value, path) {
           return value === null || value === undefined
-            ? validator.check(value, path)
-            : validator.check(node.decode(value, path), path);
+            ? value
+            : node.decode(value, path);
+        },
+        preflight(value, path) {
+          if (value !== null && value !== undefined) node.preflight?.(value, path);
         },
         encode(value, path) {
-          const checked = validator.check(value, path);
-          return checked === null ? null : node.encode(checked, path);
+          return value === null ? null : node.encode(value, path);
         },
       };
     }
@@ -472,20 +459,26 @@ export function createStandardSchemaProperties<Input, Output>(
 export function compileStandardJsonCodec<V extends StandardValidator>(
   validator: V,
 ): StandardJsonCodec<InferValidator<V>> {
-  const node = compileNode(validator, "$", true) as ProtocolNode<InferValidator<V>>;
+  const node = compileNode(validator, "$", true);
   const inputSchema = schemaFor(node, "input", { target: "draft-2020-12" });
   const outputSchema = schemaFor(node, "output", { target: "draft-2020-12" });
+  const decode = (value: unknown, path = "$input") =>
+    validator.check(node.decode(value, path), path) as InferValidator<V>;
+  const encode = (value: unknown, path = "$output") => {
+    node.preflight?.(value, path);
+    return node.encode(validator.check(value, path), path);
+  };
   const codec: StandardJsonCodec<InferValidator<V>> = {
     inputSchema,
     outputSchema,
-    decode: (value, path = "$input") => node.decode(value, path),
-    encode: (value, path = "$output") => node.encode(value, path),
+    decode,
+    encode,
     "~standard": Object.freeze({
       version: 1 as const,
       vendor: "dbzz" as const,
       validate(value: unknown): StandardSchemaResult<InferValidator<V>> {
         try {
-          return { value: node.decode(value, "$input") };
+          return { value: decode(value) };
         } catch (error) {
           if (!isValidationError(error)) throw error;
           return { issues: [{ message: error.message }] };

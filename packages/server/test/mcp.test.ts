@@ -715,10 +715,28 @@ describe("public stateless MCP endpoint", () => {
       },
     });
 
+    const minimumValidator = echoValues.args.minimum;
+    const originalCheck = minimumValidator.check;
+    let minimumChecks = 0;
+    Object.defineProperty(minimumValidator, "check", {
+      configurable: true,
+      writable: true,
+      value(value: unknown, path: string) {
+        minimumChecks++;
+        return originalCheck(value, path);
+      },
+    });
     const response = await rpcAt(valuesMcp.path, "tools/call", {
       name: "echo_values",
       arguments: protocolValues(),
-    }, 2);
+    }, 2).finally(() => {
+      Object.defineProperty(minimumValidator, "check", {
+        configurable: true,
+        writable: true,
+        value: originalCheck,
+      });
+    });
+    expect(minimumChecks).toBe(1);
     const expected = {
       minimum: "-9223372036854775808",
       maximum: "9223372036854775807",
@@ -757,6 +775,14 @@ describe("public stateless MCP endpoint", () => {
       expect(() => echoValues.inputCodec.decode(protocolValues({ bytes: invalid }), "args"))
         .toThrow("canonical base64");
     }
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const nativeValues = echoValues.inputCodec.decode(protocolValues(), "args");
+    expect(() => echoValues.outputCodec.encode({
+      ...nativeValues,
+      poisonOutput: undefined,
+      opaque: cyclic,
+    }, "output")).toThrow("output.opaque.self: cyclic JSON value");
     expect(valueHandlerCalls).toBe(0);
 
     const malformed = await rpcAt(valuesMcp.path, "tools/call", {

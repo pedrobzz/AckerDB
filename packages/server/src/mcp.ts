@@ -363,7 +363,7 @@ export function createMcp(
         handler: definition.handler,
       };
       brand(tool, MCP_TOOL_IDENTITY);
-      compileInvocation(tool);
+      compileInvocation(tool, inputCodec.decode);
       return Object.freeze(tool) as RegisteredMcpTool;
     },
   };

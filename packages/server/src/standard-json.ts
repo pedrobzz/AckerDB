@@ -1,4 +1,4 @@
-import { ValidationError } from "./dbz.ts";
+import { ValidationError } from "./validation-error.ts";
 
 const MAX_JSON_DEPTH = 64;
 const MAX_JSON_NODES = 100_000;
