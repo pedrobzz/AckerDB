@@ -25,6 +25,7 @@ import {
   type McpTokenCreateInput,
   type McpTokenDescriptor,
   type McpTokenOperations,
+  type McpTokenUpdateInput,
   type SystemMcpTokenOperations,
 } from "./mcp-token-context.ts";
 import {
@@ -500,6 +501,7 @@ export type {
   McpTokenCreateInput,
   McpTokenDescriptor,
   McpTokenOperations,
+  McpTokenUpdateInput,
   SystemMcpTokenOperations,
 };
 export type {

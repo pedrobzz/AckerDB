@@ -212,6 +212,7 @@ export {
   type McpTokenCreateInput,
   type McpTokenDescriptor,
   type McpTokenOperations,
+  type McpTokenUpdateInput,
   type SystemMcpTokenOperations,
   type McpOutputSchema,
   type McpResourceLinkContent,

@@ -54,6 +54,16 @@ export type McpTokenCreateInput<Scope extends string = never> = McpTokenCreateIn
     ? { readonly scopes?: never }
     : { readonly scopes: readonly Scope[] });
 
+export type McpTokenUpdateInput =
+  | {
+      readonly name: string;
+      readonly metadata?: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly name?: string;
+      readonly metadata: Readonly<Record<string, unknown>>;
+    };
+
 interface McpTokenDescriptorBase {
   readonly id: string;
   readonly mcp: string;
@@ -106,6 +116,17 @@ function validateTokenId(tokenId: unknown): asserts tokenId is string {
   if (typeof tokenId !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(tokenId)) {
     throw new DbzzError("validation", "MCP token ID is invalid");
   }
+}
+
+function tokenName(value: unknown, maxBytes: number): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new DbzzError("validation", "MCP token name must be non-empty");
+  }
+  const name = value.trim();
+  if (utf8.encode(name).byteLength > maxBytes) {
+    throw new DbzzError("validation", `MCP token name exceeds ${maxBytes} UTF-8 bytes`);
+  }
+  return name;
 }
 
 function metadata(value: unknown, maxBytes: number): {
@@ -228,18 +249,14 @@ export class McpTokenVault {
         throw new DbzzError("validation", `unknown MCP token field "${key}"`);
       }
     }
-    if (typeof input.name !== "string" || input.name.trim() === "") {
-      throw new DbzzError("validation", "MCP token name must be non-empty");
-    }
-    const name = input.name.trim();
-    if (utf8.encode(name).byteLength > limits.maxNameBytes) {
-      throw new DbzzError("validation", `MCP token name exceeds ${limits.maxNameBytes} UTF-8 bytes`);
-    }
+    const name = tokenName(input.name, limits.maxNameBytes);
     const normalizedMetadata = metadata(input.metadata ?? {}, limits.maxMetadataBytes);
     const scopes = scopeDescriptor === undefined
       ? Object.freeze([])
       : normalizeMcpScopeGrant(scopeDescriptor, input.scopes, "MCP token scopes");
-    if (!Number.isFinite(now) || now < 0) throw new RangeError("MCP token clock must be finite and non-negative");
+    if (!Number.isFinite(now) || now < 0) {
+      throw new RangeError("MCP token clock must be finite and non-negative");
+    }
     requireIdentity(this.writer, identity);
     const count = this.writer
       .query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens WHERE identity = ? AND mcp = ?")
@@ -282,6 +299,59 @@ export class McpTokenVault {
         ORDER BY created_at, token_id`,
     ).all(identity, mcp) as StoredTokenRow[];
     return Object.freeze(rows.map((row) => descriptor(row, scopeDescriptor)));
+  }
+
+  update(
+    identity: Identity,
+    mcp: string,
+    tokenId: string,
+    input: McpTokenUpdateInput,
+    limits: McpTokenLimits,
+    now: number,
+  ): void {
+    validateIdentity(identity);
+    validateTokenId(tokenId);
+    if (input === null || typeof input !== "object" || Array.isArray(input)) {
+      throw new DbzzError("validation", "MCP token update input must be an object");
+    }
+    const keys = Object.keys(input);
+    if (keys.length === 0) {
+      throw new DbzzError("validation", "MCP token update requires name or metadata");
+    }
+    for (const key of keys) {
+      if (key !== "name" && key !== "metadata") {
+        throw new DbzzError("validation", `unknown MCP token field "${key}"`);
+      }
+    }
+    const name = Object.hasOwn(input, "name")
+      ? tokenName(input.name, limits.maxNameBytes)
+      : undefined;
+    const normalizedMetadata = Object.hasOwn(input, "metadata")
+      ? metadata(input.metadata, limits.maxMetadataBytes)
+      : undefined;
+    if (!Number.isFinite(now) || now < 0) {
+      throw new RangeError("MCP token clock must be finite and non-negative");
+    }
+    requireIdentity(this.writer, identity);
+
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    if (name !== undefined) {
+      assignments.push("name = ?");
+      values.push(name);
+    }
+    if (normalizedMetadata !== undefined) {
+      assignments.push("metadata = ?");
+      values.push(normalizedMetadata.encoded);
+    }
+    assignments.push("updated_at = ?");
+    values.push(now, tokenId, identity, mcp);
+    const result = this.writer.query(
+      `UPDATE _dbz_mcp_tokens
+        SET ${assignments.join(", ")}
+        WHERE token_id = ? AND identity = ? AND mcp = ?`,
+    ).run(...(values as never[]));
+    if (result.changes === 0) throw new DbzzError("not_found", "MCP token not found");
   }
 
   updateScopes<Scope extends string>(

@@ -3,7 +3,12 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, encode, type MutationMessage } from "@dbzz/core";
+import {
+  PROTOCOL_VERSION,
+  encode,
+  type MutationMessage,
+  type SubscribeMessage,
+} from "@dbzz/core";
 import {
   ANONYMOUS_PRINCIPAL,
   type Principal,
@@ -12,14 +17,24 @@ import {
 import { callerFairnessKey } from "../src/caller.ts";
 import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
-import { mutation, type MutationBuilder } from "../src/functions.ts";
+import {
+  mutation,
+  query,
+  type MutationBuilder,
+  type QueryBuilder,
+} from "../src/functions.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
 import { createMcp, type McpBuilder } from "../src/mcp.ts";
 import { reconcile } from "../src/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
 import { defineSchema, defineTable } from "../src/schema.ts";
-import type { RuntimeRequest, SessionRuntimeContext } from "../src/session.ts";
+import type {
+  RuntimePublication,
+  RuntimeRequest,
+  SessionApplicationMessage,
+  SessionRuntimeContext,
+} from "../src/session.ts";
 
 const action = dbz.enum("SystemMcpTokenAction", [
   "create_agent",
@@ -43,6 +58,7 @@ const schema = defineSchema({
 });
 
 const typedMutation = mutation as MutationBuilder<typeof schema>;
+const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
 const agentMcp = typedMcp({ name: "agent" });
 const operationsMcp = typedMcp({ name: "operations", path: "/operations/mcp" });
@@ -118,6 +134,12 @@ const attempt = typedMutation({
   handler: (ctx, args) => agentMcp.systemTokens.list(ctx, args.identity),
 });
 
+const listOwned = typedQuery({
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => agentMcp.tokens.list(ctx),
+});
+
 const attemptFromMcp = agentMcp.tool({
   name: "attempt_system_administration",
   description: "Exercise the system token-administration boundary.",
@@ -132,6 +154,7 @@ const attemptFromMcp = agentMcp.tool({
 
 const modules = {
   mcp: { agentMcp, operationsMcp, scopedMcp },
+  ownerTokens: { listOwned },
   systemTokens: { attempt, attemptFromMcp, queue, run },
 };
 const directories: string[] = [];
@@ -177,14 +200,21 @@ async function user(runtime: Runtime, subject: string): Promise<UserPrincipal> {
   });
 }
 
-function session(principal: Principal, name: string): SessionRuntimeContext {
+function session(
+  principal: Principal,
+  name: string,
+  publications?: SessionApplicationMessage[],
+): SessionRuntimeContext {
   return Object.freeze({
     clientSessionId: name,
     principal,
     fairnessKey: callerFairnessKey(principal, { family: "test", address: name }),
     authEpoch: 0,
     signal: new AbortController().signal,
-    publish: async () => true,
+    publish: async (publication: RuntimePublication) => {
+      publications?.push(publication.message);
+      return true;
+    },
   });
 }
 
@@ -203,6 +233,10 @@ function mutationMessage(id: number, args: unknown, ref: string): MutationMessag
     mutationRequestId: `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${String(id).padStart(12, "0")}`,
     issuedAt: Date.now(),
   };
+}
+
+function subscribeMessage(id: number): SubscribeMessage {
+  return { v: PROTOCOL_VERSION, t: "sub", id, ref: "ownerTokens.listOwned", args: {} };
 }
 
 type Action = NonNullable<typeof action._type>;
@@ -245,7 +279,8 @@ describe("system-managed MCP integration tokens", () => {
   test("creates, lists, authenticates, and revokes once through scheduled system authority", async () => {
     const { engine, runtime } = fixture();
     const bob = await user(runtime, "backend-managed-bob");
-    const bobSession = session(bob, "backend-managed-bob-session");
+    const publications: SessionApplicationMessage[] = [];
+    const bobSession = session(bob, "backend-managed-bob-session", publications);
     await runtime.openSession(bobSession);
 
     const createAt = await queueJob(runtime, bobSession, 101, "create_agent", {
@@ -268,6 +303,10 @@ describe("system-managed MCP integration tokens", () => {
     expect(created).not.toHaveProperty("expiresAt");
     expect(created.token).toMatch(/^dbzz_mcp\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
     expect(await runtime.runScheduled(createAt)).toBe(0);
+    await runtime.subscribe(bobSession, request(subscribeMessage(90)));
+    expect(publications.at(-1)).toMatchObject({
+      transition: { kind: "reset", value: [{ id: created.id }] },
+    });
 
     const secret = created.token.split(".")[2]!;
     const stored = engine.reader.query(
@@ -293,6 +332,7 @@ describe("system-managed MCP integration tokens", () => {
       tokenId: created.id,
     });
     expect(await runtime.runScheduled(revokeAt)).toBe(1);
+    expect(publications.at(-1)).toMatchObject({ transition: { kind: "update", value: [] } });
     await expect(runtime.authenticateMcpToken("agent", created.token, "system-revoked"))
       .rejects.toMatchObject({ code: "unauthenticated" });
   });
