@@ -144,6 +144,7 @@ class FakeSink implements SessionSink {
   readonly applications: SinkApplication[] = [];
   readonly drops: number[] = [];
   readonly closes: Outcome[] = [];
+  controlHook: ((message: SessionControlMessage) => Promise<void>) | null = null;
   applicationHook: ((authEpoch: number, message: SessionApplicationMessage) => Promise<void>) | null = null;
 
   constructor(private readonly order: string[] = []) {}
@@ -151,6 +152,7 @@ class FakeSink implements SessionSink {
   async sendControl(message: SessionControlMessage): Promise<void> {
     this.order.push(`control:${message.t}${message.t === "auth" ? `:${message.attemptId}` : ""}`);
     this.controls.push(message);
+    if (this.controlHook !== null) await this.controlHook(message);
   }
 
   async sendApplication(authEpoch: number, publication: RuntimePublication): Promise<void> {
@@ -395,12 +397,8 @@ function handle(session: Session, frame: unknown): Promise<void> {
   return session.handle(encode(frame));
 }
 
-function sessionLimits(
-  readQueue: SessionLimits["readQueue"],
-  maxFrameBytes = 1_024,
-  maxRequestBytes = maxFrameBytes,
-): SessionLimits {
-  return { readQueue, maxRequestBytes, maxFrameBytes };
+function sessionLimits(maxFrameBytes = 1_024, maxRequestBytes = maxFrameBytes): SessionLimits {
+  return { maxRequestBytes, maxFrameBytes };
 }
 
 function messagesOfType<T extends ServerMessage["t"]>(
@@ -417,15 +415,9 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({ runtime, sink, source: TEST_SOURCE });
 
     await handle(session, query(1));
-    // Termination starts from inside this admitted ingress handler. Awaiting
-    // the resulting close proves that handler can leave the executor and
-    // satisfy its own drain without a promise cycle.
     await session.close();
 
-    expect(session.snapshot()).toMatchObject({
-      phase: "closed",
-      ingress: { active: 0, queue: { queuedItems: 0, closed: true } },
-    });
+    expect(session.snapshot()).toMatchObject({ phase: "closed" });
     expect(runtime.queries).toHaveLength(0);
     expect(sink.controls).toEqual([
       {
@@ -478,172 +470,105 @@ describe("Session Protocol-2 ownership", () => {
     expect(messagesOfType(sink.applications.map((entry) => entry.message), "ok")).toHaveLength(2);
   });
 
-  test("awaits each runtime dispatch so subscription state cannot be overtaken", async () => {
+  test("admits independent queries without a Session-wide data-plane queue", async () => {
     const runtime = new FakeRuntime();
-    const sink = new FakeSink();
-    const session = new Session({ runtime, sink, source: TEST_SOURCE });
-    const subscriptionGate = deferred<void>();
-    runtime.subscribeHook = async () => subscriptionGate.promise;
+    const gate = deferred<void>();
+    runtime.queryHook = async () => gate.promise;
+    const session = new Session({ runtime, sink: new FakeSink(), source: TEST_SOURCE });
     await handle(session, hello());
 
-    const subscribing = handle(session, {
+    const queries = Array.from({ length: 8 }, (_, index) => handle(session, query(index + 1)));
+    await settle();
+    expect(runtime.queries.map(({ id }) => id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+
+    gate.resolve(undefined);
+    await Promise.all(queries);
+    await session.close();
+  });
+
+  test("admits distinct subscription ids concurrently", async () => {
+    const runtime = new FakeRuntime();
+    const gate = deferred<void>();
+    runtime.subscribeHook = async () => gate.promise;
+    const session = new Session({ runtime, sink: new FakeSink(), source: TEST_SOURCE });
+    await handle(session, hello());
+
+    const subscriptions = [1, 2].map((id) => handle(session, {
       v: 2,
       t: "sub",
-      id: 1,
+      id,
       ref: "messages.list",
       args: {},
-    });
-    const mutating = handle(session, mutation(2));
+    }));
     await settle();
-
-    expect(runtime.subscriptions).toEqual([1]);
-    expect(runtime.mutations).toHaveLength(0);
-    subscriptionGate.resolve(undefined);
-    await Promise.all([subscribing, mutating]);
-    expect(runtime.mutations).toHaveLength(1);
-  });
-
-  test("bounds a blocked serialized ingress by exact queued item count", async () => {
-    const runtime = new FakeRuntime();
-    const sink = new FakeSink();
-    const gate = deferred<void>();
-    runtime.queryHook = async () => gate.promise;
-    const queuedFrames = [query(2), query(3)];
-    const queuedBytes = queuedFrames.reduce((total, frame) => total + wireBytes(frame), 0);
-    const session = new Session({
-      runtime,
-      sink,
-      source: TEST_SOURCE,
-      limits: sessionLimits({ maxItems: 2, maxBytes: queuedBytes + 1_000, maxAgeMs: 1_000 }),
-    });
-    await handle(session, hello());
-
-    const admitted = handle(session, query(1));
-    await settle();
-    const queued = queuedFrames.map((frame) => handle(session, frame));
-    expect(session.snapshot().ingress).toMatchObject({
-      active: 1,
-      queue: { queuedItems: 2, queuedBytes, oldestAgeMs: 0 },
-    });
-
-    const rejected = handle(session, query(4));
-    await expect(rejected).rejects.toMatchObject({
-      reason: "items",
-      code: "overloaded",
-      retryable: true,
-      retryAfterMs: 0,
-      resource: "connection",
-    });
-    for (const frame of queued) {
-      await expect(frame).rejects.toMatchObject({ reason: "closed", code: "draining" });
-    }
-    expect(sink.closes[0]).toMatchObject({
-      code: "overloaded",
-      retryable: true,
-      retryAfterMs: 0,
-      resource: "connection",
-      message: "Admission rejected: items",
-    });
+    expect(runtime.subscriptions).toEqual([1, 2]);
 
     gate.resolve(undefined);
-    await admitted;
-    await session.close();
-    expect(runtime.queries.map((message) => message.id)).toEqual([1]);
-    expect(runtime.closes[0]?.code).toBe("overloaded");
-    expect(session.snapshot().ingress).toMatchObject({
-      active: 0,
-      queue: { queuedItems: 0, queuedBytes: 0, closed: true },
-    });
-  });
-
-  test("derives exact received bytes for serialized ingress and Runtime", async () => {
-    const runtime = new FakeRuntime();
-    const sink = new FakeSink();
-    const gate = deferred<void>();
-    runtime.queryHook = async () => gate.promise;
-    const admittedBytes = 173;
-    const queuedFrames = [
-      { wire: wireWithBytes({ ...query(2), args: { value: "é" } }, 211), bytes: 211 },
-      { wire: wireWithBytes(query(3), 307), bytes: 307 },
-    ];
-    const queuedBytes = queuedFrames.reduce((total, received) => total + received.bytes, 0);
-    const session = new Session({
-      runtime,
-      sink,
-      source: TEST_SOURCE,
-      limits: sessionLimits({ maxItems: 3, maxBytes: queuedBytes, maxAgeMs: 1_000 }),
-    });
-    await handle(session, hello());
-
-    const admitted = session.handle(wireWithBytes(query(1), admittedBytes));
-    await settle();
-    expect(runtime.queryRequests[0]?.bytes).toBe(admittedBytes);
-    const queued = queuedFrames.map(({ wire }) => session.handle(wire));
-    expect(session.snapshot().ingress.queue).toMatchObject({ queuedItems: 2, queuedBytes });
-
-    const rejected = handle(session, query(4));
-    await expect(rejected).rejects.toMatchObject({
-      reason: "bytes",
-      code: "overloaded",
-      resource: "connection",
-    });
-    for (const frame of queued) {
-      await expect(frame).rejects.toMatchObject({ reason: "closed", code: "draining" });
-    }
-    expect(sink.closes[0]?.message).toBe("Admission rejected: bytes");
-
-    gate.resolve(undefined);
-    await admitted;
+    await Promise.all(subscriptions);
     await session.close();
   });
 
-  test("expires queued ingress at the exact age limit and releases its capacity", async () => {
-    const clock = new ManualClock();
+  test("auth pauses and aborts the old epoch synchronously", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
-    const gate = deferred<void>();
-    runtime.queryHook = async () => gate.promise;
-    const session = new Session({
-      runtime,
-      sink,
-      source: TEST_SOURCE,
-      clock,
-      limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 10 }),
-    });
+    const verifier = new FakeVerifier();
+    const verified = deferred<VerifiedCredential>();
+    verifier.results.set("next", verified.promise);
+    runtime.credentialVerifier = verifier;
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
     await handle(session, hello());
 
-    const admitted = handle(session, query(1));
+    const refreshing = handle(session, auth(1, { kind: "bearer", token: "next" }));
+    expect(runtime.opens[0]!.signal.aborted).toBe(true);
+    expect(session.snapshot().phase).toBe("refreshing");
+    const blockedData = handle(session, query(9));
+    expect(runtime.queries).toHaveLength(0);
+    expect((sink.controls.at(-1) as ErrorMessage).outcome.code).toBe("auth_stale");
+
+    await Promise.all([refreshing, blockedData]);
     await settle();
-    const queued = handle(session, query(2));
-    expect(session.snapshot().ingress.queue).toMatchObject({
-      queuedItems: 1,
-      queuedBytes: wireBytes(query(2)),
-      oldestAgeMs: 0,
-      nextExpiryAtMs: 10,
-    });
-    await clock.advance(9);
-    expect(session.snapshot().ingress.queue).toMatchObject({ queuedItems: 1, oldestAgeMs: 9 });
-    await clock.advance(1);
+    expect(runtime.transitions).toHaveLength(0);
 
-    await expect(queued).rejects.toMatchObject({
-      reason: "age",
-      code: "deadline_exceeded",
-      resource: "connection",
-    });
-    expect(session.snapshot()).toMatchObject({
-      phase: "closed",
-      ingress: { queue: { queuedItems: 0, queuedBytes: 0, closed: true } },
-    });
-    expect(sink.closes[0]?.code).toBe("deadline_exceeded");
-    expect(runtime.closes).toHaveLength(0);
-
-    gate.resolve(undefined);
-    await admitted;
+    verified.resolve(principal("next"));
+    await settle();
+    expect(runtime.transitions).toHaveLength(1);
+    expect(session.snapshot()).toMatchObject({ phase: "active", authEpoch: 1 });
     await session.close();
-    expect(runtime.closes[0]?.code).toBe("deadline_exceeded");
   });
 
-  test("rejects an oversized frame before ingress retention", async () => {
+  test("keeps data paused until the auth acknowledgment handoff is accepted", async () => {
+    const runtime = new FakeRuntime();
+    const sink = new FakeSink();
+    const verifier = new FakeVerifier();
+    const acknowledgmentStarted = deferred<void>();
+    const acknowledgmentAccepted = deferred<void>();
+    verifier.results.set("next", principal("next"));
+    runtime.credentialVerifier = verifier;
+    sink.controlHook = async (message) => {
+      if (message.t !== "auth" || message.attemptId !== 1) return;
+      acknowledgmentStarted.resolve(undefined);
+      await acknowledgmentAccepted.promise;
+    };
+    const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
+    await handle(session, hello());
+
+    await handle(session, auth(1, { kind: "bearer", token: "next" }));
+    await acknowledgmentStarted.promise;
+    expect(session.snapshot()).toMatchObject({ phase: "refreshing", authEpoch: 1 });
+
+    await handle(session, query(9));
+    expect(runtime.queries).toHaveLength(0);
+    expect((sink.controls.at(-1) as ErrorMessage).outcome.code).toBe("auth_stale");
+
+    acknowledgmentAccepted.resolve(undefined);
+    await settle();
+    expect(session.snapshot()).toMatchObject({ phase: "active", authEpoch: 1 });
+    await handle(session, query(10));
+    expect(runtime.queries.map(({ id }) => id)).toEqual([10]);
+    await session.close();
+  });
+
+  test("rejects an oversized frame before Runtime admission", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
     const maxFrameBytes = Math.max(wireBytes(hello()), wireBytes(query(1))) + 8;
@@ -651,7 +576,7 @@ describe("Session Protocol-2 ownership", () => {
       runtime,
       sink,
       source: TEST_SOURCE,
-      limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 }, maxFrameBytes),
+      limits: sessionLimits(maxFrameBytes),
     });
     await handle(session, hello());
 
@@ -666,14 +591,10 @@ describe("Session Protocol-2 ownership", () => {
 
     expect(runtime.queries).toEqual([]);
     expect(sink.closes[0]).toMatchObject({ code: "overloaded", resource: "connection" });
-    expect(session.snapshot().ingress).toMatchObject({
-      admitted: 1,
-      active: 0,
-      queue: { queuedItems: 0, queuedBytes: 0, closed: true },
-    });
+    expect(session.snapshot().phase).toBe("closed");
   });
 
-  test("rejects an oversized request below the transport frame ceiling before ingress retention", async () => {
+  test("rejects an oversized request below the transport frame ceiling before Runtime admission", async () => {
     const runtime = new FakeRuntime();
     const sink = new FakeSink();
     const minimumRequestBytes = Math.max(wireBytes(hello()), wireBytes(query(1)));
@@ -683,11 +604,7 @@ describe("Session Protocol-2 ownership", () => {
       runtime,
       sink,
       source: TEST_SOURCE,
-      limits: sessionLimits(
-        { maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 },
-        maxFrameBytes,
-        maxRequestBytes,
-      ),
+      limits: sessionLimits(maxFrameBytes, maxRequestBytes),
     });
     await handle(session, hello());
     const oversizedBytes = maxRequestBytes + 1;
@@ -708,11 +625,7 @@ describe("Session Protocol-2 ownership", () => {
       resource: "operation",
       message: "client request exceeds maxRequestBytes",
     }]);
-    expect(session.snapshot().ingress).toMatchObject({
-      admitted: 1,
-      active: 0,
-      queue: { queuedItems: 0, queuedBytes: 0, closed: true },
-    });
+    expect(session.snapshot().phase).toBe("closed");
   });
 
   test("accepts the exact UTF-8 request boundary and preserves its byte count", async () => {
@@ -727,7 +640,7 @@ describe("Session Protocol-2 ownership", () => {
       runtime,
       sink,
       source: TEST_SOURCE,
-      limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 }, bytes, bytes),
+      limits: sessionLimits(bytes, bytes),
     });
 
     await handle(session, hello());
@@ -753,53 +666,7 @@ describe("Session Protocol-2 ownership", () => {
     await session.close();
 
     expect(runtime.opens).toEqual([]);
-    expect(session.snapshot().ingress).toMatchObject({
-      admitted: 0,
-      active: 0,
-      queue: { queuedItems: 0, queuedBytes: 0, closed: true },
-    });
-  });
-
-  test("close rejects queued frames and waits for the admitted handler to finish", async () => {
-    const runtime = new FakeRuntime();
-    const sink = new FakeSink();
-    const gate = deferred<void>();
-    runtime.queryHook = async () => gate.promise;
-    const session = new Session({
-      runtime,
-      sink,
-      source: TEST_SOURCE,
-      limits: sessionLimits({ maxItems: 2, maxBytes: 1_024, maxAgeMs: 1_000 }),
-    });
-    await handle(session, hello());
-
-    let admittedFinished = false;
-    const admitted = handle(session, query(1)).then(() => {
-      admittedFinished = true;
-    });
-    await settle();
-    const queued = [handle(session, query(2)), handle(session, query(3))];
-    const closing = session.close(new DbzzError("draining", "server draining"));
-
-    for (const frame of queued) {
-      await expect(frame).rejects.toMatchObject({ reason: "closed", code: "draining" });
-    }
-    await settle();
-    expect(admittedFinished).toBe(false);
-    expect(runtime.closes).toEqual([]);
-    expect(sink.closes[0]).toMatchObject({ code: "draining", message: "server draining" });
-
-    gate.resolve(undefined);
-    await Promise.all([admitted, closing]);
-    expect(admittedFinished).toBe(true);
-    expect(runtime.queries.map((message) => message.id)).toEqual([1]);
-    expect(runtime.closes).toEqual([
-      { code: "draining", retryable: false, message: "server draining" },
-    ]);
-    expect(session.snapshot().ingress).toMatchObject({
-      active: 0,
-      queue: { queuedItems: 0, queuedBytes: 0, closed: true },
-    });
+    expect(session.snapshot().phase).toBe("closed");
   });
 
   test("latest auth attempt wins, pauses operations, and exposes transitions before auth success", async () => {

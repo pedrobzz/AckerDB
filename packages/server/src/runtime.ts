@@ -255,10 +255,16 @@ interface AuthTransitionCapture {
 
 interface RuntimeSession {
   context: SessionRuntimeContext;
+  readonly contexts: WeakSet<SessionRuntimeContext>;
   subscriber: Subscriber;
   readonly telemetryConnectionId?: string;
   readonly subscriptions: Map<number, RuntimeSubscription>;
+  readonly subscriptionControlTails: Map<number, Promise<void>>;
+  subscriptionControlFrontier: Promise<void>;
+  pendingSubscriptionControls: number;
   capture: AuthTransitionCapture | null;
+  phase: "open" | "closing" | "removed";
+  closeDrain: Deferred<void> | null;
   activeOperations: number;
 }
 
@@ -283,6 +289,24 @@ type RuntimeOperationOutcome<T> =
   | { readonly ok: false; readonly error: unknown };
 
 type RuntimeOperationFinalizer<T, R> = (outcome: RuntimeOperationOutcome<T>) => R | Promise<R>;
+
+type SessionOperationOrder =
+  | { readonly kind: "subscription-control"; readonly id: number }
+  | { readonly kind: "subscription-frontier" };
+
+interface OperationAdmission {
+  readonly predecessor: Promise<void> | undefined;
+  release(): void;
+}
+
+interface RunOperationOptions<T, R> {
+  readonly identifiers?: TraceIdentifiers;
+  readonly synthesizeHandler?: boolean;
+  readonly finalize?: RuntimeOperationFinalizer<T, R>;
+  readonly claimedTrace?: ClaimedHttpTrace;
+  readonly fairnessKey?: string;
+  readonly sessionOrder?: SessionOperationOrder;
+}
 
 interface FinishedRuntimeMutation {
   readonly result: RuntimeMutationResult;
@@ -678,11 +702,7 @@ export class Runtime implements RuntimePort {
           work: () => this.engine.resolveIdentity(account.issuer, account.subject),
         });
       },
-      {},
-      false,
-      undefined,
-      undefined,
-      fairnessKey,
+      { synthesizeHandler: false, fairnessKey },
     );
   }
 
@@ -789,12 +809,18 @@ export class Runtime implements RuntimePort {
     const subscriber = this.makeSubscriber(() => state, context.authEpoch);
     state = {
       context,
+      contexts: new WeakSet([context]),
       subscriber,
       ...(this.telemetry.enabled
         ? { telemetryConnectionId: digest(context.clientSessionId) }
         : {}),
       subscriptions: new Map(),
+      subscriptionControlTails: new Map(),
+      subscriptionControlFrontier: Promise.resolve(),
+      pendingSubscriptionControls: 0,
       capture: null,
+      phase: "open",
+      closeDrain: null,
       activeOperations: 0,
     };
     this.sessions.set(context.clientSessionId, state);
@@ -834,6 +860,7 @@ export class Runtime implements RuntimePort {
         ) {
           throw new DbzzError("auth_stale", "authentication state changed");
         }
+        state.contexts.add(transition.to);
         state.context = transition.to;
         state.subscriber = this.makeSubscriber(() => state, transition.to.authEpoch);
         captured.phase = "reattaching";
@@ -853,16 +880,18 @@ export class Runtime implements RuntimePort {
         }
         return this.finishCapture(captured);
       } catch (error) {
-        // Auth transitions are terminal when their captured protocol cannot be
-        // completed. Remove both old and partially reattached ownership now;
-        // Session still holds the old epoch and cannot close the new one.
-        this.removeSession(state);
+        // A failed transition is terminal, but ownership stays attached until
+        // this and every other already-admitted operation have finalized.
+        void this.startSessionClose(state);
         throw error;
       } finally {
         if (state.capture === captured) state.capture = null;
         this.releaseCapture(captured);
       }
-    }, {}, true, undefined, undefined, transition.from.fairnessKey);
+    }, {
+      fairnessKey: transition.from.fairnessKey,
+      sessionOrder: { kind: "subscription-frontier" },
+    });
   }
 
   async subscribe(context: SessionRuntimeContext, request: RuntimeRequest<SubscribeMessage>): Promise<void> {
@@ -992,20 +1021,39 @@ export class Runtime implements RuntimePort {
   }
 
   async closeSession(context: SessionRuntimeContext, _outcome: Outcome): Promise<void> {
-    const state = this.matchingSession(context);
-    if (state === null) return;
-    this.removeSession(state);
+    const state = this.sessions.get(context.clientSessionId);
+    if (state === undefined || !state.contexts.has(context)) return;
+    await this.startSessionClose(state);
+  }
+
+  private startSessionClose(state: RuntimeSession): Promise<void> {
+    if (state.phase === "removed") return Promise.resolve();
+    if (state.phase === "closing") return state.closeDrain?.promise ?? Promise.resolve();
+    state.phase = "closing";
+    if (state.activeOperations === 0) {
+      this.removeSession(state);
+      return Promise.resolve();
+    }
+    const drain = deferred<void>();
+    state.closeDrain = drain;
+    return drain.promise;
   }
 
   private removeSession(state: RuntimeSession): void {
+    if (state.phase === "removed") return;
+    state.phase = "removed";
     const capture = state.capture;
     state.capture = null;
     if (capture !== null) this.releaseCapture(capture);
     this.reactive.disconnect(state.subscriber);
     state.subscriptions.clear();
-    if (this.sessions.get(state.context.clientSessionId) !== state) return;
-    this.sessions.delete(state.context.clientSessionId);
-    this.telemetry.recordMetric({ name: "runtime.connections", value: this.sessions.size, unit: "gauge" });
+    if (this.sessions.get(state.context.clientSessionId) === state) {
+      this.sessions.delete(state.context.clientSessionId);
+      this.telemetry.recordMetric({ name: "runtime.connections", value: this.sessions.size, unit: "gauge" });
+    }
+    const drain = state.closeDrain;
+    state.closeDrain = null;
+    drain?.resolve(undefined);
   }
 
   async runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
@@ -1064,13 +1112,18 @@ export class Runtime implements RuntimePort {
       );
       aborted(signal);
       return value;
-    }, { requestId: String(request.id) }, true, (outcome) => {
-      try {
-        return this.respondProcedure(request, outcome);
-      } finally {
-        if (originScope !== undefined) publishOriginInvalidations(originScope);
-      }
-    }, claimedTrace, fairnessKey);
+    }, {
+      identifiers: { requestId: String(request.id) },
+      finalize: (outcome) => {
+        try {
+          return this.respondProcedure(request, outcome);
+        } finally {
+          if (originScope !== undefined) publishOriginInvalidations(originScope);
+        }
+      },
+      claimedTrace,
+      fairnessKey,
+    });
   }
 
   private respondProcedure(
@@ -1270,7 +1323,7 @@ export class Runtime implements RuntimePort {
     const admittedAt = scope === undefined ? 0 : performance.now();
     let release: () => void;
     try {
-      release = this.admitOperation(null, fairnessKey);
+      release = this.admitOperation(null, fairnessKey).release;
       if (scope !== undefined) {
         this.telemetry[RECORD_PREPARED_SPAN]({
           operation: "sse",
@@ -1621,7 +1674,7 @@ export class Runtime implements RuntimePort {
       retryAfterMs: DRAIN_RETRY_AFTER_MS,
       resource: "operation",
     });
-    for (const state of [...this.sessions.values()]) this.removeSession(state);
+    const sessionDrains = [...this.sessions.values()].map((state) => this.startSessionClose(state));
     for (const producer of this.sseProducers.values()) producer.fail(draining);
 
     // Close every internal admission boundary before the first await. Existing
@@ -1636,6 +1689,7 @@ export class Runtime implements RuntimePort {
       this.coordinator.drain(),
       reactiveDrain,
       this.reader.drain(),
+      ...sessionDrains,
     ]).then(() => undefined);
     const shutdownWork = coreShutdown.then(() => {
       // A core that outlives the Runtime deadline must not start a detached
@@ -1720,6 +1774,7 @@ export class Runtime implements RuntimePort {
     this.assertReady();
     const state = this.matchingSession(context);
     if (state === null) throw new DbzzError("auth_stale", "authentication state changed");
+    if (state.phase !== "open") throw new DbzzError("auth_stale", "session is closing");
     if (!allowAborted) aborted(context.signal);
     return state;
   }
@@ -1740,17 +1795,30 @@ export class Runtime implements RuntimePort {
       claimRuntimeRequestBytes(request),
     );
     const state = this.matchingSession(context);
+    const execute = () => {
+      if (state === null) throw new DbzzError("auth_stale", "authentication state changed");
+      aborted(context.signal);
+      return work(state, requestBytes);
+    };
+    const sessionOrder: SessionOperationOrder | undefined = operation === "subscription"
+      ? { kind: "subscription-control", id: message.id }
+      : operation === "mutation"
+        ? { kind: "subscription-frontier" }
+        : undefined;
     return this.runOperation(
       state,
       operation,
       functionName,
       requestBytes,
-      () => work(this.currentSession(context), requestBytes),
-      options.identifiers ?? {},
-      options.synthesizeHandler ?? true,
-      (outcome) => this.publishOperationOutcome(context, state, message.id, operation, outcome, options),
-      undefined,
-      context.fairnessKey,
+      execute,
+      {
+        identifiers: options.identifiers ?? {},
+        synthesizeHandler: options.synthesizeHandler ?? true,
+        finalize: (outcome) =>
+          this.publishOperationOutcome(context, state, message.id, operation, outcome, options),
+        fairnessKey: context.fairnessKey,
+        ...(sessionOrder === undefined ? {} : { sessionOrder }),
+      },
     );
   }
 
@@ -2745,12 +2813,12 @@ export class Runtime implements RuntimePort {
     functionName: string | undefined,
     sizeBytes: number,
     work: () => T | Promise<T>,
-    identifiers: TraceIdentifiers = {},
-    synthesizeHandler = true,
-    finalize?: RuntimeOperationFinalizer<T, R>,
-    claimedTrace?: ClaimedHttpTrace,
-    fairnessKey?: string,
+    options: RunOperationOptions<T, R> = {},
   ): Promise<R> {
+    const identifiers = options.identifiers ?? {};
+    const synthesizeHandler = options.synthesizeHandler ?? true;
+    const finalize = options.finalize;
+    const claimedTrace = options.claimedTrace;
     const scope = this.telemetry.enabled
       ? this.operationTrace(session, operation, functionName, identifiers, claimedTrace?.context)
       : undefined;
@@ -2771,10 +2839,10 @@ export class Runtime implements RuntimePort {
       if (outcome.ok) return outcome.value as unknown as R;
       throw outcome.error;
     };
-    let release: () => void;
+    let admission: OperationAdmission;
     try {
       this.assertRequestBytes(sizeBytes);
-      release = this.admitOperation(session, fairnessKey);
+      admission = this.admitOperation(session, options.fairnessKey, options.sessionOrder);
       if (scope !== undefined) {
         this.telemetry[RECORD_PREPARED_SPAN]({
           operation,
@@ -2819,7 +2887,10 @@ export class Runtime implements RuntimePort {
       );
     }
     const startedAt = scope === undefined ? 0 : performance.now();
-    const execute = () => Promise.resolve().then(work)
+    const start = () => Promise.resolve().then(work);
+    const execute = () => (admission.predecessor === undefined
+      ? start()
+      : admission.predecessor.then(start))
       .then(
         (value): RuntimeOperationOutcome<T> => {
           if (scope !== undefined && synthesizeHandler && scope.invocations.size === 0) {
@@ -2857,12 +2928,16 @@ export class Runtime implements RuntimePort {
           return { ok: false, error: safeError };
         },
       )
-      .finally(release)
-      .then(settle);
+      .then(settle)
+      .finally(admission.release);
     return finishOperationTrace(scope === undefined ? execute() : this.runTraced(scope, execute));
   }
 
-  private admitOperation(session: RuntimeSession | null, fairnessKey?: string): () => void {
+  private admitOperation(
+    session: RuntimeSession | null,
+    fairnessKey?: string,
+    sessionOrder?: SessionOperationOrder,
+  ): OperationAdmission {
     this.assertReady();
     const callerOperations = fairnessKey === undefined
       ? 0
@@ -2873,6 +2948,9 @@ export class Runtime implements RuntimePort {
         retryAfterMs: 0,
         resource: "operation",
       });
+    }
+    if (session !== null && session.phase !== "open") {
+      throw new DbzzError("auth_stale", "session is closing");
     }
     if (session !== null && session.activeOperations >= this.limits.maxOperationsPerConnection) {
       throw new DbzzError("overloaded", "per-connection operation capacity is full", {
@@ -2891,21 +2969,65 @@ export class Runtime implements RuntimePort {
     this.activeOperations++;
     if (session !== null) session.activeOperations++;
     if (fairnessKey !== undefined) this.externalOperations.set(fairnessKey, callerOperations + 1);
+
+    let predecessor: Promise<void> | undefined;
+    let control: {
+      readonly state: RuntimeSession;
+      readonly id: number;
+      readonly completion: Deferred<void>;
+    } | undefined;
+    if (session !== null && sessionOrder?.kind === "subscription-control") {
+      predecessor = session.subscriptionControlTails.get(sessionOrder.id);
+      const completion = deferred<void>();
+      control = { state: session, id: sessionOrder.id, completion };
+      session.pendingSubscriptionControls++;
+      session.subscriptionControlTails.set(sessionOrder.id, completion.promise);
+      session.subscriptionControlFrontier = Promise.all([
+        session.subscriptionControlFrontier,
+        completion.promise,
+      ]).then(() => {});
+    } else if (
+      session !== null &&
+      sessionOrder?.kind === "subscription-frontier" &&
+      session.pendingSubscriptionControls > 0
+    ) {
+      predecessor = session.subscriptionControlFrontier;
+    }
+
     let active = true;
-    return () => {
-      if (!active) return;
-      active = false;
-      this.activeOperations--;
-      if (session !== null) session.activeOperations--;
-      if (fairnessKey !== undefined) {
-        const remaining = this.externalOperations.get(fairnessKey)! - 1;
-        if (remaining === 0) this.externalOperations.delete(fairnessKey);
-        else this.externalOperations.set(fairnessKey, remaining);
-      }
-      if (this.activeOperations === 0) {
-        for (const resolve of this.activeWaiters) resolve();
-        this.activeWaiters.clear();
-      }
+    return {
+      predecessor,
+      release: () => {
+        if (!active) return;
+        active = false;
+        if (control !== undefined) {
+          const { state, id, completion } = control;
+          state.pendingSubscriptionControls--;
+          if (state.subscriptionControlTails.get(id) === completion.promise) {
+            state.subscriptionControlTails.delete(id);
+          }
+          completion.resolve(undefined);
+          if (state.pendingSubscriptionControls === 0) {
+            state.subscriptionControlFrontier = Promise.resolve();
+          }
+        }
+        this.activeOperations--;
+        if (session !== null) {
+          session.activeOperations--;
+          if (session.activeOperations === 0 && session.phase === "closing") {
+            this.removeSession(session);
+          }
+        }
+        if (fairnessKey !== undefined) {
+          const remaining = this.externalOperations.get(fairnessKey)! - 1;
+          if (remaining === 0) this.externalOperations.delete(fairnessKey);
+          else this.externalOperations.set(fairnessKey, remaining);
+        }
+        if (this.activeOperations === 0) {
+          for (const resolve of this.activeWaiters) resolve();
+          this.activeWaiters.clear();
+        }
+      },
     };
   }
 

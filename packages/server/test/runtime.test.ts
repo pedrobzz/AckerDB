@@ -60,6 +60,10 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 24; turn++) await Promise.resolve();
+}
+
 function uuidV7(now = Date.now(), sequence = 0): string {
   const timestamp = now.toString(16).padStart(12, "0");
   return `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${sequence.toString(16).padStart(12, "0")}`;
@@ -379,6 +383,7 @@ const functions = {
 class SessionHarness {
   readonly publications: SessionApplicationMessage[] = [];
   readonly preparedPublications: RuntimePublication[] = [];
+  beforePublish: ((publication: RuntimePublication) => void | Promise<void>) | undefined;
   context!: SessionRuntimeContext;
   private controller = new AbortController();
 
@@ -436,6 +441,15 @@ class SessionHarness {
     return this.runtime.mutation(this.context, request(message));
   }
 
+  close(): Promise<void> {
+    this.controller.abort(new DbzzError("draining", "session closed"));
+    return this.runtime.closeSession(this.context, {
+      code: "draining",
+      retryable: false,
+      message: "session closed",
+    });
+  }
+
   private makeContext(
     principal: Principal,
     authEpoch: number,
@@ -448,6 +462,8 @@ class SessionHarness {
       authEpoch,
       signal: controller.signal,
       publish: async (publication: RuntimePublication) => {
+        if (controller.signal.aborted || this.context?.authEpoch !== authEpoch) return false;
+        await this.beforePublish?.(publication);
         if (controller.signal.aborted || this.context?.authEpoch !== authEpoch) return false;
         this.preparedPublications.push(publication);
         this.publications.push(publication.message);
@@ -670,6 +686,111 @@ describe("runtime commit and replay ownership", () => {
 });
 
 describe("ordered convergence", () => {
+  test("orders same-id subscription controls while distinct ids enter independently", async () => {
+    await session.open();
+    revalidationGate = deferred<void>();
+    revalidationEntered = deferred<void>();
+    const subscribing = runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 40,
+      ref: "messages.parallelList",
+      args: { channelId: 1n },
+    }));
+    await revalidationEntered.promise;
+
+    let resetSettled = false;
+    let unsubscribeSettled = false;
+    const resetting = runtime.reset(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "reset",
+      id: 40,
+      cursor: { generation: "stale", commitVersion: 0n, authEpoch: 0, identity: "stale" },
+    })).finally(() => {
+      resetSettled = true;
+    });
+    const unsubscribing = runtime.unsubscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "unsub",
+      id: 40,
+    })).finally(() => {
+      unsubscribeSettled = true;
+    });
+    const independent = runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 41,
+      ref: "messages.list",
+      args: { channelId: 2n },
+    }));
+    await independent;
+    await settle();
+
+    expect(resetSettled).toBe(false);
+    expect(unsubscribeSettled).toBe(false);
+    expect(runtime.status()).toMatchObject({ activeOperations: 3 });
+
+    revalidationGate.resolve(undefined);
+    await Promise.all([subscribing, resetting, unsubscribing]);
+    expect(runtime.status().reactive.queryListeners).toBe(1);
+  });
+
+  test("a mutation waits only subscription controls that arrived before it", async () => {
+    await session.open();
+    revalidationGate = deferred<void>();
+    revalidationEntered = deferred<void>();
+    const priorSubscription = runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 50,
+      ref: "messages.parallelList",
+      args: { channelId: 1n },
+    }));
+    await revalidationEntered.promise;
+
+    const mutation = session.mutation(51, "messages.send", { channelId: 3n, body: "after-control" });
+    const laterSubscription = runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 52,
+      ref: "messages.list",
+      args: { channelId: 2n },
+    }));
+    await laterSubscription;
+    expect(engine.reader.query('SELECT COUNT(*) AS count FROM "messages"').get()).toEqual({ count: 0n });
+
+    revalidationGate.resolve(undefined);
+    await Promise.all([priorSubscription, mutation]);
+    expect(engine.reader.query('SELECT COUNT(*) AS count FROM "messages"').get()).toEqual({ count: 1n });
+  });
+
+  test("auth transition waits the prior subscription-control frontier", async () => {
+    await session.open(user("alice"));
+    revalidationGate = deferred<void>();
+    revalidationEntered = deferred<void>();
+    const subscribing = runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 60,
+      ref: "messages.parallelList",
+      args: { channelId: 1n },
+    }));
+    await revalidationEntered.promise;
+
+    let transitionSettled = false;
+    const rotating = session.rotateBatch(user("bob")).finally(() => {
+      transitionSettled = true;
+    });
+    await settle();
+    expect(transitionSettled).toBe(false);
+
+    revalidationGate.resolve(undefined);
+    await expect(subscribing).rejects.toMatchObject({ code: "auth_stale" });
+    const batch = await rotating;
+    batch.release();
+    expect(session.context).toMatchObject({ authEpoch: 1, principal: { subject: "bob" } });
+  });
+
   test("does not encode an old-epoch error rejected by auth capture", async () => {
     const exported: TelemetryRecord[] = [];
     await restart(limits(), {
@@ -1408,6 +1529,43 @@ describe("scheduler and lifecycle", () => {
     await eventually(() => runtime.status().activeOperations === 0);
   });
 
+  test("keeps a closing session owned until a blocked subscription attach finalizes", async () => {
+    await session.open();
+    revalidationGate = deferred<void>();
+    revalidationEntered = deferred<void>();
+    const attaching = runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 85,
+      ref: "messages.parallelList",
+      args: { channelId: 1n },
+    }));
+    await revalidationEntered.promise;
+
+    const closing = session.close();
+    expect(runtime.status()).toMatchObject({
+      connections: 1,
+      activeOperations: 1,
+    });
+    await expect(runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 86,
+      ref: "messages.list",
+      args: { channelId: 1n },
+    }))).rejects.toMatchObject({ code: "auth_stale" });
+
+    revalidationGate.resolve(undefined);
+    await expect(attaching).rejects.toMatchObject({ code: "auth_stale" });
+    await closing;
+    expect(session.publications).toEqual([]);
+    expect(runtime.status()).toMatchObject({
+      connections: 0,
+      activeOperations: 0,
+      reactive: { queryListeners: 0, eventListeners: 0 },
+    });
+  });
+
   test("owns a finite deadline across stalled active reader and publication work", async () => {
     await restart(limits({ gracefulShutdownMs: 500 }));
     await session.open();
@@ -1427,11 +1585,11 @@ describe("scheduler and lifecycle", () => {
     const drain = runtime.drain(Date.now() + 20);
     expect(runtime.status()).toMatchObject({
       state: "draining",
-      connections: 0,
+      connections: 1,
       reader: { queue: { closed: true } },
       writer: { queue: { closed: true } },
       publication: { closed: true },
-      reactive: { queryListeners: 0, eventListeners: 0 },
+      reactive: { queryListeners: 1, eventListeners: 0 },
     });
     await expect(runtime.query(session.context, request({
       v: PROTOCOL_VERSION,
@@ -1456,6 +1614,8 @@ describe("scheduler and lifecycle", () => {
 
     revalidationGate.resolve(undefined);
     await mutation.catch(() => {});
+    await eventually(() => runtime.status().connections === 0);
+    expect(runtime.status().reactive).toMatchObject({ queryListeners: 0, eventListeners: 0 });
     expect(runtime.status().state).toBe("failed");
   });
 
@@ -1630,6 +1790,68 @@ describe("configured capacity", () => {
       reader: { active: 0, queue: { queuedItems: 0, queuedBytes: 0 } },
     });
     await expect(blocked(globalExcess, 66)).resolves.toBe("released");
+  });
+
+  test("retains subscription ordering only after operation admission succeeds", async () => {
+    await restart(limits({ maxOperationsPerConnection: 1 }));
+    await session.open();
+    queryGate = deferred<void>();
+    const rejectedPublication = deferred<void>();
+    const releaseRejectedPublication = deferred<void>();
+    session.beforePublish = async (publication) => {
+      if (publication.message.id !== 71) return;
+      rejectedPublication.resolve(undefined);
+      await releaseRejectedPublication.promise;
+    };
+
+    const held = runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 70,
+      ref: "messages.block",
+      args: {},
+    }));
+    await eventually(() => runtime.status().activeOperations === 1);
+    const rejectedControl = runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 71,
+      ref: "messages.list",
+      args: { channelId: 1n },
+    }));
+    void rejectedControl.catch(() => {});
+    await rejectedPublication.promise;
+
+    try {
+      queryGate.resolve(undefined);
+      await held;
+      let mutationSettled = false;
+      let mutationValue: unknown;
+      let mutationError: unknown;
+      const mutation = session.mutation(72, "messages.send", {
+        channelId: 1n,
+        body: "not behind rejected control",
+      }).then(
+        (result) => {
+          mutationValue = result.value;
+          mutationSettled = true;
+        },
+        (error) => {
+          mutationError = error;
+          mutationSettled = true;
+        },
+      );
+      await eventually(() => mutationSettled);
+      await mutation;
+      expect(mutationError).toBeUndefined();
+      expect(mutationValue).toBe(1n);
+    } finally {
+      releaseRejectedPublication.resolve(undefined);
+    }
+    await expect(rejectedControl).rejects.toMatchObject({
+      code: "overloaded",
+      resource: "operation",
+    });
   });
 
   test("sheds per-connection and global subscription saturation then reuses released capacity", async () => {
