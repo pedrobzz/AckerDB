@@ -38,28 +38,28 @@
     },
     "packages/cli": {
       "name": "@dbzz/cli",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "bin": {
         "dbz": "./src/main.ts",
       },
       "dependencies": {
-        "@dbzz/core": "workspace:0.2.4",
-        "@dbzz/server": "workspace:0.2.4",
+        "@dbzz/core": "workspace:0.2.5",
+        "@dbzz/server": "workspace:0.2.5",
       },
     },
     "packages/client": {
       "name": "@dbzz/client",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "dependencies": {
-        "@dbzz/core": "workspace:0.2.4",
+        "@dbzz/core": "workspace:0.2.5",
       },
     },
     "packages/client-react": {
       "name": "@dbzz/client-react",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "dependencies": {
-        "@dbzz/client": "workspace:0.2.4",
-        "@dbzz/core": "workspace:0.2.4",
+        "@dbzz/client": "workspace:0.2.5",
+        "@dbzz/core": "workspace:0.2.5",
       },
       "devDependencies": {
         "@ai-sdk/react": "4.0.32",
@@ -88,13 +88,13 @@
     },
     "packages/core": {
       "name": "@dbzz/core",
-      "version": "0.2.4",
+      "version": "0.2.5",
     },
     "packages/server": {
       "name": "@dbzz/server",
-      "version": "0.2.4",
+      "version": "0.2.5",
       "dependencies": {
-        "@dbzz/core": "workspace:0.2.4",
+        "@dbzz/core": "workspace:0.2.5",
         "jose": "6.2.3",
       },
     },

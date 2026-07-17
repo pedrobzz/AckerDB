@@ -8,7 +8,7 @@ import {
 } from "jose";
 import { parseCredential, type Credential } from "@dbzz/core";
 import type { Identity } from "./dbz.ts";
-import { DbzzError } from "./errors.ts";
+import { DbzzError, isDbzzError } from "./errors.ts";
 import { deepFreeze } from "./immutable.ts";
 
 export interface AnonymousPrincipal {
@@ -301,7 +301,7 @@ export async function verifyBearerCredential(
   try {
     candidate = await verifier.verify(credential.token);
   } catch (error) {
-    if (error instanceof DbzzError) throw error;
+    if (isDbzzError(error)) throw error;
     throw authUnavailable(error);
   }
   if (!isVerifiedCredential(candidate)) {
@@ -359,7 +359,7 @@ export async function verifyClientCredential(
       subject: verified.subject,
     }));
   } catch (error) {
-    if (error instanceof DbzzError) throw error;
+    if (isDbzzError(error)) throw error;
     throw authUnavailable(error);
   }
   if (typeof identity !== "bigint" || identity <= 0n) {
@@ -546,7 +546,7 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
           tokenId: typeof payload.jti === "string" ? payload.jti : null,
         });
       } catch (error) {
-        if (error instanceof DbzzError) throw error;
+        if (isDbzzError(error)) throw error;
         if (invalidJoseCredential(error)) throw unauthenticated(error);
         throw authUnavailable(error);
       }

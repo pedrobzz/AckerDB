@@ -46,7 +46,7 @@ import {
   type CommitWaitHook,
   type FetchObservation,
 } from "./coordinator.ts";
-import { ValidationError, type Identity } from "./dbz.ts";
+import { isValidationError, type Identity } from "./dbz.ts";
 import {
   makeDbReader,
   type DbStatementObservation,
@@ -357,7 +357,7 @@ function convergenceError(message: string): DbzzError {
 }
 
 function transportError(error: unknown): unknown {
-  return error instanceof ValidationError
+  return isValidationError(error)
     ? new DbzzError("validation", error.message, { cause: error })
     : error;
 }

@@ -18,9 +18,12 @@ import {
   validateArgsShape,
   type AccessPolicy,
 } from "./functions.ts";
+import { brand, hasBrand } from "./identity.ts";
 import type { InvocationContext } from "./invocation.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+const SCHEMA_IDENTITY = Symbol.for("@dbzz/server/Schema/v1");
+const TABLE_DEF_IDENTITY = Symbol.for("@dbzz/server/TableDef/v1");
 
 function checkName(name: string, what: string): void {
   if (!IDENTIFIER.test(name)) {
@@ -99,6 +102,7 @@ export class TableDef<
     kind: Kind,
     eventSubscription: EventSubscriptionDefinition<Cols, EventArgs> | null = null,
   ) {
+    brand(this, TABLE_DEF_IDENTITY);
     this.columns = columns;
     this.kind = kind;
     this.eventSubscription = eventSubscription as RuntimeEventSubscriptionDefinition | null;
@@ -211,6 +215,11 @@ export class TableDef<
   }
 }
 
+/** True for a table definition created by any compatible @dbzz/server instance. */
+export function isTableDef(value: unknown): value is TableDef {
+  return hasBrand(value, TABLE_DEF_IDENTITY);
+}
+
 export function defineTable<Cols extends ObjectShape>(
   columns: Cols,
 ): TableDef<Cols, Record<never, never>, "table"> {
@@ -278,9 +287,15 @@ export class Schema<T extends Record<string, TableDef> = Record<string, TableDef
   readonly namedTypes: ReadonlyMap<string, Validator<unknown, string>>;
 
   constructor(tables: T, namedTypes: Map<string, Validator<unknown, string>>) {
+    brand(this, SCHEMA_IDENTITY);
     this.tables = tables;
     this.namedTypes = namedTypes;
   }
+}
+
+/** True for a schema created by any compatible @dbzz/server instance. */
+export function isSchema(value: unknown): value is Schema {
+  return hasBrand(value, SCHEMA_IDENTITY);
 }
 
 export function defineSchema<T extends Record<string, TableDef>>(tables: T): Schema<T> {
@@ -352,7 +367,7 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
 
   for (const [tableName, table] of Object.entries(tables)) {
     checkName(tableName, "table name");
-    if (!(table instanceof TableDef)) {
+    if (!isTableDef(table)) {
       throw new ValidationError(`table "${tableName}" is not a defineTable(...) result`);
     }
     if (table.scheduleAtColumn !== null && table.scheduledHandler === null) {

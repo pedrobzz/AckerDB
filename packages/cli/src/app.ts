@@ -13,10 +13,11 @@ import {
   Runtime,
   assertCredentialVerifier,
   createOidcVerifier,
+  isSchema,
   type CredentialVerifier,
   type EngineCloseDisposition,
   reconcile,
-  Schema,
+  type Schema,
   UnsafeSchemaChange,
 } from "@dbzz/server";
 import type { AppConfig } from "./config.ts";
@@ -53,7 +54,7 @@ export async function importSchema(config: AppConfig): Promise<Schema> {
     throw new Error(`schema not found at ${config.schemaPath}`);
   }
   const module = (await import(pathToFileURL(config.schemaPath).href)) as { default?: unknown };
-  if (!(module.default instanceof Schema)) {
+  if (!isSchema(module.default)) {
     throw new Error(`${config.schemaPath} must default-export defineSchema(...)`);
   }
   return module.default;

@@ -1,6 +1,6 @@
 {
   "name": "@dbzz/client-react",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "type": "module",
   "files": [
     "src"
@@ -13,8 +13,8 @@
     "./ai": "./src/ai/index.ts"
   },
   "dependencies": {
-    "@dbzz/client": "workspace:0.2.4",
-    "@dbzz/core": "workspace:0.2.4"
+    "@dbzz/client": "workspace:0.2.5",
+    "@dbzz/core": "workspace:0.2.5"
   },
   "peerDependencies": {
     "ai": "^7.0.0",

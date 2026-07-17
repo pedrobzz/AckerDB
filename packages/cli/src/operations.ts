@@ -16,11 +16,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
   CorruptDatabaseError,
-  DbzzError,
   Engine,
   IncompatibleDatabaseError,
   PRODUCTION_LIMITS,
   Telemetry,
+  isDbzzError,
   type BackupManifest,
   type DurabilityPolicy,
   type EngineStatus,
@@ -41,7 +41,7 @@ interface OperationTelemetryDetails {
 }
 
 function operationOutcome(error: unknown): TelemetryOutcome {
-  if (error instanceof DbzzError) return error.code;
+  if (isDbzzError(error)) return error.code;
   if (error instanceof CorruptDatabaseError || error instanceof IncompatibleDatabaseError) {
     return "validation";
   }

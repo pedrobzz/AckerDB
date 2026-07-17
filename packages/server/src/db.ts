@@ -7,10 +7,22 @@
 import type { Database } from "bun:sqlite";
 import { ValidationError, type Validator } from "./dbz.ts";
 import type { ColumnPlan, Engine, TablePlan } from "./engine.ts";
+import { brand, hasBrand } from "./identity.ts";
 import { camelCase, type IndexDef } from "./schema.ts";
 import { emitWriteKeys, idKey, ixKey, scanKey } from "./keys.ts";
 
-export class UniqueConstraintError extends Error {}
+const UNIQUE_CONSTRAINT_ERROR_IDENTITY = Symbol.for("@dbzz/server/UniqueConstraintError/v1");
+
+export class UniqueConstraintError extends Error {
+  constructor(message?: string) {
+    super(message);
+    brand(this, UNIQUE_CONSTRAINT_ERROR_IDENTITY);
+  }
+}
+
+export function isUniqueConstraintError(value: unknown): value is UniqueConstraintError {
+  return hasBrand(value, UNIQUE_CONSTRAINT_ERROR_IDENTITY);
+}
 
 export interface ReadRecorder {
   add(key: string): void;

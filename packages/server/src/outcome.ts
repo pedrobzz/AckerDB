@@ -1,7 +1,6 @@
 import { ProtocolError, type Outcome } from "@dbzz/core";
-import { AdmissionRejected } from "./admission.ts";
-import { ValidationError } from "./dbz.ts";
-import { DbzzError } from "./errors.ts";
+import { isValidationError } from "./dbz.ts";
+import { isDbzzError } from "./errors.ts";
 
 export const PUBLIC_ERROR_FALLBACK = "err";
 const MAX_PUBLIC_MESSAGE_UNITS = 512;
@@ -58,7 +57,7 @@ export function fitOutcome<T>(
 
 /** Convert every owning failure boundary to the one safe transport contract. */
 export function outcomeFromError(error: unknown): Outcome {
-  if (error instanceof DbzzError) {
+  if (isDbzzError(error)) {
     return {
       code: error.code,
       retryable: error.retryable,
@@ -71,17 +70,8 @@ export function outcomeFromError(error: unknown): Outcome {
   if (error instanceof ProtocolError) {
     return { code: error.code, retryable: false, message: boundedMessage(error.message) };
   }
-  if (error instanceof ValidationError) {
+  if (isValidationError(error)) {
     return { code: "validation", retryable: false, message: boundedMessage(error.message) };
-  }
-  if (error instanceof AdmissionRejected) {
-    return {
-      code: error.code,
-      retryable: error.retryable,
-      message: boundedMessage(error.message),
-      resource: error.resource,
-      ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
-    };
   }
   return { code: "internal", retryable: false, message: "internal server error" };
 }
