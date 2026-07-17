@@ -35,6 +35,7 @@ import {
   recordHttpTraceFailure,
 } from "./external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "./limits.ts";
+import { DBZZ_HTTP_ROUTES } from "./http-routes.ts";
 import type { McpDeclaration } from "./mcp.ts";
 import {
   mcpErrorResponse,
@@ -571,11 +572,11 @@ export class DbzzServer {
   private async fetch(request: Request, listener: Server<WsData>): Promise<Response | undefined> {
     const url = new URL(request.url);
 
-    if (url.pathname === "/live" && request.method === "GET") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.live && request.method === "GET") {
       const live = this.lifecycle !== "failed" && this.lifecycle !== "stopped";
       return json({ version: 1, live }, live ? 200 : 503);
     }
-    if (url.pathname === "/ready" && request.method === "GET") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.ready && request.method === "GET") {
       const runtimeState = this.activeRuntime?.status().state;
       const ready = this.lifecycle === "ready" && runtimeState === "ready";
       const state = this.lifecycle === "ready" && runtimeState !== "ready"
@@ -589,7 +590,7 @@ export class DbzzServer {
       }, ready ? 200 : 503);
     }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-    if (url.pathname === "/api/sse/ack") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.sseAck) {
       if (request.method !== "POST") {
         return new Response("method not allowed", {
           status: 405,
@@ -607,7 +608,7 @@ export class DbzzServer {
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
       return protocolError(unavailableWhile(this.lifecycle));
     }
-    if (url.pathname === "/status" && request.method === "GET") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.status && request.method === "GET") {
       let admission: HttpAdmissionLease | undefined;
       let lease: AuthLease | undefined;
       try {
@@ -624,21 +625,21 @@ export class DbzzServer {
         admission?.release();
       }
     }
-    if (url.pathname === "/ws") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.websocket) {
       return this.upgradeWebSocket(request, listener);
     }
-    if (url.pathname === "/api/call" && request.method === "POST") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.call && request.method === "POST") {
       return this.call(request, false, this.requestSource(request, listener));
     }
-    if (url.pathname === "/api/sse" && request.method === "POST") {
+    if (url.pathname === DBZZ_HTTP_ROUTES.sse && request.method === "POST") {
       return this.call(request, true, this.requestSource(request, listener));
     }
     if (
-      url.pathname === "/live" ||
-      url.pathname === "/ready" ||
-      url.pathname === "/status" ||
-      url.pathname === "/api/call" ||
-      url.pathname === "/api/sse"
+      url.pathname === DBZZ_HTTP_ROUTES.live ||
+      url.pathname === DBZZ_HTTP_ROUTES.ready ||
+      url.pathname === DBZZ_HTTP_ROUTES.status ||
+      url.pathname === DBZZ_HTTP_ROUTES.call ||
+      url.pathname === DBZZ_HTTP_ROUTES.sse
     ) {
       return new Response("method not allowed", {
         status: 405,
