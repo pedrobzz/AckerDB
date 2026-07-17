@@ -73,6 +73,16 @@ const listAgentTokens = typedQuery({
   args: {},
   handler: (ctx) => agentMcp.tokens.list(ctx),
 });
+const updateAgentToken = typedMutation({
+  access: "authenticated",
+  args: { tokenId: dbz.string(), name: dbz.string() },
+  handler: (ctx, args) => agentMcp.tokens.update(ctx, args.tokenId, { name: args.name }),
+});
+const revokeAgentToken = typedMutation({
+  access: "authenticated",
+  args: { tokenId: dbz.string() },
+  handler: (ctx, args) => agentMcp.tokens.revoke(ctx, args.tokenId),
+});
 const createSystemAgentToken = typedMutation({
   access: "system",
   args: { identity: dbz.identity(), name: dbz.string() },
@@ -121,6 +131,8 @@ void createdSystemToken;
 void listedTokenId;
 void createdScope;
 void createdSystemScope;
+void updateAgentToken;
+void revokeAgentToken;
 void updateScopedToken;
 void revokeSystemAgentToken;
 const renamedEndpoint = typedMcp({
@@ -210,6 +222,16 @@ typedMutation({
     scopedMcp.tokens.create(ctx, { name: "invalid", scopes: ["orders.create"] });
     // @ts-expect-error owner token operations never accept a selected Identity
     agentMcp.tokens.create(ctx, 1n as Identity, { name: "escalation" });
+    // @ts-expect-error descriptor edits cannot change authorization grants
+    scopedMcp.tokens.update(ctx, "token", { scopes: ["orders.get"] });
+    // @ts-expect-error descriptor edits expose only bounded name and metadata
+    agentMcp.tokens.update(ctx, "token", { expiresAt: Date.now() });
+    // @ts-expect-error descriptor edits require at least one replacement field
+    agentMcp.tokens.update(ctx, "token", {});
+    // @ts-expect-error plaintext secrets cannot be recovered
+    agentMcp.tokens.recover(ctx, "token");
+    // @ts-expect-error owner lifecycle has no built-in expiration
+    agentMcp.tokens.expire(ctx, "token");
     // @ts-expect-error scope-free system token creation cannot accept a scope value
     agentMcp.systemTokens.create(ctx, 1n as Identity, { name: "invalid", scopes: [] });
     // @ts-expect-error scoped system token creation requires an explicit grant

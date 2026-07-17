@@ -12,12 +12,18 @@ import {
   type McpTokenCreateInput,
   type McpTokenDescriptor,
   type McpTokenLimits,
+  type McpTokenUpdateInput,
 } from "./mcp-token-vault.ts";
 import type { McpScopeDescriptor } from "./mcp-scopes.ts";
 import { markOneTimeResult } from "./one-time-result.ts";
 import type { Schema } from "./schema.ts";
 
-export type { CreatedMcpToken, McpTokenCreateInput, McpTokenDescriptor };
+export type {
+  CreatedMcpToken,
+  McpTokenCreateInput,
+  McpTokenDescriptor,
+  McpTokenUpdateInput,
+};
 
 export type McpTokenOperations<
   S extends Schema = Schema,
@@ -30,6 +36,15 @@ export type McpTokenOperations<
   list(
     ctx: QueryCtx<S> | MutationCtx<S> | TxCtx<S>,
   ): readonly McpTokenDescriptor<Scope>[];
+  update(
+    ctx: MutationCtx<S> | TxCtx<S>,
+    tokenId: string,
+    input: McpTokenUpdateInput,
+  ): void;
+  revoke(
+    ctx: MutationCtx<S> | TxCtx<S>,
+    tokenId: string,
+  ): void;
 } & ([Scope] extends [never] ? object : {
   updateScopes(
     ctx: MutationCtx<S> | TxCtx<S>,
@@ -161,6 +176,30 @@ export function createMcpTokenOperations<S extends Schema, Scope extends string 
         mcp,
         scopeDescriptor,
       );
+    },
+    update(
+      ctx: MutationCtx<S> | TxCtx<S>,
+      tokenId: string,
+      input: McpTokenUpdateInput,
+    ): void {
+      const owner = ownerCapability(ctx, true);
+      owner.engine[mcpTokenVaultOwner].update(
+        owner.principal.identity,
+        mcp,
+        tokenId,
+        input,
+        owner.limits,
+        owner.now(),
+      );
+      owner.writes!.keys.add(ownerKey(owner.principal.identity, mcp));
+    },
+    revoke(
+      ctx: MutationCtx<S> | TxCtx<S>,
+      tokenId: string,
+    ): void {
+      const owner = ownerCapability(ctx, true);
+      owner.engine[mcpTokenVaultOwner].revoke(owner.principal.identity, mcp, tokenId);
+      owner.writes!.keys.add(ownerKey(owner.principal.identity, mcp));
     },
     ...(scopeDescriptor === undefined ? {} : {
       updateScopes(

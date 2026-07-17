@@ -1,288 +1,33 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import {
-  PROTOCOL_VERSION,
-  encode,
-  type MutationMessage,
-  type QueryMessage,
-} from "@dbzz/core";
+import { encode } from "@dbzz/core";
 import {
   ANONYMOUS_PRINCIPAL,
   verifyBearerCredential,
   type CredentialVerifier,
-  type McpPrincipal,
   type PrincipalInvalidation,
-  type UserPrincipal,
 } from "../src/auth.ts";
-import { callerFairnessKey } from "../src/caller.ts";
-import { dbz } from "../src/dbz.ts";
-import { Engine } from "../src/engine.ts";
-import {
-  mutation,
-  procedure,
-  query,
-  type MutationCtx,
-  type MutationBuilder,
-  type ProcedureBuilder,
-  type QueryBuilder,
-} from "../src/functions.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
-import { createMcp, type McpBuilder } from "../src/mcp.ts";
-import { reconcile } from "../src/reconcile.ts";
-import { Registry } from "../src/registry.ts";
-import { Runtime } from "../src/runtime.ts";
-import { defineSchema, defineTable } from "../src/schema.ts";
+import { createMcp } from "../src/mcp.ts";
 import { serve } from "../src/serve.ts";
-import type { RuntimeRequest, SessionRuntimeContext } from "../src/session.ts";
+import type { SessionApplicationMessage } from "../src/session.ts";
+import {
+  agentMcp,
+  cleanupMcpTokenFixtures,
+  databasePath,
+  fixture,
+  mutationMessage,
+  queryMessage,
+  request,
+  retainedOwnerContext,
+  scopedMcp,
+  session,
+  subscribeMessage,
+  trackCleanup,
+  user,
+} from "./support/mcp-token-fixture.ts";
 
-const schema = defineSchema({
-  records: defineTable({
-    id: dbz.primaryKey(),
-    owner: dbz.identity(),
-    value: dbz.string(),
-  }),
-});
-
-const typedMutation = mutation as MutationBuilder<typeof schema>;
-const typedQuery = query as QueryBuilder<typeof schema>;
-const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-
-const agentMcp = typedMcp({ name: "agent", path: "/agent/mcp" });
-const operationsMcp = typedMcp({ name: "operations", path: "/operations/mcp" });
-const scopedMcp = typedMcp({
-  name: "scoped",
-  path: "/scoped/mcp",
-  scopes: ["orders.all", "orders.get", "reports.all"] as const,
-});
-let retainedOwnerContext: MutationCtx<typeof schema> | null = null;
-
-const createAgentToken = typedMutation({
-  access: "authenticated",
-  args: {
-    name: dbz.string(),
-    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
-  },
-  handler: (ctx, args) => {
-    retainedOwnerContext = ctx;
-    return agentMcp.tokens.create(ctx, args);
-  },
-});
-
-const listAgentTokens = typedQuery({
-  access: "authenticated",
-  args: {},
-  handler: (ctx) => agentMcp.tokens.list(ctx),
-});
-
-const createScopedToken = typedMutation({
-  access: "authenticated",
-  args: {
-    name: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
-  },
-  handler: (ctx, args) => scopedMcp.tokens.create(ctx, args),
-});
-
-const updateScopedToken = typedMutation({
-  access: "authenticated",
-  args: {
-    id: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
-  },
-  handler: (ctx, args) => scopedMcp.tokens.updateScopes(ctx, args.id, args.scopes),
-});
-
-const listScopedTokens = typedQuery({
-  access: "authenticated",
-  args: {},
-  handler: (ctx) => scopedMcp.tokens.list(ctx),
-});
-
-const normalProcedure = typedProcedure({
-  access: "authenticated",
-  args: {},
-  handler: (ctx) => ctx.auth.kind,
-});
-
-const writeOwnedRecord = agentMcp.tool({
-  name: "write_owned_record",
-  description: "Write a row owned by the delegated Identity.",
-  access: "authenticated",
-  args: { value: dbz.string() },
-  handler: async (ctx, args) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
-    const identity = ctx.auth.identity;
-    const id = await ctx.tx((tx) => tx.db.records.insert({ owner: identity, value: args.value }));
-    return {
-      content: [
-        { type: "text", text: `${ctx.auth.kind}:${identity}` },
-        {
-          type: "resource_link",
-          uri: `dbzz://records/${id}`,
-          name: `record-${id}`,
-          annotations: { audience: ["assistant"], priority: 0.8 },
-          _meta: { owner: identity.toString() },
-        },
-      ],
-      _meta: { tokenId: ctx.auth.tokenId },
-    };
-  },
-});
-
-const attemptSelfAdministration = agentMcp.tool({
-  name: "attempt_self_administration",
-  description: "Exercise the delegated-credential administration boundary.",
-  access: "authenticated",
-  args: {},
-  handler: async (ctx) => ctx.tx((tx) => {
-    agentMcp.tokens.list(tx);
-    agentMcp.tokens.create(tx, { name: "escalated", metadata: {} });
-    return { content: [{ type: "text", text: "unexpected" }] };
-  }),
-});
-
-const publicScopedTool = scopedMcp.tool({
-  name: "public_status",
-  description: "Public scope fixture.",
-  access: "public",
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "public" }] }),
-});
-
-const authenticatedScopedTool = scopedMcp.tool({
-  name: "authenticated_status",
-  description: "Authenticated scope fixture.",
-  access: "authenticated",
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "authenticated" }] }),
-});
-
-const anyScopedTool = scopedMcp.tool({
-  name: "read_orders",
-  description: "Any-of scope fixture.",
-  access: { anyOf: ["orders.all", "orders.get"] },
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "orders" }] }),
-});
-
-const allScopedTool = scopedMcp.tool({
-  name: "read_reports",
-  description: "All-of scope fixture.",
-  access: { allOf: ["orders.get", "reports.all"] },
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "reports" }] }),
-});
-
-const exactAllTool = scopedMcp.tool({
-  name: "admin_orders",
-  description: "Prove .all is an opaque exact value.",
-  access: { anyOf: ["orders.all"] },
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "admin" }] }),
-});
-
-const modules = {
-  mcp: { agentMcp, operationsMcp, scopedMcp },
-  records: {
-    allScopedTool,
-    anyScopedTool,
-    authenticatedScopedTool,
-    exactAllTool,
-    publicScopedTool,
-    writeOwnedRecord,
-  },
-  security: { attemptSelfAdministration, normalProcedure },
-  tokens: {
-    createAgentToken,
-    createScopedToken,
-    listAgentTokens,
-    listScopedTokens,
-    updateScopedToken,
-  },
-};
-
-const directories: string[] = [];
-const cleanups: Array<() => Promise<void>> = [];
-
-afterEach(async () => {
-  retainedOwnerContext = null;
-  while (cleanups.length > 0) await cleanups.pop()!().catch(() => {});
-  while (directories.length > 0) rmSync(directories.pop()!, { recursive: true, force: true });
-});
-
-function fixture(path: string, verifier?: CredentialVerifier): { engine: Engine; runtime: Runtime } {
-  const engine = new Engine(schema, path);
-  reconcile(engine);
-  const runtime = new Runtime({
-    engine,
-    registry: new Registry(modules),
-    verifier,
-    telemetry: false,
-    limits: {
-      ...PRODUCTION_LIMITS,
-      mcp: { ...PRODUCTION_LIMITS.mcp, maxTokensPerIdentity: 2 },
-    },
-  });
-  cleanups.push(async () => {
-    await runtime.drain().catch(() => {});
-    engine.close("clean");
-  });
-  return { engine, runtime };
-}
-
-async function user(runtime: Runtime, subject: string): Promise<UserPrincipal> {
-  const identity = await runtime.resolveIdentity({ issuer: "https://issuer.test/", subject });
-  return Object.freeze({
-    kind: "user",
-    identity,
-    issuer: "https://issuer.test/",
-    subject,
-    claims: Object.freeze({}),
-    expiresAt: Date.now() + 60_000,
-    tokenId: `external-${subject}`,
-  });
-}
-
-function session(principal: UserPrincipal, name: string): SessionRuntimeContext {
-  return Object.freeze({
-    clientSessionId: name,
-    principal,
-    fairnessKey: callerFairnessKey(principal, { family: "test", address: name }),
-    authEpoch: 0,
-    signal: new AbortController().signal,
-    publish: async () => true,
-  });
-}
-
-function request<Message>(message: Message): RuntimeRequest<Message> {
-  return Object.freeze({ message, bytes: Buffer.byteLength(encode(message)) });
-}
-
-function mutationMessage(
-  id: number,
-  requestId: string,
-  args: unknown,
-  ref = "tokens.createAgentToken",
-): MutationMessage {
-  const timestamp = Date.now().toString(16).padStart(12, "0");
-  return {
-    v: PROTOCOL_VERSION,
-    t: "m",
-    id,
-    ref,
-    args,
-    mutationRequestId: `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${requestId.padStart(12, "0")}`,
-    issuedAt: Date.now(),
-  };
-}
-
-function queryMessage(id: number, ref = "tokens.listAgentTokens"): QueryMessage {
-  return { v: PROTOCOL_VERSION, t: "q", id, ref, args: {} };
-}
+afterEach(cleanupMcpTokenFixtures);
 
 function mcpHeaders(token?: string): Record<string, string> {
   return {
@@ -311,9 +56,7 @@ async function listedToolNames(response: Response): Promise<readonly string[]> {
 
 describe("Identity-bound MCP owner tokens", () => {
   test("creates one-time secrets in an ordinary mutation without persisting replayable plaintext", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-token-create-"));
-    directories.push(directory);
-    const { engine, runtime } = fixture(join(directory, "data.db"));
+    const { engine, runtime } = fixture(databasePath("dbzz-mcp-token-create-"));
     const alice = await user(runtime, "alice");
     const aliceSession = session(alice, "alice-session");
     await runtime.openSession(aliceSession);
@@ -371,7 +114,7 @@ describe("Identity-bound MCP owner tokens", () => {
     expect(
       engine.writer.query("SELECT result_disposition, result, result_bytes FROM _dbz_mutations").get(),
     ).toEqual({ result_disposition: "one-time", result: null, result_bytes: 0n });
-    expect(() => agentMcp.tokens.create(retainedOwnerContext!, {
+    expect(() => agentMcp.tokens.create(retainedOwnerContext()!, {
       name: "Escaped context",
       metadata: {},
     })).toThrow("MCP token operations require a DBZZ invocation context");
@@ -415,10 +158,142 @@ describe("Identity-bound MCP owner tokens", () => {
     })))).rejects.toMatchObject({ code: "overloaded" });
   });
 
+  test("reactively edits and revokes only the owner's endpoint-bound descriptor", async () => {
+    const { engine, runtime } = fixture(databasePath("dbzz-mcp-token-lifecycle-"));
+    const alice = await user(runtime, "lifecycle-alice");
+    const publications: SessionApplicationMessage[] = [];
+    const aliceSession = session(alice, "lifecycle-alice-session", publications);
+    await runtime.openSession(aliceSession);
+    await runtime.subscribe(aliceSession, request(subscribeMessage(100)));
+
+    const lifecycleTransitions = () => publications.filter((message) =>
+      message.t === "transition" && message.id === 100 &&
+      (message.transition.kind === "reset" || message.transition.kind === "update")
+    );
+    expect(lifecycleTransitions()).toHaveLength(1);
+    expect(lifecycleTransitions()[0]).toMatchObject({ transition: { kind: "reset", value: [] } });
+
+    const created = (await runtime.mutation(aliceSession, request(mutationMessage(101, "101", {
+      name: "Laptop",
+      metadata: { device: "mac" },
+    })))).value as { readonly id: string; readonly token: string };
+    expect(lifecycleTransitions()).toHaveLength(2);
+    expect(lifecycleTransitions().at(-1)).toMatchObject({
+      transition: { kind: "update", value: [{ id: created.id, name: "Laptop" }] },
+    });
+
+    const before = engine.reader.query(
+      "SELECT secret_digest, scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
+    ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
+    const active = await runtime.authenticateMcpToken("agent", created.token, "before-edit");
+
+    await runtime.mutation(aliceSession, request(mutationMessage(
+      102,
+      "102",
+      { id: created.id, name: "Personal Codex" },
+      "tokens.renameAgentToken",
+    )));
+    expect(lifecycleTransitions()).toHaveLength(3);
+    expect(lifecycleTransitions().at(-1)).toMatchObject({
+      transition: { kind: "update", value: [{ name: "Personal Codex", metadata: { device: "mac" } }] },
+    });
+
+    await runtime.mutation(aliceSession, request(mutationMessage(
+      103,
+      "103",
+      { id: created.id, metadata: { device: "mac", color: "blue", generation: 2n } },
+      "tokens.updateAgentTokenMetadata",
+    )));
+    expect(lifecycleTransitions()).toHaveLength(4);
+    expect(lifecycleTransitions().at(-1)).toMatchObject({
+      transition: {
+        kind: "update",
+        value: [{ name: "Personal Codex", metadata: { device: "mac", color: "blue", generation: 2n } }],
+      },
+    });
+
+    const after = engine.reader.query(
+      "SELECT secret_digest, scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
+    ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
+    expect(Buffer.from(after.secret_digest)).toEqual(Buffer.from(before.secret_digest));
+    expect(after.scopes).toBe(before.scopes);
+    expect(await runtime.authenticateMcpToken("agent", created.token, "after-edit"))
+      .toMatchObject({ identity: alice.identity, tokenId: created.id });
+    const activeResult = await runtime.runMcpTool({
+      id: "active-through-descriptor-edit",
+      mcp: "agent",
+      tool: "write_owned_record",
+      args: { value: "still-active" },
+      principal: active,
+    });
+    expect(activeResult.content[0]).toMatchObject({ text: `mcp:${alice.identity}` });
+
+    for (const [id, args, ref] of [
+      [104, { id: created.id, metadata: { value: "x".repeat(PRODUCTION_LIMITS.mcp.maxMetadataBytes) } }, "tokens.updateAgentTokenMetadata"],
+      [105, { id: created.id, kind: "empty" }, "tokens.invalidAgentTokenUpdate"],
+      [106, { id: created.id, kind: "undefined" }, "tokens.invalidAgentTokenUpdate"],
+    ] as const) {
+      await expect(runtime.mutation(aliceSession, request(mutationMessage(id, String(id), args, ref))))
+        .rejects.toMatchObject({ code: "validation" });
+    }
+    expect(lifecycleTransitions()).toHaveLength(4);
+
+    const bob = await user(runtime, "lifecycle-bob");
+    const bobSession = session(bob, "lifecycle-bob-session");
+    await runtime.openSession(bobSession);
+    expect(await runtime.query(bobSession, request(queryMessage(107)))).toEqual([]);
+    expect(await runtime.query(
+      aliceSession,
+      request(queryMessage(108, "tokens.listOperationsTokens")),
+    )).toEqual([]);
+    for (const [id, context, args, ref] of [
+      [109, bobSession, { id: created.id, name: "Stolen" }, "tokens.renameAgentToken"],
+      [110, bobSession, { id: created.id }, "tokens.revokeAgentToken"],
+      [111, aliceSession, { id: created.id, name: "Wrong endpoint" }, "tokens.renameOperationsToken"],
+      [112, aliceSession, { id: created.id }, "tokens.revokeOperationsToken"],
+    ] as const) {
+      await expect(runtime.mutation(context, request(mutationMessage(id, String(id), args, ref))))
+        .rejects.toMatchObject({ code: "not_found" });
+    }
+    expect(lifecycleTransitions()).toHaveLength(4);
+    const unchanged = await runtime.query(
+      aliceSession,
+      request(queryMessage(113)),
+    ) as readonly Record<string, unknown>[];
+    expect(unchanged).toMatchObject([{
+      id: created.id,
+      name: "Personal Codex",
+      metadata: { device: "mac", color: "blue", generation: 2n },
+    }]);
+    expect(unchanged[0]).not.toHaveProperty("token");
+    expect(await runtime.authenticateMcpToken("agent", created.token, "after-isolation-checks"))
+      .toMatchObject({ identity: alice.identity, tokenId: created.id });
+
+    await runtime.mutation(aliceSession, request(mutationMessage(
+      114,
+      "114",
+      { id: created.id },
+      "tokens.revokeAgentToken",
+    )));
+    expect(lifecycleTransitions()).toHaveLength(5);
+    expect(lifecycleTransitions().at(-1)).toMatchObject({ transition: { kind: "update", value: [] } });
+    await expect(runtime.authenticateMcpToken("agent", created.token, "after-revoke"))
+      .rejects.toMatchObject({ code: "unauthenticated" });
+
+    const server = serve({ runtime, port: 0 });
+    trackCleanup(async () => server.drain());
+    const response = await rpc(
+      `http://127.0.0.1:${server.port}`,
+      "/agent/mcp",
+      "ping",
+      {},
+      created.token,
+    );
+    expect(response.status).toBe(401);
+  });
+
   test("stores exact immutable grants and enforces explicit authenticated, any-of, and all-of policy", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-token-scopes-"));
-    directories.push(directory);
-    const { engine, runtime } = fixture(join(directory, "data.db"));
+    const { engine, runtime } = fixture(databasePath("dbzz-mcp-token-scopes-"));
     const alice = await user(runtime, "scoped-alice");
     const aliceSession = session(alice, "scoped-alice-session");
     await runtime.openSession(aliceSession);
@@ -608,9 +483,7 @@ describe("Identity-bound MCP owner tokens", () => {
   });
 
   test("filters discovery and reauthorizes every HTTP call against the current exact grant", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-discovery-"));
-    directories.push(directory);
-    const { runtime } = fixture(join(directory, "data.db"));
+    const { runtime } = fixture(databasePath("dbzz-mcp-discovery-"));
     const alice = await user(runtime, "discovery-alice");
     const aliceSession = session(alice, "discovery-alice-session");
     await runtime.openSession(aliceSession);
@@ -622,7 +495,7 @@ describe("Identity-bound MCP owner tokens", () => {
     )))).value as { readonly id: string; readonly token: string };
 
     const server = serve({ runtime, port: 0 });
-    cleanups.push(async () => server.drain());
+    trackCleanup(async () => server.drain());
     const base = `http://127.0.0.1:${server.port}`;
 
     expect(await listedToolNames(await rpc(base, scopedMcp.path, "tools/list", {}))).toEqual([
@@ -775,9 +648,7 @@ describe("Identity-bound MCP owner tokens", () => {
   });
 
   test("survives restart, authenticates only its bound endpoint, and cannot self-administer", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-token-auth-"));
-    directories.push(directory);
-    const path = join(directory, "data.db");
+    const path = databasePath("dbzz-mcp-token-auth-");
     const verifierCalls: string[] = [];
     const permissiveVerifier: CredentialVerifier = {
       revocationBound: { kind: "token-expiration" },
@@ -807,9 +678,7 @@ describe("Identity-bound MCP owner tokens", () => {
       firstSession,
       request(mutationMessage(2, "11", { name: "Claude", metadata: { host: "claude" } })),
     )).value as { readonly token: string; readonly id: string };
-    await first.runtime.drain();
-    first.engine.close("clean");
-    cleanups.pop();
+    await first.close();
 
     const second = fixture(path, permissiveVerifier);
     const secondAlice = await user(second.runtime, "alice");
@@ -857,7 +726,7 @@ describe("Identity-bound MCP owner tokens", () => {
     expect(verifierCalls).toEqual([]);
 
     const server = serve({ runtime: second.runtime, port: 0 });
-    cleanups.push(async () => server.drain());
+    trackCleanup(async () => server.drain());
     const base = `http://127.0.0.1:${server.port}`;
     const called = await rpc(base, "/agent/mcp", "tools/call", {
       name: "write_owned_record",
