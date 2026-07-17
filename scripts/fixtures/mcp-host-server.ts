@@ -1,0 +1,324 @@
+import { createInterface } from "node:readline";
+import {
+  PROTOCOL_VERSION,
+  encode,
+  type MutationMessage,
+} from "@dbzz/core";
+import {
+  dbz,
+  defineSchema,
+  Engine,
+  mutation,
+  reconcile,
+  Registry,
+  Runtime,
+  serve,
+  type McpBuilder,
+  type MutationBuilder,
+  type SessionRuntimeContext,
+  type UserPrincipal,
+} from "@dbzz/server";
+import { createMcp } from "@dbzz/server/mcp";
+
+const INSTRUCTION_MARKER = "dbzz-host-instructions-v1";
+const READ_SCOPE = "acceptance.read";
+const ADMIN_SCOPE = "acceptance.admin";
+const schema = defineSchema({});
+const typedMutation = mutation as MutationBuilder<typeof schema>;
+const typedMcp = createMcp as McpBuilder<typeof schema>;
+
+const acceptanceMcp = typedMcp({
+  name: "acceptance",
+  instructions:
+    `DBZZ host acceptance endpoint. When record_discovery is requested, pass marker ` +
+    `${INSTRUCTION_MARKER} and the exact lower-snake-case names of the currently available ` +
+    `tools. Follow the caller's requested tool order and continue after expected authorization errors.`,
+  scopes: [READ_SCOPE, ADMIN_SCOPE] as const,
+});
+
+function emit(value: Readonly<Record<string, unknown>>): void {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+function called(name: string): void {
+  emit({ type: "tool", name });
+}
+
+const publicText = acceptanceMcp.tool({
+  name: "public_text",
+  description: "Return the stable public host-acceptance marker.",
+  access: "public",
+  args: {},
+  handler: () => {
+    called("public_text");
+    return { content: [{ type: "text", text: "public:ok" }] };
+  },
+});
+
+const authenticatedStatus = acceptanceMcp.tool({
+  name: "authenticated_status",
+  description: "Return the delegated DBZZ Identity for an authenticated MCP token.",
+  access: "authenticated",
+  args: {},
+  handler: (ctx) => {
+    called("authenticated_status");
+    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    return { content: [{ type: "text", text: `authenticated:${ctx.auth.identity}` }] };
+  },
+});
+
+const structuredStatus = acceptanceMcp.tool({
+  name: "structured_status",
+  description: "Return one validated structured result and its canonical text fallback.",
+  access: "authenticated",
+  args: { value: dbz.string().describe("The exact value to round-trip.") },
+  output: dbz.object({
+    kind: dbz.literal("structured"),
+    value: dbz.string(),
+    identity: dbz.identity(),
+  }),
+  handler: (ctx, args) => {
+    called("structured_status");
+    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    return { kind: "structured" as const, value: args.value, identity: ctx.auth.identity };
+  },
+});
+
+const richContent = acceptanceMcp.tool({
+  name: "rich_content",
+  description: "Return mixed text, embedded-resource, and resource-link MCP content.",
+  access: { anyOf: [READ_SCOPE] },
+  args: {},
+  handler: () => {
+    called("rich_content");
+    return {
+      content: [
+        { type: "text", text: "rich:ok" },
+        {
+          type: "resource",
+          resource: {
+            uri: "dbzz://acceptance/embedded",
+            mimeType: "text/plain",
+            text: "embedded:ok",
+          },
+        },
+        {
+          type: "resource_link",
+          uri: "https://dbzz.dev/acceptance",
+          name: "dbzz-host-acceptance",
+          title: "DBZZ host acceptance",
+          mimeType: "text/plain",
+        },
+      ],
+      _meta: { fixture: "rich-content-v1" },
+    };
+  },
+});
+
+const adminOnly = acceptanceMcp.tool({
+  name: "admin_only",
+  description: "Return an admin marker only when the exact admin scope is granted.",
+  access: { anyOf: [ADMIN_SCOPE] },
+  args: {},
+  handler: () => {
+    called("admin_only");
+    return { content: [{ type: "text", text: "admin:ok" }] };
+  },
+});
+
+const scopeCheckpoint = acceptanceMcp.tool({
+  name: "scope_checkpoint",
+  description: "Mark the point after which the acceptance controller reduces this token's scopes.",
+  access: "authenticated",
+  args: {},
+  handler: () => {
+    called("scope_checkpoint");
+    return { content: [{ type: "text", text: "scope-checkpoint:ok" }] };
+  },
+});
+
+const revocationCheckpoint = acceptanceMcp.tool({
+  name: "revocation_checkpoint",
+  description: "Mark the point after which the acceptance controller revokes this token.",
+  access: "authenticated",
+  args: {},
+  handler: () => {
+    called("revocation_checkpoint");
+    return { content: [{ type: "text", text: "revocation-checkpoint:ok" }] };
+  },
+});
+
+const READ_TOOLS = [
+  "authenticated_status",
+  "public_text",
+  "record_discovery",
+  "revocation_checkpoint",
+  "rich_content",
+  "scope_checkpoint",
+  "structured_status",
+] as const;
+
+const recordDiscovery = acceptanceMcp.tool({
+  name: "record_discovery",
+  description:
+    "Validate the initialization instruction marker and exact currently visible MCP tool names.",
+  access: "authenticated",
+  args: {
+    marker: dbz.string(),
+    tools: dbz.array(dbz.string()),
+  },
+  output: dbz.object({ accepted: dbz.boolean(), count: dbz.number() }),
+  handler: (ctx, args) => {
+    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    const expected = ctx.auth.scopes.includes(ADMIN_SCOPE)
+      ? [...READ_TOOLS, "admin_only"].sort()
+      : [...READ_TOOLS];
+    const received = [...new Set(args.tools)].sort();
+    const accepted = args.marker === INSTRUCTION_MARKER &&
+      expected.length === received.length &&
+      expected.every((name, index) => name === received[index]);
+    emit({ type: "discovery", accepted, count: received.length });
+    return { accepted, count: received.length };
+  },
+});
+
+const createToken = typedMutation({
+  access: "authenticated",
+  args: { name: dbz.string(), scopes: dbz.array(acceptanceMcp.scopes) },
+  handler: (ctx, args) => acceptanceMcp.tokens.create(ctx, {
+    name: args.name,
+    metadata: { fixture: "host-acceptance" },
+    scopes: args.scopes,
+  }),
+});
+
+const updateTokenScopes = typedMutation({
+  access: "authenticated",
+  args: { id: dbz.string(), scopes: dbz.array(acceptanceMcp.scopes) },
+  handler: (ctx, args) => acceptanceMcp.tokens.updateScopes(ctx, args.id, args.scopes),
+});
+
+const revokeToken = typedMutation({
+  access: "authenticated",
+  args: { id: dbz.string() },
+  handler: (ctx, args) => acceptanceMcp.tokens.revoke(ctx, args.id),
+});
+
+const modules = {
+  acceptance: {
+    acceptanceMcp,
+    adminOnly,
+    authenticatedStatus,
+    publicText,
+    recordDiscovery,
+    revocationCheckpoint,
+    richContent,
+    scopeCheckpoint,
+    structuredStatus,
+  },
+  tokens: { createToken, revokeToken, updateTokenScopes },
+};
+
+let messageId = 0;
+
+function request(args: unknown, ref: string) {
+  const id = ++messageId;
+  const issuedAt = Date.now();
+  const timestamp = issuedAt.toString(16).padStart(12, "0");
+  const message: MutationMessage = {
+    v: PROTOCOL_VERSION,
+    t: "m",
+    id,
+    ref,
+    args,
+    mutationRequestId:
+      `${timestamp.slice(0, 8)}-${timestamp.slice(8)}-7000-8000-${id.toString(16).padStart(12, "0")}`,
+    issuedAt,
+  };
+  return Object.freeze({ message, bytes: Buffer.byteLength(encode(message)) });
+}
+
+interface ControlMessage {
+  readonly action: "scopes" | "revoke" | "stop" | "sync";
+  readonly id?: string;
+  readonly scopes?: readonly (typeof READ_SCOPE | typeof ADMIN_SCOPE)[];
+}
+
+async function main(): Promise<void> {
+  const path = process.env.DBZZ_ACCEPTANCE_DB;
+  if (path === undefined || path === "") throw new Error("DBZZ_ACCEPTANCE_DB is required");
+  const engine = new Engine(schema, path);
+  reconcile(engine);
+  const runtime = new Runtime({ engine, registry: new Registry(modules), telemetry: false });
+  const identity = await runtime.resolveIdentity({
+    issuer: "https://acceptance.dbzz.test/",
+    subject: "host-owner",
+  });
+  const principal: UserPrincipal = Object.freeze({
+    kind: "user",
+    identity,
+    issuer: "https://acceptance.dbzz.test/",
+    subject: "host-owner",
+    claims: Object.freeze({}),
+    expiresAt: Date.now() + 60 * 60 * 1_000,
+    tokenId: "host-acceptance-owner",
+  });
+  const controller = new AbortController();
+  const session: SessionRuntimeContext = Object.freeze({
+    clientSessionId: "host-acceptance-owner",
+    principal,
+    fairnessKey: "host-acceptance-owner",
+    authEpoch: 0,
+    signal: controller.signal,
+    publish: async () => true,
+  });
+  await runtime.openSession(session);
+
+  const create = async (name: string) => (await runtime.mutation(
+    session,
+    request({ name, scopes: [READ_SCOPE] }, "tokens.createToken"),
+  )).value as { readonly id: string; readonly token: string };
+  const codex = await create("Codex acceptance");
+  const claude = await create("Claude Code acceptance");
+  const server = serve({ runtime, port: 0 });
+
+  emit({
+    type: "ready",
+    url: `http://127.0.0.1:${server.port}${acceptanceMcp.path}`,
+    codex,
+    claude,
+  });
+
+  try {
+    const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    for await (const line of lines) {
+      const control = JSON.parse(line) as ControlMessage;
+      if (control.action === "stop") break;
+      if (control.action === "sync") {
+        emit({ type: "control", action: control.action });
+        continue;
+      }
+      if (control.id === undefined) throw new Error("token control requires an id");
+      if (control.action === "scopes") {
+        if (control.scopes === undefined) throw new Error("scope control requires scopes");
+        await runtime.mutation(
+          session,
+          request({ id: control.id, scopes: control.scopes }, "tokens.updateTokenScopes"),
+        );
+      } else {
+        await runtime.mutation(
+          session,
+          request({ id: control.id }, "tokens.revokeToken"),
+        );
+      }
+      emit({ type: "control", action: control.action });
+    }
+  } finally {
+    controller.abort();
+    await server.drain().catch(() => {});
+    await runtime.drain().catch(() => {});
+    engine.close("clean");
+  }
+}
+
+await main();

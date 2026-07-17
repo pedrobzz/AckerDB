@@ -1,40 +1,12 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { PACKAGES, pkgJsonPath, syncedVersion } from "./lib.ts";
-
-interface PackageManifest {
-  readonly name?: string;
-  readonly version?: string;
-  readonly exports?: Record<string, unknown>;
-  readonly dependencies?: Record<string, string>;
-  readonly devDependencies?: Record<string, string>;
-  readonly optionalDependencies?: Record<string, string>;
-  readonly peerDependencies?: Record<string, string>;
-}
-
-async function command(
-  args: string[],
-  cwd: string,
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): Promise<string> {
-  const child = Bun.spawn(args, { cwd, env, stdout: "pipe", stderr: "pipe" });
-  const [exitCode, stdout, stderr] = await Promise.all([
-    child.exited,
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-  ]);
-  if (exitCode !== 0) {
-    throw new Error(
-      `${args.join(" ")} failed in ${cwd} (exit ${exitCode})\n${stdout}${stderr}`,
-    );
-  }
-  return stdout.trim();
-}
-
-function readManifest(path: string): PackageManifest {
-  return JSON.parse(readFileSync(path, "utf8")) as PackageManifest;
-}
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { PACKAGES } from "./lib.ts";
+import {
+  createPackedConsumer,
+  type PackageManifest,
+  readManifest,
+  runCommand,
+} from "./packed-consumer.ts";
 
 function assertNoProductionAiDependency(manifest: PackageManifest): void {
   for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
@@ -47,53 +19,11 @@ function assertNoProductionAiDependency(manifest: PackageManifest): void {
 }
 
 async function main(): Promise<void> {
-  const root = resolve(import.meta.dir, "..");
-  const version = syncedVersion((pkg) => readFileSync(join(root, pkgJsonPath(pkg)), "utf8"));
-  const bunTypesVersion = readManifest(join(root, "node_modules/@types/bun/package.json")).version;
-  if (bunTypesVersion === undefined) throw new Error("root @types/bun version is unavailable");
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-package-"));
-  const packDir = join(directory, "packs");
-  const consumerDir = join(directory, "consumer");
-  mkdirSync(packDir);
+  const packed = await createPackedConsumer("dbzz-mcp-packed-consumer");
+  const { consumerDir, root, version } = packed;
   mkdirSync(join(consumerDir, "functions"), { recursive: true });
 
   try {
-    const dependencies: Record<string, string> = {};
-    for (const pkg of PACKAGES) {
-      const output = await command([
-        process.execPath,
-        "pm",
-        "pack",
-        "--destination",
-        packDir,
-        "--ignore-scripts",
-        "--quiet",
-      ], join(root, "packages", pkg));
-      const tarball = output.split("\n").at(-1)?.trim();
-      if (tarball === undefined || tarball === "") {
-        throw new Error(`bun pm pack did not report a tarball for @dbzz/${pkg}`);
-      }
-      dependencies[`@dbzz/${pkg}`] = `file:${tarball}`;
-    }
-
-    writeFileSync(join(consumerDir, "package.json"), JSON.stringify({
-      name: "dbzz-mcp-packed-consumer",
-      private: true,
-      type: "module",
-      dependencies,
-      devDependencies: { "@types/bun": bunTypesVersion },
-      // The release is intentionally unpublished: force transitive @dbzz exact
-      // versions to the same five tarballs while preserving their packed
-      // manifests for the assertions below.
-      overrides: dependencies,
-    }, null, 2));
-    await command([
-      process.execPath,
-      "install",
-      "--ignore-scripts",
-      "--registry=https://registry.npmjs.org",
-    ], consumerDir);
-
     for (const pkg of PACKAGES) {
       const manifest = readManifest(
         join(consumerDir, "node_modules", "@dbzz", pkg, "package.json"),
@@ -198,7 +128,7 @@ if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the w
       include: ["schema.ts", "functions/**/*.ts", "_generated/**/*.ts"],
     }, null, 2));
 
-    await command([
+    await runCommand([
       process.execPath,
       join(consumerDir, "node_modules/@dbzz/cli/src/main.ts"),
       "codegen",
@@ -208,8 +138,8 @@ if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the w
       DBZZ_DURABILITY: "balanced",
       DBZZ_TELEMETRY: "disabled",
     });
-    await command([process.execPath, "verify-runtime.ts"], consumerDir);
-    await command([
+    await runCommand([process.execPath, "verify-runtime.ts"], consumerDir);
+    await runCommand([
       process.execPath,
       join(root, "node_modules/typescript/bin/tsc"),
       "-p",
@@ -220,7 +150,7 @@ if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the w
       `Packed MCP gate passed: five @dbzz packages at ${version}, generated types, Bun runtime, SDK 1.29.0, and no server AI production dependency.`,
     );
   } finally {
-    rmSync(directory, { recursive: true, force: true });
+    packed.cleanup();
   }
 }
 
