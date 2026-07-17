@@ -4,7 +4,7 @@ import { decode, encode } from "@dbzz/core";
 import type { Identity } from "./dbz.ts";
 import { CorruptDatabaseError, DbzzError } from "./errors.ts";
 import { deepFreeze } from "./immutable.ts";
-import { MCP_TOKEN_PREFIX, parseMcpToken } from "./mcp-credential.ts";
+import { MCP_TOKEN_PREFIX, type ParsedMcpToken } from "./mcp-credential.ts";
 import {
   isMcpScopeGrant,
   normalizeMcpScopeGrant,
@@ -361,16 +361,33 @@ export class McpTokenVault {
     value: unknown,
     scopeDescriptor: McpScopeDescriptor<Scope>,
     now: number,
-  ): void {
+  ): boolean {
     validateIdentity(identity);
     validateTokenId(tokenId);
     const scopes = normalizeMcpScopeGrant(scopeDescriptor, value, "MCP token scopes");
+    const stored = this.writer.query(
+      `SELECT scopes FROM _dbz_mcp_tokens
+        WHERE token_id = ? AND identity = ? AND mcp = ?`,
+    ).get(tokenId, identity, mcp) as Pick<StoredTokenRow, "scopes"> | null;
+    if (stored === null) throw new DbzzError("not_found", "MCP token not found");
+    let previous: readonly Scope[];
+    try {
+      previous = normalizeMcpScopeGrant(
+        scopeDescriptor,
+        storedScopes(stored.scopes),
+        "stored MCP token scopes",
+      );
+    } catch {
+      throw new CorruptDatabaseError("DBZZ MCP token scope grant is invalid for its endpoint");
+    }
     const result = this.writer.query(
       `UPDATE _dbz_mcp_tokens
         SET scopes = ?, updated_at = ?
         WHERE token_id = ? AND identity = ? AND mcp = ?`,
     ).run(encode(scopes), now, tokenId, identity, mcp);
     if (result.changes === 0) throw new DbzzError("not_found", "MCP token not found");
+    const next = new Set(scopes);
+    return previous.some((scope) => !next.has(scope));
   }
 
   revoke(identity: Identity, mcp: string, tokenId: string): void {
@@ -386,11 +403,9 @@ export class McpTokenVault {
   authenticate(
     connection: Database,
     expectedMcp: string,
-    rawToken: string,
+    parsed: ParsedMcpToken,
     scopeDescriptor: McpScopeDescriptor | undefined,
   ): Readonly<{ identity: Identity; tokenId: string; scopes: readonly string[] }> {
-    const parsed = parseMcpToken(rawToken);
-    if (parsed === null) throw invalidCredential();
     const row = connection.query(
       "SELECT identity, mcp, secret_digest, scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
     ).get(parsed.id) as Pick<StoredTokenRow, "identity" | "mcp" | "secret_digest" | "scopes"> | null;

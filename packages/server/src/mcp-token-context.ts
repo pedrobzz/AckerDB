@@ -15,6 +15,7 @@ import {
   type McpTokenUpdateInput,
 } from "./mcp-token-vault.ts";
 import type { McpScopeDescriptor } from "./mcp-scopes.ts";
+import { stageMcpTokenInvalidation } from "./mcp-token-invalidation.ts";
 import { markOneTimeResult } from "./one-time-result.ts";
 import type { Schema } from "./schema.ts";
 
@@ -200,6 +201,7 @@ export function createMcpTokenOperations<S extends Schema, Scope extends string 
       const owner = ownerCapability(ctx, true);
       owner.engine[mcpTokenVaultOwner].revoke(owner.principal.identity, mcp, tokenId);
       owner.writes!.keys.add(ownerKey(owner.principal.identity, mcp));
+      stageMcpTokenInvalidation(owner.writes!, { reason: "revoked", mcp, tokenId });
     },
     ...(scopeDescriptor === undefined ? {} : {
       updateScopes(
@@ -208,7 +210,7 @@ export function createMcpTokenOperations<S extends Schema, Scope extends string 
         scopes: readonly Scope[],
       ): void {
         const owner = ownerCapability(ctx, true);
-        owner.engine[mcpTokenVaultOwner].updateScopes(
+        const reduced = owner.engine[mcpTokenVaultOwner].updateScopes(
           owner.principal.identity,
           mcp,
           tokenId,
@@ -217,6 +219,13 @@ export function createMcpTokenOperations<S extends Schema, Scope extends string 
           owner.now(),
         );
         owner.writes!.keys.add(ownerKey(owner.principal.identity, mcp));
+        if (reduced) {
+          stageMcpTokenInvalidation(owner.writes!, {
+            reason: "scopes_reduced",
+            mcp,
+            tokenId,
+          });
+        }
       },
     }),
   };
@@ -270,6 +279,7 @@ export function createSystemMcpTokenOperations<
       const system = systemCapability(ctx, true);
       system.engine[mcpTokenVaultOwner].revoke(identity, mcp, tokenId);
       system.writes!.keys.add(ownerKey(identity, mcp));
+      stageMcpTokenInvalidation(system.writes!, { reason: "revoked", mcp, tokenId });
     },
   });
 }

@@ -51,6 +51,7 @@ function callNames(body: unknown): readonly string[] {
 
 /** One private official-SDK server/transport pair for exactly one stateless POST. */
 export async function handleMcpPost(options: McpPostOptions): Promise<Response> {
+  options.signal.throwIfAborted();
   // The transport cannot attach HTTP auth status to a JSON-RPC handler result.
   // Preflight only valid tools/call requests, then the dispatcher repeats this
   // same decision as the authoritative execution boundary.
@@ -73,18 +74,21 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
     enableJsonResponse: true,
   });
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: options.runtime.registry.toolsFor(options.mcp, options.principal).map((tool) => ({
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    options.signal.throwIfAborted();
+    const tools = options.runtime.registry.toolsFor(options.mcp, options.principal).map((tool) => ({
       name: tool.name,
       ...(tool.title === undefined ? {} : { title: tool.title }),
       description: tool.description,
       inputSchema: tool.inputSchema,
       ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
       ...(tool.annotations === undefined ? {} : { annotations: tool.annotations }),
-    })),
-  }));
+    }));
+    return { tools };
+  });
   server.setRequestHandler(CallToolRequestSchema, async (call, extra) => {
     try {
+      options.signal.throwIfAborted();
       const result = await options.runtime.runMcpTool(carryHttpRequestProvenance({
         id: extra.requestId,
         mcp: options.mcp.name,
@@ -109,7 +113,9 @@ export async function handleMcpPost(options: McpPostOptions): Promise<Response> 
 
   try {
     await server.connect(transport);
-    return await transport.handleRequest(options.request, { parsedBody: options.body });
+    const response = await transport.handleRequest(options.request, { parsedBody: options.body });
+    options.signal.throwIfAborted();
+    return response;
   } finally {
     await server.close();
   }
