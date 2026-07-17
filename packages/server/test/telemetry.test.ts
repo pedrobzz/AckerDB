@@ -454,6 +454,47 @@ describe("Telemetry", () => {
     expect(telemetry.snapshot().dropped.invalid).toBe(1);
   });
 
+  test("accounts lazy prepared ids exactly when a staged trace is promoted", async () => {
+    const { batches, exporter } = exporterBatches();
+    const telemetry = new Telemetry({
+      exporter,
+      localSink: false,
+      now: () => 10,
+      limits: { slowOperationMs: 100, batchIntervalMs: 60_000 },
+    });
+    const root = prepareTelemetryTraceContext({
+      traceId: "trace_lazy_prepared",
+      spanId: "span_lazy_root",
+    });
+    const child = deriveTelemetryTraceContext(root);
+
+    expect(telemetry.beginTrace(root, 0)).toBe(true);
+    expect(telemetry[RECORD_PREPARED_SPAN]({
+      context: child,
+      operation: "query",
+      stage: "handler",
+      outcome: "ok",
+      durationMs: 1,
+    })).toBe(true);
+    const stagedBytes = telemetry.snapshot().traceRetention.stagedBytes;
+    telemetry.recordEvent({
+      context: root,
+      name: "failure",
+      level: "error",
+      operation: "query",
+      outcome: "internal",
+    });
+    await telemetry.flush();
+    telemetry.stop();
+
+    const span = batches.flat().find((record) => record.kind === "span");
+    if (span?.kind !== "span") throw new Error("promoted prepared span was not exported");
+    expect(span.traceId).toBe(root.traceId);
+    expect(span.parentSpanId).toBe(root.spanId);
+    expect(span.spanId).toHaveLength(36);
+    expect(stagedBytes).toBe(new TextEncoder().encode(JSON.stringify(span)).byteLength);
+  });
+
   test("keeps prepared trace ownership isolated across telemetry instances", () => {
     const options = {
       localSink: false as const,
