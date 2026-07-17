@@ -433,12 +433,21 @@ function schemaUri(options: StandardJsonSchemaOptions): string {
   throw new TypeError("DBZZ validators support JSON Schema draft-2020-12 and draft-07");
 }
 
+/** Standard Schema consumers may normalize in place, so every call owns a fresh graph. */
+function mutableStandardSchemaFor(
+  node: ProtocolNode,
+  mode: SchemaMode,
+  options: StandardJsonSchemaOptions,
+): Readonly<Record<string, unknown>> {
+  return { $schema: schemaUri(options), ...node.schema(mode) };
+}
+
 function schemaFor(
   node: ProtocolNode,
   mode: SchemaMode,
   options: StandardJsonSchemaOptions,
 ): Readonly<Record<string, unknown>> {
-  return deepFreeze({ $schema: schemaUri(options), ...node.schema(mode) });
+  return deepFreeze(mutableStandardSchemaFor(node, mode, options));
 }
 
 function jsonSchema(
@@ -446,7 +455,7 @@ function jsonSchema(
   mode: SchemaMode,
   options: StandardJsonSchemaOptions,
 ): Readonly<Record<string, unknown>> {
-  return schemaFor(compileNode(validator, "$", false), mode, options);
+  return mutableStandardSchemaFor(compileNode(validator, "$", false), mode, options);
 }
 
 export function createStandardSchemaProperties<Input, Output>(
@@ -498,8 +507,8 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
         }
       },
       jsonSchema: Object.freeze({
-        input: (options: StandardJsonSchemaOptions) => schemaFor(node, mode, options),
-        output: (options: StandardJsonSchemaOptions) => schemaFor(node, mode, options),
+        input: (options: StandardJsonSchemaOptions) => mutableStandardSchemaFor(node, mode, options),
+        output: (options: StandardJsonSchemaOptions) => mutableStandardSchemaFor(node, mode, options),
       }),
     }),
   });
@@ -522,8 +531,8 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
         }
       },
       jsonSchema: Object.freeze({
-        input: (options: StandardJsonSchemaOptions) => schemaFor(node, "input", options),
-        output: (options: StandardJsonSchemaOptions) => schemaFor(node, "output", options),
+        input: (options: StandardJsonSchemaOptions) => mutableStandardSchemaFor(node, "input", options),
+        output: (options: StandardJsonSchemaOptions) => mutableStandardSchemaFor(node, "output", options),
       }),
     }),
   };
