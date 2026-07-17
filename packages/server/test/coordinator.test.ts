@@ -245,12 +245,8 @@ describe("CommitCoordinator", () => {
       ...identity,
       result: "1",
       resultBytes: 1,
-      commitVersion: 1n,
       durability: "balanced",
     });
-    engine.writer.query(
-      "UPDATE _dbz_state SET commit_version = 1, mutation_records = 1, mutation_result_bytes = 1 WHERE singleton = 1",
-    ).run();
     engine.writer.exec("COMMIT");
 
     const replay = await coordinator.execute({

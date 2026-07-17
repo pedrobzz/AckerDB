@@ -239,8 +239,7 @@ describe("durability and internal state", () => {
     const engine = new Engine(schema, database);
     reconcile(engine);
     engine.writer.exec("BEGIN IMMEDIATE");
-    const commitVersion = engine.allocateCommitVersion();
-    engine.insertStoredMutation({
+    const commitVersion = engine.insertStoredMutation({
       sessionId: "session-a",
       requestId: "request-a",
       issuedAt: 10,
@@ -249,7 +248,6 @@ describe("durability and internal state", () => {
       argsFingerprint: "args",
       result: "{\"value\":1}",
       resultBytes: 11,
-      commitVersion,
       durability: "production",
       completedAt: 20,
     });

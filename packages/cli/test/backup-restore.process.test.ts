@@ -64,13 +64,11 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
           "INSERT INTO messages (channelId, body, role, payload, payload__p) VALUES (?, ?, ?, ?, ?)",
         )
         .run(7n, "preserved", role, payload, encode(null));
-      const commitVersion = engine.allocateCommitVersion();
-      expect(commitVersion).toBe(1n);
-      engine.insertStoredMutation({
+      const commitVersion = engine.insertStoredMutation({
         ...replayRecord,
-        commitVersion,
         durability,
       });
+      expect(commitVersion).toBe(1n);
       engine.writer.exec("COMMIT");
     } catch (error) {
       engine.writer.exec("ROLLBACK");

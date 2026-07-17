@@ -146,7 +146,9 @@ export interface StoredMutation {
   completedAt: number;
 }
 
-export type NewStoredMutation = Omit<StoredMutation, "completedAt"> & { completedAt?: number };
+export type NewStoredMutation = Omit<StoredMutation, "commitVersion" | "completedAt"> & {
+  completedAt?: number;
+};
 
 export class IncompatibleDatabaseError extends Error {}
 export class CorruptDatabaseError extends Error {}
@@ -1012,9 +1014,10 @@ export class Engine {
         };
   }
 
-  /** Persist a successful mutation receipt. The caller must own the writer transaction. */
-  insertStoredMutation(record: NewStoredMutation): void {
+  /** Allocate a version and persist its replay receipt. The caller must own the writer transaction. */
+  insertStoredMutation(record: NewStoredMutation): bigint {
     const completedAt = record.completedAt ?? Date.now();
+    const commitVersion = this.allocateCommitState(record.resultBytes);
     this.writer
       .query(
         "INSERT INTO _dbz_mutations (session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result, result_bytes, commit_version, durability, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1028,13 +1031,11 @@ export class Engine {
         record.argsFingerprint,
         record.result,
         record.resultBytes,
-        record.commitVersion,
+        commitVersion,
         record.durability,
         completedAt,
       );
-    this.writer
-      .query("UPDATE _dbz_state SET mutation_records = mutation_records + 1, mutation_result_bytes = mutation_result_bytes + ? WHERE singleton = 1")
-      .run(record.resultBytes);
+    return commitVersion;
   }
 
   pruneStoredMutations(completedBefore: number, limit = 1_000): number {
@@ -1061,11 +1062,25 @@ export class Engine {
     }
   }
 
-  /** Allocate the next version. The caller must already own an open writer transaction. */
+  /** Allocate the next non-replay version. The caller must own an open writer transaction. */
   allocateCommitVersion(): bigint {
+    return this.allocateCommitState(null);
+  }
+
+  private allocateCommitState(mutationResultBytes: number | null): bigint {
+    if (
+      mutationResultBytes !== null &&
+      (!Number.isSafeInteger(mutationResultBytes) || mutationResultBytes < 0)
+    ) {
+      throw new RangeError("mutationResultBytes must be a non-negative safe integer or null");
+    }
     const row = this.writer
-      .query("UPDATE _dbz_state SET commit_version = commit_version + 1 WHERE singleton = 1 RETURNING commit_version")
-      .get() as { commit_version: bigint };
+      .query(`UPDATE _dbz_state SET
+        commit_version = commit_version + 1,
+        mutation_records = mutation_records + CASE WHEN ? IS NULL THEN 0 ELSE 1 END,
+        mutation_result_bytes = mutation_result_bytes + COALESCE(?, 0)
+        WHERE singleton = 1 RETURNING commit_version`)
+      .get(mutationResultBytes, mutationResultBytes) as { commit_version: bigint };
     return row.commit_version;
   }
 

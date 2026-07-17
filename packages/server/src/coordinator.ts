@@ -569,7 +569,14 @@ export class CommitCoordinator<Publication> {
           });
         }
       }
-      const commitVersion = this.engine.allocateCommitVersion();
+      const commitVersion = idempotency && result !== undefined
+        ? this.engine.insertStoredMutation({
+          ...idempotency,
+          result,
+          resultBytes,
+          durability: this.engine.durability,
+        })
+        : this.engine.allocateCommitVersion();
       if (commitVersion !== reservation.version) {
         throw new DbzzError("internal", "storage and publication versions diverged");
       }
@@ -597,15 +604,6 @@ export class CommitCoordinator<Publication> {
           postCommit: false,
         });
         throw error;
-      }
-      if (idempotency && result !== undefined) {
-        this.engine.insertStoredMutation({
-          ...idempotency,
-          result,
-          resultBytes,
-          commitVersion,
-          durability: this.engine.durability,
-        });
       }
       observeCommit(request, {
         stage: "storage",
