@@ -12,8 +12,13 @@ import { staffAccess } from "../lib/access.ts";
 import { createChatModel } from "../lib/chat-model.ts";
 import { admin } from "./admin/mcp.ts";
 
-/** How many streamText steps (model turn + tool round) one answer may take. */
-const MAX_STEPS = 8;
+/**
+ * How many streamText steps (model turn + tool round) one answer may take.
+ * Roomy on purpose: the flash model often iterates on bash pipelines several
+ * times before answering. The last permitted step is forced text-only below,
+ * so hitting the cap still ends in an answer, never a silent tool result.
+ */
+const MAX_STEPS = 16;
 
 const SYSTEM_PROMPT = [
   "You are the Admin Chat for Savoria, a single sit-down restaurant. You help",
@@ -63,9 +68,21 @@ export const stream = sseProcedure({
       tools,
       // Bounded agent loop: model turn → tool round, repeated until an answer.
       stopWhen: stepCountIs(MAX_STEPS),
+      prepareStep: ({ stepNumber }) =>
+        stepNumber === MAX_STEPS - 1 ? { toolChoice: "none" } : undefined,
       // A client abort (or the credential lease ending) cancels generation.
       abortSignal: ctx.abortSignal,
     });
-    return toUIMessageStream({ stream: result.stream, tools });
+    return toUIMessageStream({
+      stream: result.stream,
+      tools,
+      // Surface the real failure instead of the SDK's masked "An error
+      // occurred." — the tool cards exist to show staff what actually
+      // happened, and the transcript is staff-only.
+      onError: (error) => {
+        console.error("[chat] stream error:", error);
+        return error instanceof Error ? error.message : String(error);
+      },
+    });
   },
 });
