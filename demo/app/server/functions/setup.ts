@@ -1,10 +1,8 @@
 import { mutation } from "@demo/dbzz-codegen/server";
-import { isStaff } from "../lib/access.ts";
+import { staffAccess } from "../lib/access.ts";
 import { scheduleReminder } from "../lib/domain.ts";
 import type { ItemStatus } from "@demo/dbzz-codegen/types";
 
-const staffAccess = (ctx: { auth: Parameters<typeof isStaff>[0] }) =>
-  isStaff(ctx.auth);
 const SEED_KEY = "restaurant-v1";
 
 export const initialize = mutation({

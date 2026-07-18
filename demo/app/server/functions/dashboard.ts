@@ -1,9 +1,7 @@
 import { query } from "@demo/dbzz-codegen/server";
-import { isStaff } from "../lib/access.ts";
+import { staffAccess } from "../lib/access.ts";
 import { isFinal, orderView, REMINDER_DELAY_MS } from "../lib/domain.ts";
 
-const staffAccess = (ctx: { auth: Parameters<typeof isStaff>[0] }) =>
-  isStaff(ctx.auth);
 
 export const overview = query({
   access: staffAccess,

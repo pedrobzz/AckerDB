@@ -8,7 +8,7 @@ import {
   type InferUIMessageChunk,
   type UIMessage,
 } from "ai";
-import { isStaff } from "../lib/access.ts";
+import { staffAccess } from "../lib/access.ts";
 import { createChatModel } from "../lib/chat-model.ts";
 import { admin } from "./admin/mcp.ts";
 
@@ -46,7 +46,7 @@ const SYSTEM_PROMPT = [
  * resolve to a user principal, so the grant is exactly `read` + `operate`.
  */
 export const stream = sseProcedure({
-  access: (ctx) => isStaff(ctx.auth),
+  access: staffAccess,
   args: {
     trigger: dbz.string(),
     chatId: dbz.string(),

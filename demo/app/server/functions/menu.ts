@@ -1,6 +1,6 @@
 import { dbz } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
-import { isStaff } from "../lib/access.ts";
+import { isStaff, staffAccess } from "../lib/access.ts";
 import {
   cleanName,
   cleanText,
@@ -12,8 +12,6 @@ import {
 
 const authenticatedAccess = (ctx: { auth: { kind: string } }) =>
   ctx.auth.kind === "user";
-const staffAccess = (ctx: { auth: Parameters<typeof isStaff>[0] }) =>
-  isStaff(ctx.auth);
 
 export const catalog = query({
   access: authenticatedAccess,

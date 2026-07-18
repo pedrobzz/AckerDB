@@ -1,6 +1,6 @@
 import { DbzzError, dbz } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
-import { isStaff, requireUser } from "../lib/access.ts";
+import { requireUser, staffAccess } from "../lib/access.ts";
 import {
   cleanName,
   conflict,
@@ -13,8 +13,6 @@ import {
 
 const guestAccess = (ctx: { auth: Parameters<typeof requireUser>[0] }) =>
   ctx.auth.kind === "user";
-const staffAccess = (ctx: { auth: Parameters<typeof isStaff>[0] }) =>
-  isStaff(ctx.auth);
 
 export const ensureCurrent = mutation({
   access: guestAccess,

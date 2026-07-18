@@ -14,3 +14,7 @@ export function requireUser(auth: Principal) {
   }
   return auth;
 }
+
+/** Shared staff-only access policy for query/mutation/procedure declarations. */
+export const staffAccess = (ctx: { auth: Principal }): boolean =>
+  isStaff(ctx.auth);
