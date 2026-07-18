@@ -27,8 +27,18 @@ export class McpHarness {
   readonly config: AppConfig;
   private app: RunningApp | undefined;
   private readonly clients = new Set<DbzzClient>();
+  private readonly envRestore: Array<readonly [string, string | undefined]> = [];
 
   private constructor(env: Record<string, string>) {
+    // The backend boots in-process, so env-driven module code (such as the chat
+    // model factory reading DBZZ_DEMO_CHAT_MODEL) observes this process's
+    // environment directly. Apply the caller's overrides for the app's lifetime
+    // and restore them on dispose so tests never leak configuration into one
+    // another.
+    for (const [key, value] of Object.entries(env)) {
+      this.envRestore.push([key, process.env[key]]);
+      process.env[key] = value;
+    }
     this.config = {
       ...loadConfig(SERVER_DIR, {
         ...process.env,
@@ -107,6 +117,10 @@ export class McpHarness {
     try {
       await this.app?.drain();
     } finally {
+      for (const [key, value] of this.envRestore) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
       rmSync(this.directory, { recursive: true, force: true });
     }
   }
