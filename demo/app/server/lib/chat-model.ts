@@ -96,7 +96,10 @@ function mockModel(): LanguageModel {
               type: "tool-call" as const,
               toolCallId: "call-get-tables",
               toolName: "get_tables",
-              input: "{}",
+              // Deliberately stringly, mimicking DeepSeek's function calling:
+              // the chat's repairToolCall must coerce these per the schema
+              // before dbzz's strict validation accepts them.
+              input: '{"activeOnly":"true","limit":"50"}',
             },
             {
               type: "finish" as const,

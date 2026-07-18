@@ -10,6 +10,7 @@ import {
 } from "ai";
 import { staffAccess } from "../lib/access.ts";
 import { createChatModel } from "../lib/chat-model.ts";
+import { repairStringlyToolInput } from "../lib/chat-repair.ts";
 import { admin } from "./admin/mcp.ts";
 
 /**
@@ -70,6 +71,8 @@ export const stream = sseProcedure({
       stopWhen: stepCountIs(MAX_STEPS),
       prepareStep: ({ stepNumber }) =>
         stepNumber === MAX_STEPS - 1 ? { toolChoice: "none" } : undefined,
+      // DeepSeek stringifies scalar args; coerce them back per the schema.
+      repairToolCall: repairStringlyToolInput(),
       // A client abort (or the credential lease ending) cancels generation.
       abortSignal: ctx.abortSignal,
     });
