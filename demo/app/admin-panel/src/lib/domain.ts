@@ -14,6 +14,7 @@ export type OrderItem = OrderView["items"][number];
 export type KitchenItem = QueryResult<typeof api.kitchen.queue>[number];
 export type Guest = QueryResult<typeof api.users.list>[number];
 export type GuestDetail = QueryResult<typeof api.users.detail>;
+export type OwnerToken = QueryResult<typeof api.admin.tokens.list>[number];
 
 export type OrderStatus = OrderView["status"];
 export type ItemStatus = OrderItem["status"];
