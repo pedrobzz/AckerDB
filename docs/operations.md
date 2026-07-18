@@ -319,6 +319,11 @@ The operator workflow is therefore:
 A failed drain is not a clean backup boundary. Let the next open run recovery
 validation, then stop cleanly before taking the offline backup.
 
+Run this workflow before deploying any release that carries pending
+migrations: a refused or failed migration leaves the database untouched, but a
+migration that succeeds with wrong transform logic is only recoverable from a
+verified backup. See [migrations.md](migrations.md) for the deploy sequence.
+
 `dbz backup` performs this acceptance sequence:
 
 1. open the source with a full integrity check;
