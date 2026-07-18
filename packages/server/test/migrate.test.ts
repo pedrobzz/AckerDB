@@ -9,11 +9,13 @@ import {
   defineTable,
   Engine,
   makeDbWriter,
+  migrationFingerprint,
   MigrationError,
   newWriteCollector,
   reconcile,
   snapshotOf,
   type Migration,
+  type MigrationStep,
   type Schema,
 } from "@dbzz/server";
 
@@ -42,10 +44,18 @@ async function seed(schema: Schema, path: string, fn: (d: ReturnType<typeof db>)
   engine.close("clean");
 }
 
-/** Reopen `path` under `schema` and run `migration`; returns the live engine + db. */
+/**
+ * Wrap a single migration into a one-step chain: `pre` is the snapshot the DB
+ * was seeded with (its stored snapshot), `target` is the new declared schema.
+ */
+function chain(engine: Engine, migration: Migration, number = 1, name = "m"): MigrationStep[] {
+  return [{ number, name, pre: engine.loadSnapshot()!, target: snapshotOf(engine.schema), migration }];
+}
+
+/** Reopen `path` under `schema` and run `migration` as a one-step chain. */
 async function migrate(schema: Schema, path: string, migration: Migration) {
   const engine = new Engine(schema, path);
-  const { applied } = await reconcile(engine, migration);
+  const { applied } = await reconcile(engine, chain(engine, migration));
   return { engine, db: db(engine), applied };
 }
 
@@ -239,7 +249,7 @@ describe("migrate: volunteered transforms", () => {
     expect((await d.users.get(1n)).slug).toBe("ANA");
     expect((await d.users.get(2n)).slug).toBe("BEA");
     // the classified add-column is absorbed by the rebuild, never applied twice
-    expect(applied).toContain("migrated table users");
+    expect(applied).toContain("0001_m: migrated table users");
     expect(applied).not.toContain("added nullable column users.slug");
     engine.close("clean");
   });
@@ -346,7 +356,7 @@ describe("migrate: validation refuses before touching anything", () => {
     const path = freshPath();
     await seedOne(path);
     const engine = new Engine(b, path);
-    await expect(reconcile(engine, defineMigration({ tables: {} }))).rejects.toThrow(/refused table\(s\): posts/);
+    await expect(reconcile(engine, chain(engine, defineMigration({ tables: {} })))).rejects.toThrow(/refused table\(s\): posts/);
     assertUntouched(engine);
     engine.close("clean");
   });
@@ -358,7 +368,7 @@ describe("migrate: validation refuses before touching anything", () => {
     const migration = defineMigration({
       tables: { posts: (row) => ({ count: Number(row.count) }), ghost: (row) => row },
     });
-    await expect(reconcile(engine, migration)).rejects.toThrow(/unknown table "ghost"/);
+    await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow(/unknown table "ghost"/);
     assertUntouched(engine);
     engine.close("clean");
   });
@@ -367,7 +377,7 @@ describe("migrate: validation refuses before touching anything", () => {
     const path = freshPath();
     await seedOne(path);
     const engine = new Engine(b, path);
-    await expect(reconcile(engine, defineMigration({ tables: { posts: null } }))).rejects.toThrow(
+    await expect(reconcile(engine, chain(engine, defineMigration({ tables: { posts: null } })))).rejects.toThrow(
       /"posts" still exists/,
     );
     assertUntouched(engine);
@@ -378,7 +388,7 @@ describe("migrate: validation refuses before touching anything", () => {
     const path = freshPath();
     await seedOne(path);
     const engine = new Engine(b, path);
-    await expect(reconcile(engine, defineMigration({ tables: {} }))).rejects.toBeInstanceOf(MigrationError);
+    await expect(reconcile(engine, chain(engine, defineMigration({ tables: {} })))).rejects.toBeInstanceOf(MigrationError);
     engine.close("clean");
   });
 });
@@ -403,7 +413,7 @@ describe("migrate: transactional integrity", () => {
         },
       },
     });
-    await expect(reconcile(engine, migration)).rejects.toThrow("boom");
+    await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow("boom");
     // snapshot unchanged, all rows intact and still strings
     expect(engine.loadSnapshot()).toEqual(snapshotOf(a));
     const rows = engine.writer.query("SELECT id, count FROM posts ORDER BY id").all() as {
@@ -432,7 +442,7 @@ describe("migrate: transactional integrity", () => {
     const engine = new Engine(b, path);
     // the volunteered transform collapses every name to a constant → a duplicate group
     const migration = defineMigration({ tables: { users: () => ({ name: "same" }) } });
-    await expect(reconcile(engine, migration)).rejects.toThrow(/UNIQUE/);
+    await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow(/UNIQUE/);
     // nothing applied: names intact, the index never became unique
     expect(engine.loadSnapshot()).toEqual(snapshotOf(a));
     const names = (engine.writer.query("SELECT name FROM users ORDER BY id").all() as { name: string }[]).map(
@@ -462,7 +472,7 @@ describe("migrate: renames", () => {
       path,
       defineMigration({ renames: { tables: { logs: "auditLogs" } } }),
     );
-    expect(applied).toContain("renamed table logs to auditLogs");
+    expect(applied).toContain("0001_m: renamed table logs to auditLogs");
     expect((await d.auditLogs.get(2n)).msg).toBe("two");
     expect((await d.auditLogs.get(3n)).msg).toBe("three");
     expect(await d.auditLogs.get(1n)).toBe(null);
@@ -505,7 +515,7 @@ describe("migrate: renames", () => {
       path,
       defineMigration({ renames: { columns: { users: { street: "streetName", note: "memo" } } } }),
     );
-    expect(applied).toContain("renamed column(s) on users");
+    expect(applied).toContain("0001_m: renamed column(s) on users");
     expect(await d.users.get(1n)).toEqual({ id: 1n, streetName: "main", memo: { tag: "text", value: "hi" } });
     expect((await d.users.get(2n)).memo).toEqual({ tag: "nothing", value: null });
     // the index followed the renamed column
@@ -536,7 +546,7 @@ describe("migrate: renames", () => {
       path,
       defineMigration({ renames: { variants: { Status: { Test: "Foo" } } } }),
     );
-    expect(applied).toContain("renamed variant Status.Test to Foo");
+    expect(applied).toContain("0001_m: renamed variant Status.Test to Foo");
     // ZERO row rewrites: the stored integer is unchanged
     const rawStatus = (engine.writer.query("SELECT status FROM users WHERE id = 1").get() as { status: bigint }).status;
     expect(rawStatus).toBe(0n);
@@ -565,7 +575,7 @@ describe("migrate: renames", () => {
 
     const engine = new Engine(b, path);
     // no rename declared: the drop of logs is refused, the add of auditLogs is not paired to it
-    await expect(reconcile(engine, defineMigration({ tables: {} }))).rejects.toThrow(/refused table\(s\): logs/);
+    await expect(reconcile(engine, chain(engine, defineMigration({ tables: {} })))).rejects.toThrow(/refused table\(s\): logs/);
     expect(engine.loadSnapshot()).toEqual(snapshotOf(a));
     engine.close("clean");
   });
@@ -646,7 +656,7 @@ describe("migrate: renames", () => {
       path,
       defineMigration({ renames: { tables: { logs: "auditLogs" } } }), // no tables section at all
     );
-    expect(applied).toContain("migrated table auditLogs");
+    expect(applied).toContain("0001_m: migrated table auditLogs");
     expect(await d.auditLogs.get(1n)).toEqual({ id: 1n, msg: "one", extra: null });
     expect(await d.auditLogs.get(2n)).toEqual({ id: 2n, msg: "two", extra: null });
     expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name = 'logs'").get()).toBe(null);
@@ -675,7 +685,7 @@ describe("migrate: renames", () => {
       path,
       defineMigration({ renames: { columns: { users: { street: "streetName" } } } }),
     );
-    expect(applied).toContain("migrated table users");
+    expect(applied).toContain("0001_m: migrated table users");
     expect(await d.users.get(1n)).toEqual({ id: 1n, streetName: "main", note: null });
     expect(await d.users.get(2n)).toEqual({ id: 2n, streetName: "elm", note: null });
     engine.close("clean");
@@ -701,7 +711,7 @@ describe("migrate: renames", () => {
       renames: { tables: { logs: "auditLogs" }, columns: { auditLogs: { msg: "text" } } },
     });
     // the counted refusal names the target-world site; the probe read old names
-    await expect(reconcile(engine, migration)).rejects.toThrow(
+    await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow(
       /auditLogs\.by_text: unique index over \(text\); 1 duplicate group\(s\) exist/,
     );
     expect(engine.loadSnapshot()).toEqual(snapshotOf(a)); // database untouched
@@ -718,7 +728,7 @@ describe("migrate: renames", () => {
     });
 
     const engine = new Engine(b, path);
-    await expect(reconcile(engine, defineMigration({ renames: { tables: { logs: "auditLogs" } } }))).rejects.toThrow(
+    await expect(reconcile(engine, chain(engine, defineMigration({ renames: { tables: { logs: "auditLogs" } } })))).rejects.toThrow(
       /refused table\(s\): auditLogs/,
     );
     expect(engine.loadSnapshot()).toEqual(snapshotOf(a));
@@ -744,7 +754,7 @@ describe("migrate: renames", () => {
     // but checks.meta honestly surfaces as type-changed and demands a transform
     const renamesOnly = defineMigration({ renames: { variants: { Status: { Test: "Foo" } } } });
     const refused = new Engine(b, path);
-    await expect(reconcile(refused, renamesOnly)).rejects.toThrow(/refused table\(s\): checks/);
+    await expect(reconcile(refused, chain(refused, renamesOnly))).rejects.toThrow(/refused table\(s\): checks/);
     expect(refused.loadSnapshot()).toEqual(snapshotOf(a)); // untouched
     refused.close("clean");
 
@@ -817,7 +827,7 @@ describe("migrate: rename validation refuses before touching anything", () => {
 
   async function expectRefused(target: Schema, path: string, migration: Migration, pattern: RegExp): Promise<void> {
     const engine = new Engine(target, path);
-    await expect(reconcile(engine, migration)).rejects.toThrow(pattern);
+    await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow(pattern);
     expect(engine.loadSnapshot()).toEqual(snapshotOf(one)); // database untouched
     engine.close("clean");
   }
@@ -860,7 +870,7 @@ describe("migrate: rename validation refuses before touching anything", () => {
     );
     const b = defineSchema({ b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
     const engine = new Engine(b, path);
-    await expect(reconcile(engine, defineMigration({ renames: { tables: { a: "b" } } }))).rejects.toThrow(
+    await expect(reconcile(engine, chain(engine, defineMigration({ renames: { tables: { a: "b" } } })))).rejects.toThrow(
       /cannot rename onto a live table/,
     );
     engine.close("clean");
@@ -880,7 +890,7 @@ describe("migrate: rename validation refuses before touching anything", () => {
     );
     const c = defineSchema({ c: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
     const engine = new Engine(c, path);
-    await expect(reconcile(engine, defineMigration({ renames: { tables: { a: "c", b: "c" } } }))).rejects.toThrow(
+    await expect(reconcile(engine, chain(engine, defineMigration({ renames: { tables: { a: "c", b: "c" } } })))).rejects.toThrow(
       /two renames target table "c"/,
     );
     engine.close("clean");
@@ -912,12 +922,442 @@ describe("migrate: rename validation refuses before touching anything", () => {
     const m2 = await migrate(s2, path, defineMigration({ tables: { users: (row) => ({ ...row, role: "Live" }) } }));
     m2.engine.close("clean");
 
-    // s2 -> s3 renames Live -> Old, but Old is a retired variant (its integer tag is retired)
+    // s2 -> s3 renames Live -> Old, but Old is a retired variant (its integer tag is retired).
+    // The chain re-presents migration 1 (already applied) plus the pending rename.
     const engine3 = new Engine(s3, path);
-    await expect(reconcile(engine3, defineMigration({ renames: { variants: { Role: { Live: "Old" } } } }))).rejects.toThrow(
-      /variant "Role.Old" is a retired variant/,
-    );
+    const steps: MigrationStep[] = [
+      { number: 1, name: "m", pre: snapshotOf(s1), target: snapshotOf(s2), migration: defineMigration({}) },
+      {
+        number: 2,
+        name: "retire",
+        pre: snapshotOf(s2),
+        target: snapshotOf(s3),
+        migration: defineMigration({ renames: { variants: { Role: { Live: "Old" } } } }),
+      },
+    ];
+    await expect(reconcile(engine3, steps)).rejects.toThrow(/variant "Role.Old" is a retired variant/);
     expect(engine3.loadSnapshot()).toEqual(snapshotOf(s2)); // untouched
     engine3.close("clean");
+  });
+});
+
+/** The recorded, ordered migration history of a database. */
+function history(engine: Engine): { number: bigint; name: string; target_fingerprint: string }[] {
+  return engine.writer
+    .query("SELECT number, name, target_fingerprint FROM _dbz_migrations ORDER BY number ASC")
+    .all() as { number: bigint; name: string; target_fingerprint: string }[];
+}
+
+/**
+ * Build a chain from consecutive stages; the first stage's `pre` is the seed's
+ * snapshot, and each later stage's `pre` is the previous stage's target.
+ */
+function buildChain(seed: Schema, stages: { schema: Schema; migration: Migration; name?: string }[]): MigrationStep[] {
+  const steps: MigrationStep[] = [];
+  let pre = snapshotOf(seed);
+  stages.forEach((stage, i) => {
+    const target = snapshotOf(stage.schema);
+    steps.push({ number: i + 1, name: stage.name ?? `m${i + 1}`, pre, target, migration: stage.migration });
+    pre = target;
+  });
+  return steps;
+}
+
+describe("migrate: the chain", () => {
+  test("two pending migrations apply in order; history and data reflect both", async () => {
+    const seedS = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
+    const s1 = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.number() }) });
+    const s2 = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), label: dbz.nullable(dbz.string()) }),
+    });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.items.insert({ qty: "5" }); // id 1
+      await d.items.insert({ qty: "20" }); // id 2
+    });
+
+    const engine = new Engine(s2, path);
+    const { applied } = await reconcile(
+      engine,
+      buildChain(seedS, [
+        { name: "parse_qty", schema: s1, migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }) },
+        {
+          name: "add_label",
+          schema: s2,
+          migration: defineMigration({ tables: { items: (row) => ({ ...row, label: `q${row.qty}` }) } }),
+        },
+      ]),
+    );
+    // per-step prefixes name each migration
+    expect(applied).toContain("0001_parse_qty: migrated table items");
+    expect(applied).toContain("0002_add_label: migrated table items");
+
+    const d = db(engine);
+    expect(await d.items.get(1n)).toEqual({ id: 1n, qty: 5, label: "q5" });
+    expect(await d.items.get(2n)).toEqual({ id: 2n, qty: 20, label: "q20" });
+
+    const rows = history(engine);
+    expect(rows.map((r) => [Number(r.number), r.name])).toEqual([
+      [1, "parse_qty"],
+      [2, "add_label"],
+    ]);
+    expect(rows[0]!.target_fingerprint).toBe(migrationFingerprint(snapshotOf(s1)));
+    expect(rows[1]!.target_fingerprint).toBe(migrationFingerprint(snapshotOf(s2)));
+    engine.close("clean");
+
+    // fresh Engine passes every reopen-time verifier (schema version, internals, tags)
+    const again = reopen(s2, path);
+    expect((await again.db.items.get(2n)).label).toBe("q20");
+    again.engine.close("clean");
+  });
+
+  test("mid-chain failure keeps earlier steps applied and rolls the failing one back whole", async () => {
+    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
+    const s1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), qty: dbz.number() }) });
+    const s2 = defineSchema({
+      posts: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), note: dbz.nullable(dbz.string()) }),
+    });
+    const s3 = defineSchema({
+      posts: defineTable({
+        id: dbz.primaryKey(),
+        qty: dbz.number(),
+        note: dbz.nullable(dbz.string()),
+        extra: dbz.nullable(dbz.string()),
+      }),
+    });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.posts.insert({ qty: "1" });
+      await d.posts.insert({ qty: "2" });
+      await d.posts.insert({ qty: "3" });
+    });
+
+    const engine = new Engine(s3, path);
+    const reached: string[] = [];
+    await expect(
+      reconcile(
+        engine,
+        buildChain(seedS, [
+          { name: "parse", schema: s1, migration: defineMigration({ tables: { posts: (row) => ({ qty: Number(row.qty) }) } }) },
+          {
+            name: "note",
+            schema: s2,
+            migration: defineMigration({
+              tables: {
+                posts: (row) => {
+                  if (row.qty === 2) throw new Error("boom");
+                  return { ...row, note: `n${row.qty}` };
+                },
+              },
+            }),
+          },
+          {
+            name: "extra",
+            schema: s3,
+            migration: defineMigration({ tables: { posts: (row) => (reached.push("step3"), { ...row, extra: "x" }) } }),
+          },
+        ]),
+      ),
+    ).rejects.toThrow("boom");
+
+    // step 1 committed + recorded; step 2 fully rolled back; step 3 never attempted
+    expect(reached).toEqual([]);
+    expect(history(engine).map((r) => Number(r.number))).toEqual([1]);
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(s1)); // no `note` column; step-2 schema never saved
+    const rows = engine.writer.query("SELECT id, qty FROM posts ORDER BY id").all() as { id: bigint; qty: unknown }[];
+    expect(rows).toEqual([
+      { id: 1n, qty: 1 },
+      { id: 2n, qty: 2 },
+      { id: 3n, qty: 3 },
+    ]);
+    engine.close("clean");
+  });
+
+  test("editing an applied migration refuses at the next run, naming it", async () => {
+    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
+    const applied = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const edited = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.bigint() }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.posts.insert({ count: "5" });
+    });
+    const m1 = await migrate(applied, path, defineMigration({ tables: { posts: (row) => ({ count: Number(row.count) }) } }));
+    m1.engine.close("clean");
+
+    // same number 1, different target (count: bigint) -> different fingerprint
+    const engine = new Engine(edited, path);
+    const steps: MigrationStep[] = [
+      { number: 1, name: "m", pre: snapshotOf(seedS), target: snapshotOf(edited), migration: defineMigration({ tables: { posts: (row) => ({ count: BigInt(row.count as number) }) } }) },
+    ];
+    await expect(reconcile(engine, steps)).rejects.toThrow(/applied migration 0001_m no longer matches.*immutable/s);
+    await expect(reconcile(engine, steps)).rejects.toBeInstanceOf(MigrationError);
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(applied)); // untouched
+    engine.close("clean");
+  });
+
+  test("an applied history row with no corresponding chain step refuses", async () => {
+    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const s1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.number() }) });
+    const s2 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.number(), w: dbz.nullable(dbz.string()) }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.posts.insert({ v: "1" });
+    });
+    const engine = new Engine(s2, path);
+    await reconcile(
+      engine,
+      buildChain(seedS, [
+        { schema: s1, migration: defineMigration({ tables: { posts: (row) => ({ v: Number(row.v) }) } }) },
+        { schema: s2, migration: defineMigration({ tables: { posts: (row) => ({ ...row, w: "x" }) } }) },
+      ]),
+    );
+    engine.close("clean");
+
+    // reopen presenting only the first step: step 2 is applied but absent from the chain
+    const truncated = new Engine(s1, path);
+    await expect(
+      reconcile(truncated, buildChain(seedS, [{ schema: s1, migration: defineMigration({ tables: { posts: (row) => ({ v: Number(row.v) }) } }) }])),
+    ).rejects.toThrow(/applied migration 0002_m2 no longer matches.*immutable/s);
+    truncated.close("clean");
+  });
+
+  test("duplicate or non-increasing numbers refuse before touching anything", async () => {
+    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const s1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.number() }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.posts.insert({ v: "1" });
+    });
+    const engine = new Engine(s1, path);
+    const parse = defineMigration({ tables: { posts: (row) => ({ v: Number(row.v) }) } });
+    const dupNumbers: MigrationStep[] = [
+      { number: 1, name: "a", pre: snapshotOf(seedS), target: snapshotOf(s1), migration: parse },
+      { number: 1, name: "b", pre: snapshotOf(s1), target: snapshotOf(s1), migration: defineMigration({}) },
+    ];
+    await expect(reconcile(engine, dupNumbers)).rejects.toThrow(/numbers must strictly increase/);
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(seedS)); // untouched, string still a string
+    expect(history(engine)).toEqual([]);
+    engine.close("clean");
+  });
+
+  test("partial prefix: a chain of 3 with 2 already applied runs only the third", async () => {
+    const seedS = defineSchema({ items: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const s1 = defineSchema({ items: defineTable({ id: dbz.primaryKey(), v: dbz.number() }) });
+    const s2 = defineSchema({ items: defineTable({ id: dbz.primaryKey(), v: dbz.number(), w: dbz.nullable(dbz.number()) }) });
+    const s3 = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), v: dbz.number(), w: dbz.nullable(dbz.number()), z: dbz.nullable(dbz.string()) }),
+    });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.items.insert({ v: "5" });
+    });
+
+    const stage1 = { schema: s1, migration: defineMigration({ tables: { items: (row) => ({ v: Number(row.v) }) } }) };
+    const stage2 = { schema: s2, migration: defineMigration({ tables: { items: (row) => ({ ...row, w: (row.v as number) * 2 }) } }) };
+    const stage3 = { schema: s3, migration: defineMigration({ tables: { items: (row) => ({ ...row, z: `z${row.v}` }) } }) };
+
+    const first = new Engine(s2, path);
+    await reconcile(first, buildChain(seedS, [stage1, stage2]));
+    first.close("clean");
+
+    const engine = new Engine(s3, path);
+    const { applied } = await reconcile(engine, buildChain(seedS, [stage1, stage2, stage3]));
+    // only the third step ran
+    expect(applied.some((l) => l.startsWith("0001_"))).toBe(false);
+    expect(applied.some((l) => l.startsWith("0002_"))).toBe(false);
+    expect(applied).toContain("0003_m3: migrated table items");
+    expect(history(engine).map((r) => Number(r.number))).toEqual([1, 2, 3]);
+    expect(await db(engine).items.get(1n)).toEqual({ id: 1n, v: 5, w: 10, z: "z5" });
+    engine.close("clean");
+  });
+
+  test("after the chain, a remaining shape-safe diff to the live schema auto-applies", async () => {
+    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.string() }) });
+    const stepTarget = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number() }) });
+    // live schema is one shape-safe nullable column ahead of the last migration's target
+    const live = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number(), extra: dbz.nullable(dbz.string()) }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.posts.insert({ n: "7" });
+    });
+    const engine = new Engine(live, path);
+    const { applied } = await reconcile(
+      engine,
+      [{ number: 1, name: "parse", pre: snapshotOf(seedS), target: snapshotOf(stepTarget), migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
+    );
+    expect(applied).toContain("0001_parse: migrated table posts");
+    expect(applied).toContain("added nullable column posts.extra"); // the final hop, unprefixed
+    expect(await db(engine).posts.get(1n)).toEqual({ id: 1n, n: 7, extra: null });
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(live));
+    engine.close("clean");
+  });
+
+  test("after the chain, a remaining shape-unsafe diff refuses naming the recourse", async () => {
+    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.string() }) });
+    const stepTarget = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number() }) });
+    // live schema demands a required column no migration answered
+    const live = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number(), req: dbz.string() }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.posts.insert({ n: "7" });
+    });
+    const engine = new Engine(live, path);
+    await expect(
+      reconcile(
+        engine,
+        [{ number: 1, name: "parse", pre: snapshotOf(seedS), target: snapshotOf(stepTarget), migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
+      ),
+    ).rejects.toThrow(/unsafe schema changes.*dbz reset/s);
+    // the chain step itself still committed (history records it)
+    expect(history(engine).map((r) => Number(r.number))).toEqual([1]);
+    engine.close("clean");
+  });
+
+  test("safe drift: a pre column and table the database lacks read null / empty", async () => {
+    // The migration was generated against a richer pre-state (a nullable column
+    // and a whole table) that this database never physically acquired.
+    const preSchema = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), bio: dbz.nullable(dbz.string()) }),
+      logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+    });
+    const live = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), bio: dbz.nullable(dbz.string()), summary: dbz.string() }),
+      logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+    });
+    const seedS = defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.users.insert({ name: "ana" }); // id 1
+      await d.users.insert({ name: "bea" }); // id 2
+    });
+
+    const engine = new Engine(live, path);
+    const seen: unknown[] = [];
+    await reconcile(engine, [
+      {
+        number: 1,
+        name: "summarize",
+        pre: snapshotOf(preSchema),
+        target: snapshotOf(live),
+        migration: defineMigration({
+          tables: {
+            users: async (row, ctx) => {
+              let logCount = 0;
+              for await (const _ of ctx.before.logs!.scan()) logCount++; // absent table -> empty
+              seen.push(row.bio); // absent nullable column -> null
+              return { name: row.name, bio: row.bio, summary: `${row.name}:${row.bio ?? "none"}:${logCount}` };
+            },
+          },
+        }),
+      },
+    ]);
+    expect(seen).toEqual([null, null]); // bio read as null for every row
+    const d = db(engine);
+    expect(await d.users.get(1n)).toEqual({ id: 1n, name: "ana", bio: null, summary: "ana:none:0" });
+    expect((await d.logs.scan().collect()).length).toBe(0);
+    engine.close("clean");
+
+    const again = reopen(live, path);
+    expect((await again.db.users.get(2n)).summary).toBe("bea:none:0");
+    again.engine.close("clean");
+  });
+
+  test("an intermediate target's tags encode an enum value the final schema also holds", async () => {
+    const seedS = defineSchema({
+      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["x"]), n: dbz.string() }),
+    });
+    // step 1's target (NOT the live schema) is where variant "y" is first interned
+    const s1 = defineSchema({
+      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["x", "y"]), n: dbz.number() }),
+    });
+    const live = defineSchema({
+      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["x", "y", "z"]), n: dbz.number() }),
+    });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.events.insert({ kind: "x", n: "5" }); // id 1, kind tag 0
+    });
+
+    const engine = new Engine(live, path);
+    await reconcile(
+      engine,
+      buildChain(seedS, [
+        // encodes "y" through step 1's tags, not the live engine's speculative ones
+        { name: "widen", schema: s1, migration: defineMigration({ tables: { events: (row) => ({ kind: "y", n: Number(row.n) }) } }) },
+        { name: "add_z", schema: live, migration: defineMigration({}) },
+      ]),
+    );
+    expect(await db(engine).events.get(1n)).toEqual({ id: 1n, kind: "y", n: 5 });
+    engine.close("clean");
+
+    const again = reopen(live, path);
+    expect((await again.db.events.get(1n)).kind).toBe("y");
+    again.engine.close("clean");
+  });
+
+  test("safe drift: a transform on a table the database lacks materializes it empty", async () => {
+    const preSchema = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
+      archive: defineTable({ id: dbz.primaryKey(), tag: dbz.string() }),
+    });
+    const live = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), note: dbz.string() }),
+      archive: defineTable({ id: dbz.primaryKey(), tag: dbz.string() }),
+    });
+    const seedS = defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.users.insert({ name: "ana" }); // id 1
+    });
+
+    const engine = new Engine(live, path);
+    await reconcile(engine, [
+      {
+        number: 1,
+        name: "note",
+        pre: snapshotOf(preSchema),
+        target: snapshotOf(live),
+        migration: defineMigration({
+          tables: {
+            users: (row) => ({ ...row, note: `note-${row.name}` }),
+            archive: (row) => row, // volunteered on a table this database never had
+          },
+        }),
+      },
+    ]);
+    const d = db(engine);
+    expect(await d.users.get(1n)).toEqual({ id: 1n, name: "ana", note: "note-ana" });
+    expect((await d.archive.scan().collect()).length).toBe(0); // created empty, no crash
+    engine.close("clean");
+
+    const again = reopen(live, path); // physical archive table verified against the snapshot
+    expect((await again.db.users.get(1n)).note).toBe("note-ana");
+    again.engine.close("clean");
+  });
+
+  test("a fresh database stamps the whole chain applied and reopens as a no-op", async () => {
+    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.string() }) });
+    const s1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number() }) });
+    const live = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number(), tag: dbz.nullable(dbz.string()) }) });
+    const path = freshPath();
+    const steps = buildChain(seedS, [
+      { schema: s1, migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) },
+      { schema: live, migration: defineMigration({ tables: { posts: (row) => ({ ...row, tag: "x" }) } }) },
+    ]);
+
+    const engine = new Engine(live, path); // brand-new database, no data
+    const { applied } = await reconcile(engine, steps);
+    expect(applied.some((l) => l.startsWith("initialized"))).toBe(true);
+    // the chain is stamped vacuously applied — its prefix must hold on reopen
+    expect(history(engine).map((r) => Number(r.number))).toEqual([1, 2]);
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(live));
+    await db(engine).posts.insert({ n: 3, tag: "y" }); // id 1
+    engine.close("clean");
+
+    const again = new Engine(live, path);
+    const { applied: none } = await reconcile(again, steps); // full prefix match → nothing pending
+    expect(none).toEqual([]);
+    expect(await db(again).posts.get(1n)).toEqual({ id: 1n, n: 3, tag: "y" });
+    again.close("clean");
   });
 });

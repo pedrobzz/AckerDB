@@ -30,7 +30,7 @@
  * is the answer to a refusal; `dbz reset` is the dev escape hatch.
  */
 import { Engine, indexSqlName, type TablePlan } from "./engine.ts";
-import { applyMigration, type Migration } from "./migrate.ts";
+import { applyStep, pendingSteps, recordChain, stepLabel, validateChain, type MigrationStep } from "./migrate.ts";
 import {
   classifySchemaDiff,
   refusalSite,
@@ -64,28 +64,57 @@ interface ReconcilePlan {
 }
 
 export function reconcile(engine: Engine): { applied: string[] };
-export function reconcile(engine: Engine, migration: Migration): Promise<{ applied: string[] }>;
+export function reconcile(engine: Engine, steps: MigrationStep[]): Promise<{ applied: string[] }>;
 export function reconcile(
   engine: Engine,
-  migration?: Migration,
+  steps?: MigrationStep[],
 ): { applied: string[] } | Promise<{ applied: string[] }> {
+  if (steps !== undefined) return applyChain(engine, steps);
+
   const target = snapshotOf(engine.schema);
   const current = engine.loadSnapshot();
   if (current === null) {
     engine.createAll();
-    const result = { applied: [`initialized ${Object.keys(target.tables).length} table(s)`] };
-    return migration === undefined ? result : Promise.resolve(result);
+    return { applied: [`initialized ${Object.keys(target.tables).length} table(s)`] };
   }
-  if (JSON.stringify(current) === JSON.stringify(target)) {
-    return migration === undefined ? { applied: [] } : Promise.resolve({ applied: [] });
-  }
-
-  if (migration !== undefined) return applyMigration(engine, target, current, migration);
+  if (JSON.stringify(current) === JSON.stringify(target)) return { applied: [] };
 
   const plan = planReconcile(engine, current, diffSnapshots(current, target));
   if (plan.refusals.length > 0) throw new UnsafeSchemaChange(plan.refusals);
   applyPlan(engine, target, plan.ops);
   return { applied: plan.applied.length > 0 ? plan.applied : ["updated schema snapshot"] };
+}
+
+/**
+ * Apply an append-only migration chain at startup. Every pending step reconciles
+ * toward its own historical target in its own transaction (that same transaction
+ * records the history row), so a mid-chain failure leaves every earlier step
+ * applied and rolls the failing one back whole. After the chain the in-memory tag
+ * maps are refreshed and the remaining diff to the live schema takes the ordinary
+ * shape-safe reconcile path (auto-applies, or throws naming the recourse).
+ */
+async function applyChain(engine: Engine, steps: MigrationStep[]): Promise<{ applied: string[] }> {
+  validateChain(steps); // reject malformed numbering before touching the database
+  const stored = engine.loadSnapshot();
+  if (stored === null) {
+    // A fresh database is already at the live schema; stamp the whole chain
+    // applied so its (number, fingerprint) prefix holds on the next open.
+    engine.createAll();
+    recordChain(engine, steps);
+    return { applied: [`initialized ${Object.keys(snapshotOf(engine.schema).tables).length} table(s)`] };
+  }
+  const pending = pendingSteps(engine.writer, steps);
+  const applied: string[] = [];
+  let current = stored;
+  for (const step of pending) {
+    const lines = await applyStep(engine, current, step);
+    const label = stepLabel(step);
+    for (const line of lines.length > 0 ? lines : ["applied"]) applied.push(`${label}: ${line}`);
+    current = step.target;
+  }
+  if (pending.length > 0) engine.reinternTags();
+  applied.push(...reconcile(engine).applied);
+  return { applied };
 }
 
 /**
@@ -102,19 +131,31 @@ function planReconcile(engine: Engine, current: SchemaSnapshot, diff: SchemaDiff
   const count = (sql: string, ...params: unknown[]): number =>
     Number((writer.query(sql).get(...(params as never[])) as { n: bigint }).n);
 
-  for (const change of safe) applySafe(engine, change, current, ops, applied);
-  for (const opt of optimistic) probeOptimistic(engine, opt, current, count, ops, applied, refusals);
+  const planOf = (table: string): TablePlan => engine.plan(table);
+  for (const change of safe) applySafe(engine, change, current, ops, applied, planOf);
+  for (const opt of optimistic) probeOptimistic(engine, opt, current, count, ops, applied, refusals, planOf);
 
   return { ops, applied, refusals };
 }
 
-/** Build the physical ops (and applied log) for one shape-safe change. */
-export function applySafe(engine: Engine, change: SafeChange, current: SchemaSnapshot, ops: Op[], applied: string[]): void {
+/**
+ * Build the physical ops (and applied log) for one shape-safe change. `planOf`
+ * resolves a table name to its NEW-target plan: the live-schema plan for an
+ * ordinary reconcile, an intermediate step's target plan inside a migration chain.
+ */
+export function applySafe(
+  engine: Engine,
+  change: SafeChange,
+  current: SchemaSnapshot,
+  ops: Op[],
+  applied: string[],
+  planOf: (table: string) => TablePlan,
+): void {
   const writer = engine.writer;
   const table = change.table;
   switch (change.op) {
     case "create-table":
-      ops.push(() => engine.createTablePhysical(engine.plan(table)));
+      ops.push(() => engine.createTablePhysical(planOf(table)));
       applied.push(`created table ${table}`);
       return;
     case "add-event-table":
@@ -127,11 +168,11 @@ export function applySafe(engine: Engine, change: SafeChange, current: SchemaSna
       applied.push(`updated event table ${table}`);
       return;
     case "event-to-table":
-      ops.push(() => engine.createTablePhysical(engine.plan(table)));
+      ops.push(() => engine.createTablePhysical(planOf(table)));
       applied.push(`converted ${table} to a table`);
       return;
     case "add-column": {
-      const columnPlan = engine.plan(table).columns.get(change.column)!;
+      const columnPlan = planOf(table).columns.get(change.column)!;
       for (const phys of columnPlan.phys) {
         ops.push(() => writer.exec(`ALTER TABLE ${quote(table)} ADD COLUMN ${phys.ddl}`));
       }
@@ -139,7 +180,7 @@ export function applySafe(engine: Engine, change: SafeChange, current: SchemaSna
       return;
     }
     case "rebuild-table":
-      rebuild(engine, engine.plan(table), current.tables[table]!, ops);
+      rebuild(engine, planOf(table), current.tables[table]!, ops);
       applied.push(`rebuilt table ${table}`);
       return;
     case "drop-index":
@@ -147,7 +188,7 @@ export function applySafe(engine: Engine, change: SafeChange, current: SchemaSna
       applied.push(`dropped index ${table}.${change.index}`);
       return;
     case "create-index":
-      ops.push(createIndexOp(engine, engine.plan(table), change.index, change.recreate));
+      ops.push(createIndexOp(engine, planOf(table), change.index, change.recreate));
       applied.push(`${change.recreate ? "recreated" : "created"} index ${table}.${change.index}`);
       return;
   }
@@ -172,9 +213,10 @@ export function probeOptimistic(
   ops: Op[],
   applied: string[],
   refusals: SchemaRefusal[],
+  planOf: (table: string) => TablePlan,
   phys: { table: string; column: (c: string) => string } = { table: opt.table, column: (c) => c },
 ): void {
-  const tablePlan = engine.plan(opt.table);
+  const tablePlan = planOf(opt.table);
   const index = tablePlan.indexes.find((ix) => ix.name === opt.index)!;
   const currentColumns = current.tables[opt.table]?.columns ?? {};
   const allExist = index.columns.every((c) => currentColumns[c] !== undefined);

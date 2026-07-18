@@ -72,11 +72,15 @@ export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.
 export { reconcile, UnsafeSchemaChange } from "./reconcile.ts";
 export {
   defineMigration,
+  migrationFingerprint,
   MigrationError,
+  stepLabel,
+  validateChain,
   type BeforeTable,
   type Migration,
   type MigrationContext,
   type MigrationRow,
+  type MigrationStep,
   type Renames,
   type RowTransform,
 } from "./migrate.ts";

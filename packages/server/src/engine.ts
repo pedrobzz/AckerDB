@@ -146,7 +146,7 @@ export interface BackupManifest {
   verifiedAt: number;
 }
 
-const ENGINE_SCHEMA_VERSION = 7;
+const ENGINE_SCHEMA_VERSION = 8;
 const LOCK_SUFFIX = ".dbzz.lock";
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
@@ -236,6 +236,12 @@ const INTERNAL_OBJECTS: StoredObject[] = [
     table: "_dbz_identity_accounts",
     sql: "CREATE INDEX ix__dbz_identity_accounts_identity ON _dbz_identity_accounts (identity)",
   },
+  {
+    type: "table",
+    name: "_dbz_migrations",
+    table: "_dbz_migrations",
+    sql: "CREATE TABLE _dbz_migrations (number INTEGER PRIMARY KEY, name TEXT NOT NULL, target_fingerprint TEXT NOT NULL, applied_at REAL NOT NULL)",
+  },
   ...MCP_TOKEN_INTERNAL_OBJECTS,
 ];
 
@@ -261,7 +267,7 @@ function storedName(value: unknown, path: string): string {
   return value;
 }
 
-function physicalColumnDdl(name: string, descriptor: Descriptor, path: string): string[] {
+export function physicalColumnDdl(name: string, descriptor: Descriptor, path: string): string[] {
   if (!storedRecord(descriptor) || typeof descriptor["k"] !== "string") {
     corruptSnapshot(`${path} is not a validator descriptor`);
   }
@@ -945,6 +951,12 @@ export class Engine {
     if (invalidIdentity !== null || invalidAccount !== null) {
       throw new CorruptDatabaseError("DBZZ identity directory is invalid");
     }
+    const invalidMigration = connection
+      .query(
+        "SELECT 1 FROM _dbz_migrations WHERE typeof(number) <> 'integer' OR number <= 0 OR typeof(name) <> 'text' OR length(name) = 0 OR typeof(target_fingerprint) <> 'text' OR length(target_fingerprint) <> 64 OR typeof(applied_at) NOT IN ('integer', 'real') LIMIT 1",
+      )
+      .get();
+    if (invalidMigration !== null) throw new CorruptDatabaseError("DBZZ migration history is invalid");
     verifyMcpTokenVaultState(connection);
   }
 
