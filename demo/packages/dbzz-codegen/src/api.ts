@@ -3,6 +3,8 @@
 
 import { anyApi } from "@dbzz/core";
 import type { ApiFromModules, EventRef } from "@dbzz/core";
+import type * as m_admin_mcp from "../../../app/server/functions/admin/mcp.ts";
+import type * as m_admin_tools_tables from "../../../app/server/functions/admin/tools/tables.ts";
 import type * as m_auth from "../../../app/server/functions/auth.ts";
 import type * as m_dashboard from "../../../app/server/functions/dashboard.ts";
 import type * as m_kitchen from "../../../app/server/functions/kitchen.ts";
@@ -14,6 +16,12 @@ import type * as m_tables from "../../../app/server/functions/tables.ts";
 import type * as m_users from "../../../app/server/functions/users.ts";
 
 export const api = anyApi as unknown as ApiFromModules<{
+  admin: {
+    mcp: typeof m_admin_mcp;
+    tools: {
+      tables: typeof m_admin_tools_tables;
+    };
+  };
   auth: typeof m_auth;
   dashboard: typeof m_dashboard;
   kitchen: typeof m_kitchen;
