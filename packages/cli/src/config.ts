@@ -25,6 +25,8 @@ export interface AppConfig {
   schemaPath: string;
   /** Directory of function modules. */
   functionsDir: string;
+  /** Directory of migration modules and their `meta/` sidecars. */
+  migrationsDir: string;
   /** Where codegen writes _generated files. */
   generatedDir: string;
   /** Where the local database lives. */
@@ -41,6 +43,7 @@ export interface AppConfig {
 interface RawConfig {
   schema?: string;
   functions?: string;
+  migrations?: string;
   generated?: string;
   db?: string;
   port?: number;
@@ -112,6 +115,7 @@ export function loadConfig(
     appDir: dir,
     schemaPath: abs(raw.schema ?? "./schema.ts"),
     functionsDir: abs(raw.functions ?? "./functions"),
+    migrationsDir: abs(raw.migrations ?? "./migrations"),
     generatedDir: abs(raw.generated ?? "./_generated"),
     dbDir: abs(raw.db ?? "./.zdb"),
     port: listenerPort(raw.port),

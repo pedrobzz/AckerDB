@@ -66,6 +66,7 @@ export type DbzzStartupPhase =
   | "codegen"
   | "loading"
   | "opening-storage"
+  | "migrating"
   | "reconciling";
 
 export interface DbzzServerOptions {
@@ -135,7 +136,8 @@ const STARTUP_PHASE_ORDER: Readonly<Record<DbzzStartupPhase, number>> = Object.f
   codegen: 1,
   loading: 2,
   "opening-storage": 3,
-  reconciling: 4,
+  migrating: 4,
+  reconciling: 5,
 });
 
 function json(value: unknown, status = 200): Response {
