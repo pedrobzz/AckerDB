@@ -11,14 +11,14 @@
   },
   "dependencies": {
     "@ai-sdk/gateway": "4.0.23",
-    "@dbzz/server": "0.3.1",
+    "@dbzz/server": "0.3.2",
     "@demo/dbzz-codegen": "workspace:*",
     "ai": "7.0.31",
     "jose": "^6.1.3",
     "just-bash": "3.1.0"
   },
   "devDependencies": {
-    "@dbzz/cli": "0.3.1",
+    "@dbzz/cli": "0.3.2",
     "@types/bun": "^1.2.0",
     "typescript": "^5.9.0"
   }
