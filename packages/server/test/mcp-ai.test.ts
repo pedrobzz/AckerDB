@@ -204,7 +204,7 @@ function callsFor(mode: string): readonly ModelCall[] {
     case "rich":
       return [{ id: "rich", name: "rich_output", input: {} }];
     case "invalid":
-      return [{ id: "invalid", name: "round_trip", input: { ...canonicalInput, large: 1 } }];
+      return [{ id: "invalid", name: "round_trip", input: { ...canonicalInput, large: 1.5 } }];
     case "failure":
       return [{ id: "failure", name: "fail", input: {} }];
     case "parallel":

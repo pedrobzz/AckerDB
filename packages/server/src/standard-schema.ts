@@ -136,7 +136,25 @@ function protocolError(path: string, expected: string, value: unknown): never {
   throw new ValidationError(`${path}: expected ${expected}, got ${got}`);
 }
 
+/**
+ * proto3-style int64 JSON mapping: encode always as a canonical decimal string,
+ * accept either a JSON number or a canonical decimal string on the way in. A
+ * number is taken only when it is a safe integer — every JSON integer literal
+ * past ±(2^53-1) parses to a float that fails `Number.isSafeInteger`, so silent
+ * precision loss can never pass and out-of-range values are forced to the string
+ * form (`BigInt(-0)` is `0n`, so `-0` canonicalizes cleanly).
+ */
 function canonicalDecimal(value: unknown, path: string): bigint {
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) {
+      protocolError(
+        path,
+        "a safe integer or a canonical decimal string (values beyond ±2^53-1 must be decimal strings)",
+        value,
+      );
+    }
+    return BigInt(value);
+  }
   if (typeof value !== "string" || !DECIMAL.test(value)) {
     protocolError(path, "a canonical decimal string", value);
   }
@@ -318,7 +336,7 @@ function compileNode(
         );
       }
       return {
-        schema: () => described(validator, { type: "string", pattern: DECIMAL_PATTERN }),
+        schema: () => described(validator, { type: ["integer", "string"], pattern: DECIMAL_PATTERN }),
         decode(value, path) {
           return canonicalDecimal(value, path);
         },
