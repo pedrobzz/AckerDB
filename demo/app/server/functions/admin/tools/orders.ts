@@ -1,15 +1,7 @@
 import { dbz } from "@dbzz/server";
 import { orderStatus } from "../../../schema.ts";
+import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 import { admin } from "../mcp.ts";
-
-const DEFAULT_LIMIT = 50;
-const MAX_LIMIT = 200;
-
-function clampLimit(limit: number | null): number {
-  if (limit === null) return DEFAULT_LIMIT;
-  if (!Number.isFinite(limit)) return DEFAULT_LIMIT;
-  return Math.min(MAX_LIMIT, Math.max(1, Math.trunc(limit)));
-}
 
 /**
  * `get_orders` — the restaurant's orders (open and closed), newest first. Reach
