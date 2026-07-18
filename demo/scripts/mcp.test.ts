@@ -82,15 +82,16 @@ test("tool discovery is least-privilege for the caller's scopes", async () => {
     // Anonymous callers see only genuinely public tools — the admin surface has none.
     expect(await listedToolNames(await backend.rpc("tools/list", {}))).toEqual([]);
 
-    // A read-scoped token discovers get_tables.
+    // A read-scoped token discovers get_tables. (Exact full-surface discovery
+    // is asserted once in mcp-surface.test.ts, after every tool exists.)
     expect(
       await listedToolNames(await backend.rpc("tools/list", {}, readToken.token)),
-    ).toEqual(["get_tables"]);
+    ).toContain("get_tables");
 
     // An operate-only token does not — get_tables sits behind `read`.
     expect(
       await listedToolNames(await backend.rpc("tools/list", {}, operateToken.token)),
-    ).toEqual([]);
+    ).not.toContain("get_tables");
 
     // Calling the read tool without the read scope is denied, not hidden-then-run.
     const denied = await callTables(backend, operateToken.token, {});
