@@ -58,23 +58,25 @@ large ids still travel as strings.
 
 ### Validation transcript
 
-Recorded 2026-07-18 by the 0.3.1 release gate: a scripted live run of
+Recorded 2026-07-18 by the 0.3.2 release gate: a scripted live run of
 `deepseek/deepseek-v4-flash` (via the Vercel AI gateway) through the demo's
-real chat endpoint, with `repairToolCall` deleted and no coercion anywhere.
-A second staff session held a live `dashboard.overview` subscription open for
-the whole run. Every tool argument arrived typed; the subscription survived
-the agent's commit with clean updates.
+real chat endpoint, with no repair or coercion anywhere. A second staff
+session held a live `dashboard.overview` subscription open for the whole run.
+Every tool argument arrived typed; the subscription survived the agent's
+commit with clean updates.
 
 | Prompt (abridged) | Tool call | Input received |
 |---|---|---|
 | tables with `activeOnly` true | `get_tables` | `{"activeOnly": true}` |
-| 5 menu items with `limit` 5 | `get_menu_items` | `{"limit": 5}` |
+| items on order 6 (`orderId` filter) | `get_order_items` | `{"orderId": 6}` |
 | 3 guests with `limit` 3 | `get_guests` | `{"limit": 3}` |
 | advance oldest ORDERED item | `get_order_items` | `{"status": ["ORDERED"], "limit": 200}` |
-| (same turn, the action) | `advance_kitchen_item` | `{"orderItemId": "14"}` → committed |
+| (same turn, the action) | `advance_kitchen_item` | `{"orderItemId": 14}` → committed |
 
 Outcome: zero `InvalidToolInputError`, zero masked stream errors, all four
 streams finished cleanly; the live subscription recorded 2 updates and 0
 errors across the action commit. The booleans and numbers above are real JSON
-scalars, not strings — the type-array emission alone is sufficient for
-DeepSeek; no application-side repair is needed.
+scalars — nullable args arrive typed under the type-array emission, and the
+bigint id filters arrive as plain JSON integers under the proto3-style
+mapping. The schemas alone are sufficient for DeepSeek; no application-side
+repair is needed.
