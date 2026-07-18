@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dbzz/core": "0.3.0",
-    "@dbzz/server": "0.3.0"
+    "@dbzz/core": "0.3.1",
+    "@dbzz/server": "0.3.1"
   },
   "devDependencies": {
     "typescript": "^5.9.0"

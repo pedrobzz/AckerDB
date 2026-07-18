@@ -96,10 +96,10 @@ function mockModel(): LanguageModel {
               type: "tool-call" as const,
               toolCallId: "call-get-tables",
               toolName: "get_tables",
-              // Deliberately stringly, mimicking DeepSeek's function calling:
-              // the chat's repairToolCall must coerce these per the schema
-              // before dbzz's strict validation accepts them.
-              input: '{"activeOnly":"true","limit":"50"}',
+              // Real typed JSON — booleans and numbers, not stringified scalars.
+              // dbzz's nullable tool args now emit JSON Schema type arrays, so a
+              // model targets the true type and this passes strict validation.
+              input: '{"activeOnly":true,"limit":50}',
             },
             {
               type: "finish" as const,
