@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useState } from "react";
+import { AdminChatProvider } from "../components/chat/chat-provider.tsx";
 import { useFocusBoundary } from "../components/ui.tsx";
 
 export const Route = createFileRoute("/_admin")({
@@ -68,7 +69,8 @@ function AdminLayout() {
   const connected = connection.phase === "ready";
 
   return (
-    <div className="flex min-h-screen bg-cream-50">
+    <AdminChatProvider>
+      <div className="flex min-h-screen bg-cream-50">
       <button
         className="hidden max-[900px]:fixed max-[900px]:left-[14px] max-[900px]:top-[14px] max-[900px]:z-[24] max-[900px]:inline-flex max-[900px]:size-[42px] max-[900px]:items-center max-[900px]:justify-center max-[900px]:rounded-xl max-[900px]:bg-forest-900 max-[900px]:text-white max-[900px]:shadow-[0_18px_60px_rgb(29_41_37/0.08)] print:!hidden"
         type="button"
@@ -185,6 +187,7 @@ function AdminLayout() {
       <main className="ml-[238px] w-[calc(100%-238px)] min-w-0 max-[900px]:ml-0 max-[900px]:w-full print:!m-0 print:!w-full">
         <Outlet />
       </main>
-    </div>
+      </div>
+    </AdminChatProvider>
   );
 }
