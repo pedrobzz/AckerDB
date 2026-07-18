@@ -11,7 +11,7 @@ import {
 } from "../lib/domain.ts";
 
 const authenticatedAccess = (ctx: { auth: { kind: string } }) =>
-  ctx.auth.kind === "user" || ctx.auth.kind === "workload";
+  ctx.auth.kind === "user";
 const staffAccess = (ctx: { auth: Parameters<typeof isStaff>[0] }) =>
   isStaff(ctx.auth);
 
