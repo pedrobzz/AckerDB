@@ -1,9 +1,5 @@
 import { SignJWT, jwtVerify } from "jose";
-import {
-  DbzzError,
-  type VerifiedUserCredential,
-  type WorkloadPrincipal,
-} from "@dbzz/server";
+import { DbzzError, type VerifiedUserCredential } from "@dbzz/server";
 import { cleanName, normalizeEmail } from "./domain.ts";
 
 const ISSUER = "https://demo.dbzz.local/";
@@ -43,11 +39,15 @@ export async function issueGuestToken(input: {
 
 export async function verifyDemoCredential(
   credential: string,
-): Promise<VerifiedUserCredential | WorkloadPrincipal> {
+): Promise<VerifiedUserCredential> {
   const staffToken = process.env.DBZZ_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
   if (credential === staffToken) {
+    // Staff authenticate as a user-kind principal so the whole team shares one
+    // durable Identity (subject "staff:amelia"). Owner-token administration is
+    // restricted to external user identities, so this is what lets staff manage
+    // the Admin MCP's owner tokens.
     return {
-      kind: "workload",
+      kind: "user",
       issuer: ISSUER,
       subject: "staff:amelia",
       claims: { role: "staff", name: "Amelia Morgan" },

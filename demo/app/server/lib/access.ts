@@ -1,10 +1,7 @@
 import { DbzzError, type Identity, type Principal } from "@dbzz/server";
 
 export function isStaff(auth: Principal): boolean {
-  return (
-    (auth.kind === "workload" || auth.kind === "user") &&
-    auth.claims.role === "staff"
-  );
+  return auth.kind === "user" && auth.claims.role === "staff";
 }
 
 export function ownsIdentity(auth: Principal, identity: Identity): boolean {
