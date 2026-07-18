@@ -5,6 +5,11 @@ import { anyApi } from "@dbzz/core";
 import type { ApiFromModules, EventRef } from "@dbzz/core";
 import type * as m_admin_mcp from "../../../app/server/functions/admin/mcp.ts";
 import type * as m_admin_tokens from "../../../app/server/functions/admin/tokens.ts";
+import type * as m_admin_tools_guests from "../../../app/server/functions/admin/tools/guests.ts";
+import type * as m_admin_tools_menuCategories from "../../../app/server/functions/admin/tools/menuCategories.ts";
+import type * as m_admin_tools_menuItems from "../../../app/server/functions/admin/tools/menuItems.ts";
+import type * as m_admin_tools_orderItems from "../../../app/server/functions/admin/tools/orderItems.ts";
+import type * as m_admin_tools_orders from "../../../app/server/functions/admin/tools/orders.ts";
 import type * as m_admin_tools_tables from "../../../app/server/functions/admin/tools/tables.ts";
 import type * as m_auth from "../../../app/server/functions/auth.ts";
 import type * as m_dashboard from "../../../app/server/functions/dashboard.ts";
@@ -21,6 +26,11 @@ export const api = anyApi as unknown as ApiFromModules<{
     mcp: typeof m_admin_mcp;
     tokens: typeof m_admin_tokens;
     tools: {
+      guests: typeof m_admin_tools_guests;
+      menuCategories: typeof m_admin_tools_menuCategories;
+      menuItems: typeof m_admin_tools_menuItems;
+      orderItems: typeof m_admin_tools_orderItems;
+      orders: typeof m_admin_tools_orders;
       tables: typeof m_admin_tools_tables;
     };
   };
