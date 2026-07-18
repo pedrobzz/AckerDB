@@ -27,8 +27,8 @@ orders. Deliberately basic: it answers direct lookups, never analytics. Exists
 so a small model can answer simple questions without composing pipelines.
 
 **Bash workspace** — The Admin MCP's open-ended read tool: a sandboxed shell
-whose files are the restaurant's live data rendered as JSONL, materialized on
-demand at call time and discarded afterwards (never stored, therefore never
+whose files are the restaurant's live data rendered as JSONL, materialized
+fresh at call time and discarded afterwards (never stored, therefore never
 stale). Exists so a capable model can answer arbitrary analytical questions
 the entity query tools never anticipated.
 

@@ -157,3 +157,25 @@ test("oversized output is bounded and flags truncation", async () => {
     expect(small.stdout).toBe("tiny\n");
   });
 });
+
+// Regression: `dbz dev`/`dbz start` run with telemetry enabled, where dbzz
+// times reads with performance.now(). just-bash's sandbox blocks that global
+// during exec(), so files must be materialized BEFORE the shell runs — lazy
+// providers die here with a SecurityViolationError surfaced as ENOENT.
+test("workspace materializes under the dev config (telemetry enabled)", async () => {
+  await withBackend(
+    async (backend) => {
+      const staff = await backend.staff();
+      const token = await issueToken(staff, "Dev config", ["read"]);
+      const body = await backend.call(
+        "bash",
+        { script: "head -c 40 /data/tables.jsonl" },
+        token.token,
+      );
+      const result = structuredOf<WorkspaceResult>(body);
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('"number":1');
+    },
+    { DBZZ_TELEMETRY: "enabled", DBZZ_DURABILITY: "production" },
+  );
+});

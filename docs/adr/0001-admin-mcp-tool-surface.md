@@ -6,7 +6,7 @@ strong agent hosts (Codex, Claude Code) — over the *same* single endpoint. We
 decided the read surface is exactly two shapes: **per-entity query tools**
 (`get_tables`, `get_orders`, … — plain filters and limits, one per entity, no
 aggregation) and **one bash workspace tool** (a sandboxed just-bash shell whose
-files are the live data rendered as JSONL, materialized lazily at call time and
+files are the live data rendered as JSONL, materialized fresh at call time and
 discarded after — never stored, therefore never stale). Mutations are two
 dedicated action tools (`advance_kitchen_item`, `cancel_order`) behind the
 `operate` scope; reads sit behind `read`.

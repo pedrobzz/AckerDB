@@ -128,95 +128,87 @@ Revenue by dish across all checks (cents), busiest dish first:
 `;
 
 /**
- * Build the workspace's virtual files as lazy providers over one database
- * snapshot. Each provider runs only if its file is actually read and is cached
- * for the rest of the call, so an unread table is never queried. Every provider
- * reads through the SAME transaction reader, giving one consistent view per
- * call; the next call gets a brand-new instance over fresh data.
+ * Materialize the workspace's virtual files from one database snapshot.
+ *
+ * Materialization is EAGER — every file is rendered here, inside the open read
+ * transaction, before the shell runs. Lazy per-file providers would query less,
+ * but just-bash's sandbox lockdown blocks `globalThis.performance.now` while a
+ * script executes, and dbzz's read path times its reads with `performance.now()`
+ * whenever telemetry is enabled — so any database read issued from inside
+ * `exec()` dies with a SecurityViolationError (surfaced to the script as
+ * ENOENT). Host reads happen out here instead, where the sandbox has no say;
+ * the shell only ever sees plain strings. Per-call freshness and snapshot
+ * consistency are unchanged: files are rebuilt from live data on every call and
+ * discarded afterward.
  */
-function buildFiles(db: DatabaseReader, now: number): InitialFiles {
+async function buildFiles(db: DatabaseReader, now: number): Promise<InitialFiles> {
+  const [tables, categories, menuItems, orders, orderItems, users] =
+    await Promise.all([
+      db.restaurantTables.scan().collect(),
+      db.menuCategories.scan().collect(),
+      db.menuItems.scan().collect(),
+      db.orders.scan().collect(),
+      db.orderItems.scan().collect(),
+      db.users.scan().collect(),
+    ]);
+  const orderById = new Map(orders.map((order) => [order.id, order]));
+  const tableById = new Map(tables.map((table) => [table.id, table]));
+  const sessions = orders.filter((order) => order.status !== "OPEN");
   return {
     "/data/README.md": README,
-
-    "/data/tables.jsonl": async () =>
-      toJsonl(await db.restaurantTables.scan().collect()),
-    "/data/menu_categories.jsonl": async () =>
-      toJsonl(await db.menuCategories.scan().collect()),
-    "/data/menu_items.jsonl": async () =>
-      toJsonl(await db.menuItems.scan().collect()),
-    "/data/orders.jsonl": async () => toJsonl(await db.orders.scan().collect()),
-    "/data/order_items.jsonl": async () =>
-      toJsonl(await db.orderItems.scan().collect()),
-    "/data/users.jsonl": async () =>
-      // `identity` stays private, matching get_guests: the workspace never
-      // exposes more than the typed tools do.
-      toJsonl(
-        (await db.users.scan().collect()).map(
-          ({ identity: _identity, ...user }) => user,
-        ),
-      ),
-
-    "/data/views/wait_times.jsonl": async () => {
-      const [items, orders, tables] = await Promise.all([
-        db.orderItems.scan().collect(),
-        db.orders.scan().collect(),
-        db.restaurantTables.scan().collect(),
-      ]);
-      const orderById = new Map(orders.map((order) => [order.id, order]));
-      const tableById = new Map(tables.map((table) => [table.id, table]));
-      return toJsonl(
-        items.map((item) => {
-          const order = orderById.get(item.orderId);
-          const table = order ? tableById.get(order.tableId) : undefined;
-          const final = isFinal(item.status);
-          const endedAt = final ? item.statusChangedAt : now;
-          return {
-            orderItemId: item.id,
-            orderId: item.orderId,
-            menuItemId: item.menuItemId,
-            tableNumber: table?.number ?? null,
-            itemName: item.name,
-            status: item.status,
-            final,
-            orderedAt: item.orderedAt,
-            statusChangedAt: item.statusChangedAt,
-            waitMs: endedAt - item.orderedAt,
-          };
-        }),
-      );
-    },
-
-    "/data/views/table_sessions.jsonl": async () => {
-      const [orders, tables] = await Promise.all([
-        db.orders.scan().collect(),
-        db.restaurantTables.scan().collect(),
-      ]);
-      const tableById = new Map(tables.map((table) => [table.id, table]));
-      const sessions = orders.filter((order) => order.status !== "OPEN");
-      return toJsonl(
-        sessions.map((order) => {
-          const table = tableById.get(order.tableId);
-          return {
-            orderId: order.id,
-            tableNumber: table?.number ?? null,
-            openedAt: order.openedAt,
-            closedAt: order.closedAt,
-            durationMs:
-              order.closedAt === null ? null : order.closedAt - order.openedAt,
-            totalCents: order.totalCents,
-            status: order.status,
-          };
-        }),
-      );
-    },
+    "/data/tables.jsonl": toJsonl(tables),
+    "/data/menu_categories.jsonl": toJsonl(categories),
+    "/data/menu_items.jsonl": toJsonl(menuItems),
+    "/data/orders.jsonl": toJsonl(orders),
+    "/data/order_items.jsonl": toJsonl(orderItems),
+    // `identity` stays private, matching get_guests: the workspace never
+    // exposes more than the typed tools do.
+    "/data/users.jsonl": toJsonl(
+      users.map(({ identity: _identity, ...user }) => user),
+    ),
+    "/data/views/wait_times.jsonl": toJsonl(
+      orderItems.map((item) => {
+        const order = orderById.get(item.orderId);
+        const table = order ? tableById.get(order.tableId) : undefined;
+        const final = isFinal(item.status);
+        const endedAt = final ? item.statusChangedAt : now;
+        return {
+          orderItemId: item.id,
+          orderId: item.orderId,
+          menuItemId: item.menuItemId,
+          tableNumber: table?.number ?? null,
+          itemName: item.name,
+          status: item.status,
+          final,
+          orderedAt: item.orderedAt,
+          statusChangedAt: item.statusChangedAt,
+          waitMs: endedAt - item.orderedAt,
+        };
+      }),
+    ),
+    "/data/views/table_sessions.jsonl": toJsonl(
+      sessions.map((order) => {
+        const table = tableById.get(order.tableId);
+        return {
+          orderId: order.id,
+          tableNumber: table?.number ?? null,
+          openedAt: order.openedAt,
+          closedAt: order.closedAt,
+          durationMs:
+            order.closedAt === null ? null : order.closedAt - order.openedAt,
+          totalCents: order.totalCents,
+          status: order.status,
+        };
+      }),
+    ),
   };
 }
 
 /**
  * `bash` — the Admin MCP's open-ended read tool. A sandboxed just-bash shell,
  * created fresh for each call, whose files are the live restaurant data rendered
- * as JSON Lines (materialized lazily from read queries, cached only within the
- * call, discarded after — never stored, therefore never stale). Ships derived
+ * as JSON Lines (materialized from read queries at call time, discarded after —
+ * never stored, therefore never stale). Ships derived
  * views and a `/data/README.md` so flagship analytics collapse into one-line jq
  * pipelines. This is where a capable model answers questions the typed entity
  * tools never anticipated; small models should prefer the typed tools.
@@ -255,7 +247,7 @@ export const bashWorkspace = admin.tool({
     ctx.tx(async (tx) => {
       const now = Date.now();
       const shell = new Bash({
-        files: buildFiles(tx.db, now),
+        files: await buildFiles(tx.db, now),
         executionLimits: EXECUTION_LIMITS,
       });
       const result = await shell.exec(args.script, {
