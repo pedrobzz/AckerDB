@@ -99,6 +99,32 @@ function described(
     : { ...schema, description: validator.description };
 }
 
+const NULLABLE_MERGE_BLOCKERS = ["enum", "const", "anyOf", "oneOf", "allOf", "not", "$ref"] as const;
+
+/**
+ * A nullable wrapper widens the inner `type` keyword instead of wrapping the
+ * schema in an `anyOf` union whenever that is spec-equivalent:
+ * `{"type":["boolean","null"]}` accepts exactly the same values as
+ * `{"anyOf":[{"type":"boolean"},{"type":"null"}]}`, and function-calling
+ * models reliably honor flat `type` keywords where many ignore `anyOf`
+ * member types entirely (DeepSeek, for one, stringifies every scalar
+ * argument of an `anyOf`-typed parameter). Inners whose constraints would
+ * change meaning under a widened type (enum/const/combinators) keep the
+ * union form.
+ */
+function nullableSchema(
+  inner: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+  const type = inner.type;
+  const mergeable =
+    (typeof type === "string" ||
+      (Array.isArray(type) && type.every((member) => typeof member === "string"))) &&
+    NULLABLE_MERGE_BLOCKERS.every((key) => !(key in inner));
+  if (!mergeable) return { anyOf: [inner, { type: "null" }] };
+  const types = typeof type === "string" ? [type] : (type as readonly string[]);
+  return types.includes("null") ? inner : { ...inner, type: [...types, "null"] };
+}
+
 function protocolError(path: string, expected: string, value: unknown): never {
   const got = value === null
     ? "null"
@@ -394,9 +420,7 @@ function compileNode(
       if (inner === undefined) throw new TypeError(`${where}: dbz.nullable() has no inner validator`);
       const node = compileNode(inner, where, protocol);
       return {
-        schema: (mode) => described(validator, {
-          anyOf: [node.schema(mode), { type: "null" }],
-        }),
+        schema: (mode) => described(validator, nullableSchema(node.schema(mode))),
         decode(value, path, mode) {
           return value === null || value === undefined
             ? value
