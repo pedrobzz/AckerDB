@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import {
   decode,
@@ -250,6 +251,12 @@ export class OrderedReactive<C = unknown> {
   readonly limits: ServiceLimits;
 
   private readonly evaluateQuery: QueryEvaluator<C>;
+  // Invariant: application code run on a subscriber's behalf (query
+  // re-evaluation, event-listener matching) executes under this pristine async
+  // context captured at construction, never a committing caller's context left
+  // ambient when a commit lands. Scoped to the app-code calls so the observer
+  // bookkeeping around them keeps its ambient trace correlation.
+  private readonly root = AsyncLocalStorage.snapshot();
   private readonly now: () => number;
   private readonly nextGeneration: () => string;
   private readonly observer?: ReactiveObserver;
@@ -688,13 +695,13 @@ export class OrderedReactive<C = unknown> {
       const evaluatedAt = this.observer ? this.observationNow() : undefined;
       let evaluated: QueryEvaluation;
       try {
-        evaluated = await this.evaluateQuery({
+        evaluated = await this.root(() => this.evaluateQuery({
           address: entry.address,
           args: decode(entry.encodedArgs),
           policyScopeFingerprint: entry.policyScopeFingerprint,
           fairnessKey,
           context,
-        });
+        }));
         this.validateEvaluation(evaluated);
         const highWater = this.publication.snapshot().highWater;
         if (evaluated.commitVersion > highWater) {
@@ -991,7 +998,7 @@ export class OrderedReactive<C = unknown> {
     for (const listener of [...state.listeners]) {
       const matchedAt = this.observer ? this.observationNow() : undefined;
       try {
-        const matched = listener.matches(event.row, listener.args) === true;
+        const matched = this.root(() => listener.matches(event.row, listener.args)) === true;
         if (this.observer) {
           this.observe(matchedAt, {
             kind: "event",
