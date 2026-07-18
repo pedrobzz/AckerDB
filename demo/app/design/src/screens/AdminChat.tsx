@@ -346,12 +346,12 @@ export const AdminChatWindowStreaming = artboard({
                 </div>
 
                 <ToolStepCard
-                  tool="get_kitchen_queue"
-                  summary="7 active items · 5 need attention"
+                  tool="get_order_items"
+                  summary="7 items in the kitchen · 5 need attention"
                   state="done"
                   expanded={false}
-                  input='{ "station": "all" }'
-                  output='{ "active": 7, "needsAttention": 5 }'
+                  input='{ "status": ["ORDERED", "PREPARING"] }'
+                  output='{ "count": 7, "needsAttention": 5 }'
                   czId="cz_cs0a"
                 />
 
