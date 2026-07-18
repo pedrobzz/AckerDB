@@ -98,8 +98,11 @@ function discoverFiles(dir: string): DiscoveredFile[] {
 
   if (existsSync(metaDir)) {
     for (const entry of readdirSync(metaDir, { withFileTypes: true })) {
+      // `NNNN_name.types.ts` is the generated types companion the scaffold
+      // imports, not a sidecar; it rides alongside the JSON and is never loaded here.
+      if (entry.isFile() && entry.name.endsWith(".types.ts")) continue;
       if (!entry.isFile() || !entry.name.endsWith(".json")) {
-        throw new Error(`migrations/meta/${entry.name} is not a sidecar; meta/ holds NNNN_name.json files only`);
+        throw new Error(`migrations/meta/${entry.name} is not a sidecar; meta/ holds NNNN_name.json files (and .types.ts companions) only`);
       }
       const stem = entry.name.slice(0, -".json".length);
       if (!stems.has(stem)) {

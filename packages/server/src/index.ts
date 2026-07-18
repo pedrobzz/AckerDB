@@ -71,6 +71,7 @@ export type {
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
 export { reconcile, UnsafeSchemaChange } from "./reconcile.ts";
 export {
+  applyRenames,
   defineMigration,
   migrationFingerprint,
   MigrationError,
@@ -81,9 +82,18 @@ export {
   type MigrationContext,
   type MigrationRow,
   type MigrationStep,
+  type NormalizedRenames,
   type Renames,
   type RowTransform,
 } from "./migrate.ts";
+export {
+  diffSnapshots,
+  type ColumnChange,
+  type IndexChange,
+  type SchemaDiff,
+  type TableChange,
+  type VariantChange,
+} from "./schema-diff.ts";
 export {
   classifySchemaDiff,
   refusalSite,

@@ -922,7 +922,7 @@ function persistTagMaps(writer: Database, maps: Map<string, TagMap>): void {
 
 // -- renames ------------------------------------------------------------------
 
-interface NormalizedRenames {
+export interface NormalizedRenames {
   tables: Record<string, string>; // old -> new
   columns: Record<string, Record<string, string>>; // NEW table name -> { oldCol -> newCol }
   variants: Record<string, Record<string, string>>; // type name -> { oldVariant -> newVariant }
@@ -1054,8 +1054,12 @@ function validateRenames(writer: Database, current: SchemaSnapshot, target: Sche
   }
 }
 
-/** Rewrite table keys, column keys, index column references, and variant names. */
-function applyRenames(current: SchemaSnapshot, raw: NormalizedRenames): SchemaSnapshot {
+/**
+ * Rewrite table keys, column keys, index column references, and variant names.
+ * Exported for migration generation, which classifies the diff of the
+ * renamed-stored snapshot against the target without ever opening a database.
+ */
+export function applyRenames(current: SchemaSnapshot, raw: NormalizedRenames): SchemaSnapshot {
   const tables: Record<string, TableSnapshot> = {};
   for (const [name, snap] of Object.entries(current.tables)) tables[name] = structuredClone(snap);
   for (const [oldT, newT] of Object.entries(raw.tables)) {
