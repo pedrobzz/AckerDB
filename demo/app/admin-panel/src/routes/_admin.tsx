@@ -48,8 +48,8 @@ const navigation: readonly NavigationItem[] = [
 ];
 
 const navLinkClasses =
-  "flex min-h-11 items-center gap-[11px] rounded-[11px] px-[13px] text-[13px] font-[550] text-[#b5c7c0] transition-colors duration-150 " +
-  "[&_svg]:size-[17px] [&_svg]:text-[#91a89f] " +
+  "flex min-h-11 items-center gap-[11px] rounded-[11px] px-[13px] text-[13px] font-[550] text-pine-nav transition-colors duration-150 " +
+  "[&_svg]:size-[17px] [&_svg]:text-pine-faint " +
   "hover:bg-white/[0.07] hover:text-warm-white " +
   "data-[status=active]:bg-warm-white data-[status=active]:font-[750] data-[status=active]:text-forest-950 " +
   "data-[status=active]:[&_svg]:text-forest-950 " +
@@ -113,7 +113,7 @@ function AdminLayout() {
               <strong className="block font-display text-[27px] font-semibold leading-none tracking-[-0.035em]">
                 Savoria
               </strong>
-              <span className="mt-[7px] block text-[8px] font-[750] uppercase tracking-[0.15em] text-[#9eb7ad]">
+              <span className="mt-[7px] block text-[8px] font-[750] uppercase tracking-[0.15em] text-pine-muted">
                 Restaurant OS
               </span>
             </div>
@@ -155,7 +155,7 @@ function AdminLayout() {
         </nav>
 
         <div
-          className="mt-auto flex items-center gap-2 px-[11px] pb-3 pt-[18px] text-[10px] capitalize text-[#9eb7ad] [&_svg]:text-[#83b296]"
+          className="mt-auto flex items-center gap-2 px-[11px] pb-3 pt-[18px] text-[10px] capitalize text-pine-muted [&_svg]:text-pine-live"
           title={`Connection: ${connection.phase}`}
         >
           {connected ? (
@@ -168,7 +168,7 @@ function AdminLayout() {
           </span>
         </div>
 
-        <div className="flex items-center gap-2.5 border-t border-[#2a4b43] px-[11px] pb-1 pt-4">
+        <div className="flex items-center gap-2.5 border-t border-pine-divider px-[11px] pb-1 pt-4">
           <span
             className="inline-flex size-[34px] flex-none items-center justify-center rounded-full bg-clay-500 text-[11px] font-extrabold"
             aria-hidden="true"
@@ -177,7 +177,7 @@ function AdminLayout() {
           </span>
           <div className="min-w-0">
             <strong className="block text-[11px]">Amelia Morgan</strong>
-            <small className="mt-[3px] block text-[9px] text-[#91a89f]">
+            <small className="mt-[3px] block text-[9px] text-pine-faint">
               General manager
             </small>
           </div>

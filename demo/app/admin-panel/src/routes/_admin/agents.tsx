@@ -298,18 +298,18 @@ function InstallSnippet({
           <Copy className="size-[11px]" aria-hidden="true" /> Copy
         </button>
       </div>
-      <div className="mx-3.5 mb-3.5 overflow-hidden rounded-xl border border-[#24463D] bg-forest-950">
-        <div className="flex items-center justify-between border-b border-[#24463D] px-3 py-[7px]">
-          <span className="text-[8px] font-extrabold uppercase tracking-[0.12em] text-[#7e9a90]">
+      <div className="mx-3.5 mb-3.5 overflow-hidden rounded-xl border border-pine-border bg-forest-950">
+        <div className="flex items-center justify-between border-b border-pine-border px-3 py-[7px]">
+          <span className="text-[8px] font-extrabold uppercase tracking-[0.12em] text-pine-dim">
             {language}
           </span>
           <span className="flex gap-1" aria-hidden="true">
-            <i className="size-[7px] rounded-full bg-[#3f6357]" />
-            <i className="size-[7px] rounded-full bg-[#3f6357]" />
-            <i className="size-[7px] rounded-full bg-[#3f6357]" />
+            <i className="size-[7px] rounded-full bg-pine-dot" />
+            <i className="size-[7px] rounded-full bg-pine-dot" />
+            <i className="size-[7px] rounded-full bg-pine-dot" />
           </span>
         </div>
-        <pre className="m-0 overflow-x-auto whitespace-pre-wrap break-words px-[13px] py-3 font-mono text-[10px] leading-[1.6] text-[#eaf1ec]">
+        <pre className="m-0 overflow-x-auto whitespace-pre-wrap break-words px-[13px] py-3 font-mono text-[10px] leading-[1.6] text-pine-bright">
           {code}
         </pre>
       </div>
@@ -664,8 +664,8 @@ function SecretRevealDialog({
       <span className="mb-[7px] mt-4 block text-[9px] font-extrabold uppercase tracking-[0.05em] text-ink-700">
         Secret token
       </span>
-      <div className="flex items-center gap-3 rounded-[13px] border border-[#24463d] bg-forest-950 px-3.5 py-[13px]">
-        <code className="min-w-0 flex-1 break-all font-mono text-xs text-[#eaf1ec]">
+      <div className="flex items-center gap-3 rounded-[13px] border border-pine-border bg-forest-950 px-3.5 py-[13px]">
+        <code className="min-w-0 flex-1 break-all font-mono text-xs text-pine-bright">
           {reveal.token}
         </code>
         <button

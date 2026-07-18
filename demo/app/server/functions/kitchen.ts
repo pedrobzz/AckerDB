@@ -1,6 +1,6 @@
 import { dbz } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
-import { isStaff } from "../lib/access.ts";
+import { staffAccess } from "../lib/access.ts";
 import {
   advanceOrderItem,
   cancelOrderItem,
@@ -8,8 +8,6 @@ import {
   requireOpenOrder,
 } from "../lib/domain.ts";
 
-const staffAccess = (ctx: { auth: Parameters<typeof isStaff>[0] }) =>
-  isStaff(ctx.auth);
 
 export const queue = query({
   access: staffAccess,

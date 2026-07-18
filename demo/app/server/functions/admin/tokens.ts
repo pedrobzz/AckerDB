@@ -1,6 +1,6 @@
 import { dbz } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
-import { isStaff } from "../../lib/access.ts";
+import { staffAccess } from "../../lib/access.ts";
 import { invalid } from "../../lib/domain.ts";
 import { admin } from "./mcp.ts";
 
@@ -11,8 +11,6 @@ import { admin } from "./mcp.ts";
  * denied by `staffAccess`; the one-time-secret reveal on create and the
  * revocation semantics come from the framework, not the demo.
  */
-const staffAccess = (ctx: { auth: Parameters<typeof isStaff>[0] }) =>
-  isStaff(ctx.auth);
 
 export const list = query({
   access: staffAccess,

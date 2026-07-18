@@ -2,14 +2,11 @@ import { getToolName } from "ai";
 import { Braces, Check, ChevronDown, ChevronUp, Terminal, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import {
+  isRunningToolState,
   prettyJson,
   toolSummary,
   type ChatToolPart,
-  type ChatToolState,
 } from "./chat-format.tsx";
-
-const isRunning = (state: ChatToolState): boolean =>
-  state === "input-streaming" || state === "input-available";
 
 /** A small forest-tinted spinner matching the design's tool-card loader. */
 function Spinner({ className }: Readonly<{ className: string }>) {
@@ -24,7 +21,7 @@ export function ToolStepCard({ part }: Readonly<{ part: ChatToolPart }>) {
 
 function EntityToolCard({ part }: Readonly<{ part: ChatToolPart }>) {
   const [expanded, setExpanded] = useState(false);
-  const running = isRunning(part.state);
+  const running = isRunningToolState(part.state);
   const failed = part.state === "output-error";
   const canExpand = !running;
   const summary = toolSummary(part);
@@ -122,7 +119,7 @@ function JsonPanel({
 }
 
 function WorkspaceCard({ part }: Readonly<{ part: ChatToolPart }>) {
-  const running = isRunning(part.state);
+  const running = isRunningToolState(part.state);
   const failed = part.state === "output-error";
   const input = typeof part.input === "object" && part.input !== null ? part.input : {};
   const script =
@@ -144,20 +141,20 @@ function WorkspaceCard({ part }: Readonly<{ part: ChatToolPart }>) {
       : stderr || stdout || "(no output)";
 
   return (
-    <div className="overflow-hidden rounded-[13px] border border-[#24463d] bg-forest-950">
-      <div className="flex items-center gap-2 border-b border-[#24463d] px-3 py-2">
-        <Terminal className="size-3 text-[#9fb8ae]" aria-hidden="true" />
-        <span className="text-[9px] font-[750] uppercase tracking-[0.06em] text-[#c9d8d0]">
+    <div className="overflow-hidden rounded-[13px] border border-pine-border bg-forest-950">
+      <div className="flex items-center gap-2 border-b border-pine-border px-3 py-2">
+        <Terminal className="size-3 text-pine-muted" aria-hidden="true" />
+        <span className="text-[9px] font-[750] uppercase tracking-[0.06em] text-pine-text">
           Bash
         </span>
-        <code className="font-mono text-[9px] text-[#7e9a90]">/data</code>
+        <code className="font-mono text-[9px] text-pine-dim">/data</code>
         <span
           className={`ml-auto inline-flex items-center gap-1.5 text-[8px] font-[750] ${
-            running ? "text-[#e6c77a]" : clean ? "text-[#8fb6a2]" : "text-rose-500"
+            running ? "text-amber-300" : clean ? "text-pine-ok" : "text-rose-500"
           }`}
         >
           {running ? (
-            <Spinner className="size-[11px] border-2 border-white/20 border-t-[#e6c77a]" />
+            <Spinner className="size-[11px] border-2 border-white/20 border-t-amber-300" />
           ) : clean ? (
             <Check className="size-2.5" aria-hidden="true" />
           ) : (
@@ -169,18 +166,18 @@ function WorkspaceCard({ part }: Readonly<{ part: ChatToolPart }>) {
       <div className="px-3 py-2.5">
         <div className="flex gap-2">
           <span className="font-mono text-[10px] text-sage-500">$</span>
-          <code className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[10px] leading-[1.55] text-[#eaf1ec]">
+          <code className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[10px] leading-[1.55] text-pine-bright">
             {script}
           </code>
         </div>
         <div className="mt-2 flex items-start gap-2">
           <span className="w-2 flex-none" />
           {running ? (
-            <span className="h-3.5 w-[7px] animate-pulse bg-[#eaf1ec]/70" aria-hidden="true" />
+            <span className="h-3.5 w-[7px] animate-pulse bg-pine-bright/70" aria-hidden="true" />
           ) : (
             <code
               className={`min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[10px] leading-[1.55] ${
-                clean ? "text-[#9fb8ae]" : "text-rose-500"
+                clean ? "text-pine-muted" : "text-rose-500"
               }`}
             >
               {outputText}

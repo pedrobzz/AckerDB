@@ -21,6 +21,7 @@ import {
   type KeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { isStreamingStatus } from "./chat-format.tsx";
 import { ChatTranscript } from "./chat-transcript.tsx";
 import { clamp, MIN_HEIGHT, MIN_WIDTH, type Geometry } from "./chat-geometry.ts";
 
@@ -42,9 +43,6 @@ const SUGGESTIONS: readonly Suggestion[] = [
   },
   { label: "Which tables have waited longest?", icon: Clock, tint: "text-clay-500", tintBackground: "bg-clay-100" },
 ];
-
-const isStreamingStatus = (status: UseChatHelpers<UIMessage>["status"]): boolean =>
-  status === "submitted" || status === "streaming";
 
 export function ChatWindow({
   chat,
@@ -174,15 +172,15 @@ export function ChatWindow({
         className="flex flex-none touch-none cursor-grab items-center gap-2.5 bg-forest-950 px-[15px] py-[13px] text-warm-white active:cursor-grabbing"
       >
         <span className="flex flex-none flex-col gap-[3px]" aria-hidden="true">
-          <span className="h-0.5 w-3 rounded-full bg-[#3f6357]" />
-          <span className="h-0.5 w-3 rounded-full bg-[#3f6357]" />
+          <span className="h-0.5 w-3 rounded-full bg-pine-dot" />
+          <span className="h-0.5 w-3 rounded-full bg-pine-dot" />
         </span>
         <span className="inline-flex size-[34px] flex-none items-center justify-center rounded-[11px] bg-white/10">
           <Sparkles className="size-4 text-warm-white" aria-hidden="true" />
         </span>
         <div className="min-w-0 flex-1">
           <strong className="block text-xs">Savoria Assistant</strong>
-          <span className="flex items-center gap-1.5 text-[9px] text-[#9fb8ae]">
+          <span className="flex items-center gap-1.5 text-[9px] text-pine-muted">
             <i className="size-1.5 rounded-full bg-sage-500" aria-hidden="true" />
             {streaming ? "Streaming · read + operate" : "MCP · read + operate"}
           </span>
@@ -275,7 +273,7 @@ function HeaderButton({
       type="button"
       onClick={onClick}
       aria-label={label}
-      className="inline-flex size-7 flex-none items-center justify-center rounded-[9px] bg-white/[0.08] text-[#c9d8d0] transition-colors hover:bg-white/[0.16]"
+      className="inline-flex size-7 flex-none items-center justify-center rounded-[9px] bg-white/[0.08] text-pine-text transition-colors hover:bg-white/[0.16]"
     >
       {children}
     </button>

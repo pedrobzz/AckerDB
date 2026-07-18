@@ -84,11 +84,11 @@ function MinimizedPill({
           {streaming && (
             <span className="size-[11px] animate-spin rounded-full border-2 border-white/20 border-t-clay-500" />
           )}
-          <span className="truncate text-[9px] text-[#9fb8ae]">
+          <span className="truncate text-[9px] text-pine-muted">
             {active !== null ? (
               <>
                 Running{" "}
-                <code className="font-mono text-[9px] text-[#c9d8d0]">{active.tool}</code> · step{" "}
+                <code className="font-mono text-[9px] text-pine-text">{active.tool}</code> · step{" "}
                 {active.step}
               </>
             ) : streaming ? (
@@ -103,7 +103,7 @@ function MinimizedPill({
         type="button"
         onClick={onOpen}
         aria-label="Expand the Savoria Assistant"
-        className="inline-flex size-7 flex-none items-center justify-center rounded-[9px] bg-white/[0.08] text-[#c9d8d0] transition-colors hover:bg-white/[0.16]"
+        className="inline-flex size-7 flex-none items-center justify-center rounded-[9px] bg-white/[0.08] text-pine-text transition-colors hover:bg-white/[0.16]"
       >
         <ChevronUp className="size-3.5" aria-hidden="true" />
       </button>
@@ -111,7 +111,7 @@ function MinimizedPill({
         type="button"
         onClick={onClose}
         aria-label="Close the Savoria Assistant"
-        className="inline-flex size-7 flex-none items-center justify-center rounded-[9px] bg-white/[0.08] text-[#c9d8d0] transition-colors hover:bg-white/[0.16]"
+        className="inline-flex size-7 flex-none items-center justify-center rounded-[9px] bg-white/[0.08] text-pine-text transition-colors hover:bg-white/[0.16]"
       >
         <X className="size-3.5" aria-hidden="true" />
       </button>
