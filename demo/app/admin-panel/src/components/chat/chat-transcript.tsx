@@ -2,7 +2,7 @@ import type { ChatStatus, UIMessage } from "ai";
 import { isToolUIPart } from "ai";
 import { RotateCcw, Sparkles, TriangleAlert } from "lucide-react";
 import { useEffect, useRef } from "react";
-import { MarkdownText, type ChatToolPart } from "./chat-format.tsx";
+import { MarkdownText, isStreamingStatus, type ChatToolPart } from "./chat-format.tsx";
 import { ToolStepCard } from "./tool-step-card.tsx";
 
 /** Distance (px) from the bottom within which we keep the view pinned. */
@@ -153,7 +153,7 @@ export function ChatTranscript({
   }
 
   const waiting = status === "submitted" && messages.at(-1)?.role === "user";
-  const streaming = status === "streaming" || status === "submitted";
+  const streaming = isStreamingStatus(status);
 
   return (
     <div

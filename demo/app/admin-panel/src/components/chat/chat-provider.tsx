@@ -2,7 +2,7 @@ import { useChat } from "@ai-sdk/react";
 import { useChatTransport } from "@dbzz/client-react/ai";
 import { api } from "@demo/dbzz-codegen/api";
 import { useMemo, useState, type ReactNode } from "react";
-import { activeToolStatus } from "./chat-format.tsx";
+import { activeToolStatus, isStreamingStatus } from "./chat-format.tsx";
 import { ChatLauncher } from "./chat-fab.tsx";
 import { defaultGeometry, type Geometry } from "./chat-geometry.ts";
 import { ChatWindow } from "./chat-window.tsx";
@@ -22,7 +22,7 @@ export function AdminChatProvider({ children }: Readonly<{ children: ReactNode }
   const [mode, setMode] = useState<ChatMode>("closed");
   const [geometry, setGeometry] = useState<Geometry | null>(null);
 
-  const streaming = chat.status === "submitted" || chat.status === "streaming";
+  const streaming = isStreamingStatus(chat.status);
   const active = useMemo(() => activeToolStatus(chat.messages), [chat.messages]);
 
   function open() {

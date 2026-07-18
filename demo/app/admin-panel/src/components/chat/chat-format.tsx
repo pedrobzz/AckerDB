@@ -1,4 +1,4 @@
-import type { UIMessage } from "ai";
+import type { ChatStatus, UIMessage } from "ai";
 import { getToolName, isToolUIPart } from "ai";
 import { Fragment, type ReactNode } from "react";
 import { money } from "../../lib/domain.ts";
@@ -8,6 +8,14 @@ export type ChatToolPart = Extract<
   UIMessage["parts"][number],
   { type: `tool-${string}` } | { type: "dynamic-tool" }
 >;
+
+/** Whether a response is in flight (from submit until the stream settles). */
+export const isStreamingStatus = (status: ChatStatus): boolean =>
+  status === "submitted" || status === "streaming";
+
+/** Whether a tool part is still running (no output yet). */
+export const isRunningToolState = (state: ChatToolPart["state"]): boolean =>
+  state === "input-streaming" || state === "input-available";
 
 /** The states a tool part streams through, in order. */
 export type ChatToolState = ChatToolPart["state"];
@@ -112,7 +120,7 @@ export function activeToolStatus(messages: UIMessage[]): { tool: string; step: n
   const toolParts = last.parts.filter(isToolUIPart);
   for (let index = toolParts.length - 1; index >= 0; index -= 1) {
     const part = toolParts[index];
-    if (part.state === "input-streaming" || part.state === "input-available") {
+    if (isRunningToolState(part.state)) {
       return { tool: getToolName(part), step: index + 1 };
     }
   }
