@@ -71,6 +71,15 @@ export type {
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
 export { reconcile, UnsafeSchemaChange } from "./reconcile.ts";
 export {
+  defineMigration,
+  MigrationError,
+  type BeforeTable,
+  type Migration,
+  type MigrationContext,
+  type MigrationRow,
+  type RowTransform,
+} from "./migrate.ts";
+export {
   classifySchemaDiff,
   refusalSite,
   type Classification,

@@ -30,6 +30,7 @@
  * is the answer to a refusal; `dbz reset` is the dev escape hatch.
  */
 import { Engine, indexSqlName, type TablePlan } from "./engine.ts";
+import { applyMigration, type Migration } from "./migrate.ts";
 import {
   classifySchemaDiff,
   refusalSite,
@@ -54,7 +55,7 @@ export class UnsafeSchemaChange extends Error {
 
 const quote = (name: string) => `"${name}"`;
 
-type Op = () => void;
+export type Op = () => void;
 
 interface ReconcilePlan {
   ops: Op[];
@@ -62,16 +63,27 @@ interface ReconcilePlan {
   refusals: SchemaRefusal[];
 }
 
-export function reconcile(engine: Engine): { applied: string[] } {
+export function reconcile(engine: Engine): { applied: string[] };
+export function reconcile(engine: Engine, migration: Migration): Promise<{ applied: string[] }>;
+export function reconcile(
+  engine: Engine,
+  migration?: Migration,
+): { applied: string[] } | Promise<{ applied: string[] }> {
   const target = snapshotOf(engine.schema);
   const current = engine.loadSnapshot();
   if (current === null) {
     engine.createAll();
-    return { applied: [`initialized ${Object.keys(target.tables).length} table(s)`] };
+    const result = { applied: [`initialized ${Object.keys(target.tables).length} table(s)`] };
+    return migration === undefined ? result : Promise.resolve(result);
   }
-  if (JSON.stringify(current) === JSON.stringify(target)) return { applied: [] };
+  if (JSON.stringify(current) === JSON.stringify(target)) {
+    return migration === undefined ? { applied: [] } : Promise.resolve({ applied: [] });
+  }
 
-  const plan = planReconcile(engine, current, diffSnapshots(current, target));
+  const diff = diffSnapshots(current, target);
+  if (migration !== undefined) return applyMigration(engine, target, current, diff, migration);
+
+  const plan = planReconcile(engine, current, diff);
   if (plan.refusals.length > 0) throw new UnsafeSchemaChange(plan.refusals);
   applyPlan(engine, target, plan.ops);
   return { applied: plan.applied.length > 0 ? plan.applied : ["updated schema snapshot"] };
@@ -98,7 +110,7 @@ function planReconcile(engine: Engine, current: SchemaSnapshot, diff: SchemaDiff
 }
 
 /** Build the physical ops (and applied log) for one shape-safe change. */
-function applySafe(engine: Engine, change: SafeChange, current: SchemaSnapshot, ops: Op[], applied: string[]): void {
+export function applySafe(engine: Engine, change: SafeChange, current: SchemaSnapshot, ops: Op[], applied: string[]): void {
   const writer = engine.writer;
   const table = change.table;
   switch (change.op) {
@@ -151,7 +163,7 @@ function applySafe(engine: Engine, change: SafeChange, current: SchemaSnapshot, 
  * Clean → schedule the create (unless a sibling rebuild owns it); duplicate →
  * a clean refusal carrying the probed count, nothing touched.
  */
-function probeOptimistic(
+export function probeOptimistic(
   engine: Engine,
   opt: OptimisticChange,
   current: SchemaSnapshot,
