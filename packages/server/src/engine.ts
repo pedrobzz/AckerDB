@@ -1041,6 +1041,18 @@ export class Engine {
     }
   }
 
+  /**
+   * Re-derive every in-memory tag map from `_dbz_tags` + the live schema. Run
+   * after a migration relabels variants (`UPDATE _dbz_tags`) so the renamed-to
+   * variant resolves to its original tag instead of the speculative one the
+   * constructor assigned; column plans read `this.tags` lazily, so they pick the
+   * rebuilt maps up on their next encode.
+   */
+  reinternTags(): void {
+    this.tags.clear();
+    this.internTags();
+  }
+
   /** Persist the in-memory tag plan. The caller owns the schema transaction. */
   persistTags(): void {
     const insert = this.writer.query(

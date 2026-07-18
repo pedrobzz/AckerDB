@@ -77,6 +77,7 @@ export {
   type Migration,
   type MigrationContext,
   type MigrationRow,
+  type Renames,
   type RowTransform,
 } from "./migrate.ts";
 export {

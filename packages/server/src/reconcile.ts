@@ -80,10 +80,9 @@ export function reconcile(
     return migration === undefined ? { applied: [] } : Promise.resolve({ applied: [] });
   }
 
-  const diff = diffSnapshots(current, target);
-  if (migration !== undefined) return applyMigration(engine, target, current, diff, migration);
+  if (migration !== undefined) return applyMigration(engine, target, current, migration);
 
-  const plan = planReconcile(engine, current, diff);
+  const plan = planReconcile(engine, current, diffSnapshots(current, target));
   if (plan.refusals.length > 0) throw new UnsafeSchemaChange(plan.refusals);
   applyPlan(engine, target, plan.ops);
   return { applied: plan.applied.length > 0 ? plan.applied : ["updated schema snapshot"] };
@@ -161,7 +160,9 @@ export function applySafe(engine: Engine, change: SafeChange, current: SchemaSna
  * can never collide and are excluded — and an index touching a column that is
  * not physical yet (added in this same change) cannot have duplicates at all.
  * Clean → schedule the create (unless a sibling rebuild owns it); duplicate →
- * a clean refusal carrying the probed count, nothing touched.
+ * a clean refusal carrying the probed count, nothing touched. `phys` routes the
+ * read-only probe to a physical table/columns still holding pre-rename names;
+ * the refusal keeps naming the target-world site.
  */
 export function probeOptimistic(
   engine: Engine,
@@ -171,16 +172,17 @@ export function probeOptimistic(
   ops: Op[],
   applied: string[],
   refusals: SchemaRefusal[],
+  phys: { table: string; column: (c: string) => string } = { table: opt.table, column: (c) => c },
 ): void {
   const tablePlan = engine.plan(opt.table);
   const index = tablePlan.indexes.find((ix) => ix.name === opt.index)!;
   const currentColumns = current.tables[opt.table]?.columns ?? {};
   const allExist = index.columns.every((c) => currentColumns[c] !== undefined);
-  const cols = index.columns.map(quote).join(", ");
-  const notNull = index.columns.map((c) => `${quote(c)} IS NOT NULL`).join(" AND ");
+  const cols = index.columns.map((c) => quote(phys.column(c))).join(", ");
+  const notNull = index.columns.map((c) => `${quote(phys.column(c))} IS NOT NULL`).join(" AND ");
   const dupes = allExist
     ? count(
-        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${quote(opt.table)} WHERE ${notNull} GROUP BY ${cols} HAVING COUNT(*) > 1)`,
+        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${quote(phys.table)} WHERE ${notNull} GROUP BY ${cols} HAVING COUNT(*) > 1)`,
       )
     : 0;
   if (dupes > 0) {
@@ -207,7 +209,7 @@ function createIndexOp(engine: Engine, tablePlan: TablePlan, name: string, recre
   };
 }
 
-function physColsOf(oldTable: TableSnapshot): Set<string> {
+export function physColsOf(oldTable: TableSnapshot): Set<string> {
   return new Set(
     Object.entries(oldTable.columns).flatMap(([col, desc]) =>
       namedOf(desc)?.kind === "union" ? [col, `${col}__p`] : [col],

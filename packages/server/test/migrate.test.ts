@@ -49,6 +49,17 @@ async function migrate(schema: Schema, path: string, migration: Migration) {
   return { engine, db: db(engine), applied };
 }
 
+/**
+ * Reopen `path` under `schema` from scratch — the constructor runs every
+ * reopen-time verifier (`verifyApplicationSchema`, `verifySnapshotTags`, tag
+ * density), so a successful `new Engine` IS the assertion that the open holds.
+ */
+function reopen(schema: Schema, path: string) {
+  const engine = new Engine(schema, path);
+  reconcile(engine); // snapshot already matches; asserts nothing drifted
+  return { engine, db: db(engine) };
+}
+
 describe("migrate: rebuild transforms", () => {
   test("a type change is resolved by a transform, preserving pks and converting data", async () => {
     const a = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
@@ -429,5 +440,484 @@ describe("migrate: transactional integrity", () => {
     );
     expect(names).toEqual(["ana", "bea"]);
     engine.close("clean");
+  });
+});
+
+describe("migrate: renames", () => {
+  test("a pure table rename keeps rows, ids, and indexes; reopen passes", async () => {
+    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }).index("by_msg", ["msg"]) });
+    const b = defineSchema({
+      auditLogs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }).index("by_msg", ["msg"]),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.logs.insert({ msg: "one" }); // id 1
+      await d.logs.insert({ msg: "two" }); // id 2
+      await d.logs.delete(1n); // gap: id 1 gone, must stay retired
+      await d.logs.insert({ msg: "three" }); // id 3
+    });
+
+    const { engine, db: d, applied } = await migrate(
+      b,
+      path,
+      defineMigration({ renames: { tables: { logs: "auditLogs" } } }),
+    );
+    expect(applied).toContain("renamed table logs to auditLogs");
+    expect((await d.auditLogs.get(2n)).msg).toBe("two");
+    expect((await d.auditLogs.get(3n)).msg).toBe("three");
+    expect(await d.auditLogs.get(1n)).toBe(null);
+    // old name gone, index usable under the new name
+    expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name = 'logs'").get()).toBe(null);
+    const found = await d.auditLogs.byMsg((q: any) => q.eq("msg", "two")).collect();
+    expect(found.map((r: any) => r.id)).toEqual([2n]);
+    // id 1 stays retired: the next insert lands on 4
+    expect(await d.auditLogs.insert({ msg: "four" })).toBe(4n);
+    engine.close("clean");
+
+    const again = reopen(b, path);
+    expect((await again.db.auditLogs.get(3n)).msg).toBe("three");
+    again.engine.close("clean");
+  });
+
+  test("a pure column rename keeps data for a plain and a union column; reopen passes", async () => {
+    const a = defineSchema({
+      users: defineTable({
+        id: dbz.primaryKey(),
+        street: dbz.string(),
+        note: dbz.union("Payload", { text: dbz.string(), nothing: dbz.tag() }),
+      }).index("by_street", ["street"]),
+    });
+    const b = defineSchema({
+      users: defineTable({
+        id: dbz.primaryKey(),
+        streetName: dbz.string(),
+        memo: dbz.union("Payload", { text: dbz.string(), nothing: dbz.tag() }),
+      }).index("by_street", ["streetName"]),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.users.insert({ street: "main", note: { tag: "text", value: "hi" } }); // id 1
+      await d.users.insert({ street: "elm", note: { tag: "nothing", value: null } }); // id 2
+    });
+
+    const { engine, db: d, applied } = await migrate(
+      b,
+      path,
+      defineMigration({ renames: { columns: { users: { street: "streetName", note: "memo" } } } }),
+    );
+    expect(applied).toContain("renamed column(s) on users");
+    expect(await d.users.get(1n)).toEqual({ id: 1n, streetName: "main", memo: { tag: "text", value: "hi" } });
+    expect((await d.users.get(2n)).memo).toEqual({ tag: "nothing", value: null });
+    // the index followed the renamed column
+    const found = await d.users.byStreet((q: any) => q.eq("streetName", "main")).collect();
+    expect(found.map((r: any) => r.id)).toEqual([1n]);
+    engine.close("clean");
+
+    const again = reopen(b, path);
+    expect(await again.db.users.get(1n)).toEqual({ id: 1n, streetName: "main", memo: { tag: "text", value: "hi" } });
+    again.engine.close("clean");
+  });
+
+  test("a variant rename keeps the interned tag; no transform; reopen passes", async () => {
+    const a = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["Test", "Live", "Off"]) }),
+    });
+    const b = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["Foo", "Live", "Off"]) }),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.users.insert({ status: "Test" }); // id 1, interned tag 0
+      await d.users.insert({ status: "Live" }); // id 2, interned tag 1
+    });
+
+    const { engine, db: d, applied } = await migrate(
+      b,
+      path,
+      defineMigration({ renames: { variants: { Status: { Test: "Foo" } } } }),
+    );
+    expect(applied).toContain("renamed variant Status.Test to Foo");
+    // ZERO row rewrites: the stored integer is unchanged
+    const rawStatus = (engine.writer.query("SELECT status FROM users WHERE id = 1").get() as { status: bigint }).status;
+    expect(rawStatus).toBe(0n);
+    // _dbz_tags now maps the NEW name to the OLD tag, and the old name is gone
+    const foo = engine.writer.query("SELECT tag FROM _dbz_tags WHERE type = 'Status' AND variant = 'Foo'").get() as {
+      tag: bigint;
+    };
+    expect(foo.tag).toBe(0n);
+    expect(engine.writer.query("SELECT 1 FROM _dbz_tags WHERE type = 'Status' AND variant = 'Test'").get()).toBe(null);
+    // and the value reads back under the new name
+    expect((await d.users.get(1n)).status).toBe("Foo");
+    engine.close("clean");
+
+    const again = reopen(b, path);
+    expect((await again.db.users.get(1n)).status).toBe("Foo");
+    again.engine.close("clean");
+  });
+
+  test("an undeclared drop+add is not inferred as a rename", async () => {
+    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }) });
+    const b = defineSchema({ auditLogs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }) });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.logs.insert({ msg: "x" });
+    });
+
+    const engine = new Engine(b, path);
+    // no rename declared: the drop of logs is refused, the add of auditLogs is not paired to it
+    await expect(reconcile(engine, defineMigration({ tables: {} }))).rejects.toThrow(/refused table\(s\): logs/);
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(a));
+    engine.close("clean");
+  });
+
+  test("a rename composed with a type change pairs up; old column names in, new shape out", async () => {
+    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), rawCount: dbz.string() }) });
+    const b = defineSchema({ auditLogs: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.logs.insert({ rawCount: "5" }); // id 1
+      await d.logs.insert({ rawCount: "nope" }); // id 2
+    });
+
+    const seenKeys: string[][] = [];
+    const { engine, db: d } = await migrate(
+      b,
+      path,
+      defineMigration({
+        renames: { tables: { logs: "auditLogs" }, columns: { auditLogs: { rawCount: "count" } } },
+        // keyed by the NEW table name; the input row still carries the OLD column name
+        tables: { auditLogs: (row) => (seenKeys.push(Object.keys(row)), { count: Number(row.rawCount) || 0 }) },
+      }),
+    );
+    expect(seenKeys).toEqual([
+      ["id", "rawCount"],
+      ["id", "rawCount"],
+    ]);
+    expect((await d.auditLogs.get(1n)).count).toBe(5); // pk preserved
+    expect((await d.auditLogs.get(2n)).count).toBe(0);
+    expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name = 'logs'").get()).toBe(null);
+    engine.close("clean");
+
+    const again = reopen(b, path);
+    expect((await again.db.auditLogs.get(1n)).count).toBe(5);
+    again.engine.close("clean");
+  });
+
+  test("a table rename composes with a column rename on the same table", async () => {
+    const a = defineSchema({ notes: defineTable({ id: dbz.primaryKey(), body: dbz.string() }) });
+    const b = defineSchema({ memos: defineTable({ id: dbz.primaryKey(), text: dbz.string() }) });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.notes.insert({ body: "hello" }); // id 1
+      await d.notes.insert({ body: "world" }); // id 2
+    });
+
+    const { engine, db: d } = await migrate(
+      b,
+      path,
+      // columns keyed by the NEW table name
+      defineMigration({ renames: { tables: { notes: "memos" }, columns: { memos: { body: "text" } } } }),
+    );
+    expect((await d.memos.get(1n)).text).toBe("hello");
+    expect((await d.memos.get(2n)).text).toBe("world");
+    expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name = 'notes'").get()).toBe(null);
+    engine.close("clean");
+
+    const again = reopen(b, path);
+    expect((await again.db.memos.get(2n)).text).toBe("world");
+    again.engine.close("clean");
+  });
+
+  test("a table rename plus a nullable column add needs no transform", async () => {
+    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }) });
+    const b = defineSchema({
+      auditLogs: defineTable({ id: dbz.primaryKey(), msg: dbz.string(), extra: dbz.nullable(dbz.string()) }),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.logs.insert({ msg: "one" }); // id 1
+      await d.logs.insert({ msg: "two" }); // id 2
+      await d.logs.insert({ msg: "three" }); // id 3
+      await d.logs.delete(3n); // high-water mark must carry through the identity rebuild
+    });
+
+    const { engine, db: d, applied } = await migrate(
+      b,
+      path,
+      defineMigration({ renames: { tables: { logs: "auditLogs" } } }), // no tables section at all
+    );
+    expect(applied).toContain("migrated table auditLogs");
+    expect(await d.auditLogs.get(1n)).toEqual({ id: 1n, msg: "one", extra: null });
+    expect(await d.auditLogs.get(2n)).toEqual({ id: 2n, msg: "two", extra: null });
+    expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name = 'logs'").get()).toBe(null);
+    // id 3 stays retired: the next insert lands on 4
+    expect(await d.auditLogs.insert({ msg: "four", extra: "x" })).toBe(4n);
+    engine.close("clean");
+
+    const again = reopen(b, path);
+    expect((await again.db.auditLogs.get(4n)).extra).toBe("x");
+    again.engine.close("clean");
+  });
+
+  test("a column rename plus another nullable column add on the same table needs no transform", async () => {
+    const a = defineSchema({ users: defineTable({ id: dbz.primaryKey(), street: dbz.string() }) });
+    const b = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), streetName: dbz.string(), note: dbz.nullable(dbz.string()) }),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.users.insert({ street: "main" }); // id 1
+      await d.users.insert({ street: "elm" }); // id 2
+    });
+
+    const { engine, db: d, applied } = await migrate(
+      b,
+      path,
+      defineMigration({ renames: { columns: { users: { street: "streetName" } } } }),
+    );
+    expect(applied).toContain("migrated table users");
+    expect(await d.users.get(1n)).toEqual({ id: 1n, streetName: "main", note: null });
+    expect(await d.users.get(2n)).toEqual({ id: 2n, streetName: "elm", note: null });
+    engine.close("clean");
+
+    const again = reopen(b, path);
+    expect((await again.db.users.get(1n)).streetName).toBe("main");
+    again.engine.close("clean");
+  });
+
+  test("a unique index added on a renamed table probes the old physical names and refuses with counts", async () => {
+    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }) });
+    const b = defineSchema({
+      auditLogs: defineTable({ id: dbz.primaryKey(), text: dbz.string() }).index("by_text", ["text"], { unique: true }),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.logs.insert({ msg: "dup" });
+      await d.logs.insert({ msg: "dup" });
+    });
+
+    const engine = new Engine(b, path);
+    const migration = defineMigration({
+      renames: { tables: { logs: "auditLogs" }, columns: { auditLogs: { msg: "text" } } },
+    });
+    // the counted refusal names the target-world site; the probe read old names
+    await expect(reconcile(engine, migration)).rejects.toThrow(
+      /auditLogs\.by_text: unique index over \(text\); 1 duplicate group\(s\) exist/,
+    );
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(a)); // database untouched
+    expect(engine.writer.query("SELECT COUNT(*) AS n FROM logs").get()).toEqual({ n: 2n });
+    engine.close("clean");
+  });
+
+  test("a rename plus a type change still demands a transform", async () => {
+    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
+    const b = defineSchema({ auditLogs: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.logs.insert({ count: "1" });
+    });
+
+    const engine = new Engine(b, path);
+    await expect(reconcile(engine, defineMigration({ renames: { tables: { logs: "auditLogs" } } }))).rejects.toThrow(
+      /refused table\(s\): auditLogs/,
+    );
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(a));
+    engine.close("clean");
+  });
+
+  test("a variant rename with a nested use refuses the nested column until a transform rewrites the payloads", async () => {
+    const a = defineSchema({
+      hosts: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["Test", "Live"]) }),
+      checks: defineTable({ id: dbz.primaryKey(), meta: dbz.object({ s: dbz.enum("Status", ["Test", "Live"]) }) }),
+    });
+    const b = defineSchema({
+      hosts: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["Foo", "Live"]) }),
+      checks: defineTable({ id: dbz.primaryKey(), meta: dbz.object({ s: dbz.enum("Status", ["Foo", "Live"]) }) }),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.hosts.insert({ status: "Test" }); // id 1, interned tag 0
+      await d.checks.insert({ meta: { s: "Test" } }); // id 1, wire-encoded string, NOT a tag
+    });
+
+    // nested values are strings, not tags: the rename covers hosts (top-level),
+    // but checks.meta honestly surfaces as type-changed and demands a transform
+    const renamesOnly = defineMigration({ renames: { variants: { Status: { Test: "Foo" } } } });
+    const refused = new Engine(b, path);
+    await expect(reconcile(refused, renamesOnly)).rejects.toThrow(/refused table\(s\): checks/);
+    expect(refused.loadSnapshot()).toEqual(snapshotOf(a)); // untouched
+    refused.close("clean");
+
+    const { engine, db: d } = await migrate(
+      b,
+      path,
+      defineMigration({
+        renames: { variants: { Status: { Test: "Foo" } } },
+        tables: {
+          checks: (row) => {
+            const meta = row.meta as { s: string };
+            return { ...row, meta: { s: meta.s === "Test" ? "Foo" : meta.s } };
+          },
+        },
+      }),
+    );
+    // top-level storage untouched (tag preserved), nested payload rewritten
+    expect((engine.writer.query("SELECT status FROM hosts WHERE id = 1").get() as { status: bigint }).status).toBe(0n);
+    expect((await d.hosts.get(1n)).status).toBe("Foo");
+    expect((await d.checks.get(1n)).meta).toEqual({ s: "Foo" });
+    engine.close("clean");
+
+    const again = reopen(b, path);
+    expect((await again.db.checks.get(1n)).meta).toEqual({ s: "Foo" });
+    again.engine.close("clean");
+  });
+
+  test("an emit into a purely-renamed table lands correctly", async () => {
+    const a = defineSchema({
+      inbox: defineTable({ id: dbz.primaryKey(), text: dbz.string() }),
+      drafts: defineTable({ id: dbz.primaryKey(), text: dbz.string() }),
+    });
+    const b = defineSchema({ messages: defineTable({ id: dbz.primaryKey(), text: dbz.string() }) });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.inbox.insert({ text: "hi" }); // id 1
+      await d.drafts.insert({ text: "draft-a" });
+      await d.drafts.insert({ text: "draft-b" });
+    });
+
+    const { engine, db: d } = await migrate(
+      b,
+      path,
+      defineMigration({
+        renames: { tables: { inbox: "messages" } },
+        // drafts is dropped; its salvage emits into the table renamed this same step
+        tables: { drafts: (row, ctx) => ctx.insert("messages", { text: row.text }) },
+      }),
+    );
+    const rows = await d.messages.scan().collect();
+    expect(rows.map((r: any) => r.text).sort()).toEqual(["draft-a", "draft-b", "hi"]);
+    expect((await d.messages.get(1n)).text).toBe("hi"); // original id preserved
+    expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name IN ('inbox', 'drafts')").all()).toEqual([]);
+    engine.close("clean");
+
+    const again = reopen(b, path);
+    expect((await again.db.messages.scan().collect()).length).toBe(3);
+    again.engine.close("clean");
+  });
+});
+
+describe("migrate: rename validation refuses before touching anything", () => {
+  const one = defineSchema({ a: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+
+  async function seedOne(path: string): Promise<void> {
+    await seed(one, path, async (d) => {
+      await d.a.insert({ v: "x" });
+    });
+  }
+
+  async function expectRefused(target: Schema, path: string, migration: Migration, pattern: RegExp): Promise<void> {
+    const engine = new Engine(target, path);
+    await expect(reconcile(engine, migration)).rejects.toThrow(pattern);
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(one)); // database untouched
+    engine.close("clean");
+  }
+
+  test("rename source table must exist in the current snapshot", async () => {
+    const path = freshPath();
+    await seedOne(path);
+    const b = defineSchema({ b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    await expectRefused(b, path, defineMigration({ renames: { tables: { ghost: "b" } } }), /source table "ghost" does not exist/);
+  });
+
+  test("rename target table must exist in the schema", async () => {
+    const path = freshPath();
+    await seedOne(path);
+    const b = defineSchema({ b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    await expectRefused(b, path, defineMigration({ renames: { tables: { a: "ghost" } } }), /target table "ghost" is not in the schema/);
+  });
+
+  test("rename source table must not still exist in the target", async () => {
+    const path = freshPath();
+    await seedOne(path);
+    const b = defineSchema({
+      a: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
+      b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
+    });
+    await expectRefused(b, path, defineMigration({ renames: { tables: { a: "b" } } }), /source table "a" still exists/);
+  });
+
+  test("rename target table must not already exist in the current snapshot", async () => {
+    const path = freshPath();
+    await seed(
+      defineSchema({
+        a: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
+        b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
+      }),
+      path,
+      async (d) => {
+        await d.a.insert({ v: "x" });
+      },
+    );
+    const b = defineSchema({ b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const engine = new Engine(b, path);
+    await expect(reconcile(engine, defineMigration({ renames: { tables: { a: "b" } } }))).rejects.toThrow(
+      /cannot rename onto a live table/,
+    );
+    engine.close("clean");
+  });
+
+  test("two renames may not share a target table", async () => {
+    const path = freshPath();
+    await seed(
+      defineSchema({
+        a: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
+        b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
+      }),
+      path,
+      async (d) => {
+        await d.a.insert({ v: "x" });
+      },
+    );
+    const c = defineSchema({ c: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const engine = new Engine(c, path);
+    await expect(reconcile(engine, defineMigration({ renames: { tables: { a: "c", b: "c" } } }))).rejects.toThrow(
+      /two renames target table "c"/,
+    );
+    engine.close("clean");
+  });
+
+  test("rename source column must exist in the current snapshot", async () => {
+    const path = freshPath();
+    await seedOne(path);
+    const b = defineSchema({ a: defineTable({ id: dbz.primaryKey(), w: dbz.string() }) });
+    await expectRefused(
+      b,
+      path,
+      defineMigration({ renames: { columns: { a: { ghost: "w" } } } }),
+      /source column "a.ghost" does not exist/,
+    );
+  });
+
+  test("a variant rename onto a retired historical variant is refused", async () => {
+    const s1 = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["Live", "Old"]) }),
+    });
+    const s2 = defineSchema({ users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["Live"]) }) });
+    const s3 = defineSchema({ users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["Old"]) }) });
+    const path = freshPath();
+    // seed s1 (interns Live=0, Old=1), then retire "Old" — its tag stays in _dbz_tags forever
+    const engine1 = new Engine(s1, path);
+    reconcile(engine1);
+    engine1.close("clean");
+    const m2 = await migrate(s2, path, defineMigration({ tables: { users: (row) => ({ ...row, role: "Live" }) } }));
+    m2.engine.close("clean");
+
+    // s2 -> s3 renames Live -> Old, but Old is a retired variant (its integer tag is retired)
+    const engine3 = new Engine(s3, path);
+    await expect(reconcile(engine3, defineMigration({ renames: { variants: { Role: { Live: "Old" } } } }))).rejects.toThrow(
+      /variant "Role.Old" is a retired variant/,
+    );
+    expect(engine3.loadSnapshot()).toEqual(snapshotOf(s2)); // untouched
+    engine3.close("clean");
   });
 });
