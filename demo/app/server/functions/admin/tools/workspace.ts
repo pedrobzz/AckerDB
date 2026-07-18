@@ -75,8 +75,8 @@ plain strings.
 - \`order_items.jsonl\` — one row per line on a check. Fields: id, orderId,
   menuItemId, name, image, unitPriceCents, quantity, note, status (ORDERED |
   PREPARING | PREPARED | SERVED | CANCELLED), orderedAt, statusChangedAt.
-- \`users.jsonl\` — guests and staff. Fields: id, identity, email, name,
-  createdAt, updatedAt.
+- \`users.jsonl\` — guests and staff. Fields: id, email, name, createdAt,
+  updatedAt.
 
 ## Derived views (/data/views)
 
@@ -147,7 +147,14 @@ function buildFiles(db: DatabaseReader, now: number): InitialFiles {
     "/data/orders.jsonl": async () => toJsonl(await db.orders.scan().collect()),
     "/data/order_items.jsonl": async () =>
       toJsonl(await db.orderItems.scan().collect()),
-    "/data/users.jsonl": async () => toJsonl(await db.users.scan().collect()),
+    "/data/users.jsonl": async () =>
+      // `identity` stays private, matching get_guests: the workspace never
+      // exposes more than the typed tools do.
+      toJsonl(
+        (await db.users.scan().collect()).map(
+          ({ identity: _identity, ...user }) => user,
+        ),
+      ),
 
     "/data/views/wait_times.jsonl": async () => {
       const [items, orders, tables] = await Promise.all([
