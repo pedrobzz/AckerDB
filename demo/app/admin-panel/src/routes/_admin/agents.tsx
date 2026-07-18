@@ -211,6 +211,7 @@ function AgentsPage() {
         <SecretRevealDialog
           reveal={revealed}
           onCopy={() => copy(revealed.token, "Secret token")}
+          onCopyExport={(line) => copy(line, "Export line")}
           onClose={() => setRevealed(null)}
         />
       )}
@@ -626,8 +627,14 @@ function ScopeOption({
 function SecretRevealDialog({
   reveal,
   onCopy,
+  onCopyExport,
   onClose,
-}: Readonly<{ reveal: RevealedToken; onCopy: () => void; onClose: () => void }>) {
+}: Readonly<{
+  reveal: RevealedToken;
+  onCopy: () => void;
+  onCopyExport: (line: string) => void;
+  onClose: () => void;
+}>) {
   return (
     <DialogShell width="max-w-[476px]" onClose={onClose}>
       <div className="flex items-center gap-[13px]">
@@ -674,6 +681,13 @@ function SecretRevealDialog({
         Set it as{" "}
         <code className="font-mono text-[9px] text-forest-800">{TOKEN_ENV_VAR}</code>{" "}
         for the install snippet above.
+        <button
+          type="button"
+          onClick={() => onCopyExport(`export ${TOKEN_ENV_VAR}="${reveal.token}"`)}
+          className="ml-auto inline-flex h-6 flex-none items-center gap-1 rounded-md border border-line px-2 text-[9px] font-extrabold text-forest-800 transition-colors hover:bg-sage-100"
+        >
+          <Copy className="size-2.5" aria-hidden="true" /> Copy export line
+        </button>
       </div>
 
       <button
