@@ -17,6 +17,83 @@ listener). Always runs under the reactive system's execution root, under the
 subscriber's own principal — never under the identity or context of whoever
 triggered it.
 
+## Schema migrations
+
+**Reconcile** — The startup pass that compares the application's declared
+schema against what the database last stored and applies the difference.
+Applies shape-safe changes on its own; refuses shape-unsafe ones until a
+migration answers for them.
+
+**Shape-safe change** — A schema change that cannot lose or invalidate
+existing data no matter what that data is — judged by the shape of the change
+alone, always presuming rows exist. Applies automatically, identically in dev
+and prod, with no migration file.
+
+**Shape-unsafe change** — A schema change that poses a per-row question:
+existing rows could be lost or would need transformation to satisfy the new
+schema. Always requires a migration answering that question, even when the
+actual table happens to be empty.
+
+**Optimistic change** — A schema change that transforms no rows but tightens a
+cross-row constraint (e.g. a unique index over existing data). It is attempted
+as if safe: either it holds, or it is refused cleanly with nothing touched.
+A refusal is resolved by a migration with a volunteered transform.
+
+**Migration** — A versioned TypeScript file that declares only what a schema
+diff cannot infer or must not assume: which drops-plus-adds are really
+renames, how existing rows become valid rows of the new schema, and an
+explicit acknowledgment for every drop that destroys data. Never a source of
+structural truth — structure always comes from the schema declaration.
+
+**Row transform** — A migration's per-table function answering "what does this
+old row become in the new database?" Its answer may be a row in the same
+table, nothing (the row is dropped), and/or rows emitted into other tables.
+Transforms see only the frozen before-state and never observe each other's
+output.
+
+**Emit** — A row a transform produces into a table other than its own, derived
+from the old row in hand. The mechanism for restructures that move data
+between tables (e.g. a 1-1 foreign key becoming an N-N junction table).
+
+**Volunteered transform** — A row transform supplied for a table the reconcile
+did not refuse, used to backfill data an automatic change would have left
+empty. Refused tables must have a transform; any table may.
+
+**Drop acknowledgment** — A migration's required, explicit answer for a
+dropped table or column holding data: either the data goes nowhere, or a
+salvage transform carries it into surviving tables first. Nothing is dropped
+silently; the acknowledgment is visible in the migration itself.
+
+**Salvage transform** — A row transform for a dropped table. It produces no
+same-table rows (the table is going away); it exists only to emit surviving
+data into other tables before the drop.
+
+**Before-state** — The read-only, frozen image of the database as it was
+before the migration, visible to every transform for cross-table lookups.
+
+**Rename declaration** — A migration's statement that a dropped and an added
+name (table, column, or enum variant) are the same thing renamed, so its data
+and identity carry over instead of being dropped and recreated.
+
+**Pre-snapshot** — The recorded image of the schema as it stood when a
+migration was generated. It types the migration's before-state, and stays
+sound for every database the migration can legally meet, because the only
+permitted divergence is safe drift.
+
+**Target snapshot** — The full declared schema at the moment a migration was
+generated: the state the migration is contracted to reach. The migration's
+identity for immutability checks derives from it.
+
+**Safe drift** — The accumulation of shape-safe changes applied automatically
+between migrations. Safe drift only widens what a database can hold (an
+absent nullable column reads as null, an absent table as empty), which is why
+a migration's recorded types survive it.
+
+**Migration history** — The database's append-only record of which migrations
+have run. It must always be a prefix of the application's migration chain;
+an applied migration is immutable, and any edit to one is refused, never
+silently ignored.
+
 ## Demo app (Savoria restaurant)
 
 **Admin MCP** — The demo backend's single MCP endpoint. Isolated and staff-only:
