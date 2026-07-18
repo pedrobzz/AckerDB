@@ -4,6 +4,7 @@
 import { anyApi } from "@dbzz/core";
 import type { ApiFromModules, EventRef } from "@dbzz/core";
 import type * as m_admin_mcp from "../../../app/server/functions/admin/mcp.ts";
+import type * as m_admin_tokens from "../../../app/server/functions/admin/tokens.ts";
 import type * as m_admin_tools_tables from "../../../app/server/functions/admin/tools/tables.ts";
 import type * as m_auth from "../../../app/server/functions/auth.ts";
 import type * as m_dashboard from "../../../app/server/functions/dashboard.ts";
@@ -18,6 +19,7 @@ import type * as m_users from "../../../app/server/functions/users.ts";
 export const api = anyApi as unknown as ApiFromModules<{
   admin: {
     mcp: typeof m_admin_mcp;
+    tokens: typeof m_admin_tokens;
     tools: {
       tables: typeof m_admin_tools_tables;
     };

@@ -1,0 +1,54 @@
+import { dbz } from "@dbzz/server";
+import { mutation, query } from "@demo/dbzz-codegen/server";
+import { isStaff } from "../../lib/access.ts";
+import { invalid } from "../../lib/domain.ts";
+import { admin } from "./mcp.ts";
+
+/**
+ * Staff-gated wrappers over the framework's owner-token operations for the
+ * Admin MCP. Every operation runs as the shared staff user identity, so all
+ * staff see and manage the same token vault. Guests and anonymous callers are
+ * denied by `staffAccess`; the one-time-secret reveal on create and the
+ * revocation semantics come from the framework, not the demo.
+ */
+const staffAccess = (ctx: { auth: Parameters<typeof isStaff>[0] }) =>
+  isStaff(ctx.auth);
+
+export const list = query({
+  access: staffAccess,
+  args: {},
+  handler: (ctx) => admin.tokens.list(ctx),
+});
+
+export const create = mutation({
+  access: staffAccess,
+  args: { name: dbz.string(), scopes: dbz.array(admin.scopes) },
+  handler: (ctx, args) =>
+    admin.tokens.create(ctx, { name: args.name, scopes: args.scopes }),
+});
+
+export const update = mutation({
+  access: staffAccess,
+  args: {
+    id: dbz.string(),
+    name: dbz.nullable(dbz.string()),
+    scopes: dbz.nullable(dbz.array(admin.scopes)),
+  },
+  handler: (ctx, args) => {
+    if (args.name === null && args.scopes === null) {
+      invalid("Provide a new name or scopes to update the token");
+    }
+    if (args.name !== null) admin.tokens.update(ctx, args.id, { name: args.name });
+    if (args.scopes !== null) admin.tokens.updateScopes(ctx, args.id, args.scopes);
+    return args.id;
+  },
+});
+
+export const revoke = mutation({
+  access: staffAccess,
+  args: { id: dbz.string() },
+  handler: (ctx, args) => {
+    admin.tokens.revoke(ctx, args.id);
+    return args.id;
+  },
+});
