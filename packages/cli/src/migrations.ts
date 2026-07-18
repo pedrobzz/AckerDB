@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url";
 import {
   defineMigration,
   migrationFingerprint,
+  stepLabel,
   validateChain,
   type Migration,
   type MigrationStep,
@@ -122,7 +123,7 @@ async function loadStep(found: DiscoveredFile): Promise<MigrationStep> {
   const meta = readMeta(metaPath, stem);
   if (meta.number !== number || meta.name !== name) {
     throw new Error(
-      `migration ${stem} disagrees with its sidecar (meta names ${stepStem(meta.number, meta.name)}); ` +
+      `migration ${stem} disagrees with its sidecar (meta names ${stepLabel(meta)}); ` +
         "the filename number and name must match the meta exactly",
     );
   }
@@ -196,6 +197,3 @@ async function importMigration(file: string, stem: string): Promise<Migration> {
   }
 }
 
-function stepStem(number: number, name: string): string {
-  return `${String(number).padStart(4, "0")}_${name}`;
-}

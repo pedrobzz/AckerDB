@@ -24,6 +24,7 @@ import {
   diffSnapshots,
   refusalSite,
   snapshotOf,
+  stepLabel,
   type RefusalReason,
   type Renames,
   type SchemaDiff,
@@ -270,7 +271,7 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
     renames: request.renames ?? {},
   });
 
-  const stem = `${String(number).padStart(4, "0")}_${request.name}`;
+  const stem = stepLabel({ number, name: request.name });
   const metaDir = join(config.migrationsDir, "meta");
   mkdirSync(metaDir, { recursive: true });
   const artifacts: [string, string][] = [

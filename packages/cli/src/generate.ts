@@ -34,6 +34,7 @@ import {
   migrationFingerprint,
   refusalSite,
   snapshotOf,
+  stepLabel,
   type Descriptor,
   type Renames,
   type Schema,
@@ -221,7 +222,7 @@ export function generateMigration(input: GenerateMigrationInput): GeneratedMigra
   const diff = diffSnapshots(applyRenames(pre, normalizedRenames), target);
   const { refusals } = classifySchemaDiff(diff);
 
-  const stem = `${String(number).padStart(4, "0")}_${name}`;
+  const stem = stepLabel({ number, name });
   return {
     migrationTs: renderScaffold(stem, renames, refusals),
     typesTs: renderTypes(pre, target, normalizedRenames),

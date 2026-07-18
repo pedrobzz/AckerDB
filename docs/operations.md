@@ -222,7 +222,8 @@ operators must configure a workload provider that selects `scope` before
 
 `dbz start` binds one listener before code generation and keeps that port live
 through the monotonic startup phases `listening`, `codegen`, `loading`,
-`opening-storage`, and `reconciling`. `/live` and `/ready` remain reachable;
+`opening-storage`, `migrating` (when a migration chain is present), and
+`reconciling`. `/live` and `/ready` remain reachable;
 `OPTIONS` receives its finite control response, and a syntactically valid SSE
 acknowledgement passes bounded admission but is an oracle-free no-op before a
 Runtime producer exists. Application, WebSocket, and protected-status traffic

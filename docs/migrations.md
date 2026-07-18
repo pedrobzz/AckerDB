@@ -37,7 +37,11 @@ prompt; they exit naming the recourse: `dbz generate [name]`.
 
 The scaffold's unanswered per-row questions are *typed holes* — a transform
 with a declared return type and no return — so the dev server stays down until
-you answer them. Fill the TODOs; the next reload applies the migration. Column
+you answer them. Fill the TODOs; the next reload applies the migration. The
+hole is a compile-time gate (your editor and `bun run typecheck` refuse it);
+at runtime an unfilled transform fails against any real row, so a table that
+happens to be empty in dev can let the migration apply vacuously — production
+data will still refuse it, and the typecheck catches it long before that. Column
 drops scaffold as a destructuring that names every discarded field; table
 drops scaffold as `null` (replace with a salvage transform to carry rows into
 surviving tables first).
