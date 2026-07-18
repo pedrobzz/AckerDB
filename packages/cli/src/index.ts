@@ -17,3 +17,18 @@ export {
   type StartAppOptions,
   type StartupPreparation,
 } from "./app.ts";
+export {
+  computePlan,
+  deriveSlug,
+  planToWire,
+  readStoredState,
+  renameCandidates,
+  writeMigration,
+  type CandidateGroup,
+  type GenerateRequest,
+  type PlanOutcome,
+  type PlanWire,
+  type RenameCandidates,
+  type StoredState,
+} from "./plan.ts";
+export { runRenameForm, type Ask, type FormResult } from "./form.ts";
