@@ -695,12 +695,19 @@ describe("public stateless MCP endpoint", () => {
     };
     const discovered = listedBody.result.tools[0]!;
     expect(discovered.inputSchema.properties.minimum).toEqual({
-      type: "string",
+      type: ["integer", "string"],
       pattern: "^(?:0|-?[1-9][0-9]*)$",
     });
     expect(discovered.inputSchema.properties.identity).toEqual({
-      type: "string",
+      type: ["integer", "string"],
       pattern: "^(?:0|-?[1-9][0-9]*)$",
+    });
+    expect(discovered.inputSchema.properties.nested).toEqual({
+      type: "array",
+      items: {
+        type: ["integer", "string", "null"],
+        pattern: "^(?:0|-?[1-9][0-9]*)$",
+      },
     });
     expect(discovered.inputSchema.properties.bytes).toEqual({
       type: "string",
@@ -773,8 +780,37 @@ describe("public stateless MCP endpoint", () => {
     });
   });
 
+  test("accepts JSON-number bigints (proto3-style) while forcing unsafe magnitudes to strings", () => {
+    const decode = (overrides: Record<string, unknown>) =>
+      echoValues.inputCodec.decode(protocolValues(overrides), "args") as {
+        readonly minimum: bigint;
+        readonly negative: bigint;
+        readonly large: bigint;
+        readonly identity: bigint;
+      };
+    expect(decode({ minimum: 9 }).minimum).toBe(9n);
+    expect(decode({ minimum: "9" }).minimum).toBe(9n);
+    expect(decode({ negative: -3 }).negative).toBe(-3n);
+    expect(decode({ minimum: -0 }).minimum).toBe(0n);
+    expect(decode({ large: "9007199254740993" }).large).toBe(9_007_199_254_740_993n);
+    expect(decode({ identity: 42 }).identity).toBe(42n);
+
+    for (const [invalid, message] of [
+      [9.5, "safe integer"],
+      [9_007_199_254_740_992, "safe integer"],
+      [Number.NaN, "safe integer"],
+      [Number.POSITIVE_INFINITY, "safe integer"],
+      [true, "canonical decimal string"],
+      ['"9"', "canonical decimal string"],
+      ["09", "canonical decimal string"],
+    ] as const) {
+      expect(() => echoValues.inputCodec.decode(protocolValues({ minimum: invalid }), "args"))
+        .toThrow(message);
+    }
+  });
+
   test("rejects malformed decimal/base64 and non-JSON opaque values", async () => {
-    for (const invalid of ["01", "+1", "-0", "9223372036854775808", 1]) {
+    for (const invalid of ["01", "+1", "-0", "9223372036854775808"]) {
       expect(() => echoValues.inputCodec.decode(protocolValues({ minimum: invalid }), "args"))
         .toThrow();
     }

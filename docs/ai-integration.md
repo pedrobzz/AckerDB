@@ -46,6 +46,16 @@ emits JSON Schema type arrays (`{"type": ["boolean", "null"]}`) rather than
 type arrays, no application-side coercion or `repairToolCall` is needed; tool
 inputs validate as declared.
 
+The same principle governs int64 ids. `dbz.bigint()` / `dbz.identity()` args
+follow proto3's JSON mapping since 0.3.2: they *serialize* as canonical
+decimal strings (wire-safe past 2^53), but *accept* either a JSON integer or
+the decimal string. A model's natural completion for an id is the number `9`;
+forcing it through a string type is what produced double-encoded garbage like
+`"\"9\""` from small models. Numbers are accepted only within safe-integer
+range — any JSON integer literal beyond 2^53−1 parses to a float that fails
+`Number.isSafeInteger`, so silent precision loss cannot pass validation, and
+large ids still travel as strings.
+
 ### Validation transcript
 
 Recorded 2026-07-18 by the 0.3.1 release gate: a scripted live run of
