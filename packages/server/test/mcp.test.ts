@@ -535,7 +535,7 @@ describe("public stateless MCP endpoint", () => {
             properties: {
               body: { type: "string", description: "The note text to summarize." },
               label: {
-                anyOf: [{ type: "string" }, { type: "null" }],
+                type: ["string", "null"],
                 description: "An optional human label.",
               },
             },
@@ -549,7 +549,7 @@ describe("public stateless MCP endpoint", () => {
               body: { type: "string", description: "The original note text." },
               length: { type: "number", description: "The number of UTF-16 code units." },
               label: {
-                anyOf: [{ type: "string" }, { type: "null" }],
+                type: ["string", "null"],
                 description: "The normalized label.",
               },
             },

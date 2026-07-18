@@ -1,0 +1,52 @@
+# AI integration notes
+
+What an application author must handle on *their* side when building an AI
+chat on dbzz with the AI SDK. Everything here was learned building the demo's
+Admin Chat (the reference implementation, under `demo/app/server`); none of it
+is a dbzz defect — these are properties of the AI SDK, of model behavior, or
+of sandboxed tool execution that any dbzz + AI SDK app will meet.
+
+## Surface tool errors to the client
+
+`toUIMessageStream` masks every stream error as the literal text
+`"An error occurred."` unless you pass `onError`. During development this
+hides tool failures completely — the model apologizes vaguely and you learn
+nothing. Wire `onError` to return the real message. Do this only for trusted
+transcripts (the demo's chat is staff-only); for end-user surfaces, map to a
+safe message but *log* the real one.
+
+## Always end the turn with text
+
+A model can legitimately end its turn on a tool call, which leaves the chat
+hanging with no assistant prose. Cap the loop with `stopWhen: stepCountIs(N)`
+and use `prepareStep` to force `toolChoice: "none"` on the final step, so the
+last step can only produce text. The demo uses `N = 16`.
+
+## Sandboxed CLI tools: materialize eagerly
+
+just-bash blocks `globalThis.performance.now` while `exec()` runs. dbzz reads
+are telemetry-timed, so *lazy* file providers that query the database from
+inside the sandbox die mid-command (surfacing as `ENOENT`). Materialize every
+workspace file eagerly — inside one `ctx.tx`, before constructing the sandbox
+— so the sandbox only ever touches plain strings. This is also what makes the
+workspace transactionally consistent: one snapshot, no torn reads.
+
+## Dev database across engine-schema bumps
+
+Pre-1.0, a dbzz upgrade that bumps the storage engine's internal schema
+refuses to open older `.zdb` files (the error names both versions). The dev
+workflow is wipe + reseed; there is no migration story before 1.0 by design.
+
+## Model compatibility: nullable tool arguments
+
+dbzz's optionality idiom for tool args is `dbz.nullable(...)`. Since 0.3.1 it
+emits JSON Schema type arrays (`{"type": ["boolean", "null"]}`) rather than
+`anyOf` unions, because models — verified with DeepSeek v4 flash — ignore
+`anyOf` member types in tool schemas and send every scalar as a string. With
+type arrays, no application-side coercion or `repairToolCall` is needed; tool
+inputs validate as declared.
+
+### Validation transcript
+
+<!-- Appended by the 0.3.1 merge gate: scripted live DeepSeek run through the
+demo chat endpoint exercising every nullable-arg tool + one action tool. -->

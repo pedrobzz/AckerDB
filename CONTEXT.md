@@ -2,6 +2,21 @@
 
 Glossary of domain terms. Definitions only — no implementation details.
 
+## Framework runtime
+
+**Execution root** — The execution context a runtime subsystem owns and runs
+its work under when that work is performed on its own behalf rather than a
+caller's — e.g. the reactive system re-evaluating subscriptions for
+subscribers. Work a caller triggers never carries the caller's context into
+another subsystem's execution root; anything that must cross a scheduling
+boundary crosses explicitly.
+
+**Subscriber-facing work** — Runtime work that executes application code on
+behalf of a subscriber (re-running a subscribed query, matching an event
+listener). Always runs under the reactive system's execution root, under the
+subscriber's own principal — never under the identity or context of whoever
+triggered it.
+
 ## Demo app (Savoria restaurant)
 
 **Admin MCP** — The demo backend's single MCP endpoint. Isolated and staff-only:

@@ -127,7 +127,7 @@ describe("Standard Schema contract", () => {
       properties: {
         query: { type: "string", description: "Words to find." },
         limit: {
-          anyOf: [{ type: "number" }, { type: "null" }],
+          type: ["number", "null"],
           description: "Maximum results, or null for the default.",
         },
         filters: { description: "Opaque application filters." },

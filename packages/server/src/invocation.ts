@@ -261,7 +261,11 @@ function validateContext<Ctx extends InvocationContext>(
   parent: InvocationState | undefined,
 ): Ctx {
   if (parent !== undefined && ctx.auth !== parent.principal) {
-    throw new DbzzError("unauthorized", "access denied");
+    // Deliberately distinct from a policy denial's "access denied": tripping
+    // this guard means runtime-owned work ran inside a foreign invocation's
+    // async context (a framework or composition bug), not that a policy said
+    // no — the message must point debugging at the right layer.
+    throw new DbzzError("unauthorized", "invocation context principal mismatch");
   }
   if (!isPrincipal(ctx.auth)) throw new DbzzError("internal", "invalid invocation context");
   const principal = parent?.principal ?? ctx.auth;
