@@ -16,6 +16,7 @@ import { AlertTriangle, ChefHat, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ToastProvider, useToast } from "../components/toast.tsx";
 import styles from "../styles.css?url";
+import tailwind from "../tailwind.css?url";
 
 export const Route = createRootRoute({
   head: () => ({
@@ -26,6 +27,7 @@ export const Route = createRootRoute({
       { title: "Savoria Restaurant OS" },
     ],
     links: [
+      { rel: "stylesheet", href: tailwind },
       { rel: "stylesheet", href: styles },
       { rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
     ],

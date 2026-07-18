@@ -1,0 +1,114 @@
+/*
+ * Tailwind v4 entry for the admin panel.
+ *
+ * Preflight (Tailwind's base reset) is intentionally OMITTED: the legacy
+ * stylesheets in ./styles/*.css own the reset and every existing rule, and
+ * they stay untouched. We import only the `theme` and `utilities` layers so
+ * new work can use utilities while every current page renders pixel-identical.
+ *
+ * Because the legacy CSS is unlayered, it always outranks these layered
+ * utilities in the cascade — so utilities can never override an existing rule.
+ * Preflight stays off until the last legacy stylesheet is deleted (see
+ * demo/AGENTS.md, "Gradual Tailwind migration").
+ */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities);
+
+/*
+ * shadcn/ui semantic variables, mapped to the Savoria palette (light only —
+ * the admin panel has no dark mode; see styles/foundation.css). Any
+ * shadcn-anatomy component dropped in later reads these and looks native.
+ */
+:root {
+  --background: #fbf8f2; /* cream-50  */
+  --foreground: #1d2925; /* ink-900   */
+  --card: #fffdfc; /* warm white (surface) */
+  --card-foreground: #1d2925; /* ink-900   */
+  --popover: #fffdfc; /* warm white */
+  --popover-foreground: #1d2925; /* ink-900   */
+  --primary: #15372f; /* forest-900 (.button--primary) */
+  --primary-foreground: #fffdfc; /* warm white */
+  --secondary: #f5efe4; /* cream-100 */
+  --secondary-foreground: #1d2925; /* ink-900   */
+  --muted: #f5efe4; /* cream-100 */
+  --muted-foreground: #596661; /* ink-500 (theme.ts `muted`) */
+  --accent: #ecf2ec; /* sage-100 (subtle highlight surface) */
+  --accent-foreground: #1e4a3e; /* forest-800 */
+  --destructive: #a43a41; /* rose-500 (.button--danger) */
+  --destructive-foreground: #fffdfc; /* warm white */
+  --border: #e5e8e3; /* line      */
+  --input: #e5e8e3; /* line      */
+  --ring: #3f6c50; /* sage-500 (input focus) */
+  --radius: 0.75rem; /* 12px — the demo's control radius */
+}
+
+/*
+ * Savoria palette, fonts and radii. Mirrors styles/foundation.css and
+ * app/design/src/theme.ts. Generates utilities such as `bg-forest-950`,
+ * `text-ink-500`, `border-line`, `font-display`.
+ */
+@theme {
+  --color-forest-950: #102a24;
+  --color-forest-900: #15372f;
+  --color-forest-800: #1e4a3e;
+  --color-sage-500: #3f6c50;
+  --color-sage-200: #dde8dd;
+  --color-sage-100: #ecf2ec;
+  --color-cream-50: #fbf8f2;
+  --color-cream-100: #f5efe4;
+  --color-warm-white: #fffdfc; /* demo `--white`; keeps Tailwind's `white` pure */
+  --color-ink-900: #1d2925;
+  --color-ink-700: #40514b;
+  --color-ink-500: #596661;
+  --color-ink-300: #a7b0ac;
+  --color-line: #e5e8e3;
+  --color-clay-500: #ac492c;
+  --color-clay-100: #f8e4dc;
+  --color-amber-500: #8c5a0d;
+  --color-amber-100: #f9ecd6;
+  --color-sky-500: #376581;
+  --color-sky-100: #dfebf1;
+  --color-rose-500: #a43a41;
+  --color-rose-100: #f7e2e2;
+  --color-violet-500: #7566a8;
+  --color-violet-100: #ece8f7;
+
+  --font-sans:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  --font-display: "Iowan Old Style", Baskerville, Georgia, serif;
+  --font-mono: SFMono-Regular, Consolas, monospace;
+}
+
+/*
+ * shadcn semantic tokens + radius scale, resolved inline so they always track
+ * the :root variables above (no cached copies). Generates `bg-background`,
+ * `text-foreground`, `bg-primary`, `border-border`, `rounded-lg`, etc.
+ */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
