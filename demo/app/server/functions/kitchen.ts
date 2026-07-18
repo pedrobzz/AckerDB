@@ -2,13 +2,10 @@ import { dbz } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { isStaff } from "../lib/access.ts";
 import {
+  advanceOrderItem,
   cancelOrderItem,
-  conflict,
-  emitOrderEvent,
-  nextItemStatus,
   notFound,
   requireOpenOrder,
-  scheduleReminder,
 } from "../lib/domain.ts";
 
 const staffAccess = (ctx: { auth: Parameters<typeof isStaff>[0] }) =>
@@ -49,31 +46,8 @@ export const queue = query({
 export const advance = mutation({
   access: staffAccess,
   args: { orderItemId: dbz.bigint() },
-  handler: async (ctx, args) => {
-    const item =
-      (await ctx.db.orderItems.get(args.orderItemId)) ??
-      notFound("Order item not found");
-    const order = await requireOpenOrder(ctx.db, item.orderId);
-    const status = nextItemStatus(item.status);
-    if (status === null) conflict("This item is already final");
-    const now = Date.now();
-    await ctx.db.orderItems.patch(item.id, { status, statusChangedAt: now });
-    await scheduleReminder(ctx.db, item.id, status, now);
-    const phrase =
-      status === "PREPARING"
-        ? "is now being prepared"
-        : status === "PREPARED"
-          ? "is ready"
-          : "was served";
-    await emitOrderEvent(ctx.db, order, {
-      orderItemId: item.id,
-      kind: "ITEM_STATUS",
-      status,
-      message: `${item.name} ${phrase}`,
-      occurredAt: now,
-    });
-    return status;
-  },
+  handler: async (ctx, args) =>
+    (await advanceOrderItem(ctx.db, args.orderItemId)).status,
 });
 
 export const cancel = mutation({

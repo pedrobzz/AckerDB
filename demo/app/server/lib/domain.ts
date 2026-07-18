@@ -267,6 +267,40 @@ export async function cancelOrderItem(
   return item.id;
 }
 
+/**
+ * Advance one order item to the next kitchen status, scheduling the follow-up
+ * reminder and announcing the change to the guest. The single source of truth
+ * for the ORDERED → PREPARING → PREPARED → SERVED progression, shared by the
+ * staff `kitchen.advance` mutation and the `advance_kitchen_item` MCP tool.
+ */
+export async function advanceOrderItem(
+  db: DatabaseWriter,
+  orderItemId: bigint,
+): Promise<{ orderItemId: bigint; orderId: bigint; status: ItemStatus }> {
+  const item =
+    (await db.orderItems.get(orderItemId)) ?? notFound("Order item not found");
+  const order = await requireOpenOrder(db, item.orderId);
+  const status = nextItemStatus(item.status);
+  if (status === null) conflict("This item is already final");
+  const now = Date.now();
+  await db.orderItems.patch(item.id, { status, statusChangedAt: now });
+  await scheduleReminder(db, item.id, status, now);
+  const phrase =
+    status === "PREPARING"
+      ? "is now being prepared"
+      : status === "PREPARED"
+        ? "is ready"
+        : "was served";
+  await emitOrderEvent(db, order, {
+    orderItemId: item.id,
+    kind: "ITEM_STATUS",
+    status,
+    message: `${item.name} ${phrase}`,
+    occurredAt: now,
+  });
+  return { orderItemId: item.id, orderId: order.id, status };
+}
+
 export async function closeOrder(
   db: DatabaseWriter,
   order: Order,
@@ -288,6 +322,32 @@ export async function closeOrder(
     message,
     occurredAt: now,
   });
+}
+
+/**
+ * Cancel an OPEN order: drop its outstanding kitchen reminders and close it as
+ * CANCELLED, which clears the open-user/open-table index and so frees the
+ * table. Shared by the staff `orders.cancel` mutation and the `cancel_order`
+ * MCP tool. Returns the order snapshot and its item rows so callers can report
+ * what was cancelled.
+ */
+export async function cancelOpenOrder(
+  db: DatabaseWriter,
+  orderId: bigint,
+): Promise<{ order: Order; items: OrderItem[] }> {
+  const order = await requireOpenOrder(db, orderId);
+  const items = await db.orderItems
+    .byOrder((q) => q.eq("orderId", order.id))
+    .collect();
+  for (const item of items) await clearReminder(db, item.id);
+  await closeOrder(
+    db,
+    order,
+    "CANCELLED",
+    0,
+    "The restaurant cancelled this order",
+  );
+  return { order, items };
 }
 
 export async function clearReminder(

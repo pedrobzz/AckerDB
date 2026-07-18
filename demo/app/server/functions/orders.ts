@@ -3,8 +3,8 @@ import { mutation, query } from "@demo/dbzz-codegen/server";
 import { isStaff, requireUser } from "../lib/access.ts";
 import {
   addOrderItems,
+  cancelOpenOrder,
   cancelOrderItem,
-  clearReminder,
   closeOrder,
   conflict,
   isFinal,
@@ -233,19 +233,6 @@ export const addItemsAsStaff = mutation({
 export const cancel = mutation({
   access: staffAccess,
   args: { orderId: dbz.bigint() },
-  handler: async (ctx, args) => {
-    const order = await requireOpenOrder(ctx.db, args.orderId);
-    const items = await ctx.db.orderItems
-      .byOrder((q) => q.eq("orderId", order.id))
-      .collect();
-    for (const item of items) await clearReminder(ctx.db, item.id);
-    await closeOrder(
-      ctx.db,
-      order,
-      "CANCELLED",
-      0,
-      "The restaurant cancelled this order",
-    );
-    return order.id;
-  },
+  handler: async (ctx, args) =>
+    (await cancelOpenOrder(ctx.db, args.orderId)).order.id,
 });
