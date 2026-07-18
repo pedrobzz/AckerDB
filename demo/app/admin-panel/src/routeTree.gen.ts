@@ -16,6 +16,7 @@ import { Route as AdminOrdersRouteImport } from './routes/_admin/orders'
 import { Route as AdminMenuRouteImport } from './routes/_admin/menu'
 import { Route as AdminKitchenRouteImport } from './routes/_admin/kitchen'
 import { Route as AdminGuestsRouteImport } from './routes/_admin/guests'
+import { Route as AdminAgentsRouteImport } from './routes/_admin/agents'
 
 const AdminRoute = AdminRouteImport.update({
   id: '/_admin',
@@ -51,9 +52,15 @@ const AdminGuestsRoute = AdminGuestsRouteImport.update({
   path: '/guests',
   getParentRoute: () => AdminRoute,
 } as any)
+const AdminAgentsRoute = AdminAgentsRouteImport.update({
+  id: '/agents',
+  path: '/agents',
+  getParentRoute: () => AdminRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof AdminIndexRoute
+  '/agents': typeof AdminAgentsRoute
   '/guests': typeof AdminGuestsRoute
   '/kitchen': typeof AdminKitchenRoute
   '/menu': typeof AdminMenuRoute
@@ -61,6 +68,7 @@ export interface FileRoutesByFullPath {
   '/tables': typeof AdminTablesRoute
 }
 export interface FileRoutesByTo {
+  '/agents': typeof AdminAgentsRoute
   '/guests': typeof AdminGuestsRoute
   '/kitchen': typeof AdminKitchenRoute
   '/menu': typeof AdminMenuRoute
@@ -71,6 +79,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_admin': typeof AdminRouteWithChildren
+  '/_admin/agents': typeof AdminAgentsRoute
   '/_admin/guests': typeof AdminGuestsRoute
   '/_admin/kitchen': typeof AdminKitchenRoute
   '/_admin/menu': typeof AdminMenuRoute
@@ -80,12 +89,14 @@ export interface FileRoutesById {
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/guests' | '/kitchen' | '/menu' | '/orders' | '/tables'
+  fullPaths:
+    '/' | '/agents' | '/guests' | '/kitchen' | '/menu' | '/orders' | '/tables'
   fileRoutesByTo: FileRoutesByTo
-  to: '/guests' | '/kitchen' | '/menu' | '/orders' | '/tables' | '/'
+  to: '/agents' | '/guests' | '/kitchen' | '/menu' | '/orders' | '/tables' | '/'
   id:
     | '__root__'
     | '/_admin'
+    | '/_admin/agents'
     | '/_admin/guests'
     | '/_admin/kitchen'
     | '/_admin/menu'
@@ -149,10 +160,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminGuestsRouteImport
       parentRoute: typeof AdminRoute
     }
+    '/_admin/agents': {
+      id: '/_admin/agents'
+      path: '/agents'
+      fullPath: '/agents'
+      preLoaderRoute: typeof AdminAgentsRouteImport
+      parentRoute: typeof AdminRoute
+    }
   }
 }
 
 interface AdminRouteChildren {
+  AdminAgentsRoute: typeof AdminAgentsRoute
   AdminGuestsRoute: typeof AdminGuestsRoute
   AdminKitchenRoute: typeof AdminKitchenRoute
   AdminMenuRoute: typeof AdminMenuRoute
@@ -162,6 +181,7 @@ interface AdminRouteChildren {
 }
 
 const AdminRouteChildren: AdminRouteChildren = {
+  AdminAgentsRoute: AdminAgentsRoute,
   AdminGuestsRoute: AdminGuestsRoute,
   AdminKitchenRoute: AdminKitchenRoute,
   AdminMenuRoute: AdminMenuRoute,
