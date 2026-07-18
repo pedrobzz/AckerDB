@@ -71,6 +71,15 @@ export type {
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
 export { reconcile, UnsafeSchemaChange } from "./reconcile.ts";
 export {
+  classifySchemaDiff,
+  refusalSite,
+  type Classification,
+  type OptimisticChange,
+  type RefusalReason,
+  type SafeChange,
+  type SchemaRefusal,
+} from "./schema-classify.ts";
+export {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
   createOidcVerifier,

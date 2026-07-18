@@ -1,39 +1,54 @@
 /**
  * Schema reconciliation: diff the stored snapshot against the live schema and
- * make the database match — the MVP slice of the migrations design. It layers
- * three steps: a pure structural diff (`schema-diff.ts`), a data-dependent
- * planner that probes rows and turns the diff into ops or refusals, and one
+ * make the database match. It layers three seams: a pure structural diff
+ * (`schema-diff.ts`), a pure shape classification (`schema-classify.ts`) that
+ * presumes rows always exist and judges each change by its shape alone, and one
  * transactional apply.
  *
- * Safe changes apply automatically, in one transaction:
- *   - adding a table (or event table)
- *   - adding a nullable column
- *   - any structural change to an *empty* table (rebuild in place)
- *   - widening a column to nullable / narrowing when no NULLs exist
- *   - adding/reordering enum & union variants (tags are stable)
- *   - removing a variant no rows hold
- *   - adding / removing / changing indexes (unique only over clean data)
- *   - dropping an empty table
+ * Safety is a property of the change's shape, never of the data underneath it —
+ * a change classified safe applies identically on an empty dev table and a full
+ * prod one; a change classified unsafe refuses on both. No row counts excuse
+ * anything.
  *
- * Anything existing rows can't satisfy is *refused* with row counts — the
- * database is never touched. (TypeScript migration files that resolve those
- * refusals are the post-MVP half of the design; `dbz reset` is the dev
- * escape hatch. Renames are not detected: they read as drop+add and refuse
- * when data exists.)
+ * Shape-safe changes apply automatically, in one transaction:
+ *   - adding a table or event table; dropping or updating an event table
+ *   - converting an event table into a real table (event → table)
+ *   - adding a nullable column
+ *   - widening a column to nullable (a rebuild that preserves every row)
+ *   - adding / reordering enum & union variants (tags are stable)
+ *   - dropping any index; adding / changing a non-unique index
+ *
+ * The sole optimistic change — a unique index (or an index changed to unique) —
+ * is attempted: the planner probes for duplicate groups (the one remaining data
+ * probe), applies on a clean table, and refuses cleanly with the counts if
+ * duplicates exist, touching nothing.
+ *
+ * Everything else is *refused* — a type change, narrowing to required, a
+ * required-column add, a variant removal or union payload change, a column or
+ * table drop, a table → event conversion — with the presume-data question, and
+ * with no row-count probing, even on a provably empty table. A migration file
+ * is the answer to a refusal; `dbz reset` is the dev escape hatch.
  */
-import type { Descriptor } from "./dbz.ts";
 import { Engine, indexSqlName, type TablePlan } from "./engine.ts";
+import {
+  classifySchemaDiff,
+  refusalSite,
+  type OptimisticChange,
+  type SafeChange,
+  type SchemaRefusal,
+} from "./schema-classify.ts";
 import { diffSnapshots, namedOf, type SchemaDiff } from "./schema-diff.ts";
 import { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
 
 export class UnsafeSchemaChange extends Error {
-  readonly problems: string[];
-  constructor(problems: string[]) {
+  readonly refusals: SchemaRefusal[];
+  constructor(refusals: SchemaRefusal[]) {
     super(
-      `refusing to apply unsafe schema changes:\n${problems.map((p) => `  - ${p}`).join("\n")}\n` +
-        `(resolve the data first, or wipe local data with \`dbz reset\`)`,
+      `refusing to apply unsafe schema changes; each needs a migration:\n` +
+        refusals.map((r) => `  - ${refusalSite(r)}: ${r.question}`).join("\n") +
+        `\n(write a migration to answer these, or wipe local data with \`dbz reset\`)`,
     );
-    this.problems = problems;
+    this.refusals = refusals;
   }
 }
 
@@ -44,11 +59,7 @@ type Op = () => void;
 interface ReconcilePlan {
   ops: Op[];
   applied: string[];
-  problems: string[];
-}
-
-function physColsOf(column: string, desc: Descriptor): string[] {
-  return namedOf(desc)?.kind === "union" ? [column, `${column}__p`] : [column];
+  refusals: SchemaRefusal[];
 }
 
 export function reconcile(engine: Engine): { applied: string[] } {
@@ -61,197 +72,167 @@ export function reconcile(engine: Engine): { applied: string[] } {
   if (JSON.stringify(current) === JSON.stringify(target)) return { applied: [] };
 
   const plan = planReconcile(engine, current, diffSnapshots(current, target));
-  if (plan.problems.length > 0) throw new UnsafeSchemaChange(plan.problems);
+  if (plan.refusals.length > 0) throw new UnsafeSchemaChange(plan.refusals);
   applyPlan(engine, target, plan.ops);
   return { applied: plan.applied.length > 0 ? plan.applied : ["updated schema snapshot"] };
 }
 
-/** Turn a structural diff into concrete ops or refusals by probing live data. Read-only. */
+/**
+ * Turn a diff into ops or refusals. Shape-unsafe refusals come straight from
+ * the classification with no probing; optimistic unique indexes are the only
+ * data probe. Read-only: any refusal leaves the plan unapplied.
+ */
 function planReconcile(engine: Engine, current: SchemaSnapshot, diff: SchemaDiff): ReconcilePlan {
+  const { safe, optimistic, refusals } = classifySchemaDiff(diff);
   const ops: Op[] = [];
   const applied: string[] = [];
-  const problems: string[] = [];
   const writer = engine.writer;
 
   const count = (sql: string, ...params: unknown[]): number =>
     Number((writer.query(sql).get(...(params as never[])) as { n: bigint }).n);
-  const rowCount = (table: string): number => count(`SELECT COUNT(*) AS n FROM ${quote(table)}`);
 
-  const dropIndex = (table: string, index: string) =>
-    ops.push(() => writer.exec(`DROP INDEX IF EXISTS ${quote(indexSqlName(table, index))}`));
-  const createIndex = (tablePlan: TablePlan, name: string) => {
-    const index = tablePlan.indexes.find((ix) => ix.name === name)!;
-    if (index.unique) {
-      const cols = index.columns.map(quote).join(", ");
-      const dupes = count(
-        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${quote(tablePlan.name)} GROUP BY ${cols} HAVING COUNT(*) > 1)`,
-      );
-      if (dupes > 0) {
-        problems.push(
-          `${tablePlan.name}.${name}: unique index over (${index.columns.join(", ")}), but ${dupes} group(s) of duplicate rows exist`,
-        );
-        return;
+  for (const change of safe) applySafe(engine, change, current, ops, applied);
+  for (const opt of optimistic) probeOptimistic(engine, opt, current, count, ops, applied, refusals);
+
+  return { ops, applied, refusals };
+}
+
+/** Build the physical ops (and applied log) for one shape-safe change. */
+function applySafe(engine: Engine, change: SafeChange, current: SchemaSnapshot, ops: Op[], applied: string[]): void {
+  const writer = engine.writer;
+  const table = change.table;
+  switch (change.op) {
+    case "create-table":
+      ops.push(() => engine.createTablePhysical(engine.plan(table)));
+      applied.push(`created table ${table}`);
+      return;
+    case "add-event-table":
+      applied.push(`added event table ${table}`);
+      return;
+    case "drop-event-table":
+      applied.push(`dropped event table ${table}`);
+      return;
+    case "update-event-table":
+      applied.push(`updated event table ${table}`);
+      return;
+    case "event-to-table":
+      ops.push(() => engine.createTablePhysical(engine.plan(table)));
+      applied.push(`converted ${table} to a table`);
+      return;
+    case "add-column": {
+      const columnPlan = engine.plan(table).columns.get(change.column)!;
+      for (const phys of columnPlan.phys) {
+        ops.push(() => writer.exec(`ALTER TABLE ${quote(table)} ADD COLUMN ${phys.ddl}`));
       }
+      applied.push(`added nullable column ${table}.${change.column}`);
+      return;
     }
-    ops.push(() => writer.exec(engine.indexDdl(tablePlan, index)));
-  };
-
-  /** Rebuild `table` to the new plan, preserving intersecting columns and ids. */
-  const rebuild = (tablePlan: TablePlan, oldTable: TableSnapshot) => {
-    ops.push(() => {
-      const oldPhys = new Set(
-        Object.entries(oldTable.columns).flatMap(([col, desc]) => physColsOf(col, desc)),
-      );
-      const copy = tablePlan.physOrder.filter((c) => oldPhys.has(c)).map(quote).join(", ");
-      const tmp = `${tablePlan.name}__rebuild`;
-      const seqRow = writer
-        .query("SELECT seq FROM sqlite_sequence WHERE name = ?")
-        .get(tablePlan.name) as { seq: bigint } | null;
-      writer.exec(engine.createTableDdl(tablePlan, tmp));
-      if (copy.length > 0) {
-        writer.exec(`INSERT INTO ${quote(tmp)} (${copy}) SELECT ${copy} FROM ${quote(tablePlan.name)}`);
-      }
-      writer.exec(`DROP TABLE ${quote(tablePlan.name)}`);
-      writer.exec(`ALTER TABLE ${quote(tmp)} RENAME TO ${quote(tablePlan.name)}`);
-      if (seqRow !== null) {
-        // never reuse ids: restore the sequence high-water mark
-        const changed = writer
-          .query("UPDATE sqlite_sequence SET seq = ? WHERE name = ? AND seq < ?")
-          .run(seqRow.seq, tablePlan.name, seqRow.seq);
-        if (changed.changes === 0 && count("SELECT COUNT(*) AS n FROM sqlite_sequence WHERE name = ?", tablePlan.name) === 0) {
-          writer.query("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)").run(tablePlan.name, seqRow.seq);
-        }
-      }
-      engine.createIndexesPhysical(tablePlan);
-    });
-  };
-
-  for (const change of diff) {
-    const table = change.table;
-    switch (change.op) {
-      case "table-added": {
-        if (change.kind === "table") {
-          ops.push(() => engine.createTablePhysical(engine.plan(table)));
-          applied.push(`created table ${table}`);
-        } else {
-          applied.push(`added event table ${table}`);
-        }
-        break;
-      }
-      case "table-dropped": {
-        if (change.kind === "table") {
-          const n = rowCount(table);
-          if (n > 0) {
-            problems.push(`table ${table} dropped, but it still holds ${n} row(s)`);
-            break;
-          }
-          ops.push(() => writer.exec(`DROP TABLE IF EXISTS ${quote(table)}`));
-        }
-        applied.push(`dropped ${table}`);
-        break;
-      }
-      case "table-kind-changed": {
-        if (change.from === "table") {
-          const n = rowCount(table);
-          if (n > 0) {
-            problems.push(`table ${table} changed to an ${change.to} table, but it still holds ${n} row(s)`);
-            break;
-          }
-          ops.push(() => writer.exec(`DROP TABLE IF EXISTS ${quote(table)}`));
-        }
-        applied.push(`converted ${table}`);
-        if (change.to === "table") ops.push(() => engine.createTablePhysical(engine.plan(table)));
-        break;
-      }
-      case "event-updated": {
-        applied.push(`updated event table ${table}`);
-        break;
-      }
-      case "table-altered": {
-        const tablePlan = engine.plan(table);
-        const rows = rowCount(table);
-        let needsRebuild = false;
-        const alterAdds: string[] = [];
-
-        for (const col of change.columns) {
-          switch (col.op) {
-            case "added":
-              if (col.nullable) alterAdds.push(col.column);
-              else if (rows === 0) needsRebuild = true;
-              else
-                problems.push(
-                  `${table}.${col.column}: required column added, but the table has ${rows} row(s) with no value for it`,
-                );
-              break;
-            case "dropped":
-              if (rows === 0) needsRebuild = true;
-              else problems.push(`${table}.${col.column}: column dropped, but the table still holds ${rows} row(s)`);
-              break;
-            case "type-changed":
-              if (rows === 0) needsRebuild = true;
-              else problems.push(`${table}.${col.column}: type changed, but ${rows} row(s) would need converting`);
-              break;
-            case "nullability-changed":
-              if (col.to === "nullable") {
-                needsRebuild = true; // widen: keep data, relax NOT NULL
-              } else {
-                const nulls = count(`SELECT COUNT(*) AS n FROM ${quote(table)} WHERE ${quote(col.column)} IS NULL`);
-                if (nulls > 0) problems.push(`${table}.${col.column}: made required, but ${nulls} row(s) hold NULL`);
-                else needsRebuild = true;
-              }
-              break;
-            case "variants-changed": {
-              const tags = engine.tags.get(col.typeName)!;
-              const holders = (variant: string): number => {
-                const tag = tags.toTag.get(variant);
-                if (tag === undefined) return 0;
-                return count(`SELECT COUNT(*) AS n FROM ${quote(table)} WHERE ${quote(col.column)} = ?`, tag);
-              };
-              for (const v of col.variants) {
-                if (v.op === "removed") {
-                  const n = holders(v.variant);
-                  if (n > 0) problems.push(`${table}.${col.column}: variant '${v.variant}' removed, but ${n} row(s) still hold it`);
-                } else if (v.op === "payload-changed") {
-                  const n = holders(v.variant);
-                  if (n > 0)
-                    problems.push(
-                      `${table}.${col.column}: variant '${v.variant}' payload type changed, but ${n} row(s) still hold it`,
-                    );
-                }
-              }
-              break;
-            }
-          }
-        }
-
-        if (needsRebuild) {
-          rebuild(tablePlan, current.tables[table]!); // recreates every index from the new plan
-          applied.push(`rebuilt table ${table}`);
-        } else {
-          for (const column of alterAdds) {
-            const columnPlan = tablePlan.columns.get(column)!;
-            for (const phys of columnPlan.phys) {
-              ops.push(() => writer.exec(`ALTER TABLE ${quote(table)} ADD COLUMN ${phys.ddl}`));
-            }
-            applied.push(`added nullable column ${table}.${column}`);
-          }
-          for (const ix of change.indexes) {
-            if (ix.op === "dropped" || ix.op === "changed") dropIndex(table, ix.name);
-            if (ix.op === "dropped") applied.push(`dropped index ${table}.${ix.name}`);
-          }
-          for (const ix of change.indexes) {
-            if (ix.op === "added" || ix.op === "changed") {
-              createIndex(tablePlan, ix.name);
-              applied.push(`${ix.op === "added" ? "created" : "recreated"} index ${table}.${ix.name}`);
-            }
-          }
-        }
-        break;
-      }
-    }
+    case "rebuild-table":
+      rebuild(engine, engine.plan(table), current.tables[table]!, ops);
+      applied.push(`rebuilt table ${table}`);
+      return;
+    case "drop-index":
+      ops.push(() => writer.exec(`DROP INDEX IF EXISTS ${quote(indexSqlName(table, change.index))}`));
+      applied.push(`dropped index ${table}.${change.index}`);
+      return;
+    case "create-index":
+      ops.push(createIndexOp(engine, engine.plan(table), change.index, change.recreate));
+      applied.push(`${change.recreate ? "recreated" : "created"} index ${table}.${change.index}`);
+      return;
   }
+}
 
-  return { ops, applied, problems };
+/**
+ * The one data probe: does the table already hold duplicate groups for a unique
+ * index's columns? The probe mirrors the constraint exactly: SQLite unique
+ * indexes treat NULLs as distinct, so rows holding NULL in any indexed column
+ * can never collide and are excluded — and an index touching a column that is
+ * not physical yet (added in this same change) cannot have duplicates at all.
+ * Clean → schedule the create (unless a sibling rebuild owns it); duplicate →
+ * a clean refusal carrying the probed count, nothing touched.
+ */
+function probeOptimistic(
+  engine: Engine,
+  opt: OptimisticChange,
+  current: SchemaSnapshot,
+  count: (sql: string, ...params: unknown[]) => number,
+  ops: Op[],
+  applied: string[],
+  refusals: SchemaRefusal[],
+): void {
+  const tablePlan = engine.plan(opt.table);
+  const index = tablePlan.indexes.find((ix) => ix.name === opt.index)!;
+  const currentColumns = current.tables[opt.table]?.columns ?? {};
+  const allExist = index.columns.every((c) => currentColumns[c] !== undefined);
+  const cols = index.columns.map(quote).join(", ");
+  const notNull = index.columns.map((c) => `${quote(c)} IS NOT NULL`).join(" AND ");
+  const dupes = allExist
+    ? count(
+        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${quote(opt.table)} WHERE ${notNull} GROUP BY ${cols} HAVING COUNT(*) > 1)`,
+      )
+    : 0;
+  if (dupes > 0) {
+    refusals.push({
+      table: opt.table,
+      index: opt.index,
+      reason: "unique-index-duplicates",
+      question: `unique index over (${index.columns.join(", ")}); ${dupes} duplicate group(s) exist`,
+      count: dupes,
+    });
+    return;
+  }
+  if (opt.viaRebuild) return; // the rebuild creates every index from the new plan
+  ops.push(createIndexOp(engine, tablePlan, opt.index, opt.recreate));
+  applied.push(`${opt.recreate ? "recreated" : "created"} index ${opt.table}.${opt.index}`);
+}
+
+function createIndexOp(engine: Engine, tablePlan: TablePlan, name: string, recreate: boolean): Op {
+  const index = tablePlan.indexes.find((ix) => ix.name === name)!;
+  return () => {
+    const writer = engine.writer;
+    if (recreate) writer.exec(`DROP INDEX IF EXISTS ${quote(indexSqlName(tablePlan.name, name))}`);
+    writer.exec(engine.indexDdl(tablePlan, index));
+  };
+}
+
+function physColsOf(oldTable: TableSnapshot): Set<string> {
+  return new Set(
+    Object.entries(oldTable.columns).flatMap(([col, desc]) =>
+      namedOf(desc)?.kind === "union" ? [col, `${col}__p`] : [col],
+    ),
+  );
+}
+
+/** Rebuild `table` to the new plan, preserving intersecting columns and ids. */
+function rebuild(engine: Engine, tablePlan: TablePlan, oldTable: TableSnapshot, ops: Op[]): void {
+  const writer = engine.writer;
+  ops.push(() => {
+    const oldPhys = physColsOf(oldTable);
+    const copy = tablePlan.physOrder.filter((c) => oldPhys.has(c)).map(quote).join(", ");
+    const tmp = `${tablePlan.name}__rebuild`;
+    const seqRow = writer
+      .query("SELECT seq FROM sqlite_sequence WHERE name = ?")
+      .get(tablePlan.name) as { seq: bigint } | null;
+    writer.exec(engine.createTableDdl(tablePlan, tmp));
+    if (copy.length > 0) {
+      writer.exec(`INSERT INTO ${quote(tmp)} (${copy}) SELECT ${copy} FROM ${quote(tablePlan.name)}`);
+    }
+    writer.exec(`DROP TABLE ${quote(tablePlan.name)}`);
+    writer.exec(`ALTER TABLE ${quote(tmp)} RENAME TO ${quote(tablePlan.name)}`);
+    if (seqRow !== null) {
+      // never reuse ids: restore the sequence high-water mark
+      const changed = writer
+        .query("UPDATE sqlite_sequence SET seq = ? WHERE name = ? AND seq < ?")
+        .run(seqRow.seq, tablePlan.name, seqRow.seq);
+      const missing = Number(
+        (writer.query("SELECT COUNT(*) AS n FROM sqlite_sequence WHERE name = ?").get(tablePlan.name) as { n: bigint }).n,
+      );
+      if (changed.changes === 0 && missing === 0) {
+        writer.query("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)").run(tablePlan.name, seqRow.seq);
+      }
+    }
+    engine.createIndexesPhysical(tablePlan);
+  });
 }
 
 /** Apply a refusal-free plan: tags, ops, and the new snapshot in one transaction. */
