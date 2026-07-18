@@ -14,6 +14,7 @@ import type * as m_admin_tools_orders from "../../../app/server/functions/admin/
 import type * as m_admin_tools_tables from "../../../app/server/functions/admin/tools/tables.ts";
 import type * as m_admin_tools_workspace from "../../../app/server/functions/admin/tools/workspace.ts";
 import type * as m_auth from "../../../app/server/functions/auth.ts";
+import type * as m_chat from "../../../app/server/functions/chat.ts";
 import type * as m_dashboard from "../../../app/server/functions/dashboard.ts";
 import type * as m_kitchen from "../../../app/server/functions/kitchen.ts";
 import type * as m_menu from "../../../app/server/functions/menu.ts";
@@ -39,6 +40,7 @@ export const api = anyApi as unknown as ApiFromModules<{
     };
   };
   auth: typeof m_auth;
+  chat: typeof m_chat;
   dashboard: typeof m_dashboard;
   kitchen: typeof m_kitchen;
   menu: typeof m_menu;
