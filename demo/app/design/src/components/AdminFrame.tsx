@@ -9,12 +9,13 @@ const navigation = [
   { label: "Menu", value: "menu", icon: "fork.knife" },
   { label: "Tables", value: "tables", icon: "table.furniture" },
   { label: "Guests", value: "users", icon: "person.2" },
+  { label: "Agents", value: "agents", icon: "sparkles" },
 ] as const;
 
 export const AdminFrame = component({
   id: "AdminFrame",
   schema: {
-    active: cz.enum(["overview", "orders", "kitchen", "menu", "tables", "users"]),
+    active: cz.enum(["overview", "orders", "kitchen", "menu", "tables", "users", "agents"]),
     title: cz.string(),
     subtitle: cz.string(),
     actionLabel: cz.string(),
