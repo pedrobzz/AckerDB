@@ -73,7 +73,9 @@ function MenuPage() {
           return (
             <div className="menu-layout">
               <aside className="surface category-panel">
-                <span className="eyebrow">Categories</span>
+                <span className="text-ink-500 text-[9px] font-extrabold tracking-[0.1em] uppercase">
+                  Categories
+                </span>
                 <div className="category-list">
                   <button
                     className={categoryId === "all" ? "active" : ""}
