@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -545,6 +545,16 @@ export default defineSchema({
     if (outcome.status !== "pending") throw new Error("unreachable");
     expect(outcome.stale).toBe(false);
     expect(outcome.pendingFiles).toHaveLength(3);
+    expect(outcome.pendingLabels).toEqual(["0001_parse_count"]);
+    // The apply-decline memory key: covers file bytes, so editing the
+    // migration (filling a TODO) releases a remembered decline.
+    expect(outcome.pendingIdentity).toMatch(/^[0-9a-f]{64}$/);
+    const before = outcome.pendingIdentity;
+    const modulePath = outcome.pendingFiles[0]!;
+    writeFileSync(modulePath, `${readFileSync(modulePath, "utf8")}\n// touched\n`);
+    const edited = await computePlan(config);
+    if (edited.status !== "pending") throw new Error("unreachable");
+    expect(edited.pendingIdentity).not.toBe(before);
   });
 
   test("a schema that moved after the scaffold flags the pending chain stale and names its files", async () => {

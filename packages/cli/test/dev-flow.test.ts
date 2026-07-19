@@ -19,9 +19,11 @@ const changesWire = (fingerprint: string): PlanWire => ({
   fingerprint,
   stale: false,
   pendingFiles: [],
+  pendingLabels: [],
+  pendingIdentity: "",
 });
 const CLEAN: PlanWire = { clean: true };
-const stalePendingWire: PlanWire = {
+const pendingWire = (identity: string, stale: boolean): PlanWire => ({
   clean: false,
   refusals: [],
   candidates: EMPTY,
@@ -29,9 +31,12 @@ const stalePendingWire: PlanWire = {
   pendingCount: 1,
   safe: [],
   fingerprint: "",
-  stale: true,
+  stale,
   pendingFiles: ["0001_x.ts", "0001_x.types.ts", "0001_x.json"],
-};
+  pendingLabels: ["0001_x"],
+  pendingIdentity: identity,
+});
+const stalePendingWire = pendingWire("id-1", true);
 
 const CONSENT_YES: PromptOutcome<unknown> = { answer: { generate: true, name: "m" } };
 const CONSENT_NO: PromptOutcome<unknown> = { answer: { generate: false } };
@@ -66,8 +71,8 @@ function makeHarness(plans: PlanWire[], prompts: PromptScript[], generates: Gene
       });
     },
     deleteFiles: (files) => calls.push(`delete:${files.length}`),
-    startServer: async () => {
-      calls.push("start");
+    startServer: async (applyPending) => {
+      calls.push(applyPending ? "start:apply" : "start");
     },
     report: () => calls.push("report"),
     log: () => calls.push("ledger"),
@@ -166,14 +171,55 @@ describe("dev flow: retraction and supersede", () => {
     expect(calls).toEqual(["plan", "prompt", "delete:3", "plan", "start"]);
   });
 
-  test("keeping a stale scaffold (or interrupting the offer) deletes nothing", async () => {
-    const keep = makeHarness([stalePendingWire], [{ answer: "keep" }]);
+  test("keeping a stale scaffold falls through to the apply question; waiting deletes nothing", async () => {
+    const keep = makeHarness([stalePendingWire], [{ answer: "keep" }, { answer: "wait" }]);
     await keep.handler.onCrash();
-    expect(keep.calls).toEqual(["plan", "prompt", "error"]);
+    expect(keep.calls).toEqual(["plan", "prompt", "prompt", "error"]);
 
-    const interrupted = makeHarness([stalePendingWire], [{ interrupted: true }]);
+    const interrupted = makeHarness([stalePendingWire], [{ interrupted: true }, { answer: "wait" }]);
     await interrupted.handler.onCrash();
-    expect(interrupted.calls).toEqual(["plan", "prompt", "error"]);
+    expect(interrupted.calls).toEqual(["plan", "prompt", "prompt", "error"]);
+  });
+
+  test("pending migrations apply only on an explicit yes", async () => {
+    const { calls, handler } = makeHarness([pendingWire("id-1", false)], [{ answer: "apply" }]);
+    await handler.onCrash();
+    expect(calls).toEqual(["plan", "prompt", "start:apply"]);
+  });
+
+  test("a declined apply is remembered against the chain identity; an edited migration asks again", async () => {
+    const { calls, handler } = makeHarness(
+      [pendingWire("id-1", false), pendingWire("id-1", false), pendingWire("id-2", false)],
+      [{ answer: "wait" }, { answer: "apply" }],
+    );
+    await handler.onCrash();
+    expect(calls).toEqual(["plan", "prompt", "error"]); // waiting: banner, server down
+    await handler.onCrash();
+    expect(calls.slice(3)).toEqual(["plan", "error"]); // same identity: banner only, no re-ask
+    await handler.onCrash(); // the file was edited (a TODO filled) — identity moved
+    expect(calls.slice(5)).toEqual(["plan", "prompt", "start:apply"]);
+  });
+
+  test("interrupting the apply question waits, and is remembered like a no", async () => {
+    const { calls, handler } = makeHarness(
+      [pendingWire("id-1", false), pendingWire("id-1", false)],
+      [{ interrupted: true }],
+    );
+    await handler.onCrash();
+    expect(calls).toEqual(["plan", "prompt", "error"]);
+    await handler.onCrash();
+    expect(calls.slice(3)).toEqual(["plan", "error"]);
+  });
+
+  test("a canceled apply question is retraction: same identity asks again", async () => {
+    const { calls, handler } = makeHarness(
+      [pendingWire("id-1", false), pendingWire("id-1", false)],
+      [{ canceled: true }, { answer: "apply" }],
+    );
+    await handler.onCrash();
+    expect(calls).toEqual(["plan", "prompt"]); // retracted: no banner, nothing remembered
+    await handler.onCrash();
+    expect(calls.slice(2)).toEqual(["plan", "prompt", "start:apply"]);
   });
 
   test("a canceled rename form abandons generation without declining", async () => {

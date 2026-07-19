@@ -281,8 +281,13 @@ async function dev(appDir: string): Promise<void> {
   // Children we killed ourselves (reload/shutdown); their non-zero exit is not a crash.
   const stopped = new WeakSet<Child>();
 
-  const spawnChild = () => {
-    const started = Bun.spawn([process.execPath, CLI_PATH, "__serve", appDir], {
+  // Interactive dev children hold pending migrations (exit instead of
+  // applying) so the flow below can ask first; the one start after a yes drops
+  // the hold. Non-TTY dev keeps applying at startup, exactly like production.
+  const spawnChild = (applyPending: boolean) => {
+    const args = [process.execPath, CLI_PATH, "__serve", appDir];
+    if (isInteractive() && !applyPending) args.push("--hold-pending");
+    const started = Bun.spawn(args, {
       stdout: "inherit",
       stderr: "inherit",
     });
@@ -301,9 +306,9 @@ async function dev(appDir: string): Promise<void> {
     }
   };
 
-  const startChild = async () => {
+  const startChild = async (applyPending = false) => {
     await stopChild();
-    spawnChild();
+    spawnChild(applyPending);
   };
 
   const onChildExit = (exited: Child, code: number) => {
@@ -341,7 +346,7 @@ async function dev(appDir: string): Promise<void> {
         }
       },
       deleteFiles: deletePendingFiles,
-      startServer: startChild,
+      startServer: (applyPending) => startChild(applyPending),
       report: (written, form) => reportGenerated(written, form.renames, form.dropsAcknowledged),
       log: console.log,
       error: console.error,
@@ -426,8 +431,9 @@ try {
       break;
     }
     case "__serve": {
-      requireArgumentCount(args, 1, 1);
-      await startApp(loadConfig(resolve(args[0]!)));
+      requireArgumentCount(args, 1, 2);
+      if (args[1] !== undefined && args[1] !== "--hold-pending") usage();
+      await startApp(loadConfig(resolve(args[0]!)), args[1] === "--hold-pending" ? { holdPendingMigrations: true } : {});
       break;
     }
     case "__verify_backup": {

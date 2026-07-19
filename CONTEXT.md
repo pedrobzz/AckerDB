@@ -146,11 +146,12 @@ migration (each with its per-row question) and the shape-safe changes that
 ride along automatically. Displayed, never persisted; shown wherever consent
 is asked and whenever a migration is generated.
 
-**Consent** — The developer's explicit yes to generating a migration for the
-change ledger they were shown. Consent is fingerprinted against the exact
-ledger displayed; if the schema moves before the yes lands, the stale consent
-is refused and the question is asked again over the fresh ledger. No migration
-file exists before consent.
+**Consent** — The developer's explicit yes at a dev-loop gate: generating a
+migration for the change ledger they were shown, or applying pending
+migrations. Consent is always pinned to exactly what was shown — a generation
+yes carries the displayed ledger's fingerprint and refuses stale, an apply yes
+is asked against the pending chain's identity. No migration file exists and no
+migration runs in interactive dev before the matching consent.
 
 **Declined** — The dev-loop state after the developer answers "not yet" to a
 migration question: the server stays down, nothing is written or persisted,

@@ -81,6 +81,23 @@ export async function runConsentForm(defaultName: string, ask: Ask): Promise<Con
 }
 
 /**
+ * The apply question: pending migrations are ready and the developer decides
+ * when they run. Wait is the default — a bare Enter never rewrites rows. A
+ * declined apply is remembered against the pending chain's identity, so
+ * editing a migration file (filling its TODOs) asks again while unrelated
+ * saves only re-print the banner.
+ */
+export async function runApplyForm(labels: string[], ask: Ask): Promise<"apply" | "wait"> {
+  const named = labels.join(", ");
+  const prompt = `apply pending migration${labels.length === 1 ? "" : "s"} ${named} now? [y/N] `;
+  for (;;) {
+    const answer = (await ask(prompt)).trim().toLowerCase();
+    if (YES.has(answer)) return "apply";
+    if (answer === "" || NO.has(answer)) return "wait";
+  }
+}
+
+/**
  * The stale-scaffold offer: the schema moved after these migration files were
  * written, so the chain no longer ends at the live schema. Deleting re-derives
  * one migration covering everything; keeping means fill + apply, with further

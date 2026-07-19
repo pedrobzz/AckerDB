@@ -64,9 +64,20 @@ pulled from git) and re-derive one migration. Deleting an unapplied migration
 is always chain-legal; if nothing needs answering afterwards, the server just
 starts.
 
+Applying gets the same consent: pending migrations rewrite rows, so an
+interactive `dbz dev` never runs them unasked. Each refused start asks
+`apply pending migration NNNN_name now? [y/N]` — yes applies on the spot, no
+(the default) keeps the server down. A declined apply is remembered against
+the pending chain's identity: unrelated saves only re-print the banner, while
+any edit to the migration file (filling a TODO shifts its identity) asks
+again — so the natural loop is fill, save, answer yes. Withdraw the migration
+by deleting its files, or `dbz reset`. Production `dbz start` and
+non-interactive dev apply at startup unattended, exactly as the deploy recipe
+requires.
+
 The scaffold's unanswered per-row questions are *typed holes* — a transform
 with a declared return type and no return — so the dev server stays down until
-you answer them. Fill the TODOs; the next reload applies the migration. The
+you answer them. Fill the TODOs, save, and answer yes to apply. The
 hole is a compile-time gate (your editor and `bun run typecheck` refuse it);
 at runtime an unfilled transform fails against any real row, so a table that
 happens to be empty in dev can let the migration apply vacuously — production

@@ -12,7 +12,7 @@
  * against a fresh plan the moment the current one exits.
  */
 import { deriveSlug, type PlanWire } from "./plan.ts";
-import { renderLedger, runConsentForm, runDivergenceForm, type Consent } from "./consent.ts";
+import { renderLedger, runApplyForm, runConsentForm, runDivergenceForm, type Consent } from "./consent.ts";
 import { runRenameForm, type Ask, type FormResult } from "./form.ts";
 import type { GenerateRequest } from "./write.ts";
 
@@ -28,66 +28,91 @@ export interface DevFlowEffects {
   /** Run one form on the terminal. At most one prompt is ever open. */
   prompt<T>(form: (ask: Ask) => Promise<T>): Promise<PromptOutcome<T>>;
   deleteFiles(files: string[]): void;
-  /** Restart the serve child — the crash resolved without a migration. */
-  startServer(): Promise<void>;
+  /**
+   * Restart the serve child — with `applyPending` the one start that may run
+   * pending migrations (the developer just said yes); without it the child
+   * holds pending again.
+   */
+  startServer(applyPending: boolean): Promise<void>;
   report(written: string[], form: FormResult): void;
   log(line: string): void;
   error(line: string): void;
 }
 
-const FILL_TODOS =
-  "[dbz] a scaffolded migration is not applied yet — fill its TODOs; the server reloads when it compiles";
 const DECLINED_BANNER =
   "[dbz] migration declined — server stays down; edit the schema (a clean ledger starts it, a changed one asks again), run `dbz generate`, or wipe local data with `dbz reset`";
+const APPLY_WAITING_BANNER =
+  "[dbz] not applying — server stays down; fill the TODOs and answer yes (any edit to the migration asks again), delete its files to withdraw it, or wipe local data with `dbz reset`";
+
+/** What the developer stands declined on: a ledger they said "not yet" to, and/or a pending chain they are not ready to apply. */
+interface DeclineMemory {
+  ledger: string | null;
+  apply: string | null;
+}
 
 /**
- * One pass over a crashed state: plan, present, and resolve. Returns the
- * declined-ledger fingerprint to carry forward (`null` when nothing stands
- * declined). Retraction returns the incoming fingerprint unchanged.
+ * One pass over a crashed state: plan, present, and resolve, mutating the
+ * decline memory as questions are answered. Retraction changes nothing.
  */
-async function runFlow(fx: DevFlowEffects, declined: string | null): Promise<string | null> {
+async function runFlow(fx: DevFlowEffects, declined: DeclineMemory): Promise<void> {
   let deletedScaffold = false;
   for (;;) {
     const wire = await fx.plan();
-    if ("error" in wire) return declined; // fresh db, or a diverged chain the child already reported
+    if ("error" in wire) return; // fresh db, or a diverged chain the child already reported
     if (wire.clean) {
       // Deleting a stale scaffold can leave nothing to answer — the crash is
       // resolved, so the server comes straight back.
-      if (deletedScaffold) await fx.startServer();
-      return declined;
+      if (deletedScaffold) await fx.startServer(false);
+      return;
     }
     if (wire.pendingCount > 0) {
-      if (!wire.stale) {
-        fx.error(FILL_TODOS);
-        return declined;
+      if (wire.stale) {
+        const res = await fx.prompt((ask) => runDivergenceForm(wire.pendingFiles, ask));
+        if ("canceled" in res) return;
+        if ("answer" in res && res.answer === "delete") {
+          fx.deleteFiles(wire.pendingFiles);
+          deletedScaffold = true;
+          continue;
+        }
+        // Keeping (or bailing out of the offer) falls through to the apply
+        // question — a kept migration's next step is deciding when it runs.
       }
-      const res = await fx.prompt((ask) => runDivergenceForm(wire.pendingFiles, ask));
-      if ("canceled" in res) return declined;
-      if ("interrupted" in res || res.answer === "keep") {
-        fx.error("[dbz] keeping it — fill its TODOs; further changes become the next migration");
-        return declined;
+      if (wire.pendingIdentity === declined.apply) {
+        fx.error(APPLY_WAITING_BANNER);
+        return;
       }
-      fx.deleteFiles(wire.pendingFiles);
-      deletedScaffold = true;
-      continue;
+      const res = await fx.prompt((ask) => runApplyForm(wire.pendingLabels, ask));
+      if ("canceled" in res) return;
+      if ("interrupted" in res || res.answer === "wait") {
+        declined.apply = wire.pendingIdentity;
+        fx.error(APPLY_WAITING_BANNER);
+        return;
+      }
+      // The one start allowed to apply. If the migration fails (an unfilled
+      // hole against real rows), the crash lands back here with a new identity
+      // once the file is edited.
+      await fx.startServer(true);
+      return;
     }
-    if (wire.fingerprint === declined) {
+    if (wire.fingerprint === declined.ledger) {
       fx.error(DECLINED_BANNER);
-      return declined;
+      return;
     }
     fx.log(renderLedger(wire));
     const consentRes = await fx.prompt((ask) => runConsentForm(deriveSlug(wire.refusals), ask));
-    if ("canceled" in consentRes) return declined;
+    if ("canceled" in consentRes) return;
     const consent: Consent = "interrupted" in consentRes ? { generate: false } : consentRes.answer;
     if (!consent.generate) {
+      declined.ledger = wire.fingerprint;
       fx.error(DECLINED_BANNER);
-      return wire.fingerprint;
+      return;
     }
     const formRes = await fx.prompt((ask) => runRenameForm(wire.candidates, ask));
-    if ("canceled" in formRes) return declined;
+    if ("canceled" in formRes) return;
     if ("interrupted" in formRes) {
+      declined.ledger = wire.fingerprint;
       fx.error(DECLINED_BANNER);
-      return wire.fingerprint;
+      return;
     }
     const result = await fx.generate({
       name: consent.name,
@@ -98,8 +123,9 @@ async function runFlow(fx: DevFlowEffects, declined: string | null): Promise<str
       fx.error("[dbz] more changes happened while the question was open — the fresh ledger:");
       continue;
     }
+    declined.ledger = null; // generated: nothing stands declined anymore
     fx.report(result.written, formRes.answer);
-    return null; // generated: nothing stands declined anymore
+    return;
   }
 }
 
@@ -117,7 +143,7 @@ export function makeDevFlowHandler(
 ): { onCrash: () => Promise<void>; retractPrompt: () => void } {
   let running = false;
   let crashPending = false;
-  let declined: string | null = null;
+  const declined: DeclineMemory = { ledger: null, apply: null };
 
   const onCrash = async (): Promise<void> => {
     if (!gate()) return;
@@ -131,7 +157,7 @@ export function makeDevFlowHandler(
       do {
         crashPending = false;
         try {
-          declined = await runFlow(fx, declined);
+          await runFlow(fx, declined);
         } catch (error) {
           fx.error(`[dbz] ${error instanceof Error ? error.message : String(error)}`);
         }

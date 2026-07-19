@@ -476,6 +476,42 @@ describe("dbz generate", () => {
     expect(second.stderr).toContain("0001_count_to_string.ts");
   }, TEST_TIMEOUT_MS);
 
+  test("--hold-pending exits before applying; the database is untouched", async () => {
+    const port = await freePort();
+    const dir = makeFixture({
+      "schema.ts": SCHEMA_V1,
+      "functions/items.ts": ITEMS_FUNCTIONS,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+    await seedV1(dir, port);
+    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+
+    // A filled, ready-to-apply chain entry the database has not applied.
+    mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
+    writeFileSync(
+      join(dir, "migrations", "0001_count_to_string.ts"),
+      `import { defineMigration } from "@dbzz/server";\nexport default defineMigration({ tables: { items: (row) => ({ ...row, count: String(row.count) }) } });\n`,
+    );
+    writeFileSync(
+      join(dir, "migrations", "meta", "0001_count_to_string.json"),
+      JSON.stringify({ number: 1, name: "count_to_string", fingerprint: migrationFingerprint(V2), pre: V1, target: V2 }),
+    );
+
+    const held = await withTimeout(runCli(["__serve", dir, "--hold-pending"]), "__serve --hold-pending");
+    expect(held.code).not.toBe(0);
+    expect(held.stderr).toContain("held for confirmation");
+
+    const db = new Database(join(dir, ".zdb", "data.db"), { readonly: true });
+    try {
+      // Nothing applied, nothing transformed: rows still hold numbers.
+      expect(Number((db.query("SELECT COUNT(*) AS n FROM _dbz_migrations").get() as { n: number | bigint }).n)).toBe(0);
+      expect((db.query('SELECT "count" FROM "items" WHERE "id" = 1').get() as { count: number }).count).toBe(5);
+    } finally {
+      db.close();
+    }
+  }, TEST_TIMEOUT_MS);
+
   test("refuses when there is no database to diff against", async () => {
     const dir = makeFixture({
       "schema.ts": SCHEMA_V2,

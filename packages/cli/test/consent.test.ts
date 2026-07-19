@@ -10,7 +10,7 @@ import {
   type Schema,
   type SchemaRefusal,
 } from "@dbzz/server";
-import { renderLedger, runConsentForm, runDivergenceForm } from "../src/migrations/consent.ts";
+import { renderLedger, runApplyForm, runConsentForm, runDivergenceForm } from "../src/migrations/consent.ts";
 import type { Ask } from "../src/migrations/form.ts";
 import { describeSafeChanges, planFingerprint, renameCandidates } from "../src/migrations/plan.ts";
 
@@ -202,6 +202,26 @@ describe("runConsentForm", () => {
     const ask: Ask = () => Promise.reject(interrupted);
     await expect(runConsentForm("slug", ask)).rejects.toBe(interrupted);
     await expect(runDivergenceForm(["/x.ts"], ask)).rejects.toBe(interrupted);
+  });
+});
+
+describe("runApplyForm", () => {
+  test("yes applies; the prompt names every pending migration", async () => {
+    const ask = scriptedAsk(["y"]);
+    expect(await runApplyForm(["0001_add_slug", "0002_drop_note"], ask)).toBe("apply");
+    expect(ask.prompts[0]).toContain("0001_add_slug, 0002_drop_note");
+    expect(ask.prompts[0]).toContain("migrations");
+  });
+
+  test("a bare Enter waits — applying is never the default", async () => {
+    expect(await runApplyForm(["0001_x"], scriptedAsk([""]))).toBe("wait");
+    expect(await runApplyForm(["0001_x"], scriptedAsk(["n"]))).toBe("wait");
+  });
+
+  test("garbage re-asks", async () => {
+    const ask = scriptedAsk(["wat", "yes"]);
+    expect(await runApplyForm(["0001_x"], ask)).toBe("apply");
+    expect(ask.prompts).toHaveLength(2);
   });
 });
 

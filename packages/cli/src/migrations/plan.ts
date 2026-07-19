@@ -18,17 +18,17 @@
  */
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   classifySchemaDiff,
   diffSnapshots,
+  migrationIdentity,
   MigrationError,
   probeUniqueIndex,
   refusalSite,
   snapshotOf,
+  stepLabel,
   validateHistoryPrefix,
-  type AppliedMigrationRow,
   type MigrationStep,
   type OptimisticChange,
   type RefusalReason,
@@ -40,45 +40,9 @@ import {
 import { importSchema } from "../app.ts";
 import type { AppConfig } from "../config.ts";
 import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
+import { readStoredState } from "./stored.ts";
 
-// -- stored snapshot (read-only peek) -----------------------------------------
-
-export interface StoredState {
-  /** The snapshot the database last committed — the pre-state new migrations sit on. */
-  snapshot: SchemaSnapshot;
-  /** The `_dbz_migrations` rows — the applied prefix, by positional (number, identity). */
-  applied: AppliedMigrationRow[];
-}
-
-/**
- * Read the stored snapshot and applied-migration rows through a read-only
- * connection. Reading the full (number, identity) rows — not a bare COUNT — lets
- * the planner run the server's exact prefix validation, so an edited applied
- * migration cannot masquerade as fully applied. `null` when there is no database
- * yet (nothing to migrate — `dbz dev` initializes a fresh one), or when the file
- * exists but holds no snapshot.
- */
-export function readStoredState(config: AppConfig): StoredState | null {
-  const path = join(config.dbDir, "data.db");
-  if (!existsSync(path)) return null;
-  const db = new Database(path, { readonly: true });
-  try {
-    const row = db.query("SELECT value FROM _dbz_meta WHERE key = 'schema'").get() as
-      | { value: string }
-      | null;
-    if (row === null) return null;
-    const applied = (
-      db.query("SELECT number, name, identity FROM _dbz_migrations ORDER BY number ASC").all() as {
-        number: bigint;
-        name: string;
-        identity: string;
-      }[]
-    ).map((r) => ({ number: Number(r.number), name: r.name, identity: r.identity }));
-    return { snapshot: JSON.parse(row.value) as SchemaSnapshot, applied };
-  } finally {
-    db.close();
-  }
-}
+export { readStoredState, type StoredState } from "./stored.ts";
 
 /**
  * Run the reconcile planner's duplicate probe against the stored database for
@@ -304,6 +268,10 @@ export type PlanOutcome =
       stale: boolean;
       /** Every artifact of every pending migration — what the re-derive offer deletes. */
       pendingFiles: string[];
+      /** `NNNN_name` per pending step — what the apply question names. */
+      pendingLabels: string[];
+      /** The pending steps' identities, joined — what an apply decline is remembered against. */
+      pendingIdentity: string;
     }
   | { status: "clean" }
   | {
@@ -354,6 +322,10 @@ export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
       nextNumber,
       stale,
       pendingFiles: pending.flatMap((step) => migrationArtifactPaths(config, step)),
+      pendingLabels: pending.map((step) => stepLabel(step)),
+      // Identity covers pre, target, and file bytes: any edit to a pending
+      // migration (filling a TODO) shifts it, so a remembered decline releases.
+      pendingIdentity: pending.map((step) => migrationIdentity(step)).join("\n"),
     };
   }
   const schema = await importSchema(config);
@@ -387,6 +359,8 @@ export type PlanWire =
       fingerprint: string;
       stale: boolean;
       pendingFiles: string[];
+      pendingLabels: string[];
+      pendingIdentity: string;
     };
 
 const EMPTY_CANDIDATES: RenameCandidates = { tables: { dropped: [], added: [] }, columns: {}, variants: {} };
@@ -411,6 +385,8 @@ export function planToWire(outcome: PlanOutcome, config: AppConfig): PlanWire {
         fingerprint: "",
         stale: outcome.stale,
         pendingFiles: outcome.pendingFiles,
+        pendingLabels: outcome.pendingLabels,
+        pendingIdentity: outcome.pendingIdentity,
       };
     case "changes":
       return {
@@ -423,6 +399,8 @@ export function planToWire(outcome: PlanOutcome, config: AppConfig): PlanWire {
         fingerprint: outcome.fingerprint,
         stale: false,
         pendingFiles: [],
+        pendingLabels: [],
+        pendingIdentity: "",
       };
   }
 }
