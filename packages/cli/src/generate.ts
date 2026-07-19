@@ -57,6 +57,12 @@ export interface GenerateMigrationInput {
   schema: Schema;
   /** The rename answers, keyed exactly as the runtime expects; omit when there are none. */
   renames?: Renames;
+  /**
+   * Refusals the pure diff cannot see: the database-probed `unique-index-duplicates`
+   * from the plan. Merged into the shape-classified refusals so the offending
+   * table gets a volunteered dedupe transform stub.
+   */
+  probedRefusals?: SchemaRefusal[];
 }
 
 export interface GeneratedMigration {
@@ -221,10 +227,11 @@ export function generateMigration(input: GenerateMigrationInput): GeneratedMigra
 
   const diff = diffSnapshots(applyRenames(pre, normalizedRenames), target);
   const { refusals } = classifySchemaDiff(diff);
+  const allRefusals = [...refusals, ...(input.probedRefusals ?? [])];
 
   const stem = stepLabel({ number, name });
   return {
-    migrationTs: renderScaffold(stem, renames, refusals),
+    migrationTs: renderScaffold(stem, renames, allRefusals),
     typesTs: renderTypes(pre, target, normalizedRenames),
     metaJson: `${JSON.stringify({ number, name, fingerprint: migrationFingerprint(target), pre, target }, null, 2)}\n`,
   };
@@ -241,6 +248,13 @@ function groupRefusals(refusals: SchemaRefusal[]): Map<string, SchemaRefusal[]> 
     group.push(refusal);
   }
   return byTable;
+}
+
+/** The TODO body for one refusal — the dedupe hole spells out its survivor/drop contract. */
+function todoText(refusal: SchemaRefusal): string {
+  return refusal.reason === "unique-index-duplicates"
+    ? `${refusal.question} — return the surviving row, or null to drop this one`
+    : refusal.question;
 }
 
 function renderScaffold(stem: string, renames: Renames, refusals: SchemaRefusal[]): string {
@@ -266,8 +280,11 @@ function renderScaffold(stem: string, renames: Renames, refusals: SchemaRefusal[
     }
     // Everything else — a typed hole: annotated with the NEW row type, its body
     // only TODO lines. A declared return type with no return does not compile.
+    // The probed unique-index refusal is volunteered here: same shape old/new, so
+    // the hole is the forcing function and the physical unique index at apply is
+    // the final enforcer (a non-deduping transform fails cleanly and rolls back).
     holeTables.add(table);
-    const todos = group.map((r) => `      // TODO(${refusalSite(r)}): ${r.question}`).join("\n");
+    const todos = group.map((r) => `      // TODO(${refusalSite(r)}): ${todoText(r)}`).join("\n");
     entries.push({
       key: table,
       text: `    ${identKey(table)}: (row): ${rowName(table)} => {\n${todos}\n    },`,

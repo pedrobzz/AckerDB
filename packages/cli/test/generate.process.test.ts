@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import type { Subprocess } from "bun";
 import { DbzzClient } from "@dbzz/client";
-import { defineSchema, defineTable, dbz, migrationFingerprint, snapshotOf } from "@dbzz/server";
+import { defineSchema, defineTable, dbz, indexSqlName, migrationFingerprint, snapshotOf } from "@dbzz/server";
 import { makeFixture } from "./fixture.ts";
 
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
@@ -41,6 +42,18 @@ export default defineSchema({
     label: dbz.string(),
     count: dbz.number(),
   }),
+});
+`;
+
+// v1 plus a UNIQUE index over `label` — an optimistic change whose stored rows may already collide.
+const SCHEMA_UNIQUE = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+
+export default defineSchema({
+  items: defineTable({
+    id: dbz.primaryKey(),
+    label: dbz.string(),
+    count: dbz.number(),
+  }).index("by_label", ["label"], { unique: true }),
 });
 `;
 
@@ -268,6 +281,86 @@ describe("dbz generate", () => {
     const second = await withTimeout(runCli(["generate", "", dir]), "dbz generate (second)");
     expect(second.code).toBe(0);
     expect(existsSync(join(dir, "migrations", "0002_items_count_retype.ts"))).toBe(true);
+  }, TEST_TIMEOUT_MS);
+
+  test("probes stored duplicates for a new unique index and scaffolds a dedupe stub that applies once filled", async () => {
+    const port = await freePort();
+    const dir = makeFixture({
+      "schema.ts": SCHEMA_V1,
+      "functions/items.ts": ITEMS_FUNCTIONS,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+
+    // Seed two rows sharing a label (one duplicate group) plus one distinct row.
+    const server = spawnServer(dir);
+    await server.waitReady();
+    const seeder = makeClient(port, "dup-seed");
+    const add = (label: string, count: number, label2: string) =>
+      withTimeout(seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label, count }), label2);
+    expect(await add("dup", 5, "seed dup1")).toBe(1n);
+    expect(await add("dup", 42, "seed dup2")).toBe(2n);
+    expect(await add("solo", 7, "seed solo")).toBe(3n);
+    seeder.close();
+    clients.splice(clients.indexOf(seeder), 1);
+    await stopServer(server);
+
+    // Add the unique index; the optimistic change refuses because stored rows collide.
+    writeFileSync(join(dir, "schema.ts"), SCHEMA_UNIQUE);
+
+    const generated = await withTimeout(runCli(["generate", "", dir]), "dbz generate (dedupe)");
+    expect(generated.code).toBe(0);
+    // Before the fix computePlan discarded the optimistic bucket and reported clean.
+    expect(generated.stdout).not.toContain("nothing to generate");
+
+    const scaffold = join(dir, "migrations", "0001_items_by_label_dedupe.ts");
+    expect(existsSync(scaffold)).toBe(true);
+    const scaffoldSource = readFileSync(scaffold, "utf8");
+    // A volunteered typed-hole transform on the offending table, naming the index and count.
+    expect(scaffoldSource).toContain("items: (row): ItemsRow => {");
+    expect(scaffoldSource).toContain(
+      "// TODO(items.by_label): unique index over (label); 1 duplicate group(s) exist — return the surviving row, or null to drop this one",
+    );
+
+    // Fill the hole with a real dedupe: keep the lowest id per label group, drop the rest.
+    const filled = scaffoldSource.replace(
+      "    items: (row): ItemsRow => {\n" +
+        "      // TODO(items.by_label): unique index over (label); 1 duplicate group(s) exist — return the surviving row, or null to drop this one\n" +
+        "    },",
+      "    items: async (row, ctx) => {\n" +
+        "      let lowest = row.id;\n" +
+        "      for await (const other of ctx.before.items.scan()) {\n" +
+        "        if (other.label === row.label && other.id < lowest) lowest = other.id;\n" +
+        "      }\n" +
+        "      return row.id === lowest ? row : null;\n" +
+        "    },",
+    );
+    expect(filled).not.toBe(scaffoldSource); // the surgery matched the generated stub
+    writeFileSync(scaffold, filled);
+
+    const applied = spawnServer(dir);
+    await applied.waitReady();
+    const reader = makeClient(port, "dup-read");
+    const rows = await withTimeout(reader.query<Record<string, never>, Item[]>("items.list", {}), "list after dedupe");
+    // The later duplicate (id 2) is gone; the lowest-id survivor and the distinct row remain.
+    expect(rows.map((r) => [r.id, r.label])).toEqual([
+      [1n, "dup"],
+      [3n, "solo"],
+    ]);
+    reader.close();
+    clients.splice(clients.indexOf(reader), 1);
+    await stopServer(applied);
+
+    // The physical index is now UNIQUE — the final enforcer the migration satisfied.
+    const db = new Database(join(dir, ".zdb", "data.db"), { readonly: true });
+    try {
+      const row = db
+        .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
+        .get(indexSqlName("items", "by_label")) as { sql: string } | null;
+      expect(row?.sql).toContain("UNIQUE");
+    } finally {
+      db.close();
+    }
   }, TEST_TIMEOUT_MS);
 
   test("refuses cleanly when a pending migration is not yet applied", async () => {

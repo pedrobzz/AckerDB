@@ -10,6 +10,7 @@ import {
   Engine,
   makeDbWriter,
   newWriteCollector,
+  probeUniqueIndex,
   reconcile,
   UnsafeSchemaChange,
   type Schema,
@@ -400,6 +401,64 @@ describe("reconcile: optimistic unique index", () => {
     // both duplicate rows survive
     expect((refusing.writer.query("SELECT COUNT(*) AS n FROM users").get() as { n: bigint }).n).toBe(2n);
     refusing.close("clean");
+  });
+});
+
+describe("probeUniqueIndex (the shared duplicate probe)", () => {
+  // A query function that fakes the duplicate-group count and records the SQL it ran.
+  const fakeQuery = (dupes: number) => {
+    const calls: string[] = [];
+    const query = (sql: string): number => {
+      calls.push(sql);
+      return dupes;
+    };
+    return Object.assign(query, { calls });
+  };
+  const cols = { email: {} }; // a physically-present column
+
+  test("clean → null; duplicates → the target-world refusal carrying the count", () => {
+    expect(probeUniqueIndex(fakeQuery(0), "users", "by_email", ["email"], cols)).toBeNull();
+    expect(probeUniqueIndex(fakeQuery(3), "users", "by_email", ["email"], cols)).toEqual({
+      table: "users",
+      index: "by_email",
+      reason: "unique-index-duplicates",
+      question: "unique index over (email); 3 duplicate group(s) exist",
+      count: 3,
+    });
+  });
+
+  test("a column not physically present yet cannot have duplicates — no query runs", () => {
+    const q = fakeQuery(99); // even if the DB would report dupes, an absent column is never probed
+    expect(probeUniqueIndex(q, "users", "by_slug", ["slug"], cols)).toBeNull();
+    expect(q.calls).toEqual([]);
+  });
+
+  test("NULLs are excluded and only present columns are grouped (the constraint's own semantics)", () => {
+    const q = fakeQuery(0);
+    probeUniqueIndex(q, "users", "by_email", ["email"], cols);
+    expect(q.calls[0]).toBe(
+      'SELECT COUNT(*) AS n FROM (SELECT 1 FROM "users" WHERE "email" IS NOT NULL GROUP BY "email" HAVING COUNT(*) > 1)',
+    );
+  });
+
+  test("a renamed table probes the OLD physical names while the refusal names the target world", () => {
+    const q = fakeQuery(2);
+    const refusal = probeUniqueIndex(q, "members", "by_email", ["email"], cols, {
+      table: "users",
+      column: (c) => (c === "email" ? "mail" : c),
+    });
+    // SQL reads the pre-rename physical table + column...
+    expect(q.calls[0]).toBe(
+      'SELECT COUNT(*) AS n FROM (SELECT 1 FROM "users" WHERE "mail" IS NOT NULL GROUP BY "mail" HAVING COUNT(*) > 1)',
+    );
+    // ...but the refusal points at the new (target) site and its logical columns.
+    expect(refusal).toEqual({
+      table: "members",
+      index: "by_email",
+      reason: "unique-index-duplicates",
+      question: "unique index over (email); 2 duplicate group(s) exist",
+      count: 2,
+    });
   });
 });
 

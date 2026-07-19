@@ -18,6 +18,7 @@ import {
 import { loadConfig } from "../src/config.ts";
 import { generateMigration } from "../src/generate.ts";
 import { loadMigrationChain } from "../src/migrations.ts";
+import { computePlan } from "../src/plan.ts";
 import { makeFixture } from "./fixture.ts";
 
 const REPO = new URL("../../..", import.meta.url).pathname;
@@ -94,6 +95,36 @@ describe("generateMigration: scaffold", () => {
     expect(migrationTs).toContain("// TODO(t.a): type changed; existing rows would need converting");
     expect(migrationTs).toContain("// TODO(t.b): column dropped; existing rows would lose data");
     expect(migrationTs).not.toContain("=> rest");
+  });
+
+  test("a probed unique-index-duplicates refusal becomes a volunteered dedupe hole", () => {
+    // The shapes are identical old/new (a bare unique-index add), so the pure diff
+    // sees nothing to refuse — the probed refusal is what forces the transform.
+    const pre = defineSchema({ users: defineTable({ id: dbz.primaryKey(), email: dbz.string() }) });
+    const target = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), email: dbz.string() }).index("by_email", ["email"], { unique: true }),
+    });
+    const { migrationTs } = generateMigration({
+      number: 1,
+      name: "dedupe_email",
+      pre: snapshotOf(pre),
+      schema: target,
+      probedRefusals: [
+        {
+          table: "users",
+          index: "by_email",
+          reason: "unique-index-duplicates",
+          question: "unique index over (email); 2 duplicate group(s) exist",
+          count: 2,
+        },
+      ],
+    });
+    expect(migrationTs).toContain("users: (row): UsersRow => {");
+    expect(migrationTs).toContain(
+      "// TODO(users.by_email): unique index over (email); 2 duplicate group(s) exist — return the surviving row, or null to drop this one",
+    );
+    // the hole's NEW row type is imported for annotation
+    expect(migrationTs).toContain('import { defineMigration, type UsersRow } from "./meta/0001_dedupe_email.types.ts";');
   });
 
   test("a column rename on the same table as a drop forces a hole, not a broken destructuring", () => {
@@ -246,6 +277,53 @@ describe("generateMigration: round-trip through loadMigrationChain + reconcile",
     expect((await d.posts.get(2n)).count).toBe(0); // "nope" -> 0
     expect((await d.posts.get(3n)).count).toBe(9);
     engine.close("clean");
+  });
+});
+
+// -- computePlan: the optimistic duplicate probe wired to a real database -----
+
+describe("computePlan: optimistic unique-index duplicate probe", () => {
+  const PROBE_PRE = defineSchema({ users: defineTable({ id: dbz.primaryKey(), email: dbz.nullable(dbz.string()) }) });
+  // The live schema.ts adds a UNIQUE index over the (nullable) email column.
+  const PROBE_SCHEMA_TS = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+export default defineSchema({
+  users: defineTable({ id: dbz.primaryKey(), email: dbz.nullable(dbz.string()) })
+    .index("by_email", ["email"], { unique: true }),
+});
+`;
+
+  async function planAfterSeeding(emails: (string | null)[]) {
+    const dir = makeFixture({ "schema.ts": PROBE_SCHEMA_TS });
+    dirs.push(dir);
+    const dbPath = join(dir, ".zdb", "data.db");
+    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    await seed(PROBE_PRE, dbPath, async (d) => {
+      for (const email of emails) await d.users.insert({ email });
+    });
+    return computePlan(loadConfig(dir));
+  }
+
+  test("duplicate rows synthesize the unique-index-duplicates refusal", async () => {
+    const outcome = await planAfterSeeding(["a@x", "a@x", "b@x"]);
+    expect(outcome.status).toBe("changes");
+    if (outcome.status !== "changes") throw new Error("unreachable");
+    expect(outcome.refusals).toEqual([
+      {
+        table: "users",
+        index: "by_email",
+        reason: "unique-index-duplicates",
+        question: "unique index over (email); 1 duplicate group(s) exist",
+        count: 1,
+      },
+    ]);
+  });
+
+  test("clean data leaves a clean plan — the optimistic change just applies", async () => {
+    expect((await planAfterSeeding(["a@x", "b@x"])).status).toBe("clean");
+  });
+
+  test("NULL emails are never duplicates — the probe mirrors the constraint", async () => {
+    expect((await planAfterSeeding([null, null, "c@x"])).status).toBe("clean");
   });
 });
 

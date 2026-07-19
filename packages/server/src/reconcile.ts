@@ -197,15 +197,47 @@ export function applySafe(
 }
 
 /**
- * The one data probe: does the table already hold duplicate groups for a unique
- * index's columns? The probe mirrors the constraint exactly: SQLite unique
- * indexes treat NULLs as distinct, so rows holding NULL in any indexed column
- * can never collide and are excluded — and an index touching a column that is
- * not physical yet (added in this same change) cannot have duplicates at all.
- * Clean → schedule the create (unless a sibling rebuild owns it); duplicate →
- * a clean refusal carrying the probed count, nothing touched. `phys` routes the
- * read-only probe to a physical table/columns still holding pre-rename names;
- * the refusal keeps naming the target-world site.
+ * The one data probe, pure over a query function: does `table` already hold
+ * duplicate groups for a would-be unique index's `columns`, and if so what is
+ * the refusal? The probe mirrors the constraint exactly: SQLite unique indexes
+ * treat NULLs as distinct, so rows holding NULL in any indexed column can never
+ * collide and are excluded — and an index touching a column that is not physical
+ * yet (added in this same change, so absent from `currentColumns`) cannot have
+ * duplicates at all. `phys` routes the read-only probe to a physical
+ * table/columns still holding pre-rename names; the refusal keeps naming the
+ * target-world `table`/`index`. Returns `null` when the table is clean. Shared by
+ * the reconcile planner (Engine writer) and the migration plan (a read-only
+ * `bun:sqlite` peek), so both run byte-identical SQL and yield identical refusals.
+ */
+export function probeUniqueIndex(
+  query: (sql: string) => number,
+  table: string,
+  index: string,
+  columns: readonly string[],
+  currentColumns: Record<string, unknown>,
+  phys: { table: string; column: (c: string) => string } = { table, column: (c) => c },
+): SchemaRefusal | null {
+  if (!columns.every((c) => currentColumns[c] !== undefined)) return null;
+  const physCols = columns.map((c) => quote(phys.column(c)));
+  const notNull = physCols.map((c) => `${c} IS NOT NULL`).join(" AND ");
+  const dupes = query(
+    `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${quote(phys.table)} WHERE ${notNull} GROUP BY ${physCols.join(", ")} HAVING COUNT(*) > 1)`,
+  );
+  if (dupes === 0) return null;
+  return {
+    table,
+    index,
+    reason: "unique-index-duplicates",
+    question: `unique index over (${columns.join(", ")}); ${dupes} duplicate group(s) exist`,
+    count: dupes,
+  };
+}
+
+/**
+ * Probe one optimistic unique index against the live database and either
+ * schedule its physical creation or record a duplicate refusal — nothing
+ * touched either way. Duplicate → a clean refusal carrying the probed count;
+ * clean → schedule the create (unless a sibling rebuild owns it).
  */
 export function probeOptimistic(
   engine: Engine,
@@ -220,23 +252,9 @@ export function probeOptimistic(
 ): void {
   const tablePlan = planOf(opt.table);
   const index = tablePlan.indexes.find((ix) => ix.name === opt.index)!;
-  const currentColumns = current.tables[opt.table]?.columns ?? {};
-  const allExist = index.columns.every((c) => currentColumns[c] !== undefined);
-  const cols = index.columns.map((c) => quote(phys.column(c))).join(", ");
-  const notNull = index.columns.map((c) => `${quote(phys.column(c))} IS NOT NULL`).join(" AND ");
-  const dupes = allExist
-    ? count(
-        `SELECT COUNT(*) AS n FROM (SELECT 1 FROM ${quote(phys.table)} WHERE ${notNull} GROUP BY ${cols} HAVING COUNT(*) > 1)`,
-      )
-    : 0;
-  if (dupes > 0) {
-    refusals.push({
-      table: opt.table,
-      index: opt.index,
-      reason: "unique-index-duplicates",
-      question: `unique index over (${index.columns.join(", ")}); ${dupes} duplicate group(s) exist`,
-      count: dupes,
-    });
+  const refusal = probeUniqueIndex(count, opt.table, opt.index, index.columns, current.tables[opt.table]?.columns ?? {}, phys);
+  if (refusal !== null) {
+    refusals.push(refusal);
     return;
   }
   if (opt.viaRebuild) return; // the rebuild creates every index from the new plan

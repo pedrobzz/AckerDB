@@ -69,7 +69,7 @@ export type {
   Upsert,
 } from "./dbtypes.ts";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
-export { reconcile, UnsafeSchemaChange } from "./reconcile.ts";
+export { probeUniqueIndex, reconcile, UnsafeSchemaChange } from "./reconcile.ts";
 export {
   applyRenames,
   defineMigration,

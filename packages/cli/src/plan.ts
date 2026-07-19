@@ -22,9 +22,11 @@ import { join } from "node:path";
 import {
   classifySchemaDiff,
   diffSnapshots,
+  probeUniqueIndex,
   refusalSite,
   snapshotOf,
   stepLabel,
+  type OptimisticChange,
   type RefusalReason,
   type Renames,
   type SchemaDiff,
@@ -61,6 +63,38 @@ export function readStoredState(config: AppConfig): StoredState | null {
     if (row === null) return null;
     const counted = db.query("SELECT COUNT(*) AS n FROM _dbz_migrations").get() as { n: number };
     return { snapshot: JSON.parse(row.value) as SchemaSnapshot, appliedCount: Number(counted.n) };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Run the reconcile planner's duplicate probe against the stored database for
+ * every optimistic unique index, synthesizing the `unique-index-duplicates`
+ * refusals the pure diff cannot see. This is the missing half the classifier
+ * drops: an optimistic change with no shape refusal is otherwise invisible to
+ * generation, so a table already holding duplicates would refuse at startup with
+ * no recourse. A clean table stays invisible — it just applies. Opened read-only
+ * (a committed peek, safe whether the serve child is dead or alive) and only when
+ * there is something to probe.
+ */
+function probeDuplicateRefusals(
+  config: AppConfig,
+  current: SchemaSnapshot,
+  target: SchemaSnapshot,
+  optimistic: OptimisticChange[],
+): SchemaRefusal[] {
+  if (optimistic.length === 0) return [];
+  const db = new Database(join(config.dbDir, "data.db"), { readonly: true });
+  try {
+    const query = (sql: string): number => Number((db.query(sql).get() as { n: bigint | number }).n);
+    const refusals: SchemaRefusal[] = [];
+    for (const opt of optimistic) {
+      const index = target.tables[opt.table]!.indexes.find((ix) => ix.name === opt.index)!;
+      const refusal = probeUniqueIndex(query, opt.table, opt.index, index.columns, current.tables[opt.table]?.columns ?? {});
+      if (refusal !== null) refusals.push(refusal);
+    }
+    return refusals;
   } finally {
     db.close();
   }
@@ -153,10 +187,12 @@ export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
   const pendingCount = chain.length - state.appliedCount;
   if (pendingCount > 0) return { status: "pending", pendingCount, nextNumber };
   const schema = await importSchema(config);
-  const diff = diffSnapshots(state.snapshot, snapshotOf(schema));
-  const { refusals } = classifySchemaDiff(diff);
-  if (refusals.length === 0) return { status: "clean" };
-  return { status: "changes", refusals, candidates: renameCandidates(diff), nextNumber };
+  const target = snapshotOf(schema);
+  const diff = diffSnapshots(state.snapshot, target);
+  const { optimistic, refusals } = classifySchemaDiff(diff);
+  const allRefusals = [...refusals, ...probeDuplicateRefusals(config, state.snapshot, target, optimistic)];
+  if (allRefusals.length === 0) return { status: "clean" };
+  return { status: "changes", refusals: allRefusals, candidates: renameCandidates(diff), nextNumber };
 }
 
 // -- the wire form (one JSON line from the `__plan` child) ---------------------
@@ -263,12 +299,20 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
 
   const schema = await importSchema(config);
   const number = (chain.at(-1)?.number ?? 0) + 1;
+  // Generation's classification is pure (no database); the duplicate probe runs
+  // here and its refusals flow into the scaffold alongside the shape-classified
+  // ones. Re-probed fresh (never carried on the wire), so the scaffold reflects
+  // the database as it actually is at write time.
+  const target = snapshotOf(schema);
+  const { optimistic } = classifySchemaDiff(diffSnapshots(state.snapshot, target));
+  const probedRefusals = probeDuplicateRefusals(config, state.snapshot, target, optimistic);
   const { migrationTs, typesTs, metaJson } = generateMigration({
     number,
     name: request.name,
     pre: state.snapshot,
     schema,
     renames: request.renames ?? {},
+    probedRefusals,
   });
 
   const stem = stepLabel({ number, name: request.name });
