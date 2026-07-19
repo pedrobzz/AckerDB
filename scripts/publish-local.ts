@@ -19,7 +19,12 @@ import {
 const REGISTRY = await registryUrl();
 const branch = tryGit("symbolic-ref", "--short", "HEAD");
 if (branch !== "main") fail("publish from main only — merge your branch first.");
-if (git("status", "--porcelain") !== "") fail("working tree is dirty — commit or stash before publishing.");
+// The gate protects what gets packed and tagged. demo/ is a consumer fixture:
+// its beta pins and local experiments never enter a tarball and must not
+// block a release.
+if (git("status", "--porcelain", "--", ".", ":!demo") !== "") {
+  fail("working tree is dirty outside demo/ — commit or stash before publishing.");
+}
 
 const sources = new Map<string, string>();
 for (const pkg of PACKAGES) sources.set(pkg, await Bun.file(pkgJsonPath(pkg)).text());

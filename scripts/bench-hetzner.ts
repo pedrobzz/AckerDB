@@ -65,7 +65,9 @@ function run(command: string[], inherit = true): number {
 function remote(command: string): number {
   // Keepalives make a dead TCP session fail loudly (~2 min) instead of the
   // orchestrator hanging forever on a pipe nobody will ever write to again.
-  return run(["ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=8", HETZNER, "sh", "-lc", command]);
+  // One argv entry for the command: ssh joins arguments with spaces, so a
+  // separate `sh -lc` would swallow everything after the first word.
+  return run(["ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=8", HETZNER, command]);
 }
 
 try {
