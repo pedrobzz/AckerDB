@@ -39,7 +39,36 @@ import { applySafe, countOn, physColsOf, probeOptimistic, UnsafeSchemaChange, ty
 
 const quote = (name: string) => `"${name}"`;
 
+/**
+ * The internal page size for every row accumulation a step performs — old-row
+ * iteration, `ctx.before.scan()`, and the emit-spool flush. A migration must run
+ * within a bounded heap on the deployment target no matter how large a table is,
+ * so this is a fixed constant, never a knob.
+ */
+const MIGRATE_BATCH = 1000;
+
 export type MigrationRow = Record<string, unknown>;
+
+/**
+ * Page a physically-immutable table by primary key, `MIGRATE_BATCH` rows at a
+ * time, so a step's heap never scales with table size. Sound only during the
+ * transform phase, where old physical tables are frozen — emits spool, rebuilt
+ * writes go to a tmp, structural renames/swaps happen after — so `pk > last`
+ * walks every row exactly once.
+ */
+async function* pageRows(writer: Database, table: string, pk: string): AsyncIterableIterator<MigrationRow> {
+  let last: bigint | undefined;
+  for (;;) {
+    const where = last === undefined ? "" : `WHERE ${quote(pk)} > ? `;
+    const params = last === undefined ? [] : [last as never];
+    const rows = writer
+      .query(`SELECT * FROM ${quote(table)} ${where}ORDER BY ${quote(pk)} ASC LIMIT ${MIGRATE_BATCH}`)
+      .all(...params) as MigrationRow[];
+    for (const raw of rows) yield raw;
+    if (rows.length < MIGRATE_BATCH) return;
+    last = rows[rows.length - 1]![pk] as bigint;
+  }
+}
 
 /** Read-only view of one OLD table for cross-table lookups inside a transform. */
 export interface BeforeTable {
@@ -330,12 +359,13 @@ export async function applyStep(
   if (probeRefusals.length > 0) throw new UnsafeSchemaChange(probeRefusals);
 
   const scope: StepScope = { engine, pre, stored, target, renames, targetPlans, oldTags };
-  const carriedOf = new Map<string, CarriedColumn[]>();
+  const driftOf = new Map<string, DriftColumn[]>();
   for (const name of [...rebuilt, ...identityRebuilt]) {
-    const carried = carriedColumns(scope, name);
-    if (carried.length > 0) carriedOf.set(name, carried);
+    const drift = driftColumns(scope, name);
+    validateDrift(name, drift, target); // refuse illegal drift as a MigrationError before the transaction
+    if (drift.length > 0) driftOf.set(name, drift);
   }
-  const saved = augmentSnapshot(target, carriedOf);
+  const saved = augmentSnapshot(target, driftOf);
 
   writer.exec("BEGIN IMMEDIATE");
   try {
@@ -348,7 +378,7 @@ export async function applyStep(
     }
     persistTagMaps(writer, stepTags);
     for (const op of ops) op();
-    const tmpOf = await runTransforms(scope, entries, rebuilt, identityRebuilt, carriedOf);
+    const tmpOf = await runTransforms(scope, entries, rebuilt, identityRebuilt, driftOf);
     for (const name of [...tmpOf.keys()].sort()) {
       // IF EXISTS: safe drift may have left this database without the old table,
       // in which case the rebuilt tmp simply becomes the (empty) new table.
@@ -674,8 +704,7 @@ function buildBefore(engine: Engine, pre: SchemaSnapshot, stored: SchemaSnapshot
         return raw === null ? null : decodeOldRow(old, raw);
       },
       async *scan() {
-        const rows = writer.query(`SELECT * FROM ${quote(name)} ORDER BY ${quote(old.pk)} ASC`).all() as MigrationRow[];
-        for (const raw of rows) yield decodeOldRow(old, raw);
+        for await (const raw of pageRows(writer, name, old.pk)) yield decodeOldRow(old, raw);
       },
     };
   }
@@ -696,54 +725,109 @@ interface EmitTarget {
   translate: (col: string) => string;
 }
 
-/** A stored-physical column a rebuild must carry through untouched (safe drift). */
-interface CarriedColumn {
+/**
+ * One stored-physical column the step's PRE never typed but the database already
+ * physically holds — safe drift ahead of this rebuild of `name`, classified once
+ * against the target:
+ *   - `carried`: the target dropped it silently on a parallel branch. Its DDL is
+ *     appended to the tmp and its raw values are copied verbatim on replay, so a
+ *     later diff can drop it deliberately; it also augments the saved snapshot.
+ *   - `defaults`: the target re-declares it. The PRE-typed transform cannot see
+ *     it, so its stored value backfills any row whose output omits `jsName`.
+ * A column PRE knew (a deliberate, acknowledged drop), a column the renames map
+ * into the target (its data moves via the rename), the pk, and every plain target
+ * column are all excluded — they are not drift.
+ */
+interface DriftColumn {
+  kind: "carried" | "defaults";
+  /** The stored/old js (column) name — where the value lives on disk. */
+  oldJs: string;
+  /** Target js name a `defaults` column backfills under; the kept stored name for `carried`. */
   jsName: string;
+  /** Stored descriptor (kept nullable-as-stored). */
   descriptor: Descriptor;
   /** Stored physical names (a union contributes both `col` and `col__p`). */
   phys: string[];
-  /** DDL for the tmp, from the stored descriptor (kept nullable-as-stored). */
+  /** tmp DDL for a `carried` column (empty for `defaults` — the plan already declares it). */
   ddls: string[];
-  nullable: boolean;
 }
 
 /**
- * The columns a rebuild of `name` must carry: every stored-physical column that
- * is absent from BOTH the step's `pre` and its target plan — safe drift that
- * landed on this database from a lineage the migration never saw. A column the
- * migration knew (in `pre`) but the target drops is a deliberate, acknowledged
- * drop and is NOT carried; a column the renames map into the target is excluded
- * (its data moves via the rename); so is the pk and every target column (they
- * are the plan). One mechanism, shared by every rebuild flavor: append the DDL
- * to the tmp, copy the raw values on replay.
+ * The single drift overlay for a rebuild of `name`: every stored-physical column
+ * absent from the step's `pre` (mapped through renames), each classified
+ * `carried` (absent from target) or `defaults` (present in target). This is the
+ * ONE source every rebuild consumer reads — tmp DDL, per-row carried copy, per-row
+ * defaults injection, identity-rebuild SELECT, and `augmentSnapshot`. Validated by
+ * `validateDrift` before any transaction; the classification is pure derivation.
  */
-function carriedColumns(scope: StepScope, name: string): CarriedColumn[] {
+function driftColumns(scope: StepScope, name: string): DriftColumn[] {
   const { pre, stored, renames, targetPlans } = scope;
   const oldPhysName = renames.tableOldName.get(name) ?? name;
   const storedSnap = stored.tables[oldPhysName];
   if (storedSnap === undefined || storedSnap.kind !== "table") return [];
+  const plan = targetPlans.get(name)!;
   const reverse = renames.columnReverse.get(name);
-  const targetOldPhys = new Set(targetPlans.get(name)!.physOrder.map((c) => reverse?.get(c) ?? c));
+  const targetOldPhys = new Set(plan.physOrder.map((c) => reverse?.get(c) ?? c));
+  const targetJsByOldJs = new Map<string, string>();
+  for (const c of plan.columns.values()) {
+    if (c.kind !== "pk") targetJsByOldJs.set(reverse?.get(c.phys[0]!.name) ?? c.jsName, c.jsName);
+  }
   const preColumns = pre.tables[oldPhysName]?.columns ?? {};
-  const carried: CarriedColumn[] = [];
+  const drift: DriftColumn[] = [];
   for (const [col, desc] of Object.entries(storedSnap.columns)) {
     if (col in preColumns) continue; // the migration knew this column; a target dropping it is deliberate
     const phys = namedOf(desc)?.kind === "union" ? [col, `${col}__p`] : [col];
-    if (phys.some((p) => targetOldPhys.has(p))) continue;
-    carried.push({ jsName: col, descriptor: desc, phys, ddls: physicalColumnDdl(col, desc, col), nullable: unwrapDesc(desc).nullable });
+    if (phys.some((p) => targetOldPhys.has(p))) {
+      drift.push({ kind: "defaults", oldJs: col, jsName: targetJsByOldJs.get(col)!, descriptor: desc, phys, ddls: [] });
+    } else {
+      drift.push({ kind: "carried", oldJs: col, jsName: col, descriptor: desc, phys, ddls: physicalColumnDdl(col, desc, col) });
+    }
   }
-  return carried;
+  return drift;
+}
+
+/**
+ * Refuse an illegal drift overlay UP FRONT, before anything is touched. Legal
+ * safe drift only widens, so a stored-only column is always nullable; a NOT NULL
+ * one (carried or defaults) means the lineage is not shape-safe drift. A defaults
+ * column additionally must agree with the target's type after nullable-unwrapping
+ * — the same compatibility the row-time decode+check used to enforce mid-flight,
+ * now hoisted so the row-time path can never fail on descriptor grounds.
+ */
+function validateDrift(name: string, drift: DriftColumn[], target: SchemaSnapshot): void {
+  for (const d of drift) {
+    if (!unwrapDesc(d.descriptor).nullable) {
+      throw new MigrationError(
+        `migration on "${name}": stored column "${d.oldJs}" is NOT NULL yet neither the step's pre nor a widening add ` +
+          `produced it, so this lineage is not shape-safe drift`,
+      );
+    }
+    if (d.kind === "defaults") {
+      const targetDesc = target.tables[name]!.columns[d.jsName]!;
+      if (JSON.stringify(unwrapDesc(d.descriptor).base) !== JSON.stringify(unwrapDesc(targetDesc).base)) {
+        throw new MigrationError(
+          `migration on "${name}": stored column "${d.oldJs}" carries drift whose type conflicts with target column "${d.jsName}"`,
+        );
+      }
+    }
+  }
 }
 
 /**
  * The snapshot a step saves: its target augmented with every carried column's
- * descriptor (target order, then carried in stored order). The physical table
- * now holds columns the bare target lacks, so the stored snapshot must keep
- * describing them or the next `verifyApplicationSchema` refuses the open. The
- * carried column simply resurfaces as drift in the next step's diff and the
- * final safe hop (live schema has it → no-op; lacks it → ordinary drop refusal).
+ * descriptor (target order, then carried in stored order). The physical table now
+ * holds columns the bare target lacks, so the stored snapshot must keep describing
+ * them or the next `verifyApplicationSchema` refuses the open. Defaults columns
+ * are already in the target, so only carried drift augments. The carried column
+ * simply resurfaces as drift in the next step's diff and the final safe hop (live
+ * schema has it → no-op; lacks it → ordinary drop refusal).
  */
-function augmentSnapshot(target: SchemaSnapshot, carriedOf: Map<string, CarriedColumn[]>): SchemaSnapshot {
+function augmentSnapshot(target: SchemaSnapshot, driftOf: Map<string, DriftColumn[]>): SchemaSnapshot {
+  const carriedOf = new Map<string, DriftColumn[]>();
+  for (const [name, drift] of driftOf) {
+    const carried = drift.filter((d) => d.kind === "carried");
+    if (carried.length > 0) carriedOf.set(name, carried);
+  }
   if (carriedOf.size === 0) return target;
   const tables: Record<string, TableSnapshot> = {};
   for (const [name, snap] of Object.entries(target.tables)) {
@@ -768,21 +852,21 @@ function augmentSnapshot(target: SchemaSnapshot, carriedOf: Map<string, CarriedC
  * reads its rows from its OLD physical name and PRE descriptors. Identity
  * rebuilds (renamed tables whose other changes are all shape-safe, no user
  * transform) are copied wholesale through the rename map before any transform
- * runs, so emits into them land in the tmp alongside the carried rows. Each
- * rebuild also carries every stored-physical column its target plan does not
- * know about (`carriedOf`): the tmp gains those columns and replayed rows copy
- * their raw values. A target column the PRE lacks but the database already
- * holds defaults to the old row's stored value unless the transform's raw
- * output provides the key. Emits into non-rebuilt tables are buffered and
- * flushed only after every transform has run, so the frozen before-state never
- * sees them.
+ * runs, so emits into them land in the tmp alongside the carried rows. The drift
+ * overlay (`driftOf`) is the single source for both drift flavors: a `carried`
+ * column extends the tmp DDL and its raw values are copied on replay, while a
+ * `defaults` column backfills the old row's stored value whenever the transform's
+ * raw output omits the key. Old rows are paged by primary key, and emits into
+ * non-rebuilt tables spool to an engine-owned TEMP table (never the heap), then
+ * flush only after every transform has run — so neither iteration nor buffering
+ * scales with table size, and the frozen before-state never sees an emit.
  */
 async function runTransforms(
   scope: StepScope,
   entries: Record<string, RowTransform | null>,
   rebuilt: Set<string>,
   identityRebuilt: Set<string>,
-  carriedOf: Map<string, CarriedColumn[]>,
+  driftOf: Map<string, DriftColumn[]>,
 ): Promise<Map<string, string>> {
   const { engine, pre, stored, target, renames, targetPlans, oldTags } = scope;
   const writer = engine.writer;
@@ -792,7 +876,7 @@ async function runTransforms(
     const oldPhys = renames.tableOldName.get(name) ?? name;
     const tmp = `${name}__migrate`;
     tmpOf.set(name, tmp);
-    const carriedDdls = (carriedOf.get(name) ?? []).flatMap((c) => c.ddls);
+    const carriedDdls = (driftOf.get(name) ?? []).filter((c) => c.kind === "carried").flatMap((c) => c.ddls);
     writer.exec(engine.createTableDdl(planOf(name), tmp, carriedDdls));
     const seq = writer.query("SELECT seq FROM sqlite_sequence WHERE name = ?").get(oldPhys) as { seq: bigint } | null;
     if (seq !== null) writer.query("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)").run(tmp, seq.seq);
@@ -809,7 +893,7 @@ async function runTransforms(
     const pairs = planOf(name)
       .physOrder.map((c) => [reverse?.get(c) ?? c, c] as const)
       .filter(([old]) => oldCols.has(old));
-    const carriedPhys = (carriedOf.get(name) ?? []).flatMap((c) => c.phys);
+    const carriedPhys = (driftOf.get(name) ?? []).filter((c) => c.kind === "carried").flatMap((c) => c.phys);
     const insertCols = [...pairs.map(([, c]) => c), ...carriedPhys];
     const selectCols = [...pairs.map(([old]) => old), ...carriedPhys];
     writer.exec(
@@ -826,21 +910,24 @@ async function runTransforms(
   };
 
   // Emits into non-rebuilt tables write to the same connection `ctx.before`
-  // reads, so they are buffered here and flushed after every transform has run;
-  // emits into rebuilt tables go to the (invisible) tmp and stay immediate.
-  const staged: { table: string; row: MigrationRow }[] = [];
+  // reads, so they spool to an engine-owned TEMP table (bounded, never the heap)
+  // and flush after every transform has run; emits into rebuilt tables go to the
+  // (invisible) tmp and stay immediate. The spool stores the wire-encoded
+  // *validated* row — before `toSql`, so enum/union values survive as their JS
+  // forms and the plan's tag maps resolve them at flush. `_dbz_emit_spool` is
+  // `_dbz`-prefixed, so `ctx.before` (which reads only named old tables) never
+  // sees it. The whole step is one transaction, so a rollback discards the spool;
+  // the success path drops it below.
+  writer.exec("CREATE TEMP TABLE _dbz_emit_spool (target TEXT NOT NULL, row TEXT NOT NULL)");
+  const spoolInsert = writer.query("INSERT INTO _dbz_emit_spool (target, row) VALUES (?, ?)");
   const ctx: MigrationContext = {
     before: buildBefore(engine, pre, stored, oldTags),
     insert(table, row) {
       if (!targetPlans.has(table)) throw new ValidationError(`migration insert: unknown table "${table}"`);
       const validated = checkRow(table, target.tables[table]!, row, "insert"); // eager: error locality stays here
       if (!tmpOf.has(table)) {
-        staged.push({ table, row: validated });
+        spoolInsert.run(table, encode(validated));
         return;
-      }
-      const notNull = (carriedOf.get(table) ?? []).find((c) => !c.nullable);
-      if (notNull !== undefined) {
-        throw new ValidationError(`migration insert into "${table}": carried NOT NULL column "${notNull.jsName}" cannot be emitted`);
       }
       physicalInsert(engine, planOf(table), emitTargetOf(table), validated);
     },
@@ -855,27 +942,25 @@ async function runTransforms(
     // replay (a rebuilt table stays the empty tmp; a salvage is a no-op).
     if (preSnap === undefined || physical === undefined || physical.kind !== "table") continue;
     const old = buildOldTable(preSnap, physColsOf(physical), oldTags);
-    const rows = writer.query(`SELECT * FROM ${quote(oldPhys)} ORDER BY ${quote(old.pk)} ASC`).all() as MigrationRow[];
     if (!rebuilt.has(name)) {
-      for (const raw of rows) await fn(decodeOldRow(old, raw), ctx); // salvage: emits only
+      for await (const raw of pageRows(writer, oldPhys, old.pk)) await fn(decodeOldRow(old, raw), ctx); // salvage: emits only
       continue;
     }
     const plan = planOf(name);
     const emit = emitTargetOf(name); // the tmp under new names
-    const carried = carriedOf.get(name) ?? [];
-    // Target columns the PRE never typed but the database already physically
-    // holds (parallel-lineage drift the target re-declares): a PRE-typed
-    // transform cannot see them, so when its raw output does not provide the
-    // key the stored value is decoded and used as the default. `undefined`
-    // counts as absent — carrying the stored value is the data-safe reading —
-    // while an explicit null is a provided value and wins.
-    const reverse = renames.columnReverse.get(name);
-    const defaults = [...plan.columns.values()]
-      .filter((c) => c.kind !== "pk")
-      .map((c) => ({ jsName: c.jsName, oldJs: reverse?.get(c.phys[0]!.name) ?? c.jsName }))
-      .filter(({ oldJs }) => preSnap.columns[oldJs] === undefined && physical.columns[oldJs] !== undefined)
-      .map(({ jsName, oldJs }) => ({ jsName, old: oldColumn(oldJs, physical.columns[oldJs]!, physColsOf(physical), oldTags) }));
-    for (const raw of rows) {
+    const drift = driftOf.get(name) ?? [];
+    const carried = drift.filter((d) => d.kind === "carried");
+    // Defaults: target columns the PRE never typed but the database already
+    // physically holds (parallel-lineage drift the target re-declares). A
+    // PRE-typed transform cannot see them, so when its raw output does not
+    // provide the key the stored value is decoded and used as the default.
+    // `undefined` counts as absent — carrying the stored value is the data-safe
+    // reading — while an explicit null is a provided value and wins.
+    // `validateDrift` already refused any default whose type conflicts.
+    const defaults = drift
+      .filter((d) => d.kind === "defaults")
+      .map((d) => ({ jsName: d.jsName, old: oldColumn(d.oldJs, d.descriptor, physColsOf(physical), oldTags) }));
+    for await (const raw of pageRows(writer, oldPhys, old.pk)) {
       const decoded = decodeOldRow(old, raw);
       const result = await fn(decoded, ctx);
       if (result === null) continue; // deleted: the whole row goes, carried values included
@@ -890,9 +975,21 @@ async function runTransforms(
       physicalInsert(engine, plan, emit, checkRow(name, target.tables[name]!, out, "transform"), decoded[old.pk] as bigint, carriedValues);
     }
   }
-  for (const { table, row } of staged) {
-    physicalInsert(engine, planOf(table), emitTargetOf(table), row); // ids assigned now; nothing read them earlier
+  // Flush the spool into its (non-rebuilt) targets, paged by rowid so the buffer
+  // never lived on the heap; ids are assigned now, after every transform froze
+  // the before-state. rowid preserves emit order for deterministic id assignment.
+  let lastRowid: bigint | undefined;
+  for (;;) {
+    const where = lastRowid === undefined ? "" : "WHERE rowid > ? ";
+    const params = lastRowid === undefined ? [] : [lastRowid as never];
+    const spooled = writer
+      .query(`SELECT rowid, target, row FROM _dbz_emit_spool ${where}ORDER BY rowid ASC LIMIT ${MIGRATE_BATCH}`)
+      .all(...params) as { rowid: bigint; target: string; row: string }[];
+    for (const s of spooled) physicalInsert(engine, planOf(s.target), emitTargetOf(s.target), decode(s.row) as MigrationRow);
+    if (spooled.length < MIGRATE_BATCH) break;
+    lastRowid = spooled[spooled.length - 1]!.rowid;
   }
+  writer.exec("DROP TABLE _dbz_emit_spool");
   return tmpOf;
 }
 

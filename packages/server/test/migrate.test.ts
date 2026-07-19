@@ -1505,10 +1505,11 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
     again.engine.close("clean");
   });
 
-  test("an emit into a rebuilt table carrying a NOT NULL column is refused, naming it", async () => {
+  test("a stored NOT NULL column the pre and target both lack is refused up front, naming it", async () => {
     // A NOT NULL column drifted in on a parallel branch; the step's pre/target
-    // both lack it. The rebuild carries it for replayed rows, but an emit cannot
-    // satisfy it — fail closed at emit time rather than invent a value.
+    // both lack it. Legal safe drift (widening-only) can never produce a NOT NULL
+    // stored-only column, so the lineage is not shape-safe drift — refused before
+    // the transaction ever opens, never accommodated mid-flight.
     const seedS = defineSchema({
       dest: defineTable({ id: dbz.primaryKey(), val: dbz.string(), tag: dbz.string() }),
       source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
@@ -1541,9 +1542,53 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
           }),
         },
       ]),
-    ).rejects.toThrow(/carried NOT NULL column "tag"/);
-    // nothing applied: the DB is untouched and the drifted column is intact
+    ).rejects.toThrow(/"tag".*not shape-safe drift/);
+    await expect(
+      reconcile(engine, [
+        { number: 1, name: "salvage", pre: snapshotOf(pre), target: snapshotOf(stepTarget), code: "", migration: defineMigration({ tables: { dest: (row) => ({ val: Number(row.val) }) } }) },
+      ]),
+    ).rejects.toBeInstanceOf(MigrationError);
+    // nothing touched: the DB and its history are untouched, the drifted column intact
     expect(engine.loadSnapshot()).toEqual(snapshotOf(seedS));
+    expect(history(engine)).toEqual([]);
+    engine.close("clean");
+  });
+
+  test("a defaults column whose stored descriptor conflicts with the target's is refused up front", async () => {
+    // The DB physically holds `note` as nullable string (parallel-lineage drift);
+    // the step's pre lacks it and its target re-declares it as nullable NUMBER.
+    // A PRE-typed transform cannot see the column, so a stored string could not be
+    // coerced into a number at row time — hoisted to a clean up-front refusal.
+    const seedS = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+    });
+    const pre = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
+    const live = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), note: dbz.nullable(dbz.number()) }),
+    });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.items.insert({ qty: "5", note: "keep-me" }); // id 1
+    });
+
+    const engine = new Engine(live, path);
+    await expect(
+      reconcile(engine, [
+        {
+          number: 1,
+          name: "retype",
+          pre: snapshotOf(pre),
+          target: snapshotOf(live),
+          code: "",
+          migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }),
+        },
+      ]),
+    ).rejects.toThrow(/"note".*conflicts/);
+    // nothing touched: still the seed schema, no history, row still a string
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(seedS));
+    expect(history(engine)).toEqual([]);
+    const raw = engine.writer.query("SELECT note FROM items WHERE id = 1").get() as { note: unknown };
+    expect(typeof raw.note).toBe("string");
     engine.close("clean");
   });
 });
@@ -1769,6 +1814,109 @@ describe("migrate: frozen before-state (emits never observed by transforms)", ()
     );
     expect(bbSaw).toBe(1); // only the original cc row, not aa's emit
     expect((await d.cc.scan().collect()).map((r: Record<string, unknown>) => r.msg).sort()).toEqual(["from-aa", "orig"]);
+    engine.close("clean");
+  });
+});
+
+// The migration engine's internal page size. Tests seed past it (and past twice
+// it) to prove every accumulation is bounded and still walks every row exactly
+// once — heap use is not assertable in bun:test, so paging is proven by counts,
+// spot values, pk preservation, and order rather than by measuring memory.
+const MIGRATE_BATCH = 1000;
+
+describe("migrate: bounded accumulation (paging + emit spool)", () => {
+  test("a rebuild transform over more than twice the batch converts every row, preserving pks", async () => {
+    const n = 2 * MIGRATE_BATCH + 1; // 2001: two full pages plus a partial one
+    const a = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), val: dbz.string() }) });
+    const b = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), val: dbz.number() }) });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      for (let i = 1; i <= n; i++) await d.posts.insert({ val: String(i) });
+    });
+
+    const { engine, db: d } = await migrate(b, path, defineMigration({ tables: { posts: (row) => ({ val: Number(row.val) }) } }));
+    expect((await d.posts.scan().collect()).length).toBe(n);
+    // pk preserved and value converted at both page boundaries and the tail
+    expect(await d.posts.get(1n)).toEqual({ id: 1n, val: 1 });
+    expect(await d.posts.get(BigInt(MIGRATE_BATCH))).toEqual({ id: BigInt(MIGRATE_BATCH), val: MIGRATE_BATCH });
+    expect(await d.posts.get(BigInt(MIGRATE_BATCH + 1))).toEqual({ id: BigInt(MIGRATE_BATCH + 1), val: MIGRATE_BATCH + 1 });
+    expect(await d.posts.get(BigInt(n))).toEqual({ id: BigInt(n), val: n });
+    // the next insert lands past the preserved high-water mark
+    expect(await d.posts.insert({ val: n + 1 })).toBe(BigInt(n + 1));
+    engine.close("clean");
+  });
+
+  test("ctx.before.scan() over more than the batch yields every row in pk order", async () => {
+    const n = MIGRATE_BATCH + 500; // 1500: one full page plus a partial one
+    const a = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      log: defineTable({ id: dbz.primaryKey(), seq: dbz.number() }),
+    });
+    const b = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), val: dbz.number() }),
+      log: defineTable({ id: dbz.primaryKey(), seq: dbz.number() }),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.items.insert({ val: "1" });
+      for (let i = 1; i <= n; i++) await d.log.insert({ seq: i });
+    });
+
+    const seen: number[] = [];
+    const { engine } = await migrate(
+      b,
+      path,
+      defineMigration({
+        tables: {
+          items: async (row, ctx) => {
+            for await (const entry of ctx.before.log!.scan()) seen.push(entry.seq as number);
+            return { val: Number(row.val) };
+          },
+        },
+      }),
+    );
+    expect(seen.length).toBe(n);
+    expect(seen[0]).toBe(1);
+    expect(seen[n - 1]).toBe(n);
+    expect(seen.every((v, i) => v === i + 1)).toBe(true); // strictly ascending pk (== seq) order
+    engine.close("clean");
+  });
+
+  test("an emit-per-source-row salvage spools more than the batch and lands every emit, enum included", async () => {
+    const n = MIGRATE_BATCH + 1; // 1001: past a full spool page
+    const a = defineSchema({
+      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["even", "odd"]), amount: dbz.number() }),
+      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+    });
+    const b = defineSchema({
+      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["even", "odd"]), amount: dbz.number() }),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      for (let i = 1; i <= n; i++) await d.source.insert({ val: String(i) });
+    });
+
+    const { engine, db: d } = await migrate(
+      b,
+      path,
+      // events is unchanged (not rebuilt): every emit takes the spool path
+      defineMigration({
+        tables: {
+          source: (row, ctx) => {
+            const amount = Number(row.val);
+            ctx.insert("events", { kind: amount % 2 === 0 ? "even" : "odd", amount });
+          },
+        },
+      }),
+    );
+    const rows = (await d.events.scan().collect()) as Record<string, unknown>[];
+    expect(rows.length).toBe(n);
+    // enum values round-tripped through the spool, amounts intact
+    expect(rows.every((r) => r.kind === ((r.amount as number) % 2 === 0 ? "even" : "odd"))).toBe(true);
+    const amounts = rows.map((r) => r.amount as number).sort((x, y) => x - y);
+    expect(amounts[0]).toBe(1);
+    expect(amounts[n - 1]).toBe(n);
+    expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name = 'source'").get()).toBe(null);
     engine.close("clean");
   });
 });
