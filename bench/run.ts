@@ -969,7 +969,7 @@ const validationTargets: BenchmarkValidationTarget[] = [
 const validation = validateBenchmarkResults(validationTargets);
 let dbzzTelemetryCost: ProfileComparisonMetric[] | null = null;
 let dbzzExporterCost: ProfileComparisonMetric[] | null = null;
-const dbzzFailed = validation.failures.some((failure) => validationTargetIsSystem(failure.target, "dbzz"));
+const dbzzFailed = validation.dbzzStatus === "failed";
 if (!dbzzFailed) {
   dbzzTelemetryCost = compareProfileMetrics(
     "runtime-default",
@@ -1040,7 +1040,9 @@ const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
   dbzzExporterCost,
   validation,
 };
-const performanceAcceptance: PerformanceAcceptanceResult = validation.status === "failed"
+// The release verdict judges DBZZ itself: a comparative harness failure is
+// recorded in `validation.failures` but never vetoes a DBZZ release.
+const performanceAcceptance: PerformanceAcceptanceResult = dbzzFailed
   ? { status: "not-evaluated", reason: "correctness-failed" }
   : bootstrap
     ? { status: "passed", evidence: { schemaVersion: 1, previousVersion: null, currentVersion: releaseContext.version, metricCount: 0, regressions: [] } }
@@ -1071,6 +1073,9 @@ if (performanceAcceptance.status === "not-evaluated") {
   console.log(bootstrap
     ? `\nrelease benchmark bootstrap approved: v${releaseContext.version} is the baseline for its successor.`
     : `\nrelease benchmark approved: v${releaseContext.version} has no material DBZZ regression against v${previous!.version}.`);
+  if (validation.status === "failed") {
+    console.log("comparative-target validation failures are recorded in the evidence (non-blocking; the gate judges DBZZ).");
+  }
 }
 
-if (validation.status === "failed" || performanceAcceptance.status === "recovery-needed") process.exitCode = 1;
+if (dbzzFailed || performanceAcceptance.status === "recovery-needed") process.exitCode = 1;

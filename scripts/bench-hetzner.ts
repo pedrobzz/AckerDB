@@ -56,7 +56,9 @@ function run(command: string[], inherit = true): number {
 }
 
 function remote(command: string): number {
-  return run(["ssh", HETZNER, "sh", "-lc", command]);
+  // Keepalives make a dead TCP session fail loudly (~2 min) instead of the
+  // orchestrator hanging forever on a pipe nobody will ever write to again.
+  return run(["ssh", "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=8", HETZNER, "sh", "-lc", command]);
 }
 
 try {

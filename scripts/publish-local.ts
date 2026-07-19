@@ -34,7 +34,7 @@ if (!(await evidenceFile.exists())) {
 const evidence = await evidenceFile.json() as {
   schemaVersion?: unknown;
   release?: { version?: unknown; previousVersion?: unknown; host?: unknown };
-  validation?: { status?: unknown };
+  validation?: { dbzzStatus?: unknown };
   performanceAcceptance?: { status?: unknown };
 };
 // A baseline record (previousVersion null) stands only where no comparison was
@@ -51,7 +51,8 @@ if (
   evidence.release?.version !== version ||
   !previousOk ||
   evidence.release?.host !== "hetzner" ||
-  evidence.validation?.status !== "passed" ||
+  // The gate judges DBZZ itself; comparative-leg failures ride in the record.
+  evidence.validation?.dbzzStatus !== "passed" ||
   evidence.performanceAcceptance?.status !== "passed"
 ) {
   fail(`cannot publish v${version}: ${evidencePath} is not a final approved Hetzner release comparison (or baseline)`);

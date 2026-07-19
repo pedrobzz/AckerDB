@@ -114,7 +114,7 @@ function targets(): BenchmarkValidationTarget[] {
 describe("benchmark result validation", () => {
   test("returns immutable pass evidence for comparable correct results", () => {
     const validation = validateBenchmarkResults(targets());
-    expect(validation).toEqual({ status: "passed", failures: [] });
+    expect(validation).toEqual({ status: "passed", dbzzStatus: "passed", failures: [] });
     expect(formatBenchmarkValidation(validation)).toBe("Benchmark correctness validation: PASSED");
     expect(Object.isFrozen(validation)).toBe(true);
   });
@@ -128,8 +128,21 @@ describe("benchmark result validation", () => {
     const validation = validateBenchmarkResults(results);
     expect(validation).toMatchObject({
       status: "failed",
+      dbzzStatus: "failed",
       failures: [{ target: "dbzz", kind: "operation", case: "query/latency/trial-0", errors: ["query checksum mismatch", "1 request failed"] }],
     });
+  });
+
+  test("a comparative-target failure fails the run verdict but not the DBZZ verdict", () => {
+    const results = targets();
+    const trial = results[1]!.workload.operations[0]!.trials[0]!; // convex
+    trial.completedInWindow = 0;
+    trial.failed = 1;
+    trial.correctness = { ok: false, errors: ["duplicate deliveries"] };
+    const validation = validateBenchmarkResults(results);
+    expect(validation.status).toBe("failed");
+    expect(validation.dbzzStatus).toBe("passed");
+    expect(validation.failures.every((failure) => failure.target === "convex")).toBe(true);
   });
 
   test("rejects a changed workload or broken request accounting", () => {

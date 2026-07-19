@@ -23,7 +23,14 @@ export interface BenchmarkCorrectnessFailure {
 }
 
 export interface BenchmarkValidation {
+  /** Whole-run verdict across every target, comparative legs included. */
   readonly status: "passed" | "failed";
+  /**
+   * The verdict over DBZZ targets alone — what the release gate judges.
+   * Comparative targets make the DBZZ result interpretable; their harness
+   * failures are recorded above but never veto a DBZZ release.
+   */
+  readonly dbzzStatus: "passed" | "failed";
   readonly failures: readonly BenchmarkCorrectnessFailure[];
 }
 
@@ -291,8 +298,10 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
     throw new Error(`benchmark produced incomparable results:\n${integrityErrors.join("\n")}`);
   }
 
+  const systemOf = new Map(targets.map((target) => [target.label, target.system]));
   return Object.freeze({
     status: failures.length === 0 ? "passed" : "failed",
+    dbzzStatus: failures.some((failure) => systemOf.get(failure.target) === "dbzz") ? "failed" : "passed",
     failures: Object.freeze(failures),
   });
 }

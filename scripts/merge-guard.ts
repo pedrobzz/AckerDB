@@ -59,7 +59,7 @@ function assertReleaseBenchmark(ref: string, previousVersion: string, version: s
   let record: {
     schemaVersion?: unknown;
     release?: { version?: unknown; previousVersion?: unknown; host?: unknown };
-    validation?: { status?: unknown };
+    validation?: { dbzzStatus?: unknown };
     performanceAcceptance?: { status?: unknown };
   };
   try {
@@ -77,7 +77,8 @@ function assertReleaseBenchmark(ref: string, previousVersion: string, version: s
     record.release?.version !== version ||
     !previousOk ||
     record.release?.host !== "hetzner" ||
-    record.validation?.status !== "passed" ||
+    // The gate judges DBZZ itself; comparative-leg failures ride in the record.
+    record.validation?.dbzzStatus !== "passed" ||
     record.performanceAcceptance?.status !== "passed"
   ) {
     fail(
