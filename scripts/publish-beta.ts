@@ -114,12 +114,15 @@ for (const path of demoManifests) {
     if (!deps) continue;
     for (const [name, spec] of Object.entries(deps)) {
       if (!name.startsWith("@dbzz/")) continue;
-      // Only pins at the current base move to its beta; anything else is a
-      // deliberate divergence to surface, not overwrite.
-      if (spec === base) {
-        deps[name] = version;
-        changed = true;
-      } else if (spec !== version) {
+      // Pins at the current base — or at any of its earlier betas — follow the
+      // fresh beta; anything else is a deliberate divergence to surface, not
+      // overwrite.
+      if (spec === base || BETA.test(spec)) {
+        if (spec !== version) {
+          deps[name] = version;
+          changed = true;
+        }
+      } else {
         leftAlone.push(`${path}: ${name}@${spec}`);
       }
     }
