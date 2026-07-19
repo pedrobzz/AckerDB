@@ -52,6 +52,10 @@ again, and an identical ledger only re-prints the banner. Composition falls
 out of declining: change several things across saves, then one yes produces
 one migration covering everything.
 
+A save while the question is open *retracts* it — the question was about a
+state that may be gone. Retraction is not a decline: it remembers nothing,
+and the next refusal simply asks again over the fresh ledger.
+
 If a scaffold sits unapplied and the schema moves further — the need
 evaporated, or more changes landed — the supervisor detects that the chain no
 longer ends at your schema and offers to delete the unapplied migration files

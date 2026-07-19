@@ -23,7 +23,8 @@ import { loadConfig, type AppConfig } from "./config.ts";
 import { runCodegen } from "./codegen.ts";
 import { startApp, StartupInterruptedError } from "./app.ts";
 import { runRenameForm, type Ask, type FormResult } from "./migrations/form.ts";
-import { renderLedger, runConsentForm, runDivergenceForm, type Consent } from "./migrations/consent.ts";
+import { renderLedger, runDivergenceForm } from "./migrations/consent.ts";
+import { makeDevFlowHandler, type GenerateResult, type PromptOutcome } from "./migrations/dev-flow.ts";
 import { computePlan, deriveSlug, planToWire, type PlanWire } from "./migrations/plan.ts";
 import { StaleConsentError, writeMigration, type GenerateRequest } from "./migrations/write.ts";
 import {
@@ -117,9 +118,6 @@ async function planChild(appDir: string): Promise<PlanWire> {
   return JSON.parse(lastJsonLine(out)) as PlanWire;
 }
 
-/** What a `__generate` child reports: the artifacts it wrote, or a consent gone stale. */
-type GenerateResult = { written: string[] } | { stale: true };
-
 /** Drive an ephemeral `__generate` child. */
 async function generateChild(appDir: string, request: GenerateRequest): Promise<GenerateResult> {
   const child = Bun.spawn([process.execPath, CLI_PATH, "__generate", appDir, JSON.stringify(request)], {
@@ -137,6 +135,8 @@ function isInteractive(): boolean {
 
 /** Ctrl+C while a prompt was open. Bailing out of a question is always safe. */
 class PromptInterruptedError extends Error {}
+/** The supervisor retracted the prompt — the state it asked about changed. */
+class PromptCanceledError extends Error {}
 
 /**
  * Map an interrupted prompt to that prompt's safe answer — decline for the
@@ -150,18 +150,32 @@ const interruptAs =
     throw error;
   };
 
-/** Run one prompt form over a real readline; the caller guarantees a TTY. */
-async function withReadline<T>(form: (ask: Ask) => Promise<T>): Promise<T> {
+/**
+ * Run one prompt form over a real readline; the caller guarantees a TTY.
+ * Ctrl+C surfaces as PromptInterruptedError; an abort of `cancel` — the
+ * supervisor retracting the question because a file changed under it — as
+ * PromptCanceledError.
+ */
+async function withReadline<T>(form: (ask: Ask) => Promise<T>, cancel?: AbortSignal): Promise<T> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const interrupted = new AbortController();
-  rl.on("SIGINT", () => interrupted.abort());
+  const aborted = new AbortController();
+  let retracted = false;
+  rl.on("SIGINT", () => aborted.abort());
+  const retract = () => {
+    retracted = true;
+    aborted.abort();
+  };
+  cancel?.addEventListener("abort", retract, { once: true });
+  if (cancel?.aborted) retract();
   try {
     return await form((prompt) =>
-      rl.question(prompt, { signal: interrupted.signal }).catch((error) => {
-        throw interrupted.signal.aborted ? new PromptInterruptedError() : error;
+      rl.question(prompt, { signal: aborted.signal }).catch((error) => {
+        if (!aborted.signal.aborted) throw error;
+        throw retracted ? new PromptCanceledError() : new PromptInterruptedError();
       }),
     );
   } finally {
+    cancel?.removeEventListener("abort", retract);
     rl.close();
   }
 }
@@ -266,7 +280,6 @@ async function dev(appDir: string): Promise<void> {
   let child: Child | null = null;
   // Children we killed ourselves (reload/shutdown); their non-zero exit is not a crash.
   const stopped = new WeakSet<Child>();
-  let handlingCrash = false;
 
   const spawnChild = () => {
     const started = Bun.spawn([process.execPath, CLI_PATH, "__serve", appDir], {
@@ -301,88 +314,41 @@ async function dev(appDir: string): Promise<void> {
     if (exited !== child) return; // already superseded by a newer child
     if (code === 0) return; // graceful exit
     child = null;
-    void handleCrash();
+    void devFlow.onCrash();
   };
 
-  // The last ledger the developer explicitly declined. While the ledger stays
-  // identical, a re-crash only re-prints the banner; any different ledger asks
-  // again. In-memory on purpose — restarting `dbz dev` forgets the decline.
-  let declinedFingerprint: string | null = null;
-
-  const printDeclinedBanner = () =>
-    console.error(
-      "[dbz] migration declined — server stays down; edit the schema (a clean ledger starts it, a changed one asks again), run `dbz generate`, or wipe local data with `dbz reset`",
-    );
-
-  // A crashed serve child is the interactive consent prompt's entry point. Only
-  // one prompt at a time, and only with a real terminal on both ends — a non-TTY
-  // dev keeps today's behavior (the child's own stderr already names `dbz generate`).
-  // Nothing is ever written before the developer's yes, and that yes carries the
-  // displayed ledger's fingerprint: generation re-derives and refuses stale
-  // consent, so the loop re-plans and re-asks over the fresh ledger.
-  const handleCrash = async () => {
-    if (handlingCrash || !isInteractive()) return;
-    handlingCrash = true;
-    let deletedScaffold = false;
-    try {
-      for (;;) {
-        const wire = await planChild(appDir);
-        if ("error" in wire) return; // fresh db, or a diverged chain the child already reported
-        if (wire.clean) {
-          // Deleting a stale scaffold can leave nothing to answer — the crash
-          // is resolved, so the server comes straight back.
-          if (deletedScaffold) await startChild();
-          return;
+  // A crashed serve child is the interactive consent flow's entry point; the
+  // flow itself lives in dev-flow.ts (state machine, decline memory, retract
+  // semantics) — this is only its terminal-and-process wiring. Only with a
+  // real terminal on both ends: a non-TTY dev keeps today's behavior (the
+  // child's own stderr already names `dbz generate`). At most one readline is
+  // open at a time; `promptCancel` is how the supervisor retracts it.
+  let promptCancel: AbortController | null = null;
+  const devFlow = makeDevFlowHandler(
+    {
+      plan: () => planChild(appDir),
+      generate: (request) => generateChild(appDir, request),
+      prompt: async <T,>(form: (ask: Ask) => Promise<T>): Promise<PromptOutcome<T>> => {
+        promptCancel = new AbortController();
+        try {
+          return { answer: await withReadline(form, promptCancel.signal) };
+        } catch (error) {
+          if (error instanceof PromptCanceledError) return { canceled: true };
+          if (error instanceof PromptInterruptedError) return { interrupted: true };
+          throw error;
+        } finally {
+          promptCancel = null;
         }
-        if (wire.pendingCount > 0) {
-          if (!wire.stale) {
-            console.error(
-              "[dbz] a scaffolded migration is not applied yet — fill its TODOs; the server reloads when it compiles",
-            );
-            return;
-          }
-          const choice = await withReadline((ask) => runDivergenceForm(wire.pendingFiles, ask)).catch(
-            interruptAs("keep" as const),
-          );
-          if (choice === "keep") {
-            console.error("[dbz] keeping it — fill its TODOs; further changes become the next migration");
-            return;
-          }
-          deletePendingFiles(wire.pendingFiles);
-          deletedScaffold = true;
-          continue;
-        }
-        if (wire.fingerprint === declinedFingerprint) {
-          printDeclinedBanner();
-          return;
-        }
-        console.log(renderLedger(wire));
-        const decline = () => {
-          declinedFingerprint = wire.fingerprint;
-          printDeclinedBanner();
-        };
-        const consent = await withReadline((ask) => runConsentForm(deriveSlug(wire.refusals), ask)).catch(
-          interruptAs<Consent>({ generate: false }),
-        );
-        if (!consent.generate) return decline();
-        const form = await withReadline((ask) => runRenameForm(wire.candidates, ask)).catch(interruptAs(null));
-        if (form === null) return decline();
-        const { renames, dropsAcknowledged } = form;
-        const result = await generateChild(appDir, { name: consent.name, renames, consent: wire.fingerprint });
-        if ("stale" in result) {
-          console.error("[dbz] more changes happened while the question was open — the fresh ledger:");
-          continue;
-        }
-        declinedFingerprint = null;
-        reportGenerated(result.written, renames, dropsAcknowledged);
-        return;
-      }
-    } catch (error) {
-      console.error(`[dbz] ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      handlingCrash = false;
-    }
-  };
+      },
+      deleteFiles: deletePendingFiles,
+      startServer: startChild,
+      report: (written, form) => reportGenerated(written, form.renames, form.dropsAcknowledged),
+      log: console.log,
+      error: console.error,
+    },
+    isInteractive,
+    () => promptCancel?.abort(),
+  );
 
   console.log(`[dbz] dev watching ${config.appDir}`);
   if (!(await codegenChild(appDir))) {
@@ -413,6 +379,9 @@ async function dev(appDir: string): Promise<void> {
     running = false;
   };
   const trigger = () => {
+    // A save may change the very state an open question was asked about —
+    // retract it; the next refusal asks again over the fresh ledger.
+    devFlow.retractPrompt();
     if (timer !== null) clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
