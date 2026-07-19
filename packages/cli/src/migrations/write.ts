@@ -12,21 +12,29 @@ import {
   classifySchemaDiff,
   diffSnapshots,
   snapshotOf,
-  stepLabel,
   validateHistoryPrefix,
   type Renames,
 } from "@dbzz/server";
 import { importSchema } from "../app.ts";
 import type { AppConfig } from "../config.ts";
-import { loadMigrationChain } from "./load.ts";
-import { probeDuplicateRefusals, readStoredState } from "./plan.ts";
+import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
+import { planFingerprint, probeDuplicateRefusals, readStoredState } from "./plan.ts";
 import { generateMigration } from "./scaffold.ts";
 
 const MIGRATION_NAME = /^[A-Za-z0-9_]+$/;
 
+/**
+ * Consent that no longer matches the plan on disk: the schema moved between
+ * the ledger the developer said yes to and this write. Nothing is written; the
+ * caller re-plans, shows the fresh ledger, and asks again.
+ */
+export class StaleConsentError extends Error {}
+
 export interface GenerateRequest {
   name: string;
   renames?: Renames;
+  /** The fingerprint of the ledger the developer consented to (see `planFingerprint`). */
+  consent?: string;
 }
 
 /**
@@ -59,6 +67,12 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
   // ones. Re-probed fresh (never carried on the wire), so the scaffold reflects
   // the database as it actually is at write time.
   const target = snapshotOf(schema);
+  // Consent is verified against the freshly derived plan, not the one the
+  // prompt displayed — so a yes and the write are atomic, and a schema that
+  // moved in between can never be generated for unseen.
+  if (request.consent !== undefined && request.consent !== planFingerprint(state.snapshot, target)) {
+    throw new StaleConsentError("the schema changed since this ledger was shown");
+  }
   const { optimistic } = classifySchemaDiff(diffSnapshots(state.snapshot, target));
   const probedRefusals = probeDuplicateRefusals(config, state.snapshot, target, optimistic);
   const { migrationTs, typesTs, metaJson } = generateMigration({
@@ -70,13 +84,12 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
     probedRefusals,
   });
 
-  const stem = stepLabel({ number, name: request.name });
-  const metaDir = join(config.migrationsDir, "meta");
-  mkdirSync(metaDir, { recursive: true });
+  mkdirSync(join(config.migrationsDir, "meta"), { recursive: true });
+  const [modulePath, typesPath, metaPath] = migrationArtifactPaths(config, { number, name: request.name });
   const artifacts: [string, string][] = [
-    [join(config.migrationsDir, `${stem}.ts`), migrationTs],
-    [join(metaDir, `${stem}.types.ts`), typesTs],
-    [join(metaDir, `${stem}.json`), metaJson],
+    [modulePath!, migrationTs],
+    [typesPath!, typesTs],
+    [metaPath!, metaJson],
   ];
   for (const [path, content] of artifacts) writeFileSync(path, content);
   return artifacts.map(([path]) => path);

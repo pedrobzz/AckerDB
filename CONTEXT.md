@@ -140,6 +140,24 @@ and file bytes). It must always be a prefix of the application's migration chain
 an applied migration is immutable, and any edit to one — its pre, target, or
 transform code — shifts the identity and is refused, never silently ignored.
 
+**Change ledger** — The grouped report of every schema change between what the
+database stored and what the application declares: the changes that need a
+migration (each with its per-row question) and the shape-safe changes that
+ride along automatically. Displayed, never persisted; shown wherever consent
+is asked and whenever a migration is generated.
+
+**Consent** — The developer's explicit yes to generating a migration for the
+change ledger they were shown. Consent is fingerprinted against the exact
+ledger displayed; if the schema moves before the yes lands, the stale consent
+is refused and the question is asked again over the fresh ledger. No migration
+file exists before consent.
+
+**Declined** — The dev-loop state after the developer answers "not yet" to a
+migration question: the server stays down, nothing is written or persisted,
+and the state releases when the ledger changes — a rescued schema starts the
+server silently, a different ledger asks again, and generation stays available
+on demand.
+
 ## Demo app (Savoria restaurant)
 
 **Admin MCP** — The demo backend's single MCP endpoint. Isolated and staff-only:

@@ -22,15 +22,10 @@ import type { Renames } from "@dbzz/server";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { runCodegen } from "./codegen.ts";
 import { startApp, StartupInterruptedError } from "./app.ts";
-import { runRenameForm, type FormResult } from "./migrations/form.ts";
-import {
-  computePlan,
-  deriveSlug,
-  planToWire,
-  type PlanWire,
-  type RenameCandidates,
-} from "./migrations/plan.ts";
-import { writeMigration, type GenerateRequest } from "./migrations/write.ts";
+import { runRenameForm, type Ask, type FormResult } from "./migrations/form.ts";
+import { renderLedger, runConsentForm, runDivergenceForm } from "./migrations/consent.ts";
+import { computePlan, deriveSlug, planToWire, type PlanWire } from "./migrations/plan.ts";
+import { StaleConsentError, writeMigration, type GenerateRequest } from "./migrations/write.ts";
 import {
   createVerifiedBackup,
   inspectDatabase,
@@ -91,13 +86,17 @@ async function codegenChild(appDir: string): Promise<boolean> {
 
 // -- migration generation flow ------------------------------------------------
 
-/** Parse the JSON the `__generate` child receives: `{ name, renames? }`. */
+/** Parse the JSON the `__generate` child receives: `{ name, renames?, consent? }`. */
 function parseGenerateRequest(json: string): GenerateRequest {
-  const parsed = JSON.parse(json) as { name?: unknown; renames?: unknown };
+  const parsed = JSON.parse(json) as { name?: unknown; renames?: unknown; consent?: unknown };
   if (typeof parsed.name !== "string") throw new Error("__generate request must carry a string name");
-  return parsed.renames === undefined
-    ? { name: parsed.name }
-    : { name: parsed.name, renames: parsed.renames as Renames };
+  if (parsed.consent !== undefined && typeof parsed.consent !== "string") {
+    throw new Error("__generate consent must be a string fingerprint");
+  }
+  const request: GenerateRequest = { name: parsed.name };
+  if (parsed.renames !== undefined) request.renames = parsed.renames as Renames;
+  if (parsed.consent !== undefined) request.consent = parsed.consent;
+  return request;
 }
 
 /** The last non-empty line of a child's stdout — the one JSON line it prints. */
@@ -118,26 +117,29 @@ async function planChild(appDir: string): Promise<PlanWire> {
   return JSON.parse(lastJsonLine(out)) as PlanWire;
 }
 
-/** Drive an ephemeral `__generate` child, returning the written artifact paths. */
-async function generateChild(appDir: string, request: GenerateRequest): Promise<string[]> {
+/** What a `__generate` child reports: the artifacts it wrote, or a consent gone stale. */
+type GenerateResult = { written: string[] } | { stale: true };
+
+/** Drive an ephemeral `__generate` child. */
+async function generateChild(appDir: string, request: GenerateRequest): Promise<GenerateResult> {
   const child = Bun.spawn([process.execPath, CLI_PATH, "__generate", appDir, JSON.stringify(request)], {
     stdout: "pipe",
     stderr: "inherit",
   });
   const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
   if (code !== 0) throw new Error("migration generation failed (see the error above)");
-  return (JSON.parse(lastJsonLine(out)) as { written: string[] }).written;
+  return JSON.parse(lastJsonLine(out)) as GenerateResult;
 }
 
 function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
 }
 
-/** Run the rename form over a real readline; the caller guarantees a TTY. */
-async function promptRenames(candidates: RenameCandidates): Promise<FormResult> {
+/** Run one prompt form over a real readline; the caller guarantees a TTY. */
+async function withReadline<T>(form: (ask: Ask) => Promise<T>): Promise<T> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    return await runRenameForm(candidates, (prompt) => rl.question(prompt));
+    return await form((prompt) => rl.question(prompt));
   } finally {
     rl.close();
   }
@@ -161,32 +163,62 @@ function reportGenerated(written: string[], renames: Renames, dropsAcknowledged:
   );
 }
 
-/** `dbz generate`: plan in-process, run the form when interactive, then write the scaffold. */
+/** Delete a stale pending scaffold's artifacts so one migration can be re-derived. */
+function deletePendingFiles(files: string[]): void {
+  for (const file of files) rmSync(file, { force: true });
+  console.log(`[dbz] deleted ${files.length} migration file(s); re-deriving`);
+}
+
+/**
+ * `dbz generate`: plan in-process, print the ledger, run the rename form when
+ * interactive, then write the scaffold. Invoking the command IS the consent —
+ * no fingerprint rides along, and the plan is re-derived at write time anyway.
+ * A stale pending chain gets the same delete-or-keep offer the dev supervisor
+ * makes (as guidance text without a terminal), then the loop re-plans.
+ */
 async function generate(nameArg: string | undefined, appDir: string): Promise<void> {
   const config = loadConfig(appDir);
-  const outcome = await computePlan(config);
-  switch (outcome.status) {
-    case "no-database":
-      throw new Error(`no database at ${resolve(config.dbDir, "data.db")}; run \`dbz dev\` to initialize it first`);
-    case "diverged":
-      throw new Error(outcome.message);
-    case "pending":
-      throw new Error(`apply the ${outcome.pendingCount} pending migration(s) first — start \`dbz dev\``);
-    case "clean":
-      console.log("[dbz] no changes need a migration; nothing to generate (shape-safe changes apply on their own)");
-      return;
-    case "changes": {
-      let form: FormResult = { renames: {}, dropsAcknowledged: [] };
-      if (isInteractive()) {
-        form = await promptRenames(outcome.candidates);
-      } else {
-        console.error(
-          "[dbz] rename detection needs a terminal; generating with no renames (drops are acknowledged, adds treated as new)",
-        );
+  for (;;) {
+    const outcome = await computePlan(config);
+    switch (outcome.status) {
+      case "no-database":
+        throw new Error(`no database at ${resolve(config.dbDir, "data.db")}; run \`dbz dev\` to initialize it first`);
+      case "diverged":
+        throw new Error(outcome.message);
+      case "pending": {
+        const apply = `apply the ${outcome.pendingCount} pending migration(s) first — start \`dbz dev\``;
+        if (!outcome.stale) throw new Error(apply);
+        if (!isInteractive()) {
+          throw new Error(
+            `${apply}\nthe schema changed after the pending migration was scaffolded; ` +
+              `delete its files to re-derive one migration covering everything:\n` +
+              outcome.pendingFiles.map((file) => `  ${file}`).join("\n"),
+          );
+        }
+        if ((await withReadline((ask) => runDivergenceForm(outcome.pendingFiles, ask))) === "keep") {
+          throw new Error(apply);
+        }
+        deletePendingFiles(outcome.pendingFiles);
+        continue;
       }
-      const name = nameArg !== undefined && nameArg.length > 0 ? nameArg : deriveSlug(outcome.refusals);
-      const written = await writeMigration(config, { name, renames: form.renames });
-      reportGenerated(written, form.renames, form.dropsAcknowledged);
+      case "clean":
+        console.log("[dbz] no changes need a migration; nothing to generate (shape-safe changes apply on their own)");
+        return;
+      case "changes": {
+        console.log(renderLedger(outcome));
+        let form: FormResult = { renames: {}, dropsAcknowledged: [] };
+        if (isInteractive()) {
+          form = await withReadline((ask) => runRenameForm(outcome.candidates, ask));
+        } else {
+          console.error(
+            "[dbz] rename detection needs a terminal; generating with no renames (drops are acknowledged, adds treated as new)",
+          );
+        }
+        const name = nameArg !== undefined && nameArg.length > 0 ? nameArg : deriveSlug(outcome.refusals);
+        const result = await writeMigration(config, { name, renames: form.renames });
+        reportGenerated(result, form.renames, form.dropsAcknowledged);
+        return;
+      }
     }
   }
 }
@@ -249,23 +281,72 @@ async function dev(appDir: string): Promise<void> {
     void handleCrash();
   };
 
-  // A crashed serve child is the interactive migration prompt's entry point. Only
+  // The last ledger the developer explicitly declined. While the ledger stays
+  // identical, a re-crash only re-prints the banner; any different ledger asks
+  // again. In-memory on purpose — restarting `dbz dev` forgets the decline.
+  let declinedFingerprint: string | null = null;
+
+  const printDeclinedBanner = () =>
+    console.error(
+      "[dbz] migration declined — server stays down; edit the schema (a clean ledger starts it, a changed one asks again), run `dbz generate`, or wipe local data with `dbz reset`",
+    );
+
+  // A crashed serve child is the interactive consent prompt's entry point. Only
   // one prompt at a time, and only with a real terminal on both ends — a non-TTY
   // dev keeps today's behavior (the child's own stderr already names `dbz generate`).
+  // Nothing is ever written before the developer's yes, and that yes carries the
+  // displayed ledger's fingerprint: generation re-derives and refuses stale
+  // consent, so the loop re-plans and re-asks over the fresh ledger.
   const handleCrash = async () => {
     if (handlingCrash || !isInteractive()) return;
     handlingCrash = true;
+    let deletedScaffold = false;
     try {
-      const wire = await planChild(appDir);
-      if ("error" in wire || wire.clean) return; // fresh db, or nothing to answer
-      if (wire.pendingCount > 0) {
-        console.error("[dbz] a scaffolded migration is not applied yet — fill its TODOs; the server reloads when it compiles");
+      for (;;) {
+        const wire = await planChild(appDir);
+        if ("error" in wire) return; // fresh db, or a diverged chain the child already reported
+        if (wire.clean) {
+          // Deleting a stale scaffold can leave nothing to answer — the crash
+          // is resolved, so the server comes straight back.
+          if (deletedScaffold) await startChild();
+          return;
+        }
+        if (wire.pendingCount > 0) {
+          if (!wire.stale) {
+            console.error(
+              "[dbz] a scaffolded migration is not applied yet — fill its TODOs; the server reloads when it compiles",
+            );
+            return;
+          }
+          if ((await withReadline((ask) => runDivergenceForm(wire.pendingFiles, ask))) === "keep") {
+            console.error("[dbz] keeping it — fill its TODOs; further changes become the next migration");
+            return;
+          }
+          deletePendingFiles(wire.pendingFiles);
+          deletedScaffold = true;
+          continue;
+        }
+        if (wire.fingerprint === declinedFingerprint) {
+          printDeclinedBanner();
+          return;
+        }
+        console.log(renderLedger(wire));
+        const consent = await withReadline((ask) => runConsentForm(deriveSlug(wire.refusals), ask));
+        if (!consent.generate) {
+          declinedFingerprint = wire.fingerprint;
+          printDeclinedBanner();
+          return;
+        }
+        const { renames, dropsAcknowledged } = await withReadline((ask) => runRenameForm(wire.candidates, ask));
+        const result = await generateChild(appDir, { name: consent.name, renames, consent: wire.fingerprint });
+        if ("stale" in result) {
+          console.error("[dbz] more changes happened while the question was open — the fresh ledger:");
+          continue;
+        }
+        declinedFingerprint = null;
+        reportGenerated(result.written, renames, dropsAcknowledged);
         return;
       }
-      if (wire.refusals.length === 0) return;
-      const { renames, dropsAcknowledged } = await promptRenames(wire.candidates);
-      const written = await generateChild(appDir, { name: deriveSlug(wire.refusals), renames });
-      reportGenerated(written, renames, dropsAcknowledged);
     } catch (error) {
       console.error(`[dbz] ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -379,8 +460,15 @@ try {
     case "__generate": {
       requireArgumentCount(args, 2, 2);
       const config = loadConfig(resolve(args[0]!));
-      const written = await writeMigration(config, parseGenerateRequest(args[1]!));
-      console.log(JSON.stringify({ written }));
+      try {
+        const written = await writeMigration(config, parseGenerateRequest(args[1]!));
+        console.log(JSON.stringify({ written }));
+      } catch (error) {
+        // Stale consent is an answer, not a failure: the supervisor re-plans
+        // and asks again over the fresh ledger.
+        if (!(error instanceof StaleConsentError)) throw error;
+        console.log(JSON.stringify({ stale: true }));
+      }
       break;
     }
     case "reset": {

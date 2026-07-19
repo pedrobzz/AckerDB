@@ -17,6 +17,7 @@
  * read and duplicate probe.
  */
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -34,10 +35,11 @@ import {
   type SchemaDiff,
   type SchemaRefusal,
   type SchemaSnapshot,
+  type TableChange,
 } from "@dbzz/server";
 import { importSchema } from "../app.ts";
 import type { AppConfig } from "../config.ts";
-import { loadMigrationChain } from "./load.ts";
+import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
 
 // -- stored snapshot (read-only peek) -----------------------------------------
 
@@ -107,6 +109,118 @@ export function probeDuplicateRefusals(
     return refusals;
   } finally {
     db.close();
+  }
+}
+
+// -- consent fingerprint ------------------------------------------------------
+
+/**
+ * The fingerprint a displayed ledger reflects: a hash over the exact (pre,
+ * target) snapshot pair the plan was derived from. Consent carries it back into
+ * generation, which re-derives fresh and refuses on mismatch — so a yes can
+ * never authorize changes the developer was not shown. Netstring framing keeps
+ * the two parts unambiguous.
+ */
+export function planFingerprint(pre: SchemaSnapshot, target: SchemaSnapshot): string {
+  const hash = createHash("sha256");
+  for (const part of [JSON.stringify(pre), JSON.stringify(target)]) {
+    hash.update(`${Buffer.byteLength(part)}:${part},`);
+  }
+  return hash.digest("hex");
+}
+
+// -- safe-change descriptions (pure projection of the diff) -------------------
+
+type RefusalSites = {
+  tables: Set<string>;
+  columns: Set<string>;
+  variants: Set<string>;
+  indexes: Set<string>;
+};
+
+const SEP = "\u0000";
+
+function refusalSites(refusals: SchemaRefusal[]): RefusalSites {
+  const sites: RefusalSites = { tables: new Set(), columns: new Set(), variants: new Set(), indexes: new Set() };
+  for (const r of refusals) {
+    if (r.variant !== undefined) sites.variants.add([r.table, r.column, r.variant].join(SEP));
+    else if (r.column !== undefined) sites.columns.add([r.table, r.column].join(SEP));
+    else if (r.index !== undefined) sites.indexes.add([r.table, r.index].join(SEP));
+    else sites.tables.add(r.table);
+  }
+  return sites;
+}
+
+/**
+ * One human line per diff atom that is NOT refused — the "applies
+ * automatically" half of the change ledger. The classifier stays the sole owner
+ * of the verdict: an atom is skipped exactly when the refusal list names its
+ * site, never by re-deriving the shape rules here. A unique index that survives
+ * classification and the duplicate probe therefore renders as applying.
+ */
+export function describeSafeChanges(diff: SchemaDiff, refusals: SchemaRefusal[]): string[] {
+  const sites = refusalSites(refusals);
+  const lines: string[] = [];
+  for (const change of diff) describeTable(change, sites, lines);
+  return lines;
+}
+
+function describeTable(change: TableChange, sites: RefusalSites, lines: string[]): void {
+  const table = change.table;
+  switch (change.op) {
+    case "table-added":
+      lines.push(`new ${change.kind === "event" ? "event table" : "table"} "${table}"`);
+      return;
+    case "table-dropped":
+      if (!sites.tables.has(table)) lines.push(`event table "${table}" dropped`);
+      return;
+    case "table-kind-changed":
+      if (!sites.tables.has(table)) lines.push(`"${table}" became a ${change.to === "event" ? "event table" : "table"}`);
+      return;
+    case "event-updated":
+      lines.push(`event table "${table}" updated`);
+      return;
+    case "table-altered": {
+      for (const col of change.columns) describeColumn(table, col, sites, lines);
+      for (const ix of change.indexes) {
+        if (sites.indexes.has([table, ix.name].join(SEP))) continue;
+        if (ix.op === "dropped") lines.push(`index "${table}.${ix.name}" dropped`);
+        else if (ix.unique) lines.push(`unique index "${table}.${ix.name}" ${ix.op} (no duplicates found)`);
+        else lines.push(`index "${table}.${ix.name}" ${ix.op}`);
+      }
+      return;
+    }
+  }
+}
+
+function describeColumn(
+  table: string,
+  col: Extract<TableChange, { op: "table-altered" }>["columns"][number],
+  sites: RefusalSites,
+  lines: string[],
+): void {
+  const site = `"${table}.${col.column}"`;
+  if (col.op === "variants-changed") {
+    for (const v of col.variants) {
+      if (sites.variants.has([table, col.column, v.variant].join(SEP))) continue;
+      lines.push(`${col.typeName}: variant "${v.variant}" ${v.op === "payload-changed" ? "payload changed" : v.op}`);
+    }
+    return;
+  }
+  if (sites.columns.has([table, col.column].join(SEP))) return;
+  switch (col.op) {
+    case "added":
+      lines.push(`column ${site} added${col.nullable ? " (nullable)" : ""}`);
+      return;
+    case "dropped":
+      lines.push(`column ${site} dropped`);
+      return;
+    case "type-changed":
+      lines.push(`column ${site} type changed`);
+      return;
+    case "nullability-changed":
+      lines.push(col.to === "nullable" ? `column ${site} widened to nullable` : `column ${site} made required`);
+      return;
   }
 }
 
@@ -180,9 +294,26 @@ export function renameCandidates(diff: SchemaDiff): RenameCandidates {
 export type PlanOutcome =
   | { status: "no-database" }
   | { status: "diverged"; message: string }
-  | { status: "pending"; pendingCount: number; nextNumber: number }
+  | {
+      status: "pending";
+      pendingCount: number;
+      nextNumber: number;
+      /** The live schema moved after the pending chain was written — its end-state no longer matches. */
+      stale: boolean;
+      /** Every artifact of every pending migration — what the re-derive offer deletes. */
+      pendingFiles: string[];
+    }
   | { status: "clean" }
-  | { status: "changes"; refusals: SchemaRefusal[]; candidates: RenameCandidates; nextNumber: number };
+  | {
+      status: "changes";
+      refusals: SchemaRefusal[];
+      candidates: RenameCandidates;
+      nextNumber: number;
+      /** The "applies automatically" half of the ledger, one line per safe change. */
+      safe: string[];
+      /** What consent to THIS ledger carries into generation (see `planFingerprint`). */
+      fingerprint: string;
+    };
 
 /**
  * Diff the stored snapshot against the live schema and classify the result.
@@ -191,7 +322,10 @@ export type PlanOutcome =
  * divergence — an edited applied migration, or a history longer than the chain —
  * is its own outcome, never a scaffold. Pending migrations then short-circuit:
  * a new migration always sits on a fully-applied chain, so `pre` (the stored
- * snapshot) is only the right pre-state once the chain is fully applied.
+ * snapshot) is only the right pre-state once the chain is fully applied. A
+ * pending outcome still peeks at the live schema to flag staleness — a chain
+ * whose end-state is no longer the schema means the developer kept editing
+ * after the scaffold, and deleting + re-deriving may serve better than filling.
  */
 export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
   const state = readStoredState(config);
@@ -205,14 +339,35 @@ export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
     if (error instanceof MigrationError) return { status: "diverged", message: error.message };
     throw error;
   }
-  if (pending.length > 0) return { status: "pending", pendingCount: pending.length, nextNumber };
+  if (pending.length > 0) {
+    let stale = false;
+    try {
+      stale = diffSnapshots(chain.at(-1)!.target, snapshotOf(await importSchema(config))).length > 0;
+    } catch {
+      // The schema does not even import — nothing to judge staleness against.
+    }
+    return {
+      status: "pending",
+      pendingCount: pending.length,
+      nextNumber,
+      stale,
+      pendingFiles: pending.flatMap((step) => migrationArtifactPaths(config, step)),
+    };
+  }
   const schema = await importSchema(config);
   const target = snapshotOf(schema);
   const diff = diffSnapshots(state.snapshot, target);
   const { optimistic, refusals } = classifySchemaDiff(diff);
   const allRefusals = [...refusals, ...probeDuplicateRefusals(config, state.snapshot, target, optimistic)];
   if (allRefusals.length === 0) return { status: "clean" };
-  return { status: "changes", refusals: allRefusals, candidates: renameCandidates(diff), nextNumber };
+  return {
+    status: "changes",
+    refusals: allRefusals,
+    candidates: renameCandidates(diff),
+    nextNumber,
+    safe: describeSafeChanges(diff, allRefusals),
+    fingerprint: planFingerprint(state.snapshot, target),
+  };
 }
 
 // -- the wire form (one JSON line from the `__plan` child) ---------------------
@@ -226,6 +381,10 @@ export type PlanWire =
       candidates: RenameCandidates;
       nextNumber: number;
       pendingCount: number;
+      safe: string[];
+      fingerprint: string;
+      stale: boolean;
+      pendingFiles: string[];
     };
 
 const EMPTY_CANDIDATES: RenameCandidates = { tables: { dropped: [], added: [] }, columns: {}, variants: {} };
@@ -246,6 +405,10 @@ export function planToWire(outcome: PlanOutcome, config: AppConfig): PlanWire {
         candidates: EMPTY_CANDIDATES,
         nextNumber: outcome.nextNumber,
         pendingCount: outcome.pendingCount,
+        safe: [],
+        fingerprint: "",
+        stale: outcome.stale,
+        pendingFiles: outcome.pendingFiles,
       };
     case "changes":
       return {
@@ -254,6 +417,10 @@ export function planToWire(outcome: PlanOutcome, config: AppConfig): PlanWire {
         candidates: outcome.candidates,
         nextNumber: outcome.nextNumber,
         pendingCount: 0,
+        safe: outcome.safe,
+        fingerprint: outcome.fingerprint,
+        stale: false,
+        pendingFiles: [],
       };
   }
 }

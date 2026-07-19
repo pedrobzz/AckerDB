@@ -33,6 +33,24 @@ import type { AppConfig } from "../config.ts";
 const MIGRATION_FILE = /^(\d{4})_([A-Za-z0-9_]+)\.ts$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
+/**
+ * The three artifact paths of one migration under this module's on-disk
+ * convention: the module, its types companion, and the meta sidecar. Generation
+ * writes exactly these; the divergence offer deletes exactly these.
+ */
+export function migrationArtifactPaths(
+  config: AppConfig,
+  step: { number: number; name: string },
+): string[] {
+  const stem = stepLabel(step);
+  const metaDir = join(config.migrationsDir, "meta");
+  return [
+    join(config.migrationsDir, `${stem}.ts`),
+    join(metaDir, `${stem}.types.ts`),
+    join(metaDir, `${stem}.json`),
+  ];
+}
+
 interface DiscoveredFile {
   number: number;
   name: string;

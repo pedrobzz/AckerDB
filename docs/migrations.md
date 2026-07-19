@@ -30,10 +30,35 @@ assume: rename declarations, row transforms, and drop acknowledgments.
 ## Dev flow
 
 `dbz dev` applies shape-safe changes on every reload, silently. When a change
-is refused, the server fails to start and — on a real terminal — the supervisor
-asks one question per ambiguous dropped/added pair (rename, or delete+add?
-never guessed), then scaffolds the migration. Non-interactive contexts never
-prompt; they exit naming the recourse: `dbz generate [name]`.
+needs a migration, the server refuses to start and — on a real terminal — the
+supervisor prints the **change ledger**: every change that needs a migration
+(each with its per-row question, and probed duplicate counts for unique
+indexes), the ambiguous dropped/added pairs that might be renames, and the
+shape-safe changes that ride along automatically. Then it asks whether to
+generate the migration now. **Nothing is written before you say yes** — a bare
+Enter declines. Non-interactive contexts never prompt; they exit naming the
+recourse: `dbz generate [name]`.
+
+Saying yes names the migration (Enter accepts the derived name), answers the
+rename questions (rename, or delete+add? never guessed), and scaffolds.
+Consent is fingerprinted against the exact ledger shown and verified inside
+the write: if the schema moved while the question was open, the stale yes
+refuses, the fresh ledger prints, and the question is asked again.
+
+Declining leaves the server down with a banner naming the recourses; nothing
+is persisted, and restarting `dbz dev` asks again. Keep editing freely: a
+ledger that goes clean starts the server silently, a ledger that changes asks
+again, and an identical ledger only re-prints the banner. Composition falls
+out of declining: change several things across saves, then one yes produces
+one migration covering everything.
+
+If a scaffold sits unapplied and the schema moves further — the need
+evaporated, or more changes landed — the supervisor detects that the chain no
+longer ends at your schema and offers to delete the unapplied migration files
+(named explicitly; this discards any transform code you wrote — keep a chain
+pulled from git) and re-derive one migration. Deleting an unapplied migration
+is always chain-legal; if nothing needs answering afterwards, the server just
+starts.
 
 The scaffold's unanswered per-row questions are *typed holes* — a transform
 with a declared return type and no return — so the dev server stays down until
@@ -49,6 +74,11 @@ surviving tables first).
 `dbz reset` remains the dev escape hatch: it deletes the local database
 directory, and the next start initializes fresh (a fresh database stamps the
 whole chain as vacuously applied).
+
+`dbz generate` never asks for consent — invoking it is the consent — but it
+prints the same ledger before writing, so the record of what a migration
+answers always appears. On a stale unapplied scaffold it makes the same
+delete-or-keep offer (as guidance text without a terminal).
 
 ## The migration file
 
