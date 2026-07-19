@@ -15,7 +15,7 @@ import {
 } from "../src/functions.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
 import { createMcp, type McpBuilder } from "../src/mcp.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";

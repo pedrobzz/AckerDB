@@ -23,6 +23,28 @@ for (const pkg of PACKAGES) sources.set(pkg, await Bun.file(pkgJsonPath(pkg)).te
 const version = syncedVersion((pkg) => sources.get(pkg)!);
 assertWorkspaceLock(await readBunLock(), (pkg) => sources.get(pkg)!);
 
+const evidencePath = `bench/results/v${version}.json`;
+const evidenceFile = Bun.file(evidencePath);
+if (!(await evidenceFile.exists())) {
+  fail(`cannot publish v${version} without final Hetzner benchmark evidence (${evidencePath})`);
+}
+const evidence = await evidenceFile.json() as {
+  schemaVersion?: unknown;
+  release?: { version?: unknown; previousVersion?: unknown; host?: unknown };
+  validation?: { status?: unknown };
+  performanceAcceptance?: { status?: unknown };
+};
+if (
+  evidence.schemaVersion !== 8 ||
+  evidence.release?.version !== version ||
+  typeof evidence.release?.previousVersion !== "string" ||
+  evidence.release.host !== "hetzner" ||
+  evidence.validation?.status !== "passed" ||
+  evidence.performanceAcceptance?.status !== "passed"
+) {
+  fail(`cannot publish v${version}: ${evidencePath} is not a final approved Hetzner release comparison`);
+}
+
 // Publishing from an existing checkout must not inherit Bun's pre-bump
 // installed workspace graph. The frozen lock keeps this a reinstall, never an
 // opportunistic dependency update.

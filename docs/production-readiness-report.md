@@ -1,5 +1,11 @@
 # Production Safety Milestone and Production-Readiness Report
 
+> Historical report (2026-07-14). Its frozen-baseline and local/current-host
+> benchmark procedure is superseded. Current release evidence is version-bound,
+> runs on Hetzner only, compares with the preceding final version, and retains
+> no timestamp records. Imperative benchmark instructions or blockers below
+> describe the old state and must not be followed; see [the benchmark contract](../bench/README.md).
+
 - Date: 2026-07-14
 - PRD: [GitHub issue #1 — Production safety and full operational visibility](https://github.com/pedrobzz/dbzz/issues/1)
 - Whole-branch comparison: `4aa2b1e` through audited snapshot `17a2524`

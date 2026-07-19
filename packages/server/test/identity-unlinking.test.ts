@@ -18,7 +18,7 @@ import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
 import { procedure } from "../src/functions.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { carryHttpRequestProvenance } from "../src/request-provenance.ts";
 import { Runtime, type RuntimeProcedureResponse } from "../src/runtime.ts";

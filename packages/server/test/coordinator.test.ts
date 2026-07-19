@@ -15,7 +15,7 @@ import { DbzzError } from "../src/errors.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits } from "../src/limits.ts";
 import { mutationReplayOwner } from "../src/mutation-replay.ts";
 import { OrderedPublication } from "../src/publication.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { defineSchema, defineTable } from "../src/schema.ts";
 
 const schema = defineSchema({

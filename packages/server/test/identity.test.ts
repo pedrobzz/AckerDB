@@ -14,7 +14,7 @@ import { callerFairnessKey } from "../src/caller.ts";
 import { dbz, type Identity } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
 import { mutation, query } from "../src/functions.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
 import { defineSchema, defineTable } from "../src/schema.ts";

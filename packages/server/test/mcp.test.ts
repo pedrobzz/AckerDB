@@ -22,7 +22,7 @@ import {
   type McpToolResult,
 } from "../src/mcp.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { carryHttpRequestProvenance } from "../src/request-provenance.ts";
 import { Runtime } from "../src/runtime.ts";

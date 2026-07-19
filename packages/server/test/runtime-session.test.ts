@@ -28,7 +28,7 @@ import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
 import { mutation, query } from "../src/functions.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../src/limits.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../src/schema.ts";

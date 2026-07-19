@@ -222,7 +222,8 @@ operators must configure a workload provider that selects `scope` before
 
 `dbz start` binds one listener before code generation and keeps that port live
 through the monotonic startup phases `listening`, `codegen`, `loading`,
-`opening-storage`, and `reconciling`. `/live` and `/ready` remain reachable;
+`opening-storage`, `migrating` (when a migration chain is present), and
+`reconciling`. `/live` and `/ready` remain reachable;
 `OPTIONS` receives its finite control response, and a syntactically valid SSE
 acknowledgement passes bounded admission but is an oracle-free no-op before a
 Runtime producer exists. Application, WebSocket, and protected-status traffic
@@ -318,6 +319,11 @@ The operator workflow is therefore:
 
 A failed drain is not a clean backup boundary. Let the next open run recovery
 validation, then stop cleanly before taking the offline backup.
+
+Run this workflow before deploying any release that carries pending
+migrations: a refused or failed migration leaves the database untouched, but a
+migration that succeeds with wrong transform logic is only recoverable from a
+verified backup. See [migrations.md](migrations.md) for the deploy sequence.
 
 `dbz backup` performs this acceptance sequence:
 

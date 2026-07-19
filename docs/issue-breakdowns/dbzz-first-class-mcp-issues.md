@@ -58,7 +58,7 @@ Every later token, scope, output, and AI adapter needs one real protocol path. T
 - Extend the existing registry with a distinct server-only export kind instead of disguising tools as procedures.
 - Mount into the existing Bun listener and reuse bounded body parsing; do not use DBZZ's private tagged wire codec.
 - Build the shared dispatcher as the only handler execution path from the first slice.
-- Run a baseline and post-change comparative benchmark because registry, invocation, and listener structure change.
+- If this work changes the release version, run one Hetzner release benchmark against the preceding version; do not create a pre-change baseline.
 
 ## Blocked by
 
@@ -329,7 +329,8 @@ This proves the central product promise—external agents act as the same applic
 - Create two tokens, restart, authenticate each to the correct endpoint, and assert shared row ownership.
 - Inspect storage to prove the secret is absent and list output never reveals it.
 - Reject wrong endpoint, malformed/unknown tokens, cross-owner listing, and MCP self-administration.
-- Benchmark the authentication lookup path.
+- Include authentication lookup changes in the release's one Hetzner benchmark;
+  do not create an ad hoc microbenchmark record.
 
 ### Out of scope
 
@@ -674,7 +675,7 @@ MCP is first-class only when it obeys the database runtime's production invarian
 
 - Prefer adapting the existing Runtime boundary over adding MCP-specific schedulers or semaphores.
 - Exercise one MCP token across parallel calls and several identities for fairness.
-- Benchmark headline mutation/subscription/CPU metrics before and after structural changes.
+- At the release version, compare headline mutation/subscription/CPU metrics with the preceding final Hetzner record.
 
 ## Blocked by
 
@@ -689,7 +690,7 @@ MCP is first-class only when it obeys the database runtime's production invarian
 - Load concurrent public and authenticated tools through admission limits.
 - Drain and shut down during queued, transactional, and long-running calls.
 - Use resource counters and telemetry assertions to detect leaks or double leases.
-- Run full comparative benchmarks and rerun noisy regressions.
+- Run the version-bound Hetzner comparison and rerun a material regression before performance recovery.
 
 ### Out of scope
 
@@ -863,7 +864,7 @@ AFK
 
 ## What to build
 
-Turn the complete implementation into a reproducible automated gate: run official MCP server conformance plus retained raw JSON cases, pack/install the real lockstep artifacts in clean Bun fixtures, validate server exports/dependencies, and compare full DBZZ, Convex, and SpacetimeDB benchmarks against the pre-change baseline.
+Turn the complete implementation into a reproducible automated gate: run official MCP server conformance plus retained raw JSON cases, pack/install the real lockstep artifacts in clean Bun fixtures, validate server exports/dependencies, and compare full DBZZ, Convex, and SpacetimeDB on Hetzner against the preceding release version.
 
 ### Why this slice exists
 
@@ -875,7 +876,7 @@ Protocol and performance claims must survive outside unit mocks and source-works
 - [ ] Raw fixtures cover initialize, notification, ping, list, call, malformed JSON-RPC, unsupported methods, auth failures, JSON POST responses, and stateless GET/DELETE.
 - [ ] Clean packed consumers resolve the server MCP subpath, generated server types, stable SDK dependency, and Bun runtime.
 - [ ] Packed `@dbzz/server` contains no AI SDK production dependency.
-- [ ] The full comparative benchmark is recorded and shows no consistent regression, especially in metrics DBZZ already wins or must beat Convex.
+- [ ] The version-bound Hetzner benchmark is final and approved, or performance recovery has removed any repeated material DBZZ regression.
 - [ ] All compile, unit, integration, security, cancellation, leak, and package tests run in the normal repository gate.
 
 ### Implementation notes
@@ -911,7 +912,7 @@ Protocol and performance claims must survive outside unit mocks and source-works
 
 - Run the official suite and raw fixtures from a clean checkout.
 - Pack and install exact lockstep artifacts in an isolated consumer.
-- Run the full three-system benchmark before/after and inspect headline deltas.
+- At the version bump, run the full three-system Hetzner benchmark and inspect deltas from the preceding final version.
 
 ### Out of scope
 

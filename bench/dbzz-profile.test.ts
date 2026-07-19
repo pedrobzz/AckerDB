@@ -3,7 +3,6 @@ import {
   assertDbzzStartup,
   benchmarkExecutionOrder,
   benchmarkProfileFromConfig,
-  benchmarkRunPolicy,
   compareProfileMetrics,
   expectedDbzzStartupMode,
   parseDbzzStartup,
@@ -112,52 +111,6 @@ describe("dbzz benchmark profile order", () => {
     expect(() => benchmarkProfileFromConfig("disabled", "in-process")).toThrow(
       "requires telemetry to be enabled",
     );
-  });
-});
-
-describe("benchmark acceptance and persistence policy", () => {
-  const allSystems = ["dbzz", "convex", "spacetimedb"] as const;
-
-  test("accepts and saves only the default all-system profile", () => {
-    expect(benchmarkRunPolicy(allSystems, "default")).toEqual({
-      profiledDbzz: true,
-      persist: true,
-      historicalAcceptance: true,
-      diagnosticMessage: null,
-    });
-  });
-
-  test("runs the complete current-host comparison without historical acceptance", () => {
-    expect(benchmarkRunPolicy(allSystems, "default", "current")).toEqual({
-      profiledDbzz: true,
-      persist: true,
-      historicalAcceptance: false,
-      diagnosticMessage: null,
-    });
-  });
-
-  test("keeps all-system quick and stress profiles paired but diagnostic", () => {
-    for (const profile of ["quick", "stress"] as const) {
-      expect(benchmarkRunPolicy(allSystems, profile)).toEqual({
-        profiledDbzz: true,
-        persist: false,
-        historicalAcceptance: false,
-        diagnosticMessage:
-          `${profile} all-system diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
-      });
-    }
-  });
-
-  test("keeps every partial profile unpaired and diagnostic", () => {
-    for (const profile of ["quick", "default", "stress"] as const) {
-      expect(benchmarkRunPolicy(["dbzz", "convex"], profile)).toEqual({
-        profiledDbzz: false,
-        persist: false,
-        historicalAcceptance: false,
-        diagnosticMessage:
-          `partial ${profile} diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
-      });
-    }
   });
 });
 

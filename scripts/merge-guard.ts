@@ -32,7 +32,42 @@ function versionAt(ref: string, requireCompleteSet: boolean): string {
   );
 }
 
-function check(subjects: string[], mainVersion: string, newVersion: string): void {
+function assertReleaseBenchmark(ref: string, previousVersion: string, version: string): void {
+  const path = `bench/results/v${version}.json`;
+  const source = tryGit("show", `${ref}:${path}`);
+  if (source === null) {
+    fail(
+      `v${version} has no final Hetzner benchmark evidence (${path}).\n` +
+        `  Run bun run bench:hetzner in a background worker, commit the final result, then merge.`,
+    );
+  }
+  let record: {
+    schemaVersion?: unknown;
+    release?: { version?: unknown; previousVersion?: unknown; host?: unknown };
+    validation?: { status?: unknown };
+    performanceAcceptance?: { status?: unknown };
+  };
+  try {
+    record = JSON.parse(source);
+  } catch {
+    fail(`${path} is not valid JSON`);
+  }
+  if (
+    record?.schemaVersion !== 8 ||
+    record.release?.version !== version ||
+    record.release?.previousVersion !== previousVersion ||
+    record.release?.host !== "hetzner" ||
+    record.validation?.status !== "passed" ||
+    record.performanceAcceptance?.status !== "passed"
+  ) {
+    fail(
+      `${path} is not a final approved comparison from v${previousVersion} on Hetzner. ` +
+        `A release benchmark must pass correctness and have no material DBZZ regression.`,
+    );
+  }
+}
+
+function check(subjects: string[], mainVersion: string, newVersion: string, resultRef: string): void {
   const bumpCommits = subjects.filter((s) => bumpType.test(s) || breaking.test(s));
 
   if (newVersion === mainVersion) {
@@ -53,6 +88,7 @@ function check(subjects: string[], mainVersion: string, newVersion: string): voi
   if (tryGit("rev-parse", "-q", "--verify", `refs/tags/v${newVersion}`)) {
     fail(`v${newVersion} is already tagged (published) — bump to a fresh version on the branch`);
   }
+  assertReleaseBenchmark(resultRef, mainVersion, newVersion);
 }
 
 const args = process.argv.slice(2);
@@ -67,7 +103,7 @@ if (args[0] === "--range") {
   if (subjects.length === 0) process.exit(0); // pure rewind (reset to an ancestor)
   // The old ref may predate a package added by this release. The new ref must
   // contain the complete release set and keep every package in lockstep.
-  check(subjects, versionAt(oldRef, false), versionAt(newRef, true));
+  check(subjects, versionAt(oldRef, false), versionAt(newRef, true), newRef);
   process.exit(0);
 }
 
@@ -91,4 +127,4 @@ const subjects = heads
 
 // HEAD = main before the merge; ":" = the index, i.e. the merged result.
 const mergedVersion = syncedVersion((pkg) => git("show", `:packages/${pkg}/package.json`));
-check(subjects, versionAt("HEAD", false), mergedVersion);
+check(subjects, versionAt("HEAD", false), mergedVersion, ":");

@@ -20,7 +20,7 @@ import { createMcp, type McpAiToolSet, type McpBuilder } from "../src/mcp.ts";
 import { handleMcpPost } from "../src/mcp-http.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
 import { mcpTokenVaultOwner } from "../src/mcp-token-vault.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime, type RuntimeProcedureResponse } from "../src/runtime.ts";
 import { defineSchema, defineTable } from "../src/schema.ts";

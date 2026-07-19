@@ -27,7 +27,7 @@ import {
 } from "../src/mcp.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
 import { mcpTokenVaultOwner } from "../src/mcp-token-vault.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import {
   Runtime,

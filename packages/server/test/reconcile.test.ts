@@ -10,6 +10,7 @@ import {
   Engine,
   makeDbWriter,
   newWriteCollector,
+  probeUniqueIndex,
   reconcile,
   UnsafeSchemaChange,
   type Schema,
@@ -36,16 +37,32 @@ function open(schema: Schema, path: string) {
   return { engine, db, applied };
 }
 
+/** Reconcile `v1` into a fresh empty database, then assert `v2` refuses it. */
+function refusesEmpty(v1: Schema, v2: Schema, needle: string): void {
+  const path = freshPath();
+  const a = new Engine(v1, path);
+  reconcile(a);
+  a.close("clean");
+  const b = new Engine(v2, path);
+  expect(() => reconcile(b)).toThrow(UnsafeSchemaChange);
+  expect(() => reconcile(b)).toThrow(needle);
+  b.close("clean");
+}
+
+const RRole = () => dbz.enum("RRole", ["admin", "member", "guest"]);
+const pings = () =>
+  defineEventTable({ id: dbz.primaryKey(), n: dbz.bigint() }, { args: {}, access: "public", matches: () => true });
+
 const baseSchema = () =>
   defineSchema({
     users: defineTable({
       id: dbz.primaryKey(),
       name: dbz.string(),
-      role: dbz.enum("RRole", ["admin", "member", "guest"]),
+      role: RRole(),
     }).index("by_name", ["name"]),
   });
 
-describe("reconcile", () => {
+describe("reconcile: bootstrap", () => {
   test("fresh database initializes; identical schema is a no-op", () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
@@ -55,8 +72,10 @@ describe("reconcile", () => {
     expect(b.applied).toEqual([]);
     b.engine.close("clean");
   });
+});
 
-  test("adding tables and nullable columns applies with data present", async () => {
+describe("reconcile: shape-safe changes apply with data present", () => {
+  test("adding tables (both kinds) and a nullable column", async () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
     await a.db.users.insert({ name: "ana", role: "admin" });
@@ -66,59 +85,22 @@ describe("reconcile", () => {
       users: defineTable({
         id: dbz.primaryKey(),
         name: dbz.string(),
-        role: dbz.enum("RRole", ["admin", "member", "guest"]),
+        role: RRole(),
         bio: dbz.nullable(dbz.string()),
       }).index("by_name", ["name"]),
       posts: defineTable({ id: dbz.primaryKey(), title: dbz.string() }),
-      pings: defineEventTable(
-        { id: dbz.primaryKey(), n: dbz.bigint() },
-        { args: {}, access: "public", matches: () => true },
-      ),
+      pings: pings(),
     });
     const b = open(grown, path);
     expect(b.applied).toContain("created table posts");
     expect(b.applied).toContain("added event table pings");
     expect(b.applied).toContain("added nullable column users.bio");
-    const ana = await b.db.users.get(1n);
-    expect(ana).toMatchObject({ name: "ana", bio: null });
+    expect(await b.db.users.get(1n)).toMatchObject({ name: "ana", bio: null });
     await b.db.posts.insert({ title: "t" });
     b.engine.close("clean");
   });
 
-  test("required column: rebuild when empty, refuse when rows exist", async () => {
-    const path = freshPath();
-    const a = open(baseSchema(), path);
-    a.engine.close("clean");
-
-    const withCredits = defineSchema({
-      users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
-        role: dbz.enum("RRole", ["admin", "member", "guest"]),
-        credits: dbz.number(),
-      }).index("by_name", ["name"]),
-    });
-    const b = open(withCredits, path); // empty table -> rebuild
-    expect(b.applied).toEqual(["rebuilt table users"]);
-    await b.db.users.insert({ name: "ana", role: "admin", credits: 5 });
-    b.engine.close("clean");
-
-    const withMore = defineSchema({
-      users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
-        role: dbz.enum("RRole", ["admin", "member", "guest"]),
-        credits: dbz.number(),
-        slug: dbz.string(),
-      }).index("by_name", ["name"]),
-    });
-    const engine = new Engine(withMore, path);
-    expect(() => reconcile(engine)).toThrow(UnsafeSchemaChange);
-    expect(() => reconcile(engine)).toThrow("1 row(s) with no value");
-    engine.close("clean");
-  });
-
-  test("widen keeps data and ids; sequence never reuses ids across rebuild", async () => {
+  test("widening a column to nullable rebuilds, preserving rows and ids", async () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
     await a.db.users.insert({ name: "a", role: "admin" });
@@ -130,195 +112,413 @@ describe("reconcile", () => {
       users: defineTable({
         id: dbz.primaryKey(),
         name: dbz.nullable(dbz.string()),
-        role: dbz.enum("RRole", ["admin", "member", "guest"]),
+        role: RRole(),
       }).index("by_name", ["name"]),
     });
     const b = open(widened, path);
     expect(b.applied).toEqual(["rebuilt table users"]);
     expect(await b.db.users.get(1n)).toMatchObject({ name: "a" });
-    const newId = await b.db.users.insert({ name: null, role: "guest" });
-    expect(newId).toBe(3n);
+    expect(await b.db.users.insert({ name: null, role: "guest" })).toBe(3n);
     b.engine.close("clean");
   });
 
-  test("narrow refuses when NULLs exist, applies when clean", async () => {
+  test("enum & union variants: adding and reordering apply with rows present", async () => {
     const path = freshPath();
-    const nullable = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.nullable(dbz.string()) }),
-    });
-    const a = open(nullable, path);
-    await a.db.users.insert({ name: null });
-    a.engine.close("clean");
-
-    const required = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
-    });
-    const refusing = new Engine(required, path);
-    expect(() => reconcile(refusing)).toThrow("1 row(s) hold NULL");
-    refusing.close("clean");
-
-    const fix = open(nullable, path);
-    await fix.db.users.patch(1n, { name: "fixed" });
-    fix.engine.close("clean");
-
-    const b = open(required, path);
-    expect(b.applied).toEqual(["rebuilt table users"]);
-    expect((await b.db.users.get(1n)).name).toBe("fixed");
-    b.engine.close("clean");
-  });
-
-  test("enum variants: add/reorder free; removal gated on live rows", async () => {
-    const path = freshPath();
-    const a = open(baseSchema(), path);
+    const withUnion = (variants: Record<string, ReturnType<typeof dbz.object> | ReturnType<typeof dbz.string>>) =>
+      defineSchema({
+        users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole() }).index("by_name", ["name"]),
+        posts: defineTable({ id: dbz.primaryKey(), body: dbz.union("PBody", variants) }),
+      });
+    const a = open(withUnion({ text: dbz.string(), image: dbz.object({ url: dbz.string() }) }), path);
     await a.db.users.insert({ name: "m", role: "member" });
+    await a.db.posts.insert({ body: { tag: "text", value: "hi" } });
     a.engine.close("clean");
 
-    // reorder + add: applies, tags stable
-    const reordered = defineSchema({
+    // reorder + add an enum variant, add a union variant: both are tag-stable
+    const grown = defineSchema({
       users: defineTable({
         id: dbz.primaryKey(),
         name: dbz.string(),
         role: dbz.enum("RRole", ["guest", "admin", "trial", "member"]),
       }).index("by_name", ["name"]),
+      posts: defineTable({
+        id: dbz.primaryKey(),
+        body: dbz.union("PBody", { text: dbz.string(), image: dbz.object({ url: dbz.string() }), video: dbz.string() }),
+      }),
     });
-    const b = open(reordered, path);
-    expect((await b.db.users.get(1n)).role).toBe("member");
+    const b = open(grown, path);
+    expect((await b.db.users.get(1n)).role).toBe("member"); // stable tag
+    expect((await b.db.posts.get(1n)).body).toEqual({ tag: "text", value: "hi" });
+    await b.db.users.insert({ name: "t", role: "trial" }); // new variant usable
+    await b.db.posts.insert({ body: { tag: "video", value: "v" } });
+    b.engine.close("clean");
+  });
+
+  test("non-unique index lifecycle: add, change, drop", async () => {
+    const path = freshPath();
+    const a = open(baseSchema(), path);
+    await a.db.users.insert({ name: "ana", role: "admin" });
+    a.engine.close("clean");
+
+    // change the existing index's columns, add a second index
+    const changed = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole() })
+        .index("by_name", ["name", "role"])
+        .index("by_role", ["role"]),
+    });
+    const b = open(changed, path);
+    expect(b.applied).toContain("recreated index users.by_name");
+    expect(b.applied).toContain("created index users.by_role");
+    expect(await b.db.users.get(1n)).toMatchObject({ name: "ana" });
     b.engine.close("clean");
 
-    // removing 'member' while a row holds it: refuse with the count
+    // drop both indexes
     const dropped = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole() }),
+    });
+    const c = open(dropped, path);
+    expect(c.applied).toContain("dropped index users.by_name");
+    expect(c.applied).toContain("dropped index users.by_role");
+    c.engine.close("clean");
+  });
+
+  test("event → table conversion creates the real table", async () => {
+    const path = freshPath();
+    const a = open(
+      defineSchema({
+        users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
+        pings: pings(),
+      }),
+      path,
+    );
+    await a.db.users.insert({ name: "ana" });
+    a.engine.close("clean");
+
+    const b = open(
+      defineSchema({
+        users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
+        pings: defineTable({ id: dbz.primaryKey(), n: dbz.bigint() }),
+      }),
+      path,
+    );
+    expect(b.applied).toContain("converted pings to a table");
+    expect(await b.db.pings.insert({ n: 1n })).toBe(1n);
+    expect(await b.db.users.get(1n)).toMatchObject({ name: "ana" }); // sibling data intact
+    b.engine.close("clean");
+  });
+
+  test("event table updated applies", async () => {
+    const path = freshPath();
+    const a = open(
+      defineSchema({ users: defineTable({ id: dbz.primaryKey() }), pings: pings() }),
+      path,
+    );
+    a.engine.close("clean");
+    const b = open(
+      defineSchema({
+        users: defineTable({ id: dbz.primaryKey() }),
+        pings: defineEventTable(
+          { id: dbz.primaryKey(), n: dbz.bigint(), extra: dbz.nullable(dbz.string()) },
+          { args: {}, access: "public", matches: () => true },
+        ),
+      }),
+      path,
+    );
+    expect(b.applied).toContain("updated event table pings");
+    b.engine.close("clean");
+  });
+
+  test("event table dropped applies", () => {
+    const path = freshPath();
+    const a = open(
+      defineSchema({ users: defineTable({ id: dbz.primaryKey() }), pings: pings() }),
+      path,
+    );
+    a.engine.close("clean");
+    const b = open(defineSchema({ users: defineTable({ id: dbz.primaryKey() }) }), path);
+    expect(b.applied).toContain("dropped event table pings");
+    b.engine.close("clean");
+  });
+});
+
+describe("reconcile: shape-unsafe changes refuse even on an empty table", () => {
+  const users = (extra: Record<string, ReturnType<typeof dbz.string>>) =>
+    defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), ...extra }) });
+
+  test("column type change", () => {
+    refusesEmpty(
+      defineSchema({ users: defineTable({ id: dbz.primaryKey(), tag: dbz.string() }) }),
+      defineSchema({ users: defineTable({ id: dbz.primaryKey(), tag: dbz.number() }) }),
+      "type changed",
+    );
+  });
+
+  test("narrowing nullable → required", () => {
+    refusesEmpty(
+      defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.nullable(dbz.string()) }) }),
+      defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }) }),
+      "made required",
+    );
+  });
+
+  test("required column added", () => {
+    refusesEmpty(users({}), users({ slug: dbz.string() }), "required column added");
+  });
+
+  test("enum variant removed", () => {
+    refusesEmpty(
+      defineSchema({ users: defineTable({ id: dbz.primaryKey(), role: RRole() }) }),
+      defineSchema({ users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("RRole", ["admin", "member"]) }) }),
+      "variant 'guest' removed",
+    );
+  });
+
+  test("union variant payload changed", () => {
+    const body = (image: ReturnType<typeof dbz.object>) =>
+      defineSchema({ posts: defineTable({ id: dbz.primaryKey(), body: dbz.union("PBody", { text: dbz.string(), image }) }) });
+    refusesEmpty(
+      body(dbz.object({ url: dbz.string() })),
+      body(dbz.object({ href: dbz.string() })),
+      "variant 'image' payload changed",
+    );
+  });
+
+  test("column dropped", () => {
+    refusesEmpty(users({ bio: dbz.string() }), users({}), "column dropped");
+  });
+
+  test("table dropped", () => {
+    refusesEmpty(
+      defineSchema({
+        users: defineTable({ id: dbz.primaryKey() }),
+        logs: defineTable({ id: dbz.primaryKey(), line: dbz.string() }),
+      }),
+      defineSchema({ users: defineTable({ id: dbz.primaryKey() }) }),
+      "table dropped",
+    );
+  });
+
+  test("table → event conversion", () => {
+    refusesEmpty(
+      defineSchema({
+        users: defineTable({ id: dbz.primaryKey() }),
+        logs: defineTable({ id: dbz.primaryKey(), line: dbz.string() }),
+      }),
+      defineSchema({
+        users: defineTable({ id: dbz.primaryKey() }),
+        logs: defineEventTable(
+          { id: dbz.primaryKey(), line: dbz.string() },
+          { args: {}, access: "public", matches: () => true },
+        ),
+      }),
+      "changed to an event table",
+    );
+  });
+});
+
+describe("reconcile: optimistic unique index", () => {
+  const uniqueName = defineSchema({
+    users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole() }).index("by_name", ["name"], {
+      unique: true,
+    }),
+  });
+
+  test("clean data applies and the physical index is unique", async () => {
+    const path = freshPath();
+    const a = open(baseSchema(), path);
+    await a.db.users.insert({ name: "ana", role: "admin" });
+    await a.db.users.insert({ name: "bea", role: "member" });
+    a.engine.close("clean");
+
+    const b = open(uniqueName, path);
+    expect(b.applied).toContain("recreated index users.by_name");
+    const sql = (
+      b.engine.writer.query("SELECT sql FROM sqlite_master WHERE name = 'ix_users_by_name'").get() as { sql: string }
+    ).sql;
+    expect(sql).toContain("UNIQUE");
+    b.engine.close("clean");
+  });
+
+  test("NULLs are not duplicates: the probe mirrors the constraint", async () => {
+    const nullable = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole(), nick: dbz.nullable(dbz.string()) }),
+    });
+    const uniqueNick = defineSchema({
       users: defineTable({
         id: dbz.primaryKey(),
         name: dbz.string(),
-        role: dbz.enum("RRole", ["guest", "admin", "trial"]),
-      }).index("by_name", ["name"]),
+        role: RRole(),
+        nick: dbz.nullable(dbz.string()),
+      }).index("by_nick", ["nick"], { unique: true }),
     });
-    const refusing = new Engine(dropped, path);
-    expect(() => reconcile(refusing)).toThrow("variant 'member' removed, but 1 row(s) still hold it");
-    refusing.close("clean");
-
-    // clear the row, then removal applies
-    const c = open(reordered, path);
-    await c.db.users.patch(1n, { role: "guest" });
-    c.engine.close("clean");
-    const d = open(dropped, path);
-    expect((await d.db.users.get(1n)).role).toBe("guest");
-    d.engine.close("clean");
-  });
-
-  test("union payload change gated on rows holding that variant", async () => {
     const path = freshPath();
-    const uSchema = (imageValidator: ReturnType<typeof dbz.object>) =>
-      defineSchema({
-        posts: defineTable({
-          id: dbz.primaryKey(),
-          body: dbz.union("PBody", { text: dbz.string(), image: imageValidator }),
-        }),
-      });
-    const v1 = uSchema(dbz.object({ url: dbz.string() }));
-    const a = open(v1, path);
-    await a.db.posts.insert({ body: { tag: "text", value: "hello" } });
+    const a = open(nullable, path);
+    await a.db.users.insert({ name: "ana", role: "admin", nick: null });
+    await a.db.users.insert({ name: "bea", role: "member", nick: null });
     a.engine.close("clean");
 
-    // only 'text' rows exist: changing 'image' payload is safe
-    const v2 = uSchema(dbz.object({ url: dbz.string(), width: dbz.number() }));
-    const b = open(v2, path);
-    await b.db.posts.insert({ body: { tag: "image", value: { url: "u", width: 1 } } });
+    // two NULL nicks group together in SQL but never collide in a unique index
+    const b = open(uniqueNick, path);
+    expect(b.applied).toContain("created index users.by_nick");
     b.engine.close("clean");
-
-    // now an 'image' row exists: changing it again refuses
-    const v3 = uSchema(dbz.object({ href: dbz.string() }));
-    const refusing = new Engine(v3, path);
-    expect(() => reconcile(refusing)).toThrow("variant 'image' payload type changed");
-    refusing.close("clean");
   });
 
-  test("index lifecycle: add, drop, unique over duplicates refuses", async () => {
+  test("a unique index over a column added in the same change applies", async () => {
+    const withNew = defineSchema({
+      users: defineTable({
+        id: dbz.primaryKey(),
+        name: dbz.string(),
+        role: RRole(),
+        slug: dbz.nullable(dbz.string()),
+      }).index("by_slug", ["slug"], { unique: true }),
+    });
+    const path = freshPath();
+    const a = open(baseSchema(), path);
+    await a.db.users.insert({ name: "ana", role: "admin" });
+    a.engine.close("clean");
+
+    // the probed column is not physical yet; existing rows will hold NULL
+    const b = open(withNew, path);
+    expect(b.applied).toContain("added nullable column users.slug");
+    expect(b.applied).toContain("created index users.by_slug");
+    b.engine.close("clean");
+  });
+
+  test("duplicates refuse with counts and leave the database untouched", async () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
     await a.db.users.insert({ name: "dup", role: "admin" });
     await a.db.users.insert({ name: "dup", role: "member" });
     a.engine.close("clean");
 
-    const uniqueName = defineSchema({
-      users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
-        role: dbz.enum("RRole", ["admin", "member", "guest"]),
-      }).index("by_name", ["name"], { unique: true }),
-    });
     const refusing = new Engine(uniqueName, path);
-    expect(() => reconcile(refusing)).toThrow("1 group(s) of duplicate rows");
+    expect(() => reconcile(refusing)).toThrow("1 duplicate group(s)");
+    // nothing touched: the index is still the old non-unique one
+    const sql = (
+      refusing.writer.query("SELECT sql FROM sqlite_master WHERE name = 'ix_users_by_name'").get() as { sql: string }
+    ).sql;
+    expect(sql).not.toContain("UNIQUE");
+    // both duplicate rows survive
+    expect((refusing.writer.query("SELECT COUNT(*) AS n FROM users").get() as { n: bigint }).n).toBe(2n);
     refusing.close("clean");
+  });
+});
 
-    const roleIndexed = defineSchema({
-      users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
-        role: dbz.enum("RRole", ["admin", "member", "guest"]),
-      }).index("by_role", ["role"]),
+describe("probeUniqueIndex (the shared duplicate probe)", () => {
+  // A query function that fakes the duplicate-group count and records the SQL it ran.
+  const fakeQuery = (dupes: number) => {
+    const calls: string[] = [];
+    const query = (sql: string): number => {
+      calls.push(sql);
+      return dupes;
+    };
+    return Object.assign(query, { calls });
+  };
+  const cols = { email: {} }; // a physically-present column
+
+  test("clean → null; duplicates → the target-world refusal carrying the count", () => {
+    expect(probeUniqueIndex(fakeQuery(0), "users", "by_email", ["email"], cols)).toBeNull();
+    expect(probeUniqueIndex(fakeQuery(3), "users", "by_email", ["email"], cols)).toEqual({
+      table: "users",
+      index: "by_email",
+      reason: "unique-index-duplicates",
+      question: "unique index over (email); 3 duplicate group(s) exist",
+      count: 3,
     });
-    const b = open(roleIndexed, path);
-    expect(b.applied).toContain("dropped index users.by_name");
-    expect(b.applied).toContain("created index users.by_role");
-    const admins = await b.db.users.byRole((q: any) => q.eq("role", "admin")).collect();
-    expect(admins).toHaveLength(1);
-    b.engine.close("clean");
   });
 
-  test("dropping tables: empty drops, non-empty refuses", async () => {
+  test("a column not physically present yet cannot have duplicates — no query runs", () => {
+    const q = fakeQuery(99); // even if the DB would report dupes, an absent column is never probed
+    expect(probeUniqueIndex(q, "users", "by_slug", ["slug"], cols)).toBeNull();
+    expect(q.calls).toEqual([]);
+  });
+
+  test("NULLs are excluded and only present columns are grouped (the constraint's own semantics)", () => {
+    const q = fakeQuery(0);
+    probeUniqueIndex(q, "users", "by_email", ["email"], cols);
+    expect(q.calls[0]).toBe(
+      'SELECT COUNT(*) AS n FROM (SELECT 1 FROM "users" WHERE "email" IS NOT NULL GROUP BY "email" HAVING COUNT(*) > 1)',
+    );
+  });
+
+  test("a renamed table probes the OLD physical names while the refusal names the target world", () => {
+    const q = fakeQuery(2);
+    const refusal = probeUniqueIndex(q, "members", "by_email", ["email"], cols, {
+      table: "users",
+      column: (c) => (c === "email" ? "mail" : c),
+    });
+    // SQL reads the pre-rename physical table + column...
+    expect(q.calls[0]).toBe(
+      'SELECT COUNT(*) AS n FROM (SELECT 1 FROM "users" WHERE "mail" IS NOT NULL GROUP BY "mail" HAVING COUNT(*) > 1)',
+    );
+    // ...but the refusal points at the new (target) site and its logical columns.
+    expect(refusal).toEqual({
+      table: "members",
+      index: "by_email",
+      reason: "unique-index-duplicates",
+      question: "unique index over (email); 2 duplicate group(s) exist",
+      count: 2,
+    });
+  });
+});
+
+describe("reconcile: refusal surface", () => {
+  test("the message names the migration recourse and the dbz reset escape hatch", () => {
     const path = freshPath();
-    const two = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
-      logs: defineTable({ id: dbz.primaryKey(), line: dbz.string() }),
-    });
-    const a = open(two, path);
-    await a.db.logs.insert({ line: "x" });
-    a.engine.close("clean");
+    const a = new Engine(baseSchema(), path);
+    reconcile(a);
+    a.close("clean");
 
-    const one = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
+    const withRequired = defineSchema({
+      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole(), slug: dbz.string() }).index(
+        "by_name",
+        ["name"],
+      ),
     });
-    const refusing = new Engine(one, path);
-    expect(() => reconcile(refusing)).toThrow("table logs dropped, but it still holds 1 row(s)");
-    refusing.close("clean");
-
-    const b = open(two, path);
-    await b.db.logs.delete(1n);
-    b.engine.close("clean");
-    const c = open(one, path);
-    expect(c.applied).toContain("dropped logs");
-    c.engine.close("clean");
+    const b = new Engine(withRequired, path);
+    try {
+      reconcile(b);
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(UnsafeSchemaChange);
+      const refusal = error as UnsafeSchemaChange;
+      expect(refusal.refusals).toEqual([
+        {
+          table: "users",
+          column: "slug",
+          reason: "required-column-added",
+          question: "required column added; existing rows would have no value",
+        },
+      ]);
+      expect(refusal.message).toContain("users.slug: required column added");
+      expect(refusal.message).toContain("migration");
+      expect(refusal.message).toContain("dbz reset");
+    }
+    b.close("clean");
   });
 
-  test("refusal leaves the database untouched (all-or-nothing)", async () => {
+  test("a safe change alongside an unsafe one applies nothing (all-or-nothing)", async () => {
     const path = freshPath();
     const a = open(baseSchema(), path);
     await a.db.users.insert({ name: "keeper", role: "admin" });
     a.engine.close("clean");
 
-    // one safe change (new table) + one unsafe (required column on non-empty)
+    // one safe change (new table + enum) + one unsafe (required column)
     const mixed = defineSchema({
       users: defineTable({
         id: dbz.primaryKey(),
         name: dbz.string(),
-        role: dbz.enum("RRole", ["admin", "member", "guest"]),
+        role: RRole(),
         slug: dbz.string(),
       }).index("by_name", ["name"]),
-      audit: defineTable({
-        id: dbz.primaryKey(),
-        line: dbz.enum("AuditKind", ["created", "deleted"]),
-      }),
+      audit: defineTable({ id: dbz.primaryKey(), line: dbz.enum("AuditKind", ["created", "deleted"]) }),
     });
     const refusing = new Engine(mixed, path);
     expect(() => reconcile(refusing)).toThrow(UnsafeSchemaChange);
-    // the safe part (audit table) must NOT have been applied
-    expect(
-      refusing.writer.query("SELECT name FROM sqlite_master WHERE name = 'audit'").get(),
-    ).toBe(null);
-    expect(
-      refusing.writer.query("SELECT COUNT(*) AS count FROM _dbz_tags WHERE type = 'AuditKind'").get(),
-    ).toEqual({ count: 0n });
+    expect(refusing.writer.query("SELECT name FROM sqlite_master WHERE name = 'audit'").get()).toBe(null);
+    expect(refusing.writer.query("SELECT COUNT(*) AS count FROM _dbz_tags WHERE type = 'AuditKind'").get()).toEqual({
+      count: 0n,
+    });
     refusing.close("clean");
   });
 });

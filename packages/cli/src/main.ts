@@ -15,11 +15,22 @@
  * zero import-cache staleness. Clients reconnect and resubscribe on restart.
  */
 import { existsSync, rmSync, watch } from "node:fs";
-import { basename, resolve, sep } from "node:path";
+import { basename, relative, resolve, sep } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
+import type { Renames } from "@dbzz/server";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { runCodegen } from "./codegen.ts";
 import { startApp, StartupInterruptedError } from "./app.ts";
+import { runRenameForm, type FormResult } from "./migrations/form.ts";
+import {
+  computePlan,
+  deriveSlug,
+  planToWire,
+  type PlanWire,
+  type RenameCandidates,
+} from "./migrations/plan.ts";
+import { writeMigration, type GenerateRequest } from "./migrations/write.ts";
 import {
   createVerifiedBackup,
   inspectDatabase,
@@ -37,6 +48,7 @@ function usage(): never {
   dbz dev [app-dir]
   dbz start [app-dir]
   dbz codegen [app-dir]
+  dbz generate [name] [app-dir]
   dbz reset [app-dir]
   dbz status [app-dir]
   dbz backup <artifact> [app-dir]
@@ -77,6 +89,108 @@ async function codegenChild(appDir: string): Promise<boolean> {
   return (await child.exited) === 0;
 }
 
+// -- migration generation flow ------------------------------------------------
+
+/** Parse the JSON the `__generate` child receives: `{ name, renames? }`. */
+function parseGenerateRequest(json: string): GenerateRequest {
+  const parsed = JSON.parse(json) as { name?: unknown; renames?: unknown };
+  if (typeof parsed.name !== "string") throw new Error("__generate request must carry a string name");
+  return parsed.renames === undefined
+    ? { name: parsed.name }
+    : { name: parsed.name, renames: parsed.renames as Renames };
+}
+
+/** The last non-empty line of a child's stdout — the one JSON line it prints. */
+function lastJsonLine(text: string): string {
+  const lines = text.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  if (lines.length === 0) throw new Error("expected JSON output from the child process");
+  return lines[lines.length - 1]!;
+}
+
+/** Ask an ephemeral `__plan` child (fresh modules, no user code here) for the plan. */
+async function planChild(appDir: string): Promise<PlanWire> {
+  const child = Bun.spawn([process.execPath, CLI_PATH, "__plan", appDir], {
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  if (code !== 0) throw new Error("could not compute the migration plan (see the error above)");
+  return JSON.parse(lastJsonLine(out)) as PlanWire;
+}
+
+/** Drive an ephemeral `__generate` child, returning the written artifact paths. */
+async function generateChild(appDir: string, request: GenerateRequest): Promise<string[]> {
+  const child = Bun.spawn([process.execPath, CLI_PATH, "__generate", appDir, JSON.stringify(request)], {
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  if (code !== 0) throw new Error("migration generation failed (see the error above)");
+  return (JSON.parse(lastJsonLine(out)) as { written: string[] }).written;
+}
+
+function isInteractive(): boolean {
+  return Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
+}
+
+/** Run the rename form over a real readline; the caller guarantees a TTY. */
+async function promptRenames(candidates: RenameCandidates): Promise<FormResult> {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    return await runRenameForm(candidates, (prompt) => rl.question(prompt));
+  } finally {
+    rl.close();
+  }
+}
+
+function countRenames(renames: Renames): number {
+  const columns = Object.values(renames.columns ?? {}).reduce((n, cols) => n + Object.keys(cols).length, 0);
+  const variants = Object.values(renames.variants ?? {}).reduce((n, vars) => n + Object.keys(vars).length, 0);
+  return Object.keys(renames.tables ?? {}).length + columns + variants;
+}
+
+/** Report what was scaffolded and point the developer at the holes to fill. */
+function reportGenerated(written: string[], renames: Renames, dropsAcknowledged: string[]): void {
+  const rel = (path: string) => relative(process.cwd(), path);
+  console.log(`[dbz] generated ${written.map(rel).join(", ")}`);
+  const renameCount = countRenames(renames);
+  if (renameCount > 0) console.log(`[dbz] recorded ${renameCount} rename(s)`);
+  if (dropsAcknowledged.length > 0) console.log(`[dbz] delete + add: ${dropsAcknowledged.join(", ")}`);
+  console.log(
+    `[dbz] fill the TODOs in ${rel(written[0]!)}, then restart — the server applies the migration once it compiles`,
+  );
+}
+
+/** `dbz generate`: plan in-process, run the form when interactive, then write the scaffold. */
+async function generate(nameArg: string | undefined, appDir: string): Promise<void> {
+  const config = loadConfig(appDir);
+  const outcome = await computePlan(config);
+  switch (outcome.status) {
+    case "no-database":
+      throw new Error(`no database at ${resolve(config.dbDir, "data.db")}; run \`dbz dev\` to initialize it first`);
+    case "diverged":
+      throw new Error(outcome.message);
+    case "pending":
+      throw new Error(`apply the ${outcome.pendingCount} pending migration(s) first — start \`dbz dev\``);
+    case "clean":
+      console.log("[dbz] no changes need a migration; nothing to generate (shape-safe changes apply on their own)");
+      return;
+    case "changes": {
+      let form: FormResult = { renames: {}, dropsAcknowledged: [] };
+      if (isInteractive()) {
+        form = await promptRenames(outcome.candidates);
+      } else {
+        console.error(
+          "[dbz] rename detection needs a terminal; generating with no renames (drops are acknowledged, adds treated as new)",
+        );
+      }
+      const name = nameArg !== undefined && nameArg.length > 0 ? nameArg : deriveSlug(outcome.refusals);
+      const written = await writeMigration(config, { name, renames: form.renames });
+      reportGenerated(written, form.renames, form.dropsAcknowledged);
+    }
+  }
+}
+
 function shouldIgnore(config: AppConfig, filename: string): boolean {
   const generatedName = basename(config.generatedDir);
   const dbName = basename(config.dbDir);
@@ -93,17 +207,70 @@ function shouldIgnore(config: AppConfig, filename: string): boolean {
 
 async function dev(appDir: string): Promise<void> {
   const config = loadConfig(appDir);
-  let child: ReturnType<typeof Bun.spawn> | null = null;
+  type Child = ReturnType<typeof Bun.spawn>;
+  let child: Child | null = null;
+  // Children we killed ourselves (reload/shutdown); their non-zero exit is not a crash.
+  const stopped = new WeakSet<Child>();
+  let handlingCrash = false;
 
-  const startChild = async () => {
-    if (child !== null) {
-      child.kill();
-      await child.exited;
-    }
-    child = Bun.spawn([process.execPath, CLI_PATH, "__serve", appDir], {
+  const spawnChild = () => {
+    const started = Bun.spawn([process.execPath, CLI_PATH, "__serve", appDir], {
       stdout: "inherit",
       stderr: "inherit",
     });
+    child = started;
+    // Watch this child's exit without disturbing the reload flow: a genuine
+    // crash (a refused schema change fails startup) is the only trigger.
+    void started.exited.then((code) => onChildExit(started, code));
+  };
+
+  const stopChild = async () => {
+    if (child !== null) {
+      stopped.add(child);
+      child.kill();
+      await child.exited;
+      child = null;
+    }
+  };
+
+  const startChild = async () => {
+    await stopChild();
+    spawnChild();
+  };
+
+  const onChildExit = (exited: Child, code: number) => {
+    if (stopped.has(exited)) {
+      stopped.delete(exited);
+      return; // we killed it for a reload or shutdown
+    }
+    if (exited !== child) return; // already superseded by a newer child
+    if (code === 0) return; // graceful exit
+    child = null;
+    void handleCrash();
+  };
+
+  // A crashed serve child is the interactive migration prompt's entry point. Only
+  // one prompt at a time, and only with a real terminal on both ends — a non-TTY
+  // dev keeps today's behavior (the child's own stderr already names `dbz generate`).
+  const handleCrash = async () => {
+    if (handlingCrash || !isInteractive()) return;
+    handlingCrash = true;
+    try {
+      const wire = await planChild(appDir);
+      if ("error" in wire || wire.clean) return; // fresh db, or nothing to answer
+      if (wire.pendingCount > 0) {
+        console.error("[dbz] a scaffolded migration is not applied yet — fill its TODOs; the server reloads when it compiles");
+        return;
+      }
+      if (wire.refusals.length === 0) return;
+      const { renames, dropsAcknowledged } = await promptRenames(wire.candidates);
+      const written = await generateChild(appDir, { name: deriveSlug(wire.refusals), renames });
+      reportGenerated(written, renames, dropsAcknowledged);
+    } catch (error) {
+      console.error(`[dbz] ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      handlingCrash = false;
+    }
   };
 
   console.log(`[dbz] dev watching ${config.appDir}`);
@@ -154,6 +321,7 @@ async function dev(appDir: string): Promise<void> {
   const shutdown = () => {
     treeWatcher.close();
     schemaWatcher?.close();
+    if (child !== null) stopped.add(child);
     child?.kill();
     process.exit(0);
   };
@@ -195,6 +363,24 @@ try {
       console.log(
         `[dbz] codegen ${written.length > 0 ? `wrote ${written.join(", ")}` : "up to date"} (${Math.round(performance.now() - t0)}ms)`,
       );
+      break;
+    }
+    case "generate": {
+      requireArgumentCount(args, 0, 2);
+      await generate(args[0], resolve(args[1] ?? "."));
+      break;
+    }
+    case "__plan": {
+      requireArgumentCount(args, 1, 1);
+      const config = loadConfig(resolve(args[0]!));
+      console.log(JSON.stringify(planToWire(await computePlan(config), config)));
+      break;
+    }
+    case "__generate": {
+      requireArgumentCount(args, 2, 2);
+      const config = loadConfig(resolve(args[0]!));
+      const written = await writeMigration(config, parseGenerateRequest(args[1]!));
+      console.log(JSON.stringify({ written }));
       break;
     }
     case "reset": {

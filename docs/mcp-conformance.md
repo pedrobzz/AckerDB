@@ -92,14 +92,15 @@ exact versions, configuration, assertions, and current host limitations.
 
 ## Comparative performance
 
-Runtime MCP changes retain the repository-wide same-machine comparison:
+Runtime MCP changes are benchmarked only when they enter a release version:
 
 ```sh
-bun bench/run.ts
+# Dispatch from a background worker after bun run bump.
+bun run bench:hetzner
 ```
 
-DBZZ, Convex, and SpacetimeDB must run on the same host and workload. Compare
-only records from matching hardware and tool profiles, rerun noisy latency
-movements before classifying a regression, and preserve measured failures in
-the benchmark record rather than replacing them with partial success claims.
-See [the benchmark contract](../bench/README.md) for the complete procedure.
+DBZZ, Convex, and SpacetimeDB run on the Hetzner host with the same workload.
+The final release record compares DBZZ with the preceding version; rerun a
+material regression before performance recovery. A failed run is retained as a
+version iteration, never a replacement for the final record. See [the
+benchmark contract](../bench/README.md) for the complete procedure.

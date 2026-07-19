@@ -148,12 +148,13 @@ bun run typecheck
 bun run typecheck:bench
 ```
 
-The comparative benchmark runs DBZZ, Convex, and SpacetimeDB on the same
-machine and separately measures DBZZ's exact default telemetry, minimum
-in-process exporter handoff cost, and fully disabled telemetry. Its workload,
-durability profile, correctness gates, results, and interpretation limits are
-documented in [bench/README.md](bench/README.md).
+The comparative benchmark is release evidence: every major, minor, or patch
+version is measured once on Hetzner against the preceding version's final
+record. It runs DBZZ, Convex, and SpacetimeDB with the same workload and
+separately measures DBZZ's exact default telemetry, minimum in-process exporter
+handoff cost, and fully disabled telemetry. Its recovery process, naming, and
+interpretation limits are documented in [bench/README.md](bench/README.md).
 
 ```sh
-bun bench/run.ts
+bun run bench:hetzner # dispatch from a background worker after bun run bump
 ```

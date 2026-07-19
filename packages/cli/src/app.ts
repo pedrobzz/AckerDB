@@ -16,11 +16,13 @@ import {
   isSchema,
   type CredentialVerifier,
   type EngineCloseDisposition,
+  MigrationError,
   reconcile,
   type Schema,
   UnsafeSchemaChange,
 } from "@dbzz/server";
 import type { AppConfig } from "./config.ts";
+import { loadMigrationChain } from "./migrations/load.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 
@@ -221,10 +223,11 @@ export async function startApp(
     }
 
     server.advanceStartup("loading");
-    const [verifier, schema, modules] = await awaitStartup(Promise.all([
+    const [verifier, schema, modules, steps] = await awaitStartup(Promise.all([
       loadCredentialVerifier(),
       importSchema(config),
       importFunctionModules(config),
+      loadMigrationChain(config),
     ]));
     requireStartupOwnership();
 
@@ -234,8 +237,11 @@ export async function startApp(
       durability: config.durability,
     });
 
-    server.advanceStartup("reconciling");
-    const { applied } = reconcile(ownedEngine);
+    // A present chain reports `migrating` distinctly; an empty one reconciles
+    // exactly as before. The chain form owns history, the per-step apply, and
+    // the trailing safe reconcile in one call.
+    server.advanceStartup(steps.length > 0 ? "migrating" : "reconciling");
+    const { applied } = await reconcile(ownedEngine, steps);
     for (const line of applied) console.log(`[dbz] ${line}`);
     const registry = new Registry(modules);
     runtime = new Runtime({
@@ -262,7 +268,19 @@ export async function startApp(
     if (shutdownRequested && !(error instanceof StartupInterruptedError)) {
       throw new StartupInterruptedError();
     }
-    if (error instanceof UnsafeSchemaChange) throw new Error(error.message, { cause: error });
+    if (error instanceof UnsafeSchemaChange || error instanceof MigrationError) {
+      throw new Error(withGenerationRecourse(error.message), { cause: error });
+    }
     throw error;
   }
+}
+
+/**
+ * Startup is the non-interactive path: a refused schema change or an incomplete
+ * migration is surfaced with the exact command that authors the answer, never a
+ * prompt. The message ends with the command itself so it is the last thing the
+ * operator reads.
+ */
+function withGenerationRecourse(message: string): string {
+  return `${message}\n\ngenerate a migration for the change above, then restart:\n\n    dbz generate`;
 }
