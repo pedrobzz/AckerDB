@@ -1,0 +1,984 @@
+{
+  "number": 2,
+  "name": "drop_category_slug",
+  "fingerprint": "b98911062336066b9ff1ad221626b57c2960bee993235fe862cc4967dc0b22a3",
+  "pre": {
+    "version": 1,
+    "tables": {
+      "kitchenReminders": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "orderItemId": {
+            "k": "bigint"
+          },
+          "expectedStatus": {
+            "k": "enum",
+            "name": "ItemStatus",
+            "values": [
+              "ORDERED",
+              "PREPARING",
+              "PREPARED",
+              "SERVED",
+              "CANCELLED"
+            ]
+          },
+          "at": {
+            "k": "scheduleAt"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_order_item",
+            "columns": [
+              "orderItemId"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "menuCategories": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "name": {
+            "k": "string"
+          },
+          "slug": {
+            "k": "string"
+          },
+          "sortOrder": {
+            "k": "number"
+          },
+          "active": {
+            "k": "boolean"
+          },
+          "createdAt": {
+            "k": "number"
+          },
+          "updatedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_name",
+            "columns": [
+              "name"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_sort_order",
+            "columns": [
+              "sortOrder"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "menuItems": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "categoryId": {
+            "k": "bigint"
+          },
+          "name": {
+            "k": "string"
+          },
+          "description": {
+            "k": "string"
+          },
+          "image": {
+            "k": "string"
+          },
+          "priceCents": {
+            "k": "number"
+          },
+          "sortOrder": {
+            "k": "number"
+          },
+          "active": {
+            "k": "boolean"
+          },
+          "createdAt": {
+            "k": "number"
+          },
+          "updatedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_category",
+            "columns": [
+              "categoryId",
+              "sortOrder"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_name",
+            "columns": [
+              "name"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "orderEvents": {
+        "kind": "event",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "ownerIdentity": {
+            "k": "identity"
+          },
+          "orderId": {
+            "k": "bigint"
+          },
+          "orderItemId": {
+            "k": "nullable",
+            "inner": {
+              "k": "bigint"
+            }
+          },
+          "kind": {
+            "k": "enum",
+            "name": "OrderEventKind",
+            "values": [
+              "ITEM_STATUS",
+              "ORDER_STATUS"
+            ]
+          },
+          "status": {
+            "k": "string"
+          },
+          "message": {
+            "k": "string"
+          },
+          "occurredAt": {
+            "k": "number"
+          }
+        },
+        "indexes": []
+      },
+      "orderItems": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "orderId": {
+            "k": "bigint"
+          },
+          "menuItemId": {
+            "k": "bigint"
+          },
+          "name": {
+            "k": "string"
+          },
+          "image": {
+            "k": "string"
+          },
+          "unitPriceCents": {
+            "k": "number"
+          },
+          "quantity": {
+            "k": "number"
+          },
+          "note": {
+            "k": "nullable",
+            "inner": {
+              "k": "string"
+            }
+          },
+          "status": {
+            "k": "enum",
+            "name": "ItemStatus",
+            "values": [
+              "ORDERED",
+              "PREPARING",
+              "PREPARED",
+              "SERVED",
+              "CANCELLED"
+            ]
+          },
+          "orderedAt": {
+            "k": "number"
+          },
+          "statusChangedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_order",
+            "columns": [
+              "orderId",
+              "orderedAt"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_order_status",
+            "columns": [
+              "orderId",
+              "status"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_status_changed_at",
+            "columns": [
+              "status",
+              "statusChangedAt"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "orders": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "userId": {
+            "k": "bigint"
+          },
+          "tableId": {
+            "k": "bigint"
+          },
+          "openUserId": {
+            "k": "nullable",
+            "inner": {
+              "k": "bigint"
+            }
+          },
+          "openTableId": {
+            "k": "nullable",
+            "inner": {
+              "k": "bigint"
+            }
+          },
+          "status": {
+            "k": "enum",
+            "name": "OrderStatus",
+            "values": [
+              "OPEN",
+              "PAID",
+              "CANCELLED"
+            ]
+          },
+          "totalCents": {
+            "k": "number"
+          },
+          "openedAt": {
+            "k": "number"
+          },
+          "closedAt": {
+            "k": "nullable",
+            "inner": {
+              "k": "number"
+            }
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_open_table",
+            "columns": [
+              "openTableId"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_open_user",
+            "columns": [
+              "openUserId"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_status_opened_at",
+            "columns": [
+              "status",
+              "openedAt"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_user_opened_at",
+            "columns": [
+              "userId",
+              "openedAt"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "restaurantTables": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "number": {
+            "k": "number"
+          },
+          "seats": {
+            "k": "number"
+          },
+          "active": {
+            "k": "boolean"
+          },
+          "createdAt": {
+            "k": "number"
+          },
+          "updatedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_number",
+            "columns": [
+              "number"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "setupState": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "key": {
+            "k": "string"
+          },
+          "completedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_key",
+            "columns": [
+              "key"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "staffEvents": {
+        "kind": "event",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "kind": {
+            "k": "enum",
+            "name": "StaffEventKind",
+            "values": [
+              "KITCHEN_REMINDER"
+            ]
+          },
+          "orderId": {
+            "k": "bigint"
+          },
+          "orderItemId": {
+            "k": "bigint"
+          },
+          "tableNumber": {
+            "k": "number"
+          },
+          "itemName": {
+            "k": "string"
+          },
+          "status": {
+            "k": "enum",
+            "name": "ItemStatus",
+            "values": [
+              "ORDERED",
+              "PREPARING",
+              "PREPARED",
+              "SERVED",
+              "CANCELLED"
+            ]
+          },
+          "message": {
+            "k": "string"
+          },
+          "occurredAt": {
+            "k": "number"
+          }
+        },
+        "indexes": []
+      },
+      "users": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "identity": {
+            "k": "nullable",
+            "inner": {
+              "k": "identity"
+            }
+          },
+          "email": {
+            "k": "string"
+          },
+          "name": {
+            "k": "string"
+          },
+          "createdAt": {
+            "k": "number"
+          },
+          "updatedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_email",
+            "columns": [
+              "email"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_identity",
+            "columns": [
+              "identity"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_name",
+            "columns": [
+              "name"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          }
+        ]
+      }
+    }
+  },
+  "target": {
+    "version": 1,
+    "tables": {
+      "kitchenReminders": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "orderItemId": {
+            "k": "bigint"
+          },
+          "expectedStatus": {
+            "k": "enum",
+            "name": "ItemStatus",
+            "values": [
+              "ORDERED",
+              "PREPARING",
+              "PREPARED",
+              "SERVED",
+              "CANCELLED"
+            ]
+          },
+          "at": {
+            "k": "scheduleAt"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_order_item",
+            "columns": [
+              "orderItemId"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "menuCategories": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "name": {
+            "k": "string"
+          },
+          "sortOrder": {
+            "k": "number"
+          },
+          "active": {
+            "k": "boolean"
+          },
+          "createdAt": {
+            "k": "number"
+          },
+          "updatedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_name",
+            "columns": [
+              "name"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_sort_order",
+            "columns": [
+              "sortOrder"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "menuItems": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "categoryId": {
+            "k": "bigint"
+          },
+          "name": {
+            "k": "string"
+          },
+          "description": {
+            "k": "string"
+          },
+          "image": {
+            "k": "string"
+          },
+          "priceCents": {
+            "k": "number"
+          },
+          "sortOrder": {
+            "k": "number"
+          },
+          "active": {
+            "k": "boolean"
+          },
+          "createdAt": {
+            "k": "number"
+          },
+          "updatedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_category",
+            "columns": [
+              "categoryId",
+              "sortOrder"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_name",
+            "columns": [
+              "name"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "orderEvents": {
+        "kind": "event",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "ownerIdentity": {
+            "k": "identity"
+          },
+          "orderId": {
+            "k": "bigint"
+          },
+          "orderItemId": {
+            "k": "nullable",
+            "inner": {
+              "k": "bigint"
+            }
+          },
+          "kind": {
+            "k": "enum",
+            "name": "OrderEventKind",
+            "values": [
+              "ITEM_STATUS",
+              "ORDER_STATUS"
+            ]
+          },
+          "status": {
+            "k": "string"
+          },
+          "message": {
+            "k": "string"
+          },
+          "occurredAt": {
+            "k": "number"
+          }
+        },
+        "indexes": []
+      },
+      "orderItems": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "orderId": {
+            "k": "bigint"
+          },
+          "menuItemId": {
+            "k": "bigint"
+          },
+          "name": {
+            "k": "string"
+          },
+          "image": {
+            "k": "string"
+          },
+          "unitPriceCents": {
+            "k": "number"
+          },
+          "quantity": {
+            "k": "number"
+          },
+          "note": {
+            "k": "nullable",
+            "inner": {
+              "k": "string"
+            }
+          },
+          "status": {
+            "k": "enum",
+            "name": "ItemStatus",
+            "values": [
+              "ORDERED",
+              "PREPARING",
+              "PREPARED",
+              "SERVED",
+              "CANCELLED"
+            ]
+          },
+          "orderedAt": {
+            "k": "number"
+          },
+          "statusChangedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_order",
+            "columns": [
+              "orderId",
+              "orderedAt"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_order_status",
+            "columns": [
+              "orderId",
+              "status"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_status_changed_at",
+            "columns": [
+              "status",
+              "statusChangedAt"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "orders": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "userId": {
+            "k": "bigint"
+          },
+          "tableId": {
+            "k": "bigint"
+          },
+          "openUserId": {
+            "k": "nullable",
+            "inner": {
+              "k": "bigint"
+            }
+          },
+          "openTableId": {
+            "k": "nullable",
+            "inner": {
+              "k": "bigint"
+            }
+          },
+          "status": {
+            "k": "enum",
+            "name": "OrderStatus",
+            "values": [
+              "OPEN",
+              "PAID",
+              "CANCELLED"
+            ]
+          },
+          "totalCents": {
+            "k": "number"
+          },
+          "openedAt": {
+            "k": "number"
+          },
+          "closedAt": {
+            "k": "nullable",
+            "inner": {
+              "k": "number"
+            }
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_open_table",
+            "columns": [
+              "openTableId"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_open_user",
+            "columns": [
+              "openUserId"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_status_opened_at",
+            "columns": [
+              "status",
+              "openedAt"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_user_opened_at",
+            "columns": [
+              "userId",
+              "openedAt"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "restaurantTables": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "number": {
+            "k": "number"
+          },
+          "seats": {
+            "k": "number"
+          },
+          "active": {
+            "k": "boolean"
+          },
+          "createdAt": {
+            "k": "number"
+          },
+          "updatedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_number",
+            "columns": [
+              "number"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "setupState": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "key": {
+            "k": "string"
+          },
+          "completedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_key",
+            "columns": [
+              "key"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          }
+        ]
+      },
+      "staffEvents": {
+        "kind": "event",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "kind": {
+            "k": "enum",
+            "name": "StaffEventKind",
+            "values": [
+              "KITCHEN_REMINDER"
+            ]
+          },
+          "orderId": {
+            "k": "bigint"
+          },
+          "orderItemId": {
+            "k": "bigint"
+          },
+          "tableNumber": {
+            "k": "number"
+          },
+          "itemName": {
+            "k": "string"
+          },
+          "status": {
+            "k": "enum",
+            "name": "ItemStatus",
+            "values": [
+              "ORDERED",
+              "PREPARING",
+              "PREPARED",
+              "SERVED",
+              "CANCELLED"
+            ]
+          },
+          "message": {
+            "k": "string"
+          },
+          "occurredAt": {
+            "k": "number"
+          }
+        },
+        "indexes": []
+      },
+      "users": {
+        "kind": "table",
+        "columns": {
+          "id": {
+            "k": "pk"
+          },
+          "identity": {
+            "k": "nullable",
+            "inner": {
+              "k": "identity"
+            }
+          },
+          "email": {
+            "k": "string"
+          },
+          "name": {
+            "k": "string"
+          },
+          "createdAt": {
+            "k": "number"
+          },
+          "updatedAt": {
+            "k": "number"
+          }
+        },
+        "indexes": [
+          {
+            "name": "by_email",
+            "columns": [
+              "email"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_identity",
+            "columns": [
+              "identity"
+            ],
+            "unique": true,
+            "algorithm": "btree"
+          },
+          {
+            "name": "by_name",
+            "columns": [
+              "name"
+            ],
+            "unique": false,
+            "algorithm": "btree"
+          }
+        ]
+      }
+    }
+  }
+}
