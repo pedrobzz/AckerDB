@@ -88,3 +88,4 @@ if (install.exitCode !== 0) fail(`bun install failed after bump:\n${install.stde
 git("commit", "-m", `chore(release): v${next}`, "--", ...PACKAGES.map(pkgJsonPath), "bun.lock");
 console.log(`bumped ${current} → ${next} across ${PACKAGES.map((p) => `@dbzz/${p}`).join(", ")}`);
 console.log(`committed as: chore(release): v${next}`);
+console.log(`dispatch bun run bench:hetzner in a background worker for v${next}; merge is blocked until its final Hetzner result is committed.`);

@@ -1,5 +1,5 @@
 import { PRODUCTION_LIMITS, type TelemetryLimits } from "@dbzz/server";
-import type { BenchmarkConfig, SystemName } from "./benchmark.ts";
+import type { SystemName } from "./benchmark.ts";
 
 export type DbzzTelemetryMode = "enabled" | "disabled";
 export type DbzzDurabilityMode = "production" | "balanced";
@@ -40,72 +40,7 @@ export interface ProfileComparisonMetric {
   readonly lowerIsBetter: boolean;
 }
 
-export type BenchmarkRunPolicy =
-  | {
-      readonly profiledDbzz: true;
-      readonly persist: true;
-      readonly historicalAcceptance: boolean;
-      readonly diagnosticMessage: null;
-    }
-  | {
-      readonly profiledDbzz: boolean;
-      readonly persist: false;
-      readonly historicalAcceptance: false;
-      readonly diagnosticMessage: string;
-    };
-export type BenchmarkComparison = "frozen" | "current";
-
 export const DBZZ_STARTUP_PREFIX = "@@dbzz-startup ";
-
-export function benchmarkRunPolicy(
-  systems: readonly SystemName[],
-  profile: BenchmarkConfig["profile"],
-  comparison: BenchmarkComparison = "frozen",
-): BenchmarkRunPolicy {
-  const allSystems = systems.length === 3 &&
-    (["dbzz", "convex", "spacetimedb"] as const).every((system) => systems.includes(system));
-  if (!allSystems) {
-    return {
-      profiledDbzz: false,
-      persist: false,
-      historicalAcceptance: false,
-      diagnosticMessage:
-        `partial ${profile} diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
-    };
-  }
-  if (comparison === "current") {
-    if (profile === "default") {
-      return {
-        profiledDbzz: true,
-        persist: true,
-        historicalAcceptance: false,
-        diagnosticMessage: null,
-      };
-    }
-    return {
-      profiledDbzz: true,
-      persist: false,
-      historicalAcceptance: false,
-      diagnosticMessage:
-        `current-host ${profile} comparison complete: historical acceptance skipped; result not saved`,
-    };
-  }
-  if (profile !== "default") {
-    return {
-      profiledDbzz: true,
-      persist: false,
-      historicalAcceptance: false,
-      diagnosticMessage:
-        `${profile} all-system diagnostic run: performance acceptance skipped; result not saved (only the default all-system profile is eligible)`,
-    };
-  }
-  return {
-    profiledDbzz: true,
-    persist: true,
-    historicalAcceptance: true,
-    diagnosticMessage: null,
-  };
-}
 
 export function benchmarkProfileFromConfig(
   telemetry: DbzzTelemetryMode,

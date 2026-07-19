@@ -1,44 +1,189 @@
 When researching any topic, Do not forget to use the [LLM Wiki Skill](.agents/skills/karpathy-llm-wiki/SKILL.md) to build a wiki of the topic.
 
+## Performance, correctness, and code quality
+
+Standing rules for every change. Terms are defined in `CONTEXT.md`
+(Engineering philosophy)—use those names; do not redefine them here.
+
+### Target and scale
+
+Optimize for the default deployment envelope under the design load: smooth
+operation with meaningful headroom, not a single fast metric that saturates
+CPU or memory. Normal production at that size must not live near CPU, memory,
+queue, file-descriptor, or transport saturation. The more useful work that
+fits inside that envelope, the better. It is not a claim that every
+concurrency level fits on 4 GiB—for example, ~100k concurrent users are
+expected to need a larger host that the operator can afford.
+
+Apply minimal proportional cost: CPU and RAM may grow with connections, users,
+subscriptions, and updates, but only in proportion to that work, and that
+proportion must stay as small as possible. Super-linear growth, global scans,
+and duplicated per-connection machinery violate the rule. Design load is a
+design target, not an excuse to pre-allocate for every theoretical maximum.
+
+Development may use more resources than production, but must remain bounded
+and must not make the developer machine hostile to use.
+
+### Measure the whole performance vector
+
+State the operation and load shape first: data size, concurrency, subscription
+count, latency target, durability point, and failure mode. Evaluate a change
+across every dimension of the performance vector:
+
+| Dimension | What good looks like |
+| --- | --- |
+| Useful latency and throughput | Fast p50/p95/p99 and high completed useful work for the actual operation, not a synthetic partial path. |
+| Idle cost | Near-zero CPU when there is no work; no background churn, polling, or retained state without a purpose. |
+| Memory | Explicit, finite ownership and budgets. RAM is scarce; copying, caches, queues, history, and telemetry must earn their bytes. |
+| Scale shape | Minimal proportional cost. No global scans, duplicated recomputation, or allocation cliffs. Larger loads may use larger machines. |
+| Tail behavior | A slow consumer, a hot key, a full queue, or a dependency failure gets a bounded typed outcome instead of poisoning unrelated work. |
+| Startup and recovery | Recovery, migration, and shutdown are observable and finite; fast startup does not skip integrity or durability work. |
+| Durable correctness | A number is meaningless if the operation loses, corrupts, duplicates, or silently hides data. |
+
+Convex is a useful contrast: measure the CPU/RAM and fan-out cost of equivalent
+work rather than inheriting its architecture by default. SpacetimeDB is a
+useful performance reference, not a claim that every one of its tradeoffs
+belongs in DBzz. Compare the same workload on the same machine; the repository
+benchmark is the authoritative comparison method (see Benchmarks).
+
+### Judge by net-effect judgment
+
+Score against the simplest design that still satisfies the required
+invariant—not against the decision's stated intention. Apply the same rule to
+performance, correctness, and code quality:
+
+| Score | Meaning |
+| --- | --- |
+| 8–10 | Exceptional net improvement. Use only when evidence shows a material gain and no relevant cost offsets it. |
+| 6–7 | Net improvement with explicit costs. |
+| 5 | Neutral, mixed, or not directed at that dimension. |
+| 1–4 | Net regression, even if it buys another dimension. State the benefit and the cost plainly. |
+| 0 | Substantially harmful for the stated target. |
+
+Do not give a high score merely because a mechanism has a good purpose. A
+retry model may increase correctness while worsening tail latency; an all-RAM
+database may improve raw reads while worsening capacity; a massive workspace
+may isolate ownership while making contributors slower; a validation layer may
+prevent bad data while adding deployment and write cost. If a system's choices
+all score above 5 in every dimension, the review is not judging its tradeoffs.
+
+### Correct code
+
+Correctness is broader than “the happy-path test passed.” Correct DBzz code:
+
+1. **Does not lose data silently.** Persisted state, migrations, retries,
+   ordering, recovery, and destructive operations must be explicit. A failure
+   must preserve evidence and say what is known, unknown, committed, or not
+   committed.
+2. **Is organized enough to change safely.** A new contributor should find the
+   owner, invariant, data flow, and test boundary without weeks of archaeology.
+   Small direct modules and one source of truth beat wrappers, duplicate paths,
+   and hidden state.
+3. **Solves the design instead of stacking fixes.** A new guard that is part of
+   the real contract—an implementation safeguard such as validation, a
+   transaction, a bound, a typed outcome, or a migration transform—is
+   implementation. A branch added only to compensate for a wrong shape is
+   debt, not a solution.
+4. **Addresses severe credible edge cases.** Probability and impact are both
+   relevant. An ultra-rare theoretical case can remain when its cure would make
+   the system worse. A 0.01% event that can lose data, leak memory, or break a
+   customer is credible enough to fix deliberately.
+
+### When a design wall appears
+
+A mismatch with a specification, failed assumption, test, or integration is a
+design signal. Do not patch around it to make the old statement appear true.
+Re-derive the model from first principles until the conflicting case has one
+honest home. If that result diverges from the requested specification, explain
+the divergence before implementing it.
+
+Never turn an invalid design into a “working” deliverable using an accidental
+patch. The patch merely hides the failure and becomes future machinery.
+
+When the only correct design is breaking, make the break explicit: state what
+changes, why the replacement is simpler/safer/faster, and how consumers move.
+Do not add backwards compatibility unless it was explicitly requested.
+
+### Distinguish safeguards from debt
+
+| Kind | Test | Treatment |
+| --- | --- | --- |
+| Implementation safeguard | The desired design needs it to enforce an invariant. | Keep it direct, name the invariant, and test it. |
+| Deferred-design workaround | It exists only because the correct structure is known but too expensive to implement now. | Avoid. If explicitly approved, constrain it tightly and add a `TODO` naming the protection, missing design, and deletion condition. |
+| Accidental patch | It creates a special/parallel path to avoid changing the wrong model. | Reject it; return to the ownership or invariant that made it appear necessary. |
+
+### Prefer less code and proven work
+
+The most performant code is code that never runs. The least buggy code is code
+that does not exist. Delete redundant operations and state before optimizing
+them. Do not hand-build commodity machinery just to avoid a dependency; use a
+small, well-understood solution when it fits the actual contract.
+
+Do not keep a dependency merely because it currently works. If its design adds
+material cost, incorrectness, or unused machinery, first study it in OpenSRC
+and its primary sources, then refresh deliberately when the studied version
+changes. Vendor it only when a focused adaptation has a proven net gain; build
+a replacement only after a prototype demonstrates a material performance or
+correctness gain that justifies permanent maintenance.
+
+### Evidence and verification
+
+Most mature systems problems already have prior art. Before inventing, inspect
+current OpenSRC snapshots and primary sources. Put external source material and
+compiled findings in the LLM Wiki (`raw/` and `wiki/`); put DBzz terminology
+and settled domain boundaries in `CONTEXT.md`; put material DBzz tradeoffs in
+the decision ledger. Revisit all three when later evidence changes a decision.
+
+Verify at the boundary that previously failed; prove the old failure path is
+gone rather than masked.
+
+Before accepting a performance/correctness change, answer:
+
+1. What useful work became faster or safer, under which load shape?
+2. What RAM, CPU, queue, network, and storage ownership did it add or remove?
+3. What happens at saturation, crash, timeout, disconnect, restart, and
+   schema change?
+4. Does it preserve data and make ambiguity explicit?
+5. Does it remove a model problem or create another branch around it?
+6. Which OpenSRC/primary-source decision or DBzz ledger entry supports it?
+7. What boundary test and, when relevant, benchmark prove the claim?
+
 
 # Benchmarks
-**important**: Run benchmarks before and after changes to the dbzz packages only when those changes can plausibly impact runtime performance. Changes limited to docs, tooling, demos, tests, release plumbing, or other non-runtime code do not require benchmarks.
 
-We always benchmark agains convex and spacetimeDB on the same machine, same workload, to see if our changes keep the same level of performance or increases it.
+Benchmarks are a release-only last resort. Run them only for a major, minor,
+or patch version change—never before or after ordinary implementation work.
+The final benchmark from the preceding version is the before-state.
 
-We never try to beat SpacetimeDB, we use SpacetimeDB as a reference of "excellent performance". Every metric that we beat SpacetimeDB is a win, but it's not required. (If we used to beat SpacetimeDB, we should still beat it on every change. We shouldn't regress.)
+Every release benchmark runs all of DBZZ, Convex, and SpacetimeDB on Hetzner
+only, with the same workload. After `bun run bump <patch|minor|major>`,
+dispatch `bun run bench:hetzner` in a background subagent or worker. Do not
+run `bench/run.ts` on the developer machine. The merge guard rejects a version
+change without a final approved Hetzner result.
 
-Convex is always the thing to beat, and not by little.
+Records are version-bound:
 
-## How to benchmark
+- final: `bench/results/v<version>.json`;
+- recovery iteration: `bench/results/v<version>.iteration-<n>.json`.
 
-```sh
-bun bench/run.ts                # full run: dbzz + convex + spacetimedb
-bun bench/run.ts dbzz convex    # any subset, for debugging (result not saved)
-```
+A passing final run deletes that version's iterations. Do not retain timestamp
+results, ad-hoc benchmark logs, or a separate before-change record. Existing
+releases get one Hetzner bootstrap at their release tag, not a renamed legacy
+record.
 
-A full run benchmarks all three systems with fresh state, prints a 3-way
-comparison table, saves a record to `bench/results/<timestamp>-<gitsha>.json`
-(git-tracked — machine info, tool versions, per-system metrics), and prints a
-per-metric delta vs the most recent previous record with ⚠ on regressions.
-Details, prerequisites, and fairness notes: `bench/README.md`.
+A material DBZZ regression is a directional move beyond the 15% noise envelope
+(0.025 CPU cores for idle CPU). Rerun once; the Hetzner wrapper assigns the
+next iteration number without overwriting evidence. If it repeats, enter performance
+recovery: inspect every changed implementation and decision as intended
+behavior with a wrong design; identify the hot path and redesign it so the
+cost disappears. Do not patch around the regression. A release passes only
+when correctness passes and no material regression remains. If the feature
+cannot exist without the impact, say so explicitly in the final handoff.
 
-Instructions for next runs:
-
-1. Before a performance-relevant change to a dbzz package, run `bun bench/run.ts`
-   on a clean tree to get a fresh baseline record (skip if there is already a
-   recent record for HEAD).
-2. After the change, run it again and read the "vs previous run" delta.
-3. Latency percentiles are noisy (±15% run-to-run is normal). Rerun before
-   believing a regression; a real one shows a consistent direction across
-   metrics and runs. dbzz mutations/sec, sub p50, and CPU time are the
-   headline metrics.
-4. If dbzz regressed on any metric it used to win, fix it before landing.
-5. Commit the new `bench/results/*.json` together with the change, and update
-   the results table in `bench/README.md` when the numbers move meaningfully.
-6. Requirements for the SpacetimeDB leg: `spacetime` CLI on PATH, and the npm
-   `spacetimedb` pin in `bench/spacetime-app/` matching the CLI version
-   (currently 2.6.1). Client bindings regenerate automatically each run.
+SpacetimeDB remains an excellent reference, not a product DBZZ must beat on
+every metric. Convex remains the main comparative target. Their same-run
+measurements make the DBZZ result interpretable; the version-to-version gate
+judges DBZZ itself.
 
 # Local Publishing
 
@@ -67,17 +212,30 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    bun run bump patch   # or: minor | major
    ```
    This rewrites the version in all 5 packages **and** their inter-deps (pinned as `workspace:X.Y.Z` — never hand-edit these back to `workspace:*`; bun packs `workspace:*` from a bun.lock snapshot that goes stale on version-only edits), then commits everything as `chore(release): vX.Y.Z`.
-4. **Merge into main** (a merge commit by default — no-ff is configured):
+4. **Benchmark the release version**: dispatch this in a background worker or
+   subagent; it runs only on Hetzner and compares the pending version with the
+   preceding version's final record:
+   ```bash
+   bun run bench:hetzner
+   ```
+   Commit only `bench/results/vX.Y.Z.json` when it passes. A material regression
+   produces `vX.Y.Z.iteration-N.json`; rerun once, then do performance recovery
+   instead of merging a materially slower release. During this policy migration,
+   establish the latest already-published predecessor once with
+   `bun run bench:hetzner --bootstrap X.Y.Z` at its tag.
+5. **Merge into main** (a merge commit by default — no-ff is configured):
    ```bash
    git checkout main && git merge feat/<name>
    ```
    The `pre-merge-commit` hook (`scripts/merge-guard.ts`) blocks the merge if:
    - the branch has `feat`/`fix`/breaking commits but the version didn't change;
-   - the 4 package versions are not identical;
+   - the 5 package versions are not identical;
    - the new version is not greater than main's, or is already tagged.
+   - a version change lacks a final passing Hetzner result against main's
+     version.
 
    If it blocks you: `git merge --abort`, bump on the branch, merge again.
-5. **Publish** (manual, from main, clean tree):
+6. **Publish** (manual, from main, clean tree):
    ```bash
    bun run publish:local
    ```

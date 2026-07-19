@@ -63,7 +63,7 @@ Every later hook needs a correct React ownership boundary. This slice proves pac
 - Use React's external-store contract for observable connection state; do not mirror mutable client state through ad hoc effects.
 - Provider options are immutable for one lifetime. Make replacement explicit rather than partially mutating a live client.
 - Target only the current approved React line. Do not add backward-compatibility branches.
-- Run the full comparative benchmark before and after any structural change to the base client.
+- If a release version includes the structural client change, run the full Hetzner comparison against the preceding final version.
 
 ## Blocked by
 
@@ -117,7 +117,8 @@ Live queries are the central React value proposition. This slice delivers the en
 - Likely surfaces include the React package query hook/store, generated reference types from `packages/core`, and public client subscription events in `packages/client`.
 - Preserve existing cursor, reset, limit, and error semantics. Do not introduce a second query cache protocol or one-off query API.
 - Keep query snapshots immutable and stable when observable state did not change.
-- If base subscription behavior changes structurally, take and compare full benchmark records.
+- If this reaches a release version with structural subscription changes, use
+  the one Hetzner release benchmark against the preceding final version.
 
 ## Blocked by
 
@@ -169,7 +170,7 @@ The single-consumer query path already delivers user value. This slice adds the 
 - The registry belongs to the provider/client lifetime, not a process-global singleton.
 - Derive deterministic keys from generated references and validated arguments; do not rely on caller object identity.
 - Likely surfaces include the query store introduced by `ISSUE-02` and React concurrent-rendering tests.
-- Benchmark before and after if registry ownership changes base subscription hot paths.
+- At the release version, benchmark registry ownership changes against the preceding final version on Hetzner.
 
 ## Blocked by
 
@@ -220,7 +221,8 @@ Mutations are independent of query caching and can ship as a complete write path
 - Likely surfaces include the React hook and public mutation entry points in `packages/client/src/client.ts`.
 - Do not add optimistic cache behavior or a second retry policy.
 - Avoid wrapping an existing mutation function with another function whose only job is renaming it; expose the correct callable directly through the hook.
-- Benchmark any structural mutation replay change.
+- If this reaches a release version with structural mutation replay changes,
+  use the one Hetzner release benchmark against the preceding final version.
 
 ## Blocked by
 
@@ -322,7 +324,8 @@ This is the smallest complete slice that fixes the root type-model defect. Chang
 - Likely surfaces include `packages/server/src/functions.ts`, server invocation/delivery, `packages/core/src/refs.ts`, `packages/cli/src/codegen.ts`, `packages/client`, and the new React hook.
 - This is an approved breaking correction; do not retain a compatibility overload for the incorrect completion-type model.
 - Preserve the current acknowledgement protocol and high-water behavior.
-- Run the full benchmark before and after because server delivery and client streaming paths are structural.
+- At the release version, run the one full Hetzner benchmark against the
+  preceding final version because server delivery and client streaming paths are structural.
 
 ## Blocked by
 
@@ -528,7 +531,8 @@ This is the decisive packaging tracer bullet: one package, one public API, two r
 - Likely surfaces include `packages/core/src/wire.ts`, runtime capabilities in `packages/client`, conditional exports and peers in the React package, and browser/Expo consumer fixtures.
 - Shared React hooks must not import native modules. The native entry supplies only capabilities and lifecycle integration points.
 - A separate native package is permitted only if a documented Metro failure proves conditional exports impossible; keep it as thin re-exports plus capabilities.
-- Run full comparative benchmarks before and after portable wire/client structural changes.
+- At the release version, run the one full Hetzner benchmark against the
+  preceding final version for portable wire/client structural changes.
 
 ## Blocked by
 
@@ -583,7 +587,7 @@ A single mounted query is the narrowest complete proof of durable recovery. It e
 - The lifecycle observer belongs below hooks in the native runtime adapter, while connection generation ownership belongs in the base client state machine.
 - Retain logical work separately from physical transport state. Do not infer liveness from a remembered WebSocket state.
 - No network-reachability dependency or background service is needed; failed immediate attempts enter ordinary reconnect behavior.
-- Benchmark the structural client changes before and after.
+- Compare structural client changes with the preceding final version at release time.
 
 ## Blocked by
 
@@ -639,7 +643,8 @@ Query recovery proves the lifecycle state machine. This slice adds the two resum
 - Reuse the generation and logical-demand model from `ISSUE-11`; do not create operation-specific sockets or AppState observers.
 - Preserve base mutation UUIDs and event reset semantics exactly.
 - Backgrounding during handshake, authentication, mutation response, or event subscription application must converge deterministically.
-- Benchmark structural reconnect/replay changes.
+- If this reaches a release version with structural reconnect/replay changes,
+  use the one Hetzner release benchmark against the preceding final version.
 
 ## Blocked by
 
@@ -788,7 +793,7 @@ AFK
 
 ## What to build
 
-Finish the feature as a releasable fifth lockstep dbzz package. Wire `@dbzz/client-react` into version bumping, merge validation, local Verdaccio publishing, root typechecks, packed consumer verification, documentation, and wiki quality checks. Prove the final tarball supports browser React, Expo React Native, and the optional AI subpath at one exact version with no benchmark regression.
+Finish the feature as a releasable fifth lockstep dbzz package. Wire `@dbzz/client-react` into version bumping, merge validation, local Verdaccio publishing, root typechecks, packed consumer verification, documentation, and wiki quality checks. Prove the final tarball supports browser React, Expo React Native, and the optional AI subpath at one exact version; its release must pass the version-bound Hetzner benchmark.
 
 ### Why this slice exists
 
@@ -802,7 +807,7 @@ Individual hooks are not a product until real consumers can install the exact ar
 - [ ] Browser output contains no Expo/React Native code; the Expo fixture uses Expo fetch/crypto and passes Metro resolution.
 - [ ] Root typecheck/test workflows cover all hooks, generated references, runtime conditions, and AI integration.
 - [ ] Packed server/client/React consumers agree on the provider-neutral principal, durable Identity, credential-provenance, and account-linking contracts.
-- [ ] The final full dbzz/Convex/SpacetimeDB benchmark shows no consistent regression, particularly in metrics dbzz already wins.
+- [ ] The release's final Hetzner dbzz/Convex/SpacetimeDB record shows no material DBZZ regression against the preceding final version.
 - [ ] User-facing documentation covers durable Identity, provider-account linking boundaries, supported versions, Expo requirements, hooks, query states, SSE/AI usage, mobile recovery guarantees, and explicit out-of-scope behavior.
 - [ ] Wiki index/link/lint checks pass and research decisions remain discoverable.
 
@@ -811,7 +816,8 @@ Individual hooks are not a product until real consumers can install the exact ar
 - Likely surfaces include all package manifests, root workspace scripts, `scripts/bump.ts`, `scripts/merge-guard.ts`, `scripts/publish-local.ts`, shared release helpers, consumer fixtures, docs, benchmark results, and wiki indexes.
 - Do not publish to npm. Exercise the configured local Verdaccio flow and exact version pins.
 - This issue assembles and verifies earlier behavior; it must not become a bucket for unfinished hook or lifecycle implementation.
-- Update the benchmark results table only when final numbers move meaningfully.
+- Do not maintain a results table; the final version-bound JSON record is the
+  only retained release evidence.
 
 ## Blocked by
 
@@ -828,7 +834,7 @@ Individual hooks are not a product until real consumers can install the exact ar
 - Run the complete first-login, provider-convergence, linking/unlinking, principal, client-authentication, and secret-absence suites.
 - Pack and install exact artifacts into clean consumers, then run browser production build and Expo Metro/release builds.
 - Exercise the local bump, merge-guard, interrupted publish/resume, exact install, and version-drift failure paths.
-- Run the full comparative benchmark, rerun noisy regressions, and compare every headline metric with the baseline.
+- Run the full version-bound Hetzner benchmark, rerun material regressions once, then enter performance recovery if they repeat.
 
 ### Out of scope
 
@@ -867,7 +873,7 @@ Every provider-neutral and MCP capability depends on a durable application user 
 - Integrate identity records with the Engine's existing internal-schema ownership and transactional writer instead of creating a side database.
 - Resolve Identity inside the shared authentication lifecycle after credential verification, never as a hidden write inside a query handler.
 - Refactor the existing principal contract directly; do not retain a compatibility principal keyed by issuer/subject.
-- Run the full comparative benchmark before and after the structural authentication and internal-schema change.
+- At the release version, run the full Hetzner comparison for the structural authentication and internal-schema change.
 
 ## Blocked by
 

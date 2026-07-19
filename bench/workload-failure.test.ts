@@ -15,7 +15,7 @@ import {
   type SearchRow,
 } from "./benchmark.ts";
 import { validateBenchmarkResults } from "./result-validation.ts";
-import { persistBenchmarkOutcome } from "./result-persistence.ts";
+import { retainReleaseBenchmark } from "./release.ts";
 import { runConnectionScale, runSubscriptionCase } from "./workload.ts";
 
 function config(): BenchmarkConfig {
@@ -304,10 +304,13 @@ describe("measured workload failures", () => {
     expect(validation.failures[0]).toMatchObject({ kind: "subscription", case: "subscriptions/shared" });
 
     const directory = mkdtempSync(join(tmpdir(), "dbzz-workload-failure-"));
-    const path = join(directory, "result.json");
     try {
-      const outcome = await persistBenchmarkOutcome(path, {
-        schemaVersion: 7,
+      const path = await retainReleaseBenchmark(directory, {
+        version: "0.3.3",
+        iteration: 1,
+        host: "hetzner",
+      }, false, {
+        schemaVersion: 8,
         validation,
         performanceAcceptance: { status: "not-evaluated", reason: "correctness-failed" },
       });
@@ -316,9 +319,8 @@ describe("measured workload failures", () => {
         validation: { status: string; failures: Array<{ kind: string }> };
       };
 
-      expect(outcome.status).toBe("failed");
       expect(saved).toMatchObject({
-        schemaVersion: 7,
+        schemaVersion: 8,
         validation: { status: "failed", failures: [{ kind: "subscription" }] },
       });
     } finally {

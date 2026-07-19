@@ -25,7 +25,7 @@ registry/htpasswd
 sandbox/
 
 # benchmark artifacts (local backend state, generated bindings)
-# bench/results/ is tracked on purpose: it is the cross-run comparison history
+# bench/results/ retains only the final version-bound release evidence.
 bench/convex-app/.convex/
 bench/convex-app/.env.local
 bench/convex-app/convex/_generated/

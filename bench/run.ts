@@ -1,4 +1,4 @@
-/** Apples-to-apples local microbenchmark orchestrator. */
+/** Apples-to-apples release benchmark runner; invoked only by the Hetzner worker. */
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
@@ -15,7 +15,6 @@ import {
 import {
   assertDbzzStartup,
   benchmarkExecutionOrder,
-  benchmarkRunPolicy,
   compareProfileMetrics,
   expectedDbzzStartupMode,
   type BenchmarkExecutionLeg,
@@ -39,10 +38,14 @@ import { withTimeout } from "./load-engine.ts";
 import {
   evaluatePerformanceAcceptance,
   extractComparableMetrics,
-  FROZEN_BASELINE_PATH,
-  nearTieDriftTable,
   type PerformanceAcceptanceResult,
 } from "./performance-gates.ts";
+import {
+  readPreviousFinalBenchmark,
+  releaseBenchmarkContext,
+  retainReleaseBenchmark,
+  type ReleaseBenchmarkContext,
+} from "./release.ts";
 import {
   activePhaseIds,
   BENCHMARK_START_SIGNAL,
@@ -57,7 +60,6 @@ import {
   type BenchmarkValidation,
   type BenchmarkValidationTarget,
 } from "./result-validation.ts";
-import { persistBenchmarkOutcome, type PersistedBenchmarkOutcome } from "./result-persistence.ts";
 
 const BENCH = import.meta.dir;
 const REPO = join(BENCH, "..");
@@ -93,8 +95,8 @@ type SystemResults = Partial<Record<SystemName, MeasuredDriverResult>> & {
 };
 
 interface RunRecord {
-  schemaVersion: 7;
-  comparison: "frozen" | "current";
+  schemaVersion: 8;
+  release: ReleaseBenchmarkContext & { readonly previousVersion: string | null };
   timestamp: string;
   git: { commit: string; dirty: boolean; sourceHash: string };
   machine: {
@@ -680,89 +682,6 @@ function fileDescriptorLimit(): number {
   return Number(result.stdout.toString().trim());
 }
 
-function savedCurrentCount(): number {
-  try {
-    return readdirSync(RESULTS_DIR).filter((name) => {
-      if (!name.endsWith(".json")) return false;
-      try {
-        const result = JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as {
-          schemaVersion?: number;
-          dbzzExporterProfile?: unknown;
-        };
-        return (result.schemaVersion === 6 || result.schemaVersion === 7) &&
-          result.dbzzExporterProfile !== undefined;
-      } catch {
-        return false;
-      }
-    }).length;
-  } catch {
-    return 0;
-  }
-}
-
-function balancedOrder(savedRuns: number): SystemName[] {
-  const rotation = savedRuns % ALL_SYSTEMS.length;
-  return [...ALL_SYSTEMS.slice(rotation), ...ALL_SYSTEMS.slice(0, rotation)];
-}
-
-function readinessProtocol(system: MeasuredDriverResult): Array<number | null> {
-  return system.workload.connections.map((level) =>
-    level.addedConnections === 1 ? level.readyLatency.count : null
-  );
-}
-
-function comparisonFingerprint(record: RunRecord): string {
-  return JSON.stringify({
-    machine: {
-      platform: record.machine.platform,
-      arch: record.machine.arch,
-      cpu: record.machine.cpu,
-      logicalCpus: record.machine.logicalCpus,
-      memGb: record.machine.memGb,
-    },
-    configs: ALL_SYSTEMS.map((name) => record.systems[name]?.workload.config ?? null),
-    dbzzTelemetryDisabledConfig: record.dbzzTelemetryDisabled.workload.config,
-    dbzzExporterProfileConfig: record.dbzzExporterProfile.workload.config,
-    dbzzModes: [
-      record.systems.dbzz?.startupMode,
-      record.dbzzExporterProfile.startupMode,
-      record.dbzzTelemetryDisabled.startupMode,
-    ],
-  });
-}
-
-function latestComparable(record: RunRecord): RunRecord | undefined {
-  const fingerprint = comparisonFingerprint(record);
-  const candidates: RunRecord[] = [];
-  let filenames: string[];
-  try {
-    filenames = readdirSync(RESULTS_DIR);
-  } catch {
-    return undefined;
-  }
-  for (const name of filenames) {
-    if (!name.endsWith(".json")) continue;
-    try {
-      const candidate = JSON.parse(readFileSync(join(RESULTS_DIR, name), "utf8")) as RunRecord;
-      if (
-        candidate.schemaVersion !== 7 ||
-        (record.comparison === "frozen" &&
-          (candidate.validation.status !== "passed" || candidate.performanceAcceptance.status !== "passed")) ||
-        (candidate.comparison ?? "frozen") !== record.comparison ||
-        !candidate.dbzzTelemetryDisabled ||
-        !candidate.dbzzExporterProfile ||
-        !ALL_SYSTEMS.every((system) => candidate.systems[system])
-      ) {
-        continue;
-      }
-      if (comparisonFingerprint(candidate) === fingerprint) candidates.push(candidate);
-    } catch {
-      // Ignore old or incomplete result files.
-    }
-  }
-  return candidates.sort((a, b) => b.timestamp.localeCompare(a.timestamp))[0];
-}
-
 function comparisonMetrics(system: MeasuredDriverResult): ComparableMetric[] {
   return extractComparableMetrics(system).map((metric) => ({
     label: metric.path,
@@ -777,40 +696,6 @@ function validationTargetIsSystem(target: string, system: SystemName): boolean {
 
 function systemPassedValidation(record: RunRecord, system: SystemName): boolean {
   return !record.validation.failures.some((failure) => validationTargetIsSystem(failure.target, system));
-}
-
-function printComparableDelta(record: RunRecord, previous: RunRecord | undefined): void {
-  if (!previous) {
-    console.log("\nNo previous comparable schema-v7 result has the same machine and benchmark config; delta skipped.");
-    return;
-  }
-  console.log(`\nVs comparable run ${previous.timestamp} (⚠ = regression greater than 15%)`);
-  for (const name of ALL_SYSTEMS) {
-    if (!systemPassedValidation(record, name) || !systemPassedValidation(previous, name)) {
-      console.log(`\n${name}: delta skipped because one paired run failed correctness validation.`);
-      continue;
-    }
-    if (
-      JSON.stringify(readinessProtocol(record.systems[name]!)) !==
-      JSON.stringify(readinessProtocol(previous.systems[name]!))
-    ) {
-      console.log(`\n${name}: delta skipped because the paired runs used different readiness protocols.`);
-      continue;
-    }
-    const oldByLabel = new Map(comparisonMetrics(previous.systems[name]!).map((metric) => [metric.label, metric]));
-    console.log(`\n${name}`);
-    console.log("| metric | current | previous | delta |");
-    console.log("|---|---:|---:|---:|");
-    for (const metric of comparisonMetrics(record.systems[name]!)) {
-      const old = oldByLabel.get(metric.label)!;
-      const delta = old.value === 0 ? 0 : (metric.value - old.value) / old.value;
-      const improvement = metric.lowerIsBetter ? -delta : delta;
-      const warning = improvement < -0.15 ? " ⚠" : "";
-      console.log(
-        `| ${metric.label} | ${fmt(metric.value)} | ${fmt(old.value)} | ${delta >= 0 ? "+" : ""}${fmt(delta * 100, 1)}%${warning} |`,
-      );
-    }
-  }
 }
 
 function printDbzzProfileCost(title: string, metrics: ProfileComparisonMetric[]): void {
@@ -1027,22 +912,25 @@ for (const name of requested) {
   if (!ALL_SYSTEMS.includes(name)) throw new Error(`unknown system ${JSON.stringify(name)}`);
 }
 if (new Set(requested).size !== requested.length) throw new Error("each requested system may appear only once");
-const selected = requested.length > 0 ? requested : ALL_SYSTEMS;
-const comparison = process.env.BENCH_COMPARISON ?? "frozen";
-if (comparison !== "frozen" && comparison !== "current") {
-  throw new Error(`BENCH_COMPARISON must be frozen or current`);
+if (requested.length > 0) throw new Error("release benchmarks always run DBZZ, Convex, and SpacetimeDB together");
+
+const benchmarkConfig = benchmarkConfigFromEnv();
+if (benchmarkConfig.profile !== "default") {
+  throw new Error("release benchmarks use the default workload only");
 }
-const runPolicy = benchmarkRunPolicy(selected, benchmarkConfigFromEnv().profile, comparison);
-if (selected.includes("dbzz")) {
-  await runCodegen(loadConfig(join(BENCH, "dbzz-app"), {
-    DBZZ_DURABILITY: "balanced",
-    DBZZ_TELEMETRY: "enabled",
-  }));
+const releaseContext = releaseBenchmarkContext(packageVersion(join(REPO, "packages", "core", "package.json")));
+const bootstrap = process.env.BENCH_RELEASE_BOOTSTRAP === "1";
+const previous = bootstrap ? undefined : readPreviousFinalBenchmark<RunRecord>(RESULTS_DIR, releaseContext.version);
+if (previous && (previous.record.schemaVersion !== 8 || previous.record.release?.host !== "hetzner")) {
+  throw new Error(`v${previous.version} is not a final Hetzner release benchmark`);
 }
-const spacetimeVersion = selected.includes("spacetimedb") ? assertSpacetimeVersionAlignment() : undefined;
-const savedRuns = savedCurrentCount();
-const order = requested.length > 0 ? selected : balancedOrder(savedRuns);
-const executionOrder = benchmarkExecutionOrder(order, runPolicy.profiledDbzz, savedRuns);
+
+await runCodegen(loadConfig(join(BENCH, "dbzz-app"), {
+  DBZZ_DURABILITY: "balanced",
+  DBZZ_TELEMETRY: "enabled",
+}));
+const spacetimeVersion = assertSpacetimeVersionAlignment();
+const executionOrder = benchmarkExecutionOrder(ALL_SYSTEMS, true, releaseContext.iteration - 1);
 const systems: SystemResults = {};
 let dbzzTelemetryDisabled: DbzzMeasuredDriverResult | undefined;
 let dbzzExporterProfile: DbzzMeasuredDriverResult | undefined;
@@ -1068,176 +956,121 @@ for (let index = 0; index < executionOrder.length; index++) {
   if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
 }
 
+if (systems.dbzz === undefined || dbzzTelemetryDisabled === undefined || dbzzExporterProfile === undefined) {
+  throw new Error("release benchmark DBZZ profile measurements are missing");
+}
+const validationTargets: BenchmarkValidationTarget[] = [
+  { label: "dbzz/runtime-default", system: "dbzz", workload: systems.dbzz.workload },
+  { label: "convex", system: "convex", workload: systems.convex!.workload },
+  { label: "spacetimedb", system: "spacetimedb", workload: systems.spacetimedb!.workload },
+  { label: "dbzz/benchmark-exporter", system: "dbzz", workload: dbzzExporterProfile.workload },
+  { label: "dbzz/disabled", system: "dbzz", workload: dbzzTelemetryDisabled.workload },
+];
+const validation = validateBenchmarkResults(validationTargets);
 let dbzzTelemetryCost: ProfileComparisonMetric[] | null = null;
 let dbzzExporterCost: ProfileComparisonMetric[] | null = null;
-const validationTargets: BenchmarkValidationTarget[] = ALL_SYSTEMS.flatMap((name) => {
-  const system = systems[name];
-  return system === undefined
-    ? []
-    : [{ label: name === "dbzz" ? "dbzz/runtime-default" : name, system: name, workload: system.workload }];
-});
-if (dbzzExporterProfile !== undefined) {
-  validationTargets.push({
-    label: "dbzz/benchmark-exporter",
-    system: "dbzz",
-    workload: dbzzExporterProfile.workload,
-  });
+const dbzzFailed = validation.failures.some((failure) => validationTargetIsSystem(failure.target, "dbzz"));
+if (!dbzzFailed) {
+  dbzzTelemetryCost = compareProfileMetrics(
+    "runtime-default",
+    comparisonMetrics(systems.dbzz),
+    "disabled",
+    comparisonMetrics(dbzzTelemetryDisabled),
+  );
+  dbzzExporterCost = compareProfileMetrics(
+    "benchmark-exporter",
+    comparisonMetrics(dbzzExporterProfile),
+    "runtime-default",
+    comparisonMetrics(systems.dbzz),
+  );
 }
-if (dbzzTelemetryDisabled !== undefined) {
-  validationTargets.push({
-    label: "dbzz/disabled",
-    system: "dbzz",
-    workload: dbzzTelemetryDisabled.workload,
-  });
-}
-const validation = validateBenchmarkResults(validationTargets);
-let persistedOutcome: PersistedBenchmarkOutcome | undefined;
 
-if (runPolicy.profiledDbzz) {
-  if (
-    systems.dbzz === undefined ||
-    dbzzTelemetryDisabled === undefined ||
-    dbzzExporterProfile === undefined
-  ) {
-    throw new Error("all-system benchmark requires default, exporter, and disabled DBZZ telemetry profiles");
-  }
-  const dbzzFailed = validation.failures.some((failure) => validationTargetIsSystem(failure.target, "dbzz"));
-  if (!dbzzFailed) {
-    dbzzTelemetryCost = compareProfileMetrics(
-      "runtime-default",
-      comparisonMetrics(systems.dbzz),
-      "disabled",
-      comparisonMetrics(dbzzTelemetryDisabled),
-    );
-    dbzzExporterCost = compareProfileMetrics(
-      "benchmark-exporter",
-      comparisonMetrics(dbzzExporterProfile),
-      "runtime-default",
-      comparisonMetrics(systems.dbzz),
-    );
-  }
-}
 printResults(systems);
 console.log(`\n${formatBenchmarkValidation(validation)}`);
-if (dbzzTelemetryCost !== null) {
-  printDbzzProfileCost("DBZZ default telemetry cost", dbzzTelemetryCost);
-}
-if (dbzzExporterCost !== null) {
-  printDbzzProfileCost("DBZZ exporter handoff cost", dbzzExporterCost);
-}
-if (systems.dbzz !== undefined) {
-  printDbzzTelemetryStatus([
-    systems.dbzz,
-    ...(dbzzExporterProfile === undefined ? [] : [dbzzExporterProfile]),
-    ...(dbzzTelemetryDisabled === undefined ? [] : [dbzzTelemetryDisabled]),
-  ]);
-}
-if (runPolicy.persist) {
-  if (
-    dbzzTelemetryDisabled === undefined ||
-    dbzzExporterProfile === undefined ||
-    systems.dbzz === undefined
-  ) {
-    throw new Error("default acceptance benchmark DBZZ profile measurements are missing");
-  }
-  const cliVersion = spacetimeVersion!;
-  const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
-    schemaVersion: 7,
-    comparison,
-    timestamp: new Date().toISOString(),
-    git: {
-      commit: git(["rev-parse", "--short", "HEAD"]),
-      dirty: git(["status", "--porcelain"]).length > 0,
-      sourceHash: sourceHash(),
+if (dbzzTelemetryCost !== null) printDbzzProfileCost("DBZZ default telemetry cost", dbzzTelemetryCost);
+if (dbzzExporterCost !== null) printDbzzProfileCost("DBZZ exporter handoff cost", dbzzExporterCost);
+printDbzzTelemetryStatus([systems.dbzz, dbzzExporterProfile, dbzzTelemetryDisabled]);
+
+const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
+  schemaVersion: 8,
+  release: { ...releaseContext, previousVersion: previous?.version ?? null },
+  timestamp: new Date().toISOString(),
+  git: {
+    commit: process.env.BENCH_RELEASE_SOURCE_COMMIT ?? git(["rev-parse", "--short", "HEAD"]),
+    dirty: git(["status", "--porcelain"]).length > 0,
+    sourceHash: sourceHash(),
+  },
+  machine: {
+    platform: platform(),
+    arch: arch(),
+    cpu: cpus()[0]?.model ?? "unknown",
+    logicalCpus: cpus().length,
+    memGb: Math.round(totalmem() / 1024 ** 3),
+    osRelease: release(),
+    fileDescriptorLimit: fileDescriptorLimit(),
+  },
+  versions: {
+    bun: Bun.version,
+    bunRevision: Bun.spawnSync([process.execPath, "--revision"]).stdout.toString().trim(),
+    convexClient: packageVersion(join(BENCH, "convex-app", "node_modules", "convex", "package.json")),
+    convexBackend: systems.convex?.implementationVersion ?? "unknown",
+    spacetimedbCli: spacetimeVersion,
+    spacetimedbClient: packageVersion(join(BENCH, "spacetime-app", "node_modules", "spacetimedb", "package.json")),
+    spacetimedbModule: packageVersion(join(BENCH, "spacetime-app", "spacetimedb", "node_modules", "spacetimedb", "package.json")),
+  },
+  methodology: {
+    serverResources: `${RESOURCE_SAMPLE_MS}ms shared ps process-tree sampling; RSS is sampled summed per-process RSS (shared pages may be counted more than once) and CPU is cumulative user+system time`,
+    loadGeneratorResources: "same shared process-table samples, reported separately from server resources to expose client-side saturation",
+    sampleIntervalMs: RESOURCE_SAMPLE_MS,
+    durability: {
+      dbzz: "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
+      convex: "current local backend native default",
+      spacetimedb: "confirmed reads explicitly enabled; standalone native durable commit log",
     },
-    machine: {
-      platform: platform(),
-      arch: arch(),
-      cpu: cpus()[0]?.model ?? "unknown",
-      logicalCpus: cpus().length,
-      memGb: Math.round(totalmem() / 1024 ** 3),
-      osRelease: release(),
-      fileDescriptorLimit: fileDescriptorLimit(),
-    },
-    versions: {
-      bun: Bun.version,
-      bunRevision: Bun.spawnSync([process.execPath, "--revision"]).stdout.toString().trim(),
-      convexClient: packageVersion(join(BENCH, "convex-app", "node_modules", "convex", "package.json")),
-      convexBackend: systems.convex?.implementationVersion ?? "unknown",
-      spacetimedbCli: cliVersion,
-      spacetimedbClient: packageVersion(join(BENCH, "spacetime-app", "node_modules", "spacetimedb", "package.json")),
-      spacetimedbModule: packageVersion(join(BENCH, "spacetime-app", "spacetimedb", "node_modules", "spacetimedb", "package.json")),
-    },
-    methodology: {
-      serverResources: `${RESOURCE_SAMPLE_MS}ms shared ps process-tree sampling; RSS is sampled summed per-process RSS (shared pages may be counted more than once) and CPU is cumulative user+system time`,
-      loadGeneratorResources: "same shared process-table samples, reported separately from server resources to expose client-side saturation",
-      sampleIntervalMs: RESOURCE_SAMPLE_MS,
-      durability: {
-        dbzz: "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
-        convex: "current local backend native default",
-        spacetimedb: "confirmed reads explicitly enabled; standalone native durable commit log",
-      },
-      dbzzProfiles: "systems.dbzz omits Runtime.telemetry and measures the exact default local console sink, retention, and limits; dbzzExporterProfile adds only an explicit in-process exporter callback to that default; dbzzTelemetryDisabled passes telemetry=false; all three use durability=balanced with fresh equivalent state",
-      dbzzTelemetryValidation: "the parent streams DBZZ stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; enabled legs validate local record/delivery accounting, bounded queue and trace-retention state, exact exporter selection and health, the query.queue/mutation.queue/procedure.admission/subscription.queue aggregate matrix, and lower-bound consistency with workload attempts; disabled telemetry must remain entirely inactive",
-      spacetimeQueryTransport: "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
-      subscriptionCapacity: "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery",
-    },
-    executionOrder,
-    systems,
-    dbzzTelemetryDisabled,
-    dbzzExporterProfile,
-    dbzzTelemetryCost,
-    dbzzExporterCost,
-    validation,
-  };
-  const performanceAcceptance: PerformanceAcceptanceResult = validation.status === "failed"
-    ? { status: "not-evaluated", reason: "correctness-failed" }
-    : runPolicy.historicalAcceptance
-      ? evaluatePerformanceAcceptance(
-          recordWithoutAcceptance,
-          readFileSync(join(REPO, FROZEN_BASELINE_PATH), "utf8"),
-          validation,
-        )
-      : { status: "not-evaluated", reason: "current-host-comparison" };
-  const record: RunRecord = { ...recordWithoutAcceptance, performanceAcceptance };
-  if (performanceAcceptance.status === "not-evaluated") {
-    console.log(
-      performanceAcceptance.reason === "correctness-failed"
-        ? "\nperformance acceptance not evaluated: benchmark correctness validation failed"
-        : "\nhistorical performance acceptance not evaluated: current-host comparison",
-    );
-  } else if (performanceAcceptance.status === "passed") {
-    const evidence = performanceAcceptance.evidence;
-    console.log(
-      `\nperformance acceptance passed: ${evidence.metricCounts.frozenDbzzSpacetimeWins} frozen SpacetimeDB wins (${evidence.metricCounts.frozenNearTieWins} near-tie), ${evidence.metricCounts.convexFloorChecks} Convex floors, ${evidence.metricCounts.afterPerSystem.dbzz} comparable metrics/system`,
-    );
-    console.log(`\n${nearTieDriftTable(evidence.frozenDbzzSpacetimeWins)}`);
-  } else if (performanceAcceptance.status === "failed") {
-    console.log(
-      `\nperformance acceptance FAILED (${performanceAcceptance.failures.length} ` +
-        `gate${performanceAcceptance.failures.length === 1 ? "" : "s"})`,
-    );
-    for (const failure of performanceAcceptance.failures) {
-      console.log(`  - ${failure.path} [${failure.kind}]: ${failure.message}`);
-    }
-  }
-  const previous =
-    performanceAcceptance.status === "passed" || comparison === "current"
-      ? latestComparable(record)
-      : undefined;
-  mkdirSync(RESULTS_DIR, { recursive: true });
-  const filename = `${record.timestamp.replace(/:/g, "-").replace(/\.\d+Z$/, "Z")}-${record.git.commit}.json`;
-  persistedOutcome = await persistBenchmarkOutcome(join(RESULTS_DIR, filename), record);
-  console.log(`\nsaved bench/results/${filename}`);
-  if (performanceAcceptance.status === "passed" || comparison === "current") {
-    printComparableDelta(record, previous);
-  } else if (performanceAcceptance.status === "failed") {
-    console.log("\nComparable delta skipped because performance acceptance failed.");
+    dbzzProfiles: "systems.dbzz omits Runtime.telemetry and measures the exact default local console sink, retention, and limits; dbzzExporterProfile adds only an explicit in-process exporter callback to that default; dbzzTelemetryDisabled passes telemetry=false; all three use durability=balanced with fresh equivalent state",
+    dbzzTelemetryValidation: "the parent streams DBZZ stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; enabled legs validate local record/delivery accounting, bounded queue and trace-retention state, exact exporter selection and health, the query.queue/mutation.queue/procedure.admission/subscription.queue aggregate matrix, and lower-bound consistency with workload attempts; disabled telemetry must remain entirely inactive",
+    spacetimeQueryTransport: "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
+    subscriptionCapacity: "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery",
+  },
+  executionOrder,
+  systems,
+  dbzzTelemetryDisabled,
+  dbzzExporterProfile,
+  dbzzTelemetryCost,
+  dbzzExporterCost,
+  validation,
+};
+const performanceAcceptance: PerformanceAcceptanceResult = validation.status === "failed"
+  ? { status: "not-evaluated", reason: "correctness-failed" }
+  : bootstrap
+    ? { status: "passed", evidence: { schemaVersion: 1, previousVersion: null, currentVersion: releaseContext.version, metricCount: 0, regressions: [] } }
+    : evaluatePerformanceAcceptance(previous!.record, recordWithoutAcceptance, {
+      previousVersion: previous!.version,
+      currentVersion: releaseContext.version,
+    });
+const record: RunRecord = { ...recordWithoutAcceptance, performanceAcceptance };
+mkdirSync(RESULTS_DIR, { recursive: true });
+const approved = performanceAcceptance.status === "passed";
+const savedPath = await retainReleaseBenchmark(RESULTS_DIR, releaseContext, approved, record);
+console.log(`\nsaved ${relative(REPO, savedPath)}`);
+
+if (performanceAcceptance.status === "not-evaluated") {
+  console.log("\nbenchmark correctness failed; rerun after fixing the benchmark or product failure.");
+} else if (performanceAcceptance.status === "recovery-needed") {
+  const count = performanceAcceptance.evidence.regressions.length;
+  if (releaseContext.iteration === 1) {
+    console.log(`\nbenchmark verification rerun required (${count} material regression${count === 1 ? "" : "s"}). Rerun once; if it repeats, enter performance recovery and redesign the hot path before approving the release.`);
   } else {
-    console.log("\nComparable delta skipped because benchmark correctness validation failed.");
+    console.log(`\nperformance recovery required after a repeated benchmark regression (${count} material regression${count === 1 ? "" : "s"}). Treat intended behavior as a wrong design: find the hot path and redesign it before approving the release.`);
+  }
+  for (const regression of performanceAcceptance.evidence.regressions) {
+    const delta = regression.deltaPercent === null ? "n/a" : `${regression.deltaPercent >= 0 ? "+" : ""}${regression.deltaPercent.toFixed(1)}%`;
+    console.log(`  - ${regression.path}: ${regression.previous} → ${regression.current} (${delta})`);
   }
 } else {
-  console.log(`\n${runPolicy.diagnosticMessage}`);
+  console.log(bootstrap
+    ? `\nrelease benchmark bootstrap approved: v${releaseContext.version} is the baseline for its successor.`
+    : `\nrelease benchmark approved: v${releaseContext.version} has no material DBZZ regression against v${previous!.version}.`);
 }
 
-if (validation.status === "failed" || persistedOutcome?.status === "failed") process.exitCode = 1;
+if (validation.status === "failed" || performanceAcceptance.status === "recovery-needed") process.exitCode = 1;

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import {
   offeredFixedRateUpdates,
   type DriverResult,
@@ -8,42 +7,11 @@ import {
   type SystemName,
 } from "./benchmark.ts";
 import type { ProcessTreeWindowSummary } from "./process-tree.ts";
-import type { BenchmarkValidation } from "./result-validation.ts";
 
-export const FROZEN_BASELINE_PATH = "bench/results/2026-07-13T15-34-33Z-74d8554.json";
-export const FROZEN_BASELINE_SHA256 = "ab78ada0d9d16576b7aca175c1230c456064bcf5b4a80e66b5e1c55a4528a474";
-export const FROZEN_METRICS_PER_SYSTEM = 351;
-export const FROZEN_DBZZ_SPACETIME_WINS = 273;
-export const FROZEN_NEAR_TIE_WINS = 22;
-export const FROZEN_CONVEX_FLOORS = 126;
-
-/**
- * Run-to-run measurement noise floor from the repo benchmark doctrine:
- * percentiles move ±15% between runs on this hardware, and a real regression
- * shows a consistent direction across metrics and runs rather than a
- * single-draw flip. The doctrine quantifies 15% for latency percentiles; it
- * is adopted as the single repo-derived bound for every family rather than
- * inventing uncalibrated per-family numbers. The exposure this creates is
- * bounded and non-compounding: a near-tie path can drift at most one
- * envelope behind current SpacetimeDB — roughly its baseline margin plus
- * the floor, once — before the gate fails, and every near-tie margin is
- * printed and recorded on every accepted run, unlike the strict gate, which
- * surfaced nothing until a flip. Applied as a fraction of the SpacetimeDB
- * value on the same path.
- */
-export const NOISE_FLOOR_RELATIVE = 0.15;
-/**
- * Absolute noise floor for the resource.cpu family only. A windowed cpuCores
- * value is the difference of two ps cputime readings quantized to 10 ms and
- * interpolated across 250 ms sample spacing, so an idle plateau a few seconds
- * long resolves one system only to several milli-cores, and the repo's own
- * back-to-back full runs move individual idle readings by ~12 milli-cores.
- * A DBZZ-versus-SpacetimeDB difference therefore swings ~25 milli-cores with
- * no code change. The absolute floor governs only windows below
- * NOISE_FLOOR_CPU_CORES / NOISE_FLOOR_RELATIVE ≈ 0.17 cores — idle plateaus —
- * while loaded CPU windows (0.5–1.0+ cores) stay on the relative envelope.
- */
-export const NOISE_FLOOR_CPU_CORES = 0.025;
+/** A directional move must exceed this observed run-to-run envelope before recovery starts. */
+export const REGRESSION_NOISE_FLOOR_RELATIVE = 0.15;
+/** `ps` CPU accounting is quantized at idle, so a relative threshold alone is not meaningful there. */
+export const REGRESSION_NOISE_FLOOR_CPU_CORES = 0.025;
 
 export interface MeasuredSystem {
   workload: DriverResult;
@@ -79,113 +47,32 @@ export interface ComparableMetric {
   convexRssFloor?: boolean;
 }
 
-export type FrozenWinClassification = "solid" | "near-tie";
-
-export interface FrozenWinEvidence {
+export interface PerformanceRegression {
   path: string;
   direction: MetricDirection;
-  /** Derived from the frozen baseline only: "near-tie" iff the baseline win margin is below the measurement noise floor. */
-  classification: FrozenWinClassification;
-  baselineDbzz: number;
-  baselineSpacetime: number;
-  afterDbzz: number;
-  afterSpacetime: number;
-  /** Deficit versus current SpacetimeDB this path may show before failing: 0 for solid wins (strict), the noise envelope for near-ties. */
-  noiseAllowance: number;
-  passed: boolean;
-}
-
-export interface FloorEvidence {
-  path: string;
-  rule: string;
-  dbzz: number;
-  convex: number;
-  limit: number;
-  passed: boolean;
-}
-
-export interface FixedRateEvidence {
-  offeredUpdatesPerSec: number;
-  offeredUpdates: number;
-  completedUpdates: number;
-  expectedDeliveries: number;
-  observedDeliveries: number;
-  deliveryTargetPerSec: number;
-  deliveryThroughputPerSec: number;
-  minimumMeasuredDeliveryPerSec: number;
-  passed: boolean;
+  previous: number;
+  current: number;
+  deltaPercent: number | null;
+  threshold: number;
 }
 
 export interface PerformanceAcceptanceEvidence {
-  schemaVersion: 3;
-  passed: boolean;
-  baseline: {
-    path: typeof FROZEN_BASELINE_PATH;
-    sha256: string;
-    schemaVersion: 3;
-    timestamp: string;
-    gitCommit: string;
-    sourceHash: string;
-    machineFingerprint: string;
-    configSha256: string;
-  };
-  metricCounts: {
-    baselinePerSystem: Record<SystemName, number>;
-    afterPerSystem: Record<SystemName, number>;
-    frozenDbzzSpacetimeWins: number;
-    frozenNearTieWins: number;
-    convexFloorChecks: number;
-  };
-  frozenDbzzSpacetimeWins: readonly FrozenWinEvidence[];
-  convexFloors: readonly FloorEvidence[];
-  sharedFixedRate: FixedRateEvidence;
-  partitionedFixedRate: FixedRateEvidence;
-  exclusions: readonly { metric: string; reason: string }[];
-}
-
-export interface PerformanceAcceptanceFailure {
-  readonly kind: "frozen-win" | "convex-floor" | "fixed-rate";
-  readonly path: string;
-  readonly message: string;
+  schemaVersion: 1;
+  previousVersion: string | null;
+  currentVersion: string;
+  metricCount: number;
+  regressions: readonly PerformanceRegression[];
 }
 
 export type PerformanceAcceptanceResult =
   | {
-      readonly status: "passed" | "failed";
+      readonly status: "passed" | "recovery-needed";
       readonly evidence: PerformanceAcceptanceEvidence;
-      readonly failures: readonly PerformanceAcceptanceFailure[];
     }
   | {
       readonly status: "not-evaluated";
-      readonly reason: "correctness-failed" | "current-host-comparison";
+      readonly reason: "correctness-failed";
     };
-
-export const PERFORMANCE_EXCLUSIONS = Object.freeze([
-  {
-    metric: "load-generator RSS and CPU",
-    reason: "SDK/client process architectures differ; acceptance compares the separately sampled server process trees only",
-  },
-  {
-    metric: "instantaneous resource snapshots",
-    reason: "timed server windows are comparable and stable; snapshots are boundary diagnostics already retained in the raw record",
-  },
-  {
-    metric: "latency min, max, and sample count",
-    reason: "the frozen contract explicitly compares p50, p95, and p99; extrema and counts remain correctness diagnostics",
-  },
-  {
-    metric: "attempt, completion, delivery, and error counters",
-    reason: "benchmark validation records these as correctness before performance acceptance, so they are not directional performance metrics",
-  },
-  {
-    metric: "process-count peaks and RSS deltas",
-    reason: "absolute timed-window server RSS is the portable resource metric; process topology and derived deltas are implementation-specific",
-  },
-  {
-    metric: "empty startup, seeded-idle, and pre-connection/subscription baseline RSS in the Convex margin floor",
-    reason: "the frozen 50% floor is for loaded operation, connection, and subscription plateaus; idle RSS remains comparable and frozen against prior SpacetimeDB wins",
-  },
-] as const);
 
 class MetricCollector {
   readonly metrics: ComparableMetric[] = [];
@@ -255,54 +142,6 @@ function capacityComplete(result: SubscriptionCapacityResult): boolean {
   return result.correctness.ok &&
     result.failed === 0 &&
     result.attempted === result.completedInWindow + result.completedAfterWindow;
-}
-
-/**
- * Both fixed-rate patterns must complete the offered workload at the offered
- * rate. This hard floor is what keeps the fixed-rate throughput near-ties
- * honest: the noise envelope tolerates a bounded ranking flip against
- * SpacetimeDB, never a failure to sustain the offered load itself.
- */
-function evaluateFixedRateOfferedTarget(
-  system: MeasuredSystem,
-  pattern: "shared" | "partitioned",
-  failures: PerformanceAcceptanceFailure[],
-): FixedRateEvidence {
-  const result = system.workload.subscriptions.find((item) => item.pattern === pattern);
-  if (result === undefined) throw new Error(`DBZZ after-run omits ${pattern} fixed-rate subscriptions`);
-  const config = system.workload.config.subscriptions;
-  const offeredPerSec = pattern === "shared" ? config.sharedUpdatesPerSec : config.partitionedUpdatesPerSec;
-  const offeredUpdates = offeredFixedRateUpdates(config.durationMs, offeredPerSec);
-  // the realized offered rate: the discrete update count the workload emits
-  // over the exact window, which equals the configured rate whenever the
-  // window is a whole number of seconds
-  const realizedOfferedPerSec = offeredUpdates / (config.durationMs / 1_000);
-  const deliveryTarget = result.expectedDeliveries / (config.durationMs / 1_000);
-  const minimumDelivery = deliveryTarget * 0.99;
-  const failed =
-    !fixedRateComplete(result, config.durationMs, offeredPerSec) ||
-    result.updateThroughputPerSec < realizedOfferedPerSec ||
-    result.deliveryThroughputPerSec < minimumDelivery;
-  if (failed) {
-    failures.push(Object.freeze({
-      kind: "fixed-rate",
-      path: `subscriptions/${pattern}/fixed-rate`,
-      message:
-        `${pattern} fixed-rate offered target failed: ${result.deliveryThroughputPerSec}/s, ` +
-        `expected at least ${minimumDelivery}/s with exact completion`,
-    }));
-  }
-  return {
-    offeredUpdatesPerSec: offeredPerSec,
-    offeredUpdates,
-    completedUpdates: result.updates,
-    expectedDeliveries: result.expectedDeliveries,
-    observedDeliveries: result.observedDeliveries,
-    deliveryTargetPerSec: deliveryTarget,
-    deliveryThroughputPerSec: result.deliveryThroughputPerSec,
-    minimumMeasuredDeliveryPerSec: minimumDelivery,
-    passed: !failed,
-  };
 }
 
 export function extractComparableMetrics(system: MeasuredSystem): ComparableMetric[] {
@@ -502,324 +341,101 @@ function assertMetricParity(
   }
 }
 
-function strictWin(left: ComparableMetric, right: ComparableMetric): boolean {
-  return left.direction === "higher" ? left.value > right.value : left.value < right.value;
-}
-
-/** Signed DBZZ advantage over SpacetimeDB in the metric's own units; positive means DBZZ is ahead. */
-function signedAdvantage(dbzz: ComparableMetric, spacetime: ComparableMetric): number {
-  return dbzz.direction === "higher" ? dbzz.value - spacetime.value : spacetime.value - dbzz.value;
-}
-
-/** The measurement-noise envelope for one path, in the metric's own units. */
-export function noiseAllowance(family: string, spacetimeValue: number): number {
-  const relative = NOISE_FLOOR_RELATIVE * spacetimeValue;
-  return family === "resource.cpu" ? Math.max(relative, NOISE_FLOOR_CPU_CORES) : relative;
-}
-
-/**
- * Classify a frozen baseline win. A baseline margin below the noise envelope
- * was a coin flip when it was frozen, so demanding a strict win on every
- * after-run re-flips that coin; such paths become bounded near-tie
- * obligations instead. Margins at or above the envelope stay strict.
- */
-export function classifyFrozenWin(dbzz: ComparableMetric, spacetime: ComparableMetric): FrozenWinClassification {
-  if (!strictWin(dbzz, spacetime)) throw new Error(`${dbzz.path} is not a frozen baseline win`);
-  return signedAdvantage(dbzz, spacetime) < noiseAllowance(dbzz.family, spacetime.value) ? "near-tie" : "solid";
-}
-
-/** Compact near-tie drift table: baseline versus current margins, so within-floor drift stays visible run-over-run. */
-export function nearTieDriftTable(wins: readonly FrozenWinEvidence[]): string {
-  const margin = (dbzz: number, spacetime: number, direction: MetricDirection): string => {
-    if (spacetime === 0) return "n/a";
-    const fraction = (direction === "higher" ? dbzz - spacetime : spacetime - dbzz) / spacetime;
-    return `${fraction >= 0 ? "+" : ""}${(fraction * 100).toFixed(1)}%`;
-  };
-  const rows = wins
-    .filter((win) => win.classification === "near-tie")
-    .map((win) =>
-      `  ${win.path.padEnd(62)} baseline ${margin(win.baselineDbzz, win.baselineSpacetime, win.direction).padStart(7)}` +
-      `  current ${margin(win.afterDbzz, win.afterSpacetime, win.direction).padStart(7)}` +
-      `  (${win.afterDbzz.toPrecision(4)} vs ${win.afterSpacetime.toPrecision(4)}, allowed deficit ${win.noiseAllowance.toPrecision(3)})`,
-    );
-  return [
-    `near-tie frozen wins (baseline margin below measurement noise; a deficit beyond the floor fails the run):`,
-    ...rows,
-  ].join("\n");
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function machineFingerprint(record: BenchmarkRecordLike): string {
-  return sha256(JSON.stringify(record.machine));
-}
-
-function configSha256(record: BenchmarkRecordLike): string {
-  const systems = requireSystems(record);
-  return sha256(JSON.stringify({
-    sampleIntervalMs: record.methodology.sampleIntervalMs,
-    systems: (["dbzz", "convex", "spacetimedb"] as const).map((name) => systems[name].workload.config),
-  }));
-}
-
 function workloadIdentity(config: DriverResult["config"]): object {
   return {
     profile: config.profile,
     seed: config.seed,
-    operation: {
-      drainTimeoutMs: config.operation.drainTimeoutMs,
-      profiles: config.operation.profiles,
-    },
-    connections: {
-      levels: config.connections.levels,
-      batchSize: config.connections.batchSize,
-      timeoutMs: config.connections.timeoutMs,
-    },
-    subscriptions: {
-      users: config.subscriptions.users,
-      queriesPerUser: config.subscriptions.queriesPerUser,
-      sharedUpdatesPerSec: config.subscriptions.sharedUpdatesPerSec,
-      partitionedUpdatesPerSec: config.subscriptions.partitionedUpdatesPerSec,
-      capacitySlots: config.subscriptions.capacitySlots,
-      setupTimeoutMs: config.subscriptions.setupTimeoutMs,
-      drainTimeoutMs: config.subscriptions.drainTimeoutMs,
-      patterns: config.subscriptions.patterns,
-    },
+    operation: config.operation,
+    connections: config.connections,
+    subscriptions: config.subscriptions,
+    resources: config.resources,
     seedBatchSize: config.seedBatchSize,
   };
 }
 
-function assertComparableRun(baseline: BenchmarkRecordLike, after: BenchmarkRecordLike): void {
-  if (JSON.stringify(after.machine) !== JSON.stringify(baseline.machine)) {
-    throw new Error("after-run machine does not match the frozen baseline machine");
+function assertComparableRun(previous: BenchmarkRecordLike, current: BenchmarkRecordLike): void {
+  const previousMachine = previous.machine;
+  const currentMachine = current.machine;
+  for (const key of ["platform", "arch", "cpu", "logicalCpus", "memGb"] as const) {
+    if (previousMachine[key] !== currentMachine[key]) {
+      throw new Error(`release benchmark machine ${key} differs from the prior version`);
+    }
   }
-  if (after.methodology.sampleIntervalMs !== baseline.methodology.sampleIntervalMs) {
-    throw new Error("after-run server resource sampling interval does not match the frozen baseline");
+  if (previous.methodology.sampleIntervalMs !== current.methodology.sampleIntervalMs) {
+    throw new Error("release benchmark server-resource sampling interval differs from the prior version");
   }
-  const baselineSystems = requireSystems(baseline);
-  const afterSystems = requireSystems(after);
-  const afterConfig = JSON.stringify(afterSystems.dbzz.workload.config);
+  const previousSystems = requireSystems(previous);
+  const currentSystems = requireSystems(current);
+  const currentConfig = JSON.stringify(currentSystems.dbzz.workload.config);
   for (const name of ["dbzz", "convex", "spacetimedb"] as const) {
-    if (JSON.stringify(afterSystems[name].workload.config) !== afterConfig) {
-      throw new Error(`${name} after-run config does not match the current DBZZ config`);
+    if (JSON.stringify(currentSystems[name].workload.config) !== currentConfig) {
+      throw new Error(`${name} release benchmark config does not match the current DBZZ config`);
     }
     if (
-      JSON.stringify(workloadIdentity(afterSystems[name].workload.config)) !==
-        JSON.stringify(workloadIdentity(baselineSystems[name].workload.config))
+      JSON.stringify(workloadIdentity(previousSystems[name].workload.config)) !==
+      JSON.stringify(workloadIdentity(currentSystems[name].workload.config))
     ) {
-      throw new Error(`${name} after-run workload identity does not match the frozen baseline`);
+      throw new Error(`${name} release benchmark workload differs from the prior version`);
     }
   }
 }
 
-function floorCheck(
-  evidence: FloorEvidence[],
-  failures: PerformanceAcceptanceFailure[],
-  dbzz: ComparableMetric,
-  convex: ComparableMetric,
-  rule: string,
-  factor: number,
-  comparable = true,
-): void {
-  const limit = convex.value * factor;
-  if (!comparable) {
-    failures.push(Object.freeze({
-      kind: "convex-floor",
-      path: dbzz.path,
-      message: `Convex floor could not be evaluated at ${dbzz.path}: offered work was incomplete`,
+export function regressionThreshold(metric: ComparableMetric): number {
+  const relative = metric.value * REGRESSION_NOISE_FLOOR_RELATIVE;
+  return metric.family === "resource.cpu" ? Math.max(relative, REGRESSION_NOISE_FLOOR_CPU_CORES) : relative;
+}
+
+export function compareDbzzMetrics(
+  previous: readonly ComparableMetric[],
+  current: readonly ComparableMetric[],
+): readonly PerformanceRegression[] {
+  assertMetricParity(previous, current, "current DBZZ");
+  const previousByPath = indexMetrics(previous);
+  const regressions: PerformanceRegression[] = [];
+
+  for (const metric of current) {
+    const before = previousByPath.get(metric.path)!;
+    const threshold = regressionThreshold(before);
+    const regressed = metric.direction === "higher"
+      ? metric.value < before.value - threshold
+      : metric.value > before.value + threshold;
+    if (!regressed) continue;
+    regressions.push(Object.freeze({
+      path: metric.path,
+      direction: metric.direction,
+      previous: before.value,
+      current: metric.value,
+      deltaPercent: before.value === 0 ? null : ((metric.value - before.value) / before.value) * 100,
+      threshold,
     }));
-    evidence.push({ path: dbzz.path, rule, dbzz: dbzz.value, convex: convex.value, limit, passed: false });
-    return;
   }
-  const passed = dbzz.direction === "higher" ? dbzz.value >= limit : dbzz.value <= limit;
-  if (!passed) {
-    failures.push(Object.freeze({
-      kind: "convex-floor",
-      path: dbzz.path,
-      message:
-        `Convex floor failed at ${dbzz.path}: DBZZ ${dbzz.value} must be ` +
-        `${dbzz.direction === "higher" ? ">=" : "<="} ${limit} (${rule})`,
-    }));
-  }
-  evidence.push({ path: dbzz.path, rule, dbzz: dbzz.value, convex: convex.value, limit, passed });
+  return Object.freeze(regressions.sort((left, right) => left.path.localeCompare(right.path)));
 }
 
-function evaluateMeasuredPerformance(
-  after: BenchmarkRecordLike,
-  frozenBaselineJson: string,
-): {
-  readonly evidence: PerformanceAcceptanceEvidence;
-  readonly failures: readonly PerformanceAcceptanceFailure[];
-} {
-  const baselineDigest = sha256(frozenBaselineJson);
-  if (baselineDigest !== FROZEN_BASELINE_SHA256) {
-    throw new Error(`frozen benchmark baseline digest is ${baselineDigest}; expected ${FROZEN_BASELINE_SHA256}`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(frozenBaselineJson);
-  } catch (error) {
-    throw new Error("frozen benchmark baseline is not valid JSON", { cause: error });
-  }
-  const baseline = parsed as BenchmarkRecordLike;
-  if (baseline.schemaVersion !== 3 || baseline.git?.commit !== "74d8554") {
-    throw new Error("frozen benchmark baseline identity is invalid");
-  }
-  if (after.schemaVersion !== 7) throw new Error("performance acceptance requires an after-run schema-v7 record");
-  assertComparableRun(baseline, after);
-  const baselineSystems = requireSystems(baseline);
-  const afterSystems = requireSystems(after);
-  const baselineMetrics = {} as Record<SystemName, ComparableMetric[]>;
-  const afterMetrics = {} as Record<SystemName, ComparableMetric[]>;
-  for (const name of ["dbzz", "convex", "spacetimedb"] as const) {
-    baselineMetrics[name] = extractComparableMetrics(baselineSystems[name]);
-    afterMetrics[name] = extractComparableMetrics(afterSystems[name]);
-    if (baselineMetrics[name].length !== FROZEN_METRICS_PER_SYSTEM) {
-      throw new Error(
-        `baseline ${name} comparable metric count is ${baselineMetrics[name].length}; expected frozen count ${FROZEN_METRICS_PER_SYSTEM}`,
-      );
-    }
-    assertMetricParity(baselineMetrics.dbzz ?? baselineMetrics[name], baselineMetrics[name], `baseline ${name}`);
-    assertMetricParity(baselineMetrics[name], afterMetrics[name], `after ${name}`);
-  }
-
-  const baselineDbzz = indexMetrics(baselineMetrics.dbzz);
-  const baselineSpacetime = indexMetrics(baselineMetrics.spacetimedb);
-  const afterDbzz = indexMetrics(afterMetrics.dbzz);
-  const afterSpacetime = indexMetrics(afterMetrics.spacetimedb);
-  const frozenWins: FrozenWinEvidence[] = [];
-  const failures: PerformanceAcceptanceFailure[] = [];
-  for (const [path, dbzz] of baselineDbzz) {
-    const spacetime = baselineSpacetime.get(path)!;
-    if (!strictWin(dbzz, spacetime)) continue;
-    const currentDbzz = afterDbzz.get(path)!;
-    const currentSpacetime = afterSpacetime.get(path)!;
-    const classification = classifyFrozenWin(dbzz, spacetime);
-    const allowance = classification === "near-tie" ? noiseAllowance(dbzz.family, currentSpacetime.value) : 0;
-    const passed = classification === "solid"
-      ? strictWin(currentDbzz, currentSpacetime)
-      : signedAdvantage(currentDbzz, currentSpacetime) >= -allowance;
-    if (!passed) {
-      failures.push(Object.freeze({
-        kind: "frozen-win",
-        path,
-        message: classification === "solid"
-          ? `frozen DBZZ-over-SpacetimeDB win lost at ${path}: ${currentDbzz.value} vs ${currentSpacetime.value}`
-          : `frozen near-tie DBZZ-over-SpacetimeDB win reversed beyond the noise floor at ${path}: ` +
-            `${currentDbzz.value} vs ${currentSpacetime.value} (allowed deficit ${allowance})`,
-      }));
-    }
-    frozenWins.push({
-      path,
-      direction: dbzz.direction,
-      classification,
-      baselineDbzz: dbzz.value,
-      baselineSpacetime: spacetime.value,
-      afterDbzz: currentDbzz.value,
-      afterSpacetime: currentSpacetime.value,
-      noiseAllowance: allowance,
-      passed,
-    });
-  }
-  if (frozenWins.length !== FROZEN_DBZZ_SPACETIME_WINS) {
-    throw new Error(
-      `frozen baseline derives ${frozenWins.length} DBZZ-over-SpacetimeDB wins; expected ${FROZEN_DBZZ_SPACETIME_WINS}`,
-    );
-  }
-  const nearTieWins = frozenWins.filter((win) => win.classification === "near-tie").length;
-  if (nearTieWins !== FROZEN_NEAR_TIE_WINS) {
-    throw new Error(
-      `frozen baseline derives ${nearTieWins} near-tie DBZZ-over-SpacetimeDB wins; expected ${FROZEN_NEAR_TIE_WINS}`,
-    );
-  }
-
-  const convexByPath = indexMetrics(afterMetrics.convex);
-  const floors: FloorEvidence[] = [];
-  for (const metric of afterMetrics.dbzz) {
-    const convex = convexByPath.get(metric.path)!;
-    if (metric.family === "operation.throughput" || metric.family === "connection.work.throughput") {
-      floorCheck(floors, failures, metric, convex, ">=5x throughput", 5);
-    } else if (metric.family === "operation.latency.p95" || metric.family === "connection.work.latency.p95") {
-      floorCheck(floors, failures, metric, convex, "<=50% p95 latency", 0.5);
-    } else if (
-      metric.family === "subscription.fixed.delivery.throughput" &&
-      metric.path.startsWith("subscriptions/shared/")
-    ) {
-      floorCheck(floors, failures, metric, convex, ">=1.25x shared fixed-rate delivery throughput", 1.25);
-    } else if (
-      metric.family === "subscription.fixed.delivery.p95" ||
-      metric.family === "subscription.capacity.delivery.p95"
-    ) {
-      floorCheck(
-        floors,
-        failures,
-        metric,
-        convex,
-        "<=50% delivery p95 with complete offered work",
-        0.5,
-        metric.offeredWorkComplete === true && convex.offeredWorkComplete === true,
-      );
-    } else if (metric.family === "resource.rss" && metric.convexRssFloor === true) {
-      floorCheck(floors, failures, metric, convex, "<=50% comparable server RSS", 0.5);
-    }
-  }
-  const sharedFixedRate = evaluateFixedRateOfferedTarget(afterSystems.dbzz, "shared", failures);
-  const partitionedFixedRate = evaluateFixedRateOfferedTarget(afterSystems.dbzz, "partitioned", failures);
-  if (floors.length !== FROZEN_CONVEX_FLOORS) {
-    throw new Error(`after-run evaluated ${floors.length} Convex floors; expected ${FROZEN_CONVEX_FLOORS}`);
-  }
-
-  const evidence = Object.freeze({
-    schemaVersion: 3,
-    passed: failures.length === 0,
-    baseline: {
-      path: FROZEN_BASELINE_PATH,
-      sha256: baselineDigest,
-      schemaVersion: 3,
-      timestamp: baseline.timestamp,
-      gitCommit: baseline.git.commit,
-      sourceHash: baseline.git.sourceHash,
-      machineFingerprint: machineFingerprint(baseline),
-      configSha256: configSha256(baseline),
-    },
-    metricCounts: {
-      baselinePerSystem: {
-        dbzz: baselineMetrics.dbzz.length,
-        convex: baselineMetrics.convex.length,
-        spacetimedb: baselineMetrics.spacetimedb.length,
-      },
-      afterPerSystem: {
-        dbzz: afterMetrics.dbzz.length,
-        convex: afterMetrics.convex.length,
-        spacetimedb: afterMetrics.spacetimedb.length,
-      },
-      frozenDbzzSpacetimeWins: frozenWins.length,
-      frozenNearTieWins: nearTieWins,
-      convexFloorChecks: floors.length,
-    },
-    frozenDbzzSpacetimeWins: Object.freeze(frozenWins.map((win) => Object.freeze(win))),
-    convexFloors: Object.freeze(floors.map((floor) => Object.freeze(floor))),
-    sharedFixedRate,
-    partitionedFixedRate,
-    exclusions: PERFORMANCE_EXCLUSIONS,
-  } satisfies PerformanceAcceptanceEvidence);
-  return Object.freeze({ evidence, failures: Object.freeze(failures) });
-}
-
+/**
+ * Release performance compares DBZZ only with the preceding final DBZZ release.
+ * Convex and SpacetimeDB still run in the same Hetzner workload to keep the
+ * result interpretable, but their vendor movement cannot turn into a DBZZ
+ * release regression.
+ */
 export function evaluatePerformanceAcceptance(
-  after: BenchmarkRecordLike,
-  frozenBaselineJson: string,
-  validation: BenchmarkValidation,
+  previous: BenchmarkRecordLike,
+  current: BenchmarkRecordLike,
+  versions: { previousVersion: string; currentVersion: string },
 ): PerformanceAcceptanceResult {
-  if (validation.status === "failed") {
-    return Object.freeze({ status: "not-evaluated", reason: "correctness-failed" });
-  }
-  const { evidence, failures } = evaluateMeasuredPerformance(after, frozenBaselineJson);
+  assertComparableRun(previous, current);
+  const previousMetrics = extractComparableMetrics(requireSystems(previous).dbzz);
+  const currentMetrics = extractComparableMetrics(requireSystems(current).dbzz);
+  const regressions = compareDbzzMetrics(previousMetrics, currentMetrics);
+  const evidence = Object.freeze({
+    schemaVersion: 1,
+    previousVersion: versions.previousVersion,
+    currentVersion: versions.currentVersion,
+    metricCount: currentMetrics.length,
+    regressions,
+  } satisfies PerformanceAcceptanceEvidence);
   return Object.freeze({
-    status: failures.length === 0 ? "passed" : "failed",
+    status: regressions.length === 0 ? "passed" : "recovery-needed",
     evidence,
-    failures,
   });
 }
