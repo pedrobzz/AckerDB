@@ -1,9 +1,11 @@
-// bun run bench:hetzner [--bootstrap <released-version> | --baseline]
+// bun run bench:hetzner [--bootstrap <released-version> | --baseline | --telemetry]
 //
 // --bootstrap re-establishes an already-released version's final record at its
 // tag; --baseline runs HEAD's pending version with no predecessor comparison —
 // the run itself becomes the final evidence (the first release under the
-// policy, or a deliberate baseline reset).
+// policy, or a deliberate baseline reset); --telemetry runs the optional
+// DBZZ-only telemetry-cost comparison (telemetry-v<version>.json, freely
+// rerun, never release evidence).
 //
 // This command is deliberately synchronous: release automation starts it in a
 // background worker/subagent, while this process owns the remote worktree and
@@ -16,13 +18,16 @@ import { fail, git, syncedVersion } from "./lib.ts";
 
 const HETZNER = "htz";
 const RESULTS = "bench/results";
-const USAGE = "usage: bun run bench:hetzner [--bootstrap <released-version> | --baseline]";
+const USAGE = "usage: bun run bench:hetzner [--bootstrap <released-version> | --baseline | --telemetry]";
 const args = process.argv.slice(2);
-const bootstrap = args[0] === "--bootstrap";
-const baseline = args[0] === "--baseline";
+const mode =
+  args[0] === "--bootstrap" ? "bootstrap"
+  : args[0] === "--baseline" ? "baseline"
+  : args[0] === "--telemetry" ? "telemetry"
+  : "release";
+const bootstrap = mode === "bootstrap";
 if (bootstrap && args.length !== 2) fail(USAGE);
-if (baseline && args.length !== 1) fail(USAGE);
-if (!bootstrap && !baseline && args.length !== 0) fail(USAGE);
+if (!bootstrap && args.length !== (mode === "release" ? 0 : 1)) fail(USAGE);
 
 const sources = new Map<string, string>();
 if (!bootstrap) {
@@ -33,7 +38,7 @@ if (!bootstrap) {
 const version = bootstrap ? args[1]! : syncedVersion((pkg) => sources.get(pkg)!);
 if (!/^\d+\.\d+\.\d+$/.test(version)) fail(`benchmark version ${version} must be a plain x.y.z version`);
 mkdirSync(RESULTS, { recursive: true });
-if (existsSync(`${RESULTS}/${finalBenchmarkFilename(version)}`)) {
+if (mode !== "telemetry" && existsSync(`${RESULTS}/${finalBenchmarkFilename(version)}`)) {
   fail(`v${version} already has final benchmark evidence; benchmark only a version change once`);
 }
 const existingIterations = readdirSync(RESULTS)
@@ -49,7 +54,9 @@ const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const localBundle = join(tmpdir(), `dbzz-v${version}-benchmark-${stamp}.bundle`);
 const remoteRoot = `/root/benchmarks/dbzz-v${version}-${iteration}-${stamp}`;
 const remoteRepo = `${remoteRoot}/repo`;
-const names = [finalBenchmarkFilename(version), iterationBenchmarkFilename(version, iteration)];
+const names = mode === "telemetry"
+  ? [`telemetry-v${version}.json`]
+  : [finalBenchmarkFilename(version), iterationBenchmarkFilename(version, iteration)];
 
 function run(command: string[], inherit = true): number {
   return Bun.spawnSync(command, { stdout: inherit ? "inherit" : "pipe", stderr: inherit ? "inherit" : "pipe" }).exitCode;
@@ -80,7 +87,7 @@ try {
     "cd ../spacetime-app && bun install --frozen-lockfile",
     "cd spacetimedb && bun install --frozen-lockfile",
     `cd ${remoteRepo}`,
-    `BENCH_EXECUTION_HOST=hetzner BENCH_RELEASE_VERSION=${version} BENCH_RELEASE_ITERATION=${iteration} BENCH_RELEASE_SOURCE_COMMIT=${productCommit}${bootstrap || baseline ? " BENCH_RELEASE_BOOTSTRAP=1" : ""} bun bench/run.ts`,
+    `BENCH_EXECUTION_HOST=hetzner BENCH_RELEASE_VERSION=${version} BENCH_RELEASE_ITERATION=${iteration} BENCH_RELEASE_SOURCE_COMMIT=${productCommit}${bootstrap || mode === "baseline" ? " BENCH_RELEASE_BOOTSTRAP=1" : ""}${mode === "telemetry" ? " BENCH_RUN_KIND=telemetry" : ""} bun bench/run.ts`,
   ].join("; "));
 
   let copied = false;

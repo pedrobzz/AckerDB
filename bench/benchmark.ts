@@ -264,18 +264,27 @@ export function benchmarkConfigFromEnv(): BenchmarkConfig {
   }
 
   const quick = profile === "quick";
+  // The default workload measures the two points a decision rests on: the
+  // single-user floor (latency) and the throughput ceiling (saturation). The
+  // intermediate rungs live in the stress profile — they cost minutes and
+  // change no verdicts.
   const profiles: OperationProfile[] = quick
     ? [
         { name: "latency", connections: 1, inFlightPerConnection: 1 },
         { name: "concurrent", connections: 4, inFlightPerConnection: 4 },
       ]
-    : [
-        { name: "latency", connections: 1, inFlightPerConnection: 1 },
-        { name: "pipeline", connections: 1, inFlightPerConnection: 8 },
-        { name: "concurrent", connections: 8, inFlightPerConnection: 4 },
-        { name: "saturation", connections: 32, inFlightPerConnection: 4 },
-      ];
-  const defaultConnectionLevels = quick ? [1, 25] : profile === "stress" ? [1, 100, 500, 1_000, 5_000, 10_000] : [1, 100, 500, 1_000];
+    : profile === "stress"
+      ? [
+          { name: "latency", connections: 1, inFlightPerConnection: 1 },
+          { name: "pipeline", connections: 1, inFlightPerConnection: 8 },
+          { name: "concurrent", connections: 8, inFlightPerConnection: 4 },
+          { name: "saturation", connections: 32, inFlightPerConnection: 4 },
+        ]
+      : [
+          { name: "latency", connections: 1, inFlightPerConnection: 1 },
+          { name: "saturation", connections: 32, inFlightPerConnection: 4 },
+        ];
+  const defaultConnectionLevels = quick ? [1, 25] : profile === "stress" ? [1, 100, 500, 1_000, 5_000, 10_000] : [1, 1_000];
 
   return {
     profile,
@@ -295,12 +304,12 @@ export function benchmarkConfigFromEnv(): BenchmarkConfig {
     },
     subscriptions: {
       users: positiveInt("BENCH_SUB_USERS", quick ? 10 : 500),
-      queriesPerUser: positiveInt("BENCH_SUB_QUERIES", quick ? 5 : 50),
+      queriesPerUser: positiveInt("BENCH_SUB_QUERIES", quick ? 5 : 10),
       durationMs: positiveInt("BENCH_SUB_DURATION_MS", quick ? 500 : 2_000),
       sharedUpdatesPerSec: positiveInt("BENCH_SUB_SHARED_UPDATES_PER_SEC", quick ? 5 : 20),
       partitionedUpdatesPerSec: positiveInt("BENCH_SUB_PARTITIONED_UPDATES_PER_SEC", quick ? 10 : 100),
       capacityDurationMs: positiveInt("BENCH_SUB_CAPACITY_DURATION_MS", quick ? 500 : 2_000),
-      capacitySlots: integerList("BENCH_SUB_CAPACITY_SLOTS", quick ? [1, 4] : [1, 8, 32, 128, 512]),
+      capacitySlots: integerList("BENCH_SUB_CAPACITY_SLOTS", quick ? [1, 4] : [1, 32, 512]),
       setupTimeoutMs: positiveInt("BENCH_SUB_SETUP_TIMEOUT_MS", 120_000),
       drainTimeoutMs: positiveInt("BENCH_SUB_DRAIN_TIMEOUT_MS", 30_000),
       patterns: quick ? ["shared"] : ["shared", "partitioned"],

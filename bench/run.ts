@@ -94,20 +94,27 @@ type SystemResults = Partial<Record<SystemName, MeasuredDriverResult>> & {
   dbzz?: DbzzMeasuredDriverResult;
 };
 
+interface MachineRecord {
+  platform: string;
+  arch: string;
+  cpu: string;
+  logicalCpus: number;
+  memGb: number;
+  osRelease: string;
+  fileDescriptorLimit: number;
+}
+
+/**
+ * The release evidence: apples-to-apples. The DBZZ leg runs telemetry=false
+ * because the comparative targets ship no equivalent always-on telemetry;
+ * telemetry cost has its own optional run (`TelemetryRunRecord`).
+ */
 interface RunRecord {
-  schemaVersion: 8;
+  schemaVersion: 9;
   release: ReleaseBenchmarkContext & { readonly previousVersion: string | null };
   timestamp: string;
   git: { commit: string; dirty: boolean; sourceHash: string };
-  machine: {
-    platform: string;
-    arch: string;
-    cpu: string;
-    logicalCpus: number;
-    memGb: number;
-    osRelease: string;
-    fileDescriptorLimit: number;
-  };
+  machine: MachineRecord;
   versions: Record<string, string>;
   methodology: {
     serverResources: string;
@@ -121,12 +128,27 @@ interface RunRecord {
   };
   executionOrder: BenchmarkExecutionLeg[];
   systems: SystemResults;
-  dbzzTelemetryDisabled: DbzzMeasuredDriverResult;
-  dbzzExporterProfile: DbzzMeasuredDriverResult;
-  dbzzTelemetryCost: ProfileComparisonMetric[] | null;
-  dbzzExporterCost: ProfileComparisonMetric[] | null;
   validation: BenchmarkValidation;
   performanceAcceptance: PerformanceAcceptanceResult;
+}
+
+/** The optional telemetry-cost run: DBZZ against itself, no comparative legs. */
+interface TelemetryRunRecord {
+  kind: "telemetry";
+  schemaVersion: 1;
+  version: string;
+  timestamp: string;
+  git: { commit: string; dirty: boolean; sourceHash: string };
+  machine: MachineRecord;
+  executionOrder: BenchmarkExecutionLeg[];
+  profiles: {
+    enabled: DbzzMeasuredDriverResult;
+    exporter: DbzzMeasuredDriverResult;
+    disabled: DbzzMeasuredDriverResult;
+  };
+  telemetryCost: ProfileComparisonMetric[] | null;
+  exporterCost: ProfileComparisonMetric[] | null;
+  validation: BenchmarkValidation;
 }
 
 interface ComparableMetric {
@@ -907,6 +929,91 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
   }
 }
 
+function gitRecord(): RunRecord["git"] {
+  return {
+    commit: process.env.BENCH_RELEASE_SOURCE_COMMIT ?? git(["rev-parse", "--short", "HEAD"]),
+    dirty: git(["status", "--porcelain"]).length > 0,
+    sourceHash: sourceHash(),
+  };
+}
+
+function machineRecord(): MachineRecord {
+  return {
+    platform: platform(),
+    arch: arch(),
+    cpu: cpus()[0]?.model ?? "unknown",
+    logicalCpus: cpus().length,
+    memGb: Math.round(totalmem() / 1024 ** 3),
+    osRelease: release(),
+    fileDescriptorLimit: fileDescriptorLimit(),
+  };
+}
+
+/**
+ * The optional telemetry-cost run: three DBZZ profiles against each other —
+ * enabled (runtime default), exporter handoff, and disabled. No comparative
+ * legs, no release gating; the record lands beside the release evidence as
+ * telemetry-v<version>.json and is overwritten freely.
+ */
+async function runTelemetryBenchmark(version: string): Promise<void> {
+  await runCodegen(loadConfig(join(BENCH, "dbzz-app"), {
+    DBZZ_DURABILITY: "balanced",
+    DBZZ_TELEMETRY: "enabled",
+  }));
+  const executionOrder = benchmarkExecutionOrder(["dbzz"], ["enabled", "exporter", "disabled"], 0);
+  const measured = new Map<BenchmarkExecutionLeg, DbzzMeasuredDriverResult>();
+  for (let index = 0; index < executionOrder.length; index++) {
+    const leg = executionOrder[index]!;
+    const profile = leg.replace("dbzz-telemetry-", "") as DbzzBenchmarkProfile;
+    measured.set(leg, await benchDbzz(profile));
+    if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
+  }
+  const profiles = {
+    enabled: measured.get("dbzz-telemetry-enabled")!,
+    exporter: measured.get("dbzz-telemetry-exporter")!,
+    disabled: measured.get("dbzz-telemetry-disabled")!,
+  };
+  const validation = validateBenchmarkResults([
+    { label: "dbzz/runtime-default", system: "dbzz", workload: profiles.enabled.workload },
+    { label: "dbzz/benchmark-exporter", system: "dbzz", workload: profiles.exporter.workload },
+    { label: "dbzz/disabled", system: "dbzz", workload: profiles.disabled.workload },
+  ]);
+  const clean = validation.dbzzStatus === "passed";
+  const telemetryCost = clean
+    ? compareProfileMetrics("runtime-default", comparisonMetrics(profiles.enabled), "disabled", comparisonMetrics(profiles.disabled))
+    : null;
+  const exporterCost = clean
+    ? compareProfileMetrics("benchmark-exporter", comparisonMetrics(profiles.exporter), "runtime-default", comparisonMetrics(profiles.enabled))
+    : null;
+
+  console.log(`\n${formatBenchmarkValidation(validation)}`);
+  if (telemetryCost !== null) printDbzzProfileCost("DBZZ default telemetry cost", telemetryCost);
+  if (exporterCost !== null) printDbzzProfileCost("DBZZ exporter handoff cost", exporterCost);
+  printDbzzTelemetryStatus([profiles.enabled, profiles.exporter, profiles.disabled]);
+
+  const record: TelemetryRunRecord = {
+    kind: "telemetry",
+    schemaVersion: 1,
+    version,
+    timestamp: new Date().toISOString(),
+    git: gitRecord(),
+    machine: machineRecord(),
+    executionOrder,
+    profiles,
+    telemetryCost,
+    exporterCost,
+    validation,
+  };
+  mkdirSync(RESULTS_DIR, { recursive: true });
+  const savedPath = join(RESULTS_DIR, `telemetry-v${version}.json`);
+  await Bun.write(savedPath, `${JSON.stringify(record, null, 2)}\n`);
+  console.log(`\nsaved ${relative(REPO, savedPath)}`);
+  if (!clean) {
+    console.log("\ntelemetry benchmark correctness failed; fix before trusting the cost tables.");
+    process.exitCode = 1;
+  }
+}
+
 const requested = process.argv.slice(2) as SystemName[];
 for (const name of requested) {
   if (!ALL_SYSTEMS.includes(name)) throw new Error(`unknown system ${JSON.stringify(name)}`);
@@ -919,32 +1026,33 @@ if (benchmarkConfig.profile !== "default") {
   throw new Error("release benchmarks use the default workload only");
 }
 const releaseContext = releaseBenchmarkContext(packageVersion(join(REPO, "packages", "core", "package.json")));
+
+if (process.env.BENCH_RUN_KIND === "telemetry") {
+  await runTelemetryBenchmark(releaseContext.version);
+  process.exit(process.exitCode ?? 0);
+}
+
 const bootstrap = process.env.BENCH_RELEASE_BOOTSTRAP === "1";
 const previous = bootstrap ? undefined : readPreviousFinalBenchmark<RunRecord>(RESULTS_DIR, releaseContext.version);
-if (previous && (previous.record.schemaVersion !== 8 || previous.record.release?.host !== "hetzner")) {
+if (previous && (previous.record.schemaVersion !== 9 || previous.record.release?.host !== "hetzner")) {
   throw new Error(`v${previous.version} is not a final Hetzner release benchmark`);
 }
 
+// Apples-to-apples: the comparative targets ship no equivalent always-on
+// telemetry, so the release leg runs telemetry=false. Telemetry cost is the
+// separate optional run above.
 await runCodegen(loadConfig(join(BENCH, "dbzz-app"), {
   DBZZ_DURABILITY: "balanced",
-  DBZZ_TELEMETRY: "enabled",
+  DBZZ_TELEMETRY: "disabled",
 }));
 const spacetimeVersion = assertSpacetimeVersionAlignment();
-const executionOrder = benchmarkExecutionOrder(ALL_SYSTEMS, true, releaseContext.iteration - 1);
+const executionOrder = benchmarkExecutionOrder(ALL_SYSTEMS, ["disabled"], releaseContext.iteration - 1);
 const systems: SystemResults = {};
-let dbzzTelemetryDisabled: DbzzMeasuredDriverResult | undefined;
-let dbzzExporterProfile: DbzzMeasuredDriverResult | undefined;
 for (let index = 0; index < executionOrder.length; index++) {
   const leg = executionOrder[index]!;
   switch (leg) {
-    case "dbzz-telemetry-enabled":
-      systems.dbzz = await benchDbzz("enabled");
-      break;
-    case "dbzz-telemetry-exporter":
-      dbzzExporterProfile = await benchDbzz("exporter");
-      break;
     case "dbzz-telemetry-disabled":
-      dbzzTelemetryDisabled = await benchDbzz("disabled");
+      systems.dbzz = await benchDbzz("disabled");
       break;
     case "convex":
       systems.convex = await benchConvex();
@@ -952,63 +1060,34 @@ for (let index = 0; index < executionOrder.length; index++) {
     case "spacetimedb":
       systems.spacetimedb = await benchSpacetime();
       break;
+    default:
+      throw new Error(`release benchmark does not run leg ${leg}`);
   }
   if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
 }
 
-if (systems.dbzz === undefined || dbzzTelemetryDisabled === undefined || dbzzExporterProfile === undefined) {
-  throw new Error("release benchmark DBZZ profile measurements are missing");
+if (systems.dbzz === undefined) {
+  throw new Error("release benchmark DBZZ measurements are missing");
 }
 const validationTargets: BenchmarkValidationTarget[] = [
-  { label: "dbzz/runtime-default", system: "dbzz", workload: systems.dbzz.workload },
+  { label: "dbzz", system: "dbzz", workload: systems.dbzz.workload },
   { label: "convex", system: "convex", workload: systems.convex!.workload },
   { label: "spacetimedb", system: "spacetimedb", workload: systems.spacetimedb!.workload },
-  { label: "dbzz/benchmark-exporter", system: "dbzz", workload: dbzzExporterProfile.workload },
-  { label: "dbzz/disabled", system: "dbzz", workload: dbzzTelemetryDisabled.workload },
 ];
 const validation = validateBenchmarkResults(validationTargets);
-let dbzzTelemetryCost: ProfileComparisonMetric[] | null = null;
-let dbzzExporterCost: ProfileComparisonMetric[] | null = null;
 const dbzzFailed = validation.dbzzStatus === "failed";
-if (!dbzzFailed) {
-  dbzzTelemetryCost = compareProfileMetrics(
-    "runtime-default",
-    comparisonMetrics(systems.dbzz),
-    "disabled",
-    comparisonMetrics(dbzzTelemetryDisabled),
-  );
-  dbzzExporterCost = compareProfileMetrics(
-    "benchmark-exporter",
-    comparisonMetrics(dbzzExporterProfile),
-    "runtime-default",
-    comparisonMetrics(systems.dbzz),
-  );
-}
 
 printResults(systems);
 console.log(`\n${formatBenchmarkValidation(validation)}`);
-if (dbzzTelemetryCost !== null) printDbzzProfileCost("DBZZ default telemetry cost", dbzzTelemetryCost);
-if (dbzzExporterCost !== null) printDbzzProfileCost("DBZZ exporter handoff cost", dbzzExporterCost);
-printDbzzTelemetryStatus([systems.dbzz, dbzzExporterProfile, dbzzTelemetryDisabled]);
+// The release leg must prove its telemetry really is inactive.
+printDbzzTelemetryStatus([systems.dbzz]);
 
 const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
-  schemaVersion: 8,
+  schemaVersion: 9,
   release: { ...releaseContext, previousVersion: previous?.version ?? null },
   timestamp: new Date().toISOString(),
-  git: {
-    commit: process.env.BENCH_RELEASE_SOURCE_COMMIT ?? git(["rev-parse", "--short", "HEAD"]),
-    dirty: git(["status", "--porcelain"]).length > 0,
-    sourceHash: sourceHash(),
-  },
-  machine: {
-    platform: platform(),
-    arch: arch(),
-    cpu: cpus()[0]?.model ?? "unknown",
-    logicalCpus: cpus().length,
-    memGb: Math.round(totalmem() / 1024 ** 3),
-    osRelease: release(),
-    fileDescriptorLimit: fileDescriptorLimit(),
-  },
+  git: gitRecord(),
+  machine: machineRecord(),
   versions: {
     bun: Bun.version,
     bunRevision: Bun.spawnSync([process.execPath, "--revision"]).stdout.toString().trim(),
@@ -1027,17 +1106,13 @@ const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
       convex: "current local backend native default",
       spacetimedb: "confirmed reads explicitly enabled; standalone native durable commit log",
     },
-    dbzzProfiles: "systems.dbzz omits Runtime.telemetry and measures the exact default local console sink, retention, and limits; dbzzExporterProfile adds only an explicit in-process exporter callback to that default; dbzzTelemetryDisabled passes telemetry=false; all three use durability=balanced with fresh equivalent state",
-    dbzzTelemetryValidation: "the parent streams DBZZ stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; enabled legs validate local record/delivery accounting, bounded queue and trace-retention state, exact exporter selection and health, the query.queue/mutation.queue/procedure.admission/subscription.queue aggregate matrix, and lower-bound consistency with workload attempts; disabled telemetry must remain entirely inactive",
+    dbzzProfiles: "apples-to-apples: systems.dbzz runs telemetry=false because the comparative targets ship no equivalent always-on telemetry; telemetry cost is measured by the separate optional telemetry run (telemetry-v<version>.json), not re-proven on every release",
+    dbzzTelemetryValidation: "the parent streams DBZZ stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; the release leg runs telemetry=false and must prove it stays entirely inactive; enabled-profile accounting is validated by the telemetry run",
     spacetimeQueryTransport: "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
     subscriptionCapacity: "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery",
   },
   executionOrder,
   systems,
-  dbzzTelemetryDisabled,
-  dbzzExporterProfile,
-  dbzzTelemetryCost,
-  dbzzExporterCost,
   validation,
 };
 // The release verdict judges DBZZ itself: a comparative harness failure is

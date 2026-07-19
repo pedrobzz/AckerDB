@@ -47,7 +47,7 @@ const previousOk =
   typeof evidence.release?.previousVersion === "string" ||
   (evidence.release?.previousVersion === null && priorFinals.length === 0);
 if (
-  evidence.schemaVersion !== 8 ||
+  evidence.schemaVersion !== 9 ||
   evidence.release?.version !== version ||
   !previousOk ||
   evidence.release?.host !== "hetzner" ||

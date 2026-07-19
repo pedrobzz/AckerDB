@@ -73,7 +73,7 @@ function assertReleaseBenchmark(ref: string, previousVersion: string, version: s
     record?.release?.previousVersion === previousVersion ||
     (record?.release?.previousVersion === null && finalBenchmarksAt(ref, version).length === 0);
   if (
-    record?.schemaVersion !== 8 ||
+    record?.schemaVersion !== 9 ||
     record.release?.version !== version ||
     !previousOk ||
     record.release?.host !== "hetzner" ||

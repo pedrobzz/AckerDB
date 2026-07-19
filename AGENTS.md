@@ -157,15 +157,27 @@ or patch version change—never before or after ordinary implementation work.
 The final benchmark from the preceding version is the before-state.
 
 Every release benchmark runs all of DBZZ, Convex, and SpacetimeDB on Hetzner
-only, with the same workload. After `bun run bump <patch|minor|major>`,
+only, with the same workload, **apples-to-apples**: the DBZZ leg runs
+`telemetry=false` because the comparative targets ship no equivalent always-on
+telemetry. The whole run is budgeted at five minutes on Hetzner (eight is the
+ceiling); the default workload measures the decision points only — single-user
+latency and saturation, the connection floor and ceiling, and a three-rung
+subscription-capacity ladder. After `bun run bump <patch|minor|major>`,
 dispatch `bun run bench:hetzner` in a background subagent or worker. Do not
 run `bench/run.ts` on the developer machine. The merge guard rejects a version
 change without a final approved Hetzner result.
 
+Telemetry cost is *not* re-proven on every release: `bun run bench:hetzner
+--telemetry` is the optional DBZZ-only run (enabled vs exporter vs disabled)
+whenever telemetry code actually changed. Its record —
+`bench/results/telemetry-v<version>.json` — is diagnostic, freely rerun, and
+never release evidence.
+
 Records are version-bound:
 
 - final: `bench/results/v<version>.json`;
-- recovery iteration: `bench/results/v<version>.iteration-<n>.json`.
+- recovery iteration: `bench/results/v<version>.iteration-<n>.json`;
+- telemetry (optional, diagnostic): `bench/results/telemetry-v<version>.json`.
 
 A passing final run deletes that version's iterations. Do not retain timestamp
 results, ad-hoc benchmark logs, or a separate before-change record. Existing
