@@ -18,16 +18,21 @@ const BUMP_TYPES = ["feat", "fix"];
 const bumpType = new RegExp(`^(${BUMP_TYPES.join("|")})(\\(.+\\))?!?:`, "i");
 const breaking = /^[a-z]+(\(.+\))?!:/i;
 
+/** A `git show` object spec at a ref, where `":"` means the index (`:path`, never `"::path"`). */
+function specAt(ref: string, path: string): string {
+  return ref === ":" ? `:${path}` : `${ref}:${path}`;
+}
+
 function versionAt(ref: string, requireCompleteSet: boolean): string {
   const present = PACKAGES.filter(
-    (pkg) => tryGit("show", `${ref}:packages/${pkg}/package.json`) !== null,
+    (pkg) => tryGit("show", specAt(ref, `packages/${pkg}/package.json`)) !== null,
   );
   if (requireCompleteSet && present.length !== PACKAGES.length) {
     const missing = PACKAGES.filter((pkg) => !present.includes(pkg));
     fail(`${ref} is missing release package(s): ${missing.map((pkg) => `@dbzz/${pkg}`).join(", ")}`);
   }
   return syncedVersion(
-    (pkg) => git("show", `${ref}:packages/${pkg}/package.json`),
+    (pkg) => git("show", specAt(ref, `packages/${pkg}/package.json`)),
     present,
   );
 }
@@ -49,7 +54,7 @@ function finalBenchmarksAt(ref: string, version: string): string[] {
 
 function assertReleaseBenchmark(ref: string, previousVersion: string, version: string): void {
   const path = `bench/results/v${version}.json`;
-  const source = tryGit("show", `${ref}:${path}`);
+  const source = tryGit("show", specAt(ref, path));
   if (source === null) {
     fail(
       `v${version} has no final Hetzner benchmark evidence (${path}).\n` +
