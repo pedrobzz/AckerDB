@@ -26,6 +26,16 @@ export async function registryUrl(): Promise<string> {
   return m[1]!.trim().replace(/\/+$/, "");
 }
 
+/** Fail with a start-the-registry hint unless the registry answers a ping. */
+export async function assertRegistryReachable(registry: string): Promise<void> {
+  try {
+    const ping = await fetch(`${registry}/-/ping`);
+    if (!ping.ok) throw new Error(`ping returned ${ping.status}`);
+  } catch {
+    fail(`registry ${registry} is not reachable — start it in another terminal: bun run registry`);
+  }
+}
+
 export function pkgJsonPath(pkg: string): string {
   return `packages/${pkg}/package.json`;
 }

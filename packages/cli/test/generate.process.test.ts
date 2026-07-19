@@ -45,6 +45,19 @@ export default defineSchema({
 });
 `;
 
+// v2 plus a required column — the schema "moving on" after a v2 ledger was consented to.
+const SCHEMA_V2_MOVED = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+
+export default defineSchema({
+  items: defineTable({
+    id: dbz.primaryKey(),
+    label: dbz.string(),
+    count: dbz.string(),
+    flag: dbz.string(),
+  }),
+});
+`;
+
 // v1 plus a UNIQUE index over `label` — an optimistic change whose stored rows may already collide.
 const SCHEMA_UNIQUE = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
 
@@ -389,6 +402,114 @@ describe("dbz generate", () => {
     const result = await withTimeout(runCli(["generate", "", dir]), "dbz generate (pending)");
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("pending migration");
+  }, TEST_TIMEOUT_MS);
+
+  test("stale consent refuses across fresh child processes; fresh consent writes", async () => {
+    const port = await freePort();
+    const dir = makeFixture({
+      "schema.ts": SCHEMA_V1,
+      "functions/items.ts": ITEMS_FUNCTIONS,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+    await seedV1(dir, port);
+
+    // The ledger the developer consents to: count number -> string.
+    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    const planned = await withTimeout(runCli(["__plan", dir]), "__plan (v2)");
+    expect(planned.code).toBe(0);
+    const wire = JSON.parse(planned.stdout.trim().split("\n").at(-1)!) as {
+      clean: boolean;
+      fingerprint: string;
+      refusals: unknown[];
+      safe: string[];
+    };
+    expect(wire.clean).toBe(false);
+    expect(wire.refusals).toHaveLength(1);
+    expect(wire.fingerprint).toMatch(/^[0-9a-f]{64}$/);
+
+    // The schema moves after the yes: the consented fingerprint is now stale.
+    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2_MOVED);
+    const staleRun = await withTimeout(
+      runCli(["__generate", dir, JSON.stringify({ name: "count_to_string", consent: wire.fingerprint })]),
+      "__generate (stale)",
+    );
+    expect(staleRun.code).toBe(0);
+    expect(JSON.parse(staleRun.stdout.trim().split("\n").at(-1)!)).toEqual({ stale: true });
+    expect(existsSync(join(dir, "migrations"))).toBe(false);
+
+    // Re-planned over the moved schema, the fresh consent writes.
+    const replanned = await withTimeout(runCli(["__plan", dir]), "__plan (moved)");
+    const fresh = JSON.parse(replanned.stdout.trim().split("\n").at(-1)!) as { fingerprint: string };
+    expect(fresh.fingerprint).not.toBe(wire.fingerprint);
+    const written = await withTimeout(
+      runCli(["__generate", dir, JSON.stringify({ name: "count_to_string", consent: fresh.fingerprint })]),
+      "__generate (fresh)",
+    );
+    expect(written.code).toBe(0);
+    expect(existsSync(join(dir, "migrations", "0001_count_to_string.ts"))).toBe(true);
+  }, TEST_TIMEOUT_MS);
+
+  test("a stale pending scaffold gets delete-or-keep guidance from non-TTY generate", async () => {
+    const port = await freePort();
+    const dir = makeFixture({
+      "schema.ts": SCHEMA_V1,
+      "functions/items.ts": ITEMS_FUNCTIONS,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+    await seedV1(dir, port);
+
+    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    const first = await withTimeout(runCli(["generate", "count_to_string", dir]), "dbz generate (scaffold)");
+    expect(first.code).toBe(0);
+    // Invocation is the consent, but the ledger is still the record of what it answers.
+    expect(first.stdout).toContain("the change ledger");
+    expect(first.stdout).toContain("needs a migration");
+
+    // The schema moves on with the scaffold still unapplied.
+    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2_MOVED);
+    const second = await withTimeout(runCli(["generate", "", dir]), "dbz generate (stale pending)");
+    expect(second.code).not.toBe(0);
+    expect(second.stderr).toContain("pending migration");
+    expect(second.stderr).toContain("delete its files to re-derive");
+    expect(second.stderr).toContain("0001_count_to_string.ts");
+  }, TEST_TIMEOUT_MS);
+
+  test("--hold-pending exits before applying; the database is untouched", async () => {
+    const port = await freePort();
+    const dir = makeFixture({
+      "schema.ts": SCHEMA_V1,
+      "functions/items.ts": ITEMS_FUNCTIONS,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+    await seedV1(dir, port);
+    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+
+    // A filled, ready-to-apply chain entry the database has not applied.
+    mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
+    writeFileSync(
+      join(dir, "migrations", "0001_count_to_string.ts"),
+      `import { defineMigration } from "@dbzz/server";\nexport default defineMigration({ tables: { items: (row) => ({ ...row, count: String(row.count) }) } });\n`,
+    );
+    writeFileSync(
+      join(dir, "migrations", "meta", "0001_count_to_string.json"),
+      JSON.stringify({ number: 1, name: "count_to_string", fingerprint: migrationFingerprint(V2), pre: V1, target: V2 }),
+    );
+
+    const held = await withTimeout(runCli(["__serve", dir, "--hold-pending"]), "__serve --hold-pending");
+    expect(held.code).not.toBe(0);
+    expect(held.stderr).toContain("held for confirmation");
+
+    const db = new Database(join(dir, ".zdb", "data.db"), { readonly: true });
+    try {
+      // Nothing applied, nothing transformed: rows still hold numbers.
+      expect(Number((db.query("SELECT COUNT(*) AS n FROM _dbz_migrations").get() as { n: number | bigint }).n)).toBe(0);
+      expect((db.query('SELECT "count" FROM "items" WHERE "id" = 1').get() as { count: number }).count).toBe(5);
+    } finally {
+      db.close();
+    }
   }, TEST_TIMEOUT_MS);
 
   test("refuses when there is no database to diff against", async () => {

@@ -20,9 +20,11 @@ import {
   reconcile,
   type Schema,
   UnsafeSchemaChange,
+  validateHistoryPrefix,
 } from "@dbzz/server";
 import type { AppConfig } from "./config.ts";
 import { loadMigrationChain } from "./migrations/load.ts";
+import { readStoredState } from "./migrations/stored.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 
@@ -87,6 +89,12 @@ export interface StartAppOptions {
   prepare?: StartupPreparation;
   /** Programmatic auth authority. Cannot be combined with a configured verifier or OIDC. */
   credentialVerifier?: CredentialVerifier;
+  /**
+   * Exit instead of applying pending migrations — the interactive dev
+   * supervisor's gate, which asks for consent and restarts without the hold.
+   * Production starts and non-TTY dev never set this: they apply at startup.
+   */
+  holdPendingMigrations?: boolean;
 }
 
 type CredentialVerifierLoader = () => Promise<CredentialVerifier | undefined>;
@@ -230,6 +238,28 @@ export async function startApp(
       loadMigrationChain(config),
     ]));
     requireStartupOwnership();
+
+    // The hold gate: migrations rewrite rows, so the interactive dev flow
+    // applies them only on an explicit yes. A held start exits before the
+    // engine opens; the supervisor prompts and restarts without the hold.
+    // A fresh database is never held (the chain stamps vacuously — no rows),
+    // and a divergent history falls through to the engine's own report.
+    if (options.holdPendingMigrations === true && steps.length > 0) {
+      const stored = readStoredState(config);
+      if (stored !== null) {
+        let pendingCount = 0;
+        try {
+          pendingCount = validateHistoryPrefix(stored.applied, steps).pending.length;
+        } catch {
+          // Divergence is the engine's message to deliver, not the gate's.
+        }
+        if (pendingCount > 0) {
+          throw new Error(
+            `${pendingCount} pending migration(s) held for confirmation — the dev supervisor asks before applying`,
+          );
+        }
+      }
+    }
 
     server.advanceStartup("opening-storage");
     mkdirSync(config.dbDir, { recursive: true });

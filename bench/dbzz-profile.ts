@@ -78,23 +78,20 @@ export function expectedDbzzStartupMode(
 
 export function benchmarkExecutionOrder(
   systemOrder: readonly SystemName[],
-  profiledDbzz: boolean,
+  dbzzProfiles: readonly DbzzBenchmarkProfile[],
   savedRuns: number,
 ): BenchmarkExecutionLeg[] {
   if (!Number.isSafeInteger(savedRuns) || savedRuns < 0) {
     throw new RangeError("savedRuns must be a non-negative safe integer");
   }
-  const rotations: readonly (readonly DbzzBenchmarkProfile[])[] = [
-    ["enabled", "exporter", "disabled"],
-    ["disabled", "enabled", "exporter"],
-    ["exporter", "disabled", "enabled"],
-  ];
-  const dbzzProfiles: readonly DbzzBenchmarkProfile[] = profiledDbzz
-    ? rotations[savedRuns % rotations.length]!
-    : ["enabled"];
+  if (dbzzProfiles.length === 0) throw new RangeError("at least one DBZZ profile must run");
+  // Rotate the profile order across reruns so no profile always pays the
+  // cold-cache first slot.
+  const rotation = savedRuns % dbzzProfiles.length;
+  const rotated = [...dbzzProfiles.slice(rotation), ...dbzzProfiles.slice(0, rotation)];
   return systemOrder.flatMap((system) =>
     system === "dbzz"
-      ? dbzzProfiles.map((profile) => `dbzz-telemetry-${profile}` as const)
+      ? rotated.map((profile) => `dbzz-telemetry-${profile}` as const)
       : [system],
   );
 }

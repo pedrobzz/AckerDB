@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,8 +18,8 @@ import {
 import { loadConfig } from "../src/config.ts";
 import { generateMigration } from "../src/migrations/scaffold.ts";
 import { loadMigrationChain } from "../src/migrations/load.ts";
-import { computePlan } from "../src/migrations/plan.ts";
-import { writeMigration } from "../src/migrations/write.ts";
+import { computePlan, planFingerprint } from "../src/migrations/plan.ts";
+import { StaleConsentError, writeMigration } from "../src/migrations/write.ts";
 import { makeFixture } from "./fixture.ts";
 
 const REPO = new URL("../../..", import.meta.url).pathname;
@@ -503,5 +503,114 @@ export default defineSchema({
 
     expect((await computePlan(config)).status).toBe("diverged");
     await expect(writeMigration(config, { name: "next" })).rejects.toThrow("no longer matches the on-disk chain");
+  });
+});
+
+// -- computePlan: pending staleness / writeMigration: consent -----------------
+
+describe("computePlan: pending staleness + writeMigration: consent", () => {
+  const P_PRE = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
+  const P_TARGET = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+  const SCHEMA_AT_TARGET = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+export default defineSchema({
+  posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }),
+});
+`;
+  const SCHEMA_MOVED_ON = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+export default defineSchema({
+  posts: defineTable({ id: dbz.primaryKey(), count: dbz.number(), flag: dbz.string() }),
+});
+`;
+
+  /** A scaffolded-but-unapplied chain over a database still at PRE. */
+  async function pendingFixture(schemaTs: string): Promise<{ dir: string; config: ReturnType<typeof loadConfig> }> {
+    const gen = generateMigration({ number: 1, name: "parse_count", pre: snapshotOf(P_PRE), schema: P_TARGET });
+    const dir = makeFixture({
+      "schema.ts": schemaTs,
+      "migrations/0001_parse_count.ts": gen.migrationTs,
+      "migrations/meta/0001_parse_count.types.ts": gen.typesTs,
+      "migrations/meta/0001_parse_count.json": gen.metaJson,
+    });
+    dirs.push(dir);
+    const config = loadConfig(dir);
+    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    await seed(P_PRE, join(dir, ".zdb", "data.db"), async () => {});
+    return { dir, config };
+  }
+
+  test("a pending chain whose end-state is the live schema is not stale", async () => {
+    const { config } = await pendingFixture(SCHEMA_AT_TARGET);
+    const outcome = await computePlan(config);
+    expect(outcome.status).toBe("pending");
+    if (outcome.status !== "pending") throw new Error("unreachable");
+    expect(outcome.stale).toBe(false);
+    expect(outcome.pendingFiles).toHaveLength(3);
+    expect(outcome.pendingLabels).toEqual(["0001_parse_count"]);
+    // The apply-decline memory key: covers file bytes, so editing the
+    // migration (filling a TODO) releases a remembered decline.
+    expect(outcome.pendingIdentity).toMatch(/^[0-9a-f]{64}$/);
+    const before = outcome.pendingIdentity;
+    const modulePath = outcome.pendingFiles[0]!;
+    writeFileSync(modulePath, `${readFileSync(modulePath, "utf8")}\n// touched\n`);
+    const edited = await computePlan(config);
+    if (edited.status !== "pending") throw new Error("unreachable");
+    expect(edited.pendingIdentity).not.toBe(before);
+  });
+
+  test("a schema that moved after the scaffold flags the pending chain stale and names its files", async () => {
+    const { config } = await pendingFixture(SCHEMA_MOVED_ON);
+    const outcome = await computePlan(config);
+    expect(outcome.status).toBe("pending");
+    if (outcome.status !== "pending") throw new Error("unreachable");
+    expect(outcome.stale).toBe(true);
+    expect(outcome.pendingFiles.map((f) => f.split("/").pop())).toEqual([
+      "0001_parse_count.ts",
+      "0001_parse_count.types.ts",
+      "0001_parse_count.json",
+    ]);
+  });
+
+  /** A chainless app whose live schema needs a migration: the consent-fingerprint stage. */
+  async function changesFixture(): Promise<{ dir: string; config: ReturnType<typeof loadConfig> }> {
+    const dir = makeFixture({ "schema.ts": SCHEMA_AT_TARGET });
+    dirs.push(dir);
+    const config = loadConfig(dir);
+    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    await seed(P_PRE, join(dir, ".zdb", "data.db"), async () => {});
+    return { dir, config };
+  }
+
+  const fingerprintOf = async (config: ReturnType<typeof loadConfig>): Promise<string> => {
+    const outcome = await computePlan(config);
+    if (outcome.status !== "changes") throw new Error(`expected changes, got ${outcome.status}`);
+    return outcome.fingerprint;
+  };
+
+  test("consent matching the fresh plan writes the scaffold", async () => {
+    const { dir, config } = await changesFixture();
+    const written = await writeMigration(config, { name: "parse_count", consent: await fingerprintOf(config) });
+    expect(written).toHaveLength(3);
+    expect(existsSync(join(dir, "migrations", "0001_parse_count.ts"))).toBe(true);
+  });
+
+  test("consent that no longer matches the fresh plan refuses inside the write, and writes nothing", async () => {
+    const { dir, config } = await changesFixture();
+    // A fingerprint over any other (pre, target) pair — what a consent becomes
+    // the moment the schema moves after the ledger was shown. (The full
+    // moved-schema replay lives in the process tests: in production every plan
+    // and write is a fresh child, so the schema module is never stale-cached.)
+    const stale = planFingerprint(snapshotOf(P_PRE), snapshotOf(P_PRE));
+
+    await expect(writeMigration(config, { name: "parse_count", consent: stale })).rejects.toThrow(StaleConsentError);
+    expect(existsSync(join(dir, "migrations"))).toBe(false);
+
+    const written = await writeMigration(config, { name: "parse_count", consent: await fingerprintOf(config) });
+    expect(written).toHaveLength(3);
+  });
+
+  test("no consent means the invocation is the consent — dbz generate's path still writes", async () => {
+    const { dir, config } = await changesFixture();
+    await writeMigration(config, { name: "parse_count" });
+    expect(existsSync(join(dir, "migrations", "0001_parse_count.ts"))).toBe(true);
   });
 });

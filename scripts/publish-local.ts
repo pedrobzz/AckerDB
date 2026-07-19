@@ -1,14 +1,17 @@
 // bun run publish:local
 // Publishes every package at its synced pinned version to the local
 // Verdaccio registry, then tags the release commit as v<version>.
+import { readdirSync } from "node:fs";
 import {
   PACKAGES,
+  assertRegistryReachable,
   assertWorkspaceLock,
   fail,
   git,
   pkgJsonPath,
   readBunLock,
   registryUrl,
+  semverGt,
   syncedVersion,
   tryGit,
 } from "./lib";
@@ -16,7 +19,12 @@ import {
 const REGISTRY = await registryUrl();
 const branch = tryGit("symbolic-ref", "--short", "HEAD");
 if (branch !== "main") fail("publish from main only — merge your branch first.");
-if (git("status", "--porcelain") !== "") fail("working tree is dirty — commit or stash before publishing.");
+// The gate protects what gets packed and tagged. demo/ is a consumer fixture:
+// its beta pins and local experiments never enter a tarball and must not
+// block a release.
+if (git("status", "--porcelain", "--", ".", ":!demo") !== "") {
+  fail("working tree is dirty outside demo/ — commit or stash before publishing.");
+}
 
 const sources = new Map<string, string>();
 for (const pkg of PACKAGES) sources.set(pkg, await Bun.file(pkgJsonPath(pkg)).text());
@@ -31,18 +39,28 @@ if (!(await evidenceFile.exists())) {
 const evidence = await evidenceFile.json() as {
   schemaVersion?: unknown;
   release?: { version?: unknown; previousVersion?: unknown; host?: unknown };
-  validation?: { status?: unknown };
+  validation?: { dbzzStatus?: unknown };
   performanceAcceptance?: { status?: unknown };
 };
+// A baseline record (previousVersion null) stands only where no comparison was
+// possible: no earlier final evidence exists.
+const priorFinals = readdirSync("bench/results").filter((name) => {
+  const match = /^v(\d+\.\d+\.\d+)\.json$/.exec(name);
+  return match !== null && semverGt(version, match[1]!);
+});
+const previousOk =
+  typeof evidence.release?.previousVersion === "string" ||
+  (evidence.release?.previousVersion === null && priorFinals.length === 0);
 if (
-  evidence.schemaVersion !== 8 ||
+  evidence.schemaVersion !== 9 ||
   evidence.release?.version !== version ||
-  typeof evidence.release?.previousVersion !== "string" ||
-  evidence.release.host !== "hetzner" ||
-  evidence.validation?.status !== "passed" ||
+  !previousOk ||
+  evidence.release?.host !== "hetzner" ||
+  // The gate judges DBZZ itself; comparative-leg failures ride in the record.
+  evidence.validation?.dbzzStatus !== "passed" ||
   evidence.performanceAcceptance?.status !== "passed"
 ) {
-  fail(`cannot publish v${version}: ${evidencePath} is not a final approved Hetzner release comparison`);
+  fail(`cannot publish v${version}: ${evidencePath} is not a final approved Hetzner release comparison (or baseline)`);
 }
 
 // Publishing from an existing checkout must not inherit Bun's pre-bump
@@ -61,12 +79,7 @@ if (tagCommit && tagCommit !== head) {
   fail(`${tag} is already tagged at ${tagCommit.slice(0, 7)} but HEAD is ${head.slice(0, 7)} — bump before publishing.`);
 }
 
-try {
-  const ping = await fetch(`${REGISTRY}/-/ping`);
-  if (!ping.ok) throw new Error(`ping returned ${ping.status}`);
-} catch {
-  fail(`registry ${REGISTRY} is not reachable — start it in another terminal: bun run registry`);
-}
+await assertRegistryReachable(REGISTRY);
 
 // A previous run may have been interrupted mid-publish: skip packages that
 // already have this version so a re-run resumes instead of dead-ending.

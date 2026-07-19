@@ -23,8 +23,8 @@ export interface FormResult {
   dropsAcknowledged: string[];
 }
 
-const YES = new Set(["y", "yes"]);
-const NO = new Set(["n", "no"]);
+export const YES = new Set(["y", "yes"]);
+export const NO = new Set(["n", "no"]);
 
 async function askYesNo(ask: Ask, prompt: string): Promise<boolean> {
   for (;;) {

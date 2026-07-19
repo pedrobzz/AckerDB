@@ -253,6 +253,23 @@ function canonicalSql(sql: string): string {
   return sql.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * Application-table DDL comparison is column-ORDER-insensitive: a shape-safe
+ * ADD COLUMN is a physical append while the stored snapshot keeps declaration
+ * order, so the same table legitimately renders in two orders. Column order is
+ * not part of physical truth — every row access is name-keyed — but the column
+ * set, types, and constraints still must match exactly. Our generated DDL has
+ * no parentheses inside the column list; anything that does not parse as that
+ * one shape falls back to the strict comparison and is flagged as before.
+ */
+function canonicalTableSql(sql: string): string {
+  const canonical = canonicalSql(sql);
+  const m = /^(CREATE TABLE .*?\()(.*)(\))$/.exec(canonical);
+  if (m === null || /[()]/.test(m[2]!)) return canonical;
+  const columns = m[2]!.split(",").map((column) => column.trim()).sort();
+  return `${m[1]!}${columns.join(", ")}${m[3]!}`;
+}
+
 function storedRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -1210,11 +1227,12 @@ export class Engine {
     }
     for (const object of expected.values()) {
       const stored = actual.find((candidate) => candidate.name === object.name);
+      const canonical = object.type === "table" ? canonicalTableSql : canonicalSql;
       if (
         stored === undefined ||
         stored.type !== object.type ||
         stored.tbl_name !== object.table ||
-        canonicalSql(stored.sql ?? "") !== canonicalSql(object.sql)
+        canonical(stored.sql ?? "") !== canonical(object.sql)
       ) {
         if (INTERNAL_OBJECT_NAMES.has(object.name)) continue;
         throw new CorruptDatabaseError(

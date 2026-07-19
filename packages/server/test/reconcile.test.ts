@@ -100,6 +100,32 @@ describe("reconcile: shape-safe changes apply with data present", () => {
     b.engine.close("clean");
   });
 
+  test("a MID-table nullable add survives close and reopen (ALTER appends; order is not identity)", async () => {
+    const path = freshPath();
+    const a = open(baseSchema(), path);
+    await a.db.users.insert({ name: "ana", role: "admin" });
+    a.engine.close("clean");
+
+    // `bio` declared BETWEEN existing columns: the physical ALTER appends it
+    // last, so the stored snapshot's column order and the table's physical
+    // order legitimately diverge. Reopening must not read that as corruption.
+    const grown = defineSchema({
+      users: defineTable({
+        id: dbz.primaryKey(),
+        name: dbz.string(),
+        bio: dbz.nullable(dbz.string()),
+        role: RRole(),
+      }).index("by_name", ["name"]),
+    });
+    const b = open(grown, path);
+    expect(b.applied).toContain("added nullable column users.bio");
+    b.engine.close("clean");
+
+    const c = open(grown, path);
+    expect(await c.db.users.get(1n)).toMatchObject({ name: "ana", bio: null, role: "admin" });
+    c.engine.close("clean");
+  });
+
   test("widening a column to nullable rebuilds, preserving rows and ids", async () => {
     const path = freshPath();
     const a = open(baseSchema(), path);

@@ -76,32 +76,29 @@ describe("dbzz benchmark startup confirmation", () => {
 });
 
 describe("dbzz benchmark profile order", () => {
-  test("adds all DBZZ cost profiles only to all-system runs and rotates their order", () => {
-    expect(benchmarkExecutionOrder(["convex", "dbzz", "spacetimedb"], true, 0)).toEqual([
+  test("expands the requested DBZZ profiles in place and rotates their order across reruns", () => {
+    expect(benchmarkExecutionOrder(["convex", "dbzz", "spacetimedb"], ["enabled", "exporter", "disabled"], 0)).toEqual([
       "convex",
       "dbzz-telemetry-enabled",
       "dbzz-telemetry-exporter",
       "dbzz-telemetry-disabled",
       "spacetimedb",
     ]);
-    expect(benchmarkExecutionOrder(["dbzz", "convex", "spacetimedb"], true, 1)).toEqual([
-      "dbzz-telemetry-disabled",
-      "dbzz-telemetry-enabled",
-      "dbzz-telemetry-exporter",
-      "convex",
-      "spacetimedb",
-    ]);
-    expect(benchmarkExecutionOrder(["dbzz", "spacetimedb", "convex"], true, 2)).toEqual([
+    expect(benchmarkExecutionOrder(["dbzz", "convex", "spacetimedb"], ["enabled", "exporter", "disabled"], 1)).toEqual([
       "dbzz-telemetry-exporter",
       "dbzz-telemetry-disabled",
       "dbzz-telemetry-enabled",
+      "convex",
       "spacetimedb",
-      "convex",
     ]);
-    expect(benchmarkExecutionOrder(["dbzz", "convex"], false, 2)).toEqual([
-      "dbzz-telemetry-enabled",
+    // The release run's single profile: rotation is a no-op, every iteration
+    // measures the same apples-to-apples leg.
+    expect(benchmarkExecutionOrder(["dbzz", "convex", "spacetimedb"], ["disabled"], 2)).toEqual([
+      "dbzz-telemetry-disabled",
       "convex",
+      "spacetimedb",
     ]);
+    expect(() => benchmarkExecutionOrder(["dbzz"], [], 0)).toThrow("at least one DBZZ profile");
   });
 
   test("selects the explicit exporter profile only with enabled telemetry", () => {
