@@ -1,6 +1,7 @@
 // bun run publish:local
 // Publishes every package at its synced pinned version to the local
 // Verdaccio registry, then tags the release commit as v<version>.
+import { readdirSync } from "node:fs";
 import {
   PACKAGES,
   assertRegistryReachable,
@@ -10,6 +11,7 @@ import {
   pkgJsonPath,
   readBunLock,
   registryUrl,
+  semverGt,
   syncedVersion,
   tryGit,
 } from "./lib";
@@ -35,15 +37,24 @@ const evidence = await evidenceFile.json() as {
   validation?: { status?: unknown };
   performanceAcceptance?: { status?: unknown };
 };
+// A baseline record (previousVersion null) stands only where no comparison was
+// possible: no earlier final evidence exists.
+const priorFinals = readdirSync("bench/results").filter((name) => {
+  const match = /^v(\d+\.\d+\.\d+)\.json$/.exec(name);
+  return match !== null && semverGt(version, match[1]!);
+});
+const previousOk =
+  typeof evidence.release?.previousVersion === "string" ||
+  (evidence.release?.previousVersion === null && priorFinals.length === 0);
 if (
   evidence.schemaVersion !== 8 ||
   evidence.release?.version !== version ||
-  typeof evidence.release?.previousVersion !== "string" ||
-  evidence.release.host !== "hetzner" ||
+  !previousOk ||
+  evidence.release?.host !== "hetzner" ||
   evidence.validation?.status !== "passed" ||
   evidence.performanceAcceptance?.status !== "passed"
 ) {
-  fail(`cannot publish v${version}: ${evidencePath} is not a final approved Hetzner release comparison`);
+  fail(`cannot publish v${version}: ${evidencePath} is not a final approved Hetzner release comparison (or baseline)`);
 }
 
 // Publishing from an existing checkout must not inherit Bun's pre-bump

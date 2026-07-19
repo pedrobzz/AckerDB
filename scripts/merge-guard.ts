@@ -32,6 +32,21 @@ function versionAt(ref: string, requireCompleteSet: boolean): string {
   );
 }
 
+/** Final benchmark filenames at a ref (`":"` reads the index during a merge). */
+function finalBenchmarksAt(ref: string, version: string): string[] {
+  const listed =
+    ref === ":"
+      ? tryGit("ls-files", "--", "bench/results")
+      : tryGit("ls-tree", "--name-only", `${ref}:bench/results`);
+  return (listed ?? "")
+    .split("\n")
+    .map((line) => line.trim().replace(/^bench\/results\//, ""))
+    .flatMap((name) => {
+      const match = /^v(\d+\.\d+\.\d+)\.json$/.exec(name);
+      return match !== null && semverGt(version, match[1]!) ? [match[1]!] : [];
+    });
+}
+
 function assertReleaseBenchmark(ref: string, previousVersion: string, version: string): void {
   const path = `bench/results/v${version}.json`;
   const source = tryGit("show", `${ref}:${path}`);
@@ -52,16 +67,22 @@ function assertReleaseBenchmark(ref: string, previousVersion: string, version: s
   } catch {
     fail(`${path} is not valid JSON`);
   }
+  // A baseline record (previousVersion null) stands only where no comparison
+  // was possible: no earlier final evidence exists at this ref.
+  const previousOk =
+    record?.release?.previousVersion === previousVersion ||
+    (record?.release?.previousVersion === null && finalBenchmarksAt(ref, version).length === 0);
   if (
     record?.schemaVersion !== 8 ||
     record.release?.version !== version ||
-    record.release?.previousVersion !== previousVersion ||
+    !previousOk ||
     record.release?.host !== "hetzner" ||
     record.validation?.status !== "passed" ||
     record.performanceAcceptance?.status !== "passed"
   ) {
     fail(
-      `${path} is not a final approved comparison from v${previousVersion} on Hetzner. ` +
+      `${path} is not a final approved comparison from v${previousVersion} on Hetzner ` +
+        `(or a baseline where no earlier evidence exists). ` +
         `A release benchmark must pass correctness and have no material DBZZ regression.`,
     );
   }

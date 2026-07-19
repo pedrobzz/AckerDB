@@ -1,4 +1,9 @@
-// bun run bench:hetzner [--bootstrap <released-version>]
+// bun run bench:hetzner [--bootstrap <released-version> | --baseline]
+//
+// --bootstrap re-establishes an already-released version's final record at its
+// tag; --baseline runs HEAD's pending version with no predecessor comparison —
+// the run itself becomes the final evidence (the first release under the
+// policy, or a deliberate baseline reset).
 //
 // This command is deliberately synchronous: release automation starts it in a
 // background worker/subagent, while this process owns the remote worktree and
@@ -11,10 +16,13 @@ import { fail, git, syncedVersion } from "./lib.ts";
 
 const HETZNER = "htz";
 const RESULTS = "bench/results";
+const USAGE = "usage: bun run bench:hetzner [--bootstrap <released-version> | --baseline]";
 const args = process.argv.slice(2);
 const bootstrap = args[0] === "--bootstrap";
-if (bootstrap && args.length !== 2) fail("usage: bun run bench:hetzner --bootstrap <released-version>");
-if (!bootstrap && args.length !== 0) fail("usage: bun run bench:hetzner [--bootstrap <released-version>]");
+const baseline = args[0] === "--baseline";
+if (bootstrap && args.length !== 2) fail(USAGE);
+if (baseline && args.length !== 1) fail(USAGE);
+if (!bootstrap && !baseline && args.length !== 0) fail(USAGE);
 
 const sources = new Map<string, string>();
 if (!bootstrap) {
@@ -70,7 +78,7 @@ try {
     "cd ../spacetime-app && bun install --frozen-lockfile",
     "cd spacetimedb && bun install --frozen-lockfile",
     `cd ${remoteRepo}`,
-    `BENCH_EXECUTION_HOST=hetzner BENCH_RELEASE_VERSION=${version} BENCH_RELEASE_ITERATION=${iteration} BENCH_RELEASE_SOURCE_COMMIT=${productCommit}${bootstrap ? " BENCH_RELEASE_BOOTSTRAP=1" : ""} bun bench/run.ts`,
+    `BENCH_EXECUTION_HOST=hetzner BENCH_RELEASE_VERSION=${version} BENCH_RELEASE_ITERATION=${iteration} BENCH_RELEASE_SOURCE_COMMIT=${productCommit}${bootstrap || baseline ? " BENCH_RELEASE_BOOTSTRAP=1" : ""} bun bench/run.ts`,
   ].join("; "));
 
   let copied = false;
