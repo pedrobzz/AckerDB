@@ -5,7 +5,7 @@ export {
   GenerateError,
   type GeneratedMigration,
   type GenerateMigrationInput,
-} from "./generate.ts";
+} from "./migrations/scaffold.ts";
 export {
   importFunctionModules,
   importSchema,
@@ -23,12 +23,11 @@ export {
   planToWire,
   readStoredState,
   renameCandidates,
-  writeMigration,
   type CandidateGroup,
-  type GenerateRequest,
   type PlanOutcome,
   type PlanWire,
   type RenameCandidates,
   type StoredState,
-} from "./plan.ts";
-export { runRenameForm, type Ask, type FormResult } from "./form.ts";
+} from "./migrations/plan.ts";
+export { writeMigration, type GenerateRequest } from "./migrations/write.ts";
+export { runRenameForm, type Ask, type FormResult } from "./migrations/form.ts";

@@ -16,7 +16,7 @@
  * refusals it cannot clear; this module owns every shape rule, so those
  * consumers never re-derive them.
  */
-import type { SchemaDiff, TableChange } from "./schema-diff.ts";
+import type { SchemaDiff, TableChange } from "./diff.ts";
 
 /** A shape-safe unit of physical work, applied identically whether rows exist or not. */
 export type SafeChange =

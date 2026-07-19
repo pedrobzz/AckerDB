@@ -9,8 +9,8 @@ import {
   snapshotOf,
   type Schema,
 } from "@dbzz/server";
-import { runRenameForm, type Ask } from "../src/form.ts";
-import { deriveSlug, renameCandidates, type RenameCandidates } from "../src/plan.ts";
+import { runRenameForm, type Ask } from "../src/migrations/form.ts";
+import { deriveSlug, renameCandidates, type RenameCandidates } from "../src/migrations/plan.ts";
 
 const diffOf = (pre: Schema, target: Schema) => diffSnapshots(snapshotOf(pre), snapshotOf(target));
 const refusalsOf = (pre: Schema, target: Schema) => classifySchemaDiff(diffOf(pre, target)).refusals;

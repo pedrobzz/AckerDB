@@ -16,9 +16,10 @@ import {
   type Schema,
 } from "@dbzz/server";
 import { loadConfig } from "../src/config.ts";
-import { generateMigration } from "../src/generate.ts";
-import { loadMigrationChain } from "../src/migrations.ts";
-import { computePlan, writeMigration } from "../src/plan.ts";
+import { generateMigration } from "../src/migrations/scaffold.ts";
+import { loadMigrationChain } from "../src/migrations/load.ts";
+import { computePlan } from "../src/migrations/plan.ts";
+import { writeMigration } from "../src/migrations/write.ts";
 import { makeFixture } from "./fixture.ts";
 
 const REPO = new URL("../../..", import.meta.url).pathname;

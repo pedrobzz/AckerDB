@@ -22,7 +22,7 @@ import {
   UnsafeSchemaChange,
 } from "@dbzz/server";
 import type { AppConfig } from "./config.ts";
-import { loadMigrationChain } from "./migrations.ts";
+import { loadMigrationChain } from "./migrations/load.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 

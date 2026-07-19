@@ -14,7 +14,7 @@ import {
   type QueryBuilder,
 } from "../src/functions.ts";
 import { createMcp, type McpBuilder } from "../src/mcp.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime, type RuntimeProcedureResponse } from "../src/runtime.ts";
 import { defineSchema } from "../src/schema.ts";

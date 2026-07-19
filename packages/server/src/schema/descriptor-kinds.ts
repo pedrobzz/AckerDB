@@ -11,7 +11,7 @@
  * CLI as a table keyed by these same kinds. DDL type and `check` still live here.
  */
 import { decode, encode, WireError } from "@dbzz/core";
-import { ValidationError, type Descriptor } from "./dbz.ts";
+import { ValidationError, type Descriptor } from "../dbz.ts";
 
 export type SqlType = "TEXT" | "REAL" | "INTEGER" | "BLOB";
 

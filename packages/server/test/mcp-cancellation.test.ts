@@ -8,7 +8,7 @@ import { dbz } from "../src/dbz.ts";
 import { Engine } from "../src/engine.ts";
 import { procedure, type ProcedureBuilder } from "../src/functions.ts";
 import { createMcp, type McpBuilder } from "../src/mcp.ts";
-import { reconcile } from "../src/reconcile.ts";
+import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime, type RuntimeProcedureResponse } from "../src/runtime.ts";
 import { defineSchema, defineTable } from "../src/schema.ts";

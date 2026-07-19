@@ -28,7 +28,7 @@ import {
   type MigrationStep,
   type SchemaSnapshot,
 } from "@dbzz/server";
-import type { AppConfig } from "./config.ts";
+import type { AppConfig } from "../config.ts";
 
 const MIGRATION_FILE = /^(\d{4})_([A-Za-z0-9_]+)\.ts$/;
 const SHA256 = /^[0-9a-f]{64}$/;

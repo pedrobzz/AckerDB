@@ -47,7 +47,7 @@ import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
 import type { Descriptor, Identity, Validator } from "./dbz.ts";
-import { scalarDecoder, scalarEncoder, sqlTypeOf } from "./descriptor-kinds.ts";
+import { scalarDecoder, scalarEncoder, sqlTypeOf } from "./schema/descriptor-kinds.ts";
 import {
   MutationReplayLedger,
   mutationReplayOwner,

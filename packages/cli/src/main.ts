@@ -22,16 +22,15 @@ import type { Renames } from "@dbzz/server";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { runCodegen } from "./codegen.ts";
 import { startApp, StartupInterruptedError } from "./app.ts";
-import { runRenameForm, type FormResult } from "./form.ts";
+import { runRenameForm, type FormResult } from "./migrations/form.ts";
 import {
   computePlan,
   deriveSlug,
   planToWire,
-  writeMigration,
-  type GenerateRequest,
   type PlanWire,
   type RenameCandidates,
-} from "./plan.ts";
+} from "./migrations/plan.ts";
+import { writeMigration, type GenerateRequest } from "./migrations/write.ts";
 import {
   createVerifiedBackup,
   inspectDatabase,

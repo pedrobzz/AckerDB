@@ -69,26 +69,24 @@ export type {
   Upsert,
 } from "./dbtypes.ts";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
-export { probeUniqueIndex, reconcile, UnsafeSchemaChange } from "./reconcile.ts";
+export { probeUniqueIndex, UnsafeSchemaChange } from "./schema/planner.ts";
+export { reconcile } from "./schema/reconcile.ts";
 export {
-  applyRenames,
   defineMigration,
   migrationFingerprint,
   migrationIdentity,
   MigrationError,
   stepLabel,
-  validateChain,
-  validateHistoryPrefix,
-  type AppliedMigrationRow,
   type BeforeTable,
   type Migration,
   type MigrationContext,
   type MigrationRow,
   type MigrationStep,
-  type NormalizedRenames,
   type Renames,
   type RowTransform,
-} from "./migrate.ts";
+} from "./schema/migrations/types.ts";
+export { validateChain, validateHistoryPrefix, type AppliedMigrationRow } from "./schema/migrations/chain.ts";
+export { applyRenames, type NormalizedRenames } from "./schema/migrations/rename.ts";
 export {
   diffSnapshots,
   type ColumnChange,
@@ -96,7 +94,7 @@ export {
   type SchemaDiff,
   type TableChange,
   type VariantChange,
-} from "./schema-diff.ts";
+} from "./schema/diff.ts";
 export {
   classifySchemaDiff,
   refusalSite,
@@ -105,7 +103,7 @@ export {
   type RefusalReason,
   type SafeChange,
   type SchemaRefusal,
-} from "./schema-classify.ts";
+} from "./schema/classify.ts";
 export {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,

@@ -6,18 +6,18 @@
  * a peek is always safe whether the serve child is freshly dead or still alive
  * (a reader sees only committed state).
  *
- * Three seams the command layer drives:
+ * Two seams the command layer drives:
  *   - `computePlan`      diff the STORED snapshot against the live schema and
  *                        classify it into an outcome the form and the supervisor
  *                        act on (no database, pending chain, clean, or changes);
  *   - `renameCandidates` the ambiguous drop/add pairs the form asks about,
- *                        derived purely from the diff (unit-testable);
- *   - `writeMigration`   re-derive pre/target fresh and lay the three artifacts
- *                        onto disk — the one generation path both the `generate`
- *                        command and the internal `__generate` child share.
+ *                        derived purely from the diff (unit-testable).
+ * The generation half — re-deriving pre/target and laying the artifacts onto
+ * disk — lives in its sibling `write.ts`, which consumes this module's stored-state
+ * read and duplicate probe.
  */
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
   classifySchemaDiff,
@@ -26,21 +26,18 @@ import {
   probeUniqueIndex,
   refusalSite,
   snapshotOf,
-  stepLabel,
   validateHistoryPrefix,
   type AppliedMigrationRow,
   type MigrationStep,
   type OptimisticChange,
   type RefusalReason,
-  type Renames,
   type SchemaDiff,
   type SchemaRefusal,
   type SchemaSnapshot,
 } from "@dbzz/server";
-import { importSchema } from "./app.ts";
-import type { AppConfig } from "./config.ts";
-import { generateMigration } from "./generate.ts";
-import { loadMigrationChain } from "./migrations.ts";
+import { importSchema } from "../app.ts";
+import type { AppConfig } from "../config.ts";
+import { loadMigrationChain } from "./load.ts";
 
 // -- stored snapshot (read-only peek) -----------------------------------------
 
@@ -91,7 +88,7 @@ export function readStoredState(config: AppConfig): StoredState | null {
  * (a committed peek, safe whether the serve child is dead or alive) and only when
  * there is something to probe.
  */
-function probeDuplicateRefusals(
+export function probeDuplicateRefusals(
   config: AppConfig,
   current: SchemaSnapshot,
   target: SchemaSnapshot,
@@ -290,66 +287,4 @@ export function deriveSlug(refusals: SchemaRefusal[]): string {
     .replace(/_+/g, "_")
     .replace(/^_+|_+$/g, "");
   return slug.length > 0 ? slug : "migration";
-}
-
-// -- generation (the shared on-disk write path) -------------------------------
-
-const MIGRATION_NAME = /^[A-Za-z0-9_]+$/;
-
-export interface GenerateRequest {
-  name: string;
-  renames?: Renames;
-}
-
-/**
- * Re-derive pre/target fresh and write the three artifacts of the next
- * migration, returning their absolute paths. Refuses the same states
- * `computePlan` flags — no database, a chain that diverged from applied history
- * (the shared `validateHistoryPrefix`, which throws before any file is written),
- * or a chain that is not fully applied — so the recorded `pre` is always the true
- * pre-state. This is the single generation path behind both `dbz generate` and
- * the `__generate` child.
- */
-export async function writeMigration(config: AppConfig, request: GenerateRequest): Promise<string[]> {
-  if (!MIGRATION_NAME.test(request.name)) {
-    throw new Error(`migration name "${request.name}" must be one or more of [A-Za-z0-9_]`);
-  }
-  const state = readStoredState(config);
-  if (state === null) {
-    throw new Error(`no database at ${join(config.dbDir, "data.db")}; run \`dbz dev\` to initialize it first`);
-  }
-  const chain = await loadMigrationChain(config);
-  const { pending } = validateHistoryPrefix(state.applied, chain);
-  if (pending.length > 0) {
-    throw new Error(`apply the ${pending.length} pending migration(s) first — start \`dbz dev\``);
-  }
-
-  const schema = await importSchema(config);
-  const number = (chain.at(-1)?.number ?? 0) + 1;
-  // Generation's classification is pure (no database); the duplicate probe runs
-  // here and its refusals flow into the scaffold alongside the shape-classified
-  // ones. Re-probed fresh (never carried on the wire), so the scaffold reflects
-  // the database as it actually is at write time.
-  const target = snapshotOf(schema);
-  const { optimistic } = classifySchemaDiff(diffSnapshots(state.snapshot, target));
-  const probedRefusals = probeDuplicateRefusals(config, state.snapshot, target, optimistic);
-  const { migrationTs, typesTs, metaJson } = generateMigration({
-    number,
-    name: request.name,
-    pre: state.snapshot,
-    schema,
-    renames: request.renames ?? {},
-    probedRefusals,
-  });
-
-  const stem = stepLabel({ number, name: request.name });
-  const metaDir = join(config.migrationsDir, "meta");
-  mkdirSync(metaDir, { recursive: true });
-  const artifacts: [string, string][] = [
-    [join(config.migrationsDir, `${stem}.ts`), migrationTs],
-    [join(metaDir, `${stem}.types.ts`), typesTs],
-    [join(metaDir, `${stem}.json`), metaJson],
-  ];
-  for (const [path, content] of artifacts) writeFileSync(path, content);
-  return artifacts.map(([path]) => path);
 }

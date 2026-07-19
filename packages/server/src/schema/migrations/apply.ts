@@ -24,18 +24,30 @@
  * transform on a dropped table (a salvage — the return is ignored, only its
  * `ctx.insert` emits matter). Every write happens in the step's single
  * transaction, which also inserts the append-only history row; any error rolls
- * the whole step back byte-identical, leaving every earlier step applied.
+ * the whole step back byte-identical, leaving every earlier step applied. The
+ * safe/optimistic work for tables the migration does not own is delegated to the
+ * shared planner (`../planner.ts`); the machinery below owns only the rebuild,
+ * transform, rename, and drop work a migration alone performs.
  */
-import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { decode, encode } from "@dbzz/core";
-import { ValidationError, type Descriptor } from "./dbz.ts";
-import { checkDescriptor, scalarDecoder, scalarEncoder } from "./descriptor-kinds.ts";
-import { physicalColumnDdl, type ColumnPlan, type Engine, type TablePlan, type TagMap } from "./engine.ts";
-import { classifySchemaDiff, type SchemaRefusal } from "./schema-classify.ts";
-import { diffSnapshots, namedOf, unwrapDesc } from "./schema-diff.ts";
-import type { SchemaSnapshot, TableSnapshot } from "./snapshot.ts";
-import { applySafe, countOn, physColsOf, probeOptimistic, UnsafeSchemaChange, type Op } from "./reconcile.ts";
+import { ValidationError, type Descriptor } from "../../dbz.ts";
+import { checkDescriptor, scalarDecoder, scalarEncoder } from "../descriptor-kinds.ts";
+import { physicalColumnDdl, type ColumnPlan, type Engine, type TablePlan, type TagMap } from "../../engine.ts";
+import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
+import { diffSnapshots, namedOf, unwrapDesc } from "../diff.ts";
+import type { SchemaSnapshot, TableSnapshot } from "../../snapshot.ts";
+import { physColsOf, SchemaPlanner, UnsafeSchemaChange } from "../planner.ts";
+import { planRenames, variantSets, type RenamePlan } from "./rename.ts";
+import {
+  migrationIdentity,
+  MigrationError,
+  type BeforeTable,
+  type MigrationContext,
+  type MigrationRow,
+  type MigrationStep,
+  type RowTransform,
+} from "./types.ts";
 
 const quote = (name: string) => `"${name}"`;
 
@@ -46,8 +58,6 @@ const quote = (name: string) => `"${name}"`;
  * so this is a fixed constant, never a knob.
  */
 const MIGRATE_BATCH = 1000;
-
-export type MigrationRow = Record<string, unknown>;
 
 /**
  * Page a physically-immutable table by primary key, `MIGRATE_BATCH` rows at a
@@ -67,222 +77,6 @@ async function* pageRows(writer: Database, table: string, pk: string): AsyncIter
     for (const raw of rows) yield raw;
     if (rows.length < MIGRATE_BATCH) return;
     last = rows[rows.length - 1]![pk] as bigint;
-  }
-}
-
-/** Read-only view of one OLD table for cross-table lookups inside a transform. */
-export interface BeforeTable {
-  get(id: bigint): Promise<MigrationRow | null>;
-  scan(): AsyncIterableIterator<MigrationRow>;
-}
-
-export interface MigrationContext {
-  /** The frozen before-state, keyed by old table name. */
-  readonly before: Record<string, BeforeTable>;
-  /** Emit a row into any table of the NEW schema; its pk is engine-assigned. */
-  insert(table: string, row: MigrationRow): void;
-}
-
-/**
- * A per-table row transform. On a surviving table the return is the new row
- * (pk stripped and re-applied by the engine), `null` deletes the row, and
- * `undefined` keeps the row it was handed. On a dropped table the return is
- * ignored — only the emits matter.
- */
-export type RowTransform = (
-  row: MigrationRow,
-  ctx: MigrationContext,
-) => MigrationRow | null | void | Promise<MigrationRow | null | void>;
-
-/**
- * Rename declarations: which dropped-plus-added names are the same thing
- * renamed, so data and identity carry over. `tables` maps old table name to
- * new; `columns` is keyed by the table's name in the TARGET schema; `variants`
- * is keyed by the enum/union type name. Applied to the diff first (see
- * `applyRenames`): a pure rename yields no diff, a rename with a change pairs up
- * and the normal transform machinery fires.
- */
-export interface Renames {
-  tables?: Record<string, string>;
-  columns?: Record<string, Record<string, string>>;
-  variants?: Record<string, Record<string, string>>;
-}
-
-export interface Migration {
-  renames?: Renames;
-  tables?: Record<string, RowTransform | null>;
-}
-
-/**
- * One link in the application's migration chain. `number` is 1-based and
- * strictly increasing across the chain; `pre` types the before-state the
- * transforms were written against; `target` is the full declared schema at
- * generation time; `code` is the migration module's file text, the last
- * component of the step's immutable identity (see `migrationIdentity`). An
- * in-memory chain (server tests, embedded users) passes any string for `code`,
- * conventionally `""` — it is a value, not an optional.
- */
-export interface MigrationStep {
-  number: number;
-  name: string;
-  pre: SchemaSnapshot;
-  target: SchemaSnapshot;
-  code: string;
-  migration: Migration;
-}
-
-export class MigrationError extends Error {}
-
-export function defineMigration(migration: Migration): Migration {
-  if (migration === null || typeof migration !== "object") {
-    throw new MigrationError("defineMigration expects a migration object");
-  }
-  const tables = migration.tables;
-  if (tables !== undefined) {
-    if (typeof tables !== "object" || tables === null) {
-      throw new MigrationError("migration tables must be an object");
-    }
-    for (const [name, value] of Object.entries(tables)) {
-      if (value !== null && typeof value !== "function") {
-        throw new MigrationError(`migration entry for "${name}" must be a transform function or null`);
-      }
-    }
-  }
-  checkRenamesShape(migration.renames);
-  return migration;
-}
-
-/** Shallow shape guard for `renames`; existence/conflict checks run in `planRenames`. */
-function checkRenamesShape(renames: Renames | undefined): void {
-  if (renames === undefined) return;
-  if (typeof renames !== "object" || renames === null) throw new MigrationError("migration renames must be an object");
-  const isStringMap = (value: unknown): boolean =>
-    typeof value === "object" && value !== null && Object.values(value).every((v) => typeof v === "string");
-  if (renames.tables !== undefined && !isStringMap(renames.tables)) {
-    throw new MigrationError("migration renames.tables must map old names to new names");
-  }
-  for (const key of ["columns", "variants"] as const) {
-    const nested = renames[key];
-    if (nested === undefined) continue;
-    if (typeof nested !== "object" || nested === null || !Object.values(nested).every(isStringMap)) {
-      throw new MigrationError(`migration renames.${key} must map each name to a { old: new } object`);
-    }
-  }
-}
-
-// -- chain: history, identity, immutability -----------------------------------
-
-/**
- * The load-time target-integrity fingerprint: the sha256 hex of a target
- * snapshot alone. Used by meta sidecars and generation to catch an edited
- * target snapshot before the database opens — a narrower job than identity.
- */
-export function migrationFingerprint(target: SchemaSnapshot): string {
-  return createHash("sha256").update(JSON.stringify(target)).digest("hex");
-}
-
-/**
- * A migration's immutable applied identity: the sha256 hex over everything that
- * changes what the step does to data — its number, name, pre snapshot, target
- * snapshot, and migration file text (`code`). Each component is netstring-framed
- * (`<byteLength>:<value>,`) before concatenation, so the encoding is injective:
- * no two distinct tuples ever collide, regardless of what any component holds.
- * This is the value `_dbz_migrations` records and `validateHistoryPrefix`
- * compares, so editing an applied migration's pre, renames, or transform code —
- * not just its target — shifts the identity and is refused loudly on the next open.
- */
-export function migrationIdentity(step: MigrationStep): string {
-  const part = (value: string): string => `${Buffer.byteLength(value)}:${value},`;
-  const canonical =
-    part(String(step.number)) +
-    part(step.name) +
-    part(JSON.stringify(step.pre)) +
-    part(JSON.stringify(step.target)) +
-    part(step.code);
-  return createHash("sha256").update(canonical).digest("hex");
-}
-
-/** The zero-padded label a step is logged and named under, e.g. `0003_split_users`. */
-export function stepLabel(step: { number: number; name: string }): string {
-  return `${String(step.number).padStart(4, "0")}_${step.name}`;
-}
-
-/** Numbers must be 1-based and strictly increasing across the whole chain. */
-export function validateChain(steps: MigrationStep[]): void {
-  let prev = 0;
-  for (const step of steps) {
-    if (!Number.isSafeInteger(step.number) || step.number <= 0) {
-      throw new MigrationError(`migration ${stepLabel(step)} has an invalid number; numbers are 1-based positive integers`);
-    }
-    if (step.number <= prev) {
-      throw new MigrationError(`migration numbers must strictly increase; ${stepLabel(step)} does not follow ${prev}`);
-    }
-    prev = step.number;
-  }
-}
-
-/** One recorded `_dbz_migrations` row: the applied prefix's positional identity. */
-export interface AppliedMigrationRow {
-  number: number;
-  name: string;
-  identity: string;
-}
-
-function loadHistory(writer: Database): AppliedMigrationRow[] {
-  const rows = writer
-    .query("SELECT number, name, identity FROM _dbz_migrations ORDER BY number ASC")
-    .all() as { number: bigint; name: string; identity: string }[];
-  return rows.map((r) => ({ number: Number(r.number), name: r.name, identity: r.identity }));
-}
-
-/**
- * The ONE rule for "is this on-disk chain a valid continuation of what was
- * applied", pure over plain data so the server (rows via SQL) and the CLI (rows
- * via its read-only reader) share it exactly. The applied history must be a
- * positional (number, identity) prefix of the chain; a mismatch, or an applied
- * row with no corresponding chain step, means an applied migration was edited —
- * any change to its number, name, pre, target, or transform code shifts the
- * identity — refused loudly with a `MigrationError`, never silently ignored.
- * Returns the pending suffix (the steps after the applied prefix).
- */
-export function validateHistoryPrefix(
-  applied: AppliedMigrationRow[],
-  steps: MigrationStep[],
-): { pending: MigrationStep[] } {
-  validateChain(steps);
-  for (let i = 0; i < applied.length; i++) {
-    const row = applied[i]!;
-    const step = steps[i];
-    if (step === undefined || step.number !== row.number || migrationIdentity(step) !== row.identity) {
-      throw new MigrationError(
-        `applied migration ${stepLabel(row)} no longer matches the on-disk chain; applied migrations are immutable ` +
-          "(editing its pre, target, or transform code changes its identity). Restore it, or wipe local data with `dbz reset`.",
-      );
-    }
-  }
-  return { pending: steps.slice(applied.length) };
-}
-
-/** Load the append-only history and return the pending suffix (see `validateHistoryPrefix`). */
-export function pendingSteps(writer: Database, steps: MigrationStep[]): MigrationStep[] {
-  return validateHistoryPrefix(loadHistory(writer), steps).pending;
-}
-
-/** Stamp a whole chain as applied on a fresh database, in one transaction. */
-export function recordChain(engine: Engine, steps: MigrationStep[]): void {
-  validateChain(steps);
-  const writer = engine.writer;
-  const insert = writer.query(
-    "INSERT INTO _dbz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
-  );
-  const now = Date.now();
-  writer.exec("BEGIN IMMEDIATE");
-  try {
-    for (const step of steps) insert.run(step.number, step.name, migrationIdentity(step), now);
-    writer.exec("COMMIT");
-  } catch (error) {
-    writer.exec("ROLLBACK");
-    throw error;
   }
 }
 
@@ -347,14 +141,9 @@ export async function applyStep(
 
   // Plan the safe/optimistic work for tables the migration does NOT own — a
   // rebuilt table's classified ops are absorbed by its rebuild, never doubled.
-  const ops: Op[] = [];
-  const applied: string[] = [];
-  const probeRefusals: SchemaRefusal[] = [];
-  const count = countOn(writer);
+  const planner = new SchemaPlanner({ engine, current: renames.renamedCurrent, planOf });
   for (const change of safe) {
-    if (!rebuilt.has(change.table) && !identityRebuilt.has(change.table)) {
-      applySafe(engine, change, renames.renamedCurrent, ops, applied, planOf);
-    }
+    if (!rebuilt.has(change.table) && !identityRebuilt.has(change.table)) planner.safe(change);
   }
   for (const opt of optimistic) {
     if (rebuilt.has(opt.table)) continue;
@@ -363,15 +152,17 @@ export async function applyStep(
       // the read-only probe through the rename map so the counted refusal
       // survives; the index itself is created from the new plan post-swap.
       const reverse = renames.columnReverse.get(opt.table);
-      probeOptimistic(engine, { ...opt, viaRebuild: true }, renames.renamedCurrent, count, ops, applied, probeRefusals, planOf, {
-        table: renames.tableOldName.get(opt.table) ?? opt.table,
-        column: (c) => reverse?.get(c) ?? c,
-      });
+      planner.optimistic(
+        { ...opt, viaRebuild: true },
+        { table: renames.tableOldName.get(opt.table) ?? opt.table, column: (c) => reverse?.get(c) ?? c },
+      );
     } else {
-      probeOptimistic(engine, opt, renames.renamedCurrent, count, ops, applied, probeRefusals, planOf);
+      planner.optimistic(opt);
     }
   }
-  if (probeRefusals.length > 0) throw new UnsafeSchemaChange(probeRefusals);
+  const plan = planner.plan;
+  if (plan.refusals.length > 0) throw new UnsafeSchemaChange([...plan.refusals]);
+  const applied: string[] = [...plan.applied];
 
   const scope: StepScope = { engine, pre, stored, target, renames, targetPlans, oldTags };
   const driftOf = new Map<string, DriftColumn[]>();
@@ -392,7 +183,7 @@ export async function applyStep(
       applied.push(`renamed variant ${type}.${from} to ${to}`);
     }
     persistTagMaps(writer, stepTags);
-    for (const op of ops) op();
+    for (const op of plan.ops) op();
     const tmpOf = await runTransforms(scope, entries, rebuilt, identityRebuilt, driftOf);
     for (const name of [...tmpOf.keys()].sort()) {
       // IF EXISTS: safe drift may have left this database without the old table,
@@ -1063,221 +854,4 @@ function persistTagMaps(writer: Database, maps: Map<string, TagMap>): void {
   for (const [type, map] of maps) {
     for (const [variant, tag] of map.toTag) insert.run(type, variant, tag);
   }
-}
-
-// -- renames ------------------------------------------------------------------
-
-export interface NormalizedRenames {
-  tables: Record<string, string>; // old -> new
-  columns: Record<string, Record<string, string>>; // NEW table name -> { oldCol -> newCol }
-  variants: Record<string, Record<string, string>>; // type name -> { oldVariant -> newVariant }
-}
-
-interface RenamePlan {
-  /** The stored snapshot with every rename applied — what the diff runs against. */
-  renamedCurrent: SchemaSnapshot;
-  /** new table name -> old table name, for tables whose name changed. */
-  tableOldName: Map<string, string>;
-  /** new table name -> physical [old, new] column pairs (a union contributes both). */
-  columnPhys: Map<string, [string, string][]>;
-  /** new table name -> new physical column name -> old physical column name. */
-  columnReverse: Map<string, Map<string, string>>;
-  variants: { type: string; from: string; to: string }[];
-  /** Every new table name touched by a table or column rename. */
-  renamedTables: Set<string>;
-}
-
-/**
- * Validate the rename declarations (MigrationError, nothing touched) and derive
- * the renamed-stored snapshot plus the physical rename work. `columns` are keyed
- * by the TARGET table name, so table renames are resolved first; a column's
- * physical arity comes from its TARGET descriptor (a union contributes two).
- */
-function planRenames(writer: Database, current: SchemaSnapshot, target: SchemaSnapshot, migration: Migration): RenamePlan {
-  const raw: NormalizedRenames = {
-    tables: migration.renames?.tables ?? {},
-    columns: migration.renames?.columns ?? {},
-    variants: migration.renames?.variants ?? {},
-  };
-  validateRenames(writer, current, target, raw);
-
-  const tableOldName = new Map<string, string>();
-  for (const [oldT, newT] of Object.entries(raw.tables)) tableOldName.set(newT, oldT);
-
-  const columnPhys = new Map<string, [string, string][]>();
-  const columnReverse = new Map<string, Map<string, string>>();
-  for (const [table, cols] of Object.entries(raw.columns)) {
-    const pairs: [string, string][] = [];
-    const reverse = new Map<string, string>();
-    for (const [oldCol, newCol] of Object.entries(cols)) {
-      pairs.push([oldCol, newCol]);
-      reverse.set(newCol, oldCol);
-      if (namedOf(target.tables[table]!.columns[newCol]!)?.kind === "union") {
-        pairs.push([`${oldCol}__p`, `${newCol}__p`]);
-        reverse.set(`${newCol}__p`, `${oldCol}__p`);
-      }
-    }
-    columnPhys.set(table, pairs);
-    columnReverse.set(table, reverse);
-  }
-
-  const variants: RenamePlan["variants"] = [];
-  for (const [type, vmap] of Object.entries(raw.variants)) {
-    for (const [from, to] of Object.entries(vmap)) variants.push({ type, from, to });
-  }
-
-  return {
-    renamedCurrent: applyRenames(current, raw),
-    tableOldName,
-    columnPhys,
-    columnReverse,
-    variants,
-    renamedTables: new Set([...tableOldName.keys(), ...Object.keys(raw.columns)]),
-  };
-}
-
-function validateRenames(writer: Database, current: SchemaSnapshot, target: SchemaSnapshot, raw: NormalizedRenames): void {
-  const tableTargets = new Set<string>();
-  for (const [oldT, newT] of Object.entries(raw.tables)) {
-    if (current.tables[oldT]?.kind !== "table") throw new MigrationError(`rename source table "${oldT}" does not exist`);
-    if (target.tables[newT] === undefined) throw new MigrationError(`rename target table "${newT}" is not in the schema`);
-    if (target.tables[oldT] !== undefined) {
-      throw new MigrationError(`rename source table "${oldT}" still exists in the schema; it was not dropped`);
-    }
-    if (current.tables[newT] !== undefined) {
-      throw new MigrationError(`rename target table "${newT}" already exists; cannot rename onto a live table`);
-    }
-    if (tableTargets.has(newT)) throw new MigrationError(`two renames target table "${newT}"`);
-    tableTargets.add(newT);
-  }
-
-  for (const [table, cols] of Object.entries(raw.columns)) {
-    if (target.tables[table] === undefined) throw new MigrationError(`rename target table "${table}" is not in the schema`);
-    const oldTable = Object.keys(raw.tables).find((o) => raw.tables[o] === table) ?? table;
-    const from = current.tables[oldTable]?.columns ?? {};
-    const to = target.tables[table]!.columns;
-    const colTargets = new Set<string>();
-    for (const [oldCol, newCol] of Object.entries(cols)) {
-      if (from[oldCol] === undefined) throw new MigrationError(`rename source column "${table}.${oldCol}" does not exist`);
-      if (to[newCol] === undefined) throw new MigrationError(`rename target column "${table}.${newCol}" is not in the schema`);
-      if (to[oldCol] !== undefined) {
-        throw new MigrationError(`rename source column "${table}.${oldCol}" still exists in the schema; it was not dropped`);
-      }
-      if (from[newCol] !== undefined) {
-        throw new MigrationError(`rename target column "${table}.${newCol}" already exists; cannot rename onto a live column`);
-      }
-      if (colTargets.has(newCol)) throw new MigrationError(`two renames target column "${table}.${newCol}"`);
-      colTargets.add(newCol);
-    }
-  }
-
-  const currentVariants = variantSets(current);
-  const targetVariants = variantSets(target);
-  const taggedVariants = new Map<string, Set<string>>();
-  for (const row of writer.query("SELECT type, variant FROM _dbz_tags").all() as { type: string; variant: string }[]) {
-    (taggedVariants.get(row.type) ?? taggedVariants.set(row.type, new Set()).get(row.type)!).add(row.variant);
-  }
-  for (const [type, vmap] of Object.entries(raw.variants)) {
-    const fromSet = currentVariants.get(type) ?? new Set();
-    const toSet = targetVariants.get(type) ?? new Set();
-    const seen = new Set<string>();
-    for (const [from, to] of Object.entries(vmap)) {
-      if (!fromSet.has(from)) throw new MigrationError(`rename source variant "${type}.${from}" does not exist`);
-      if (!toSet.has(to)) throw new MigrationError(`rename target variant "${type}.${to}" is not in the schema`);
-      if (toSet.has(from)) {
-        throw new MigrationError(`rename source variant "${type}.${from}" still exists in the schema; it was not removed`);
-      }
-      if (fromSet.has(to)) {
-        throw new MigrationError(`rename target variant "${type}.${to}" already exists; cannot rename onto a live variant`);
-      }
-      if (taggedVariants.get(type)?.has(to)) {
-        throw new MigrationError(`rename target variant "${type}.${to}" is a retired variant; its tag is retired forever`);
-      }
-      if (seen.has(to)) throw new MigrationError(`two renames target variant "${type}.${to}"`);
-      seen.add(to);
-    }
-  }
-}
-
-/**
- * Rewrite table keys, column keys, index column references, and variant names.
- * Exported for migration generation, which classifies the diff of the
- * renamed-stored snapshot against the target without ever opening a database.
- */
-export function applyRenames(current: SchemaSnapshot, raw: NormalizedRenames): SchemaSnapshot {
-  const tables: Record<string, TableSnapshot> = {};
-  for (const [name, snap] of Object.entries(current.tables)) tables[name] = structuredClone(snap);
-  for (const [oldT, newT] of Object.entries(raw.tables)) {
-    tables[newT] = tables[oldT]!;
-    delete tables[oldT];
-  }
-  for (const [table, cols] of Object.entries(raw.columns)) {
-    const snap = tables[table]!;
-    const columns: Record<string, Descriptor> = {};
-    for (const [col, desc] of Object.entries(snap.columns)) columns[cols[col] ?? col] = desc;
-    snap.columns = columns;
-    snap.indexes = snap.indexes.map((ix) => ({ ...ix, columns: ix.columns.map((c) => cols[c] ?? c) }));
-  }
-  for (const [type, vmap] of Object.entries(raw.variants)) {
-    for (const snap of Object.values(tables)) {
-      for (const col of Object.keys(snap.columns)) snap.columns[col] = renameVariants(snap.columns[col]!, type, vmap);
-    }
-  }
-  return { version: 1, tables };
-}
-
-/**
- * Rewrite variant names of the named `type` on a TOP-LEVEL column descriptor
- * only (through nullable). A tag relabel is zero-rewrite only where variants
- * are stored as interned tags — the top level; nested enum/union values are
- * wire-encoded STRINGS, so a deep rewrite would erase the diff while stranding
- * stale variant strings the new type cannot validate. Left untouched, a nested
- * use of the renamed type surfaces as an honest type-changed refusal whose
- * transform rewrites the payloads. That is correct behavior, not a limitation.
- */
-function renameVariants(desc: Descriptor, type: string, vmap: Record<string, string>): Descriptor {
-  if (desc["k"] === "nullable") {
-    return { ...desc, inner: renameVariants(desc["inner"] as Descriptor, type, vmap) };
-  }
-  if (desc["k"] === "enum" && desc["name"] === type) {
-    return { ...desc, values: (desc["values"] as string[]).map((v) => vmap[v] ?? v) };
-  }
-  if (desc["k"] === "union" && desc["name"] === type) {
-    const members: Record<string, Descriptor> = {};
-    for (const [variant, d] of Object.entries(desc["members"] as Record<string, Descriptor>)) {
-      members[vmap[variant] ?? variant] = d; // payload descriptors untouched: nested uses must diff
-    }
-    return { ...desc, members };
-  }
-  return desc;
-}
-
-/** Collect the variant set of every named enum/union in a snapshot, by type name. */
-function variantSets(snapshot: SchemaSnapshot): Map<string, Set<string>> {
-  const out = new Map<string, Set<string>>();
-  const visit = (desc: Descriptor): void => {
-    switch (desc["k"]) {
-      case "nullable":
-        return visit(desc["inner"] as Descriptor);
-      case "array":
-        return visit(desc["el"] as Descriptor);
-      case "object":
-        return void Object.values(desc["shape"] as Record<string, Descriptor>).forEach(visit);
-      case "enum": {
-        const set = out.get(desc["name"] as string) ?? out.set(desc["name"] as string, new Set()).get(desc["name"] as string)!;
-        for (const v of desc["values"] as string[]) set.add(v);
-        return;
-      }
-      case "union": {
-        const set = out.get(desc["name"] as string) ?? out.set(desc["name"] as string, new Set()).get(desc["name"] as string)!;
-        for (const [variant, d] of Object.entries(desc["members"] as Record<string, Descriptor>)) {
-          set.add(variant);
-          visit(d);
-        }
-        return;
-      }
-    }
-  };
-  for (const table of Object.values(snapshot.tables)) for (const desc of Object.values(table.columns)) visit(desc);
-  return out;
 }

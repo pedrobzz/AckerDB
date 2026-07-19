@@ -11,7 +11,7 @@ import {
   type SchemaSnapshot,
 } from "@dbzz/server";
 import { loadConfig } from "../src/config.ts";
-import { loadMigrationChain } from "../src/migrations.ts";
+import { loadMigrationChain } from "../src/migrations/load.ts";
 import { makeFixture } from "./fixture.ts";
 
 const schemaV1 = defineSchema({
