@@ -108,49 +108,40 @@ function literalTs(value: unknown): string {
 }
 
 /**
- * A descriptor's TypeScript type text, structural everywhere: bigint/identity/pk
- * as bigint, bytes as Uint8Array, scheduleAt as number, jsonb as the codegen
- * convention (`unknown`), enums as string-literal unions, unions as discriminated
- * `{ tag; value }` unions, objects/arrays/nullables recursively.
+ * The render facet of the descriptor seam, co-located CLI-side because it emits
+ * TypeScript text (a codegen concern that also owns `GenerateError`): a table
+ * keyed by the same descriptor kinds the server seam uses, mapping each to its
+ * structural type text. bigint/identity/pk as bigint, bytes as Uint8Array,
+ * scheduleAt as number, jsonb as the codegen convention (`unknown`), enums as
+ * string-literal unions, unions as discriminated `{ tag; value }` unions,
+ * objects/arrays/nullables recursively.
  */
+const RENDER_KIND: Record<string, (desc: Descriptor) => string> = {
+  pk: () => "bigint",
+  bigint: () => "bigint",
+  identity: () => "bigint",
+  string: () => "string",
+  number: () => "number",
+  scheduleAt: () => "number",
+  boolean: () => "boolean",
+  bytes: () => "Uint8Array",
+  jsonb: () => "unknown",
+  tag: () => "null",
+  literal: (desc) => literalTs(decode(JSON.stringify(desc["v"]))),
+  enum: (desc) => (desc["values"] as string[]).map((v) => JSON.stringify(v)).join(" | "),
+  nullable: (desc) => `${renderType(desc["inner"] as Descriptor)} | null`,
+  array: (desc) => `${paren(renderType(desc["el"] as Descriptor))}[]`,
+  object: (desc) => renderShape(desc["shape"] as Record<string, Descriptor>),
+  union: (desc) =>
+    Object.entries(desc["members"] as Record<string, Descriptor>)
+      .map(([tag, member]) => `{ tag: ${JSON.stringify(tag)}; value: ${renderType(member)} }`)
+      .join(" | "),
+};
+
 function renderType(desc: Descriptor): string {
-  switch (desc["k"]) {
-    case "pk":
-    case "bigint":
-    case "identity":
-      return "bigint";
-    case "string":
-      return "string";
-    case "number":
-    case "scheduleAt":
-      return "number";
-    case "boolean":
-      return "boolean";
-    case "bytes":
-      return "Uint8Array";
-    case "jsonb":
-      return "unknown";
-    case "tag":
-      return "null";
-    case "literal":
-      return literalTs(decode(JSON.stringify(desc["v"])));
-    case "enum":
-      return (desc["values"] as string[]).map((v) => JSON.stringify(v)).join(" | ");
-    case "nullable":
-      return `${renderType(desc["inner"] as Descriptor)} | null`;
-    case "array":
-      return `${paren(renderType(desc["el"] as Descriptor))}[]`;
-    case "object":
-      return renderShape(desc["shape"] as Record<string, Descriptor>);
-    case "union": {
-      const members = desc["members"] as Record<string, Descriptor>;
-      return Object.entries(members)
-        .map(([tag, member]) => `{ tag: ${JSON.stringify(tag)}; value: ${renderType(member)} }`)
-        .join(" | ");
-    }
-    default:
-      throw new GenerateError(`cannot render descriptor kind "${String(desc["k"])}" structurally`);
-  }
+  const render = RENDER_KIND[desc["k"]];
+  if (render === undefined) throw new GenerateError(`cannot render descriptor kind "${String(desc["k"])}" structurally`);
+  return render(desc);
 }
 
 function renderShape(shape: Record<string, Descriptor>): string {

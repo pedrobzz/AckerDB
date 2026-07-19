@@ -29,6 +29,7 @@
  * with no row-count probing, even on a provably empty table. A migration file
  * is the answer to a refusal; `dbz reset` is the dev escape hatch.
  */
+import type { Database } from "bun:sqlite";
 import { Engine, indexSqlName, type TablePlan } from "./engine.ts";
 import { applyStep, pendingSteps, recordChain, stepLabel, validateChain, type MigrationStep } from "./migrate.ts";
 import {
@@ -56,6 +57,11 @@ export class UnsafeSchemaChange extends Error {
 const quote = (name: string) => `"${name}"`;
 
 export type Op = () => void;
+
+/** A row-count probe bound to a writer: runs `sql` (aliasing its count `n`) and returns it. */
+export function countOn(writer: Database): (sql: string, ...params: unknown[]) => number {
+  return (sql, ...params) => Number((writer.query(sql).get(...(params as never[])) as { n: bigint }).n);
+}
 
 interface ReconcilePlan {
   ops: Op[];
@@ -128,10 +134,7 @@ function planReconcile(engine: Engine, current: SchemaSnapshot, diff: SchemaDiff
   const { safe, optimistic, refusals } = classifySchemaDiff(diff);
   const ops: Op[] = [];
   const applied: string[] = [];
-  const writer = engine.writer;
-
-  const count = (sql: string, ...params: unknown[]): number =>
-    Number((writer.query(sql).get(...(params as never[])) as { n: bigint }).n);
+  const count = countOn(engine.writer);
 
   const planOf = (table: string): TablePlan => engine.plan(table);
   for (const change of safe) applySafe(engine, change, current, ops, applied, planOf);

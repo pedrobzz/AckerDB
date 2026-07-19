@@ -28,13 +28,14 @@
  */
 import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { decode, encode, WireError } from "@dbzz/core";
+import { decode, encode } from "@dbzz/core";
 import { ValidationError, type Descriptor } from "./dbz.ts";
+import { checkDescriptor, scalarDecoder, scalarEncoder } from "./descriptor-kinds.ts";
 import { physicalColumnDdl, type ColumnPlan, type Engine, type TablePlan, type TagMap } from "./engine.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "./schema-classify.ts";
 import { diffSnapshots, namedOf, unwrapDesc } from "./schema-diff.ts";
 import type { SchemaSnapshot, TableSnapshot } from "./snapshot.ts";
-import { applySafe, physColsOf, probeOptimistic, UnsafeSchemaChange, type Op } from "./reconcile.ts";
+import { applySafe, countOn, physColsOf, probeOptimistic, UnsafeSchemaChange, type Op } from "./reconcile.ts";
 
 const quote = (name: string) => `"${name}"`;
 
@@ -305,8 +306,7 @@ export async function applyStep(
   const ops: Op[] = [];
   const applied: string[] = [];
   const probeRefusals: SchemaRefusal[] = [];
-  const count = (sql: string, ...params: unknown[]): number =>
-    Number((writer.query(sql).get(...(params as never[])) as { n: bigint }).n);
+  const count = countOn(writer);
   for (const change of safe) {
     if (!rebuilt.has(change.table) && !identityRebuilt.has(change.table)) {
       applySafe(engine, change, renames.renamedCurrent, ops, applied, planOf);
@@ -501,24 +501,13 @@ function snapshotColumnPlan(jsName: string, desc: Descriptor, tags: Map<string, 
       fromSql: (values) => (values[0] === null ? null : tags.get(typeName)!.toName.get(Number(values[0]))!),
     };
   }
+  const enc = scalarEncoder(kind);
+  const dec = scalarDecoder(kind);
   return {
     ...shared,
-    toSql: (value) => [value === null ? null : encodeScalar(kind, value)],
-    fromSql: (values) => (values[0] === null ? null : decodeScalar(kind, values[0])),
+    toSql: (value) => [value === null ? null : enc(value)],
+    fromSql: (values) => (values[0] === null ? null : dec(values[0])),
   };
-}
-
-function encodeScalar(kind: string, value: unknown): unknown {
-  switch (kind) {
-    case "boolean":
-      return value ? 1 : 0;
-    case "array":
-    case "object":
-    case "jsonb":
-      return encode(value);
-    default:
-      return value; // pk / string / number / scheduleAt / bigint / identity / bytes store as-is
-  }
 }
 
 /**
@@ -577,112 +566,6 @@ function checkRow(table: string, snap: TableSnapshot, row: unknown, op: string):
     }
   }
   return out;
-}
-
-const I64_MIN = -(2n ** 63n);
-const I64_MAX = 2n ** 63n - 1n;
-
-function describeValue(value: unknown): string {
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "array";
-  if (value instanceof Uint8Array) return "bytes";
-  return typeof value;
-}
-
-/**
- * Structural mirror of the dbz validators over a descriptor, for transform
- * output and emits. Every kind a column can hold is expressible: kind and
- * finiteness checks, i64 range, enum membership, union tag membership + payload
- * recursion, strict object keys, and jsonb wire-encodability. Returns the
- * normalized value (nullable/undefined collapse to null, unknown keys reject).
- */
-function checkDescriptor(desc: Descriptor, value: unknown, path: string): unknown {
-  const kind = desc["k"] as string;
-  const expect = (ok: boolean, what: string): void => {
-    if (!ok) throw new ValidationError(`${path}: expected ${what}, got ${describeValue(value)}`);
-  };
-  switch (kind) {
-    case "nullable":
-      return value === null || value === undefined ? null : checkDescriptor(desc["inner"] as Descriptor, value, path);
-    case "pk":
-      expect(typeof value === "bigint", "bigint (primary key)");
-      return value;
-    case "string":
-      expect(typeof value === "string", "string");
-      return value;
-    case "number":
-    case "scheduleAt":
-      expect(typeof value === "number" && Number.isFinite(value), "finite number");
-      return value;
-    case "bigint":
-    case "identity":
-      expect(typeof value === "bigint", "bigint");
-      if ((value as bigint) < I64_MIN || (value as bigint) > I64_MAX) {
-        throw new ValidationError(`${path}: bigint out of 64-bit range`);
-      }
-      return value;
-    case "boolean":
-      expect(typeof value === "boolean", "boolean");
-      return value;
-    case "bytes":
-      expect(value instanceof Uint8Array, "Uint8Array");
-      return value;
-    case "enum": {
-      const values = desc["values"] as string[];
-      expect(typeof value === "string" && values.includes(value), `one of ${values.map((v) => JSON.stringify(v)).join(" | ")}`);
-      return value;
-    }
-    case "literal": {
-      const lit = decode(JSON.stringify(desc["v"]));
-      if (value !== lit) throw new ValidationError(`${path}: expected literal ${describeValue(lit)}, got ${describeValue(value)}`);
-      return value;
-    }
-    case "tag":
-      expect(value === null || value === undefined, "null (payload-less variant)");
-      return null;
-    case "array": {
-      expect(Array.isArray(value), "array");
-      const el = desc["el"] as Descriptor;
-      return (value as unknown[]).map((v, i) => checkDescriptor(el, v, `${path}[${i}]`));
-    }
-    case "object": {
-      expect(value !== null && typeof value === "object" && !Array.isArray(value) && !(value instanceof Uint8Array), "object");
-      const shape = desc["shape"] as Record<string, Descriptor>;
-      const input = value as Record<string, unknown>;
-      for (const key of Object.keys(input)) {
-        if (!(key in shape) && input[key] !== undefined) throw new ValidationError(`${path}: unknown field "${key}"`);
-      }
-      const outObject: Record<string, unknown> = {};
-      for (const key of Object.keys(shape)) outObject[key] = checkDescriptor(shape[key]!, input[key], `${path}.${key}`);
-      return outObject;
-    }
-    case "union": {
-      expect(value !== null && typeof value === "object" && !Array.isArray(value), "{ tag, value }");
-      const input = value as Record<string, unknown>;
-      const members = desc["members"] as Record<string, Descriptor>;
-      const variant = input["tag"];
-      if (typeof variant !== "string" || !(variant in members)) {
-        throw new ValidationError(`${path}.tag: expected one of ${Object.keys(members).map((v) => JSON.stringify(v)).join(" | ")}`);
-      }
-      for (const key of Object.keys(input)) {
-        if (key !== "tag" && key !== "value" && input[key] !== undefined) {
-          throw new ValidationError(`${path}: unknown field "${key}" on union value`);
-        }
-      }
-      return { tag: variant, value: checkDescriptor(members[variant]!, input["value"], `${path}.value`) };
-    }
-    case "jsonb":
-      if (value === undefined) throw new ValidationError(`${path}: expected JSON value, got undefined`);
-      try {
-        encode(value);
-      } catch (error) {
-        if (error instanceof WireError) throw new ValidationError(`${path}: not wire-encodable: ${error.message}`);
-        throw error;
-      }
-      return value;
-    default:
-      throw new ValidationError(`${path}: unsupported descriptor kind "${kind}"`);
-  }
 }
 
 // -- old-side decode (pre descriptors, physical-presence guarded) -------------
@@ -760,23 +643,8 @@ function oldColumn(col: string, desc: Descriptor, physicalCols: Set<string>, old
     const typeName = base["name"] as string;
     return { col, phys, decode: (v) => (v[0] === null ? null : oldTags.get(typeName)!.get(Number(v[0]))!) };
   }
-  return { col, phys, decode: (v) => (v[0] === null ? null : decodeScalar(kind, v[0])) };
-}
-
-function decodeScalar(kind: string, value: unknown): unknown {
-  switch (kind) {
-    case "number":
-    case "scheduleAt":
-      return Number(value);
-    case "boolean":
-      return value === 1n || value === 1;
-    case "array":
-    case "object":
-    case "jsonb":
-      return decode(value as string);
-    default:
-      return value; // pk / string / bigint / identity / bytes round-trip as-is
-  }
+  const dec = scalarDecoder(kind);
+  return { col, phys, decode: (v) => (v[0] === null ? null : dec(v[0])) };
 }
 
 /**

@@ -47,6 +47,7 @@ import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
 import type { Descriptor, Identity, Validator } from "./dbz.ts";
+import { scalarDecoder, scalarEncoder, sqlTypeOf } from "./descriptor-kinds.ts";
 import {
   MutationReplayLedger,
   mutationReplayOwner,
@@ -281,28 +282,9 @@ export function physicalColumnDdl(name: string, descriptor: Descriptor, path: st
   if (base["k"] === "union") {
     return [`${quote(name)} INTEGER${notNull}`, `${quote(`${name}__p`)} TEXT${notNull}`];
   }
-  const type = (() => {
-    switch (base["k"]) {
-      case "string":
-      case "array":
-      case "object":
-      case "jsonb":
-        return "TEXT";
-      case "number":
-      case "scheduleAt":
-        return "REAL";
-      case "bigint":
-      case "identity":
-      case "boolean":
-      case "enum":
-        return "INTEGER";
-      case "bytes":
-        return "BLOB";
-      default:
-        corruptSnapshot(`${path} cannot be stored as a table column`);
-    }
-  })();
-  return [`${quote(name)} ${type}${notNull}`];
+  const sqlType = sqlTypeOf(base["k"] as string);
+  if (sqlType === undefined) corruptSnapshot(`${path} cannot be stored as a table column`);
+  return [`${quote(name)} ${sqlType}${notNull}`];
 }
 
 function parseStoredSnapshot(value: string): SchemaSnapshot {
@@ -405,29 +387,6 @@ function unwrapValidator(validator: Validator<unknown, string>): {
     return { base: (validator as unknown as { inner: Validator<unknown, string> }).inner, nullable: true };
   }
   return { base: validator, nullable: false };
-}
-
-function ddlTypeOf(kind: string): string {
-  switch (kind) {
-    case "string":
-      return "TEXT";
-    case "number":
-    case "scheduleAt":
-      return "REAL";
-    case "bigint":
-    case "identity":
-    case "boolean":
-    case "enum":
-      return "INTEGER";
-    case "bytes":
-      return "BLOB";
-    case "array":
-    case "object":
-    case "jsonb":
-      return "TEXT";
-    default:
-      throw new Error(`no DDL type for validator kind "${kind}"`);
-  }
 }
 
 function positiveInt(value: number, name: string): number {
@@ -1164,36 +1123,18 @@ export class Engine {
       };
     }
 
-    const ddl = `${quote(jsName)} ${ddlTypeOf(base.kind)}${notNull}`;
-    const simple = (toSql: (v: unknown) => unknown, fromSql: (v: unknown) => unknown): ColumnPlan => ({
+    const sqlType = sqlTypeOf(base.kind);
+    if (sqlType === undefined) throw new Error(`unsupported column kind "${base.kind}"`);
+    const encodeScalar = scalarEncoder(base.kind);
+    const decodeScalar = scalarDecoder(base.kind);
+    return {
       jsName,
       kind: base.kind,
       nullable,
-      phys: [{ name: jsName, ddl }],
-      toSql: (value) => [value === null ? null : toSql(value)],
-      fromSql: (values) => (values[0] === null ? null : fromSql(values[0])),
-    });
-
-    switch (base.kind) {
-      case "string":
-        return simple((v) => v, (v) => v);
-      case "number":
-      case "scheduleAt":
-        return simple((v) => v, (v) => Number(v));
-      case "bigint":
-      case "identity":
-        return simple((v) => v, (v) => v);
-      case "boolean":
-        return simple((v) => (v ? 1 : 0), (v) => v === 1n || v === 1);
-      case "bytes":
-        return simple((v) => v, (v) => v);
-      case "array":
-      case "object":
-      case "jsonb":
-        return simple((v) => encode(v), (v) => decode(v as string));
-      default:
-        throw new Error(`unsupported column kind "${base.kind}"`);
-    }
+      phys: [{ name: jsName, ddl: `${quote(jsName)} ${sqlType}${notNull}` }],
+      toSql: (value) => [value === null ? null : encodeScalar(value)],
+      fromSql: (values) => (values[0] === null ? null : decodeScalar(values[0])),
+    };
   }
 
   // -- DDL -------------------------------------------------------------------
