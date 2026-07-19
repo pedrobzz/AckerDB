@@ -107,10 +107,12 @@ async function applyChain(engine: Engine, steps: MigrationStep[]): Promise<{ app
   const applied: string[] = [];
   let current = stored;
   for (const step of pending) {
-    const lines = await applyStep(engine, current, step);
+    // The saved snapshot (target augmented with carried columns) is physical
+    // truth for the next step, so a carried column resurfaces as drift there.
+    const { applied: lines, saved } = await applyStep(engine, current, step);
     const label = stepLabel(step);
     for (const line of lines.length > 0 ? lines : ["applied"]) applied.push(`${label}: ${line}`);
-    current = step.target;
+    current = saved;
   }
   if (pending.length > 0) engine.reinternTags();
   applied.push(...reconcile(engine).applied);

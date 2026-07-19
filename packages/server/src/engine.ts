@@ -1198,11 +1198,12 @@ export class Engine {
 
   // -- DDL -------------------------------------------------------------------
 
-  createTableDdl(plan: TablePlan, nameOverride?: string): string {
+  createTableDdl(plan: TablePlan, nameOverride?: string, extraColumnDdls: string[] = []): string {
     const cols: string[] = [];
     for (const column of plan.columns.values()) {
       for (const phys of column.phys) cols.push(phys.ddl);
     }
+    cols.push(...extraColumnDdls); // rebuilds append carried columns absent from the plan
     return `CREATE TABLE IF NOT EXISTS ${quote(nameOverride ?? plan.name)} (${cols.join(", ")})`;
   }
 

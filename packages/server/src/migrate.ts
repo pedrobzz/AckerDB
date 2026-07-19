@@ -237,10 +237,15 @@ interface StepScope {
  * applies the safe ops the migration does not own (creates first, so emits land),
  * replays every transform against the before-state, swaps rebuilt tables in,
  * performs pure renames last (so transforms read old physical names), drops
- * acknowledged tables, saves the target snapshot, records the history row, and
- * commits. Returns the applied lines (unprefixed).
+ * acknowledged tables, saves the target snapshot (augmented with any carried
+ * columns so it keeps describing physical reality), records the history row, and
+ * commits. Returns the applied lines (unprefixed) and the snapshot it saved.
  */
-export async function applyStep(engine: Engine, stored: SchemaSnapshot, step: MigrationStep): Promise<string[]> {
+export async function applyStep(
+  engine: Engine,
+  stored: SchemaSnapshot,
+  step: MigrationStep,
+): Promise<{ applied: string[]; saved: SchemaSnapshot }> {
   const writer = engine.writer;
   const { pre, target, migration } = step;
   const renames = planRenames(writer, stored, target, migration);
@@ -300,6 +305,12 @@ export async function applyStep(engine: Engine, stored: SchemaSnapshot, step: Mi
   if (probeRefusals.length > 0) throw new UnsafeSchemaChange(probeRefusals);
 
   const scope: StepScope = { engine, pre, stored, target, renames, targetPlans, oldTags };
+  const carriedOf = new Map<string, CarriedColumn[]>();
+  for (const name of [...rebuilt, ...identityRebuilt]) {
+    const carried = carriedColumns(scope, name);
+    if (carried.length > 0) carriedOf.set(name, carried);
+  }
+  const saved = augmentSnapshot(target, carriedOf);
 
   writer.exec("BEGIN IMMEDIATE");
   try {
@@ -312,7 +323,7 @@ export async function applyStep(engine: Engine, stored: SchemaSnapshot, step: Mi
     }
     persistTagMaps(writer, stepTags);
     for (const op of ops) op();
-    const tmpOf = await runTransforms(scope, entries, rebuilt, identityRebuilt);
+    const tmpOf = await runTransforms(scope, entries, rebuilt, identityRebuilt, carriedOf);
     for (const name of [...tmpOf.keys()].sort()) {
       // IF EXISTS: safe drift may have left this database without the old table,
       // in which case the rebuilt tmp simply becomes the (empty) new table.
@@ -328,7 +339,7 @@ export async function applyStep(engine: Engine, stored: SchemaSnapshot, step: Mi
       writer.exec(`DROP TABLE ${quote(name)}`);
       applied.push(`dropped table ${name}`);
     }
-    engine.saveSnapshot(target);
+    engine.saveSnapshot(saved);
     writer
       .query("INSERT INTO _dbz_migrations (number, name, target_fingerprint, applied_at) VALUES (?, ?, ?, ?)")
       .run(step.number, step.name, migrationFingerprint(target), Date.now());
@@ -337,7 +348,7 @@ export async function applyStep(engine: Engine, stored: SchemaSnapshot, step: Mi
     writer.exec("ROLLBACK");
     throw error;
   }
-  return applied;
+  return { applied, saved };
 }
 
 /**
@@ -485,8 +496,20 @@ function encodeScalar(kind: string, value: unknown): unknown {
   }
 }
 
-/** Insert a validated row into `target`; a supplied `pk` is preserved. */
-function physicalInsert(engine: Engine, plan: TablePlan, target: EmitTarget, values: MigrationRow, pk?: bigint): void {
+/**
+ * Insert a validated row into `target`; a supplied `pk` is preserved. `carried`
+ * are stored-physical columns the target plan does not know about (safe drift
+ * ahead of the step) — their raw values are copied verbatim under their stored
+ * physical names, which the rebuilt tmp holds alongside the plan's columns.
+ */
+function physicalInsert(
+  engine: Engine,
+  plan: TablePlan,
+  target: EmitTarget,
+  values: MigrationRow,
+  pk?: bigint,
+  carried: { name: string; value: unknown }[] = [],
+): void {
   const names: string[] = [];
   const params: unknown[] = [];
   if (pk !== undefined) {
@@ -497,6 +520,10 @@ function physicalInsert(engine: Engine, plan: TablePlan, target: EmitTarget, val
     if (column.kind === "pk") continue;
     for (const phys of column.phys) names.push(target.translate(phys.name));
     params.push(...column.toSql(values[column.jsName]));
+  }
+  for (const c of carried) {
+    names.push(c.name);
+    params.push(c.value);
   }
   const sql = `INSERT INTO ${quote(target.name)} (${names.map(quote).join(", ")}) VALUES (${names.map(() => "?").join(", ")})`;
   engine.writer.query(sql).run(...(params as never[]));
@@ -776,6 +803,69 @@ interface EmitTarget {
   translate: (col: string) => string;
 }
 
+/** A stored-physical column a rebuild must carry through untouched (safe drift). */
+interface CarriedColumn {
+  jsName: string;
+  descriptor: Descriptor;
+  /** Stored physical names (a union contributes both `col` and `col__p`). */
+  phys: string[];
+  /** DDL for the tmp, from the stored descriptor (kept nullable-as-stored). */
+  ddls: string[];
+  nullable: boolean;
+}
+
+/**
+ * The columns a rebuild of `name` must carry: every stored-physical column that
+ * is absent from BOTH the step's `pre` and its target plan — safe drift that
+ * landed on this database from a lineage the migration never saw. A column the
+ * migration knew (in `pre`) but the target drops is a deliberate, acknowledged
+ * drop and is NOT carried; a column the renames map into the target is excluded
+ * (its data moves via the rename); so is the pk and every target column (they
+ * are the plan). One mechanism, shared by every rebuild flavor: append the DDL
+ * to the tmp, copy the raw values on replay.
+ */
+function carriedColumns(scope: StepScope, name: string): CarriedColumn[] {
+  const { pre, stored, renames, targetPlans } = scope;
+  const oldPhysName = renames.tableOldName.get(name) ?? name;
+  const storedSnap = stored.tables[oldPhysName];
+  if (storedSnap === undefined || storedSnap.kind !== "table") return [];
+  const reverse = renames.columnReverse.get(name);
+  const targetOldPhys = new Set(targetPlans.get(name)!.physOrder.map((c) => reverse?.get(c) ?? c));
+  const preColumns = pre.tables[oldPhysName]?.columns ?? {};
+  const carried: CarriedColumn[] = [];
+  for (const [col, desc] of Object.entries(storedSnap.columns)) {
+    if (col in preColumns) continue; // the migration knew this column; a target dropping it is deliberate
+    const phys = namedOf(desc)?.kind === "union" ? [col, `${col}__p`] : [col];
+    if (phys.some((p) => targetOldPhys.has(p))) continue;
+    carried.push({ jsName: col, descriptor: desc, phys, ddls: physicalColumnDdl(col, desc, col), nullable: unwrapDesc(desc).nullable });
+  }
+  return carried;
+}
+
+/**
+ * The snapshot a step saves: its target augmented with every carried column's
+ * descriptor (target order, then carried in stored order). The physical table
+ * now holds columns the bare target lacks, so the stored snapshot must keep
+ * describing them or the next `verifyApplicationSchema` refuses the open. The
+ * carried column simply resurfaces as drift in the next step's diff and the
+ * final safe hop (live schema has it → no-op; lacks it → ordinary drop refusal).
+ */
+function augmentSnapshot(target: SchemaSnapshot, carriedOf: Map<string, CarriedColumn[]>): SchemaSnapshot {
+  if (carriedOf.size === 0) return target;
+  const tables: Record<string, TableSnapshot> = {};
+  for (const [name, snap] of Object.entries(target.tables)) {
+    const carried = carriedOf.get(name);
+    if (carried === undefined) {
+      tables[name] = snap;
+      continue;
+    }
+    const columns: Record<string, Descriptor> = { ...snap.columns };
+    for (const c of carried) columns[c.jsName] = c.descriptor;
+    tables[name] = { ...snap, columns };
+  }
+  return { version: 1, tables };
+}
+
 /**
  * Run every transform against the before-state and return the temporary
  * physical name of each rebuilt table. Rebuilt tables are materialized empty
@@ -785,13 +875,21 @@ interface EmitTarget {
  * reads its rows from its OLD physical name and PRE descriptors. Identity
  * rebuilds (renamed tables whose other changes are all shape-safe, no user
  * transform) are copied wholesale through the rename map before any transform
- * runs, so emits into them land in the tmp alongside the carried rows.
+ * runs, so emits into them land in the tmp alongside the carried rows. Each
+ * rebuild also carries every stored-physical column its target plan does not
+ * know about (`carriedOf`): the tmp gains those columns and replayed rows copy
+ * their raw values. A target column the PRE lacks but the database already
+ * holds defaults to the old row's stored value unless the transform's raw
+ * output provides the key. Emits into non-rebuilt tables are buffered and
+ * flushed only after every transform has run, so the frozen before-state never
+ * sees them.
  */
 async function runTransforms(
   scope: StepScope,
   entries: Record<string, RowTransform | null>,
   rebuilt: Set<string>,
   identityRebuilt: Set<string>,
+  carriedOf: Map<string, CarriedColumn[]>,
 ): Promise<Map<string, string>> {
   const { engine, pre, stored, target, renames, targetPlans, oldTags } = scope;
   const writer = engine.writer;
@@ -801,14 +899,16 @@ async function runTransforms(
     const oldPhys = renames.tableOldName.get(name) ?? name;
     const tmp = `${name}__migrate`;
     tmpOf.set(name, tmp);
-    writer.exec(engine.createTableDdl(planOf(name), tmp));
+    const carriedDdls = (carriedOf.get(name) ?? []).flatMap((c) => c.ddls);
+    writer.exec(engine.createTableDdl(planOf(name), tmp, carriedDdls));
     const seq = writer.query("SELECT seq FROM sqlite_sequence WHERE name = ?").get(oldPhys) as { seq: bigint } | null;
     if (seq !== null) writer.query("INSERT INTO sqlite_sequence (name, seq) VALUES (?, ?)").run(tmp, seq.seq);
   }
 
   // Identity rebuild: one INSERT..SELECT per table, new physical columns fed
   // from their pre-rename names; columns absent from the old physical table are
-  // omitted (new nullable columns land NULL). No per-row JS ever runs.
+  // omitted (new nullable columns land NULL). Carried columns keep their stored
+  // names on both sides (a verbatim copy). No per-row JS ever runs.
   for (const name of [...identityRebuilt].sort()) {
     const oldPhysName = renames.tableOldName.get(name) ?? name;
     const reverse = renames.columnReverse.get(name);
@@ -816,9 +916,12 @@ async function runTransforms(
     const pairs = planOf(name)
       .physOrder.map((c) => [reverse?.get(c) ?? c, c] as const)
       .filter(([old]) => oldCols.has(old));
+    const carriedPhys = (carriedOf.get(name) ?? []).flatMap((c) => c.phys);
+    const insertCols = [...pairs.map(([, c]) => c), ...carriedPhys];
+    const selectCols = [...pairs.map(([old]) => old), ...carriedPhys];
     writer.exec(
-      `INSERT INTO ${quote(tmpOf.get(name)!)} (${pairs.map(([, c]) => quote(c)).join(", ")}) ` +
-        `SELECT ${pairs.map(([old]) => quote(old)).join(", ")} FROM ${quote(oldPhysName)}`,
+      `INSERT INTO ${quote(tmpOf.get(name)!)} (${insertCols.map(quote).join(", ")}) ` +
+        `SELECT ${selectCols.map(quote).join(", ")} FROM ${quote(oldPhysName)}`,
     );
   }
 
@@ -829,11 +932,24 @@ async function runTransforms(
     return { name: renames.tableOldName.get(table) ?? table, translate: (c) => reverse?.get(c) ?? c };
   };
 
+  // Emits into non-rebuilt tables write to the same connection `ctx.before`
+  // reads, so they are buffered here and flushed after every transform has run;
+  // emits into rebuilt tables go to the (invisible) tmp and stay immediate.
+  const staged: { table: string; row: MigrationRow }[] = [];
   const ctx: MigrationContext = {
     before: buildBefore(engine, pre, stored, oldTags),
     insert(table, row) {
       if (!targetPlans.has(table)) throw new ValidationError(`migration insert: unknown table "${table}"`);
-      physicalInsert(engine, planOf(table), emitTargetOf(table), checkRow(table, target.tables[table]!, row, "insert"));
+      const validated = checkRow(table, target.tables[table]!, row, "insert"); // eager: error locality stays here
+      if (!tmpOf.has(table)) {
+        staged.push({ table, row: validated });
+        return;
+      }
+      const notNull = (carriedOf.get(table) ?? []).find((c) => !c.nullable);
+      if (notNull !== undefined) {
+        throw new ValidationError(`migration insert into "${table}": carried NOT NULL column "${notNull.jsName}" cannot be emitted`);
+      }
+      physicalInsert(engine, planOf(table), emitTargetOf(table), validated);
     },
   };
 
@@ -853,12 +969,36 @@ async function runTransforms(
     }
     const plan = planOf(name);
     const emit = emitTargetOf(name); // the tmp under new names
+    const carried = carriedOf.get(name) ?? [];
+    // Target columns the PRE never typed but the database already physically
+    // holds (parallel-lineage drift the target re-declares): a PRE-typed
+    // transform cannot see them, so when its raw output does not provide the
+    // key the stored value is decoded and used as the default. `undefined`
+    // counts as absent — carrying the stored value is the data-safe reading —
+    // while an explicit null is a provided value and wins.
+    const reverse = renames.columnReverse.get(name);
+    const defaults = [...plan.columns.values()]
+      .filter((c) => c.kind !== "pk")
+      .map((c) => ({ jsName: c.jsName, oldJs: reverse?.get(c.phys[0]!.name) ?? c.jsName }))
+      .filter(({ oldJs }) => preSnap.columns[oldJs] === undefined && physical.columns[oldJs] !== undefined)
+      .map(({ jsName, oldJs }) => ({ jsName, old: oldColumn(oldJs, physical.columns[oldJs]!, physColsOf(physical), oldTags) }));
     for (const raw of rows) {
       const decoded = decodeOldRow(old, raw);
       const result = await fn(decoded, ctx);
-      if (result === null) continue; // deleted
-      physicalInsert(engine, plan, emit, checkRow(name, target.tables[name]!, result ?? decoded, "transform"), decoded[old.pk] as bigint);
+      if (result === null) continue; // deleted: the whole row goes, carried values included
+      let out = (result ?? decoded) as MigrationRow;
+      if (defaults.length > 0 && typeof out === "object" && !Array.isArray(out)) {
+        out = { ...out }; // never mutate the transform's returned object
+        for (const d of defaults) {
+          if (out[d.jsName] === undefined) out[d.jsName] = d.old.decode(d.old.phys.map((p) => raw[p]));
+        }
+      }
+      const carriedValues = carried.flatMap((c) => c.phys.map((p) => ({ name: p, value: raw[p] })));
+      physicalInsert(engine, plan, emit, checkRow(name, target.tables[name]!, out, "transform"), decoded[old.pk] as bigint, carriedValues);
     }
+  }
+  for (const { table, row } of staged) {
+    physicalInsert(engine, planOf(table), emitTargetOf(table), row); // ids assigned now; nothing read them earlier
   }
   return tmpOf;
 }

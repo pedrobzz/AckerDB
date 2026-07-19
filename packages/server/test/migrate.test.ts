@@ -1361,3 +1361,357 @@ describe("migrate: the chain", () => {
     again.close("clean");
   });
 });
+
+describe("migrate: carried columns (safe drift ahead of the step)", () => {
+  test("a rebuild carries a stored column the step's pre and target both lack", async () => {
+    // The DB physically holds `note` (safe drift from a lineage the migration
+    // never saw); the step only retypes `qty` and knows nothing about `note`.
+    const seedS = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+    });
+    const pre = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
+    const stepTarget = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.number() }) });
+    const live = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), note: dbz.nullable(dbz.string()) }),
+    });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.items.insert({ qty: "5", note: "keep-me" }); // id 1
+      await d.items.insert({ qty: "9", note: "and-me" }); // id 2
+    });
+
+    const engine = new Engine(live, path);
+    await reconcile(engine, [
+      {
+        number: 1,
+        name: "retype",
+        pre: snapshotOf(pre),
+        target: snapshotOf(stepTarget),
+        migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }),
+      },
+    ]);
+    const d = db(engine);
+    expect(await d.items.get(1n)).toEqual({ id: 1n, qty: 5, note: "keep-me" });
+    expect(await d.items.get(2n)).toEqual({ id: 2n, qty: 9, note: "and-me" });
+    engine.close("clean");
+
+    const again = reopen(live, path); // physical `note` verified against the augmented snapshot
+    expect((await again.db.items.get(1n)).note).toBe("keep-me");
+    again.engine.close("clean");
+  });
+
+  test("a carried column survives two consecutive rebuilds and the final safe hop", async () => {
+    const seedS = defineSchema({
+      posts: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+    });
+    const pre1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
+    const t1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), qty: dbz.number() }) });
+    const t2 = defineSchema({
+      posts: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), label: dbz.nullable(dbz.string()) }),
+    });
+    const live = defineSchema({
+      posts: defineTable({
+        id: dbz.primaryKey(),
+        qty: dbz.number(),
+        label: dbz.nullable(dbz.string()),
+        note: dbz.nullable(dbz.string()),
+      }),
+    });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.posts.insert({ qty: "5", note: "keep-me" }); // id 1
+      await d.posts.insert({ qty: "20", note: "and-me" }); // id 2
+    });
+
+    const engine = new Engine(live, path);
+    await reconcile(engine, [
+      {
+        number: 1,
+        name: "parse",
+        pre: snapshotOf(pre1),
+        target: snapshotOf(t1),
+        migration: defineMigration({ tables: { posts: (row) => ({ qty: Number(row.qty) }) } }),
+      },
+      {
+        number: 2,
+        name: "label",
+        pre: snapshotOf(t1),
+        target: snapshotOf(t2),
+        migration: defineMigration({ tables: { posts: (row) => ({ ...row, label: `q${row.qty}` }) } }),
+      },
+    ]);
+    const d = db(engine);
+    expect(await d.posts.get(1n)).toEqual({ id: 1n, qty: 5, label: "q5", note: "keep-me" });
+    expect(await d.posts.get(2n)).toEqual({ id: 2n, qty: 20, label: "q20", note: "and-me" });
+    // the final safe hop is a no-op: the live schema still carries `note`
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(live));
+    engine.close("clean");
+
+    const again = reopen(live, path);
+    expect((await again.db.posts.get(1n)).note).toBe("keep-me");
+    again.engine.close("clean");
+  });
+
+  test("an emit into a rebuilt table carrying a NOT NULL column is refused, naming it", async () => {
+    // A NOT NULL column drifted in on a parallel branch; the step's pre/target
+    // both lack it. The rebuild carries it for replayed rows, but an emit cannot
+    // satisfy it — fail closed at emit time rather than invent a value.
+    const seedS = defineSchema({
+      dest: defineTable({ id: dbz.primaryKey(), val: dbz.string(), tag: dbz.string() }),
+      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+    });
+    const pre = defineSchema({
+      dest: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+    });
+    const stepTarget = defineSchema({ dest: defineTable({ id: dbz.primaryKey(), val: dbz.number() }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.dest.insert({ val: "10", tag: "t1" }); // id 1
+      await d.source.insert({ val: "99" }); // id 1
+    });
+
+    const engine = new Engine(stepTarget, path);
+    await expect(
+      reconcile(engine, [
+        {
+          number: 1,
+          name: "salvage",
+          pre: snapshotOf(pre),
+          target: snapshotOf(stepTarget),
+          migration: defineMigration({
+            tables: {
+              dest: (row) => ({ val: Number(row.val) }),
+              source: (row, ctx) => ctx.insert("dest", { val: Number(row.val) }),
+            },
+          }),
+        },
+      ]),
+    ).rejects.toThrow(/carried NOT NULL column "tag"/);
+    // nothing applied: the DB is untouched and the drifted column is intact
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(seedS));
+    engine.close("clean");
+  });
+});
+
+describe("migrate: pre-absent target columns default to stored values", () => {
+  // The step's PRE lacks `note`, its TARGET has it, and the database already
+  // physically holds it populated (parallel-lineage drift). A PRE-typed
+  // transform cannot see the column, so an output that never mentions the key
+  // must not destroy its data.
+  const seedS = defineSchema({
+    items: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+  });
+  const pre = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
+  const live = defineSchema({
+    items: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), note: dbz.nullable(dbz.string()) }),
+  });
+
+  async function run(path: string, transform: (row: Record<string, unknown>) => unknown) {
+    const engine = new Engine(live, path);
+    await reconcile(engine, [
+      {
+        number: 1,
+        name: "retype",
+        pre: snapshotOf(pre),
+        target: snapshotOf(live),
+        migration: defineMigration({ tables: { items: transform as never } }),
+      },
+    ]);
+    return { engine, db: db(engine) };
+  }
+
+  test("a transform that never mentions the key keeps the stored value", async () => {
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.items.insert({ qty: "5", note: "keep-me" }); // id 1
+      await d.items.insert({ qty: "9", note: null }); // id 2
+    });
+    const { engine, db: d } = await run(path, (row) => ({ ...row, qty: Number(row.qty) }));
+    expect(await d.items.get(1n)).toEqual({ id: 1n, qty: 5, note: "keep-me" });
+    expect(await d.items.get(2n)).toEqual({ id: 2n, qty: 9, note: null });
+    engine.close("clean");
+
+    const again = reopen(live, path);
+    expect((await again.db.items.get(1n)).note).toBe("keep-me");
+    again.engine.close("clean");
+  });
+
+  test("an undefined return (keep the handed row) flows through the same default", async () => {
+    // target only re-declares `note`; qty is unchanged, the transform is a
+    // volunteered no-op returning undefined — the kept row still carries note.
+    const same = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+    });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.items.insert({ qty: "5", note: "keep-me" }); // id 1
+    });
+    const engine = new Engine(same, path);
+    await reconcile(engine, [
+      {
+        number: 1,
+        name: "noop",
+        pre: snapshotOf(pre),
+        target: snapshotOf(same),
+        migration: defineMigration({ tables: { items: () => undefined } }),
+      },
+    ]);
+    expect(await db(engine).items.get(1n)).toEqual({ id: 1n, qty: "5", note: "keep-me" });
+    engine.close("clean");
+  });
+
+  test("an explicit backfill wins over the stored value", async () => {
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.items.insert({ qty: "5", note: "keep-me" }); // id 1
+    });
+    const { engine, db: d } = await run(path, (row) => ({ qty: Number(row.qty), note: "backfilled" }));
+    expect(await d.items.get(1n)).toEqual({ id: 1n, qty: 5, note: "backfilled" });
+    engine.close("clean");
+  });
+
+  test("an explicit null is a provided value, not a carry", async () => {
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.items.insert({ qty: "5", note: "keep-me" }); // id 1
+    });
+    const { engine, db: d } = await run(path, (row) => ({ qty: Number(row.qty), note: null }));
+    expect(await d.items.get(1n)).toEqual({ id: 1n, qty: 5, note: null });
+    engine.close("clean");
+  });
+
+  test("a genuinely new column (stored also lacks it) still lands NULL", async () => {
+    const path = freshPath();
+    await seed(pre, path, async (d) => {
+      await d.items.insert({ qty: "5" }); // id 1 — no `note` anywhere in this lineage
+    });
+    const { engine, db: d } = await run(path, (row) => ({ ...row, qty: Number(row.qty) }));
+    expect(await d.items.get(1n)).toEqual({ id: 1n, qty: 5, note: null });
+    engine.close("clean");
+  });
+
+  test("emits into the rebuilt table get the emitter's value or null, never a stored carry", async () => {
+    const seedBoth = defineSchema({
+      dest: defineTable({ id: dbz.primaryKey(), val: dbz.string(), note: dbz.nullable(dbz.string()) }),
+      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+    });
+    const preBoth = defineSchema({
+      dest: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+    });
+    const target = defineSchema({
+      dest: defineTable({ id: dbz.primaryKey(), val: dbz.number(), note: dbz.nullable(dbz.string()) }),
+    });
+    const path = freshPath();
+    await seed(seedBoth, path, async (d) => {
+      await d.dest.insert({ val: "10", note: "keep-me" }); // id 1
+      await d.source.insert({ val: "99" }); // id 1
+    });
+    const engine = new Engine(target, path);
+    await reconcile(engine, [
+      {
+        number: 1,
+        name: "merge",
+        pre: snapshotOf(preBoth),
+        target: snapshotOf(target),
+        migration: defineMigration({
+          tables: {
+            dest: (row) => ({ ...row, val: Number(row.val) }),
+            source: (row, ctx) => ctx.insert("dest", { val: Number(row.val) }),
+          },
+        }),
+      },
+    ]);
+    const d = db(engine);
+    expect(await d.dest.get(1n)).toEqual({ id: 1n, val: 10, note: "keep-me" }); // replayed: carried
+    expect(await d.dest.get(2n)).toEqual({ id: 2n, val: 99, note: null }); // emitted: no old row, no carry
+    engine.close("clean");
+  });
+});
+
+describe("migrate: frozen before-state (emits never observed by transforms)", () => {
+  test("ctx.before does not observe an emit into an unchanged table", async () => {
+    const a = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      log: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+    });
+    const b = defineSchema({
+      items: defineTable({ id: dbz.primaryKey(), val: dbz.number() }),
+      log: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.items.insert({ val: "1" }); // id 1
+      await d.items.insert({ val: "2" }); // id 2
+      await d.log.insert({ msg: "orig" }); // id 1
+    });
+
+    const seenCounts: number[] = [];
+    const { engine, db: d } = await migrate(
+      b,
+      path,
+      defineMigration({
+        tables: {
+          items: async (row, ctx) => {
+            ctx.insert("log", { msg: `from-${row.val}` });
+            let count = 0;
+            for await (const _ of ctx.before.log!.scan()) count++;
+            seenCounts.push(count);
+            return { val: Number(row.val) };
+          },
+        },
+      }),
+    );
+    // every transform sees the single frozen original, never its own or a sibling's emit
+    expect(seenCounts).toEqual([1, 1]);
+    // the emits still landed after the transforms froze the before-state
+    expect((await d.log.scan().collect()).map((r: Record<string, unknown>) => r.msg).sort()).toEqual([
+      "from-1",
+      "from-2",
+      "orig",
+    ]);
+    engine.close("clean");
+  });
+
+  test("a later transform's ctx.before does not observe an earlier transform's emit", async () => {
+    const a = defineSchema({
+      aa: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      bb: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      cc: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+    });
+    const b = defineSchema({
+      aa: defineTable({ id: dbz.primaryKey(), val: dbz.number() }),
+      bb: defineTable({ id: dbz.primaryKey(), val: dbz.number() }),
+      cc: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+    });
+    const path = freshPath();
+    await seed(a, path, async (d) => {
+      await d.aa.insert({ val: "1" });
+      await d.bb.insert({ val: "1" });
+      await d.cc.insert({ msg: "orig" });
+    });
+
+    let bbSaw = -1;
+    const { engine, db: d } = await migrate(
+      b,
+      path,
+      defineMigration({
+        tables: {
+          // aa runs first (alphabetical) and emits into the unchanged cc
+          aa: (row, ctx) => (ctx.insert("cc", { msg: "from-aa" }), { val: Number(row.val) }),
+          // bb runs later and must still see cc frozen
+          bb: async (row, ctx) => {
+            let c = 0;
+            for await (const _ of ctx.before.cc!.scan()) c++;
+            bbSaw = c;
+            return { val: Number(row.val) };
+          },
+        },
+      }),
+    );
+    expect(bbSaw).toBe(1); // only the original cc row, not aa's emit
+    expect((await d.cc.scan().collect()).map((r: Record<string, unknown>) => r.msg).sort()).toEqual(["from-aa", "orig"]);
+    engine.close("clean");
+  });
+});
