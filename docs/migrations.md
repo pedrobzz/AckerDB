@@ -85,12 +85,14 @@ removal forces you (in the types) to map or delete the rows that hold it.
 
 - Sequential 4-digit numbers; duplicate numbers are a load error; renumbering
   an *unapplied* migration is always safe.
-- The database records each applied migration's number and target fingerprint
-  in an append-only history that must be a prefix of the app's chain.
-  **Applied migrations are immutable**: editing one changes its fingerprint
-  and the next start refuses loudly. The meta sidecar's fingerprint is also
-  recomputed at load, so an edited target snapshot is caught before the
-  database is opened.
+- The database records each applied migration's number and identity — a hash
+  over its number, name, pre, target, and file bytes — in an append-only history
+  that must be a prefix of the app's chain. **Applied migrations are immutable**:
+  editing one's pre, target, or transform code shifts its identity and the next
+  start refuses loudly. (The migration file is the immutable unit; a helper
+  module it merely imports is outside the identity boundary.) The meta sidecar's
+  fingerprint is also recomputed at load, so an edited target snapshot is caught
+  before the database is opened.
 - Each pending migration applies at startup in its own transaction, history
   row included: a mid-chain failure keeps every earlier migration applied and
   rolls the failing one back byte-identically. Fix the code, restart.

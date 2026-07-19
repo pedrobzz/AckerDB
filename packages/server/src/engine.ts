@@ -240,7 +240,7 @@ const INTERNAL_OBJECTS: StoredObject[] = [
     type: "table",
     name: "_dbz_migrations",
     table: "_dbz_migrations",
-    sql: "CREATE TABLE _dbz_migrations (number INTEGER PRIMARY KEY, name TEXT NOT NULL, target_fingerprint TEXT NOT NULL, applied_at REAL NOT NULL)",
+    sql: "CREATE TABLE _dbz_migrations (number INTEGER PRIMARY KEY, name TEXT NOT NULL, identity TEXT NOT NULL, applied_at REAL NOT NULL)",
   },
   ...MCP_TOKEN_INTERNAL_OBJECTS,
 ];
@@ -953,7 +953,7 @@ export class Engine {
     }
     const invalidMigration = connection
       .query(
-        "SELECT 1 FROM _dbz_migrations WHERE typeof(number) <> 'integer' OR number <= 0 OR typeof(name) <> 'text' OR length(name) = 0 OR typeof(target_fingerprint) <> 'text' OR length(target_fingerprint) <> 64 OR typeof(applied_at) NOT IN ('integer', 'real') LIMIT 1",
+        "SELECT 1 FROM _dbz_migrations WHERE typeof(number) <> 'integer' OR number <= 0 OR typeof(name) <> 'text' OR length(name) = 0 OR typeof(identity) <> 'text' OR length(identity) <> 64 OR typeof(applied_at) NOT IN ('integer', 'real') LIMIT 1",
       )
       .get();
     if (invalidMigration !== null) throw new CorruptDatabaseError("DBZZ migration history is invalid");

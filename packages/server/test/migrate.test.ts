@@ -9,7 +9,7 @@ import {
   defineTable,
   Engine,
   makeDbWriter,
-  migrationFingerprint,
+  migrationIdentity,
   MigrationError,
   newWriteCollector,
   reconcile,
@@ -17,6 +17,7 @@ import {
   type Migration,
   type MigrationStep,
   type Schema,
+  type SchemaSnapshot,
 } from "@dbzz/server";
 
 const dirs: string[] = [];
@@ -49,7 +50,7 @@ async function seed(schema: Schema, path: string, fn: (d: ReturnType<typeof db>)
  * was seeded with (its stored snapshot), `target` is the new declared schema.
  */
 function chain(engine: Engine, migration: Migration, number = 1, name = "m"): MigrationStep[] {
-  return [{ number, name, pre: engine.loadSnapshot()!, target: snapshotOf(engine.schema), migration }];
+  return [{ number, name, pre: engine.loadSnapshot()!, target: snapshotOf(engine.schema), code: "", migration }];
 }
 
 /** Reopen `path` under `schema` and run `migration` as a one-step chain. */
@@ -926,12 +927,13 @@ describe("migrate: rename validation refuses before touching anything", () => {
     // The chain re-presents migration 1 (already applied) plus the pending rename.
     const engine3 = new Engine(s3, path);
     const steps: MigrationStep[] = [
-      { number: 1, name: "m", pre: snapshotOf(s1), target: snapshotOf(s2), migration: defineMigration({}) },
+      { number: 1, name: "m", pre: snapshotOf(s1), target: snapshotOf(s2), code: "", migration: defineMigration({}) },
       {
         number: 2,
         name: "retire",
         pre: snapshotOf(s2),
         target: snapshotOf(s3),
+        code: "",
         migration: defineMigration({ renames: { variants: { Role: { Live: "Old" } } } }),
       },
     ];
@@ -942,22 +944,22 @@ describe("migrate: rename validation refuses before touching anything", () => {
 });
 
 /** The recorded, ordered migration history of a database. */
-function history(engine: Engine): { number: bigint; name: string; target_fingerprint: string }[] {
+function history(engine: Engine): { number: bigint; name: string; identity: string }[] {
   return engine.writer
-    .query("SELECT number, name, target_fingerprint FROM _dbz_migrations ORDER BY number ASC")
-    .all() as { number: bigint; name: string; target_fingerprint: string }[];
+    .query("SELECT number, name, identity FROM _dbz_migrations ORDER BY number ASC")
+    .all() as { number: bigint; name: string; identity: string }[];
 }
 
 /**
  * Build a chain from consecutive stages; the first stage's `pre` is the seed's
  * snapshot, and each later stage's `pre` is the previous stage's target.
  */
-function buildChain(seed: Schema, stages: { schema: Schema; migration: Migration; name?: string }[]): MigrationStep[] {
+function buildChain(seed: Schema, stages: { schema: Schema; migration: Migration; name?: string; code?: string }[]): MigrationStep[] {
   const steps: MigrationStep[] = [];
   let pre = snapshotOf(seed);
   stages.forEach((stage, i) => {
     const target = snapshotOf(stage.schema);
-    steps.push({ number: i + 1, name: stage.name ?? `m${i + 1}`, pre, target, migration: stage.migration });
+    steps.push({ number: i + 1, name: stage.name ?? `m${i + 1}`, pre, target, code: stage.code ?? "", migration: stage.migration });
     pre = target;
   });
   return steps;
@@ -977,17 +979,16 @@ describe("migrate: the chain", () => {
     });
 
     const engine = new Engine(s2, path);
-    const { applied } = await reconcile(
-      engine,
-      buildChain(seedS, [
-        { name: "parse_qty", schema: s1, migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }) },
-        {
-          name: "add_label",
-          schema: s2,
-          migration: defineMigration({ tables: { items: (row) => ({ ...row, label: `q${row.qty}` }) } }),
-        },
-      ]),
-    );
+    const steps = buildChain(seedS, [
+      { name: "parse_qty", schema: s1, code: "A", migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }) },
+      {
+        name: "add_label",
+        schema: s2,
+        code: "B",
+        migration: defineMigration({ tables: { items: (row) => ({ ...row, label: `q${row.qty}` }) } }),
+      },
+    ]);
+    const { applied } = await reconcile(engine, steps);
     // per-step prefixes name each migration
     expect(applied).toContain("0001_parse_qty: migrated table items");
     expect(applied).toContain("0002_add_label: migrated table items");
@@ -1001,8 +1002,9 @@ describe("migrate: the chain", () => {
       [1, "parse_qty"],
       [2, "add_label"],
     ]);
-    expect(rows[0]!.target_fingerprint).toBe(migrationFingerprint(snapshotOf(s1)));
-    expect(rows[1]!.target_fingerprint).toBe(migrationFingerprint(snapshotOf(s2)));
+    // Identity covers the whole step (number, name, pre, target, code), not just the target.
+    expect(rows[0]!.identity).toBe(migrationIdentity(steps[0]!, steps[0]!.code));
+    expect(rows[1]!.identity).toBe(migrationIdentity(steps[1]!, steps[1]!.code));
     engine.close("clean");
 
     // fresh Engine passes every reopen-time verifier (schema version, internals, tags)
@@ -1087,12 +1089,58 @@ describe("migrate: the chain", () => {
     // same number 1, different target (count: bigint) -> different fingerprint
     const engine = new Engine(edited, path);
     const steps: MigrationStep[] = [
-      { number: 1, name: "m", pre: snapshotOf(seedS), target: snapshotOf(edited), migration: defineMigration({ tables: { posts: (row) => ({ count: BigInt(row.count as number) }) } }) },
+      { number: 1, name: "m", pre: snapshotOf(seedS), target: snapshotOf(edited), code: "", migration: defineMigration({ tables: { posts: (row) => ({ count: BigInt(row.count as number) }) } }) },
     ];
     await expect(reconcile(engine, steps)).rejects.toThrow(/applied migration 0001_m no longer matches.*immutable/s);
     await expect(reconcile(engine, steps)).rejects.toBeInstanceOf(MigrationError);
     expect(engine.loadSnapshot()).toEqual(snapshotOf(applied)); // untouched
     engine.close("clean");
+  });
+
+  test("editing only an applied migration's transform code refuses, naming it", async () => {
+    // Same number, name, pre, and target: only the migration's file text differs.
+    // Identity must cover the code, or two databases could run different data
+    // transformations while their histories look identical.
+    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
+    const target = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.posts.insert({ count: "5" });
+    });
+    const migration = defineMigration({ tables: { posts: (row) => ({ count: Number(row.count) }) } });
+    const step = (code: string): MigrationStep => ({ number: 1, name: "m", pre: snapshotOf(seedS), target: snapshotOf(target), code, migration });
+
+    const first = new Engine(target, path);
+    await reconcile(first, [step("A")]);
+    first.close("clean");
+
+    const second = new Engine(target, path);
+    await expect(reconcile(second, [step("B")])).rejects.toThrow(/applied migration 0001_m no longer matches.*immutable/s);
+    await expect(reconcile(second, [step("B")])).rejects.toBeInstanceOf(MigrationError);
+    expect(second.loadSnapshot()).toEqual(snapshotOf(target)); // untouched
+    second.close("clean");
+  });
+
+  test("editing only an applied migration's pre snapshot refuses, naming it", async () => {
+    // Same number, name, target, and code: only the recorded pre differs.
+    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
+    const altPre = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string(), note: dbz.nullable(dbz.string()) }) });
+    const target = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.posts.insert({ count: "5" });
+    });
+    const migration = defineMigration({ tables: { posts: (row) => ({ count: Number(row.count) }) } });
+    const step = (pre: SchemaSnapshot): MigrationStep => ({ number: 1, name: "m", pre, target: snapshotOf(target), code: "", migration });
+
+    const first = new Engine(target, path);
+    await reconcile(first, [step(snapshotOf(seedS))]);
+    first.close("clean");
+
+    const second = new Engine(target, path);
+    await expect(reconcile(second, [step(snapshotOf(altPre))])).rejects.toThrow(/applied migration 0001_m no longer matches.*immutable/s);
+    expect(second.loadSnapshot()).toEqual(snapshotOf(target)); // untouched
+    second.close("clean");
   });
 
   test("an applied history row with no corresponding chain step refuses", async () => {
@@ -1131,8 +1179,8 @@ describe("migrate: the chain", () => {
     const engine = new Engine(s1, path);
     const parse = defineMigration({ tables: { posts: (row) => ({ v: Number(row.v) }) } });
     const dupNumbers: MigrationStep[] = [
-      { number: 1, name: "a", pre: snapshotOf(seedS), target: snapshotOf(s1), migration: parse },
-      { number: 1, name: "b", pre: snapshotOf(s1), target: snapshotOf(s1), migration: defineMigration({}) },
+      { number: 1, name: "a", pre: snapshotOf(seedS), target: snapshotOf(s1), code: "", migration: parse },
+      { number: 1, name: "b", pre: snapshotOf(s1), target: snapshotOf(s1), code: "", migration: defineMigration({}) },
     ];
     await expect(reconcile(engine, dupNumbers)).rejects.toThrow(/numbers must strictly increase/);
     expect(engine.loadSnapshot()).toEqual(snapshotOf(seedS)); // untouched, string still a string
@@ -1183,7 +1231,7 @@ describe("migrate: the chain", () => {
     const engine = new Engine(live, path);
     const { applied } = await reconcile(
       engine,
-      [{ number: 1, name: "parse", pre: snapshotOf(seedS), target: snapshotOf(stepTarget), migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
+      [{ number: 1, name: "parse", pre: snapshotOf(seedS), target: snapshotOf(stepTarget), code: "", migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
     );
     expect(applied).toContain("0001_parse: migrated table posts");
     expect(applied).toContain("added nullable column posts.extra"); // the final hop, unprefixed
@@ -1205,7 +1253,7 @@ describe("migrate: the chain", () => {
     await expect(
       reconcile(
         engine,
-        [{ number: 1, name: "parse", pre: snapshotOf(seedS), target: snapshotOf(stepTarget), migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
+        [{ number: 1, name: "parse", pre: snapshotOf(seedS), target: snapshotOf(stepTarget), code: "", migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
       ),
     ).rejects.toThrow(/unsafe schema changes.*dbz reset/s);
     // the chain step itself still committed (history records it)
@@ -1239,6 +1287,7 @@ describe("migrate: the chain", () => {
         name: "summarize",
         pre: snapshotOf(preSchema),
         target: snapshotOf(live),
+        code: "",
         migration: defineMigration({
           tables: {
             users: async (row, ctx) => {
@@ -1317,6 +1366,7 @@ describe("migrate: the chain", () => {
         name: "note",
         pre: snapshotOf(preSchema),
         target: snapshotOf(live),
+        code: "",
         migration: defineMigration({
           tables: {
             users: (row) => ({ ...row, note: `note-${row.name}` }),
@@ -1387,6 +1437,7 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
         name: "retype",
         pre: snapshotOf(pre),
         target: snapshotOf(stepTarget),
+        code: "",
         migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }),
       },
     ]);
@@ -1430,6 +1481,7 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
         name: "parse",
         pre: snapshotOf(pre1),
         target: snapshotOf(t1),
+        code: "",
         migration: defineMigration({ tables: { posts: (row) => ({ qty: Number(row.qty) }) } }),
       },
       {
@@ -1437,6 +1489,7 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
         name: "label",
         pre: snapshotOf(t1),
         target: snapshotOf(t2),
+        code: "",
         migration: defineMigration({ tables: { posts: (row) => ({ ...row, label: `q${row.qty}` }) } }),
       },
     ]);
@@ -1479,6 +1532,7 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
           name: "salvage",
           pre: snapshotOf(pre),
           target: snapshotOf(stepTarget),
+          code: "",
           migration: defineMigration({
             tables: {
               dest: (row) => ({ val: Number(row.val) }),
@@ -1515,6 +1569,7 @@ describe("migrate: pre-absent target columns default to stored values", () => {
         name: "retype",
         pre: snapshotOf(pre),
         target: snapshotOf(live),
+        code: "",
         migration: defineMigration({ tables: { items: transform as never } }),
       },
     ]);
@@ -1554,6 +1609,7 @@ describe("migrate: pre-absent target columns default to stored values", () => {
         name: "noop",
         pre: snapshotOf(pre),
         target: snapshotOf(same),
+        code: "",
         migration: defineMigration({ tables: { items: () => undefined } }),
       },
     ]);
@@ -1615,6 +1671,7 @@ describe("migrate: pre-absent target columns default to stored values", () => {
         name: "merge",
         pre: snapshotOf(preBoth),
         target: snapshotOf(target),
+        code: "",
         migration: defineMigration({
           tables: {
             dest: (row) => ({ ...row, val: Number(row.val) }),

@@ -70,6 +70,17 @@ export default defineMigration({
 });
 `;
 
+// Same PRE/TARGET, same meta: only the transform body differs (still valid, same
+// end result). Its file text shifts the applied identity, so a restart refuses.
+const MIGRATION_0001_EDITED = `import { defineMigration } from "@dbzz/server";
+
+export default defineMigration({
+  tables: {
+    items: (row) => ({ ...row, count: \`\${row.count}\` }),
+  },
+});
+`;
+
 type CliProcess = Subprocess<"ignore", "pipe", "pipe">;
 type Item = { id: bigint; label: string; count: unknown };
 
@@ -255,6 +266,51 @@ describe("dbz startup migrations", () => {
     expect(status.operation).toBe("status");
     expect(status.schemaFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(status.status.commitVersion).toBe("2");
+  }, TEST_TIMEOUT_MS);
+
+  test("refuses on restart after an applied migration's transform body is edited", async () => {
+    const port = await freePort();
+    const dir = makeFixture({
+      "schema.ts": SCHEMA_V1,
+      "functions/items.ts": ITEMS_FUNCTIONS,
+      ".zdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+
+    // v1: seed a row, then shut down.
+    const first = spawnServer(dir);
+    await first.waitFor("ready on");
+    const seeder = makeClient(port, "immutable-seed");
+    expect(await withTimeout(
+      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      "seed alpha",
+    )).toBe(1n);
+    closeClient(seeder);
+    await stopServer(first, "v1 server");
+
+    // Author v2 + the migration and apply it on the next start.
+    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
+    writeFileSync(join(dir, "migrations", "0001_count_to_string.ts"), MIGRATION_0001);
+    writeFileSync(
+      join(dir, "migrations", "meta", "0001_count_to_string.json"),
+      JSON.stringify({ number: 1, name: "count_to_string", fingerprint: migrationFingerprint(TARGET), pre: PRE, target: TARGET }),
+    );
+    const second = spawnServer(dir);
+    await second.waitFor("migrated table items");
+    await stopServer(second, "v2 server");
+
+    // Edit ONLY the transform body; the meta sidecar (pre/target/fingerprint)
+    // is untouched, so the load-time target check passes — but the file text is
+    // part of the applied identity, so startup must refuse as immutable.
+    writeFileSync(join(dir, "migrations", "0001_count_to_string.ts"), MIGRATION_0001_EDITED);
+    const third = spawnServer(dir);
+    const exitCode = await withTimeout(third.child.exited, "immutable refusal exit");
+    await withTimeout(third.drained, "immutable refusal output drain");
+    children.delete(third.child);
+    expect(exitCode).not.toBe(0);
+    expect(third.output()).toContain("0001_count_to_string");
+    expect(third.output()).toContain("immutable");
   }, TEST_TIMEOUT_MS);
 
   test("refuses an unanswered schema change and names dbz generate", async () => {

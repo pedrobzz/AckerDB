@@ -87,13 +87,17 @@ export interface Migration {
  * One link in the application's migration chain. `number` is 1-based and
  * strictly increasing across the chain; `pre` types the before-state the
  * transforms were written against; `target` is the full declared schema at
- * generation time (its fingerprint is the step's immutable identity).
+ * generation time; `code` is the migration module's file text, the last
+ * component of the step's immutable identity (see `migrationIdentity`). An
+ * in-memory chain (server tests, embedded users) passes any string for `code`,
+ * conventionally `""` — it is a value, not an optional.
  */
 export interface MigrationStep {
   number: number;
   name: string;
   pre: SchemaSnapshot;
   target: SchemaSnapshot;
+  code: string;
   migration: Migration;
 }
 
@@ -136,11 +140,32 @@ function checkRenamesShape(renames: Renames | undefined): void {
   }
 }
 
-// -- chain: history, fingerprint, immutability --------------------------------
+// -- chain: history, identity, immutability -----------------------------------
 
-/** A migration's immutable identity: the sha256 hex of its target snapshot. */
+/**
+ * The load-time target-integrity fingerprint: the sha256 hex of a target
+ * snapshot alone. Used by meta sidecars and generation to catch an edited
+ * target snapshot before the database opens — a narrower job than identity.
+ */
 export function migrationFingerprint(target: SchemaSnapshot): string {
   return createHash("sha256").update(JSON.stringify(target)).digest("hex");
+}
+
+/**
+ * A migration's immutable applied identity: the sha256 hex over everything that
+ * changes what the step does to data — its number, name, pre snapshot, target
+ * snapshot, and migration file text (`code`). Each component is netstring-framed
+ * (`<byteLength>:<value>,`) before concatenation, so the encoding is injective:
+ * no two distinct tuples ever collide, regardless of what any component holds.
+ * This is the value `_dbz_migrations` records and `pendingSteps` compares, so
+ * editing an applied migration's pre, renames, or transform code — not just its
+ * target — shifts the identity and is refused loudly on the next open.
+ */
+export function migrationIdentity(step: MigrationStep, code: string): string {
+  const part = (value: string): string => `${Buffer.byteLength(value)}:${value},`;
+  const canonical =
+    part(String(step.number)) + part(step.name) + part(JSON.stringify(step.pre)) + part(JSON.stringify(step.target)) + part(code);
+  return createHash("sha256").update(canonical).digest("hex");
 }
 
 /** The zero-padded label a step is logged and named under, e.g. `0003_split_users`. */
@@ -165,22 +190,22 @@ export function validateChain(steps: MigrationStep[]): void {
 interface HistoryRow {
   number: number;
   name: string;
-  fingerprint: string;
+  identity: string;
 }
 
 function loadHistory(writer: Database): HistoryRow[] {
   const rows = writer
-    .query("SELECT number, name, target_fingerprint FROM _dbz_migrations ORDER BY number ASC")
-    .all() as { number: bigint; name: string; target_fingerprint: string }[];
-  return rows.map((r) => ({ number: Number(r.number), name: r.name, fingerprint: r.target_fingerprint }));
+    .query("SELECT number, name, identity FROM _dbz_migrations ORDER BY number ASC")
+    .all() as { number: bigint; name: string; identity: string }[];
+  return rows.map((r) => ({ number: Number(r.number), name: r.name, identity: r.identity }));
 }
 
 /**
  * Validate the chain against the append-only history and return the pending
- * suffix. The history must be a positional (number, fingerprint) prefix of the
+ * suffix. The history must be a positional (number, identity) prefix of the
  * chain; a mismatch, or an applied row with no corresponding chain step, means
- * an applied migration was edited (which changes its fingerprint) — refused
- * loudly, never silently ignored.
+ * an applied migration was edited — any change to its number, name, pre, target,
+ * or transform code shifts the identity — refused loudly, never silently ignored.
  */
 export function pendingSteps(writer: Database, steps: MigrationStep[]): MigrationStep[] {
   validateChain(steps);
@@ -188,10 +213,10 @@ export function pendingSteps(writer: Database, steps: MigrationStep[]): Migratio
   for (let i = 0; i < history.length; i++) {
     const row = history[i]!;
     const step = steps[i];
-    if (step === undefined || step.number !== row.number || migrationFingerprint(step.target) !== row.fingerprint) {
+    if (step === undefined || step.number !== row.number || migrationIdentity(step, step.code) !== row.identity) {
       throw new MigrationError(
         `applied migration ${stepLabel(row)} no longer matches the chain; applied migrations are immutable ` +
-          "(editing one changes its fingerprint). Restore it, or wipe local data with `dbz reset`.",
+          "(editing its pre, target, or transform code changes its identity). Restore it, or wipe local data with `dbz reset`.",
       );
     }
   }
@@ -203,12 +228,12 @@ export function recordChain(engine: Engine, steps: MigrationStep[]): void {
   validateChain(steps);
   const writer = engine.writer;
   const insert = writer.query(
-    "INSERT INTO _dbz_migrations (number, name, target_fingerprint, applied_at) VALUES (?, ?, ?, ?)",
+    "INSERT INTO _dbz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
   );
   const now = Date.now();
   writer.exec("BEGIN IMMEDIATE");
   try {
-    for (const step of steps) insert.run(step.number, step.name, migrationFingerprint(step.target), now);
+    for (const step of steps) insert.run(step.number, step.name, migrationIdentity(step, step.code), now);
     writer.exec("COMMIT");
   } catch (error) {
     writer.exec("ROLLBACK");
@@ -341,8 +366,8 @@ export async function applyStep(
     }
     engine.saveSnapshot(saved);
     writer
-      .query("INSERT INTO _dbz_migrations (number, name, target_fingerprint, applied_at) VALUES (?, ?, ?, ?)")
-      .run(step.number, step.name, migrationFingerprint(target), Date.now());
+      .query("INSERT INTO _dbz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)")
+      .run(step.number, step.name, migrationIdentity(step, step.code), Date.now());
     writer.exec("COMMIT");
   } catch (error) {
     writer.exec("ROLLBACK");

@@ -81,8 +81,9 @@ sound for every database the migration can legally meet, because the only
 permitted divergence is safe drift.
 
 **Target snapshot** — The full declared schema at the moment a migration was
-generated: the state the migration is contracted to reach. The migration's
-identity for immutability checks derives from it.
+generated: the state the migration is contracted to reach. The meta sidecar's
+load-time integrity check recomputes a fingerprint from it; the applied
+immutability identity covers it alongside the number, name, pre, and file bytes.
 
 **Safe drift** — The accumulation of shape-safe changes applied automatically
 between migrations. Safe drift only widens what a database can hold (an
@@ -90,9 +91,10 @@ absent nullable column reads as null, an absent table as empty), which is why
 a migration's recorded types survive it.
 
 **Migration history** — The database's append-only record of which migrations
-have run. It must always be a prefix of the application's migration chain;
-an applied migration is immutable, and any edit to one is refused, never
-silently ignored.
+have run, each stamped with its identity (a hash over number, name, pre, target,
+and file bytes). It must always be a prefix of the application's migration chain;
+an applied migration is immutable, and any edit to one — its pre, target, or
+transform code — shifts the identity and is refused, never silently ignored.
 
 ## Demo app (Savoria restaurant)
 

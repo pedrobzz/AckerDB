@@ -98,7 +98,7 @@ async function applyChain(engine: Engine, steps: MigrationStep[]): Promise<{ app
   const stored = engine.loadSnapshot();
   if (stored === null) {
     // A fresh database is already at the live schema; stamp the whole chain
-    // applied so its (number, fingerprint) prefix holds on the next open.
+    // applied so its (number, identity) prefix holds on the next open.
     engine.createAll();
     recordChain(engine, steps);
     return { applied: [`initialized ${Object.keys(snapshotOf(engine.schema).tables).length} table(s)`] };

@@ -36,8 +36,12 @@ removal forces handling the removed case.
 
 **3. Chain mechanics.** Each migration records a pre-snapshot (types the
 before-state) and a target snapshot (the contract). Applied migrations are
-immutable — the database verifies a (number, fingerprint) prefix and refuses
-loudly on edits, unlike Drizzle's silent ignore. Sequential numbers;
+immutable — the database verifies a (number, identity) prefix and refuses
+loudly on edits, unlike Drizzle's silent ignore. A step's identity is the hash
+of everything that changes what it does to data: its number, name, pre snapshot,
+target snapshot, and migration file bytes. The file is the immutable unit — drift
+in a helper module the migration merely *imports* is outside the identity
+boundary. Sequential numbers;
 duplicate numbers are a load error, renumbering unapplied files is safe.
 Migrations apply at startup (the server *is* the database — no
 migrate-then-flip topology exists), one transaction each, rollback on any

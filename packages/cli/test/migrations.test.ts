@@ -6,6 +6,7 @@ import {
   defineSchema,
   defineTable,
   migrationFingerprint,
+  migrationIdentity,
   snapshotOf,
   type SchemaSnapshot,
 } from "@dbzz/server";
@@ -91,6 +92,19 @@ describe("loadMigrationChain", () => {
     expect(typeof steps[0]!.migration.tables?.items).toBe("function");
     expect(steps[1]!.pre).toEqual(TARGET);
     expect(steps[1]!.target).toEqual(target3);
+  });
+
+  test("hydrates each step's code with the exact migration file text", async () => {
+    const config = chain({
+      "migrations/0001_count_to_string.ts": MIGRATION_TS,
+      "migrations/meta/0001_count_to_string.json": metaJson(),
+    });
+    const [step] = await loadMigrationChain(config);
+    expect(step!.code).toBe(MIGRATION_TS);
+    // The file text is part of the applied identity, so a different transform
+    // body shifts it even when number, name, pre, and target are unchanged.
+    const edited = MIGRATION_TS.replace("String(row.count)", "`${row.count}`");
+    expect(migrationIdentity(step!, edited)).not.toBe(migrationIdentity(step!, step!.code));
   });
 
   test("orders numerically regardless of directory listing", async () => {

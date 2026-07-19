@@ -135,7 +135,10 @@ async function loadStep(found: DiscoveredFile): Promise<MigrationStep> {
     );
   }
   const migration = await importMigration(file, stem);
-  return { number: meta.number, name: meta.name, pre: meta.pre, target: meta.target, migration };
+  // The file text is the last component of the step's applied identity, so any
+  // edit to the transform body — not just the target snapshot — shifts it.
+  const code = readFileSync(file, "utf8");
+  return { number: meta.number, name: meta.name, pre: meta.pre, target: meta.target, code, migration };
 }
 
 function readMeta(path: string, stem: string): MigrationMeta {

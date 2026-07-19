@@ -74,6 +74,7 @@ export {
   applyRenames,
   defineMigration,
   migrationFingerprint,
+  migrationIdentity,
   MigrationError,
   stepLabel,
   validateChain,
