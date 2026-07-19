@@ -1003,8 +1003,8 @@ describe("migrate: the chain", () => {
       [2, "add_label"],
     ]);
     // Identity covers the whole step (number, name, pre, target, code), not just the target.
-    expect(rows[0]!.identity).toBe(migrationIdentity(steps[0]!, steps[0]!.code));
-    expect(rows[1]!.identity).toBe(migrationIdentity(steps[1]!, steps[1]!.code));
+    expect(rows[0]!.identity).toBe(migrationIdentity(steps[0]!));
+    expect(rows[1]!.identity).toBe(migrationIdentity(steps[1]!));
     engine.close("clean");
 
     // fresh Engine passes every reopen-time verifier (schema version, internals, tags)

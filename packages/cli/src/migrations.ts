@@ -134,10 +134,20 @@ async function loadStep(found: DiscoveredFile): Promise<MigrationStep> {
         "it was edited after generation",
     );
   }
-  const migration = await importMigration(file, stem);
   // The file text is the last component of the step's applied identity, so any
-  // edit to the transform body — not just the target snapshot — shifts it.
+  // edit to the transform body — not just the target snapshot — shifts it. Read
+  // it BEFORE importing and again AFTER: an editor save landing mid-load (routine
+  // during dev restarts) would otherwise execute one version while recording
+  // another's identity, silently corrupting immutability. The pre-import bytes
+  // are the identity input; a change between the reads is refused, never used.
   const code = readFileSync(file, "utf8");
+  const migration = await importMigration(file, stem);
+  if (readFileSync(file, "utf8") !== code) {
+    throw new Error(
+      `migration ${stem} was modified on disk while loading (migrations/${stem}.ts changed between read and import); ` +
+        "nothing was applied — retry",
+    );
+  }
   return { number: meta.number, name: meta.name, pre: meta.pre, target: meta.target, code, migration };
 }
 

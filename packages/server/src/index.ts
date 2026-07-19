@@ -78,6 +78,8 @@ export {
   MigrationError,
   stepLabel,
   validateChain,
+  validateHistoryPrefix,
+  type AppliedMigrationRow,
   type BeforeTable,
   type Migration,
   type MigrationContext,

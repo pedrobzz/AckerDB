@@ -187,14 +187,18 @@ export function migrationFingerprint(target: SchemaSnapshot): string {
  * snapshot, and migration file text (`code`). Each component is netstring-framed
  * (`<byteLength>:<value>,`) before concatenation, so the encoding is injective:
  * no two distinct tuples ever collide, regardless of what any component holds.
- * This is the value `_dbz_migrations` records and `pendingSteps` compares, so
- * editing an applied migration's pre, renames, or transform code — not just its
- * target — shifts the identity and is refused loudly on the next open.
+ * This is the value `_dbz_migrations` records and `validateHistoryPrefix`
+ * compares, so editing an applied migration's pre, renames, or transform code —
+ * not just its target — shifts the identity and is refused loudly on the next open.
  */
-export function migrationIdentity(step: MigrationStep, code: string): string {
+export function migrationIdentity(step: MigrationStep): string {
   const part = (value: string): string => `${Buffer.byteLength(value)}:${value},`;
   const canonical =
-    part(String(step.number)) + part(step.name) + part(JSON.stringify(step.pre)) + part(JSON.stringify(step.target)) + part(code);
+    part(String(step.number)) +
+    part(step.name) +
+    part(JSON.stringify(step.pre)) +
+    part(JSON.stringify(step.target)) +
+    part(step.code);
   return createHash("sha256").update(canonical).digest("hex");
 }
 
@@ -217,13 +221,14 @@ export function validateChain(steps: MigrationStep[]): void {
   }
 }
 
-interface HistoryRow {
+/** One recorded `_dbz_migrations` row: the applied prefix's positional identity. */
+export interface AppliedMigrationRow {
   number: number;
   name: string;
   identity: string;
 }
 
-function loadHistory(writer: Database): HistoryRow[] {
+function loadHistory(writer: Database): AppliedMigrationRow[] {
   const rows = writer
     .query("SELECT number, name, identity FROM _dbz_migrations ORDER BY number ASC")
     .all() as { number: bigint; name: string; identity: string }[];
@@ -231,26 +236,36 @@ function loadHistory(writer: Database): HistoryRow[] {
 }
 
 /**
- * Validate the chain against the append-only history and return the pending
- * suffix. The history must be a positional (number, identity) prefix of the
- * chain; a mismatch, or an applied row with no corresponding chain step, means
- * an applied migration was edited — any change to its number, name, pre, target,
- * or transform code shifts the identity — refused loudly, never silently ignored.
+ * The ONE rule for "is this on-disk chain a valid continuation of what was
+ * applied", pure over plain data so the server (rows via SQL) and the CLI (rows
+ * via its read-only reader) share it exactly. The applied history must be a
+ * positional (number, identity) prefix of the chain; a mismatch, or an applied
+ * row with no corresponding chain step, means an applied migration was edited —
+ * any change to its number, name, pre, target, or transform code shifts the
+ * identity — refused loudly with a `MigrationError`, never silently ignored.
+ * Returns the pending suffix (the steps after the applied prefix).
  */
-export function pendingSteps(writer: Database, steps: MigrationStep[]): MigrationStep[] {
+export function validateHistoryPrefix(
+  applied: AppliedMigrationRow[],
+  steps: MigrationStep[],
+): { pending: MigrationStep[] } {
   validateChain(steps);
-  const history = loadHistory(writer);
-  for (let i = 0; i < history.length; i++) {
-    const row = history[i]!;
+  for (let i = 0; i < applied.length; i++) {
+    const row = applied[i]!;
     const step = steps[i];
-    if (step === undefined || step.number !== row.number || migrationIdentity(step, step.code) !== row.identity) {
+    if (step === undefined || step.number !== row.number || migrationIdentity(step) !== row.identity) {
       throw new MigrationError(
-        `applied migration ${stepLabel(row)} no longer matches the chain; applied migrations are immutable ` +
+        `applied migration ${stepLabel(row)} no longer matches the on-disk chain; applied migrations are immutable ` +
           "(editing its pre, target, or transform code changes its identity). Restore it, or wipe local data with `dbz reset`.",
       );
     }
   }
-  return steps.slice(history.length);
+  return { pending: steps.slice(applied.length) };
+}
+
+/** Load the append-only history and return the pending suffix (see `validateHistoryPrefix`). */
+export function pendingSteps(writer: Database, steps: MigrationStep[]): MigrationStep[] {
+  return validateHistoryPrefix(loadHistory(writer), steps).pending;
 }
 
 /** Stamp a whole chain as applied on a fresh database, in one transaction. */
@@ -263,7 +278,7 @@ export function recordChain(engine: Engine, steps: MigrationStep[]): void {
   const now = Date.now();
   writer.exec("BEGIN IMMEDIATE");
   try {
-    for (const step of steps) insert.run(step.number, step.name, migrationIdentity(step, step.code), now);
+    for (const step of steps) insert.run(step.number, step.name, migrationIdentity(step), now);
     writer.exec("COMMIT");
   } catch (error) {
     writer.exec("ROLLBACK");
@@ -397,7 +412,7 @@ export async function applyStep(
     engine.saveSnapshot(saved);
     writer
       .query("INSERT INTO _dbz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)")
-      .run(step.number, step.name, migrationIdentity(step, step.code), Date.now());
+      .run(step.number, step.name, migrationIdentity(step), Date.now());
     writer.exec("COMMIT");
   } catch (error) {
     writer.exec("ROLLBACK");

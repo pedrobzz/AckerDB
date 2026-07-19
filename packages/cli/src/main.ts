@@ -169,6 +169,8 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
   switch (outcome.status) {
     case "no-database":
       throw new Error(`no database at ${resolve(config.dbDir, "data.db")}; run \`dbz dev\` to initialize it first`);
+    case "diverged":
+      throw new Error(outcome.message);
     case "pending":
       throw new Error(`apply the ${outcome.pendingCount} pending migration(s) first — start \`dbz dev\``);
     case "clean":

@@ -22,10 +22,14 @@ import { join } from "node:path";
 import {
   classifySchemaDiff,
   diffSnapshots,
+  MigrationError,
   probeUniqueIndex,
   refusalSite,
   snapshotOf,
   stepLabel,
+  validateHistoryPrefix,
+  type AppliedMigrationRow,
+  type MigrationStep,
   type OptimisticChange,
   type RefusalReason,
   type Renames,
@@ -43,14 +47,17 @@ import { loadMigrationChain } from "./migrations.ts";
 export interface StoredState {
   /** The snapshot the database last committed — the pre-state new migrations sit on. */
   snapshot: SchemaSnapshot;
-  /** Rows in `_dbz_migrations`; the applied prefix of the chain. */
-  appliedCount: number;
+  /** The `_dbz_migrations` rows — the applied prefix, by positional (number, identity). */
+  applied: AppliedMigrationRow[];
 }
 
 /**
- * Read the stored snapshot and applied-migration count through a read-only
- * connection. `null` when there is no database yet (nothing to migrate — `dbz
- * dev` initializes a fresh one), or when the file exists but holds no snapshot.
+ * Read the stored snapshot and applied-migration rows through a read-only
+ * connection. Reading the full (number, identity) rows — not a bare COUNT — lets
+ * the planner run the server's exact prefix validation, so an edited applied
+ * migration cannot masquerade as fully applied. `null` when there is no database
+ * yet (nothing to migrate — `dbz dev` initializes a fresh one), or when the file
+ * exists but holds no snapshot.
  */
 export function readStoredState(config: AppConfig): StoredState | null {
   const path = join(config.dbDir, "data.db");
@@ -61,8 +68,14 @@ export function readStoredState(config: AppConfig): StoredState | null {
       | { value: string }
       | null;
     if (row === null) return null;
-    const counted = db.query("SELECT COUNT(*) AS n FROM _dbz_migrations").get() as { n: number };
-    return { snapshot: JSON.parse(row.value) as SchemaSnapshot, appliedCount: Number(counted.n) };
+    const applied = (
+      db.query("SELECT number, name, identity FROM _dbz_migrations ORDER BY number ASC").all() as {
+        number: bigint;
+        name: string;
+        identity: string;
+      }[]
+    ).map((r) => ({ number: Number(r.number), name: r.name, identity: r.identity }));
+    return { snapshot: JSON.parse(row.value) as SchemaSnapshot, applied };
   } finally {
     db.close();
   }
@@ -169,23 +182,33 @@ export function renameCandidates(diff: SchemaDiff): RenameCandidates {
 
 export type PlanOutcome =
   | { status: "no-database" }
+  | { status: "diverged"; message: string }
   | { status: "pending"; pendingCount: number; nextNumber: number }
   | { status: "clean" }
   | { status: "changes"; refusals: SchemaRefusal[]; candidates: RenameCandidates; nextNumber: number };
 
 /**
  * Diff the stored snapshot against the live schema and classify the result.
- * Pending migrations short-circuit: a new migration always sits on a
- * fully-applied chain, so `pre` (the stored snapshot) is only the right
- * pre-state once the chain is fully applied.
+ * The applied history must be a (number, identity) prefix of the on-disk chain
+ * (the server's exact rule, run here through `validateHistoryPrefix`): a
+ * divergence — an edited applied migration, or a history longer than the chain —
+ * is its own outcome, never a scaffold. Pending migrations then short-circuit:
+ * a new migration always sits on a fully-applied chain, so `pre` (the stored
+ * snapshot) is only the right pre-state once the chain is fully applied.
  */
 export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
   const state = readStoredState(config);
   if (state === null) return { status: "no-database" };
   const chain = await loadMigrationChain(config);
   const nextNumber = (chain.at(-1)?.number ?? 0) + 1;
-  const pendingCount = chain.length - state.appliedCount;
-  if (pendingCount > 0) return { status: "pending", pendingCount, nextNumber };
+  let pending: MigrationStep[];
+  try {
+    ({ pending } = validateHistoryPrefix(state.applied, chain));
+  } catch (error) {
+    if (error instanceof MigrationError) return { status: "diverged", message: error.message };
+    throw error;
+  }
+  if (pending.length > 0) return { status: "pending", pendingCount: pending.length, nextNumber };
   const schema = await importSchema(config);
   const target = snapshotOf(schema);
   const diff = diffSnapshots(state.snapshot, target);
@@ -215,6 +238,8 @@ export function planToWire(outcome: PlanOutcome, config: AppConfig): PlanWire {
   switch (outcome.status) {
     case "no-database":
       return { error: `no database at ${join(config.dbDir, "data.db")}; \`dbz dev\` initializes a fresh one` };
+    case "diverged":
+      return { error: outcome.message };
     case "clean":
       return { clean: true };
     case "pending":
@@ -279,9 +304,11 @@ export interface GenerateRequest {
 /**
  * Re-derive pre/target fresh and write the three artifacts of the next
  * migration, returning their absolute paths. Refuses the same states
- * `computePlan` flags — no database, or a chain that is not fully applied — so
- * the recorded `pre` is always the true pre-state. This is the single
- * generation path behind both `dbz generate` and the `__generate` child.
+ * `computePlan` flags — no database, a chain that diverged from applied history
+ * (the shared `validateHistoryPrefix`, which throws before any file is written),
+ * or a chain that is not fully applied — so the recorded `pre` is always the true
+ * pre-state. This is the single generation path behind both `dbz generate` and
+ * the `__generate` child.
  */
 export async function writeMigration(config: AppConfig, request: GenerateRequest): Promise<string[]> {
   if (!MIGRATION_NAME.test(request.name)) {
@@ -292,9 +319,9 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
     throw new Error(`no database at ${join(config.dbDir, "data.db")}; run \`dbz dev\` to initialize it first`);
   }
   const chain = await loadMigrationChain(config);
-  const pendingCount = chain.length - state.appliedCount;
-  if (pendingCount > 0) {
-    throw new Error(`apply the ${pendingCount} pending migration(s) first — start \`dbz dev\``);
+  const { pending } = validateHistoryPrefix(state.applied, chain);
+  if (pending.length > 0) {
+    throw new Error(`apply the ${pending.length} pending migration(s) first — start \`dbz dev\``);
   }
 
   const schema = await importSchema(config);

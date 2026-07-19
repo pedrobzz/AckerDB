@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -18,7 +18,7 @@ import {
 import { loadConfig } from "../src/config.ts";
 import { generateMigration } from "../src/generate.ts";
 import { loadMigrationChain } from "../src/migrations.ts";
-import { computePlan } from "../src/plan.ts";
+import { computePlan, writeMigration } from "../src/plan.ts";
 import { makeFixture } from "./fixture.ts";
 
 const REPO = new URL("../../..", import.meta.url).pathname;
@@ -428,4 +428,79 @@ export default defineMigration({
     expect(out).not.toContain("a_filled.ts");
     expect(out).not.toContain("b_handled.ts");
   }, 120_000);
+});
+
+// -- the on-disk chain must match applied history, not just its count ----------
+
+describe("computePlan / writeMigration: applied-history prefix validation", () => {
+  const B_PRE = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
+  const B_TARGET = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+  const B_SCHEMA_TS = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+export default defineSchema({
+  posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }),
+});
+`;
+
+  /** Scaffold a filled migration, seed at PRE, apply it, and return the app dir + config. */
+  async function appliedFixture(): Promise<{ dir: string; config: ReturnType<typeof loadConfig>; filled: string }> {
+    const gen = generateMigration({ number: 1, name: "parse_count", pre: snapshotOf(B_PRE), schema: B_TARGET });
+    const filled = gen.migrationTs.replace(
+      "      // TODO(posts.count): type changed; existing rows would need converting\n",
+      "      return { ...row, count: Number(row.count) || 0 };\n",
+    );
+    const dir = makeFixture({
+      "schema.ts": B_SCHEMA_TS,
+      "migrations/0001_parse_count.ts": filled,
+      "migrations/meta/0001_parse_count.types.ts": gen.typesTs,
+      "migrations/meta/0001_parse_count.json": gen.metaJson,
+    });
+    dirs.push(dir);
+    const config = loadConfig(dir);
+    const dbPath = join(dir, ".zdb", "data.db");
+    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    await seed(B_PRE, dbPath, async (d) => {
+      await d.posts.insert({ count: "5" });
+    });
+    // Apply the chain so `_dbz_migrations` records the identity of the ORIGINAL code.
+    const engine = new Engine(B_TARGET, dbPath);
+    await reconcile(engine, await loadMigrationChain(config));
+    engine.close("clean");
+    return { dir, config, filled };
+  }
+
+  test("a fully-applied, untouched chain is clean", async () => {
+    const { config } = await appliedFixture();
+    expect((await computePlan(config)).status).toBe("clean");
+  });
+
+  test("editing an applied migration (same count) diverges instead of reading as applied", async () => {
+    const { dir, config, filled } = await appliedFixture();
+    // Same file count, same row count — only the transform body changed, so the
+    // recorded identity no longer matches the on-disk chain entry.
+    writeFileSync(
+      join(dir, "migrations", "0001_parse_count.ts"),
+      filled.replace("Number(row.count) || 0", "Number(row.count) || -1"),
+    );
+
+    const outcome = await computePlan(config);
+    expect(outcome.status).toBe("diverged");
+    if (outcome.status !== "diverged") throw new Error("unreachable");
+    expect(outcome.message).toContain("no longer matches the on-disk chain");
+    expect(outcome.message).toContain("dbz reset");
+
+    await expect(writeMigration(config, { name: "next" })).rejects.toThrow("no longer matches the on-disk chain");
+    // The refusal must scaffold nothing on top of the divergent chain.
+    expect(readdirSync(join(dir, "migrations")).filter((f) => f.startsWith("0002"))).toEqual([]);
+  });
+
+  test("history longer than the on-disk chain diverges instead of reading as applied", async () => {
+    const { dir, config } = await appliedFixture();
+    // Delete the only migration on disk: history now has a row with no chain step.
+    rmSync(join(dir, "migrations", "0001_parse_count.ts"));
+    rmSync(join(dir, "migrations", "meta", "0001_parse_count.json"));
+    rmSync(join(dir, "migrations", "meta", "0001_parse_count.types.ts"));
+
+    expect((await computePlan(config)).status).toBe("diverged");
+    await expect(writeMigration(config, { name: "next" })).rejects.toThrow("no longer matches the on-disk chain");
+  });
 });

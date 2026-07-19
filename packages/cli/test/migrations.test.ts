@@ -100,11 +100,29 @@ describe("loadMigrationChain", () => {
       "migrations/meta/0001_count_to_string.json": metaJson(),
     });
     const [step] = await loadMigrationChain(config);
+    // `code` is the ORIGINAL file bytes (read pre-import), so the recorded
+    // identity is pinned to exactly what was loaded.
     expect(step!.code).toBe(MIGRATION_TS);
     // The file text is part of the applied identity, so a different transform
     // body shifts it even when number, name, pre, and target are unchanged.
     const edited = MIGRATION_TS.replace("String(row.count)", "`${row.count}`");
-    expect(migrationIdentity(step!, edited)).not.toBe(migrationIdentity(step!, step!.code));
+    expect(migrationIdentity({ ...step!, code: edited })).not.toBe(migrationIdentity(step!));
+  });
+
+  test("refuses when the migration file changes between the pre-import read and the post-import read", async () => {
+    // The module rewrites its own file at import time, standing in for an editor
+    // save landing between the loader's two reads. The pre-import bytes are the
+    // identity input, so a change is refused rather than silently recorded.
+    const config = chain({
+      "migrations/0001_self_tamper.ts": `import { defineMigration } from "@dbzz/server";
+import { writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+writeFileSync(fileURLToPath(import.meta.url), "// tampered mid-load\\n");
+export default defineMigration({ tables: { items: (row) => row } });
+`,
+      "migrations/meta/0001_self_tamper.json": metaJson({ name: "self_tamper" }),
+    });
+    await expect(loadMigrationChain(config)).rejects.toThrow("modified on disk while loading");
   });
 
   test("orders numerically regardless of directory listing", async () => {
