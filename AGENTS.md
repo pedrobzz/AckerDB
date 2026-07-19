@@ -188,7 +188,7 @@ judges DBZZ itself.
 
 # Local Publishing
 
-We do not publish to npm. Releases go to a local Verdaccio registry at `http://127.0.0.1:4873`, so real projects on this machine can install `@dbzz/*` like normal npm packages — pinned, with every old version still installable.
+We do not publish to npm. Releases go to a local Verdaccio registry at `http://127.0.0.1:4874`, so real projects on this machine can install `@dbzz/*` like normal npm packages — pinned, with every old version still installable. (4874, not Verdaccio's default 4873: this machine's own Homebrew Verdaccio launchd agent owns 4873.)
 
 The five packages (`@dbzz/core`, `@dbzz/server`, `@dbzz/client`, `@dbzz/client-react`, `@dbzz/cli`) share **one version, always in lockstep**. Bumping one bumps all five (`bun run bump` writes all of them; the merge guard rejects drift). Each published version is also a git tag (`v0.2.0`), so old published code is always recoverable with `git checkout v0.2.0`.
 
@@ -197,7 +197,7 @@ The five packages (`@dbzz/core`, `@dbzz/server`, `@dbzz/client`, `@dbzz/client-r
 ```bash
 bun install                                  # "prepare" installs the git hooks + no-ff merges on main
 bun run registry                             # starts Verdaccio (keep it running in its own terminal)
-bunx npm adduser --registry http://127.0.0.1:4873   # any username/password; token lands in ~/.npmrc
+bunx npm adduser --registry http://127.0.0.1:4874   # any username/password; token lands in ~/.npmrc
 ```
 
 The committed repo-root `.npmrc` routes the `@dbzz` scope to the local registry — that line is what `bun publish` uses to pick the target registry (and to find the adduser token in `~/.npmrc`). The release scripts read the same line, so `.npmrc` is the single place the registry URL lives.
@@ -242,12 +242,34 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    ```
    Publishes all 5 packages at the pinned version to Verdaccio (in dependency order: core, server, client, client-react, cli) and tags the commit `vX.Y.Z`. `bun publish` rewrites the `workspace:X.Y.Z` inter-deps to the literal `X.Y.Z` at pack time, so tarballs depend on exact versions.
 
+## Beta publishing: test a branch without merging
+
+`bun run publish:beta` publishes the **working tree** — any branch, dirty is
+fine — as `@dbzz/*@<base>-beta.N` under the `beta` dist-tag. None of the
+release gates apply (no main-only, no clean tree, no bench evidence, no git
+tag); `latest` never moves, so real consumers are untouched. The registry's
+version list is the beta counter: every run takes a fresh `N`, and a failed
+run is just re-run. Package manifests are rewritten only for the pack and
+restored byte-for-byte.
+
+```bash
+bun run publish:beta          # publish only; prints the version
+bun run publish:beta --demo   # also repin the demo to it and reinstall
+```
+
+`--demo` rewrites every demo workspace's `@dbzz/*` pins **that sit at the
+current base version** to the fresh beta (deliberate divergences are reported,
+not overwritten) and runs `bun install` in `demo/`. The pin edits are ordinary
+tracked changes — restore them when done testing. Betas accumulate in
+`registry/storage/` like any published version; they are throwaway by
+convention, unpublishable with the usual `npm unpublish` line below.
+
 ## Using dbzz in a real project
 
 In the consumer project, scope `@dbzz` to the local registry — `.npmrc` in the project root:
 
 ```ini
-@dbzz:registry=http://127.0.0.1:4873
+@dbzz:registry=http://127.0.0.1:4874
 ```
 
 Then install exact (pinned) versions:
@@ -267,7 +289,7 @@ Consumers must run Bun — packages ship raw TypeScript from `src/`.
 - Prefer plain `git merge` (merge commits) — the merge hooks give clearer errors than the backstop, and history stays legible.
 - Never `npm publish` here (it does not rewrite `workspace:*`) and never pass `--registry` to `bun publish` (it bypasses `.npmrc` and loses the auth token). Always `bun run publish:local`.
 - If a publish is interrupted midway, just re-run `bun run publish:local` — it skips packages already in the registry at the current version and finishes the rest (then tags).
-- To unpublish a broken version: `bunx npm unpublish --force @dbzz/<pkg>@X.Y.Z --registry http://127.0.0.1:4873` (do it for all 5, then delete the tag).
+- To unpublish a broken version: `bunx npm unpublish --force @dbzz/<pkg>@X.Y.Z --registry http://127.0.0.1:4874` (do it for all 5, then delete the tag).
 
 Release plumbing lives in `scripts/` (`bump.ts`, `merge-guard.ts`, `publish-local.ts`, shared `lib.ts`), hooks in `.githooks/`, registry config in `registry/config.yaml`, scope routing in the repo-root `.npmrc`.
 

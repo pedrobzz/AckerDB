@@ -3,6 +3,7 @@
 // Verdaccio registry, then tags the release commit as v<version>.
 import {
   PACKAGES,
+  assertRegistryReachable,
   assertWorkspaceLock,
   fail,
   git,
@@ -61,12 +62,7 @@ if (tagCommit && tagCommit !== head) {
   fail(`${tag} is already tagged at ${tagCommit.slice(0, 7)} but HEAD is ${head.slice(0, 7)} — bump before publishing.`);
 }
 
-try {
-  const ping = await fetch(`${REGISTRY}/-/ping`);
-  if (!ping.ok) throw new Error(`ping returned ${ping.status}`);
-} catch {
-  fail(`registry ${REGISTRY} is not reachable — start it in another terminal: bun run registry`);
-}
+await assertRegistryReachable(REGISTRY);
 
 // A previous run may have been interrupted mid-publish: skip packages that
 // already have this version so a re-run resumes instead of dead-ending.

@@ -16,6 +16,7 @@
     "registry": "bunx verdaccio --config registry/config.yaml",
     "bump": "bun scripts/bump.ts",
     "publish:local": "bun scripts/publish-local.ts",
+    "publish:beta": "bun scripts/publish-beta.ts",
     "prepare": "git config core.hooksPath .githooks && git config branch.main.mergeoptions --no-ff"
   },
   "devDependencies": {
