@@ -1,4 +1,4 @@
-When researching any topic, Do not forget to use the [LLM Wiki Skill](.agents/skills/karpathy-llm-wiki/SKILL.md) to build a wiki of the topic.
+Before researching external knowledge or working with a third-party package, always read the [LLM Wiki Skill](.agents/skills/llm-wiki/SKILL.md) and the relevant existing wiki pages. The LLM Wiki is read for those tasks; write to `raw/` or `wiki/` only when the user explicitly asks to ingest, archive, or lint it. It records external knowledge and third-party packages, not DBzz decisions or domain modeling.
 
 ## Performance, correctness, and code quality
 
@@ -129,10 +129,11 @@ correctness gain that justifies permanent maintenance.
 ### Evidence and verification
 
 Most mature systems problems already have prior art. Before inventing, inspect
-current OpenSRC snapshots and primary sources. Put external source material and
-compiled findings in the LLM Wiki (`raw/` and `wiki/`); put DBzz terminology
-and settled domain boundaries in `CONTEXT.md`; put material DBzz tradeoffs in
-the decision ledger. Revisit all three when later evidence changes a decision.
+current OpenSRC snapshots and primary sources. When the user explicitly asks to
+capture the research, put external source material and compiled findings in the
+LLM Wiki (`raw/` and `wiki/`); put DBzz terminology and settled domain
+boundaries in `CONTEXT.md`; put material DBzz tradeoffs in the decision ledger.
+Revisit all three when later evidence changes a decision.
 
 Verify at the boundary that previously failed; prove the old failure path is
 gone rather than masked.
