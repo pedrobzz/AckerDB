@@ -14,6 +14,7 @@
  */
 import { refusalSite, type SchemaRefusal } from "@dbzz/server";
 import { NO, YES, type Ask } from "./form.ts";
+import { MIGRATION_NAME } from "./load.ts";
 import type { CandidateGroup, RenameCandidates } from "./plan.ts";
 
 /** What the ledger renders: the plan's refusals, safe lines, and rename candidates. */
@@ -59,8 +60,6 @@ export function renderLedger(view: LedgerView): string {
 }
 
 export type Consent = { generate: true; name: string } | { generate: false };
-
-const MIGRATION_NAME = /^[A-Za-z0-9_]+$/;
 
 /**
  * The consent question over a rendered ledger. Yes proceeds to naming (Enter

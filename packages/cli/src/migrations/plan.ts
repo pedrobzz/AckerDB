@@ -172,7 +172,9 @@ function describeTable(change: TableChange, sites: RefusalSites, lines: string[]
       lines.push(`new ${change.kind === "event" ? "event table" : "table"} "${table}"`);
       return;
     case "table-dropped":
-      if (!sites.tables.has(table)) lines.push(`event table "${table}" dropped`);
+      if (!sites.tables.has(table)) {
+        lines.push(`${change.kind === "event" ? "event table" : "table"} "${table}" dropped`);
+      }
       return;
     case "table-kind-changed":
       if (!sites.tables.has(table)) lines.push(`"${table}" became a ${change.to === "event" ? "event table" : "table"}`);

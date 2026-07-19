@@ -17,11 +17,9 @@ import {
 } from "@dbzz/server";
 import { importSchema } from "../app.ts";
 import type { AppConfig } from "../config.ts";
-import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
+import { loadMigrationChain, migrationArtifactPaths, MIGRATION_NAME } from "./load.ts";
 import { planFingerprint, probeDuplicateRefusals, readStoredState } from "./plan.ts";
 import { generateMigration } from "./scaffold.ts";
-
-const MIGRATION_NAME = /^[A-Za-z0-9_]+$/;
 
 /**
  * Consent that no longer matches the plan on disk: the schema moved between
@@ -87,9 +85,9 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
   mkdirSync(join(config.migrationsDir, "meta"), { recursive: true });
   const [modulePath, typesPath, metaPath] = migrationArtifactPaths(config, { number, name: request.name });
   const artifacts: [string, string][] = [
-    [modulePath!, migrationTs],
-    [typesPath!, typesTs],
-    [metaPath!, metaJson],
+    [modulePath, migrationTs],
+    [typesPath, typesTs],
+    [metaPath, metaJson],
   ];
   for (const [path, content] of artifacts) writeFileSync(path, content);
   return artifacts.map(([path]) => path);

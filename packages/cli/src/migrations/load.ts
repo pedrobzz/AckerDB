@@ -30,7 +30,10 @@ import {
 } from "@dbzz/server";
 import type { AppConfig } from "../config.ts";
 
-const MIGRATION_FILE = /^(\d{4})_([A-Za-z0-9_]+)\.ts$/;
+/** The one grammar a migration's name obeys, everywhere it is asked for or parsed. */
+const NAME_GRAMMAR = "[A-Za-z0-9_]+";
+export const MIGRATION_NAME = new RegExp(`^${NAME_GRAMMAR}$`);
+const MIGRATION_FILE = new RegExp(`^(\\d{4})_(${NAME_GRAMMAR})\\.ts$`);
 const SHA256 = /^[0-9a-f]{64}$/;
 
 /**
@@ -41,7 +44,7 @@ const SHA256 = /^[0-9a-f]{64}$/;
 export function migrationArtifactPaths(
   config: AppConfig,
   step: { number: number; name: string },
-): string[] {
+): [module: string, types: string, meta: string] {
   const stem = stepLabel(step);
   const metaDir = join(config.migrationsDir, "meta");
   return [

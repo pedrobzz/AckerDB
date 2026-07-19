@@ -23,7 +23,7 @@ import { loadConfig, type AppConfig } from "./config.ts";
 import { runCodegen } from "./codegen.ts";
 import { startApp, StartupInterruptedError } from "./app.ts";
 import { runRenameForm, type Ask, type FormResult } from "./migrations/form.ts";
-import { renderLedger, runConsentForm, runDivergenceForm } from "./migrations/consent.ts";
+import { renderLedger, runConsentForm, runDivergenceForm, type Consent } from "./migrations/consent.ts";
 import { computePlan, deriveSlug, planToWire, type PlanWire } from "./migrations/plan.ts";
 import { StaleConsentError, writeMigration, type GenerateRequest } from "./migrations/write.ts";
 import {
@@ -135,11 +135,32 @@ function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
 }
 
+/** Ctrl+C while a prompt was open. Bailing out of a question is always safe. */
+class PromptInterruptedError extends Error {}
+
+/**
+ * Map an interrupted prompt to that prompt's safe answer — decline for the
+ * consent question, keep for the divergence offer — so Ctrl+C never writes,
+ * never deletes, and never tears the supervisor down mid-question.
+ */
+const interruptAs =
+  <T,>(fallback: T) =>
+  (error: unknown): T => {
+    if (error instanceof PromptInterruptedError) return fallback;
+    throw error;
+  };
+
 /** Run one prompt form over a real readline; the caller guarantees a TTY. */
 async function withReadline<T>(form: (ask: Ask) => Promise<T>): Promise<T> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const interrupted = new AbortController();
+  rl.on("SIGINT", () => interrupted.abort());
   try {
-    return await form((prompt) => rl.question(prompt));
+    return await form((prompt) =>
+      rl.question(prompt, { signal: interrupted.signal }).catch((error) => {
+        throw interrupted.signal.aborted ? new PromptInterruptedError() : error;
+      }),
+    );
   } finally {
     rl.close();
   }
@@ -195,9 +216,10 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
               outcome.pendingFiles.map((file) => `  ${file}`).join("\n"),
           );
         }
-        if ((await withReadline((ask) => runDivergenceForm(outcome.pendingFiles, ask))) === "keep") {
-          throw new Error(apply);
-        }
+        const choice = await withReadline((ask) => runDivergenceForm(outcome.pendingFiles, ask)).catch(
+          interruptAs("keep" as const),
+        );
+        if (choice === "keep") throw new Error(apply);
         deletePendingFiles(outcome.pendingFiles);
         continue;
       }
@@ -206,9 +228,10 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
         return;
       case "changes": {
         console.log(renderLedger(outcome));
-        let form: FormResult = { renames: {}, dropsAcknowledged: [] };
+        let form: FormResult | null = { renames: {}, dropsAcknowledged: [] };
         if (isInteractive()) {
-          form = await withReadline((ask) => runRenameForm(outcome.candidates, ask));
+          form = await withReadline((ask) => runRenameForm(outcome.candidates, ask)).catch(interruptAs(null));
+          if (form === null) throw new Error("interrupted; nothing was written");
         } else {
           console.error(
             "[dbz] rename detection needs a terminal; generating with no renames (drops are acknowledged, adds treated as new)",
@@ -318,7 +341,10 @@ async function dev(appDir: string): Promise<void> {
             );
             return;
           }
-          if ((await withReadline((ask) => runDivergenceForm(wire.pendingFiles, ask))) === "keep") {
+          const choice = await withReadline((ask) => runDivergenceForm(wire.pendingFiles, ask)).catch(
+            interruptAs("keep" as const),
+          );
+          if (choice === "keep") {
             console.error("[dbz] keeping it — fill its TODOs; further changes become the next migration");
             return;
           }
@@ -331,13 +357,17 @@ async function dev(appDir: string): Promise<void> {
           return;
         }
         console.log(renderLedger(wire));
-        const consent = await withReadline((ask) => runConsentForm(deriveSlug(wire.refusals), ask));
-        if (!consent.generate) {
+        const decline = () => {
           declinedFingerprint = wire.fingerprint;
           printDeclinedBanner();
-          return;
-        }
-        const { renames, dropsAcknowledged } = await withReadline((ask) => runRenameForm(wire.candidates, ask));
+        };
+        const consent = await withReadline((ask) => runConsentForm(deriveSlug(wire.refusals), ask)).catch(
+          interruptAs<Consent>({ generate: false }),
+        );
+        if (!consent.generate) return decline();
+        const form = await withReadline((ask) => runRenameForm(wire.candidates, ask)).catch(interruptAs(null));
+        if (form === null) return decline();
+        const { renames, dropsAcknowledged } = form;
         const result = await generateChild(appDir, { name: consent.name, renames, consent: wire.fingerprint });
         if ("stale" in result) {
           console.error("[dbz] more changes happened while the question was open — the fresh ledger:");

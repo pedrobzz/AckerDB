@@ -61,6 +61,9 @@ describe("describeSafeChanges", () => {
     });
     const target = defineSchema({ fresh: defineTable({ id: dbz.primaryKey() }) });
     expect(describeOf(pre, target)).toEqual(['new table "fresh"', 'event table "ping" dropped']);
+    // The label follows the diff atom's kind, never an assumption about what
+    // survives refusal: with no refusals passed, the real drop renders honestly.
+    expect(describeSafeChanges(diffOf(pre, target), [])).toContain('table "gone" dropped');
   });
 
   test("variants: additions render under the type name; removals are refused away", () => {
@@ -192,6 +195,13 @@ describe("runConsentForm", () => {
     const ask = scriptedAsk(["wat", "y", ""]);
     expect(await runConsentForm("slug", ask)).toEqual({ generate: true, name: "slug" });
     expect(ask.prompts[1]).toContain("generate a migration");
+  });
+
+  test("a rejecting ask propagates — the interrupt path the caller maps to decline", async () => {
+    const interrupted = new Error("interrupted");
+    const ask: Ask = () => Promise.reject(interrupted);
+    await expect(runConsentForm("slug", ask)).rejects.toBe(interrupted);
+    await expect(runDivergenceForm(["/x.ts"], ask)).rejects.toBe(interrupted);
   });
 });
 
