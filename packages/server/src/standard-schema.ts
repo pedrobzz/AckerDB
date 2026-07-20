@@ -7,7 +7,7 @@ import {
   type ObjectValidator,
   type StandardValidator,
   type UnionValidator,
-} from "./dbz.ts";
+} from "./v.ts";
 import { deepFreeze } from "./immutable.ts";
 import { assertStandardJson } from "./standard-json.ts";
 import { isValidationError, ValidationError } from "./validation-error.ts";
@@ -189,7 +189,7 @@ function compileObject(
   protocol: boolean,
 ): ProtocolNode {
   if (validator.shape === null || typeof validator.shape !== "object" || Array.isArray(validator.shape)) {
-    throw new TypeError(`${where}: dbz.object() has an invalid shape`);
+    throw new TypeError(`${where}: v.object() has an invalid shape`);
   }
   const fields = Object.entries(validator.shape).map(([name, field]) => [
     name,
@@ -202,7 +202,7 @@ function compileObject(
       const required: string[] = [];
       for (const [name, field, node] of fields) {
         properties[name] = node.schema(mode);
-        if (mode === "output" || field.kind !== "nullable") required.push(name);
+        if (field.kind !== "optional" && field.kind !== "nullish") required.push(name);
       }
       return described(validator, {
         type: "object",
@@ -217,9 +217,10 @@ function compileObject(
       }
       const input = value as Record<string, unknown>;
       const decoded: Record<string, unknown> = { ...input };
-      for (const [name, , node] of fields) {
-        if (mode === "output" && !Object.hasOwn(input, name)) {
-          throw new ValidationError(`${path}.${name}: required output field is missing`);
+      for (const [name, field, node] of fields) {
+        if (!Object.hasOwn(input, name)) {
+          if (field.kind === "optional" || field.kind === "nullish") continue;
+          throw new ValidationError(`${path}.${name}: required ${mode} field is missing`);
         }
         decoded[name] = node.decode(input[name], `${path}.${name}`, mode);
       }
@@ -230,14 +231,26 @@ function compileObject(
         return;
       }
       const input = value as Record<string, unknown>;
-      for (const [name, , node] of fields) {
+      for (const [name, field, node] of fields) {
+        if (
+          (field.kind === "optional" || field.kind === "nullish") &&
+          (!Object.hasOwn(input, name) || input[name] === undefined)
+        ) {
+          continue;
+        }
         node.preflight?.(input[name], `${path}.${name}`);
       }
     },
     encode(value, path) {
       const checked = value as Record<string, unknown>;
       const encoded: Record<string, unknown> = {};
-      for (const [name, , node] of fields) {
+      for (const [name, field, node] of fields) {
+        if (
+          (field.kind === "optional" || field.kind === "nullish") &&
+          (!Object.hasOwn(checked, name) || checked[name] === undefined)
+        ) {
+          continue;
+        }
         encoded[name] = node.encode(checked[name], `${path}.${name}`);
       }
       return encoded;
@@ -251,7 +264,7 @@ function compileUnion(
   protocol: boolean,
 ): ProtocolNode {
   if (validator.members === null || typeof validator.members !== "object" || Array.isArray(validator.members)) {
-    throw new TypeError(`${where}: dbz.union() has invalid members`);
+    throw new TypeError(`${where}: v.union() has invalid members`);
   }
   const members = new Map(Object.entries(validator.members).map(([tag, member]) => [
     tag,
@@ -271,11 +284,11 @@ function compileUnion(
             tag: { const: tag },
             value: member.node === undefined ? { type: "null" } : member.node.schema(mode),
           },
-          required: mode === "output" || (
-            member.validator.kind !== "tag" && member.validator.kind !== "nullable"
-          )
-            ? ["tag", "value"]
-            : ["tag"],
+          required:
+            member.validator.kind === "optional" || member.validator.kind === "nullish" ||
+              (mode === "input" && member.validator.kind === "tag")
+              ? ["tag"]
+              : ["tag", "value"],
           additionalProperties: false,
         })),
       });
@@ -287,8 +300,13 @@ function compileUnion(
       const input = value as Record<string, unknown>;
       const member = typeof input.tag === "string" ? members.get(input.tag) : undefined;
       if (member === undefined) return value;
-      if (mode === "output" && !Object.hasOwn(input, "value")) {
-        throw new ValidationError(`${path}.value: required output field is missing`);
+      if (
+        !Object.hasOwn(input, "value") &&
+        member.validator.kind !== "optional" &&
+        member.validator.kind !== "nullish" &&
+        (mode === "output" || member.validator.kind !== "tag")
+      ) {
+        throw new ValidationError(`${path}.value: required ${mode} field is missing`);
       }
       return {
         ...input,
@@ -306,6 +324,12 @@ function compileUnion(
     encode(value, path) {
       const checked = value as { readonly tag: string; readonly value: unknown };
       const member = members.get(checked.tag)!;
+      if (
+        (member.validator.kind === "optional" || member.validator.kind === "nullish") &&
+        (!Object.hasOwn(checked, "value") || checked.value === undefined)
+      ) {
+        return { tag: checked.tag };
+      }
       return {
         tag: checked.tag,
         value: member.node === undefined
@@ -324,7 +348,9 @@ function compileNode(
   switch (validator.kind) {
     case "string":
       return checkedNode(validator, { type: "string" });
-    case "number":
+    case "int":
+      return checkedNode(validator, { type: "integer" });
+    case "float":
       return checkedNode(validator, { type: "number" });
     case "boolean":
       return checkedNode(validator, { type: "boolean" });
@@ -332,7 +358,7 @@ function compileNode(
     case "identity":
       if (!protocol) {
         throw new TypeError(
-          `${where}: dbz.${validator.kind}() requires a standard-JSON protocol codec`,
+          `${where}: v.${validator.kind}() requires a standard-JSON protocol codec`,
         );
       }
       return {
@@ -346,7 +372,7 @@ function compileNode(
       };
     case "bytes":
       if (!protocol) {
-        throw new TypeError(`${where}: dbz.bytes() requires a standard-JSON protocol codec`);
+        throw new TypeError(`${where}: v.bytes() requires a standard-JSON protocol codec`);
       }
       return {
         schema: () => described(validator, {
@@ -375,7 +401,7 @@ function compileNode(
     case "enum": {
       const values = (validator as EnumValidator).values;
       if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
-        throw new TypeError(`${where}: dbz.enum() has invalid string values`);
+        throw new TypeError(`${where}: v.enum() has invalid string values`);
       }
       return checkedNode(validator, { type: "string", enum: [...values] });
     }
@@ -383,7 +409,7 @@ function compileNode(
       const value = (validator as LiteralValidator).value;
       if (typeof value === "bigint") {
         if (!protocol) {
-          throw new TypeError(`${where}: dbz.literal(bigint) requires a standard-JSON protocol codec`);
+          throw new TypeError(`${where}: v.literal(bigint) requires a standard-JSON protocol codec`);
         }
         const protocolValue = value.toString();
         return {
@@ -399,7 +425,7 @@ function compileNode(
         (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") ||
         (typeof value === "number" && !Number.isFinite(value))
       ) {
-        throw new TypeError(`${where}: dbz.literal() has no standard-JSON protocol value`);
+        throw new TypeError(`${where}: v.literal() has no standard-JSON protocol value`);
       }
       return checkedNode(validator, { const: value });
     }
@@ -407,7 +433,7 @@ function compileNode(
       const element = (validator as StandardValidator & {
         readonly element?: StandardValidator;
       }).element;
-      if (element === undefined) throw new TypeError(`${where}: dbz.array() has no element validator`);
+      if (element === undefined) throw new TypeError(`${where}: v.array() has no element validator`);
       const node = compileNode(element, `${where}[]`, protocol);
       return {
         schema: (mode) => described(validator, { type: "array", items: node.schema(mode) }),
@@ -431,40 +457,51 @@ function compileNode(
       return compileObject(validator as ObjectValidator, where, protocol);
     case "union":
       return compileUnion(validator as UnionValidator, where, protocol);
-    case "nullable": {
+    case "nullable":
+    case "optional":
+    case "nullish": {
       const inner = (validator as StandardValidator & {
         readonly inner?: StandardValidator;
       }).inner;
-      if (inner === undefined) throw new TypeError(`${where}: dbz.nullable() has no inner validator`);
+      if (inner === undefined) throw new TypeError(`${where}: .${validator.kind}() has no inner validator`);
       const node = compileNode(inner, where, protocol);
+      const acceptsNull = validator.kind === "nullable" || validator.kind === "nullish";
+      const acceptsUndefined = validator.kind === "optional" || validator.kind === "nullish";
       return {
-        schema: (mode) => described(validator, nullableSchema(node.schema(mode))),
+        schema: (mode) => described(
+          validator,
+          acceptsNull ? nullableSchema(node.schema(mode)) : node.schema(mode),
+        ),
         decode(value, path, mode) {
-          return value === null || value === undefined
-            ? value
-            : node.decode(value, path, mode);
+          if (value === null && acceptsNull) return null;
+          if (value === undefined && acceptsUndefined) return undefined;
+          return node.decode(value, path, mode);
         },
         preflight(value, path) {
-          if (value !== null && value !== undefined) node.preflight?.(value, path);
+          if ((value !== null || !acceptsNull) && (value !== undefined || !acceptsUndefined)) {
+            node.preflight?.(value, path);
+          }
         },
         encode(value, path) {
-          return value === null ? null : node.encode(value, path);
+          if (value === null && acceptsNull) return null;
+          if (value === undefined && acceptsUndefined) return undefined;
+          return node.encode(value, path);
         },
       };
     }
     case "pk":
       throw new TypeError(
-        `${where}: dbz.primaryKey() is not an MCP value; use dbz.bigint() for a decimal string`,
+        `${where}: v.primaryKey() is not an MCP value; use v.bigint() for a decimal string`,
       );
     case "scheduleAt":
       throw new TypeError(
-        `${where}: dbz.scheduleAt() is not an MCP value; use dbz.number() for a timestamp`,
+        `${where}: v.scheduleAt() is not an MCP value; use v.float() for a timestamp`,
       );
     case "tag":
-      throw new TypeError(`${where}: dbz.tag() is valid only as a direct dbz.union() member`);
+      throw new TypeError(`${where}: v.tag() is valid only as a direct v.union() member`);
     default:
       throw new TypeError(
-        `${where}: dbz.${validator.kind}() has no lossless standard-JSON protocol representation`,
+        `${where}: v.${validator.kind}() has no lossless standard-JSON protocol representation`,
       );
   }
 }

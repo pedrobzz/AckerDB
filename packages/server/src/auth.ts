@@ -7,7 +7,7 @@ import {
   type JWTPayload,
 } from "jose";
 import { parseCredential, type Credential } from "@dbzz/core";
-import type { Identity } from "./dbz.ts";
+import type { Identity } from "./v.ts";
 import { DbzzError, isDbzzError } from "./errors.ts";
 import { deepFreeze } from "./immutable.ts";
 import { hasMcpTokenPrefix } from "./mcp-credential.ts";

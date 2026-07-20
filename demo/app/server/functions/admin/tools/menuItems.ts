@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 import { admin } from "../mcp.ts";
 
@@ -18,26 +18,29 @@ export const getMenuItems = admin.tool({
   access: { anyOf: ["read"] },
   annotations: { readOnlyHint: true },
   args: {
-    categoryId: dbz
-      .nullable(dbz.bigint())
+    categoryId: v
+      .bigint()
+      .optional()
       .describe("Restrict to one menu category (its id from get_menu_categories)."),
-    activeOnly: dbz
-      .nullable(dbz.boolean())
+    activeOnly: v
+      .boolean()
+      .optional()
       .describe("When true, exclude retired (inactive) items."),
-    limit: dbz
-      .nullable(dbz.number())
+    limit: v
+      .int()
+      .optional()
       .describe(`Maximum items to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: dbz.object({
-    items: dbz.array(
-      dbz.object({
-        id: dbz.bigint(),
-        categoryId: dbz.bigint(),
-        name: dbz.string(),
-        description: dbz.string(),
-        priceCents: dbz.number(),
-        sortOrder: dbz.number(),
-        active: dbz.boolean(),
+  output: v.object({
+    items: v.array(
+      v.object({
+        id: v.bigint(),
+        categoryId: v.bigint(),
+        name: v.string(),
+        description: v.string(),
+        priceCents: v.int(),
+        sortOrder: v.int(),
+        active: v.boolean(),
       }),
     ),
   }),
@@ -47,7 +50,7 @@ export const getMenuItems = admin.tool({
       const activeOnly = args.activeOnly ?? false;
       const categoryId = args.categoryId;
       const rows =
-        categoryId === null
+        categoryId === undefined
           ? (await tx.db.menuItems.scan().collect()).sort((a, b) =>
               a.categoryId === b.categoryId
                 ? a.sortOrder - b.sortOrder

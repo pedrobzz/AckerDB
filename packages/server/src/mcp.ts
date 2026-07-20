@@ -1,12 +1,12 @@
 import type { RegisteredServerOnly } from "@dbzz/core";
 import {
-  dbz,
+  v,
   type Expand,
   type InferShape,
   type InferValidator,
   type ObjectShape,
   type ObjectValidator,
-} from "./dbz.ts";
+} from "./v.ts";
 import type { Invocable } from "./functions.ts";
 import { validateArgsShape } from "./functions.ts";
 import { brand, hasBrand } from "./identity.ts";
@@ -459,9 +459,9 @@ export function createMcp(
       );
       validateArgsShape(definition.args, `MCP tool ${definition.name} args`);
       if (definition.output !== undefined && definition.output.kind !== "object") {
-        throw new TypeError(`MCP tool "${definition.name}" output must be dbz.object(...)`);
+        throw new TypeError(`MCP tool "${definition.name}" output must be v.object(...)`);
       }
-      const inputValidator = dbz.object(definition.args);
+      const inputValidator = v.object(definition.args);
       const outputValidator = definition.output;
       const inputCodec = compileMcpObjectCodec(inputValidator);
       const outputCodec = outputValidator === undefined

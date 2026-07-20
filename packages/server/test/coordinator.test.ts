@@ -9,7 +9,7 @@ import {
   type CommitTelemetryEvent,
   type FetchObservation,
 } from "../src/coordinator.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits } from "../src/limits.ts";
@@ -19,7 +19,7 @@ import { reconcile } from "../src/schema/reconcile.ts";
 import { defineSchema, defineTable } from "../src/schema.ts";
 
 const schema = defineSchema({
-  notes: defineTable({ id: dbz.primaryKey(), body: dbz.string() }),
+  notes: defineTable({ id: v.primaryKey(), body: v.string() }),
 });
 
 const dirs: string[] = [];

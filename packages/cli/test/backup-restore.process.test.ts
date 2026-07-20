@@ -324,7 +324,7 @@ describe("dbz backup, restore, and status", () => {
     const mismatchedTarget = fixture(
       FIXTURE_SCHEMA.replace(
         "messages: defineTable({",
-        "extra: defineTable({ id: dbz.primaryKey() }),\n  messages: defineTable({",
+        "extra: defineTable({ id: v.primaryKey() }),\n  messages: defineTable({",
       ),
     );
     const mismatchedResult = await runCli(["restore", artifact, mismatchedTarget]);

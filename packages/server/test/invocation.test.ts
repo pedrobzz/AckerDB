@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { ANONYMOUS_PRINCIPAL, type UserPrincipal } from "../src/auth.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { DbzzError } from "../src/errors.ts";
 import { query } from "../src/functions.ts";
 import {
@@ -26,12 +26,12 @@ function user(): UserPrincipal {
 describe("invocation instrumentation", () => {
   test("observes top-level and nested phases with deterministic parent metadata", async () => {
     const child = query({
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       access: "public",
       handler: (_ctx, args) => `child:${args.value}`,
     });
     const parent = query({
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       access: "public",
       handler: (ctx, args) => child(ctx, args),
     });
@@ -74,7 +74,7 @@ describe("invocation instrumentation", () => {
 
   test("reports validation, policy denial, and handler failure without protected details", async () => {
     const validation = query({
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       access: "public",
       handler: () => "unreachable",
     });

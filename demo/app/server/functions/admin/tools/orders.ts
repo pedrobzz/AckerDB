@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { orderStatus } from "../../../schema.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 import { admin } from "../mcp.ts";
@@ -19,35 +19,40 @@ export const getOrders = admin.tool({
   access: { anyOf: ["read"] },
   annotations: { readOnlyHint: true },
   args: {
-    status: dbz
-      .nullable(orderStatus)
+    status: orderStatus
+      .optional()
       .describe("Restrict to one order status (OPEN, PAID or CANCELLED)."),
-    tableId: dbz
-      .nullable(dbz.bigint())
+    tableId: v
+      .bigint()
+      .optional()
       .describe("Restrict to orders seated at this table id."),
-    userId: dbz
-      .nullable(dbz.bigint())
+    userId: v
+      .bigint()
+      .optional()
       .describe("Restrict to orders belonging to this guest id."),
-    openedAfter: dbz
-      .nullable(dbz.number())
+    openedAfter: v
+      .int()
+      .optional()
       .describe("Only orders opened at or after this millisecond epoch."),
-    openedBefore: dbz
-      .nullable(dbz.number())
+    openedBefore: v
+      .int()
+      .optional()
       .describe("Only orders opened at or before this millisecond epoch."),
-    limit: dbz
-      .nullable(dbz.number())
+    limit: v
+      .int()
+      .optional()
       .describe(`Maximum orders to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: dbz.object({
-    orders: dbz.array(
-      dbz.object({
-        id: dbz.bigint(),
-        userId: dbz.bigint(),
-        tableId: dbz.bigint(),
+  output: v.object({
+    orders: v.array(
+      v.object({
+        id: v.bigint(),
+        userId: v.bigint(),
+        tableId: v.bigint(),
         status: orderStatus,
-        totalCents: dbz.number(),
-        openedAt: dbz.number(),
-        closedAt: dbz.nullable(dbz.number()),
+        totalCents: v.int(),
+        openedAt: v.int(),
+        closedAt: v.int().nullable(),
       }),
     ),
   }),
@@ -58,11 +63,11 @@ export const getOrders = admin.tool({
       const orders = rows
         .filter(
           (order) =>
-            (args.status === null || order.status === args.status) &&
-            (args.tableId === null || order.tableId === args.tableId) &&
-            (args.userId === null || order.userId === args.userId) &&
-            (args.openedAfter === null || order.openedAt >= args.openedAfter) &&
-            (args.openedBefore === null || order.openedAt <= args.openedBefore),
+            (args.status === undefined || order.status === args.status) &&
+            (args.tableId === undefined || order.tableId === args.tableId) &&
+            (args.userId === undefined || order.userId === args.userId) &&
+            (args.openedAfter === undefined || order.openedAt >= args.openedAfter) &&
+            (args.openedBefore === undefined || order.openedAt <= args.openedBefore),
         )
         .sort((a, b) => b.openedAt - a.openedAt)
         .slice(0, limit)

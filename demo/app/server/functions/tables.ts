@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { requireUser, staffAccess } from "../lib/access.ts";
 import {
@@ -63,7 +63,7 @@ export const list = query({
 
 export const create = mutation({
   access: staffAccess,
-  args: { number: dbz.number(), seats: dbz.number() },
+  args: { number: v.int(), seats: v.int() },
   handler: async (ctx, args) => {
     const number = positiveInteger(args.number, "Table number", 999);
     const seats = positiveInteger(args.seats, "Seat count", 20);
@@ -92,7 +92,7 @@ export const create = mutation({
 
 export const update = mutation({
   access: staffAccess,
-  args: { id: dbz.bigint(), number: dbz.number(), seats: dbz.number() },
+  args: { id: v.bigint(), number: v.int(), seats: v.int() },
   handler: async (ctx, args) => {
     const table =
       (await ctx.db.restaurantTables.get(args.id)) ??
@@ -118,7 +118,7 @@ export const update = mutation({
 
 export const remove = mutation({
   access: staffAccess,
-  args: { id: dbz.bigint() },
+  args: { id: v.bigint() },
   handler: async (ctx, args) => {
     const table =
       (await ctx.db.restaurantTables.get(args.id)) ??

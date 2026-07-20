@@ -10,7 +10,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   query,
@@ -21,8 +21,8 @@ import index from "./index.html";
 
 const schema = defineSchema({
   notes: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 

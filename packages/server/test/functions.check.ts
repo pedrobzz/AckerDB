@@ -4,7 +4,7 @@
  * executed — `bun run typecheck` failing is the test.
  */
 import {
-  dbz,
+  v,
   defineSchema,
   defineTable,
   mutation,
@@ -19,9 +19,9 @@ import {
 
 const schema = defineSchema({
   counters: defineTable({
-    id: dbz.primaryKey(),
-    key: dbz.string(),
-    value: dbz.number(),
+    id: v.primaryKey(),
+    key: v.string(),
+    value: v.int(),
   }).index("by_key", ["key"], { unique: true }),
 });
 type S = typeof schema;
@@ -31,13 +31,13 @@ const typedMutation = mutation as MutationBuilder<S>;
 const typedProcedure = procedure as ProcedureBuilder<S>;
 
 const getCounter = typedQuery({
-  args: { key: dbz.string() },
+  args: { key: v.string() },
   access: (_ctx, args) => args.key.length > 0,
   handler: (ctx, args) => ctx.db.counters.byKey((q) => q.eq("key", args.key)).unique(),
 });
 
 const bump = typedMutation({
-  args: { key: dbz.string() },
+  args: { key: v.string() },
   access: "authenticated",
   handler: async (ctx, args) => {
     // a mutation calls a query with its own ctx: read/write ⊇ read-only
@@ -47,7 +47,7 @@ const bump = typedMutation({
 });
 
 export const _pipeline = typedProcedure({
-  args: { key: dbz.string() },
+  args: { key: v.string() },
   access: "system",
   handler: async (ctx, args) => {
     // procedures compose queries and mutations inside explicit transactions;
@@ -65,9 +65,9 @@ export const _pipeline = typedProcedure({
   },
 });
 
-defineTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }).scheduled(bump);
+defineTable({ id: v.primaryKey(), at: v.scheduleAt() }).scheduled(bump);
 // @ts-expect-error scheduled handlers must be mutations so deletion shares their commit
-defineTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }).scheduled(_pipeline);
+defineTable({ id: v.primaryKey(), at: v.scheduleAt() }).scheduled(_pipeline);
 
 export const _readOnly = typedQuery({
   args: {},
@@ -92,8 +92,8 @@ typedQuery({
 const typedSse = sseProcedure as SseBuilder<S>;
 
 export const _ticker = typedSse({
-  args: { key: dbz.string() },
-  yields: dbz.object({ key: dbz.string(), value: dbz.number() }),
+  args: { key: v.string() },
+  yields: v.object({ key: v.string(), value: v.int() }),
   access: "public",
   handler: async function* (ctx, args) {
     const row = await ctx.tx((tx) => getCounter(tx, { key: args.key }));
@@ -116,7 +116,7 @@ typedSse({
 
 typedSse({
   args: {},
-  yields: dbz.number(),
+  yields: v.float(),
   access: "public",
   // @ts-expect-error yielded values must satisfy the yields validator
   handler: async function* () {
@@ -127,14 +127,14 @@ typedSse({
 // A handler may return a ReadableStream of the declared chunks directly.
 export const _streamed = typedSse({
   args: {},
-  yields: dbz.number(),
+  yields: v.float(),
   access: "public",
   handler: () => new ReadableStream<number>(),
 });
 
 typedSse({
   args: {},
-  yields: dbz.number(),
+  yields: v.float(),
   access: "public",
   // @ts-expect-error a stream of the wrong chunk type is rejected
   handler: () => new ReadableStream<string>(),
@@ -142,7 +142,7 @@ typedSse({
 
 typedSse({
   args: {},
-  yields: dbz.number(),
+  yields: v.float(),
   access: "public",
   // @ts-expect-error SSE handlers must return a chunk source, not a bare value
   handler: () => 1,

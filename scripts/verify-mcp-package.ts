@@ -64,17 +64,17 @@ async function main(): Promise<void> {
     assertNoProductionAiDependency(serverManifest);
 
     writeFileSync(join(consumerDir, "schema.ts"), `
-import { dbz, defineSchema, defineTable } from "@dbzz/server";
+import { v, defineSchema, defineTable } from "@dbzz/server";
 
 export default defineSchema({
   orders: defineTable({
-    id: dbz.primaryKey(),
-    description: dbz.string(),
+    id: v.primaryKey(),
+    description: v.string(),
   }),
 });
 `);
     writeFileSync(join(consumerDir, "functions", "orders.ts"), `
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { createMcp, type McpToolCtx } from "../_generated/server.ts";
 
 export const agentMcp = createMcp({
@@ -92,8 +92,8 @@ void invalidScope;
 export const getOrder = agentMcp.tool({
   name: "orders_get",
   description: "Get an order by ID.",
-  args: { id: dbz.bigint() },
-  output: dbz.object({ id: dbz.bigint() }),
+  args: { id: v.bigint() },
+  output: v.object({ id: v.bigint() }),
   access: { anyOf: ["orders.all", "orders.get"] },
   handler: (ctx, args) => {
     const typedContext: McpToolCtx = ctx;

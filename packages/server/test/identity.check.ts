@@ -1,6 +1,6 @@
 /** Compile-time Identity ownership assertions. `bun run typecheck` is the test. */
 import {
-  dbz,
+  v,
   defineSchema,
   defineTable,
   mutation,
@@ -20,9 +20,9 @@ import {
 
 const schema = defineSchema({
   owned: defineTable({
-    id: dbz.primaryKey(),
-    userId: dbz.identity(),
-    value: dbz.string(),
+    id: v.primaryKey(),
+    userId: v.identity(),
+    value: v.string(),
   }),
 });
 
@@ -30,7 +30,7 @@ const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 
 export const _writeOwnedRow = typedMutation({
-  args: { value: dbz.string() },
+  args: { value: v.string() },
   access: (ctx) => ctx.auth.kind === "user",
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -42,13 +42,13 @@ export const _writeOwnedRow = typedMutation({
 });
 
 export const _linkAccount = typedProcedure({
-  args: { rawBearerToken: dbz.string() },
+  args: { rawBearerToken: v.string() },
   access: (ctx) => ctx.auth.kind === "user",
   handler: (ctx, args) => ctx.linkAccount(args.rawBearerToken),
 });
 
 export const _unlinkAccount = typedProcedure({
-  args: { issuer: dbz.string(), subject: dbz.string() },
+  args: { issuer: v.string(), subject: v.string() },
   access: (ctx) => ctx.auth.kind === "user",
   handler: (ctx, account) => ctx.unlinkAccount(account),
 });

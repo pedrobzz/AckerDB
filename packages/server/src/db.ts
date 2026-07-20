@@ -5,7 +5,7 @@
  * the generics at the function-constructor boundary keep users honest.
  */
 import type { Database } from "bun:sqlite";
-import { ValidationError, type Validator } from "./dbz.ts";
+import { ValidationError, type Validator } from "./v.ts";
 import type { ColumnPlan, Engine, TablePlan } from "./engine.ts";
 import { brand, hasBrand } from "./identity.ts";
 import { camelCase, type IndexDef } from "./schema.ts";
@@ -668,7 +668,10 @@ function checkFullRow(plan: TablePlan, engine: Engine, row: unknown, op: string)
   const out: Record<string, unknown> = {};
   for (const [name, validator] of Object.entries(table.columns)) {
     if (name === plan.pk) continue;
-    out[name] = validator.check(input[name], `${plan.name}.${op}.${name}`);
+    const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
+      ? null
+      : input[name];
+    out[name] = validator.check(value, `${plan.name}.${op}.${name}`);
   }
   for (const key of Object.keys(input)) {
     if (!(key in table.columns) && input[key] !== undefined) {
@@ -924,7 +927,10 @@ function eventWriteMethods(
       const out: Record<string, unknown> = {};
       for (const [name, validator] of Object.entries(table.columns)) {
         if (name === pk) continue;
-        out[name] = validator.check(input[name], `${tableName}.insert.${name}`);
+        const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
+          ? null
+          : input[name];
+        out[name] = validator.check(value, `${tableName}.insert.${name}`);
       }
       for (const key of Object.keys(input)) {
         if (!(key in table.columns) && input[key] !== undefined) {

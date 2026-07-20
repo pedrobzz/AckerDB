@@ -7,7 +7,8 @@
  * Physical mapping:
  *   - primary key            INTEGER PRIMARY KEY AUTOINCREMENT (ids never reused)
  *   - string                 TEXT
- *   - number / scheduleAt    REAL
+ *   - int                    INTEGER
+ *   - float / scheduleAt     REAL
  *   - bigint / identity      INTEGER
  *   - boolean                INTEGER (0/1)
  *   - bytes                  BLOB
@@ -46,7 +47,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
-import type { Descriptor, Identity, Validator } from "./dbz.ts";
+import type { Descriptor, Identity, Validator } from "./v.ts";
 import { scalarDecoder, scalarEncoder, sqlTypeOf } from "./schema/descriptor-kinds.ts";
 import {
   MutationReplayLedger,

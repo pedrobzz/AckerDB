@@ -9,7 +9,7 @@
  * deltas, and per-index add/drop/change with the uniqueness that governs the
  * change's safety class.
  */
-import type { Descriptor } from "../dbz.ts";
+import type { Descriptor } from "../v.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
 
 export interface VariantChange {

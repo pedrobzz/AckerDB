@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { staffAccess } from "../lib/access.ts";
 import {
@@ -43,14 +43,14 @@ export const queue = query({
 
 export const advance = mutation({
   access: staffAccess,
-  args: { orderItemId: dbz.bigint() },
+  args: { orderItemId: v.bigint() },
   handler: async (ctx, args) =>
     (await advanceOrderItem(ctx.db, args.orderItemId)).status,
 });
 
 export const cancel = mutation({
   access: staffAccess,
-  args: { orderItemId: dbz.bigint() },
+  args: { orderItemId: v.bigint() },
   handler: async (ctx, args) => {
     const item =
       (await ctx.db.orderItems.get(args.orderItemId)) ??

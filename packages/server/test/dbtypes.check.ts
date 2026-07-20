@@ -4,7 +4,7 @@
  * @ts-expect-error) is the test.
  */
 import {
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -15,27 +15,32 @@ import {
 
 const schema = defineSchema({
   payments: defineTable({
-    id: dbz.primaryKey(),
-    userId: dbz.bigint(),
-    status: dbz.enum("PayStatusT", ["active", "failed"]),
-    amount: dbz.number(),
-    note: dbz.nullable(dbz.string()),
+    id: v.primaryKey(),
+    userId: v.bigint(),
+    status: v.enum("PayStatusT", ["active", "failed"]),
+    amount: v.float(),
+    note: v.string().nullable(),
   })
     .index("by_user", ["userId"])
     .index("by_user_status_amount", ["userId", "status", "amount"]),
   users: defineTable({
-    id: dbz.primaryKey(),
-    email: dbz.string(),
-    name: dbz.string(),
-    payload: dbz.union("UPayloadT", { text: dbz.string(), nothing: dbz.tag() }),
+    id: v.primaryKey(),
+    email: v.string(),
+    name: v.string(),
+    payload: v.union("UPayloadT", { text: v.string(), nothing: v.tag() }),
   })
     .index("by_email", ["email"], { unique: true })
     .index("by_payload", ["payload"]),
   pings: defineEventTable({
-    id: dbz.primaryKey(),
-    channel: dbz.bigint(),
+    id: v.primaryKey(),
+    channel: v.bigint(),
   }, {
-    args: { channel: dbz.bigint() },
+    args: {
+      channel: v.bigint(),
+      label: v.string().nullable(),
+      cursor: v.string().optional(),
+      replacement: v.string().nullish(),
+    },
     access: "public",
     matches: (row, args) => row.channel === args.channel,
   }),
@@ -47,11 +52,21 @@ declare const rdb: DbReader<S>;
 declare const wdb: DbWriter<S>;
 
 export async function _typecheckUsage(): Promise<void> {
-  const pingArgs: PingArgs = { channel: 1n };
+  const pingArgs: PingArgs = { channel: 1n, label: null };
+  const completePingArgs: PingArgs = {
+    channel: 1n,
+    label: "live",
+    cursor: undefined,
+    replacement: null,
+  };
   void pingArgs;
+  void completePingArgs;
   // @ts-expect-error event subscription args retain their validator types
-  const invalidPingArgs: PingArgs = { channel: 1 };
+  const invalidPingArgs: PingArgs = { channel: 1, label: null };
+  // @ts-expect-error nullable event args remain required; only optional/nullish keys may be omitted
+  const missingNullablePingArg: PingArgs = { channel: 1n };
   void invalidPingArgs;
+  void missingNullablePingArg;
   // rows come out exactly typed
   const p = await rdb.payments.get(1n);
   if (p !== null) {

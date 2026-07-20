@@ -16,7 +16,7 @@ import type {
   UnionMembers,
   UnionValidator,
   Validator,
-} from "./dbz.ts";
+} from "./v.ts";
 import type {
   CamelCase,
   IndexMeta,

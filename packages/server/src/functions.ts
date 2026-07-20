@@ -9,18 +9,19 @@
 import type { ExternalAccount, Principal } from "./auth.ts";
 import {
   type Expand,
+  type InferInputShape,
   type InferShape,
   type InferValidator,
   type ObjectShape,
   type Validator,
-} from "./dbz.ts";
+} from "./v.ts";
 import type { DbReader, DbWriter } from "./dbtypes.ts";
 import {
   compileInvocation,
   invokeFunction,
   type InvocationContext,
 } from "./invocation.ts";
-import type { InsertShape, Schema } from "./schema.ts";
+import type { Schema } from "./schema.ts";
 
 export type AuthCtx = Principal;
 
@@ -63,8 +64,8 @@ export type SseSource<Chunk> = ReadableStream<Chunk> | AsyncIterable<Chunk>;
 
 export type SseCtx<S extends Schema = Schema> = ProcedureCtx<S>;
 
-/** Args as the caller provides them: nullable validators become optional. */
-export type ArgsInput<A extends ObjectShape> = InsertShape<A>;
+/** Args as the caller provides them: only optional/nullish keys may be omitted. */
+export type ArgsInput<A extends ObjectShape> = InferInputShape<A>;
 
 export type BuiltinAccessPolicy = "public" | "authenticated" | "system";
 
@@ -150,7 +151,7 @@ export function isAccessPolicy(value: unknown): value is AccessPolicy<Invocation
 export function validateArgsShape(args: ObjectShape, prefix = "args"): void {
   for (const [name, validator] of Object.entries(args)) {
     if (validator.kind === "pk" || validator.kind === "scheduleAt" || validator.kind === "tag") {
-      throw new Error(`${prefix}.${name}: dbz.${validator.kind}() is not a valid argument validator`);
+      throw new Error(`${prefix}.${name}: v.${validator.kind}() is not a valid argument validator`);
     }
   }
 }
@@ -167,10 +168,10 @@ function isValidator(value: unknown): value is Validator<unknown, string> {
 
 export function validateYields(yields: unknown): asserts yields is Validator<unknown, string> {
   if (!isValidator(yields)) {
-    throw new TypeError("sse yields must be a dbz validator for the chunks the stream emits");
+    throw new TypeError("sse yields must be a v validator for the chunks the stream emits");
   }
   if (yields.kind === "pk" || yields.kind === "scheduleAt" || yields.kind === "tag") {
-    throw new Error(`yields: dbz.${yields.kind}() is not a valid chunk validator`);
+    throw new Error(`yields: v.${yields.kind}() is not a valid chunk validator`);
   }
 }
 

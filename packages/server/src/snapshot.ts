@@ -3,7 +3,7 @@
  * Reconciliation diffs the stored snapshot against the live schema's
  * descriptor; equality of descriptors means "nothing changed".
  */
-import type { Descriptor } from "./dbz.ts";
+import type { Descriptor } from "./v.ts";
 import type { Schema } from "./schema.ts";
 
 export interface TableSnapshot {

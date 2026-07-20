@@ -68,14 +68,14 @@ describe("codegen", () => {
     const dir = makeFixture({
       "schema.ts": FIXTURE_SCHEMA,
       "functions/agent.ts": `
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { createMcp } from "../_generated/server.ts";
 
 export const agentMcp = createMcp({ name: "agent" });
 export const echo = agentMcp.tool({
   name: "echo_text",
   description: "Echo text.",
-  args: { text: dbz.string() },
+  args: { text: v.string() },
   handler: (_ctx, args) => ({ content: [{ type: "text", text: args.text }] }),
 });
 `,

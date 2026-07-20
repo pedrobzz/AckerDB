@@ -4,78 +4,78 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { Subprocess } from "bun";
 import { DbzzClient } from "@dbzz/client";
-import { defineSchema, defineTable, dbz, indexSqlName, migrationFingerprint, snapshotOf } from "@dbzz/server";
+import { defineSchema, defineTable, v, indexSqlName, migrationFingerprint, snapshotOf } from "@dbzz/server";
 import { makeFixture } from "./fixture.ts";
 
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 60_000;
 const STEP_TIMEOUT_MS = 15_000;
 
-const SCHEMA_V1 = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+const SCHEMA_V1 = `import { defineSchema, defineTable, v } from "@dbzz/server";
 
 export default defineSchema({
   items: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
-    count: dbz.number(),
+    id: v.primaryKey(),
+    label: v.string(),
+    count: v.int(),
   }),
 });
 `;
 
-const SCHEMA_V2 = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+const SCHEMA_V2 = `import { defineSchema, defineTable, v } from "@dbzz/server";
 
 export default defineSchema({
   items: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
-    count: dbz.string(),
+    id: v.primaryKey(),
+    label: v.string(),
+    count: v.string(),
   }),
 });
 `;
 
-// A third state so numbering can increment on a fully-applied chain (string -> number).
-const SCHEMA_V3 = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+// A third state so numbering can increment on a fully-applied chain (string -> float).
+const SCHEMA_V3 = `import { defineSchema, defineTable, v } from "@dbzz/server";
 
 export default defineSchema({
   items: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
-    count: dbz.number(),
+    id: v.primaryKey(),
+    label: v.string(),
+    count: v.int(),
   }),
 });
 `;
 
 // v2 plus a required column — the schema "moving on" after a v2 ledger was consented to.
-const SCHEMA_V2_MOVED = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+const SCHEMA_V2_MOVED = `import { defineSchema, defineTable, v } from "@dbzz/server";
 
 export default defineSchema({
   items: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
-    count: dbz.string(),
-    flag: dbz.string(),
+    id: v.primaryKey(),
+    label: v.string(),
+    count: v.string(),
+    flag: v.string(),
   }),
 });
 `;
 
 // v1 plus a UNIQUE index over `label` — an optimistic change whose stored rows may already collide.
-const SCHEMA_UNIQUE = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+const SCHEMA_UNIQUE = `import { defineSchema, defineTable, v } from "@dbzz/server";
 
 export default defineSchema({
   items: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
-    count: dbz.number(),
+    id: v.primaryKey(),
+    label: v.string(),
+    count: v.int(),
   }).index("by_label", ["label"], { unique: true }),
 });
 `;
 
-const ITEMS_FUNCTIONS = `import { dbz } from "@dbzz/server";
+const ITEMS_FUNCTIONS = `import { v } from "@dbzz/server";
 import { mutation, query } from "../_generated/server.ts";
 
 export const add = mutation({
   access: "public",
-  args: { label: dbz.string(), count: dbz.number() },
+  args: { label: v.string(), count: v.int() },
   handler: (ctx, args) => ctx.db.items.insert(args),
 });
 
@@ -86,8 +86,8 @@ export const list = query({
 });
 `;
 
-const V1 = snapshotOf(defineSchema({ items: defineTable({ id: dbz.primaryKey(), label: dbz.string(), count: dbz.number() }) }));
-const V2 = snapshotOf(defineSchema({ items: defineTable({ id: dbz.primaryKey(), label: dbz.string(), count: dbz.string() }) }));
+const V1 = snapshotOf(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.int() }) }));
+const V2 = snapshotOf(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.string() }) }));
 
 type CliProcess = Subprocess<"ignore", "pipe", "pipe">;
 type Item = { id: bigint; label: string; count: unknown };
@@ -414,7 +414,7 @@ describe("dbz generate", () => {
     dirs.push(dir);
     await seedV1(dir, port);
 
-    // The ledger the developer consents to: count number -> string.
+    // The ledger the developer consents to: count float -> string.
     writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
     const planned = await withTimeout(runCli(["__plan", dir]), "__plan (v2)");
     expect(planned.code).toBe(0);

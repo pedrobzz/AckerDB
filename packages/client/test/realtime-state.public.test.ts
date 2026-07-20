@@ -21,7 +21,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineServiceLimits,
   defineTable,
@@ -296,9 +296,9 @@ class TestVerifier implements CredentialVerifier {
 
 const schema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
+    body: v.string(),
   }).index("by_channel", ["channelId"]),
 });
 
@@ -340,7 +340,7 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
       messages: {
         list: query({
           access: "public",
-          args: { channelId: dbz.bigint() },
+          args: { channelId: v.bigint() },
           handler: async (ctx: Ctx, args: Ctx) => {
             const rows = await ctx.db.messages.byChannel((builder: Ctx) =>
               builder.eq("channelId", args.channelId)
@@ -351,7 +351,7 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
         }),
         nonempty: query({
           access: "public",
-          args: { channelId: dbz.bigint() },
+          args: { channelId: v.bigint() },
           handler: async (ctx: Ctx, args: Ctx) =>
             (await ctx.db.messages.byChannel((builder: Ctx) =>
               builder.eq("channelId", args.channelId)
@@ -364,7 +364,7 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
         }),
         send: mutation({
           access: "public",
-          args: { channelId: dbz.bigint(), body: dbz.string() },
+          args: { channelId: v.bigint(), body: v.string() },
           handler: async (ctx: Ctx, args: Ctx) => {
             await mutationGate.pause();
             return ctx.db.messages.insert(args);

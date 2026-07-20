@@ -15,7 +15,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -59,26 +59,26 @@ function request<Message>(message: Message, bytes = Buffer.byteLength(encode(mes
 
 const schema = defineSchema({
   items: defineTable({
-    id: dbz.primaryKey(),
-    room: dbz.bigint(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    room: v.bigint(),
+    body: v.string(),
   }).index("by_room", ["room"]),
   signals: defineEventTable({
-    id: dbz.primaryKey(),
-    room: dbz.bigint(),
+    id: v.primaryKey(),
+    room: v.bigint(),
   }, {
-    args: { room: dbz.bigint() },
+    args: { room: v.bigint() },
     access: "public",
     matches: (row, args) => row.room === args.room,
   }),
   audit: defineTable({
-    id: dbz.primaryKey(),
-    line: dbz.string(),
+    id: v.primaryKey(),
+    line: v.string(),
   }),
   jobs: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
-    at: dbz.scheduleAt(),
+    id: v.primaryKey(),
+    label: v.string(),
+    at: v.scheduleAt(),
   }).scheduled("jobs.run"),
 });
 
@@ -96,7 +96,7 @@ let operatorWriteEntered: (() => void) | null = null;
 
 const addItem = mutation({
   access: "public",
-  args: { room: dbz.bigint(), body: dbz.string() },
+  args: { room: v.bigint(), body: v.string() },
   handler: async (ctx: Ctx, args: Ctx) => {
     const id = await ctx.db.items.insert(args);
     await ctx.db.signals.insert({ room: args.room });
@@ -108,7 +108,7 @@ const functions = {
   items: {
     list: query({
       access: "public",
-      args: { room: dbz.bigint() },
+      args: { room: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.items.byRoom((builder: Ctx) => builder.eq("room", args.room)).collect(),
     }),
@@ -128,7 +128,7 @@ const functions = {
     }),
     holdAdd: mutation({
       access: "public",
-      args: { room: dbz.bigint(), body: dbz.string() },
+      args: { room: v.bigint(), body: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const id = await ctx.db.items.insert(args);
         operatorWriteEntered?.();
@@ -139,7 +139,7 @@ const functions = {
     add: addItem,
     touch: mutation({
       access: "public",
-      args: { id: dbz.bigint() },
+      args: { id: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const row = await ctx.db.items.get(args.id);
         await ctx.db.items.patch(args.id, { body: row.body });
@@ -147,7 +147,7 @@ const functions = {
     }),
     fail: mutation({
       access: "public",
-      args: { room: dbz.bigint(), body: dbz.string() },
+      args: { room: v.bigint(), body: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         await ctx.db.items.insert(args);
         throw new Error(`${PRIVATE_FAILURE}:${args.body}`);
@@ -164,19 +164,19 @@ const functions = {
   jobs: {
     schedule: mutation({
       access: "public",
-      args: { label: dbz.string(), at: dbz.number() },
+      args: { label: v.string(), at: v.float() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.jobs.insert(args),
     }),
     run: mutation({
       access: "system",
-      args: { id: dbz.bigint(), label: dbz.string(), at: dbz.number() },
+      args: { id: v.bigint(), label: v.string(), at: v.float() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.audit.insert({ line: `scheduled:${args.label}` }),
     }),
   },
   ops: {
     pipeline: procedure({
       access: "public",
-      args: { room: dbz.bigint(), payload: dbz.string() },
+      args: { room: v.bigint(), payload: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const external = await (await fetch(
           `data:text/plain,${encodeURIComponent(args.payload)}`,
@@ -190,8 +190,8 @@ const functions = {
     }),
     stream: sseProcedure({
       access: "public",
-      args: { payload: dbz.string() },
-      yields: dbz.object({ payload: dbz.string() }),
+      args: { payload: v.string() },
+      yields: v.object({ payload: v.string() }),
       handler: async function* (ctx: Ctx, args: Ctx) {
         if (operatorSseGate !== null) {
           operatorSseEntered?.();

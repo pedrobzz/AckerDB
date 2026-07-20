@@ -22,14 +22,14 @@ const STEP_TIMEOUT_MS = 10_000;
 const CRASH_BEFORE_COMMIT_MESSAGES = `
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { mutation } from "../_generated/server.ts";
 
 const crashSentinel = join(import.meta.dir, "..", ".precommit-crash-reached");
 
 export const crashBeforeCommit = mutation({
   access: "public",
-  args: { channelId: dbz.bigint(), body: dbz.string() },
+  args: { channelId: v.bigint(), body: v.string() },
   handler: async (ctx, args) => {
     const id = await ctx.db.messages.insert({
       ...args,

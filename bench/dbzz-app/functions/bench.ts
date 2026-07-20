@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { mutation, procedure, query } from "../_generated/server.ts";
 
 const DOCUMENT_PARTITIONS = 64;
@@ -49,7 +49,7 @@ function validateChannelBatch(start: number, count: number): void {
 
 export const seedDocuments = mutation({
   access: "public",
-  args: { start: dbz.number(), count: dbz.number() },
+  args: { start: v.int(), count: v.int() },
   handler: async (ctx, { start, count }) => {
     validateBatch(start, count, DOCUMENT_COUNT);
     for (let index = start; index < start + count; index++) {
@@ -68,7 +68,7 @@ export const seedDocuments = mutation({
 
 export const seedAccounts = mutation({
   access: "public",
-  args: { start: dbz.number(), count: dbz.number() },
+  args: { start: v.int(), count: v.int() },
   handler: async (ctx, { start, count }) => {
     validateBatch(start, count, ACCOUNT_COUNT);
     for (let account = start; account < start + count; account++) {
@@ -80,7 +80,7 @@ export const seedAccounts = mutation({
 
 export const seedChannels = mutation({
   access: "public",
-  args: { start: dbz.number(), count: dbz.number() },
+  args: { start: v.int(), count: v.int() },
   handler: async (ctx, { start, count }) => {
     validateChannelBatch(start, count);
     for (let channel = start; channel < start + count; channel++) {
@@ -98,7 +98,7 @@ export const seedChannels = mutation({
 
 export const search = query({
   access: "public",
-  args: { partition: dbz.number(), nonce: dbz.number() },
+  args: { partition: v.int(), nonce: v.int() },
   handler: async (ctx, { partition, nonce }) => {
     const documents = await ctx.db.documents
       .byPartitionRank((q) => q.eq("partition", partition))
@@ -118,10 +118,10 @@ export const search = query({
 export const transfer = mutation({
   access: "public",
   args: {
-    pair: dbz.number(),
-    direction: dbz.number(),
-    amount: dbz.number(),
-    nonce: dbz.number(),
+    pair: v.int(),
+    direction: v.int(),
+    amount: v.int(),
+    nonce: v.int(),
   },
   handler: async (ctx, { pair, direction, amount, nonce }) => {
     if (!Number.isInteger(pair) || pair < 0 || pair >= ACCOUNT_COUNT / 2) throw new Error(`invalid pair ${pair}`);
@@ -148,7 +148,7 @@ export const transfer = mutation({
 
 export const accountState = query({
   access: "public",
-  args: { nonce: dbz.number() },
+  args: { nonce: v.int() },
   handler: async (ctx, { nonce }) => {
     const accounts = await ctx.db.accounts.scan().collect();
     accounts.sort((a, b) => a.account - b.account);
@@ -168,7 +168,7 @@ export const accountState = query({
 
 export const channel = query({
   access: "public",
-  args: { channel: dbz.number() },
+  args: { channel: v.int() },
   handler: async (ctx, { channel }) => {
     const row = await ctx.db.channels.byChannel((q) => q.eq("channel", channel)).unique();
     if (row === null) return null;
@@ -178,7 +178,7 @@ export const channel = query({
 
 export const updateChannel = mutation({
   access: "public",
-  args: { channel: dbz.number(), nonce: dbz.number() },
+  args: { channel: v.int(), nonce: v.int() },
   handler: async (ctx, { channel, nonce }) => {
     const row = await ctx.db.channels.byChannel((q) => q.eq("channel", channel)).unique();
     if (row === null) throw new Error(`channel ${channel} is not seeded`);
@@ -193,10 +193,10 @@ export const updateChannel = mutation({
 export const compute = procedure({
   access: "public",
   args: {
-    nonce: dbz.number(),
-    seed: dbz.number(),
-    payload: dbz.string(),
-    rounds: dbz.number(),
+    nonce: v.int(),
+    seed: v.int(),
+    payload: v.string(),
+    rounds: v.int(),
   },
   handler: (_ctx, { nonce, seed, payload, rounds }) => {
     if (!Number.isInteger(rounds) || rounds <= 0 || rounds > 1_024) throw new Error(`invalid rounds ${rounds}`);
@@ -208,7 +208,7 @@ export const compute = procedure({
 
 export const probe = query({
   access: "public",
-  args: { nonce: dbz.number() },
+  args: { nonce: v.int() },
   handler: async (ctx, { nonce }) => {
     const account = ((nonce % ACCOUNT_COUNT) + ACCOUNT_COUNT) % ACCOUNT_COUNT;
     const row = await ctx.db.accounts.byAccount((q) => q.eq("account", account)).unique();

@@ -10,7 +10,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   mutation,
@@ -38,9 +38,9 @@ function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
 
 const schema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
+    body: v.string(),
   }).index("by_channel", ["channelId"]),
 });
 
@@ -74,7 +74,7 @@ async function createApp(): Promise<App> {
     messages: {
       list: query({
         access: "public",
-        args: { channelId: dbz.bigint() },
+        args: { channelId: v.bigint() },
         handler: async (ctx: Ctx, args: Ctx) =>
           await ctx.db.messages
             .byChannel((builder: Ctx) => builder.eq("channelId", args.channelId))
@@ -82,7 +82,7 @@ async function createApp(): Promise<App> {
       }),
       send: mutation({
         access: "public",
-        args: { channelId: dbz.bigint(), body: dbz.string() },
+        args: { channelId: v.bigint(), body: v.string() },
         handler: async (ctx: Ctx, args: Ctx) => await ctx.db.messages.insert(args),
       }),
     },

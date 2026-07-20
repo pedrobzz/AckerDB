@@ -15,7 +15,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   mutation,
@@ -28,10 +28,10 @@ import { DbzzProvider, useConnectionState, useEvent } from "@dbzz/client-react";
 
 const schema = defineSchema({
   pings: defineEventTable({
-    id: dbz.primaryKey(),
-    n: dbz.number(),
+    id: v.primaryKey(),
+    n: v.int(),
   }, {
-    args: { min: dbz.number() },
+    args: { min: v.int() },
     access: "public",
     // n === 13 fails the match itself: the server marks the listener gapped
     // and the next matched event arrives as an honest gap instead of a row.
@@ -59,7 +59,7 @@ function createApp(): App {
     pings: {
       emit: mutation({
         access: "public",
-        args: { n: dbz.number() },
+        args: { n: v.int() },
         handler: async (ctx: Ctx, args: Ctx) => {
           await ctx.db.pings.insert({ n: args.n });
           return args.n;

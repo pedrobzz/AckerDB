@@ -17,7 +17,7 @@ import {
   type UserPrincipal,
 } from "../src/auth.ts";
 import { callerFairnessKey } from "../src/caller.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
 import { mutation, procedure, query, sseProcedure } from "../src/functions.ts";
@@ -99,27 +99,27 @@ const eventMatchInputs: Array<{ row: object; args: object }> = [];
 
 const schema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
+    body: v.string(),
   }).index("by_channel", ["channelId"]),
   log: defineTable({
-    id: dbz.primaryKey(),
-    line: dbz.string(),
+    id: v.primaryKey(),
+    line: v.string(),
   }),
   typing: defineEventTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
   }, {
-    args: { channelId: dbz.bigint() },
+    args: { channelId: v.bigint() },
     access: "public",
     matches: (row, args) => row.channelId === args.channelId,
   }),
   privateTyping: defineEventTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
   }, {
-    args: { channelId: dbz.bigint() },
+    args: { channelId: v.bigint() },
     access: (ctx, args) => {
       eventAccessInputs.push({ ctx, args });
       return ctx.auth.kind === "user";
@@ -130,9 +130,9 @@ const schema = defineSchema({
     },
   }),
   reminders: defineTable({
-    id: dbz.primaryKey(),
-    message: dbz.string(),
-    at: dbz.scheduleAt(),
+    id: v.primaryKey(),
+    message: v.string(),
+    at: v.scheduleAt(),
   }).scheduled("reminders.fire"),
 });
 
@@ -157,13 +157,13 @@ const functions = {
   messages: {
     list: query({
       access: "public",
-      args: { channelId: dbz.bigint() },
+      args: { channelId: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.messages.byChannel((builder: Ctx) => builder.eq("channelId", args.channelId)).collect(),
     }),
     parallelList: query({
       access: "public",
-      args: { channelId: dbz.bigint() },
+      args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const rows = await ctx.db.messages
           .byChannel((builder: Ctx) => builder.eq("channelId", args.channelId))
@@ -199,7 +199,7 @@ const functions = {
     }),
     largeQuery: query({
       access: "public",
-      args: { size: dbz.number() },
+      args: { size: v.int() },
       handler: (_ctx: Ctx, args: Ctx) => "x".repeat(args.size),
     }),
     nonWireQuery: query({
@@ -209,7 +209,7 @@ const functions = {
     }),
     send: mutation({
       access: "public",
-      args: { channelId: dbz.bigint(), body: dbz.string() },
+      args: { channelId: v.bigint(), body: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const id = await ctx.db.messages.insert(args);
         await ctx.db.typing.insert({ channelId: args.channelId });
@@ -219,7 +219,7 @@ const functions = {
     }),
     rewrite: mutation({
       access: "public",
-      args: { id: dbz.bigint() },
+      args: { id: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const row = await ctx.db.messages.get(args.id);
         await ctx.db.messages.patch(args.id, { body: row.body });
@@ -235,7 +235,7 @@ const functions = {
     }),
     composeFail: mutation({
       access: "public",
-      args: { channelId: dbz.bigint() },
+      args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         await functions.messages.send(ctx, { channelId: args.channelId, body: "rollback" });
         throw new Error("compose failed");
@@ -243,7 +243,7 @@ const functions = {
     }),
     largeResult: mutation({
       access: "public",
-      args: { channelId: dbz.bigint(), size: dbz.number() },
+      args: { channelId: v.bigint(), size: v.int() },
       handler: async (ctx: Ctx, args: Ctx) => {
         await ctx.db.messages.insert({ channelId: args.channelId, body: "must-roll-back" });
         return "x".repeat(args.size);
@@ -258,7 +258,7 @@ const functions = {
   reminders: {
     fire: mutation({
       access: "system",
-      args: { id: dbz.bigint(), message: dbz.string(), at: dbz.number() },
+      args: { id: v.bigint(), message: v.string(), at: v.float() },
       handler: async (ctx: Ctx, args: Ctx) => {
         scheduledAttempts++;
         await ctx.db.log.insert({ line: `fired:${args.message}` });
@@ -267,14 +267,14 @@ const functions = {
     }),
     schedule: mutation({
       access: "public",
-      args: { message: dbz.string(), at: dbz.number() },
+      args: { message: v.string(), at: v.float() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.reminders.insert(args),
     }),
   },
   ops: {
     echo: procedure({
       access: "public",
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
     block: procedure({
@@ -288,7 +288,7 @@ const functions = {
     }),
     pipeline: procedure({
       access: "public",
-      args: { channelId: dbz.bigint() },
+      args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const external = await (await fetch("data:text/plain,external")).text();
         const body = await ctx.tx(async (tx: Ctx) => {
@@ -312,8 +312,8 @@ const functions = {
     }),
     stream: sseProcedure({
       access: "public",
-      args: { count: dbz.number() },
-      yields: dbz.jsonb(),
+      args: { count: v.int() },
+      yields: v.jsonb(),
       handler: async function* (ctx: Ctx, args: Ctx) {
         for (let index = 0; index < args.count; index++) {
           yield { type: "delta", value: index };
@@ -325,7 +325,7 @@ const functions = {
     streamed: sseProcedure({
       access: "public",
       args: {},
-      yields: dbz.jsonb(),
+      yields: v.jsonb(),
       handler: () =>
         new ReadableStream({
           start(controller) {
@@ -337,7 +337,7 @@ const functions = {
     invalidChunk: sseProcedure({
       access: "public",
       args: {},
-      yields: dbz.object({ value: dbz.string() }),
+      yields: v.object({ value: v.string() }),
       handler: async function* () {
         yield { value: "first" };
         yield { value: 2 as unknown as string };
@@ -346,7 +346,7 @@ const functions = {
     failingStream: sseProcedure({
       access: "public",
       args: {},
-      yields: dbz.jsonb(),
+      yields: v.jsonb(),
       handler: () => {
         throw new Error("stream failed");
       },
@@ -354,7 +354,7 @@ const functions = {
     waitForAbort: sseProcedure({
       access: "public",
       args: {},
-      yields: dbz.jsonb(),
+      yields: v.jsonb(),
       handler: async function* (ctx: Ctx) {
         yield { phase: "started" };
         if (ctx.abortSignal.aborted) return;
@@ -366,7 +366,7 @@ const functions = {
     holdSse: sseProcedure({
       access: "public",
       args: {},
-      yields: dbz.jsonb(),
+      yields: v.jsonb(),
       handler: async function* () {
         try {
           externalSseStarted?.resolve(undefined);

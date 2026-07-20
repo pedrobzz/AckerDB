@@ -7,7 +7,7 @@ import {
   type InferShape,
   type ObjectShape,
   type Validator,
-} from "./dbz.ts";
+} from "./v.ts";
 import { DbzzError } from "./errors.ts";
 import type { AccessPolicy, AnyInvocable, Invocable } from "./functions.ts";
 import { deepFreeze } from "./immutable.ts";
@@ -180,7 +180,8 @@ function compileAccess<Ctx extends InvocationContext, Args>(
 
 const SCALAR_OUTPUT_KINDS = new Set([
   "string",
-  "number",
+  "int",
+  "float",
   "bigint",
   "identity",
   "boolean",
@@ -190,7 +191,7 @@ const SCALAR_OUTPUT_KINDS = new Set([
 
 function scalarOutput(validator: Validator<unknown, string>): boolean {
   return SCALAR_OUTPUT_KINDS.has(validator.kind) || (
-    validator.kind === "nullable" &&
+    (validator.kind === "nullable" || validator.kind === "optional" || validator.kind === "nullish") &&
     scalarOutput((validator as Validator & { readonly inner: Validator }).inner)
   );
 }

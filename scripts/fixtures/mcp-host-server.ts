@@ -5,7 +5,7 @@ import {
   type MutationMessage,
 } from "@dbzz/core";
 import {
-  dbz,
+  v,
   defineSchema,
   Engine,
   mutation,
@@ -71,11 +71,11 @@ const structuredStatus = acceptanceMcp.tool({
   name: "structured_status",
   description: "Return one validated structured result and its canonical text fallback.",
   access: "authenticated",
-  args: { value: dbz.string().describe("The exact value to round-trip.") },
-  output: dbz.object({
-    kind: dbz.literal("structured"),
-    value: dbz.string(),
-    identity: dbz.identity(),
+  args: { value: v.string().describe("The exact value to round-trip.") },
+  output: v.object({
+    kind: v.literal("structured"),
+    value: v.string(),
+    identity: v.identity(),
   }),
   handler: (ctx, args) => {
     called("structured_status");
@@ -164,10 +164,10 @@ const recordDiscovery = acceptanceMcp.tool({
     "Validate the initialization instruction marker and exact currently visible MCP tool names.",
   access: "authenticated",
   args: {
-    marker: dbz.string(),
-    tools: dbz.array(dbz.string()),
+    marker: v.string(),
+    tools: v.array(v.string()),
   },
-  output: dbz.object({ accepted: dbz.boolean(), count: dbz.number() }),
+  output: v.object({ accepted: v.boolean(), count: v.int() }),
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const expected = ctx.auth.scopes.includes(ADMIN_SCOPE)
@@ -184,7 +184,7 @@ const recordDiscovery = acceptanceMcp.tool({
 
 const createToken = typedMutation({
   access: "authenticated",
-  args: { name: dbz.string(), scopes: dbz.array(acceptanceMcp.scopes) },
+  args: { name: v.string(), scopes: v.array(acceptanceMcp.scopes) },
   handler: (ctx, args) => acceptanceMcp.tokens.create(ctx, {
     name: args.name,
     metadata: { fixture: "host-acceptance" },
@@ -194,13 +194,13 @@ const createToken = typedMutation({
 
 const updateTokenScopes = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string(), scopes: dbz.array(acceptanceMcp.scopes) },
+  args: { id: v.string(), scopes: v.array(acceptanceMcp.scopes) },
   handler: (ctx, args) => acceptanceMcp.tokens.updateScopes(ctx, args.id, args.scopes),
 });
 
 const revokeToken = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string() },
+  args: { id: v.string() },
   handler: (ctx, args) => acceptanceMcp.tokens.revoke(ctx, args.id),
 });
 

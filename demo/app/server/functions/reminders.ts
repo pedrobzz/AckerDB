@@ -1,14 +1,14 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { mutation } from "@demo/dbzz-codegen/server";
 import { itemStatus } from "../schema.ts";
 
 export const fire = mutation({
   access: "system",
   args: {
-    id: dbz.bigint(),
-    orderItemId: dbz.bigint(),
+    id: v.bigint(),
+    orderItemId: v.bigint(),
     expectedStatus: itemStatus,
-    at: dbz.number(),
+    at: v.int(),
   },
   handler: async (ctx, args) => {
     const item = await ctx.db.orderItems.get(args.orderItemId);

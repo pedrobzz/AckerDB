@@ -7,7 +7,7 @@
  *
  * `undefined` fields are dropped (matching dbzz's "undefined = absent" write
  * semantics). Non-finite numbers are rejected: they are not representable in
- * JSON and `dbz.number()` only admits finite values.
+ * JSON and `v.float()` only admits finite values.
  *
  * This module runs on every dbzz runtime — Bun servers, browsers, and React
  * Native's Hermes engine — so it is written against bare ECMAScript plus

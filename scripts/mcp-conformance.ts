@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   DbzzError,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   Engine,
@@ -37,8 +37,8 @@ interface ConformanceCheck {
 
 const schema = defineSchema({
   fixtures: defineTable({
-    id: dbz.primaryKey(),
-    value: dbz.string(),
+    id: v.primaryKey(),
+    value: v.string(),
   }),
 });
 const typedMcp = createMcp as McpBuilder<typeof schema>;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
 import { serve } from "../src/serve.ts";
 import {
@@ -100,7 +100,7 @@ const holdAgent = agentMcp.tool({
   name: "hold_agent",
   description: "Test live token invalidation.",
   access: "authenticated",
-  args: { key: dbz.string() },
+  args: { key: v.string() },
   handler: async (ctx, args) => {
     await waitForRelease(ctx.abortSignal, args.key);
     ctx.abortSignal.throwIfAborted();
@@ -112,7 +112,7 @@ const holdScoped = scopedMcp.tool({
   name: "hold_scoped",
   description: "Test live scoped-token invalidation.",
   access: { anyOf: ["orders.get"] },
-  args: { key: dbz.string() },
+  args: { key: v.string() },
   handler: async (ctx, args) => {
     await waitForRelease(ctx.abortSignal, args.key);
     ctx.abortSignal.throwIfAborted();
@@ -124,7 +124,7 @@ const queueAgentWrite = agentMcp.tool({
   name: "queue_agent_write",
   description: "Queue an agent-token writer.",
   access: "authenticated",
-  args: { key: dbz.string() },
+  args: { key: v.string() },
   handler: async (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const identity = ctx.auth.identity;
@@ -138,7 +138,7 @@ const queueScopedWrite = scopedMcp.tool({
   name: "queue_scoped_write",
   description: "Queue a scoped-token writer.",
   access: { anyOf: ["orders.get"] },
-  args: { key: dbz.string() },
+  args: { key: v.string() },
   handler: async (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const identity = ctx.auth.identity;
@@ -150,7 +150,7 @@ const queueScopedWrite = scopedMcp.tool({
 
 const rollbackAgentRevoke = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string() },
+  args: { id: v.string() },
   handler: (ctx, args) => {
     agentMcp.tokens.revoke(ctx, args.id);
     throw new Error("roll back agent revoke");
@@ -159,7 +159,7 @@ const rollbackAgentRevoke = typedMutation({
 
 const rollbackScopeReduction = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string() },
+  args: { id: v.string() },
   handler: (ctx, args) => {
     scopedMcp.tokens.updateScopes(ctx, args.id, []);
     throw new Error("roll back scope reduction");
@@ -168,7 +168,7 @@ const rollbackScopeReduction = typedMutation({
 
 const gatedAgentRevoke = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string(), key: dbz.string() },
+  args: { id: v.string(), key: v.string() },
   handler: async (ctx, args) => {
     const gate = requiredGate(args.key);
     gate.started.resolve();
@@ -179,7 +179,7 @@ const gatedAgentRevoke = typedMutation({
 
 const gatedScopeReduction = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string(), key: dbz.string() },
+  args: { id: v.string(), key: v.string() },
   handler: async (ctx, args) => {
     const gate = requiredGate(args.key);
     gate.started.resolve();

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { sseProcedure } from "../src/functions.ts";
 
 describe("sseProcedure declaration", () => {
@@ -10,7 +10,7 @@ describe("sseProcedure declaration", () => {
         access: "public",
         handler: async function* () {},
       } as never),
-    ).toThrow("sse yields must be a dbz validator");
+    ).toThrow("sse yields must be a v validator");
     expect(() =>
       sseProcedure({
         args: {},
@@ -18,11 +18,11 @@ describe("sseProcedure declaration", () => {
         access: "public",
         handler: async function* () {},
       } as never),
-    ).toThrow("sse yields must be a dbz validator");
+    ).toThrow("sse yields must be a v validator");
   });
 
   test("rejects storage-only validators as chunk validators", () => {
-    for (const yields of [dbz.primaryKey(), dbz.scheduleAt(), dbz.tag()]) {
+    for (const yields of [v.primaryKey(), v.scheduleAt(), v.tag()]) {
       expect(() =>
         sseProcedure({
           args: {},
@@ -30,14 +30,14 @@ describe("sseProcedure declaration", () => {
           access: "public",
           handler: async function* () {},
         } as never),
-      ).toThrow(`yields: dbz.${yields.kind}() is not a valid chunk validator`);
+      ).toThrow(`yields: v.${yields.kind}() is not a valid chunk validator`);
     }
   });
 
   test("keeps the transport-boundary and access invariants of other kinds", () => {
     const declared = sseProcedure({
-      args: { label: dbz.string() },
-      yields: dbz.object({ label: dbz.string() }),
+      args: { label: v.string() },
+      yields: v.object({ label: v.string() }),
       access: "public",
       handler: async function* (_ctx, args) {
         yield { label: args.label };
@@ -51,18 +51,18 @@ describe("sseProcedure declaration", () => {
     expect(() =>
       sseProcedure({
         args: {},
-        yields: dbz.string(),
+        yields: v.string(),
         access: "everyone",
         handler: async function* () {},
       } as never),
     ).toThrow("sse access must be public, authenticated, system, or a policy callback");
     expect(() =>
       sseProcedure({
-        args: { at: dbz.scheduleAt() },
-        yields: dbz.string(),
+        args: { at: v.scheduleAt() },
+        yields: v.string(),
         access: "public",
         handler: async function* () {},
       } as never),
-    ).toThrow("args.at: dbz.scheduleAt() is not a valid argument validator");
+    ).toThrow("args.at: v.scheduleAt() is not a valid argument validator");
   });
 });

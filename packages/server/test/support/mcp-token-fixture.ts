@@ -10,7 +10,7 @@ import {
 } from "@dbzz/core";
 import type { CredentialVerifier, UserPrincipal } from "../../src/auth.ts";
 import { callerFairnessKey } from "../../src/caller.ts";
-import { dbz } from "../../src/dbz.ts";
+import { v } from "../../src/v.ts";
 import { Engine } from "../../src/engine.ts";
 import {
   mutation,
@@ -36,9 +36,9 @@ import type {
 
 const schema = defineSchema({
   records: defineTable({
-    id: dbz.primaryKey(),
-    owner: dbz.identity(),
-    value: dbz.string(),
+    id: v.primaryKey(),
+    owner: v.identity(),
+    value: v.string(),
   }),
 });
 
@@ -46,7 +46,7 @@ export const typedMutation = mutation as MutationBuilder<typeof schema>;
 export const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 export const typedMcp = createMcp as McpBuilder<typeof schema>;
-const invalidUpdateKind = dbz.enum("InvalidMcpTokenUpdateKind", ["empty", "undefined"]);
+const invalidUpdateKind = v.enum("InvalidMcpTokenUpdateKind", ["empty", "undefined"]);
 
 export const agentMcp = typedMcp({ name: "agent", path: "/agent/mcp" });
 const operationsMcp = typedMcp({ name: "operations", path: "/operations/mcp" });
@@ -60,8 +60,8 @@ let escapedOwnerContext: MutationCtx<typeof schema> | null = null;
 const createAgentToken = typedMutation({
   access: "authenticated",
   args: {
-    name: dbz.string(),
-    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
+    name: v.string(),
+    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
   },
   handler: (ctx, args) => {
     escapedOwnerContext = ctx;
@@ -77,22 +77,22 @@ const listAgentTokens = typedQuery({
 
 const renameAgentToken = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string(), name: dbz.string() },
+  args: { id: v.string(), name: v.string() },
   handler: (ctx, args) => agentMcp.tokens.update(ctx, args.id, { name: args.name }),
 });
 
 const updateAgentTokenMetadata = typedMutation({
   access: "authenticated",
   args: {
-    id: dbz.string(),
-    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
+    id: v.string(),
+    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
   },
   handler: (ctx, args) => agentMcp.tokens.update(ctx, args.id, { metadata: args.metadata }),
 });
 
 const invalidAgentTokenUpdate = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string(), kind: invalidUpdateKind },
+  args: { id: v.string(), kind: invalidUpdateKind },
   handler: (ctx, args) => agentMcp.tokens.update(
     ctx,
     args.id,
@@ -102,19 +102,19 @@ const invalidAgentTokenUpdate = typedMutation({
 
 const revokeAgentToken = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string() },
+  args: { id: v.string() },
   handler: (ctx, args) => agentMcp.tokens.revoke(ctx, args.id),
 });
 
 const renameOperationsToken = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string(), name: dbz.string() },
+  args: { id: v.string(), name: v.string() },
   handler: (ctx, args) => operationsMcp.tokens.update(ctx, args.id, { name: args.name }),
 });
 
 const revokeOperationsToken = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string() },
+  args: { id: v.string() },
   handler: (ctx, args) => operationsMcp.tokens.revoke(ctx, args.id),
 });
 
@@ -127,8 +127,8 @@ const listOperationsTokens = typedQuery({
 const createScopedToken = typedMutation({
   access: "authenticated",
   args: {
-    name: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
+    name: v.string(),
+    scopes: v.array(scopedMcp.scopes),
   },
   handler: (ctx, args) => scopedMcp.tokens.create(ctx, args),
 });
@@ -136,8 +136,8 @@ const createScopedToken = typedMutation({
 const updateScopedToken = typedMutation({
   access: "authenticated",
   args: {
-    id: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
+    id: v.string(),
+    scopes: v.array(scopedMcp.scopes),
   },
   handler: (ctx, args) => scopedMcp.tokens.updateScopes(ctx, args.id, args.scopes),
 });
@@ -158,7 +158,7 @@ const writeOwnedRecord = agentMcp.tool({
   name: "write_owned_record",
   description: "Write a row owned by the delegated Identity.",
   access: "authenticated",
-  args: { value: dbz.string() },
+  args: { value: v.string() },
   handler: async (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const identity = ctx.auth.identity;

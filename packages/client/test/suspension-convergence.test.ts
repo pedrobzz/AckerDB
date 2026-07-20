@@ -38,7 +38,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -995,15 +995,15 @@ async function until(
 
 const realSchema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
+    body: v.string(),
   }).index("by_channel", ["channelId"]),
   pings: defineEventTable({
-    id: dbz.primaryKey(),
-    n: dbz.number(),
+    id: v.primaryKey(),
+    n: v.int(),
   }, {
-    args: { min: dbz.number() },
+    args: { min: v.int() },
     access: "public",
     matches: (row, args) => row.n >= args.min,
   }),
@@ -1052,7 +1052,7 @@ function realRegistry(): Registry {
     messages: {
       list: query({
         access: "public",
-        args: { channelId: dbz.bigint() },
+        args: { channelId: v.bigint() },
         handler: async (ctx: Ctx, args: Ctx) =>
           await ctx.db.messages
             .byChannel((builder: Ctx) => builder.eq("channelId", args.channelId))
@@ -1060,7 +1060,7 @@ function realRegistry(): Registry {
       }),
       send: mutation({
         access: "public",
-        args: { channelId: dbz.bigint(), body: dbz.string() },
+        args: { channelId: v.bigint(), body: v.string() },
         handler: async (ctx: Ctx, args: Ctx) => {
           const gate = sendGates.get(args.body);
           if (gate) {
@@ -1075,7 +1075,7 @@ function realRegistry(): Registry {
     pings: {
       emit: mutation({
         access: "public",
-        args: { n: dbz.number() },
+        args: { n: v.int() },
         handler: async (ctx: Ctx, args: Ctx) => {
           await ctx.db.pings.insert({ n: args.n });
           return args.n;

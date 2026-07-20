@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import {
   advanceOrderItem,
   cancelOpenOrder,
@@ -30,13 +30,13 @@ export const advanceKitchenItem = admin.tool({
   access: { anyOf: ["operate"] },
   annotations: { destructiveHint: false, idempotentHint: false },
   args: {
-    orderItemId: dbz
+    orderItemId: v
       .bigint()
       .describe("Identifier of the order item to advance."),
   },
-  output: dbz.object({
-    orderItemId: dbz.bigint(),
-    orderId: dbz.bigint(),
+  output: v.object({
+    orderItemId: v.bigint(),
+    orderId: v.bigint(),
     status: itemStatus,
   }),
   handler: (ctx, args) =>
@@ -59,14 +59,14 @@ export const cancelOrder = admin.tool({
   access: { anyOf: ["operate"] },
   annotations: { destructiveHint: true, idempotentHint: false },
   args: {
-    orderId: dbz.bigint().describe("Identifier of the open order to cancel."),
+    orderId: v.bigint().describe("Identifier of the open order to cancel."),
   },
-  output: dbz.object({
-    orderId: dbz.bigint(),
-    tableId: dbz.bigint(),
-    tableNumber: dbz.number(),
-    itemsCancelled: dbz.number(),
-    itemsPreserved: dbz.number(),
+  output: v.object({
+    orderId: v.bigint(),
+    tableId: v.bigint(),
+    tableNumber: v.int(),
+    itemsCancelled: v.int(),
+    itemsPreserved: v.int(),
   }),
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {

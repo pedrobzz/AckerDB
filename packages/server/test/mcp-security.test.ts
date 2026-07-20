@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { createMcp } from "../src/mcp.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
@@ -25,7 +25,7 @@ const securityMcp = createMcp({ name: "security" });
 const echoSecret = securityMcp.tool({
   name: "echo_secret",
   description: "Return one private fixture without observing its contents.",
-  args: { secret: dbz.string(), crash: dbz.boolean() },
+  args: { secret: v.string(), crash: v.boolean() },
   handler: (_ctx, args) => {
     if (args.crash) throw new Error(`${HANDLER_ERROR_CANARY}:${args.secret}`);
     return { content: [{ type: "text", text: `${RESULT_CANARY}:${args.secret}` }] };

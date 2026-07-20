@@ -1,5 +1,5 @@
 export {
-  dbz,
+  v,
   ValidationError,
   isValidationError,
   checkShape,
@@ -14,14 +14,17 @@ export {
   type ObjectValidator,
   type InferShape,
   type StandardValidator,
+  type ChainableValidator,
   type Validator,
   type EnumValidator,
   type UnionValidator,
   type NullableValidator,
+  type OptionalValidator,
+  type NullishValidator,
   type UnionMembers,
   type UnionValue,
   type UnionNamespace,
-} from "./dbz.ts";
+} from "./v.ts";
 export {
   CorruptDatabaseError,
   Engine,

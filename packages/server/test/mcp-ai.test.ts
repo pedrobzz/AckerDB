@@ -12,7 +12,7 @@ import {
 import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { ANONYMOUS_PRINCIPAL } from "../src/auth.ts";
-import { dbz, type Identity } from "../src/dbz.ts";
+import { v, type Identity } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import {
   procedure,
@@ -39,8 +39,8 @@ import type { TelemetryRecord, TelemetrySpanRecord } from "../src/telemetry.ts";
 
 const schema = defineSchema({
   calls: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
+    id: v.primaryKey(),
+    label: v.string(),
   }),
 });
 
@@ -48,16 +48,17 @@ const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedSse = sseProcedure as SseBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
 const agentMcp = typedMcp({ name: "agent", path: "/agent/mcp" });
-const choice = dbz.union("AiChoice", {
-  text: dbz.string(),
-  nothing: dbz.tag(),
+const choice = v.union("AiChoice", {
+  text: v.string(),
+  nothing: v.tag(),
+  maybe: v.string().optional(),
 });
 
 const canonicalInput = Object.freeze({
   large: "9007199254740993",
   identity: "9223372036854775806",
   bytes: "AAEC/v8=",
-  choice: { tag: "nothing" },
+  choice: { tag: "maybe" },
 });
 
 let runtime: Runtime;
@@ -65,8 +66,8 @@ let nativeInput: {
   readonly large: bigint;
   readonly identity: Identity;
   readonly bytes: readonly number[];
-  readonly optional: string | null;
-  readonly choice: { readonly tag: string; readonly value: unknown };
+  readonly optional: string | undefined;
+  readonly choice: { readonly tag: string; readonly value?: unknown };
 } | undefined;
 let roundTripCalls = 0;
 let retainedTools: McpAiToolSet | undefined;
@@ -80,17 +81,17 @@ const roundTrip = agentMcp.tool({
   title: "Round trip canonical values",
   description: "Round-trip lossless DBZZ values through one local MCP dispatch.",
   args: {
-    large: dbz.bigint(),
-    identity: dbz.identity(),
-    bytes: dbz.bytes(),
-    optional: dbz.nullable(dbz.string()),
+    large: v.bigint(),
+    identity: v.identity(),
+    bytes: v.bytes(),
+    optional: v.string().optional(),
     choice,
   },
-  output: dbz.object({
-    large: dbz.bigint(),
-    identity: dbz.identity(),
-    bytes: dbz.bytes(),
-    optional: dbz.nullable(dbz.string()),
+  output: v.object({
+    large: v.bigint(),
+    identity: v.identity(),
+    bytes: v.bytes(),
+    optional: v.string().nullable(),
     choice,
   }),
   handler: async (ctx, args) => {
@@ -103,7 +104,7 @@ const roundTrip = agentMcp.tool({
       choice: args.choice,
     };
     await ctx.tx((tx) => tx.db.calls.insert({ label: ctx.auth.kind }));
-    return args;
+    return { ...args, optional: args.optional ?? null };
   },
 });
 
@@ -139,8 +140,8 @@ const fail = agentMcp.tool({
 const parallelEcho = agentMcp.tool({
   name: "parallel_echo",
   description: "Wait until two local model calls have entered concurrently.",
-  args: { index: dbz.number() },
-  output: dbz.object({ index: dbz.number() }),
+  args: { index: v.int() },
+  output: v.object({ index: v.int() }),
   handler: async (_ctx, args) => {
     operationCounts.push(runtime.status().activeOperations);
     parallelEntered++;
@@ -223,7 +224,7 @@ function errorMessage(error: unknown): string {
 
 const runAi = typedProcedure({
   access: "public",
-  args: { mode: dbz.string() },
+  args: { mode: v.string() },
   handler: async (ctx, args) => {
     const tools = agentMcp.aiTools(ctx);
     retainedTools = tools;
@@ -248,7 +249,7 @@ const runAi = typedProcedure({
 const runAiSse = typedSse({
   access: "public",
   args: {},
-  yields: dbz.jsonb<unknown>(),
+  yields: v.jsonb<unknown>(),
   handler: (ctx) => {
     const tools = agentMcp.aiTools(ctx);
     retainedSseTools = tools;
@@ -354,15 +355,15 @@ describe("MCP zero-hop AI SDK tools", () => {
           identity: canonicalInput.identity,
           bytes: canonicalInput.bytes,
           optional: null,
-          choice: { tag: "nothing", value: null },
+          choice: { tag: "maybe" },
         },
       }]);
       expect(nativeInput).toEqual({
         large: 9_007_199_254_740_993n,
         identity: 9_223_372_036_854_775_806n as Identity,
         bytes: [0, 1, 2, 254, 255],
-        optional: null,
-        choice: { tag: "nothing", value: null },
+        optional: undefined,
+        choice: { tag: "maybe" },
       });
       expect(fetch).not.toHaveBeenCalled();
       expect(authenticate).not.toHaveBeenCalled();
@@ -408,13 +409,17 @@ describe("MCP zero-hop AI SDK tools", () => {
     });
     expect(roundTrip.inputSchema).toMatchObject({ additionalProperties: false });
     expect(input.validate(canonicalInput)).toEqual({ value: canonicalInput });
-    expect(output.validate({ ...canonicalInput, optional: null })).toMatchObject({
+    expect(output.validate({
+      ...canonicalInput,
+      optional: null,
+      choice: { tag: "nothing" },
+    })).toMatchObject({
       issues: expect.any(Array),
     });
     const structured = {
       ...canonicalInput,
       optional: null,
-      choice: { tag: "nothing", value: null },
+      choice: { tag: "maybe" },
     };
     expect(tools.round_trip!.toModelOutput({
       toolCallId: "structured",
@@ -501,7 +506,7 @@ describe("MCP zero-hop AI SDK tools", () => {
         identity: canonicalInput.identity,
         bytes: canonicalInput.bytes,
         optional: null,
-        choice: { tag: "nothing", value: null },
+        choice: { tag: "maybe" },
       },
     });
     expect(messages.at(-1)?.t).toBe("sse_done");

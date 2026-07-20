@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import {
   CorruptDatabaseError,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   Engine,
@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 const schema = defineSchema({
-  records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }),
+  records: defineTable({ id: v.primaryKey(), value: v.string() }),
 });
 
 function catalog(database: string): unknown[] {
@@ -168,7 +168,7 @@ describe("durability and internal state", () => {
 
   test("rejects missing and wrong application indexes before ready or reconciliation", () => {
     const indexed = defineSchema({
-      records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }).index("by_value", ["value"], {
+      records: defineTable({ id: v.primaryKey(), value: v.string() }).index("by_value", ["value"], {
         unique: true,
       }),
     });
@@ -202,8 +202,8 @@ describe("durability and internal state", () => {
   test("rejects corrupt tag assignments without repairing them", () => {
     const tagged = defineSchema({
       records: defineTable({
-        id: dbz.primaryKey(),
-        value: dbz.enum("RecordState", ["draft", "ready", "done"]),
+        id: v.primaryKey(),
+        value: v.enum("RecordState", ["draft", "ready", "done"]),
       }),
     });
     for (const corruption of [
@@ -411,8 +411,8 @@ describe("durability and internal state", () => {
   test("detects an unclean prior process without deleting WAL state", async () => {
     const { database } = fresh();
     const script = `
-      import { dbz, defineSchema, defineTable, Engine, reconcile } from "@dbzz/server";
-      const schema = defineSchema({ records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }) });
+      import { v, defineSchema, defineTable, Engine, reconcile } from "@dbzz/server";
+      const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(database)});
       reconcile(engine);
       engine.writer.exec("BEGIN IMMEDIATE");
@@ -536,8 +536,8 @@ describe("durability and internal state", () => {
 
     const unavailableTmp = join(root, "missing-tmp");
     const script = `
-      import { dbz, defineSchema, defineTable, Engine } from "@dbzz/server";
-      const schema = defineSchema({ records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }) });
+      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(database)});
       engine.close("clean");
     `;

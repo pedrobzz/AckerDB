@@ -37,16 +37,20 @@ Pre-1.0, a dbzz upgrade that bumps the storage engine's internal schema
 refuses to open older `.zdb` files (the error names both versions). The dev
 workflow is wipe + reseed; there is no migration story before 1.0 by design.
 
-## Model compatibility: nullable tool arguments
+## Model compatibility: optional and nullable tool arguments
 
-dbzz's optionality idiom for tool args is `dbz.nullable(...)`. Since 0.3.1 it
-emits JSON Schema type arrays (`{"type": ["boolean", "null"]}`) rather than
-`anyOf` unions, because models — verified with DeepSeek v4 flash — ignore
-`anyOf` member types in tool schemas and send every scalar as a string. With
-type arrays, no application-side coercion or `repairToolCall` is needed; tool
-inputs validate as declared.
+DBzz keeps omission and null explicit in tool contracts. Use
+`v.boolean().optional()` when a property may be omitted,
+`v.boolean().nullable()` when it is required but may be `null`, and
+`v.boolean().nullish()` when both forms are accepted. Optional properties are
+omitted from JSON Schema's `required` list. Nullable properties emit type
+arrays (`{"type": ["boolean", "null"]}`) rather than `anyOf` unions, because
+models — verified with DeepSeek v4 flash — ignore `anyOf` member types in tool
+schemas and send every scalar as a string. With these schemas, no
+application-side coercion or `repairToolCall` is needed; tool inputs validate
+as declared.
 
-The same principle governs int64 ids. `dbz.bigint()` / `dbz.identity()` args
+The same principle governs int64 ids. `v.bigint()` / `v.identity()` args
 follow proto3's JSON mapping since 0.3.2: they *serialize* as canonical
 decimal strings (wire-safe past 2^53), but *accept* either a JSON integer or
 the decimal string. A model's natural completion for an id is the number `9`;

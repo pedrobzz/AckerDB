@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { stableEncode } from "@dbzz/core";
 import type { Principal } from "./auth.ts";
-import type { Identity } from "./dbz.ts";
+import type { Identity } from "./v.ts";
 import type { ReadRecorder, WriteCollector } from "./db.ts";
 import type { Engine } from "./engine.ts";
 import { DbzzError } from "./errors.ts";

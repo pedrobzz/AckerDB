@@ -31,7 +31,7 @@
  */
 import type { Database } from "bun:sqlite";
 import { decode, encode } from "@dbzz/core";
-import { ValidationError, type Descriptor } from "../../dbz.ts";
+import { ValidationError, type Descriptor } from "../../v.ts";
 import { checkDescriptor, scalarDecoder, scalarEncoder } from "../descriptor-kinds.ts";
 import { physicalColumnDdl, type ColumnPlan, type Engine, type TablePlan, type TagMap } from "../../engine.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
@@ -394,7 +394,10 @@ function checkRow(table: string, snap: TableSnapshot, row: unknown, op: string):
       pk = name;
       continue;
     }
-    out[name] = checkDescriptor(desc, input[name], `${table}.${op}.${name}`);
+    const value = !Object.hasOwn(input, name) && desc["k"] === "nullable"
+      ? null
+      : input[name];
+    out[name] = checkDescriptor(desc, value, `${table}.${op}.${name}`);
   }
   for (const key of Object.keys(input)) {
     if (key !== pk && !(key in snap.columns) && input[key] !== undefined) {

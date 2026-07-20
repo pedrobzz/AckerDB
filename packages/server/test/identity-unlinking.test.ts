@@ -14,7 +14,7 @@ import {
   type VerifiedCredential,
 } from "../src/auth.ts";
 import { acquireAuthLease, type AuthLease } from "../src/auth-lease.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
 import { procedure } from "../src/functions.ts";
@@ -50,9 +50,9 @@ const BOB_A = Object.freeze({ issuer: ISSUER_A, subject: "bob" });
 
 const schema = defineSchema({
   owned: defineTable({
-    id: dbz.primaryKey(),
-    userId: dbz.identity(),
-    value: dbz.string(),
+    id: v.primaryKey(),
+    userId: v.identity(),
+    value: v.string(),
   }).index("by_user", ["userId"], { unique: true }),
 });
 
@@ -84,13 +84,13 @@ const functions = {
   accounts: {
     link: procedure({
       access: "public",
-      args: { rawBearerToken: dbz.string() },
+      args: { rawBearerToken: v.string() },
       handler: (ctx: Ctx, args: { rawBearerToken: string }) =>
         ctx.linkAccount(args.rawBearerToken),
     }),
     unlink: procedure({
       access: "public",
-      args: { issuer: dbz.string(), subject: dbz.string() },
+      args: { issuer: v.string(), subject: v.string() },
       handler: async (ctx: Ctx, account: ExternalAccount) => {
         await ctx.unlinkAccount(account);
         return true;
@@ -98,7 +98,7 @@ const functions = {
     }),
     unlinkThenFail: procedure({
       access: "public",
-      args: { issuer: dbz.string(), subject: dbz.string() },
+      args: { issuer: v.string(), subject: v.string() },
       handler: async (ctx: Ctx, account: ExternalAccount) => {
         await ctx.unlinkAccount(account);
         throw new Error("handler failed after committed unlink");
@@ -106,7 +106,7 @@ const functions = {
     }),
     unlinkAndWait: procedure({
       access: "public",
-      args: { issuer: dbz.string(), subject: dbz.string() },
+      args: { issuer: v.string(), subject: v.string() },
       handler: async (ctx: Ctx, account: ExternalAccount) => {
         const stall = unlinkStall;
         if (stall === undefined) throw new Error("unlink stall is not installed");
@@ -120,7 +120,7 @@ const functions = {
   owned: {
     create: procedure({
       access: (ctx) => ctx.auth.kind === "user",
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       handler: (ctx: Ctx, args: { value: string }) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
         return ctx.tx((tx: Ctx) => tx.db.owned.insert({

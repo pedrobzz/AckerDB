@@ -13,7 +13,7 @@ import {
   type UserPrincipal,
   type WorkloadPrincipal,
 } from "../src/auth.ts";
-import { dbz, type Identity } from "../src/dbz.ts";
+import { v, type Identity } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { procedure, type ProcedureBuilder } from "../src/functions.ts";
 import { createMcp, type McpAiToolSet, type McpBuilder } from "../src/mcp.ts";
@@ -28,8 +28,8 @@ import type { TelemetryRecord, TelemetrySpanRecord } from "../src/telemetry.ts";
 
 const schema = defineSchema({
   calls: defineTable({
-    id: dbz.primaryKey(),
-    tool: dbz.string(),
+    id: v.primaryKey(),
+    tool: v.string(),
   }),
 });
 
@@ -82,10 +82,10 @@ async function parallelPoint(): Promise<void> {
   await parallelRelease.promise;
 }
 
-const principalOutput = dbz.object({
-  tool: dbz.string(),
-  kind: dbz.string(),
-  identity: dbz.nullable(dbz.identity()),
+const principalOutput = v.object({
+  tool: v.string(),
+  kind: v.string(),
+  identity: v.identity().nullable(),
 });
 
 const publicStatus = scopedMcp.tool({
@@ -234,7 +234,7 @@ function errorMessage(work: () => unknown): string {
 
 const runLocal = typedProcedure({
   access: "public",
-  args: { mode: dbz.string() },
+  args: { mode: v.string() },
   handler: async (ctx, args) => {
     switch (args.mode) {
       case "scoped": {
@@ -323,10 +323,10 @@ const delegate = scopedMcp.tool({
   name: "delegate",
   description: "Exercise local delegation from an existing MCP principal.",
   access: "authenticated",
-  args: { mode: dbz.string() },
-  output: dbz.object({
-    names: dbz.array(dbz.string()),
-    events: dbz.jsonb<readonly unknown[]>(),
+  args: { mode: v.string() },
+  output: v.object({
+    names: v.array(v.string()),
+    events: v.jsonb<readonly unknown[]>(),
   }),
   handler: async (ctx, args) => {
     switch (args.mode) {

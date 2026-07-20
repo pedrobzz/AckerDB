@@ -47,7 +47,7 @@ import {
   type CommitWaitHook,
   type FetchObservation,
 } from "./coordinator.ts";
-import { isValidationError, type Identity } from "./dbz.ts";
+import { isValidationError, type Identity } from "./v.ts";
 import {
   makeDbReader,
   type DbStatementObservation,

@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 import { admin } from "../mcp.ts";
 
@@ -17,20 +17,22 @@ export const getMenuCategories = admin.tool({
   access: { anyOf: ["read"] },
   annotations: { readOnlyHint: true },
   args: {
-    activeOnly: dbz
-      .nullable(dbz.boolean())
+    activeOnly: v
+      .boolean()
+      .optional()
       .describe("When true, exclude retired (inactive) categories."),
-    limit: dbz
-      .nullable(dbz.number())
+    limit: v
+      .int()
+      .optional()
       .describe(`Maximum categories to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: dbz.object({
-    categories: dbz.array(
-      dbz.object({
-        id: dbz.bigint(),
-        name: dbz.string(),
-        sortOrder: dbz.number(),
-        active: dbz.boolean(),
+  output: v.object({
+    categories: v.array(
+      v.object({
+        id: v.bigint(),
+        name: v.string(),
+        sortOrder: v.int(),
+        active: v.boolean(),
       }),
     ),
   }),

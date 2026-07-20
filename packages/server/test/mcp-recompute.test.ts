@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PROTOCOL_VERSION, encode } from "@dbzz/core";
 import type { UserPrincipal } from "../src/auth.ts";
 import { callerFairnessKey } from "../src/caller.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import {
   procedure,
@@ -35,12 +35,12 @@ import type {
 
 const schema = defineSchema({
   records: defineTable({
-    id: dbz.primaryKey(),
-    value: dbz.string(),
+    id: v.primaryKey(),
+    value: v.string(),
   }),
   signals: defineEventTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
+    id: v.primaryKey(),
+    label: v.string(),
   }, {
     args: {},
     access: (ctx) => ctx.auth.kind === "user",
@@ -58,7 +58,7 @@ const addRecord = actionsMcp.tool({
   name: "add_record",
   description: "Insert one record transactionally.",
   access: "authenticated",
-  args: { value: dbz.string() },
+  args: { value: v.string() },
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       await tx.db.records.insert({ value: args.value });
@@ -70,7 +70,7 @@ const emitSignal = actionsMcp.tool({
   name: "emit_signal",
   description: "Emit one live event transactionally.",
   access: "authenticated",
-  args: { label: dbz.string() },
+  args: { label: v.string() },
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       await tx.db.signals.insert({ label: args.label });
@@ -86,7 +86,7 @@ const listRecords = typedQuery({
 
 const commitRecord = typedProcedure({
   access: (ctx) => ctx.auth.kind === "user",
-  args: { value: dbz.string() },
+  args: { value: v.string() },
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       await tx.db.records.insert({ value: args.value });

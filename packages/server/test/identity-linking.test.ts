@@ -12,7 +12,7 @@ import {
   type UserPrincipal,
   type VerifiedCredential,
 } from "../src/auth.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
 import { procedure } from "../src/functions.ts";
@@ -33,9 +33,9 @@ const SHARED_CLAIMS = Object.freeze({
 
 const schema = defineSchema({
   owned: defineTable({
-    id: dbz.primaryKey(),
-    userId: dbz.identity(),
-    value: dbz.string(),
+    id: v.primaryKey(),
+    userId: v.identity(),
+    value: v.string(),
   }).index("by_user", ["userId"], { unique: true }),
 });
 
@@ -47,7 +47,7 @@ const functions = {
   accounts: {
     link: procedure({
       access: "public",
-      args: { rawBearerToken: dbz.string() },
+      args: { rawBearerToken: v.string() },
       handler: async (ctx: Ctx, args: { rawBearerToken: string }) => {
         await ctx.linkAccount(args.rawBearerToken);
         return true;
@@ -57,7 +57,7 @@ const functions = {
   owned: {
     create: procedure({
       access: (ctx) => ctx.auth.kind === "user",
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       handler: (ctx: Ctx, args: { value: string }) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
         return ctx.tx((tx: Ctx) => tx.db.owned.insert({

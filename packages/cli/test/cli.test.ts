@@ -331,8 +331,8 @@ describe("dbz CLI", () => {
     const port = freePort();
     const dir = makeFixture({
       "schema.ts": `
-        import { dbz, defineSchema, defineTable } from "@dbzz/server";
-        export default defineSchema({ records: defineTable({ id: dbz.primaryKey() }) });
+        import { v, defineSchema, defineTable } from "@dbzz/server";
+        export default defineSchema({ records: defineTable({ id: v.primaryKey() }) });
       `,
       ".zdb.config.json": JSON.stringify({ port }),
     });
@@ -523,7 +523,7 @@ ${FIXTURE_SCHEMA}`,
       join(dir, "schema.ts"),
       FIXTURE_SCHEMA.replace(
         "typingEvents: defineEventTable({",
-        `notes: defineTable({ id: dbz.primaryKey(), text: dbz.string() }),
+        `notes: defineTable({ id: v.primaryKey(), text: v.string() }),
   typingEvents: defineEventTable({`,
       ),
     );

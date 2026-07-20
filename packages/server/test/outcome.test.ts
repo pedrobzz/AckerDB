@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { ProtocolError, decode, encode, parseOutcome } from "@dbzz/core";
 import { AdmissionRejected } from "../src/admission.ts";
-import { ValidationError } from "../src/dbz.ts";
+import { ValidationError } from "../src/v.ts";
 import { DbzzError } from "../src/errors.ts";
 import {
   fitOutcome,

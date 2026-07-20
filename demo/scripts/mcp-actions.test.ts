@@ -196,7 +196,7 @@ test("removing the operate scope denies the token's very next action call", asyn
     expect(ok.status).toBe("PREPARING");
 
     // Drop operate; the reduced scope is authoritative on the next call.
-    await staff.mutation(api.admin.tokens.update, { id: token.id, name: null, scopes: ["read"] });
+    await staff.mutation(api.admin.tokens.update, { id: token.id, scopes: ["read"] });
 
     const denied = await callAction(
       backend,

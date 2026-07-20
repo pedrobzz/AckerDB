@@ -10,7 +10,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   query,
@@ -38,8 +38,8 @@ const WAIT_DEADLINE_MS = 5_000;
 
 const schema = defineSchema({
   notes: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 

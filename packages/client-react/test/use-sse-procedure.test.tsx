@@ -10,7 +10,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   reconcile,
   serve,
@@ -62,8 +62,8 @@ function registry(): Registry {
     stream: {
       ticks: sseProcedure({
         access: "public",
-        args: { count: dbz.number() },
-        yields: dbz.object({ tick: dbz.number() }),
+        args: { count: v.int() },
+        yields: v.object({ tick: v.int() }),
         handler: async function* (_ctx: SseCtx, args: { count: number }) {
           for (let tick = 0; tick < args.count; tick++) {
             producedTicks.push(tick);
@@ -74,7 +74,7 @@ function registry(): Registry {
       invalid: sseProcedure({
         access: "public",
         args: {},
-        yields: dbz.object({ value: dbz.string() }),
+        yields: v.object({ value: v.string() }),
         handler: async function* () {
           yield { value: "first" };
           yield { value: 2 as unknown as string };
@@ -83,7 +83,7 @@ function registry(): Registry {
       hold: sseProcedure({
         access: "public",
         args: {},
-        yields: dbz.object({ phase: dbz.string() }),
+        yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
           try {
             holdStarted.resolve(undefined);
@@ -96,7 +96,7 @@ function registry(): Registry {
       holdAfterFirst: sseProcedure({
         access: "public",
         args: {},
-        yields: dbz.object({ phase: dbz.string() }),
+        yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
           try {
             yield { phase: "one" };
@@ -109,7 +109,7 @@ function registry(): Registry {
       unmountHold: sseProcedure({
         access: "public",
         args: {},
-        yields: dbz.object({ phase: dbz.string() }),
+        yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
           try {
             yield { phase: "one" };

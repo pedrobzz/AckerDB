@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { isStaff, staffAccess } from "../lib/access.ts";
 import {
@@ -40,7 +40,7 @@ export const catalog = query({
 
 export const createCategory = mutation({
   access: staffAccess,
-  args: { name: dbz.string(), sortOrder: dbz.number() },
+  args: { name: v.string(), sortOrder: v.int() },
   handler: async (ctx, args) => {
     const name = cleanName(args.name, "Category name");
     const sortOrder = nonNegativeInteger(args.sortOrder, "Sort order");
@@ -65,12 +65,12 @@ export const createCategory = mutation({
 export const createItem = mutation({
   access: staffAccess,
   args: {
-    categoryId: dbz.bigint(),
-    name: dbz.string(),
-    description: dbz.string(),
-    image: dbz.string(),
-    priceCents: dbz.number(),
-    sortOrder: dbz.number(),
+    categoryId: v.bigint(),
+    name: v.string(),
+    description: v.string(),
+    image: v.string(),
+    priceCents: v.int(),
+    sortOrder: v.int(),
   },
   handler: async (ctx, args) => {
     const category = await ctx.db.menuCategories.get(args.categoryId);
@@ -100,14 +100,14 @@ export const createItem = mutation({
 export const updateItem = mutation({
   access: staffAccess,
   args: {
-    id: dbz.bigint(),
-    categoryId: dbz.bigint(),
-    name: dbz.string(),
-    description: dbz.string(),
-    image: dbz.string(),
-    priceCents: dbz.number(),
-    sortOrder: dbz.number(),
-    active: dbz.boolean(),
+    id: v.bigint(),
+    categoryId: v.bigint(),
+    name: v.string(),
+    description: v.string(),
+    image: v.string(),
+    priceCents: v.int(),
+    sortOrder: v.int(),
+    active: v.boolean(),
   },
   handler: async (ctx, args) => {
     const item =

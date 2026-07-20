@@ -11,7 +11,7 @@
  * CLI as a table keyed by these same kinds. DDL type and `check` still live here.
  */
 import { decode, encode, WireError } from "@dbzz/core";
-import { ValidationError, type Descriptor } from "../dbz.ts";
+import { ValidationError, type Descriptor } from "../v.ts";
 
 export type SqlType = "TEXT" | "REAL" | "INTEGER" | "BLOB";
 
@@ -52,6 +52,7 @@ const guard = (ok: (v: unknown) => boolean, what: string): CheckFn => ({ value, 
 };
 
 const checkFiniteNumber = guard((v) => typeof v === "number" && Number.isFinite(v), "finite number");
+const checkSafeInteger = guard((v) => typeof v === "number" && Number.isSafeInteger(v), "safe integer");
 const checkI64: CheckFn = ({ value, path, expect }) => {
   expect(typeof value === "bigint", "bigint");
   if ((value as bigint) < I64_MIN || (value as bigint) > I64_MAX) throw new ValidationError(`${path}: bigint out of 64-bit range`);
@@ -62,11 +63,22 @@ const wire = { encode: (v: unknown) => encode(v), decode: (v: unknown) => decode
 const KINDS: Record<string, DescriptorKind> = {
   nullable: {
     check: ({ desc, value, path }) =>
-      value === null || value === undefined ? null : checkDescriptor(desc["inner"] as Descriptor, value, path),
+      value === null ? null : checkDescriptor(desc["inner"] as Descriptor, value, path),
+  },
+  optional: {
+    check: ({ desc, value, path }) =>
+      value === undefined ? undefined : checkDescriptor(desc["inner"] as Descriptor, value, path),
+  },
+  nullish: {
+    check: ({ desc, value, path }) =>
+      value === null || value === undefined
+        ? value
+        : checkDescriptor(desc["inner"] as Descriptor, value, path),
   },
   pk: { check: guard((v) => typeof v === "bigint", "bigint (primary key)") },
   string: { sqlType: "TEXT", check: guard((v) => typeof v === "string", "string") },
-  number: { sqlType: "REAL", decode: (v) => Number(v), check: checkFiniteNumber },
+  int: { sqlType: "INTEGER", decode: (v) => Number(v), check: checkSafeInteger },
+  float: { sqlType: "REAL", decode: (v) => Number(v), check: checkFiniteNumber },
   scheduleAt: { sqlType: "REAL", decode: (v) => Number(v), check: checkFiniteNumber },
   bigint: { sqlType: "INTEGER", check: checkI64 },
   identity: { sqlType: "INTEGER", check: checkI64 },
@@ -118,7 +130,16 @@ const KINDS: Record<string, DescriptorKind> = {
         if (!(key in shape) && input[key] !== undefined) throw new ValidationError(`${path}: unknown field "${key}"`);
       }
       const out: Record<string, unknown> = {};
-      for (const key of Object.keys(shape)) out[key] = checkDescriptor(shape[key]!, input[key], `${path}.${key}`);
+      for (const key of Object.keys(shape)) {
+        const field = shape[key]!;
+        if (
+          !Object.hasOwn(input, key) &&
+          (field["k"] === "optional" || field["k"] === "nullish")
+        ) {
+          continue;
+        }
+        out[key] = checkDescriptor(field, input[key], `${path}.${key}`);
+      }
       return out;
     },
   },
@@ -136,7 +157,14 @@ const KINDS: Record<string, DescriptorKind> = {
           throw new ValidationError(`${path}: unknown field "${key}" on union value`);
         }
       }
-      return { tag: variant, value: checkDescriptor(members[variant]!, input["value"], `${path}.value`) };
+      const member = members[variant]!;
+      if (
+        !Object.hasOwn(input, "value") &&
+        (member["k"] === "optional" || member["k"] === "nullish")
+      ) {
+        return { tag: variant };
+      }
+      return { tag: variant, value: checkDescriptor(member, input["value"], `${path}.value`) };
     },
   },
   jsonb: {
@@ -173,10 +201,10 @@ export function scalarDecoder(kind: string): (value: unknown) => unknown {
 }
 
 /**
- * Structural mirror of the dbz validators over a descriptor, for migration
+ * Structural mirror of the v validators over a descriptor, for migration
  * transform output and emits: kind + finiteness checks, i64 range, enum/union
  * membership with payload recursion, strict object keys, jsonb wire-encodability.
- * Returns the normalized value (nullable/undefined collapse to null, unknown keys reject).
+ * Returns the normalized value while preserving optional-key presence; unknown keys reject.
  */
 export function checkDescriptor(desc: Descriptor, value: unknown, path: string): unknown {
   const spec = KINDS[desc["k"] as string];

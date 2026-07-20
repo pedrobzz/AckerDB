@@ -101,7 +101,7 @@ function paren(ts: string): string {
   return /[|&]/.test(ts) ? `(${ts})` : ts;
 }
 
-/** Reproduce dbz.literal's TypeScript text from the descriptor's stored value. */
+/** Reproduce v.literal's TypeScript text from the descriptor's stored value. */
 function literalTs(value: unknown): string {
   if (typeof value === "bigint") return `${value}n`;
   return typeof value === "string" ? JSON.stringify(value) : String(value);
@@ -111,8 +111,8 @@ function literalTs(value: unknown): string {
  * The render facet of the descriptor seam, co-located CLI-side because it emits
  * TypeScript text (a codegen concern that also owns `GenerateError`): a table
  * keyed by the same descriptor kinds the server seam uses, mapping each to its
- * structural type text. bigint/identity/pk as bigint, bytes as Uint8Array,
- * scheduleAt as number, jsonb as the codegen convention (`unknown`), enums as
+ * structural type text. bigint/identity/pk as bigint, int/float/scheduleAt as
+ * number, bytes as Uint8Array, jsonb as the codegen convention (`unknown`), enums as
  * string-literal unions, unions as discriminated `{ tag; value }` unions,
  * objects/arrays/nullables recursively.
  */
@@ -121,7 +121,8 @@ const RENDER_KIND: Record<string, (desc: Descriptor) => string> = {
   bigint: () => "bigint",
   identity: () => "bigint",
   string: () => "string",
-  number: () => "number",
+  int: () => "number",
+  float: () => "number",
   scheduleAt: () => "number",
   boolean: () => "boolean",
   bytes: () => "Uint8Array",

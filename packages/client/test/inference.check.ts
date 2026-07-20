@@ -6,7 +6,7 @@
 import { DbzzClient } from "@dbzz/client";
 import { anyApi, type ApiFromModules, type MutationReceipt, type SseRef } from "@dbzz/core";
 import {
-  dbz,
+  v,
   defineSchema,
   mutation,
   procedure,
@@ -26,13 +26,13 @@ const generatedMutation = mutation as MutationBuilder<Schema>;
 const generatedProcedure = procedure as ProcedureBuilder<Schema>;
 
 const authorizationSummary = generatedQuery({
-  args: { label: dbz.string() },
+  args: { label: v.string() },
   access: "public",
   handler: (ctx, args) => ({ kind: ctx.auth.kind, label: args.label }),
 });
 
 const createItem = generatedMutation({
-  args: { label: dbz.string() },
+  args: { label: v.string() },
   access: "authenticated",
   handler: async (ctx, args) => ({
     id: 1n,
@@ -41,7 +41,7 @@ const createItem = generatedMutation({
 });
 
 const pipeline = generatedProcedure({
-  args: { label: dbz.string() },
+  args: { label: v.string() },
   access: "authenticated",
   handler: (ctx, args) => ctx.tx(async (tx) => ({
     item: await createItem(tx, args),
@@ -52,8 +52,8 @@ const pipeline = generatedProcedure({
 const generatedSse = sseProcedure as SseBuilder<Schema>;
 
 const ticker = generatedSse({
-  args: { label: dbz.string() },
-  yields: dbz.object({ label: dbz.string(), tick: dbz.number() }),
+  args: { label: v.string() },
+  yields: v.object({ label: v.string(), tick: v.int() }),
   access: "public",
   handler: async function* (_ctx, args) {
     yield { label: args.label, tick: 0 };

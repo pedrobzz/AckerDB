@@ -101,12 +101,12 @@
     },
     "packages/dbzz-codegen": {
       "name": "@demo/dbzz-codegen",
-      "dependencies": {
-        "@dbzz/core": "0.3.2",
-        "@dbzz/server": "0.3.2",
-      },
       "devDependencies": {
         "typescript": "^5.9.0",
+      },
+      "peerDependencies": {
+        "@dbzz/core": "0.4.1",
+        "@dbzz/server": "0.4.1",
       },
     },
   },
@@ -1726,10 +1726,6 @@
     "@babel/template/@babel/code-frame": ["@babel/code-frame@7.29.7", "http://127.0.0.1:4873/@babel/code-frame/-/code-frame-7.29.7.tgz", { "dependencies": { "@babel/helper-validator-identifier": "^7.29.7", "js-tokens": "^4.0.0", "picocolors": "^1.1.1" } }, "sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw=="],
 
     "@babel/traverse/@babel/code-frame": ["@babel/code-frame@7.29.7", "http://127.0.0.1:4873/@babel/code-frame/-/code-frame-7.29.7.tgz", { "dependencies": { "@babel/helper-validator-identifier": "^7.29.7", "js-tokens": "^4.0.0", "picocolors": "^1.1.1" } }, "sha512-Aup7aUOfpbAUg2ROOJN6Iw5f9DMBlzu0mIkm/malLQFN/YQgO48wCj0Kxa3sEHJvPVFg7siR+qRInwXd2qhQKw=="],
-
-    "@demo/dbzz-codegen/@dbzz/core": ["@dbzz/core@0.3.2", "http://127.0.0.1:4873/@dbzz/core/-/core-0.3.2.tgz", {}, "sha512-If97rO/wTBc0eM+IpS9fM87dDkwoeGzGiCdvqWF7QAl+aT14b3t/q1BB7M3eyHb7YuIXzz4FNktJiJsJml0ZxA=="],
-
-    "@demo/dbzz-codegen/@dbzz/server": ["@dbzz/server@0.3.2", "http://127.0.0.1:4873/@dbzz/server/-/server-0.3.2.tgz", { "dependencies": { "@dbzz/core": "0.3.2", "@modelcontextprotocol/sdk": "1.29.0", "jose": "6.2.3" } }, "sha512-fzPS13pGRj8eCNnnA/g5XqWqklwp3I1hPjCn9MDYnfkbDWQin7Xn2R5wDwd9mJGuychByzrx3C2kHX6h3QSj5g=="],
 
     "@demo/design/react": ["react@19.2.0", "http://127.0.0.1:4873/react/-/react-19.2.0.tgz", {}, "sha512-tmbWg6W31tQLeB5cdIBOicJDJRR2KzXsV7uSK9iNfLWQ5bIZfxuPEHp7M8wiHyHnn0DD1i7w3Zmin0FtkrwoCQ=="],
 

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { ANONYMOUS_PRINCIPAL } from "../src/auth.ts";
-import { dbz, type Identity } from "../src/dbz.ts";
+import { v, type Identity } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
 import {
@@ -33,8 +33,8 @@ const PROTOCOL_VERSION = "2025-11-25";
 
 const schema = defineSchema({
   notes: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 
@@ -50,7 +50,7 @@ const listNotes = typedQuery({
 
 const insertNote = typedMutation({
   access: "public",
-  args: { body: dbz.string() },
+  args: { body: v.string() },
   handler: (ctx, args) => ctx.db.notes.insert(args),
 });
 
@@ -87,7 +87,7 @@ let lastNativeValues: {
 const writeNote = agentMcp.tool({
   name: "write_note",
   description: "Write one note and report the committed note count.",
-  args: { body: dbz.string() },
+  args: { body: v.string() },
   handler: async (ctx, args) => {
     handlerCalls++;
     lastHandlerContext = { auth: ctx.auth.kind, aborted: ctx.abortSignal.aborted };
@@ -105,20 +105,20 @@ const writeNoteSummary = agentMcp.tool({
   name: "summarize_note",
   description: "Summarize one note as structured data.",
   args: {
-    body: dbz.string().describe("The note text to summarize."),
-    label: dbz.nullable(dbz.string()).describe("An optional human label."),
+    body: v.string().describe("The note text to summarize."),
+    label: v.string().optional().describe("An optional human label."),
   },
-  output: dbz.object({
-    body: dbz.string().describe("The original note text."),
-    length: dbz.number().describe("The number of UTF-16 code units."),
-    label: dbz.nullable(dbz.string()).describe("The normalized label."),
+  output: v.object({
+    body: v.string().describe("The original note text."),
+    length: v.int().describe("The number of UTF-16 code units."),
+    label: v.string().nullable().describe("The normalized label."),
   }),
   handler: (_ctx, args) => {
     summaryHandlerCalls++;
     if (args.body === "invalid-output") {
       return { body: args.body, length: "wrong", label: args.label } as never;
     }
-    return { body: args.body, length: args.body.length, label: args.label };
+    return { body: args.body, length: args.body.length, label: args.label ?? null };
   },
 });
 
@@ -133,27 +133,27 @@ const echoValues = valuesMcp.tool({
   name: "echo_values",
   description: "Round-trip DBZZ-native values without losing precision or bytes.",
   args: {
-    minimum: dbz.bigint(),
-    maximum: dbz.bigint(),
-    negative: dbz.bigint(),
-    large: dbz.bigint(),
-    identity: dbz.identity(),
-    bytes: dbz.bytes(),
-    nested: dbz.array(dbz.nullable(dbz.bigint())),
-    literal: dbz.literal(7n),
-    opaque: dbz.jsonb<unknown>(),
-    poisonOutput: dbz.boolean(),
+    minimum: v.bigint(),
+    maximum: v.bigint(),
+    negative: v.bigint(),
+    large: v.bigint(),
+    identity: v.identity(),
+    bytes: v.bytes(),
+    nested: v.array(v.bigint().nullable()),
+    literal: v.literal(7n),
+    opaque: v.jsonb<unknown>(),
+    poisonOutput: v.boolean(),
   },
-  output: dbz.object({
-    minimum: dbz.bigint(),
-    maximum: dbz.bigint(),
-    negative: dbz.bigint(),
-    large: dbz.bigint(),
-    identity: dbz.identity(),
-    bytes: dbz.bytes(),
-    nested: dbz.array(dbz.nullable(dbz.bigint())),
-    literal: dbz.literal(7n),
-    opaque: dbz.jsonb<unknown>(),
+  output: v.object({
+    minimum: v.bigint(),
+    maximum: v.bigint(),
+    negative: v.bigint(),
+    large: v.bigint(),
+    identity: v.identity(),
+    bytes: v.bytes(),
+    nested: v.array(v.bigint().nullable()),
+    literal: v.literal(7n),
+    opaque: v.jsonb<unknown>(),
   }),
   handler: (_ctx, args) => {
     valueHandlerCalls++;
@@ -339,14 +339,14 @@ const renderContent = contentMcp.tool({
     idempotentHint: true,
     openWorldHint: false,
   },
-  args: { kind: dbz.string() },
+  args: { kind: v.string() },
   handler: (ctx, args) => richContentResult(args.kind, ctx.auth.kind),
 });
 
 const invalidResult = contentMcp.tool({
   name: "invalid_result",
   description: "Exercise runtime rejection of arbitrary results.",
-  args: { kind: dbz.string() },
+  args: { kind: v.string() },
   handler: (_ctx, args) => invalidContentValue(args.kind) as never,
 });
 
@@ -535,7 +535,7 @@ describe("public stateless MCP endpoint", () => {
             properties: {
               body: { type: "string", description: "The note text to summarize." },
               label: {
-                type: ["string", "null"],
+                type: "string",
                 description: "An optional human label.",
               },
             },
@@ -547,7 +547,7 @@ describe("public stateless MCP endpoint", () => {
             type: "object",
             properties: {
               body: { type: "string", description: "The original note text." },
-              length: { type: "number", description: "The number of UTF-16 code units." },
+              length: { type: "integer", description: "The number of UTF-16 code units." },
               label: {
                 type: ["string", "null"],
                 description: "The normalized label.",
@@ -676,7 +676,7 @@ describe("public stateless MCP endpoint", () => {
     }, 3);
     expect(await invalidOutput.json()).toMatchObject({
       result: {
-        content: [{ text: "output.length: expected finite number, got string" }],
+        content: [{ text: "output.length: expected safe integer, got string" }],
         isError: true,
       },
     });
@@ -1069,14 +1069,14 @@ describe("public stateless MCP endpoint", () => {
 
 describe("MCP startup invariants", () => {
   test("rejects every unsupported or contradictory nested validator shape", () => {
-    const unsupported = { ...dbz.string(), kind: "custom" } as never;
-    const contradictoryArray = { ...dbz.string(), kind: "array" } as never;
+    const unsupported = { ...v.string(), kind: "custom" } as never;
+    const contradictoryArray = { ...v.string(), kind: "array" } as never;
     const cases = [
-      [dbz.array(dbz.primaryKey()), "dbz.primaryKey() is not an MCP value"],
-      [dbz.array(dbz.scheduleAt()), "dbz.scheduleAt() is not an MCP value"],
-      [dbz.array(dbz.tag()), "dbz.tag() is valid only as a direct dbz.union() member"],
-      [unsupported, "dbz.custom() has no lossless standard-JSON protocol representation"],
-      [contradictoryArray, "dbz.array() has no element validator"],
+      [v.array(v.primaryKey()), "v.primaryKey() is not an MCP value"],
+      [v.array(v.scheduleAt()), "v.scheduleAt() is not an MCP value"],
+      [v.array(v.tag()), "v.tag() is valid only as a direct v.union() member"],
+      [unsupported, "v.custom() has no lossless standard-JSON protocol representation"],
+      [contradictoryArray, "v.array() has no element validator"],
     ] as const;
     for (const [value, message] of cases) {
       expect(() => agentMcp.tool({
@@ -1091,9 +1091,9 @@ describe("MCP startup invariants", () => {
       name: "invalid_output",
       description: "Nested output validators compile at declaration time too.",
       args: {},
-      output: dbz.object({ value: dbz.array(dbz.scheduleAt()) }),
+      output: v.object({ value: v.array(v.scheduleAt()) }),
       handler: () => ({ value: [] }),
-    })).toThrow("$.value[]: dbz.scheduleAt() is not an MCP value");
+    })).toThrow("$.value[]: v.scheduleAt() is not an MCP value");
   });
 
   test("rejects duplicate tool names within one MCP", () => {

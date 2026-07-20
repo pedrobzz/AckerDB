@@ -2,7 +2,7 @@
 import type { ApiFromModules, Identity } from "@dbzz/core";
 import {
   createMcp,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   mutation,
@@ -18,8 +18,8 @@ import {
 
 const schema = defineSchema({
   notes: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 
@@ -30,7 +30,7 @@ const typedMcp = createMcp as McpBuilder<typeof schema>;
 
 const addNote = typedMutation({
   access: "public",
-  args: { body: dbz.string() },
+  args: { body: v.string() },
   handler: (ctx, args) => ctx.db.notes.insert(args),
 });
 
@@ -52,22 +52,22 @@ void unknownScope;
 void agentMcp.scopes;
 const createAgentToken = typedMutation({
   access: "authenticated",
-  args: { name: dbz.string() },
+  args: { name: v.string() },
   handler: (ctx, args) => agentMcp.tokens.create(ctx, { name: args.name }),
 });
 const createScopedToken = typedMutation({
   access: "authenticated",
   args: {
-    name: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
+    name: v.string(),
+    scopes: v.array(scopedMcp.scopes),
   },
   handler: (ctx, args) => scopedMcp.tokens.create(ctx, args),
 });
 const updateScopedToken = typedMutation({
   access: "authenticated",
   args: {
-    tokenId: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
+    tokenId: v.string(),
+    scopes: v.array(scopedMcp.scopes),
   },
   handler: (ctx, args) => scopedMcp.tokens.updateScopes(ctx, args.tokenId, args.scopes),
 });
@@ -78,17 +78,17 @@ const listAgentTokens = typedQuery({
 });
 const updateAgentToken = typedMutation({
   access: "authenticated",
-  args: { tokenId: dbz.string(), name: dbz.string() },
+  args: { tokenId: v.string(), name: v.string() },
   handler: (ctx, args) => agentMcp.tokens.update(ctx, args.tokenId, { name: args.name }),
 });
 const revokeAgentToken = typedMutation({
   access: "authenticated",
-  args: { tokenId: dbz.string() },
+  args: { tokenId: v.string() },
   handler: (ctx, args) => agentMcp.tokens.revoke(ctx, args.tokenId),
 });
 const createSystemAgentToken = typedMutation({
   access: "system",
-  args: { identity: dbz.identity(), name: dbz.string() },
+  args: { identity: v.identity(), name: v.string() },
   handler: (ctx, args) => agentMcp.systemTokens.create(
     ctx,
     args.identity,
@@ -98,9 +98,9 @@ const createSystemAgentToken = typedMutation({
 const createSystemScopedToken = typedMutation({
   access: "system",
   args: {
-    identity: dbz.identity(),
-    name: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
+    identity: v.identity(),
+    name: v.string(),
+    scopes: v.array(scopedMcp.scopes),
   },
   handler: (ctx, args) => scopedMcp.systemTokens.create(
     ctx,
@@ -110,12 +110,12 @@ const createSystemScopedToken = typedMutation({
 });
 const listSystemAgentTokens = typedQuery({
   access: "system",
-  args: { identity: dbz.identity() },
+  args: { identity: v.identity() },
   handler: (ctx, args) => agentMcp.systemTokens.list(ctx, args.identity),
 });
 const revokeSystemAgentToken = typedMutation({
   access: "system",
-  args: { identity: dbz.identity(), tokenId: dbz.string() },
+  args: { identity: v.identity(), tokenId: v.string() },
   handler: (ctx, args) => agentMcp.systemTokens.revoke(ctx, args.identity, args.tokenId),
 });
 const localAiTools = typedProcedure({
@@ -171,7 +171,7 @@ void stablePath;
 const writeNote = agentMcp.tool({
   name: "write_note",
   description: "Write a note.",
-  args: { body: dbz.string() },
+  args: { body: v.string() },
   handler: async (ctx, args) => {
     const authKind: "anonymous" | "user" | "mcp" | "workload" | "system" = ctx.auth.kind;
     const signal: AbortSignal = ctx.abortSignal;
@@ -323,17 +323,17 @@ const summarizeNote = agentMcp.tool({
   name: "summarize_note",
   description: "Return a typed summary.",
   args: {
-    body: dbz.string().describe("The note body."),
-    label: dbz.nullable(dbz.string()),
+    body: v.string().describe("The note body."),
+    label: v.string().optional(),
   },
-  output: dbz.object({
-    length: dbz.number(),
-    label: dbz.nullable(dbz.string()),
+  output: v.object({
+    length: v.int(),
+    label: v.string().nullable(),
   }),
   handler: (_ctx, args) => {
     const body: string = args.body;
-    const label: string | null = args.label;
-    return { length: body.length, label };
+    const label: string | undefined = args.label;
+    return { length: body.length, label: label ?? null };
   },
 });
 void summarizeNote;
@@ -342,14 +342,14 @@ const echoNativeValues = agentMcp.tool({
   name: "echo_native_values",
   description: "Keep protocol strings out of the typed handler contract.",
   args: {
-    count: dbz.bigint(),
-    identity: dbz.identity(),
-    bytes: dbz.bytes(),
+    count: v.bigint(),
+    identity: v.identity(),
+    bytes: v.bytes(),
   },
-  output: dbz.object({
-    count: dbz.bigint(),
-    identity: dbz.identity(),
-    bytes: dbz.bytes(),
+  output: v.object({
+    count: v.bigint(),
+    identity: v.identity(),
+    bytes: v.bytes(),
   }),
   handler: (_ctx, args) => {
     const count: bigint = args.count;
@@ -386,11 +386,11 @@ interface NeutralStandard<Input, Output> {
     };
   };
 }
-const summaryInput = dbz.object({
-  body: dbz.string(),
-  label: dbz.nullable(dbz.string()),
+const summaryInput = v.object({
+  body: v.string(),
+  label: v.string().nullable(),
 });
-const validStandardInput: StandardInput<typeof summaryInput> = { body: "hello" };
+const validStandardInput: StandardInput<typeof summaryInput> = { body: "hello", label: null };
 const validStandardOutput: StandardOutput<typeof summaryInput> = { body: "hello", label: null };
 const neutralStandard: NeutralStandard<
   StandardInput<typeof summaryInput>,
@@ -498,7 +498,7 @@ agentMcp.tool({
   name: "scalar_args",
   description: "Prove input roots are objects.",
   // @ts-expect-error MCP inputs are argument shapes, never scalar roots
-  args: dbz.string(),
+  args: v.string(),
   handler: () => ({ content: [{ type: "text", text: "never" }] }),
 });
 
@@ -506,8 +506,8 @@ agentMcp.tool({
   name: "scalar_output",
   description: "Prove output roots are objects.",
   args: {},
-  // @ts-expect-error advertised structured outputs require dbz.object(...)
-  output: dbz.string(),
+  // @ts-expect-error advertised structured outputs require v.object(...)
+  output: v.string(),
   handler: () => ({ content: [{ type: "text", text: "never" }] }),
 });
 
@@ -516,7 +516,7 @@ agentMcp.tool({
   description: "Prove nullable results use a named property.",
   args: {},
   // @ts-expect-error a nullable object is not an object-root output schema
-  output: dbz.nullable(dbz.object({ value: dbz.string() })),
+  output: v.object({ value: v.string() }).nullable(),
   handler: () => ({ content: [{ type: "text", text: "never" }] }),
 });
 
@@ -524,7 +524,7 @@ agentMcp.tool({
   name: "wrong_structured_result",
   description: "Prove structured result inference.",
   args: {},
-  output: dbz.object({ value: dbz.string() }),
+  output: v.object({ value: v.string() }),
   // @ts-expect-error handlers must return the declared structured object
   handler: () => ({ value: 1 }),
 });

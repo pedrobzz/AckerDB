@@ -15,7 +15,7 @@ import {
   type UserPrincipal,
 } from "../src/auth.ts";
 import { callerFairnessKey } from "../src/caller.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import {
   mutation,
@@ -36,7 +36,7 @@ import type {
   SessionRuntimeContext,
 } from "../src/session.ts";
 
-const action = dbz.enum("SystemMcpTokenAction", [
+const action = v.enum("SystemMcpTokenAction", [
   "create_agent",
   "create_scoped",
   "list_agent",
@@ -46,14 +46,14 @@ const action = dbz.enum("SystemMcpTokenAction", [
 
 const schema = defineSchema({
   tokenJobs: defineTable({
-    id: dbz.primaryKey(),
+    id: v.primaryKey(),
     action,
-    identity: dbz.identity(),
-    name: dbz.nullable(dbz.string()),
-    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
-    scopes: dbz.array(dbz.string()),
-    tokenId: dbz.nullable(dbz.string()),
-    at: dbz.scheduleAt(),
+    identity: v.identity(),
+    name: v.string().nullable(),
+    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
+    scopes: v.array(v.string()),
+    tokenId: v.string().nullable(),
+    at: v.scheduleAt(),
   }).scheduled("systemTokens.run"),
 });
 
@@ -75,11 +75,11 @@ const queue = typedMutation({
   access: "authenticated",
   args: {
     action,
-    name: dbz.nullable(dbz.string()),
-    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
-    scopes: dbz.array(dbz.string()),
-    tokenId: dbz.nullable(dbz.string()),
-    at: dbz.number(),
+    name: v.string().nullable(),
+    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
+    scopes: v.array(v.string()),
+    tokenId: v.string().nullable(),
+    at: v.int(),
   },
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "user") throw new Error("expected external user");
@@ -90,14 +90,14 @@ const queue = typedMutation({
 const run = typedMutation({
   access: "system",
   args: {
-    id: dbz.bigint(),
+    id: v.bigint(),
     action,
-    identity: dbz.identity(),
-    name: dbz.nullable(dbz.string()),
-    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
-    scopes: dbz.array(dbz.string()),
-    tokenId: dbz.nullable(dbz.string()),
-    at: dbz.number(),
+    identity: v.identity(),
+    name: v.string().nullable(),
+    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
+    scopes: v.array(v.string()),
+    tokenId: v.string().nullable(),
+    at: v.int(),
   },
   handler: (ctx, args) => {
     switch (args.action) {
@@ -130,7 +130,7 @@ const run = typedMutation({
 
 const attempt = typedMutation({
   access: "public",
-  args: { identity: dbz.identity() },
+  args: { identity: v.identity() },
   handler: (ctx, args) => agentMcp.systemTokens.list(ctx, args.identity),
 });
 

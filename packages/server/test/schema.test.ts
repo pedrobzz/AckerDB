@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -9,27 +9,27 @@ import {
   ValidationError,
 } from "@dbzz/server";
 
-const pkCols = () => ({ id: dbz.primaryKey(), name: dbz.string() });
+const pkCols = () => ({ id: v.primaryKey(), name: v.string() });
 
 describe("defineTable", () => {
   test("requires exactly one primary key", () => {
-    expect(() => defineTable({ name: dbz.string() })).toThrow("exactly one");
-    expect(() => defineTable({ a: dbz.primaryKey(), b: dbz.primaryKey() })).toThrow("exactly one");
+    expect(() => defineTable({ name: v.string() })).toThrow("exactly one");
+    expect(() => defineTable({ a: v.primaryKey(), b: v.primaryKey() })).toThrow("exactly one");
     expect(defineTable(pkCols()).primaryKey).toBe("id");
   });
 
   test("rejects reserved column names", () => {
-    expect(() => defineTable({ id: dbz.primaryKey(), a__b: dbz.string() })).toThrow("__");
-    expect(() => defineTable({ id: dbz.primaryKey(), "1bad": dbz.string() })).toThrow(ValidationError);
+    expect(() => defineTable({ id: v.primaryKey(), a__b: v.string() })).toThrow("__");
+    expect(() => defineTable({ id: v.primaryKey(), "1bad": v.string() })).toThrow(ValidationError);
   });
 
   test("index rules: existence, order, kinds, pk, duplicates", () => {
     const table = () =>
       defineTable({
-        id: dbz.primaryKey(),
-        channelId: dbz.bigint(),
-        body: dbz.string(),
-        tags: dbz.array(dbz.string()),
+        id: v.primaryKey(),
+        channelId: v.bigint(),
+        body: v.string(),
+        tags: v.array(v.string()),
       });
     expect(() => table().index("by_missing", ["nope" as never])).toThrow("unknown column");
     expect(() => table().index("by_id", ["id" as never])).toThrow("redundant");
@@ -45,10 +45,10 @@ describe("defineTable", () => {
   test("direct indexes: single dense-integer column only", () => {
     const make = () =>
       defineTable({
-        id: dbz.primaryKey(),
-        seq: dbz.bigint(),
-        role: dbz.enum("SRole", ["a", "b"]),
-        name: dbz.string(),
+        id: v.primaryKey(),
+        seq: v.bigint(),
+        role: v.enum("SRole", ["a", "b"]),
+        name: v.string(),
       });
     expect(make().index("by_seq", ["seq"], { algorithm: "direct" }).indexes[0]!.algorithm).toBe("direct");
     expect(make().index("by_role", ["role"], { algorithm: "direct" }).indexes[0]!.algorithm).toBe("direct");
@@ -60,16 +60,16 @@ describe("defineTable", () => {
 
   test("scheduled tables need scheduleAt and vice versa", () => {
     expect(() =>
-      defineTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }),
+      defineTable({ id: v.primaryKey(), at: v.scheduleAt() }),
     ).not.toThrow(); // defineTable alone is fine...
     expect(() =>
-      defineSchema({ jobs: defineTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }) }),
+      defineSchema({ jobs: defineTable({ id: v.primaryKey(), at: v.scheduleAt() }) }),
     ).toThrow("no .scheduled"); // ...but the schema demands the handler
-    expect(() => defineTable(pkCols()).scheduled("jobs.run")).toThrow("requires a dbz.scheduleAt()");
-    const ok = defineTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }).scheduled("jobs.run");
+    expect(() => defineTable(pkCols()).scheduled("jobs.run")).toThrow("requires a v.scheduleAt()");
+    const ok = defineTable({ id: v.primaryKey(), at: v.scheduleAt() }).scheduled("jobs.run");
     expect(ok.scheduledHandler).toBe("jobs.run");
     expect(() =>
-      defineTable({ id: dbz.primaryKey(), a: dbz.scheduleAt(), b: dbz.scheduleAt() }),
+      defineTable({ id: v.primaryKey(), a: v.scheduleAt(), b: v.scheduleAt() }),
     ).toThrow("at most one");
   });
 
@@ -78,7 +78,7 @@ describe("defineTable", () => {
     expect(() => defineEventTable(pkCols(), subscription).index("by_name", ["name"])).toThrow("never persist");
     expect(() => defineEventTable(pkCols(), subscription).scheduled("x.y")).toThrow("cannot be scheduled");
     expect(() =>
-      defineEventTable({ id: dbz.primaryKey(), at: dbz.scheduleAt() }, subscription),
+      defineEventTable({ id: v.primaryKey(), at: v.scheduleAt() }, subscription),
     ).toThrow("event tables cannot");
   });
 
@@ -90,7 +90,7 @@ describe("defineTable", () => {
       matches: () => true,
     })).toThrow("event subscription access");
     expect(() => defineEventTable(pkCols(), {
-      args: { id: dbz.primaryKey() },
+      args: { id: v.primaryKey() },
       access: "public",
       matches: () => true,
     })).toThrow("not a valid argument validator");
@@ -104,17 +104,17 @@ describe("defineTable", () => {
 
 describe("defineSchema", () => {
   test("collects named types and rejects conflicting redeclarations", () => {
-    const role = dbz.enum("UserRole", ["admin", "member"]);
+    const role = v.enum("UserRole", ["admin", "member"]);
     const schema = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), role }),
-      audits: defineTable({ id: dbz.primaryKey(), role }),
+      users: defineTable({ id: v.primaryKey(), role }),
+      audits: defineTable({ id: v.primaryKey(), role }),
     });
     expect([...schema.namedTypes.keys()]).toEqual(["UserRole"]);
 
     expect(() =>
       defineSchema({
-        users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["a"]) }),
-        posts: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["b"]) }),
+        users: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["a"]) }),
+        posts: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["b"]) }),
       }),
     ).toThrow("declared twice");
   });
@@ -122,12 +122,12 @@ describe("defineSchema", () => {
   test("nested placement rules", () => {
     expect(() =>
       defineSchema({
-        t: defineTable({ id: dbz.primaryKey(), o: dbz.object({ inner: dbz.primaryKey() }) }),
+        t: defineTable({ id: v.primaryKey(), o: v.object({ inner: v.primaryKey() }) }),
       }),
     ).toThrow("top-level column");
     expect(() =>
       defineSchema({
-        t: defineTable({ id: dbz.primaryKey(), o: dbz.array(dbz.scheduleAt()) }),
+        t: defineTable({ id: v.primaryKey(), o: v.array(v.scheduleAt()) }),
       }),
     ).toThrow("top-level column");
   });
@@ -141,7 +141,7 @@ describe("defineSchema", () => {
     ).toThrow("collides");
     expect(() =>
       defineSchema({
-        messages: defineTable({ id: dbz.primaryKey(), m: dbz.enum("Message", ["a"]) }),
+        messages: defineTable({ id: v.primaryKey(), m: v.enum("Message", ["a"]) }),
       }),
     ).toThrow("collides");
   });

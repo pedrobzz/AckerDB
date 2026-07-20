@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -23,26 +23,26 @@ import type { DbStatementObservation, DbStatementObserver } from "../src/db.ts";
 const schema = () =>
   defineSchema({
     payments: defineTable({
-      id: dbz.primaryKey(),
-      userId: dbz.bigint(),
-      status: dbz.enum("PayStatus", ["active", "failed", "refunded"]),
-      amount: dbz.number(),
-      currency: dbz.string(),
-      note: dbz.nullable(dbz.string()),
+      id: v.primaryKey(),
+      userId: v.bigint(),
+      status: v.enum("PayStatus", ["active", "failed", "refunded"]),
+      amount: v.float(),
+      currency: v.string(),
+      note: v.string().nullable(),
     })
       .index("by_user", ["userId"])
       .index("by_user_status_amount", ["userId", "status", "amount"]),
     users: defineTable({
-      id: dbz.primaryKey(),
-      email: dbz.string(),
-      name: dbz.string(),
-      payload: dbz.union("UPayload", { text: dbz.string(), nothing: dbz.tag() }),
+      id: v.primaryKey(),
+      email: v.string(),
+      name: v.string(),
+      payload: v.union("UPayload", { text: v.string(), nothing: v.tag() }),
     })
       .index("by_email", ["email"], { unique: true })
       .index("by_payload", ["payload"]),
     pings: defineEventTable({
-      id: dbz.primaryKey(),
-      channel: dbz.bigint(),
+      id: v.primaryKey(),
+      channel: v.bigint(),
     }, {
       args: {},
       access: "public",
@@ -495,8 +495,8 @@ describe("pagination", () => {
   test("nullable index columns paginate across the NULL group", async () => {
     const s = defineSchema({
       notes: defineTable({
-        id: dbz.primaryKey(),
-        tag: dbz.nullable(dbz.string()),
+        id: v.primaryKey(),
+        tag: v.string().nullable(),
       }).index("by_tag", ["tag"]),
     });
     const d2 = mkdtempSync(join(tmpdir(), "dbzz-null-"));

@@ -2,7 +2,7 @@ import { Server as McpSdkServer } from "@modelcontextprotocol/sdk/server/index.j
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { callerFairnessKey } from "../src/caller.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../src/limits.ts";
 import { serve } from "../src/serve.ts";
 import type { Runtime, RuntimeOptions } from "../src/runtime.ts";
@@ -102,7 +102,7 @@ const ownershipMcp = typedMcp({ name: "ownership", path: "/ownership/mcp" });
 
 const createOwnershipToken = typedMutation({
   access: "authenticated",
-  args: { name: dbz.string() },
+  args: { name: v.string() },
   handler: (ctx, args) => ownershipMcp.tokens.create(ctx, {
     name: args.name,
     metadata: {},
@@ -121,7 +121,7 @@ const holdOwnership = ownershipMcp.tool({
   name: "hold_ownership",
   description: "Hold one runtime-owned operation at a deterministic test gate.",
   access: "public",
-  args: { gate: dbz.string() },
+  args: { gate: v.string() },
   handler: async (ctx, args) => {
     await waitAtGate(args.gate, ctx.abortSignal);
     return { content: [{ type: "text", text: ctx.auth.kind }] };
@@ -130,7 +130,7 @@ const holdOwnership = ownershipMcp.tool({
 
 const insertOwnershipRecord = typedMutation({
   access: "authenticated",
-  args: { value: dbz.string() },
+  args: { value: v.string() },
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     return ctx.db.records.insert({ owner: ctx.auth.identity, value: args.value });
@@ -148,9 +148,9 @@ const nestedOwnershipWrite = ownershipMcp.tool({
   description: "Compose nested DBZZ functions inside one transaction.",
   access: "authenticated",
   args: {
-    value: dbz.string(),
-    gate: dbz.nullable(dbz.string()),
-    commit: dbz.boolean(),
+    value: v.string(),
+    gate: v.string().nullable(),
+    commit: v.boolean(),
   },
   handler: (ctx, args) => ctx.tx(async (tx) => {
     await insertOwnershipRecord(tx, { value: args.value });

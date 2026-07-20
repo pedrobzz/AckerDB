@@ -3,12 +3,12 @@ import type { UIMessageChunk } from "ai";
 
 /**
  * The fixture's `yields` validator for AI SDK v7 `UIMessageChunk` streams,
- * and why it is a custom `Validator` rather than a `dbz` composition:
+ * and why it is a custom `Validator` rather than a `v` composition:
  *
- * - `dbz.object` validates exact keys, but every chunk variant carries
+ * - `v.object` validates exact keys, but every chunk variant carries
  *   optional fields (`providerMetadata`, `title`, ...), so a per-variant
  *   shape model rejects real AI SDK chunks.
- * - `dbz.union` expects dbzz's `{ tag, value }` wire form, not the AI SDK's
+ * - `v.union` expects dbzz's `{ tag, value }` wire form, not the AI SDK's
  *   `type`-discriminated objects.
  * - The AI SDK's own `uiMessageChunkSchema` validates asynchronously, while
  *   dbzz's boundary check is synchronous by design (it sits in the stream's
