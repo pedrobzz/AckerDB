@@ -43,6 +43,8 @@ export interface ComparableMetric {
   value: number;
   direction: MetricDirection;
   family: string;
+  sampleCount?: number;
+  minimumSamples?: number;
   offeredWorkComplete?: boolean;
   convexRssFloor?: boolean;
 }
@@ -83,6 +85,9 @@ class MetricCollector {
     if (!Number.isFinite(metric.value) || metric.value < 0) {
       throw new Error(`comparable metric ${metric.path} is not a finite non-negative number`);
     }
+    if ((metric.sampleCount === undefined) !== (metric.minimumSamples === undefined)) {
+      throw new Error(`comparable metric ${metric.path} has incomplete sample readiness`);
+    }
     this.paths.add(metric.path);
     this.metrics.push(metric);
   }
@@ -106,26 +111,39 @@ function addResources(
   metrics: MetricCollector,
   path: string,
   window: ProcessTreeWindowSummary,
-  convexRssFloor = false,
+  options: { convexRssFloor?: boolean; active?: boolean } = {},
 ): void {
-  metrics.add({ path: `${path}/rssMb/p50`, value: window.rssMb.p50, direction: "lower", family: "resource.rss", convexRssFloor });
+  const convexRssFloor = options.convexRssFloor ?? false;
+  metrics.add({
+    path: `${path}/rssMb/p50`,
+    value: window.rssMb.p50,
+    direction: "lower",
+    family: "resource.rss",
+    sampleCount: window.sampleCount,
+    minimumSamples: 20,
+    convexRssFloor,
+  });
   metrics.add({ path: `${path}/rssMb/peak`, value: window.rssMb.peak, direction: "lower", family: "resource.rss", convexRssFloor });
-  metrics.add({ path: `${path}/cpuCores`, value: window.cpuCores, direction: "lower", family: "resource.cpu" });
+  if (!options.active) {
+    metrics.add({ path: `${path}/cpuCores`, value: window.cpuCores, direction: "lower", family: "resource.cpu" });
+  }
 }
 
 function addLatency(
   metrics: MetricCollector,
   path: string,
-  latency: Pick<LatencyStats, "p50Ms" | "p95Ms" | "p99Ms">,
+  latency: Pick<LatencyStats, "count" | "p50Ms" | "p95Ms" | "p99Ms">,
   family: string,
   offeredWorkComplete?: boolean,
 ): void {
-  for (const percentile of ["p50Ms", "p95Ms", "p99Ms"] as const) {
+  for (const [percentile, minimumSamples] of [["p50Ms", 20], ["p95Ms", 100], ["p99Ms", 500]] as const) {
     metrics.add({
       path: `${path}/${percentile}`,
       value: latency[percentile],
       direction: "lower",
       family: `${family}.${percentile.slice(0, 3)}`,
+      sampleCount: latency.count,
+      minimumSamples,
       ...(offeredWorkComplete === undefined ? {} : { offeredWorkComplete }),
     });
   }
@@ -171,6 +189,7 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
       family: "operation.throughput",
     });
     addLatency(metrics, `${root}/latency`, {
+      count: Math.min(...operation.trials.map((trial) => trial.latency.count)),
       p50Ms: operation.medianLatencyP50Ms,
       p95Ms: operation.medianLatencyP95Ms,
       p99Ms: operation.medianLatencyP99Ms,
@@ -183,6 +202,8 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
       value: median(windows.map((window) => window.rssMb.p50), root),
       direction: "lower",
       family: "resource.rss",
+      sampleCount: Math.min(...windows.map((window) => window.sampleCount)),
+      minimumSamples: 20,
       convexRssFloor: true,
     });
     metrics.add({
@@ -191,12 +212,6 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
       direction: "lower",
       family: "resource.rss",
       convexRssFloor: true,
-    });
-    metrics.add({
-      path: `${root}/resources/server/cpuCoresMedian`,
-      value: median(windows.map((window) => window.cpuCores), root),
-      direction: "lower",
-      family: "resource.cpu",
     });
   }
 
@@ -226,13 +241,13 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
       metrics,
       `${root}/resources/server/idle`,
       phase(system, connection.connectedIdlePhaseId, `connections:${connection.targetConnections}:idle`),
-      true,
+      { convexRssFloor: true },
     );
     addResources(
       metrics,
       `${root}/resources/server/work`,
       phase(system, connection.work.phaseId, `connections:${connection.targetConnections}:work`),
-      true,
+      { convexRssFloor: true, active: true },
     );
   }
 
@@ -274,13 +289,13 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
       metrics,
       `${root}/resources/server/subscribed-idle`,
       phase(system, subscription.subscribedIdlePhaseId, `subscriptions:${subscription.pattern}:idle`),
-      true,
+      { convexRssFloor: true },
     );
     addResources(
       metrics,
       `${root}/resources/server/work`,
       phase(system, subscription.phaseId, `subscriptions:${subscription.pattern}:updates`),
-      true,
+      { convexRssFloor: true, active: true },
     );
 
     for (const capacity of subscription.capacity) {
@@ -305,7 +320,7 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
         metrics,
         `${capacityRoot}/resources/server/work`,
         phase(system, capacity.phaseId, `subscriptions:${subscription.pattern}:capacity-${capacity.slots}`),
-        true,
+        { convexRssFloor: true, active: true },
       );
     }
   }
@@ -323,6 +338,10 @@ function indexMetrics(metrics: readonly ComparableMetric[]): Map<string, Compara
   return new Map(metrics.map((metric) => [metric.path, metric]));
 }
 
+function hasEnoughSamples(metric: ComparableMetric): boolean {
+  return metric.minimumSamples === undefined || metric.sampleCount! >= metric.minimumSamples;
+}
+
 function assertMetricParity(
   expected: readonly ComparableMetric[],
   actual: readonly ComparableMetric[],
@@ -337,6 +356,9 @@ function assertMetricParity(
     if (candidate === undefined) throw new Error(`${label} omitted comparable metric ${metric.path}`);
     if (candidate.direction !== metric.direction || candidate.family !== metric.family) {
       throw new Error(`${label} miswired comparable metric ${metric.path}`);
+    }
+    if (candidate.minimumSamples !== metric.minimumSamples) {
+      throw new Error(`${label} changed sample readiness for comparable metric ${metric.path}`);
     }
   }
 }
@@ -395,6 +417,7 @@ export function compareDbzzMetrics(
 
   for (const metric of current) {
     const before = previousByPath.get(metric.path)!;
+    if (!hasEnoughSamples(before) || !hasEnoughSamples(metric)) continue;
     const threshold = regressionThreshold(before);
     const regressed = metric.direction === "higher"
       ? metric.value < before.value - threshold
@@ -427,11 +450,14 @@ export function evaluatePerformanceAcceptance(
   const previousMetrics = extractComparableMetrics(requireSystems(previous).dbzz);
   const currentMetrics = extractComparableMetrics(requireSystems(current).dbzz);
   const regressions = compareDbzzMetrics(previousMetrics, currentMetrics);
+  const previousByPath = indexMetrics(previousMetrics);
   const evidence = Object.freeze({
     schemaVersion: 1,
     previousVersion: versions.previousVersion,
     currentVersion: versions.currentVersion,
-    metricCount: currentMetrics.length,
+    metricCount: currentMetrics.filter((metric) =>
+      hasEnoughSamples(metric) && hasEnoughSamples(previousByPath.get(metric.path)!)
+    ).length,
     regressions,
   } satisfies PerformanceAcceptanceEvidence);
   return Object.freeze({
