@@ -10,8 +10,8 @@
  * and a full prod one; a shape-unsafe change is refused on both, with the
  * presume-data question and no row-count probing — even on a provably empty
  * table. A migration file is the answer to a refusal; `dbz reset` is the dev
- * escape hatch. The sole optimistic change (a unique index) is attempted and
- * refused cleanly with duplicate counts if it cannot hold.
+ * escape hatch. Unique indexes and tightened validators are attempted under the
+ * writer lock and refused cleanly with exact counts if they cannot hold.
  *
  * This module owns only policy: the fresh-DB path (create every table), the
  * no-op short-circuit, and the dispatch to the append-only migration chain. All

@@ -104,6 +104,22 @@ describe("describeSafeChanges", () => {
     };
     expect(describeOf(pre, target, [probed])).toEqual([]);
   });
+
+  test("constraint loosening renders as safe; a counted tightening refusal is subtracted by column site", () => {
+    const strict = defineSchema({ t: defineTable({ id: v.primaryKey(), value: v.string().min(3) }) });
+    const loose = defineSchema({ t: defineTable({ id: v.primaryKey(), value: v.string().min(1) }) });
+    expect(describeOf(strict, loose)).toEqual(['column "t.value" constraints loosened']);
+
+    const refusal: SchemaRefusal = {
+      table: "t",
+      column: "value",
+      reason: "constraint-violations",
+      question: "constraints tightened; 4 existing row(s) violate the target validator",
+      count: 4,
+    };
+    expect(describeOf(loose, strict, [refusal])).toEqual([]);
+    expect(describeOf(loose, strict)).toEqual(['column "t.value" constraints tightened (no violations found)']);
+  });
 });
 
 describe("planFingerprint", () => {

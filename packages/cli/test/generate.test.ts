@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ts from "typescript";
 import {
   v,
   defineSchema,
@@ -86,6 +86,26 @@ describe("generateMigration: scaffold", () => {
     expect(migrationTs).not.toContain("\n    profiles:"); // a pure rename is not a refusal, so no transform entry
   });
 
+  test("an untouched prototype-named table gets exactly one surviving transform slot", () => {
+    const pre = defineSchema({
+      toString: defineTable({ id: v.primaryKey(), value: v.string() }),
+      legacy: defineTable({ id: v.primaryKey() }),
+    });
+    const target = defineSchema({
+      toString: defineTable({ id: v.primaryKey(), value: v.string() }),
+      current: defineTable({ id: v.primaryKey() }),
+    });
+    const { typesTs } = generateMigration({
+      number: 1,
+      name: "rename_sibling",
+      pre: snapshotOf(pre),
+      schema: target,
+      renames: { tables: { legacy: "current" } },
+    });
+    expect(typesTs.match(/\btoString\?:/g)).toHaveLength(1);
+    expect(typesTs).not.toContain("toString?: null |");
+  });
+
   test("mixed drops render as a hole, listing every drop and any other refusal", () => {
     // posts drops `kind`'s old value via type change; a table that has BOTH a drop
     // and a type change must be a hole, not a destructuring.
@@ -126,6 +146,28 @@ describe("generateMigration: scaffold", () => {
     );
     // the hole's NEW row type is imported for annotation
     expect(migrationTs).toContain('import { defineMigration, type UsersRow } from "./meta/0001_dedupe_email.types.ts";');
+  });
+
+  test("a probed constraint refusal becomes an ordinary volunteered repair transform", () => {
+    const pre = defineSchema({ users: defineTable({ id: v.primaryKey(), handle: v.string() }) });
+    const target = defineSchema({ users: defineTable({ id: v.primaryKey(), handle: v.string().min(2) }) });
+    const { migrationTs } = generateMigration({
+      number: 1,
+      name: "validate_handle",
+      pre: snapshotOf(pre),
+      schema: target,
+      probedRefusals: [{
+        table: "users",
+        column: "handle",
+        reason: "constraint-violations",
+        question: "constraints tightened; 2 existing row(s) violate the target validator",
+        count: 2,
+      }],
+    });
+    expect(migrationTs).toContain("users: (row): UsersRow => {");
+    expect(migrationTs).toContain(
+      "// TODO(users.handle): constraints tightened; 2 existing row(s) violate the target validator",
+    );
   });
 
   test("a column rename on the same table as a drop forces a hole, not a broken destructuring", () => {
@@ -328,6 +370,73 @@ export default defineSchema({
   });
 });
 
+describe("computePlan: optimistic constraint probe", () => {
+  const pre = defineSchema({
+    items: defineTable({ id: v.primaryKey(), label: v.string().nullable() }),
+  });
+  const schemaTs = `import { defineSchema, defineTable, v } from "@dbzz/server";
+export default defineSchema({
+  items: defineTable({ id: v.primaryKey(), label: v.string().min(2).nullable() }),
+});
+`;
+
+  test("reports the exact violating-row count while nullable null is ignored", async () => {
+    const dir = makeFixture({ "schema.ts": schemaTs });
+    dirs.push(dir);
+    const dbPath = join(dir, ".zdb", "data.db");
+    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    await seed(pre, dbPath, async (d) => {
+      for (const label of [null, "", "x", "ok"]) await d.items.insert({ label });
+    });
+    const outcome = await computePlan(loadConfig(dir));
+    expect(outcome.status).toBe("changes");
+    if (outcome.status !== "changes") throw new Error("unreachable");
+    expect(outcome.refusals).toEqual([{
+      table: "items",
+      column: "label",
+      reason: "constraint-violations",
+      question: "constraints tightened; 2 existing row(s) violate the target validator",
+      count: 2,
+    }]);
+    expect(outcome.safe).toEqual([]);
+  });
+
+  test("post-answer generation probes through a variant rename and scaffolds the newly visible repair", async () => {
+    const before = defineSchema({
+      items: defineTable({
+        id: v.primaryKey(),
+        body: v.union("Body", { legacy: v.object({ label: v.string() }) }),
+      }),
+    });
+    const targetTs = `import { defineSchema, defineTable, v } from "@dbzz/server";
+export default defineSchema({
+  items: defineTable({
+    id: v.primaryKey(),
+    body: v.union("Body", { current: v.object({ label: v.string().min(2) }) }),
+  }),
+});
+`;
+    const dir = makeFixture({ "schema.ts": targetTs });
+    dirs.push(dir);
+    const config = loadConfig(dir);
+    mkdirSync(config.dbDir, { recursive: true });
+    await seed(before, join(config.dbDir, "data.db"), async (d) => {
+      await d.items.insert({ body: { tag: "legacy", value: { label: "x" } } });
+    });
+
+    const [migrationPath] = await writeMigration(config, {
+      name: "rename_and_validate",
+      renames: { variants: { Body: { legacy: "current" } } },
+    });
+    const migrationTs = readFileSync(migrationPath!, "utf8");
+    expect(migrationTs).toContain('renames: { variants: { Body: { legacy: "current" } } },');
+    expect(migrationTs).toContain(
+      "// TODO(items.body): constraints tightened; 1 existing row(s) violate the target validator",
+    );
+    expect(migrationTs).toContain("items: (row): ItemsRow => {");
+  });
+});
+
 // -- compile-time guarantees: one tsc run over generated + usage files --------
 
 describe("generateMigration: compile-time gate (single tsc --noEmit)", () => {
@@ -406,10 +515,18 @@ export default defineMigration({
     );
 
     const started = Date.now();
-    const result = spawnSync(join(REPO, "node_modules", ".bin", "tsc"), ["-p", join(dir, "tsconfig.json"), "--pretty", "false"], {
-      encoding: "utf8",
-    });
-    const out = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    const configPath = join(dir, "tsconfig.json");
+    const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+    const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, dir);
+    const program = ts.createProgram(parsed.fileNames, parsed.options);
+    const out = ts.formatDiagnostics(
+      [...(configFile.error === undefined ? [] : [configFile.error]), ...parsed.errors, ...ts.getPreEmitDiagnostics(program)],
+      {
+        getCanonicalFileName: (fileName) => fileName,
+        getCurrentDirectory: () => REPO,
+        getNewLine: () => "\n",
+      },
+    );
     // eslint-disable-next-line no-console
     console.log(`[generate tsc gate] ${Date.now() - started}ms`);
 

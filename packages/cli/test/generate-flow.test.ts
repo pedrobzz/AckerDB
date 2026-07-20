@@ -62,6 +62,48 @@ describe("renameCandidates", () => {
     expect(renameCandidates(diffOf(pre, target)).variants).toEqual({ Role: { dropped: ["guest"], added: ["member"] } });
   });
 
+  test("a prototype-named type is an ordinary variant candidate key", () => {
+    const pre = defineSchema({
+      u: defineTable({
+        id: v.primaryKey(),
+        role: v.enum("toString", ["stable", "legacy"]),
+      }),
+    });
+    const target = defineSchema({
+      u: defineTable({
+        id: v.primaryKey(),
+        role: v.enum("toString", ["stable", "current"]),
+      }),
+    });
+    const variants = renameCandidates(diffOf(pre, target)).variants;
+    expect(Object.hasOwn(variants, "toString")).toBe(true);
+    expect(variants["toString"]).toEqual({ dropped: ["legacy"], added: ["current"] });
+
+    const prototypeCandidates = renameCandidates([{
+      op: "table-altered",
+      table: "__proto__",
+      columns: [
+        { op: "dropped", column: "old" },
+        { op: "added", column: "current", nullable: false },
+        {
+          op: "variants-changed",
+          column: "kind",
+          typeName: "__proto__",
+          variants: [
+            { op: "removed", variant: "old" },
+            { op: "added", variant: "new" },
+          ],
+        },
+      ],
+      indexes: [],
+    }]);
+    const columns = prototypeCandidates.columns;
+    expect(Object.hasOwn(columns, "__proto__")).toBe(true);
+    expect(columns["__proto__"]).toEqual({ dropped: ["old"], added: ["current"] });
+    expect(Object.hasOwn(prototypeCandidates.variants, "__proto__")).toBe(true);
+    expect(prototypeCandidates.variants["__proto__"]).toEqual({ dropped: ["old"], added: ["new"] });
+  });
+
   test("a pure type change yields no candidates", () => {
     const pre = defineSchema({ items: defineTable({ id: v.primaryKey(), count: v.int() }) });
     const target = defineSchema({ items: defineTable({ id: v.primaryKey(), count: v.string() }) });
@@ -147,6 +189,21 @@ describe("runRenameForm", () => {
       variants: { Role: { guest: "member" } },
     });
   });
+
+  test("prototype-named rename answers remain own table, scope, and source keys", async () => {
+    const candidates: RenameCandidates = {
+      tables: { dropped: ["__proto__"], added: ["constructor"] },
+      columns: Object.fromEntries([["__proto__", { dropped: ["toString"], added: ["label"] }]]),
+      variants: Object.fromEntries([["constructor", { dropped: ["__proto__"], added: ["current"] }]]),
+    };
+    const result = await runRenameForm(candidates, scriptedAsk(["y", "y", "y"]));
+    expect(Object.hasOwn(result.renames.tables!, "__proto__")).toBe(true);
+    expect(result.renames.tables!["__proto__"]).toBe("constructor");
+    expect(Object.hasOwn(result.renames.columns!, "__proto__")).toBe(true);
+    expect(result.renames.columns!["__proto__"]!["toString"]).toBe("label");
+    expect(Object.hasOwn(result.renames.variants!["constructor"]!, "__proto__")).toBe(true);
+    expect(result.renames.variants!["constructor"]!["__proto__"]).toBe("current");
+  });
 });
 
 describe("deriveSlug", () => {
@@ -160,6 +217,16 @@ describe("deriveSlug", () => {
     const pre = defineSchema({ keep: defineTable({ id: v.primaryKey() }), legacy: defineTable({ id: v.primaryKey() }) });
     const target = defineSchema({ keep: defineTable({ id: v.primaryKey() }) });
     expect(deriveSlug(refusalsOf(pre, target))).toBe("legacy_drop");
+  });
+
+  test("a counted constraint refusal names the validator repair", () => {
+    expect(deriveSlug([{
+      table: "posts",
+      column: "title",
+      reason: "constraint-violations",
+      question: "constraints tightened; 1 existing row(s) violate the target validator",
+      count: 1,
+    }])).toBe("posts_title_validate");
   });
 
   test("no refusals falls back to a stable default", () => {

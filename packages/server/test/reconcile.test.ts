@@ -459,6 +459,12 @@ describe("probeUniqueIndex (the shared duplicate probe)", () => {
     expect(q.calls).toEqual([]);
   });
 
+  test("prototype names are not mistaken for physically present columns", () => {
+    const q = fakeQuery(99);
+    expect(probeUniqueIndex(q, "users", "by_to_string", ["toString"], {})).toBeNull();
+    expect(q.calls).toEqual([]);
+  });
+
   test("NULLs are excluded and only present columns are grouped (the constraint's own semantics)", () => {
     const q = fakeQuery(0);
     probeUniqueIndex(q, "users", "by_email", ["email"], cols);

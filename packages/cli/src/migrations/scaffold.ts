@@ -261,7 +261,9 @@ function renderScaffold(stem: string, renames: Renames, refusals: SchemaRefusal[
       entries.push({ key: table, text: `    ${identKey(table)}: null, // ${drop.question}` });
       continue;
     }
-    const renamedColumns = renames.columns?.[table];
+    const renamedColumns = renames.columns !== undefined && Object.hasOwn(renames.columns, table)
+      ? renames.columns[table]
+      : undefined;
     const columnRenamed = renamedColumns !== undefined && Object.keys(renamedColumns).length > 0;
     if (!columnRenamed && group.every((r) => r.reason === "column-dropped")) {
       // Column drops only, no column rename in play: a complete destructuring
@@ -272,9 +274,9 @@ function renderScaffold(stem: string, renames: Renames, refusals: SchemaRefusal[
     }
     // Everything else — a typed hole: annotated with the NEW row type, its body
     // only TODO lines. A declared return type with no return does not compile.
-    // The probed unique-index refusal is volunteered here: same shape old/new, so
-    // the hole is the forcing function and the physical unique index at apply is
-    // the final enforcer (a non-deduping transform fails cleanly and rolls back).
+    // A probed optimistic refusal is volunteered here: same storage/type shape,
+    // so the hole is the forcing function. Target row validation and physical
+    // indexes remain the final enforcers; an invalid transform rolls back.
     holeTables.add(table);
     const todos = group.map((r) => `      // TODO(${refusalSite(r)}): ${todoText(r)}`).join("\n");
     entries.push({
@@ -353,14 +355,16 @@ function renderTypes(
   const slots: { key: string; text: string }[] = [];
   for (const newName of targetTables) {
     const oldName = oldNameOf.get(newName) ?? newName;
-    if (pre.tables[oldName]?.kind !== "table") continue; // newly added: no old rows to transform
+    if (!Object.hasOwn(pre.tables, oldName) || pre.tables[oldName]!.kind !== "table") continue; // newly added: no old rows to transform
     slots.push({
       key: newName,
       text: `    ${identKey(newName)}?: (row: ${beforeName(oldName)}, ctx: MigrationContext) => ${rowName(newName)} | null | Promise<${rowName(newName)} | null>;`,
     });
   }
   for (const oldName of preTables) {
-    const newName = normalizedRenames.tables[oldName] ?? oldName;
+    const newName = Object.hasOwn(normalizedRenames.tables, oldName)
+      ? normalizedRenames.tables[oldName]!
+      : oldName;
     if (targetSet.has(newName)) continue; // survived
     slots.push({
       key: oldName,

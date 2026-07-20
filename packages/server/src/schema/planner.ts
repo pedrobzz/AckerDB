@@ -16,10 +16,10 @@
  *   - adding / reordering enum & union variants (tags are stable)
  *   - dropping any index; adding / changing a non-unique index
  *
- * The sole optimistic change — a unique index (or an index changed to unique) —
- * is attempted: the planner probes for duplicate groups (the one remaining data
- * probe), applies on a clean table, and records a clean refusal with the counts
- * if duplicates exist, touching nothing.
+ * Data-dependent constraints are attempted optimistically: unique indexes probe
+ * duplicate groups and tightened validators scan their affected columns once
+ * per table. The writer runs these guards under BEGIN IMMEDIATE before any
+ * schema, data, snapshot, or history write.
  *
  * Everything else is *refused* with the presume-data question and no row-count
  * probing. The refusals ride along the plan; the reconcile entry throws them and
@@ -34,9 +34,20 @@
  */
 import type { Database } from "bun:sqlite";
 import { Engine, indexSqlName, type TablePlan } from "../engine.ts";
+import { CorruptDatabaseError } from "../errors.ts";
+import { isValidationError } from "../v.ts";
+import { checkDescriptor } from "./descriptor-kinds.ts";
 import { classifySchemaDiff, refusalSite, type OptimisticChange, type SafeChange, type SchemaRefusal } from "./classify.ts";
-import { diffSnapshots, namedOf, type SchemaDiff } from "./diff.ts";
+import { diffSnapshots, type SchemaDiff } from "./diff.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
+import {
+  buildStoredTable,
+  decodeStoredRow,
+  loadStoredTags,
+  pageStoredRows,
+  physicalColumnsOf,
+  type StoredTags,
+} from "./stored-rows.ts";
 
 export class UnsafeSchemaChange extends Error {
   readonly refusals: SchemaRefusal[];
@@ -64,6 +75,27 @@ export interface SchemaPlan {
   readonly ops: readonly Op[];
   readonly applied: readonly string[];
   readonly refusals: readonly SchemaRefusal[];
+  /** Replayable data guards, rerun by the writer after BEGIN IMMEDIATE. */
+  readonly probes: readonly (() => readonly SchemaRefusal[])[];
+}
+
+export interface PhysicalProbeRoute {
+  readonly table: string;
+  column(name: string): string;
+}
+
+export interface RoutedOptimisticChange {
+  readonly change: OptimisticChange;
+  readonly phys: PhysicalProbeRoute;
+}
+
+export type StoredTagNames = StoredTags;
+
+export interface OptimisticProbeOptions {
+  /** Already-resolved tag names, used by migration apply before tag rows move. */
+  readonly storedTags?: StoredTagNames;
+  /** Logical variant renames for a CLI post-answer preview over old tag rows. */
+  readonly variantRenames?: Readonly<Record<string, Readonly<Record<string, string>>>>;
 }
 
 /** What the planner needs to translate a classified change into physical work, carried once instead of threaded. */
@@ -76,6 +108,8 @@ export interface PlanContext {
    * ordinary reconcile, an intermediate step's target plan inside a migration chain.
    */
   planOf: (table: string) => TablePlan;
+  /** Optional post-rename tag names for migration probes before tag rows move. */
+  storedTags?: StoredTags;
 }
 
 /**
@@ -88,16 +122,15 @@ export interface PlanContext {
 export class SchemaPlanner {
   private readonly _ops: Op[] = [];
   private readonly _applied: string[] = [];
-  private readonly _refusals: SchemaRefusal[] = [];
-  private readonly count: (sql: string, ...params: unknown[]) => number;
+  private readonly queued: RoutedOptimisticChange[] = [];
+  private completed: SchemaPlan | undefined;
 
-  constructor(private readonly ctx: PlanContext) {
-    this.count = countOn(ctx.engine.writer);
-  }
+  constructor(private readonly ctx: PlanContext) {}
 
-  /** The plan accumulated so far: physical ops, applied log, and the probe refusals discovered. */
+  /** The sealed plan: physical ops, applied log, shape refusals, and deferred writer guards. */
   get plan(): SchemaPlan {
-    return { ops: this._ops, applied: this._applied, refusals: this._refusals };
+    if (this.completed === undefined) this.completed = this.finish();
+    return this.completed;
   }
 
   /**
@@ -107,6 +140,7 @@ export class SchemaPlanner {
    * plan inside a migration chain.
    */
   safe(change: SafeChange): void {
+    if (this.completed !== undefined) throw new Error("cannot add safe work after reading the schema plan");
     const { engine, current, planOf } = this.ctx;
     const writer = engine.writer;
     const table = change.table;
@@ -136,6 +170,9 @@ export class SchemaPlanner {
         this._applied.push(`added nullable column ${table}.${change.column}`);
         return;
       }
+      case "loosen-constraints":
+        this._applied.push(`loosened constraints ${table}.${change.column}`);
+        return;
       case "rebuild-table":
         rebuild(engine, planOf(table), current.tables[table]!, this._ops);
         this._applied.push(`rebuilt table ${table}`);
@@ -152,32 +189,48 @@ export class SchemaPlanner {
   }
 
   /**
-   * Probe one optimistic unique index against the live database and either
-   * schedule its physical creation or record a duplicate refusal — nothing
-   * touched either way. Duplicate → a clean refusal carrying the probed count;
-   * clean → schedule the create (unless a sibling rebuild owns it). `phys` routes
-   * the read-only probe to a physical table/columns still holding pre-rename names.
+   * Queue one optimistic guard. Physical work is scheduled in the sealed plan;
+   * the guard itself remains deferred until the writer transaction. `phys`
+   * routes a migration guard to still-old table/column names before renames.
    */
   optimistic(
     opt: OptimisticChange,
-    phys: { table: string; column: (c: string) => string } = { table: opt.table, column: (c) => c },
+    phys: PhysicalProbeRoute = { table: opt.table, column: (column) => column },
   ): void {
-    const { engine, current, planOf } = this.ctx;
-    const tablePlan = planOf(opt.table);
-    const index = tablePlan.indexes.find((ix) => ix.name === opt.index)!;
-    const refusal = probeUniqueIndex(this.count, opt.table, opt.index, index.columns, current.tables[opt.table]?.columns ?? {}, phys);
-    if (refusal !== null) {
-      this._refusals.push(refusal);
-      return;
+    if (this.completed !== undefined) throw new Error("cannot add optimistic work after reading the schema plan");
+    this.queued.push({ change: opt, phys });
+  }
+
+  private finish(): SchemaPlan {
+    const { engine, current, planOf, storedTags } = this.ctx;
+    const runProbes = () => probeOptimisticChanges(
+      engine.writer,
+      current,
+      this.queued,
+      (table, index) => planOf(table).indexes.find((candidate) => candidate.name === index)!.columns,
+      { storedTags },
+    );
+    for (const { change } of this.queued) {
+      if (change.op === "tighten-constraints") {
+        this._applied.push(`tightened constraints ${change.table}.${change.column}`);
+        continue;
+      }
+      if (change.viaRebuild) continue;
+      const tablePlan = planOf(change.table);
+      this._ops.push(createIndexOp(engine, tablePlan, change.index, change.recreate));
+      this._applied.push(`${change.recreate ? "recreated" : "created"} index ${change.table}.${change.index}`);
     }
-    if (opt.viaRebuild) return; // the rebuild creates every index from the new plan
-    this._ops.push(createIndexOp(engine, tablePlan, opt.index, opt.recreate));
-    this._applied.push(`${opt.recreate ? "recreated" : "created"} index ${opt.table}.${opt.index}`);
+    return {
+      ops: this._ops,
+      applied: this._applied,
+      refusals: [],
+      probes: this.queued.length === 0 ? [] : [runProbes],
+    };
   }
 }
 
 /**
- * The one data probe, pure over a query function: does `table` already hold
+ * The unique-index data probe, pure over a query function: does `table` already hold
  * duplicate groups for a would-be unique index's `columns`, and if so what is
  * the refusal? The probe mirrors the constraint exactly: SQLite unique indexes
  * treat NULLs as distinct, so rows holding NULL in any indexed column can never
@@ -197,7 +250,7 @@ export function probeUniqueIndex(
   currentColumns: Record<string, unknown>,
   phys: { table: string; column: (c: string) => string } = { table, column: (c) => c },
 ): SchemaRefusal | null {
-  if (!columns.every((c) => currentColumns[c] !== undefined)) return null;
+  if (!columns.every((column) => Object.hasOwn(currentColumns, column))) return null;
   const physCols = columns.map((c) => quote(phys.column(c)));
   const notNull = physCols.map((c) => `${c} IS NOT NULL`).join(" AND ");
   const dupes = query(
@@ -213,6 +266,140 @@ export function probeUniqueIndex(
   };
 }
 
+type IndexColumns = (table: string, index: string) => readonly string[];
+
+interface ConstraintProbeGroup {
+  readonly table: string;
+  readonly phys: PhysicalProbeRoute;
+  readonly changes: Extract<OptimisticChange, { op: "tighten-constraints" }>[];
+}
+
+/**
+ * Execute every optimistic data guard. Unique indexes retain their exact SQL
+ * probe. Constraint tightenings are grouped by physical table, decoded from the
+ * recorded descriptor/tag context, and served by one bounded page scan per
+ * table regardless of how many columns tightened.
+ */
+export function probeOptimisticChanges(
+  writer: Database,
+  current: SchemaSnapshot,
+  routed: readonly RoutedOptimisticChange[],
+  indexColumns: IndexColumns,
+  options: OptimisticProbeOptions = {},
+): SchemaRefusal[] {
+  const uniqueRefusals = new Map<OptimisticChange, SchemaRefusal>();
+  const constraintCounts = new Map<OptimisticChange, number>();
+  const groups = new Map<string, ConstraintProbeGroup>();
+  const count = countOn(writer);
+
+  for (const item of routed) {
+    const change = item.change;
+    if (change.op === "unique-index") {
+      const currentTable = Object.hasOwn(current.tables, change.table)
+        ? current.tables[change.table]
+        : undefined;
+      const refusal = probeUniqueIndex(
+        count,
+        change.table,
+        change.index,
+        indexColumns(change.table, change.index),
+        currentTable?.columns ?? {},
+        item.phys,
+      );
+      if (refusal !== null) uniqueRefusals.set(change, refusal);
+      continue;
+    }
+    const key = `${change.table}\0${item.phys.table}`;
+    const group = groups.get(key);
+    if (group === undefined) {
+      groups.set(key, { table: change.table, phys: item.phys, changes: [change] });
+    } else {
+      group.changes.push(change);
+    }
+    constraintCounts.set(change, 0);
+  }
+
+  if (groups.size > 0) {
+    const loadedTags = options.storedTags ?? loadStoredTags(writer);
+    const tags = options.variantRenames === undefined
+      ? loadedTags
+      : renameStoredTagNames(loadedTags, options.variantRenames);
+    for (const group of groups.values()) {
+      const table = current.tables[group.table];
+      if (table === undefined || table.kind !== "table") continue;
+      const selected = new Set(group.changes.map((change) => change.column));
+      const physical = new Set([...physicalColumnsOf(table)].map(group.phys.column));
+      const decoder = buildStoredTable(table, physical, tags, group.phys.column, selected);
+      const projection = decoder.columns.filter((column) => column.present).flatMap((column) => column.phys);
+
+      for (const raw of pageStoredRows(writer, group.phys.table, decoder.physicalPk, projection)) {
+        const row = decodeStoredRow(decoder, raw);
+        for (const change of group.changes) {
+          const value = row[change.column];
+          let currentValue: unknown;
+          try {
+            currentValue = checkDescriptor(
+              change.current,
+              value,
+              `${change.table}.${change.column} stored row ${String(row[decoder.pk])}`,
+            );
+          } catch (error) {
+            if (!isValidationError(error)) throw error;
+            throw new CorruptDatabaseError(
+              `stored value violates the recorded descriptor for ${change.table}.${change.column}: ${error.message}`,
+            );
+          }
+          if (currentValue === null) continue;
+          try {
+            checkDescriptor(change.target, currentValue, `${change.table}.${change.column}`);
+          } catch (error) {
+            if (!isValidationError(error)) throw error;
+            constraintCounts.set(change, constraintCounts.get(change)! + 1);
+          }
+        }
+      }
+    }
+  }
+
+  const refusals: SchemaRefusal[] = [];
+  for (const { change } of routed) {
+    if (change.op === "unique-index") {
+      const refusal = uniqueRefusals.get(change);
+      if (refusal !== undefined) refusals.push(refusal);
+      continue;
+    }
+    const violations = constraintCounts.get(change) ?? 0;
+    if (violations === 0) continue;
+    refusals.push({
+      table: change.table,
+      column: change.column,
+      reason: "constraint-violations",
+      question: `constraints tightened; ${violations} existing row(s) violate the target validator`,
+      count: violations,
+    });
+  }
+  return refusals;
+}
+
+function renameStoredTagNames(
+  tags: StoredTagNames,
+  renames: NonNullable<OptimisticProbeOptions["variantRenames"]>,
+): StoredTagNames {
+  const renamed = new Map<string, ReadonlyMap<number, string>>();
+  for (const [type, names] of tags) {
+    const variants = Object.hasOwn(renames, type) ? renames[type] : undefined;
+    if (variants === undefined) {
+      renamed.set(type, names);
+      continue;
+    }
+    renamed.set(type, new Map([...names].map(([tag, name]) => [
+      tag,
+      Object.hasOwn(variants, name) ? variants[name]! : name,
+    ])));
+  }
+  return renamed;
+}
+
 function createIndexOp(engine: Engine, tablePlan: TablePlan, name: string, recreate: boolean): Op {
   const index = tablePlan.indexes.find((ix) => ix.name === name)!;
   return () => {
@@ -222,19 +409,11 @@ function createIndexOp(engine: Engine, tablePlan: TablePlan, name: string, recre
   };
 }
 
-export function physColsOf(oldTable: TableSnapshot): Set<string> {
-  return new Set(
-    Object.entries(oldTable.columns).flatMap(([col, desc]) =>
-      namedOf(desc)?.kind === "union" ? [col, `${col}__p`] : [col],
-    ),
-  );
-}
-
 /** Rebuild `table` to the new plan, preserving intersecting columns and ids. */
 function rebuild(engine: Engine, tablePlan: TablePlan, oldTable: TableSnapshot, ops: Op[]): void {
   const writer = engine.writer;
   ops.push(() => {
-    const oldPhys = physColsOf(oldTable);
+    const oldPhys = physicalColumnsOf(oldTable);
     const copy = tablePlan.physOrder.filter((c) => oldPhys.has(c)).map(quote).join(", ");
     const tmp = `${tablePlan.name}__rebuild`;
     const seqRow = writer
@@ -264,8 +443,8 @@ function rebuild(engine: Engine, tablePlan: TablePlan, oldTable: TableSnapshot, 
 
 /**
  * Turn a diff into an immutable plan: shape-safe changes become physical ops,
- * optimistic unique indexes are probed (the one data probe), and every refusal —
- * shape-classified or probed — rides along unapplied. Read-only over the database.
+ * optimistic work becomes deferred writer guards, and every shape refusal rides
+ * along unapplied. Planning performs no database scan.
  */
 export function planDiff(ctx: PlanContext, diff: SchemaDiff): SchemaPlan {
   const { safe, optimistic, refusals } = classifySchemaDiff(diff);
@@ -273,7 +452,12 @@ export function planDiff(ctx: PlanContext, diff: SchemaDiff): SchemaPlan {
   for (const change of safe) planner.safe(change);
   for (const opt of optimistic) planner.optimistic(opt);
   const probed = planner.plan;
-  return { ops: probed.ops, applied: probed.applied, refusals: [...refusals, ...probed.refusals] };
+  return {
+    ops: probed.ops,
+    applied: probed.applied,
+    refusals: [...refusals, ...probed.refusals],
+    probes: probed.probes,
+  };
 }
 
 /** Apply a refusal-free plan: tags, ops, and the new snapshot in one transaction. */
@@ -281,6 +465,7 @@ export function commitPlan(engine: Engine, target: SchemaSnapshot, plan: SchemaP
   const writer = engine.writer;
   writer.exec("BEGIN IMMEDIATE");
   try {
+    verifyPlanProbes(plan);
     engine.persistTags();
     for (const op of plan.ops) op();
     engine.saveSnapshot(target);
@@ -289,6 +474,12 @@ export function commitPlan(engine: Engine, target: SchemaSnapshot, plan: SchemaP
     writer.exec("ROLLBACK");
     throw error;
   }
+}
+
+/** Refuse a stale optimistic plan before its transaction performs any writes. */
+export function verifyPlanProbes(plan: SchemaPlan): void {
+  const refusals = plan.probes.flatMap((probe) => [...probe()]);
+  if (refusals.length > 0) throw new UnsafeSchemaChange(refusals);
 }
 
 /**

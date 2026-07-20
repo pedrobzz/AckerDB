@@ -16,6 +16,14 @@ import type { SchemaSnapshot, TableSnapshot } from "../../snapshot.ts";
 import { namedOf } from "../diff.ts";
 import { MigrationError, type Migration } from "./types.ts";
 
+function ownValue<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
+}
+
+function renamedName(renames: Readonly<Record<string, string>>, name: string): string {
+  return Object.hasOwn(renames, name) ? renames[name]! : name;
+}
+
 export interface NormalizedRenames {
   tables: Record<string, string>; // old -> new
   columns: Record<string, Record<string, string>>; // NEW table name -> { oldCol -> newCol }
@@ -36,6 +44,48 @@ export interface RenamePlan {
   renamedTables: Set<string>;
 }
 
+export interface RenameRoutes {
+  /** new table name -> old physical table name. */
+  tableOldName: Map<string, string>;
+  /** new table name -> physical [old, new] column pairs. */
+  columnPhys: Map<string, [string, string][]>;
+  /** new table name -> new physical column name -> old physical column name. */
+  columnReverse: Map<string, Map<string, string>>;
+}
+
+/**
+ * The one pure derivation of logical rename answers into physical read routes.
+ * Both migration apply and CLI post-answer probes consume it.
+ */
+export function renameRoutes(target: SchemaSnapshot, raw: NormalizedRenames): RenameRoutes {
+  const tableOldName = new Map<string, string>();
+  for (const [oldTable, newTable] of Object.entries(raw.tables)) tableOldName.set(newTable, oldTable);
+
+  const columnPhys = new Map<string, [string, string][]>();
+  const columnReverse = new Map<string, Map<string, string>>();
+  for (const [table, columns] of Object.entries(raw.columns)) {
+    const targetTable = ownValue(target.tables, table);
+    if (targetTable === undefined) throw new MigrationError(`rename target table "${table}" is not in the schema`);
+    const pairs: [string, string][] = [];
+    const reverse = new Map<string, string>();
+    for (const [oldColumn, newColumn] of Object.entries(columns)) {
+      const targetColumn = ownValue(targetTable.columns, newColumn);
+      if (targetColumn === undefined) {
+        throw new MigrationError(`rename target column "${table}.${newColumn}" is not in the schema`);
+      }
+      pairs.push([oldColumn, newColumn]);
+      reverse.set(newColumn, oldColumn);
+      if (namedOf(targetColumn)?.kind === "union") {
+        pairs.push([`${oldColumn}__p`, `${newColumn}__p`]);
+        reverse.set(`${newColumn}__p`, `${oldColumn}__p`);
+      }
+    }
+    columnPhys.set(table, pairs);
+    columnReverse.set(table, reverse);
+  }
+  return { tableOldName, columnPhys, columnReverse };
+}
+
 /**
  * Validate the rename declarations (MigrationError, nothing touched) and derive
  * the renamed-stored snapshot plus the physical rename work. `columns` are keyed
@@ -50,25 +100,7 @@ export function planRenames(writer: Database, current: SchemaSnapshot, target: S
   };
   validateRenames(writer, current, target, raw);
 
-  const tableOldName = new Map<string, string>();
-  for (const [oldT, newT] of Object.entries(raw.tables)) tableOldName.set(newT, oldT);
-
-  const columnPhys = new Map<string, [string, string][]>();
-  const columnReverse = new Map<string, Map<string, string>>();
-  for (const [table, cols] of Object.entries(raw.columns)) {
-    const pairs: [string, string][] = [];
-    const reverse = new Map<string, string>();
-    for (const [oldCol, newCol] of Object.entries(cols)) {
-      pairs.push([oldCol, newCol]);
-      reverse.set(newCol, oldCol);
-      if (namedOf(target.tables[table]!.columns[newCol]!)?.kind === "union") {
-        pairs.push([`${oldCol}__p`, `${newCol}__p`]);
-        reverse.set(`${newCol}__p`, `${oldCol}__p`);
-      }
-    }
-    columnPhys.set(table, pairs);
-    columnReverse.set(table, reverse);
-  }
+  const { tableOldName, columnPhys, columnReverse } = renameRoutes(target, raw);
 
   const variants: RenamePlan["variants"] = [];
   for (const [type, vmap] of Object.entries(raw.variants)) {
@@ -88,12 +120,13 @@ export function planRenames(writer: Database, current: SchemaSnapshot, target: S
 function validateRenames(writer: Database, current: SchemaSnapshot, target: SchemaSnapshot, raw: NormalizedRenames): void {
   const tableTargets = new Set<string>();
   for (const [oldT, newT] of Object.entries(raw.tables)) {
-    if (current.tables[oldT]?.kind !== "table") throw new MigrationError(`rename source table "${oldT}" does not exist`);
-    if (target.tables[newT] === undefined) throw new MigrationError(`rename target table "${newT}" is not in the schema`);
-    if (target.tables[oldT] !== undefined) {
+    const source = ownValue(current.tables, oldT);
+    if (source?.kind !== "table") throw new MigrationError(`rename source table "${oldT}" does not exist`);
+    if (!Object.hasOwn(target.tables, newT)) throw new MigrationError(`rename target table "${newT}" is not in the schema`);
+    if (Object.hasOwn(target.tables, oldT)) {
       throw new MigrationError(`rename source table "${oldT}" still exists in the schema; it was not dropped`);
     }
-    if (current.tables[newT] !== undefined) {
+    if (Object.hasOwn(current.tables, newT)) {
       throw new MigrationError(`rename target table "${newT}" already exists; cannot rename onto a live table`);
     }
     if (tableTargets.has(newT)) throw new MigrationError(`two renames target table "${newT}"`);
@@ -101,18 +134,19 @@ function validateRenames(writer: Database, current: SchemaSnapshot, target: Sche
   }
 
   for (const [table, cols] of Object.entries(raw.columns)) {
-    if (target.tables[table] === undefined) throw new MigrationError(`rename target table "${table}" is not in the schema`);
+    if (!Object.hasOwn(target.tables, table)) throw new MigrationError(`rename target table "${table}" is not in the schema`);
     const oldTable = Object.keys(raw.tables).find((o) => raw.tables[o] === table) ?? table;
-    const from = current.tables[oldTable]?.columns ?? {};
+    const sourceTable = ownValue(current.tables, oldTable);
+    const from = sourceTable?.columns ?? {};
     const to = target.tables[table]!.columns;
     const colTargets = new Set<string>();
     for (const [oldCol, newCol] of Object.entries(cols)) {
-      if (from[oldCol] === undefined) throw new MigrationError(`rename source column "${table}.${oldCol}" does not exist`);
-      if (to[newCol] === undefined) throw new MigrationError(`rename target column "${table}.${newCol}" is not in the schema`);
-      if (to[oldCol] !== undefined) {
+      if (!Object.hasOwn(from, oldCol)) throw new MigrationError(`rename source column "${table}.${oldCol}" does not exist`);
+      if (!Object.hasOwn(to, newCol)) throw new MigrationError(`rename target column "${table}.${newCol}" is not in the schema`);
+      if (Object.hasOwn(to, oldCol)) {
         throw new MigrationError(`rename source column "${table}.${oldCol}" still exists in the schema; it was not dropped`);
       }
-      if (from[newCol] !== undefined) {
+      if (Object.hasOwn(from, newCol)) {
         throw new MigrationError(`rename target column "${table}.${newCol}" already exists; cannot rename onto a live column`);
       }
       if (colTargets.has(newCol)) throw new MigrationError(`two renames target column "${table}.${newCol}"`);
@@ -154,18 +188,21 @@ function validateRenames(writer: Database, current: SchemaSnapshot, target: Sche
  * renamed-stored snapshot against the target without ever opening a database.
  */
 export function applyRenames(current: SchemaSnapshot, raw: NormalizedRenames): SchemaSnapshot {
-  const tables: Record<string, TableSnapshot> = {};
+  const tables = Object.create(null) as Record<string, TableSnapshot>;
   for (const [name, snap] of Object.entries(current.tables)) tables[name] = structuredClone(snap);
   for (const [oldT, newT] of Object.entries(raw.tables)) {
-    tables[newT] = tables[oldT]!;
+    const source = ownValue(tables, oldT);
+    if (source === undefined) throw new MigrationError(`rename source table "${oldT}" does not exist`);
+    tables[newT] = source;
     delete tables[oldT];
   }
   for (const [table, cols] of Object.entries(raw.columns)) {
-    const snap = tables[table]!;
-    const columns: Record<string, Descriptor> = {};
-    for (const [col, desc] of Object.entries(snap.columns)) columns[cols[col] ?? col] = desc;
+    const snap = ownValue(tables, table);
+    if (snap === undefined) throw new MigrationError(`rename target table "${table}" is not in the schema`);
+    const columns = Object.create(null) as Record<string, Descriptor>;
+    for (const [col, desc] of Object.entries(snap.columns)) columns[renamedName(cols, col)] = desc;
     snap.columns = columns;
-    snap.indexes = snap.indexes.map((ix) => ({ ...ix, columns: ix.columns.map((c) => cols[c] ?? c) }));
+    snap.indexes = snap.indexes.map((ix) => ({ ...ix, columns: ix.columns.map((column) => renamedName(cols, column)) }));
   }
   for (const [type, vmap] of Object.entries(raw.variants)) {
     for (const snap of Object.values(tables)) {
@@ -189,12 +226,12 @@ function renameVariants(desc: Descriptor, type: string, vmap: Record<string, str
     return { ...desc, inner: renameVariants(desc["inner"] as Descriptor, type, vmap) };
   }
   if (desc["k"] === "enum" && desc["name"] === type) {
-    return { ...desc, values: (desc["values"] as string[]).map((v) => vmap[v] ?? v) };
+    return { ...desc, values: (desc["values"] as string[]).map((variant) => renamedName(vmap, variant)) };
   }
   if (desc["k"] === "union" && desc["name"] === type) {
-    const members: Record<string, Descriptor> = {};
+    const members = Object.create(null) as Record<string, Descriptor>;
     for (const [variant, d] of Object.entries(desc["members"] as Record<string, Descriptor>)) {
-      members[vmap[variant] ?? variant] = d; // payload descriptors untouched: nested uses must diff
+      members[renamedName(vmap, variant)] = d; // payload descriptors untouched: nested uses must diff
     }
     return { ...desc, members };
   }

@@ -75,7 +75,15 @@ export type {
   Upsert,
 } from "./dbtypes.ts";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
-export { probeUniqueIndex, UnsafeSchemaChange } from "./schema/planner.ts";
+export {
+  probeOptimisticChanges,
+  probeUniqueIndex,
+  UnsafeSchemaChange,
+  type OptimisticProbeOptions,
+  type PhysicalProbeRoute,
+  type RoutedOptimisticChange,
+  type StoredTagNames,
+} from "./schema/planner.ts";
 export { reconcile } from "./schema/reconcile.ts";
 export {
   defineMigration,
@@ -92,7 +100,12 @@ export {
   type RowTransform,
 } from "./schema/migrations/types.ts";
 export { validateChain, validateHistoryPrefix, type AppliedMigrationRow } from "./schema/migrations/chain.ts";
-export { applyRenames, type NormalizedRenames } from "./schema/migrations/rename.ts";
+export {
+  applyRenames,
+  renameRoutes,
+  type NormalizedRenames,
+  type RenameRoutes,
+} from "./schema/migrations/rename.ts";
 export {
   diffSnapshots,
   type ColumnChange,
