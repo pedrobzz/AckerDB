@@ -44,7 +44,7 @@ import {
 import { DbzzError, isDbzzError } from "./errors.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "./limits.ts";
 import { outcomeFromError } from "./outcome.ts";
-import type { Identity } from "./dbz.ts";
+import type { Identity } from "./v.ts";
 
 export type SubscriptionServerMessage = TransitionMessage | EventMessage;
 export type SessionApplicationMessage =

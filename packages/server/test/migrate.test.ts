@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  dbz,
+  applyRenames,
+  v,
   defineMigration,
   defineSchema,
   defineTable,
@@ -72,9 +73,70 @@ function reopen(schema: Schema, path: string) {
 }
 
 describe("migrate: rebuild transforms", () => {
+  test("target descriptors enforce constraints on transformed rows", async () => {
+    const before = defineSchema({ posts: defineTable({ id: v.primaryKey(), title: v.string() }) });
+    const target = defineSchema({
+      posts: defineTable({ id: v.primaryKey(), title: v.string().min(2) }),
+    });
+    const path = freshPath();
+    await seed(before, path, async (d) => {
+      await d.posts.insert({ title: "x" });
+    });
+
+    const engine = new Engine(target, path);
+    const current = engine.loadSnapshot()!;
+    await expect(reconcile(
+      engine,
+      chain(engine, defineMigration({ tables: { posts: (row) => row } })),
+    )).rejects.toThrow("posts.transform.title");
+    expect(engine.loadSnapshot()).toEqual(current);
+    expect(history(engine)).toEqual([]);
+    expect((engine.writer.query("SELECT title FROM posts WHERE id = 1").get() as { title: string }).title).toBe("x");
+    engine.close("clean");
+  });
+
+  test("a constraint-only refusal is repairable by the ordinary table transform", async () => {
+    const before = defineSchema({ posts: defineTable({ id: v.primaryKey(), title: v.string() }) });
+    const target = defineSchema({ posts: defineTable({ id: v.primaryKey(), title: v.string().min(2) }) });
+    const path = freshPath();
+    await seed(before, path, async (d) => {
+      await d.posts.insert({ title: "x" });
+      await d.posts.insert({ title: "valid" });
+    });
+
+    const { engine, db: migrated } = await migrate(
+      target,
+      path,
+      defineMigration({
+        tables: { posts: (row) => ({ ...row, title: String(row.title).padEnd(2, "_") }) },
+      }),
+    );
+    expect((await migrated.posts.get(1n)).title).toBe("x_");
+    expect((await migrated.posts.get(2n)).title).toBe("valid");
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(target));
+    expect(history(engine)).toHaveLength(1);
+    engine.close("clean");
+  });
+
+  test("migration row validation rejects prototype-named unknown fields", async () => {
+    const before = defineSchema({ posts: defineTable({ id: v.primaryKey(), title: v.string() }) });
+    const target = defineSchema({ posts: defineTable({ id: v.primaryKey(), title: v.string().min(2) }) });
+    const path = freshPath();
+    await seed(before, path, async (d) => {
+      await d.posts.insert({ title: "ok" });
+    });
+    const engine = new Engine(target, path);
+    await expect(reconcile(
+      engine,
+      chain(engine, defineMigration({ tables: { posts: (row) => ({ ...row, toString: "not-a-column" }) } })),
+    )).rejects.toThrow('unknown field "toString"');
+    expect(history(engine)).toEqual([]);
+    engine.close("clean");
+  });
+
   test("a type change is resolved by a transform, preserving pks and converting data", async () => {
-    const a = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-    const b = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const a = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+    const b = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.posts.insert({ count: "5" }); // id 1
@@ -97,8 +159,8 @@ describe("migrate: rebuild transforms", () => {
   });
 
   test("a null return deletes the row", async () => {
-    const a = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-    const b = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const a = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+    const b = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.posts.insert({ count: "1" }); // id 1
@@ -120,12 +182,12 @@ describe("migrate: rebuild transforms", () => {
 
   test("an async transform merges a sibling table through ctx.before", async () => {
     const a = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), score: dbz.string() }),
-      bonuses: defineTable({ id: dbz.primaryKey(), userId: dbz.bigint(), extra: dbz.number() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string(), score: v.string() }),
+      bonuses: defineTable({ id: v.primaryKey(), userId: v.bigint(), extra: v.float() }),
     });
     const b = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), score: dbz.number() }),
-      bonuses: defineTable({ id: dbz.primaryKey(), userId: dbz.bigint(), extra: dbz.number() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string(), score: v.float() }),
+      bonuses: defineTable({ id: v.primaryKey(), userId: v.bigint(), extra: v.float() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -159,10 +221,10 @@ describe("migrate: rebuild transforms", () => {
 
 describe("migrate: emits", () => {
   test("a column drop salvages into a freshly created junction table", async () => {
-    const a = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), ownerId: dbz.bigint() }) });
+    const a = defineSchema({ posts: defineTable({ id: v.primaryKey(), ownerId: v.bigint() }) });
     const b = defineSchema({
-      posts: defineTable({ id: dbz.primaryKey() }),
-      post_owners: defineTable({ id: dbz.primaryKey(), postId: dbz.bigint(), ownerId: dbz.bigint() }),
+      posts: defineTable({ id: v.primaryKey() }),
+      post_owners: defineTable({ id: v.primaryKey(), postId: v.bigint(), ownerId: v.bigint() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -193,10 +255,10 @@ describe("migrate: emits", () => {
 
   test("a salvage emits into a table being rebuilt this same step", async () => {
     const a = defineSchema({
-      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
-      dest: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      source: defineTable({ id: v.primaryKey(), val: v.string() }),
+      dest: defineTable({ id: v.primaryKey(), val: v.string() }),
     });
-    const b = defineSchema({ dest: defineTable({ id: dbz.primaryKey(), val: dbz.number() }) });
+    const b = defineSchema({ dest: defineTable({ id: v.primaryKey(), val: v.float() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.dest.insert({ val: "10" }); // id 1
@@ -232,9 +294,9 @@ describe("migrate: emits", () => {
 
 describe("migrate: volunteered transforms", () => {
   test("a volunteered transform backfills a shape-safe nullable column, its add-column absorbed", async () => {
-    const a = defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }) });
+    const a = defineSchema({ users: defineTable({ id: v.primaryKey(), name: v.string() }) });
     const b = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), slug: dbz.nullable(dbz.string()) }),
+      users: defineTable({ id: v.primaryKey(), name: v.string(), slug: v.string().nullable() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -259,10 +321,10 @@ describe("migrate: volunteered transforms", () => {
 describe("migrate: drops", () => {
   test("null acknowledges a dropped table", async () => {
     const a = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
-      temp: defineTable({ id: dbz.primaryKey(), x: dbz.string() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string() }),
+      temp: defineTable({ id: v.primaryKey(), x: v.string() }),
     });
-    const b = defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }) });
+    const b = defineSchema({ users: defineTable({ id: v.primaryKey(), name: v.string() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.users.insert({ name: "ana" });
@@ -277,12 +339,12 @@ describe("migrate: drops", () => {
 
   test("a salvage transform emits then drops", async () => {
     const a = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
-      legacy: defineTable({ id: dbz.primaryKey(), data: dbz.string() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string() }),
+      legacy: defineTable({ id: v.primaryKey(), data: v.string() }),
     });
     const b = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
-      archive: defineTable({ id: dbz.primaryKey(), data: dbz.string() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string() }),
+      archive: defineTable({ id: v.primaryKey(), data: v.string() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -305,10 +367,10 @@ describe("migrate: drops", () => {
 describe("migrate: enum variant removal", () => {
   test("a transform maps the removed variant's rows, enums read as strings both sides", async () => {
     const a = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("RRole", ["admin", "member", "guest"]) }),
+      users: defineTable({ id: v.primaryKey(), role: v.enum("RRole", ["admin", "member", "guest"]) }),
     });
     const b = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("RRole", ["admin", "member"]) }),
+      users: defineTable({ id: v.primaryKey(), role: v.enum("RRole", ["admin", "member"]) }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -337,8 +399,8 @@ describe("migrate: enum variant removal", () => {
 });
 
 describe("migrate: validation refuses before touching anything", () => {
-  const a = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-  const b = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+  const a = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+  const b = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
 
   async function seedOne(path: string): Promise<void> {
     await seed(a, path, async (d) => {
@@ -396,8 +458,8 @@ describe("migrate: validation refuses before touching anything", () => {
 
 describe("migrate: transactional integrity", () => {
   test("a throwing transform rolls the whole step back, byte-identical", async () => {
-    const a = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-    const b = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const a = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+    const b = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.posts.insert({ count: "1" });
@@ -430,9 +492,9 @@ describe("migrate: transactional integrity", () => {
   });
 
   test("a unique index over duplicate transform output fails the migration cleanly", async () => {
-    const a = defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }) });
+    const a = defineSchema({ users: defineTable({ id: v.primaryKey(), name: v.string() }) });
     const b = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }).index("by_name", ["name"], { unique: true }),
+      users: defineTable({ id: v.primaryKey(), name: v.string() }).index("by_name", ["name"], { unique: true }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -455,10 +517,85 @@ describe("migrate: transactional integrity", () => {
 });
 
 describe("migrate: renames", () => {
+  test("prototype-named table, column, type, and untouched siblings survive a combined rename", async () => {
+    const before = defineSchema({
+      toString: defineTable({
+        id: v.primaryKey(),
+        constructor: v.string(),
+        toString: v.string(),
+        state: v.enum("toString", ["legacy", "toString"]),
+      }),
+    });
+    const target = defineSchema({
+      constructor: defineTable({
+        id: v.primaryKey(),
+        label: v.string(),
+        toString: v.string(),
+        state: v.enum("toString", ["current", "toString"]),
+      }),
+    });
+    const path = freshPath();
+    await seed(before, path, async (database) => {
+      await database.toString.insert({ constructor: "renamed", toString: "untouched", state: "legacy" });
+    });
+
+    const { engine, db: migrated } = await migrate(target, path, defineMigration({
+      renames: {
+        tables: { toString: "constructor" },
+        columns: { constructor: { constructor: "label" } },
+        variants: { toString: { legacy: "current" } },
+      },
+    }));
+    expect(await migrated.constructor.get(1n)).toEqual({
+      id: 1n,
+      label: "renamed",
+      toString: "untouched",
+      state: "current",
+    });
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(target));
+    engine.close("clean");
+  });
+
+  test("applyRenames preserves own __proto__ table, column, and union member keys", () => {
+    const current: SchemaSnapshot = {
+      version: 1,
+      tables: {
+        legacy: {
+          kind: "table",
+          columns: Object.fromEntries([
+            ["id", v.primaryKey().descriptor()],
+            ["old", v.string().descriptor()],
+            ["__proto__", v.string().descriptor()],
+            ["choice", {
+              k: "union",
+              name: "Choice",
+              members: Object.fromEntries([
+                ["old", v.string().descriptor()],
+                ["__proto__", v.string().descriptor()],
+              ]),
+            }],
+          ]),
+          indexes: [],
+        },
+      },
+    };
+    const renamed = applyRenames(current, {
+      tables: { legacy: "__proto__" },
+      columns: Object.fromEntries([["__proto__", { old: "renamed" }]]),
+      variants: { Choice: { old: "current" } },
+    });
+
+    expect(Object.hasOwn(renamed.tables, "__proto__")).toBe(true);
+    const columns = renamed.tables["__proto__"]!.columns;
+    expect(Object.hasOwn(columns, "__proto__")).toBe(true);
+    const members = columns.choice!["members"] as Record<string, unknown>;
+    expect(Object.keys(members).sort()).toEqual(["__proto__", "current"]);
+  });
+
   test("a pure table rename keeps rows, ids, and indexes; reopen passes", async () => {
-    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }).index("by_msg", ["msg"]) });
+    const a = defineSchema({ logs: defineTable({ id: v.primaryKey(), msg: v.string() }).index("by_msg", ["msg"]) });
     const b = defineSchema({
-      auditLogs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }).index("by_msg", ["msg"]),
+      auditLogs: defineTable({ id: v.primaryKey(), msg: v.string() }).index("by_msg", ["msg"]),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -493,16 +630,16 @@ describe("migrate: renames", () => {
   test("a pure column rename keeps data for a plain and a union column; reopen passes", async () => {
     const a = defineSchema({
       users: defineTable({
-        id: dbz.primaryKey(),
-        street: dbz.string(),
-        note: dbz.union("Payload", { text: dbz.string(), nothing: dbz.tag() }),
+        id: v.primaryKey(),
+        street: v.string(),
+        note: v.union("Payload", { text: v.string(), nothing: v.tag() }),
       }).index("by_street", ["street"]),
     });
     const b = defineSchema({
       users: defineTable({
-        id: dbz.primaryKey(),
-        streetName: dbz.string(),
-        memo: dbz.union("Payload", { text: dbz.string(), nothing: dbz.tag() }),
+        id: v.primaryKey(),
+        streetName: v.string(),
+        memo: v.union("Payload", { text: v.string(), nothing: v.tag() }),
       }).index("by_street", ["streetName"]),
     });
     const path = freshPath();
@@ -531,10 +668,10 @@ describe("migrate: renames", () => {
 
   test("a variant rename keeps the interned tag; no transform; reopen passes", async () => {
     const a = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["Test", "Live", "Off"]) }),
+      users: defineTable({ id: v.primaryKey(), status: v.enum("Status", ["Test", "Live", "Off"]) }),
     });
     const b = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["Foo", "Live", "Off"]) }),
+      users: defineTable({ id: v.primaryKey(), status: v.enum("Status", ["Foo", "Live", "Off"]) }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -566,9 +703,76 @@ describe("migrate: renames", () => {
     again.engine.close("clean");
   });
 
+  test("a variant rename and clean nested constraint tightening share the renamed tag view", async () => {
+    const before = defineSchema({
+      items: defineTable({
+        id: v.primaryKey(),
+        body: v.union("Body", { legacy: v.object({ label: v.string() }) }),
+      }),
+    });
+    const target = defineSchema({
+      items: defineTable({
+        id: v.primaryKey(),
+        body: v.union("Body", { current: v.object({ label: v.string().min(2) }) }),
+      }),
+    });
+    const path = freshPath();
+    await seed(before, path, async (d) => {
+      await d.items.insert({ body: { tag: "legacy", value: { label: "ok" } } });
+    });
+
+    const engine = new Engine(target, path);
+    await reconcile(engine, [{
+      number: 1,
+      name: "rename_and_tighten",
+      pre: snapshotOf(before),
+      target: snapshotOf(target),
+      code: "",
+      migration: defineMigration({ renames: { variants: { Body: { legacy: "current" } } } }),
+    }]);
+    expect((await db(engine).items.get(1n)).body).toEqual({ tag: "current", value: { label: "ok" } });
+    expect(history(engine)).toHaveLength(1);
+    engine.close("clean");
+  });
+
+  test("a variant rename plus violating nested tightening refuses as data, not tag corruption", async () => {
+    const before = defineSchema({
+      items: defineTable({
+        id: v.primaryKey(),
+        body: v.union("Body", { legacy: v.object({ label: v.string() }) }),
+      }),
+    });
+    const target = defineSchema({
+      items: defineTable({
+        id: v.primaryKey(),
+        body: v.union("Body", { current: v.object({ label: v.string().min(2) }) }),
+      }),
+    });
+    const path = freshPath();
+    await seed(before, path, async (d) => {
+      await d.items.insert({ body: { tag: "legacy", value: { label: "x" } } });
+    });
+
+    const engine = new Engine(target, path);
+    await expect(reconcile(engine, [{
+      number: 1,
+      name: "rename_and_tighten",
+      pre: snapshotOf(before),
+      target: snapshotOf(target),
+      code: "",
+      migration: defineMigration({ renames: { variants: { Body: { legacy: "current" } } } }),
+    }])).rejects.toThrow("1 existing row(s) violate the target validator");
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(before));
+    expect(history(engine)).toEqual([]);
+    expect(engine.writer.query("SELECT variant FROM _dbz_tags WHERE type = 'Body'").all()).toEqual([
+      { variant: "legacy" },
+    ]);
+    engine.close("clean");
+  });
+
   test("an undeclared drop+add is not inferred as a rename", async () => {
-    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }) });
-    const b = defineSchema({ auditLogs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }) });
+    const a = defineSchema({ logs: defineTable({ id: v.primaryKey(), msg: v.string() }) });
+    const b = defineSchema({ auditLogs: defineTable({ id: v.primaryKey(), msg: v.string() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.logs.insert({ msg: "x" });
@@ -582,8 +786,8 @@ describe("migrate: renames", () => {
   });
 
   test("a rename composed with a type change pairs up; old column names in, new shape out", async () => {
-    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), rawCount: dbz.string() }) });
-    const b = defineSchema({ auditLogs: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const a = defineSchema({ logs: defineTable({ id: v.primaryKey(), rawCount: v.string() }) });
+    const b = defineSchema({ auditLogs: defineTable({ id: v.primaryKey(), count: v.int() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.logs.insert({ rawCount: "5" }); // id 1
@@ -615,8 +819,8 @@ describe("migrate: renames", () => {
   });
 
   test("a table rename composes with a column rename on the same table", async () => {
-    const a = defineSchema({ notes: defineTable({ id: dbz.primaryKey(), body: dbz.string() }) });
-    const b = defineSchema({ memos: defineTable({ id: dbz.primaryKey(), text: dbz.string() }) });
+    const a = defineSchema({ notes: defineTable({ id: v.primaryKey(), body: v.string() }) });
+    const b = defineSchema({ memos: defineTable({ id: v.primaryKey(), text: v.string() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.notes.insert({ body: "hello" }); // id 1
@@ -640,9 +844,9 @@ describe("migrate: renames", () => {
   });
 
   test("a table rename plus a nullable column add needs no transform", async () => {
-    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }) });
+    const a = defineSchema({ logs: defineTable({ id: v.primaryKey(), msg: v.string() }) });
     const b = defineSchema({
-      auditLogs: defineTable({ id: dbz.primaryKey(), msg: dbz.string(), extra: dbz.nullable(dbz.string()) }),
+      auditLogs: defineTable({ id: v.primaryKey(), msg: v.string(), extra: v.string().nullable() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -671,9 +875,9 @@ describe("migrate: renames", () => {
   });
 
   test("a column rename plus another nullable column add on the same table needs no transform", async () => {
-    const a = defineSchema({ users: defineTable({ id: dbz.primaryKey(), street: dbz.string() }) });
+    const a = defineSchema({ users: defineTable({ id: v.primaryKey(), street: v.string() }) });
     const b = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), streetName: dbz.string(), note: dbz.nullable(dbz.string()) }),
+      users: defineTable({ id: v.primaryKey(), streetName: v.string(), note: v.string().nullable() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -697,9 +901,9 @@ describe("migrate: renames", () => {
   });
 
   test("a unique index added on a renamed table probes the old physical names and refuses with counts", async () => {
-    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }) });
+    const a = defineSchema({ logs: defineTable({ id: v.primaryKey(), msg: v.string() }) });
     const b = defineSchema({
-      auditLogs: defineTable({ id: dbz.primaryKey(), text: dbz.string() }).index("by_text", ["text"], { unique: true }),
+      auditLogs: defineTable({ id: v.primaryKey(), text: v.string() }).index("by_text", ["text"], { unique: true }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -721,8 +925,8 @@ describe("migrate: renames", () => {
   });
 
   test("a rename plus a type change still demands a transform", async () => {
-    const a = defineSchema({ logs: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-    const b = defineSchema({ auditLogs: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const a = defineSchema({ logs: defineTable({ id: v.primaryKey(), count: v.string() }) });
+    const b = defineSchema({ auditLogs: defineTable({ id: v.primaryKey(), count: v.int() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.logs.insert({ count: "1" });
@@ -738,12 +942,12 @@ describe("migrate: renames", () => {
 
   test("a variant rename with a nested use refuses the nested column until a transform rewrites the payloads", async () => {
     const a = defineSchema({
-      hosts: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["Test", "Live"]) }),
-      checks: defineTable({ id: dbz.primaryKey(), meta: dbz.object({ s: dbz.enum("Status", ["Test", "Live"]) }) }),
+      hosts: defineTable({ id: v.primaryKey(), status: v.enum("Status", ["Test", "Live"]) }),
+      checks: defineTable({ id: v.primaryKey(), meta: v.object({ s: v.enum("Status", ["Test", "Live"]) }) }),
     });
     const b = defineSchema({
-      hosts: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["Foo", "Live"]) }),
-      checks: defineTable({ id: dbz.primaryKey(), meta: dbz.object({ s: dbz.enum("Status", ["Foo", "Live"]) }) }),
+      hosts: defineTable({ id: v.primaryKey(), status: v.enum("Status", ["Foo", "Live"]) }),
+      checks: defineTable({ id: v.primaryKey(), meta: v.object({ s: v.enum("Status", ["Foo", "Live"]) }) }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -785,10 +989,10 @@ describe("migrate: renames", () => {
 
   test("an emit into a purely-renamed table lands correctly", async () => {
     const a = defineSchema({
-      inbox: defineTable({ id: dbz.primaryKey(), text: dbz.string() }),
-      drafts: defineTable({ id: dbz.primaryKey(), text: dbz.string() }),
+      inbox: defineTable({ id: v.primaryKey(), text: v.string() }),
+      drafts: defineTable({ id: v.primaryKey(), text: v.string() }),
     });
-    const b = defineSchema({ messages: defineTable({ id: dbz.primaryKey(), text: dbz.string() }) });
+    const b = defineSchema({ messages: defineTable({ id: v.primaryKey(), text: v.string() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       await d.inbox.insert({ text: "hi" }); // id 1
@@ -818,7 +1022,7 @@ describe("migrate: renames", () => {
 });
 
 describe("migrate: rename validation refuses before touching anything", () => {
-  const one = defineSchema({ a: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+  const one = defineSchema({ a: defineTable({ id: v.primaryKey(), v: v.string() }) });
 
   async function seedOne(path: string): Promise<void> {
     await seed(one, path, async (d) => {
@@ -836,14 +1040,14 @@ describe("migrate: rename validation refuses before touching anything", () => {
   test("rename source table must exist in the current snapshot", async () => {
     const path = freshPath();
     await seedOne(path);
-    const b = defineSchema({ b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const b = defineSchema({ b: defineTable({ id: v.primaryKey(), v: v.string() }) });
     await expectRefused(b, path, defineMigration({ renames: { tables: { ghost: "b" } } }), /source table "ghost" does not exist/);
   });
 
   test("rename target table must exist in the schema", async () => {
     const path = freshPath();
     await seedOne(path);
-    const b = defineSchema({ b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const b = defineSchema({ b: defineTable({ id: v.primaryKey(), v: v.string() }) });
     await expectRefused(b, path, defineMigration({ renames: { tables: { a: "ghost" } } }), /target table "ghost" is not in the schema/);
   });
 
@@ -851,8 +1055,8 @@ describe("migrate: rename validation refuses before touching anything", () => {
     const path = freshPath();
     await seedOne(path);
     const b = defineSchema({
-      a: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
-      b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
+      a: defineTable({ id: v.primaryKey(), v: v.string() }),
+      b: defineTable({ id: v.primaryKey(), v: v.string() }),
     });
     await expectRefused(b, path, defineMigration({ renames: { tables: { a: "b" } } }), /source table "a" still exists/);
   });
@@ -861,15 +1065,15 @@ describe("migrate: rename validation refuses before touching anything", () => {
     const path = freshPath();
     await seed(
       defineSchema({
-        a: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
-        b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
+        a: defineTable({ id: v.primaryKey(), v: v.string() }),
+        b: defineTable({ id: v.primaryKey(), v: v.string() }),
       }),
       path,
       async (d) => {
         await d.a.insert({ v: "x" });
       },
     );
-    const b = defineSchema({ b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const b = defineSchema({ b: defineTable({ id: v.primaryKey(), v: v.string() }) });
     const engine = new Engine(b, path);
     await expect(reconcile(engine, chain(engine, defineMigration({ renames: { tables: { a: "b" } } })))).rejects.toThrow(
       /cannot rename onto a live table/,
@@ -881,15 +1085,15 @@ describe("migrate: rename validation refuses before touching anything", () => {
     const path = freshPath();
     await seed(
       defineSchema({
-        a: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
-        b: defineTable({ id: dbz.primaryKey(), v: dbz.string() }),
+        a: defineTable({ id: v.primaryKey(), v: v.string() }),
+        b: defineTable({ id: v.primaryKey(), v: v.string() }),
       }),
       path,
       async (d) => {
         await d.a.insert({ v: "x" });
       },
     );
-    const c = defineSchema({ c: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const c = defineSchema({ c: defineTable({ id: v.primaryKey(), v: v.string() }) });
     const engine = new Engine(c, path);
     await expect(reconcile(engine, chain(engine, defineMigration({ renames: { tables: { a: "c", b: "c" } } })))).rejects.toThrow(
       /two renames target table "c"/,
@@ -900,7 +1104,7 @@ describe("migrate: rename validation refuses before touching anything", () => {
   test("rename source column must exist in the current snapshot", async () => {
     const path = freshPath();
     await seedOne(path);
-    const b = defineSchema({ a: defineTable({ id: dbz.primaryKey(), w: dbz.string() }) });
+    const b = defineSchema({ a: defineTable({ id: v.primaryKey(), w: v.string() }) });
     await expectRefused(
       b,
       path,
@@ -911,10 +1115,10 @@ describe("migrate: rename validation refuses before touching anything", () => {
 
   test("a variant rename onto a retired historical variant is refused", async () => {
     const s1 = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["Live", "Old"]) }),
+      users: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["Live", "Old"]) }),
     });
-    const s2 = defineSchema({ users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["Live"]) }) });
-    const s3 = defineSchema({ users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["Old"]) }) });
+    const s2 = defineSchema({ users: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["Live"]) }) });
+    const s3 = defineSchema({ users: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["Old"]) }) });
     const path = freshPath();
     // seed s1 (interns Live=0, Old=1), then retire "Old" — its tag stays in _dbz_tags forever
     const engine1 = new Engine(s1, path);
@@ -967,10 +1171,10 @@ function buildChain(seed: Schema, stages: { schema: Schema; migration: Migration
 
 describe("migrate: the chain", () => {
   test("two pending migrations apply in order; history and data reflect both", async () => {
-    const seedS = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
-    const s1 = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.number() }) });
+    const seedS = defineSchema({ items: defineTable({ id: v.primaryKey(), qty: v.string() }) });
+    const s1 = defineSchema({ items: defineTable({ id: v.primaryKey(), qty: v.int() }) });
     const s2 = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), label: dbz.nullable(dbz.string()) }),
+      items: defineTable({ id: v.primaryKey(), qty: v.int(), label: v.string().nullable() }),
     });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
@@ -1014,17 +1218,17 @@ describe("migrate: the chain", () => {
   });
 
   test("mid-chain failure keeps earlier steps applied and rolls the failing one back whole", async () => {
-    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
-    const s1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), qty: dbz.number() }) });
+    const seedS = defineSchema({ posts: defineTable({ id: v.primaryKey(), qty: v.string() }) });
+    const s1 = defineSchema({ posts: defineTable({ id: v.primaryKey(), qty: v.int() }) });
     const s2 = defineSchema({
-      posts: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), note: dbz.nullable(dbz.string()) }),
+      posts: defineTable({ id: v.primaryKey(), qty: v.int(), note: v.string().nullable() }),
     });
     const s3 = defineSchema({
       posts: defineTable({
-        id: dbz.primaryKey(),
-        qty: dbz.number(),
-        note: dbz.nullable(dbz.string()),
-        extra: dbz.nullable(dbz.string()),
+        id: v.primaryKey(),
+        qty: v.int(),
+        note: v.string().nullable(),
+        extra: v.string().nullable(),
       }),
     });
     const path = freshPath();
@@ -1068,17 +1272,17 @@ describe("migrate: the chain", () => {
     expect(engine.loadSnapshot()).toEqual(snapshotOf(s1)); // no `note` column; step-2 schema never saved
     const rows = engine.writer.query("SELECT id, qty FROM posts ORDER BY id").all() as { id: bigint; qty: unknown }[];
     expect(rows).toEqual([
-      { id: 1n, qty: 1 },
-      { id: 2n, qty: 2 },
-      { id: 3n, qty: 3 },
+      { id: 1n, qty: 1n },
+      { id: 2n, qty: 2n },
+      { id: 3n, qty: 3n },
     ]);
     engine.close("clean");
   });
 
   test("editing an applied migration refuses at the next run, naming it", async () => {
-    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-    const applied = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
-    const edited = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.bigint() }) });
+    const seedS = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+    const applied = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
+    const edited = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.bigint() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.posts.insert({ count: "5" });
@@ -1101,8 +1305,8 @@ describe("migrate: the chain", () => {
     // Same number, name, pre, and target: only the migration's file text differs.
     // Identity must cover the code, or two databases could run different data
     // transformations while their histories look identical.
-    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-    const target = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const seedS = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+    const target = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.posts.insert({ count: "5" });
@@ -1123,9 +1327,9 @@ describe("migrate: the chain", () => {
 
   test("editing only an applied migration's pre snapshot refuses, naming it", async () => {
     // Same number, name, target, and code: only the recorded pre differs.
-    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-    const altPre = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string(), note: dbz.nullable(dbz.string()) }) });
-    const target = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const seedS = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+    const altPre = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string(), note: v.string().nullable() }) });
+    const target = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.posts.insert({ count: "5" });
@@ -1144,9 +1348,9 @@ describe("migrate: the chain", () => {
   });
 
   test("an applied history row with no corresponding chain step refuses", async () => {
-    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
-    const s1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.number() }) });
-    const s2 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.number(), w: dbz.nullable(dbz.string()) }) });
+    const seedS = defineSchema({ posts: defineTable({ id: v.primaryKey(), v: v.string() }) });
+    const s1 = defineSchema({ posts: defineTable({ id: v.primaryKey(), v: v.float() }) });
+    const s2 = defineSchema({ posts: defineTable({ id: v.primaryKey(), v: v.float(), w: v.string().nullable() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.posts.insert({ v: "1" });
@@ -1170,8 +1374,8 @@ describe("migrate: the chain", () => {
   });
 
   test("duplicate or non-increasing numbers refuse before touching anything", async () => {
-    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
-    const s1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), v: dbz.number() }) });
+    const seedS = defineSchema({ posts: defineTable({ id: v.primaryKey(), v: v.string() }) });
+    const s1 = defineSchema({ posts: defineTable({ id: v.primaryKey(), v: v.float() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.posts.insert({ v: "1" });
@@ -1189,11 +1393,11 @@ describe("migrate: the chain", () => {
   });
 
   test("partial prefix: a chain of 3 with 2 already applied runs only the third", async () => {
-    const seedS = defineSchema({ items: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
-    const s1 = defineSchema({ items: defineTable({ id: dbz.primaryKey(), v: dbz.number() }) });
-    const s2 = defineSchema({ items: defineTable({ id: dbz.primaryKey(), v: dbz.number(), w: dbz.nullable(dbz.number()) }) });
+    const seedS = defineSchema({ items: defineTable({ id: v.primaryKey(), v: v.string() }) });
+    const s1 = defineSchema({ items: defineTable({ id: v.primaryKey(), v: v.float() }) });
+    const s2 = defineSchema({ items: defineTable({ id: v.primaryKey(), v: v.float(), w: v.float().nullable() }) });
     const s3 = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), v: dbz.number(), w: dbz.nullable(dbz.number()), z: dbz.nullable(dbz.string()) }),
+      items: defineTable({ id: v.primaryKey(), v: v.float(), w: v.float().nullable(), z: v.string().nullable() }),
     });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
@@ -1220,10 +1424,10 @@ describe("migrate: the chain", () => {
   });
 
   test("after the chain, a remaining shape-safe diff to the live schema auto-applies", async () => {
-    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.string() }) });
-    const stepTarget = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number() }) });
+    const seedS = defineSchema({ posts: defineTable({ id: v.primaryKey(), n: v.string() }) });
+    const stepTarget = defineSchema({ posts: defineTable({ id: v.primaryKey(), n: v.int() }) });
     // live schema is one shape-safe nullable column ahead of the last migration's target
-    const live = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number(), extra: dbz.nullable(dbz.string()) }) });
+    const live = defineSchema({ posts: defineTable({ id: v.primaryKey(), n: v.int(), extra: v.string().nullable() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.posts.insert({ n: "7" });
@@ -1241,10 +1445,10 @@ describe("migrate: the chain", () => {
   });
 
   test("after the chain, a remaining shape-unsafe diff refuses naming the recourse", async () => {
-    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.string() }) });
-    const stepTarget = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number() }) });
+    const seedS = defineSchema({ posts: defineTable({ id: v.primaryKey(), n: v.string() }) });
+    const stepTarget = defineSchema({ posts: defineTable({ id: v.primaryKey(), n: v.int() }) });
     // live schema demands a required column no migration answered
-    const live = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number(), req: dbz.string() }) });
+    const live = defineSchema({ posts: defineTable({ id: v.primaryKey(), n: v.int(), req: v.string() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.posts.insert({ n: "7" });
@@ -1265,14 +1469,14 @@ describe("migrate: the chain", () => {
     // The migration was generated against a richer pre-state (a nullable column
     // and a whole table) that this database never physically acquired.
     const preSchema = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), bio: dbz.nullable(dbz.string()) }),
-      logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string(), bio: v.string().nullable() }),
+      logs: defineTable({ id: v.primaryKey(), msg: v.string() }),
     });
     const live = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), bio: dbz.nullable(dbz.string()), summary: dbz.string() }),
-      logs: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string(), bio: v.string().nullable(), summary: v.string() }),
+      logs: defineTable({ id: v.primaryKey(), msg: v.string() }),
     });
-    const seedS = defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }) });
+    const seedS = defineSchema({ users: defineTable({ id: v.primaryKey(), name: v.string() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.users.insert({ name: "ana" }); // id 1
@@ -1313,14 +1517,14 @@ describe("migrate: the chain", () => {
 
   test("an intermediate target's tags encode an enum value the final schema also holds", async () => {
     const seedS = defineSchema({
-      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["x"]), n: dbz.string() }),
+      events: defineTable({ id: v.primaryKey(), kind: v.enum("K", ["x"]), n: v.string() }),
     });
     // step 1's target (NOT the live schema) is where variant "y" is first interned
     const s1 = defineSchema({
-      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["x", "y"]), n: dbz.number() }),
+      events: defineTable({ id: v.primaryKey(), kind: v.enum("K", ["x", "y"]), n: v.int() }),
     });
     const live = defineSchema({
-      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["x", "y", "z"]), n: dbz.number() }),
+      events: defineTable({ id: v.primaryKey(), kind: v.enum("K", ["x", "y", "z"]), n: v.int() }),
     });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
@@ -1346,14 +1550,14 @@ describe("migrate: the chain", () => {
 
   test("safe drift: a transform on a table the database lacks materializes it empty", async () => {
     const preSchema = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
-      archive: defineTable({ id: dbz.primaryKey(), tag: dbz.string() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string() }),
+      archive: defineTable({ id: v.primaryKey(), tag: v.string() }),
     });
     const live = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), note: dbz.string() }),
-      archive: defineTable({ id: dbz.primaryKey(), tag: dbz.string() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string(), note: v.string() }),
+      archive: defineTable({ id: v.primaryKey(), tag: v.string() }),
     });
-    const seedS = defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }) });
+    const seedS = defineSchema({ users: defineTable({ id: v.primaryKey(), name: v.string() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.users.insert({ name: "ana" }); // id 1
@@ -1386,9 +1590,9 @@ describe("migrate: the chain", () => {
   });
 
   test("a fresh database stamps the whole chain applied and reopens as a no-op", async () => {
-    const seedS = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.string() }) });
-    const s1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number() }) });
-    const live = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), n: dbz.number(), tag: dbz.nullable(dbz.string()) }) });
+    const seedS = defineSchema({ posts: defineTable({ id: v.primaryKey(), n: v.string() }) });
+    const s1 = defineSchema({ posts: defineTable({ id: v.primaryKey(), n: v.int() }) });
+    const live = defineSchema({ posts: defineTable({ id: v.primaryKey(), n: v.int(), tag: v.string().nullable() }) });
     const path = freshPath();
     const steps = buildChain(seedS, [
       { schema: s1, migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) },
@@ -1417,12 +1621,12 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
     // The DB physically holds `note` (safe drift from a lineage the migration
     // never saw); the step only retypes `qty` and knows nothing about `note`.
     const seedS = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+      items: defineTable({ id: v.primaryKey(), qty: v.string(), note: v.string().nullable() }),
     });
-    const pre = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
-    const stepTarget = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.number() }) });
+    const pre = defineSchema({ items: defineTable({ id: v.primaryKey(), qty: v.string() }) });
+    const stepTarget = defineSchema({ items: defineTable({ id: v.primaryKey(), qty: v.int() }) });
     const live = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), note: dbz.nullable(dbz.string()) }),
+      items: defineTable({ id: v.primaryKey(), qty: v.int(), note: v.string().nullable() }),
     });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
@@ -1453,19 +1657,19 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
 
   test("a carried column survives two consecutive rebuilds and the final safe hop", async () => {
     const seedS = defineSchema({
-      posts: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+      posts: defineTable({ id: v.primaryKey(), qty: v.string(), note: v.string().nullable() }),
     });
-    const pre1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
-    const t1 = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), qty: dbz.number() }) });
+    const pre1 = defineSchema({ posts: defineTable({ id: v.primaryKey(), qty: v.string() }) });
+    const t1 = defineSchema({ posts: defineTable({ id: v.primaryKey(), qty: v.int() }) });
     const t2 = defineSchema({
-      posts: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), label: dbz.nullable(dbz.string()) }),
+      posts: defineTable({ id: v.primaryKey(), qty: v.int(), label: v.string().nullable() }),
     });
     const live = defineSchema({
       posts: defineTable({
-        id: dbz.primaryKey(),
-        qty: dbz.number(),
-        label: dbz.nullable(dbz.string()),
-        note: dbz.nullable(dbz.string()),
+        id: v.primaryKey(),
+        qty: v.int(),
+        label: v.string().nullable(),
+        note: v.string().nullable(),
       }),
     });
     const path = freshPath();
@@ -1511,14 +1715,14 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
     // stored-only column, so the lineage is not shape-safe drift — refused before
     // the transaction ever opens, never accommodated mid-flight.
     const seedS = defineSchema({
-      dest: defineTable({ id: dbz.primaryKey(), val: dbz.string(), tag: dbz.string() }),
-      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      dest: defineTable({ id: v.primaryKey(), val: v.string(), tag: v.string() }),
+      source: defineTable({ id: v.primaryKey(), val: v.string() }),
     });
     const pre = defineSchema({
-      dest: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
-      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      dest: defineTable({ id: v.primaryKey(), val: v.string() }),
+      source: defineTable({ id: v.primaryKey(), val: v.string() }),
     });
-    const stepTarget = defineSchema({ dest: defineTable({ id: dbz.primaryKey(), val: dbz.number() }) });
+    const stepTarget = defineSchema({ dest: defineTable({ id: v.primaryKey(), val: v.float() }) });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
       await d.dest.insert({ val: "10", tag: "t1" }); // id 1
@@ -1560,11 +1764,11 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
     // A PRE-typed transform cannot see the column, so a stored string could not be
     // coerced into a number at row time — hoisted to a clean up-front refusal.
     const seedS = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+      items: defineTable({ id: v.primaryKey(), qty: v.string(), note: v.string().nullable() }),
     });
-    const pre = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
+    const pre = defineSchema({ items: defineTable({ id: v.primaryKey(), qty: v.string() }) });
     const live = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), note: dbz.nullable(dbz.number()) }),
+      items: defineTable({ id: v.primaryKey(), qty: v.int(), note: v.float().nullable() }),
     });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
@@ -1591,6 +1795,41 @@ describe("migrate: carried columns (safe drift ahead of the step)", () => {
     expect(typeof raw.note).toBe("string");
     engine.close("clean");
   });
+
+  test("constraint-only drift keeps the same storage type and validates the carried default against the target", async () => {
+    const seedS = defineSchema({
+      items: defineTable({
+        id: v.primaryKey(),
+        qty: v.string(),
+        note: v.string().min(1).nullable(),
+      }),
+    });
+    const pre = defineSchema({ items: defineTable({ id: v.primaryKey(), qty: v.string() }) });
+    const live = defineSchema({
+      items: defineTable({
+        id: v.primaryKey(),
+        qty: v.int(),
+        note: v.string().min(2).nullable(),
+      }),
+    });
+    const path = freshPath();
+    await seed(seedS, path, async (d) => {
+      await d.items.insert({ qty: "5", note: "kept" });
+    });
+
+    const engine = new Engine(live, path);
+    await reconcile(engine, [{
+      number: 1,
+      name: "retype",
+      pre: snapshotOf(pre),
+      target: snapshotOf(live),
+      code: "",
+      migration: defineMigration({ tables: { items: (row) => ({ qty: Number(row.qty) }) } }),
+    }]);
+    expect(await db(engine).items.get(1n)).toEqual({ id: 1n, qty: 5, note: "kept" });
+    expect(engine.loadSnapshot()).toEqual(snapshotOf(live));
+    engine.close("clean");
+  });
 });
 
 describe("migrate: pre-absent target columns default to stored values", () => {
@@ -1599,11 +1838,11 @@ describe("migrate: pre-absent target columns default to stored values", () => {
   // transform cannot see the column, so an output that never mentions the key
   // must not destroy its data.
   const seedS = defineSchema({
-    items: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+    items: defineTable({ id: v.primaryKey(), qty: v.string(), note: v.string().nullable() }),
   });
-  const pre = defineSchema({ items: defineTable({ id: dbz.primaryKey(), qty: dbz.string() }) });
+  const pre = defineSchema({ items: defineTable({ id: v.primaryKey(), qty: v.string() }) });
   const live = defineSchema({
-    items: defineTable({ id: dbz.primaryKey(), qty: dbz.number(), note: dbz.nullable(dbz.string()) }),
+    items: defineTable({ id: v.primaryKey(), qty: v.int(), note: v.string().nullable() }),
   });
 
   async function run(path: string, transform: (row: Record<string, unknown>) => unknown) {
@@ -1641,7 +1880,7 @@ describe("migrate: pre-absent target columns default to stored values", () => {
     // target only re-declares `note`; qty is unchanged, the transform is a
     // volunteered no-op returning undefined — the kept row still carries note.
     const same = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), qty: dbz.string(), note: dbz.nullable(dbz.string()) }),
+      items: defineTable({ id: v.primaryKey(), qty: v.string(), note: v.string().nullable() }),
     });
     const path = freshPath();
     await seed(seedS, path, async (d) => {
@@ -1694,15 +1933,15 @@ describe("migrate: pre-absent target columns default to stored values", () => {
 
   test("emits into the rebuilt table get the emitter's value or null, never a stored carry", async () => {
     const seedBoth = defineSchema({
-      dest: defineTable({ id: dbz.primaryKey(), val: dbz.string(), note: dbz.nullable(dbz.string()) }),
-      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      dest: defineTable({ id: v.primaryKey(), val: v.string(), note: v.string().nullable() }),
+      source: defineTable({ id: v.primaryKey(), val: v.string() }),
     });
     const preBoth = defineSchema({
-      dest: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
-      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      dest: defineTable({ id: v.primaryKey(), val: v.string() }),
+      source: defineTable({ id: v.primaryKey(), val: v.string() }),
     });
     const target = defineSchema({
-      dest: defineTable({ id: dbz.primaryKey(), val: dbz.number(), note: dbz.nullable(dbz.string()) }),
+      dest: defineTable({ id: v.primaryKey(), val: v.float(), note: v.string().nullable() }),
     });
     const path = freshPath();
     await seed(seedBoth, path, async (d) => {
@@ -1735,12 +1974,12 @@ describe("migrate: pre-absent target columns default to stored values", () => {
 describe("migrate: frozen before-state (emits never observed by transforms)", () => {
   test("ctx.before does not observe an emit into an unchanged table", async () => {
     const a = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
-      log: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+      items: defineTable({ id: v.primaryKey(), val: v.string() }),
+      log: defineTable({ id: v.primaryKey(), msg: v.string() }),
     });
     const b = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), val: dbz.number() }),
-      log: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+      items: defineTable({ id: v.primaryKey(), val: v.float() }),
+      log: defineTable({ id: v.primaryKey(), msg: v.string() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -1778,14 +2017,14 @@ describe("migrate: frozen before-state (emits never observed by transforms)", ()
 
   test("a later transform's ctx.before does not observe an earlier transform's emit", async () => {
     const a = defineSchema({
-      aa: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
-      bb: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
-      cc: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+      aa: defineTable({ id: v.primaryKey(), val: v.string() }),
+      bb: defineTable({ id: v.primaryKey(), val: v.string() }),
+      cc: defineTable({ id: v.primaryKey(), msg: v.string() }),
     });
     const b = defineSchema({
-      aa: defineTable({ id: dbz.primaryKey(), val: dbz.number() }),
-      bb: defineTable({ id: dbz.primaryKey(), val: dbz.number() }),
-      cc: defineTable({ id: dbz.primaryKey(), msg: dbz.string() }),
+      aa: defineTable({ id: v.primaryKey(), val: v.float() }),
+      bb: defineTable({ id: v.primaryKey(), val: v.float() }),
+      cc: defineTable({ id: v.primaryKey(), msg: v.string() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -1827,8 +2066,8 @@ const MIGRATE_BATCH = 1000;
 describe("migrate: bounded accumulation (paging + emit spool)", () => {
   test("a rebuild transform over more than twice the batch converts every row, preserving pks", async () => {
     const n = 2 * MIGRATE_BATCH + 1; // 2001: two full pages plus a partial one
-    const a = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), val: dbz.string() }) });
-    const b = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), val: dbz.number() }) });
+    const a = defineSchema({ posts: defineTable({ id: v.primaryKey(), val: v.string() }) });
+    const b = defineSchema({ posts: defineTable({ id: v.primaryKey(), val: v.float() }) });
     const path = freshPath();
     await seed(a, path, async (d) => {
       for (let i = 1; i <= n; i++) await d.posts.insert({ val: String(i) });
@@ -1849,12 +2088,12 @@ describe("migrate: bounded accumulation (paging + emit spool)", () => {
   test("ctx.before.scan() over more than the batch yields every row in pk order", async () => {
     const n = MIGRATE_BATCH + 500; // 1500: one full page plus a partial one
     const a = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
-      log: defineTable({ id: dbz.primaryKey(), seq: dbz.number() }),
+      items: defineTable({ id: v.primaryKey(), val: v.string() }),
+      log: defineTable({ id: v.primaryKey(), seq: v.int() }),
     });
     const b = defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), val: dbz.number() }),
-      log: defineTable({ id: dbz.primaryKey(), seq: dbz.number() }),
+      items: defineTable({ id: v.primaryKey(), val: v.float() }),
+      log: defineTable({ id: v.primaryKey(), seq: v.int() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -1885,11 +2124,11 @@ describe("migrate: bounded accumulation (paging + emit spool)", () => {
   test("an emit-per-source-row salvage spools more than the batch and lands every emit, enum included", async () => {
     const n = MIGRATE_BATCH + 1; // 1001: past a full spool page
     const a = defineSchema({
-      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["even", "odd"]), amount: dbz.number() }),
-      source: defineTable({ id: dbz.primaryKey(), val: dbz.string() }),
+      events: defineTable({ id: v.primaryKey(), kind: v.enum("K", ["even", "odd"]), amount: v.float() }),
+      source: defineTable({ id: v.primaryKey(), val: v.string() }),
     });
     const b = defineSchema({
-      events: defineTable({ id: dbz.primaryKey(), kind: dbz.enum("K", ["even", "odd"]), amount: dbz.number() }),
+      events: defineTable({ id: v.primaryKey(), kind: v.enum("K", ["even", "odd"]), amount: v.float() }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {

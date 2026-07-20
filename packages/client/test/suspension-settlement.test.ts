@@ -37,7 +37,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   procedure,
   reconcile,
@@ -875,7 +875,7 @@ describe("suspension settlement against a real dbzz server", () => {
         holdAfterFirst: sseProcedure({
           access: "public",
           args: {},
-          yields: dbz.object({ phase: dbz.string() }),
+          yields: v.object({ phase: v.string() }),
           handler: async function* (ctx: SseCtx) {
             try {
               yield { phase: "one" };
@@ -888,7 +888,7 @@ describe("suspension settlement against a real dbzz server", () => {
         ticks: sseProcedure({
           access: "public",
           args: {},
-          yields: dbz.object({ tick: dbz.number() }),
+          yields: v.object({ tick: v.int() }),
           handler: async function* () {
             yield { tick: 0 };
           },

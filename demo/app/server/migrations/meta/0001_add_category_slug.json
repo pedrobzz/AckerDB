@@ -50,16 +50,16 @@
             "k": "string"
           },
           "sortOrder": {
-            "k": "number"
+            "k": "int"
           },
           "active": {
             "k": "boolean"
           },
           "createdAt": {
-            "k": "number"
+            "k": "int"
           },
           "updatedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -100,19 +100,19 @@
             "k": "string"
           },
           "priceCents": {
-            "k": "number"
+            "k": "int"
           },
           "sortOrder": {
-            "k": "number"
+            "k": "int"
           },
           "active": {
             "k": "boolean"
           },
           "createdAt": {
-            "k": "number"
+            "k": "int"
           },
           "updatedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -168,7 +168,7 @@
             "k": "string"
           },
           "occurredAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": []
@@ -192,10 +192,10 @@
             "k": "string"
           },
           "unitPriceCents": {
-            "k": "number"
+            "k": "int"
           },
           "quantity": {
-            "k": "number"
+            "k": "int"
           },
           "note": {
             "k": "nullable",
@@ -215,10 +215,10 @@
             ]
           },
           "orderedAt": {
-            "k": "number"
+            "k": "int"
           },
           "statusChangedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -285,15 +285,15 @@
             ]
           },
           "totalCents": {
-            "k": "number"
+            "k": "int"
           },
           "openedAt": {
-            "k": "number"
+            "k": "int"
           },
           "closedAt": {
             "k": "nullable",
             "inner": {
-              "k": "number"
+              "k": "int"
             }
           }
         },
@@ -341,19 +341,19 @@
             "k": "pk"
           },
           "number": {
-            "k": "number"
+            "k": "int"
           },
           "seats": {
-            "k": "number"
+            "k": "int"
           },
           "active": {
             "k": "boolean"
           },
           "createdAt": {
-            "k": "number"
+            "k": "int"
           },
           "updatedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -377,7 +377,7 @@
             "k": "string"
           },
           "completedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -411,7 +411,7 @@
             "k": "bigint"
           },
           "tableNumber": {
-            "k": "number"
+            "k": "int"
           },
           "itemName": {
             "k": "string"
@@ -431,7 +431,7 @@
             "k": "string"
           },
           "occurredAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": []
@@ -455,10 +455,10 @@
             "k": "string"
           },
           "createdAt": {
-            "k": "number"
+            "k": "int"
           },
           "updatedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -541,16 +541,16 @@
             "k": "string"
           },
           "sortOrder": {
-            "k": "number"
+            "k": "int"
           },
           "active": {
             "k": "boolean"
           },
           "createdAt": {
-            "k": "number"
+            "k": "int"
           },
           "updatedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -591,19 +591,19 @@
             "k": "string"
           },
           "priceCents": {
-            "k": "number"
+            "k": "int"
           },
           "sortOrder": {
-            "k": "number"
+            "k": "int"
           },
           "active": {
             "k": "boolean"
           },
           "createdAt": {
-            "k": "number"
+            "k": "int"
           },
           "updatedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -659,7 +659,7 @@
             "k": "string"
           },
           "occurredAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": []
@@ -683,10 +683,10 @@
             "k": "string"
           },
           "unitPriceCents": {
-            "k": "number"
+            "k": "int"
           },
           "quantity": {
-            "k": "number"
+            "k": "int"
           },
           "note": {
             "k": "nullable",
@@ -706,10 +706,10 @@
             ]
           },
           "orderedAt": {
-            "k": "number"
+            "k": "int"
           },
           "statusChangedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -776,15 +776,15 @@
             ]
           },
           "totalCents": {
-            "k": "number"
+            "k": "int"
           },
           "openedAt": {
-            "k": "number"
+            "k": "int"
           },
           "closedAt": {
             "k": "nullable",
             "inner": {
-              "k": "number"
+              "k": "int"
             }
           }
         },
@@ -832,19 +832,19 @@
             "k": "pk"
           },
           "number": {
-            "k": "number"
+            "k": "int"
           },
           "seats": {
-            "k": "number"
+            "k": "int"
           },
           "active": {
             "k": "boolean"
           },
           "createdAt": {
-            "k": "number"
+            "k": "int"
           },
           "updatedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -868,7 +868,7 @@
             "k": "string"
           },
           "completedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [
@@ -902,7 +902,7 @@
             "k": "bigint"
           },
           "tableNumber": {
-            "k": "number"
+            "k": "int"
           },
           "itemName": {
             "k": "string"
@@ -922,7 +922,7 @@
             "k": "string"
           },
           "occurredAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": []
@@ -946,10 +946,10 @@
             "k": "string"
           },
           "createdAt": {
-            "k": "number"
+            "k": "int"
           },
           "updatedAt": {
-            "k": "number"
+            "k": "int"
           }
         },
         "indexes": [

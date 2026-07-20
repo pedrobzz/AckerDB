@@ -1,4 +1,12 @@
 import { createMcp } from "@demo/dbzz-codegen/server";
+import { advanceKitchenItem, cancelOrder } from "./tools/actions.ts";
+import { getGuests } from "./tools/guests.ts";
+import { getMenuCategories } from "./tools/menuCategories.ts";
+import { getMenuItems } from "./tools/menuItems.ts";
+import { getOrderItems } from "./tools/orderItems.ts";
+import { getOrders } from "./tools/orders.ts";
+import { getTables } from "./tools/tables.ts";
+import { bashWorkspace } from "./tools/workspace.ts";
 
 /**
  * The demo backend's single MCP endpoint: staff-only, mounted at the default
@@ -6,13 +14,23 @@ import { createMcp } from "@demo/dbzz-codegen/server";
  * agent hosts (Codex, Claude Code) consume — what a caller may do is decided
  * solely by the scopes on its credential.
  *
- * This module only declares the endpoint. Every tool lives in its own module
- * under `admin/tools/` and registers itself against this declaration, so later
- * tickets add tools as new files without touching this one or each other.
+ * Every tool module exports an inert blueprint. This endpoint is the sole place
+ * that assigns wire names and assembles the complete Admin tool surface.
  */
 export const admin = createMcp({
   name: "admin",
   scopes: ["read", "operate"] as const,
+  tools: {
+    advance_kitchen_item: advanceKitchenItem,
+    bash: bashWorkspace,
+    cancel_order: cancelOrder,
+    get_guests: getGuests,
+    get_menu_categories: getMenuCategories,
+    get_menu_items: getMenuItems,
+    get_order_items: getOrderItems,
+    get_orders: getOrders,
+    get_tables: getTables,
+  },
   instructions:
     "Savoria restaurant Admin MCP — a staff-only view of the live restaurant. " +
     "The `read` scope grants read-only tools that answer questions about the " +

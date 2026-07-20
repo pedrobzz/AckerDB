@@ -1,8 +1,7 @@
 import { Bash, type InitialFiles } from "just-bash";
-import { dbz } from "@dbzz/server";
-import type { DatabaseReader } from "@demo/dbzz-codegen/server";
+import { v } from "@dbzz/server";
+import { mcpTool, type DatabaseReader } from "@demo/dbzz-codegen/server";
 import { isFinal } from "../../../lib/domain.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * Sane demo caps for the sandboxed shell. Runaway scripts (infinite loops,
@@ -213,8 +212,7 @@ async function buildFiles(db: DatabaseReader, now: number): Promise<InitialFiles
  * pipelines. This is where a capable model answers questions the typed entity
  * tools never anticipated; small models should prefer the typed tools.
  */
-export const bashWorkspace = admin.tool({
-  name: "bash",
+export const bashWorkspace = mcpTool({
   title: "Bash workspace",
   description:
     "Run a bash script against a sandboxed, read-only workspace of the " +
@@ -229,7 +227,7 @@ export const bashWorkspace = admin.tool({
   access: { anyOf: ["read"] },
   annotations: { readOnlyHint: true },
   args: {
-    script: dbz
+    script: v
       .string()
       .describe(
         "The bash script to run in the workspace. Read files under /data " +
@@ -237,11 +235,11 @@ export const bashWorkspace = admin.tool({
           "`cat /data/README.md` if you are unsure what is available.",
       ),
   },
-  output: dbz.object({
-    exitCode: dbz.number(),
-    stdout: dbz.string(),
-    stderr: dbz.string(),
-    truncated: dbz.boolean(),
+  output: v.object({
+    exitCode: v.int(),
+    stdout: v.string(),
+    stderr: v.string(),
+    truncated: v.boolean(),
   }),
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {

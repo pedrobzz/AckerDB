@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   classifySchemaDiff,
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -39,13 +39,13 @@ const EVENT_OPTS = { args: {}, access: "public", matches: () => true } as const;
 
 describe("describeSafeChanges", () => {
   test("safe column work renders; refused columns are subtracted by site", () => {
-    const pre = defineSchema({ t: defineTable({ id: dbz.primaryKey(), keep: dbz.string() }) });
+    const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), keep: v.string() }) });
     const target = defineSchema({
       t: defineTable({
-        id: dbz.primaryKey(),
-        keep: dbz.nullable(dbz.string()), // widened
-        bio: dbz.nullable(dbz.string()), // nullable add — safe
-        score: dbz.number(), // required add — refused
+        id: v.primaryKey(),
+        keep: v.string().nullable(), // widened
+        bio: v.string().nullable(), // nullable add — safe
+        score: v.float(), // required add — refused
       }),
     });
     expect(describeOf(pre, target)).toEqual([
@@ -56,10 +56,10 @@ describe("describeSafeChanges", () => {
 
   test("tables: new tables and event drops render; a dropped real table is refused away", () => {
     const pre = defineSchema({
-      gone: defineTable({ id: dbz.primaryKey() }),
-      ping: defineEventTable({ id: dbz.primaryKey() }, EVENT_OPTS),
+      gone: defineTable({ id: v.primaryKey() }),
+      ping: defineEventTable({ id: v.primaryKey() }, EVENT_OPTS),
     });
-    const target = defineSchema({ fresh: defineTable({ id: dbz.primaryKey() }) });
+    const target = defineSchema({ fresh: defineTable({ id: v.primaryKey() }) });
     expect(describeOf(pre, target)).toEqual(['new table "fresh"', 'event table "ping" dropped']);
     // The label follows the diff atom's kind, never an assumption about what
     // survives refusal: with no refusals passed, the real drop renders honestly.
@@ -67,19 +67,19 @@ describe("describeSafeChanges", () => {
   });
 
   test("variants: additions render under the type name; removals are refused away", () => {
-    const pre = defineSchema({ u: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["admin", "guest"]) }) });
+    const pre = defineSchema({ u: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["admin", "guest"]) }) });
     const target = defineSchema({
-      u: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["admin", "visitor"]) }),
+      u: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["admin", "visitor"]) }),
     });
     expect(describeOf(pre, target)).toEqual(['Role: variant "visitor" added']);
   });
 
   test("indexes: drops and non-unique adds render; a clean unique add names the probe result", () => {
     const pre = defineSchema({
-      t: defineTable({ id: dbz.primaryKey(), a: dbz.string(), b: dbz.string() }).index("by_a", ["a"]),
+      t: defineTable({ id: v.primaryKey(), a: v.string(), b: v.string() }).index("by_a", ["a"]),
     });
     const target = defineSchema({
-      t: defineTable({ id: dbz.primaryKey(), a: dbz.string(), b: dbz.string() })
+      t: defineTable({ id: v.primaryKey(), a: v.string(), b: v.string() })
         .index("by_b", ["b"])
         .index("by_ab", ["a", "b"], { unique: true }),
     });
@@ -91,9 +91,9 @@ describe("describeSafeChanges", () => {
   });
 
   test("a probed duplicate refusal subtracts its unique index from the safe lines", () => {
-    const pre = defineSchema({ t: defineTable({ id: dbz.primaryKey(), a: dbz.string() }) });
+    const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), a: v.string() }) });
     const target = defineSchema({
-      t: defineTable({ id: dbz.primaryKey(), a: dbz.string() }).index("by_a", ["a"], { unique: true }),
+      t: defineTable({ id: v.primaryKey(), a: v.string() }).index("by_a", ["a"], { unique: true }),
     });
     const probed: SchemaRefusal = {
       table: "t",
@@ -104,11 +104,27 @@ describe("describeSafeChanges", () => {
     };
     expect(describeOf(pre, target, [probed])).toEqual([]);
   });
+
+  test("constraint loosening renders as safe; a counted tightening refusal is subtracted by column site", () => {
+    const strict = defineSchema({ t: defineTable({ id: v.primaryKey(), value: v.string().min(3) }) });
+    const loose = defineSchema({ t: defineTable({ id: v.primaryKey(), value: v.string().min(1) }) });
+    expect(describeOf(strict, loose)).toEqual(['column "t.value" constraints loosened']);
+
+    const refusal: SchemaRefusal = {
+      table: "t",
+      column: "value",
+      reason: "constraint-violations",
+      question: "constraints tightened; 4 existing row(s) violate the target validator",
+      count: 4,
+    };
+    expect(describeOf(loose, strict, [refusal])).toEqual([]);
+    expect(describeOf(loose, strict)).toEqual(['column "t.value" constraints tightened (no violations found)']);
+  });
 });
 
 describe("planFingerprint", () => {
-  const a = snapshotOf(defineSchema({ t: defineTable({ id: dbz.primaryKey() }) }));
-  const b = snapshotOf(defineSchema({ t: defineTable({ id: dbz.primaryKey(), x: dbz.string() }) }));
+  const a = snapshotOf(defineSchema({ t: defineTable({ id: v.primaryKey() }) }));
+  const b = snapshotOf(defineSchema({ t: defineTable({ id: v.primaryKey(), x: v.string() }) }));
 
   test("deterministic over the same pair, distinct across pairs", () => {
     expect(planFingerprint(a, b)).toBe(planFingerprint(a, b));
@@ -119,10 +135,10 @@ describe("planFingerprint", () => {
 
 describe("renderLedger", () => {
   const pre = defineSchema({
-    t: defineTable({ id: dbz.primaryKey(), old: dbz.string(), gone: dbz.string() }),
+    t: defineTable({ id: v.primaryKey(), old: v.string(), gone: v.string() }),
   });
   const target = defineSchema({
-    t: defineTable({ id: dbz.primaryKey(), fresh: dbz.string(), extra: dbz.nullable(dbz.string()) }),
+    t: defineTable({ id: v.primaryKey(), fresh: v.string(), extra: v.string().nullable() }),
   });
 
   test("groups refusals, rename candidates, and safe lines under their sections", () => {

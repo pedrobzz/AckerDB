@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { PROTOCOL_VERSION, encode } from "@dbzz/core";
 import type { UserPrincipal } from "../src/auth.ts";
 import { callerFairnessKey } from "../src/caller.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import {
   procedure,
@@ -14,7 +14,7 @@ import {
   type QueryBuilder,
 } from "../src/functions.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
-import { createMcp, type McpBuilder } from "../src/mcp.ts";
+import { createMcp, mcpTool, type McpBuilder, type McpToolBuilder } from "../src/mcp.ts";
 import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
@@ -35,12 +35,12 @@ import type {
 
 const schema = defineSchema({
   records: defineTable({
-    id: dbz.primaryKey(),
-    value: dbz.string(),
+    id: v.primaryKey(),
+    value: v.string(),
   }),
   signals: defineEventTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
+    id: v.primaryKey(),
+    label: v.string(),
   }, {
     args: {},
     access: (ctx) => ctx.auth.kind === "user",
@@ -51,14 +51,12 @@ const schema = defineSchema({
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
-const actionsMcp = typedMcp({ name: "actions", path: "/actions/mcp" });
-
-const addRecord = actionsMcp.tool({
-  name: "add_record",
+const addRecord = typedMcpTool({
   description: "Insert one record transactionally.",
   access: "authenticated",
-  args: { value: dbz.string() },
+  args: { value: v.string() },
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       await tx.db.records.insert({ value: args.value });
@@ -66,16 +64,24 @@ const addRecord = actionsMcp.tool({
     }),
 });
 
-const emitSignal = actionsMcp.tool({
-  name: "emit_signal",
+const emitSignal = typedMcpTool({
   description: "Emit one live event transactionally.",
   access: "authenticated",
-  args: { label: dbz.string() },
+  args: { label: v.string() },
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       await tx.db.signals.insert({ label: args.label });
       return { content: [{ type: "text", text: "emitted" }] };
-    }),
+  }),
+});
+
+const actionsMcp = typedMcp({
+  name: "actions",
+  path: "/actions/mcp",
+  tools: {
+    add_record: addRecord,
+    emit_signal: emitSignal,
+  },
 });
 
 const listRecords = typedQuery({
@@ -86,7 +92,7 @@ const listRecords = typedQuery({
 
 const commitRecord = typedProcedure({
   access: (ctx) => ctx.auth.kind === "user",
-  args: { value: dbz.string() },
+  args: { value: v.string() },
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       await tx.db.records.insert({ value: args.value });

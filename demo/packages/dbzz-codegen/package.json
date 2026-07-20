@@ -10,9 +10,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
-  "dependencies": {
-    "@dbzz/core": "0.3.2",
-    "@dbzz/server": "0.3.2"
+  "peerDependencies": {
+    "@dbzz/core": "0.4.1-beta.3",
+    "@dbzz/server": "0.4.1-beta.3"
   },
   "devDependencies": {
     "typescript": "^5.9.0"

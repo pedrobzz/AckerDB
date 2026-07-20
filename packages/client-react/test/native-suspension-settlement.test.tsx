@@ -29,7 +29,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   mutation,
@@ -69,8 +69,8 @@ const { useChatTransport } = await import("../src/ai/index.ts");
 
 const schema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 
@@ -106,10 +106,10 @@ let aiMidReleases: Array<Deferred<void>> = [];
 let genericReleases: Array<Deferred<void>> = [];
 
 const standardArgs = {
-  trigger: dbz.string(),
-  chatId: dbz.string(),
-  messageId: dbz.nullable(dbz.string()),
-  messages: dbz.jsonb<UIMessage[]>(),
+  trigger: v.string(),
+  chatId: v.string(),
+  messageId: v.string().nullable(),
+  messages: v.jsonb<UIMessage[]>(),
 };
 
 function registry(): Registry {
@@ -122,7 +122,7 @@ function registry(): Registry {
       }),
       add: mutation({
         access: "public",
-        args: { body: dbz.string() },
+        args: { body: v.string() },
         handler: (ctx: Ctx, args: Ctx) => ctx.db.messages.insert({ body: args.body }),
       }),
     },
@@ -168,7 +168,7 @@ function registry(): Registry {
       holdAfterFirst: sseProcedure({
         access: "public",
         args: {},
-        yields: dbz.object({ phase: dbz.string() }),
+        yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
           const released = deferred<void>();
           genericReleases.push(released);

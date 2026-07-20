@@ -19,7 +19,7 @@ import type {
   PrincipalInvalidation,
   VerifiedCredential,
 } from "../src/auth.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { DbzzError } from "../src/errors.ts";
 import { mutation, procedure, query, sseProcedure } from "../src/functions.ts";
@@ -97,13 +97,13 @@ const limits = defineServiceLimits({
 
 const schema = defineSchema({
   notes: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
-    rank: dbz.bigint(),
+    id: v.primaryKey(),
+    body: v.string(),
+    rank: v.bigint(),
   }).index("by_rank", ["rank"]),
   beeps: defineEventTable({
-    id: dbz.primaryKey(),
-    n: dbz.number(),
+    id: v.primaryKey(),
+    n: v.float(),
   }, {
     args: {},
     access: "public",
@@ -127,13 +127,13 @@ const functions = {
   notes: {
     list: query({
       access: "public",
-      args: { rank: dbz.bigint() },
+      args: { rank: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.notes.byRank((builder: Ctx) => builder.eq("rank", args.rank)).collect(),
     }),
     add: mutation({
       access: "public",
-      args: { body: dbz.string(), rank: dbz.bigint() },
+      args: { body: v.string(), rank: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const id = await ctx.db.notes.insert(args);
         await ctx.db.beeps.insert({ n: 1 });
@@ -142,12 +142,12 @@ const functions = {
     }),
     echo: procedure({
       access: "public",
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
     numbers: procedure({
       access: "public",
-      args: { values: dbz.array(dbz.number()) },
+      args: { values: v.array(v.float()) },
       handler: (_ctx: Ctx, args: Ctx) => args.values.length,
     }),
     identity: procedure({
@@ -184,8 +184,8 @@ const functions = {
     }),
     chat: sseProcedure({
       access: "authenticated",
-      args: { text: dbz.string() },
-      yields: dbz.jsonb(),
+      args: { text: v.string() },
+      yields: v.jsonb(),
       handler: async function* (_ctx: Ctx, args: Ctx) {
         yield { type: "text-delta", delta: args.text };
         yield { type: "usage", chunks: 1 };
@@ -194,7 +194,7 @@ const functions = {
     failLate: sseProcedure({
       access: "public",
       args: {},
-      yields: dbz.jsonb(),
+      yields: v.jsonb(),
       handler: async function* () {
         yield { phase: "started" };
         throw new DbzzError("unavailable", "stream failed", { resource: "sse" });
@@ -203,7 +203,7 @@ const functions = {
     stayOpen: sseProcedure({
       access: "public",
       args: {},
-      yields: dbz.jsonb(),
+      yields: v.jsonb(),
       handler: async function* (ctx: Ctx) {
         longSseStarted?.resolve();
         yield { phase: "started" };

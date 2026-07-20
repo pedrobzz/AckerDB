@@ -9,7 +9,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   query,
@@ -22,8 +22,8 @@ import { DbzzProvider, useConnectionState } from "@dbzz/client-react";
 
 const schema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 

@@ -11,7 +11,13 @@
  * CLI as a table keyed by these same kinds. DDL type and `check` still live here.
  */
 import { decode, encode, WireError } from "@dbzz/core";
-import { ValidationError, type Descriptor } from "../dbz.ts";
+import { ValidationError, type Descriptor } from "../v.ts";
+import {
+  checkArrayConstraints,
+  checkBigintConstraints,
+  checkNumberConstraints,
+  checkStringConstraints,
+} from "../validator-constraints.ts";
 
 export type SqlType = "TEXT" | "REAL" | "INTEGER" | "BLOB";
 
@@ -52,6 +58,7 @@ const guard = (ok: (v: unknown) => boolean, what: string): CheckFn => ({ value, 
 };
 
 const checkFiniteNumber = guard((v) => typeof v === "number" && Number.isFinite(v), "finite number");
+const checkSafeInteger = guard((v) => typeof v === "number" && Number.isSafeInteger(v), "safe integer");
 const checkI64: CheckFn = ({ value, path, expect }) => {
   expect(typeof value === "bigint", "bigint");
   if ((value as bigint) < I64_MIN || (value as bigint) > I64_MAX) throw new ValidationError(`${path}: bigint out of 64-bit range`);
@@ -62,13 +69,62 @@ const wire = { encode: (v: unknown) => encode(v), decode: (v: unknown) => decode
 const KINDS: Record<string, DescriptorKind> = {
   nullable: {
     check: ({ desc, value, path }) =>
-      value === null || value === undefined ? null : checkDescriptor(desc["inner"] as Descriptor, value, path),
+      value === null ? null : checkDescriptor(desc["inner"] as Descriptor, value, path),
+  },
+  optional: {
+    check: ({ desc, value, path }) =>
+      value === undefined ? undefined : checkDescriptor(desc["inner"] as Descriptor, value, path),
+  },
+  nullish: {
+    check: ({ desc, value, path }) =>
+      value === null || value === undefined
+        ? value
+        : checkDescriptor(desc["inner"] as Descriptor, value, path),
   },
   pk: { check: guard((v) => typeof v === "bigint", "bigint (primary key)") },
-  string: { sqlType: "TEXT", check: guard((v) => typeof v === "string", "string") },
-  number: { sqlType: "REAL", decode: (v) => Number(v), check: checkFiniteNumber },
+  string: {
+    sqlType: "TEXT",
+    check: ({ desc, value, path, expect }) => {
+      expect(typeof value === "string", "string");
+      if (desc["min"] !== undefined || desc["max"] !== undefined || desc["regex"] !== undefined) {
+        checkStringConstraints(desc, value as string, path);
+      }
+      return value;
+    },
+  },
+  int: {
+    sqlType: "INTEGER",
+    decode: (v) => Number(v),
+    check: ({ desc, value, path, expect }) => {
+      expect(typeof value === "number" && Number.isSafeInteger(value), "safe integer");
+      if (desc["min"] !== undefined || desc["max"] !== undefined) {
+        checkNumberConstraints(desc, value as number, path);
+      }
+      return value;
+    },
+  },
+  float: {
+    sqlType: "REAL",
+    decode: (v) => Number(v),
+    check: ({ desc, value, path, expect }) => {
+      expect(typeof value === "number" && Number.isFinite(value), "finite number");
+      if (desc["min"] !== undefined || desc["max"] !== undefined) {
+        checkNumberConstraints(desc, value as number, path);
+      }
+      return value;
+    },
+  },
   scheduleAt: { sqlType: "REAL", decode: (v) => Number(v), check: checkFiniteNumber },
-  bigint: { sqlType: "INTEGER", check: checkI64 },
+  bigint: {
+    sqlType: "INTEGER",
+    check: (args) => {
+      const value = checkI64(args) as bigint;
+      if (args.desc["min"] !== undefined || args.desc["max"] !== undefined) {
+        checkBigintConstraints(args.desc, value, args.path);
+      }
+      return value;
+    },
+  },
   identity: { sqlType: "INTEGER", check: checkI64 },
   boolean: {
     sqlType: "INTEGER",
@@ -103,6 +159,9 @@ const KINDS: Record<string, DescriptorKind> = {
     ...wire,
     check: ({ desc, value, path, expect }) => {
       expect(Array.isArray(value), "array");
+      if (desc["min"] !== undefined || desc["max"] !== undefined) {
+        checkArrayConstraints(desc, (value as unknown[]).length, path);
+      }
       const el = desc["el"] as Descriptor;
       return (value as unknown[]).map((v, i) => checkDescriptor(el, v, `${path}[${i}]`));
     },
@@ -115,10 +174,19 @@ const KINDS: Record<string, DescriptorKind> = {
       const shape = desc["shape"] as Record<string, Descriptor>;
       const input = value as Record<string, unknown>;
       for (const key of Object.keys(input)) {
-        if (!(key in shape) && input[key] !== undefined) throw new ValidationError(`${path}: unknown field "${key}"`);
+        if (!Object.hasOwn(shape, key) && input[key] !== undefined) throw new ValidationError(`${path}: unknown field "${key}"`);
       }
-      const out: Record<string, unknown> = {};
-      for (const key of Object.keys(shape)) out[key] = checkDescriptor(shape[key]!, input[key], `${path}.${key}`);
+      const out = Object.create(null) as Record<string, unknown>;
+      for (const key of Object.keys(shape)) {
+        const field = shape[key]!;
+        if (
+          !Object.hasOwn(input, key) &&
+          (field["k"] === "optional" || field["k"] === "nullish")
+        ) {
+          continue;
+        }
+        out[key] = checkDescriptor(field, input[key], `${path}.${key}`);
+      }
       return out;
     },
   },
@@ -128,7 +196,7 @@ const KINDS: Record<string, DescriptorKind> = {
       const input = value as Record<string, unknown>;
       const members = desc["members"] as Record<string, Descriptor>;
       const variant = input["tag"];
-      if (typeof variant !== "string" || !(variant in members)) {
+      if (typeof variant !== "string" || !Object.hasOwn(members, variant)) {
         throw new ValidationError(`${path}.tag: expected one of ${Object.keys(members).map((v) => JSON.stringify(v)).join(" | ")}`);
       }
       for (const key of Object.keys(input)) {
@@ -136,7 +204,14 @@ const KINDS: Record<string, DescriptorKind> = {
           throw new ValidationError(`${path}: unknown field "${key}" on union value`);
         }
       }
-      return { tag: variant, value: checkDescriptor(members[variant]!, input["value"], `${path}.value`) };
+      const member = members[variant]!;
+      if (
+        !Object.hasOwn(input, "value") &&
+        (member["k"] === "optional" || member["k"] === "nullish")
+      ) {
+        return { tag: variant };
+      }
+      return { tag: variant, value: checkDescriptor(member, input["value"], `${path}.value`) };
     },
   },
   jsonb: {
@@ -173,10 +248,10 @@ export function scalarDecoder(kind: string): (value: unknown) => unknown {
 }
 
 /**
- * Structural mirror of the dbz validators over a descriptor, for migration
+ * Structural mirror of the v validators over a descriptor, for migration
  * transform output and emits: kind + finiteness checks, i64 range, enum/union
  * membership with payload recursion, strict object keys, jsonb wire-encodability.
- * Returns the normalized value (nullable/undefined collapse to null, unknown keys reject).
+ * Returns the normalized value while preserving optional-key presence; unknown keys reject.
  */
 export function checkDescriptor(desc: Descriptor, value: unknown, path: string): unknown {
   const spec = KINDS[desc["k"] as string];

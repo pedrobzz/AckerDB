@@ -10,10 +10,10 @@
 // This command is deliberately synchronous: release automation starts it in a
 // background worker/subagent, while this process owns the remote worktree and
 // copies exactly one retained result back when the run finishes.
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { finalBenchmarkFilename, iterationBenchmarkFilename, removeReleaseIterations } from "../bench/release.ts";
+import { finalBenchmarkFilename } from "../bench/release.ts";
 import { fail, git, syncedVersion } from "./lib.ts";
 
 const HETZNER = "htz";
@@ -41,22 +41,13 @@ mkdirSync(RESULTS, { recursive: true });
 if (mode !== "telemetry" && existsSync(`${RESULTS}/${finalBenchmarkFilename(version)}`)) {
   fail(`v${version} already has final benchmark evidence; benchmark only a version change once`);
 }
-const existingIterations = readdirSync(RESULTS)
-  .flatMap((name) => {
-    const match = new RegExp(`^v${version.replace(/\./g, "\\.")}\\.iteration-(\\d+)\\.json$`).exec(name);
-    return match ? [Number(match[1])] : [];
-  });
-const iteration = Math.max(0, ...existingIterations) + 1;
-
 const harnessCommit = git("rev-parse", "--verify", "HEAD");
 const productCommit = git("rev-parse", "--verify", bootstrap ? `v${version}` : "HEAD");
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const localBundle = join(tmpdir(), `dbzz-v${version}-benchmark-${stamp}.bundle`);
-const remoteRoot = `/root/benchmarks/dbzz-v${version}-${iteration}-${stamp}`;
+const remoteRoot = `/root/benchmarks/dbzz-v${version}-${stamp}`;
 const remoteRepo = `${remoteRoot}/repo`;
-const names = mode === "telemetry"
-  ? [`telemetry-v${version}.json`]
-  : [finalBenchmarkFilename(version), iterationBenchmarkFilename(version, iteration)];
+const resultName = mode === "telemetry" ? `telemetry-v${version}.json` : finalBenchmarkFilename(version);
 
 function run(command: string[], inherit = true): number {
   return Bun.spawnSync(command, { stdout: inherit ? "inherit" : "pipe", stderr: inherit ? "inherit" : "pipe" }).exitCode;
@@ -89,21 +80,14 @@ try {
     "cd ../spacetime-app && bun install --frozen-lockfile",
     "cd spacetimedb && bun install --frozen-lockfile",
     `cd ${remoteRepo}`,
-    `BENCH_EXECUTION_HOST=hetzner BENCH_RELEASE_VERSION=${version} BENCH_RELEASE_ITERATION=${iteration} BENCH_RELEASE_SOURCE_COMMIT=${productCommit}${bootstrap || mode === "baseline" ? " BENCH_RELEASE_BOOTSTRAP=1" : ""}${mode === "telemetry" ? " BENCH_RUN_KIND=telemetry" : ""} bun bench/run.ts`,
+    `BENCH_EXECUTION_HOST=hetzner BENCH_RELEASE_VERSION=${version} BENCH_RELEASE_SOURCE_COMMIT=${productCommit}${bootstrap || mode === "baseline" ? " BENCH_RELEASE_BOOTSTRAP=1" : ""}${mode === "telemetry" ? " BENCH_RUN_KIND=telemetry" : ""} bun bench/run.ts`,
   ].join("; "));
 
-  let copied = false;
-  let finalCopied = false;
-  for (const name of names) {
-    const destination = join(RESULTS, name);
-    if (run(["scp", `${HETZNER}:${remoteRepo}/${RESULTS}/${name}`, destination], false) === 0) {
-      copied = true;
-      if (name === finalBenchmarkFilename(version)) finalCopied = true;
-      console.log(`copied ${RESULTS}/${name}`);
-    }
+  const destination = join(RESULTS, resultName);
+  if (run(["scp", `${HETZNER}:${remoteRepo}/${RESULTS}/${resultName}`, destination], false) !== 0) {
+    fail("Hetzner benchmark did not retain a version-bound result");
   }
-  if (!copied) fail("Hetzner benchmark did not retain a version-bound result");
-  if (finalCopied) removeReleaseIterations(RESULTS, version);
+  console.log(`copied ${RESULTS}/${resultName}`);
   if (runExit !== 0) process.exitCode = runExit;
 } finally {
   rmSync(localBundle, { force: true });

@@ -73,6 +73,9 @@ client.close();
 
 ## Production contracts
 
+- [Validators](docs/validators.md) is the canonical guide to `v`, numeric
+  types, constraints, presence semantics, stored-data enforcement, and the
+  deliberate pre-1.0 upgrade break.
 - [Authentication and authorization](docs/authentication.md) documents strict
   bearer handling, immutable principals, external OIDC/JWKS configuration,
   access policies, WebSocket refresh, and bounded credential validity for
@@ -96,6 +99,9 @@ client.close();
   conformance scenarios, retained raw protocol/security cases, clean packed
   consumer, real Codex and Claude Code host acceptance, unsupported optional
   capabilities, and benchmark contract.
+- [MCP and AI integration](docs/ai-integration.md) documents endpoint-owned
+  tool blueprints, exact generated tool types, and the in-process AI SDK
+  adapter.
 - [Production-readiness report](docs/production-readiness-report.md) records the
   full issue #1 implementation and decision history, verification and benchmark
   evidence, remaining release blockers, and the operational gap versus Convex

@@ -2,13 +2,15 @@
 import type { ApiFromModules, Identity } from "@dbzz/core";
 import {
   createMcp,
-  dbz,
+  v,
   defineSchema,
   defineTable,
+  mcpTool,
   mutation,
   procedure,
   query,
   type McpBuilder,
+  type McpToolBuilder,
   type McpToolResult,
   type MutationBuilder,
   type ProcedureBuilder,
@@ -18,8 +20,8 @@ import {
 
 const schema = defineSchema({
   notes: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 
@@ -27,18 +29,20 @@ const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
 const addNote = typedMutation({
   access: "public",
-  args: { body: dbz.string() },
+  args: { body: v.string() },
   handler: (ctx, args) => ctx.db.notes.insert(args),
 });
 
-const agentMcp = typedMcp({ name: "agent" });
+const agentMcp = typedMcp({ name: "agent", tools: {} });
 const scopedMcp = typedMcp({
   name: "scoped_agent",
   path: "/scoped/mcp",
   scopes: ["orders.all", "orders.get", "reports.all"] as const,
+  tools: {},
 });
 type AgentScope = NonNullable<typeof scopedMcp.scopes._type>;
 const exactScope: AgentScope = "orders.get";
@@ -52,22 +56,22 @@ void unknownScope;
 void agentMcp.scopes;
 const createAgentToken = typedMutation({
   access: "authenticated",
-  args: { name: dbz.string() },
+  args: { name: v.string() },
   handler: (ctx, args) => agentMcp.tokens.create(ctx, { name: args.name }),
 });
 const createScopedToken = typedMutation({
   access: "authenticated",
   args: {
-    name: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
+    name: v.string(),
+    scopes: v.array(scopedMcp.scopes),
   },
   handler: (ctx, args) => scopedMcp.tokens.create(ctx, args),
 });
 const updateScopedToken = typedMutation({
   access: "authenticated",
   args: {
-    tokenId: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
+    tokenId: v.string(),
+    scopes: v.array(scopedMcp.scopes),
   },
   handler: (ctx, args) => scopedMcp.tokens.updateScopes(ctx, args.tokenId, args.scopes),
 });
@@ -78,17 +82,17 @@ const listAgentTokens = typedQuery({
 });
 const updateAgentToken = typedMutation({
   access: "authenticated",
-  args: { tokenId: dbz.string(), name: dbz.string() },
+  args: { tokenId: v.string(), name: v.string() },
   handler: (ctx, args) => agentMcp.tokens.update(ctx, args.tokenId, { name: args.name }),
 });
 const revokeAgentToken = typedMutation({
   access: "authenticated",
-  args: { tokenId: dbz.string() },
+  args: { tokenId: v.string() },
   handler: (ctx, args) => agentMcp.tokens.revoke(ctx, args.tokenId),
 });
 const createSystemAgentToken = typedMutation({
   access: "system",
-  args: { identity: dbz.identity(), name: dbz.string() },
+  args: { identity: v.identity(), name: v.string() },
   handler: (ctx, args) => agentMcp.systemTokens.create(
     ctx,
     args.identity,
@@ -98,9 +102,9 @@ const createSystemAgentToken = typedMutation({
 const createSystemScopedToken = typedMutation({
   access: "system",
   args: {
-    identity: dbz.identity(),
-    name: dbz.string(),
-    scopes: dbz.array(scopedMcp.scopes),
+    identity: v.identity(),
+    name: v.string(),
+    scopes: v.array(scopedMcp.scopes),
   },
   handler: (ctx, args) => scopedMcp.systemTokens.create(
     ctx,
@@ -110,12 +114,12 @@ const createSystemScopedToken = typedMutation({
 });
 const listSystemAgentTokens = typedQuery({
   access: "system",
-  args: { identity: dbz.identity() },
+  args: { identity: v.identity() },
   handler: (ctx, args) => agentMcp.systemTokens.list(ctx, args.identity),
 });
 const revokeSystemAgentToken = typedMutation({
   access: "system",
-  args: { identity: dbz.identity(), tokenId: dbz.string() },
+  args: { identity: v.identity(), tokenId: v.string() },
   handler: (ctx, args) => agentMcp.systemTokens.revoke(ctx, args.identity, args.tokenId),
 });
 const localAiTools = typedProcedure({
@@ -163,15 +167,15 @@ const renamedEndpoint = typedMcp({
   name: "stable_name",
   path: "/renamed/export",
   instructions: "Stable declaration identity is explicit.",
+  tools: {},
 });
 const stableName: "stable_name" = renamedEndpoint.name;
 const stablePath: "/renamed/export" = renamedEndpoint.path;
 void stableName;
 void stablePath;
-const writeNote = agentMcp.tool({
-  name: "write_note",
+const writeNote = typedMcpTool({
   description: "Write a note.",
-  args: { body: dbz.string() },
+  args: { body: v.string() },
   handler: async (ctx, args) => {
     const authKind: "anonymous" | "user" | "mcp" | "workload" | "system" = ctx.auth.kind;
     const signal: AbortSignal = ctx.abortSignal;
@@ -191,33 +195,28 @@ const writeNote = agentMcp.tool({
   },
 });
 
-scopedMcp.tool({
-  name: "read_orders",
+typedMcpTool({
   description: "Read orders with either exact capability.",
   access: { anyOf: ["orders.all", "orders.get"] },
   args: {},
   handler: () => ({ content: [] }),
 });
 
-scopedMcp.tool({
-  name: "read_reports",
+typedMcpTool({
   description: "Require both exact capabilities.",
   access: { allOf: ["orders.get", "reports.all"] },
   args: {},
   handler: () => ({ content: [] }),
 });
 
-scopedMcp.tool({
-  name: "invalid_scope_policy",
+const invalidScopePolicy = typedMcpTool({
   description: "Reject undeclared policy values.",
-  // @ts-expect-error tool policies accept only the declaration's exact scope union
   access: { anyOf: ["orders.create"] },
   args: {},
   handler: () => ({ content: [] }),
 });
 
-scopedMcp.tool({
-  name: "ambiguous_scope_policy",
+typedMcpTool({
   description: "Reject ambiguous bare arrays.",
   // @ts-expect-error scope policies must explicitly choose anyOf or allOf
   access: ["orders.get"],
@@ -225,13 +224,30 @@ scopedMcp.tool({
   handler: () => ({ content: [] }),
 });
 
-agentMcp.tool({
-  name: "scope_free_policy",
+const scopeFreePolicy = typedMcpTool({
   description: "Reject scope policies when the declaration has no scopes.",
-  // @ts-expect-error scope-free declarations expose only public/authenticated policies
   access: { anyOf: ["orders.get"] },
   args: {},
   handler: () => ({ content: [] }),
+});
+
+typedMcp({
+  name: "invalid_scoped_tools",
+  path: "/invalid/scoped-tools",
+  scopes: ["orders.get"] as const,
+  tools: {
+    // @ts-expect-error tool policies accept only the declaration's exact scope union
+    invalid_scope_policy: invalidScopePolicy,
+  },
+});
+
+// @ts-expect-error scope-free declarations cannot assemble scope-requiring blueprints
+typedMcp({
+  name: "invalid_scope_free_tools",
+  path: "/invalid/scope-free-tools",
+  tools: {
+    scope_free_policy: scopeFreePolicy,
+  },
 });
 
 typedMutation({
@@ -305,8 +321,7 @@ const richResult = {
   _meta: { request: { id: 1 } },
 } satisfies McpToolResult;
 
-agentMcp.tool({
-  name: "render_note",
+typedMcpTool({
   title: "Render note",
   description: "Prove every rich result block is typed.",
   annotations: {
@@ -319,37 +334,35 @@ agentMcp.tool({
   handler: () => richResult,
 });
 
-const summarizeNote = agentMcp.tool({
-  name: "summarize_note",
+const summarizeNote = typedMcpTool({
   description: "Return a typed summary.",
   args: {
-    body: dbz.string().describe("The note body."),
-    label: dbz.nullable(dbz.string()),
+    body: v.string().describe("The note body."),
+    label: v.string().optional(),
   },
-  output: dbz.object({
-    length: dbz.number(),
-    label: dbz.nullable(dbz.string()),
+  output: v.object({
+    length: v.int(),
+    label: v.string().nullable(),
   }),
   handler: (_ctx, args) => {
     const body: string = args.body;
-    const label: string | null = args.label;
-    return { length: body.length, label };
+    const label: string | undefined = args.label;
+    return { length: body.length, label: label ?? null };
   },
 });
 void summarizeNote;
 
-const echoNativeValues = agentMcp.tool({
-  name: "echo_native_values",
+const echoNativeValues = typedMcpTool({
   description: "Keep protocol strings out of the typed handler contract.",
   args: {
-    count: dbz.bigint(),
-    identity: dbz.identity(),
-    bytes: dbz.bytes(),
+    count: v.bigint(),
+    identity: v.identity(),
+    bytes: v.bytes(),
   },
-  output: dbz.object({
-    count: dbz.bigint(),
-    identity: dbz.identity(),
-    bytes: dbz.bytes(),
+  output: v.object({
+    count: v.bigint(),
+    identity: v.identity(),
+    bytes: v.bytes(),
   }),
   handler: (_ctx, args) => {
     const count: bigint = args.count;
@@ -386,11 +399,11 @@ interface NeutralStandard<Input, Output> {
     };
   };
 }
-const summaryInput = dbz.object({
-  body: dbz.string(),
-  label: dbz.nullable(dbz.string()),
+const summaryInput = v.object({
+  body: v.string(),
+  label: v.string().nullable(),
 });
-const validStandardInput: StandardInput<typeof summaryInput> = { body: "hello" };
+const validStandardInput: StandardInput<typeof summaryInput> = { body: "hello", label: null };
 const validStandardOutput: StandardOutput<typeof summaryInput> = { body: "hello", label: null };
 const neutralStandard: NeutralStandard<
   StandardInput<typeof summaryInput>,
@@ -416,8 +429,7 @@ const runtimeOnlyValidator: Validator<string, "runtime-only"> = {
   descriptor: () => ({ k: "runtime-only" }),
 };
 
-agentMcp.tool({
-  name: "runtime_only_input",
+typedMcpTool({
   description: "Prove MCP fields have an honest schema.",
   args: {
     // @ts-expect-error runtime-only validators cannot be advertised as MCP schemas
@@ -429,16 +441,14 @@ agentMcp.tool({
 // @ts-expect-error declarations require an explicit stable name
 typedMcp();
 
-agentMcp.tool({
-  name: "wrong_result",
+typedMcpTool({
   description: "Prove result typing.",
   args: {},
   // @ts-expect-error tool results are explicit MCP content results
   handler: () => "not MCP content",
 });
 
-agentMcp.tool({
-  name: "invalid_annotation",
+typedMcpTool({
   description: "Prove tool hints are booleans.",
   annotations: {
     // @ts-expect-error tool annotation hints are booleans
@@ -448,8 +458,7 @@ agentMcp.tool({
   handler: () => ({ content: [] }),
 });
 
-agentMcp.tool({
-  name: "invalid_content",
+typedMcpTool({
   description: "Prove content blocks are a closed union.",
   args: {},
   handler: () => ({
@@ -462,8 +471,7 @@ agentMcp.tool({
   }),
 });
 
-agentMcp.tool({
-  name: "invalid_metadata",
+typedMcpTool({
   description: "Prove metadata is standard JSON.",
   args: {},
   handler: () => ({
@@ -494,37 +502,33 @@ const invalidAudience = {
 } satisfies McpToolResult;
 void invalidAudience;
 
-agentMcp.tool({
-  name: "scalar_args",
+typedMcpTool({
   description: "Prove input roots are objects.",
   // @ts-expect-error MCP inputs are argument shapes, never scalar roots
-  args: dbz.string(),
+  args: v.string(),
   handler: () => ({ content: [{ type: "text", text: "never" }] }),
 });
 
-agentMcp.tool({
-  name: "scalar_output",
+typedMcpTool({
   description: "Prove output roots are objects.",
   args: {},
-  // @ts-expect-error advertised structured outputs require dbz.object(...)
-  output: dbz.string(),
+  // @ts-expect-error advertised structured outputs require v.object(...)
+  output: v.string(),
   handler: () => ({ content: [{ type: "text", text: "never" }] }),
 });
 
-agentMcp.tool({
-  name: "nullable_output",
+typedMcpTool({
   description: "Prove nullable results use a named property.",
   args: {},
   // @ts-expect-error a nullable object is not an object-root output schema
-  output: dbz.nullable(dbz.object({ value: dbz.string() })),
+  output: v.object({ value: v.string() }).nullable(),
   handler: () => ({ content: [{ type: "text", text: "never" }] }),
 });
 
-agentMcp.tool({
-  name: "wrong_structured_result",
+typedMcpTool({
   description: "Prove structured result inference.",
   args: {},
-  output: dbz.object({ value: dbz.string() }),
+  output: v.object({ value: v.string() }),
   // @ts-expect-error handlers must return the declared structured object
   handler: () => ({ value: 1 }),
 });

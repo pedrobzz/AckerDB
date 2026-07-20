@@ -8,11 +8,12 @@ import {
   ValidationError,
   type Descriptor,
   type Expand,
+  type InferInputShape,
   type InferShape,
   type InferValidator,
   type ObjectShape,
   type Validator,
-} from "./dbz.ts";
+} from "./v.ts";
 import {
   isAccessPolicy,
   validateArgsShape,
@@ -34,6 +35,46 @@ function checkName(name: string, what: string): void {
   }
 }
 
+function assertStoredValidator(
+  validator: Validator<unknown, string>,
+  where: string,
+): void {
+  if (validator.kind === "optional" || validator.kind === "nullish") {
+    throw new ValidationError(
+      `${where}: .${validator.kind}() is not valid in stored data; use .nullable() for nullable storage`,
+    );
+  }
+  if (validator.kind === "nullable") {
+    assertStoredValidator(
+      (validator as unknown as { readonly inner: Validator<unknown, string> }).inner,
+      where,
+    );
+    return;
+  }
+  if (validator.kind === "array") {
+    assertStoredValidator(
+      (validator as unknown as { readonly element: Validator<unknown, string> }).element,
+      `${where}[]`,
+    );
+    return;
+  }
+  if (validator.kind === "object") {
+    const shape = (validator as unknown as { readonly shape: ObjectShape }).shape;
+    for (const [name, field] of Object.entries(shape)) {
+      assertStoredValidator(field, `${where}.${name}`);
+    }
+    return;
+  }
+  if (validator.kind === "union") {
+    const members = (validator as unknown as {
+      readonly members: Record<string, Validator<unknown, string>>;
+    }).members;
+    for (const [name, member] of Object.entries(members)) {
+      assertStoredValidator(member, `${where}<${name}>`);
+    }
+  }
+}
+
 /** Unwrap nullable to the underlying validator. */
 function unwrap(validator: Validator<unknown, string>): Validator<unknown, string> {
   return validator.kind === "nullable"
@@ -41,8 +82,8 @@ function unwrap(validator: Validator<unknown, string>): Validator<unknown, strin
     : validator;
 }
 
-const INDEXABLE = new Set(["string", "number", "bigint", "identity", "boolean", "enum", "union", "scheduleAt"]);
-const DIRECT_INDEXABLE = new Set(["bigint", "identity", "enum", "union"]);
+const INDEXABLE = new Set(["string", "int", "float", "bigint", "identity", "boolean", "enum", "union", "scheduleAt"]);
+const DIRECT_INDEXABLE = new Set(["int", "bigint", "identity", "enum", "union"]);
 
 export interface IndexOptions {
   unique?: boolean;
@@ -110,22 +151,23 @@ export class TableDef<
     let scheduleAtCount = 0;
     for (const [name, validator] of Object.entries(columns)) {
       checkName(name, "column");
+      assertStoredValidator(validator, `column "${name}"`);
       if (validator.kind === "pk") pkCount++;
       if (validator.kind === "scheduleAt") scheduleAtCount++;
       if (validator.kind === "tag") {
-        throw new ValidationError(`column "${name}": dbz.tag() is only valid inside a union`);
+        throw new ValidationError(`column "${name}": v.tag() is only valid inside a union`);
       }
     }
     if (pkCount !== 1) {
       throw new ValidationError(
-        `every table must have exactly one dbz.primaryKey() column (found ${pkCount})`,
+        `every table must have exactly one v.primaryKey() column (found ${pkCount})`,
       );
     }
     if (scheduleAtCount > 1) {
-      throw new ValidationError("a table may have at most one dbz.scheduleAt() column");
+      throw new ValidationError("a table may have at most one v.scheduleAt() column");
     }
     if (kind === "event" && scheduleAtCount > 0) {
-      throw new ValidationError("event tables cannot have a dbz.scheduleAt() column");
+      throw new ValidationError("event tables cannot have a v.scheduleAt() column");
     }
   }
 
@@ -165,8 +207,10 @@ export class TableDef<
       throw new ValidationError(`index "${name}": duplicate columns`);
     }
     for (const column of columns) {
-      const validator = this.columns[column];
-      if (!validator) throw new ValidationError(`index "${name}": unknown column "${column}"`);
+      if (!Object.hasOwn(this.columns, column)) {
+        throw new ValidationError(`index "${name}": unknown column "${column}"`);
+      }
+      const validator = this.columns[column]!;
       if (validator.kind === "pk") {
         throw new ValidationError(
           `index "${name}": the primary key is already the table's storage key; indexing it is redundant`,
@@ -205,7 +249,7 @@ export class TableDef<
       throw new ValidationError("event tables cannot be scheduled");
     }
     if (this.scheduleAtColumn === null) {
-      throw new ValidationError(".scheduled(...) requires a dbz.scheduleAt() column");
+      throw new ValidationError(".scheduled(...) requires a v.scheduleAt() column");
     }
     if (this.scheduledHandler !== null) {
       throw new ValidationError("table already has a scheduled handler");
@@ -313,25 +357,46 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
     typeNames.set(name, owner);
   };
 
-  const walk = (validator: Validator<unknown, string>, where: string, context: "column" | "nested") => {
+  const walk = (
+    validator: Validator<unknown, string>,
+    where: string,
+    context: "column" | "nested",
+    stored: boolean,
+  ) => {
     switch (validator.kind) {
       case "pk":
-        if (context !== "column") throw new ValidationError(`${where}: dbz.primaryKey() must be a top-level column`);
+        if (context !== "column") throw new ValidationError(`${where}: v.primaryKey() must be a top-level column`);
         return;
       case "scheduleAt":
-        if (context !== "column") throw new ValidationError(`${where}: dbz.scheduleAt() must be a top-level column`);
+        if (context !== "column") throw new ValidationError(`${where}: v.scheduleAt() must be a top-level column`);
         return;
       case "tag":
-        throw new ValidationError(`${where}: dbz.tag() is only valid inside a union`);
+        throw new ValidationError(`${where}: v.tag() is only valid inside a union`);
       case "nullable":
-        walk((validator as { inner?: Validator<unknown, string> }).inner!, where, context);
+        walk((validator as { inner?: Validator<unknown, string> }).inner!, where, context, stored);
+        return;
+      case "optional":
+      case "nullish":
+        if (stored) {
+          throw new ValidationError(
+            `${where}: .${validator.kind}() is not valid in stored data; use .nullable() for nullable storage`,
+          );
+        }
+        walk((validator as { inner?: Validator<unknown, string> }).inner!, where, context, false);
         return;
       case "array":
-        walk((validator as { element?: Validator<unknown, string> }).element!, `${where}[]`, "nested");
+        walk(
+          (validator as { element?: Validator<unknown, string> }).element!,
+          `${where}[]`,
+          "nested",
+          stored,
+        );
         return;
       case "object": {
         const shape = (validator as { shape?: ObjectShape }).shape!;
-        for (const key of Object.keys(shape)) walk(shape[key]!, `${where}.${key}`, "nested");
+        for (const key of Object.keys(shape)) {
+          walk(shape[key]!, `${where}.${key}`, "nested", stored);
+        }
         return;
       }
       case "enum":
@@ -355,7 +420,7 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
             checkName(variant, "union variant");
             const member = members[variant]!;
             if (member.kind === "tag") continue;
-            walk(member, `${where}<${variant}>`, "nested");
+            walk(member, `${where}<${variant}>`, "nested", stored);
           }
         }
         return;
@@ -372,17 +437,17 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
     }
     if (table.scheduleAtColumn !== null && table.scheduledHandler === null) {
       throw new ValidationError(
-        `table "${tableName}" has a dbz.scheduleAt() column but no .scheduled(handler)`,
+        `table "${tableName}" has a v.scheduleAt() column but no .scheduled(handler)`,
       );
     }
     claimTypeName(rowTypeName(tableName), `table "${tableName}"`);
     for (const [column, validator] of Object.entries(table.columns)) {
-      walk(validator, `${tableName}.${column}`, "column");
+      walk(validator, `${tableName}.${column}`, "column", true);
     }
     if (table.kind === "event") {
       claimTypeName(eventArgsTypeName(tableName), `event args for table "${tableName}"`);
       for (const [name, validator] of Object.entries(table.eventSubscription!.args)) {
-        walk(validator, `${tableName}.eventArgs.${name}`, "nested");
+        walk(validator, `${tableName}.eventArgs.${name}`, "nested", false);
       }
     }
   }
@@ -433,5 +498,5 @@ export type RowOf<S, T extends keyof SchemaTables<S>> = RowShape<TableColumns<Sc
 /** Caller input accepted by an event table's subscription argument schema. */
 export type EventArgsOf<S, T extends keyof SchemaTables<S>> =
   SchemaTables<S>[T] extends TableDef<ObjectShape, Record<string, IndexMeta>, "event", infer A>
-    ? InsertShape<A>
+    ? Expand<InferInputShape<A>>
     : never;

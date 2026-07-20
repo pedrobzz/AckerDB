@@ -26,7 +26,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   query,
@@ -989,9 +989,9 @@ async function until(predicate: () => boolean, description: string): Promise<voi
 
 const realSchema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
+    body: v.string(),
   }).index("by_channel", ["channelId"]),
 });
 
@@ -1008,7 +1008,7 @@ describe("suspension against a real dbzz server", () => {
       messages: {
         list: query({
           access: "public",
-          args: { channelId: dbz.bigint() },
+          args: { channelId: v.bigint() },
           handler: (ctx: Ctx, args: Ctx) =>
             ctx.db.messages.byChannel((builder: Ctx) => builder.eq("channelId", args.channelId)).collect(),
         }),

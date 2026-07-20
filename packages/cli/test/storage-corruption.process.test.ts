@@ -9,20 +9,20 @@ import {
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
-import { dbz, defineSchema, defineTable, Engine, reconcile } from "@dbzz/server";
+import { v, defineSchema, defineTable, Engine, reconcile } from "@dbzz/server";
 import { makeFixture } from "./fixture.ts";
 
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 const REPO = new URL("../../..", import.meta.url).pathname;
 const STEP_TIMEOUT_MS = 10_000;
 const SCHEMA = `
-import { dbz, defineSchema, defineTable } from "@dbzz/server";
+import { v, defineSchema, defineTable } from "@dbzz/server";
 export default defineSchema({
-  records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }),
+  records: defineTable({ id: v.primaryKey(), value: v.string() }),
 });
 `;
 const schema = defineSchema({
-  records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }),
+  records: defineTable({ id: v.primaryKey(), value: v.string() }),
 });
 
 type CliProcess = Subprocess<"ignore", "pipe", "pipe">;
@@ -297,8 +297,8 @@ describe("fresh-process storage corruption rejection", () => {
     mkdirSync(join(crashDir, ".zdb"), { recursive: true });
     writeFileSync(source, clean);
     const crashScript = `
-      import { dbz, defineSchema, defineTable, Engine } from "@dbzz/server";
-      const schema = defineSchema({ records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }) });
+      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(source)});
       engine.writer.exec("PRAGMA wal_autocheckpoint = 0");
       engine.writer.exec("BEGIN IMMEDIATE");
@@ -350,8 +350,8 @@ describe("fresh-process storage corruption rejection", () => {
     mkdirSync(join(uncommittedDir, ".zdb"), { recursive: true });
     writeFileSync(uncommittedPath, clean);
     const spillScript = `
-      import { dbz, defineSchema, defineTable, Engine } from "@dbzz/server";
-      const schema = defineSchema({ records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }) });
+      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(uncommittedPath)});
       engine.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       engine.writer.exec("PRAGMA cache_size = 5");
@@ -394,8 +394,8 @@ describe("fresh-process storage corruption rejection", () => {
     mkdirSync(join(resetDir, ".zdb"), { recursive: true });
     writeFileSync(resetPath, clean);
     const resetScript = `
-      import { dbz, defineSchema, defineTable, Engine } from "@dbzz/server";
-      const schema = defineSchema({ records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }) });
+      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(resetPath)});
       engine.writer.exec("PRAGMA wal_autocheckpoint = 0");
       engine.writer.exec("BEGIN IMMEDIATE");
@@ -475,8 +475,8 @@ describe("fresh-process storage corruption rejection", () => {
     mkdirSync(join(dir, ".zdb"), { recursive: true });
     writeFileSync(path, cleanDatabase());
     const corruptScript = `
-      import { dbz, defineSchema, defineTable, Engine } from "@dbzz/server";
-      const schema = defineSchema({ records: defineTable({ id: dbz.primaryKey(), value: dbz.string() }) });
+      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(path)});
       engine.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       engine.writer.query("UPDATE _dbz_state SET mutation_records = 999 WHERE singleton = 1").run();

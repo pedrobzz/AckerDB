@@ -11,8 +11,10 @@ import {
 } from "./functions.ts";
 import {
   isMcpDeclaration,
+  isMcpToolBlueprint,
   isRegisteredMcpTool,
   type AnyMcpDeclaration,
+  type AnyMcpToolBlueprint,
   type AnyRegisteredMcpTool,
   type McpEndpointDeclaration,
 } from "./mcp.ts";
@@ -20,7 +22,7 @@ import { isMcpToolAuthorized } from "./mcp-scopes.ts";
 import { isDbzzHttpRoute } from "./http-routes.ts";
 import type { Schema, ScheduledHandler } from "./schema.ts";
 
-type ServerOnlyExport = AnyMcpDeclaration | AnyRegisteredMcpTool;
+type ServerOnlyExport = AnyMcpDeclaration | AnyMcpToolBlueprint;
 
 interface ModuleExport {
   readonly address: string;
@@ -33,6 +35,7 @@ export class Registry {
   readonly mcps = new Map<string, AnyMcpDeclaration>();
   readonly mcpTools = new Map<string, AnyRegisteredMcpTool>();
   private readonly mcpByPath = new Map<string, AnyMcpDeclaration>();
+  private readonly toolsByMcp = new Map<AnyMcpDeclaration, readonly AnyRegisteredMcpTool[]>();
   private readonly addressByObject = new Map<object, string>();
 
   /** `modules` is keyed by dot path: functions/messages.ts -> "messages". */
@@ -76,21 +79,20 @@ export class Registry {
       this.mcps.set(value.name, value);
       this.mcpByPath.set(value.path, value);
       this.serverOnly.set(address, value);
+      const endpointTools = Object.freeze(Object.values(value.tools));
+      this.toolsByMcp.set(value, endpointTools);
+      for (const tool of endpointTools) {
+        const name = tool.name;
+        const key = this.mcpToolKey(value.name, name);
+        if (this.mcpTools.has(key)) {
+          throw new Error(`duplicate MCP tool name "${name}" in MCP "${value.name}"`);
+        }
+        this.mcpTools.set(key, tool);
+      }
     }
 
     for (const { address, value } of moduleExports) {
-      if (!isRegisteredMcpTool(value)) continue;
-      this.registerAddress(address, value);
-      if (this.mcps.get(value.mcp.name) !== value.mcp) {
-        throw new Error(
-          `MCP tool "${value.name}" references MCP "${value.mcp.name}" which is not exported`,
-        );
-      }
-      const key = this.mcpToolKey(value.mcp.name, value.name);
-      if (this.mcpTools.has(key)) {
-        throw new Error(`duplicate MCP tool name "${value.name}" in MCP "${value.mcp.name}"`);
-      }
-      this.mcpTools.set(key, value);
+      if (!isMcpToolBlueprint(value)) continue;
       this.serverOnly.set(address, value);
     }
 
@@ -136,7 +138,7 @@ export class Registry {
   }
 
   registeredToolsFor(mcp: McpEndpointDeclaration): readonly AnyRegisteredMcpTool[] {
-    return [...this.mcpTools.values()].filter((tool) => tool.mcp === mcp);
+    return this.toolsByMcp.get(mcp as AnyMcpDeclaration) ?? [];
   }
 
   mcpTool(mcp: string, tool: string): AnyRegisteredMcpTool | undefined {
@@ -153,6 +155,13 @@ export class Registry {
 
   addressOf(value: object): string | undefined {
     return this.addressByObject.get(value);
+  }
+
+  /** Stable telemetry name for exported functions or endpoint-owned MCP tools. */
+  invocationNameOf(value: object): string | undefined {
+    return this.addressByObject.get(value) ?? (isRegisteredMcpTool(value)
+      ? `${value.mcp.name}:${value.name}`
+      : undefined);
   }
 
   /*

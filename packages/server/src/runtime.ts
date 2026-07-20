@@ -47,7 +47,7 @@ import {
   type CommitWaitHook,
   type FetchObservation,
 } from "./coordinator.ts";
-import { isValidationError, type Identity } from "./dbz.ts";
+import { isValidationError, type Identity } from "./v.ts";
 import {
   makeDbReader,
   type DbStatementObservation,
@@ -1551,7 +1551,7 @@ export class Runtime implements RuntimePort {
     const invocation = currentInvocationTelemetryContext();
     const functionName = invocation === undefined
       ? scope?.rootFunction
-      : this.registry.addressOf(invocation.fn) ?? scope?.rootFunction;
+      : this.registry.invocationNameOf(invocation.fn) ?? scope?.rootFunction;
     this.traceEvent({
       name: "failure",
       level: "error",
@@ -1833,7 +1833,7 @@ export class Runtime implements RuntimePort {
               const plan = this.engine.plan(candidate.table);
               const raw = this.measuredStatement("read", candidate.table, "scheduledGet", () =>
                 this.engine.writer.query(
-                  `SELECT * FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ? AND ${quoted(plan.scheduleAt!)} <= ?`,
+                  `SELECT ${plan.readProjection} FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ? AND ${quoted(plan.scheduleAt!)} <= ?`,
                 )
                   .get(candidate.primaryKey as never, now) as Record<string, unknown> | null,
                 (value) => value === null ? 0 : 1,
@@ -2937,7 +2937,7 @@ export class Runtime implements RuntimePort {
         operation: scope.operation,
         stage: invocation.phase,
         outcome,
-        functionName: this.registry.addressOf(invocation.fn) ?? scope.rootFunction,
+        functionName: this.registry.invocationNameOf(invocation.fn) ?? scope.rootFunction,
         durationMs,
       },
     );
@@ -3168,7 +3168,7 @@ export class Runtime implements RuntimePort {
     const parent = capturedParent ?? this.invocationNode(scope, invocation);
     const currentFunction = invocation === undefined
       ? undefined
-      : this.registry.addressOf(invocation.fn);
+      : this.registry.invocationNameOf(invocation.fn);
     this.telemetry[RECORD_OPERATION_SPAN](
       scope.trace,
       -1,

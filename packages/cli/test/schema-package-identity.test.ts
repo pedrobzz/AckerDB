@@ -73,8 +73,8 @@ test("packed @dbzz/server values keep identity across physical package copies", 
     writeFileSync(
       schemaPath,
       [
-        `import { DbzzError, UniqueConstraintError, ValidationError, dbz, defineSchema, defineTable } from "@dbzz/server";`,
-        `export const records = defineTable({ id: dbz.primaryKey() });`,
+        `import { DbzzError, UniqueConstraintError, ValidationError, v, defineSchema, defineTable } from "@dbzz/server";`,
+        `export const records = defineTable({ id: v.primaryKey() });`,
         `export const conflict = new DbzzError("conflict", "foreign conflict");`,
         `export const invalid = new ValidationError("foreign validation");`,
         `export const unique = new UniqueConstraintError("foreign unique");`,

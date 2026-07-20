@@ -3,7 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { DbzzClient } from "@dbzz/client";
-import { dbz, defineSchema, defineTable, migrationFingerprint, snapshotOf } from "@dbzz/server";
+import { v, defineSchema, defineTable, migrationFingerprint, snapshotOf } from "@dbzz/server";
 import { loadConfig } from "../src/config.ts";
 import { inspectDatabase, type StatusReport } from "../src/operations.ts";
 import { makeFixture } from "./fixture.ts";
@@ -14,42 +14,42 @@ const STEP_TIMEOUT_MS = 15_000;
 
 // The on-disk schema sources and the in-process snapshots are the same schema:
 // snapshotOf is deterministic, so PRE/TARGET here equal what the server derives
-// from schema.ts. Only the `count` column type changes (number -> string).
-const SCHEMA_V1 = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+// from schema.ts. Only the `count` column type changes (float -> string).
+const SCHEMA_V1 = `import { defineSchema, defineTable, v } from "@dbzz/server";
 
 export default defineSchema({
   items: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
-    count: dbz.number(),
+    id: v.primaryKey(),
+    label: v.string(),
+    count: v.int(),
   }),
 });
 `;
 
-const SCHEMA_V2 = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+const SCHEMA_V2 = `import { defineSchema, defineTable, v } from "@dbzz/server";
 
 export default defineSchema({
   items: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
-    count: dbz.string(),
+    id: v.primaryKey(),
+    label: v.string(),
+    count: v.string(),
   }),
 });
 `;
 
 const PRE = snapshotOf(
-  defineSchema({ items: defineTable({ id: dbz.primaryKey(), label: dbz.string(), count: dbz.number() }) }),
+  defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.int() }) }),
 );
 const TARGET = snapshotOf(
-  defineSchema({ items: defineTable({ id: dbz.primaryKey(), label: dbz.string(), count: dbz.string() }) }),
+  defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.string() }) }),
 );
 
-const ITEMS_FUNCTIONS = `import { dbz } from "@dbzz/server";
+const ITEMS_FUNCTIONS = `import { v } from "@dbzz/server";
 import { mutation, query } from "../_generated/server.ts";
 
 export const add = mutation({
   access: "public",
-  args: { label: dbz.string(), count: dbz.number() },
+  args: { label: v.string(), count: v.int() },
   handler: (ctx, args) => ctx.db.items.insert(args),
 });
 
@@ -60,7 +60,7 @@ export const list = query({
 });
 `;
 
-// Answers the count number -> string refusal by stringifying every old row.
+// Answers the count float -> string refusal by stringifying every old row.
 const MIGRATION_0001 = `import { defineMigration } from "@dbzz/server";
 
 export default defineMigration({

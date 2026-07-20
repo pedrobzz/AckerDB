@@ -21,39 +21,42 @@ bun run bench:hetzner
 The command makes a clean Git-bundle checkout on Hetzner, installs the pinned
 dependencies, runs the suite, and copies the retained result back. It never
 benchmarks the developer machine. The merge guard requires the final result,
-so a version cannot reach `main` without approved evidence.
+so a version cannot reach `main` without evidence bound to the expected
+version, host, source, and preceding version. It does not interpret the values
+or decide whether the release is acceptable.
 
 ### Version-bound retention
 
-- Final approved evidence is `bench/results/v<version>.json`.
-- A failing correctness check or material regression is
-  `bench/results/v<version>.iteration-<n>.json`.
-- A final passing run deletes every iteration for that version. No timestamp
-  records, logs, or other non-final benchmark artifacts are retained.
+- Release evidence is `bench/results/v<version>.json`.
+- Retain exactly one release record per version. No recovery iterations,
+  timestamp records, logs, or other benchmark artifacts are retained.
 - Existing releases need one honest transition baseline. Run
   `bun run bench:hetzner --bootstrap <released-version>` against the latest
   release tag on Hetzner once; it uses the current version-bound harness with
   that tag's package sources. Do not relabel an old timestamp record.
 
-### Regression and recovery
+### Interpretation
 
-The runner compares DBZZ's full metric set with the preceding final version.
-Convex and SpacetimeDB run in the same host/workload as comparability context,
-but their vendor movement is not treated as a DBZZ regression. A directional
-move beyond the 15% run-to-run noise envelope (or 0.025 CPU cores at idle)
-enters performance recovery.
+The runner records DBZZ's full metric set beside the preceding release.
+Convex and SpacetimeDB run in the same host/workload as comparability context.
+The runner intentionally has no regression thresholds, approval status, or
+performance veto. It reports observations; a human or agent interprets them.
 
-1. Rerun once to exclude measurement error. `bench:hetzner` assigns the next
-   iteration number automatically and never overwrites a retained iteration.
-2. If it repeats, inspect the changed implementation and decisions as intended
-   behavior with a wrong design. Find the hot path, why it is hot, and replace
-   the design so the work disappears rather than patching around it.
-3. A release is approved only after no material regression remains. If keeping
-   the feature makes that impossible, state that explicitly in the release
-   handoff rather than hiding the cost.
+Interpret the full performance vector against the actual useful work and load
+shape. More completions can legitimately require more CPU or RAM, while a
+smaller resource total can merely mean that less work completed. Consider
+latency, throughput, idle cost, memory ownership, scale shape, tail behavior,
+startup/recovery, and durable correctness together. Explain material movements
+and suspected measurement noise in the release handoff. Rerun only when doing
+so helps resolve an ambiguity. Because the wrapper is write-once, deliberately
+remove the prior version record before rerunning, then retain only its
+replacement. Never retain parallel or iteration artifacts.
 
-Benchmark correctness failures always fail the release. Small movements inside
-the envelope are normal measurement variation; meaningful impact is not.
+An execution or transport failure that prevents the runner from producing the
+version-bound record leaves no release evidence. Once the record is produced,
+its structural, accounting, comparability, and correctness anomalies remain
+inside the evidence for human or agent interpretation; none is an automatic
+release veto.
 
 ## What the runner measures
 
@@ -62,7 +65,7 @@ measurement, and server resource windows. DBZZ is run three times from fresh
 equivalent state: its literal runtime telemetry default, the same default with
 an explicit in-process exporter, and telemetry disabled. The record verifies
 result correctness, request accounting, delivery completeness, process cleanup,
-and telemetry mode/accounting before performance is evaluated.
+and telemetry mode/accounting alongside the performance measurements.
 
 Prerequisites on Hetzner are Bun, Node 24 for Convex, and SpacetimeDB CLI
 2.6.1 with its matching client/module SDK pins. The runner regenerates DBZZ
@@ -85,9 +88,10 @@ Every query and compute response is validated by nonce, shape, payload, and
 checksum. Mutations are checked outside the timed window against a client-side
 model of every account, not merely total balance. Request failures, missed
 connection targets, and missing, duplicated, unexpected, or corrupt
-subscription deliveries are recorded as measured correctness failures.
-Unbalanced request accounting or mismatched configs/case shapes abort because
-the result is malformed or incomparable.
+subscription deliveries are recorded as correctness anomalies.
+Unbalanced request accounting and mismatched configs/case shapes are recorded
+as structural, accounting, or comparability anomalies alongside any completed
+measurements.
 
 SpacetimeDB 2.6's TypeScript SDK has no public one-off query method. Its query
 case therefore uses the native read-only procedure API plus `ctx.withTx`; using

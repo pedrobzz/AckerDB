@@ -164,8 +164,9 @@ ceiling); the default workload measures the decision points only — single-user
 latency and saturation, the connection floor and ceiling, and a three-rung
 subscription-capacity ladder. After `bun run bump <patch|minor|major>`,
 dispatch `bun run bench:hetzner` in a background subagent or worker. Do not
-run `bench/run.ts` on the developer machine. The merge guard rejects a version
-change without a final approved Hetzner result.
+run `bench/run.ts` on the developer machine. The merge guard may require the
+version-, host-, and source-bound result to exist, but it must never interpret
+benchmark values or use them to approve or block a release.
 
 Telemetry cost is *not* re-proven on every release: `bun run bench:hetzner
 --telemetry` is the optional DBZZ-only run (enabled vs exporter vs disabled)
@@ -175,28 +176,28 @@ never release evidence.
 
 Records are version-bound:
 
-- final: `bench/results/v<version>.json`;
-- recovery iteration: `bench/results/v<version>.iteration-<n>.json`;
+- release evidence: `bench/results/v<version>.json`;
 - telemetry (optional, diagnostic): `bench/results/telemetry-v<version>.json`.
 
-A passing final run deletes that version's iterations. Do not retain timestamp
-results, ad-hoc benchmark logs, or a separate before-change record. Existing
-releases get one Hetzner bootstrap at their release tag, not a renamed legacy
-record.
+Retain exactly one release record per version. Do not retain recovery
+iterations, timestamp results, ad-hoc benchmark logs, or a separate
+before-change record. Existing releases get one Hetzner bootstrap at their
+release tag, not a renamed legacy record.
 
-A material DBZZ regression is a directional move beyond the 15% noise envelope
-(0.025 CPU cores for idle CPU). Rerun once; the Hetzner wrapper assigns the
-next iteration number without overwriting evidence. If it repeats, enter performance
-recovery: inspect every changed implementation and decision as intended
-behavior with a wrong design; identify the hot path and redesign it so the
-cost disappears. Do not patch around the regression. A release passes only
-when correctness passes and no material regression remains. If the feature
-cannot exist without the impact, say so explicitly in the final handoff.
+The benchmark is evidence, never a verdict. A human or agent must interpret the
+complete performance vector and correctness observations in the context of the
+workload and the change. There are no universal regression thresholds and no
+benchmark-derived pass/fail status. More useful work can legitimately consume
+more CPU or RAM; less work can make a lower resource total misleading. Explain
+material movements, distinguish measurement noise from changed load or useful
+work, and record the reasoning in the release handoff. If the evidence reveals
+a design problem, redesign the hot path rather than patching around it, but the
+script itself must not make that judgment or veto the release.
 
 SpacetimeDB remains an excellent reference, not a product DBZZ must beat on
 every metric. Convex remains the main comparative target. Their same-run
-measurements make the DBZZ result interpretable; the version-to-version gate
-judges DBZZ itself.
+measurements make the DBZZ result interpretable; the version-to-version
+comparison is evidence about DBZZ itself.
 
 # Local Publishing
 
@@ -231,10 +232,10 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    ```bash
    bun run bench:hetzner
    ```
-   Commit only `bench/results/vX.Y.Z.json` when it passes. A material regression
-   produces `vX.Y.Z.iteration-N.json`; rerun once, then do performance recovery
-   instead of merging a materially slower release. During this policy migration,
-   establish the latest already-published predecessor once with
+   Commit the single `bench/results/vX.Y.Z.json`, inspect the full performance
+   vector, and document the reasoning for material movements. The command does
+   not approve or reject the release. During this policy migration, establish
+   the latest already-published predecessor once with
    `bun run bench:hetzner --bootstrap X.Y.Z` at its tag.
 5. **Merge into main** (a merge commit by default — no-ff is configured):
    ```bash
@@ -244,8 +245,9 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    - the branch has `feat`/`fix`/breaking commits but the version didn't change;
    - the 5 package versions are not identical;
    - the new version is not greater than main's, or is already tagged.
-   - a version change lacks a final passing Hetzner result against main's
-     version.
+   - a completed benchmark did not produce a Hetzner evidence record bound to
+     the release version, source, and main's preceding version. Observations,
+     anomaly fields, benchmark values, and status fields are not merge criteria.
 
    If it blocks you: `git merge --abort`, bump on the branch, merge again.
 6. **Publish** (manual, from main, clean tree):

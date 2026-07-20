@@ -3,7 +3,8 @@
 DBZZ tests its Streamable HTTP MCP server with both raw protocol fixtures and
 the official MCP conformance runner. These are release gates for the
 capabilities DBZZ implements; they are not a claim that DBZZ implements every
-optional MCP capability.
+optional MCP capability. Application authoring is documented in
+[MCP and AI integration](ai-integration.md).
 
 ## Official conformance
 
@@ -61,8 +62,9 @@ in a temporary consumer. It verifies:
 - every installed DBZZ package has the same exact version and packed internal
   dependencies contain literal versions rather than `workspace:` specifiers;
 - `@dbzz/server/mcp` resolves and executes under Bun;
-- packaged `dbz codegen` emits schema-bound `createMcp` and exact scope types
-  that compile in the clean consumer;
+- packaged `dbz codegen` emits schema-bound `createMcp` and `mcpTool` builders,
+  and endpoint tool names, inputs, outputs, and scope subsets compile exactly in
+  the clean consumer;
 - `@dbzz/server` pins `@modelcontextprotocol/sdk` to `1.29.0`, the consumer
   resolves that version, and the server has no production dependency on `ai`
   or `@ai-sdk/*`.
@@ -100,7 +102,7 @@ bun run bench:hetzner
 ```
 
 DBZZ, Convex, and SpacetimeDB run on the Hetzner host with the same workload.
-The final release record compares DBZZ with the preceding version; rerun a
-material regression before performance recovery. A failed run is retained as a
-version iteration, never a replacement for the final record. See [the
+The single version-bound release record compares DBZZ with the preceding
+version. It is evidence for human or agent interpretation of the full
+performance vector, never an automated approval or release veto. See [the
 benchmark contract](../bench/README.md) for the complete procedure.

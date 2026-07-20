@@ -4,7 +4,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineServiceLimits,
   defineTable,
@@ -25,9 +25,9 @@ if (!Number.isSafeInteger(port) || port < 1 || port > 65_535 || directory === un
 
 const schema = defineSchema({
   items: defineTable({
-    id: dbz.primaryKey(),
-    sequence: dbz.number(),
-    payload: dbz.string(),
+    id: v.primaryKey(),
+    sequence: v.int(),
+    payload: v.string(),
   }).index("by_sequence", ["sequence"]),
 });
 
@@ -50,7 +50,7 @@ const functions = {
     }),
     add: mutation({
       access: "public",
-      args: { sequence: dbz.number() },
+      args: { sequence: v.int() },
       handler: (ctx, args) => ctx.db.items.insert({
         sequence: args.sequence,
         payload: `row-${args.sequence}`,
@@ -60,7 +60,7 @@ const functions = {
   pressure: {
     echo: procedure({
       access: "public",
-      args: { value: dbz.number() },
+      args: { value: v.float() },
       handler: (_ctx, args) => args.value,
     }),
     collect: procedure({
@@ -74,7 +74,7 @@ const functions = {
     endless: sseProcedure({
       access: "public",
       args: {},
-      yields: dbz.object({ payload: dbz.string() }),
+      yields: v.object({ payload: v.string() }),
       handler: () => {
         let emitted = false;
         return new ReadableStream({

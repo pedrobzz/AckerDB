@@ -3,7 +3,7 @@
 // (including an unused @ts-expect-error) is the test.
 import { anyApi, type ApiFromModules } from "@dbzz/client";
 import {
-  dbz,
+  v,
   defineSchema,
   mutation,
   procedure,
@@ -26,26 +26,26 @@ const generatedProcedure = procedure as ProcedureBuilder<Schema>;
 const generatedSse = sseProcedure as SseBuilder<Schema>;
 
 const listMessages = generatedQuery({
-  args: { channelId: dbz.bigint() },
+  args: { channelId: v.bigint() },
   access: "public",
   handler: (_ctx, args) => [{ id: 1n, channelId: args.channelId }],
 });
 
 const sendMessage = generatedMutation({
-  args: { channelId: dbz.bigint(), body: dbz.string() },
+  args: { channelId: v.bigint(), body: v.string() },
   access: "public",
   handler: (_ctx, args) => ({ id: 1n, body: args.body }),
 });
 
 const exportChannel = generatedProcedure({
-  args: { channelId: dbz.bigint() },
+  args: { channelId: v.bigint() },
   access: "public",
   handler: () => "done" as const,
 });
 
 const streamChannel = generatedSse({
-  args: { channelId: dbz.bigint() },
-  yields: dbz.string(),
+  args: { channelId: v.bigint() },
+  yields: v.string(),
   access: "public",
   handler: async function* () {
     yield "chunk";

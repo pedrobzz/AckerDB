@@ -4,8 +4,11 @@ import { DbzzError, throwIfAborted } from "./errors.ts";
 import type { ProcedureCtx } from "./functions.ts";
 import type {
   AnyMcpDeclaration,
+  AnyMcpToolBlueprintRecord,
   AnyRegisteredMcpTool,
+  McpDeclaration,
   McpEndpointDeclaration,
+  McpToolBlueprint,
 } from "./mcp.ts";
 import type {
   McpCallToolResult,
@@ -16,7 +19,12 @@ import {
   normalizeMcpScopeGrant,
 } from "./mcp-scopes.ts";
 import type { Schema } from "./schema.ts";
-import type { StandardJsonProtocolSchema } from "./standard-schema.ts";
+import type {
+  StandardJsonInput,
+  StandardJsonOutput,
+  StandardJsonProtocolSchema,
+} from "./standard-schema.ts";
+import type { ObjectShape, ObjectValidator } from "./v.ts";
 
 type McpAiContent =
   | { type: "text"; text: string }
@@ -30,35 +38,61 @@ export type McpAiModelOutput =
   | { type: "json"; value: McpJsonValue }
   | { type: "content"; value: McpAiContent[] };
 
-export interface McpAiTool {
+export interface McpAiTool<Input = unknown, Output = unknown> {
   readonly title?: string;
   readonly description: string;
-  readonly inputSchema: StandardJsonProtocolSchema;
-  readonly outputSchema?: StandardJsonProtocolSchema;
+  readonly inputSchema: StandardJsonProtocolSchema<Input>;
+  readonly outputSchema?: StandardJsonProtocolSchema<Output>;
   readonly execute: (
-    input: unknown,
+    input: Input,
     options?: { readonly abortSignal?: AbortSignal },
-  ) => Promise<unknown>;
+  ) => Promise<Output>;
   readonly toModelOutput: (options: {
     readonly toolCallId: string;
-    readonly input: unknown;
-    readonly output: unknown;
+    readonly input: Input;
+    readonly output: Output;
   }) => McpAiModelOutput;
 }
 
-export type McpAiToolSet = Readonly<Record<string, McpAiTool>>;
+type McpAiToolFromBlueprint<Blueprint> = Blueprint extends McpToolBlueprint<
+  infer A extends ObjectShape,
+  infer O,
+  infer _S,
+  infer _Scope
+> ? McpAiTool<
+    StandardJsonInput<ObjectValidator<A>>,
+    O extends ObjectValidator ? StandardJsonOutput<O> : McpCallToolResult
+  >
+  : never;
+
+export type McpAiToolSet<
+  Tools extends AnyMcpToolBlueprintRecord | undefined = undefined,
+> = [Tools] extends [AnyMcpToolBlueprintRecord]
+  ? Readonly<{
+    [Name in keyof Tools]: McpAiToolFromBlueprint<Tools[Name]>;
+  }>
+  : Readonly<Record<string, McpAiTool<any, any>>>;
 
 export type McpAiContext<S extends Schema = Schema> = Pick<
   ProcedureCtx<S>,
   "auth" | "abortSignal" | "tx"
 >;
 
-export type McpAiToolsOptions<Scope extends string = never> = Readonly<
-  { readonly includeUnavailable?: boolean } &
-    ([Scope] extends [never]
-      ? { readonly scopes?: never }
-      : { readonly scopes?: readonly Scope[] })
+type McpAiToolScopesOption<Scope extends string> = [Scope] extends [never]
+  ? { readonly scopes?: never }
+  : { readonly scopes?: readonly Scope[] };
+
+export type McpAiToolsFilteredOptions<Scope extends string = never> = Readonly<
+  { readonly includeUnavailable?: false } & McpAiToolScopesOption<Scope>
 >;
+
+export type McpAiToolsCompleteOptions<Scope extends string = never> = Readonly<
+  { readonly includeUnavailable: true } & McpAiToolScopesOption<Scope>
+>;
+
+export type McpAiToolsOptions<Scope extends string = never> =
+  | McpAiToolsFilteredOptions<Scope>
+  | McpAiToolsCompleteOptions<Scope>;
 
 export interface McpAiRuntimeCapability {
   readonly toolsFor: (
@@ -162,7 +196,7 @@ function normalizeOptions(
   ) {
     throw new TypeError("MCP AI tools includeUnavailable must be a boolean");
   }
-  if (!("scopes" in mcp)) {
+  if (mcp.scopes === undefined) {
     if ("scopes" in value) {
       throw new TypeError(`MCP "${mcp.name}" declares no scopes`);
     }
@@ -215,6 +249,29 @@ function richModelOutput(result: McpCallToolResult): McpAiModelOutput {
 }
 
 /** Materialize the registry-owned tools available under one explicit local delegation. */
+export function createMcpAiTools<
+  S extends Schema,
+  Scope extends string,
+  Tools extends AnyMcpToolBlueprintRecord,
+>(
+  mcp: McpDeclaration<string, S, string, Scope, Tools>,
+  context: McpAiContext<S>,
+  options: McpAiToolsCompleteOptions<Scope>,
+): McpAiToolSet<Tools>;
+export function createMcpAiTools<
+  S extends Schema,
+  Scope extends string,
+  Tools extends AnyMcpToolBlueprintRecord,
+>(
+  mcp: McpDeclaration<string, S, string, Scope, Tools>,
+  context: McpAiContext<S>,
+  options?: McpAiToolsFilteredOptions<Scope>,
+): Readonly<Partial<McpAiToolSet<Tools>>>;
+export function createMcpAiTools(
+  mcp: AnyMcpDeclaration,
+  context: McpAiContext,
+  options?: McpAiToolsOptions<string>,
+): McpAiToolSet;
 export function createMcpAiTools(
   mcp: AnyMcpDeclaration,
   context: McpAiContext,
@@ -271,5 +328,5 @@ export function createMcpAiTools(
       },
     });
   }
-  return Object.freeze(tools);
+  return Object.freeze(tools) as unknown as McpAiToolSet;
 }

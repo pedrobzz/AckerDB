@@ -9,7 +9,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   mutation,
@@ -23,8 +23,8 @@ import { DbzzProvider, useQuery, type DbzzQueryState } from "@dbzz/client-react"
 
 const schema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 
@@ -50,7 +50,7 @@ function createApp(): App {
       }),
       add: mutation({
         access: "public",
-        args: { body: dbz.string() },
+        args: { body: v.string() },
         handler: (ctx: Ctx, args: Ctx) => ctx.db.messages.insert({ body: args.body }),
       }),
     },

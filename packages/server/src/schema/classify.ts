@@ -4,8 +4,8 @@
  * by data — sorting the diff into three buckets:
  *   - `safe`       physical work the reconcile applies unconditionally, the
  *                  same in an empty dev table and a full prod one;
- *   - `optimistic` the sole cross-row probe left in the planner: a unique index
- *                  whose existing rows might already collide;
+ *   - `optimistic` data-dependent constraints: unique indexes whose rows might
+ *                  collide and tightened validators rows might violate;
  *   - `refusals`   per-row questions no automatic apply may answer — each one
  *                  names its table (and column/variant where it applies) and
  *                  states the presume-data question, so the migration engine
@@ -16,6 +16,7 @@
  * refusals it cannot clear; this module owns every shape rule, so those
  * consumers never re-derive them.
  */
+import type { Descriptor } from "../v.ts";
 import type { SchemaDiff, TableChange } from "./diff.ts";
 
 /** A shape-safe unit of physical work, applied identically whether rows exist or not. */
@@ -26,23 +27,31 @@ export type SafeChange =
   | { op: "update-event-table"; table: string }
   | { op: "event-to-table"; table: string }
   | { op: "add-column"; table: string; column: string }
+  | { op: "loosen-constraints"; table: string; column: string }
   | { op: "rebuild-table"; table: string }
   | { op: "drop-index"; table: string; index: string }
   | { op: "create-index"; table: string; index: string; recreate: boolean };
 
 /**
- * A unique index whose result tightens a cross-row constraint over data that
- * may already violate it. Attempted optimistically: the planner probes for
- * duplicate groups, applies on a clean table, refuses cleanly otherwise.
- * `recreate` drops a pre-existing index first (its uniqueness changed);
- * `viaRebuild` folds the physical creation into a sibling table rebuild.
+ * A data-dependent target constraint. The writer probes it transactionally,
+ * applies on clean data, and refuses with exact counts otherwise. Unique-index
+ * changes additionally carry their physical recreation/rebuild ownership.
  */
-export interface OptimisticChange {
-  table: string;
-  index: string;
-  recreate: boolean;
-  viaRebuild: boolean;
-}
+export type OptimisticChange =
+  | {
+      op: "unique-index";
+      table: string;
+      index: string;
+      recreate: boolean;
+      viaRebuild: boolean;
+    }
+  | {
+      op: "tighten-constraints";
+      table: string;
+      column: string;
+      current: Descriptor;
+      target: Descriptor;
+    };
 
 export type RefusalReason =
   | "column-type-changed"
@@ -53,13 +62,14 @@ export type RefusalReason =
   | "variant-payload-changed"
   | "table-dropped"
   | "table-to-event"
-  | "unique-index-duplicates";
+  | "unique-index-duplicates"
+  | "constraint-violations";
 
 /**
  * One refused change: the table it lives on, the column/variant/index site
- * where applicable, and the presume-data question it poses. `count` is set only
- * for the unique-index duplicate refusal — the one figure that was actually
- * probed rather than presumed.
+ * where applicable, and the presume-data question it poses. `count` is set for
+ * data-probed optimistic refusals (duplicate groups or violating rows), never
+ * for shape-presumed refusals.
  */
 export interface SchemaRefusal {
   table: string;
@@ -130,6 +140,19 @@ function classifyAltered(change: TableChange & { op: "table-altered" }, c: Class
       case "type-changed":
         c.refusals.push({ table, column, reason: "column-type-changed", question: "type changed; existing rows would need converting" });
         break;
+      case "constraints-changed":
+        if (col.direction === "loosen") {
+          c.safe.push({ op: "loosen-constraints", table, column });
+        } else {
+          c.optimistic.push({
+            op: "tighten-constraints",
+            table,
+            column,
+            current: col.current,
+            target: col.target,
+          });
+        }
+        break;
       case "nullability-changed":
         if (col.to === "nullable") rebuild = true;
         else c.refusals.push({ table, column, reason: "column-made-required", question: "made required; existing rows may hold null" });
@@ -160,7 +183,15 @@ function classifyAltered(change: TableChange & { op: "table-altered" }, c: Class
   }
   for (const ix of change.indexes) {
     if (ix.op === "dropped") continue;
-    if (ix.unique) c.optimistic.push({ table, index: ix.name, recreate: ix.op === "changed", viaRebuild: rebuild });
+    if (ix.unique) {
+      c.optimistic.push({
+        op: "unique-index",
+        table,
+        index: ix.name,
+        recreate: ix.op === "changed",
+        viaRebuild: rebuild,
+      });
+    }
     else if (!rebuild) c.safe.push({ op: "create-index", table, index: ix.name, recreate: ix.op === "changed" });
   }
 }

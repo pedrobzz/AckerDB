@@ -22,7 +22,7 @@ import {
   type VerifiedUserCredential,
 } from "../src/auth.ts";
 import { callerFairnessKey } from "../src/caller.ts";
-import type { Identity } from "../src/dbz.ts";
+import type { Identity } from "../src/v.ts";
 import { DbzzError } from "../src/errors.ts";
 import { outcomeFromError } from "../src/outcome.ts";
 import {

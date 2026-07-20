@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -23,26 +23,33 @@ import type { DbStatementObservation, DbStatementObserver } from "../src/db.ts";
 const schema = () =>
   defineSchema({
     payments: defineTable({
-      id: dbz.primaryKey(),
-      userId: dbz.bigint(),
-      status: dbz.enum("PayStatus", ["active", "failed", "refunded"]),
-      amount: dbz.number(),
-      currency: dbz.string(),
-      note: dbz.nullable(dbz.string()),
+      id: v.primaryKey(),
+      userId: v.bigint(),
+      status: v.enum("PayStatus", ["active", "failed", "refunded"]),
+      amount: v.float(),
+      currency: v.string(),
+      note: v.string().nullable(),
     })
       .index("by_user", ["userId"])
       .index("by_user_status_amount", ["userId", "status", "amount"]),
     users: defineTable({
-      id: dbz.primaryKey(),
-      email: dbz.string(),
-      name: dbz.string(),
-      payload: dbz.union("UPayload", { text: dbz.string(), nothing: dbz.tag() }),
+      id: v.primaryKey(),
+      email: v.string(),
+      name: v.string(),
+      payload: v.union("UPayload", { text: v.string(), nothing: v.tag() }),
     })
       .index("by_email", ["email"], { unique: true })
       .index("by_payload", ["payload"]),
+    numericRows: defineTable({
+      id: v.primaryKey(),
+      rank: v.int(),
+      maybeRank: v.int().nullable(),
+      exact: v.bigint(),
+      owner: v.identity(),
+    }).index("by_rank", ["rank"]),
     pings: defineEventTable({
-      id: dbz.primaryKey(),
-      channel: dbz.bigint(),
+      id: v.primaryKey(),
+      channel: v.bigint(),
     }, {
       args: {},
       access: "public",
@@ -77,6 +84,209 @@ const observedDb = (observer: DbStatementObserver): any =>
   makeDbWriter(engine, newWriteCollector(), () => ++eventSeq, observer);
 
 describe("writes", () => {
+  test("keeps the native wildcard read path for tables without logical ints", () => {
+    expect(engine.plan("payments").readProjection).toBe("*");
+    expect(engine.plan("users").readProjection).toBe("*");
+  });
+
+  test("projects mixed numeric rows explicitly and casts only logical ints", () => {
+    expect(engine.plan("numericRows").readProjection).toBe(
+      '"id", CAST("rank" AS REAL) AS "rank", CAST("maybeRank" AS REAL) AS "maybeRank", "exact", "owner"',
+    );
+  });
+
+  test("materializes int columns as numbers without narrowing integer-backed bigint kinds", async () => {
+    const max = Number.MAX_SAFE_INTEGER;
+    const min = Number.MIN_SAFE_INTEGER;
+    const exact = 2n ** 63n - 1n;
+    const owner = 7n;
+    const id = await db.numericRows.insert({
+      rank: max,
+      maybeRank: null,
+      exact,
+      owner,
+    });
+
+    const materialized: {
+      id: string;
+      rank: string;
+      maybeRank: string;
+      exact: string;
+      owner: string;
+    }[] = [];
+    const decodeRow = engine.rowFromSql.bind(engine);
+    engine.rowFromSql = (plan, sqlRow) => {
+      if (plan.name === "numericRows") {
+        materialized.push({
+          id: typeof sqlRow["id"],
+          rank: typeof sqlRow["rank"],
+          maybeRank: sqlRow["maybeRank"] === null ? "null" : typeof sqlRow["maybeRank"],
+          exact: typeof sqlRow["exact"],
+          owner: typeof sqlRow["owner"],
+        });
+      }
+      return decodeRow(plan, sqlRow);
+    };
+    let indexedSql: string | undefined;
+    const issueStatement = engine.statement.bind(engine);
+    engine.statement = (connection, sql) => {
+      if (sql.includes('FROM "numericRows"') && sql.includes(" ORDER BY ")) indexedSql = sql;
+      return issueStatement(connection, sql);
+    };
+
+    const reader: any = makeDbReader(engine, engine.reader, null);
+    expect(await reader.numericRows.get(id)).toEqual({
+      id,
+      rank: max,
+      maybeRank: null,
+      exact,
+      owner,
+    });
+    const page = await reader.numericRows
+      .byRank((q: any) => q.gte("rank", min))
+      .paginate({ cursor: null, numItems: 1 });
+    expect(page.page).toEqual([{ id, rank: max, maybeRank: null, exact, owner }]);
+    expect(indexedSql).toBeDefined();
+    const queryPlan = engine.reader
+      .query(`EXPLAIN QUERY PLAN ${indexedSql!}`)
+      .all(min) as { detail: string }[];
+    expect(queryPlan.some(({ detail }) => detail.includes("ix_numericRows_by_rank"))).toBe(true);
+    expect(queryPlan.some(({ detail }) => detail.includes("USE TEMP B-TREE"))).toBe(false);
+
+    await db.numericRows.patch(id, { maybeRank: min });
+    expect(await db.numericRows.get(id)).toEqual({
+      id,
+      rank: max,
+      maybeRank: min,
+      exact,
+      owner,
+    });
+    expect(materialized).toEqual([
+      { id: "bigint", rank: "number", maybeRank: "null", exact: "bigint", owner: "bigint" },
+      { id: "bigint", rank: "number", maybeRank: "null", exact: "bigint", owner: "bigint" },
+      { id: "bigint", rank: "number", maybeRank: "null", exact: "bigint", owner: "bigint" },
+      { id: "bigint", rank: "number", maybeRank: "number", exact: "bigint", owner: "bigint" },
+    ]);
+  });
+
+  test("prototype-shaped table and column names remain own runtime entries", async () => {
+    const prototypeSchema = defineSchema({
+      toString: defineTable({
+        constructor: v.primaryKey(),
+        toString: v.string(),
+      }),
+      constructor: defineEventTable({
+        toString: v.primaryKey(),
+        constructor: v.string(),
+      }, {
+        args: {},
+        access: "public",
+        matches: () => true,
+      }),
+      plain: defineTable({ id: v.primaryKey(), value: v.string() }),
+      plainEvents: defineEventTable({ id: v.primaryKey(), value: v.string() }, {
+        args: {},
+        access: "public",
+        matches: () => true,
+      }),
+    });
+    const prototypeEngine = new Engine(prototypeSchema, join(dir, "prototype-names.db"));
+    prototypeEngine.createAll();
+    const prototypeWrites = newWriteCollector();
+    let prototypeEventId = 0n;
+    const prototypeDb: any = makeDbWriter(
+      prototypeEngine,
+      prototypeWrites,
+      () => ++prototypeEventId,
+    );
+    try {
+      const snapshot = prototypeEngine.loadSnapshot()!;
+      expect(Object.hasOwn(snapshot.tables, "toString")).toBe(true);
+      expect(Object.hasOwn(snapshot.tables, "constructor")).toBe(true);
+      expect(Object.hasOwn(snapshot.tables["toString"]!.columns, "toString")).toBe(true);
+      expect(Object.hasOwn(snapshot.tables["toString"]!.columns, "constructor")).toBe(true);
+      expect(Object.hasOwn(prototypeDb, "toString")).toBe(true);
+      expect(Object.hasOwn(prototypeDb, "constructor")).toBe(true);
+
+      const id = await prototypeDb.toString.insert({ toString: "before" });
+      await prototypeDb.toString.patch(id, { toString: "after" });
+      const row = await prototypeDb.toString.get(id);
+      expect(row).toEqual({ constructor: 1n, toString: "after" });
+      expect(Object.getPrototypeOf(row)).toBe(Object.prototype);
+      expect(Object.hasOwn(row, "constructor")).toBe(true);
+      expect(Object.hasOwn(row, "toString")).toBe(true);
+
+      await prototypeDb.constructor.insert({ constructor: "event" });
+      expect(prototypeWrites.events).toEqual([{
+        table: "constructor",
+        row: { toString: 1n, constructor: "event" },
+      }]);
+
+      await expect(prototypeDb.plain.insert({ value: "x", toString: "unknown" }))
+        .rejects.toThrow('plain.insert: unknown field "toString"');
+      const plainId = await prototypeDb.plain.insert({ value: "x" });
+      await expect(prototypeDb.plain.patch(plainId, { constructor: "unknown" }))
+        .rejects.toThrow('plain.patch: unknown field "constructor"');
+      await expect(prototypeDb.plainEvents.insert({ value: "x", toString: "unknown" }))
+        .rejects.toThrow('plainEvents.insert: unknown field "toString"');
+
+      expect(Object.hasOwn(db, "toString")).toBe(false);
+      expect(Object.hasOwn(db, "constructor")).toBe(false);
+      expect(db.toString).toBeUndefined();
+      expect(db.constructor).toBeUndefined();
+    } finally {
+      prototypeEngine.close("clean");
+    }
+  });
+
+  test("enforces constraints on insert, patch, replace, upsert, and event insert", async () => {
+    const constrainedSchema = defineSchema({
+      articles: defineTable({
+        id: v.primaryKey(),
+        externalId: v.string(),
+        slug: v.string().min(2).max(4).regex(/^[a-z]+$/),
+      }).index("by_external_id", ["externalId"], { unique: true }),
+      articleEvents: defineEventTable({
+        id: v.primaryKey(),
+        slug: v.string().min(2),
+      }, {
+        args: {},
+        access: "public",
+        matches: () => true,
+      }),
+    });
+    const constrainedDir = mkdtempSync(join(tmpdir(), "dbzz-constrained-writes-"));
+    const constrainedEngine = new Engine(constrainedSchema, join(constrainedDir, "data.db"));
+    constrainedEngine.createAll();
+    const constrainedDb: any = makeDbWriter(
+      constrainedEngine,
+      newWriteCollector(),
+      () => 1n,
+    );
+    try {
+      await expect(constrainedDb.articles.insert({ externalId: "a", slug: "x" }))
+        .rejects.toThrow("articles.insert.slug");
+      const id = await constrainedDb.articles.insert({ externalId: "a", slug: "good" });
+      await expect(constrainedDb.articles.patch(id, { slug: "BAD" }))
+        .rejects.toThrow("articles.patch.slug");
+      await expect(constrainedDb.articles.replace(id, { externalId: "a", slug: "toolong" }))
+        .rejects.toThrow("articles.replace.slug");
+      await expect(constrainedDb.articles.byExternalId.upsert(
+        { externalId: "b" },
+        { slug: "1" },
+      )).rejects.toThrow("articles.insert.slug");
+      await expect(constrainedDb.articles.byExternalId.upsert(
+        { externalId: "a" },
+        { slug: "1" },
+      )).rejects.toThrow("articles.patch.slug");
+      await expect(constrainedDb.articleEvents.insert({ slug: "x" }))
+        .rejects.toThrow("articleEvents.insert.slug");
+    } finally {
+      constrainedEngine.close("clean");
+      rmSync(constrainedDir, { recursive: true, force: true });
+    }
+  });
+
   test("observes frozen safe summaries and observer failures stay fail-open", async () => {
     const canary = "never-export-this-row";
     const observations: DbStatementObservation[] = [];
@@ -495,8 +705,8 @@ describe("pagination", () => {
   test("nullable index columns paginate across the NULL group", async () => {
     const s = defineSchema({
       notes: defineTable({
-        id: dbz.primaryKey(),
-        tag: dbz.nullable(dbz.string()),
+        id: v.primaryKey(),
+        tag: v.string().nullable(),
       }).index("by_tag", ["tag"]),
     });
     const d2 = mkdtempSync(join(tmpdir(), "dbzz-null-"));

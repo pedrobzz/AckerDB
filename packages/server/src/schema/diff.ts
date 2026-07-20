@@ -9,7 +9,7 @@
  * deltas, and per-index add/drop/change with the uniqueness that governs the
  * change's safety class.
  */
-import type { Descriptor } from "../dbz.ts";
+import type { Descriptor } from "../v.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
 
 export interface VariantChange {
@@ -21,6 +21,13 @@ export type ColumnChange =
   | { op: "added"; column: string; nullable: boolean }
   | { op: "dropped"; column: string }
   | { op: "type-changed"; column: string }
+  | {
+      op: "constraints-changed";
+      column: string;
+      direction: "loosen" | "tighten";
+      current: Descriptor;
+      target: Descriptor;
+    }
   | { op: "nullability-changed"; column: string; to: "nullable" | "required" }
   | { op: "variants-changed"; column: string; typeName: string; variants: VariantChange[] };
 
@@ -65,17 +72,146 @@ export function namedOf(desc: Descriptor): Named | null {
   return null;
 }
 
+/**
+ * How two descriptors relate when their storage/TypeScript shape is held
+ * constant. The walk is kind-aware: only the durable constraint slots on the
+ * five constrained validator kinds are ignored for structural comparison, so
+ * an object field or union variant literally named `min`, `max`, or `regex`
+ * remains ordinary schema structure.
+ */
+export type ConstraintDirection = "same" | "loosen" | "tighten" | "incompatible";
+
+function structuralDescriptor(desc: Descriptor): unknown {
+  switch (desc["k"]) {
+    case "string":
+    case "int":
+    case "float":
+    case "bigint":
+      return { k: desc["k"] };
+    case "array":
+      return { k: "array", el: structuralDescriptor(desc["el"] as Descriptor) };
+    case "object": {
+      const shape = Object.create(null) as Record<string, unknown>;
+      for (const [key, field] of Object.entries(desc["shape"] as Record<string, Descriptor>)) {
+        shape[key] = structuralDescriptor(field);
+      }
+      return { k: "object", shape };
+    }
+    case "union": {
+      const members = Object.create(null) as Record<string, unknown>;
+      for (const [variant, member] of Object.entries(desc["members"] as Record<string, Descriptor>)) {
+        members[variant] = structuralDescriptor(member);
+      }
+      return { k: "union", name: desc["name"], members };
+    }
+    case "nullable":
+    case "optional":
+    case "nullish":
+      return { k: desc["k"], inner: structuralDescriptor(desc["inner"] as Descriptor) };
+    default:
+      return desc;
+  }
+}
+
+type ConstraintMotion = Exclude<ConstraintDirection, "incompatible">;
+
+function mergeMotion(current: ConstraintMotion, next: ConstraintMotion): ConstraintMotion {
+  if (current === "tighten" || next === "tighten") return "tighten";
+  if (current === "loosen" || next === "loosen") return "loosen";
+  return "same";
+}
+
+function compareBound(
+  before: unknown,
+  after: unknown,
+  side: "min" | "max",
+  bigint: boolean,
+): ConstraintMotion {
+  if (before === after) return "same";
+  if (before === undefined) return "tighten";
+  if (after === undefined) return "loosen";
+  const oldValue = bigint ? BigInt(before as string) : before as number;
+  const newValue = bigint ? BigInt(after as string) : after as number;
+  if (oldValue === newValue) return "same";
+  const narrowed = side === "min" ? newValue > oldValue : newValue < oldValue;
+  return narrowed ? "tighten" : "loosen";
+}
+
+function localConstraintMotion(before: Descriptor, after: Descriptor): ConstraintMotion {
+  const kind = before["k"];
+  if (kind !== "string" && kind !== "int" && kind !== "float" && kind !== "bigint" && kind !== "array") {
+    return "same";
+  }
+  let motion = compareBound(before["min"], after["min"], "min", kind === "bigint");
+  motion = mergeMotion(motion, compareBound(before["max"], after["max"], "max", kind === "bigint"));
+  if (kind === "string" && before["regex"] !== after["regex"]) {
+    // A changed pattern is tightening: proving regex-language implication is
+    // intentionally outside the schema engine. Removing one is a loosening.
+    motion = mergeMotion(motion, after["regex"] === undefined ? "loosen" : "tighten");
+  }
+  return motion;
+}
+
+function nestedConstraintMotion(before: Descriptor, after: Descriptor): ConstraintMotion {
+  let motion = localConstraintMotion(before, after);
+  switch (before["k"]) {
+    case "array":
+      return mergeMotion(
+        motion,
+        nestedConstraintMotion(before["el"] as Descriptor, after["el"] as Descriptor),
+      );
+    case "object": {
+      const oldShape = before["shape"] as Record<string, Descriptor>;
+      const newShape = after["shape"] as Record<string, Descriptor>;
+      for (const key of Object.keys(oldShape)) {
+        motion = mergeMotion(motion, nestedConstraintMotion(oldShape[key]!, newShape[key]!));
+      }
+      return motion;
+    }
+    case "union": {
+      const oldMembers = before["members"] as Record<string, Descriptor>;
+      const newMembers = after["members"] as Record<string, Descriptor>;
+      for (const variant of Object.keys(oldMembers)) {
+        motion = mergeMotion(motion, nestedConstraintMotion(oldMembers[variant]!, newMembers[variant]!));
+      }
+      return motion;
+    }
+    case "nullable":
+    case "optional":
+    case "nullish":
+      return mergeMotion(
+        motion,
+        nestedConstraintMotion(before["inner"] as Descriptor, after["inner"] as Descriptor),
+      );
+    default:
+      return motion;
+  }
+}
+
+export function constraintDirection(before: Descriptor, after: Descriptor): ConstraintDirection {
+  if (JSON.stringify(structuralDescriptor(before)) !== JSON.stringify(structuralDescriptor(after))) {
+    return "incompatible";
+  }
+  return nestedConstraintMotion(before, after);
+}
+
 export function diffSnapshots(current: SchemaSnapshot, target: SchemaSnapshot): SchemaDiff {
   const diff: SchemaDiff = [];
   const tables = new Set([...Object.keys(current.tables), ...Object.keys(target.tables)]);
   for (const table of [...tables].sort()) {
-    const oldTable = current.tables[table];
-    const newTable = target.tables[table];
-    if (oldTable === undefined) {
-      diff.push({ op: "table-added", table, kind: newTable!.kind });
-    } else if (newTable === undefined) {
-      diff.push({ op: "table-dropped", table, kind: oldTable.kind });
-    } else if (oldTable.kind !== newTable.kind) {
+    const hasOldTable = Object.hasOwn(current.tables, table);
+    const hasNewTable = Object.hasOwn(target.tables, table);
+    if (!hasOldTable) {
+      diff.push({ op: "table-added", table, kind: target.tables[table]!.kind });
+      continue;
+    }
+    if (!hasNewTable) {
+      diff.push({ op: "table-dropped", table, kind: current.tables[table]!.kind });
+      continue;
+    }
+    const oldTable = current.tables[table]!;
+    const newTable = target.tables[table]!;
+    if (oldTable.kind !== newTable.kind) {
       diff.push({ op: "table-kind-changed", table, from: oldTable.kind, to: newTable.kind });
     } else if (oldTable.kind === "event") {
       if (JSON.stringify(oldTable) !== JSON.stringify(newTable)) diff.push({ op: "event-updated", table });
@@ -93,13 +229,25 @@ export function diffSnapshots(current: SchemaSnapshot, target: SchemaSnapshot): 
 function diffColumns(oldTable: TableSnapshot, newTable: TableSnapshot): ColumnChange[] {
   const changes: ColumnChange[] = [];
   for (const column of Object.keys(newTable.columns)) {
-    const oldDesc = oldTable.columns[column];
     const newDesc = newTable.columns[column]!;
-    if (oldDesc === undefined) {
+    if (!Object.hasOwn(oldTable.columns, column)) {
       changes.push({ op: "added", column, nullable: unwrapDesc(newDesc).nullable });
       continue;
     }
+    const oldDesc = oldTable.columns[column]!;
     if (JSON.stringify(oldDesc) === JSON.stringify(newDesc)) continue;
+    const direction = constraintDirection(oldDesc, newDesc);
+    if (direction === "loosen" || direction === "tighten") {
+      changes.push({
+        op: "constraints-changed",
+        column,
+        direction,
+        current: oldDesc,
+        target: newDesc,
+      });
+      continue;
+    }
+    if (direction === "same") continue;
     const variants = diffVariants(oldDesc, newDesc);
     if (variants !== null) {
       if (variants.changes.length > 0) {
@@ -116,7 +264,7 @@ function diffColumns(oldTable: TableSnapshot, newTable: TableSnapshot): ColumnCh
     }
   }
   for (const column of Object.keys(oldTable.columns)) {
-    if (newTable.columns[column] === undefined) changes.push({ op: "dropped", column });
+    if (!Object.hasOwn(newTable.columns, column)) changes.push({ op: "dropped", column });
   }
   return changes;
 }

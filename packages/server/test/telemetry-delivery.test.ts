@@ -19,7 +19,7 @@ import {
   Runtime,
   Session,
   WebSocketSessionSink,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   mutation,
@@ -43,8 +43,8 @@ const TEST_SOURCE = Object.freeze({ family: "test", address: "telemetry-delivery
 
 const schema = defineSchema({
   notes: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 
@@ -61,19 +61,19 @@ const functions = {
     }),
     large: query({
       access: "public",
-      args: { size: dbz.number() },
+      args: { size: v.int() },
       handler: (_ctx: Ctx, args: Ctx) => "x".repeat(args.size),
     }),
     add: mutation({
       access: "public",
-      args: { body: dbz.string() },
+      args: { body: v.string() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.notes.insert(args),
     }),
   },
   ops: {
     echo: procedure({
       access: "public",
-      args: { body: dbz.string() },
+      args: { body: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.body,
     }),
     fail: procedure({

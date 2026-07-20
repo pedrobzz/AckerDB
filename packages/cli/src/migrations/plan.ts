@@ -14,23 +14,26 @@
  *                        derived purely from the diff (unit-testable).
  * The generation half — re-deriving pre/target and laying the artifacts onto
  * disk — lives in its sibling `write.ts`, which consumes this module's stored-state
- * read and duplicate probe.
+ * read and optimistic data probes.
  */
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
+  applyRenames,
   classifySchemaDiff,
   diffSnapshots,
   migrationIdentity,
   MigrationError,
-  probeUniqueIndex,
+  probeOptimisticChanges,
+  renameRoutes,
   refusalSite,
   snapshotOf,
   stepLabel,
   validateHistoryPrefix,
   type MigrationStep,
-  type OptimisticChange,
+  type NormalizedRenames,
+  type Renames,
   type RefusalReason,
   type SchemaDiff,
   type SchemaRefusal,
@@ -45,32 +48,40 @@ import { readStoredState } from "./stored.ts";
 export { readStoredState, type StoredState } from "./stored.ts";
 
 /**
- * Run the reconcile planner's duplicate probe against the stored database for
- * every optimistic unique index, synthesizing the `unique-index-duplicates`
- * refusals the pure diff cannot see. This is the missing half the classifier
- * drops: an optimistic change with no shape refusal is otherwise invisible to
- * generation, so a table already holding duplicates would refuse at startup with
- * no recourse. A clean table stays invisible — it just applies. Opened read-only
- * (a committed peek, safe whether the serve child is dead or alive) and only when
- * there is something to probe.
+ * Preview every optimistic unique-index or validator tightening against the
+ * stored database. The CLI uses this committed read to offer a repair scaffold;
+ * the writer repeats the same guards transactionally before applying anything.
  */
-export function probeDuplicateRefusals(
+export function probeOptimisticRefusals(
   config: AppConfig,
   current: SchemaSnapshot,
   target: SchemaSnapshot,
-  optimistic: OptimisticChange[],
+  renames: Renames = {},
 ): SchemaRefusal[] {
+  const normalized: NormalizedRenames = {
+    tables: renames.tables ?? {},
+    columns: renames.columns ?? {},
+    variants: renames.variants ?? {},
+  };
+  const renamedCurrent = applyRenames(current, normalized);
+  const { optimistic } = classifySchemaDiff(diffSnapshots(renamedCurrent, target));
   if (optimistic.length === 0) return [];
+  const routes = renameRoutes(target, normalized);
   const db = new Database(join(config.dbDir, "data.db"), { readonly: true });
   try {
-    const query = (sql: string): number => Number((db.query(sql).get() as { n: bigint | number }).n);
-    const refusals: SchemaRefusal[] = [];
-    for (const opt of optimistic) {
-      const index = target.tables[opt.table]!.indexes.find((ix) => ix.name === opt.index)!;
-      const refusal = probeUniqueIndex(query, opt.table, opt.index, index.columns, current.tables[opt.table]?.columns ?? {});
-      if (refusal !== null) refusals.push(refusal);
-    }
-    return refusals;
+    return probeOptimisticChanges(
+      db,
+      renamedCurrent,
+      optimistic.map((change) => ({
+        change,
+        phys: {
+          table: routes.tableOldName.get(change.table) ?? change.table,
+          column: (column: string) => routes.columnReverse.get(change.table)?.get(column) ?? column,
+        },
+      })),
+      (table, index) => target.tables[table]!.indexes.find((candidate) => candidate.name === index)!.columns,
+      { variantRenames: normalized.variants },
+    );
   } finally {
     db.close();
   }
@@ -120,7 +131,7 @@ function refusalSites(refusals: SchemaRefusal[]): RefusalSites {
  * automatically" half of the change ledger. The classifier stays the sole owner
  * of the verdict: an atom is skipped exactly when the refusal list names its
  * site, never by re-deriving the shape rules here. A unique index that survives
- * classification and the duplicate probe therefore renders as applying.
+ * classification and its optimistic preview therefore renders as applying.
  */
 export function describeSafeChanges(diff: SchemaDiff, refusals: SchemaRefusal[]): string[] {
   const sites = refusalSites(refusals);
@@ -184,6 +195,13 @@ function describeColumn(
     case "type-changed":
       lines.push(`column ${site} type changed`);
       return;
+    case "constraints-changed":
+      lines.push(
+        col.direction === "loosen"
+          ? `column ${site} constraints loosened`
+          : `column ${site} constraints tightened (no violations found)`,
+      );
+      return;
     case "nullability-changed":
       lines.push(col.to === "nullable" ? `column ${site} widened to nullable` : `column ${site} made required`);
       return;
@@ -217,10 +235,16 @@ const sorted = (values: Iterable<string>): string[] => [...new Set(values)].sort
 
 export function renameCandidates(diff: SchemaDiff): RenameCandidates {
   const tables: CandidateGroup = { dropped: [], added: [] };
-  const columns: Record<string, CandidateGroup> = {};
-  const variants: Record<string, { dropped: Set<string>; added: Set<string> }> = {};
-  const variantGroup = (type: string) =>
-    (variants[type] ??= { dropped: new Set(), added: new Set() });
+  const columns = Object.create(null) as Record<string, CandidateGroup>;
+  const variants = new Map<string, { dropped: Set<string>; added: Set<string> }>();
+  const variantGroup = (type: string) => {
+    let group = variants.get(type);
+    if (group === undefined) {
+      group = { dropped: new Set(), added: new Set() };
+      variants.set(type, group);
+    }
+    return group;
+  };
 
   for (const change of diff) {
     if (change.op === "table-added") {
@@ -246,8 +270,8 @@ export function renameCandidates(diff: SchemaDiff): RenameCandidates {
     }
   }
 
-  const variantOut: Record<string, CandidateGroup> = {};
-  for (const [type, g] of Object.entries(variants)) {
+  const variantOut = Object.create(null) as Record<string, CandidateGroup>;
+  for (const [type, g] of variants) {
     if (g.dropped.size > 0 || g.added.size > 0) {
       variantOut[type] = { dropped: sorted(g.dropped), added: sorted(g.added) };
     }
@@ -331,8 +355,8 @@ export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
   const schema = await importSchema(config);
   const target = snapshotOf(schema);
   const diff = diffSnapshots(state.snapshot, target);
-  const { optimistic, refusals } = classifySchemaDiff(diff);
-  const allRefusals = [...refusals, ...probeDuplicateRefusals(config, state.snapshot, target, optimistic)];
+  const { refusals } = classifySchemaDiff(diff);
+  const allRefusals = [...refusals, ...probeOptimisticRefusals(config, state.snapshot, target)];
   if (allRefusals.length === 0) return { status: "clean" };
   return {
     status: "changes",
@@ -417,6 +441,7 @@ const REASON_WORD: Record<RefusalReason, string> = {
   "table-dropped": "drop",
   "table-to-event": "event",
   "unique-index-duplicates": "dedupe",
+  "constraint-violations": "validate",
 };
 
 /**

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { dbz, defineSchema, defineTable, Engine } from "@dbzz/server";
+import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
 
 const dirs: string[] = [];
 const freshPath = () => {
@@ -14,31 +14,32 @@ afterEach(() => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-const role = () => dbz.enum("Role", ["admin", "member", "guest"]);
+const role = () => v.enum("Role", ["admin", "member", "guest"]);
 const payload = () =>
-  dbz.union("Payload", {
-    text: dbz.string(),
-    image: dbz.object({ url: dbz.string(), width: dbz.number() }),
-    nothing: dbz.tag(),
+  v.union("Payload", {
+    text: v.string(),
+    image: v.object({ url: v.string(), width: v.int() }),
+    nothing: v.tag(),
   });
 
 const kitchenSinkSchema = () =>
   defineSchema({
     things: defineTable({
-      id: dbz.primaryKey(),
-      name: dbz.string(),
-      score: dbz.number(),
-      count: dbz.bigint(),
-      ok: dbz.boolean(),
-      blob: dbz.bytes(),
-      tags: dbz.array(dbz.string()),
-      meta: dbz.object({ a: dbz.bigint(), b: dbz.nullable(dbz.string()) }),
-      extra: dbz.jsonb<{ deep: bigint[] }>(),
+      id: v.primaryKey(),
+      name: v.string(),
+      rank: v.int(),
+      score: v.float(),
+      count: v.bigint(),
+      ok: v.boolean(),
+      blob: v.bytes(),
+      tags: v.array(v.string()),
+      meta: v.object({ a: v.bigint(), b: v.string().nullable() }),
+      extra: v.jsonb<{ deep: bigint[] }>(),
       role: role(),
       payload: payload(),
-      maybe: dbz.nullable(dbz.string()),
-      maybeRole: dbz.nullable(role()),
-      maybePayload: dbz.nullable(payload()),
+      maybe: v.string().nullable(),
+      maybeRole: role().nullable(),
+      maybePayload: payload().nullable(),
     }).index("by_name", ["name"]),
   });
 
@@ -55,7 +56,7 @@ function insertAndReadBack(engine: Engine, row: Record<string, unknown>) {
 describe("engine storage", () => {
   test("isolates in-memory reads from an uncommitted writer transaction", () => {
     const engine = new Engine(
-      defineSchema({ notes: defineTable({ id: dbz.primaryKey(), body: dbz.string() }) }),
+      defineSchema({ notes: defineTable({ id: v.primaryKey(), body: v.string() }) }),
       ":memory:",
       { busyTimeoutMs: 1 },
     );
@@ -83,6 +84,7 @@ describe("engine storage", () => {
     engine.createAll();
     const input = {
       name: "n1",
+      rank: 7,
       score: 4.5,
       count: 9007199254740993n,
       ok: true,
@@ -99,6 +101,13 @@ describe("engine storage", () => {
     const { id, row } = insertAndReadBack(engine, input);
     expect(id).toBe(1n);
     expect(row).toEqual({ id: 1n, ...input });
+    const storageTypes = Object.fromEntries(
+      (engine.writer.query('PRAGMA table_info("things")').all() as {
+        readonly name: string;
+        readonly type: string;
+      }[]).map((column) => [column.name, column.type]),
+    );
+    expect(storageTypes).toMatchObject({ rank: "INTEGER", score: "REAL", count: "INTEGER" });
 
     const second = insertAndReadBack(engine, {
       ...input,
@@ -118,6 +127,7 @@ describe("engine storage", () => {
     engine.createAll();
     insertAndReadBack(engine, {
       name: "n",
+      rank: 0,
       score: 0,
       count: 0n,
       ok: false,
@@ -146,7 +156,7 @@ describe("engine storage", () => {
 describe("tag interning", () => {
   const schemaWith = (values: [string, ...string[]]) =>
     defineSchema({
-      items: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", values) }),
+      items: defineTable({ id: v.primaryKey(), status: v.enum("Status", values) }),
     });
 
   test("tags are stable across reopen, reorder, delete and re-add", () => {

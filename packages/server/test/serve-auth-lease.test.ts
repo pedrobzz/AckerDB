@@ -15,7 +15,7 @@ import type {
   PrincipalInvalidation,
   VerifiedCredential,
 } from "../src/auth.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { procedure, sseProcedure } from "../src/functions.ts";
 import { reconcile } from "../src/schema/reconcile.ts";
@@ -100,7 +100,7 @@ async function waitForAbort(signal: AbortSignal): Promise<void> {
 
 const schema = defineSchema({
   state: defineTable({
-    id: dbz.primaryKey(),
+    id: v.primaryKey(),
   }),
 });
 
@@ -130,7 +130,7 @@ const functions = {
     once: sseProcedure({
       access: "authenticated",
       args: {},
-      yields: dbz.object({ phase: dbz.string() }),
+      yields: v.object({ phase: v.string() }),
       handler: async function* () {
         yield { phase: "once" };
       },
@@ -138,7 +138,7 @@ const functions = {
     stream: sseProcedure({
       access: "authenticated",
       args: {},
-      yields: dbz.object({ phase: dbz.string() }),
+      yields: v.object({ phase: v.string() }),
       handler: async function* (ctx: Ctx) {
         blockedSseStarted.resolve();
         yield { phase: "started" };

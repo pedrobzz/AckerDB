@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { sseProcedure } from "@demo/dbzz-codegen/server";
 import {
   convertToModelMessages,
@@ -53,14 +53,17 @@ const SYSTEM_PROMPT = [
 export const stream = sseProcedure({
   access: staffAccess,
   args: {
-    trigger: dbz.string(),
-    chatId: dbz.string(),
-    messageId: dbz.nullable(dbz.string()),
-    messages: dbz.jsonb<UIMessage[]>(),
+    trigger: v.string(),
+    chatId: v.string(),
+    messageId: v.string().nullable(),
+    messages: v.jsonb<UIMessage[]>(),
   },
-  yields: dbz.jsonb<InferUIMessageChunk<UIMessage>>(),
+  yields: v.jsonb<InferUIMessageChunk<UIMessage>>(),
   handler: async (ctx, args) => {
-    const tools = admin.aiTools(ctx, { scopes: ["read", "operate"] });
+    const tools = admin.aiTools(ctx, {
+      scopes: ["read", "operate"],
+      includeUnavailable: true,
+    });
     const result = streamText({
       model: createChatModel(),
       system: SYSTEM_PROMPT,

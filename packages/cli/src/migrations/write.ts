@@ -2,15 +2,13 @@
  * Migration generation, on disk: re-derive pre/target fresh and lay the three
  * artifacts of the next migration onto disk. The pure string computation lives in
  * `scaffold.ts`; this module is generation's filesystem half — it reads the stored
- * state and duplicate probe from its sibling `plan.ts`, validates that a new
+ * state and optimistic probes from its sibling `plan.ts`, validates that a new
  * migration may be written at all, and owns the `migrations/` + `meta/` layout.
  * The single generation path behind both `dbz generate` and the `__generate` child.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  classifySchemaDiff,
-  diffSnapshots,
   snapshotOf,
   validateHistoryPrefix,
   type Renames,
@@ -18,7 +16,7 @@ import {
 import { importSchema } from "../app.ts";
 import type { AppConfig } from "../config.ts";
 import { loadMigrationChain, migrationArtifactPaths, MIGRATION_NAME } from "./load.ts";
-import { planFingerprint, probeDuplicateRefusals, readStoredState } from "./plan.ts";
+import { planFingerprint, probeOptimisticRefusals, readStoredState } from "./plan.ts";
 import { generateMigration } from "./scaffold.ts";
 
 /**
@@ -60,7 +58,7 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
 
   const schema = await importSchema(config);
   const number = (chain.at(-1)?.number ?? 0) + 1;
-  // Generation's classification is pure (no database); the duplicate probe runs
+  // Generation's classification is pure (no database); optimistic previews run
   // here and its refusals flow into the scaffold alongside the shape-classified
   // ones. Re-probed fresh (never carried on the wire), so the scaffold reflects
   // the database as it actually is at write time.
@@ -71,8 +69,7 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
   if (request.consent !== undefined && request.consent !== planFingerprint(state.snapshot, target)) {
     throw new StaleConsentError("the schema changed since this ledger was shown");
   }
-  const { optimistic } = classifySchemaDiff(diffSnapshots(state.snapshot, target));
-  const probedRefusals = probeDuplicateRefusals(config, state.snapshot, target, optimistic);
+  const probedRefusals = probeOptimisticRefusals(config, state.snapshot, target, request.renames);
   const { migrationTs, typesTs, metaJson } = generateMigration({
     number,
     name: request.name,

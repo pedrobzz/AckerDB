@@ -64,22 +64,35 @@ async function main(): Promise<void> {
     assertNoProductionAiDependency(serverManifest);
 
     writeFileSync(join(consumerDir, "schema.ts"), `
-import { dbz, defineSchema, defineTable } from "@dbzz/server";
+import { v, defineSchema, defineTable } from "@dbzz/server";
 
 export default defineSchema({
   orders: defineTable({
-    id: dbz.primaryKey(),
-    description: dbz.string(),
+    id: v.primaryKey(),
+    description: v.string(),
   }),
 });
 `);
     writeFileSync(join(consumerDir, "functions", "orders.ts"), `
-import { dbz } from "@dbzz/server";
-import { createMcp, type McpToolCtx } from "../_generated/server.ts";
+import { v } from "@dbzz/server";
+import { createMcp, mcpTool, type McpToolCtx } from "../_generated/server.ts";
+
+export const getOrder = mcpTool({
+  description: "Get an order by ID.",
+  args: { id: v.bigint() },
+  output: v.object({ id: v.bigint() }),
+  access: { anyOf: ["orders.all", "orders.get"] },
+  handler: (ctx, args) => {
+    const typedContext: McpToolCtx = ctx;
+    void typedContext;
+    return { id: args.id };
+  },
+});
 
 export const agentMcp = createMcp({
   name: "agent",
   scopes: ["orders.all", "orders.get"] as const,
+  tools: { orders_get: getOrder },
 });
 
 type AgentScope = NonNullable<typeof agentMcp.scopes._type>;
@@ -88,28 +101,33 @@ void scope;
 // @ts-expect-error generated MCP scopes remain the exact declared union
 const invalidScope: AgentScope = "orders.delete";
 void invalidScope;
-
-export const getOrder = agentMcp.tool({
-  name: "orders_get",
-  description: "Get an order by ID.",
-  args: { id: dbz.bigint() },
-  output: dbz.object({ id: dbz.bigint() }),
-  access: { anyOf: ["orders.all", "orders.get"] },
-  handler: (ctx, args) => {
-    const typedContext: McpToolCtx = ctx;
-    void typedContext;
-    return { id: args.id };
-  },
-});
 `);
     writeFileSync(join(consumerDir, "verify-runtime.ts"), `
-import { createMcp as createMcpFromRoot } from "@dbzz/server";
-import { createMcp as createMcpFromSubpath } from "@dbzz/server/mcp";
+import {
+  createMcp as createMcpFromRoot,
+  mcpTool as mcpToolFromRoot,
+} from "@dbzz/server";
+import {
+  createMcp as createMcpFromSubpath,
+  mcpTool as mcpToolFromSubpath,
+} from "@dbzz/server/mcp";
 
 if (createMcpFromRoot !== createMcpFromSubpath) {
   throw new Error("@dbzz/server/mcp resolves a different createMcp implementation");
 }
-const endpoint = createMcpFromSubpath({ name: "package_probe" });
+if (mcpToolFromRoot !== mcpToolFromSubpath) {
+  throw new Error("@dbzz/server/mcp resolves a different mcpTool implementation");
+}
+const endpoint = createMcpFromSubpath({
+  name: "package_probe",
+  tools: {
+    package_probe: mcpToolFromSubpath({
+      description: "Verify packed MCP blueprint assembly.",
+      args: {},
+      handler: () => ({ content: [{ type: "text", text: "ok" }] }),
+    }),
+  },
+});
 if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the wrong path");
 `);
     writeFileSync(join(consumerDir, "tsconfig.json"), JSON.stringify({

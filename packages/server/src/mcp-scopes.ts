@@ -1,5 +1,5 @@
 import type { Principal } from "./auth.ts";
-import { dbz, type EnumValidator } from "./dbz.ts";
+import { v, type EnumValidator } from "./v.ts";
 import { DbzzError } from "./errors.ts";
 
 export const MAX_MCP_SCOPES = 128;
@@ -64,7 +64,7 @@ export function createMcpScopeDescriptor(
   }
   const values = Object.freeze([...value]) as unknown as McpScopeValues;
   const typeName = `McpScope_${mcp.replace(/[^A-Za-z0-9_]/g, "_")}`;
-  return Object.freeze(dbz.enum(typeName, values));
+  return Object.freeze(v.enum(typeName, values));
 }
 
 /** Validate a token grant completely, then return it in declaration order as an immutable set. */

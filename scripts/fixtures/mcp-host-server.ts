@@ -5,7 +5,7 @@ import {
   type MutationMessage,
 } from "@dbzz/core";
 import {
-  dbz,
+  v,
   defineSchema,
   Engine,
   mutation,
@@ -14,11 +14,12 @@ import {
   Runtime,
   serve,
   type McpBuilder,
+  type McpToolBuilder,
   type MutationBuilder,
   type SessionRuntimeContext,
   type UserPrincipal,
 } from "@dbzz/server";
-import { createMcp } from "@dbzz/server/mcp";
+import { createMcp, mcpTool } from "@dbzz/server/mcp";
 
 const INSTRUCTION_MARKER = "dbzz-host-instructions-v1";
 const READ_SCOPE = "acceptance.read";
@@ -26,15 +27,7 @@ const ADMIN_SCOPE = "acceptance.admin";
 const schema = defineSchema({});
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
-
-const acceptanceMcp = typedMcp({
-  name: "acceptance",
-  instructions:
-    `DBZZ host acceptance endpoint. When record_discovery is requested, pass marker ` +
-    `${INSTRUCTION_MARKER} and the exact lower-snake-case names of the currently available ` +
-    `tools. Follow the caller's requested tool order and continue after expected authorization errors.`,
-  scopes: [READ_SCOPE, ADMIN_SCOPE] as const,
-});
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
 function emit(value: Readonly<Record<string, unknown>>): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -44,8 +37,7 @@ function called(name: string): void {
   emit({ type: "tool", name });
 }
 
-const publicText = acceptanceMcp.tool({
-  name: "public_text",
+const publicText = typedMcpTool({
   description: "Return the stable public host-acceptance marker.",
   access: "public",
   args: {},
@@ -55,8 +47,7 @@ const publicText = acceptanceMcp.tool({
   },
 });
 
-const authenticatedStatus = acceptanceMcp.tool({
-  name: "authenticated_status",
+const authenticatedStatus = typedMcpTool({
   description: "Return the delegated DBZZ Identity for an authenticated MCP token.",
   access: "authenticated",
   args: {},
@@ -67,15 +58,14 @@ const authenticatedStatus = acceptanceMcp.tool({
   },
 });
 
-const structuredStatus = acceptanceMcp.tool({
-  name: "structured_status",
+const structuredStatus = typedMcpTool({
   description: "Return one validated structured result and its canonical text fallback.",
   access: "authenticated",
-  args: { value: dbz.string().describe("The exact value to round-trip.") },
-  output: dbz.object({
-    kind: dbz.literal("structured"),
-    value: dbz.string(),
-    identity: dbz.identity(),
+  args: { value: v.string().describe("The exact value to round-trip.") },
+  output: v.object({
+    kind: v.literal("structured"),
+    value: v.string(),
+    identity: v.identity(),
   }),
   handler: (ctx, args) => {
     called("structured_status");
@@ -84,8 +74,7 @@ const structuredStatus = acceptanceMcp.tool({
   },
 });
 
-const richContent = acceptanceMcp.tool({
-  name: "rich_content",
+const richContent = typedMcpTool({
   description: "Return mixed text, embedded-resource, and resource-link MCP content.",
   access: { anyOf: [READ_SCOPE] },
   args: {},
@@ -115,8 +104,7 @@ const richContent = acceptanceMcp.tool({
   },
 });
 
-const adminOnly = acceptanceMcp.tool({
-  name: "admin_only",
+const adminOnly = typedMcpTool({
   description: "Return an admin marker only when the exact admin scope is granted.",
   access: { anyOf: [ADMIN_SCOPE] },
   args: {},
@@ -126,8 +114,7 @@ const adminOnly = acceptanceMcp.tool({
   },
 });
 
-const scopeCheckpoint = acceptanceMcp.tool({
-  name: "scope_checkpoint",
+const scopeCheckpoint = typedMcpTool({
   description: "Mark the point after which the acceptance controller reduces this token's scopes.",
   access: "authenticated",
   args: {},
@@ -137,8 +124,7 @@ const scopeCheckpoint = acceptanceMcp.tool({
   },
 });
 
-const revocationCheckpoint = acceptanceMcp.tool({
-  name: "revocation_checkpoint",
+const revocationCheckpoint = typedMcpTool({
   description: "Mark the point after which the acceptance controller revokes this token.",
   access: "authenticated",
   args: {},
@@ -158,16 +144,15 @@ const READ_TOOLS = [
   "structured_status",
 ] as const;
 
-const recordDiscovery = acceptanceMcp.tool({
-  name: "record_discovery",
+const recordDiscovery = typedMcpTool({
   description:
     "Validate the initialization instruction marker and exact currently visible MCP tool names.",
   access: "authenticated",
   args: {
-    marker: dbz.string(),
-    tools: dbz.array(dbz.string()),
+    marker: v.string(),
+    tools: v.array(v.string()),
   },
-  output: dbz.object({ accepted: dbz.boolean(), count: dbz.number() }),
+  output: v.object({ accepted: v.boolean(), count: v.int() }),
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const expected = ctx.auth.scopes.includes(ADMIN_SCOPE)
@@ -182,9 +167,28 @@ const recordDiscovery = acceptanceMcp.tool({
   },
 });
 
+const acceptanceMcp = typedMcp({
+  name: "acceptance",
+  instructions:
+    `DBZZ host acceptance endpoint. When record_discovery is requested, pass marker ` +
+    `${INSTRUCTION_MARKER} and the exact lower-snake-case names of the currently available ` +
+    `tools. Follow the caller's requested tool order and continue after expected authorization errors.`,
+  scopes: [READ_SCOPE, ADMIN_SCOPE] as const,
+  tools: {
+    admin_only: adminOnly,
+    authenticated_status: authenticatedStatus,
+    public_text: publicText,
+    record_discovery: recordDiscovery,
+    revocation_checkpoint: revocationCheckpoint,
+    rich_content: richContent,
+    scope_checkpoint: scopeCheckpoint,
+    structured_status: structuredStatus,
+  },
+});
+
 const createToken = typedMutation({
   access: "authenticated",
-  args: { name: dbz.string(), scopes: dbz.array(acceptanceMcp.scopes) },
+  args: { name: v.string(), scopes: v.array(acceptanceMcp.scopes) },
   handler: (ctx, args) => acceptanceMcp.tokens.create(ctx, {
     name: args.name,
     metadata: { fixture: "host-acceptance" },
@@ -194,27 +198,19 @@ const createToken = typedMutation({
 
 const updateTokenScopes = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string(), scopes: dbz.array(acceptanceMcp.scopes) },
+  args: { id: v.string(), scopes: v.array(acceptanceMcp.scopes) },
   handler: (ctx, args) => acceptanceMcp.tokens.updateScopes(ctx, args.id, args.scopes),
 });
 
 const revokeToken = typedMutation({
   access: "authenticated",
-  args: { id: dbz.string() },
+  args: { id: v.string() },
   handler: (ctx, args) => acceptanceMcp.tokens.revoke(ctx, args.id),
 });
 
 const modules = {
   acceptance: {
     acceptanceMcp,
-    adminOnly,
-    authenticatedStatus,
-    publicText,
-    recordDiscovery,
-    revocationCheckpoint,
-    richContent,
-    scopeCheckpoint,
-    structuredStatus,
   },
   tokens: { createToken, revokeToken, updateTokenScopes },
 };

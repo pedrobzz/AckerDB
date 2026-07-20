@@ -1,4 +1,4 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { requireUser, staffAccess } from "../lib/access.ts";
 import {
@@ -21,11 +21,11 @@ import {
 
 const guestAccess = (ctx: { auth: Parameters<typeof requireUser>[0] }) =>
   ctx.auth.kind === "user";
-const cartArgs = dbz.array(
-  dbz.object({
-    menuItemId: dbz.bigint(),
-    quantity: dbz.number(),
-    note: dbz.nullable(dbz.string()),
+const cartArgs = v.array(
+  v.object({
+    menuItemId: v.bigint(),
+    quantity: v.int(),
+    note: v.string().nullable(),
   }),
 );
 
@@ -63,7 +63,7 @@ export const history = query({
 
 export const sit = mutation({
   access: guestAccess,
-  args: { tableId: dbz.bigint() },
+  args: { tableId: v.bigint() },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
     const user = await requireCurrentUser(ctx.db, principal.identity);
@@ -88,7 +88,7 @@ export const sit = mutation({
 
 export const addItems = mutation({
   access: guestAccess,
-  args: { orderId: dbz.bigint(), items: cartArgs },
+  args: { orderId: v.bigint(), items: cartArgs },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
     const { order } = await requireOwnedOpenOrder(
@@ -102,7 +102,7 @@ export const addItems = mutation({
 
 export const cancelItem = mutation({
   access: guestAccess,
-  args: { orderId: dbz.bigint(), orderItemId: dbz.bigint() },
+  args: { orderId: v.bigint(), orderItemId: v.bigint() },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
     const { order } = await requireOwnedOpenOrder(
@@ -120,7 +120,7 @@ export const cancelItem = mutation({
 
 export const closeCancelled = mutation({
   access: guestAccess,
-  args: { orderId: dbz.bigint() },
+  args: { orderId: v.bigint() },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
     const { order } = await requireOwnedOpenOrder(
@@ -143,7 +143,7 @@ export const closeCancelled = mutation({
 
 export const pay = mutation({
   access: guestAccess,
-  args: { orderId: dbz.bigint() },
+  args: { orderId: v.bigint() },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
     const { order } = await requireOwnedOpenOrder(
@@ -184,7 +184,7 @@ export const list = query({
 
 export const detail = query({
   access: staffAccess,
-  args: { id: dbz.bigint() },
+  args: { id: v.bigint() },
   handler: async (ctx, args) =>
     orderView(
       ctx.db,
@@ -194,7 +194,7 @@ export const detail = query({
 
 export const create = mutation({
   access: staffAccess,
-  args: { userId: dbz.bigint(), tableId: dbz.bigint() },
+  args: { userId: v.bigint(), tableId: v.bigint() },
   handler: async (ctx, args) => {
     const user =
       (await ctx.db.users.get(args.userId)) ?? notFound("Guest not found");
@@ -219,7 +219,7 @@ export const create = mutation({
 
 export const addItemsAsStaff = mutation({
   access: staffAccess,
-  args: { orderId: dbz.bigint(), items: cartArgs },
+  args: { orderId: v.bigint(), items: cartArgs },
   handler: async (ctx, args) =>
     addOrderItems(
       ctx.db,
@@ -230,7 +230,7 @@ export const addItemsAsStaff = mutation({
 
 export const cancel = mutation({
   access: staffAccess,
-  args: { orderId: dbz.bigint() },
+  args: { orderId: v.bigint() },
   handler: async (ctx, args) =>
     (await cancelOpenOrder(ctx.db, args.orderId)).order.id,
 });

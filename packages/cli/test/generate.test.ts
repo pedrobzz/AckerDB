@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as ts from "typescript";
 import {
-  dbz,
+  v,
   defineSchema,
   defineTable,
   Engine,
@@ -33,17 +33,17 @@ afterEach(() => {
 // (destructuring), a type change and a variant-removal + required-add (holes), a
 // dropped table (null), and a pure column rename (no entry, but rendered).
 const PRE = defineSchema({
-  accounts: defineTable({ id: dbz.primaryKey(), count: dbz.string(), city: dbz.string() }),
-  posts: defineTable({ id: dbz.primaryKey(), kind: dbz.number() }),
-  profiles: defineTable({ id: dbz.primaryKey(), bio: dbz.string() }),
-  users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["admin", "guest"]) }),
-  legacy: defineTable({ id: dbz.primaryKey(), x: dbz.string() }),
+  accounts: defineTable({ id: v.primaryKey(), count: v.string(), city: v.string() }),
+  posts: defineTable({ id: v.primaryKey(), kind: v.int() }),
+  profiles: defineTable({ id: v.primaryKey(), bio: v.string() }),
+  users: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["admin", "guest"]) }),
+  legacy: defineTable({ id: v.primaryKey(), x: v.string() }),
 });
 const TARGET = defineSchema({
-  accounts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }), // city dropped only
-  posts: defineTable({ id: dbz.primaryKey(), kind: dbz.string() }), // type change
-  profiles: defineTable({ id: dbz.primaryKey(), blurb: dbz.string() }), // bio -> blurb
-  users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["admin"]), tier: dbz.string() }),
+  accounts: defineTable({ id: v.primaryKey(), count: v.string() }), // city dropped only
+  posts: defineTable({ id: v.primaryKey(), kind: v.string() }), // type change
+  profiles: defineTable({ id: v.primaryKey(), blurb: v.string() }), // bio -> blurb
+  users: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["admin"]), tier: v.string() }),
   // legacy dropped
 });
 const RENAMES = { columns: { profiles: { bio: "blurb" } } };
@@ -86,11 +86,31 @@ describe("generateMigration: scaffold", () => {
     expect(migrationTs).not.toContain("\n    profiles:"); // a pure rename is not a refusal, so no transform entry
   });
 
+  test("an untouched prototype-named table gets exactly one surviving transform slot", () => {
+    const pre = defineSchema({
+      toString: defineTable({ id: v.primaryKey(), value: v.string() }),
+      legacy: defineTable({ id: v.primaryKey() }),
+    });
+    const target = defineSchema({
+      toString: defineTable({ id: v.primaryKey(), value: v.string() }),
+      current: defineTable({ id: v.primaryKey() }),
+    });
+    const { typesTs } = generateMigration({
+      number: 1,
+      name: "rename_sibling",
+      pre: snapshotOf(pre),
+      schema: target,
+      renames: { tables: { legacy: "current" } },
+    });
+    expect(typesTs.match(/\btoString\?:/g)).toHaveLength(1);
+    expect(typesTs).not.toContain("toString?: null |");
+  });
+
   test("mixed drops render as a hole, listing every drop and any other refusal", () => {
     // posts drops `kind`'s old value via type change; a table that has BOTH a drop
     // and a type change must be a hole, not a destructuring.
-    const pre = defineSchema({ t: defineTable({ id: dbz.primaryKey(), a: dbz.string(), b: dbz.string() }) });
-    const target = defineSchema({ t: defineTable({ id: dbz.primaryKey(), a: dbz.number() }) });
+    const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), a: v.string(), b: v.string() }) });
+    const target = defineSchema({ t: defineTable({ id: v.primaryKey(), a: v.float() }) });
     const { migrationTs } = generateMigration({ number: 1, name: "m", pre: snapshotOf(pre), schema: target });
     expect(migrationTs).toContain("t: (row): TRow => {");
     expect(migrationTs).toContain("// TODO(t.a): type changed; existing rows would need converting");
@@ -101,9 +121,9 @@ describe("generateMigration: scaffold", () => {
   test("a probed unique-index-duplicates refusal becomes a volunteered dedupe hole", () => {
     // The shapes are identical old/new (a bare unique-index add), so the pure diff
     // sees nothing to refuse — the probed refusal is what forces the transform.
-    const pre = defineSchema({ users: defineTable({ id: dbz.primaryKey(), email: dbz.string() }) });
+    const pre = defineSchema({ users: defineTable({ id: v.primaryKey(), email: v.string() }) });
     const target = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), email: dbz.string() }).index("by_email", ["email"], { unique: true }),
+      users: defineTable({ id: v.primaryKey(), email: v.string() }).index("by_email", ["email"], { unique: true }),
     });
     const { migrationTs } = generateMigration({
       number: 1,
@@ -128,9 +148,31 @@ describe("generateMigration: scaffold", () => {
     expect(migrationTs).toContain('import { defineMigration, type UsersRow } from "./meta/0001_dedupe_email.types.ts";');
   });
 
+  test("a probed constraint refusal becomes an ordinary volunteered repair transform", () => {
+    const pre = defineSchema({ users: defineTable({ id: v.primaryKey(), handle: v.string() }) });
+    const target = defineSchema({ users: defineTable({ id: v.primaryKey(), handle: v.string().min(2) }) });
+    const { migrationTs } = generateMigration({
+      number: 1,
+      name: "validate_handle",
+      pre: snapshotOf(pre),
+      schema: target,
+      probedRefusals: [{
+        table: "users",
+        column: "handle",
+        reason: "constraint-violations",
+        question: "constraints tightened; 2 existing row(s) violate the target validator",
+        count: 2,
+      }],
+    });
+    expect(migrationTs).toContain("users: (row): UsersRow => {");
+    expect(migrationTs).toContain(
+      "// TODO(users.handle): constraints tightened; 2 existing row(s) violate the target validator",
+    );
+  });
+
   test("a column rename on the same table as a drop forces a hole, not a broken destructuring", () => {
-    const pre = defineSchema({ t: defineTable({ id: dbz.primaryKey(), old: dbz.string(), gone: dbz.string() }) });
-    const target = defineSchema({ t: defineTable({ id: dbz.primaryKey(), renamed: dbz.string() }) });
+    const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), old: v.string(), gone: v.string() }) });
+    const target = defineSchema({ t: defineTable({ id: v.primaryKey(), renamed: v.string() }) });
     const { migrationTs } = generateMigration({
       number: 1,
       name: "m",
@@ -161,16 +203,16 @@ describe("generateMigration: types companion", () => {
   });
 
   test("renders structural enums, unions, arrays, objects, nullables and scalars", () => {
-    const pre = defineSchema({ t: defineTable({ id: dbz.primaryKey(), v: dbz.string() }) });
+    const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), v: v.string() }) });
     const target = defineSchema({
-      t: defineTable({ id: dbz.primaryKey(), v: dbz.number() }),
+      t: defineTable({ id: v.primaryKey(), v: v.float() }),
       shapes: defineTable({
-        id: dbz.primaryKey(),
-        e: dbz.enum("E", ["x", "y"]),
-        u: dbz.union("U", { text: dbz.string(), nada: dbz.tag() }),
-        arr: dbz.array(dbz.nullable(dbz.string())),
-        obj: dbz.object({ a: dbz.bigint(), b: dbz.bytes() }),
-        maybe: dbz.nullable(dbz.boolean()),
+        id: v.primaryKey(),
+        e: v.enum("E", ["x", "y"]),
+        u: v.union("U", { text: v.string(), nada: v.tag() }),
+        arr: v.array(v.string().nullable()),
+        obj: v.object({ a: v.bigint(), b: v.bytes() }),
+        maybe: v.boolean().nullable(),
       }),
     });
     const { typesTs } = generateMigration({ number: 1, name: "m", pre: snapshotOf(pre), schema: target });
@@ -237,8 +279,8 @@ async function seed(schema: Schema, path: string, fn: (d: ReturnType<typeof writ
 
 describe("generateMigration: round-trip through loadMigrationChain + reconcile", () => {
   test("generated pre/target load and apply, transforming real seeded data", async () => {
-    const pre = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-    const target = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
+    const pre = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+    const target = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
 
     const { migrationTs, typesTs, metaJson } = generateMigration({
       number: 1,
@@ -284,11 +326,11 @@ describe("generateMigration: round-trip through loadMigrationChain + reconcile",
 // -- computePlan: the optimistic duplicate probe wired to a real database -----
 
 describe("computePlan: optimistic unique-index duplicate probe", () => {
-  const PROBE_PRE = defineSchema({ users: defineTable({ id: dbz.primaryKey(), email: dbz.nullable(dbz.string()) }) });
+  const PROBE_PRE = defineSchema({ users: defineTable({ id: v.primaryKey(), email: v.string().nullable() }) });
   // The live schema.ts adds a UNIQUE index over the (nullable) email column.
-  const PROBE_SCHEMA_TS = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+  const PROBE_SCHEMA_TS = `import { defineSchema, defineTable, v } from "@dbzz/server";
 export default defineSchema({
-  users: defineTable({ id: dbz.primaryKey(), email: dbz.nullable(dbz.string()) })
+  users: defineTable({ id: v.primaryKey(), email: v.string().nullable() })
     .index("by_email", ["email"], { unique: true }),
 });
 `;
@@ -328,21 +370,88 @@ export default defineSchema({
   });
 });
 
+describe("computePlan: optimistic constraint probe", () => {
+  const pre = defineSchema({
+    items: defineTable({ id: v.primaryKey(), label: v.string().nullable() }),
+  });
+  const schemaTs = `import { defineSchema, defineTable, v } from "@dbzz/server";
+export default defineSchema({
+  items: defineTable({ id: v.primaryKey(), label: v.string().min(2).nullable() }),
+});
+`;
+
+  test("reports the exact violating-row count while nullable null is ignored", async () => {
+    const dir = makeFixture({ "schema.ts": schemaTs });
+    dirs.push(dir);
+    const dbPath = join(dir, ".zdb", "data.db");
+    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    await seed(pre, dbPath, async (d) => {
+      for (const label of [null, "", "x", "ok"]) await d.items.insert({ label });
+    });
+    const outcome = await computePlan(loadConfig(dir));
+    expect(outcome.status).toBe("changes");
+    if (outcome.status !== "changes") throw new Error("unreachable");
+    expect(outcome.refusals).toEqual([{
+      table: "items",
+      column: "label",
+      reason: "constraint-violations",
+      question: "constraints tightened; 2 existing row(s) violate the target validator",
+      count: 2,
+    }]);
+    expect(outcome.safe).toEqual([]);
+  });
+
+  test("post-answer generation probes through a variant rename and scaffolds the newly visible repair", async () => {
+    const before = defineSchema({
+      items: defineTable({
+        id: v.primaryKey(),
+        body: v.union("Body", { legacy: v.object({ label: v.string() }) }),
+      }),
+    });
+    const targetTs = `import { defineSchema, defineTable, v } from "@dbzz/server";
+export default defineSchema({
+  items: defineTable({
+    id: v.primaryKey(),
+    body: v.union("Body", { current: v.object({ label: v.string().min(2) }) }),
+  }),
+});
+`;
+    const dir = makeFixture({ "schema.ts": targetTs });
+    dirs.push(dir);
+    const config = loadConfig(dir);
+    mkdirSync(config.dbDir, { recursive: true });
+    await seed(before, join(config.dbDir, "data.db"), async (d) => {
+      await d.items.insert({ body: { tag: "legacy", value: { label: "x" } } });
+    });
+
+    const [migrationPath] = await writeMigration(config, {
+      name: "rename_and_validate",
+      renames: { variants: { Body: { legacy: "current" } } },
+    });
+    const migrationTs = readFileSync(migrationPath!, "utf8");
+    expect(migrationTs).toContain('renames: { variants: { Body: { legacy: "current" } } },');
+    expect(migrationTs).toContain(
+      "// TODO(items.body): constraints tightened; 1 existing row(s) violate the target validator",
+    );
+    expect(migrationTs).toContain("items: (row): ItemsRow => {");
+  });
+});
+
 // -- compile-time guarantees: one tsc run over generated + usage files --------
 
 describe("generateMigration: compile-time gate (single tsc --noEmit)", () => {
   test("the hole fails, filling it compiles, old-typed / removed-variant returns fail", () => {
     // Bundle A: a nullable -> required change (an un-narrowed nullable is the trap).
-    const preA = defineSchema({ users: defineTable({ id: dbz.primaryKey(), email: dbz.nullable(dbz.string()) }) });
-    const targetA = defineSchema({ users: defineTable({ id: dbz.primaryKey(), email: dbz.string() }) });
+    const preA = defineSchema({ users: defineTable({ id: v.primaryKey(), email: v.string().nullable() }) });
+    const targetA = defineSchema({ users: defineTable({ id: v.primaryKey(), email: v.string() }) });
     const a = generateMigration({ number: 1, name: "a", pre: snapshotOf(preA), schema: targetA });
 
     // Bundle B: a variant removal (the removed literal is the trap).
     const preB = defineSchema({
-      posts: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["draft", "published", "archived"]) }),
+      posts: defineTable({ id: v.primaryKey(), status: v.enum("Status", ["draft", "published", "archived"]) }),
     });
     const targetB = defineSchema({
-      posts: defineTable({ id: dbz.primaryKey(), status: dbz.enum("Status", ["draft", "published"]) }),
+      posts: defineTable({ id: v.primaryKey(), status: v.enum("Status", ["draft", "published"]) }),
     });
     const b = generateMigration({ number: 2, name: "b", pre: snapshotOf(preB), schema: targetB });
 
@@ -406,10 +515,18 @@ export default defineMigration({
     );
 
     const started = Date.now();
-    const result = spawnSync(join(REPO, "node_modules", ".bin", "tsc"), ["-p", join(dir, "tsconfig.json"), "--pretty", "false"], {
-      encoding: "utf8",
-    });
-    const out = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    const configPath = join(dir, "tsconfig.json");
+    const configFile = ts.readConfigFile(configPath, ts.sys.readFile);
+    const parsed = ts.parseJsonConfigFileContent(configFile.config, ts.sys, dir);
+    const program = ts.createProgram(parsed.fileNames, parsed.options);
+    const out = ts.formatDiagnostics(
+      [...(configFile.error === undefined ? [] : [configFile.error]), ...parsed.errors, ...ts.getPreEmitDiagnostics(program)],
+      {
+        getCanonicalFileName: (fileName) => fileName,
+        getCurrentDirectory: () => REPO,
+        getNewLine: () => "\n",
+      },
+    );
     // eslint-disable-next-line no-console
     console.log(`[generate tsc gate] ${Date.now() - started}ms`);
 
@@ -434,11 +551,11 @@ export default defineMigration({
 // -- the on-disk chain must match applied history, not just its count ----------
 
 describe("computePlan / writeMigration: applied-history prefix validation", () => {
-  const B_PRE = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-  const B_TARGET = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
-  const B_SCHEMA_TS = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+  const B_PRE = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+  const B_TARGET = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
+  const B_SCHEMA_TS = `import { defineSchema, defineTable, v } from "@dbzz/server";
 export default defineSchema({
-  posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }),
+  posts: defineTable({ id: v.primaryKey(), count: v.int() }),
 });
 `;
 
@@ -509,16 +626,16 @@ export default defineSchema({
 // -- computePlan: pending staleness / writeMigration: consent -----------------
 
 describe("computePlan: pending staleness + writeMigration: consent", () => {
-  const P_PRE = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
-  const P_TARGET = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
-  const SCHEMA_AT_TARGET = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+  const P_PRE = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
+  const P_TARGET = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
+  const SCHEMA_AT_TARGET = `import { defineSchema, defineTable, v } from "@dbzz/server";
 export default defineSchema({
-  posts: defineTable({ id: dbz.primaryKey(), count: dbz.number() }),
+  posts: defineTable({ id: v.primaryKey(), count: v.int() }),
 });
 `;
-  const SCHEMA_MOVED_ON = `import { defineSchema, defineTable, dbz } from "@dbzz/server";
+  const SCHEMA_MOVED_ON = `import { defineSchema, defineTable, v } from "@dbzz/server";
 export default defineSchema({
-  posts: defineTable({ id: dbz.primaryKey(), count: dbz.number(), flag: dbz.string() }),
+  posts: defineTable({ id: v.primaryKey(), count: v.int(), flag: v.string() }),
 });
 `;
 

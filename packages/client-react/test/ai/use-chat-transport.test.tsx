@@ -9,7 +9,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   reconcile,
   serve,
@@ -67,10 +67,10 @@ let holdReleased = deferred<void>();
 let midStreamHoldReleased = deferred<void>();
 
 const standardArgs = {
-  trigger: dbz.string(),
-  chatId: dbz.string(),
-  messageId: dbz.nullable(dbz.string()),
-  messages: dbz.jsonb<UIMessage[]>(),
+  trigger: v.string(),
+  chatId: v.string(),
+  messageId: v.string().nullable(),
+  messages: v.jsonb<UIMessage[]>(),
 };
 
 function registry(): Registry {
@@ -167,10 +167,10 @@ function registry(): Registry {
       custom: sseProcedure({
         access: "public",
         args: {
-          sessionId: dbz.string(),
-          prompt: dbz.string(),
-          intent: dbz.string(),
-          auth: dbz.string(),
+          sessionId: v.string(),
+          prompt: v.string(),
+          intent: v.string(),
+          auth: v.string(),
         },
         yields: uiMessageChunk(),
         handler: (_ctx: SseCtx, args: { prompt: string }) => {

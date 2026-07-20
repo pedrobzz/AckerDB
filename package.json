@@ -12,6 +12,7 @@
     "test:mcp:package": "bun scripts/verify-mcp-package.ts",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit && bunx tsc -p packages/client-react/tsconfig.json --noEmit",
     "typecheck:bench": "bunx tsc -p bench/tsconfig.json --noEmit",
+    "diagnostic:validator": "bun scripts/validator-diagnostic.ts",
     "bench:hetzner": "bun scripts/bench-hetzner.ts",
     "registry": "bunx verdaccio --config registry/config.yaml",
     "bump": "bun scripts/bump.ts",

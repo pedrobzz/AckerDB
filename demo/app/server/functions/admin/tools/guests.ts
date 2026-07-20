@@ -1,14 +1,13 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * `get_guests` — the restaurant's guests (diners) and their contact details.
  * Reach for this to find a guest by name or email, or to resolve a guest's id
  * before looking up their orders with `get_orders`.
  */
-export const getGuests = admin.tool({
-  name: "get_guests",
+export const getGuests = mcpTool({
   title: "Get guests",
   description:
     "List guests (diners) with their name and email, optionally narrowed by a " +
@@ -17,32 +16,35 @@ export const getGuests = admin.tool({
   access: { anyOf: ["read"] },
   annotations: { readOnlyHint: true },
   args: {
-    email: dbz
-      .nullable(dbz.string())
+    email: v
+      .string()
+      .optional()
       .describe("Case-insensitive substring to match against a guest's email."),
-    name: dbz
-      .nullable(dbz.string())
+    name: v
+      .string()
+      .optional()
       .describe("Case-insensitive substring to match against a guest's name."),
-    limit: dbz
-      .nullable(dbz.number())
+    limit: v
+      .int()
+      .optional()
       .describe(`Maximum guests to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: dbz.object({
-    guests: dbz.array(
-      dbz.object({
-        id: dbz.bigint(),
-        name: dbz.string(),
-        email: dbz.string(),
-        createdAt: dbz.number(),
-        updatedAt: dbz.number(),
+  output: v.object({
+    guests: v.array(
+      v.object({
+        id: v.bigint(),
+        name: v.string(),
+        email: v.string(),
+        createdAt: v.int(),
+        updatedAt: v.int(),
       }),
     ),
   }),
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       const limit = clampLimit(args.limit);
-      const email = args.email === null ? null : args.email.trim().toLowerCase();
-      const name = args.name === null ? null : args.name.trim().toLowerCase();
+      const email = args.email?.trim().toLowerCase() ?? null;
+      const name = args.name?.trim().toLowerCase() ?? null;
       const rows = await tx.db.users.scan().order("asc").collect();
       const guests = rows
         .filter(

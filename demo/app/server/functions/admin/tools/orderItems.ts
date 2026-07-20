@@ -1,7 +1,7 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import { itemStatus } from "../../../schema.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * `get_order_items` — the individual line items on orders, with their kitchen
@@ -10,8 +10,7 @@ import { admin } from "../mcp.ts";
  * everything still PREPARING); orderedAt/statusChangedAt answer how long an
  * item has been waiting.
  */
-export const getOrderItems = admin.tool({
-  name: "get_order_items",
+export const getOrderItems = mcpTool({
   title: "Get order items",
   description:
     "List order line items with quantity, unit price (cents), kitchen status " +
@@ -21,42 +20,45 @@ export const getOrderItems = admin.tool({
   access: { anyOf: ["read"] },
   annotations: { readOnlyHint: true },
   args: {
-    orderId: dbz
-      .nullable(dbz.bigint())
+    orderId: v
+      .bigint()
+      .optional()
       .describe("Restrict to line items on this order id."),
-    status: dbz
-      .nullable(dbz.array(itemStatus))
+    status: v
+      .array(itemStatus)
+      .optional()
       .describe(
         "Restrict to these kitchen statuses (any of ORDERED, PREPARING, " +
           "PREPARED, SERVED, CANCELLED). Omit for every status.",
       ),
-    limit: dbz
-      .nullable(dbz.number())
+    limit: v
+      .int()
+      .optional()
       .describe(`Maximum items to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: dbz.object({
-    items: dbz.array(
-      dbz.object({
-        id: dbz.bigint(),
-        orderId: dbz.bigint(),
-        menuItemId: dbz.bigint(),
-        name: dbz.string(),
-        quantity: dbz.number(),
-        unitPriceCents: dbz.number(),
-        note: dbz.nullable(dbz.string()),
+  output: v.object({
+    items: v.array(
+      v.object({
+        id: v.bigint(),
+        orderId: v.bigint(),
+        menuItemId: v.bigint(),
+        name: v.string(),
+        quantity: v.int(),
+        unitPriceCents: v.int(),
+        note: v.string().nullable(),
         status: itemStatus,
-        orderedAt: dbz.number(),
-        statusChangedAt: dbz.number(),
+        orderedAt: v.int(),
+        statusChangedAt: v.int(),
       }),
     ),
   }),
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       const limit = clampLimit(args.limit);
-      const statuses = args.status === null ? null : new Set(args.status);
+      const statuses = args.status === undefined ? null : new Set(args.status);
       const orderId = args.orderId;
       const rows =
-        orderId === null
+        orderId === undefined
           ? await tx.db.orderItems.scan().collect()
           : await tx.db.orderItems
               .byOrder((q) => q.eq("orderId", orderId))

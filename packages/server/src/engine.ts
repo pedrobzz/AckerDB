@@ -7,7 +7,8 @@
  * Physical mapping:
  *   - primary key            INTEGER PRIMARY KEY AUTOINCREMENT (ids never reused)
  *   - string                 TEXT
- *   - number / scheduleAt    REAL
+ *   - int                    INTEGER
+ *   - float / scheduleAt     REAL
  *   - bigint / identity      INTEGER
  *   - boolean                INTEGER (0/1)
  *   - bytes                  BLOB
@@ -46,8 +47,9 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
-import type { Descriptor, Identity, Validator } from "./dbz.ts";
+import type { Descriptor, Identity, Validator } from "./v.ts";
 import { scalarDecoder, scalarEncoder, sqlTypeOf } from "./schema/descriptor-kinds.ts";
+import { validateStoredDescriptor } from "./schema/stored-descriptor.ts";
 import {
   MutationReplayLedger,
   mutationReplayOwner,
@@ -63,6 +65,7 @@ import {
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
 import type { IndexDef, Schema, TableDef } from "./schema.ts";
 import { snapshotOf, type SchemaSnapshot } from "./snapshot.ts";
+import { isValidationError } from "./validation-error.ts";
 
 export { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
 export interface TagMap {
@@ -94,6 +97,12 @@ export interface TablePlan {
   columns: Map<string, ColumnPlan>;
   /** Physical column names in DDL order (pk first). */
   physOrder: string[];
+  /**
+   * Runtime row projection. `safeIntegers` must remain enabled for exact i64
+   * values, so logical ints are cast at the result boundary to avoid
+   * materializing a temporary BigInt for every number-valued cell.
+   */
+  readProjection: string;
   indexes: IndexDef[];
 }
 
@@ -157,6 +166,20 @@ const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
 const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
 
 const quote = (name: string) => `"${name}"`;
+
+/** Compile the exact physical row shape expected by `rowFromSql`. */
+export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
+  const selected: string[] = [];
+  let castsInt = false;
+  for (const column of columns) {
+    if (column.kind === "int") castsInt = true;
+    for (const physical of column.phys) {
+      const name = quote(physical.name);
+      selected.push(column.kind === "int" ? `CAST(${name} AS REAL) AS ${name}` : name);
+    }
+  }
+  return castsInt ? selected.join(", ") : "*";
+}
 
 interface StoredObject {
   type: "table" | "index";
@@ -327,7 +350,12 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
     let scheduleColumns = 0;
     for (const [column, descriptor] of Object.entries(storedColumns)) {
       storedName(column, `${tableName} column`);
-      if (!storedRecord(descriptor)) corruptSnapshot(`${tableName}.${column} is invalid`);
+      try {
+        validateStoredDescriptor(descriptor, `${tableName}.${column}`);
+      } catch (error) {
+        if (isValidationError(error)) corruptSnapshot(error.message);
+        throw error;
+      }
       if (descriptor["k"] === "pk") primaryKeys++;
       if (descriptor["k"] === "scheduleAt") scheduleColumns++;
       physicalColumnDdl(column, descriptor as Descriptor, `${tableName}.${column}`);
@@ -345,7 +373,9 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
       if (
         !Array.isArray(index["columns"]) ||
         index["columns"].length === 0 ||
-        index["columns"].some((column) => typeof column !== "string" || !(column in storedColumns)) ||
+        index["columns"].some((column) =>
+          typeof column !== "string" || !Object.hasOwn(storedColumns, column)
+        ) ||
         new Set(index["columns"]).size !== index["columns"].length ||
         typeof index["unique"] !== "boolean" ||
         (index["algorithm"] !== "btree" && index["algorithm"] !== "direct")
@@ -1072,6 +1102,7 @@ export class Engine {
       scheduleAt: table.scheduleAtColumn,
       columns,
       physOrder,
+      readProjection: compileReadProjection(columns.values()),
       indexes: table.indexes,
     };
   }

@@ -24,7 +24,7 @@ import {
   type PrincipalInvalidation,
   type VerifiedUserCredential,
 } from "../src/auth.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { mutation, query } from "../src/functions.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../src/limits.ts";
@@ -413,23 +413,23 @@ async function waitForTransitionAttempt(
 
 const schema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
+    body: v.string(),
   }).index("by_channel", ["channelId"]),
   typing: defineEventTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
   }, {
-    args: { channelId: dbz.bigint() },
+    args: { channelId: v.bigint() },
     access: "public",
     matches: (row, args) => row.channelId === args.channelId,
   }),
   privateTyping: defineEventTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
   }, {
-    args: { channelId: dbz.bigint() },
+    args: { channelId: v.bigint() },
     access: "authenticated",
     matches: (row, args) => row.channelId === args.channelId,
   }),
@@ -487,7 +487,7 @@ async function reconnectTransitionEvidence(
     messages: {
       list: query({
         access: "public",
-        args: { channelId: dbz.bigint() },
+        args: { channelId: v.bigint() },
         handler: (ctx: Ctx, args: Ctx) =>
           ctx.db.messages.byChannel((builder: Ctx) =>
             builder.eq("channelId", args.channelId)
@@ -495,7 +495,7 @@ async function reconnectTransitionEvidence(
       }),
       nonempty: query({
         access: "public",
-        args: { channelId: dbz.bigint() },
+        args: { channelId: v.bigint() },
         handler: async (ctx: Ctx, args: Ctx) =>
           (await ctx.db.messages.byChannel((builder: Ctx) =>
             builder.eq("channelId", args.channelId)
@@ -508,7 +508,7 @@ async function reconnectTransitionEvidence(
       }),
       send: mutation({
         access: "public",
-        args: { channelId: dbz.bigint(), body: dbz.string() },
+        args: { channelId: v.bigint(), body: v.string() },
         handler: (ctx: Ctx, args: Ctx) => ctx.db.messages.insert(args),
       }),
     },
@@ -699,7 +699,7 @@ describe("Session + Runtime integration", () => {
         messages: {
           list: query({
             access: "public",
-            args: { channelId: dbz.bigint() },
+            args: { channelId: v.bigint() },
             handler: (ctx: Ctx, args: Ctx) =>
               ctx.db.messages.byChannel((builder: Ctx) =>
                 builder.eq("channelId", args.channelId)
@@ -775,7 +775,7 @@ describe("Session + Runtime integration", () => {
       messages: {
         list: query({
           access: "public",
-          args: { channelId: dbz.bigint() },
+          args: { channelId: v.bigint() },
           handler: (ctx: Ctx, args: Ctx) =>
             ctx.db.messages.byChannel((builder: Ctx) =>
               builder.eq("channelId", args.channelId)
@@ -788,7 +788,7 @@ describe("Session + Runtime integration", () => {
         }),
         send: mutation({
           access: "public",
-          args: { channelId: dbz.bigint(), body: dbz.string() },
+          args: { channelId: v.bigint(), body: v.string() },
           handler: async (ctx: Ctx, args: Ctx) => {
             mutationExecutions++;
             return ctx.db.messages.insert(args);
@@ -953,7 +953,7 @@ describe("Session + Runtime integration", () => {
       typing: {
         emit: mutation({
           access: "public",
-          args: { channelId: dbz.bigint() },
+          args: { channelId: v.bigint() },
           handler: async (ctx: Ctx, args: Ctx) => {
             await ctx.db.typing.insert(args);
             await ctx.db.privateTyping.insert(args);
@@ -1068,7 +1068,7 @@ describe("Session + Runtime integration", () => {
       messages: {
         list: query({
           access: "public",
-          args: { channelId: dbz.bigint() },
+          args: { channelId: v.bigint() },
           handler: (ctx: Ctx, args: Ctx) =>
             ctx.db.messages.byChannel((builder: Ctx) =>
               builder.eq("channelId", args.channelId)
@@ -1076,14 +1076,14 @@ describe("Session + Runtime integration", () => {
         }),
         send: mutation({
           access: "public",
-          args: { channelId: dbz.bigint(), body: dbz.string() },
+          args: { channelId: v.bigint(), body: v.string() },
           handler: (ctx: Ctx, args: Ctx) => ctx.db.messages.insert(args),
         }),
       },
       typing: {
         emit: mutation({
           access: "public",
-          args: { channelId: dbz.bigint() },
+          args: { channelId: v.bigint() },
           handler: (ctx: Ctx, args: Ctx) => ctx.db.typing.insert(args),
         }),
       },

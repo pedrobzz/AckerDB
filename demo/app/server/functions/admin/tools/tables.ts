@@ -1,15 +1,14 @@
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import { openOrderForTable } from "../../../lib/domain.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * `get_tables` — the first entity query tool. Returns the restaurant's tables
  * with their occupancy state derived from the open-order index, so an agent can
  * answer "which tables are free?" without composing a pipeline.
  */
-export const getTables = admin.tool({
-  name: "get_tables",
+export const getTables = mcpTool({
   title: "Get tables",
   description:
     "List the restaurant's tables and whether each is occupied by an open " +
@@ -17,22 +16,24 @@ export const getTables = admin.tool({
   access: { anyOf: ["read"] },
   annotations: { readOnlyHint: true },
   args: {
-    activeOnly: dbz
-      .nullable(dbz.boolean())
+    activeOnly: v
+      .boolean()
+      .optional()
       .describe("When true, exclude retired (inactive) tables."),
-    limit: dbz
-      .nullable(dbz.number())
+    limit: v
+      .int()
+      .optional()
       .describe(`Maximum tables to return (1-${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`),
   },
-  output: dbz.object({
-    tables: dbz.array(
-      dbz.object({
-        id: dbz.bigint(),
-        number: dbz.number(),
-        seats: dbz.number(),
-        active: dbz.boolean(),
-        occupied: dbz.boolean(),
-        orderId: dbz.nullable(dbz.bigint()),
+  output: v.object({
+    tables: v.array(
+      v.object({
+        id: v.bigint(),
+        number: v.int(),
+        seats: v.int(),
+        active: v.boolean(),
+        occupied: v.boolean(),
+        orderId: v.bigint().nullable(),
       }),
     ),
   }),

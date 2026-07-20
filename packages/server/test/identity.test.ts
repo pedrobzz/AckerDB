@@ -11,7 +11,7 @@ import {
   type VerifiedUserCredential,
 } from "../src/auth.ts";
 import { callerFairnessKey } from "../src/caller.ts";
-import { dbz, type Identity } from "../src/dbz.ts";
+import { v, type Identity } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { mutation, query } from "../src/functions.ts";
 import { reconcile } from "../src/schema/reconcile.ts";
@@ -42,9 +42,9 @@ afterEach(async () => {
 
 const schema = defineSchema({
   owned: defineTable({
-    id: dbz.primaryKey(),
-    userId: dbz.identity(),
-    value: dbz.string(),
+    id: v.primaryKey(),
+    userId: v.identity(),
+    value: v.string(),
   }).index("by_user", ["userId"], { unique: true }),
 });
 
@@ -54,7 +54,7 @@ type Ctx = any;
 const functions = {
   owned: {
     create: mutation({
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       access: (ctx) => ctx.auth.kind === "user",
       handler: (ctx: Ctx, args: { value: string }) => ctx.db.owned.insert({
         userId: ctx.auth.identity,

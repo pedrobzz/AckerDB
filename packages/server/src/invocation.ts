@@ -2,12 +2,12 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Outcome } from "@dbzz/core";
 import { isPrincipal, type Principal } from "./auth.ts";
 import {
-  checkShape,
+  compileShape,
   type Expand,
   type InferShape,
   type ObjectShape,
   type Validator,
-} from "./dbz.ts";
+} from "./v.ts";
 import { DbzzError } from "./errors.ts";
 import type { AccessPolicy, AnyInvocable, Invocable } from "./functions.ts";
 import { deepFreeze } from "./immutable.ts";
@@ -180,7 +180,8 @@ function compileAccess<Ctx extends InvocationContext, Args>(
 
 const SCALAR_OUTPUT_KINDS = new Set([
   "string",
-  "number",
+  "int",
+  "float",
   "bigint",
   "identity",
   "boolean",
@@ -190,7 +191,7 @@ const SCALAR_OUTPUT_KINDS = new Set([
 
 function scalarOutput(validator: Validator<unknown, string>): boolean {
   return SCALAR_OUTPUT_KINDS.has(validator.kind) || (
-    validator.kind === "nullable" &&
+    (validator.kind === "nullable" || validator.kind === "optional" || validator.kind === "nullish") &&
     scalarOutput((validator as Validator & { readonly inner: Validator }).inner)
   );
 }
@@ -201,13 +202,11 @@ function buildInvocation<A extends ObjectShape, Ctx extends InvocationContext>(
 ): CompiledInvocation<Ctx, Expand<InferShape<A>>> {
   const shape = definition.args;
   const enforceAccess = compileAccess(definition.access);
-  const check = decoder === undefined
-    ? (rawArgs: unknown) => checkShape(
-      shape,
-      rawArgs === undefined ? {} : rawArgs,
-      "args",
-    ) as Expand<InferShape<A>>
-    : (rawArgs: unknown) => decoder(rawArgs === undefined ? {} : rawArgs, "args");
+  const decode = decoder ?? (
+    compileShape(shape) as InvocationArgsDecoder<Expand<InferShape<A>>>
+  );
+  const check = (rawArgs: unknown) =>
+    decode(rawArgs === undefined ? {} : rawArgs, "args");
   const validateArgs = Object.values(shape).every(scalarOutput)
     ? (rawArgs: unknown) => Object.freeze(check(rawArgs)) as Expand<InferShape<A>>
     : (rawArgs: unknown) => deepFreeze(check(rawArgs));

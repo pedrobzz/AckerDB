@@ -15,7 +15,7 @@ import {
   type UserPrincipal,
 } from "../src/auth.ts";
 import { callerFairnessKey } from "../src/caller.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import {
   mutation,
@@ -24,7 +24,14 @@ import {
   type QueryBuilder,
 } from "../src/functions.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
-import { createMcp, type McpBuilder } from "../src/mcp.ts";
+import {
+  createMcp,
+  mcpTool,
+  type McpBuilder,
+  type McpToolBuilder,
+  type McpToolCtx,
+  type McpToolResult,
+} from "../src/mcp.ts";
 import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
@@ -36,7 +43,7 @@ import type {
   SessionRuntimeContext,
 } from "../src/session.ts";
 
-const action = dbz.enum("SystemMcpTokenAction", [
+const action = v.enum("SystemMcpTokenAction", [
   "create_agent",
   "create_scoped",
   "list_agent",
@@ -46,40 +53,67 @@ const action = dbz.enum("SystemMcpTokenAction", [
 
 const schema = defineSchema({
   tokenJobs: defineTable({
-    id: dbz.primaryKey(),
+    id: v.primaryKey(),
     action,
-    identity: dbz.identity(),
-    name: dbz.nullable(dbz.string()),
-    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
-    scopes: dbz.array(dbz.string()),
-    tokenId: dbz.nullable(dbz.string()),
-    at: dbz.scheduleAt(),
+    identity: v.identity(),
+    name: v.string().nullable(),
+    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
+    scopes: v.array(v.string()),
+    tokenId: v.string().nullable(),
+    at: v.scheduleAt(),
   }).scheduled("systemTokens.run"),
 });
 
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
-const agentMcp = typedMcp({ name: "agent" });
-const operationsMcp = typedMcp({ name: "operations", path: "/operations/mcp" });
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+
+let systemResult: unknown = null;
+
+async function attemptSystemAdministration(
+  ctx: McpToolCtx<typeof schema>,
+): Promise<McpToolResult> {
+  return ctx.tx((tx) => {
+    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    agentMcp.systemTokens.list(tx, ctx.auth.identity);
+    return { content: [{ type: "text", text: "unexpected" }] };
+  });
+}
+
+const attemptFromMcp = typedMcpTool({
+  description: "Exercise the system token-administration boundary.",
+  access: "authenticated",
+  args: {},
+  handler: attemptSystemAdministration,
+});
+
+const agentMcp = typedMcp({
+  name: "agent",
+  tools: { attempt_system_administration: attemptFromMcp },
+});
+const operationsMcp = typedMcp({
+  name: "operations",
+  path: "/operations/mcp",
+  tools: {},
+});
 const scopedMcp = typedMcp({
   name: "scoped",
   path: "/scoped/mcp",
   scopes: ["orders.all", "orders.get", "reports.all"] as const,
+  tools: {},
 });
-
-let systemResult: unknown = null;
 
 /** Backend-only fixture: an external user can queue work only for its own Identity. */
 const queue = typedMutation({
   access: "authenticated",
   args: {
     action,
-    name: dbz.nullable(dbz.string()),
-    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
-    scopes: dbz.array(dbz.string()),
-    tokenId: dbz.nullable(dbz.string()),
-    at: dbz.number(),
+    name: v.string().nullable(),
+    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
+    scopes: v.array(v.string()),
+    tokenId: v.string().nullable(),
+    at: v.int(),
   },
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "user") throw new Error("expected external user");
@@ -90,14 +124,14 @@ const queue = typedMutation({
 const run = typedMutation({
   access: "system",
   args: {
-    id: dbz.bigint(),
+    id: v.bigint(),
     action,
-    identity: dbz.identity(),
-    name: dbz.nullable(dbz.string()),
-    metadata: dbz.jsonb<Readonly<Record<string, unknown>>>(),
-    scopes: dbz.array(dbz.string()),
-    tokenId: dbz.nullable(dbz.string()),
-    at: dbz.number(),
+    identity: v.identity(),
+    name: v.string().nullable(),
+    metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
+    scopes: v.array(v.string()),
+    tokenId: v.string().nullable(),
+    at: v.int(),
   },
   handler: (ctx, args) => {
     switch (args.action) {
@@ -130,7 +164,7 @@ const run = typedMutation({
 
 const attempt = typedMutation({
   access: "public",
-  args: { identity: dbz.identity() },
+  args: { identity: v.identity() },
   handler: (ctx, args) => agentMcp.systemTokens.list(ctx, args.identity),
 });
 
@@ -138,18 +172,6 @@ const listOwned = typedQuery({
   access: "authenticated",
   args: {},
   handler: (ctx) => agentMcp.tokens.list(ctx),
-});
-
-const attemptFromMcp = agentMcp.tool({
-  name: "attempt_system_administration",
-  description: "Exercise the system token-administration boundary.",
-  access: "authenticated",
-  args: {},
-  handler: async (ctx) => ctx.tx((tx) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
-    agentMcp.systemTokens.list(tx, ctx.auth.identity);
-    return { content: [{ type: "text", text: "unexpected" }] };
-  }),
 });
 
 const modules = {

@@ -3,6 +3,7 @@
 
 import {
   createMcp as createMcpGeneric,
+  mcpTool as mcpToolGeneric,
   mutation as mutationGeneric,
   procedure as procedureGeneric,
   query as queryGeneric,
@@ -12,6 +13,7 @@ import type {
   DbReader,
   DbWriter,
   McpBuilder,
+  McpToolBuilder,
   McpToolCtx as GenericMcpToolCtx,
   MutationBuilder,
   MutationCtx as GenericMutationCtx,
@@ -31,6 +33,7 @@ export const mutation = mutationGeneric as MutationBuilder<Schema>;
 export const procedure = procedureGeneric as ProcedureBuilder<Schema>;
 export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema>;
 export const createMcp = createMcpGeneric as McpBuilder<Schema>;
+export const mcpTool = mcpToolGeneric as McpToolBuilder<Schema>;
 
 export type QueryCtx = GenericQueryCtx<Schema>;
 export type MutationCtx = GenericMutationCtx<Schema>;

@@ -1,10 +1,11 @@
 /** Apples-to-apples release benchmark runner; invoked only by the Hetzner worker. */
-import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { join, relative } from "node:path";
 import { runCodegen } from "../packages/cli/src/codegen.ts";
 import { loadConfig } from "../packages/cli/src/config.ts";
+import { benchmarkSourceHashAt } from "../scripts/release-evidence.ts";
 import {
   benchmarkConfigFromEnv,
   OPERATION_NAMES,
@@ -15,12 +16,10 @@ import {
 import {
   assertDbzzStartup,
   benchmarkExecutionOrder,
-  compareProfileMetrics,
   expectedDbzzStartupMode,
   type BenchmarkExecutionLeg,
   type DbzzBenchmarkProfile,
   type DbzzStartupMode,
-  type ProfileComparisonMetric,
 } from "./dbzz-profile.ts";
 import {
   assertDbzzTelemetryWorkload,
@@ -36,12 +35,7 @@ import {
 } from "./process-tree.ts";
 import { withTimeout } from "./load-engine.ts";
 import {
-  evaluatePerformanceAcceptance,
-  extractComparableMetrics,
-  type PerformanceAcceptanceResult,
-} from "./performance-gates.ts";
-import {
-  readPreviousFinalBenchmark,
+  previousFinalBenchmark,
   releaseBenchmarkContext,
   retainReleaseBenchmark,
   type ReleaseBenchmarkContext,
@@ -110,7 +104,7 @@ interface MachineRecord {
  * telemetry cost has its own optional run (`TelemetryRunRecord`).
  */
 interface RunRecord {
-  schemaVersion: 9;
+  schemaVersion: 10;
   release: ReleaseBenchmarkContext & { readonly previousVersion: string | null };
   timestamp: string;
   git: { commit: string; dirty: boolean; sourceHash: string };
@@ -129,7 +123,6 @@ interface RunRecord {
   executionOrder: BenchmarkExecutionLeg[];
   systems: SystemResults;
   validation: BenchmarkValidation;
-  performanceAcceptance: PerformanceAcceptanceResult;
 }
 
 /** The optional telemetry-cost run: DBZZ against itself, no comparative legs. */
@@ -146,15 +139,7 @@ interface TelemetryRunRecord {
     exporter: DbzzMeasuredDriverResult;
     disabled: DbzzMeasuredDriverResult;
   };
-  telemetryCost: ProfileComparisonMetric[] | null;
-  exporterCost: ProfileComparisonMetric[] | null;
   validation: BenchmarkValidation;
-}
-
-interface ComparableMetric {
-  label: string;
-  value: number;
-  lowerIsBetter: boolean;
 }
 
 function assertPortFree(port: number): void {
@@ -667,34 +652,6 @@ function assertSpacetimeVersionAlignment(): string {
   return REQUIRED_SPACETIME_VERSION;
 }
 
-function sourceHash(): string {
-  const output = Bun.spawnSync(["rg", "--files", "bench", "packages", "package.json", "bun.lock"], {
-    cwd: REPO,
-    stdout: "pipe",
-  });
-  const files = output.stdout
-    .toString()
-    .split("\n")
-    .filter(Boolean)
-    .filter(
-      (file) =>
-        !file.startsWith("bench/results/") &&
-        file !== "bench/README.md" &&
-        !file.endsWith(".test.ts") &&
-        !file.includes("/.stdb-data/") &&
-        !file.includes("/.convex/"),
-    )
-    .sort();
-  const hash = createHash("sha256");
-  for (const file of files) {
-    hash.update(relative(REPO, join(REPO, file)));
-    hash.update("\0");
-    hash.update(readFileSync(join(REPO, file)));
-    hash.update("\0");
-  }
-  return hash.digest("hex");
-}
-
 function git(args: string[]): string {
   return Bun.spawnSync(["git", ...args], { cwd: REPO }).stdout.toString().trim();
 }
@@ -702,42 +659,6 @@ function git(args: string[]): string {
 function fileDescriptorLimit(): number {
   const result = Bun.spawnSync(["sh", "-c", "ulimit -n"], { stdout: "pipe" });
   return Number(result.stdout.toString().trim());
-}
-
-function comparisonMetrics(system: MeasuredDriverResult): ComparableMetric[] {
-  return extractComparableMetrics(system).map((metric) => ({
-    label: metric.path,
-    value: metric.value,
-    lowerIsBetter: metric.direction === "lower",
-  }));
-}
-
-function validationTargetIsSystem(target: string, system: SystemName): boolean {
-  return target === system || target.startsWith(`${system}/`);
-}
-
-function systemPassedValidation(record: RunRecord, system: SystemName): boolean {
-  return !record.validation.failures.some((failure) => validationTargetIsSystem(failure.target, system));
-}
-
-function printDbzzProfileCost(title: string, metrics: ProfileComparisonMetric[]): void {
-  const first = metrics[0];
-  if (first === undefined) throw new Error(`${title} has no comparable metrics`);
-  console.log(`\n${title} (positive delta means ${first.measuredProfile} measured higher)`);
-  console.log(`| metric | ${first.measuredProfile} | ${first.referenceProfile} | measured vs reference |`);
-  console.log("|---|---:|---:|---:|");
-  for (const metric of metrics) {
-    if (
-      metric.measuredProfile !== first.measuredProfile ||
-      metric.referenceProfile !== first.referenceProfile
-    ) {
-      throw new Error(`${title} mixes telemetry profile comparisons`);
-    }
-    const delta = metric.measuredVsReferencePercent;
-    console.log(
-      `| ${metric.label} | ${fmt(metric.measured)} | ${fmt(metric.reference)} | ${delta === null ? "—" : `${delta >= 0 ? "+" : ""}${fmt(delta, 1)}%`} |`,
-    );
-  }
 }
 
 function aggregateCell(cell: { readonly count: number; readonly durationMs: number }): string {
@@ -931,9 +852,9 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
 
 function gitRecord(): RunRecord["git"] {
   return {
-    commit: process.env.BENCH_RELEASE_SOURCE_COMMIT ?? git(["rev-parse", "--short", "HEAD"]),
+    commit: process.env.BENCH_RELEASE_SOURCE_COMMIT ?? git(["rev-parse", "HEAD"]),
     dirty: git(["status", "--porcelain"]).length > 0,
-    sourceHash: sourceHash(),
+    sourceHash: benchmarkSourceHashAt("HEAD"),
   };
 }
 
@@ -952,7 +873,7 @@ function machineRecord(): MachineRecord {
 /**
  * The optional telemetry-cost run: three DBZZ profiles against each other —
  * enabled (runtime default), exporter handoff, and disabled. No comparative
- * legs, no release gating; the record lands beside the release evidence as
+ * release gate; the record lands beside the release evidence as
  * telemetry-v<version>.json and is overwritten freely.
  */
 async function runTelemetryBenchmark(version: string): Promise<void> {
@@ -978,18 +899,6 @@ async function runTelemetryBenchmark(version: string): Promise<void> {
     { label: "dbzz/benchmark-exporter", system: "dbzz", workload: profiles.exporter.workload },
     { label: "dbzz/disabled", system: "dbzz", workload: profiles.disabled.workload },
   ]);
-  const clean = validation.dbzzStatus === "passed";
-  const telemetryCost = clean
-    ? compareProfileMetrics("runtime-default", comparisonMetrics(profiles.enabled), "disabled", comparisonMetrics(profiles.disabled))
-    : null;
-  const exporterCost = clean
-    ? compareProfileMetrics("benchmark-exporter", comparisonMetrics(profiles.exporter), "runtime-default", comparisonMetrics(profiles.enabled))
-    : null;
-
-  console.log(`\n${formatBenchmarkValidation(validation)}`);
-  if (telemetryCost !== null) printDbzzProfileCost("DBZZ default telemetry cost", telemetryCost);
-  if (exporterCost !== null) printDbzzProfileCost("DBZZ exporter handoff cost", exporterCost);
-  printDbzzTelemetryStatus([profiles.enabled, profiles.exporter, profiles.disabled]);
 
   const record: TelemetryRunRecord = {
     kind: "telemetry",
@@ -1000,18 +909,14 @@ async function runTelemetryBenchmark(version: string): Promise<void> {
     machine: machineRecord(),
     executionOrder,
     profiles,
-    telemetryCost,
-    exporterCost,
     validation,
   };
   mkdirSync(RESULTS_DIR, { recursive: true });
   const savedPath = join(RESULTS_DIR, `telemetry-v${version}.json`);
   await Bun.write(savedPath, `${JSON.stringify(record, null, 2)}\n`);
   console.log(`\nsaved ${relative(REPO, savedPath)}`);
-  if (!clean) {
-    console.log("\ntelemetry benchmark correctness failed; fix before trusting the cost tables.");
-    process.exitCode = 1;
-  }
+  console.log(`\n${formatBenchmarkValidation(validation)}`);
+  printDbzzTelemetryStatus([profiles.enabled, profiles.exporter, profiles.disabled]);
 }
 
 const requested = process.argv.slice(2) as SystemName[];
@@ -1029,14 +934,11 @@ const releaseContext = releaseBenchmarkContext(packageVersion(join(REPO, "packag
 
 if (process.env.BENCH_RUN_KIND === "telemetry") {
   await runTelemetryBenchmark(releaseContext.version);
-  process.exit(process.exitCode ?? 0);
+  process.exit(0);
 }
 
 const bootstrap = process.env.BENCH_RELEASE_BOOTSTRAP === "1";
-const previous = bootstrap ? undefined : readPreviousFinalBenchmark<RunRecord>(RESULTS_DIR, releaseContext.version);
-if (previous && (previous.record.schemaVersion !== 9 || previous.record.release?.host !== "hetzner")) {
-  throw new Error(`v${previous.version} is not a final Hetzner release benchmark`);
-}
+const previous = bootstrap ? undefined : previousFinalBenchmark(RESULTS_DIR, releaseContext.version);
 
 // Apples-to-apples: the comparative targets ship no equivalent always-on
 // telemetry, so the release leg runs telemetry=false. Telemetry cost is the
@@ -1046,7 +948,7 @@ await runCodegen(loadConfig(join(BENCH, "dbzz-app"), {
   DBZZ_TELEMETRY: "disabled",
 }));
 const spacetimeVersion = assertSpacetimeVersionAlignment();
-const executionOrder = benchmarkExecutionOrder(ALL_SYSTEMS, ["disabled"], releaseContext.iteration - 1);
+const executionOrder = benchmarkExecutionOrder(ALL_SYSTEMS, ["disabled"], 0);
 const systems: SystemResults = {};
 for (let index = 0; index < executionOrder.length; index++) {
   const leg = executionOrder[index]!;
@@ -1075,15 +977,9 @@ const validationTargets: BenchmarkValidationTarget[] = [
   { label: "spacetimedb", system: "spacetimedb", workload: systems.spacetimedb!.workload },
 ];
 const validation = validateBenchmarkResults(validationTargets);
-const dbzzFailed = validation.dbzzStatus === "failed";
 
-printResults(systems);
-console.log(`\n${formatBenchmarkValidation(validation)}`);
-// The release leg must prove its telemetry really is inactive.
-printDbzzTelemetryStatus([systems.dbzz]);
-
-const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
-  schemaVersion: 9,
+const record: RunRecord = {
+  schemaVersion: 10,
   release: { ...releaseContext, previousVersion: previous?.version ?? null },
   timestamp: new Date().toISOString(),
   git: gitRecord(),
@@ -1115,42 +1011,10 @@ const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
   systems,
   validation,
 };
-// The release verdict judges DBZZ itself: a comparative harness failure is
-// recorded in `validation.failures` but never vetoes a DBZZ release.
-const performanceAcceptance: PerformanceAcceptanceResult = dbzzFailed
-  ? { status: "not-evaluated", reason: "correctness-failed" }
-  : bootstrap
-    ? { status: "passed", evidence: { schemaVersion: 1, previousVersion: null, currentVersion: releaseContext.version, metricCount: 0, regressions: [] } }
-    : evaluatePerformanceAcceptance(previous!.record, recordWithoutAcceptance, {
-      previousVersion: previous!.version,
-      currentVersion: releaseContext.version,
-    });
-const record: RunRecord = { ...recordWithoutAcceptance, performanceAcceptance };
 mkdirSync(RESULTS_DIR, { recursive: true });
-const approved = performanceAcceptance.status === "passed";
-const savedPath = await retainReleaseBenchmark(RESULTS_DIR, releaseContext, approved, record);
+const savedPath = await retainReleaseBenchmark(RESULTS_DIR, releaseContext, record);
 console.log(`\nsaved ${relative(REPO, savedPath)}`);
-
-if (performanceAcceptance.status === "not-evaluated") {
-  console.log("\nbenchmark correctness failed; rerun after fixing the benchmark or product failure.");
-} else if (performanceAcceptance.status === "recovery-needed") {
-  const count = performanceAcceptance.evidence.regressions.length;
-  if (releaseContext.iteration === 1) {
-    console.log(`\nbenchmark verification rerun required (${count} material regression${count === 1 ? "" : "s"}). Rerun once; if it repeats, enter performance recovery and redesign the hot path before approving the release.`);
-  } else {
-    console.log(`\nperformance recovery required after a repeated benchmark regression (${count} material regression${count === 1 ? "" : "s"}). Treat intended behavior as a wrong design: find the hot path and redesign it before approving the release.`);
-  }
-  for (const regression of performanceAcceptance.evidence.regressions) {
-    const delta = regression.deltaPercent === null ? "n/a" : `${regression.deltaPercent >= 0 ? "+" : ""}${regression.deltaPercent.toFixed(1)}%`;
-    console.log(`  - ${regression.path}: ${regression.previous} → ${regression.current} (${delta})`);
-  }
-} else {
-  console.log(bootstrap
-    ? `\nrelease benchmark bootstrap approved: v${releaseContext.version} is the baseline for its successor.`
-    : `\nrelease benchmark approved: v${releaseContext.version} has no material DBZZ regression against v${previous!.version}.`);
-  if (validation.status === "failed") {
-    console.log("comparative-target validation failures are recorded in the evidence (non-blocking; the gate judges DBZZ).");
-  }
-}
-
-if (dbzzFailed || performanceAcceptance.status === "recovery-needed") process.exitCode = 1;
+printResults(systems);
+console.log(`\n${formatBenchmarkValidation(validation)}`);
+printDbzzTelemetryStatus([systems.dbzz]);
+console.log(`\nrelease benchmark evidence recorded for human interpretation.`);

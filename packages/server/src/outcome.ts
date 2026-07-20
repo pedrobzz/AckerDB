@@ -1,5 +1,5 @@
 import { ProtocolError, type Outcome } from "@dbzz/core";
-import { isValidationError } from "./dbz.ts";
+import { isValidationError } from "./v.ts";
 import { isDbzzError } from "./errors.ts";
 
 export const PUBLIC_ERROR_FALLBACK = "err";

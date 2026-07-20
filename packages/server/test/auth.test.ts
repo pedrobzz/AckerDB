@@ -11,7 +11,7 @@ import {
   type OidcVerifierOptions,
   type UserPrincipal,
 } from "../src/auth.ts";
-import { dbz, ValidationError } from "../src/dbz.ts";
+import { v, ValidationError } from "../src/v.ts";
 import { DbzzError, type DbzzErrorCode } from "../src/errors.ts";
 import { query } from "../src/functions.ts";
 import { invokeFunction } from "../src/invocation.ts";
@@ -199,7 +199,7 @@ describe("principals and invocation access", () => {
     let policyCalls = 0;
     let handlerCalls = 0;
     const fn = query({
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       access: (_ctx, args) => {
         policyCalls += 1;
         return args.value === "allowed";
@@ -221,7 +221,7 @@ describe("principals and invocation access", () => {
   test("authorization hooks run after policy and before the handler", async () => {
     const order: string[] = [];
     const fn = query({
-      args: { value: dbz.string() },
+      args: { value: v.string() },
       access: (_ctx, args) => {
         order.push(`policy:${args.value}`);
         return args.value === "allowed";
@@ -264,7 +264,7 @@ describe("principals and invocation access", () => {
 
   test("authorization cannot mutate validated byte inputs", async () => {
     const fn = query({
-      args: { value: dbz.bytes() },
+      args: { value: v.bytes() },
       access: (_ctx, args) => {
         expect(Reflect.set(args.value, "0", 9)).toBe(false);
         expect(() => args.value.fill(9)).toThrow("immutable");

@@ -8,7 +8,7 @@ import {
   type PrincipalInvalidation,
 } from "../src/auth.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
-import { createMcp } from "../src/mcp.ts";
+import { createMcp, mcpTool } from "../src/mcp.ts";
 import { serve } from "../src/serve.ts";
 import type { SessionApplicationMessage } from "../src/session.ts";
 import {
@@ -304,42 +304,51 @@ describe("Identity-bound MCP owner tokens", () => {
     expect(() => scopedMcp.scopes.check("orders.create", "scope")).toThrow(
       "expected one of",
     );
-    expect(() => createMcp({ name: "empty_scopes", scopes: [] } as never)).toThrow(
+    expect(() => createMcp({ name: "empty_scopes", scopes: [], tools: {} } as never)).toThrow(
       "non-empty array",
     );
-    expect(() => createMcp({ name: "duplicate_scopes", scopes: ["read", "read"] } as never))
+    expect(() => createMcp({
+      name: "duplicate_scopes",
+      scopes: ["read", "read"],
+      tools: {},
+    } as never))
       .toThrow("duplicate");
-    expect(() => createMcp({ name: "null_scopes", scopes: null } as never)).toThrow(
+    expect(() => createMcp({ name: "null_scopes", scopes: null, tools: {} } as never)).toThrow(
       "non-empty array",
     );
-    expect(() => scopedMcp.tool({
-      name: "runtime_invalid_scope",
-      description: "Runtime validation cannot be bypassed by a cast.",
-      access: { anyOf: ["orders.create"] },
-      args: {},
-      handler: () => ({ content: [] }),
-    } as never)).toThrow("undeclared scope");
-    expect(() => scopedMcp.tool({
-      name: "runtime_ambiguous_scope",
-      description: "Bare arrays have no implicit combination rule.",
-      access: ["orders.get"],
-      args: {},
-      handler: () => ({ content: [] }),
-    } as never)).toThrow("must be public, authenticated");
-    expect(() => scopedMcp.tool({
-      name: "runtime_empty_scope_policy",
-      description: "Empty any-of/all-of policies are rejected.",
-      access: { allOf: [] },
-      args: {},
-      handler: () => ({ content: [] }),
-    } as never)).toThrow("at least one scope");
-    expect(() => agentMcp.tool({
-      name: "runtime_scope_free_policy",
-      description: "Scope-free declarations reject cast policy values.",
-      access: { anyOf: ["orders.get"] },
-      args: {},
-      handler: () => ({ content: [] }),
-    } as never)).toThrow("declares none");
+    const invalidEndpoint = (name: string, scopes: unknown, access: unknown) => createMcp({
+      name,
+      path: `/${name}`,
+      ...(scopes === undefined ? {} : { scopes }),
+      tools: {
+        runtime_policy: mcpTool({
+          description: "Runtime validation cannot be bypassed by a cast.",
+          access,
+          args: {},
+          handler: () => ({ content: [] }),
+        } as never),
+      },
+    } as never);
+    expect(() => invalidEndpoint(
+      "runtime_invalid_scope",
+      ["orders.get"],
+      { anyOf: ["orders.create"] },
+    )).toThrow("undeclared scope");
+    expect(() => invalidEndpoint(
+      "runtime_ambiguous_scope",
+      ["orders.get"],
+      ["orders.get"],
+    )).toThrow("must be public, authenticated");
+    expect(() => invalidEndpoint(
+      "runtime_empty_scope_policy",
+      ["orders.get"],
+      { allOf: [] },
+    )).toThrow("at least one scope");
+    expect(() => invalidEndpoint(
+      "runtime_scope_free_policy",
+      undefined,
+      { anyOf: ["orders.get"] },
+    )).toThrow("declares none");
 
     await expect(runtime.mutation(aliceSession, request(mutationMessage(
       19,

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -49,15 +49,15 @@ function refusesEmpty(v1: Schema, v2: Schema, needle: string): void {
   b.close("clean");
 }
 
-const RRole = () => dbz.enum("RRole", ["admin", "member", "guest"]);
+const RRole = () => v.enum("RRole", ["admin", "member", "guest"]);
 const pings = () =>
-  defineEventTable({ id: dbz.primaryKey(), n: dbz.bigint() }, { args: {}, access: "public", matches: () => true });
+  defineEventTable({ id: v.primaryKey(), n: v.bigint() }, { args: {}, access: "public", matches: () => true });
 
 const baseSchema = () =>
   defineSchema({
     users: defineTable({
-      id: dbz.primaryKey(),
-      name: dbz.string(),
+      id: v.primaryKey(),
+      name: v.string(),
       role: RRole(),
     }).index("by_name", ["name"]),
   });
@@ -83,12 +83,12 @@ describe("reconcile: shape-safe changes apply with data present", () => {
 
     const grown = defineSchema({
       users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
+        id: v.primaryKey(),
+        name: v.string(),
         role: RRole(),
-        bio: dbz.nullable(dbz.string()),
+        bio: v.string().nullable(),
       }).index("by_name", ["name"]),
-      posts: defineTable({ id: dbz.primaryKey(), title: dbz.string() }),
+      posts: defineTable({ id: v.primaryKey(), title: v.string() }),
       pings: pings(),
     });
     const b = open(grown, path);
@@ -111,9 +111,9 @@ describe("reconcile: shape-safe changes apply with data present", () => {
     // order legitimately diverge. Reopening must not read that as corruption.
     const grown = defineSchema({
       users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
-        bio: dbz.nullable(dbz.string()),
+        id: v.primaryKey(),
+        name: v.string(),
+        bio: v.string().nullable(),
         role: RRole(),
       }).index("by_name", ["name"]),
     });
@@ -136,8 +136,8 @@ describe("reconcile: shape-safe changes apply with data present", () => {
 
     const widened = defineSchema({
       users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.nullable(dbz.string()),
+        id: v.primaryKey(),
+        name: v.string().nullable(),
         role: RRole(),
       }).index("by_name", ["name"]),
     });
@@ -150,12 +150,12 @@ describe("reconcile: shape-safe changes apply with data present", () => {
 
   test("enum & union variants: adding and reordering apply with rows present", async () => {
     const path = freshPath();
-    const withUnion = (variants: Record<string, ReturnType<typeof dbz.object> | ReturnType<typeof dbz.string>>) =>
+    const withUnion = (variants: Record<string, ReturnType<typeof v.object> | ReturnType<typeof v.string>>) =>
       defineSchema({
-        users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole() }).index("by_name", ["name"]),
-        posts: defineTable({ id: dbz.primaryKey(), body: dbz.union("PBody", variants) }),
+        users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }).index("by_name", ["name"]),
+        posts: defineTable({ id: v.primaryKey(), body: v.union("PBody", variants) }),
       });
-    const a = open(withUnion({ text: dbz.string(), image: dbz.object({ url: dbz.string() }) }), path);
+    const a = open(withUnion({ text: v.string(), image: v.object({ url: v.string() }) }), path);
     await a.db.users.insert({ name: "m", role: "member" });
     await a.db.posts.insert({ body: { tag: "text", value: "hi" } });
     a.engine.close("clean");
@@ -163,13 +163,13 @@ describe("reconcile: shape-safe changes apply with data present", () => {
     // reorder + add an enum variant, add a union variant: both are tag-stable
     const grown = defineSchema({
       users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
-        role: dbz.enum("RRole", ["guest", "admin", "trial", "member"]),
+        id: v.primaryKey(),
+        name: v.string(),
+        role: v.enum("RRole", ["guest", "admin", "trial", "member"]),
       }).index("by_name", ["name"]),
       posts: defineTable({
-        id: dbz.primaryKey(),
-        body: dbz.union("PBody", { text: dbz.string(), image: dbz.object({ url: dbz.string() }), video: dbz.string() }),
+        id: v.primaryKey(),
+        body: v.union("PBody", { text: v.string(), image: v.object({ url: v.string() }), video: v.string() }),
       }),
     });
     const b = open(grown, path);
@@ -188,7 +188,7 @@ describe("reconcile: shape-safe changes apply with data present", () => {
 
     // change the existing index's columns, add a second index
     const changed = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole() })
+      users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() })
         .index("by_name", ["name", "role"])
         .index("by_role", ["role"]),
     });
@@ -200,7 +200,7 @@ describe("reconcile: shape-safe changes apply with data present", () => {
 
     // drop both indexes
     const dropped = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole() }),
+      users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }),
     });
     const c = open(dropped, path);
     expect(c.applied).toContain("dropped index users.by_name");
@@ -212,7 +212,7 @@ describe("reconcile: shape-safe changes apply with data present", () => {
     const path = freshPath();
     const a = open(
       defineSchema({
-        users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
+        users: defineTable({ id: v.primaryKey(), name: v.string() }),
         pings: pings(),
       }),
       path,
@@ -222,8 +222,8 @@ describe("reconcile: shape-safe changes apply with data present", () => {
 
     const b = open(
       defineSchema({
-        users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }),
-        pings: defineTable({ id: dbz.primaryKey(), n: dbz.bigint() }),
+        users: defineTable({ id: v.primaryKey(), name: v.string() }),
+        pings: defineTable({ id: v.primaryKey(), n: v.bigint() }),
       }),
       path,
     );
@@ -236,15 +236,15 @@ describe("reconcile: shape-safe changes apply with data present", () => {
   test("event table updated applies", async () => {
     const path = freshPath();
     const a = open(
-      defineSchema({ users: defineTable({ id: dbz.primaryKey() }), pings: pings() }),
+      defineSchema({ users: defineTable({ id: v.primaryKey() }), pings: pings() }),
       path,
     );
     a.engine.close("clean");
     const b = open(
       defineSchema({
-        users: defineTable({ id: dbz.primaryKey() }),
+        users: defineTable({ id: v.primaryKey() }),
         pings: defineEventTable(
-          { id: dbz.primaryKey(), n: dbz.bigint(), extra: dbz.nullable(dbz.string()) },
+          { id: v.primaryKey(), n: v.bigint(), extra: v.string().nullable() },
           { args: {}, access: "public", matches: () => true },
         ),
       }),
@@ -257,69 +257,69 @@ describe("reconcile: shape-safe changes apply with data present", () => {
   test("event table dropped applies", () => {
     const path = freshPath();
     const a = open(
-      defineSchema({ users: defineTable({ id: dbz.primaryKey() }), pings: pings() }),
+      defineSchema({ users: defineTable({ id: v.primaryKey() }), pings: pings() }),
       path,
     );
     a.engine.close("clean");
-    const b = open(defineSchema({ users: defineTable({ id: dbz.primaryKey() }) }), path);
+    const b = open(defineSchema({ users: defineTable({ id: v.primaryKey() }) }), path);
     expect(b.applied).toContain("dropped event table pings");
     b.engine.close("clean");
   });
 });
 
 describe("reconcile: shape-unsafe changes refuse even on an empty table", () => {
-  const users = (extra: Record<string, ReturnType<typeof dbz.string>>) =>
-    defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), ...extra }) });
+  const users = (extra: Record<string, ReturnType<typeof v.string>>) =>
+    defineSchema({ users: defineTable({ id: v.primaryKey(), name: v.string(), ...extra }) });
 
   test("column type change", () => {
     refusesEmpty(
-      defineSchema({ users: defineTable({ id: dbz.primaryKey(), tag: dbz.string() }) }),
-      defineSchema({ users: defineTable({ id: dbz.primaryKey(), tag: dbz.number() }) }),
+      defineSchema({ users: defineTable({ id: v.primaryKey(), tag: v.string() }) }),
+      defineSchema({ users: defineTable({ id: v.primaryKey(), tag: v.float() }) }),
       "type changed",
     );
   });
 
   test("narrowing nullable → required", () => {
     refusesEmpty(
-      defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.nullable(dbz.string()) }) }),
-      defineSchema({ users: defineTable({ id: dbz.primaryKey(), name: dbz.string() }) }),
+      defineSchema({ users: defineTable({ id: v.primaryKey(), name: v.string().nullable() }) }),
+      defineSchema({ users: defineTable({ id: v.primaryKey(), name: v.string() }) }),
       "made required",
     );
   });
 
   test("required column added", () => {
-    refusesEmpty(users({}), users({ slug: dbz.string() }), "required column added");
+    refusesEmpty(users({}), users({ slug: v.string() }), "required column added");
   });
 
   test("enum variant removed", () => {
     refusesEmpty(
-      defineSchema({ users: defineTable({ id: dbz.primaryKey(), role: RRole() }) }),
-      defineSchema({ users: defineTable({ id: dbz.primaryKey(), role: dbz.enum("RRole", ["admin", "member"]) }) }),
+      defineSchema({ users: defineTable({ id: v.primaryKey(), role: RRole() }) }),
+      defineSchema({ users: defineTable({ id: v.primaryKey(), role: v.enum("RRole", ["admin", "member"]) }) }),
       "variant 'guest' removed",
     );
   });
 
   test("union variant payload changed", () => {
-    const body = (image: ReturnType<typeof dbz.object>) =>
-      defineSchema({ posts: defineTable({ id: dbz.primaryKey(), body: dbz.union("PBody", { text: dbz.string(), image }) }) });
+    const body = (image: ReturnType<typeof v.object>) =>
+      defineSchema({ posts: defineTable({ id: v.primaryKey(), body: v.union("PBody", { text: v.string(), image }) }) });
     refusesEmpty(
-      body(dbz.object({ url: dbz.string() })),
-      body(dbz.object({ href: dbz.string() })),
+      body(v.object({ url: v.string() })),
+      body(v.object({ href: v.string() })),
       "variant 'image' payload changed",
     );
   });
 
   test("column dropped", () => {
-    refusesEmpty(users({ bio: dbz.string() }), users({}), "column dropped");
+    refusesEmpty(users({ bio: v.string() }), users({}), "column dropped");
   });
 
   test("table dropped", () => {
     refusesEmpty(
       defineSchema({
-        users: defineTable({ id: dbz.primaryKey() }),
-        logs: defineTable({ id: dbz.primaryKey(), line: dbz.string() }),
+        users: defineTable({ id: v.primaryKey() }),
+        logs: defineTable({ id: v.primaryKey(), line: v.string() }),
       }),
-      defineSchema({ users: defineTable({ id: dbz.primaryKey() }) }),
+      defineSchema({ users: defineTable({ id: v.primaryKey() }) }),
       "table dropped",
     );
   });
@@ -327,13 +327,13 @@ describe("reconcile: shape-unsafe changes refuse even on an empty table", () => 
   test("table → event conversion", () => {
     refusesEmpty(
       defineSchema({
-        users: defineTable({ id: dbz.primaryKey() }),
-        logs: defineTable({ id: dbz.primaryKey(), line: dbz.string() }),
+        users: defineTable({ id: v.primaryKey() }),
+        logs: defineTable({ id: v.primaryKey(), line: v.string() }),
       }),
       defineSchema({
-        users: defineTable({ id: dbz.primaryKey() }),
+        users: defineTable({ id: v.primaryKey() }),
         logs: defineEventTable(
-          { id: dbz.primaryKey(), line: dbz.string() },
+          { id: v.primaryKey(), line: v.string() },
           { args: {}, access: "public", matches: () => true },
         ),
       }),
@@ -344,7 +344,7 @@ describe("reconcile: shape-unsafe changes refuse even on an empty table", () => 
 
 describe("reconcile: optimistic unique index", () => {
   const uniqueName = defineSchema({
-    users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole() }).index("by_name", ["name"], {
+    users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }).index("by_name", ["name"], {
       unique: true,
     }),
   });
@@ -367,14 +367,14 @@ describe("reconcile: optimistic unique index", () => {
 
   test("NULLs are not duplicates: the probe mirrors the constraint", async () => {
     const nullable = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole(), nick: dbz.nullable(dbz.string()) }),
+      users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole(), nick: v.string().nullable() }),
     });
     const uniqueNick = defineSchema({
       users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
+        id: v.primaryKey(),
+        name: v.string(),
         role: RRole(),
-        nick: dbz.nullable(dbz.string()),
+        nick: v.string().nullable(),
       }).index("by_nick", ["nick"], { unique: true }),
     });
     const path = freshPath();
@@ -392,10 +392,10 @@ describe("reconcile: optimistic unique index", () => {
   test("a unique index over a column added in the same change applies", async () => {
     const withNew = defineSchema({
       users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
+        id: v.primaryKey(),
+        name: v.string(),
         role: RRole(),
-        slug: dbz.nullable(dbz.string()),
+        slug: v.string().nullable(),
       }).index("by_slug", ["slug"], { unique: true }),
     });
     const path = freshPath();
@@ -459,6 +459,12 @@ describe("probeUniqueIndex (the shared duplicate probe)", () => {
     expect(q.calls).toEqual([]);
   });
 
+  test("prototype names are not mistaken for physically present columns", () => {
+    const q = fakeQuery(99);
+    expect(probeUniqueIndex(q, "users", "by_to_string", ["toString"], {})).toBeNull();
+    expect(q.calls).toEqual([]);
+  });
+
   test("NULLs are excluded and only present columns are grouped (the constraint's own semantics)", () => {
     const q = fakeQuery(0);
     probeUniqueIndex(q, "users", "by_email", ["email"], cols);
@@ -496,7 +502,7 @@ describe("reconcile: refusal surface", () => {
     a.close("clean");
 
     const withRequired = defineSchema({
-      users: defineTable({ id: dbz.primaryKey(), name: dbz.string(), role: RRole(), slug: dbz.string() }).index(
+      users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole(), slug: v.string() }).index(
         "by_name",
         ["name"],
       ),
@@ -532,12 +538,12 @@ describe("reconcile: refusal surface", () => {
     // one safe change (new table + enum) + one unsafe (required column)
     const mixed = defineSchema({
       users: defineTable({
-        id: dbz.primaryKey(),
-        name: dbz.string(),
+        id: v.primaryKey(),
+        name: v.string(),
         role: RRole(),
-        slug: dbz.string(),
+        slug: v.string(),
       }).index("by_name", ["name"]),
-      audit: defineTable({ id: dbz.primaryKey(), line: dbz.enum("AuditKind", ["created", "deleted"]) }),
+      audit: defineTable({ id: v.primaryKey(), line: v.enum("AuditKind", ["created", "deleted"]) }),
     });
     const refusing = new Engine(mixed, path);
     expect(() => reconcile(refusing)).toThrow(UnsafeSchemaChange);

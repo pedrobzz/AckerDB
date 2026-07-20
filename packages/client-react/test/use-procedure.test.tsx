@@ -10,7 +10,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineSchema,
   defineTable,
   procedure,
@@ -36,8 +36,8 @@ import {
 
 const schema = defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 
@@ -91,7 +91,7 @@ function createApp(): App {
     tools: {
       echo: procedure({
         access: "public",
-        args: { value: dbz.string() },
+        args: { value: v.string() },
         handler: (_ctx: Ctx, args: Ctx) => args.value.toUpperCase(),
       }),
       fail: procedure({

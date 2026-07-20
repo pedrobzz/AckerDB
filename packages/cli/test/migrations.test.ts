@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import {
-  dbz,
+  v,
   defineSchema,
   defineTable,
   migrationFingerprint,
@@ -15,13 +15,13 @@ import { loadMigrationChain } from "../src/migrations/load.ts";
 import { makeFixture } from "./fixture.ts";
 
 const schemaV1 = defineSchema({
-  items: defineTable({ id: dbz.primaryKey(), label: dbz.string(), count: dbz.number() }),
+  items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.int() }),
 });
 const schemaV2 = defineSchema({
-  items: defineTable({ id: dbz.primaryKey(), label: dbz.string(), count: dbz.string() }),
+  items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.string() }),
 });
 const schemaV3 = defineSchema({
-  items: defineTable({ id: dbz.primaryKey(), label: dbz.string(), count: dbz.bigint() }),
+  items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.bigint() }),
 });
 const PRE = snapshotOf(schemaV1);
 const TARGET = snapshotOf(schemaV2);

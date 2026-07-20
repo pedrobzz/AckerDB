@@ -1,5 +1,5 @@
 export {
-  dbz,
+  v,
   ValidationError,
   isValidationError,
   checkShape,
@@ -14,14 +14,20 @@ export {
   type ObjectValidator,
   type InferShape,
   type StandardValidator,
+  type ChainableValidator,
+  type BoundedValidator,
+  type StringValidator,
+  type ArrayValidator,
   type Validator,
   type EnumValidator,
   type UnionValidator,
   type NullableValidator,
+  type OptionalValidator,
+  type NullishValidator,
   type UnionMembers,
   type UnionValue,
   type UnionNamespace,
-} from "./dbz.ts";
+} from "./v.ts";
 export {
   CorruptDatabaseError,
   Engine,
@@ -69,7 +75,15 @@ export type {
   Upsert,
 } from "./dbtypes.ts";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
-export { probeUniqueIndex, UnsafeSchemaChange } from "./schema/planner.ts";
+export {
+  probeOptimisticChanges,
+  probeUniqueIndex,
+  UnsafeSchemaChange,
+  type OptimisticProbeOptions,
+  type PhysicalProbeRoute,
+  type RoutedOptimisticChange,
+  type StoredTagNames,
+} from "./schema/planner.ts";
 export { reconcile } from "./schema/reconcile.ts";
 export {
   defineMigration,
@@ -86,7 +100,12 @@ export {
   type RowTransform,
 } from "./schema/migrations/types.ts";
 export { validateChain, validateHistoryPrefix, type AppliedMigrationRow } from "./schema/migrations/chain.ts";
-export { applyRenames, type NormalizedRenames } from "./schema/migrations/rename.ts";
+export {
+  applyRenames,
+  renameRoutes,
+  type NormalizedRenames,
+  type RenameRoutes,
+} from "./schema/migrations/rename.ts";
 export {
   diffSnapshots,
   type ColumnChange,
@@ -217,8 +236,12 @@ export {
 export {
   createMcp,
   isMcpDeclaration,
+  isMcpToolBlueprint,
   isRegisteredMcpTool,
+  mcpTool,
   type AnyMcpDeclaration,
+  type AnyMcpToolBlueprint,
+  type AnyMcpToolBlueprintRecord,
   type AnyRegisteredMcpTool,
   type CreatedMcpToken,
   type CustomMcpConfig,
@@ -227,10 +250,13 @@ export {
   type McpAudioContent,
   type McpAiContext,
   type McpAiModelOutput,
+  type McpAiToolsCompleteOptions,
+  type McpAiToolsFilteredOptions,
   type McpAiTool,
   type McpAiToolsOptions,
   type McpAiToolSet,
   type McpBlobResourceContents,
+  type McpCallToolResult,
   type McpContentAnnotations,
   type McpContentBlock,
   type McpContentRole,
@@ -256,14 +282,20 @@ export {
   type McpTextResourceContents,
   type McpToolAnnotations,
   type McpToolAccessPolicy,
+  type McpToolBlueprint,
+  type McpToolBlueprintRecord,
+  type McpToolBuilder,
   type McpToolCtx,
   type McpToolResult,
   type RegisteredMcpTool,
+  type RegisteredMcpTools,
   type ScopedCustomMcpConfig,
   type ScopedDefaultMcpConfig,
 } from "./mcp.ts";
 export {
   type StandardJsonCodec,
+  type StandardJsonInput,
+  type StandardJsonOutput,
   type StandardJsonProtocolSchema,
   type StandardJsonSchemaOptions,
   type StandardSchemaIssue,

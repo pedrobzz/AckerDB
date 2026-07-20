@@ -4,10 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decode, parseCallResponse } from "@dbzz/core";
 import { ANONYMOUS_PRINCIPAL } from "../src/auth.ts";
-import { dbz } from "../src/dbz.ts";
+import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { procedure, type ProcedureBuilder } from "../src/functions.ts";
-import { createMcp, type McpBuilder } from "../src/mcp.ts";
+import {
+  createMcp,
+  mcpTool,
+  type McpBuilder,
+  type McpToolBuilder,
+  type McpToolCtx,
+} from "../src/mcp.ts";
 import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime, type RuntimeProcedureResponse } from "../src/runtime.ts";
@@ -15,14 +21,14 @@ import { defineSchema, defineTable } from "../src/schema.ts";
 
 const schema = defineSchema({
   records: defineTable({
-    id: dbz.primaryKey(),
-    label: dbz.string(),
+    id: v.primaryKey(),
+    label: v.string(),
   }),
 });
 
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
-const agentMcp = typedMcp({ name: "agent", path: "/mcp" });
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
 type Gate = ReturnType<typeof Promise.withResolvers<void>>;
 
@@ -75,33 +81,32 @@ function outcome(result: PromiseSettledResult<unknown>): { status: string; value
     : { status: "rejected" };
 }
 
-const wait = agentMcp.tool({
-  name: "wait",
+const wait = typedMcpTool({
   description: "Wait for cancellation or an explicit test release.",
-  args: { key: dbz.string() },
-  output: dbz.object({ key: dbz.string() }),
+  args: { key: v.string() },
+  output: v.object({ key: v.string() }),
   handler: async (ctx, args) => {
     await gate(args.key, ctx.abortSignal);
     return { key: args.key };
   },
 });
 
-const nestedWait = agentMcp.tool({
-  name: "nested_wait",
+async function handleNestedWait(ctx: McpToolCtx<typeof schema>): Promise<{ done: boolean }> {
+  await agentMcp.aiTools(ctx).wait!.execute({ key: "nested" });
+  return { done: true };
+}
+
+const nestedWait = typedMcpTool({
   description: "Delegate to another local MCP tool.",
   args: {},
-  output: dbz.object({ done: dbz.boolean() }),
-  handler: async (ctx) => {
-    await agentMcp.aiTools(ctx).wait!.execute({ key: "nested" });
-    return { done: true };
-  },
+  output: v.object({ done: v.boolean() }),
+  handler: handleNestedWait,
 });
 
-const activeTransaction = agentMcp.tool({
-  name: "active_transaction",
+const activeTransaction = typedMcpTool({
   description: "Hold an active writer transaction until cancellation.",
   args: {},
-  output: dbz.object({ done: dbz.boolean() }),
+  output: v.object({ done: v.boolean() }),
   handler: async (ctx) => {
     await ctx.tx(async (tx) => {
       await tx.db.records.insert({ label: "active" });
@@ -111,22 +116,20 @@ const activeTransaction = agentMcp.tool({
   },
 });
 
-const committedTransaction = agentMcp.tool({
-  name: "committed_transaction",
+const committedTransaction = typedMcpTool({
   description: "Commit before cancellation suppresses the local result.",
   args: {},
-  output: dbz.object({ done: dbz.boolean() }),
+  output: v.object({ done: v.boolean() }),
   handler: async (ctx) => {
     await ctx.tx((tx) => tx.db.records.insert({ label: "committed" }));
     return { done: true };
   },
 });
 
-const holdWriter = agentMcp.tool({
-  name: "hold_writer",
+const holdWriter = typedMcpTool({
   description: "Own the writer until explicitly released.",
   args: {},
-  output: dbz.object({ done: dbz.boolean() }),
+  output: v.object({ done: v.boolean() }),
   handler: async (ctx) => {
     await ctx.tx(async (tx) => {
       await tx.db.records.insert({ label: "holder" });
@@ -136,22 +139,20 @@ const holdWriter = agentMcp.tool({
   },
 });
 
-const queuedTransaction = agentMcp.tool({
-  name: "queued_transaction",
+const queuedTransaction = typedMcpTool({
   description: "Enter the writer queue before inserting.",
   args: {},
-  output: dbz.object({ done: dbz.boolean() }),
+  output: v.object({ done: v.boolean() }),
   handler: async (ctx) => {
     await ctx.tx((tx) => tx.db.records.insert({ label: "queued" }));
     return { done: true };
   },
 });
 
-const encodingCancellation = agentMcp.tool({
-  name: "encoding_cancellation",
+const encodingCancellation = typedMcpTool({
   description: "Cancel while the structured result is encoded.",
   args: {},
-  output: dbz.object({ value: dbz.string() }),
+  output: v.object({ value: v.string() }),
   handler: () => ({
     get value() {
       executionControllers.encoding.abort(new Error("generation canceled during encoding"));
@@ -160,9 +161,23 @@ const encodingCancellation = agentMcp.tool({
   }),
 });
 
+const agentMcp = typedMcp({
+  name: "agent",
+  path: "/mcp",
+  tools: {
+    active_transaction: activeTransaction,
+    committed_transaction: committedTransaction,
+    encoding_cancellation: encodingCancellation,
+    hold_writer: holdWriter,
+    nested_wait: nestedWait,
+    queued_transaction: queuedTransaction,
+    wait,
+  },
+});
+
 const runLocal = typedProcedure({
   access: "public",
-  args: { mode: dbz.string() },
+  args: { mode: v.string() },
   handler: async (ctx, args) => {
     parentSignal = ctx.abortSignal;
     const tools = agentMcp.aiTools(ctx);

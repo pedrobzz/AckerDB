@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   classifySchemaDiff,
-  dbz,
+  v,
   defineEventTable,
   defineSchema,
   defineTable,
@@ -31,40 +31,82 @@ function scriptedAsk(answers: string[]): Ask & { prompts: string[]; calls: numbe
 
 describe("renameCandidates", () => {
   test("a lone dropped/added table pair", () => {
-    const pre = defineSchema({ keep: defineTable({ id: dbz.primaryKey() }), legacy: defineTable({ id: dbz.primaryKey() }) });
-    const target = defineSchema({ keep: defineTable({ id: dbz.primaryKey() }), archive: defineTable({ id: dbz.primaryKey() }) });
+    const pre = defineSchema({ keep: defineTable({ id: v.primaryKey() }), legacy: defineTable({ id: v.primaryKey() }) });
+    const target = defineSchema({ keep: defineTable({ id: v.primaryKey() }), archive: defineTable({ id: v.primaryKey() }) });
     expect(renameCandidates(diffOf(pre, target)).tables).toEqual({ dropped: ["legacy"], added: ["archive"] });
   });
 
   test("multiple dropped and added tables become one global pool, sorted", () => {
-    const pre = defineSchema({ b: defineTable({ id: dbz.primaryKey() }), a: defineTable({ id: dbz.primaryKey() }) });
-    const target = defineSchema({ y: defineTable({ id: dbz.primaryKey() }), x: defineTable({ id: dbz.primaryKey() }) });
+    const pre = defineSchema({ b: defineTable({ id: v.primaryKey() }), a: defineTable({ id: v.primaryKey() }) });
+    const target = defineSchema({ y: defineTable({ id: v.primaryKey() }), x: defineTable({ id: v.primaryKey() }) });
     expect(renameCandidates(diffOf(pre, target)).tables).toEqual({ dropped: ["a", "b"], added: ["x", "y"] });
   });
 
   test("event tables are never rename candidates (they hold no data to carry)", () => {
     const pre = defineSchema({
-      ping: defineEventTable({ id: dbz.primaryKey() }, { args: {}, access: "public", matches: () => true }),
+      ping: defineEventTable({ id: v.primaryKey() }, { args: {}, access: "public", matches: () => true }),
     });
     const target = defineSchema({});
     expect(renameCandidates(diffOf(pre, target)).tables).toEqual({ dropped: [], added: [] });
   });
 
   test("per-table dropped and added columns, keyed by table", () => {
-    const pre = defineSchema({ t: defineTable({ id: dbz.primaryKey(), foo: dbz.string(), bar: dbz.string() }) });
-    const target = defineSchema({ t: defineTable({ id: dbz.primaryKey(), baz: dbz.string() }) });
+    const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), foo: v.string(), bar: v.string() }) });
+    const target = defineSchema({ t: defineTable({ id: v.primaryKey(), baz: v.string() }) });
     expect(renameCandidates(diffOf(pre, target)).columns).toEqual({ t: { dropped: ["bar", "foo"], added: ["baz"] } });
   });
 
   test("per-type removed and added variants, keyed by type name", () => {
-    const pre = defineSchema({ u: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["admin", "guest"]) }) });
-    const target = defineSchema({ u: defineTable({ id: dbz.primaryKey(), role: dbz.enum("Role", ["admin", "member"]) }) });
+    const pre = defineSchema({ u: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["admin", "guest"]) }) });
+    const target = defineSchema({ u: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["admin", "member"]) }) });
     expect(renameCandidates(diffOf(pre, target)).variants).toEqual({ Role: { dropped: ["guest"], added: ["member"] } });
   });
 
+  test("a prototype-named type is an ordinary variant candidate key", () => {
+    const pre = defineSchema({
+      u: defineTable({
+        id: v.primaryKey(),
+        role: v.enum("toString", ["stable", "legacy"]),
+      }),
+    });
+    const target = defineSchema({
+      u: defineTable({
+        id: v.primaryKey(),
+        role: v.enum("toString", ["stable", "current"]),
+      }),
+    });
+    const variants = renameCandidates(diffOf(pre, target)).variants;
+    expect(Object.hasOwn(variants, "toString")).toBe(true);
+    expect(variants["toString"]).toEqual({ dropped: ["legacy"], added: ["current"] });
+
+    const prototypeCandidates = renameCandidates([{
+      op: "table-altered",
+      table: "__proto__",
+      columns: [
+        { op: "dropped", column: "old" },
+        { op: "added", column: "current", nullable: false },
+        {
+          op: "variants-changed",
+          column: "kind",
+          typeName: "__proto__",
+          variants: [
+            { op: "removed", variant: "old" },
+            { op: "added", variant: "new" },
+          ],
+        },
+      ],
+      indexes: [],
+    }]);
+    const columns = prototypeCandidates.columns;
+    expect(Object.hasOwn(columns, "__proto__")).toBe(true);
+    expect(columns["__proto__"]).toEqual({ dropped: ["old"], added: ["current"] });
+    expect(Object.hasOwn(prototypeCandidates.variants, "__proto__")).toBe(true);
+    expect(prototypeCandidates.variants["__proto__"]).toEqual({ dropped: ["old"], added: ["new"] });
+  });
+
   test("a pure type change yields no candidates", () => {
-    const pre = defineSchema({ items: defineTable({ id: dbz.primaryKey(), count: dbz.number() }) });
-    const target = defineSchema({ items: defineTable({ id: dbz.primaryKey(), count: dbz.string() }) });
+    const pre = defineSchema({ items: defineTable({ id: v.primaryKey(), count: v.int() }) });
+    const target = defineSchema({ items: defineTable({ id: v.primaryKey(), count: v.string() }) });
     expect(renameCandidates(diffOf(pre, target))).toEqual({ tables: { dropped: [], added: [] }, columns: {}, variants: {} });
   });
 });
@@ -147,19 +189,44 @@ describe("runRenameForm", () => {
       variants: { Role: { guest: "member" } },
     });
   });
+
+  test("prototype-named rename answers remain own table, scope, and source keys", async () => {
+    const candidates: RenameCandidates = {
+      tables: { dropped: ["__proto__"], added: ["constructor"] },
+      columns: Object.fromEntries([["__proto__", { dropped: ["toString"], added: ["label"] }]]),
+      variants: Object.fromEntries([["constructor", { dropped: ["__proto__"], added: ["current"] }]]),
+    };
+    const result = await runRenameForm(candidates, scriptedAsk(["y", "y", "y"]));
+    expect(Object.hasOwn(result.renames.tables!, "__proto__")).toBe(true);
+    expect(result.renames.tables!["__proto__"]).toBe("constructor");
+    expect(Object.hasOwn(result.renames.columns!, "__proto__")).toBe(true);
+    expect(result.renames.columns!["__proto__"]!["toString"]).toBe("label");
+    expect(Object.hasOwn(result.renames.variants!["constructor"]!, "__proto__")).toBe(true);
+    expect(result.renames.variants!["constructor"]!["__proto__"]).toBe("current");
+  });
 });
 
 describe("deriveSlug", () => {
   test("a type change names its site and reason", () => {
-    const pre = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), kind: dbz.number() }) });
-    const target = defineSchema({ posts: defineTable({ id: dbz.primaryKey(), kind: dbz.string() }) });
+    const pre = defineSchema({ posts: defineTable({ id: v.primaryKey(), kind: v.int() }) });
+    const target = defineSchema({ posts: defineTable({ id: v.primaryKey(), kind: v.string() }) });
     expect(deriveSlug(refusalsOf(pre, target))).toBe("posts_kind_retype");
   });
 
   test("a dropped table names the table", () => {
-    const pre = defineSchema({ keep: defineTable({ id: dbz.primaryKey() }), legacy: defineTable({ id: dbz.primaryKey() }) });
-    const target = defineSchema({ keep: defineTable({ id: dbz.primaryKey() }) });
+    const pre = defineSchema({ keep: defineTable({ id: v.primaryKey() }), legacy: defineTable({ id: v.primaryKey() }) });
+    const target = defineSchema({ keep: defineTable({ id: v.primaryKey() }) });
     expect(deriveSlug(refusalsOf(pre, target))).toBe("legacy_drop");
+  });
+
+  test("a counted constraint refusal names the validator repair", () => {
+    expect(deriveSlug([{
+      table: "posts",
+      column: "title",
+      reason: "constraint-violations",
+      question: "constraints tightened; 1 existing row(s) violate the target validator",
+      count: 1,
+    }])).toBe("posts_title_validate");
   });
 
   test("no refusals falls back to a stable default", () => {
@@ -167,8 +234,8 @@ describe("deriveSlug", () => {
   });
 
   test("always matches the loader's name grammar", () => {
-    const pre = defineSchema({ t: defineTable({ id: dbz.primaryKey(), c: dbz.string() }) });
-    const target = defineSchema({ t: defineTable({ id: dbz.primaryKey() }) });
+    const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), c: v.string() }) });
+    const target = defineSchema({ t: defineTable({ id: v.primaryKey() }) });
     expect(deriveSlug(refusalsOf(pre, target))).toMatch(/^[A-Za-z0-9_]+$/);
   });
 });

@@ -13,10 +13,17 @@ import {
   type UserPrincipal,
   type WorkloadPrincipal,
 } from "../src/auth.ts";
-import { dbz, type Identity } from "../src/dbz.ts";
+import { v, type Identity } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { procedure, type ProcedureBuilder } from "../src/functions.ts";
-import { createMcp, type McpAiToolSet, type McpBuilder } from "../src/mcp.ts";
+import {
+  createMcp,
+  mcpTool,
+  type McpAiToolSet,
+  type McpBuilder,
+  type McpToolCtx,
+  type McpToolBuilder,
+} from "../src/mcp.ts";
 import { handleMcpPost } from "../src/mcp-http.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
 import { mcpTokenVaultOwner } from "../src/mcp-token-vault.ts";
@@ -28,24 +35,14 @@ import type { TelemetryRecord, TelemetrySpanRecord } from "../src/telemetry.ts";
 
 const schema = defineSchema({
   calls: defineTable({
-    id: dbz.primaryKey(),
-    tool: dbz.string(),
+    id: v.primaryKey(),
+    tool: v.string(),
   }),
 });
 
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
-const scopedMcp = typedMcp({
-  name: "delegated",
-  path: "/delegated/mcp",
-  scopes: ["orders.get", "reports.all", "orders.admin"] as const,
-});
-const otherMcp = typedMcp({
-  name: "other",
-  path: "/other/mcp",
-  scopes: ["other.read"] as const,
-});
-const scopeFreeMcp = typedMcp({ name: "scope_free", path: "/scope-free/mcp" });
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
 interface ToolObservation {
   readonly name: string;
@@ -82,14 +79,13 @@ async function parallelPoint(): Promise<void> {
   await parallelRelease.promise;
 }
 
-const principalOutput = dbz.object({
-  tool: dbz.string(),
-  kind: dbz.string(),
-  identity: dbz.nullable(dbz.identity()),
+const principalOutput = v.object({
+  tool: v.string(),
+  kind: v.string(),
+  identity: v.identity().nullable(),
 });
 
-const publicStatus = scopedMcp.tool({
-  name: "public_status",
+const publicStatus = typedMcpTool({
   description: "Public local delegation fixture.",
   access: "public",
   args: {},
@@ -97,8 +93,7 @@ const publicStatus = scopedMcp.tool({
   handler: (ctx) => principalResult("public_status", ctx.auth),
 });
 
-const authenticatedStatus = scopedMcp.tool({
-  name: "authenticated_status",
+const authenticatedStatus = typedMcpTool({
   description: "Authenticated local delegation fixture.",
   access: "authenticated",
   args: {},
@@ -106,8 +101,7 @@ const authenticatedStatus = scopedMcp.tool({
   handler: (ctx) => principalResult("authenticated_status", ctx.auth),
 });
 
-const readOrders = scopedMcp.tool({
-  name: "read_orders",
+const readOrders = typedMcpTool({
   description: "Any-of local scope fixture.",
   access: { anyOf: ["orders.get", "orders.admin"] },
   args: {},
@@ -119,8 +113,7 @@ const readOrders = scopedMcp.tool({
   },
 });
 
-const readReports = scopedMcp.tool({
-  name: "read_reports",
+const readReports = typedMcpTool({
   description: "All-of local scope fixture.",
   access: { allOf: ["orders.get", "reports.all"] },
   args: {},
@@ -131,8 +124,7 @@ const readReports = scopedMcp.tool({
   },
 });
 
-const adminOrders = scopedMcp.tool({
-  name: "admin_orders",
+const adminOrders = typedMcpTool({
   description: "Denied exact local scope fixture.",
   access: { anyOf: ["orders.admin"] },
   args: {},
@@ -140,16 +132,14 @@ const adminOrders = scopedMcp.tool({
   handler: (ctx) => principalResult("admin_orders", ctx.auth),
 });
 
-const otherPublic = otherMcp.tool({
-  name: "other_public",
+const otherPublic = typedMcpTool({
   description: "Cross-endpoint public fixture.",
   args: {},
   output: principalOutput,
   handler: (ctx) => principalResult("other_public", ctx.auth),
 });
 
-const otherProtected = otherMcp.tool({
-  name: "other_protected",
+const otherProtected = typedMcpTool({
   description: "Cross-endpoint scoped fixture.",
   access: { anyOf: ["other.read"] },
   args: {},
@@ -157,16 +147,14 @@ const otherProtected = otherMcp.tool({
   handler: (ctx) => principalResult("other_protected", ctx.auth),
 });
 
-const freePublic = scopeFreeMcp.tool({
-  name: "free_public",
+const freePublic = typedMcpTool({
   description: "Scope-free public fixture.",
   args: {},
   output: principalOutput,
   handler: (ctx) => principalResult("free_public", ctx.auth),
 });
 
-const freeAuthenticated = scopeFreeMcp.tool({
-  name: "free_authenticated",
+const freeAuthenticated = typedMcpTool({
   description: "Scope-free authenticated fixture.",
   access: "authenticated",
   args: {},
@@ -234,7 +222,7 @@ function errorMessage(work: () => unknown): string {
 
 const runLocal = typedProcedure({
   access: "public",
-  args: { mode: dbz.string() },
+  args: { mode: v.string() },
   handler: async (ctx, args) => {
     switch (args.mode) {
       case "scoped": {
@@ -319,54 +307,93 @@ const runLocal = typedProcedure({
   },
 });
 
-const delegate = scopedMcp.tool({
-  name: "delegate",
+async function handleDelegate(
+  ctx: McpToolCtx<typeof schema>,
+  args: { readonly mode: string },
+): Promise<{ readonly names: string[]; readonly events: unknown[] }> {
+  switch (args.mode) {
+    case "intersection": {
+      const tools = scopedMcp.aiTools(ctx, {
+        scopes: ["orders.get", "reports.all", "orders.admin"],
+      });
+      retainedTools = tools;
+      const readOrdersTool = tools.read_orders;
+      if (readOrdersTool === undefined) throw new Error("read_orders must be available");
+      return {
+        names: Object.keys(tools),
+        events: await runModel({ read_orders: readOrdersTool }, [
+          { id: "orders", name: "read_orders" },
+        ]),
+      };
+    }
+    case "include": {
+      const tools = scopedMcp.aiTools(ctx, {
+        scopes: ["orders.get", "reports.all"],
+        includeUnavailable: true,
+      });
+      return {
+        names: Object.keys(tools),
+        events: await runModel(tools, [{ id: "reports", name: "read_reports" }]),
+      };
+    }
+    case "cross_default": {
+      const tools = otherMcp.aiTools(ctx, { scopes: ["other.read"] });
+      return { names: Object.keys(tools), events: [] };
+    }
+    case "cross_include": {
+      const tools = otherMcp.aiTools(ctx, {
+        scopes: ["other.read"],
+        includeUnavailable: true,
+      });
+      return {
+        names: Object.keys(tools),
+        events: await runModel(tools, [{ id: "other", name: "other_public" }]),
+      };
+    }
+    default:
+      throw new Error(`unknown MCP delegation mode ${args.mode}`);
+  }
+}
+
+const delegate = typedMcpTool({
   description: "Exercise local delegation from an existing MCP principal.",
   access: "authenticated",
-  args: { mode: dbz.string() },
-  output: dbz.object({
-    names: dbz.array(dbz.string()),
-    events: dbz.jsonb<readonly unknown[]>(),
+  args: { mode: v.string() },
+  output: v.object({
+    names: v.array(v.string()),
+    events: v.jsonb<readonly unknown[]>(),
   }),
-  handler: async (ctx, args) => {
-    switch (args.mode) {
-      case "intersection": {
-        const tools = scopedMcp.aiTools(ctx, {
-          scopes: ["orders.get", "reports.all", "orders.admin"],
-        });
-        retainedTools = tools;
-        return {
-          names: Object.keys(tools),
-          events: await runModel(tools, [{ id: "orders", name: "read_orders" }]),
-        };
-      }
-      case "include": {
-        const tools = scopedMcp.aiTools(ctx, {
-          scopes: ["orders.get", "reports.all"],
-          includeUnavailable: true,
-        });
-        return {
-          names: Object.keys(tools),
-          events: await runModel(tools, [{ id: "reports", name: "read_reports" }]),
-        };
-      }
-      case "cross_default": {
-        const tools = otherMcp.aiTools(ctx, { scopes: ["other.read"] });
-        return { names: Object.keys(tools), events: [] };
-      }
-      case "cross_include": {
-        const tools = otherMcp.aiTools(ctx, {
-          scopes: ["other.read"],
-          includeUnavailable: true,
-        });
-        return {
-          names: Object.keys(tools),
-          events: await runModel(tools, [{ id: "other", name: "other_public" }]),
-        };
-      }
-      default:
-        throw new Error(`unknown MCP delegation mode ${args.mode}`);
-    }
+  handler: handleDelegate,
+});
+
+const scopedMcp = typedMcp({
+  name: "delegated",
+  path: "/delegated/mcp",
+  scopes: ["orders.get", "reports.all", "orders.admin"] as const,
+  tools: {
+    admin_orders: adminOrders,
+    authenticated_status: authenticatedStatus,
+    delegate,
+    public_status: publicStatus,
+    read_orders: readOrders,
+    read_reports: readReports,
+  },
+});
+const otherMcp = typedMcp({
+  name: "other",
+  path: "/other/mcp",
+  scopes: ["other.read"] as const,
+  tools: {
+    other_protected: otherProtected,
+    other_public: otherPublic,
+  },
+});
+const scopeFreeMcp = typedMcp({
+  name: "scope_free",
+  path: "/scope-free/mcp",
+  tools: {
+    free_authenticated: freeAuthenticated,
+    free_public: freePublic,
   },
 });
 
@@ -551,7 +578,7 @@ describe("MCP identity-preserving local delegation", () => {
 
       await runtime.telemetry.flush();
       expect(spans()).toContainEqual(expect.objectContaining({
-        function: "tools.readOrders",
+        function: "delegated:read_orders",
         stage: "policy",
         outcome: "ok",
       }));
@@ -591,7 +618,7 @@ describe("MCP identity-preserving local delegation", () => {
     await expect(runtime.runMcpTool({
       id: "anonymous-http-equivalent",
       mcp: scopedMcp.name,
-      tool: adminOrders.name,
+      tool: scopedMcp.tools.admin_orders.name,
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
     })).rejects.toMatchObject({ code: "unauthenticated" });
@@ -642,7 +669,7 @@ describe("MCP identity-preserving local delegation", () => {
       const intersection = await runtime.runMcpTool({
         id: "mcp-local-intersection",
         mcp: scopedMcp.name,
-        tool: delegate.name,
+        tool: scopedMcp.tools.delegate.name,
         args: { mode: "intersection" },
         principal,
       });
@@ -660,7 +687,7 @@ describe("MCP identity-preserving local delegation", () => {
       const unavailable = await runtime.runMcpTool({
         id: "mcp-local-unavailable",
         mcp: scopedMcp.name,
-        tool: delegate.name,
+        tool: scopedMcp.tools.delegate.name,
         args: { mode: "include" },
         principal,
       });
@@ -681,14 +708,14 @@ describe("MCP identity-preserving local delegation", () => {
       });
       expect(observations.map(({ name }) => name)).toEqual(["read_orders"]);
 
-      const httpSuccess = await httpToolCall(principal, readOrders.name);
+      const httpSuccess = await httpToolCall(principal, scopedMcp.tools.read_orders.name);
       expect(httpSuccess.status).toBe(200);
       expect(await httpSuccess.json()).toMatchObject({
         result: {
           structuredContent: { tool: "read_orders", kind: "mcp", identity: "73" },
         },
       });
-      await expect(httpToolCall(principal, readReports.name)).rejects.toMatchObject({
+      await expect(httpToolCall(principal, scopedMcp.tools.read_reports.name)).rejects.toMatchObject({
         code: "unauthorized",
         message: "access denied",
       });
@@ -708,7 +735,7 @@ describe("MCP identity-preserving local delegation", () => {
     const hidden = await runtime.runMcpTool({
       id: "mcp-cross-default",
       mcp: scopedMcp.name,
-      tool: delegate.name,
+      tool: scopedMcp.tools.delegate.name,
       args: { mode: "cross_default" },
       principal,
     });
@@ -717,7 +744,7 @@ describe("MCP identity-preserving local delegation", () => {
     const shown = await runtime.runMcpTool({
       id: "mcp-cross-include",
       mcp: scopedMcp.name,
-      tool: delegate.name,
+      tool: scopedMcp.tools.delegate.name,
       args: { mode: "cross_include" },
       principal,
     });
@@ -748,7 +775,7 @@ describe("MCP identity-preserving local delegation", () => {
     await expect(runtime.runMcpTool({
       id: "post-local-authority",
       mcp: scopedMcp.name,
-      tool: readOrders.name,
+      tool: scopedMcp.tools.read_orders.name,
       args: {},
       principal,
     })).rejects.toMatchObject({ code: "unauthorized" });

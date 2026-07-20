@@ -18,7 +18,7 @@ import {
   PRODUCTION_LIMITS,
   Registry,
   Runtime,
-  dbz,
+  v,
   defineServiceLimits,
   defineSchema,
   defineTable,
@@ -53,8 +53,8 @@ const PRIVATE_AUTH_HEADER = "private-auth-header-canary";
 
 const schema = defineSchema({
   notes: defineTable({
-    id: dbz.primaryKey(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    body: v.string(),
   }),
 });
 
@@ -66,18 +66,18 @@ const functions = {
   ops: {
     publicEcho: procedure({
       access: "public",
-      args: { secret: dbz.string() },
+      args: { secret: v.string() },
       handler: () => "public-ok",
     }),
     echo: procedure({
       access: "authenticated",
-      args: { secret: dbz.string() },
+      args: { secret: v.string() },
       handler: () => PRIVATE_RESULT,
     }),
     stream: sseProcedure({
       access: "authenticated",
-      args: { secret: dbz.string() },
-      yields: dbz.object({ result: dbz.string() }),
+      args: { secret: v.string() },
+      yields: v.object({ result: v.string() }),
       handler: async function* () {
         yield { result: PRIVATE_STREAM_RESULT };
       },

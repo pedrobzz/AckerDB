@@ -87,9 +87,9 @@ async function resolveGroup(
 }
 
 export async function runRenameForm(candidates: RenameCandidates, ask: Ask): Promise<FormResult> {
-  const tables: Record<string, string> = {};
-  const columns: Record<string, Record<string, string>> = {};
-  const variants: Record<string, Record<string, string>> = {};
+  const tables = Object.create(null) as Record<string, string>;
+  const columns = Object.create(null) as Record<string, Record<string, string>>;
+  const variants = Object.create(null) as Record<string, Record<string, string>>;
   const dropsAcknowledged: string[] = [];
 
   await resolveGroup(candidates.tables, ask, dropsAcknowledged, {
@@ -103,7 +103,10 @@ export async function runRenameForm(candidates: RenameCandidates, ask: Ask): Pro
     await resolveGroup(candidates.columns[table]!, ask, dropsAcknowledged, {
       describe: (name) => `column "${table}.${name}"`,
       onRename: (oldCol, newCol) => {
-        (columns[table] ??= {})[oldCol] = newCol;
+        if (!Object.hasOwn(columns, table)) {
+          columns[table] = Object.create(null) as Record<string, string>;
+        }
+        columns[table]![oldCol] = newCol;
       },
     });
   }
@@ -112,7 +115,10 @@ export async function runRenameForm(candidates: RenameCandidates, ask: Ask): Pro
     await resolveGroup(candidates.variants[type]!, ask, dropsAcknowledged, {
       describe: (name) => `variant "${type}.${name}"`,
       onRename: (oldVariant, newVariant) => {
-        (variants[type] ??= {})[oldVariant] = newVariant;
+        if (!Object.hasOwn(variants, type)) {
+          variants[type] = Object.create(null) as Record<string, string>;
+        }
+        variants[type]![oldVariant] = newVariant;
       },
     });
   }

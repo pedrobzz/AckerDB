@@ -1,4 +1,4 @@
-import { DbzzError, dbz } from "@dbzz/server";
+import { DbzzError, v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { requireUser, staffAccess } from "../lib/access.ts";
 import {
@@ -109,7 +109,7 @@ export const list = query({
 
 export const detail = query({
   access: staffAccess,
-  args: { id: dbz.bigint() },
+  args: { id: v.bigint() },
   handler: async (ctx, args) => {
     const user =
       (await ctx.db.users.get(args.id)) ?? notFound("Guest not found");
@@ -128,7 +128,7 @@ export const detail = query({
 
 export const create = mutation({
   access: staffAccess,
-  args: { name: dbz.string(), email: dbz.string() },
+  args: { name: v.string(), email: v.string() },
   handler: async (ctx, args) => {
     const name = cleanName(args.name);
     const email = normalizeEmail(args.email);
@@ -151,7 +151,7 @@ export const create = mutation({
 
 export const update = mutation({
   access: staffAccess,
-  args: { id: dbz.bigint(), name: dbz.string(), email: dbz.string() },
+  args: { id: v.bigint(), name: v.string(), email: v.string() },
   handler: async (ctx, args) => {
     const user =
       (await ctx.db.users.get(args.id)) ?? notFound("Guest not found");

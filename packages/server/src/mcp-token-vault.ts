@@ -1,7 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { decode, encode } from "@dbzz/core";
-import type { Identity } from "./dbz.ts";
+import type { Identity } from "./v.ts";
 import { CorruptDatabaseError, DbzzError } from "./errors.ts";
 import { deepFreeze } from "./immutable.ts";
 import { MCP_TOKEN_PREFIX, type ParsedMcpToken } from "./mcp-credential.ts";

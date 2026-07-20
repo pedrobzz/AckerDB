@@ -1,26 +1,26 @@
-import { defineSchema, defineTable, dbz } from "@dbzz/server";
+import { defineSchema, defineTable, v } from "@dbzz/server";
 
 export default defineSchema({
   documents: defineTable({
-    id: dbz.primaryKey(),
-    partition: dbz.number(),
-    rank: dbz.number(),
-    score: dbz.number(),
-    payload: dbz.string(),
+    id: v.primaryKey(),
+    partition: v.float(),
+    rank: v.float(),
+    score: v.float(),
+    payload: v.string(),
   }).index("by_partition_rank", ["partition", "rank"]),
 
   accounts: defineTable({
-    id: dbz.primaryKey(),
-    account: dbz.number(),
-    balance: dbz.number(),
-    version: dbz.number(),
+    id: v.primaryKey(),
+    account: v.float(),
+    balance: v.float(),
+    version: v.float(),
   }).index("by_account", ["account"], { unique: true }),
 
   channels: defineTable({
-    id: dbz.primaryKey(),
-    channel: dbz.number(),
-    version: dbz.number(),
-    checksum: dbz.number(),
-    payload: dbz.string(),
+    id: v.primaryKey(),
+    channel: v.float(),
+    version: v.float(),
+    checksum: v.float(),
+    payload: v.string(),
   }).index("by_channel", ["channel"], { unique: true }),
 });

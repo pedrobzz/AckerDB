@@ -22,32 +22,32 @@ export function makeFixture(files: Record<string, string>): string {
 }
 
 export const FIXTURE_SCHEMA = `
-import { defineEventTable, defineSchema, defineTable, dbz } from "@dbzz/server";
+import { defineEventTable, defineSchema, defineTable, v } from "@dbzz/server";
 
-const role = dbz.enum("Role", ["admin", "member"]);
-const payload = dbz.union("Payload", {
-  text: dbz.string(),
-  nothing: dbz.tag(),
+const role = v.enum("Role", ["admin", "member"]);
+const payload = v.union("Payload", {
+  text: v.string(),
+  nothing: v.tag(),
 });
 
 export default defineSchema({
   messages: defineTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
-    body: dbz.string(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
+    body: v.string(),
     role,
     payload,
   }).index("by_channel", ["channelId"]),
   jobs: defineTable({
-    id: dbz.primaryKey(),
-    note: dbz.string(),
-    at: dbz.scheduleAt(),
+    id: v.primaryKey(),
+    note: v.string(),
+    at: v.scheduleAt(),
   }).scheduled("messages.runJob"),
   typingEvents: defineEventTable({
-    id: dbz.primaryKey(),
-    channelId: dbz.bigint(),
+    id: v.primaryKey(),
+    channelId: v.bigint(),
   }, {
-    args: { channelId: dbz.bigint() },
+    args: { channelId: v.bigint() },
     access: "public",
     matches: (row, args) => row.channelId === args.channelId,
   }),
@@ -55,13 +55,13 @@ export default defineSchema({
 `;
 
 export const FIXTURE_MESSAGES = `
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { mutation, query, sseProcedure } from "../_generated/server.ts";
 
 export const tail = sseProcedure({
   access: "public",
-  args: { channelId: dbz.bigint() },
-  yields: dbz.object({ body: dbz.string() }),
+  args: { channelId: v.bigint() },
+  yields: v.object({ body: v.string() }),
   handler: async function* (_ctx, args) {
     yield { body: "channel " + args.channelId };
   },
@@ -69,14 +69,14 @@ export const tail = sseProcedure({
 
 export const list = query({
   access: "public",
-  args: { channelId: dbz.bigint() },
+  args: { channelId: v.bigint() },
   handler: (ctx, args) =>
     ctx.db.messages.byChannel((q) => q.eq("channelId", args.channelId)).collect(),
 });
 
 export const send = mutation({
   access: "public",
-  args: { channelId: dbz.bigint(), body: dbz.string() },
+  args: { channelId: v.bigint(), body: v.string() },
   handler: async (ctx, args) => {
     const id = await ctx.db.messages.insert({
       ...args,
@@ -90,7 +90,7 @@ export const send = mutation({
 
 export const runJob = mutation({
   access: "system",
-  args: { id: dbz.bigint(), note: dbz.string(), at: dbz.number() },
+  args: { id: v.bigint(), note: v.string(), at: v.int() },
   handler: async (ctx, args) => {
     await ctx.db.messages.insert({
       channelId: 0n,
@@ -103,7 +103,7 @@ export const runJob = mutation({
 `;
 
 export const FIXTURE_ADMIN_USERS = `
-import { dbz } from "@dbzz/server";
+import { v } from "@dbzz/server";
 import { query } from "../../_generated/server.ts";
 
 export const count = query({

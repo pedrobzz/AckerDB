@@ -5,7 +5,7 @@
  * the generics at the function-constructor boundary keep users honest.
  */
 import type { Database } from "bun:sqlite";
-import { ValidationError, type Validator } from "./dbz.ts";
+import { ValidationError, type Validator } from "./v.ts";
 import type { ColumnPlan, Engine, TablePlan } from "./engine.ts";
 import { brand, hasBrand } from "./identity.ts";
 import { camelCase, type IndexDef } from "./schema.ts";
@@ -316,13 +316,14 @@ class RangeQueryImpl {
     const dir = this.spec.order === "asc" ? "ASC" : "DESC";
     const cols = this.spec.index === null ? [] : [...this.spec.index.columns];
     cols.push(this.spec.plan.pk);
-    return ` ORDER BY ${cols.map((c) => `${quote(c)} ${dir}`).join(", ")}`;
+    const table = quote(this.spec.plan.name);
+    return ` ORDER BY ${cols.map((column) => `${table}.${quote(column)} ${dir}`).join(", ")}`;
   }
 
   private sqlFor(extraWhere: string, limit: number): { sql: string; params: unknown[] } {
     const { where, params } = this.whereAndParams();
     const glue = extraWhere === "" ? "" : where === "" ? ` WHERE ${extraWhere}` : ` AND ${extraWhere}`;
-    const sql = `SELECT * FROM ${quote(this.spec.plan.name)}${where}${glue}${this.orderBy()}${limit >= 0 ? ` LIMIT ${limit}` : ""}`;
+    const sql = `SELECT ${this.spec.plan.readProjection} FROM ${quote(this.spec.plan.name)}${where}${glue}${this.orderBy()}${limit >= 0 ? ` LIMIT ${limit}` : ""}`;
     return { sql, params };
   }
 
@@ -618,7 +619,7 @@ function readMethods(
   plan: TablePlan,
   observer?: DbStatementObserver,
 ) {
-  const accessor: Record<string, unknown> = {
+  const accessor: Record<string, unknown> = Object.assign(Object.create(null), {
     async get(id: unknown): Promise<Record<string, unknown> | null> {
       return await observeStatement(
         observer,
@@ -631,7 +632,10 @@ function readMethods(
           }
           reads?.add(idKey(plan.name, id));
           const raw = engine
-            .statement(conn, `SELECT * FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`)
+            .statement(
+              conn,
+              `SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`,
+            )
             .get(id as never) as Record<string, unknown> | null;
           return raw === null ? null : engine.rowFromSql(plan, raw);
         },
@@ -641,7 +645,7 @@ function readMethods(
     scan(): RangeQueryImpl {
       return makeRangeQuery(engine, conn, reads, plan, null, null, observer);
     },
-  };
+  });
   for (const index of plan.indexes) {
     const run = (fn: (q: IndexQb) => unknown) => {
       const qb = new IndexQb(engine, plan, index);
@@ -659,7 +663,7 @@ function checkFullRow(plan: TablePlan, engine: Engine, row: unknown, op: string)
     throw new ValidationError(`${plan.name}.${op}: expected a row object`);
   }
   const input = row as Record<string, unknown>;
-  if (input[plan.pk] !== undefined) {
+  if (Object.hasOwn(input, plan.pk) && input[plan.pk] !== undefined) {
     throw new ValidationError(
       `${plan.name}.${op}: the primary key "${plan.pk}" is assigned by the database`,
     );
@@ -668,10 +672,13 @@ function checkFullRow(plan: TablePlan, engine: Engine, row: unknown, op: string)
   const out: Record<string, unknown> = {};
   for (const [name, validator] of Object.entries(table.columns)) {
     if (name === plan.pk) continue;
-    out[name] = validator.check(input[name], `${plan.name}.${op}.${name}`);
+    const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
+      ? null
+      : input[name];
+    out[name] = validator.check(value, `${plan.name}.${op}.${name}`);
   }
   for (const key of Object.keys(input)) {
-    if (!(key in table.columns) && input[key] !== undefined) {
+    if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
       throw new ValidationError(`${plan.name}.${op}: unknown field "${key}"`);
     }
   }
@@ -744,7 +751,10 @@ function writeMethods(
 
   const getRow = (id: bigint): Record<string, unknown> | null => {
     const raw = engine
-      .statement(conn, `SELECT * FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`)
+      .statement(
+        conn,
+        `SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`,
+      )
       .get(id as never) as Record<string, unknown> | null;
     return raw === null ? null : engine.rowFromSql(plan, raw);
   };
@@ -784,8 +794,10 @@ function writeMethods(
           if (key === plan.pk) {
             throw new ValidationError(`${plan.name}.patch: the primary key cannot be changed`);
           }
-          const validator = table.columns[key];
-          if (!validator) throw new ValidationError(`${plan.name}.patch: unknown field "${key}"`);
+          if (!Object.hasOwn(table.columns, key)) {
+            throw new ValidationError(`${plan.name}.patch: unknown field "${key}"`);
+          }
+          const validator = table.columns[key]!;
           const value = validator.check(input[key], `${plan.name}.patch.${key}`);
           updated[key] = value;
           const columnPlan = plan.columns.get(key)!;
@@ -879,7 +891,7 @@ function attachUpsert(
         }
         const qb = new IndexQb(engine, plan, index);
         for (const column of keyColumns) {
-          if (key[column] === undefined) {
+          if (!Object.hasOwn(key, column) || key[column] === undefined) {
             throw new ValidationError(`${plan.name}.${name}.upsert: missing key column "${column}"`);
           }
           qb.eq(column, key[column]);
@@ -912,28 +924,31 @@ function eventWriteMethods(
 ) {
   const table = engine.schema.tables[tableName]!;
   const pk = table.primaryKey;
-  return {
+  return Object.assign(Object.create(null) as Record<never, never>, {
     async insert(row: unknown): Promise<void> {
       if (row === null || typeof row !== "object" || Array.isArray(row)) {
         throw new ValidationError(`${tableName}.insert: expected a row object`);
       }
       const input = row as Record<string, unknown>;
-      if (input[pk] !== undefined) {
+      if (Object.hasOwn(input, pk) && input[pk] !== undefined) {
         throw new ValidationError(`${tableName}.insert: the primary key "${pk}" is assigned by dbzz`);
       }
       const out: Record<string, unknown> = {};
       for (const [name, validator] of Object.entries(table.columns)) {
         if (name === pk) continue;
-        out[name] = validator.check(input[name], `${tableName}.insert.${name}`);
+        const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
+          ? null
+          : input[name];
+        out[name] = validator.check(value, `${tableName}.insert.${name}`);
       }
       for (const key of Object.keys(input)) {
-        if (!(key in table.columns) && input[key] !== undefined) {
+        if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
           throw new ValidationError(`${tableName}.insert: unknown field "${key}"`);
         }
       }
       writes.events.push({ table: tableName, row: { [pk]: nextEventId(tableName), ...out } });
     },
-  };
+  });
 }
 
 /** Read-only ctx.db (queries). Event tables are absent — there is nothing to read. */
@@ -943,7 +958,7 @@ export function makeDbReader(
   reads: ReadRecorder | null,
   observer?: DbStatementObserver,
 ): unknown {
-  const db: Record<string, unknown> = {};
+  const db: Record<string, unknown> = Object.create(null);
   for (const plan of engine.plans.values()) {
     db[plan.name] = readMethods(engine, conn, reads, plan, observer);
   }
@@ -957,7 +972,7 @@ export function makeDbWriter(
   nextEventId: (table: string) => bigint,
   observer?: DbStatementObserver,
 ): unknown {
-  const db: Record<string, unknown> = {};
+  const db: Record<string, unknown> = Object.create(null);
   for (const [name, table] of Object.entries(engine.schema.tables)) {
     if (table.kind === "event") {
       db[name] = eventWriteMethods(engine, writes, name, nextEventId);
@@ -965,10 +980,11 @@ export function makeDbWriter(
     }
     const plan = engine.plan(name);
     const writer = writeMethods(engine, writes, plan, observer);
-    const accessor = {
-      ...readMethods(engine, engine.writer, null, plan, observer),
-      ...writer,
-    };
+    const accessor: Record<string, unknown> = Object.assign(
+      Object.create(null),
+      readMethods(engine, engine.writer, null, plan, observer),
+      writer,
+    );
     const upsertWriter = observer === undefined
       ? writer
       : writeMethods(engine, writes, plan);
