@@ -33,7 +33,7 @@ afterEach(async () => {
 });
 
 function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionRuntimeContext } {
-  const hiddenMcp = typedMcp({ name: "hidden" });
+  const hiddenMcp = typedMcp({ name: "hidden", tools: {} });
   const list = typedQuery({
     access: "public",
     args: {},

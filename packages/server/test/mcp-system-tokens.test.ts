@@ -24,7 +24,14 @@ import {
   type QueryBuilder,
 } from "../src/functions.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
-import { createMcp, type McpBuilder } from "../src/mcp.ts";
+import {
+  createMcp,
+  mcpTool,
+  type McpBuilder,
+  type McpToolBuilder,
+  type McpToolCtx,
+  type McpToolResult,
+} from "../src/mcp.ts";
 import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
@@ -60,15 +67,42 @@ const schema = defineSchema({
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
-const agentMcp = typedMcp({ name: "agent" });
-const operationsMcp = typedMcp({ name: "operations", path: "/operations/mcp" });
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+
+let systemResult: unknown = null;
+
+async function attemptSystemAdministration(
+  ctx: McpToolCtx<typeof schema>,
+): Promise<McpToolResult> {
+  return ctx.tx((tx) => {
+    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    agentMcp.systemTokens.list(tx, ctx.auth.identity);
+    return { content: [{ type: "text", text: "unexpected" }] };
+  });
+}
+
+const attemptFromMcp = typedMcpTool({
+  description: "Exercise the system token-administration boundary.",
+  access: "authenticated",
+  args: {},
+  handler: attemptSystemAdministration,
+});
+
+const agentMcp = typedMcp({
+  name: "agent",
+  tools: { attempt_system_administration: attemptFromMcp },
+});
+const operationsMcp = typedMcp({
+  name: "operations",
+  path: "/operations/mcp",
+  tools: {},
+});
 const scopedMcp = typedMcp({
   name: "scoped",
   path: "/scoped/mcp",
   scopes: ["orders.all", "orders.get", "reports.all"] as const,
+  tools: {},
 });
-
-let systemResult: unknown = null;
 
 /** Backend-only fixture: an external user can queue work only for its own Identity. */
 const queue = typedMutation({
@@ -138,18 +172,6 @@ const listOwned = typedQuery({
   access: "authenticated",
   args: {},
   handler: (ctx) => agentMcp.tokens.list(ctx),
-});
-
-const attemptFromMcp = agentMcp.tool({
-  name: "attempt_system_administration",
-  description: "Exercise the system token-administration boundary.",
-  access: "authenticated",
-  args: {},
-  handler: async (ctx) => ctx.tx((tx) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
-    agentMcp.systemTokens.list(tx, ctx.auth.identity);
-    return { content: [{ type: "text", text: "unexpected" }] };
-  }),
 });
 
 const modules = {

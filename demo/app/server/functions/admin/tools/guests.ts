@@ -1,14 +1,13 @@
 import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * `get_guests` — the restaurant's guests (diners) and their contact details.
  * Reach for this to find a guest by name or email, or to resolve a guest's id
  * before looking up their orders with `get_orders`.
  */
-export const getGuests = admin.tool({
-  name: "get_guests",
+export const getGuests = mcpTool({
   title: "Get guests",
   description:
     "List guests (diners) with their name and email, optionally narrowed by a " +

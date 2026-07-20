@@ -1,11 +1,15 @@
 import { Buffer } from "node:buffer";
 import {
+  type ArrayValidator,
   type EnumValidator,
   type Descriptor,
   type InferValidator,
   type LiteralValidator,
+  type NullableValidator,
   type ObjectShape,
   type ObjectValidator,
+  type NullishValidator,
+  type OptionalValidator,
   type StandardValidator,
   type UnionValidator,
 } from "./v.ts";
@@ -65,22 +69,80 @@ export interface JsonObjectSchema extends Readonly<Record<string, unknown>> {
  * local model adapters consume the same codec; DBZZ's ordinary runtime input
  * type remains unchanged.
  */
-export interface StandardJsonCodec<Output> {
+export interface StandardJsonCodec<
+  Output,
+  ProtocolInput = unknown,
+  ProtocolOutput = unknown,
+> {
   readonly inputSchema: Readonly<Record<string, unknown>>;
   readonly outputSchema: Readonly<Record<string, unknown>>;
   readonly decode: (value: unknown, path?: string) => Output;
   readonly encode: (value: unknown, path?: string) => unknown;
   /** Validate canonical model input JSON without converting the exposed value. */
-  readonly inputProtocolSchema: StandardJsonProtocolSchema;
+  readonly inputProtocolSchema: StandardJsonProtocolSchema<ProtocolInput>;
   /** Validate canonical structured output JSON without converting the exposed value. */
-  readonly outputProtocolSchema: StandardJsonProtocolSchema;
+  readonly outputProtocolSchema: StandardJsonProtocolSchema<ProtocolOutput>;
   readonly "~standard": StandardSchemaProperties<unknown, Output>;
 }
 
 /** Standard Schema view consumed by JSON-native model/tool runtimes. */
-export interface StandardJsonProtocolSchema {
-  readonly "~standard": StandardSchemaProperties<unknown, unknown>;
+export interface StandardJsonProtocolSchema<Value = unknown> {
+  readonly "~standard": StandardSchemaProperties<Value, Value>;
 }
+
+type OmissibleProtocolKey<S extends ObjectShape> = {
+  [K in keyof S]: S[K] extends OptionalValidator | NullishValidator ? K : never;
+}[keyof S];
+
+type RequiredProtocolKey<S extends ObjectShape> = Exclude<keyof S, OmissibleProtocolKey<S>>;
+
+/** Standard-JSON values accepted before DBZZ converts lossless wire forms. */
+export type StandardJsonInput<V extends StandardValidator> =
+  V extends NullableValidator<infer Inner> ? StandardJsonInput<Inner> | null
+    : V extends OptionalValidator<infer Inner> ? StandardJsonInput<Inner>
+      : V extends NullishValidator<infer Inner> ? StandardJsonInput<Inner> | null
+        : V extends ArrayValidator<infer Element> ? StandardJsonInput<Element>[]
+          : V extends ObjectValidator<infer Shape> ? {
+              [K in RequiredProtocolKey<Shape>]: StandardJsonInput<Shape[K]>;
+            } & {
+              [K in OmissibleProtocolKey<Shape>]?: StandardJsonInput<Shape[K]>;
+            }
+            : V extends UnionValidator<infer Members> ? {
+                [K in keyof Members & string]: Members[K] extends { readonly kind: "tag" }
+                  ? { readonly tag: K; readonly value?: null }
+                  : Members[K] extends OptionalValidator | NullishValidator
+                    ? { readonly tag: K; readonly value?: StandardJsonInput<Members[K]> }
+                    : { readonly tag: K; readonly value: StandardJsonInput<Members[K]> };
+              }[keyof Members & string]
+              : V extends LiteralValidator<infer Value> ? Value extends bigint ? `${Value}` : Value
+                : V extends { readonly kind: "bigint" | "identity" } ? number | string
+                  : V extends { readonly kind: "bytes" } ? string
+                    : V extends StandardValidator<infer Value, string, unknown> ? Value
+                      : never;
+
+/** Canonical Standard-JSON values emitted after DBZZ encodes native values. */
+export type StandardJsonOutput<V extends StandardValidator> =
+  V extends NullableValidator<infer Inner> ? StandardJsonOutput<Inner> | null
+    : V extends OptionalValidator<infer Inner> ? StandardJsonOutput<Inner>
+      : V extends NullishValidator<infer Inner> ? StandardJsonOutput<Inner> | null
+        : V extends ArrayValidator<infer Element> ? StandardJsonOutput<Element>[]
+          : V extends ObjectValidator<infer Shape> ? {
+              [K in RequiredProtocolKey<Shape>]: StandardJsonOutput<Shape[K]>;
+            } & {
+              [K in OmissibleProtocolKey<Shape>]?: StandardJsonOutput<Shape[K]>;
+            }
+            : V extends UnionValidator<infer Members> ? {
+                [K in keyof Members & string]: Members[K] extends { readonly kind: "tag" }
+                  ? { readonly tag: K; readonly value: null }
+                  : Members[K] extends OptionalValidator | NullishValidator
+                    ? { readonly tag: K; readonly value?: StandardJsonOutput<Members[K]> }
+                    : { readonly tag: K; readonly value: StandardJsonOutput<Members[K]> };
+              }[keyof Members & string]
+              : V extends LiteralValidator<infer Value> ? Value extends bigint ? `${Value}` : Value
+                : V extends { readonly kind: "bigint" | "identity" } ? string
+                  : V extends { readonly kind: "bytes" } ? string
+                    : V extends StandardValidator<infer Value, string, unknown> ? Value
+                      : never;
 
 type SchemaMode = "input" | "output";
 
@@ -205,6 +267,13 @@ function canonicalDecimal(value: unknown, path: string): bigint {
   return BigInt(value);
 }
 
+function canonicalOutputDecimal(value: unknown, path: string): bigint {
+  if (typeof value !== "string" || !DECIMAL.test(value)) {
+    protocolError(path, "a canonical decimal string", value);
+  }
+  return BigInt(value);
+}
+
 function canonicalBytes(value: unknown, path: string): Uint8Array {
   if (typeof value !== "string" || !BASE64.test(value)) {
     protocolError(path, "a canonical base64 string", value);
@@ -242,7 +311,10 @@ function compileObject(
   ] as const);
   return {
     schema(mode) {
-      const properties: Record<string, Readonly<Record<string, unknown>>> = {};
+      const properties = Object.create(null) as Record<
+        string,
+        Readonly<Record<string, unknown>>
+      >;
       const required: string[] = [];
       for (const [name, field, node] of fields) {
         properties[name] = node.schema(mode);
@@ -287,7 +359,7 @@ function compileObject(
     },
     encode(value, path) {
       const checked = value as Record<string, unknown>;
-      const encoded: Record<string, unknown> = {};
+      const encoded = Object.create(null) as Record<string, unknown>;
       for (const [name, field, node] of fields) {
         if (
           (field.kind === "optional" || field.kind === "nullish") &&
@@ -415,9 +487,16 @@ function compileNode(
         );
       }
       return {
-        schema: () => described(validator, { type: ["integer", "string"], pattern: DECIMAL_PATTERN }),
-        decode(value, path) {
-          return canonicalDecimal(value, path);
+        schema: (mode) => described(
+          validator,
+          mode === "input"
+            ? { type: ["integer", "string"], pattern: DECIMAL_PATTERN }
+            : { type: "string", pattern: DECIMAL_PATTERN },
+        ),
+        decode(value, path, mode) {
+          return mode === "input"
+            ? canonicalDecimal(value, path)
+            : canonicalOutputDecimal(value, path);
         },
         encode(value) {
           return (value as bigint).toString();
@@ -619,25 +698,30 @@ export function createStandardSchemaProperties<Input, Output>(
 
 export function compileStandardJsonCodec<V extends StandardValidator>(
   validator: V,
-): StandardJsonCodec<InferValidator<V>> {
+): StandardJsonCodec<InferValidator<V>, StandardJsonInput<V>, StandardJsonOutput<V>> {
   const node = compileNode(validator, "$", true);
   const inputSchema = schemaFor(node, "input", { target: "draft-2020-12" });
   const outputSchema = schemaFor(node, "output", { target: "draft-2020-12" });
-  const decode = (value: unknown, path = "$input") =>
-    validator.check(node.decode(value, path, "input"), path) as InferValidator<V>;
+  const decode = (value: unknown, path = "$input") => {
+    assertStandardJson(value, path);
+    return validator.check(node.decode(value, path, "input"), path) as InferValidator<V>;
+  };
   const encode = (value: unknown, path = "$output") => {
     node.preflight?.(value, path);
-    return node.encode(validator.check(value, path), path);
+    const encoded = node.encode(validator.check(value, path), path);
+    assertStandardJson(encoded, path);
+    return encoded;
   };
-  const protocolSchema = (mode: SchemaMode): StandardJsonProtocolSchema => Object.freeze({
+  const protocolSchema = <Value>(mode: SchemaMode): StandardJsonProtocolSchema<Value> => Object.freeze({
     "~standard": Object.freeze({
       version: 1 as const,
       vendor: "dbzz" as const,
-      validate(value: unknown): StandardSchemaResult<unknown> {
+      validate(value: unknown): StandardSchemaResult<Value> {
         const path = mode === "input" ? "$input" : "$output";
         try {
+          assertStandardJson(value, path);
           validator.check(node.decode(value, path, mode), path);
-          return { value };
+          return { value: value as Value };
         } catch (error) {
           if (!isValidationError(error)) throw error;
           return { issues: [{ message: error.message }] };
@@ -649,13 +733,17 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
       }),
     }),
   });
-  const codec: StandardJsonCodec<InferValidator<V>> = {
+  const codec: StandardJsonCodec<
+    InferValidator<V>,
+    StandardJsonInput<V>,
+    StandardJsonOutput<V>
+  > = {
     inputSchema,
     outputSchema,
     decode,
     encode,
-    inputProtocolSchema: protocolSchema("input"),
-    outputProtocolSchema: protocolSchema("output"),
+    inputProtocolSchema: protocolSchema<StandardJsonInput<V>>("input"),
+    outputProtocolSchema: protocolSchema<StandardJsonOutput<V>>("output"),
     "~standard": Object.freeze({
       version: 1 as const,
       vendor: "dbzz" as const,
@@ -678,11 +766,19 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
 
 export function compileMcpObjectCodec<S extends ObjectShape>(
   validator: ObjectValidator<S>,
-): StandardJsonCodec<InferValidator<ObjectValidator<S>>> & {
+): StandardJsonCodec<
+  InferValidator<ObjectValidator<S>>,
+  StandardJsonInput<ObjectValidator<S>>,
+  StandardJsonOutput<ObjectValidator<S>>
+> & {
   readonly inputSchema: JsonObjectSchema;
   readonly outputSchema: JsonObjectSchema;
 } {
-  return compileStandardJsonCodec(validator) as StandardJsonCodec<InferValidator<ObjectValidator<S>>> & {
+  return compileStandardJsonCodec(validator) as StandardJsonCodec<
+    InferValidator<ObjectValidator<S>>,
+    StandardJsonInput<ObjectValidator<S>>,
+    StandardJsonOutput<ObjectValidator<S>>
+  > & {
     readonly inputSchema: JsonObjectSchema;
     readonly outputSchema: JsonObjectSchema;
   };

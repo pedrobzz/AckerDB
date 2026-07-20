@@ -60,7 +60,10 @@ export const stream = sseProcedure({
   },
   yields: v.jsonb<InferUIMessageChunk<UIMessage>>(),
   handler: async (ctx, args) => {
-    const tools = admin.aiTools(ctx, { scopes: ["read", "operate"] });
+    const tools = admin.aiTools(ctx, {
+      scopes: ["read", "operate"],
+      includeUnavailable: true,
+    });
     const result = streamText({
       model: createChatModel(),
       system: SYSTEM_PROMPT,

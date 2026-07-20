@@ -1,7 +1,7 @@
 import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import { itemStatus } from "../../../schema.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * `get_order_items` — the individual line items on orders, with their kitchen
@@ -10,8 +10,7 @@ import { admin } from "../mcp.ts";
  * everything still PREPARING); orderedAt/statusChangedAt answer how long an
  * item has been waiting.
  */
-export const getOrderItems = admin.tool({
-  name: "get_order_items",
+export const getOrderItems = mcpTool({
   title: "Get order items",
   description:
     "List order line items with quantity, unit price (cents), kitchen status " +

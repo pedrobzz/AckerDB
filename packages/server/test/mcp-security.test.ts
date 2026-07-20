@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
-import { createMcp } from "../src/mcp.ts";
+import { createMcp, mcpTool } from "../src/mcp.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
 import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
@@ -21,9 +21,7 @@ const TOKEN_CANARY = `dbzz_mcp.${"A".repeat(22)}.${"B".repeat(43)}`;
 const PROVIDER_CREDENTIAL_CANARY = "private-provider-credential-canary";
 
 const schema = defineSchema({});
-const securityMcp = createMcp({ name: "security" });
-const echoSecret = securityMcp.tool({
-  name: "echo_secret",
+const echoSecret = mcpTool({
   description: "Return one private fixture without observing its contents.",
   args: { secret: v.string(), crash: v.boolean() },
   handler: (_ctx, args) => {
@@ -31,12 +29,18 @@ const echoSecret = securityMcp.tool({
     return { content: [{ type: "text", text: `${RESULT_CANARY}:${args.secret}` }] };
   },
 });
-const protectedTool = securityMcp.tool({
-  name: "protected_tool",
+const protectedTool = mcpTool({
   description: "Require an MCP Identity.",
   access: "authenticated",
   args: {},
   handler: () => ({ content: [{ type: "text", text: "protected" }] }),
+});
+const securityMcp = createMcp({
+  name: "security",
+  tools: {
+    echo_secret: echoSecret,
+    protected_tool: protectedTool,
+  },
 });
 const modules = { security: { securityMcp, echoSecret, protectedTool } };
 
@@ -283,18 +287,20 @@ describe("MCP HTTP security boundary", () => {
   });
 
   test("bounds registered tools and every attacker-controlled telemetry dimension", async () => {
-    const limitedMcp = createMcp({ name: "limited", path: "/limited" });
-    const one = limitedMcp.tool({
-      name: "one",
+    const one = mcpTool({
       description: "First.",
       args: {},
       handler: () => ({ content: [] }),
     });
-    const two = limitedMcp.tool({
-      name: "two",
+    const two = mcpTool({
       description: "Second.",
       args: {},
       handler: () => ({ content: [] }),
+    });
+    const limitedMcp = createMcp({
+      name: "limited",
+      path: "/limited",
+      tools: { one, two },
     });
     const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-tool-limit-"));
     const engine = new Engine(schema, join(directory, "data.db"));
@@ -311,24 +317,39 @@ describe("MCP HTTP security boundary", () => {
     engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
 
-    expect(() => securityMcp.tool({
-      name: `a${"b".repeat(63)}`,
-      description: "Too long.",
-      args: {},
-      handler: () => ({ content: [] }),
+    expect(() => createMcp({
+      name: "invalid_name",
+      path: "/invalid-name",
+      tools: {
+        [`a${"b".repeat(63)}`]: mcpTool({
+          description: "Too long.",
+          args: {},
+          handler: () => ({ content: [] }),
+        }),
+      },
     })).toThrow("at most 63 UTF-8 bytes");
-    expect(() => securityMcp.tool({
-      name: "long_title",
-      title: "x".repeat(257),
-      description: "Too long.",
-      args: {},
-      handler: () => ({ content: [] }),
+    expect(() => createMcp({
+      name: "invalid_title",
+      path: "/invalid-title",
+      tools: {
+        long_title: mcpTool({
+          title: "x".repeat(257),
+          description: "Too long.",
+          args: {},
+          handler: () => ({ content: [] }),
+        }),
+      },
     })).toThrow("title exceeds 256 UTF-8 bytes");
-    expect(() => securityMcp.tool({
-      name: "long_description",
-      description: "x".repeat(4 * 1_024 + 1),
-      args: {},
-      handler: () => ({ content: [] }),
+    expect(() => createMcp({
+      name: "invalid_description",
+      path: "/invalid-description",
+      tools: {
+        long_description: mcpTool({
+          description: "x".repeat(4 * 1_024 + 1),
+          args: {},
+          handler: () => ({ content: [] }),
+        }),
+      },
     })).toThrow("description exceeds 4096 UTF-8 bytes");
   });
 

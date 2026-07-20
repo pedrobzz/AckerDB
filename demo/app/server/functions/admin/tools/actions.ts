@@ -1,4 +1,5 @@
 import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import {
   advanceOrderItem,
   cancelOpenOrder,
@@ -6,7 +7,6 @@ import {
   notFound,
 } from "../../../lib/domain.ts";
 import { itemStatus } from "../../../schema.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * The staff action tools, gated behind the `operate` scope. Each one reuses the
@@ -20,8 +20,7 @@ import { admin } from "../mcp.ts";
  * ORDERED → PREPARING → PREPARED → SERVED. An already-final item (SERVED or
  * CANCELLED) or an item on a closed order is rejected.
  */
-export const advanceKitchenItem = admin.tool({
-  name: "advance_kitchen_item",
+export const advanceKitchenItem = mcpTool({
   title: "Advance kitchen item",
   description:
     "Advance one order item to the next kitchen status along ORDERED → " +
@@ -49,8 +48,7 @@ export const advanceKitchenItem = admin.tool({
  * rejected. The summary splits items into those voided in flight and those left
  * as-is because they were already final.
  */
-export const cancelOrder = admin.tool({
-  name: "cancel_order",
+export const cancelOrder = mcpTool({
   title: "Cancel order",
   description:
     "Cancel an open order and free its table. Fails if the order is not " +

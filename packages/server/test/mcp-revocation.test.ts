@@ -3,16 +3,16 @@ import { v } from "../src/v.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
 import { serve } from "../src/serve.ts";
 import {
-  agentMcp,
   cleanupMcpTokenFixtures,
   databasePath,
   fixture,
   mutationMessage,
   request,
-  scopedMcp,
   session,
   trackCleanup,
   typedMutation,
+  typedMcp,
+  typedMcpTool,
   user,
 } from "./support/mcp-token-fixture.ts";
 
@@ -96,8 +96,7 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   throw new Error("condition was not reached");
 }
 
-const holdAgent = agentMcp.tool({
-  name: "hold_agent",
+const holdAgent = typedMcpTool({
   description: "Test live token invalidation.",
   access: "authenticated",
   args: { key: v.string() },
@@ -108,8 +107,7 @@ const holdAgent = agentMcp.tool({
   },
 });
 
-const holdScoped = scopedMcp.tool({
-  name: "hold_scoped",
+const holdScoped = typedMcpTool({
   description: "Test live scoped-token invalidation.",
   access: { anyOf: ["orders.get"] },
   args: { key: v.string() },
@@ -120,8 +118,7 @@ const holdScoped = scopedMcp.tool({
   },
 });
 
-const queueAgentWrite = agentMcp.tool({
-  name: "queue_agent_write",
+const queueAgentWrite = typedMcpTool({
   description: "Queue an agent-token writer.",
   access: "authenticated",
   args: { key: v.string() },
@@ -134,8 +131,7 @@ const queueAgentWrite = agentMcp.tool({
   },
 });
 
-const queueScopedWrite = scopedMcp.tool({
-  name: "queue_scoped_write",
+const queueScopedWrite = typedMcpTool({
   description: "Queue a scoped-token writer.",
   access: { anyOf: ["orders.get"] },
   args: { key: v.string() },
@@ -148,11 +144,30 @@ const queueScopedWrite = scopedMcp.tool({
   },
 });
 
+const revocationAgentMcp = typedMcp({
+  name: "revocation_agent",
+  path: "/revocation/agent/mcp",
+  tools: {
+    hold_agent: holdAgent,
+    queue_agent_write: queueAgentWrite,
+  },
+});
+
+const revocationScopedMcp = typedMcp({
+  name: "revocation_scoped",
+  path: "/revocation/scoped/mcp",
+  scopes: ["orders.get"] as const,
+  tools: {
+    hold_scoped: holdScoped,
+    queue_scoped_write: queueScopedWrite,
+  },
+});
+
 const rollbackAgentRevoke = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
   handler: (ctx, args) => {
-    agentMcp.tokens.revoke(ctx, args.id);
+    revocationAgentMcp.tokens.revoke(ctx, args.id);
     throw new Error("roll back agent revoke");
   },
 });
@@ -161,7 +176,7 @@ const rollbackScopeReduction = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
   handler: (ctx, args) => {
-    scopedMcp.tokens.updateScopes(ctx, args.id, []);
+    revocationScopedMcp.tokens.updateScopes(ctx, args.id, []);
     throw new Error("roll back scope reduction");
   },
 });
@@ -173,7 +188,7 @@ const gatedAgentRevoke = typedMutation({
     const gate = requiredGate(args.key);
     gate.started.resolve();
     await gate.release.promise;
-    agentMcp.tokens.revoke(ctx, args.id);
+    revocationAgentMcp.tokens.revoke(ctx, args.id);
   },
 });
 
@@ -184,12 +199,48 @@ const gatedScopeReduction = typedMutation({
     const gate = requiredGate(args.key);
     gate.started.resolve();
     await gate.release.promise;
-    scopedMcp.tokens.updateScopes(ctx, args.id, []);
+    revocationScopedMcp.tokens.updateScopes(ctx, args.id, []);
   },
 });
 
+const createRevocationAgentToken = typedMutation({
+  access: "authenticated",
+  args: { name: v.string() },
+  handler: (ctx, args) => revocationAgentMcp.tokens.create(ctx, {
+    name: args.name,
+    metadata: {},
+  }),
+});
+
+const createRevocationScopedToken = typedMutation({
+  access: "authenticated",
+  args: { name: v.string() },
+  handler: (ctx, args) => revocationScopedMcp.tokens.create(ctx, {
+    name: args.name,
+    metadata: {},
+    scopes: ["orders.get"],
+  }),
+});
+
+const updateRevocationAgentMetadata = typedMutation({
+  access: "authenticated",
+  args: { id: v.string(), metadata: v.jsonb<Readonly<Record<string, unknown>>>() },
+  handler: (ctx, args) => revocationAgentMcp.tokens.update(ctx, args.id, {
+    metadata: args.metadata,
+  }),
+});
+
+const revokeRevocationAgentToken = typedMutation({
+  access: "authenticated",
+  args: { id: v.string() },
+  handler: (ctx, args) => revocationAgentMcp.tokens.revoke(ctx, args.id),
+});
+
 const extraModules = {
+  mcp: { revocationAgentMcp, revocationScopedMcp },
   revocation: {
+    createRevocationAgentToken,
+    createRevocationScopedToken,
     gatedAgentRevoke,
     gatedScopeReduction,
     holdAgent,
@@ -198,6 +249,8 @@ const extraModules = {
     queueScopedWrite,
     rollbackAgentRevoke,
     rollbackScopeReduction,
+    revokeRevocationAgentToken,
+    updateRevocationAgentMetadata,
   },
 };
 
@@ -238,8 +291,7 @@ async function createAgentToken(
       request(
         mutationMessage(id, String(id), {
           name,
-          metadata: {},
-        }),
+        }, "revocation.createRevocationAgentToken"),
       ),
     )
   ).value as { readonly id: string; readonly token: string };
@@ -258,8 +310,8 @@ async function createScopedToken(
         mutationMessage(
           id,
           String(id),
-          { name, scopes: ["orders.get"] },
-          "tokens.createScopedToken",
+          { name },
+          "revocation.createRevocationScopedToken",
         ),
       ),
     )
@@ -297,7 +349,7 @@ describe("bounded live MCP credential invalidation", () => {
       trackCleanup(async () => server.drain());
       const base = `http://127.0.0.1:${server.port}`;
       const path =
-        authorityChange === "revoke" ? agentMcp.path : scopedMcp.path;
+        authorityChange === "revoke" ? revocationAgentMcp.path : revocationScopedMcp.path;
       const holdName =
         authorityChange === "revoke" ? "hold_agent" : "hold_scoped";
       const queuedName =
@@ -380,7 +432,7 @@ describe("bounded live MCP credential invalidation", () => {
         expect(
           (
             await runtime.authenticateMcpToken(
-              "scoped",
+              "revocation_scoped",
               target.token,
               "fresh-reduced-grant",
             )
@@ -408,7 +460,7 @@ describe("bounded live MCP credential invalidation", () => {
     const agentGate = openGate("rollback-agent");
     const activeAgent = rpc(
       base,
-      agentMcp.path,
+      revocationAgentMcp.path,
       "tools/call",
       {
         name: "hold_agent",
@@ -437,13 +489,13 @@ describe("bounded live MCP credential invalidation", () => {
           13,
           "13",
           { id: agent.id, metadata: { renamed: true } },
-          "tokens.updateAgentTokenMetadata",
+          "revocation.updateRevocationAgentMetadata",
         ),
       ),
     );
     expect(agentGate.aborted).toBe(false);
     expect(
-      (await rpc(base, agentMcp.path, "tools/list", {}, agent.token)).status,
+      (await rpc(base, revocationAgentMcp.path, "tools/list", {}, agent.token)).status,
     ).toBe(200);
     agentGate.release.resolve();
     expect((await within(activeAgent)).status).toBe(200);
@@ -451,7 +503,7 @@ describe("bounded live MCP credential invalidation", () => {
     const scopedGate = openGate("rollback-scoped");
     const activeScoped = rpc(
       base,
-      scopedMcp.path,
+      revocationScopedMcp.path,
       "tools/call",
       {
         name: "hold_scoped",
@@ -477,7 +529,7 @@ describe("bounded live MCP credential invalidation", () => {
     expect(
       (
         await runtime.authenticateMcpToken(
-          "scoped",
+          "revocation_scoped",
           scoped.token,
           "fresh-after-rollback",
         )
@@ -513,7 +565,7 @@ describe("bounded live MCP credential invalidation", () => {
     const scopedGate = openGate("isolation-scoped");
     const revokedCall = rpc(
       base,
-      agentMcp.path,
+      revocationAgentMcp.path,
       "tools/call",
       {
         name: "hold_agent",
@@ -523,7 +575,7 @@ describe("bounded live MCP credential invalidation", () => {
     );
     const agentCall = rpc(
       base,
-      agentMcp.path,
+      revocationAgentMcp.path,
       "tools/call",
       {
         name: "hold_agent",
@@ -533,7 +585,7 @@ describe("bounded live MCP credential invalidation", () => {
     );
     const scopedCall = rpc(
       base,
-      scopedMcp.path,
+      revocationScopedMcp.path,
       "tools/call",
       {
         name: "hold_scoped",
@@ -556,7 +608,7 @@ describe("bounded live MCP credential invalidation", () => {
           23,
           "23",
           { id: revoked.id },
-          "tokens.revokeAgentToken",
+          "revocation.revokeRevocationAgentToken",
         ),
       ),
     );
@@ -565,10 +617,10 @@ describe("bounded live MCP credential invalidation", () => {
     expect(agentGate.aborted).toBe(false);
     expect(scopedGate.aborted).toBe(false);
     expect(
-      (await rpc(base, agentMcp.path, "tools/list", {}, agent.token)).status,
+      (await rpc(base, revocationAgentMcp.path, "tools/list", {}, agent.token)).status,
     ).toBe(200);
     expect(
-      (await rpc(base, scopedMcp.path, "tools/list", {}, scoped.token)).status,
+      (await rpc(base, revocationScopedMcp.path, "tools/list", {}, scoped.token)).status,
     ).toBe(200);
 
     agentGate.release.resolve();

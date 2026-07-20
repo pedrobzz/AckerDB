@@ -22,8 +22,10 @@ import {
 } from "../src/functions.ts";
 import {
   createMcp,
+  mcpTool,
   type McpAiToolSet,
   type McpBuilder,
+  type McpToolBuilder,
 } from "../src/mcp.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
 import { mcpTokenVaultOwner } from "../src/mcp-token-vault.ts";
@@ -47,7 +49,7 @@ const schema = defineSchema({
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedSse = sseProcedure as SseBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
-const agentMcp = typedMcp({ name: "agent", path: "/agent/mcp" });
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 const choice = v.union("AiChoice", {
   text: v.string(),
   nothing: v.tag(),
@@ -58,7 +60,7 @@ const canonicalInput = Object.freeze({
   large: "9007199254740993",
   identity: "9223372036854775806",
   bytes: "AAEC/v8=",
-  choice: { tag: "maybe" },
+  choice: { tag: "maybe" } as const,
 });
 
 let runtime: Runtime;
@@ -76,8 +78,7 @@ let parallelEntered = 0;
 let parallelRelease = Promise.withResolvers<void>();
 let operationCounts: number[] = [];
 
-const roundTrip = agentMcp.tool({
-  name: "round_trip",
+const roundTrip = typedMcpTool({
   title: "Round trip canonical values",
   description: "Round-trip lossless DBZZ values through one local MCP dispatch.",
   args: {
@@ -108,8 +109,7 @@ const roundTrip = agentMcp.tool({
   },
 });
 
-const richOutput = agentMcp.tool({
-  name: "rich_output",
+const richOutput = typedMcpTool({
   description: "Return MCP content blocks without a structured output schema.",
   args: {},
   handler: () => ({
@@ -128,8 +128,7 @@ const richOutput = agentMcp.tool({
   }),
 });
 
-const fail = agentMcp.tool({
-  name: "fail",
+const fail = typedMcpTool({
   description: "Throw from the handler.",
   args: {},
   handler: () => {
@@ -137,8 +136,7 @@ const fail = agentMcp.tool({
   },
 });
 
-const parallelEcho = agentMcp.tool({
-  name: "parallel_echo",
+const parallelEcho = typedMcpTool({
   description: "Wait until two local model calls have entered concurrently.",
   args: { index: v.int() },
   output: v.object({ index: v.int() }),
@@ -151,12 +149,23 @@ const parallelEcho = agentMcp.tool({
   },
 });
 
-const hidden = agentMcp.tool({
-  name: "hidden",
+const hidden = typedMcpTool({
   description: "A protected tool must not be materialized locally.",
   access: "authenticated",
   args: {},
   handler: () => ({ content: [{ type: "text", text: "hidden" }] }),
+});
+
+const agentMcp = typedMcp({
+  name: "agent",
+  path: "/agent/mcp",
+  tools: {
+    fail,
+    hidden,
+    parallel_echo: parallelEcho,
+    rich_output: richOutput,
+    round_trip: roundTrip,
+  },
 });
 
 interface ModelCall {
@@ -226,7 +235,15 @@ const runAi = typedProcedure({
   access: "public",
   args: { mode: v.string() },
   handler: async (ctx, args) => {
-    const tools = agentMcp.aiTools(ctx);
+    const available = agentMcp.aiTools(ctx);
+    const { fail, parallel_echo, rich_output, round_trip } = available;
+    if (
+      fail === undefined ||
+      parallel_echo === undefined ||
+      rich_output === undefined ||
+      round_trip === undefined
+    ) throw new Error("public MCP tools must be available");
+    const tools = { fail, parallel_echo, rich_output, round_trip } as const;
     retainedTools = tools;
     const result = streamText({
       model: modelFor(callsFor(args.mode)),
@@ -251,7 +268,10 @@ const runAiSse = typedSse({
   args: {},
   yields: v.jsonb<unknown>(),
   handler: (ctx) => {
-    const tools = agentMcp.aiTools(ctx);
+    const available = agentMcp.aiTools(ctx);
+    const tool = available.round_trip;
+    if (tool === undefined) throw new Error("round_trip must be available");
+    const tools = { round_trip: tool } as const;
     retainedSseTools = tools;
     return (async function* () {
       yield await tools.round_trip!.execute(canonicalInput);
@@ -374,7 +394,7 @@ describe("MCP zero-hop AI SDK tools", () => {
         span.operation === "procedure" && span.stage === "admission" && span.requestId === "1"
       );
       const nested = spans().find((span) =>
-        span.stage === "handler" && span.function === "tools.roundTrip" && span.requestId === "1"
+        span.stage === "handler" && span.function === "agent:round_trip" && span.requestId === "1"
       );
       expect(admission).toBeDefined();
       expect(nested).toBeDefined();
@@ -398,17 +418,33 @@ describe("MCP zero-hop AI SDK tools", () => {
     expect(firstInputSchema).toMatchObject({
       $schema: "http://json-schema.org/draft-07/schema#",
       required: ["large", "identity", "bytes", "choice"],
+      properties: {
+        large: { type: ["integer", "string"] },
+        identity: { type: ["integer", "string"] },
+      },
     });
     expect(output.jsonSchema.input({ target: "draft-07" })).toMatchObject({
       $schema: "http://json-schema.org/draft-07/schema#",
       required: ["large", "identity", "bytes", "optional", "choice"],
+      properties: {
+        large: { type: "string" },
+        identity: { type: "string" },
+      },
     });
     (firstInputSchema as Record<string, unknown>).additionalProperties = true;
     expect(input.jsonSchema.input({ target: "draft-07" })).toMatchObject({
       additionalProperties: false,
     });
-    expect(roundTrip.inputSchema).toMatchObject({ additionalProperties: false });
+    expect(agentMcp.tools.round_trip.inputSchema).toMatchObject({ additionalProperties: false });
     expect(input.validate(canonicalInput)).toEqual({ value: canonicalInput });
+    expect(input.validate({ ...canonicalInput, large: 1, identity: 2 })).toEqual({
+      value: { ...canonicalInput, large: 1, identity: 2 },
+    });
+    expect(output.validate({
+      ...canonicalInput,
+      large: 1,
+      optional: null,
+    })).toMatchObject({ issues: expect.any(Array) });
     expect(output.validate({
       ...canonicalInput,
       optional: null,

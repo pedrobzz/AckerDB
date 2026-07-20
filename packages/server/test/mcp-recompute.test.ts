@@ -14,7 +14,7 @@ import {
   type QueryBuilder,
 } from "../src/functions.ts";
 import { PRODUCTION_LIMITS } from "../src/limits.ts";
-import { createMcp, type McpBuilder } from "../src/mcp.ts";
+import { createMcp, mcpTool, type McpBuilder, type McpToolBuilder } from "../src/mcp.ts";
 import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime } from "../src/runtime.ts";
@@ -51,11 +51,9 @@ const schema = defineSchema({
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
-const actionsMcp = typedMcp({ name: "actions", path: "/actions/mcp" });
-
-const addRecord = actionsMcp.tool({
-  name: "add_record",
+const addRecord = typedMcpTool({
   description: "Insert one record transactionally.",
   access: "authenticated",
   args: { value: v.string() },
@@ -66,8 +64,7 @@ const addRecord = actionsMcp.tool({
     }),
 });
 
-const emitSignal = actionsMcp.tool({
-  name: "emit_signal",
+const emitSignal = typedMcpTool({
   description: "Emit one live event transactionally.",
   access: "authenticated",
   args: { label: v.string() },
@@ -75,7 +72,16 @@ const emitSignal = actionsMcp.tool({
     ctx.tx(async (tx) => {
       await tx.db.signals.insert({ label: args.label });
       return { content: [{ type: "text", text: "emitted" }] };
-    }),
+  }),
+});
+
+const actionsMcp = typedMcp({
+  name: "actions",
+  path: "/actions/mcp",
+  tools: {
+    add_record: addRecord,
+    emit_signal: emitSignal,
+  },
 });
 
 const listRecords = typedQuery({

@@ -75,22 +75,9 @@ export default defineSchema({
 `);
     writeFileSync(join(consumerDir, "functions", "orders.ts"), `
 import { v } from "@dbzz/server";
-import { createMcp, type McpToolCtx } from "../_generated/server.ts";
+import { createMcp, mcpTool, type McpToolCtx } from "../_generated/server.ts";
 
-export const agentMcp = createMcp({
-  name: "agent",
-  scopes: ["orders.all", "orders.get"] as const,
-});
-
-type AgentScope = NonNullable<typeof agentMcp.scopes._type>;
-const scope: AgentScope = "orders.get";
-void scope;
-// @ts-expect-error generated MCP scopes remain the exact declared union
-const invalidScope: AgentScope = "orders.delete";
-void invalidScope;
-
-export const getOrder = agentMcp.tool({
-  name: "orders_get",
+export const getOrder = mcpTool({
   description: "Get an order by ID.",
   args: { id: v.bigint() },
   output: v.object({ id: v.bigint() }),
@@ -101,15 +88,46 @@ export const getOrder = agentMcp.tool({
     return { id: args.id };
   },
 });
+
+export const agentMcp = createMcp({
+  name: "agent",
+  scopes: ["orders.all", "orders.get"] as const,
+  tools: { orders_get: getOrder },
+});
+
+type AgentScope = NonNullable<typeof agentMcp.scopes._type>;
+const scope: AgentScope = "orders.get";
+void scope;
+// @ts-expect-error generated MCP scopes remain the exact declared union
+const invalidScope: AgentScope = "orders.delete";
+void invalidScope;
 `);
     writeFileSync(join(consumerDir, "verify-runtime.ts"), `
-import { createMcp as createMcpFromRoot } from "@dbzz/server";
-import { createMcp as createMcpFromSubpath } from "@dbzz/server/mcp";
+import {
+  createMcp as createMcpFromRoot,
+  mcpTool as mcpToolFromRoot,
+} from "@dbzz/server";
+import {
+  createMcp as createMcpFromSubpath,
+  mcpTool as mcpToolFromSubpath,
+} from "@dbzz/server/mcp";
 
 if (createMcpFromRoot !== createMcpFromSubpath) {
   throw new Error("@dbzz/server/mcp resolves a different createMcp implementation");
 }
-const endpoint = createMcpFromSubpath({ name: "package_probe" });
+if (mcpToolFromRoot !== mcpToolFromSubpath) {
+  throw new Error("@dbzz/server/mcp resolves a different mcpTool implementation");
+}
+const endpoint = createMcpFromSubpath({
+  name: "package_probe",
+  tools: {
+    package_probe: mcpToolFromSubpath({
+      description: "Verify packed MCP blueprint assembly.",
+      args: {},
+      handler: () => ({ content: [{ type: "text", text: "ok" }] }),
+    }),
+  },
+});
 if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the wrong path");
 `);
     writeFileSync(join(consumerDir, "tsconfig.json"), JSON.stringify({

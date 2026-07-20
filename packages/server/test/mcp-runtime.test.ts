@@ -16,6 +16,7 @@ import {
   session,
   trackCleanup,
   typedMcp,
+  typedMcpTool,
   typedMutation,
   typedQuery,
   user,
@@ -98,8 +99,6 @@ function releaseGates(): void {
   for (const state of gates.values()) state.released.resolve(undefined);
 }
 
-const ownershipMcp = typedMcp({ name: "ownership", path: "/ownership/mcp" });
-
 const createOwnershipToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
@@ -109,16 +108,14 @@ const createOwnershipToken = typedMutation({
   }),
 });
 
-const pingOwnership = ownershipMcp.tool({
-  name: "ping_ownership",
+const pingOwnership = typedMcpTool({
   description: "Return the current principal kind without allocating runtime state.",
   access: "public",
   args: {},
   handler: (ctx) => ({ content: [{ type: "text", text: ctx.auth.kind }] }),
 });
 
-const holdOwnership = ownershipMcp.tool({
-  name: "hold_ownership",
+const holdOwnership = typedMcpTool({
   description: "Hold one runtime-owned operation at a deterministic test gate.",
   access: "public",
   args: { gate: v.string() },
@@ -143,8 +140,7 @@ const countOwnershipRecords = typedQuery({
   handler: (ctx) => ctx.db.records.scan().count(),
 });
 
-const nestedOwnershipWrite = ownershipMcp.tool({
-  name: "nested_ownership_write",
+const nestedOwnershipWrite = typedMcpTool({
   description: "Compose nested DBZZ functions inside one transaction.",
   access: "authenticated",
   args: {
@@ -159,6 +155,16 @@ const nestedOwnershipWrite = ownershipMcp.tool({
     const count = await countOwnershipRecords(tx, {});
     return { content: [{ type: "text", text: String(count) }] };
   }),
+});
+
+const ownershipMcp = typedMcp({
+  name: "ownership",
+  path: "/ownership/mcp",
+  tools: {
+    hold_ownership: holdOwnership,
+    nested_ownership_write: nestedOwnershipWrite,
+    ping_ownership: pingOwnership,
+  },
 });
 
 const ownershipModules = {

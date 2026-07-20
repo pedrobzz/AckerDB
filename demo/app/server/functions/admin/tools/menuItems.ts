@@ -1,6 +1,6 @@
 import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * `get_menu_items` — the dishes and drinks on the menu, with prices. Reach for
@@ -8,8 +8,7 @@ import { admin } from "../mcp.ts";
  * category's offerings (pass a categoryId from `get_menu_categories`), or to
  * read the whole menu.
  */
-export const getMenuItems = admin.tool({
-  name: "get_menu_items",
+export const getMenuItems = mcpTool({
   title: "Get menu items",
   description:
     "List menu items (dishes and drinks) with their price in cents, optionally " +

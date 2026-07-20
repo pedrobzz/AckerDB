@@ -18,7 +18,9 @@ import { DBZZ_HTTP_ROUTES } from "../src/http-routes.ts";
 import {
   createMcp,
   finalizeMcpToolResult,
+  mcpTool,
   type McpBuilder,
+  type McpToolBuilder,
   type McpToolResult,
 } from "../src/mcp.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../src/limits.ts";
@@ -41,6 +43,7 @@ const schema = defineSchema({
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
 const listNotes = typedQuery({
   access: "public",
@@ -54,23 +57,6 @@ const insertNote = typedMutation({
   handler: (ctx, args) => ctx.db.notes.insert(args),
 });
 
-const agentMcp = typedMcp({
-  name: "agent",
-  instructions: "Use the note tools for durable user notes.",
-  metadata: {
-    title: "Notes Agent",
-    description: "A focused notes endpoint.",
-    websiteUrl: "https://dbzz.dev/agents/notes",
-  },
-});
-const operationsMcp = typedMcp({
-  name: "operations",
-  path: "/agents/operations",
-  instructions: "Use the operations tools only for service status.",
-  metadata: { title: "Operations Agent" },
-});
-const valuesMcp = typedMcp({ name: "values", path: "/mcp/values" });
-const contentMcp = typedMcp({ name: "content", path: "/mcp/content" });
 let handlerCalls = 0;
 let summaryHandlerCalls = 0;
 let valueHandlerCalls = 0;
@@ -84,8 +70,7 @@ let lastNativeValues: {
   readonly bytes: readonly number[];
 } | undefined;
 
-const writeNote = agentMcp.tool({
-  name: "write_note",
+const writeNote = typedMcpTool({
   description: "Write one note and report the committed note count.",
   args: { body: v.string() },
   handler: async (ctx, args) => {
@@ -101,8 +86,7 @@ const writeNote = agentMcp.tool({
   },
 });
 
-const writeNoteSummary = agentMcp.tool({
-  name: "summarize_note",
+const writeNoteSummary = typedMcpTool({
   description: "Summarize one note as structured data.",
   args: {
     body: v.string().describe("The note text to summarize."),
@@ -122,15 +106,13 @@ const writeNoteSummary = agentMcp.tool({
   },
 });
 
-const readStatus = operationsMcp.tool({
-  name: "read_status",
+const readStatus = typedMcpTool({
   description: "Read the current service status.",
   args: {},
   handler: () => ({ content: [{ type: "text", text: "ready" }] }),
 });
 
-const echoValues = valuesMcp.tool({
-  name: "echo_values",
+const echoValues = typedMcpTool({
   description: "Round-trip DBZZ-native values without losing precision or bytes.",
   args: {
     minimum: v.bigint(),
@@ -329,8 +311,7 @@ function invalidContentValue(kind: string): unknown {
   }
 }
 
-const renderContent = contentMcp.tool({
-  name: "render_content",
+const renderContent = typedMcpTool({
   title: "Render rich content",
   description: "Return one stable MCP rich-content fixture.",
   annotations: {
@@ -343,12 +324,46 @@ const renderContent = contentMcp.tool({
   handler: (ctx, args) => richContentResult(args.kind, ctx.auth.kind),
 });
 
-const invalidResult = contentMcp.tool({
-  name: "invalid_result",
+const invalidResult = typedMcpTool({
   description: "Exercise runtime rejection of arbitrary results.",
   args: { kind: v.string() },
   handler: (_ctx, args) => invalidContentValue(args.kind) as never,
 });
+
+const agentMcp = typedMcp({
+  name: "agent",
+  instructions: "Use the note tools for durable user notes.",
+  metadata: {
+    title: "Notes Agent",
+    description: "A focused notes endpoint.",
+    websiteUrl: "https://dbzz.dev/agents/notes",
+  },
+  tools: {
+    summarize_note: writeNoteSummary,
+    write_note: writeNote,
+  },
+});
+const operationsMcp = typedMcp({
+  name: "operations",
+  path: "/agents/operations",
+  instructions: "Use the operations tools only for service status.",
+  metadata: { title: "Operations Agent" },
+  tools: { read_status: readStatus },
+});
+const valuesMcp = typedMcp({
+  name: "values",
+  path: "/mcp/values",
+  tools: { echo_values: echoValues },
+});
+const contentMcp = typedMcp({
+  name: "content",
+  path: "/mcp/content",
+  tools: {
+    invalid_result: invalidResult,
+    render_content: renderContent,
+  },
+});
+const registeredEchoValues = valuesMcp.tools.echo_values;
 
 const modules = {
   agent: { agentMcp },
@@ -474,7 +489,8 @@ describe("public stateless MCP endpoint", () => {
       "operations.readStatus",
       "values.echoValues",
     ]);
-    expect(harness.registry.addressOf(writeNote)).toBe("notes.writeNote");
+    expect(harness.registry.addressOf(writeNote)).toBeUndefined();
+    expect(harness.registry.addressOf(agentMcp.tools.write_note)).toBeUndefined();
 
     const initialize = await rpc("initialize", {
       protocolVersion: PROTOCOL_VERSION,
@@ -517,16 +533,6 @@ describe("public stateless MCP endpoint", () => {
       id: 3,
       result: {
         tools: [{
-          name: "write_note",
-          description: "Write one note and report the committed note count.",
-          inputSchema: {
-            $schema: "https://json-schema.org/draft/2020-12/schema",
-            type: "object",
-            properties: { body: { type: "string" } },
-            required: ["body"],
-            additionalProperties: false,
-          },
-        }, {
           name: "summarize_note",
           description: "Summarize one note as structured data.",
           inputSchema: {
@@ -556,6 +562,16 @@ describe("public stateless MCP endpoint", () => {
             required: ["body", "length", "label"],
             additionalProperties: false,
           },
+        }, {
+          name: "write_note",
+          description: "Write one note and report the committed note count.",
+          inputSchema: {
+            $schema: "https://json-schema.org/draft/2020-12/schema",
+            type: "object",
+            properties: { body: { type: "string" } },
+            required: ["body"],
+            additionalProperties: false,
+          },
         }],
       },
     });
@@ -583,7 +599,7 @@ describe("public stateless MCP endpoint", () => {
     const agentTools = await rpcAt(agentMcp.path, "tools/list", {}, 2);
     expect((await agentTools.json() as {
       readonly result: { readonly tools: readonly { readonly name: string }[] };
-    }).result.tools.map(({ name }) => name)).toEqual(["write_note", "summarize_note"]);
+    }).result.tools.map(({ name }) => name)).toEqual(["summarize_note", "write_note"]);
 
     const operationsTools = await rpcAt(operationsMcp.path, "tools/list", {}, 3);
     expect((await operationsTools.json() as {
@@ -714,11 +730,12 @@ describe("public stateless MCP endpoint", () => {
       pattern: "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
       contentEncoding: "base64",
     });
-    expect(discovered.outputSchema.properties.maximum).toEqual(
-      discovered.inputSchema.properties.maximum,
-    );
+    expect(discovered.outputSchema.properties.maximum).toEqual({
+      type: "string",
+      pattern: "^(?:0|-?[1-9][0-9]*)$",
+    });
 
-    const standardResult = echoValues.inputCodec["~standard"].validate(protocolValues());
+    const standardResult = registeredEchoValues.inputCodec["~standard"].validate(protocolValues());
     expect(standardResult).toMatchObject({
       value: {
         minimum: -(2n ** 63n),
@@ -729,7 +746,7 @@ describe("public stateless MCP endpoint", () => {
       },
     });
 
-    const minimumValidator = echoValues.args.minimum;
+    const minimumValidator = registeredEchoValues.args.minimum;
     const originalCheck = minimumValidator.check;
     let minimumChecks = 0;
     Object.defineProperty(minimumValidator, "check", {
@@ -782,7 +799,7 @@ describe("public stateless MCP endpoint", () => {
 
   test("accepts JSON-number bigints (proto3-style) while forcing unsafe magnitudes to strings", () => {
     const decode = (overrides: Record<string, unknown>) =>
-      echoValues.inputCodec.decode(protocolValues(overrides), "args") as {
+      registeredEchoValues.inputCodec.decode(protocolValues(overrides), "args") as {
         readonly minimum: bigint;
         readonly negative: bigint;
         readonly large: bigint;
@@ -798,30 +815,30 @@ describe("public stateless MCP endpoint", () => {
     for (const [invalid, message] of [
       [9.5, "safe integer"],
       [9_007_199_254_740_992, "safe integer"],
-      [Number.NaN, "safe integer"],
-      [Number.POSITIVE_INFINITY, "safe integer"],
+      [Number.NaN, "standard JSON value"],
+      [Number.POSITIVE_INFINITY, "standard JSON value"],
       [true, "canonical decimal string"],
       ['"9"', "canonical decimal string"],
       ["09", "canonical decimal string"],
     ] as const) {
-      expect(() => echoValues.inputCodec.decode(protocolValues({ minimum: invalid }), "args"))
+      expect(() => registeredEchoValues.inputCodec.decode(protocolValues({ minimum: invalid }), "args"))
         .toThrow(message);
     }
   });
 
   test("rejects malformed decimal/base64 and non-JSON opaque values", async () => {
     for (const invalid of ["01", "+1", "-0", "9223372036854775808"]) {
-      expect(() => echoValues.inputCodec.decode(protocolValues({ minimum: invalid }), "args"))
+      expect(() => registeredEchoValues.inputCodec.decode(protocolValues({ minimum: invalid }), "args"))
         .toThrow();
     }
     for (const invalid of ["AQI", "AQI===", "!!=="]) {
-      expect(() => echoValues.inputCodec.decode(protocolValues({ bytes: invalid }), "args"))
+      expect(() => registeredEchoValues.inputCodec.decode(protocolValues({ bytes: invalid }), "args"))
         .toThrow("canonical base64");
     }
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
-    const nativeValues = echoValues.inputCodec.decode(protocolValues(), "args");
-    expect(() => echoValues.outputCodec.encode({
+    const nativeValues = registeredEchoValues.inputCodec.decode(protocolValues(), "args");
+    expect(() => registeredEchoValues.outputCodec.encode({
       ...nativeValues,
       poisonOutput: undefined,
       opaque: cyclic,
@@ -927,7 +944,7 @@ describe("public stateless MCP endpoint", () => {
     ] as const;
     for (let index = 0; index < invalid.length; index++) {
       const [kind, message] = invalid[index]!;
-      expect(() => finalizeMcpToolResult(invalidResult, invalidContentValue(kind)))
+      expect(() => finalizeMcpToolResult(contentMcp.tools.invalid_result, invalidContentValue(kind)))
         .toThrow(message);
 
       const response = await rpcAt(contentMcp.path, "tools/call", {
@@ -938,20 +955,22 @@ describe("public stateless MCP endpoint", () => {
       expect(await response.json()).toMatchObject({ result: { isError: true } });
     }
 
-    expect(() => contentMcp.tool({
-      name: "invalid_hint",
-      description: "Invalid runtime fixture.",
-      args: {},
-      annotations: { readOnlyHint: "yes" } as never,
-      handler: () => ({ content: [] }),
-    })).toThrow("MCP tool annotation readOnlyHint must be a boolean");
-    expect(() => contentMcp.tool({
-      name: "unknown_hint",
-      description: "Invalid runtime fixture.",
-      args: {},
-      annotations: { authorization: true } as never,
-      handler: () => ({ content: [] }),
-    })).toThrow('unknown MCP tool annotation "authorization"');
+    const invalidAnnotations = (name: string, annotations: unknown) => typedMcp({
+      name,
+      path: `/invalid/${name}`,
+      tools: {
+        invalid_hint: typedMcpTool({
+          description: "Invalid runtime fixture.",
+          args: {},
+          annotations: annotations as never,
+          handler: () => ({ content: [] }),
+        }),
+      },
+    });
+    expect(() => invalidAnnotations("invalid_hint", { readOnlyHint: "yes" }))
+      .toThrow("MCP tool annotation readOnlyHint must be a boolean");
+    expect(() => invalidAnnotations("unknown_hint", { authorization: true }))
+      .toThrow('unknown MCP tool annotation "authorization"');
   });
 
   test("works through the official SDK client without an HTTP session", async () => {
@@ -962,8 +981,8 @@ describe("public stateless MCP endpoint", () => {
       expect(transport.sessionId).toBeUndefined();
       expect(await client.ping()).toEqual({});
       expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
-        "write_note",
         "summarize_note",
+        "write_note",
       ]);
       expect(await client.callTool({
         name: "write_note",
@@ -1068,6 +1087,44 @@ describe("public stateless MCP endpoint", () => {
 });
 
 describe("MCP startup invariants", () => {
+  test("round-trips prototype-named MCP fields as own Standard JSON properties", () => {
+    const prototypeShape = {
+      ["__proto__"]: v.string(),
+      constructor: v.bigint().optional(),
+    } as const;
+    const prototypeFields = typedMcpTool({
+      description: "Preserve legal prototype-named fields.",
+      args: prototypeShape,
+      output: v.object(prototypeShape),
+      handler: (_ctx, args) => args,
+    });
+    const endpoint = typedMcp({
+      name: "prototype_fields",
+      path: "/prototype/fields",
+      tools: { prototype_fields: prototypeFields },
+    });
+    const tool = endpoint.tools.prototype_fields;
+    const inputProperties = tool.inputSchema.properties as Record<string, unknown>;
+    const outputProperties = tool.outputSchema.properties as Record<string, unknown>;
+
+    expect(Object.getPrototypeOf(inputProperties)).toBeNull();
+    expect(Object.hasOwn(inputProperties, "__proto__")).toBe(true);
+    expect(Object.hasOwn(outputProperties, "__proto__")).toBe(true);
+
+    const decoded = tool.inputCodec.decode(
+      JSON.parse('{"__proto__":"safe","constructor":7}'),
+      "args",
+    );
+    expect(Object.hasOwn(decoded, "__proto__")).toBe(true);
+    expect(decoded.__proto__).toBe("safe");
+    expect(decoded.constructor).toBe(7n);
+
+    const encoded = tool.outputCodec.encode(decoded, "output") as Record<string, unknown>;
+    expect(Object.getPrototypeOf(encoded)).toBeNull();
+    expect(Object.hasOwn(encoded, "__proto__")).toBe(true);
+    expect(JSON.stringify(encoded)).toBe('{"__proto__":"safe","constructor":"7"}');
+  });
+
   test("rejects every unsupported or contradictory nested validator shape", () => {
     const unsupported = { ...v.string(), kind: "custom" } as never;
     const contradictoryArray = { ...v.string(), kind: "array" } as never;
@@ -1078,55 +1135,104 @@ describe("MCP startup invariants", () => {
       [unsupported, "v.custom() has no lossless standard-JSON protocol representation"],
       [contradictoryArray, "v.array() has no element validator"],
     ] as const;
-    for (const [value, message] of cases) {
-      expect(() => agentMcp.tool({
-        name: "invalid_shape",
-        description: "This declaration must fail before registration.",
-        args: { value },
-        handler: () => ({ content: [{ type: "text", text: "never" }] }),
+    for (const [index, [value, message]] of cases.entries()) {
+      expect(() => typedMcp({
+        name: `invalid_shape_${index}`,
+        path: `/invalid/shape-${index}`,
+        tools: {
+          invalid_shape: typedMcpTool({
+            description: "This declaration must fail before registration.",
+            args: { value },
+            handler: () => ({ content: [{ type: "text", text: "never" }] }),
+          }),
+        },
       })).toThrow(message);
     }
 
-    expect(() => agentMcp.tool({
+    expect(() => typedMcp({
       name: "invalid_output",
-      description: "Nested output validators compile at declaration time too.",
-      args: {},
-      output: v.object({ value: v.array(v.scheduleAt()) }),
-      handler: () => ({ value: [] }),
+      path: "/invalid/output",
+      tools: {
+        invalid_output: typedMcpTool({
+          description: "Nested output validators compile at declaration time too.",
+          args: {},
+          output: v.object({ value: v.array(v.scheduleAt()) }),
+          handler: () => ({ value: [] }),
+        }),
+      },
     })).toThrow("$.value[]: v.scheduleAt() is not an MCP value");
   });
 
-  test("rejects duplicate tool names within one MCP", () => {
-    const duplicate = agentMcp.tool({
-      name: "write_note",
-      description: "A duplicate wire name.",
-      args: {},
-      handler: () => ({ content: [{ type: "text", text: "duplicate" }] }),
+  test("snapshots and reuses inert blueprints without giving them registration identity", () => {
+    const args = { value: v.string() };
+    const annotations = { readOnlyHint: true };
+    const access = { anyOf: ["read"] } as { anyOf: ["read"] };
+    const reusable = typedMcpTool({
+      description: "Reusable source definition.",
+      args,
+      annotations,
+      access,
+      handler: (_ctx, input) => ({ content: [{ type: "text", text: input.value }] }),
     });
-    expect(() => new Registry({
-      agent: { agentMcp },
-      one: { writeNote },
-      two: { duplicate },
-    })).toThrow('duplicate MCP tool name "write_note" in MCP "agent"');
+
+    args.value = v.int() as never;
+    annotations.readOnlyHint = false;
+    (access.anyOf as string[])[0] = "admin";
+
+    const first = typedMcp({
+      name: "reuse_first",
+      path: "/reuse/first",
+      scopes: ["read"] as const,
+      tools: { first_name: reusable, second_name: reusable },
+    });
+    const second = typedMcp({
+      name: "reuse_second",
+      path: "/reuse/second",
+      scopes: ["read"] as const,
+      tools: { third_name: reusable },
+    });
+    const registry = new Registry({
+      blueprints: { again: reusable, reusable },
+      endpoints: { first, second },
+    });
+
+    expect(first.tools.first_name).not.toBe(first.tools.second_name);
+    expect(first.tools.first_name).not.toBe(second.tools.third_name);
+    expect(first.tools.first_name.name).toBe("first_name");
+    expect(first.tools.second_name.name).toBe("second_name");
+    expect(second.tools.third_name.name).toBe("third_name");
+    expect(first.tools.first_name.mcp).toBe(first);
+    expect(second.tools.third_name.mcp).toBe(second);
+    expect(first.tools.first_name.annotations).toEqual({ readOnlyHint: true });
+    expect(first.tools.first_name.accessPolicy).toEqual({ kind: "anyOf", scopes: ["read"] });
+    expect(first.tools.first_name.inputCodec.decode({ value: "kept" }, "args"))
+      .toEqual({ value: "kept" });
+    expect(() => first.tools.first_name.inputCodec.decode({ value: 1 }, "args")).toThrow();
+    expect(registry.addressOf(reusable)).toBeUndefined();
+    expect(registry.addressOf(first.tools.first_name)).toBeUndefined();
+    expect(registry.registeredToolsFor(first)).toEqual([
+      first.tools.first_name,
+      first.tools.second_name,
+    ]);
   });
 
   test("rejects two declarations that claim the default route", () => {
-    const other = createMcp({ name: "other" });
+    const other = createMcp({ name: "other", tools: {} });
     expect(() => new Registry({ agent: { agentMcp }, other: { other } })).toThrow(
       'both use path "/mcp"',
     );
   });
 
   test("rejects duplicate stable names independently of paths and export order", () => {
-    const duplicateName = createMcp({ name: "agent", path: "/other" });
+    const duplicateName = createMcp({ name: "agent", path: "/other", tools: {} });
     expect(() => new Registry({ z: { duplicateName }, agent: { agentMcp } })).toThrow(
       'duplicate MCP name "agent"',
     );
   });
 
   test("rejects duplicate custom paths deterministically", () => {
-    const alpha = createMcp({ name: "alpha", path: "/shared/mcp" });
-    const zeta = createMcp({ name: "zeta", path: "/shared/mcp" });
+    const alpha = createMcp({ name: "alpha", path: "/shared/mcp", tools: {} });
+    const zeta = createMcp({ name: "zeta", path: "/shared/mcp", tools: {} });
     expect(() => new Registry({ z: { zeta }, a: { alpha } })).toThrow(
       'MCP "zeta" and "alpha" both use path "/shared/mcp"',
     );
@@ -1134,7 +1240,7 @@ describe("MCP startup invariants", () => {
 
   test("rejects every path owned by the DBZZ listener", () => {
     for (const path of Object.values(DBZZ_HTTP_ROUTES)) {
-      const collision = createMcp({ name: "collision", path });
+      const collision = createMcp({ name: "collision", path, tools: {} });
       expect(() => new Registry({ endpoint: { collision } })).toThrow(
         `MCP "collision" path "${path}" collides with a DBZZ route`,
       );
@@ -1143,36 +1249,39 @@ describe("MCP startup invariants", () => {
 
   test("rejects non-canonical paths and bounds declaration guidance", () => {
     for (const path of ["mcp", "/", "//mcp", "/mcp/", "/mcp?mode=1", "/mcp tools", "/a/../mcp"]) {
-      expect(() => createMcp({ name: "invalid", path })).toThrow(
+      expect(() => createMcp({ name: "invalid", path, tools: {} })).toThrow(
         "MCP path must be an absolute static path",
       );
     }
-    expect(() => createMcp({ name: "invalid", path: `/${"a".repeat(257)}` })).toThrow(
+    expect(() => createMcp({ name: "invalid", path: `/${"a".repeat(257)}`, tools: {} })).toThrow(
       "MCP path must be an absolute static path",
     );
-    expect(() => createMcp({ name: "invalid", path: null } as never)).toThrow(
+    expect(() => createMcp({ name: "invalid", path: null, tools: {} } as never)).toThrow(
       "MCP path must be an absolute static path",
     );
-    expect(() => createMcp({ name: "invalid", pth: "/custom" } as never)).toThrow(
+    expect(() => createMcp({ name: "invalid", pth: "/custom", tools: {} } as never)).toThrow(
       'unknown MCP config field "pth"',
     );
     expect(() => createMcp({
       name: "invalid",
       instructions: "x".repeat(16 * 1_024 + 1),
+      tools: {},
     })).toThrow("MCP instructions must be at most 16384 UTF-8 bytes");
     expect(() => createMcp({
       name: "invalid",
       metadata: { description: "x".repeat(4 * 1_024) },
+      tools: {},
     })).toThrow("MCP metadata must be at most 4096 UTF-8 bytes");
     expect(() => createMcp({
       name: "invalid",
       metadata: { websiteUrl: "relative/path" },
+      tools: {},
     })).toThrow("MCP metadata websiteUrl must be an absolute URL");
   });
 
   test("keeps stable identity independent from path changes", () => {
-    const original = createMcp({ name: "stable", path: "/first" });
-    const moved = createMcp({ name: "stable", path: "/second" });
+    const original = createMcp({ name: "stable", path: "/first", tools: {} });
+    const moved = createMcp({ name: "stable", path: "/second", tools: {} });
     expect(original.name).toBe(moved.name);
     expect(original.path).not.toBe(moved.path);
   });

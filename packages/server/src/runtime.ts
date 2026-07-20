@@ -1551,7 +1551,7 @@ export class Runtime implements RuntimePort {
     const invocation = currentInvocationTelemetryContext();
     const functionName = invocation === undefined
       ? scope?.rootFunction
-      : this.registry.addressOf(invocation.fn) ?? scope?.rootFunction;
+      : this.registry.invocationNameOf(invocation.fn) ?? scope?.rootFunction;
     this.traceEvent({
       name: "failure",
       level: "error",
@@ -2937,7 +2937,7 @@ export class Runtime implements RuntimePort {
         operation: scope.operation,
         stage: invocation.phase,
         outcome,
-        functionName: this.registry.addressOf(invocation.fn) ?? scope.rootFunction,
+        functionName: this.registry.invocationNameOf(invocation.fn) ?? scope.rootFunction,
         durationMs,
       },
     );
@@ -3168,7 +3168,7 @@ export class Runtime implements RuntimePort {
     const parent = capturedParent ?? this.invocationNode(scope, invocation);
     const currentFunction = invocation === undefined
       ? undefined
-      : this.registry.addressOf(invocation.fn);
+      : this.registry.invocationNameOf(invocation.fn);
     this.telemetry[RECORD_OPERATION_SPAN](
       scope.trace,
       -1,

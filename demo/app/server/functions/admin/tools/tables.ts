@@ -1,15 +1,14 @@
 import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import { openOrderForTable } from "../../../lib/domain.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * `get_tables` — the first entity query tool. Returns the restaurant's tables
  * with their occupancy state derived from the open-order index, so an agent can
  * answer "which tables are free?" without composing a pipeline.
  */
-export const getTables = admin.tool({
-  name: "get_tables",
+export const getTables = mcpTool({
   title: "Get tables",
   description:
     "List the restaurant's tables and whether each is occupied by an open " +

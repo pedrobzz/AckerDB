@@ -5,10 +5,12 @@ import {
   v,
   defineSchema,
   defineTable,
+  mcpTool,
   mutation,
   procedure,
   query,
   type McpBuilder,
+  type McpToolBuilder,
   type McpToolResult,
   type MutationBuilder,
   type ProcedureBuilder,
@@ -27,6 +29,7 @@ const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
 const addNote = typedMutation({
   access: "public",
@@ -34,11 +37,12 @@ const addNote = typedMutation({
   handler: (ctx, args) => ctx.db.notes.insert(args),
 });
 
-const agentMcp = typedMcp({ name: "agent" });
+const agentMcp = typedMcp({ name: "agent", tools: {} });
 const scopedMcp = typedMcp({
   name: "scoped_agent",
   path: "/scoped/mcp",
   scopes: ["orders.all", "orders.get", "reports.all"] as const,
+  tools: {},
 });
 type AgentScope = NonNullable<typeof scopedMcp.scopes._type>;
 const exactScope: AgentScope = "orders.get";
@@ -163,13 +167,13 @@ const renamedEndpoint = typedMcp({
   name: "stable_name",
   path: "/renamed/export",
   instructions: "Stable declaration identity is explicit.",
+  tools: {},
 });
 const stableName: "stable_name" = renamedEndpoint.name;
 const stablePath: "/renamed/export" = renamedEndpoint.path;
 void stableName;
 void stablePath;
-const writeNote = agentMcp.tool({
-  name: "write_note",
+const writeNote = typedMcpTool({
   description: "Write a note.",
   args: { body: v.string() },
   handler: async (ctx, args) => {
@@ -191,33 +195,28 @@ const writeNote = agentMcp.tool({
   },
 });
 
-scopedMcp.tool({
-  name: "read_orders",
+typedMcpTool({
   description: "Read orders with either exact capability.",
   access: { anyOf: ["orders.all", "orders.get"] },
   args: {},
   handler: () => ({ content: [] }),
 });
 
-scopedMcp.tool({
-  name: "read_reports",
+typedMcpTool({
   description: "Require both exact capabilities.",
   access: { allOf: ["orders.get", "reports.all"] },
   args: {},
   handler: () => ({ content: [] }),
 });
 
-scopedMcp.tool({
-  name: "invalid_scope_policy",
+const invalidScopePolicy = typedMcpTool({
   description: "Reject undeclared policy values.",
-  // @ts-expect-error tool policies accept only the declaration's exact scope union
   access: { anyOf: ["orders.create"] },
   args: {},
   handler: () => ({ content: [] }),
 });
 
-scopedMcp.tool({
-  name: "ambiguous_scope_policy",
+typedMcpTool({
   description: "Reject ambiguous bare arrays.",
   // @ts-expect-error scope policies must explicitly choose anyOf or allOf
   access: ["orders.get"],
@@ -225,13 +224,30 @@ scopedMcp.tool({
   handler: () => ({ content: [] }),
 });
 
-agentMcp.tool({
-  name: "scope_free_policy",
+const scopeFreePolicy = typedMcpTool({
   description: "Reject scope policies when the declaration has no scopes.",
-  // @ts-expect-error scope-free declarations expose only public/authenticated policies
   access: { anyOf: ["orders.get"] },
   args: {},
   handler: () => ({ content: [] }),
+});
+
+typedMcp({
+  name: "invalid_scoped_tools",
+  path: "/invalid/scoped-tools",
+  scopes: ["orders.get"] as const,
+  tools: {
+    // @ts-expect-error tool policies accept only the declaration's exact scope union
+    invalid_scope_policy: invalidScopePolicy,
+  },
+});
+
+// @ts-expect-error scope-free declarations cannot assemble scope-requiring blueprints
+typedMcp({
+  name: "invalid_scope_free_tools",
+  path: "/invalid/scope-free-tools",
+  tools: {
+    scope_free_policy: scopeFreePolicy,
+  },
 });
 
 typedMutation({
@@ -305,8 +321,7 @@ const richResult = {
   _meta: { request: { id: 1 } },
 } satisfies McpToolResult;
 
-agentMcp.tool({
-  name: "render_note",
+typedMcpTool({
   title: "Render note",
   description: "Prove every rich result block is typed.",
   annotations: {
@@ -319,8 +334,7 @@ agentMcp.tool({
   handler: () => richResult,
 });
 
-const summarizeNote = agentMcp.tool({
-  name: "summarize_note",
+const summarizeNote = typedMcpTool({
   description: "Return a typed summary.",
   args: {
     body: v.string().describe("The note body."),
@@ -338,8 +352,7 @@ const summarizeNote = agentMcp.tool({
 });
 void summarizeNote;
 
-const echoNativeValues = agentMcp.tool({
-  name: "echo_native_values",
+const echoNativeValues = typedMcpTool({
   description: "Keep protocol strings out of the typed handler contract.",
   args: {
     count: v.bigint(),
@@ -416,8 +429,7 @@ const runtimeOnlyValidator: Validator<string, "runtime-only"> = {
   descriptor: () => ({ k: "runtime-only" }),
 };
 
-agentMcp.tool({
-  name: "runtime_only_input",
+typedMcpTool({
   description: "Prove MCP fields have an honest schema.",
   args: {
     // @ts-expect-error runtime-only validators cannot be advertised as MCP schemas
@@ -429,16 +441,14 @@ agentMcp.tool({
 // @ts-expect-error declarations require an explicit stable name
 typedMcp();
 
-agentMcp.tool({
-  name: "wrong_result",
+typedMcpTool({
   description: "Prove result typing.",
   args: {},
   // @ts-expect-error tool results are explicit MCP content results
   handler: () => "not MCP content",
 });
 
-agentMcp.tool({
-  name: "invalid_annotation",
+typedMcpTool({
   description: "Prove tool hints are booleans.",
   annotations: {
     // @ts-expect-error tool annotation hints are booleans
@@ -448,8 +458,7 @@ agentMcp.tool({
   handler: () => ({ content: [] }),
 });
 
-agentMcp.tool({
-  name: "invalid_content",
+typedMcpTool({
   description: "Prove content blocks are a closed union.",
   args: {},
   handler: () => ({
@@ -462,8 +471,7 @@ agentMcp.tool({
   }),
 });
 
-agentMcp.tool({
-  name: "invalid_metadata",
+typedMcpTool({
   description: "Prove metadata is standard JSON.",
   args: {},
   handler: () => ({
@@ -494,16 +502,14 @@ const invalidAudience = {
 } satisfies McpToolResult;
 void invalidAudience;
 
-agentMcp.tool({
-  name: "scalar_args",
+typedMcpTool({
   description: "Prove input roots are objects.",
   // @ts-expect-error MCP inputs are argument shapes, never scalar roots
   args: v.string(),
   handler: () => ({ content: [{ type: "text", text: "never" }] }),
 });
 
-agentMcp.tool({
-  name: "scalar_output",
+typedMcpTool({
   description: "Prove output roots are objects.",
   args: {},
   // @ts-expect-error advertised structured outputs require v.object(...)
@@ -511,8 +517,7 @@ agentMcp.tool({
   handler: () => ({ content: [{ type: "text", text: "never" }] }),
 });
 
-agentMcp.tool({
-  name: "nullable_output",
+typedMcpTool({
   description: "Prove nullable results use a named property.",
   args: {},
   // @ts-expect-error a nullable object is not an object-root output schema
@@ -520,8 +525,7 @@ agentMcp.tool({
   handler: () => ({ content: [{ type: "text", text: "never" }] }),
 });
 
-agentMcp.tool({
-  name: "wrong_structured_result",
+typedMcpTool({
   description: "Prove structured result inference.",
   args: {},
   output: v.object({ value: v.string() }),

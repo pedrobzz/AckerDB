@@ -69,14 +69,16 @@ describe("codegen", () => {
       "schema.ts": FIXTURE_SCHEMA,
       "functions/agent.ts": `
 import { v } from "@dbzz/server";
-import { createMcp } from "../_generated/server.ts";
+import { createMcp, mcpTool } from "../_generated/server.ts";
 
-export const agentMcp = createMcp({ name: "agent" });
-export const echo = agentMcp.tool({
-  name: "echo_text",
+export const echo = mcpTool({
   description: "Echo text.",
   args: { text: v.string() },
   handler: (_ctx, args) => ({ content: [{ type: "text", text: args.text }] }),
+});
+export const agentMcp = createMcp({
+  name: "agent",
+  tools: { echo_text: echo },
 });
 `,
     });
@@ -86,7 +88,9 @@ export const echo = agentMcp.tool({
 
     const generatedServer = readFileSync(join(config.generatedDir, "server.ts"), "utf8");
     expect(generatedServer).toContain("createMcp as createMcpGeneric");
+    expect(generatedServer).toContain("mcpTool as mcpToolGeneric");
     expect(generatedServer).toContain("export const createMcp = createMcpGeneric as McpBuilder<Schema>;");
+    expect(generatedServer).toContain("export const mcpTool = mcpToolGeneric as McpToolBuilder<Schema>;");
 
     const registry = new Registry(await importFunctionModules(config));
     expect([...registry.functions.keys()]).toEqual([]);

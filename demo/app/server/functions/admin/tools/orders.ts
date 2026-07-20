@@ -1,7 +1,7 @@
 import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import { orderStatus } from "../../../schema.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * `get_orders` — the restaurant's orders (open and closed), newest first. Reach
@@ -9,8 +9,7 @@ import { admin } from "../mcp.ts";
  * guest, or within an opened-at time window; each row carries the ids and
  * timestamps needed to drill into `get_order_items`.
  */
-export const getOrders = admin.tool({
-  name: "get_orders",
+export const getOrders = mcpTool({
   title: "Get orders",
   description:
     "List orders newest first, optionally filtered by status, table, guest, or " +

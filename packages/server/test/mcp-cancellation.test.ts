@@ -7,7 +7,13 @@ import { ANONYMOUS_PRINCIPAL } from "../src/auth.ts";
 import { v } from "../src/v.ts";
 import { Engine } from "../src/engine.ts";
 import { procedure, type ProcedureBuilder } from "../src/functions.ts";
-import { createMcp, type McpBuilder } from "../src/mcp.ts";
+import {
+  createMcp,
+  mcpTool,
+  type McpBuilder,
+  type McpToolBuilder,
+  type McpToolCtx,
+} from "../src/mcp.ts";
 import { reconcile } from "../src/schema/reconcile.ts";
 import { Registry } from "../src/registry.ts";
 import { Runtime, type RuntimeProcedureResponse } from "../src/runtime.ts";
@@ -22,7 +28,7 @@ const schema = defineSchema({
 
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedMcp = createMcp as McpBuilder<typeof schema>;
-const agentMcp = typedMcp({ name: "agent", path: "/mcp" });
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
 type Gate = ReturnType<typeof Promise.withResolvers<void>>;
 
@@ -75,8 +81,7 @@ function outcome(result: PromiseSettledResult<unknown>): { status: string; value
     : { status: "rejected" };
 }
 
-const wait = agentMcp.tool({
-  name: "wait",
+const wait = typedMcpTool({
   description: "Wait for cancellation or an explicit test release.",
   args: { key: v.string() },
   output: v.object({ key: v.string() }),
@@ -86,19 +91,19 @@ const wait = agentMcp.tool({
   },
 });
 
-const nestedWait = agentMcp.tool({
-  name: "nested_wait",
+async function handleNestedWait(ctx: McpToolCtx<typeof schema>): Promise<{ done: boolean }> {
+  await agentMcp.aiTools(ctx).wait!.execute({ key: "nested" });
+  return { done: true };
+}
+
+const nestedWait = typedMcpTool({
   description: "Delegate to another local MCP tool.",
   args: {},
   output: v.object({ done: v.boolean() }),
-  handler: async (ctx) => {
-    await agentMcp.aiTools(ctx).wait!.execute({ key: "nested" });
-    return { done: true };
-  },
+  handler: handleNestedWait,
 });
 
-const activeTransaction = agentMcp.tool({
-  name: "active_transaction",
+const activeTransaction = typedMcpTool({
   description: "Hold an active writer transaction until cancellation.",
   args: {},
   output: v.object({ done: v.boolean() }),
@@ -111,8 +116,7 @@ const activeTransaction = agentMcp.tool({
   },
 });
 
-const committedTransaction = agentMcp.tool({
-  name: "committed_transaction",
+const committedTransaction = typedMcpTool({
   description: "Commit before cancellation suppresses the local result.",
   args: {},
   output: v.object({ done: v.boolean() }),
@@ -122,8 +126,7 @@ const committedTransaction = agentMcp.tool({
   },
 });
 
-const holdWriter = agentMcp.tool({
-  name: "hold_writer",
+const holdWriter = typedMcpTool({
   description: "Own the writer until explicitly released.",
   args: {},
   output: v.object({ done: v.boolean() }),
@@ -136,8 +139,7 @@ const holdWriter = agentMcp.tool({
   },
 });
 
-const queuedTransaction = agentMcp.tool({
-  name: "queued_transaction",
+const queuedTransaction = typedMcpTool({
   description: "Enter the writer queue before inserting.",
   args: {},
   output: v.object({ done: v.boolean() }),
@@ -147,8 +149,7 @@ const queuedTransaction = agentMcp.tool({
   },
 });
 
-const encodingCancellation = agentMcp.tool({
-  name: "encoding_cancellation",
+const encodingCancellation = typedMcpTool({
   description: "Cancel while the structured result is encoded.",
   args: {},
   output: v.object({ value: v.string() }),
@@ -158,6 +159,20 @@ const encodingCancellation = agentMcp.tool({
       return "encoded";
     },
   }),
+});
+
+const agentMcp = typedMcp({
+  name: "agent",
+  path: "/mcp",
+  tools: {
+    active_transaction: activeTransaction,
+    committed_transaction: committedTransaction,
+    encoding_cancellation: encodingCancellation,
+    hold_writer: holdWriter,
+    nested_wait: nestedWait,
+    queued_transaction: queuedTransaction,
+    wait,
+  },
 });
 
 const runLocal = typedProcedure({

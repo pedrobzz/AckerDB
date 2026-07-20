@@ -12,8 +12,9 @@ import {
   Runtime,
   serve,
   type McpBuilder,
+  type McpToolBuilder,
 } from "@dbzz/server";
-import { createMcp } from "@dbzz/server/mcp";
+import { createMcp, mcpTool } from "@dbzz/server/mcp";
 
 const CONFORMANCE_VERSION = "0.1.16";
 const SCENARIOS = [
@@ -42,13 +43,9 @@ const schema = defineSchema({
   }),
 });
 const typedMcp = createMcp as McpBuilder<typeof schema>;
-const conformanceMcp = typedMcp({
-  name: "conformance",
-  instructions: "MCP protocol conformance fixtures for DBZZ release verification.",
-});
+const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 
-const simpleText = conformanceMcp.tool({
-  name: "test_simple_text",
+const simpleText = typedMcpTool({
   description: "Return the official conformance suite's simple text fixture.",
   args: {},
   handler: () => ({
@@ -56,8 +53,7 @@ const simpleText = conformanceMcp.tool({
   }),
 });
 
-const imageContent = conformanceMcp.tool({
-  name: "test_image_content",
+const imageContent = typedMcpTool({
   description: "Return a base64 image content block.",
   args: {},
   handler: () => ({
@@ -65,8 +61,7 @@ const imageContent = conformanceMcp.tool({
   }),
 });
 
-const audioContent = conformanceMcp.tool({
-  name: "test_audio_content",
+const audioContent = typedMcpTool({
   description: "Return a base64 audio content block.",
   args: {},
   handler: () => ({
@@ -74,8 +69,7 @@ const audioContent = conformanceMcp.tool({
   }),
 });
 
-const embeddedResource = conformanceMcp.tool({
-  name: "test_embedded_resource",
+const embeddedResource = typedMcpTool({
   description: "Return an embedded text resource content block.",
   args: {},
   handler: () => ({
@@ -90,8 +84,7 @@ const embeddedResource = conformanceMcp.tool({
   }),
 });
 
-const mixedContent = conformanceMcp.tool({
-  name: "test_multiple_content_types",
+const mixedContent = typedMcpTool({
   description: "Return text, image, and embedded resource content blocks.",
   args: {},
   handler: () => ({
@@ -110,8 +103,7 @@ const mixedContent = conformanceMcp.tool({
   }),
 });
 
-const errorHandling = conformanceMcp.tool({
-  name: "test_error_handling",
+const errorHandling = typedMcpTool({
   description: "Return the framework's intentional safe tool error.",
   args: {},
   handler: () => {
@@ -119,15 +111,22 @@ const errorHandling = conformanceMcp.tool({
   },
 });
 
+const conformanceMcp = typedMcp({
+  name: "conformance",
+  instructions: "MCP protocol conformance fixtures for DBZZ release verification.",
+  tools: {
+    test_audio_content: audioContent,
+    test_embedded_resource: embeddedResource,
+    test_error_handling: errorHandling,
+    test_image_content: imageContent,
+    test_multiple_content_types: mixedContent,
+    test_simple_text: simpleText,
+  },
+});
+
 const modules = {
   conformance: {
-    audioContent,
     conformanceMcp,
-    embeddedResource,
-    errorHandling,
-    imageContent,
-    mixedContent,
-    simpleText,
   },
 };
 

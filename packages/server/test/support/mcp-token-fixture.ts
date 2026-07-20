@@ -22,7 +22,12 @@ import {
   type QueryBuilder,
 } from "../../src/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/limits.ts";
-import { createMcp, type McpBuilder } from "../../src/mcp.ts";
+import {
+  createMcp,
+  mcpTool,
+  type McpBuilder,
+  type McpToolBuilder,
+} from "../../src/mcp.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/registry.ts";
 import { Runtime, type RuntimeOptions } from "../../src/runtime.ts";
@@ -46,14 +51,103 @@ export const typedMutation = mutation as MutationBuilder<typeof schema>;
 export const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 export const typedMcp = createMcp as McpBuilder<typeof schema>;
+export const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 const invalidUpdateKind = v.enum("InvalidMcpTokenUpdateKind", ["empty", "undefined"]);
 
-export const agentMcp = typedMcp({ name: "agent", path: "/agent/mcp" });
-const operationsMcp = typedMcp({ name: "operations", path: "/operations/mcp" });
+const writeOwnedRecord = typedMcpTool({
+  description: "Write a row owned by the delegated Identity.",
+  access: "authenticated",
+  args: { value: v.string() },
+  handler: async (ctx, args) => {
+    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    const identity = ctx.auth.identity;
+    const id = await ctx.tx((tx) => tx.db.records.insert({ owner: identity, value: args.value }));
+    return {
+      content: [
+        { type: "text" as const, text: `${ctx.auth.kind}:${identity}` },
+        {
+          type: "resource_link" as const,
+          uri: `dbzz://records/${id}`,
+          name: `record-${id}`,
+          annotations: { audience: ["assistant" as const], priority: 0.8 },
+          _meta: { owner: identity.toString() },
+        },
+      ],
+      _meta: { tokenId: ctx.auth.tokenId },
+    };
+  },
+});
+
+const attemptSelfAdministration = typedMcpTool({
+  description: "Exercise the delegated-credential administration boundary.",
+  access: "authenticated",
+  args: {},
+  handler: async (ctx) => ctx.tx((tx) => {
+    agentMcp.tokens.list(tx);
+    agentMcp.tokens.create(tx, { name: "escalated", metadata: {} });
+    return { content: [{ type: "text", text: "unexpected" }] };
+  }),
+});
+
+const publicScopedTool = typedMcpTool({
+  description: "Public scope fixture.",
+  access: "public",
+  args: {},
+  handler: () => ({ content: [{ type: "text", text: "public" }] }),
+});
+
+const authenticatedScopedTool = typedMcpTool({
+  description: "Authenticated scope fixture.",
+  access: "authenticated",
+  args: {},
+  handler: () => ({ content: [{ type: "text", text: "authenticated" }] }),
+});
+
+const anyScopedTool = typedMcpTool({
+  description: "Any-of scope fixture.",
+  access: { anyOf: ["orders.all", "orders.get"] },
+  args: {},
+  handler: () => ({ content: [{ type: "text", text: "orders" }] }),
+});
+
+const allScopedTool = typedMcpTool({
+  description: "All-of scope fixture.",
+  access: { allOf: ["orders.get", "reports.all"] },
+  args: {},
+  handler: () => ({ content: [{ type: "text", text: "reports" }] }),
+});
+
+const exactAllTool = typedMcpTool({
+  description: "Prove .all is an opaque exact value.",
+  access: { anyOf: ["orders.all"] },
+  args: {},
+  handler: () => ({ content: [{ type: "text", text: "admin" }] }),
+});
+
+export const agentMcp = typedMcp({
+  name: "agent",
+  path: "/agent/mcp",
+  tools: {
+    attempt_self_administration: attemptSelfAdministration,
+    write_owned_record: writeOwnedRecord,
+  },
+});
+const operationsMcp = typedMcp({
+  name: "operations",
+  path: "/operations/mcp",
+  tools: {},
+});
 export const scopedMcp = typedMcp({
   name: "scoped",
   path: "/scoped/mcp",
   scopes: ["orders.all", "orders.get", "reports.all"] as const,
+  tools: {
+    admin_orders: exactAllTool,
+    authenticated_status: authenticatedScopedTool,
+    public_status: publicScopedTool,
+    read_orders: anyScopedTool,
+    read_reports: allScopedTool,
+  },
 });
 let escapedOwnerContext: MutationCtx<typeof schema> | null = null;
 
@@ -152,83 +246,6 @@ const normalProcedure = typedProcedure({
   access: "authenticated",
   args: {},
   handler: (ctx) => ctx.auth.kind,
-});
-
-const writeOwnedRecord = agentMcp.tool({
-  name: "write_owned_record",
-  description: "Write a row owned by the delegated Identity.",
-  access: "authenticated",
-  args: { value: v.string() },
-  handler: async (ctx, args) => {
-    if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
-    const identity = ctx.auth.identity;
-    const id = await ctx.tx((tx) => tx.db.records.insert({ owner: identity, value: args.value }));
-    return {
-      content: [
-        { type: "text", text: `${ctx.auth.kind}:${identity}` },
-        {
-          type: "resource_link",
-          uri: `dbzz://records/${id}`,
-          name: `record-${id}`,
-          annotations: { audience: ["assistant"], priority: 0.8 },
-          _meta: { owner: identity.toString() },
-        },
-      ],
-      _meta: { tokenId: ctx.auth.tokenId },
-    };
-  },
-});
-
-const attemptSelfAdministration = agentMcp.tool({
-  name: "attempt_self_administration",
-  description: "Exercise the delegated-credential administration boundary.",
-  access: "authenticated",
-  args: {},
-  handler: async (ctx) => ctx.tx((tx) => {
-    agentMcp.tokens.list(tx);
-    agentMcp.tokens.create(tx, { name: "escalated", metadata: {} });
-    return { content: [{ type: "text", text: "unexpected" }] };
-  }),
-});
-
-const publicScopedTool = scopedMcp.tool({
-  name: "public_status",
-  description: "Public scope fixture.",
-  access: "public",
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "public" }] }),
-});
-
-const authenticatedScopedTool = scopedMcp.tool({
-  name: "authenticated_status",
-  description: "Authenticated scope fixture.",
-  access: "authenticated",
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "authenticated" }] }),
-});
-
-const anyScopedTool = scopedMcp.tool({
-  name: "read_orders",
-  description: "Any-of scope fixture.",
-  access: { anyOf: ["orders.all", "orders.get"] },
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "orders" }] }),
-});
-
-const allScopedTool = scopedMcp.tool({
-  name: "read_reports",
-  description: "All-of scope fixture.",
-  access: { allOf: ["orders.get", "reports.all"] },
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "reports" }] }),
-});
-
-const exactAllTool = scopedMcp.tool({
-  name: "admin_orders",
-  description: "Prove .all is an opaque exact value.",
-  access: { anyOf: ["orders.all"] },
-  args: {},
-  handler: () => ({ content: [{ type: "text", text: "admin" }] }),
 });
 
 const modules = {

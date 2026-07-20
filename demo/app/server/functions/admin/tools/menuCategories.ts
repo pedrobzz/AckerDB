@@ -1,14 +1,13 @@
 import { v } from "@dbzz/server";
+import { mcpTool } from "@demo/dbzz-codegen/server";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
-import { admin } from "../mcp.ts";
 
 /**
  * `get_menu_categories` — the menu's sections in menu order. Reach for this to
  * enumerate what parts the menu has ("which sections are there?") or to resolve
  * a categoryId before drilling into `get_menu_items`.
  */
-export const getMenuCategories = admin.tool({
-  name: "get_menu_categories",
+export const getMenuCategories = mcpTool({
   title: "Get menu categories",
   description:
     "List the menu's categories (sections) in menu order. Use it to enumerate " +
