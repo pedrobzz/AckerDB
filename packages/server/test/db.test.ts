@@ -84,6 +84,17 @@ const observedDb = (observer: DbStatementObserver): any =>
   makeDbWriter(engine, newWriteCollector(), () => ++eventSeq, observer);
 
 describe("writes", () => {
+  test("keeps the native wildcard read path for tables without logical ints", () => {
+    expect(engine.plan("payments").readProjection).toBe("*");
+    expect(engine.plan("users").readProjection).toBe("*");
+  });
+
+  test("projects mixed numeric rows explicitly and casts only logical ints", () => {
+    expect(engine.plan("numericRows").readProjection).toBe(
+      '"id", CAST("rank" AS REAL) AS "rank", CAST("maybeRank" AS REAL) AS "maybeRank", "exact", "owner"',
+    );
+  });
+
   test("materializes int columns as numbers without narrowing integer-backed bigint kinds", async () => {
     const max = Number.MAX_SAFE_INTEGER;
     const min = Number.MIN_SAFE_INTEGER;

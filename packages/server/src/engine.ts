@@ -170,13 +170,15 @@ const quote = (name: string) => `"${name}"`;
 /** Compile the exact physical row shape expected by `rowFromSql`. */
 export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
   const selected: string[] = [];
+  let castsInt = false;
   for (const column of columns) {
+    if (column.kind === "int") castsInt = true;
     for (const physical of column.phys) {
       const name = quote(physical.name);
       selected.push(column.kind === "int" ? `CAST(${name} AS REAL) AS ${name}` : name);
     }
   }
-  return selected.join(", ");
+  return castsInt ? selected.join(", ") : "*";
 }
 
 interface StoredObject {
