@@ -645,10 +645,10 @@ function setOwnField(record: Record<string, unknown>, key: string, value: unknow
 export function compileShape<S extends ObjectShape>(
   shape: S,
 ): (value: unknown, path: string) => InferShape<S> {
-  const keys = Object.keys(shape);
-  const knownKeys = new Set(keys);
-  const fields = keys.map((key): CompiledShapeField => {
+  const knownKeys: Record<string, true> = Object.create(null);
+  const fields = Object.keys(shape).map((key): CompiledShapeField => {
     const field = shape[key]!;
+    knownKeys[key] = true;
     return {
       key,
       validator: field,
@@ -662,7 +662,7 @@ export function compileShape<S extends ObjectShape>(
     }
     const input = value as Record<string, unknown>;
     for (const key of Object.keys(input)) {
-      if (!knownKeys.has(key) && input[key] !== undefined) {
+      if (knownKeys[key] !== true && input[key] !== undefined) {
         throw new ValidationError(`${path}: unknown field "${key}"`);
       }
     }
