@@ -80,24 +80,23 @@ describe("version-to-version performance recovery threshold", () => {
     expect(compareDbzzMetrics(previous, current).map((regression) => regression.path)).toEqual(["rss/peak"]);
   });
 
-  test("active CPU remains reported by the benchmark but is not a comparable regression metric", () => {
-    const window = (sampleCount: number) => ({
+  test("active memory is gated per useful work while active CPU and allocator high-water remain raw-only", () => {
+    const window = (sampleCount: number, p50 = 10, peak = 12) => ({
       wallMs: 1_000,
       cpuSeconds: 1,
       cpuCores: 1,
       rssKind: "sumProcessRss" as const,
-      rssMb: { p50: 10, peak: 12 },
+      rssMb: { p50, peak },
       sampleCount,
       processCountPeak: 1,
     });
     const idle = window(20);
-    const active = window(6);
-    const system = {
+    const system = (throughputPerSec: number, activeP50: number, activePeak: number) => ({
       startupIdle: { window: idle },
       resources: { server: { phases: {
         "server:seeded-idle-window": idle,
         "connections:baseline-idle": idle,
-        "operation:query:default:trial-0": active,
+        "operation:query:default:trial-0": window(20, activeP50, activePeak),
       } } },
       workload: {
         failures: [],
@@ -108,21 +107,33 @@ describe("version-to-version performance recovery threshold", () => {
         operations: [{
           operation: "query",
           profile: { name: "default" },
-          medianThroughputPerSec: 100,
+          medianThroughputPerSec: throughputPerSec,
           medianLatencyP50Ms: 1,
           medianLatencyP95Ms: 1,
           medianLatencyP99Ms: 1,
-          trials: [{ phaseId: "operation:query:default:trial-0", latency: { count: 20 } }],
+          trials: [{
+            phaseId: "operation:query:default:trial-0",
+            throughputPerSec,
+            latency: { count: 20 },
+          }],
         }],
         connections: [],
         subscriptions: [],
       },
-    } as unknown as MeasuredSystem;
+    } as unknown as MeasuredSystem);
 
-    const paths = extractComparableMetrics(system).map((entry) => entry.path);
+    const previous = extractComparableMetrics(system(100, 20, 30));
+    const current = extractComparableMetrics(system(200, 25, 35));
+    const paths = current.map((entry) => entry.path);
+    expect(compareDbzzMetrics(previous, current)).toEqual([]);
     expect(paths).toContain("resources/startup-idle/cpuCores");
-    expect(paths).toContain("operations/query/default/resources/server/rssMb/peakMax");
+    expect(paths).toContain("operations/query/default/resources/server/rssMbPer1kUsefulOps/peakIncrementMax");
     expect(paths).not.toContain("operations/query/default/resources/server/cpuCoresMedian");
+    expect(paths.some((path) => path.startsWith("resources/connection-baseline-idle"))).toBe(false);
+    expect(extractComparableMetrics(system(100, 5, 8))
+      .filter((entry) => entry.family === "resource.rss.efficiency")
+      .map((entry) => entry.value)).toEqual([0, 0]);
+    expect(() => extractComparableMetrics(system(0, 20, 30))).toThrow("useful throughput must be a positive");
   });
 
   test("later iterations retain only regressions repeated from the immediately preceding iteration", () => {
