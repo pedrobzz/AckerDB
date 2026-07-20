@@ -553,7 +553,12 @@ describe("public stateless MCP endpoint", () => {
             type: "object",
             properties: {
               body: { type: "string", description: "The original note text." },
-              length: { type: "integer", description: "The number of UTF-16 code units." },
+              length: {
+                type: "integer",
+                minimum: Number.MIN_SAFE_INTEGER,
+                maximum: Number.MAX_SAFE_INTEGER,
+                description: "The number of UTF-16 code units.",
+              },
               label: {
                 type: ["string", "null"],
                 description: "The normalized label.",
