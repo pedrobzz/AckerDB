@@ -6,17 +6,20 @@ guide.
 
 ## The model
 
-Every schema change is classified by its *shape*, always presuming rows exist —
-never by inspecting the data:
+Every schema change is first classified by its *shape*, always presuming rows
+exist. The classification never changes because a table happens to be empty;
+only the explicitly optimistic class performs the data probes described below:
 
 - **Shape-safe** changes apply automatically, identically on an empty dev table
   and a full production one, with no migration file: adding a table, adding a
   nullable column, adding or reordering enum/union variants, widening a column
-  to nullable, any non-unique index change, dropping any index, and every
-  event-table change.
-- **Optimistic** (the sole member: adding a unique index) is attempted: clean
-  data applies; duplicates refuse cleanly with counts and touch nothing. The
-  fix is a migration with a volunteered dedupe transform.
+  to nullable, loosening validator constraints, any non-unique index change,
+  dropping any index, and every event-table change.
+- **Optimistic** changes are attempted against the stored data: adding a unique
+  index probes duplicate groups, while tightening a validator constraint scans
+  the affected columns in bounded pages. Clean data applies; duplicates or
+  invalid rows refuse with exact counts and touch nothing. The fix is a
+  migration with a volunteered dedupe or validation transform.
 - **Shape-unsafe** changes pose a per-row question and always require a
   migration, even on an empty table: a column type change, narrowing to
   required, adding a required column, removing a variant, changing a union
@@ -29,15 +32,16 @@ assume: rename declarations, row transforms, and drop acknowledgments.
 
 ## Dev flow
 
-`dbz dev` applies shape-safe changes on every reload, silently. When a change
-needs a migration, the server refuses to start and — on a real terminal — the
-supervisor prints the **change ledger**: every change that needs a migration
-(each with its per-row question, and probed duplicate counts for unique
-indexes), the ambiguous dropped/added pairs that might be renames, and the
-shape-safe changes that ride along automatically. Then it asks whether to
-generate the migration now. **Nothing is written before you say yes** — a bare
-Enter declines. Non-interactive contexts never prompt; they exit naming the
-recourse: `dbz generate [name]`.
+`dbz dev` applies shape-safe changes and clean optimistic changes on every
+reload, silently. When a change needs a migration, the server refuses to start
+and — on a real terminal — the supervisor prints the **change ledger**: every
+change that needs a migration (each with its per-row question, plus exact
+duplicate or constraint-violation counts for optimistic changes), the
+ambiguous dropped/added pairs that might be renames, and the shape-safe changes
+that ride along automatically. Then it asks whether to generate the migration
+now. **Nothing is written before you say yes** — a bare Enter declines.
+Non-interactive contexts never prompt; they exit naming the recourse:
+`dbz generate [name]`.
 
 Saying yes names the migration (Enter accepts the derived name), answers the
 rename questions (rename, or delete+add? never guessed), and scaffolds.
@@ -125,6 +129,10 @@ into any table of the new schema. Transforms never observe each other's output
 or emits, may be async, and should be deterministic — network access is on
 you. A variant rename keeps its interned tag with zero row rewrites; a genuine
 removal forces you (in the types) to map or delete the rows that hold it.
+Constraint-refusal scaffolds use the same table transform: repair the invalid
+value, map the row to another valid shape, or return `null` to delete it. The
+engine validates every returned and emitted row against the target constraints
+before writing it.
 
 ## Chain rules
 
@@ -141,14 +149,21 @@ removal forces you (in the types) to map or delete the rows that hold it.
 - Each pending migration applies at startup in its own transaction, history
   row included: a mid-chain failure keeps every earlier migration applied and
   rolls the failing one back byte-identically. Fix the code, restart.
+- Optimistic constraint probes run under the same writer transaction before
+  schema, data, snapshot, or history writes. A violating row therefore cannot
+  race a clean probe, and a refusal leaves all four untouched.
 - After the last migration, the remaining diff to the live schema must be
-  entirely shape-safe; anything else refuses and names `dbz generate`.
+  shape-safe or pass its optimistic probes; anything else refuses and names
+  `dbz generate`.
 - Safe drift is sound by construction: a migration generated against a dev
   snapshot applies to a production database that lacks later shape-safe
   changes — an absent nullable column reads as `null`, an absent table reads
   as empty.
 - There are no down-migrations. Rolling back is a new forward migration, or a
   verified backup restore.
+
+Validator presence rules and the complete constraint surface are documented in
+[Validators](validators.md).
 
 ## Deploying a migration-carrying release
 
