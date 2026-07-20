@@ -61,6 +61,25 @@ listener). Always runs under the reactive system's execution root, under the
 subscriber's own principal — never under the identity or context of whoever
 triggered it.
 
+## Validation
+
+**Constraint** — A declarative rule that narrows the values admitted by a
+validator without changing the value's TypeScript type. A stored constraint is
+part of the declared schema and must hold for every stored row; a function-input
+constraint applies only when that function is invoked.
+
+**Nullable** — A value may be `null`. A nullable function input is still
+required to be present; a nullable stored field is present in every row and
+uses `null`, never absence, to represent no value.
+
+**Optional** — A function input may be absent, in which case the handler sees
+`undefined`; when present, the value itself may not be `null` unless its inner
+validator admits `null`. Stored fields are never optional.
+
+**Nullish** — A function input may be absent or explicitly `null`; absence
+remains `undefined` while an explicit `null` remains `null`. Stored fields are
+never nullish.
+
 ## Schema migrations
 
 **Reconcile** — The startup pass that compares the application's declared
