@@ -174,3 +174,26 @@ export function checkArrayConstraints(
 function itemCount(count: number): string {
   return `${count} ${count === 1 ? "item" : "items"}`;
 }
+
+/** Validate durable constraint metadata without needing a sample value. */
+export function validateConstraintDescriptor(
+  kind: "string" | "int" | "float" | "bigint" | "array",
+  descriptor: ConstraintFields,
+  path: string,
+): void {
+  let min: number | bigint | undefined;
+  let max: number | bigint | undefined;
+  if (kind === "string" || kind === "array") {
+    min = lengthField(descriptor, "min", path);
+    max = lengthField(descriptor, "max", path);
+    if (kind === "string") descriptorRegex(descriptor, path);
+  } else if (kind === "bigint") {
+    ({ min, max } = bigintBounds(descriptor, path));
+  } else {
+    min = numberField(descriptor, "min", path);
+    max = numberField(descriptor, "max", path);
+  }
+  if (min !== undefined && max !== undefined && min > max) {
+    throw new ValidationError(`${path}: min constraint must be less than or equal to max`);
+  }
+}

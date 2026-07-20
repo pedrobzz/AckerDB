@@ -641,8 +641,13 @@ function setOwnField(record: Record<string, unknown>, key: string, value: unknow
   });
 }
 
-function compileShapeFields(shape: ObjectShape): readonly CompiledShapeField[] {
-  return Object.keys(shape).map((key) => {
+/** Compile one strict, presence-preserving object validator from a shape. */
+export function compileShape<S extends ObjectShape>(
+  shape: S,
+): (value: unknown, path: string) => InferShape<S> {
+  const keys = Object.keys(shape);
+  const knownKeys = new Set(keys);
+  const fields = keys.map((key): CompiledShapeField => {
     const field = shape[key]!;
     return {
       key,
@@ -650,59 +655,38 @@ function compileShapeFields(shape: ObjectShape): readonly CompiledShapeField[] {
       omissible: field.kind === "optional" || field.kind === "nullish",
     };
   });
-}
 
-function checkCompiledShape<S extends ObjectShape>(
-  shape: S,
-  fields: readonly CompiledShapeField[],
-  value: unknown,
-  path: string,
-): InferShape<S> {
-  if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) {
-    fail(path, "object", value);
-  }
-  const input = value as Record<string, unknown>;
-  for (const key of Object.keys(input)) {
-    if (!Object.hasOwn(shape, key) && input[key] !== undefined) {
-      throw new ValidationError(`${path}: unknown field "${key}"`);
+  return (value, path) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) {
+      fail(path, "object", value);
     }
-  }
-  const out: Record<string, unknown> = {};
-  for (const field of fields) {
-    if (!Object.hasOwn(input, field.key) && field.omissible) continue;
-    setOwnField(
-      out,
-      field.key,
-      field.validator.check(input[field.key], `${path}.${field.key}`),
-    );
-  }
-  return out as InferShape<S>;
+    const input = value as Record<string, unknown>;
+    for (const key of Object.keys(input)) {
+      if (!knownKeys.has(key) && input[key] !== undefined) {
+        throw new ValidationError(`${path}: unknown field "${key}"`);
+      }
+    }
+    const out: Record<string, unknown> = {};
+    for (const field of fields) {
+      const present = Object.hasOwn(input, field.key);
+      if (!present && field.omissible) continue;
+      setOwnField(
+        out,
+        field.key,
+        field.validator.check(present ? input[field.key] : undefined, `${path}.${field.key}`),
+      );
+    }
+    return out as InferShape<S>;
+  };
 }
 
-/** Shared by v.object and args validation: strict keys and presence-preserving omission. */
+/** One-shot convenience for callers that do not retain a compiled shape. */
 export function checkShape<S extends ObjectShape>(
   shape: S,
   value: unknown,
   path: string,
 ): InferShape<S> {
-  if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) {
-    fail(path, "object", value);
-  }
-  const input = value as Record<string, unknown>;
-  for (const key of Object.keys(input)) {
-    if (!Object.hasOwn(shape, key) && input[key] !== undefined) {
-      throw new ValidationError(`${path}: unknown field "${key}"`);
-    }
-  }
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(shape)) {
-    const field = shape[key]!;
-    if (!Object.hasOwn(input, key) && (field.kind === "optional" || field.kind === "nullish")) {
-      continue;
-    }
-    setOwnField(out, key, field.check(input[key], `${path}.${key}`));
-  }
-  return out as InferShape<S>;
+  return compileShape(shape)(value, path);
 }
 
 export interface ObjectValidator<S extends ObjectShape = ObjectShape>
@@ -715,7 +699,7 @@ function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
   // Compile its hot-path keys and omission bits once without splitting that
   // contract or changing the receiver of a structural validator's check.
   const ownedShape = ownShape(shape);
-  const compiledFields = compileShapeFields(ownedShape);
+  const check = compileShape(ownedShape);
   return makeValidator<
     InferShape<S>,
     "object",
@@ -724,7 +708,7 @@ function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
   >(
     "object",
     {
-      check: (value, path) => checkCompiledShape(ownedShape, compiledFields, value, path),
+      check,
       tsType() {
         const fields = Object.keys(ownedShape).map((k) => {
           const field = ownedShape[k]!;
@@ -755,9 +739,17 @@ function enum_<const V extends readonly [string, ...string[]]>(
   name: string,
   values: V,
 ): EnumValidator<V[number]> {
+  if (
+    !Array.isArray(values) ||
+    values.length === 0 ||
+    values.some((value) => typeof value !== "string")
+  ) {
+    throw new ValidationError(`enum ${name}: values must be a non-empty array of strings`);
+  }
   if (new Set(values).size !== values.length) {
     throw new ValidationError(`enum ${name}: duplicate variants`);
   }
+  const ownedValues = Object.freeze([...values]) as readonly V[number][];
   return makeValidator<
     V[number],
     "enum",
@@ -766,18 +758,18 @@ function enum_<const V extends readonly [string, ...string[]]>(
     "enum",
     {
       check(value, path) {
-        if (typeof value !== "string" || !values.includes(value)) {
+        if (typeof value !== "string" || !ownedValues.includes(value)) {
           const got = typeof value === "string" ? JSON.stringify(value) : describe(value);
           throw new ValidationError(
-            `${path}: expected one of ${values.map((v) => JSON.stringify(v)).join(" | ")} (${name}), got ${got}`,
+            `${path}: expected one of ${ownedValues.map((v) => JSON.stringify(v)).join(" | ")} (${name}), got ${got}`,
           );
         }
         return value as V[number];
       },
       tsType: () => name,
-      descriptor: () => ({ k: "enum", name, values: [...values] }),
+      descriptor: () => ({ k: "enum", name, values: [...ownedValues] }),
     },
-    { name, values },
+    { name, values: ownedValues },
   );
 }
 

@@ -49,6 +49,7 @@ import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
 import type { Descriptor, Identity, Validator } from "./v.ts";
 import { scalarDecoder, scalarEncoder, sqlTypeOf } from "./schema/descriptor-kinds.ts";
+import { validateStoredDescriptor } from "./schema/stored-descriptor.ts";
 import {
   MutationReplayLedger,
   mutationReplayOwner,
@@ -64,6 +65,7 @@ import {
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
 import type { IndexDef, Schema, TableDef } from "./schema.ts";
 import { snapshotOf, type SchemaSnapshot } from "./snapshot.ts";
+import { isValidationError } from "./validation-error.ts";
 
 export { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
 export interface TagMap {
@@ -328,7 +330,12 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
     let scheduleColumns = 0;
     for (const [column, descriptor] of Object.entries(storedColumns)) {
       storedName(column, `${tableName} column`);
-      if (!storedRecord(descriptor)) corruptSnapshot(`${tableName}.${column} is invalid`);
+      try {
+        validateStoredDescriptor(descriptor, `${tableName}.${column}`);
+      } catch (error) {
+        if (isValidationError(error)) corruptSnapshot(error.message);
+        throw error;
+      }
       if (descriptor["k"] === "pk") primaryKeys++;
       if (descriptor["k"] === "scheduleAt") scheduleColumns++;
       physicalColumnDdl(column, descriptor as Descriptor, `${tableName}.${column}`);

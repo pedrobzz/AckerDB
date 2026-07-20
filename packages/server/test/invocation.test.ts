@@ -24,6 +24,48 @@ function user(): UserPrincipal {
 }
 
 describe("invocation instrumentation", () => {
+  test("compiles one strict presence-preserving argument shape", async () => {
+    const shape = {
+      required: v.string(),
+      optional: v.string().optional(),
+      nullish: v.string().nullish(),
+      ["__proto__"]: v.string().optional(),
+    };
+    const fn = query({
+      args: shape,
+      access: "public",
+      handler: (_ctx, args) => args,
+    });
+    const input: Record<string, unknown> = {
+      required: "set",
+      optional: undefined,
+      ignored: undefined,
+    };
+    Object.defineProperty(input, "__proto__", {
+      enumerable: true,
+      value: "kept",
+    });
+
+    const args = await fn({ auth: ANONYMOUS_PRINCIPAL }, input as never) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(args)).toBe(Object.prototype);
+    expect(Object.hasOwn(args, "optional")).toBe(true);
+    expect(Object.hasOwn(args, "nullish")).toBe(false);
+    expect(Object.hasOwn(args, "ignored")).toBe(false);
+    expect(Object.hasOwn(args, "__proto__")).toBe(true);
+    expect(args["__proto__"]).toBe("kept");
+
+    await expect(fn(
+      { auth: ANONYMOUS_PRINCIPAL },
+      { required: "set", toString: "unknown" } as never,
+    )).rejects.toThrow('args: unknown field "toString"');
+
+    (shape as Record<string, unknown>)["addedLater"] = v.string();
+    await expect(fn(
+      { auth: ANONYMOUS_PRINCIPAL },
+      { required: "set", addedLater: "must stay unknown" } as never,
+    )).rejects.toThrow('args: unknown field "addedLater"');
+  });
+
   test("rejects constrained arguments before policy and handler execution", async () => {
     let policyCalls = 0;
     let handlerCalls = 0;

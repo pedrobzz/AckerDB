@@ -65,6 +65,26 @@ describe("composite validators", () => {
     expect(role.name).toBe("UserRole");
     expect(role.values).toEqual(["admin", "member", "guest"]);
     expect(() => v.enum("Bad", ["a", "a"])).toThrow("duplicate");
+
+    for (const invalid of [[], ["valid", 1], "not-an-array"]) {
+      expect(() => v.enum(
+        "Invalid",
+        invalid as unknown as [string, ...string[]],
+      )).toThrow("non-empty array of strings");
+    }
+
+    const source: ["draft", "live"] = ["draft", "live"];
+    const status = v.enum("Status", source);
+    source.splice(0, source.length, "live");
+    const inferred: "draft" | "live" = check(status, "draft");
+    expect(inferred).toBe("draft");
+    expect(status.values).toEqual(["draft", "live"]);
+    expect(Object.isFrozen(status.values)).toBe(true);
+    expect(status.descriptor()).toEqual({
+      k: "enum",
+      name: "Status",
+      values: ["draft", "live"],
+    });
   });
 
   test("union validates tagged values and exposes constructors", () => {

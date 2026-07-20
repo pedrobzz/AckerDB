@@ -224,7 +224,7 @@ describe("constraint Standard JSON Schema projection", () => {
       ["~standard"].jsonSchema.output(target)).toEqual({
         $schema: "https://json-schema.org/draft/2020-12/schema",
         type: "array",
-        items: { type: "integer", minimum: 0 },
+        items: { type: "integer", minimum: 0, maximum: Number.MAX_SAFE_INTEGER },
         minItems: 1,
         maxItems: 3,
       });
@@ -233,6 +233,46 @@ describe("constraint Standard JSON Schema projection", () => {
       type: "number",
       minimum: -1.5,
       maximum: 2.5,
+    });
+  });
+
+  test("projects the effective safe-integer range for every int", () => {
+    const schema = (validator: ReturnType<typeof v.int>) =>
+      validator["~standard"].jsonSchema.input(target);
+
+    expect(schema(v.int())).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "integer",
+      minimum: Number.MIN_SAFE_INTEGER,
+      maximum: Number.MAX_SAFE_INTEGER,
+    });
+    expect(schema(v.int().min(-10.5).max(10.5))).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "integer",
+      minimum: -10.5,
+      maximum: 10.5,
+    });
+    expect(schema(
+      v.int()
+        .min(Number.MIN_SAFE_INTEGER - 1)
+        .max(Number.MAX_SAFE_INTEGER + 1),
+    )).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "integer",
+      minimum: Number.MIN_SAFE_INTEGER,
+      maximum: Number.MAX_SAFE_INTEGER,
+    });
+    expect(schema(v.int().min(Number.MAX_SAFE_INTEGER + 1))).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "integer",
+      minimum: Number.MAX_SAFE_INTEGER + 1,
+      maximum: Number.MAX_SAFE_INTEGER,
+    });
+    expect(schema(v.int().max(Number.MIN_SAFE_INTEGER - 1))).toEqual({
+      $schema: "https://json-schema.org/draft/2020-12/schema",
+      type: "integer",
+      minimum: Number.MIN_SAFE_INTEGER,
+      maximum: Number.MIN_SAFE_INTEGER - 1,
     });
   });
 

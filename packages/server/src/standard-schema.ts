@@ -194,7 +194,18 @@ function constraintSchema(descriptor: Descriptor): Readonly<Record<string, unkno
         ...(descriptor["min"] === undefined ? {} : { minItems: descriptor["min"] }),
         ...(descriptor["max"] === undefined ? {} : { maxItems: descriptor["max"] }),
       };
-    case "int":
+    case "int": {
+      const min = descriptor["min"] as number | undefined;
+      const max = descriptor["max"] as number | undefined;
+      return {
+        minimum: min === undefined
+          ? Number.MIN_SAFE_INTEGER
+          : Math.max(Number.MIN_SAFE_INTEGER, min),
+        maximum: max === undefined
+          ? Number.MAX_SAFE_INTEGER
+          : Math.min(Number.MAX_SAFE_INTEGER, max),
+      };
+    }
     case "float":
       return {
         ...(descriptor["min"] === undefined ? {} : { minimum: descriptor["min"] }),

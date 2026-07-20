@@ -60,6 +60,7 @@ function ownedState(database: string): Record<string, unknown> {
       meta: db.query("SELECT key, value FROM _dbz_meta ORDER BY key").all(),
       state: db.query("SELECT * FROM _dbz_state ORDER BY singleton").all(),
       tags: db.query("SELECT type, variant, tag FROM _dbz_tags ORDER BY type, variant").all(),
+      migrations: db.query("SELECT * FROM _dbz_migrations ORDER BY number").all(),
     };
   } finally {
     db.close();
@@ -216,6 +217,100 @@ describe("durability and internal state", () => {
         "stored schema snapshot is invalid: records.by_missing has an invalid definition",
       );
       engine.close("clean");
+    }
+  });
+
+  test("rejects malformed stored descriptor metadata before startup writes", () => {
+    const constrained = defineSchema({
+      records: defineTable({
+        id: v.primaryKey(),
+        score: v.int().min(0).max(10),
+        serial: v.bigint().min(0n).max(10n),
+        profile: v.object({ handle: v.string().regex(/^[a-z]+$/) }),
+      }),
+    });
+    const corruptions: Array<{
+      readonly name: string;
+      readonly mutate: (columns: Record<string, Record<string, unknown>>) => void;
+    }> = [
+      {
+        name: "numeric bound with the wrong type",
+        mutate: (columns) => {
+          columns.score!.min = "0";
+        },
+      },
+      {
+        name: "noncanonical bigint bound",
+        mutate: (columns) => {
+          columns.serial!.min = "01";
+        },
+      },
+      {
+        name: "out-of-range bigint bound",
+        mutate: (columns) => {
+          columns.serial!.max = "9223372036854775808";
+        },
+      },
+      {
+        name: "contradictory bounds",
+        mutate: (columns) => {
+          columns.score!.min = 11;
+        },
+      },
+      {
+        name: "uncompilable regex",
+        mutate: (columns) => {
+          const shape = columns.profile!.shape as Record<string, Record<string, unknown>>;
+          shape.handle!.regex = "[";
+        },
+      },
+      {
+        name: "unknown kind-specific field",
+        mutate: (columns) => {
+          columns.score!.unexpected = true;
+        },
+      },
+      {
+        name: "stored optional nested value",
+        mutate: (columns) => {
+          const shape = columns.profile!.shape as Record<string, Record<string, unknown>>;
+          shape.handle = { k: "optional", inner: { k: "string" } };
+        },
+      },
+    ];
+
+    for (const corruption of corruptions) {
+      const { database } = fresh();
+      const engine = new Engine(constrained, database);
+      reconcile(engine);
+      engine.close("clean");
+
+      const db = new Database(database, { safeIntegers: true });
+      const row = db.query("SELECT value FROM _dbz_meta WHERE key = 'schema'").get() as {
+        value: string;
+      };
+      db.query(
+        "INSERT INTO _dbz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
+      ).run(1, "existing evidence", "0".repeat(64), 1);
+      const snapshot = JSON.parse(row.value) as {
+        tables: { records: { columns: Record<string, Record<string, unknown>> } };
+      };
+      corruption.mutate(snapshot.tables.records.columns);
+      db.query("UPDATE _dbz_meta SET value = ? WHERE key = 'schema'")
+        .run(JSON.stringify(snapshot));
+      db.close();
+
+      const before = ownedState(database);
+      expect(before.migrations, corruption.name).toHaveLength(1);
+      let opened: Engine | undefined;
+      expect(() => {
+        try {
+          opened = new Engine(constrained, database);
+        } finally {
+          opened?.close("clean");
+        }
+      }, corruption.name).toThrow(CorruptDatabaseError);
+      expect(ownedState(database), corruption.name).toEqual(before);
     }
   });
 

@@ -32,6 +32,7 @@ describe("v modifiers", () => {
     nullable: v.string().nullable(),
     optional: v.string().optional(),
     nullish: v.string().nullish(),
+    ["__proto__"]: v.string().optional(),
   });
 
   test("keeps nullable required and preserves omitted versus explicit undefined", () => {
@@ -42,10 +43,25 @@ describe("v modifiers", () => {
     expect(Object.hasOwn(omitted, "optional")).toBe(false);
     expect(Object.hasOwn(omitted, "nullish")).toBe(false);
 
-    const explicit = check(shape, { nullable: "set", optional: undefined, nullish: undefined });
-    expect(explicit).toEqual({ nullable: "set", optional: undefined, nullish: undefined });
+    const explicit = check(shape, {
+      nullable: "set",
+      optional: undefined,
+      nullish: undefined,
+      ["__proto__"]: "kept",
+    });
+    expect(explicit).toEqual({
+      nullable: "set",
+      optional: undefined,
+      nullish: undefined,
+      ["__proto__"]: "kept",
+    });
+    expect(Object.getPrototypeOf(explicit)).toBe(Object.prototype);
     expect(Object.hasOwn(explicit, "optional")).toBe(true);
     expect(Object.hasOwn(explicit, "nullish")).toBe(true);
+    expect(Object.hasOwn(explicit, "__proto__")).toBe(true);
+
+    const ignored = check(shape, { nullable: null, unknown: undefined } as never);
+    expect(Object.hasOwn(ignored, "unknown")).toBe(false);
 
     expect(() => check(shape, { nullable: undefined })).toThrow("value.nullable");
     expect(() => check(shape, { nullable: null, optional: null })).toThrow("value.optional");
@@ -58,6 +74,13 @@ describe("v modifiers", () => {
   test("rejects redundant modifier combinations at runtime", () => {
     const nullable = v.string().nullable() as unknown as { optional(): unknown };
     expect(() => nullable.optional()).toThrow("redundant");
+  });
+
+  test("does not read declared fields through the input prototype", () => {
+    expect(() => check(v.object({ toString: v.string() }), {}))
+      .toThrow("value.toString: expected string, got undefined");
+    expect(() => check(v.object({ ["__proto__"]: v.string() }), {}))
+      .toThrow("value.__proto__: expected string, got undefined");
   });
 });
 
