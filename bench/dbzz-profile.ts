@@ -24,22 +24,6 @@ export interface DbzzStartupMode {
   readonly gracefulShutdownMs: number;
 }
 
-export interface ProfileMetric {
-  readonly label: string;
-  readonly value: number;
-  readonly lowerIsBetter: boolean;
-}
-
-export interface ProfileComparisonMetric {
-  readonly label: string;
-  readonly measuredProfile: DbzzTelemetryProfile;
-  readonly measured: number;
-  readonly referenceProfile: DbzzTelemetryProfile;
-  readonly reference: number;
-  readonly measuredVsReferencePercent: number | null;
-  readonly lowerIsBetter: boolean;
-}
-
 export const DBZZ_STARTUP_PREFIX = "@@dbzz-startup ";
 
 export function benchmarkProfileFromConfig(
@@ -94,46 +78,6 @@ export function benchmarkExecutionOrder(
       ? rotated.map((profile) => `dbzz-telemetry-${profile}` as const)
       : [system],
   );
-}
-
-export function compareProfileMetrics(
-  measuredProfile: DbzzTelemetryProfile,
-  measured: readonly ProfileMetric[],
-  referenceProfile: DbzzTelemetryProfile,
-  reference: readonly ProfileMetric[],
-): ProfileComparisonMetric[] {
-  const referenceByLabel = new Map<string, ProfileMetric>();
-  for (const metric of reference) {
-    if (referenceByLabel.has(metric.label)) {
-      throw new Error(`${referenceProfile} profile duplicates ${metric.label}`);
-    }
-    referenceByLabel.set(metric.label, metric);
-  }
-  const seen = new Set<string>();
-  const paired = measured.map((metric) => {
-    if (seen.has(metric.label)) throw new Error(`${measuredProfile} profile duplicates ${metric.label}`);
-    seen.add(metric.label);
-    const baseline = referenceByLabel.get(metric.label);
-    if (baseline === undefined) throw new Error(`${referenceProfile} profile is missing ${metric.label}`);
-    if (baseline.lowerIsBetter !== metric.lowerIsBetter) {
-      throw new Error(`profiles disagree on metric direction for ${metric.label}`);
-    }
-    return {
-      label: metric.label,
-      measuredProfile,
-      measured: metric.value,
-      referenceProfile,
-      reference: baseline.value,
-      measuredVsReferencePercent:
-        baseline.value === 0 ? null : ((metric.value - baseline.value) / baseline.value) * 100,
-      lowerIsBetter: metric.lowerIsBetter,
-    };
-  });
-  if (seen.size !== referenceByLabel.size) {
-    const extra = [...referenceByLabel.keys()].find((label) => !seen.has(label))!;
-    throw new Error(`${measuredProfile} profile is missing ${extra}`);
-  }
-  return paired;
 }
 
 /** Parse the one server-confirmed mode marker that must precede readiness. */

@@ -3,7 +3,6 @@ import {
   assertDbzzStartup,
   benchmarkExecutionOrder,
   benchmarkProfileFromConfig,
-  compareProfileMetrics,
   expectedDbzzStartupMode,
   parseDbzzStartup,
   type DbzzBenchmarkProfile,
@@ -91,8 +90,8 @@ describe("dbzz benchmark profile order", () => {
       "convex",
       "spacetimedb",
     ]);
-    // The release run's single profile: rotation is a no-op, every iteration
-    // measures the same apples-to-apples leg.
+    // The release run's single profile: rotation is a no-op, so every saved-run
+    // count measures the same apples-to-apples leg.
     expect(benchmarkExecutionOrder(["dbzz", "convex", "spacetimedb"], ["disabled"], 2)).toEqual([
       "dbzz-telemetry-disabled",
       "convex",
@@ -107,62 +106,6 @@ describe("dbzz benchmark profile order", () => {
     expect(benchmarkProfileFromConfig("disabled", "disabled")).toBe("disabled");
     expect(() => benchmarkProfileFromConfig("disabled", "in-process")).toThrow(
       "requires telemetry to be enabled",
-    );
-  });
-});
-
-describe("dbzz telemetry cost", () => {
-  test("pairs exact metric labels and preserves a zero denominator as unavailable", () => {
-    expect(
-      compareProfileMetrics(
-        "runtime-default",
-        [
-          { label: "TPS", value: 90, lowerIsBetter: false },
-          { label: "CPU", value: 0.5, lowerIsBetter: true },
-        ],
-        "disabled",
-        [
-          { label: "TPS", value: 100, lowerIsBetter: false },
-          { label: "CPU", value: 0, lowerIsBetter: true },
-        ],
-      ),
-    ).toEqual([
-      {
-        label: "TPS",
-        measuredProfile: "runtime-default",
-        measured: 90,
-        referenceProfile: "disabled",
-        reference: 100,
-        measuredVsReferencePercent: -10,
-        lowerIsBetter: false,
-      },
-      {
-        label: "CPU",
-        measuredProfile: "runtime-default",
-        measured: 0.5,
-        referenceProfile: "disabled",
-        reference: 0,
-        measuredVsReferencePercent: null,
-        lowerIsBetter: true,
-      },
-    ]);
-  });
-
-  test("rejects missing, duplicate, and direction-mismatched metrics", () => {
-    const metric = { label: "TPS", value: 1, lowerIsBetter: false };
-    expect(() => compareProfileMetrics("runtime-default", [metric], "disabled", [])).toThrow(
-      "disabled profile is missing TPS",
-    );
-    expect(() => compareProfileMetrics("runtime-default", [metric, metric], "disabled", [metric])).toThrow(
-      "runtime-default profile duplicates TPS",
-    );
-    expect(() => compareProfileMetrics("runtime-default", [metric], "disabled", [metric, metric])).toThrow(
-      "disabled profile duplicates TPS",
-    );
-    expect(() =>
-      compareProfileMetrics("runtime-default", [metric], "disabled", [{ ...metric, lowerIsBetter: true }])
-    ).toThrow(
-      "disagree on metric direction",
     );
   });
 });

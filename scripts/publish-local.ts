@@ -15,6 +15,7 @@ import {
   syncedVersion,
   tryGit,
 } from "./lib";
+import { assertReleaseEvidence } from "./release-evidence";
 
 const REGISTRY = await registryUrl();
 const branch = tryGit("symbolic-ref", "--short", "HEAD");
@@ -36,31 +37,20 @@ const evidenceFile = Bun.file(evidencePath);
 if (!(await evidenceFile.exists())) {
   fail(`cannot publish v${version} without final Hetzner benchmark evidence (${evidencePath})`);
 }
-const evidence = await evidenceFile.json() as {
-  schemaVersion?: unknown;
-  release?: { version?: unknown; previousVersion?: unknown; host?: unknown };
-  validation?: { dbzzStatus?: unknown };
-  performanceAcceptance?: { status?: unknown };
-};
-// A baseline record (previousVersion null) stands only where no comparison was
-// possible: no earlier final evidence exists.
-const priorFinals = readdirSync("bench/results").filter((name) => {
+const priorFinals = readdirSync("bench/results").flatMap((name) => {
   const match = /^v(\d+\.\d+\.\d+)\.json$/.exec(name);
-  return match !== null && semverGt(version, match[1]!);
+  return match !== null && semverGt(version, match[1]!) ? [match[1]!] : [];
 });
-const previousOk =
-  typeof evidence.release?.previousVersion === "string" ||
-  (evidence.release?.previousVersion === null && priorFinals.length === 0);
-if (
-  evidence.schemaVersion !== 9 ||
-  evidence.release?.version !== version ||
-  !previousOk ||
-  evidence.release?.host !== "hetzner" ||
-  // The gate judges DBZZ itself; comparative-leg failures ride in the record.
-  evidence.validation?.dbzzStatus !== "passed" ||
-  evidence.performanceAcceptance?.status !== "passed"
-) {
-  fail(`cannot publish v${version}: ${evidencePath} is not a final approved Hetzner release comparison (or baseline)`);
+const previousVersion = priorFinals.sort((a, b) => semverGt(a, b) ? -1 : semverGt(b, a) ? 1 : 0)[0] ?? null;
+try {
+  assertReleaseEvidence(await evidenceFile.text(), {
+    path: evidencePath,
+    version,
+    previousVersion,
+    productRef: "HEAD",
+  });
+} catch (error) {
+  fail(`cannot publish v${version}: ${error instanceof Error ? error.message : String(error)}`);
 }
 
 // Publishing from an existing checkout must not inherit Bun's pre-bump

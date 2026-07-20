@@ -17,21 +17,21 @@ export interface BenchmarkValidationTarget {
 
 export interface BenchmarkCorrectnessFailure {
   readonly target: string;
+  readonly system: SystemName;
   readonly kind: BenchmarkFailureKind;
   readonly case: string;
   readonly errors: readonly string[];
 }
 
+export interface BenchmarkIntegrityAnomaly {
+  readonly target: string;
+  readonly system: SystemName;
+  readonly message: string;
+}
+
 export interface BenchmarkValidation {
-  /** Whole-run verdict across every target, comparative legs included. */
-  readonly status: "passed" | "failed";
-  /**
-   * The verdict over DBZZ targets alone — what the release gate judges.
-   * Comparative targets make the DBZZ result interpretable; their harness
-   * failures are recorded above but never veto a DBZZ release.
-   */
-  readonly dbzzStatus: "passed" | "failed";
   readonly failures: readonly BenchmarkCorrectnessFailure[];
+  readonly integrityAnomalies: readonly BenchmarkIntegrityAnomaly[];
 }
 
 function operationShape(workload: DriverResult): string {
@@ -112,6 +112,7 @@ function failureErrors(
 function addFailure(
   failures: BenchmarkCorrectnessFailure[],
   target: string,
+  system: SystemName,
   kind: BenchmarkFailureKind,
   benchmarkCase: string,
   errors: readonly string[],
@@ -120,6 +121,7 @@ function addFailure(
 ): void {
   failures.push(Object.freeze({
     target,
+    system,
     kind,
     case: benchmarkCase,
     errors: failureErrors(errors, failedRequests, fallback),
@@ -127,15 +129,14 @@ function addFailure(
 }
 
 /**
- * Asserts that result sets remain structurally comparable, then returns the
- * measured systems' correctness outcome as data. Structural and request-
- * accounting failures remain fatal because their metrics are not meaningful.
+ * Records concrete correctness and structural observations. Interpretation is
+ * deliberately left to the release reviewer rather than encoded as a verdict.
  */
 export function validateBenchmarkResults(targets: readonly BenchmarkValidationTarget[]): BenchmarkValidation {
   const reference = targets[0]?.workload;
   if (reference === undefined) throw new Error("benchmark validation requires at least one result target");
 
-  const integrityErrors: string[] = [];
+  const integrityAnomalies: BenchmarkIntegrityAnomaly[] = [];
   const failures: BenchmarkCorrectnessFailure[] = [];
   const labels = new Set<string>();
   const referenceConfig = JSON.stringify(reference.config);
@@ -144,6 +145,7 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
   const expectedSubscriptions = expectedSubscriptionShape(reference.config);
 
   for (const target of targets) {
+    const integrityErrors: string[] = [];
     if (labels.has(target.label)) integrityErrors.push(`duplicate validation target ${target.label}`);
     labels.add(target.label);
 
@@ -179,6 +181,7 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
           addFailure(
             failures,
             target.label,
+            target.system,
             "operation",
             benchmarkCase,
             errors,
@@ -202,6 +205,7 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
         addFailure(
           failures,
           target.label,
+          target.system,
           "connection",
           benchmarkCase,
           errors,
@@ -240,7 +244,7 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
           : [`${subscription.corruptDeliveries} corrupt deliveries`]),
       ];
       if (!subscription.correctness.ok || errors.length > 0) {
-        addFailure(failures, target.label, "subscription", benchmarkCase, errors);
+        addFailure(failures, target.label, target.system, "subscription", benchmarkCase, errors);
       }
 
       for (const capacity of subscription.capacity) {
@@ -251,6 +255,7 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
           addFailure(
             failures,
             target.label,
+            target.system,
             "subscription-capacity",
             capacityCase,
             errors,
@@ -286,33 +291,38 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
       addFailure(
         failures,
         target.label,
+        target.system,
         failure.kind,
         benchmarkCase,
         [failure.message, ...(failure.partial?.errors ?? [])],
         failure.partial?.failed ?? 0,
       );
     }
+    integrityAnomalies.push(...integrityErrors.map((message) => Object.freeze({
+      target: target.label,
+      system: target.system,
+      message,
+    })));
   }
 
-  if (integrityErrors.length > 0) {
-    throw new Error(`benchmark produced incomparable results:\n${integrityErrors.join("\n")}`);
-  }
-
-  const systemOf = new Map(targets.map((target) => [target.label, target.system]));
   return Object.freeze({
-    status: failures.length === 0 ? "passed" : "failed",
-    dbzzStatus: failures.some((failure) => systemOf.get(failure.target) === "dbzz") ? "failed" : "passed",
     failures: Object.freeze(failures),
+    integrityAnomalies: Object.freeze(integrityAnomalies),
   });
 }
 
 export function formatBenchmarkValidation(validation: BenchmarkValidation): string {
-  if (validation.status === "passed") return "Benchmark correctness validation: PASSED";
+  if (validation.failures.length === 0 && validation.integrityAnomalies.length === 0) {
+    return "Benchmark validation observations: none";
+  }
   return [
-    `Benchmark correctness validation: FAILED (${validation.failures.length} case${validation.failures.length === 1 ? "" : "s"})`,
+    `Benchmark validation observations: ${validation.failures.length} correctness, ${validation.integrityAnomalies.length} integrity`,
     ...validation.failures.map(
       (failure) =>
         `  - ${failure.target} ${failure.case} [${failure.kind}]: ${failure.errors.join("; ")}`,
+    ),
+    ...validation.integrityAnomalies.map(
+      (anomaly) => `  - ${anomaly.target} [integrity]: ${anomaly.message}`,
     ),
   ].join("\n");
 }

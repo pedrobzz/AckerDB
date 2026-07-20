@@ -10,6 +10,7 @@
 //                                 config), cherry-pick, rebase, --no-verify
 //                                 merges (commit hooks are skipped, this isn't)
 import { PACKAGES, fail, git, semverGt, syncedVersion, tryGit } from "./lib";
+import { assertReleaseEvidence } from "./release-evidence";
 
 // Commit types that force a version bump; everything else (chore, docs, test,
 // refactor, ...) merges freely. A breaking `!` on any type also forces a bump.
@@ -61,36 +62,15 @@ function assertReleaseBenchmark(ref: string, previousVersion: string, version: s
         `  Run bun run bench:hetzner in a background worker, commit the final result, then merge.`,
     );
   }
-  let record: {
-    schemaVersion?: unknown;
-    release?: { version?: unknown; previousVersion?: unknown; host?: unknown };
-    validation?: { dbzzStatus?: unknown };
-    performanceAcceptance?: { status?: unknown };
-  };
   try {
-    record = JSON.parse(source);
-  } catch {
-    fail(`${path} is not valid JSON`);
-  }
-  // A baseline record (previousVersion null) stands only where no comparison
-  // was possible: no earlier final evidence exists at this ref.
-  const previousOk =
-    record?.release?.previousVersion === previousVersion ||
-    (record?.release?.previousVersion === null && finalBenchmarksAt(ref, version).length === 0);
-  if (
-    record?.schemaVersion !== 9 ||
-    record.release?.version !== version ||
-    !previousOk ||
-    record.release?.host !== "hetzner" ||
-    // The gate judges DBZZ itself; comparative-leg failures ride in the record.
-    record.validation?.dbzzStatus !== "passed" ||
-    record.performanceAcceptance?.status !== "passed"
-  ) {
-    fail(
-      `${path} is not a final approved comparison from v${previousVersion} on Hetzner ` +
-        `(or a baseline where no earlier evidence exists). ` +
-        `A release benchmark must pass correctness and have no material DBZZ regression.`,
-    );
+    assertReleaseEvidence(source, {
+      path,
+      version,
+      previousVersion: finalBenchmarksAt(ref, version).length === 0 ? null : previousVersion,
+      productRef: ref,
+    });
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
   }
 }
 

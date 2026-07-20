@@ -22,7 +22,7 @@
 | ISSUE-14 | [#39](https://github.com/pedrobzz/dbzz/issues/39) | Public zero-hop AI SDK v7 tools | AFK | ISSUE-03, ISSUE-05 | 51–52, 56, 59–60 |
 | ISSUE-15 | [#40](https://github.com/pedrobzz/dbzz/issues/40) | Identity-preserving local delegation | AFK | ISSUE-08, ISSUE-14; Identity ISSUE-16 from parent #3 | 53–55, 57 |
 | ISSUE-16 | [#41](https://github.com/pedrobzz/dbzz/issues/41) | Cancellation through local tools and queued transactions | AFK | ISSUE-13, ISSUE-15 | 58 |
-| ISSUE-17 | [#42](https://github.com/pedrobzz/dbzz/issues/42) | Automated MCP conformance and performance gate | AFK | ISSUE-01 through ISSUE-16 | 69–70 except real-host acceptance |
+| ISSUE-17 | [#42](https://github.com/pedrobzz/dbzz/issues/42) | Automated MCP conformance and performance evidence | AFK | ISSUE-01 through ISSUE-16 | 69–70 except real-host acceptance |
 | ISSUE-18 | [#43](https://github.com/pedrobzz/dbzz/issues/43) | Real Codex and Claude Code acceptance | HITL | ISSUE-12, ISSUE-17 | 41–42, 69 |
 
 ## ISSUE-01: Public transactional MCP over stateless HTTP
@@ -690,7 +690,8 @@ MCP is first-class only when it obeys the database runtime's production invarian
 - Load concurrent public and authenticated tools through admission limits.
 - Drain and shut down during queued, transactional, and long-running calls.
 - Use resource counters and telemetry assertions to detect leaks or double leases.
-- Run the version-bound Hetzner comparison and rerun a material regression before performance recovery.
+- Run the version-bound Hetzner comparison and interpret material movements
+  across the full performance vector in the release handoff.
 
 ### Out of scope
 
@@ -852,7 +853,7 @@ Zero-hop latency is only useful if cancellation also remains zero-hop and reache
 
 - Resuming cancelled generation, durable tasks, client-side AI transport changes, and automatic retry.
 
-## ISSUE-17: Automated MCP conformance and performance gate
+## ISSUE-17: Automated MCP conformance and performance evidence
 
 ### Type
 
@@ -864,7 +865,11 @@ AFK
 
 ## What to build
 
-Turn the complete implementation into a reproducible automated gate: run official MCP server conformance plus retained raw JSON cases, pack/install the real lockstep artifacts in clean Bun fixtures, validate server exports/dependencies, and compare full DBZZ, Convex, and SpacetimeDB on Hetzner against the preceding release version.
+Turn the complete implementation into reproducible conformance checks and
+performance evidence: run official MCP server conformance plus retained raw
+JSON cases, pack/install the real lockstep artifacts in clean Bun fixtures,
+validate server exports/dependencies, and compare full DBZZ, Convex, and
+SpacetimeDB on Hetzner against the preceding release version.
 
 ### Why this slice exists
 
@@ -876,13 +881,18 @@ Protocol and performance claims must survive outside unit mocks and source-works
 - [ ] Raw fixtures cover initialize, notification, ping, list, call, malformed JSON-RPC, unsupported methods, auth failures, JSON POST responses, and stateless GET/DELETE.
 - [ ] Clean packed consumers resolve the server MCP subpath, generated server types, stable SDK dependency, and Bun runtime.
 - [ ] Packed `@dbzz/server` contains no AI SDK production dependency.
-- [ ] The version-bound Hetzner benchmark is final and approved, or performance recovery has removed any repeated material DBZZ regression.
+- [ ] The completed benchmark produced its single version-, host-, source-, and
+      predecessor-bound Hetzner record, and its full performance vector and
+      anomaly observations are interpreted with explicit reasoning; benchmark
+      values do not approve or veto the release.
 - [ ] All compile, unit, integration, security, cancellation, leak, and package tests run in the normal repository gate.
 
 ### Implementation notes
 
 - Target the stable official MCP SDK/protocol available at implementation and keep it behind DBZZ public abstractions.
-- Rerun noisy latency metrics before classifying regression.
+- Rerun only when it helps resolve measurement ambiguity. Deliberately remove
+  the write-once version record first, then retain only its replacement; never
+  retain parallel or iteration artifacts.
 - Update wiki evidence if conformance or package behavior changes an architectural decision.
 
 ## Blocked by

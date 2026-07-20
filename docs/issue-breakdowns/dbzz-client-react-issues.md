@@ -793,7 +793,12 @@ AFK
 
 ## What to build
 
-Finish the feature as a releasable fifth lockstep dbzz package. Wire `@dbzz/client-react` into version bumping, merge validation, local Verdaccio publishing, root typechecks, packed consumer verification, documentation, and wiki quality checks. Prove the final tarball supports browser React, Expo React Native, and the optional AI subpath at one exact version; its release must pass the version-bound Hetzner benchmark.
+Finish the feature as a releasable fifth lockstep dbzz package. Wire
+`@dbzz/client-react` into version bumping, merge validation, local Verdaccio
+publishing, root typechecks, packed consumer verification, documentation, and
+wiki quality checks. Prove the final tarball supports browser React, Expo React
+Native, and the optional AI subpath at one exact version; retain the release's
+version-bound Hetzner evidence for explicit human or agent interpretation.
 
 ### Why this slice exists
 
@@ -807,7 +812,10 @@ Individual hooks are not a product until real consumers can install the exact ar
 - [ ] Browser output contains no Expo/React Native code; the Expo fixture uses Expo fetch/crypto and passes Metro resolution.
 - [ ] Root typecheck/test workflows cover all hooks, generated references, runtime conditions, and AI integration.
 - [ ] Packed server/client/React consumers agree on the provider-neutral principal, durable Identity, credential-provenance, and account-linking contracts.
-- [ ] The release's final Hetzner dbzz/Convex/SpacetimeDB record shows no material DBZZ regression against the preceding final version.
+- [ ] The completed benchmark produced the release's single version-, host-,
+      source-, and predecessor-bound Hetzner dbzz/Convex/SpacetimeDB record,
+      and its full performance vector and anomaly observations are interpreted
+      with explicit reasoning rather than an automated benchmark verdict.
 - [ ] User-facing documentation covers durable Identity, provider-account linking boundaries, supported versions, Expo requirements, hooks, query states, SSE/AI usage, mobile recovery guarantees, and explicit out-of-scope behavior.
 - [ ] Wiki index/link/lint checks pass and research decisions remain discoverable.
 
@@ -834,7 +842,10 @@ Individual hooks are not a product until real consumers can install the exact ar
 - Run the complete first-login, provider-convergence, linking/unlinking, principal, client-authentication, and secret-absence suites.
 - Pack and install exact artifacts into clean consumers, then run browser production build and Expo Metro/release builds.
 - Exercise the local bump, merge-guard, interrupted publish/resume, exact install, and version-drift failure paths.
-- Run the full version-bound Hetzner benchmark, rerun material regressions once, then enter performance recovery if they repeat.
+- Run the full version-bound Hetzner benchmark. If a rerun is useful to resolve
+  ambiguity, deliberately remove the write-once version record first, then
+  retain only its replacement. Do not retain parallel or iteration artifacts,
+  and do not let benchmark values approve or veto the release.
 
 ### Out of scope
 

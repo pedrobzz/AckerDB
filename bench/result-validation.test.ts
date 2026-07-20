@@ -112,14 +112,14 @@ function targets(): BenchmarkValidationTarget[] {
 }
 
 describe("benchmark result validation", () => {
-  test("returns immutable pass evidence for comparable correct results", () => {
+  test("returns immutable empty observations for comparable correct results", () => {
     const validation = validateBenchmarkResults(targets());
-    expect(validation).toEqual({ status: "passed", dbzzStatus: "passed", failures: [] });
-    expect(formatBenchmarkValidation(validation)).toBe("Benchmark correctness validation: PASSED");
+    expect(validation).toEqual({ failures: [], integrityAnomalies: [] });
+    expect(formatBenchmarkValidation(validation)).toBe("Benchmark validation observations: none");
     expect(Object.isFrozen(validation)).toBe(true);
   });
 
-  test("reports measured correctness failures without treating them as comparable performance", () => {
+  test("reports measured correctness failures with their system identity", () => {
     const results = targets();
     const trial = results[0]!.workload.operations[0]!.trials[0]!;
     trial.completedInWindow = 0;
@@ -127,31 +127,34 @@ describe("benchmark result validation", () => {
     trial.correctness = { ok: false, errors: ["query checksum mismatch"] };
     const validation = validateBenchmarkResults(results);
     expect(validation).toMatchObject({
-      status: "failed",
-      dbzzStatus: "failed",
-      failures: [{ target: "dbzz", kind: "operation", case: "query/latency/trial-0", errors: ["query checksum mismatch", "1 request failed"] }],
+      failures: [{ target: "dbzz", system: "dbzz", kind: "operation", case: "query/latency/trial-0", errors: ["query checksum mismatch", "1 request failed"] }],
+      integrityAnomalies: [],
     });
   });
 
-  test("a comparative-target failure fails the run verdict but not the DBZZ verdict", () => {
+  test("records comparative-target failures without deriving a verdict", () => {
     const results = targets();
     const trial = results[1]!.workload.operations[0]!.trials[0]!; // convex
     trial.completedInWindow = 0;
     trial.failed = 1;
     trial.correctness = { ok: false, errors: ["duplicate deliveries"] };
     const validation = validateBenchmarkResults(results);
-    expect(validation.status).toBe("failed");
-    expect(validation.dbzzStatus).toBe("passed");
-    expect(validation.failures.every((failure) => failure.target === "convex")).toBe(true);
+    expect(validation.failures).toEqual([
+      expect.objectContaining({ target: "convex", system: "convex", errors: ["duplicate deliveries", "1 request failed"] }),
+    ]);
   });
 
-  test("rejects a changed workload or broken request accounting", () => {
+  test("records changed workloads and broken accounting as integrity observations", () => {
     const configMismatch = targets();
     configMismatch[1]!.workload.config.seed = 2;
-    expect(() => validateBenchmarkResults(configMismatch)).toThrow("workload config differs");
+    expect(validateBenchmarkResults(configMismatch).integrityAnomalies).toContainEqual(
+      expect.objectContaining({ target: "convex", system: "convex", message: expect.stringContaining("workload config differs") }),
+    );
 
     const accountingMismatch = targets();
     accountingMismatch[0]!.workload.connections[0]!.work.attempted = 2;
-    expect(() => validateBenchmarkResults(accountingMismatch)).toThrow("request accounting mismatch");
+    expect(validateBenchmarkResults(accountingMismatch).integrityAnomalies).toContainEqual(
+      expect.objectContaining({ target: "dbzz", system: "dbzz", message: expect.stringContaining("request accounting mismatch") }),
+    );
   });
 });

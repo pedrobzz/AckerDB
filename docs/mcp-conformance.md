@@ -102,7 +102,7 @@ bun run bench:hetzner
 ```
 
 DBZZ, Convex, and SpacetimeDB run on the Hetzner host with the same workload.
-The final release record compares DBZZ with the preceding version; rerun a
-material regression before performance recovery. A failed run is retained as a
-version iteration, never a replacement for the final record. See [the
+The single version-bound release record compares DBZZ with the preceding
+version. It is evidence for human or agent interpretation of the full
+performance vector, never an automated approval or release veto. See [the
 benchmark contract](../bench/README.md) for the complete procedure.

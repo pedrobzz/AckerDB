@@ -171,7 +171,6 @@ describe("measured workload failures", () => {
       terminal: false,
       message: "connected 0/1; connection refused",
     });
-    expect(validation.status).toBe("failed");
     expect(validation.failures[0]).toMatchObject({
       kind: "connection",
       case: "connections/1",
@@ -300,19 +299,16 @@ describe("measured workload failures", () => {
     }]);
 
     expect(subscription).toMatchObject({ corruptDeliveries: 1, missingDeliveries: 1 });
-    expect(validation.status).toBe("failed");
     expect(validation.failures[0]).toMatchObject({ kind: "subscription", case: "subscriptions/shared" });
 
     const directory = mkdtempSync(join(tmpdir(), "dbzz-workload-failure-"));
     try {
       const path = await retainReleaseBenchmark(directory, {
         version: "0.3.3",
-        iteration: 1,
         host: "hetzner",
-      }, false, {
-        schemaVersion: 8,
+      }, {
+        schemaVersion: 10,
         validation,
-        performanceAcceptance: { status: "not-evaluated", reason: "correctness-failed" },
       });
       const saved = JSON.parse(readFileSync(path, "utf8")) as {
         schemaVersion: number;
@@ -320,8 +316,8 @@ describe("measured workload failures", () => {
       };
 
       expect(saved).toMatchObject({
-        schemaVersion: 8,
-        validation: { status: "failed", failures: [{ kind: "subscription" }] },
+        schemaVersion: 10,
+        validation: { failures: [{ kind: "subscription" }] },
       });
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -369,7 +365,6 @@ describe("measured workload failures", () => {
         terminal: false,
       }),
     ]);
-    expect(validation.status).toBe("failed");
     expect(validation.failures[0]).toMatchObject({
       kind: "subscription-capacity",
       case: "subscriptions/partitioned/capacity-2",
@@ -402,7 +397,6 @@ describe("measured workload failures", () => {
       capacity.completedInWindow + capacity.completedAfterWindow + capacity.failed,
     );
     expect(capacity.failed).toBeGreaterThan(0);
-    expect(validation.status).toBe("failed");
     expect(validation.failures[0]).toMatchObject({
       kind: "subscription-capacity",
       case: "subscriptions/shared/capacity-1",
