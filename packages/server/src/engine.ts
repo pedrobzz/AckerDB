@@ -97,6 +97,12 @@ export interface TablePlan {
   columns: Map<string, ColumnPlan>;
   /** Physical column names in DDL order (pk first). */
   physOrder: string[];
+  /**
+   * Runtime row projection. `safeIntegers` must remain enabled for exact i64
+   * values, so logical ints are cast at the result boundary to avoid
+   * materializing a temporary BigInt for every number-valued cell.
+   */
+  readProjection: string;
   indexes: IndexDef[];
 }
 
@@ -160,6 +166,18 @@ const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
 const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
 
 const quote = (name: string) => `"${name}"`;
+
+/** Compile the exact physical row shape expected by `rowFromSql`. */
+export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
+  const selected: string[] = [];
+  for (const column of columns) {
+    for (const physical of column.phys) {
+      const name = quote(physical.name);
+      selected.push(column.kind === "int" ? `CAST(${name} AS REAL) AS ${name}` : name);
+    }
+  }
+  return selected.join(", ");
+}
 
 interface StoredObject {
   type: "table" | "index";
@@ -1082,6 +1100,7 @@ export class Engine {
       scheduleAt: table.scheduleAtColumn,
       columns,
       physOrder,
+      readProjection: compileReadProjection(columns.values()),
       indexes: table.indexes,
     };
   }

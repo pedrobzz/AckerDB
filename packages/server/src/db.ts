@@ -316,13 +316,14 @@ class RangeQueryImpl {
     const dir = this.spec.order === "asc" ? "ASC" : "DESC";
     const cols = this.spec.index === null ? [] : [...this.spec.index.columns];
     cols.push(this.spec.plan.pk);
-    return ` ORDER BY ${cols.map((c) => `${quote(c)} ${dir}`).join(", ")}`;
+    const table = quote(this.spec.plan.name);
+    return ` ORDER BY ${cols.map((column) => `${table}.${quote(column)} ${dir}`).join(", ")}`;
   }
 
   private sqlFor(extraWhere: string, limit: number): { sql: string; params: unknown[] } {
     const { where, params } = this.whereAndParams();
     const glue = extraWhere === "" ? "" : where === "" ? ` WHERE ${extraWhere}` : ` AND ${extraWhere}`;
-    const sql = `SELECT * FROM ${quote(this.spec.plan.name)}${where}${glue}${this.orderBy()}${limit >= 0 ? ` LIMIT ${limit}` : ""}`;
+    const sql = `SELECT ${this.spec.plan.readProjection} FROM ${quote(this.spec.plan.name)}${where}${glue}${this.orderBy()}${limit >= 0 ? ` LIMIT ${limit}` : ""}`;
     return { sql, params };
   }
 
@@ -631,7 +632,10 @@ function readMethods(
           }
           reads?.add(idKey(plan.name, id));
           const raw = engine
-            .statement(conn, `SELECT * FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`)
+            .statement(
+              conn,
+              `SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`,
+            )
             .get(id as never) as Record<string, unknown> | null;
           return raw === null ? null : engine.rowFromSql(plan, raw);
         },
@@ -747,7 +751,10 @@ function writeMethods(
 
   const getRow = (id: bigint): Record<string, unknown> | null => {
     const raw = engine
-      .statement(conn, `SELECT * FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`)
+      .statement(
+        conn,
+        `SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`,
+      )
       .get(id as never) as Record<string, unknown> | null;
     return raw === null ? null : engine.rowFromSql(plan, raw);
   };

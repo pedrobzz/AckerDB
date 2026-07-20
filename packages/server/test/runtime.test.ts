@@ -132,6 +132,7 @@ const schema = defineSchema({
   reminders: defineTable({
     id: v.primaryKey(),
     message: v.string(),
+    attempt: v.int(),
     at: v.scheduleAt(),
   }).scheduled("reminders.fire"),
 });
@@ -150,6 +151,7 @@ let externalProcedureRelease: Deferred<void> | null = null;
 let externalSseStarted: Deferred<void> | null = null;
 let externalSseReturned: Deferred<void> | null = null;
 let scheduledAttempts = 0;
+let scheduledAttempt: number | null = null;
 let mutationResultReads = 0;
 let mutationResultValue: object = {};
 
@@ -258,16 +260,17 @@ const functions = {
   reminders: {
     fire: mutation({
       access: "system",
-      args: { id: v.bigint(), message: v.string(), at: v.float() },
+      args: { id: v.bigint(), message: v.string(), attempt: v.int(), at: v.float() },
       handler: async (ctx: Ctx, args: Ctx) => {
         scheduledAttempts++;
+        scheduledAttempt = args.attempt;
         await ctx.db.log.insert({ line: `fired:${args.message}` });
         if (args.message === "fail") throw new Error("scheduled failure");
       },
     }),
     schedule: mutation({
       access: "public",
-      args: { message: v.string(), at: v.float() },
+      args: { message: v.string(), attempt: v.int(), at: v.float() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.reminders.insert(args),
     }),
   },
@@ -565,6 +568,7 @@ beforeEach(() => {
   externalSseStarted = null;
   externalSseReturned = null;
   scheduledAttempts = 0;
+  scheduledAttempt = null;
   mutationResultReads = 0;
   mutationResultValue = Object.defineProperty({}, "payload", {
     enumerable: true,
@@ -1452,8 +1456,17 @@ describe("scheduler and lifecycle", () => {
   test("runs the handler and deletes the due row in one commit", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
-    await session.mutation(1, "reminders.schedule", { message: "ok", at: dueAt });
+    const attempt = Number.MAX_SAFE_INTEGER;
+    await session.mutation(1, "reminders.schedule", { message: "ok", attempt, at: dueAt });
+    const materialized: string[] = [];
+    const decodeRow = engine.rowFromSql.bind(engine);
+    engine.rowFromSql = (plan, sqlRow) => {
+      if (plan.name === "reminders") materialized.push(typeof sqlRow["attempt"]);
+      return decodeRow(plan, sqlRow);
+    };
     expect(await runtime.runScheduled(dueAt)).toBe(1);
+    expect(scheduledAttempt).toBe(attempt);
+    expect(materialized).toEqual(["number"]);
     expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:ok" }]);
     expect(engine.reader.query('SELECT COUNT(*) AS count FROM "reminders"').get()).toEqual({ count: 0n });
   });
@@ -1461,7 +1474,7 @@ describe("scheduler and lifecycle", () => {
   test("rolls handler writes and deletion back together on failure", async () => {
     await session.open();
     const dueAt = Date.now() + 100_000;
-    await session.mutation(1, "reminders.schedule", { message: "fail", at: dueAt });
+    await session.mutation(1, "reminders.schedule", { message: "fail", attempt: 1, at: dueAt });
     await expect(runtime.runScheduled(dueAt)).rejects.toThrow("scheduled failure");
     expect(engine.reader.query('SELECT COUNT(*) AS count FROM "log"').get()).toEqual({ count: 0n });
     expect(engine.reader.query('SELECT COUNT(*) AS count FROM "reminders"').get()).toEqual({ count: 1n });
@@ -1469,7 +1482,11 @@ describe("scheduler and lifecycle", () => {
 
   test("backs a failing due job off instead of retrying in a hot loop", async () => {
     await session.open();
-    await session.mutation(1, "reminders.schedule", { message: "fail", at: Date.now() - 1 });
+    await session.mutation(1, "reminders.schedule", {
+      message: "fail",
+      attempt: 1,
+      at: Date.now() - 1,
+    });
     for (let turn = 0; turn < 20 && scheduledAttempts === 0; turn++) await Bun.sleep(5);
     expect(scheduledAttempts).toBe(1);
     await Bun.sleep(50);

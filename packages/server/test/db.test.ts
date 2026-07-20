@@ -40,6 +40,13 @@ const schema = () =>
     })
       .index("by_email", ["email"], { unique: true })
       .index("by_payload", ["payload"]),
+    numericRows: defineTable({
+      id: v.primaryKey(),
+      rank: v.int(),
+      maybeRank: v.int().nullable(),
+      exact: v.bigint(),
+      owner: v.identity(),
+    }).index("by_rank", ["rank"]),
     pings: defineEventTable({
       id: v.primaryKey(),
       channel: v.bigint(),
@@ -77,6 +84,80 @@ const observedDb = (observer: DbStatementObserver): any =>
   makeDbWriter(engine, newWriteCollector(), () => ++eventSeq, observer);
 
 describe("writes", () => {
+  test("materializes int columns as numbers without narrowing integer-backed bigint kinds", async () => {
+    const max = Number.MAX_SAFE_INTEGER;
+    const min = Number.MIN_SAFE_INTEGER;
+    const exact = 2n ** 63n - 1n;
+    const owner = 7n;
+    const id = await db.numericRows.insert({
+      rank: max,
+      maybeRank: null,
+      exact,
+      owner,
+    });
+
+    const materialized: {
+      id: string;
+      rank: string;
+      maybeRank: string;
+      exact: string;
+      owner: string;
+    }[] = [];
+    const decodeRow = engine.rowFromSql.bind(engine);
+    engine.rowFromSql = (plan, sqlRow) => {
+      if (plan.name === "numericRows") {
+        materialized.push({
+          id: typeof sqlRow["id"],
+          rank: typeof sqlRow["rank"],
+          maybeRank: sqlRow["maybeRank"] === null ? "null" : typeof sqlRow["maybeRank"],
+          exact: typeof sqlRow["exact"],
+          owner: typeof sqlRow["owner"],
+        });
+      }
+      return decodeRow(plan, sqlRow);
+    };
+    let indexedSql: string | undefined;
+    const issueStatement = engine.statement.bind(engine);
+    engine.statement = (connection, sql) => {
+      if (sql.includes('FROM "numericRows"') && sql.includes(" ORDER BY ")) indexedSql = sql;
+      return issueStatement(connection, sql);
+    };
+
+    const reader: any = makeDbReader(engine, engine.reader, null);
+    expect(await reader.numericRows.get(id)).toEqual({
+      id,
+      rank: max,
+      maybeRank: null,
+      exact,
+      owner,
+    });
+    const page = await reader.numericRows
+      .byRank((q: any) => q.gte("rank", min))
+      .paginate({ cursor: null, numItems: 1 });
+    expect(page.page).toEqual([{ id, rank: max, maybeRank: null, exact, owner }]);
+    expect(indexedSql).toBeDefined();
+    const queryPlan = engine.reader
+      .query(`EXPLAIN QUERY PLAN ${indexedSql!}`)
+      .all(min) as { detail: string }[];
+    expect(queryPlan.some(({ detail }) => detail.includes("ix_numericRows_by_rank"))).toBe(true);
+    expect(queryPlan.some(({ detail }) => detail.includes("USE TEMP B-TREE"))).toBe(false);
+
+    await db.numericRows.patch(id, { maybeRank: min });
+    expect(await db.numericRows.get(id)).toEqual({
+      id,
+      rank: max,
+      maybeRank: min,
+      exact,
+      owner,
+    });
+    expect(materialized).toEqual([
+      { id: "bigint", rank: "number", maybeRank: "null", exact: "bigint", owner: "bigint" },
+      { id: "bigint", rank: "number", maybeRank: "null", exact: "bigint", owner: "bigint" },
+      { id: "bigint", rank: "number", maybeRank: "null", exact: "bigint", owner: "bigint" },
+      { id: "bigint", rank: "number", maybeRank: "number", exact: "bigint", owner: "bigint" },
+    ]);
+  });
+
   test("prototype-shaped table and column names remain own runtime entries", async () => {
     const prototypeSchema = defineSchema({
       toString: defineTable({

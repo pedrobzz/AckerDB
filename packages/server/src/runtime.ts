@@ -1833,7 +1833,7 @@ export class Runtime implements RuntimePort {
               const plan = this.engine.plan(candidate.table);
               const raw = this.measuredStatement("read", candidate.table, "scheduledGet", () =>
                 this.engine.writer.query(
-                  `SELECT * FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ? AND ${quoted(plan.scheduleAt!)} <= ?`,
+                  `SELECT ${plan.readProjection} FROM ${quoted(candidate.table)} WHERE ${quoted(plan.pk)} = ? AND ${quoted(plan.scheduleAt!)} <= ?`,
                 )
                   .get(candidate.primaryKey as never, now) as Record<string, unknown> | null,
                 (value) => value === null ? 0 : 1,

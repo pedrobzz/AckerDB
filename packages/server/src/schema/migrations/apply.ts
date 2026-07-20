@@ -33,7 +33,14 @@ import type { Database } from "bun:sqlite";
 import { decode, encode } from "@dbzz/core";
 import { ValidationError, type Descriptor } from "../../v.ts";
 import { checkDescriptor, scalarDecoder, scalarEncoder } from "../descriptor-kinds.ts";
-import { physicalColumnDdl, type ColumnPlan, type Engine, type TablePlan, type TagMap } from "../../engine.ts";
+import {
+  compileReadProjection,
+  physicalColumnDdl,
+  type ColumnPlan,
+  type Engine,
+  type TablePlan,
+  type TagMap,
+} from "../../engine.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
 import { constraintDirection, diffSnapshots, namedOf, unwrapDesc } from "../diff.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../../snapshot.ts";
@@ -284,7 +291,15 @@ function snapshotPlan(name: string, snap: TableSnapshot, tags: Map<string, TagMa
     if (plan.kind === "pk") pk = col;
     if (plan.kind === "scheduleAt") scheduleAt = col;
   }
-  return { name, pk, scheduleAt, columns, physOrder, indexes: snap.indexes };
+  return {
+    name,
+    pk,
+    scheduleAt,
+    columns,
+    physOrder,
+    readProjection: compileReadProjection(columns.values()),
+    indexes: snap.indexes,
+  };
 }
 
 /** The descriptor-driven encode mirror of `oldColumn`, closing over this step's tags. */
