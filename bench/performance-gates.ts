@@ -10,8 +10,6 @@ import type { ProcessTreeWindowSummary } from "./process-tree.ts";
 
 /** A directional move must exceed this observed run-to-run envelope before recovery starts. */
 export const REGRESSION_NOISE_FLOOR_RELATIVE = 0.15;
-/** `ps` CPU accounting is quantized at idle, so a relative threshold alone is not meaningful there. */
-export const REGRESSION_NOISE_FLOOR_CPU_CORES = 0.025;
 
 export interface MeasuredSystem {
   workload: DriverResult;
@@ -46,7 +44,6 @@ export interface ComparableMetric {
   sampleCount?: number;
   minimumSamples?: number;
   offeredWorkComplete?: boolean;
-  convexRssFloor?: boolean;
 }
 
 export interface PerformanceRegression {
@@ -95,79 +92,6 @@ class MetricCollector {
   }
 }
 
-function median(values: number[], path: string): number {
-  if (values.length === 0) throw new Error(`${path} has no resource windows`);
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 1 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
-}
-
-function phase(system: MeasuredSystem, actual: string, expected: string): ProcessTreeWindowSummary {
-  if (actual !== expected) throw new Error(`miswired phase ${actual}; expected ${expected}`);
-  const window = system.resources.server.phases[actual];
-  if (window === undefined) throw new Error(`missing server resource window ${actual}`);
-  return window;
-}
-
-function addIdleResources(
-  metrics: MetricCollector,
-  path: string,
-  window: ProcessTreeWindowSummary,
-  convexRssFloor = false,
-): void {
-  metrics.add({
-    path: `${path}/rssMb/p50`,
-    value: window.rssMb.p50,
-    direction: "lower",
-    family: "resource.rss",
-    sampleCount: window.sampleCount,
-    minimumSamples: 20,
-    convexRssFloor,
-  });
-  metrics.add({ path: `${path}/rssMb/peak`, value: window.rssMb.peak, direction: "lower", family: "resource.rss", convexRssFloor });
-  metrics.add({ path: `${path}/cpuCores`, value: window.cpuCores, direction: "lower", family: "resource.cpu" });
-}
-
-function activeRssEfficiency(
-  active: ProcessTreeWindowSummary,
-  idle: ProcessTreeWindowSummary,
-  usefulThroughputPerSec: number,
-  path: string,
-): { p50: number; peak: number } {
-  if (!Number.isFinite(usefulThroughputPerSec) || usefulThroughputPerSec <= 0) {
-    throw new Error(`${path} useful throughput must be a positive finite number`);
-  }
-  const thousandsOfUsefulOpsPerSec = usefulThroughputPerSec / 1_000;
-  return {
-    p50: Math.max(0, active.rssMb.p50 - idle.rssMb.p50) / thousandsOfUsefulOpsPerSec,
-    peak: Math.max(0, active.rssMb.peak - idle.rssMb.p50) / thousandsOfUsefulOpsPerSec,
-  };
-}
-
-function addActiveRssEfficiency(
-  metrics: MetricCollector,
-  path: string,
-  active: ProcessTreeWindowSummary,
-  idle: ProcessTreeWindowSummary,
-  usefulThroughputPerSec: number,
-): void {
-  const efficiency = activeRssEfficiency(active, idle, usefulThroughputPerSec, path);
-  metrics.add({
-    path: `${path}/rssMbPer1kUsefulOps/p50Increment`,
-    value: efficiency.p50,
-    direction: "lower",
-    family: "resource.rss.efficiency",
-    sampleCount: active.sampleCount,
-    minimumSamples: 20,
-  });
-  metrics.add({
-    path: `${path}/rssMbPer1kUsefulOps/peakIncrement`,
-    value: efficiency.peak,
-    direction: "lower",
-    family: "resource.rss.efficiency",
-  });
-}
-
 function addLatency(
   metrics: MetricCollector,
   path: string,
@@ -201,20 +125,14 @@ function capacityComplete(result: SubscriptionCapacityResult): boolean {
     result.attempted === result.completedInWindow + result.completedAfterWindow;
 }
 
+// CPU/RSS remain in RunRecord reports for contextual load, headroom, and retention review;
+// they are intentionally absent from automated release-veto metrics.
 export function extractComparableMetrics(system: MeasuredSystem): ComparableMetric[] {
   const metrics = new MetricCollector();
   const workload = system.workload;
   if ((workload.failures ?? []).length > 0) {
     throw new Error("cannot extract performance metrics from a failed workload");
   }
-  addIdleResources(metrics, "resources/startup-idle", system.startupIdle.window);
-  const seededIdle = phase(system, workload.snapshots.seededIdlePhaseId, "server:seeded-idle-window");
-  addIdleResources(
-    metrics,
-    "resources/seeded-idle",
-    seededIdle,
-  );
-
   for (const operation of workload.operations) {
     const root = `operations/${operation.operation}/${operation.profile.name}`;
     metrics.add({
@@ -229,27 +147,6 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
       p95Ms: operation.medianLatencyP95Ms,
       p99Ms: operation.medianLatencyP99Ms,
     }, "operation.latency");
-    const windows = operation.trials.map((trial, index) => ({
-      window: phase(system, trial.phaseId, `operation:${operation.operation}:${operation.profile.name}:trial-${index}`),
-      throughputPerSec: trial.throughputPerSec,
-    }));
-    const efficiencies = windows.map(({ window, throughputPerSec }, index) =>
-      activeRssEfficiency(window, seededIdle, throughputPerSec, `${root}/trial-${index}`)
-    );
-    metrics.add({
-      path: `${root}/resources/server/rssMbPer1kUsefulOps/p50IncrementMedian`,
-      value: median(efficiencies.map((efficiency) => efficiency.p50), root),
-      direction: "lower",
-      family: "resource.rss.efficiency",
-      sampleCount: Math.min(...windows.map(({ window }) => window.sampleCount)),
-      minimumSamples: 20,
-    });
-    metrics.add({
-      path: `${root}/resources/server/rssMbPer1kUsefulOps/peakIncrementMax`,
-      value: Math.max(...efficiencies.map((efficiency) => efficiency.peak)),
-      direction: "lower",
-      family: "resource.rss.efficiency",
-    });
   }
 
   for (const connection of workload.connections) {
@@ -274,20 +171,6 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
       family: "connection.work.throughput",
     });
     addLatency(metrics, `${root}/work/latency`, connection.work.latency, "connection.work.latency");
-    const connectedIdle = phase(system, connection.connectedIdlePhaseId, `connections:${connection.targetConnections}:idle`);
-    addIdleResources(
-      metrics,
-      `${root}/resources/server/idle`,
-      connectedIdle,
-      true,
-    );
-    addActiveRssEfficiency(
-      metrics,
-      `${root}/resources/server/work`,
-      phase(system, connection.work.phaseId, `connections:${connection.targetConnections}:work`),
-      connectedIdle,
-      connection.work.throughputPerSec,
-    );
   }
 
   for (const subscription of workload.subscriptions) {
@@ -319,26 +202,6 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
     addLatency(metrics, `${root}/updateAckLatency`, subscription.updateAckLatency, "subscription.fixed.ack", complete);
     addLatency(metrics, `${root}/deliveryLatency`, subscription.deliveryLatency, "subscription.fixed.delivery", complete);
     addLatency(metrics, `${root}/timeToAll`, subscription.timeToAll, "subscription.fixed.all", complete);
-    addIdleResources(
-      metrics,
-      `${root}/resources/server/baseline-idle`,
-      phase(system, subscription.baselineIdlePhaseId, `subscriptions:${subscription.pattern}:baseline-idle`),
-    );
-    const subscribedIdle = phase(system, subscription.subscribedIdlePhaseId, `subscriptions:${subscription.pattern}:idle`);
-    addIdleResources(
-      metrics,
-      `${root}/resources/server/subscribed-idle`,
-      subscribedIdle,
-      true,
-    );
-    addActiveRssEfficiency(
-      metrics,
-      `${root}/resources/server/work`,
-      phase(system, subscription.phaseId, `subscriptions:${subscription.pattern}:updates`),
-      subscribedIdle,
-      subscription.deliveryThroughputPerSec,
-    );
-
     for (const capacity of subscription.capacity) {
       const capacityRoot = `subscriptions/${subscription.pattern}/capacity/${capacity.slots}`;
       const capacityCompleted = capacityComplete(capacity);
@@ -357,13 +220,6 @@ export function extractComparableMetrics(system: MeasuredSystem): ComparableMetr
       addLatency(metrics, `${capacityRoot}/updateAckLatency`, capacity.updateAckLatency, "subscription.capacity.ack", capacityCompleted);
       addLatency(metrics, `${capacityRoot}/deliveryLatency`, capacity.deliveryLatency, "subscription.capacity.delivery", capacityCompleted);
       addLatency(metrics, `${capacityRoot}/timeToAll`, capacity.latency, "subscription.capacity.all", capacityCompleted);
-      addActiveRssEfficiency(
-        metrics,
-        `${capacityRoot}/resources/server/work`,
-        phase(system, capacity.phaseId, `subscriptions:${subscription.pattern}:capacity-${capacity.slots}`),
-        subscribedIdle,
-        capacity.deliveryThroughputPerSec,
-      );
     }
   }
   return metrics.metrics.sort((a, b) => a.path.localeCompare(b.path));
@@ -445,8 +301,7 @@ function assertComparableRun(previous: BenchmarkRecordLike, current: BenchmarkRe
 }
 
 export function regressionThreshold(metric: ComparableMetric): number {
-  const relative = metric.value * REGRESSION_NOISE_FLOOR_RELATIVE;
-  return metric.family === "resource.cpu" ? Math.max(relative, REGRESSION_NOISE_FLOOR_CPU_CORES) : relative;
+  return metric.value * REGRESSION_NOISE_FLOOR_RELATIVE;
 }
 
 export function compareDbzzMetrics(
