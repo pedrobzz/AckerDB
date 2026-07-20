@@ -12,6 +12,12 @@
  */
 import { decode, encode, WireError } from "@dbzz/core";
 import { ValidationError, type Descriptor } from "../v.ts";
+import {
+  checkArrayConstraints,
+  checkBigintConstraints,
+  checkNumberConstraints,
+  checkStringConstraints,
+} from "../validator-constraints.ts";
 
 export type SqlType = "TEXT" | "REAL" | "INTEGER" | "BLOB";
 
@@ -76,11 +82,49 @@ const KINDS: Record<string, DescriptorKind> = {
         : checkDescriptor(desc["inner"] as Descriptor, value, path),
   },
   pk: { check: guard((v) => typeof v === "bigint", "bigint (primary key)") },
-  string: { sqlType: "TEXT", check: guard((v) => typeof v === "string", "string") },
-  int: { sqlType: "INTEGER", decode: (v) => Number(v), check: checkSafeInteger },
-  float: { sqlType: "REAL", decode: (v) => Number(v), check: checkFiniteNumber },
+  string: {
+    sqlType: "TEXT",
+    check: ({ desc, value, path, expect }) => {
+      expect(typeof value === "string", "string");
+      if (desc["min"] !== undefined || desc["max"] !== undefined || desc["regex"] !== undefined) {
+        checkStringConstraints(desc, value as string, path);
+      }
+      return value;
+    },
+  },
+  int: {
+    sqlType: "INTEGER",
+    decode: (v) => Number(v),
+    check: ({ desc, value, path, expect }) => {
+      expect(typeof value === "number" && Number.isSafeInteger(value), "safe integer");
+      if (desc["min"] !== undefined || desc["max"] !== undefined) {
+        checkNumberConstraints(desc, value as number, path);
+      }
+      return value;
+    },
+  },
+  float: {
+    sqlType: "REAL",
+    decode: (v) => Number(v),
+    check: ({ desc, value, path, expect }) => {
+      expect(typeof value === "number" && Number.isFinite(value), "finite number");
+      if (desc["min"] !== undefined || desc["max"] !== undefined) {
+        checkNumberConstraints(desc, value as number, path);
+      }
+      return value;
+    },
+  },
   scheduleAt: { sqlType: "REAL", decode: (v) => Number(v), check: checkFiniteNumber },
-  bigint: { sqlType: "INTEGER", check: checkI64 },
+  bigint: {
+    sqlType: "INTEGER",
+    check: (args) => {
+      const value = checkI64(args) as bigint;
+      if (args.desc["min"] !== undefined || args.desc["max"] !== undefined) {
+        checkBigintConstraints(args.desc, value, args.path);
+      }
+      return value;
+    },
+  },
   identity: { sqlType: "INTEGER", check: checkI64 },
   boolean: {
     sqlType: "INTEGER",
@@ -115,6 +159,9 @@ const KINDS: Record<string, DescriptorKind> = {
     ...wire,
     check: ({ desc, value, path, expect }) => {
       expect(Array.isArray(value), "array");
+      if (desc["min"] !== undefined || desc["max"] !== undefined) {
+        checkArrayConstraints(desc, (value as unknown[]).length, path);
+      }
       const el = desc["el"] as Descriptor;
       return (value as unknown[]).map((v, i) => checkDescriptor(el, v, `${path}[${i}]`));
     },
@@ -127,7 +174,7 @@ const KINDS: Record<string, DescriptorKind> = {
       const shape = desc["shape"] as Record<string, Descriptor>;
       const input = value as Record<string, unknown>;
       for (const key of Object.keys(input)) {
-        if (!(key in shape) && input[key] !== undefined) throw new ValidationError(`${path}: unknown field "${key}"`);
+        if (!Object.hasOwn(shape, key) && input[key] !== undefined) throw new ValidationError(`${path}: unknown field "${key}"`);
       }
       const out: Record<string, unknown> = {};
       for (const key of Object.keys(shape)) {
@@ -149,7 +196,7 @@ const KINDS: Record<string, DescriptorKind> = {
       const input = value as Record<string, unknown>;
       const members = desc["members"] as Record<string, Descriptor>;
       const variant = input["tag"];
-      if (typeof variant !== "string" || !(variant in members)) {
+      if (typeof variant !== "string" || !Object.hasOwn(members, variant)) {
         throw new ValidationError(`${path}.tag: expected one of ${Object.keys(members).map((v) => JSON.stringify(v)).join(" | ")}`);
       }
       for (const key of Object.keys(input)) {

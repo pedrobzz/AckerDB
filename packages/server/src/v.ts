@@ -10,6 +10,13 @@ import {
   type StandardSchemaProperties,
 } from "./standard-schema.ts";
 import { isValidationError, ValidationError } from "./validation-error.ts";
+import {
+  checkArrayConstraints,
+  checkBigintConstraints,
+  checkNumberConstraints,
+  checkStringConstraints,
+  type ConstraintFields,
+} from "./validator-constraints.ts";
 
 export type { Identity } from "@dbzz/core";
 export { isValidationError, ValidationError } from "./validation-error.ts";
@@ -47,6 +54,21 @@ export interface ChainableValidator<T = unknown, K extends string = string, Inpu
   nullable(): NullableValidator<this>;
   optional(): OptionalValidator<this>;
   nullish(): NullishValidator<this>;
+}
+
+export interface BoundedValidator<
+  T = unknown,
+  K extends string = string,
+  B = unknown,
+  Input = T,
+>
+  extends ChainableValidator<T, K, Input> {
+  min(bound: B): this;
+  max(bound: B): this;
+}
+
+export interface StringValidator extends BoundedValidator<string, "string", number> {
+  regex(pattern: RegExp): this;
 }
 
 export type InferValidator<V> = V extends Validator<infer T, string, unknown> ? T : never;
@@ -94,13 +116,15 @@ function makeValidator<
   extra?: Extra,
   modifierMode: ModifierMode = "available",
   description?: string,
+  prototype?: object,
 ): ChainableValidator<T, K, Input> & Extra {
   const validator = {
+    __proto__: prototype ?? Object.prototype,
     kind,
     ...impl,
     ...extra,
     ...(description === undefined ? {} : { description }),
-  } as ChainableValidator<T, K, Input> & Extra;
+  } as unknown as ChainableValidator<T, K, Input> & Extra;
   Object.defineProperties(validator, {
     describe: {
       value(this: ChainableValidator<T, K, Input> & Extra, nextDescription: string) {
@@ -113,6 +137,7 @@ function makeValidator<
           extra,
           modifierMode,
           nextDescription.trim(),
+          prototype,
         );
       },
     },
@@ -150,37 +175,145 @@ function primaryKey(): StandardValidator<bigint, "pk"> {
   }, undefined, "none");
 }
 
-function string(): ChainableValidator<string, "string"> {
-  return makeValidator("string", {
-    check(value, path) {
-      if (typeof value !== "string") fail(path, "string", value);
-      return value;
-    },
-    tsType: () => "string",
-    descriptor: () => ({ k: "string" }),
-  });
+interface Bounds<B extends number | bigint> {
+  readonly min?: B;
+  readonly max?: B;
 }
 
-function int(): ChainableValidator<number, "int"> {
-  return makeValidator("int", {
-    check(value, path) {
-      if (typeof value !== "number" || !Number.isSafeInteger(value)) fail(path, "safe integer", value);
-      return value;
-    },
-    tsType: () => "number",
-    descriptor: () => ({ k: "int" }),
-  });
+interface StringConstraints extends Bounds<number> {
+  readonly regex?: { readonly source: string; readonly compiled: RegExp };
 }
 
-function float(): ChainableValidator<number, "float"> {
-  return makeValidator("float", {
-    check(value, path) {
-      if (typeof value !== "number" || !Number.isFinite(value)) fail(path, "finite number", value);
-      return value;
+function lengthBound(bound: number, method: "min" | "max", kind: "string" | "array"): number {
+  if (!Number.isSafeInteger(bound) || bound < 0) {
+    throw new ValidationError(
+      `v.${kind}().${method}(): bound must be a non-negative safe integer`,
+    );
+  }
+  return Object.is(bound, -0) ? 0 : bound;
+}
+
+function nextBounds<B extends number | bigint>(
+  kind: "string" | "int" | "float" | "bigint" | "array",
+  bounds: Bounds<B>,
+  method: "min" | "max",
+  bound: B,
+): Bounds<B> {
+  if (bounds[method] !== undefined) {
+    throw new ValidationError(`v.${kind}(): duplicate ${method} constraint`);
+  }
+  const min = method === "min" ? bound : bounds.min;
+  const max = method === "max" ? bound : bounds.max;
+  if (min !== undefined && max !== undefined && min > max) {
+    throw new ValidationError(
+      `v.${kind}(): min (${String(min)}) must be less than or equal to max (${String(max)})`,
+    );
+  }
+  return {
+    ...(min === undefined ? {} : { min }),
+    ...(max === undefined ? {} : { max }),
+  };
+}
+
+function checkString(value: unknown, path: string): string {
+  if (typeof value !== "string") fail(path, "string", value);
+  return value;
+}
+
+function string(
+  constraints?: StringConstraints,
+  description?: string,
+): StringValidator {
+  const fields: ConstraintFields | undefined = constraints === undefined
+    ? undefined
+    : {
+      ...(constraints.min === undefined ? {} : { min: constraints.min }),
+      ...(constraints.max === undefined ? {} : { max: constraints.max }),
+      ...(constraints.regex === undefined ? {} : { regex: constraints.regex.source }),
+    };
+  const check = constraints === undefined
+    ? checkString
+    : (value: unknown, path: string): string => {
+      const checked = checkString(value, path);
+      checkStringConstraints(fields!, checked, path, constraints.regex?.compiled);
+      return checked;
+    };
+  return makeValidator<string, "string", Pick<StringValidator, "min" | "max" | "regex">>(
+    "string",
+    {
+      check,
+      tsType: () => "string",
+      descriptor: () => ({
+        k: "string",
+        ...fields,
+      }),
     },
-    tsType: () => "number",
-    descriptor: () => ({ k: "float" }),
-  });
+    undefined,
+    "available",
+    description,
+    STRING_CONSTRAINT_PROTOTYPE,
+  ) as StringValidator;
+}
+
+function checkInt(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) fail(path, "safe integer", value);
+  return value;
+}
+
+function checkFloat(value: unknown, path: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) fail(path, "finite number", value);
+  return value;
+}
+
+function finiteBound(bound: number, method: "min" | "max", kind: "int" | "float"): number {
+  if (!Number.isFinite(bound)) {
+    throw new ValidationError(`v.${kind}().${method}(): bound must be a finite number`);
+  }
+  return Object.is(bound, -0) ? 0 : bound;
+}
+
+function boundedNumber<K extends "int" | "float">(
+  kind: K,
+  baseCheck: (value: unknown, path: string) => number,
+  constraints?: Bounds<number>,
+  description?: string,
+): BoundedValidator<number, K, number> {
+  const fields: ConstraintFields | undefined = constraints === undefined
+    ? undefined
+    : {
+      ...(constraints.min === undefined ? {} : { min: constraints.min }),
+      ...(constraints.max === undefined ? {} : { max: constraints.max }),
+    };
+  const check = constraints === undefined
+    ? baseCheck
+    : (value: unknown, path: string): number => {
+      const checked = baseCheck(value, path);
+      checkNumberConstraints(fields!, checked, path);
+      return checked;
+    };
+  return makeValidator<number, K, Pick<BoundedValidator<number, K, number>, "min" | "max">>(
+    kind,
+    {
+      check,
+      tsType: () => "number",
+      descriptor: () => ({
+        k: kind,
+        ...fields,
+      }),
+    },
+    undefined,
+    "available",
+    description,
+    NUMBER_CONSTRAINT_PROTOTYPE,
+  ) as BoundedValidator<number, K, number>;
+}
+
+function int(): BoundedValidator<number, "int", number> {
+  return boundedNumber("int", checkInt);
+}
+
+function float(): BoundedValidator<number, "float", number> {
+  return boundedNumber("float", checkFloat);
 }
 
 function checkI64(value: unknown, path: string, expected: string): bigint {
@@ -191,12 +324,62 @@ function checkI64(value: unknown, path: string, expected: string): bigint {
   return value;
 }
 
-function bigint(): ChainableValidator<bigint, "bigint"> {
-  return makeValidator("bigint", {
-    check: (value, path) => checkI64(value, path, "bigint"),
-    tsType: () => "bigint",
-    descriptor: () => ({ k: "bigint" }),
-  });
+function checkBigint(value: unknown, path: string): bigint {
+  return checkI64(value, path, "bigint");
+}
+
+/** @internal Base-check identities for the one sanctioned structural test; not in the package barrel. */
+export const validatorBaseChecksForTest = Object.freeze({
+  string: checkString,
+  int: checkInt,
+  float: checkFloat,
+  bigint: checkBigint,
+});
+
+function bigintBound(bound: bigint, method: "min" | "max"): void {
+  if (typeof bound !== "bigint" || bound < I64_MIN || bound > I64_MAX) {
+    throw new ValidationError(
+      `v.bigint().${method}(): bound must be a bigint within the signed 64-bit range`,
+    );
+  }
+}
+
+function bigint(
+  constraints?: Bounds<bigint>,
+  description?: string,
+): BoundedValidator<bigint, "bigint", bigint> {
+  const fields: ConstraintFields | undefined = constraints === undefined
+    ? undefined
+    : {
+      ...(constraints.min === undefined ? {} : { min: constraints.min.toString() }),
+      ...(constraints.max === undefined ? {} : { max: constraints.max.toString() }),
+    };
+  const check = constraints === undefined
+    ? checkBigint
+    : (value: unknown, path: string): bigint => {
+      const checked = checkBigint(value, path);
+      checkBigintConstraints(fields!, checked, path, constraints);
+      return checked;
+    };
+  return makeValidator<
+    bigint,
+    "bigint",
+    Pick<BoundedValidator<bigint, "bigint", bigint>, "min" | "max">
+  >(
+    "bigint",
+    {
+      check,
+      tsType: () => "bigint",
+      descriptor: () => ({
+        k: "bigint",
+        ...fields,
+      }),
+    },
+    undefined,
+    "available",
+    description,
+    BIGINT_CONSTRAINT_PROTOTYPE,
+  ) as BoundedValidator<bigint, "bigint", bigint>;
 }
 
 function identity(): ChainableValidator<Identity, "identity"> {
@@ -247,29 +430,176 @@ function parenthesize(ts: string): string {
   return ts.includes("|") || ts.includes("&") ? `(${ts})` : ts;
 }
 
+export interface ArrayValidator<
+  V extends StandardValidator<unknown, string> = StandardValidator<unknown, string>,
+>
+  extends BoundedValidator<InferValidator<V>[], "array", number, InferValidatorInput<V>[]> {
+  readonly element: V;
+}
+
 function array<V extends StandardValidator<unknown, string>>(
   element: V,
-): ChainableValidator<InferValidator<V>[], "array", InferValidatorInput<V>[]> & {
-  readonly element: V;
-} {
+  constraints?: Bounds<number>,
+  description?: string,
+  baseCheck: (value: unknown, path: string) => InferValidator<V>[] = (value, path) => {
+    if (!Array.isArray(value)) fail(path, "array", value);
+    return value.map((item, i) => element.check(item, `${path}[${i}]`)) as InferValidator<V>[];
+  },
+): ArrayValidator<V> {
+  const fields: ConstraintFields | undefined = constraints === undefined
+    ? undefined
+    : {
+      ...(constraints.min === undefined ? {} : { min: constraints.min }),
+      ...(constraints.max === undefined ? {} : { max: constraints.max }),
+    };
+  const check = constraints === undefined
+    ? baseCheck
+    : (value: unknown, path: string): InferValidator<V>[] => {
+      if (!Array.isArray(value)) fail(path, "array", value);
+      checkArrayConstraints(fields!, value.length, path);
+      return value.map((item, i) => element.check(item, `${path}[${i}]`)) as InferValidator<V>[];
+    };
   return makeValidator<
     InferValidator<V>[],
     "array",
-    { readonly element: V },
+    Pick<ArrayValidator<V>, "element">,
     InferValidatorInput<V>[]
   >(
     "array",
     {
-      check(value, path) {
-        if (!Array.isArray(value)) fail(path, "array", value);
-        return value.map((item, i) => element.check(item, `${path}[${i}]`)) as InferValidator<V>[];
-      },
+      check,
       tsType: () => `${parenthesize(element.tsType())}[]`,
-      descriptor: () => ({ k: "array", el: element.descriptor() }),
+      descriptor: () => ({
+        k: "array",
+        el: element.descriptor(),
+        ...fields,
+      }),
     },
     { element },
-  );
+    "available",
+    description,
+    ARRAY_CONSTRAINT_PROTOTYPE,
+  ) as ArrayValidator<V>;
 }
+
+function validatorPrototype<T extends object>(methods: T): T {
+  const prototype = Object.create(Object.prototype) as T;
+  for (const [name, method] of Object.entries(methods)) {
+    Object.defineProperty(prototype, name, { value: method });
+  }
+  return Object.freeze(prototype);
+}
+
+function numberBounds(descriptor: Descriptor): Bounds<number> {
+  return {
+    ...(descriptor["min"] === undefined ? {} : { min: descriptor["min"] as number }),
+    ...(descriptor["max"] === undefined ? {} : { max: descriptor["max"] as number }),
+  };
+}
+
+function bigintBounds(descriptor: Descriptor): Bounds<bigint> {
+  return {
+    ...(descriptor["min"] === undefined ? {} : { min: BigInt(descriptor["min"] as string) }),
+    ...(descriptor["max"] === undefined ? {} : { max: BigInt(descriptor["max"] as string) }),
+  };
+}
+
+const STRING_CONSTRAINT_PROTOTYPE = validatorPrototype({
+  min(this: StringValidator, bound: number): StringValidator {
+    const normalized = lengthBound(bound, "min", "string");
+    const descriptor = this.descriptor();
+    const source = descriptor["regex"] as string | undefined;
+    return string({
+      ...nextBounds("string", numberBounds(descriptor), "min", normalized),
+      ...(source === undefined ? {} : { regex: { source, compiled: new RegExp(source) } }),
+    }, this.description);
+  },
+  max(this: StringValidator, bound: number): StringValidator {
+    const normalized = lengthBound(bound, "max", "string");
+    const descriptor = this.descriptor();
+    const source = descriptor["regex"] as string | undefined;
+    return string({
+      ...nextBounds("string", numberBounds(descriptor), "max", normalized),
+      ...(source === undefined ? {} : { regex: { source, compiled: new RegExp(source) } }),
+    }, this.description);
+  },
+  regex(this: StringValidator, pattern: RegExp): StringValidator {
+    if (!(pattern instanceof RegExp)) {
+      throw new ValidationError("v.string().regex(): pattern must be a RegExp");
+    }
+    if (pattern.flags !== "") {
+      throw new ValidationError("v.string().regex(): RegExp flags are not allowed");
+    }
+    const descriptor = this.descriptor();
+    if (descriptor["regex"] !== undefined) {
+      throw new ValidationError("v.string(): duplicate regex constraint");
+    }
+    const source = pattern.source;
+    return string({
+      ...numberBounds(descriptor),
+      regex: { source, compiled: new RegExp(source) },
+    }, this.description);
+  },
+});
+
+type NumberConstraintValidator = BoundedValidator<number, "int" | "float", number>;
+const NUMBER_CONSTRAINT_PROTOTYPE = validatorPrototype({
+  min(this: NumberConstraintValidator, bound: number): NumberConstraintValidator {
+    const kind = this.kind;
+    return boundedNumber(
+      kind,
+      kind === "int" ? checkInt : checkFloat,
+      nextBounds(kind, numberBounds(this.descriptor()), "min", finiteBound(bound, "min", kind)),
+      this.description,
+    );
+  },
+  max(this: NumberConstraintValidator, bound: number): NumberConstraintValidator {
+    const kind = this.kind;
+    return boundedNumber(
+      kind,
+      kind === "int" ? checkInt : checkFloat,
+      nextBounds(kind, numberBounds(this.descriptor()), "max", finiteBound(bound, "max", kind)),
+      this.description,
+    );
+  },
+});
+
+type BigintConstraintValidator = BoundedValidator<bigint, "bigint", bigint>;
+const BIGINT_CONSTRAINT_PROTOTYPE = validatorPrototype({
+  min(this: BigintConstraintValidator, bound: bigint): BigintConstraintValidator {
+    bigintBound(bound, "min");
+    return bigint(
+      nextBounds("bigint", bigintBounds(this.descriptor()), "min", bound),
+      this.description,
+    );
+  },
+  max(this: BigintConstraintValidator, bound: bigint): BigintConstraintValidator {
+    bigintBound(bound, "max");
+    return bigint(
+      nextBounds("bigint", bigintBounds(this.descriptor()), "max", bound),
+      this.description,
+    );
+  },
+});
+
+const ARRAY_CONSTRAINT_PROTOTYPE = validatorPrototype({
+  min(this: ArrayValidator, bound: number): ArrayValidator {
+    const normalized = lengthBound(bound, "min", "array");
+    return array(
+      this.element,
+      nextBounds("array", numberBounds(this.descriptor()), "min", normalized),
+      this.description,
+    );
+  },
+  max(this: ArrayValidator, bound: number): ArrayValidator {
+    const normalized = lengthBound(bound, "max", "array");
+    return array(
+      this.element,
+      nextBounds("array", numberBounds(this.descriptor()), "max", normalized),
+      this.description,
+    );
+  },
+});
 
 export type ObjectShape = Record<string, StandardValidator<unknown, string>>;
 type OmissibleShapeKey<S extends ObjectShape> = {
@@ -286,6 +616,52 @@ export type InferInputShape<S extends ObjectShape> = {
   [K in OmissibleShapeKey<S>]?: InferValidatorInput<S[K]>;
 };
 
+interface CompiledShapeField {
+  readonly key: string;
+  readonly validator: StandardValidator<unknown, string>;
+  readonly omissible: boolean;
+}
+
+function ownShape<S extends ObjectShape>(shape: S): S {
+  const owned: ObjectShape = Object.create(null) as ObjectShape;
+  for (const key of Object.keys(shape)) owned[key] = shape[key]!;
+  return Object.freeze(owned) as S;
+}
+
+function compileShapeFields(shape: ObjectShape): readonly CompiledShapeField[] {
+  return Object.keys(shape).map((key) => {
+    const field = shape[key]!;
+    return {
+      key,
+      validator: field,
+      omissible: field.kind === "optional" || field.kind === "nullish",
+    };
+  });
+}
+
+function checkCompiledShape<S extends ObjectShape>(
+  shape: S,
+  fields: readonly CompiledShapeField[],
+  value: unknown,
+  path: string,
+): InferShape<S> {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) {
+    fail(path, "object", value);
+  }
+  const input = value as Record<string, unknown>;
+  for (const key of Object.keys(input)) {
+    if (!Object.hasOwn(shape, key) && input[key] !== undefined) {
+      throw new ValidationError(`${path}: unknown field "${key}"`);
+    }
+  }
+  const out: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (!Object.hasOwn(input, field.key) && field.omissible) continue;
+    out[field.key] = field.validator.check(input[field.key], `${path}.${field.key}`);
+  }
+  return out as InferShape<S>;
+}
+
 /** Shared by v.object and args validation: strict keys and presence-preserving omission. */
 export function checkShape<S extends ObjectShape>(
   shape: S,
@@ -297,7 +673,7 @@ export function checkShape<S extends ObjectShape>(
   }
   const input = value as Record<string, unknown>;
   for (const key of Object.keys(input)) {
-    if (!(key in shape) && input[key] !== undefined) {
+    if (!Object.hasOwn(shape, key) && input[key] !== undefined) {
       throw new ValidationError(`${path}: unknown field "${key}"`);
     }
   }
@@ -318,6 +694,11 @@ export interface ObjectValidator<S extends ObjectShape = ObjectShape>
 }
 
 function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
+  // Own one immutable DSL shape for runtime validation and every projection.
+  // Compile its hot-path keys and omission bits once without splitting that
+  // contract or changing the receiver of a structural validator's check.
+  const ownedShape = ownShape(shape);
+  const compiledFields = compileShapeFields(ownedShape);
   return makeValidator<
     InferShape<S>,
     "object",
@@ -326,10 +707,10 @@ function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
   >(
     "object",
     {
-      check: (value, path) => checkShape(shape, value, path),
+      check: (value, path) => checkCompiledShape(ownedShape, compiledFields, value, path),
       tsType() {
-        const fields = Object.keys(shape).map((k) => {
-          const field = shape[k]!;
+        const fields = Object.keys(ownedShape).map((k) => {
+          const field = ownedShape[k]!;
           const optional = field.kind === "optional" || field.kind === "nullish" ? "?" : "";
           return `${k}${optional}: ${field.tsType()}`;
         });
@@ -337,11 +718,11 @@ function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
       },
       descriptor() {
         const fields: Record<string, Descriptor> = {};
-        for (const key of Object.keys(shape)) fields[key] = shape[key]!.descriptor();
+        for (const key of Object.keys(ownedShape)) fields[key] = ownedShape[key]!.descriptor();
         return { k: "object", shape: fields };
       },
     },
-    { shape },
+    { shape: ownedShape },
   );
 }
 
@@ -480,7 +861,7 @@ function union<M extends UnionMembers>(name: string, members: M): UnionValidator
         }
         const input = value as Record<string, unknown>;
         const variant = input["tag"];
-        if (typeof variant !== "string" || !(variant in members)) {
+        if (typeof variant !== "string" || !Object.hasOwn(members, variant)) {
           throw new ValidationError(
             `${path}.tag: expected one of ${variantNames.map((v) => JSON.stringify(v)).join(" | ")}, got ${describe(variant) === "string" ? JSON.stringify(variant) : describe(variant)}`,
           );

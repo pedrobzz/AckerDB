@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import {
   type EnumValidator,
+  type Descriptor,
   type InferValidator,
   type LiteralValidator,
   type ObjectShape,
@@ -94,9 +95,52 @@ function described(
   validator: StandardValidator,
   schema: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> {
-  return validator.description === undefined
-    ? schema
-    : { ...schema, description: validator.description };
+  const descriptor = validator.kind === "bigint" ? validator.descriptor() : undefined;
+  const bigintBounds = descriptor === undefined
+    ? ""
+    : [
+      descriptor["min"] === undefined
+        ? undefined
+        : `Minimum bigint value (inclusive): ${String(descriptor["min"])}.`,
+      descriptor["max"] === undefined
+        ? undefined
+        : `Maximum bigint value (inclusive): ${String(descriptor["max"])}.`,
+    ].filter((part): part is string => part !== undefined).join(" ");
+  const ownDescription = [validator.description, bigintBounds]
+    .filter((part): part is string => part !== undefined && part !== "")
+    .join(" ");
+  if (ownDescription === "") return schema;
+  const inherited = typeof schema["description"] === "string" ? schema["description"] : "";
+  return {
+    ...schema,
+    description: inherited === "" || inherited === ownDescription
+      ? ownDescription
+      : `${ownDescription} ${inherited}`,
+  };
+}
+
+function constraintSchema(descriptor: Descriptor): Readonly<Record<string, unknown>> {
+  switch (descriptor["k"]) {
+    case "string":
+      return {
+        ...(descriptor["min"] === undefined ? {} : { minLength: descriptor["min"] }),
+        ...(descriptor["max"] === undefined ? {} : { maxLength: descriptor["max"] }),
+        ...(descriptor["regex"] === undefined ? {} : { pattern: descriptor["regex"] }),
+      };
+    case "array":
+      return {
+        ...(descriptor["min"] === undefined ? {} : { minItems: descriptor["min"] }),
+        ...(descriptor["max"] === undefined ? {} : { maxItems: descriptor["max"] }),
+      };
+    case "int":
+    case "float":
+      return {
+        ...(descriptor["min"] === undefined ? {} : { minimum: descriptor["min"] }),
+        ...(descriptor["max"] === undefined ? {} : { maximum: descriptor["max"] }),
+      };
+    default:
+      return {};
+  }
 }
 
 const NULLABLE_MERGE_BLOCKERS = ["enum", "const", "anyOf", "oneOf", "allOf", "not", "$ref"] as const;
@@ -347,11 +391,20 @@ function compileNode(
 ): ProtocolNode {
   switch (validator.kind) {
     case "string":
-      return checkedNode(validator, { type: "string" });
+      return checkedNode(validator, {
+        type: "string",
+        ...constraintSchema(validator.descriptor()),
+      });
     case "int":
-      return checkedNode(validator, { type: "integer" });
+      return checkedNode(validator, {
+        type: "integer",
+        ...constraintSchema(validator.descriptor()),
+      });
     case "float":
-      return checkedNode(validator, { type: "number" });
+      return checkedNode(validator, {
+        type: "number",
+        ...constraintSchema(validator.descriptor()),
+      });
     case "boolean":
       return checkedNode(validator, { type: "boolean" });
     case "bigint":
@@ -435,8 +488,13 @@ function compileNode(
       }).element;
       if (element === undefined) throw new TypeError(`${where}: v.array() has no element validator`);
       const node = compileNode(element, `${where}[]`, protocol);
+      const constraints = constraintSchema(validator.descriptor());
       return {
-        schema: (mode) => described(validator, { type: "array", items: node.schema(mode) }),
+        schema: (mode) => described(validator, {
+          type: "array",
+          items: node.schema(mode),
+          ...constraints,
+        }),
         decode(value, path, mode) {
           if (!Array.isArray(value)) return value;
           return value.map((item, index) => node.decode(item, `${path}[${index}]`, mode));

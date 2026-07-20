@@ -24,6 +24,29 @@ function user(): UserPrincipal {
 }
 
 describe("invocation instrumentation", () => {
+  test("rejects constrained arguments before policy and handler execution", async () => {
+    let policyCalls = 0;
+    let handlerCalls = 0;
+    const constrained = query({
+      args: { slug: v.string().min(2).regex(/^[a-z]+$/) },
+      access: () => {
+        policyCalls++;
+        return true;
+      },
+      handler: () => {
+        handlerCalls++;
+        return "unreachable";
+      },
+    });
+
+    await expect(constrained(
+      { auth: ANONYMOUS_PRINCIPAL },
+      { slug: "1" },
+    )).rejects.toThrow("args.slug");
+    expect(policyCalls).toBe(0);
+    expect(handlerCalls).toBe(0);
+  });
+
   test("observes top-level and nested phases with deterministic parent metadata", async () => {
     const child = query({
       args: { value: v.string() },

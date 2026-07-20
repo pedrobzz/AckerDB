@@ -72,6 +72,23 @@ function reopen(schema: Schema, path: string) {
 }
 
 describe("migrate: rebuild transforms", () => {
+  test("target descriptors enforce constraints on transformed rows", async () => {
+    const before = defineSchema({ posts: defineTable({ id: v.primaryKey(), title: v.string() }) });
+    const target = defineSchema({
+      posts: defineTable({ id: v.primaryKey(), title: v.string().min(2) }),
+    });
+    const path = freshPath();
+    await seed(before, path, async (d) => {
+      await d.posts.insert({ title: "x" });
+    });
+
+    await expect(migrate(
+      target,
+      path,
+      defineMigration({ tables: { posts: (row) => row } }),
+    )).rejects.toThrow("posts.transform.title");
+  });
+
   test("a type change is resolved by a transform, preserving pks and converting data", async () => {
     const a = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
     const b = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });

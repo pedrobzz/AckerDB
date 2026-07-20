@@ -77,6 +77,54 @@ const observedDb = (observer: DbStatementObserver): any =>
   makeDbWriter(engine, newWriteCollector(), () => ++eventSeq, observer);
 
 describe("writes", () => {
+  test("enforces constraints on insert, patch, replace, upsert, and event insert", async () => {
+    const constrainedSchema = defineSchema({
+      articles: defineTable({
+        id: v.primaryKey(),
+        externalId: v.string(),
+        slug: v.string().min(2).max(4).regex(/^[a-z]+$/),
+      }).index("by_external_id", ["externalId"], { unique: true }),
+      articleEvents: defineEventTable({
+        id: v.primaryKey(),
+        slug: v.string().min(2),
+      }, {
+        args: {},
+        access: "public",
+        matches: () => true,
+      }),
+    });
+    const constrainedDir = mkdtempSync(join(tmpdir(), "dbzz-constrained-writes-"));
+    const constrainedEngine = new Engine(constrainedSchema, join(constrainedDir, "data.db"));
+    constrainedEngine.createAll();
+    const constrainedDb: any = makeDbWriter(
+      constrainedEngine,
+      newWriteCollector(),
+      () => 1n,
+    );
+    try {
+      await expect(constrainedDb.articles.insert({ externalId: "a", slug: "x" }))
+        .rejects.toThrow("articles.insert.slug");
+      const id = await constrainedDb.articles.insert({ externalId: "a", slug: "good" });
+      await expect(constrainedDb.articles.patch(id, { slug: "BAD" }))
+        .rejects.toThrow("articles.patch.slug");
+      await expect(constrainedDb.articles.replace(id, { externalId: "a", slug: "toolong" }))
+        .rejects.toThrow("articles.replace.slug");
+      await expect(constrainedDb.articles.byExternalId.upsert(
+        { externalId: "b" },
+        { slug: "1" },
+      )).rejects.toThrow("articles.insert.slug");
+      await expect(constrainedDb.articles.byExternalId.upsert(
+        { externalId: "a" },
+        { slug: "1" },
+      )).rejects.toThrow("articles.patch.slug");
+      await expect(constrainedDb.articleEvents.insert({ slug: "x" }))
+        .rejects.toThrow("articleEvents.insert.slug");
+    } finally {
+      constrainedEngine.close("clean");
+      rmSync(constrainedDir, { recursive: true, force: true });
+    }
+  });
+
   test("observes frozen safe summaries and observer failures stay fail-open", async () => {
     const canary = "never-export-this-row";
     const observations: DbStatementObservation[] = [];
