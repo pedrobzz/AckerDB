@@ -63,6 +63,8 @@ export interface PerformanceAcceptanceEvidence {
   previousVersion: string | null;
   currentVersion: string;
   metricCount: number;
+  rerunOfIteration: number | null;
+  observedRegressionCount: number;
   regressions: readonly PerformanceRegression[];
 }
 
@@ -435,6 +437,14 @@ export function compareDbzzMetrics(
   return Object.freeze(regressions.sort((left, right) => left.path.localeCompare(right.path)));
 }
 
+export function retainRepeatedRegressions(
+  previousIteration: readonly PerformanceRegression[],
+  current: readonly PerformanceRegression[],
+): readonly PerformanceRegression[] {
+  const previousPaths = new Set(previousIteration.map((regression) => regression.path));
+  return Object.freeze(current.filter((regression) => previousPaths.has(regression.path)));
+}
+
 /**
  * Release performance compares DBZZ only with the preceding final DBZZ release.
  * Convex and SpacetimeDB still run in the same Hetzner workload to keep the
@@ -445,11 +455,24 @@ export function evaluatePerformanceAcceptance(
   previous: BenchmarkRecordLike,
   current: BenchmarkRecordLike,
   versions: { previousVersion: string; currentVersion: string },
+  rerun?: { previousIteration: number; record: BenchmarkRecordLike },
 ): PerformanceAcceptanceResult {
   assertComparableRun(previous, current);
   const previousMetrics = extractComparableMetrics(requireSystems(previous).dbzz);
   const currentMetrics = extractComparableMetrics(requireSystems(current).dbzz);
-  const regressions = compareDbzzMetrics(previousMetrics, currentMetrics);
+  const observedRegressions = compareDbzzMetrics(previousMetrics, currentMetrics);
+  let regressions = observedRegressions;
+  if (rerun !== undefined) {
+    if (!Number.isSafeInteger(rerun.previousIteration) || rerun.previousIteration < 1) {
+      throw new Error("previous benchmark iteration must be a positive integer");
+    }
+    assertComparableRun(previous, rerun.record);
+    const previousIterationMetrics = extractComparableMetrics(requireSystems(rerun.record).dbzz);
+    regressions = retainRepeatedRegressions(
+      compareDbzzMetrics(previousMetrics, previousIterationMetrics),
+      observedRegressions,
+    );
+  }
   const previousByPath = indexMetrics(previousMetrics);
   const evidence = Object.freeze({
     schemaVersion: 1,
@@ -458,6 +481,8 @@ export function evaluatePerformanceAcceptance(
     metricCount: currentMetrics.filter((metric) =>
       hasEnoughSamples(metric) && hasEnoughSamples(previousByPath.get(metric.path)!)
     ).length,
+    rerunOfIteration: rerun?.previousIteration ?? null,
+    observedRegressionCount: observedRegressions.length,
     regressions,
   } satisfies PerformanceAcceptanceEvidence);
   return Object.freeze({

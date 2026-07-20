@@ -42,6 +42,7 @@ import {
 } from "./performance-gates.ts";
 import {
   readPreviousFinalBenchmark,
+  readPreviousIterationBenchmark,
   releaseBenchmarkContext,
   retainReleaseBenchmark,
   type ReleaseBenchmarkContext,
@@ -1037,6 +1038,23 @@ const previous = bootstrap ? undefined : readPreviousFinalBenchmark<RunRecord>(R
 if (previous && (previous.record.schemaVersion !== 9 || previous.record.release?.host !== "hetzner")) {
   throw new Error(`v${previous.version} is not a final Hetzner release benchmark`);
 }
+const previousIteration = releaseContext.iteration > 1
+  ? readPreviousIterationBenchmark<RunRecord>(RESULTS_DIR, releaseContext.version, releaseContext.iteration)
+  : undefined;
+if (releaseContext.iteration > 1 && previousIteration === undefined) {
+  throw new Error(`release benchmark iteration ${releaseContext.iteration} requires a retained prior iteration`);
+}
+if (previousIteration && (
+  previousIteration.record.schemaVersion !== 9 ||
+  previousIteration.record.release?.host !== "hetzner" ||
+  previousIteration.record.release.version !== releaseContext.version ||
+  previousIteration.record.release.iteration !== previousIteration.iteration ||
+  previousIteration.record.performanceAcceptance.status !== "recovery-needed"
+)) {
+  throw new Error(
+    `v${releaseContext.version} iteration ${previousIteration.iteration} is not same-version Hetzner recovery evidence`,
+  );
+}
 
 // Apples-to-apples: the comparative targets ship no equivalent always-on
 // telemetry, so the release leg runs telemetry=false. Telemetry cost is the
@@ -1120,10 +1138,21 @@ const recordWithoutAcceptance: Omit<RunRecord, "performanceAcceptance"> = {
 const performanceAcceptance: PerformanceAcceptanceResult = dbzzFailed
   ? { status: "not-evaluated", reason: "correctness-failed" }
   : bootstrap
-    ? { status: "passed", evidence: { schemaVersion: 1, previousVersion: null, currentVersion: releaseContext.version, metricCount: 0, regressions: [] } }
+    ? { status: "passed", evidence: {
+      schemaVersion: 1,
+      previousVersion: null,
+      currentVersion: releaseContext.version,
+      metricCount: 0,
+      rerunOfIteration: null,
+      observedRegressionCount: 0,
+      regressions: [],
+    } }
     : evaluatePerformanceAcceptance(previous!.record, recordWithoutAcceptance, {
       previousVersion: previous!.version,
       currentVersion: releaseContext.version,
+    }, previousIteration && {
+      previousIteration: previousIteration.iteration,
+      record: previousIteration.record,
     });
 const record: RunRecord = { ...recordWithoutAcceptance, performanceAcceptance };
 mkdirSync(RESULTS_DIR, { recursive: true });
@@ -1147,7 +1176,9 @@ if (performanceAcceptance.status === "not-evaluated") {
 } else {
   console.log(bootstrap
     ? `\nrelease benchmark bootstrap approved: v${releaseContext.version} is the baseline for its successor.`
-    : `\nrelease benchmark approved: v${releaseContext.version} has no material DBZZ regression against v${previous!.version}.`);
+    : previousIteration
+      ? `\nrelease benchmark approved: v${releaseContext.version} has no material DBZZ regression repeated from iteration ${previousIteration.iteration}.`
+      : `\nrelease benchmark approved: v${releaseContext.version} has no material DBZZ regression against v${previous!.version}.`);
   if (validation.status === "failed") {
     console.log("comparative-target validation failures are recorded in the evidence (non-blocking; the gate judges DBZZ).");
   }

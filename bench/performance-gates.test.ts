@@ -5,8 +5,10 @@ import {
   REGRESSION_NOISE_FLOOR_CPU_CORES,
   REGRESSION_NOISE_FLOOR_RELATIVE,
   regressionThreshold,
+  retainRepeatedRegressions,
   type ComparableMetric,
   type MeasuredSystem,
+  type PerformanceRegression,
 } from "./performance-gates.ts";
 
 function metric(
@@ -121,5 +123,21 @@ describe("version-to-version performance recovery threshold", () => {
     expect(paths).toContain("resources/startup-idle/cpuCores");
     expect(paths).toContain("operations/query/default/resources/server/rssMb/peakMax");
     expect(paths).not.toContain("operations/query/default/resources/server/cpuCoresMedian");
+  });
+
+  test("later iterations retain only regressions repeated from the immediately preceding iteration", () => {
+    const regression = (path: string): PerformanceRegression => ({
+      path,
+      direction: "higher",
+      previous: 100,
+      current: 80,
+      deltaPercent: -20,
+      threshold: 15,
+    });
+    const previousIteration = [regression("query/throughput"), regression("mutation/throughput")];
+    const current = [regression("mutation/throughput"), regression("procedure/throughput")];
+
+    expect(retainRepeatedRegressions(previousIteration, current).map((entry) => entry.path))
+      .toEqual(["mutation/throughput"]);
   });
 });

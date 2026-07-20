@@ -72,6 +72,38 @@ export function readPreviousFinalBenchmark<T>(resultsDir: string, version: strin
   return { version: previous.version, record: JSON.parse(readFileSync(previous.path, "utf8")) as T };
 }
 
+export function previousIterationBenchmark(
+  resultsDir: string,
+  version: string,
+  currentIteration: number,
+): { iteration: number; path: string } | undefined {
+  const current = assertVersion(version, "benchmark version");
+  if (!Number.isSafeInteger(currentIteration) || currentIteration < 1) {
+    throw new Error("current benchmark iteration must be a positive integer");
+  }
+  if (!existsSync(resultsDir)) return undefined;
+  const pattern = new RegExp(`^v${current.replaceAll(".", "\\.")}\\.iteration-(\\d+)\\.json$`);
+  return readdirSync(resultsDir)
+    .map((name) => {
+      const match = pattern.exec(name);
+      return match ? { iteration: Number(match[1]), path: join(resultsDir, name) } : undefined;
+    })
+    .filter((candidate): candidate is { iteration: number; path: string } =>
+      candidate !== undefined && Number.isSafeInteger(candidate.iteration) &&
+      candidate.iteration >= 1 && candidate.iteration < currentIteration
+    )
+    .sort((left, right) => right.iteration - left.iteration)[0];
+}
+
+export function readPreviousIterationBenchmark<T>(
+  resultsDir: string,
+  version: string,
+  currentIteration: number,
+): { iteration: number; record: T } | undefined {
+  const previous = previousIterationBenchmark(resultsDir, version, currentIteration);
+  return previous && { iteration: previous.iteration, record: JSON.parse(readFileSync(previous.path, "utf8")) as T };
+}
+
 export function removeReleaseIterations(resultsDir: string, version: string): void {
   const iterationPrefix = `v${assertVersion(version, "benchmark version")}.iteration-`;
   for (const name of readdirSync(resultsDir)) {
