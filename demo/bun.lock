@@ -5,11 +5,11 @@
     "": {
       "name": "dbzz-demo",
       "dependencies": {
-        "@dbzz/cli": "0.4.1",
-        "@dbzz/client": "0.4.1",
-        "@dbzz/client-react": "0.4.1",
-        "@dbzz/core": "0.4.1",
-        "@dbzz/server": "0.4.1",
+        "@dbzz/cli": "0.4.1-beta.3",
+        "@dbzz/client": "0.4.1-beta.3",
+        "@dbzz/client-react": "0.4.1-beta.3",
+        "@dbzz/core": "0.4.1-beta.3",
+        "@dbzz/server": "0.4.1-beta.3",
       },
       "devDependencies": {
         "@types/bun": "^1.2.0",
@@ -20,7 +20,7 @@
       "name": "@demo/admin-panel",
       "dependencies": {
         "@ai-sdk/react": "4.0.34",
-        "@dbzz/client-react": "0.4.1",
+        "@dbzz/client-react": "0.4.1-beta.3",
         "@demo/dbzz-codegen": "workspace:*",
         "@tanstack/react-router": "1.170.18",
         "@tanstack/react-start": "1.168.28",
@@ -59,8 +59,8 @@
       "name": "@demo/mobile",
       "version": "1.0.0",
       "dependencies": {
-        "@dbzz/client": "0.4.1",
-        "@dbzz/client-react": "0.4.1",
+        "@dbzz/client": "0.4.1-beta.3",
+        "@dbzz/client-react": "0.4.1-beta.3",
         "@demo/dbzz-codegen": "workspace:*",
         "@expo/ui": "57.0.6",
         "expo": "57.0.6",
@@ -87,14 +87,14 @@
       "name": "@demo/server",
       "dependencies": {
         "@ai-sdk/gateway": "4.0.23",
-        "@dbzz/server": "0.4.1",
+        "@dbzz/server": "0.4.1-beta.3",
         "@demo/dbzz-codegen": "workspace:*",
         "ai": "7.0.31",
         "jose": "^6.1.3",
         "just-bash": "3.1.0",
       },
       "devDependencies": {
-        "@dbzz/cli": "0.4.1",
+        "@dbzz/cli": "0.4.1-beta.3",
         "@types/bun": "^1.2.0",
         "typescript": "^5.9.0",
       },
@@ -105,8 +105,8 @@
         "typescript": "^5.9.0",
       },
       "peerDependencies": {
-        "@dbzz/core": "0.4.1",
-        "@dbzz/server": "0.4.1",
+        "@dbzz/core": "0.4.1-beta.3",
+        "@dbzz/server": "0.4.1-beta.3",
       },
     },
   },
@@ -269,15 +269,15 @@
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "http://127.0.0.1:4873/@borewit/text-codec/-/text-codec-0.2.2.tgz", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
 
-    "@dbzz/cli": ["@dbzz/cli@0.4.1", "http://127.0.0.1:4874/@dbzz/cli/-/cli-0.4.1.tgz", { "dependencies": { "@dbzz/core": "0.4.1", "@dbzz/server": "0.4.1" }, "bin": { "dbz": "src/main.ts" } }, "sha512-saZPZea0TX5c6VjDj/AP/VwJbEsR1NnwIqiHpfrsMxzjcngi0ZN5x7yj/7v9P/nn6o963oWBR5S49N+G7G5Bpw=="],
+    "@dbzz/cli": ["@dbzz/cli@0.4.1-beta.3", "http://127.0.0.1:4874/@dbzz/cli/-/cli-0.4.1-beta.3.tgz", { "dependencies": { "@dbzz/core": "0.4.1-beta.3", "@dbzz/server": "0.4.1-beta.3" }, "bin": { "dbz": "src/main.ts" } }, "sha512-t+EnNRmCHCURBZxRjh7D4vnUtsMIhmapjp7OjZilVtSjHct7sQGQEaTh0N0ThHN719H9h9U5Y5klujiCIeozyQ=="],
 
-    "@dbzz/client": ["@dbzz/client@0.4.1", "http://127.0.0.1:4874/@dbzz/client/-/client-0.4.1.tgz", { "dependencies": { "@dbzz/core": "0.4.1" } }, "sha512-OE2gxP/q5ywX+MN9er3x34sl7YrYb4+0mHChg4KCr2If7jtI/6eKixMuwk7GUN3uv3mpWG4uW6fH3Cy8nf2JQw=="],
+    "@dbzz/client": ["@dbzz/client@0.4.1-beta.3", "http://127.0.0.1:4874/@dbzz/client/-/client-0.4.1-beta.3.tgz", { "dependencies": { "@dbzz/core": "0.4.1-beta.3" } }, "sha512-xWZuC+qzQT344JVuiJWqVDUcw9AqvPnPjPbyUNXn1STse6zuiZTZ39ElUQnLPjz7eaBcqnAaONh4mhdWilz4Gg=="],
 
-    "@dbzz/client-react": ["@dbzz/client-react@0.4.1", "http://127.0.0.1:4874/@dbzz/client-react/-/client-react-0.4.1.tgz", { "dependencies": { "@dbzz/client": "0.4.1", "@dbzz/core": "0.4.1" }, "peerDependencies": { "ai": "^7.0.0", "expo": "^57.0.0", "expo-crypto": "^57.0.0", "react": "^19.2.3", "react-native": "^0.86.0" }, "optionalPeers": ["ai", "expo", "expo-crypto", "react-native"] }, "sha512-niawxM9fUp56K444SQJUPUBt8WBPpF/rBa0iFn+DPsisTY2bQWWgrOQmQhiA5VWsXsV2dZqDs2eELdnnwl7Mzw=="],
+    "@dbzz/client-react": ["@dbzz/client-react@0.4.1-beta.3", "http://127.0.0.1:4874/@dbzz/client-react/-/client-react-0.4.1-beta.3.tgz", { "dependencies": { "@dbzz/client": "0.4.1-beta.3", "@dbzz/core": "0.4.1-beta.3" }, "peerDependencies": { "ai": "^7.0.0", "expo": "^57.0.0", "expo-crypto": "^57.0.0", "react": "^19.2.3", "react-native": "^0.86.0" }, "optionalPeers": ["ai", "expo", "expo-crypto", "react-native"] }, "sha512-u8AGLuYq91BAsXh60H1y71718hRn8tMiWQDsG4klTthYm9F1kB4fHc0RBUSTYShgH3MGKVEI3wq0OLGz5p4zVA=="],
 
-    "@dbzz/core": ["@dbzz/core@0.4.1", "http://127.0.0.1:4874/@dbzz/core/-/core-0.4.1.tgz", {}, "sha512-bGDeaQ+2Q9hDJm7Tq55TZkukDMzkInhWwi0vF0/wkZ+0ZHeCOmlLw+T/WxeAe2qMg1nCxyuFwYfSrN6yn9EQSg=="],
+    "@dbzz/core": ["@dbzz/core@0.4.1-beta.3", "http://127.0.0.1:4874/@dbzz/core/-/core-0.4.1-beta.3.tgz", {}, "sha512-ROQvczJMQdn33rMt1e21I/OmCAsEljigd+Gv3N2ofmQLd1+vEGoLll8SrCE1BRrlgEFEOLAF1mMcoSNTKTQGbw=="],
 
-    "@dbzz/server": ["@dbzz/server@0.4.1", "http://127.0.0.1:4874/@dbzz/server/-/server-0.4.1.tgz", { "dependencies": { "@dbzz/core": "0.4.1", "@modelcontextprotocol/sdk": "1.29.0", "jose": "6.2.3" } }, "sha512-uEeeb5jzawi/jUHtLqmsW1cnW2Ftye2flaCpG3sMQ93Vb4Hw3cfHCzUbL3iP+hD8tZwIgpYCra2Imu5tl05jxQ=="],
+    "@dbzz/server": ["@dbzz/server@0.4.1-beta.3", "http://127.0.0.1:4874/@dbzz/server/-/server-0.4.1-beta.3.tgz", { "dependencies": { "@dbzz/core": "0.4.1-beta.3", "@modelcontextprotocol/sdk": "1.29.0", "jose": "6.2.3" } }, "sha512-kFaZJzqZb0bkLVW1ihiLMcZVdtRTG/Bo57aAe9uzdx5WJRt34dQFPhJm/5CHHMNU/KLbA0rF3jka7gifnm/D/A=="],
 
     "@demo/admin-panel": ["@demo/admin-panel@workspace:app/admin-panel"],
 
