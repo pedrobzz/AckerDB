@@ -199,6 +199,26 @@ describe("durability and internal state", () => {
     live.close("clean");
   });
 
+  test("stored index columns must be own snapshot entries", () => {
+    for (const inheritedName of ["toString", "constructor"]) {
+      const { database } = fresh();
+      const engine = new Engine(schema, database);
+      reconcile(engine);
+      const snapshot = engine.loadSnapshot()!;
+      snapshot.tables.records!.indexes.push({
+        name: "by_missing",
+        columns: [inheritedName],
+        unique: false,
+        algorithm: "btree",
+      });
+      engine.saveSnapshot(snapshot);
+      expect(() => engine.loadSnapshot()).toThrow(
+        "stored schema snapshot is invalid: records.by_missing has an invalid definition",
+      );
+      engine.close("clean");
+    }
+  });
+
   test("rejects corrupt tag assignments without repairing them", () => {
     const tagged = defineSchema({
       records: defineTable({

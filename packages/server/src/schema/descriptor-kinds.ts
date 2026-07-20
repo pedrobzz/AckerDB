@@ -176,7 +176,7 @@ const KINDS: Record<string, DescriptorKind> = {
       for (const key of Object.keys(input)) {
         if (!Object.hasOwn(shape, key) && input[key] !== undefined) throw new ValidationError(`${path}: unknown field "${key}"`);
       }
-      const out: Record<string, unknown> = {};
+      const out = Object.create(null) as Record<string, unknown>;
       for (const key of Object.keys(shape)) {
         const field = shape[key]!;
         if (

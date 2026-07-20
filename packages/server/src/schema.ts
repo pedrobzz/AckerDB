@@ -207,8 +207,10 @@ export class TableDef<
       throw new ValidationError(`index "${name}": duplicate columns`);
     }
     for (const column of columns) {
-      const validator = this.columns[column];
-      if (!validator) throw new ValidationError(`index "${name}": unknown column "${column}"`);
+      if (!Object.hasOwn(this.columns, column)) {
+        throw new ValidationError(`index "${name}": unknown column "${column}"`);
+      }
+      const validator = this.columns[column]!;
       if (validator.kind === "pk") {
         throw new ValidationError(
           `index "${name}": the primary key is already the table's storage key; indexing it is redundant`,

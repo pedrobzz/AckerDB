@@ -77,6 +77,76 @@ const observedDb = (observer: DbStatementObserver): any =>
   makeDbWriter(engine, newWriteCollector(), () => ++eventSeq, observer);
 
 describe("writes", () => {
+  test("prototype-shaped table and column names remain own runtime entries", async () => {
+    const prototypeSchema = defineSchema({
+      toString: defineTable({
+        constructor: v.primaryKey(),
+        toString: v.string(),
+      }),
+      constructor: defineEventTable({
+        toString: v.primaryKey(),
+        constructor: v.string(),
+      }, {
+        args: {},
+        access: "public",
+        matches: () => true,
+      }),
+      plain: defineTable({ id: v.primaryKey(), value: v.string() }),
+      plainEvents: defineEventTable({ id: v.primaryKey(), value: v.string() }, {
+        args: {},
+        access: "public",
+        matches: () => true,
+      }),
+    });
+    const prototypeEngine = new Engine(prototypeSchema, join(dir, "prototype-names.db"));
+    prototypeEngine.createAll();
+    const prototypeWrites = newWriteCollector();
+    let prototypeEventId = 0n;
+    const prototypeDb: any = makeDbWriter(
+      prototypeEngine,
+      prototypeWrites,
+      () => ++prototypeEventId,
+    );
+    try {
+      const snapshot = prototypeEngine.loadSnapshot()!;
+      expect(Object.hasOwn(snapshot.tables, "toString")).toBe(true);
+      expect(Object.hasOwn(snapshot.tables, "constructor")).toBe(true);
+      expect(Object.hasOwn(snapshot.tables["toString"]!.columns, "toString")).toBe(true);
+      expect(Object.hasOwn(snapshot.tables["toString"]!.columns, "constructor")).toBe(true);
+      expect(Object.hasOwn(prototypeDb, "toString")).toBe(true);
+      expect(Object.hasOwn(prototypeDb, "constructor")).toBe(true);
+
+      const id = await prototypeDb.toString.insert({ toString: "before" });
+      await prototypeDb.toString.patch(id, { toString: "after" });
+      const row = await prototypeDb.toString.get(id);
+      expect(row).toEqual({ constructor: 1n, toString: "after" });
+      expect(Object.getPrototypeOf(row)).toBe(Object.prototype);
+      expect(Object.hasOwn(row, "constructor")).toBe(true);
+      expect(Object.hasOwn(row, "toString")).toBe(true);
+
+      await prototypeDb.constructor.insert({ constructor: "event" });
+      expect(prototypeWrites.events).toEqual([{
+        table: "constructor",
+        row: { toString: 1n, constructor: "event" },
+      }]);
+
+      await expect(prototypeDb.plain.insert({ value: "x", toString: "unknown" }))
+        .rejects.toThrow('plain.insert: unknown field "toString"');
+      const plainId = await prototypeDb.plain.insert({ value: "x" });
+      await expect(prototypeDb.plain.patch(plainId, { constructor: "unknown" }))
+        .rejects.toThrow('plain.patch: unknown field "constructor"');
+      await expect(prototypeDb.plainEvents.insert({ value: "x", toString: "unknown" }))
+        .rejects.toThrow('plainEvents.insert: unknown field "toString"');
+
+      expect(Object.hasOwn(db, "toString")).toBe(false);
+      expect(Object.hasOwn(db, "constructor")).toBe(false);
+      expect(db.toString).toBeUndefined();
+      expect(db.constructor).toBeUndefined();
+    } finally {
+      prototypeEngine.close("clean");
+    }
+  });
+
   test("enforces constraints on insert, patch, replace, upsert, and event insert", async () => {
     const constrainedSchema = defineSchema({
       articles: defineTable({

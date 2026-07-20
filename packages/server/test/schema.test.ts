@@ -32,6 +32,12 @@ describe("defineTable", () => {
         tags: v.array(v.string()),
       });
     expect(() => table().index("by_missing", ["nope" as never])).toThrow("unknown column");
+    expect(() => table().index("by_missing", ["toString" as never])).toThrow(
+      'unknown column "toString"',
+    );
+    expect(() => table().index("by_missing", ["constructor" as never])).toThrow(
+      'unknown column "constructor"',
+    );
     expect(() => table().index("by_id", ["id" as never])).toThrow("redundant");
     expect(() => table().index("by_tags", ["tags"])).toThrow("not indexable");
     expect(() => table().index("by_c", ["channelId"]).index("by_c", ["channelId"])).toThrow(

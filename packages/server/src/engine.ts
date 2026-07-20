@@ -346,7 +346,9 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
       if (
         !Array.isArray(index["columns"]) ||
         index["columns"].length === 0 ||
-        index["columns"].some((column) => typeof column !== "string" || !(column in storedColumns)) ||
+        index["columns"].some((column) =>
+          typeof column !== "string" || !Object.hasOwn(storedColumns, column)
+        ) ||
         new Set(index["columns"]).size !== index["columns"].length ||
         typeof index["unique"] !== "boolean" ||
         (index["algorithm"] !== "btree" && index["algorithm"] !== "direct")

@@ -618,7 +618,7 @@ function readMethods(
   plan: TablePlan,
   observer?: DbStatementObserver,
 ) {
-  const accessor: Record<string, unknown> = {
+  const accessor: Record<string, unknown> = Object.assign(Object.create(null), {
     async get(id: unknown): Promise<Record<string, unknown> | null> {
       return await observeStatement(
         observer,
@@ -641,7 +641,7 @@ function readMethods(
     scan(): RangeQueryImpl {
       return makeRangeQuery(engine, conn, reads, plan, null, null, observer);
     },
-  };
+  });
   for (const index of plan.indexes) {
     const run = (fn: (q: IndexQb) => unknown) => {
       const qb = new IndexQb(engine, plan, index);
@@ -659,7 +659,7 @@ function checkFullRow(plan: TablePlan, engine: Engine, row: unknown, op: string)
     throw new ValidationError(`${plan.name}.${op}: expected a row object`);
   }
   const input = row as Record<string, unknown>;
-  if (input[plan.pk] !== undefined) {
+  if (Object.hasOwn(input, plan.pk) && input[plan.pk] !== undefined) {
     throw new ValidationError(
       `${plan.name}.${op}: the primary key "${plan.pk}" is assigned by the database`,
     );
@@ -674,7 +674,7 @@ function checkFullRow(plan: TablePlan, engine: Engine, row: unknown, op: string)
     out[name] = validator.check(value, `${plan.name}.${op}.${name}`);
   }
   for (const key of Object.keys(input)) {
-    if (!(key in table.columns) && input[key] !== undefined) {
+    if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
       throw new ValidationError(`${plan.name}.${op}: unknown field "${key}"`);
     }
   }
@@ -787,8 +787,10 @@ function writeMethods(
           if (key === plan.pk) {
             throw new ValidationError(`${plan.name}.patch: the primary key cannot be changed`);
           }
-          const validator = table.columns[key];
-          if (!validator) throw new ValidationError(`${plan.name}.patch: unknown field "${key}"`);
+          if (!Object.hasOwn(table.columns, key)) {
+            throw new ValidationError(`${plan.name}.patch: unknown field "${key}"`);
+          }
+          const validator = table.columns[key]!;
           const value = validator.check(input[key], `${plan.name}.patch.${key}`);
           updated[key] = value;
           const columnPlan = plan.columns.get(key)!;
@@ -882,7 +884,7 @@ function attachUpsert(
         }
         const qb = new IndexQb(engine, plan, index);
         for (const column of keyColumns) {
-          if (key[column] === undefined) {
+          if (!Object.hasOwn(key, column) || key[column] === undefined) {
             throw new ValidationError(`${plan.name}.${name}.upsert: missing key column "${column}"`);
           }
           qb.eq(column, key[column]);
@@ -915,13 +917,13 @@ function eventWriteMethods(
 ) {
   const table = engine.schema.tables[tableName]!;
   const pk = table.primaryKey;
-  return {
+  return Object.assign(Object.create(null) as Record<never, never>, {
     async insert(row: unknown): Promise<void> {
       if (row === null || typeof row !== "object" || Array.isArray(row)) {
         throw new ValidationError(`${tableName}.insert: expected a row object`);
       }
       const input = row as Record<string, unknown>;
-      if (input[pk] !== undefined) {
+      if (Object.hasOwn(input, pk) && input[pk] !== undefined) {
         throw new ValidationError(`${tableName}.insert: the primary key "${pk}" is assigned by dbzz`);
       }
       const out: Record<string, unknown> = {};
@@ -933,13 +935,13 @@ function eventWriteMethods(
         out[name] = validator.check(value, `${tableName}.insert.${name}`);
       }
       for (const key of Object.keys(input)) {
-        if (!(key in table.columns) && input[key] !== undefined) {
+        if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
           throw new ValidationError(`${tableName}.insert: unknown field "${key}"`);
         }
       }
       writes.events.push({ table: tableName, row: { [pk]: nextEventId(tableName), ...out } });
     },
-  };
+  });
 }
 
 /** Read-only ctx.db (queries). Event tables are absent — there is nothing to read. */
@@ -949,7 +951,7 @@ export function makeDbReader(
   reads: ReadRecorder | null,
   observer?: DbStatementObserver,
 ): unknown {
-  const db: Record<string, unknown> = {};
+  const db: Record<string, unknown> = Object.create(null);
   for (const plan of engine.plans.values()) {
     db[plan.name] = readMethods(engine, conn, reads, plan, observer);
   }
@@ -963,7 +965,7 @@ export function makeDbWriter(
   nextEventId: (table: string) => bigint,
   observer?: DbStatementObserver,
 ): unknown {
-  const db: Record<string, unknown> = {};
+  const db: Record<string, unknown> = Object.create(null);
   for (const [name, table] of Object.entries(engine.schema.tables)) {
     if (table.kind === "event") {
       db[name] = eventWriteMethods(engine, writes, name, nextEventId);
@@ -971,10 +973,11 @@ export function makeDbWriter(
     }
     const plan = engine.plan(name);
     const writer = writeMethods(engine, writes, plan, observer);
-    const accessor = {
-      ...readMethods(engine, engine.writer, null, plan, observer),
-      ...writer,
-    };
+    const accessor: Record<string, unknown> = Object.assign(
+      Object.create(null),
+      readMethods(engine, engine.writer, null, plan, observer),
+      writer,
+    );
     const upsertWriter = observer === undefined
       ? writer
       : writeMethods(engine, writes, plan);

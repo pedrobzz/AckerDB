@@ -18,10 +18,10 @@ export interface SchemaSnapshot {
 }
 
 export function snapshotOf(schema: Schema): SchemaSnapshot {
-  const tables: Record<string, TableSnapshot> = {};
+  const tables: Record<string, TableSnapshot> = Object.create(null);
   for (const name of Object.keys(schema.tables).sort()) {
     const table = schema.tables[name]!;
-    const columns: Record<string, Descriptor> = {};
+    const columns: Record<string, Descriptor> = Object.create(null);
     for (const column of Object.keys(table.columns)) {
       columns[column] = table.columns[column]!.descriptor();
     }

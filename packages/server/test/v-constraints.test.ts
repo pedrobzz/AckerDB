@@ -319,3 +319,31 @@ test("live and descriptor validation reject prototype-named fields and variants"
     "value",
   )).toThrow('value.tag: expected one of "text"');
 });
+
+test("declared prototype-named fields and variants remain own through every validator projection", () => {
+  const object = v.object({ ["__proto__"]: v.string() });
+  const input = JSON.parse('{"__proto__":"kept"}');
+  const live = object.check(input, "value") as Record<string, unknown>;
+  const descriptor = object.descriptor();
+  const stored = checkDescriptor(descriptor, input, "value") as Record<string, unknown>;
+
+  expect(Object.hasOwn(live, "__proto__")).toBe(true);
+  expect(live["__proto__"]).toBe("kept");
+  expect(Object.hasOwn(descriptor["shape"] as object, "__proto__")).toBe(true);
+  expect(Object.getPrototypeOf(stored)).toBeNull();
+  expect(Object.hasOwn(stored, "__proto__")).toBe(true);
+  expect(stored["__proto__"]).toBe("kept");
+
+  const union = v.union("PrototypeVariant", { ["__proto__"]: v.string() });
+  expect(Object.hasOwn(union.union, "__proto__")).toBe(true);
+  expect(union.union.__proto__("payload")).toEqual({
+    tag: "__proto__",
+    value: "payload",
+  });
+  expect(Object.hasOwn(union.descriptor()["members"] as object, "__proto__")).toBe(true);
+  expect(checkDescriptor(
+    union.descriptor(),
+    { tag: "__proto__", value: "payload" },
+    "value",
+  )).toEqual({ tag: "__proto__", value: "payload" });
+});

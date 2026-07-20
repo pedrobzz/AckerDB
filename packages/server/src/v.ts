@@ -628,6 +628,19 @@ function ownShape<S extends ObjectShape>(shape: S): S {
   return Object.freeze(owned) as S;
 }
 
+function setOwnField(record: Record<string, unknown>, key: string, value: unknown): void {
+  if (key !== "__proto__") {
+    record[key] = value;
+    return;
+  }
+  Object.defineProperty(record, key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
 function compileShapeFields(shape: ObjectShape): readonly CompiledShapeField[] {
   return Object.keys(shape).map((key) => {
     const field = shape[key]!;
@@ -657,7 +670,11 @@ function checkCompiledShape<S extends ObjectShape>(
   const out: Record<string, unknown> = {};
   for (const field of fields) {
     if (!Object.hasOwn(input, field.key) && field.omissible) continue;
-    out[field.key] = field.validator.check(input[field.key], `${path}.${field.key}`);
+    setOwnField(
+      out,
+      field.key,
+      field.validator.check(input[field.key], `${path}.${field.key}`),
+    );
   }
   return out as InferShape<S>;
 }
@@ -683,7 +700,7 @@ export function checkShape<S extends ObjectShape>(
     if (!Object.hasOwn(input, key) && (field.kind === "optional" || field.kind === "nullish")) {
       continue;
     }
-    out[key] = field.check(input[key], `${path}.${key}`);
+    setOwnField(out, key, field.check(input[key], `${path}.${key}`));
   }
   return out as InferShape<S>;
 }
@@ -718,7 +735,9 @@ function object<S extends ObjectShape>(shape: S): ObjectValidator<S> {
       },
       descriptor() {
         const fields: Record<string, Descriptor> = {};
-        for (const key of Object.keys(ownedShape)) fields[key] = ownedShape[key]!.descriptor();
+        for (const key of Object.keys(ownedShape)) {
+          setOwnField(fields, key, ownedShape[key]!.descriptor());
+        }
         return { k: "object", shape: fields };
       },
     },
@@ -837,10 +856,13 @@ function union<M extends UnionMembers>(name: string, members: M): UnionValidator
   if (variantNames.length === 0) throw new ValidationError(`union ${name}: no variants`);
   const namespace: Record<string, (value?: unknown) => unknown> = {};
   for (const variant of variantNames) {
-    namespace[variant] =
+    setOwnField(
+      namespace,
+      variant,
       members[variant]!.kind === "tag"
         ? () => ({ tag: variant, value: null })
-        : (value: unknown) => ({ tag: variant, value });
+        : (value: unknown) => ({ tag: variant, value }),
+    );
   }
   return makeValidator<
     UnionValue<M>,
@@ -884,7 +906,9 @@ function union<M extends UnionMembers>(name: string, members: M): UnionValidator
       tsType: () => name,
       descriptor() {
         const memberDesc: Record<string, Descriptor> = {};
-        for (const variant of variantNames) memberDesc[variant] = members[variant]!.descriptor();
+        for (const variant of variantNames) {
+          setOwnField(memberDesc, variant, members[variant]!.descriptor());
+        }
         return { k: "union", name, members: memberDesc };
       },
     },
