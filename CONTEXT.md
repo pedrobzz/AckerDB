@@ -278,6 +278,112 @@ validator admits `null`. Stored fields are never optional.
 remains `undefined` while an explicit `null` remains `null`. Stored fields are
 never nullish.
 
+## Query model
+
+**Table query** — The planner-independent ordinary read started by
+`.query()`. It composes database predicates and explicit ordering before a
+materializer; `get(id)` remains the direct primary-key read.
+_Avoid_: Scan, index accessor
+
+**Database predicate** — A typed condition evaluated by the database before
+rows are ranked, limited, or materialized. An arbitrary application callback
+is post-processing, not a database predicate.
+_Avoid_: Filter
+
+**Predicate expression** — The SQL expression produced by `.where((row) =>
+...)`. Each field of `row` is a typed column reference with SQL comparison and
+null operators; predicate results compose with `and`, `or`, and `not`.
+Repeated `.where(...)` calls compose with `and`. The callback constructs an
+expression and never receives or executes against a materialized application
+row.
+_Avoid_: JavaScript predicate, row callback
+
+**Query order** — The lexicographic order declared with `.orderBy(...)` and
+`.thenBy(...)`. Without one, rows order by primary key ascending; otherwise the
+primary key is an implicit ascending final tie-breaker unless explicitly
+ordered by the caller. Nulls precede values ascending and follow them
+descending.
+_Avoid_: Index order
+
+**Transparent index** — An exact-result storage optimization selected by the
+database planner. Public schema declarations identify indexes by their ordered
+columns and configuration rather than a user-chosen name; DBzz derives the
+physical identifier. Composite indexes and multiple indexes per table remain
+supported. Application queries never name an index, and adding, changing, or
+removing one never changes exact results or the storage structure's
+performance characteristics compared with an equivalent named index.
+_Avoid_: Index accessor, named query
+
+**Structural upsert key** — The exact field set of one declared non-null unique
+index, passed to a writable table's `upsert`. Property order is irrelevant;
+missing, additional, nullable, or ambiguous key fields are invalid.
+_Avoid_: Named unique-index accessor
+
+## Vector search
+
+**Vector** — A fixed-dimensional dense numeric value that DBzz can store,
+validate, manipulate, and compare. A vector may represent an embedding, but is
+not inherently model-generated.
+_Avoid_: Embedding, when the value's model origin is irrelevant
+
+**Vector column** — A schema field declared with `v.vector(dimensions)` and
+stored as a dense Float32 vector of exactly that dimensionality. It composes
+with the same nullability modifiers and ordinary insert, update, replace, and
+read operations as other stored fields.
+_Avoid_: Embedding column
+
+**Vector value boundary** — Inserts, updates, and similarity query vectors
+accept a `readonly number[]` of exactly the declared dimensionality. DBzz
+rejects non-finite coordinates and values that overflow Float32, rounds every
+accepted coordinate to Float32 once at the boundary, canonicalizes negative
+zero to zero, and returns stored vectors as ordinary readonly number arrays
+containing those Float32 values.
+
+**Embedding** — A vector generated outside DBzz by an AI SDK or another model
+library. DBzz stores and manipulates embeddings but never generates them.
+_Avoid_: DBzz-generated embedding, derived embedding column
+
+**Embedding backfill** — An application-owned batch workflow that generates
+missing embeddings outside database transactions and persists them through
+ordinary DBzz mutations. Existing tables normally add a nullable vector column,
+backfill it in bounded batches, and optionally tighten nullability afterward;
+migrations never call an embedding model.
+
+**Distance metric** — A rule that assigns a distance to two vectors of equal
+dimensionality for ranking. Every DBzz metric is oriented so a lower distance
+means a nearer match: cosine is one minus cosine similarity, L2 is Euclidean
+distance, and dot is the negative dot product.
+_Avoid_: Similarity score
+
+**Top-k bound** — A positive maximum number of nearest matches a similarity
+search may return. An unbounded similarity search is invalid, but DBzz imposes
+no vector-specific hard maximum: CPU, temporary memory, decoded rows, and
+transport cost grow with the caller's chosen bound.
+
+**Similarity match** — A schema row selected by a similarity search together
+with its exact distance from the query vector.
+
+**Similarity-eligible vector** — A stored vector for which the selected metric
+is defined. Null vectors are ineligible for every similarity search. A zero
+vector remains valid stored data and is eligible for L2 and dot searches, but
+is ineligible for cosine search. A cosine search rejects a zero query vector
+rather than inventing a distance.
+
+**Similarity dependency** — The reactive read dependency of a similarity
+search. It covers the predicate-eligible candidate population and relevant
+vector-column state, not only the current top-k rows, because a write to an
+unreturned row can change the result. Ordinary predicate indexes narrow the
+dependency when possible without weakening invalidation correctness.
+
+**Exact similarity search** — The true nearest rows under a chosen distance
+metric among all rows satisfying a database predicate. Predicate filtering
+occurs before distance calculation, ranking, and limiting. Ordinary indexes may
+narrow the eligible population, but distance work remains linear in the number
+of eligible vectors, retained ranking state is bounded by the caller's top-k,
+and results remain exact. Results order by distance ascending and then by
+primary key ascending, making equal-distance matches deterministic; `.first()`
+is equivalent to the first element of `.take(1)` or null.
+
 ## Schema migrations
 
 **Reconcile** — The startup pass that compares the application's declared
