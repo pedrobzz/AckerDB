@@ -4,7 +4,7 @@
     "types": ["bun"]
   },
   "include": [
-    "schema.ts",
+    "app.ts",
     "credential-verifier.ts",
     "functions/**/*.ts",
     "lib/**/*.ts"

@@ -1,7 +1,7 @@
 {
   "number": 1,
   "name": "add_category_slug",
-  "fingerprint": "5cacea4bdc3fa960ab45e1a4cedacaab6b7e25420868d75ac17f626b2db4da89",
+  "fingerprint": "2ea5ca2783878dd0331846136e419a21a7d845f3dfba6491282f56f65c5381b6",
   "pre": {
     "version": 1,
     "tables": {

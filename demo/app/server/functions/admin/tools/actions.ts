@@ -6,7 +6,7 @@ import {
   isFinal,
   notFound,
 } from "../../../lib/domain.ts";
-import { itemStatus } from "../../../schema.ts";
+import { itemStatus } from "../../../app.ts";
 
 /**
  * The staff action tools, gated behind the `operate` scope. Each one reuses the

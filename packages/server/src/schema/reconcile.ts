@@ -9,7 +9,7 @@
  * shape-safe change applies automatically and identically on an empty dev table
  * and a full prod one; a shape-unsafe change is refused on both, with the
  * presume-data question and no row-count probing — even on a provably empty
- * table. A migration file is the answer to a refusal; `dbz reset` is the dev
+ * table. A migration file is the answer to a refusal; `dbzz reset` is the dev
  * escape hatch. Unique indexes and tightened validators are attempted under the
  * writer lock and refused cleanly with exact counts if they cannot hold.
  *
@@ -19,8 +19,8 @@
  * its own module and folds its trailing safe drift back through that same planner
  * core, so no cycle crosses between reconcile and the migration engine.
  */
-import type { Engine } from "../engine.ts";
-import { snapshotOf } from "../snapshot.ts";
+import type { Engine } from "../database/engine.ts";
+import { snapshotOf } from "./snapshot.ts";
 import { applyChain } from "./migrations/chain.ts";
 import type { MigrationStep } from "./migrations/types.ts";
 import { planAndReconcile } from "./planner.ts";

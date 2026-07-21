@@ -11,8 +11,8 @@
  * snapshot against the target without ever opening a database.
  */
 import type { Database } from "bun:sqlite";
-import type { Descriptor } from "../../v.ts";
-import type { SchemaSnapshot, TableSnapshot } from "../../snapshot.ts";
+import type { Descriptor } from "../../validation/v.ts";
+import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
 import { namedOf } from "../diff.ts";
 import { MigrationError, type Migration } from "./types.ts";
 
@@ -157,7 +157,7 @@ function validateRenames(writer: Database, current: SchemaSnapshot, target: Sche
   const currentVariants = variantSets(current);
   const targetVariants = variantSets(target);
   const taggedVariants = new Map<string, Set<string>>();
-  for (const row of writer.query("SELECT type, variant FROM _dbz_tags").all() as { type: string; variant: string }[]) {
+  for (const row of writer.query("SELECT type, variant FROM _dbzz_tags").all() as { type: string; variant: string }[]) {
     (taggedVariants.get(row.type) ?? taggedVariants.set(row.type, new Set()).get(row.type)!).add(row.variant);
   }
   for (const [type, vmap] of Object.entries(raw.variants)) {

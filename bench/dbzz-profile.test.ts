@@ -13,7 +13,7 @@ const marker = (
   profile: DbzzBenchmarkProfile = "enabled",
   durability: DbzzDurabilityMode = "balanced",
 ) =>
-  `booting\n@@dbzz-startup ${JSON.stringify(expectedDbzzStartupMode(profile, durability))}\n[dbz] ready on http://127.0.0.1:3311\n`;
+  `booting\n@@dbzz-startup ${JSON.stringify(expectedDbzzStartupMode(profile, durability))}\n[dbzz] ready on http://127.0.0.1:3311\n`;
 
 describe("dbzz benchmark startup confirmation", () => {
   test("parses the exact server-confirmed marker before readiness", () => {
@@ -37,19 +37,19 @@ describe("dbzz benchmark startup confirmation", () => {
   });
 
   test("rejects missing, duplicate, late, malformed, and expanded markers", () => {
-    expect(() => parseDbzzStartup("[dbz] ready on http://127.0.0.1:3311\n")).toThrow("exactly one");
+    expect(() => parseDbzzStartup("[dbzz] ready on http://127.0.0.1:3311\n")).toThrow("exactly one");
     expect(() =>
       parseDbzzStartup(
         `${marker()}@@dbzz-startup ${JSON.stringify(expectedDbzzStartupMode("enabled", "balanced"))}\n`,
       )
     ).toThrow("exactly one");
     expect(() =>
-      parseDbzzStartup(`[dbz] ready on http://127.0.0.1:3311\n@@dbzz-startup ${JSON.stringify(expectedDbzzStartupMode("enabled", "balanced"))}\n`),
+      parseDbzzStartup(`[dbzz] ready on http://127.0.0.1:3311\n@@dbzz-startup ${JSON.stringify(expectedDbzzStartupMode("enabled", "balanced"))}\n`),
     ).toThrow("must precede");
-    expect(() => parseDbzzStartup("@@dbzz-startup nope\n[dbz] ready on x\n")).toThrow("valid JSON");
+    expect(() => parseDbzzStartup("@@dbzz-startup nope\n[dbzz] ready on x\n")).toThrow("valid JSON");
     const expanded = { ...expectedDbzzStartupMode("enabled", "balanced"), source: "env" };
     expect(() =>
-      parseDbzzStartup(`@@dbzz-startup ${JSON.stringify(expanded)}\n[dbz] ready on x\n`),
+      parseDbzzStartup(`@@dbzz-startup ${JSON.stringify(expanded)}\n[dbzz] ready on x\n`),
     ).toThrow("must contain exactly");
   });
 

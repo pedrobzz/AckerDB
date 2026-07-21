@@ -21,7 +21,7 @@ import type {
   CredentialVerifier,
   PrincipalInvalidation,
   VerifiedUserCredential,
-} from "../../server/src/auth.ts";
+} from "../../server/src/auth/credentials.ts";
 import { StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {

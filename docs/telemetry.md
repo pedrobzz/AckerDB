@@ -14,8 +14,8 @@ instrumented.
 The CLI accepts an exact `DBZZ_TELEMETRY` value:
 
 ```sh
-DBZZ_TELEMETRY=enabled dbz start ./apps/server   # default
-DBZZ_TELEMETRY=disabled dbz start ./apps/server
+DBZZ_TELEMETRY=enabled dbzz start ./apps/server   # default
+DBZZ_TELEMETRY=disabled dbzz start ./apps/server
 ```
 
 Programmatic `Runtime` construction accepts `telemetry: false`, an existing
@@ -322,7 +322,7 @@ When telemetry is enabled, current automatic span coverage is:
 | Ordered realtime | `match`, `evaluation`, `changed`, `unchanged`, `queue`, `fanout`, and logical subscriber `delivery`, with dependency/result/byte counts when known. |
 | WebSocket and SSE transport | `encoding`, `queue`, and `delivery` spans with bytes, duration, outcome, and `outbound`/`sse` resource. WebSocket `delivery` observes release from Bun's buffered-byte ownership (including delayed `onDrain`). SSE retains the frame's captured observer until a valid cumulative receiver acknowledgement releases it, or reports cancellation/terminal timeout as the delivery outcome. Terminal failures also emit a `failure` event. Capabilities, proofs, and chunk values are never recorded. |
 | HTTP procedure response | `procedure` `encoding` followed by `delivery`, both with resource `operation`, the original trace/request/function correlation, and exact encoded response bytes. `delivery` ends when the responder returns the constructed Bun `Response`; it is an encoded-response handoff, not proof of socket, kernel, or network completion. |
-| CLI backup and restore | Standalone `dbz backup` and `dbz restore` commands emit one `backup`/`restore` `storage` span with duration, sanitized outcome, artifact byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `DBZZ_TELEMETRY=disabled` removes it exactly. |
+| CLI backup and restore | Standalone `dbzz backup` and `dbzz restore` commands emit one `backup`/`restore` `storage` span with duration, sanitized outcome, artifact byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `DBZZ_TELEMETRY=disabled` removes it exactly. |
 | Telemetry export | `exporter_degraded` events at the `export` stage; exporter attempts and durations are also metrics/status fields. |
 
 ### Credential verification correlation

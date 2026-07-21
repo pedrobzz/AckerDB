@@ -210,7 +210,7 @@ describe("dbzz benchmark telemetry report", () => {
       operation: "lifecycle",
     });
     collector.writeStdout(encoder.encode(startup.slice(0, 23)));
-    collector.writeStdout(encoder.encode(`${startup.slice(23)}[dbz] ready on http://127.0.0.1:3311\n`));
+    collector.writeStdout(encoder.encode(`${startup.slice(23)}[dbzz] ready on http://127.0.0.1:3311\n`));
     collector.writeStdout(encoder.encode(event.slice(0, 19)));
     collector.writeStdout(encoder.encode(`${event.slice(19)}\n`));
     collector.writeStdout(encoder.encode("x".repeat(PRODUCTION_LIMITS.telemetry.maxBytes + 1)));

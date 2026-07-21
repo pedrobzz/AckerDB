@@ -120,7 +120,7 @@ provider-side revocation, or application-data erasure.
 ## Application-defined credential verifier
 
 An application can make its own `CredentialVerifier` the CLI server's single
-authentication authority by setting a module path in `.zdb.config.json`:
+authentication authority by setting a module path in `.dbzz.config.json`:
 
 ```json
 {
@@ -144,9 +144,9 @@ const verifier = {
 export default verifier;
 ```
 
-`dbz dev` and `dbz start` load that default export through the same Runtime
-pipeline as the built-in OIDC verifier. `dbz codegen` never imports or executes
-the verifier module; during `dbz start`, codegen finishes before application
+`dbzz dev` and `dbzz start` load that default export through the same Runtime
+pipeline as the built-in OIDC verifier. `dbzz codegen` never imports or executes
+the verifier module; during `dbzz start`, codegen finishes before application
 modules and the verifier are loaded.
 
 `oidc` and `credentialVerifier` are mutually exclusive because one Runtime has
@@ -191,7 +191,7 @@ validation and policy too.
 
 ## External OIDC configuration
 
-The CLI reads OIDC configuration from `.zdb.config.json` and passes it to
+The CLI reads OIDC configuration from `.dbzz.config.json` and passes it to
 `createOidcVerifier`. DBZZ is a relying party only: it does not implement login,
 passwords, passkeys, token issuance, or OIDC discovery.
 

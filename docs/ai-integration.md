@@ -34,12 +34,12 @@ workspace transactionally consistent: one snapshot, no torn reads.
 ## Dev database across engine-schema bumps
 
 Pre-1.0, a dbzz upgrade that bumps the storage engine's internal schema
-refuses to open older `.zdb` files (the error names both versions). The dev
+refuses to open older `.dbzz` files (the error names both versions). The dev
 workflow is wipe + reseed; there is no migration story before 1.0 by design.
 
 ## Declare MCP tools at the endpoint
 
-`dbz codegen` emits schema-bound `mcpTool` and `createMcp` builders. A tool
+`dbzz codegen` emits schema-bound `mcpTool` and `createMcp` builders. A tool
 module exports an inert blueprint with no wire name and no endpoint import:
 
 ```ts
@@ -102,7 +102,7 @@ share one contract.
 This is a deliberate pre-1.0 source break. Convert old endpoint `.tool(...)`
 calls into `mcpTool(...)` blueprints, remove each definition's `name`, assemble
 them under `createMcp({ tools: { wire_name: blueprint } })`, and run
-`dbz codegen`. There is no legacy registration shim.
+`dbzz codegen`. There is no legacy registration shim.
 
 ## Exact local AI tools
 

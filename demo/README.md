@@ -117,6 +117,15 @@ Order and item status changes are recorded as events. The Customer App listens o
 
 When a guest orders an item, a schedule is set. If that item sits without a status advance for more than **2 minutes**, the Admin Panel gets a toast reminding staff to pick it up — a small ops nudge powered by dbzz schedules, not a client-side timer.
 
+### Plugin-mounted Cache
+
+The server manifest mounts `@dbzz/cache` with a validated `setupState`
+namespace. The idempotent seed mutation checks that Cache before reading the
+immutable setup marker from SQLite, fills it after a database hit, and writes it
+alongside a newly created marker. The database remains authoritative: clearing
+the Cache changes only the next seed call from a Cache hit to a database read.
+Cache is server-only and is not used by reactive Queries.
+
 ---
 
 ## Scripts
@@ -136,16 +145,16 @@ From `demo/`:
 
 ### Backend setup
 
-The demo consumes the exact published `@dbzz/*@0.2.5` artifacts from the
-local registry at `http://127.0.0.1:4873`. From `demo/`:
+The demo manifests pin the exact `@dbzz/*@0.6.0` artifacts from the local
+registry at `http://127.0.0.1:4874`. From `demo/`:
 
 ```sh
 bun install --frozen-lockfile
 bun run server:start
 ```
 
-The normal `dbz start` path loads `app/server/credential-verifier.ts`, opens
-the durable database under `app/server/.zdb`, and listens on
+The normal `dbzz start` path loads `app/server/credential-verifier.ts`, opens
+the durable database under `app/server/.dbzz`, and listens on
 `http://127.0.0.1:3212`. In another terminal, create the idempotent restaurant
 dataset:
 
@@ -167,7 +176,7 @@ Run the focused backend gate without touching the development server:
 bun run --cwd app/server test
 ```
 
-It starts the real app through the installed `@dbzz/cli@0.2.5` on ephemeral
+It starts the real app through the installed `@dbzz/cli@0.6.0` on ephemeral
 ports and temporary durable databases. The suite covers durable Identity
 across restart, authorization, atomic seating conflicts, price snapshots,
 item/order transitions, payment, owner-isolated events, and the real schedule

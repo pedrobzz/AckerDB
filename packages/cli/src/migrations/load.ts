@@ -28,7 +28,7 @@ import {
   type MigrationStep,
   type SchemaSnapshot,
 } from "@dbzz/server";
-import type { AppConfig } from "../config.ts";
+import type { AppConfig } from "../app/config.ts";
 
 /** The one grammar a migration's name obeys, everywhere it is asked for or parsed. */
 const NAME_GRAMMAR = "[A-Za-z0-9_]+";

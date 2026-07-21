@@ -11,13 +11,13 @@
  * CLI as a table keyed by these same kinds. DDL type and `check` still live here.
  */
 import { decode, encode, WireError } from "@dbzz/core";
-import { ValidationError, type Descriptor } from "../v.ts";
+import { ValidationError, type Descriptor } from "../validation/v.ts";
 import {
   checkArrayConstraints,
   checkBigintConstraints,
   checkNumberConstraints,
   checkStringConstraints,
-} from "../validator-constraints.ts";
+} from "../validation/constraints.ts";
 
 export type SqlType = "TEXT" | "REAL" | "INTEGER" | "BLOB";
 

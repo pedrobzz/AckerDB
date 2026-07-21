@@ -682,10 +682,10 @@ independent failure domain.
 
 The implementation is heavily tested but concentrated in large central files:
 
-- `packages/server/src/runtime.ts`: roughly 2,727 lines;
-- `packages/server/src/telemetry.ts`: roughly 2,395 lines;
+- `packages/server/src/runtime/runtime.ts`: roughly 2,727 lines;
+- `packages/server/src/telemetry/telemetry.ts`: roughly 2,395 lines;
 - `packages/client/src/client.ts`: roughly 1,837 lines; and
-- `packages/server/src/delivery.ts`: roughly 1,722 lines.
+- `packages/server/src/realtime/delivery.ts`: roughly 1,722 lines.
 
 These files contain real state machines and ownership contracts, so splitting
 them purely to reduce file length could make the system harder to reason about.

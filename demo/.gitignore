@@ -2,7 +2,7 @@ node_modules/
 .expo/
 app/mobile/ios/
 app/mobile/android/
-.zdb/
+.dbzz/
 .env
 .output/
 .tanstack/

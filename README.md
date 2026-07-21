@@ -20,24 +20,27 @@ backups are verified by restoring them before they are accepted.
 | --- | --- |
 | `@dbzz/core` | Protocol 2 envelopes, wire encoding, outcomes, cursors, and typed function references. |
 | `@dbzz/server` | Schema DSL, SQLite engine, function runtime, authentication, reactivity, transport, limits, and telemetry. |
+| `@dbzz/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
 | `@dbzz/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, reconnect, and credential refresh. |
 | `@dbzz/client-react` | React and Expo provider/hooks for live queries, mutations, procedures, events, SSE, authentication, and optional AI SDK chat transport. |
-| `@dbzz/cli` | `dbz dev`, `start`, `codegen`, `reset`, `status`, `backup`, and `restore`. |
+| `@dbzz/cli` | `dbzz dev`, `start`, `codegen`, `reset`, `status`, `backup`, and `restore`. |
 
 ## Application shape
 
 ```text
 your-app/
 ├── apps/
-│   ├── server/                 # schema.ts, functions/, .zdb.config.json
+│   ├── server/                 # app.ts, functions/, .dbzz.config.json
 │   └── client/                 # any runtime with WebSocket, fetch, and Web Crypto
 └── packages/
     └── server-codegen/
         └── _generated/{server,api,types}.ts
 ```
 
-- `schema.ts` default-exports `defineSchema(...)`. Persistent tables use
-  `defineTable`; `defineEventTable` declares non-persistent live events.
+- `app.ts` default-exports `defineApp({ schema, plugins })`, the executable
+  assembly point for the root `defineSchema(...)` and explicitly mounted
+  server-side Plugins. Persistent tables use `defineTable`; `defineEventTable`
+  declares non-persistent live events.
 - Functions use the generated `query`, `mutation`, `procedure`, and
   `sseProcedure` constructors. Every function must declare `access` as
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
@@ -76,6 +79,11 @@ client.close();
 - [Validators](docs/validators.md) is the canonical guide to `v`, numeric
   types, constraints, presence semantics, stored-data enforcement, and the
   deliberate pre-1.0 upgrade break.
+- [Plugins](docs/plugins.md) documents private schemas, contracts, flat
+  dependency injection, direct context mounts, execution boundaries,
+  lifecycle, and alpha storage reset/drop behavior.
+- [Cache](docs/cache.md) documents disposable Cache semantics, namespaces,
+  limits, TTL and conditions, and built-in, Redis, Upstash, or custom stores.
 - [Authentication and authorization](docs/authentication.md) documents strict
   bearer handling, immutable principals, external OIDC/JWKS configuration,
   access policies, WebSocket refresh, and bounded credential validity for
@@ -112,15 +120,15 @@ The remaining single-node and product limitations are listed explicitly in
 
 ## Configuration and CLI
 
-All `.zdb.config.json` fields are optional. The path defaults are
-`./schema.ts`, `./functions`, `./_generated`, and `./.zdb`; the default port is
+All `.dbzz.config.json` fields are optional. The path defaults are
+`./app.ts`, `./functions`, `./_generated`, and `./.dbzz`; the default port is
 `3211`. Authentication can select either built-in `oidc` providers or one
 application `credentialVerifier` module path (resolved from the app directory),
 never both. The protected status scope is configured there too. Durability and
 telemetry profiles are exact environment switches:
 
 ```sh
-DBZZ_DURABILITY=production DBZZ_TELEMETRY=enabled dbz start ./apps/server
+DBZZ_DURABILITY=production DBZZ_TELEMETRY=enabled dbzz start ./apps/server
 ```
 
 `production` and `enabled` are the defaults. See the linked contract documents
@@ -132,13 +140,15 @@ termination as described in the
 [authentication trust boundary](docs/authentication.md#trust-boundary).
 
 ```sh
-dbz dev [app-dir]
-dbz start [app-dir]
-dbz codegen [app-dir]
-dbz reset [app-dir]
-dbz status [app-dir]
-dbz backup <artifact> [app-dir]
-dbz restore <artifact> [app-dir]
+dbzz dev [app-dir]
+dbzz start [app-dir]
+dbzz codegen [app-dir]
+dbzz plugin reset <mount> [app-dir]
+dbzz plugin drop <mount> [app-dir]
+dbzz reset [app-dir]
+dbzz status [app-dir]
+dbzz backup <artifact> [app-dir]
+dbzz restore <artifact> [app-dir]
 ```
 
 ## Development and performance
@@ -147,7 +157,7 @@ dbz restore <artifact> [app-dir]
 bun install
 bun run test
 bun run test:mcp:conformance
-bun run test:mcp:package
+bun run test:packages
 # Requires locally installed and authenticated Codex and Claude Code hosts:
 bun run test:mcp:hosts
 bun run typecheck

@@ -50,19 +50,21 @@ Authentication, authorization, token lifecycle, revocation, cancellation,
 and HTTP boundary cases live beside it in the other `mcp-*.test.ts` files.
 They run as part of `bun run test`.
 
-## Packed consumer
+## Packed packages
 
 ```sh
-bun run test:mcp:package
+bun run test:packages
 ```
 
-This gate packs all five lockstep `@dbzz/*` packages and installs the tarballs
+This gate packs all six lockstep `@dbzz/*` packages and installs the tarballs
 in a temporary consumer. It verifies:
 
 - every installed DBZZ package has the same exact version and packed internal
   dependencies contain literal versions rather than `workspace:` specifiers;
 - `@dbzz/server/mcp` resolves and executes under Bun;
-- packaged `dbz codegen` emits schema-bound `createMcp` and `mcpTool` builders,
+- `@dbzz/cache`, `@dbzz/cache/redis`, and `@dbzz/cache/upstash` resolve and
+  construct without opening external connections;
+- packaged `dbzz codegen` emits schema-bound `createMcp` and `mcpTool` builders,
   and endpoint tool names, inputs, outputs, and scope subsets compile exactly in
   the clean consumer;
 - `@dbzz/server` pins `@modelcontextprotocol/sdk` to `1.29.0`, the consumer
@@ -70,7 +72,7 @@ in a temporary consumer. It verifies:
   or `@ai-sdk/*`.
 
 The temporary consumer uses package-manager overrides only to point
-transitive `@dbzz/*` versions at the five local tarballs because this project
+transitive `@dbzz/*` versions at the six local tarballs because this project
 does not publish them to npm. The packed manifests themselves remain unchanged
 and are asserted after installation.
 

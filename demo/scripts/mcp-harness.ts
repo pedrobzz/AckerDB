@@ -46,7 +46,7 @@ export class McpHarness {
         DBZZ_TELEMETRY: "disabled",
         ...env,
       }),
-      dbDir: join(this.directory, ".zdb"),
+      dbDir: join(this.directory, ".dbzz"),
       port: 0,
     };
   }

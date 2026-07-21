@@ -1,5 +1,12 @@
 // Shared helpers for the local release scripts (bump, merge-guard, publish-local).
-export const PACKAGES = ["core", "server", "client", "client-react", "cli"] as const;
+export const PACKAGES = [
+  "core",
+  "server",
+  "cache",
+  "client",
+  "client-react",
+  "cli",
+] as const;
 
 type BunLock = {
   readonly workspaces: Record<string, Record<string, unknown>>;

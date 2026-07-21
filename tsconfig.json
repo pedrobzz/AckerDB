@@ -15,7 +15,10 @@
     "paths": {
       "@dbzz/core": ["./packages/core/src/index.ts"],
       "@dbzz/server": ["./packages/server/src/index.ts"],
-      "@dbzz/server/mcp": ["./packages/server/src/mcp.ts"],
+      "@dbzz/server/mcp": ["./packages/server/src/mcp/index.ts"],
+      "@dbzz/cache": ["./packages/cache/src/index.ts"],
+      "@dbzz/cache/redis": ["./packages/cache/src/adapters/redis.ts"],
+      "@dbzz/cache/upstash": ["./packages/cache/src/adapters/upstash.ts"],
       "@dbzz/client": ["./packages/client/src/index.ts"],
       "@dbzz/client-react": ["./packages/client-react/src/index.ts"]
     }

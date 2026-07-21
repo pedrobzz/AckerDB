@@ -16,7 +16,7 @@ dist
 .DS_Store
 
 # dbzz local databases
-.zdb/
+.dbzz/
 
 # local registry (verdaccio): published tarballs + user file
 registry/storage/
