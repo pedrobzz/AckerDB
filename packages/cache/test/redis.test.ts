@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
-import { describe, expect, test } from "bun:test";
+import { RedisClient } from "bun";
+import { describe, expect, spyOn, test } from "bun:test";
 import type { PluginCleanup, PluginExportTree } from "@dbzz/server";
 import { CacheStoreError, cachePlugin } from "../src/index.ts";
 import { redisCacheStore } from "../src/redis.ts";
@@ -45,9 +46,19 @@ function bulk(value: string): string {
   return `$${Buffer.byteLength(value, "utf8")}\r\n${value}\r\n`;
 }
 
-function fakeRedis({ failGets = false }: { readonly failGets?: boolean } = {}) {
+function fakeRedis({
+  failGets = false,
+  stallHello = false,
+}: {
+  readonly failGets?: boolean;
+  readonly stallHello?: boolean;
+} = {}) {
   const commands: string[][] = [];
   const rows = new Map<string, string>();
+  let receiveHello!: () => void;
+  const helloReceived = new Promise<void>((resolve) => {
+    receiveHello = resolve;
+  });
   let connections = 0;
   const server = Bun.listen<{ pending: Buffer }>({
     hostname: "127.0.0.1",
@@ -67,7 +78,8 @@ function fakeRedis({ failGets = false }: { readonly failGets?: boolean } = {}) {
           const [rawName, key, payload, ...options] = parsed.args;
           const name = rawName?.toUpperCase();
           if (name === "HELLO") {
-            socket.write("+OK\r\n");
+            receiveHello();
+            if (!stallHello) socket.write("+OK\r\n");
           } else if (name === "GET") {
             if (failGets) {
               socket.write("-ERR deterministic GET failure\r\n");
@@ -94,6 +106,7 @@ function fakeRedis({ failGets = false }: { readonly failGets?: boolean } = {}) {
   });
   return {
     commands,
+    helloReceived,
     get connections() {
       return connections;
     },
@@ -176,6 +189,54 @@ describe("redisCacheStore", () => {
       await expect(store.open({ abortSignal: abort.signal })).rejects.toBe(reason);
       expect(redis.connections).toBe(0);
     } finally {
+      redis.close();
+    }
+  });
+
+  test("closes exactly once when lifecycle cancellation interrupts Redis connect", async () => {
+    const redis = fakeRedis({ stallHello: true });
+    const close = spyOn(RedisClient.prototype, "close");
+    try {
+      const store = redisCacheStore({ url: redis.url, keyPrefix: "test" });
+      const abort = new AbortController();
+      const opening = Promise.resolve(store.open({ abortSignal: abort.signal }));
+      await redis.helloReceived;
+
+      abort.abort(new Error("startup cancelled"));
+
+      await expect(opening).rejects.toBeInstanceOf(Error);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore();
+      redis.close();
+    }
+  });
+
+  test("keeps the connect failure first when cancellation cleanup also fails", async () => {
+    const redis = fakeRedis({ stallHello: true });
+    const closeClient = RedisClient.prototype.close;
+    const cleanupFailure = new Error("close failed");
+    const close = spyOn(RedisClient.prototype, "close").mockImplementation(function (
+      this: RedisClient,
+    ) {
+      closeClient.call(this);
+      throw cleanupFailure;
+    });
+    try {
+      const store = redisCacheStore({ url: redis.url, keyPrefix: "test" });
+      const abort = new AbortController();
+      const opening = Promise.resolve(store.open({ abortSignal: abort.signal }));
+      await redis.helloReceived;
+
+      abort.abort(new Error("startup cancelled"));
+
+      const failure = await opening.catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect((failure as AggregateError).errors[0]).not.toBe(cleanupFailure);
+      expect((failure as AggregateError).errors[1]).toBe(cleanupFailure);
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore();
       redis.close();
     }
   });

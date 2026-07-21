@@ -4,21 +4,27 @@ import {
   existsSync,
   fsyncSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   openSync,
+  readlinkSync,
   readdirSync,
+  realpathSync,
   rmSync,
   statSync,
 } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { Database } from "bun:sqlite";
+import {
+  databasePublicationArtifactPaths,
+  SQLITE_SIDECAR_SUFFIXES,
+} from "./storage-artifacts.ts";
 
 /** ASCII `DBZZ`, persisted in SQLite's application_id header field. */
 const DBZZ_COORDINATION_APPLICATION_ID = 0x44425a5a;
 const COORDINATION_SUFFIX = ".dbzz-coordination";
 const COORDINATION_STAGE_MARKER = ".dbzz-bootstrap-";
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-export const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
 
 function sqliteCode(error: unknown): string | undefined {
   if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
@@ -41,6 +47,30 @@ function errno(error: unknown): string | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function resolveCanonicalDatabasePath(path: string, seenSymlinks: Set<string>): string {
+  const absolutePath = resolve(path);
+  let status;
+  try {
+    status = lstatSync(absolutePath);
+  } catch (error) {
+    if (errno(error) !== "ENOENT") throw error;
+    return join(realpathSync(dirname(absolutePath)), basename(absolutePath));
+  }
+  if (!status.isSymbolicLink()) return realpathSync(absolutePath);
+  if (seenSymlinks.has(absolutePath)) {
+    throw new Error(`database path contains a symbolic-link cycle: ${path}`);
+  }
+  seenSymlinks.add(absolutePath);
+  return resolveCanonicalDatabasePath(
+    resolve(dirname(absolutePath), readlinkSync(absolutePath)),
+    seenSymlinks,
+  );
+}
+
+export function canonicalizeDatabasePath(path: string): string {
+  return resolveCanonicalDatabasePath(path, new Set());
 }
 
 function combinedFailure(primary: unknown, cleanup: readonly unknown[], message: string): unknown {
@@ -229,6 +259,10 @@ function publishMissingCoordinationDatabase(coordinationPath: string): void {
  */
 function convergeCoordinationPublication(path: string, coordinationPath: string): void {
   const canonical = statSync(coordinationPath, { bigint: true });
+  if (canonical.nlink === 1n) {
+    fsyncPath(dirname(coordinationPath));
+    return;
+  }
   for (const candidatePath of coordinationStagingArtifactPaths(path)) {
     try {
       const candidate = statSync(candidatePath, { bigint: true });
@@ -246,6 +280,44 @@ function convergeCoordinationPublication(path: string, coordinationPath: string)
     );
   }
   fsyncPath(dirname(coordinationPath));
+}
+
+/**
+ * Remove only same-inode DBZZ main-file publication stages. The coordination
+ * transaction is already retained, and no data SQLite connection is open.
+ */
+function convergeDatabasePublication(path: string): void {
+  let canonical;
+  try {
+    canonical = statSync(path, { bigint: true });
+  } catch (error) {
+    if (errno(error) === "ENOENT") return;
+    throw error;
+  }
+  if (canonical.nlink === 1n) return;
+  let removed = false;
+  for (const candidatePath of databasePublicationArtifactPaths(path)) {
+    try {
+      const candidate = lstatSync(candidatePath, { bigint: true });
+      if (candidate.isSymbolicLink()) continue;
+      if (candidate.dev !== canonical.dev || candidate.ino !== canonical.ino) continue;
+      rmSync(candidatePath);
+      removed = true;
+    } catch (error) {
+      if (errno(error) === "ENOENT") continue;
+      throw error;
+    }
+  }
+  if (removed) fsyncPath(dirname(path));
+  const converged = statSync(path, { bigint: true });
+  if (converged.dev !== canonical.dev || converged.ino !== canonical.ino) {
+    throw new Error(`database main file changed during ownership acquisition: ${path}`);
+  }
+  if (converged.nlink !== 1n) {
+    throw new Error(
+      `database main file has ${converged.nlink} unproven hard links; expected exactly one: ${path}`,
+    );
+  }
 }
 
 export class DatabaseAlreadyOpenError extends Error {
@@ -293,12 +365,15 @@ export class DatabaseOwnership {
   }
 
   static acquire(path: string): DatabaseOwnership {
-    const coordinationPath = coordinationDatabasePath(path);
+    const requestedPath = resolve(path);
+    mkdirSync(dirname(requestedPath), { recursive: true });
+    const canonicalPath = canonicalizeDatabasePath(requestedPath);
+    const coordinationPath = coordinationDatabasePath(canonicalPath);
     mkdirSync(dirname(coordinationPath), { recursive: true });
 
     try {
       publishMissingCoordinationDatabase(coordinationPath);
-      convergeCoordinationPublication(path, coordinationPath);
+      convergeCoordinationPublication(canonicalPath, coordinationPath);
     } catch (error) {
       throw new Error(
         `database coordination publication failed: ${coordinationPath}: ${errorMessage(error)}`,
@@ -327,7 +402,7 @@ export class DatabaseOwnership {
         transactionOpen = true;
       } catch (error) {
         if (isBusy(error)) {
-          throw new DatabaseAlreadyOpenError(path, { cause: error });
+          throw new DatabaseAlreadyOpenError(canonicalPath, { cause: error });
         }
         throw error;
       }
@@ -348,8 +423,9 @@ export class DatabaseOwnership {
       if (schema.count !== 0n) {
         throw new Error(`database coordination file has unexpected schema objects: ${coordinationPath}`);
       }
+      convergeDatabasePublication(canonicalPath);
 
-      return new DatabaseOwnership(path, coordinationPath, database);
+      return new DatabaseOwnership(canonicalPath, coordinationPath, database);
     } catch (error) {
       const cleanup: unknown[] = [];
       if (transactionOpen) {
@@ -364,7 +440,11 @@ export class DatabaseOwnership {
       } catch (closeError) {
         cleanup.push(closeError);
       }
-      throw combinedFailure(error, cleanup, `database ownership acquisition and cleanup both failed: ${path}`);
+      throw combinedFailure(
+        error,
+        cleanup,
+        `database ownership acquisition and cleanup both failed: ${canonicalPath}`,
+      );
     }
   }
 

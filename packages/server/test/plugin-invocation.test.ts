@@ -140,7 +140,9 @@ function rootLogs(harness: Harness): string[] {
     .all() as { label: string }[]).map((row) => row.label);
 }
 
-async function makeHarness(): Promise<Harness> {
+async function makeHarness(
+  storeLifecycle?: () => () => unknown | Promise<unknown>,
+): Promise<Harness> {
   const rootSchema = defineSchema({
     logs: defineTable({ id: v.primaryKey(), label: v.string() }),
   });
@@ -219,6 +221,7 @@ async function makeHarness(): Promise<Harness> {
           hasAuth: "auth" in ctx,
         })),
       },
+      ...(storeLifecycle === undefined ? {} : { lifecycle: storeLifecycle }),
     }),
   })();
 
@@ -605,5 +608,39 @@ describe("Plugin invocation boundaries", () => {
     expect(harness.plugins.state).toBe("stopped");
     await harness.runtime.drain();
     expect(harness.plugins.state).toBe("stopped");
+  });
+
+  test("Runtime drain preserves a core failure and still reports Plugin cleanup failure", async () => {
+    const coreError = new Error("reader drain failed");
+    const cleanupError = new Error("Plugin cleanup failed");
+    let cleanups = 0;
+    const harness = await makeHarness(() => () => {
+      cleanups++;
+      throw cleanupError;
+    });
+    let settleCore!: () => void;
+    const coreGate = new Promise<void>((resolve) => {
+      settleCore = resolve;
+    });
+    const internals = harness.runtime as unknown as {
+      reader: { drain: () => Promise<void> };
+      coordinator: { drain: () => Promise<void> };
+    };
+    internals.reader.drain = () => Promise.reject(coreError);
+    internals.coordinator.drain = () => coreGate;
+
+    const draining = harness.runtime.drain();
+    await Promise.resolve();
+    expect(cleanups).toBe(0);
+    settleCore();
+
+    const failure = await draining.catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([coreError, cleanupError]);
+    expect(cleanups).toBe(1);
+    expect(harness.plugins.state).toBe("failed");
+    expect(await harness.runtime.drain().catch((error: unknown) => error)).toBe(failure);
+    expect(cleanups).toBe(1);
   });
 });

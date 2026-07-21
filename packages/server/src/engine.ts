@@ -34,6 +34,7 @@ import {
   fstatSync,
   fsyncSync,
   linkSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   openSync,
@@ -73,12 +74,13 @@ import {
 import { isValidationError, ValidationError } from "./validation-error.ts";
 import {
   DatabaseOwnership,
-  SQLITE_SIDECAR_SUFFIXES,
+  canonicalizeDatabasePath,
   coordinationDatabaseEntries,
 } from "./storage-ownership.ts";
 import {
   initializationArtifactPaths,
   restoreArtifactPaths,
+  SQLITE_SIDECAR_SUFFIXES,
 } from "./storage-artifacts.ts";
 
 export { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
@@ -1054,7 +1056,6 @@ export class Engine {
     options: EngineOptions = {},
   ) {
     this.schema = schema;
-    this.path = path;
     this.durability = options.durability ?? "production";
     const busyTimeoutMs = positiveInt(options.busyTimeoutMs ?? 5_000, "busyTimeoutMs");
     this.busyTimeoutMs = busyTimeoutMs;
@@ -1063,33 +1064,39 @@ export class Engine {
       ? null
       : borrowedOwnership ?? DatabaseOwnership.acquire(path);
     this.releasesDatabaseOwnership = borrowedOwnership === undefined;
-    const sqlitePath = path === ":memory:"
+    const databasePath = path === ":memory:"
+      ? path
+      : borrowedOwnership === undefined
+        ? this.databaseOwnership!.path
+        : canonicalizeDatabasePath(path);
+    this.path = databasePath;
+    const sqlitePath = databasePath === ":memory:"
       ? `file:dbzz-${randomUUID()}?mode=memory&cache=shared`
-      : path;
+      : databasePath;
     this.sqlitePath = sqlitePath;
     let writer: Database | null = null;
     let reader: Database | null = null;
     let mutationReplay: MutationReplaySnapshot | null = null;
     try {
-      if (path !== ":memory:") {
-        const restoreArtifacts = restoreArtifactPaths(path);
-        if (!existsSync(path) && restoreArtifacts.length > 0) {
+      if (databasePath !== ":memory:") {
+        const restoreArtifacts = restoreArtifactPaths(databasePath);
+        if (!existsSync(databasePath) && restoreArtifacts.length > 0) {
           throw new Error(
-            `database initialization refused because an interrupted restore exists for ${path}; rerun dbzz restore to recover or clear its exact staging files`,
+            `database initialization refused because an interrupted restore exists for ${databasePath}; rerun dbzz restore to recover or clear its exact staging files`,
           );
         }
-        if (existsSync(path)) removeRestoreArtifacts(path);
-        removeStaleInitializationArtifacts(path);
+        if (existsSync(databasePath)) removeRestoreArtifacts(databasePath);
+        removeStaleInitializationArtifacts(databasePath);
       }
-      const bootstrap = path === ":memory:" || publishMissingDatabase(path);
-      if (path !== ":memory:" && !bootstrap) {
+      const bootstrap = databasePath === ":memory:" || publishMissingDatabase(databasePath);
+      if (databasePath !== ":memory:" && !bootstrap) {
         mutationReplay = this.validateExistingStorage(
-          path,
+          databasePath,
           busyTimeoutMs,
           options.integrityCheck ?? "quick",
         );
       }
-      writer = new Database(sqlitePath, { create: path === ":memory:", safeIntegers: true });
+      writer = new Database(sqlitePath, { create: databasePath === ":memory:", safeIntegers: true });
       writer.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
       writer.exec("PRAGMA foreign_keys = ON");
       this.writer = writer;
@@ -1103,12 +1110,12 @@ export class Engine {
       this.plans = this.rootScope.plans;
       writer.exec("PRAGMA journal_mode = WAL");
       writer.exec(`PRAGMA synchronous = ${this.durability === "production" ? "FULL" : "NORMAL"}`);
-      if (path === ":memory:") {
+      if (databasePath === ":memory:") {
         reader = new Database(sqlitePath, { create: true, safeIntegers: true });
         reader.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
         reader.exec("PRAGMA foreign_keys = ON");
       } else {
-        reader = new Database(path, { readonly: true, safeIntegers: true });
+        reader = new Database(databasePath, { readonly: true, safeIntegers: true });
         reader.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
         reader.exec("PRAGMA foreign_keys = ON");
       }
@@ -1144,7 +1151,7 @@ export class Engine {
       }
       throw cleanup.length === 0
         ? failure
-        : new AggregateError([failure, ...cleanup], `database open and cleanup both failed: ${path}`);
+        : new AggregateError([failure, ...cleanup], `database open and cleanup both failed: ${databasePath}`);
     }
   }
 
@@ -1995,21 +2002,31 @@ export class DatabaseRestoreTarget {
 
   static acquire(path: string): DatabaseRestoreTarget {
     if (path === ":memory:") throw new TypeError("restore requires a file-backed database target");
+    try {
+      if (lstatSync(path).isSymbolicLink()) {
+        throw new TypeError(`restore target must not be a symbolic link: ${path}`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
     const directory = dirname(path);
     mkdirSync(directory, { recursive: true });
     const ownership = DatabaseOwnership.acquire(path);
+    const database = ownership.path;
     try {
-      const restoreArtifacts = new Set(restoreArtifactPaths(path).map((artifact) => basename(artifact)));
-      assertRestoreTargetFresh(path, restoreArtifacts);
-      removeRestoreArtifacts(path);
-      return new DatabaseRestoreTarget(path, ownership);
+      const restoreArtifacts = new Set(
+        restoreArtifactPaths(database).map((artifact) => basename(artifact)),
+      );
+      assertRestoreTargetFresh(database, restoreArtifacts);
+      removeRestoreArtifacts(database);
+      return new DatabaseRestoreTarget(database, ownership);
     } catch (error) {
       try {
         ownership.release();
       } catch (releaseError) {
         throw new AggregateError(
           [error, releaseError],
-          `restore target acquisition and ownership cleanup both failed: ${path}`,
+          `restore target acquisition and ownership cleanup both failed: ${database}`,
         );
       }
       throw error;

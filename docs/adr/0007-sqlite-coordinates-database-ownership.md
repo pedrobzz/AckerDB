@@ -8,6 +8,15 @@ restore Engine borrows that same ownership connection. The canonical
 coordination database is never deleted, renamed, reaped, or treated as
 application data.
 
+Ownership first resolves one absolute canonical data pathname. Existing final
+symbolic links resolve to their target, dangling final links resolve to their
+missing target when its parent exists, and symbolic-link parents resolve before
+the filename is appended. The Engine uses the returned path for the main file,
+SQLite sidecars, initialization and restore artifacts, reporting, and reset;
+the spelling supplied by the caller is never a second storage path. A fresh
+restore target may have symbolic-link parents but may not itself be a symbolic
+link, because that entry violates restore's vacant-target invariant.
+
 ## Decision
 
 A missing coordination database is initialized in a unique same-directory
@@ -24,11 +33,23 @@ Only after that convergence does DBZZ open canonical SQLite, set
 empty schema, and journal mode. Only the exact `SQLITE_BUSY`/errno 5 pair means
 already open; there is no retry, timeout, polling, or owner record.
 
-A process killed before publication leaves a different-inode, single-link
-stage. DBZZ preserves it because pathname shape cannot prove ownership. A
-process killed after publication may leave a same-inode, two-link alias. The
-next acquisition removes that proven alias before opening the canonical inode.
-Once canonical SQLite is open, DBZZ performs no publication-alias cleanup.
+While that transaction is retained, and before any data SQLite connection is
+opened, DBZZ checks the canonical data inode. It removes only exact UUIDv4
+`dbzz-init` or `dbzz-restore` main-file stages whose bigint `(dev, ino)` match
+the canonical file, then syncs the parent directory. These are the hard-link
+publication aliases DBZZ can prove it owns. The canonical data file must then
+have exactly one hard link. Any remaining hard link is unproven and fails
+closed without deleting either pathname.
+
+For coordination publication, a process killed before publication leaves a
+different-inode, single-link stage. DBZZ preserves it because pathname shape
+cannot prove ownership. A process killed after coordination publication may
+leave a same-inode, two-link alias; the next acquisition removes that proven
+alias before opening the coordination inode. For data publication, same-inode
+aliases are removed under the retained coordination transaction, while
+different-inode init and restore stages continue through their existing exact
+recovery rules after ownership. Once the corresponding SQLite file is open,
+DBZZ performs no publication-alias cleanup.
 
 ## Why
 
@@ -58,12 +79,22 @@ after canonical SQLite connections were open produced `SQLITE_IOERR_VNODE` in
 3 of 100 thirty-way runs. Alias convergence therefore happens before canonical
 open, not as later scavenging.
 
+Pathname canonicalization closes the ordinary symbolic-link alias split: real
+and alias contenders derive the same coordination file, and a gated thirty-way
+cross-process race still elects exactly one owner. Hard links have no unique
+pathname to resolve to. Requiring a single data link, with the narrow
+publication-stage exception above, is the only deterministic filesystem rule
+that neither invents an owner registry nor scans and deletes unknown paths.
+
 ## Consequences
 
 The steady cost is one small persistent file, one parent-directory sync per
-acquisition, and one idle SQLite handle per live database. There is no polling
-or background work. Foreign identities, nonempty schemas, corruption,
-non-DELETE journal modes, and unproven extra hard links fail closed.
+acquisition, and one idle SQLite handle per live database. Acquisition also
+resolves the data path and stats its main file; it scans data-stage names only
+when that file actually has multiple links. There is no polling or background
+work. Foreign identities, nonempty schemas, corruption,
+non-DELETE journal modes, and unproven extra hard links fail closed. File-backed
+Engine paths and reset results expose the canonical absolute pathname.
 
 Startup, restore, and reset cannot race because they acquire the same primitive.
 `SIGKILL` releases the retained transaction through the OS. Full reset removes

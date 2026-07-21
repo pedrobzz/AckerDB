@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 import {
   existsSync,
   linkSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -138,6 +141,21 @@ describe("durability and internal state", () => {
     expect(existsSync(coordination)).toBe(true);
   });
 
+  test("uses one canonical data pathname for a symbolic-link database and all SQLite sidecars", () => {
+    const { root, database } = fresh();
+    const initialized = new Engine(schema, database);
+    initialized.close("clean");
+    const alias = join(root, "data-alias.db");
+    symlinkSync(database, alias);
+
+    const engine = new Engine(schema, alias);
+    expect(engine.path).toBe(realpathSync(database));
+    expect(() => new Engine(schema, database)).toThrow(DatabaseAlreadyOpenError);
+    expect(existsSync(`${engine.path}-wal`)).toBe(true);
+    expect(existsSync(`${alias}-wal`)).toBe(false);
+    engine.close("clean");
+  });
+
   test("start, restore, and reset share one ownership lease", () => {
     const { database } = fresh();
     const engine = new Engine(schema, database);
@@ -172,23 +190,50 @@ describe("durability and internal state", () => {
     restore.close();
   });
 
+  test("restore explicitly refuses a symbolic-link target instead of creating a second path", () => {
+    const { root, database } = fresh();
+    const alias = join(root, "data-alias.db");
+    symlinkSync(database, alias);
+
+    expect(() => DatabaseRestoreTarget.acquire(alias)).toThrow(
+      "restore target must not be a symbolic link",
+    );
+  });
+
+  test("restore canonicalizes a symbolic-link parent before deriving its ownership and staging paths", () => {
+    const { root } = fresh();
+    const canonicalDirectory = join(root, "canonical");
+    const aliasDirectory = join(root, "alias");
+    mkdirSync(canonicalDirectory);
+    symlinkSync(canonicalDirectory, aliasDirectory);
+    const target = join(aliasDirectory, "data.db");
+    const canonical = join(realpathSync(canonicalDirectory), "data.db");
+
+    const restore = DatabaseRestoreTarget.acquire(target);
+    expect(restore.path).toBe(canonical);
+    expect(restore.stagingPath.startsWith(`${canonical}.dbzz-restore-`)).toBe(true);
+    restore.assertVacant();
+    restore.close();
+  });
+
   test("reset removes only the canonical family and exact DBZZ staging artifacts", () => {
     const { root, database } = fresh();
     const engine = new Engine(schema, database);
     engine.close("clean");
-    const init = `${database}.dbzz-init-00000000-0000-4000-8000-000000000001`;
-    const restore = `${database}.dbzz-restore-00000000-0000-4000-8000-000000000002`;
-    const lookalike = `${database}.dbzz-restore-not-a-uuid`;
+    const canonical = realpathSync(database);
+    const init = `${canonical}.dbzz-init-00000000-0000-4000-8000-000000000001`;
+    const restore = `${canonical}.dbzz-restore-00000000-0000-4000-8000-000000000002`;
+    const lookalike = `${canonical}.dbzz-restore-not-a-uuid`;
     const unrelated = join(root, "keep-me");
     for (const artifact of [init, `${init}-journal`, restore, `${restore}-shm`, lookalike, unrelated]) {
       writeFileSync(artifact, artifact);
     }
-    writeFileSync(`${database}-wal`, "stale WAL");
+    writeFileSync(`${canonical}-wal`, "stale WAL");
 
     const result = resetDatabase(database);
     expect(result.removed).toEqual(expect.arrayContaining([
-      database,
-      `${database}-wal`,
+      canonical,
+      `${canonical}-wal`,
       init,
       `${init}-journal`,
       restore,
@@ -202,6 +247,26 @@ describe("durability and internal state", () => {
     const repeated = resetDatabase(database);
     expect(repeated.removed).toEqual([]);
     expect(existsSync(coordinationDatabasePath(database))).toBe(true);
+  });
+
+  test("reset through a symbolic link clears and can reinitialize the canonical database", () => {
+    const { root, database } = fresh();
+    const initialized = new Engine(schema, database);
+    initialized.close("clean");
+    const canonical = realpathSync(database);
+    const alias = join(root, "data-alias.db");
+    symlinkSync(database, alias);
+
+    const result = resetDatabase(alias);
+    expect(result.database).toBe(canonical);
+    expect(existsSync(canonical)).toBe(false);
+    expect(lstatSync(alias).isSymbolicLink()).toBe(true);
+    expect(existsSync(coordinationDatabasePath(canonical))).toBe(true);
+
+    const replacement = new Engine(schema, alias);
+    expect(replacement.path).toBe(canonical);
+    replacement.close("clean");
+    expect(existsSync(canonical)).toBe(true);
   });
 
   test("refuses to adopt user or partial internal objects when metadata is absent", () => {

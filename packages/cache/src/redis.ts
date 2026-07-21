@@ -41,16 +41,35 @@ export function redisCacheStore(
         maxRetries: 3,
         enableOfflineQueue: false,
       });
-      const closeWhileConnecting = () => client.close();
-      abortSignal.addEventListener("abort", closeWhileConnecting, { once: true });
+      let closeResult:
+        | { readonly closed: true }
+        | { readonly closed: false; readonly error: unknown }
+        | undefined;
+      const closeClient = () => {
+        if (closeResult !== undefined) return closeResult;
+        try {
+          client.close();
+          closeResult = { closed: true };
+        } catch (error) {
+          closeResult = { closed: false, error };
+        }
+        return closeResult;
+      };
+      abortSignal.addEventListener("abort", closeClient, { once: true });
       try {
         await client.connect();
         abortSignal.throwIfAborted();
       } catch (error) {
-        client.close();
+        const cleanup = closeClient();
+        if (!cleanup.closed) {
+          throw new AggregateError(
+            [error, cleanup.error],
+            "Redis connection and cleanup both failed",
+          );
+        }
         throw error;
       } finally {
-        abortSignal.removeEventListener("abort", closeWhileConnecting);
+        abortSignal.removeEventListener("abort", closeClient);
       }
 
       // RedisClient has no per-command AbortSignal. Requests reject before
@@ -81,7 +100,8 @@ export function redisCacheStore(
           return (await client.del(key)) > 0;
         },
         close() {
-          client.close();
+          const cleanup = closeClient();
+          if (!cleanup.closed) throw cleanup.error;
         },
       };
     },

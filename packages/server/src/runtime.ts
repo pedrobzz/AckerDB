@@ -2019,15 +2019,26 @@ export class Runtime implements RuntimePort {
     if (this.ownsTelemetry) this.telemetry.stop();
     const reactiveDrain = this.reactive.close();
     let deadlineReached = false;
-    const executionShutdown = Promise.all([
-      this.waitForActiveOperations(),
-      this.coordinator.drain(),
-      reactiveDrain,
-      this.reader.drain(),
-      ...sessionDrains,
-    ]).then(() => undefined);
-    const coreShutdown = executionShutdown.then(() =>
-      this.pluginRuntime?.stop(draining));
+    const coreShutdown = (async () => {
+      const settled = await Promise.allSettled([
+        this.waitForActiveOperations(),
+        this.coordinator.drain(),
+        reactiveDrain,
+        this.reader.drain(),
+        ...sessionDrains,
+      ]);
+      const errors = settled.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : []);
+      try {
+        await this.pluginRuntime?.stop(draining);
+      } catch (error) {
+        errors.push(error);
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "Runtime shutdown failed");
+      }
+    })();
     const shutdownWork = coreShutdown.then(() => {
       // A core that outlives the Runtime deadline must not start a detached
       // telemetry tail after drain has already failed.

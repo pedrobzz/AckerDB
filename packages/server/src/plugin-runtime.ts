@@ -79,6 +79,38 @@ interface StartedPlugin {
   readonly cleanup: () => unknown | Promise<unknown>;
 }
 
+interface PlannedOperation {
+  readonly type: "operation";
+  readonly callers: number;
+  readonly instance: AnyPluginInstance;
+  readonly contract: AnyPluginOperationSpec;
+  readonly implementation: AnyPluginOperationImplementation;
+  readonly path: string;
+}
+
+interface PlannedEntry {
+  readonly name: string;
+  readonly node: PlannedOperation | PlannedNamespace;
+}
+
+interface PlannedNamespace {
+  readonly type: "namespace";
+  readonly callers: number;
+  readonly entries: readonly PlannedEntry[];
+}
+
+const EMPTY_PLUGIN_BINDING: Readonly<Record<string, unknown>> = Object.freeze({});
+const CALLER_BIT: Readonly<Record<PluginOperationKind, number>> = Object.freeze({
+  query: 1,
+  mutation: 2,
+  procedure: 4,
+});
+const OPERATION_CALLERS: Readonly<Record<PluginOperationKind, number>> = Object.freeze({
+  query: CALLER_BIT.query | CALLER_BIT.mutation | CALLER_BIT.procedure,
+  mutation: CALLER_BIT.mutation | CALLER_BIT.procedure,
+  procedure: CALLER_BIT.procedure,
+});
+
 function finiteTimestamp(timestamp: number): void {
   if (!Number.isFinite(timestamp)) {
     throw new RangeError("Plugin invocation timestamp must be finite milliseconds");
@@ -111,9 +143,7 @@ function cleanupFailure(errors: readonly unknown[]): unknown | undefined {
 }
 
 function canCall(caller: PluginOperationKind, operation: PluginOperationKind): boolean {
-  if (caller === "query") return operation === "query";
-  if (caller === "mutation") return operation !== "procedure";
-  return true;
+  return (OPERATION_CALLERS[operation] & CALLER_BIT[caller]) !== 0;
 }
 
 function exposedCall(
@@ -141,6 +171,11 @@ export class PluginRuntime {
   private readonly assembly: PluginAssembly;
   private readonly scopes: ReadonlyMap<string, StorageScope>;
   private readonly mountOf = new Map<AnyPluginInstance, string>();
+  private readonly mountPlan: PlannedNamespace | undefined;
+  private readonly dependencyPlans: ReadonlyMap<
+    AnyPluginInstance,
+    PlannedNamespace | undefined
+  >;
   private readonly controller = new AbortController();
   private readonly started: StartedPlugin[] = [];
   private lifecycle: PluginRuntimeState = "created";
@@ -172,6 +207,13 @@ export class PluginRuntime {
       }
     }
     this.scopes = scopes;
+
+    this.mountPlan = this.planMounts();
+    const dependencyPlans = new Map<AnyPluginInstance, PlannedNamespace | undefined>();
+    for (const [mount, instance] of Object.entries(this.assembly.mounts)) {
+      dependencyPlans.set(instance, this.planDependencies(instance, mount));
+    }
+    this.dependencyPlans = dependencyPlans;
   }
 
   get state(): PluginRuntimeState {
@@ -244,19 +286,19 @@ export class PluginRuntime {
   bindQuery(binding: Readonly<PluginQueryBinding>): Readonly<Record<string, unknown>> {
     this.assertReady();
     finiteTimestamp(binding.timestamp);
-    return this.bindMounts("query", { kind: "query", value: binding });
+    return this.bindPlan(this.mountPlan, "query", { kind: "query", value: binding });
   }
 
   bindMutation(binding: Readonly<PluginMutationBinding>): Readonly<Record<string, unknown>> {
     this.assertReady();
     finiteTimestamp(binding.timestamp);
-    return this.bindMounts("mutation", { kind: "mutation", value: binding });
+    return this.bindPlan(this.mountPlan, "mutation", { kind: "mutation", value: binding });
   }
 
   bindProcedure(binding: Readonly<PluginProcedureBinding>): Readonly<Record<string, unknown>> {
     this.assertReady();
     finiteTimestamp(binding.timestamp);
-    return this.bindMounts("procedure", { kind: "procedure", value: binding });
+    return this.bindPlan(this.mountPlan, "procedure", { kind: "procedure", value: binding });
   }
 
   private async startAll(): Promise<void> {
@@ -297,69 +339,68 @@ export class PluginRuntime {
     }
   }
 
-  private bindMounts(
-    caller: PluginOperationKind,
-    binding: InvocationBinding,
-  ): Readonly<Record<string, unknown>> {
-    const capabilities: Record<string, unknown> = {};
+  private planMounts(): PlannedNamespace | undefined {
+    const entries: PlannedEntry[] = [];
     for (const [mount, instance] of Object.entries(this.assembly.mounts)) {
-      const tree = this.bindExportTree(instance, instance.exports, caller, binding, mount);
-      if (tree !== undefined) capabilities[mount] = tree;
+      const tree = this.planExportTree(instance, instance.exports, mount);
+      if (tree !== undefined) entries.push(Object.freeze({ name: mount, node: tree }));
     }
-    return Object.freeze(capabilities);
+    return this.namespacePlan(entries);
   }
 
-  private bindExportTree(
+  private planExportTree(
     instance: AnyPluginInstance,
     exports: PluginExportTree,
-    caller: PluginOperationKind,
-    binding: InvocationBinding,
     path: string,
-  ): Readonly<Record<string, unknown>> | undefined {
-    const capabilities: Record<string, unknown> = {};
+  ): PlannedNamespace | undefined {
+    const entries: PlannedEntry[] = [];
     for (const [name, node] of Object.entries(exports)) {
       const operationPath = `${path}.${name}`;
       if (isPluginOperationImplementation(node)) {
-        if (!canCall(caller, node.spec.kind)) continue;
-        capabilities[name] = this.bindOperation(
-          instance,
-          node.spec,
-          node,
-          binding,
-          operationPath,
-        );
+        entries.push(Object.freeze({
+          name,
+          node: Object.freeze({
+            type: "operation",
+            callers: OPERATION_CALLERS[node.spec.kind],
+            instance,
+            contract: node.spec,
+            implementation: node,
+            path: operationPath,
+          }),
+        }));
         continue;
       }
-      const nested = this.bindExportTree(instance, node, caller, binding, operationPath);
-      if (nested !== undefined) capabilities[name] = nested;
+      const nested = this.planExportTree(instance, node, operationPath);
+      if (nested !== undefined) entries.push(Object.freeze({ name, node: nested }));
     }
-    return Object.keys(capabilities).length === 0 ? undefined : Object.freeze(capabilities);
+    return this.namespacePlan(entries);
   }
 
-  private bindContractTree(
+  private planContractTree(
     provider: AnyPluginInstance,
     contract: PluginContractTree,
     exports: PluginExportTree,
-    caller: PluginOperationKind,
-    binding: InvocationBinding,
     path: string,
-  ): Readonly<Record<string, unknown>> | undefined {
-    const capabilities: Record<string, unknown> = {};
+  ): PlannedNamespace | undefined {
+    const entries: PlannedEntry[] = [];
     for (const [name, requirement] of Object.entries(contract)) {
       const operationPath = `${path}.${name}`;
       const implementation = exports[name];
       if (isPluginOperationSpec(requirement)) {
-        if (!canCall(caller, requirement.kind)) continue;
         if (!isPluginOperationImplementation(implementation)) {
           throw new TypeError(`${operationPath} provider operation is unavailable`);
         }
-        capabilities[name] = this.bindOperation(
-          provider,
-          requirement,
-          implementation,
-          binding,
-          operationPath,
-        );
+        entries.push(Object.freeze({
+          name,
+          node: Object.freeze({
+            type: "operation",
+            callers: OPERATION_CALLERS[requirement.kind],
+            instance: provider,
+            contract: requirement,
+            implementation,
+            path: operationPath,
+          }),
+        }));
         continue;
       }
       if (
@@ -368,17 +409,76 @@ export class PluginRuntime {
       ) {
         throw new TypeError(`${operationPath} provider namespace is unavailable`);
       }
-      const nested = this.bindContractTree(
+      const nested = this.planContractTree(
         provider,
         requirement,
         implementation,
-        caller,
-        binding,
         operationPath,
       );
-      if (nested !== undefined) capabilities[name] = nested;
+      if (nested !== undefined) entries.push(Object.freeze({ name, node: nested }));
     }
-    return Object.keys(capabilities).length === 0 ? undefined : Object.freeze(capabilities);
+    return this.namespacePlan(entries);
+  }
+
+  private planDependencies(
+    instance: AnyPluginInstance,
+    mount: string,
+  ): PlannedNamespace | undefined {
+    const entries: PlannedEntry[] = [];
+    for (const [slot, contract] of Object.entries(
+      instance.dependencies as PluginDependencyContracts,
+    )) {
+      const provider = instance.providers[slot]!;
+      const providerMount = this.mountOf.get(provider);
+      if (providerMount === undefined) {
+        throw new TypeError(`Plugin "${mount}" dependency "${slot}" is not mounted`);
+      }
+      const capability = this.planContractTree(
+        provider,
+        contract,
+        provider.exports,
+        `${mount}.${slot}`,
+      );
+      if (capability !== undefined) {
+        entries.push(Object.freeze({ name: slot, node: capability }));
+      }
+    }
+    return this.namespacePlan(entries);
+  }
+
+  private namespacePlan(entries: PlannedEntry[]): PlannedNamespace | undefined {
+    return entries.length === 0
+      ? undefined
+      : Object.freeze({
+          type: "namespace",
+          callers: entries.reduce((callers, entry) => callers | entry.node.callers, 0),
+          entries: Object.freeze(entries),
+        });
+  }
+
+  private bindPlan(
+    plan: PlannedNamespace | undefined,
+    caller: PluginOperationKind,
+    binding: InvocationBinding,
+  ): Readonly<Record<string, unknown>> {
+    const callerBit = CALLER_BIT[caller];
+    if (plan === undefined || (plan.callers & callerBit) === 0) {
+      return EMPTY_PLUGIN_BINDING;
+    }
+    const capabilities: Record<string, unknown> = {};
+    for (const entry of plan.entries) {
+      if ((entry.node.callers & callerBit) === 0) continue;
+      capabilities[entry.name] = entry.node.type === "operation"
+        ? this.bindOperation(
+          entry.node.instance,
+          entry.node.contract,
+          entry.node.implementation,
+          binding,
+          entry.node.path,
+        )
+        : this.bindPlan(entry.node, caller, binding);
+    }
+    return Object.freeze(capabilities);
   }
 
   private bindOperation(
@@ -461,7 +561,7 @@ export class PluginRuntime {
     const mount = this.mountOf.get(instance);
     if (mount === undefined) throw new TypeError("Plugin invocation targets an unmounted instance");
     const scope = this.scopes.get(mount)!;
-    const dependencies = this.bindDependencies(instance, kind, binding, mount);
+    const dependencies = this.bindDependencies(instance, kind, binding);
 
     if (kind === "query") {
       if (binding.kind === "procedure") {
@@ -537,27 +637,7 @@ export class PluginRuntime {
     instance: AnyPluginInstance,
     caller: PluginOperationKind,
     binding: InvocationBinding,
-    mount: string,
   ): Readonly<Record<string, unknown>> {
-    const dependencies: Record<string, unknown> = {};
-    for (const [slot, contract] of Object.entries(
-      instance.dependencies as PluginDependencyContracts,
-    )) {
-      const provider = instance.providers[slot]!;
-      const providerMount = this.mountOf.get(provider);
-      if (providerMount === undefined) {
-        throw new TypeError(`Plugin "${mount}" dependency "${slot}" is not mounted`);
-      }
-      const capability = this.bindContractTree(
-        provider,
-        contract,
-        provider.exports,
-        caller,
-        binding,
-        `${mount}.${slot}`,
-      );
-      if (capability !== undefined) dependencies[slot] = capability;
-    }
-    return Object.freeze(dependencies);
+    return this.bindPlan(this.dependencyPlans.get(instance), caller, binding);
   }
 }

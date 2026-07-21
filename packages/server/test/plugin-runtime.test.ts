@@ -212,6 +212,74 @@ describe("PluginRuntime lifecycle", () => {
 });
 
 describe("PluginRuntime invocation core", () => {
+  test("shares an empty query binding and omits caller-incompatible mounts and namespaces", async () => {
+    const cache = definePlugin({
+      id: "@runtime/mutation-only-tree",
+      schema: defineSchema({}),
+      create: ({ mutation }) => ({
+        exports: {
+          profiles: {
+            get: mutation({ args: {}, returns: v.boolean(), handler: () => true }),
+            set: mutation({ args: {}, returns: v.boolean(), handler: () => true }),
+          },
+        },
+      }),
+    })();
+    const mutationOnly = makePluginRuntime(assemblePlugins({ cache }));
+    await mutationOnly.start();
+    const mutationOnlyEngine = engines.at(-1)!;
+    const firstEmpty = mutationOnly.bindQuery({
+      timestamp: 1,
+      connection: mutationOnlyEngine.reader,
+      reads: null,
+    });
+    const secondEmpty = mutationOnly.bindQuery({
+      timestamp: 2,
+      connection: mutationOnlyEngine.reader,
+      reads: null,
+    });
+
+    expect(firstEmpty).toBe(secondEmpty);
+    expect(firstEmpty).toEqual({});
+    expect(Object.isFrozen(firstEmpty)).toBe(true);
+
+    const reader = definePlugin({
+      id: "@runtime/mixed-tree",
+      schema: defineSchema({}),
+      create: ({ query, mutation }) => ({
+        exports: {
+          values: {
+            read: query({
+              args: {},
+              returns: v.string(),
+              handler: (ctx) => ctx.mount,
+            }),
+            write: mutation({ args: {}, returns: v.boolean(), handler: () => true }),
+          },
+          administration: {
+            clear: mutation({ args: {}, returns: v.boolean(), handler: () => true }),
+          },
+        },
+      }),
+    })();
+    const mixed = makePluginRuntime(assemblePlugins({ cache, reader }));
+    await mixed.start();
+    const mixedEngine = engines.at(-1)!;
+    const capabilities = mixed.bindQuery({
+      timestamp: 3,
+      connection: mixedEngine.reader,
+      reads: null,
+    }) as AnyContext;
+
+    expect(Object.keys(capabilities)).toEqual(["reader"]);
+    expect(Object.keys(capabilities.reader)).toEqual(["values"]);
+    expect(Object.keys(capabilities.reader.values)).toEqual(["read"]);
+    expect(await capabilities.reader.values.read({})).toBe("reader");
+
+    await mixed.stop();
+    await mutationOnly.stop();
+  });
+
   test("validates canonical args once and treats result validators as metadata", async () => {
     const string = v.string();
     const boolean = v.boolean();

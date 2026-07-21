@@ -259,6 +259,91 @@ describe("definePlugin", () => {
     );
   });
 
+  test("treats enum declaration order as cosmetic in dependency descriptors", () => {
+    const required = definePluginContract({
+      choose: pluginQuery({
+        args: { status: v.enum("Status", ["é", "a", "Z"]) },
+        returns: v.enum("Decision", ["rejected", "accepted"]),
+      }),
+    });
+    const provider = definePlugin({
+      id: "@acme/reordered-enum-provider",
+      schema: defineSchema({}),
+      create: ({ query }) => ({
+        exports: {
+          choose: query({
+            args: { status: v.enum("Status", ["a", "Z", "é"]) },
+            returns: v.enum("Decision", ["accepted", "rejected"]),
+            handler: () => "accepted" as const,
+          }),
+        },
+      }),
+    })();
+    const consumer = definePlugin({
+      id: "@acme/reordered-enum-consumer",
+      schema: defineSchema({}),
+      dependencies: { provider: required },
+      create: () => ({ exports: {} }),
+    })({ provider });
+
+    expect(required.choose.argsDescriptor).toEqual({
+      k: "object",
+      shape: {
+        status: { k: "enum", name: "Status", values: ["Z", "a", "é"] },
+      },
+    });
+    expect(required.choose.resultDescriptor).toEqual({
+      k: "enum",
+      name: "Decision",
+      values: ["accepted", "rejected"],
+    });
+    expect(assemblePlugins({ provider, consumer }).order).toEqual([
+      "provider",
+      "consumer",
+    ]);
+  });
+
+  test("preserves order-sensitive arrays in non-enum dependency descriptors", () => {
+    const orderedValidator = (values: readonly string[]): ReturnType<typeof v.string> => {
+      const string = v.string();
+      return Object.freeze({
+        kind: string.kind,
+        check: (value: unknown, path: string) => string.check(value, path),
+        tsType: () => string.tsType(),
+        descriptor: () => ({ k: "ordered", values: [...values] }),
+      }) as unknown as ReturnType<typeof v.string>;
+    };
+    const required = definePluginContract({
+      inspect: pluginQuery({
+        args: { value: orderedValidator(["first", "second"]) },
+        returns: v.boolean(),
+      }),
+    });
+    const provider = definePlugin({
+      id: "@acme/reordered-array-provider",
+      schema: defineSchema({}),
+      create: ({ query }) => ({
+        exports: {
+          inspect: query({
+            args: { value: orderedValidator(["second", "first"]) },
+            returns: v.boolean(),
+            handler: () => true,
+          }),
+        },
+      }),
+    })();
+    const consumer = definePlugin({
+      id: "@acme/reordered-array-consumer",
+      schema: defineSchema({}),
+      dependencies: { provider: required },
+      create: () => ({ exports: {} }),
+    })({ provider });
+
+    expect(() => assemblePlugins({ provider, consumer })).toThrow(
+      "argument validators do not satisfy",
+    );
+  });
+
   test("rejects invalid definition, namespace, dependency, and mount identities", () => {
     const schema = defineSchema({});
     const contract = definePluginContract({

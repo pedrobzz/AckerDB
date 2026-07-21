@@ -4,8 +4,10 @@ import {
   linkSync,
   mkdtempSync,
   renameSync,
+  realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -188,19 +190,16 @@ async function childFailure(child: Subprocess): Promise<string> {
   return new Response(child.stderr).text();
 }
 
-async function expectSingleRaceWinner(path: string, contendersCount: number): Promise<void> {
-  const gate = await createGate(contendersCount, join(dirname(path), `race-${contendersCount}-gate.sock`));
-  const contenders = Array.from(
-    { length: contendersCount },
-    (_, id) => participant(path, id, gate.socketPath),
-  );
+async function expectSingleRaceWinner(paths: readonly string[], canonicalPath: string): Promise<void> {
+  const gate = await createGate(paths.length, join(dirname(canonicalPath), `race-${paths.length}-gate.sock`));
+  const contenders = paths.map((path, id) => participant(path, id, gate.socketPath));
   await gate.ready;
   gate.start();
   const outcomes = await gate.outcomes;
   expect([...outcomes.values()].filter((outcome) => outcome.kind === "error")).toEqual([]);
   expect([...outcomes.values()].filter((outcome) => outcome.kind === "acquired")).toHaveLength(1);
   expect([...outcomes.values()].filter((outcome) => outcome.kind === "busy")).toHaveLength(
-    contendersCount - 1,
+    paths.length - 1,
   );
 
   const winner = [...outcomes].find(([, outcome]) => outcome.kind === "acquired")![0];
@@ -211,15 +210,59 @@ async function expectSingleRaceWinner(path: string, contendersCount: number): Pr
     const diagnostics = await Promise.all(contenders.map(childFailure));
     throw new Error(`ownership contenders failed: ${diagnostics.join("\n")}`);
   }
-  expect(exits).toEqual(Array(contendersCount).fill(0));
-  const canonical = statSync(coordinationDatabasePath(path), { bigint: true });
+  expect(exits).toEqual(Array(paths.length).fill(0));
+  const canonical = statSync(coordinationDatabasePath(canonicalPath), { bigint: true });
   expect(canonical.nlink).toBe(1n);
   expect(canonical.mode & 0o777n).toBe(0o600n);
-  expect(coordinationStagingArtifactPaths(path)).toEqual([]);
+  expect(coordinationStagingArtifactPaths(canonicalPath)).toEqual([]);
   await gate.close();
 }
 
 describe("persistent SQLite database ownership", () => {
+  test("one existing database has one owner through its real path and a symbolic-link alias", () => {
+    const path = freshDatabase();
+    const alias = join(dirname(path), "data-alias.db");
+    writeFileSync(path, "existing database identity");
+    symlinkSync(path, alias);
+
+    const owner = DatabaseOwnership.acquire(path);
+    expect(() => DatabaseOwnership.acquire(alias)).toThrow(DatabaseAlreadyOpenError);
+    expect(existsSync(coordinationDatabasePath(alias))).toBe(false);
+    owner.release();
+
+    const aliasOwner = DatabaseOwnership.acquire(alias);
+    expect(aliasOwner.path).toBe(realpathSync(path));
+    expect(aliasOwner.coordinationPath).toBe(coordinationDatabasePath(realpathSync(path)));
+    aliasOwner.release();
+  });
+
+  test("fails closed before opening a database that has an unknown hard-link alias", () => {
+    const path = freshDatabase();
+    const alias = join(dirname(path), "data-hard-link.db");
+    writeFileSync(path, "existing database identity");
+    linkSync(path, alias);
+
+    expect(() => DatabaseOwnership.acquire(path)).toThrow("unproven hard links");
+    expect(() => DatabaseOwnership.acquire(alias)).toThrow("unproven hard links");
+    expect(existsSync(path)).toBe(true);
+    expect(existsSync(alias)).toBe(true);
+    expect(statSync(path, { bigint: true }).nlink).toBe(2n);
+  });
+
+  test("removes only exact DBZZ data-publication aliases while holding ownership", () => {
+    for (const kind of ["init", "restore"] as const) {
+      const path = freshDatabase();
+      const stage = `${path}.dbzz-${kind}-00000000-0000-4000-8000-000000000004`;
+      writeFileSync(path, "existing database identity");
+      linkSync(path, stage);
+
+      const owner = DatabaseOwnership.acquire(path);
+      expect(existsSync(stage)).toBe(false);
+      expect(statSync(path, { bigint: true }).nlink).toBe(1n);
+      owner.release();
+    }
+  });
+
   test("fails closed for nonempty, foreign, corrupt, or non-DELETE coordination files", () => {
     const nonemptyPath = freshDatabase();
     const nonempty = new Database(coordinationDatabasePath(nonemptyPath), { create: true });
@@ -268,12 +311,26 @@ describe("persistent SQLite database ownership", () => {
 
   test("allows exactly one winner in a gated two-process initialization race", async () => {
     const path = freshDatabase();
-    await expectSingleRaceWinner(path, 2);
+    await expectSingleRaceWinner([path, path], path);
   }, 10_000);
 
   test("allows exactly one winner in a gated 30-process initialization race", async () => {
     const path = freshDatabase();
-    await expectSingleRaceWinner(path, RACE_CONTENDERS);
+    await expectSingleRaceWinner(Array(RACE_CONTENDERS).fill(path), path);
+  }, 60_000);
+
+  test("allows exactly one winner in a gated 30-process symbolic-link alias race", async () => {
+    const path = freshDatabase();
+    const alias = join(dirname(path), "data-alias.db");
+    writeFileSync(path, "existing database identity");
+    symlinkSync(path, alias);
+    expect(existsSync(coordinationDatabasePath(path))).toBe(false);
+
+    await expectSingleRaceWinner(
+      Array.from({ length: RACE_CONTENDERS }, (_, index) => index % 2 === 0 ? path : alias),
+      path,
+    );
+    expect(existsSync(coordinationDatabasePath(alias))).toBe(false);
   }, 60_000);
 
   test("preserves a pre-link crash file and removes only a post-link publication alias", () => {
@@ -352,6 +409,30 @@ describe("persistent SQLite database ownership", () => {
     const replacement = DatabaseOwnership.acquire(path);
     expect(coordinationDatabasePath(path)).toEndWith(".dbzz-coordination");
     replacement.release();
+    replacement.release();
+    await gate.close();
+  }, 10_000);
+
+  test("does not clean a data-publication alias until the live owner has exited", async () => {
+    const path = freshDatabase();
+    const stage = `${path}.dbzz-init-00000000-0000-4000-8000-000000000005`;
+    writeFileSync(path, "existing database identity");
+    const gate = await createGate(1, join(dirname(path), "publication-alias-gate.sock"));
+    const owner = participant(path, 0, gate.socketPath);
+    await gate.ready;
+    gate.start();
+    expect((await gate.outcomes).get(0)).toEqual({ kind: "acquired" });
+
+    linkSync(path, stage);
+    expect(() => DatabaseOwnership.acquire(path)).toThrow(DatabaseAlreadyOpenError);
+    expect(existsSync(stage)).toBe(true);
+    owner.kill("SIGKILL");
+    await owner.exited;
+    children.delete(owner);
+
+    const replacement = DatabaseOwnership.acquire(path);
+    expect(existsSync(stage)).toBe(false);
+    expect(statSync(path, { bigint: true }).nlink).toBe(1n);
     replacement.release();
     await gate.close();
   }, 10_000);

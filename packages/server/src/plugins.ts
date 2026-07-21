@@ -1,6 +1,7 @@
 import { validateArgsShape } from "./functions.ts";
 import type { DbReader, DbWriter } from "./dbtypes.ts";
 import { brand, hasBrand } from "./identity.ts";
+import { compareCodeUnits } from "./ordering.ts";
 import { isSchema, type Schema } from "./schema.ts";
 import { canonicalSchemaSnapshot } from "./snapshot.ts";
 import {
@@ -66,9 +67,10 @@ export interface PluginOperationSpec<
   readonly _produces?: Expand<InferValidator<Result>>;
 }
 
-// Descriptor registries deliberately erase each operation's concrete call types.
+// Descriptor registries deliberately erase each operation's concrete call types,
+// but retain the closed operation-kind domain used by the runtime.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AnyPluginOperationSpec = PluginOperationSpec<any, any, any, any>;
+export type AnyPluginOperationSpec = PluginOperationSpec<PluginOperationKind, any, any, any>;
 
 interface PluginOperationDefinition<
   A extends ObjectShape,
@@ -137,6 +139,15 @@ function normalizedDescriptor(value: unknown, path: string): Descriptor {
     for (const key of Object.keys(current).sort()) {
       const child = current[key];
       if (child !== undefined) result[key] = normalize(child, `${at}.${key}`);
+    }
+    if (
+      result["k"] === "enum" &&
+      Array.isArray(result["values"]) &&
+      result["values"].every((variant) => typeof variant === "string")
+    ) {
+      result["values"] = Object.freeze(
+        [...result["values"]].sort(compareCodeUnits),
+      );
     }
     return Object.freeze(result);
   };
@@ -439,9 +450,13 @@ export interface PluginOperationImplementation<
   readonly handler: PluginHandler<Ctx, Spec>;
 }
 
-// Export registries deliberately erase each handler's concrete context.
+// Export registries deliberately erase each handler's concrete context while
+// retaining the operation metadata's closed kind domain.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AnyPluginOperationImplementation = PluginOperationImplementation<any, any>;
+export type AnyPluginOperationImplementation = PluginOperationImplementation<
+  AnyPluginOperationSpec,
+  any
+>;
 
 interface InlinePluginOperationDefinition<
   A extends ObjectShape,

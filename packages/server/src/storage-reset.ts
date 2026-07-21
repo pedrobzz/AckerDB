@@ -43,14 +43,15 @@ function fsyncDirectory(path: string): void {
 export function resetDatabase(path: string): DatabaseResetResult {
   if (path === ":memory:") throw new TypeError("reset requires a file-backed database path");
   const ownership = DatabaseOwnership.acquire(path);
+  const database = ownership.path;
   let failed = false;
   let failure: unknown;
   const removed: string[] = [];
   try {
     const candidates = [
-      ...initializationArtifactPaths(path),
-      ...restoreArtifactPaths(path),
-      ...canonicalDatabasePaths(path),
+      ...initializationArtifactPaths(database),
+      ...restoreArtifactPaths(database),
+      ...canonicalDatabasePaths(database),
     ];
     const failures: unknown[] = [];
     for (const candidate of candidates) {
@@ -64,7 +65,7 @@ export function resetDatabase(path: string): DatabaseResetResult {
     }
     if (removed.length > 0) {
       try {
-        fsyncDirectory(dirname(path));
+        fsyncDirectory(dirname(database));
       } catch (error) {
         failures.push(error);
       }
@@ -72,11 +73,13 @@ export function resetDatabase(path: string): DatabaseResetResult {
     if (failures.length > 0 && removed.length > 0) {
       throw new AggregateError(
         failures,
-        `database reset removed ${removed.length} artifact(s) from ${path}, but did not complete`,
+        `database reset removed ${removed.length} artifact(s) from ${database}, but did not complete`,
       );
     }
     if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) throw new AggregateError(failures, `database reset cleanup failed: ${path}`);
+    if (failures.length > 1) {
+      throw new AggregateError(failures, `database reset cleanup failed: ${database}`);
+    }
   } catch (error) {
     failed = true;
     failure = error;
@@ -88,18 +91,18 @@ export function resetDatabase(path: string): DatabaseResetResult {
       throw new AggregateError(
         [failure, releaseError],
         removed.length > 0
-          ? `database reset removed ${removed.length} artifact(s) from ${path}, then reset completion and ownership release both failed`
-          : `database reset and ownership release both failed: ${path}`,
+          ? `database reset removed ${removed.length} artifact(s) from ${database}, then reset completion and ownership release both failed`
+          : `database reset and ownership release both failed: ${database}`,
       );
     }
     if (removed.length > 0) {
       throw new Error(
-        `database reset removed ${removed.length} artifact(s) from ${path}, but ownership release failed`,
+        `database reset removed ${removed.length} artifact(s) from ${database}, but ownership release failed`,
         { cause: releaseError },
       );
     }
     throw releaseError;
   }
   if (failed) throw failure;
-  return Object.freeze({ database: path, removed: Object.freeze(removed) });
+  return Object.freeze({ database, removed: Object.freeze(removed) });
 }
