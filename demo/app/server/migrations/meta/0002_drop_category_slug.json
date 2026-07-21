@@ -1,7 +1,7 @@
 {
   "number": 2,
   "name": "drop_category_slug",
-  "fingerprint": "b98911062336066b9ff1ad221626b57c2960bee993235fe862cc4967dc0b22a3",
+  "fingerprint": "d7acc2b8c975cded47c84cd3f57299cc8b6b0e17d62b33ef2e86470977d3d119",
   "pre": {
     "version": 1,
     "tables": {

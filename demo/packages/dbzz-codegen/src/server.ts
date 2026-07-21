@@ -10,6 +10,8 @@ import {
   sseProcedure as sseProcedureGeneric,
 } from "@dbzz/server";
 import type {
+  AppPluginCapabilities,
+  AppSchema,
   DbReader,
   DbWriter,
   McpBuilder,
@@ -23,23 +25,25 @@ import type {
   QueryCtx as GenericQueryCtx,
   SseBuilder,
   SseCtx as GenericSseCtx,
-  AppSchema,
 } from "@dbzz/server";
 import type app from "../../../app/server/app.ts";
 
 export type Schema = AppSchema<typeof app>;
+type QueryPlugins = AppPluginCapabilities<typeof app, "query">;
+type MutationPlugins = AppPluginCapabilities<typeof app, "mutation">;
+type ProcedurePlugins = AppPluginCapabilities<typeof app, "procedure">;
 
-export const query = queryGeneric as QueryBuilder<Schema>;
-export const mutation = mutationGeneric as MutationBuilder<Schema>;
-export const procedure = procedureGeneric as ProcedureBuilder<Schema>;
-export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema>;
+export const query = queryGeneric as QueryBuilder<Schema, QueryPlugins>;
+export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins>;
+export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins>;
+export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const createMcp = createMcpGeneric as McpBuilder<Schema>;
 export const mcpTool = mcpToolGeneric as McpToolBuilder<Schema>;
 
-export type QueryCtx = GenericQueryCtx<Schema>;
-export type MutationCtx = GenericMutationCtx<Schema>;
-export type ProcedureCtx = GenericProcedureCtx<Schema>;
-export type SseCtx = GenericSseCtx<Schema>;
+export type QueryCtx = GenericQueryCtx<Schema, QueryPlugins>;
+export type MutationCtx = GenericMutationCtx<Schema, MutationPlugins>;
+export type ProcedureCtx = GenericProcedureCtx<Schema, ProcedurePlugins, MutationPlugins>;
+export type SseCtx = GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins>;
 export type McpToolCtx = GenericMcpToolCtx<Schema>;
 export type DatabaseReader = DbReader<Schema>;
 export type DatabaseWriter = DbWriter<Schema>;
