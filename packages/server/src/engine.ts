@@ -72,6 +72,7 @@ import {
   type SchemaSnapshot,
 } from "./snapshot.ts";
 import { isValidationError, ValidationError } from "./validation-error.ts";
+import { isPluginDefinitionId, isPluginIdentifier } from "./plugin-identifiers.ts";
 import {
   DatabaseOwnership,
   canonicalizeDatabasePath,
@@ -222,9 +223,6 @@ const WAL_MAGIC_LITTLE_ENDIAN = 0x377f0682;
 const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
 const PLUGIN_TABLE_PREFIX = "_dbzz_plugin_";
 const PLUGIN_INDEX_PREFIX = `ix_${PLUGIN_TABLE_PREFIX}`;
-const PLUGIN_MOUNT = /^[A-Za-z][A-Za-z0-9_]*$/;
-const PLUGIN_DEFINITION_ID = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
-
 const quote = (name: string) => `"${name}"`;
 
 /** Length-prefixing makes mount/table boundaries injective even when either contains `_`. */
@@ -507,12 +505,12 @@ export function readStoredPluginInventory(
     .query("SELECT mount, definition_identity, schema FROM _dbzz_plugins ORDER BY mount")
     .all() as { mount: unknown; definition_identity: unknown; schema: unknown }[];
   for (const row of rows) {
-    if (typeof row.mount !== "string" || !PLUGIN_MOUNT.test(row.mount)) {
+    if (typeof row.mount !== "string" || !isPluginIdentifier(row.mount)) {
       throw new CorruptDatabaseError("stored Plugin inventory contains an invalid mount");
     }
     if (
       typeof row.definition_identity !== "string" ||
-      !PLUGIN_DEFINITION_ID.test(row.definition_identity)
+      !isPluginDefinitionId(row.definition_identity)
     ) {
       throw new CorruptDatabaseError(
         `stored Plugin "${row.mount}" has an invalid definition identity`,
@@ -1492,7 +1490,7 @@ export class Engine {
 
   /** Bind one mounted Plugin schema to deterministic private SQLite storage. */
   createPluginScope(mount: string, schema: Schema): StorageScope {
-    if (typeof mount !== "string" || !PLUGIN_MOUNT.test(mount)) {
+    if (typeof mount !== "string" || !isPluginIdentifier(mount)) {
       throw new ValidationError("Plugin storage mount must be an identifier");
     }
     return this.buildStorageScope(mount, schema);

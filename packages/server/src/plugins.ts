@@ -2,6 +2,7 @@ import { validateArgsShape } from "./functions.ts";
 import type { DbReader, DbWriter } from "./dbtypes.ts";
 import { brand, hasBrand } from "./identity.ts";
 import { compareCodeUnits } from "./ordering.ts";
+import { isPluginDefinitionId, isPluginIdentifier } from "./plugin-identifiers.ts";
 import { isSchema, type Schema } from "./schema.ts";
 import { canonicalSchemaSnapshot } from "./snapshot.ts";
 import {
@@ -20,8 +21,6 @@ const PLUGIN_OPERATION_IDENTITY = Symbol.for("@dbzz/server/PluginOperation/v1");
 const PLUGIN_CONTRACT_IDENTITY = Symbol.for("@dbzz/server/PluginContract/v1");
 const PLUGIN_IMPLEMENTATION_IDENTITY = Symbol.for("@dbzz/server/PluginImplementation/v1");
 const PLUGIN_INSTANCE_IDENTITY = Symbol.for("@dbzz/server/PluginInstance/v1");
-const IDENTIFIER = /^[A-Za-z][A-Za-z0-9_]*$/;
-const PLUGIN_ID = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 const BUILTIN_CONTEXT_FIELDS = new Set([
   "abortSignal",
   "auth",
@@ -101,7 +100,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 function assertIdentifier(name: string, path: string): void {
-  if (!IDENTIFIER.test(name)) {
+  if (!isPluginIdentifier(name)) {
     throw new TypeError(`${path} "${name}" must be an identifier`);
   }
 }
@@ -712,7 +711,7 @@ export function definePlugin(
       throw new TypeError(`unknown plugin definition option "${option}"`);
     }
   }
-  if (typeof definition.id !== "string" || !PLUGIN_ID.test(definition.id)) {
+  if (typeof definition.id !== "string" || !isPluginDefinitionId(definition.id)) {
     throw new TypeError(`plugin id must be a package-like stable name`);
   }
   if (!isSchema(definition.schema)) {
@@ -891,7 +890,10 @@ function assertProviderCompatible(
 }
 
 function assertInstanceDescriptor(instance: AnyPluginInstance, mount: string): void {
-  if (typeof instance.definitionId !== "string" || !PLUGIN_ID.test(instance.definitionId)) {
+  if (
+    typeof instance.definitionId !== "string" ||
+    !isPluginDefinitionId(instance.definitionId)
+  ) {
     throw new TypeError(`plugin mount "${mount}" has an invalid definition id`);
   }
   if (!isSchema(instance.schema)) {

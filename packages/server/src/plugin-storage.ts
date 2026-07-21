@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { compareCodeUnits } from "./ordering.ts";
+import { isPluginDefinitionId, isPluginIdentifier } from "./plugin-identifiers.ts";
 import type { App } from "./app.ts";
 import type { SchemaRefusal } from "./schema/classify.ts";
 import { diffSnapshots } from "./schema/diff.ts";
@@ -17,9 +18,6 @@ import {
   type StorageScope,
   type StoredPluginStorage,
 } from "./engine.ts";
-
-const PLUGIN_MOUNT = /^[A-Za-z][A-Za-z0-9_]*$/;
-const PLUGIN_DEFINITION_ID = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 
 export interface DesiredPluginStorage {
   readonly definitionId: string;
@@ -118,10 +116,15 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function normalizeDesiredMounts(desired: DesiredPluginMounts): NormalizedDesiredMount[] {
   if (!isPlainRecord(desired)) throw new TypeError("desired Plugin mounts must be a plain object");
   return Object.keys(desired).sort().map((mount) => {
-    if (!PLUGIN_MOUNT.test(mount)) throw new TypeError(`Plugin mount "${mount}" must be an identifier`);
+    if (!isPluginIdentifier(mount)) {
+      throw new TypeError(`Plugin mount "${mount}" must be an identifier`);
+    }
     const entry = desired[mount];
     if (!isPlainRecord(entry)) throw new TypeError(`Plugin mount "${mount}" must be a Plugin storage descriptor`);
-    if (typeof entry.definitionId !== "string" || !PLUGIN_DEFINITION_ID.test(entry.definitionId)) {
+    if (
+      typeof entry.definitionId !== "string" ||
+      !isPluginDefinitionId(entry.definitionId)
+    ) {
       throw new TypeError(`Plugin mount "${mount}" has an invalid definition identity`);
     }
     if (!isSchema(entry.schema)) throw new TypeError(`Plugin mount "${mount}" has an invalid private schema`);
