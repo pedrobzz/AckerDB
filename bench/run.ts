@@ -399,7 +399,7 @@ async function benchDbzz(profile: DbzzBenchmarkProfile): Promise<DbzzMeasuredDri
   console.log(
     `→ dbzz: fresh server (telemetry=${telemetry}, profile=${expectedMode.telemetryProfile}, durability=balanced)`,
   );
-  rmSync(join(BENCH, "dbzz-app", ".zdb"), { recursive: true, force: true });
+  rmSync(join(BENCH, "dbzz-app", ".dbzz"), { recursive: true, force: true });
   const server = Bun.spawn(
     [process.execPath, join(BENCH, "dbzz-server.ts"), join(BENCH, "dbzz-app")],
     {

@@ -240,9 +240,9 @@ describe("provider-neutral exact-account Identity", () => {
         code: "unauthenticated",
       });
     }
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_identities").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_identities").get())
       .toEqual({ count: 0n });
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_identity_accounts").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_identity_accounts").get())
       .toEqual({ count: 0n });
   });
 
@@ -293,8 +293,8 @@ describe("provider-neutral exact-account Identity", () => {
 
     expect(identitiesByAccount.size).toBe(PROVIDERS.length + 1);
     expect(new Set(identitiesByAccount.values()).size).toBe(identitiesByAccount.size);
-    expect(engineCount(first.engine, "_dbz_identities")).toBe(BigInt(identitiesByAccount.size));
-    expect(engineCount(first.engine, "_dbz_identity_accounts")).toBe(BigInt(identitiesByAccount.size));
+    expect(engineCount(first.engine, "_dbzz_identities")).toBe(BigInt(identitiesByAccount.size));
+    expect(engineCount(first.engine, "_dbzz_identity_accounts")).toBe(BigInt(identitiesByAccount.size));
 
     await close(first.runtime, first.engine);
     const second = open(path);
@@ -333,10 +333,10 @@ describe("provider-neutral exact-account Identity", () => {
     );
     second.engine.writer.exec("BEGIN IMMEDIATE");
     second.engine.writer
-      .query("DELETE FROM _dbz_identity_accounts WHERE issuer = ? AND subject = ?")
+      .query("DELETE FROM _dbzz_identity_accounts WHERE issuer = ? AND subject = ?")
       .run(providerNamed("keycloak").issuer, "retired-subject");
     second.engine.writer
-      .query("DELETE FROM _dbz_identities WHERE identity = ?")
+      .query("DELETE FROM _dbzz_identities WHERE identity = ?")
       .run(retired.identity);
     second.engine.writer.exec("COMMIT");
     await close(second.runtime, second.engine);
@@ -359,7 +359,7 @@ describe("provider-neutral exact-account Identity", () => {
   });
 });
 
-function engineCount(engine: Engine, table: "_dbz_identities" | "_dbz_identity_accounts"): bigint {
+function engineCount(engine: Engine, table: "_dbzz_identities" | "_dbzz_identity_accounts"): bigint {
   return (engine.writer.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: bigint })
     .count;
 }

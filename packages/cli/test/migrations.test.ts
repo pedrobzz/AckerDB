@@ -143,12 +143,12 @@ export default defineMigration({ tables: { items: (row) => row } });
   });
 
   test("an absent migrations directory is an empty chain", async () => {
-    const config = chain({ "schema.ts": "export default {};" });
+    const config = chain({ "app.ts": "export default {};" });
     expect(await loadMigrationChain(config)).toEqual([]);
   });
 
   test("an empty migrations directory is an empty chain", async () => {
-    const config = chain({ "schema.ts": "export default {};" });
+    const config = chain({ "app.ts": "export default {};" });
     mkdirSync(config.migrationsDir, { recursive: true });
     expect(await loadMigrationChain(config)).toEqual([]);
   });

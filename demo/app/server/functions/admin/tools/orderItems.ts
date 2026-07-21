@@ -1,6 +1,6 @@
 import { v } from "@dbzz/server";
 import { mcpTool } from "@demo/dbzz-codegen/server";
-import { itemStatus } from "../../../schema.ts";
+import { itemStatus } from "../../../app.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 
 /**

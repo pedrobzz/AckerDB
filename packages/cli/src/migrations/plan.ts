@@ -1,7 +1,7 @@
 /**
  * The migration plan: what a refused schema change asks of the developer, and
  * the on-disk generation that answers it. Everything here is pure of the dev
- * supervisor — it opens no Engine and never takes the dbzz process lock. The
+ * supervisor — it opens no Engine and never takes canonical database ownership. The
  * stored snapshot is read through a plain READ-ONLY `bun:sqlite` connection, so
  * a peek is always safe whether the serve child is freshly dead or still alive
  * (a reader sees only committed state).
@@ -40,7 +40,7 @@ import {
   type SchemaSnapshot,
   type TableChange,
 } from "@dbzz/server";
-import { importSchema } from "../app.ts";
+import { importApp } from "../manifest.ts";
 import type { AppConfig } from "../config.ts";
 import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
 import { readStoredState } from "./stored.ts";
@@ -336,9 +336,9 @@ export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
   if (pending.length > 0) {
     let stale = false;
     try {
-      stale = diffSnapshots(chain.at(-1)!.target, snapshotOf(await importSchema(config))).length > 0;
+      stale = diffSnapshots(chain.at(-1)!.target, snapshotOf((await importApp(config)).schema)).length > 0;
     } catch {
-      // The schema does not even import — nothing to judge staleness against.
+      // The manifest does not even import — nothing to judge staleness against.
     }
     return {
       status: "pending",
@@ -352,7 +352,7 @@ export async function computePlan(config: AppConfig): Promise<PlanOutcome> {
       pendingIdentity: pending.map((step) => migrationIdentity(step)).join("\n"),
     };
   }
-  const schema = await importSchema(config);
+  const schema = (await importApp(config)).schema;
   const target = snapshotOf(schema);
   const diff = diffSnapshots(state.snapshot, target);
   const { refusals } = classifySchemaDiff(diff);
@@ -393,7 +393,7 @@ const EMPTY_CANDIDATES: RenameCandidates = { tables: { dropped: [], added: [] },
 export function planToWire(outcome: PlanOutcome, config: AppConfig): PlanWire {
   switch (outcome.status) {
     case "no-database":
-      return { error: `no database at ${join(config.dbDir, "data.db")}; \`dbz dev\` initializes a fresh one` };
+      return { error: `no database at ${join(config.dbDir, "data.db")}; \`dbzz dev\` initializes a fresh one` };
     case "diverged":
       return { error: outcome.message };
     case "clean":

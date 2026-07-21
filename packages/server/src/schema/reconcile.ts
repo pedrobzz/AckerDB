@@ -9,7 +9,7 @@
  * shape-safe change applies automatically and identically on an empty dev table
  * and a full prod one; a shape-unsafe change is refused on both, with the
  * presume-data question and no row-count probing — even on a provably empty
- * table. A migration file is the answer to a refusal; `dbz reset` is the dev
+ * table. A migration file is the answer to a refusal; `dbzz reset` is the dev
  * escape hatch. Unique indexes and tightened validators are attempted under the
  * writer lock and refused cleanly with exact counts if they cannot hold.
  *

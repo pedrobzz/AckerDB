@@ -928,7 +928,7 @@ function jsonb<T>(): ChainableValidator<T, "jsonb"> {
       return value as T;
     },
     // T is erased at runtime; row-level jsonb types flow through the schema's
-    // TypeScript type instead (RowOf<typeof schema, ...> in generated types).
+    // TypeScript type instead (RowOf<Schema, ...> in generated types).
     tsType: () => "unknown",
     descriptor: () => ({ k: "jsonb" }),
   });

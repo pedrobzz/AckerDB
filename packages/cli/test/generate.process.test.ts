@@ -11,44 +11,47 @@ const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 60_000;
 const STEP_TIMEOUT_MS = 15_000;
 
-const SCHEMA_V1 = `import { defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V1 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
 
-export default defineSchema({
+const schema = defineSchema({
   items: defineTable({
     id: v.primaryKey(),
     label: v.string(),
     count: v.int(),
   }),
 });
+export default defineApp({ schema });
 `;
 
-const SCHEMA_V2 = `import { defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V2 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
 
-export default defineSchema({
+const schema = defineSchema({
   items: defineTable({
     id: v.primaryKey(),
     label: v.string(),
     count: v.string(),
   }),
 });
+export default defineApp({ schema });
 `;
 
 // A third state so numbering can increment on a fully-applied chain (string -> float).
-const SCHEMA_V3 = `import { defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V3 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
 
-export default defineSchema({
+const schema = defineSchema({
   items: defineTable({
     id: v.primaryKey(),
     label: v.string(),
     count: v.int(),
   }),
 });
+export default defineApp({ schema });
 `;
 
 // v2 plus a required column — the schema "moving on" after a v2 ledger was consented to.
-const SCHEMA_V2_MOVED = `import { defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V2_MOVED = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
 
-export default defineSchema({
+const schema = defineSchema({
   items: defineTable({
     id: v.primaryKey(),
     label: v.string(),
@@ -56,18 +59,20 @@ export default defineSchema({
     flag: v.string(),
   }),
 });
+export default defineApp({ schema });
 `;
 
 // v1 plus a UNIQUE index over `label` — an optimistic change whose stored rows may already collide.
-const SCHEMA_UNIQUE = `import { defineSchema, defineTable, v } from "@dbzz/server";
+const APP_UNIQUE = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
 
-export default defineSchema({
+const schema = defineSchema({
   items: defineTable({
     id: v.primaryKey(),
     label: v.string(),
     count: v.int(),
   }).index("by_label", ["label"], { unique: true }),
 });
+export default defineApp({ schema });
 `;
 
 const ITEMS_FUNCTIONS = `import { v } from "@dbzz/server";
@@ -231,21 +236,21 @@ async function seedV1(dir: string, port: number): Promise<void> {
   await stopServer(server);
 }
 
-describe("dbz generate", () => {
+describe("dbzz generate", () => {
   test("writes the three artifacts for a type change, numbered 0001, and applies once filled", async () => {
     const port = await freePort();
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V1,
+      "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
     await seedV1(dir, port);
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    writeFileSync(join(dir, "app.ts"), APP_V2);
 
     // Non-TTY generate: no renames, just the scaffold for the count type change.
-    const generated = await withTimeout(runCli(["generate", "", dir]), "dbz generate");
+    const generated = await withTimeout(runCli(["generate", "", dir]), "dbzz generate");
     expect(generated.code).toBe(0);
 
     const scaffold = join(dir, "migrations", "0001_items_count_retype.ts");
@@ -290,8 +295,8 @@ describe("dbz generate", () => {
     await stopServer(applied);
 
     // With the chain fully applied, a second change generates 0002 (numbering increments).
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V3);
-    const second = await withTimeout(runCli(["generate", "", dir]), "dbz generate (second)");
+    writeFileSync(join(dir, "app.ts"), APP_V3);
+    const second = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (second)");
     expect(second.code).toBe(0);
     expect(existsSync(join(dir, "migrations", "0002_items_count_retype.ts"))).toBe(true);
   }, TEST_TIMEOUT_MS);
@@ -299,9 +304,9 @@ describe("dbz generate", () => {
   test("probes stored duplicates for a new unique index and scaffolds a dedupe stub that applies once filled", async () => {
     const port = await freePort();
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V1,
+      "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -319,9 +324,9 @@ describe("dbz generate", () => {
     await stopServer(server);
 
     // Add the unique index; the optimistic change refuses because stored rows collide.
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_UNIQUE);
+    writeFileSync(join(dir, "app.ts"), APP_UNIQUE);
 
-    const generated = await withTimeout(runCli(["generate", "", dir]), "dbz generate (dedupe)");
+    const generated = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (dedupe)");
     expect(generated.code).toBe(0);
     // Before the fix computePlan discarded the optimistic bucket and reported clean.
     expect(generated.stdout).not.toContain("nothing to generate");
@@ -365,7 +370,7 @@ describe("dbz generate", () => {
     await stopServer(applied);
 
     // The physical index is now UNIQUE — the final enforcer the migration satisfied.
-    const db = new Database(join(dir, ".zdb", "data.db"), { readonly: true });
+    const db = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
     try {
       const row = db
         .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
@@ -379,14 +384,14 @@ describe("dbz generate", () => {
   test("refuses cleanly when a pending migration is not yet applied", async () => {
     const port = await freePort();
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V1,
+      "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
     await seedV1(dir, port);
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    writeFileSync(join(dir, "app.ts"), APP_V2);
 
     // A chain entry on disk that the database has NOT applied (appliedCount 0, chain length 1).
     mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
@@ -399,7 +404,7 @@ describe("dbz generate", () => {
       JSON.stringify({ number: 1, name: "count_to_string", fingerprint: migrationFingerprint(V2), pre: V1, target: V2 }),
     );
 
-    const result = await withTimeout(runCli(["generate", "", dir]), "dbz generate (pending)");
+    const result = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (pending)");
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("pending migration");
   }, TEST_TIMEOUT_MS);
@@ -407,15 +412,15 @@ describe("dbz generate", () => {
   test("stale consent refuses across fresh child processes; fresh consent writes", async () => {
     const port = await freePort();
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V1,
+      "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     await seedV1(dir, port);
 
     // The ledger the developer consents to: count float -> string.
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    writeFileSync(join(dir, "app.ts"), APP_V2);
     const planned = await withTimeout(runCli(["__plan", dir]), "__plan (v2)");
     expect(planned.code).toBe(0);
     const wire = JSON.parse(planned.stdout.trim().split("\n").at(-1)!) as {
@@ -429,7 +434,7 @@ describe("dbz generate", () => {
     expect(wire.fingerprint).toMatch(/^[0-9a-f]{64}$/);
 
     // The schema moves after the yes: the consented fingerprint is now stale.
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2_MOVED);
+    writeFileSync(join(dir, "app.ts"), APP_V2_MOVED);
     const staleRun = await withTimeout(
       runCli(["__generate", dir, JSON.stringify({ name: "count_to_string", consent: wire.fingerprint })]),
       "__generate (stale)",
@@ -453,23 +458,23 @@ describe("dbz generate", () => {
   test("a stale pending scaffold gets delete-or-keep guidance from non-TTY generate", async () => {
     const port = await freePort();
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V1,
+      "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     await seedV1(dir, port);
 
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
-    const first = await withTimeout(runCli(["generate", "count_to_string", dir]), "dbz generate (scaffold)");
+    writeFileSync(join(dir, "app.ts"), APP_V2);
+    const first = await withTimeout(runCli(["generate", "count_to_string", dir]), "dbzz generate (scaffold)");
     expect(first.code).toBe(0);
     // Invocation is the consent, but the ledger is still the record of what it answers.
     expect(first.stdout).toContain("the change ledger");
     expect(first.stdout).toContain("needs a migration");
 
     // The schema moves on with the scaffold still unapplied.
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2_MOVED);
-    const second = await withTimeout(runCli(["generate", "", dir]), "dbz generate (stale pending)");
+    writeFileSync(join(dir, "app.ts"), APP_V2_MOVED);
+    const second = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (stale pending)");
     expect(second.code).not.toBe(0);
     expect(second.stderr).toContain("pending migration");
     expect(second.stderr).toContain("delete its files to re-derive");
@@ -479,13 +484,13 @@ describe("dbz generate", () => {
   test("--hold-pending exits before applying; the database is untouched", async () => {
     const port = await freePort();
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V1,
+      "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     await seedV1(dir, port);
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    writeFileSync(join(dir, "app.ts"), APP_V2);
 
     // A filled, ready-to-apply chain entry the database has not applied.
     mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
@@ -502,10 +507,10 @@ describe("dbz generate", () => {
     expect(held.code).not.toBe(0);
     expect(held.stderr).toContain("held for confirmation");
 
-    const db = new Database(join(dir, ".zdb", "data.db"), { readonly: true });
+    const db = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
     try {
       // Nothing applied, nothing transformed: rows still hold numbers.
-      expect(Number((db.query("SELECT COUNT(*) AS n FROM _dbz_migrations").get() as { n: number | bigint }).n)).toBe(0);
+      expect(Number((db.query("SELECT COUNT(*) AS n FROM _dbzz_migrations").get() as { n: number | bigint }).n)).toBe(0);
       expect((db.query('SELECT "count" FROM "items" WHERE "id" = 1').get() as { count: number }).count).toBe(5);
     } finally {
       db.close();
@@ -514,13 +519,13 @@ describe("dbz generate", () => {
 
   test("refuses when there is no database to diff against", async () => {
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V2,
+      "app.ts": APP_V2,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port: 3999 }),
+      ".dbzz.config.json": JSON.stringify({ port: 3999 }),
     });
     dirs.push(dir);
 
-    const result = await withTimeout(runCli(["generate", "", dir]), "dbz generate (no db)");
+    const result = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (no db)");
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("no database");
   }, TEST_TIMEOUT_MS);

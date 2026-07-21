@@ -12,7 +12,7 @@ import {
   type TelemetryExporter,
   type TelemetryRecord,
 } from "@dbzz/server";
-import { importFunctionModules, importSchema } from "../packages/cli/src/app.ts";
+import { importApp, importFunctionModules } from "../packages/cli/src/manifest.ts";
 import { loadConfig } from "../packages/cli/src/config.ts";
 import {
   benchmarkProfileFromConfig,
@@ -51,7 +51,7 @@ const profile = benchmarkProfileFromConfig(
   exporterMode,
 );
 const startupMode = expectedDbzzStartupMode(profile, config.durability);
-const schema = await importSchema(config);
+const schema = (await importApp(config)).schema;
 const modules = await importFunctionModules(config);
 mkdirSync(config.dbDir, { recursive: true });
 const engine = new Engine(schema, join(config.dbDir, "data.db"), { durability: config.durability });
@@ -60,7 +60,7 @@ let server: DbzzServer | undefined;
 
 try {
   const { applied } = reconcile(engine);
-  for (const line of applied) console.log(`[dbz] ${line}`);
+  for (const line of applied) console.log(`[dbzz] ${line}`);
   const registry = new Registry(modules);
   runtime = new Runtime({
     engine,
@@ -74,7 +74,7 @@ try {
   server = serve({ runtime, port: config.port, statusScope: config.statusScope });
   console.log(`@@dbzz-startup ${JSON.stringify(startupMode)}`);
   console.log(
-    `[dbz] ready on http://127.0.0.1:${server.port} — ${registry.functions.size} function(s), ${Object.keys(schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
+    `[dbzz] ready on http://127.0.0.1:${server.port} — ${registry.functions.size} function(s), ${Object.keys(schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
   );
 } catch (error) {
   let shutdown: EngineCloseDisposition = "unclean";

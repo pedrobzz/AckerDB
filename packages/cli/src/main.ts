@@ -1,24 +1,25 @@
 #!/usr/bin/env bun
 /**
- * The `dbz` CLI.
+ * The `dbzz` CLI.
  *
- *   dbz dev [dir]      watch + debounced codegen + auto-restarting server
- *   dbz start [dir]    codegen once, then serve (production)
- *   dbz codegen [dir]  one-shot codegen
- *   dbz reset [dir]    delete the local database (dev escape hatch)
- *   dbz status [dir]   inspect a database as JSON
- *   dbz backup <file> [dir]   create and verify a backup
- *   dbz restore <file> [dir]  verify and restore into a fresh target
+ *   dbzz dev [dir]      watch + debounced codegen + auto-restarting server
+ *   dbzz start [dir]    codegen once, then serve (production)
+ *   dbzz codegen [dir]  one-shot codegen
+ *   dbzz reset [dir]    delete the local database (dev escape hatch)
+ *   dbzz plugin reset|drop <mount> [dir]  clear one consent-gated Plugin scope
+ *   dbzz status [dir]   inspect a database as JSON
+ *   dbzz backup <file> [dir]   create and verify a backup
+ *   dbzz restore <file> [dir]  verify and restore into a fresh target
  *
- * `dbz dev` is a supervisor that never imports user code itself: codegen and
+ * `dbzz dev` is a supervisor that never imports user code itself: codegen and
  * the server run as child processes, so every reload sees fresh modules with
  * zero import-cache staleness. Clients reconnect and resubscribe on restart.
  */
 import { existsSync, rmSync, watch } from "node:fs";
-import { basename, relative, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
-import type { Renames } from "@dbzz/server";
+import { resetDatabase, type Renames } from "@dbzz/server";
 import { loadConfig, type AppConfig } from "./config.ts";
 import { runCodegen } from "./codegen.ts";
 import { startApp, StartupInterruptedError } from "./app.ts";
@@ -36,19 +37,29 @@ import {
   verifyBackupArtifact,
   type FreshProcessVerifier,
 } from "./operations.ts";
+import {
+  applyPluginStorageConsent,
+  executePluginStorageCommand,
+  planPluginStorage,
+  type PluginApplyResult,
+  type PluginPlanWire,
+  type PluginStorageConsent,
+} from "./plugin-storage.ts";
 
 const CLI_PATH = fileURLToPath(import.meta.url);
 
 function usage(): never {
   console.log(`usage:
-  dbz dev [app-dir]
-  dbz start [app-dir]
-  dbz codegen [app-dir]
-  dbz generate [name] [app-dir]
-  dbz reset [app-dir]
-  dbz status [app-dir]
-  dbz backup <artifact> [app-dir]
-  dbz restore <artifact> [app-dir]`);
+  dbzz dev [app-dir]
+  dbzz start [app-dir]
+  dbzz codegen [app-dir]
+  dbzz generate [name] [app-dir]
+  dbzz plugin reset <mount> [app-dir]
+  dbzz plugin drop <mount> [app-dir]
+  dbzz reset [app-dir]
+  dbzz status [app-dir]
+  dbzz backup <artifact> [app-dir]
+  dbzz restore <artifact> [app-dir]`);
   process.exit(2);
 }
 
@@ -129,6 +140,61 @@ async function generateChild(appDir: string, request: GenerateRequest): Promise<
   return JSON.parse(lastJsonLine(out)) as GenerateResult;
 }
 
+/** Inspect the next Plugin requirement in a child with fresh user modules. */
+async function pluginPlanChild(appDir: string): Promise<PluginPlanWire> {
+  const child = Bun.spawn([process.execPath, CLI_PATH, "__plugin_plan", appDir], {
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  if (code !== 0) throw new Error("could not inspect Plugin storage (see the error above)");
+  return JSON.parse(lastJsonLine(out)) as PluginPlanWire;
+}
+
+/** Apply one displayed Plugin consent in a fresh child that re-proves it. */
+async function applyPluginChild(
+  appDir: string,
+  consent: PluginStorageConsent,
+): Promise<PluginApplyResult> {
+  const child = Bun.spawn([
+    process.execPath,
+    CLI_PATH,
+    "__plugin_apply",
+    appDir,
+    JSON.stringify(consent),
+  ], {
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  const [out, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+  if (code !== 0) throw new Error("Plugin storage change failed (see the error above)");
+  return JSON.parse(lastJsonLine(out)) as PluginApplyResult;
+}
+
+function parsePluginConsent(json: string): PluginStorageConsent {
+  const parsed = JSON.parse(json) as Record<string, unknown>;
+  if (
+    parsed === null ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).some((key) =>
+      key !== "kind" && key !== "mount" && key !== "currentFingerprint" && key !== "targetFingerprint"
+    ) ||
+    (parsed.kind !== "reset" && parsed.kind !== "drop") ||
+    typeof parsed.mount !== "string" ||
+    typeof parsed.currentFingerprint !== "string" ||
+    typeof parsed.targetFingerprint !== "string"
+  ) {
+    throw new Error("__plugin_apply requires an exact Plugin storage consent");
+  }
+  return {
+    kind: parsed.kind,
+    mount: parsed.mount,
+    currentFingerprint: parsed.currentFingerprint,
+    targetFingerprint: parsed.targetFingerprint,
+  };
+}
+
 function isInteractive(): boolean {
   return Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY);
 }
@@ -189,23 +255,23 @@ function countRenames(renames: Renames): number {
 /** Report what was scaffolded and point the developer at the holes to fill. */
 function reportGenerated(written: string[], renames: Renames, dropsAcknowledged: string[]): void {
   const rel = (path: string) => relative(process.cwd(), path);
-  console.log(`[dbz] generated ${written.map(rel).join(", ")}`);
+  console.log(`[dbzz] generated ${written.map(rel).join(", ")}`);
   const renameCount = countRenames(renames);
-  if (renameCount > 0) console.log(`[dbz] recorded ${renameCount} rename(s)`);
-  if (dropsAcknowledged.length > 0) console.log(`[dbz] delete + add: ${dropsAcknowledged.join(", ")}`);
+  if (renameCount > 0) console.log(`[dbzz] recorded ${renameCount} rename(s)`);
+  if (dropsAcknowledged.length > 0) console.log(`[dbzz] delete + add: ${dropsAcknowledged.join(", ")}`);
   console.log(
-    `[dbz] fill the TODOs in ${rel(written[0]!)}, then restart — the server applies the migration once it compiles`,
+    `[dbzz] fill the TODOs in ${rel(written[0]!)}, then restart — the server applies the migration once it compiles`,
   );
 }
 
 /** Delete a stale pending scaffold's artifacts so one migration can be re-derived. */
 function deletePendingFiles(files: string[]): void {
   for (const file of files) rmSync(file, { force: true });
-  console.log(`[dbz] deleted ${files.length} migration file(s); re-deriving`);
+  console.log(`[dbzz] deleted ${files.length} migration file(s); re-deriving`);
 }
 
 /**
- * `dbz generate`: plan in-process, print the ledger, run the rename form when
+ * `dbzz generate`: plan in-process, print the ledger, run the rename form when
  * interactive, then write the scaffold. Invoking the command IS the consent —
  * no fingerprint rides along, and the plan is re-derived at write time anyway.
  * A stale pending chain gets the same delete-or-keep offer the dev supervisor
@@ -217,11 +283,11 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
     const outcome = await computePlan(config);
     switch (outcome.status) {
       case "no-database":
-        throw new Error(`no database at ${resolve(config.dbDir, "data.db")}; run \`dbz dev\` to initialize it first`);
+        throw new Error(`no database at ${resolve(config.dbDir, "data.db")}; run \`dbzz dev\` to initialize it first`);
       case "diverged":
         throw new Error(outcome.message);
       case "pending": {
-        const apply = `apply the ${outcome.pendingCount} pending migration(s) first — start \`dbz dev\``;
+        const apply = `apply the ${outcome.pendingCount} pending migration(s) first — start \`dbzz dev\``;
         if (!outcome.stale) throw new Error(apply);
         if (!isInteractive()) {
           throw new Error(
@@ -238,7 +304,7 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
         continue;
       }
       case "clean":
-        console.log("[dbz] no changes need a migration; nothing to generate (shape-safe changes apply on their own)");
+        console.log("[dbzz] no changes need a migration; nothing to generate (shape-safe changes apply on their own)");
         return;
       case "changes": {
         console.log(renderLedger(outcome));
@@ -248,7 +314,7 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
           if (form === null) throw new Error("interrupted; nothing was written");
         } else {
           console.error(
-            "[dbz] rename detection needs a terminal; generating with no renames (drops are acknowledged, adds treated as new)",
+            "[dbzz] rename detection needs a terminal; generating with no renames (drops are acknowledged, adds treated as new)",
           );
         }
         const name = nameArg !== undefined && nameArg.length > 0 ? nameArg : deriveSlug(outcome.refusals);
@@ -326,13 +392,15 @@ async function dev(appDir: string): Promise<void> {
   // flow itself lives in dev-flow.ts (state machine, decline memory, retract
   // semantics) — this is only its terminal-and-process wiring. Only with a
   // real terminal on both ends: a non-TTY dev keeps today's behavior (the
-  // child's own stderr already names `dbz generate`). At most one readline is
+  // child's own stderr already names `dbzz generate`). At most one readline is
   // open at a time; `promptCancel` is how the supervisor retracts it.
   let promptCancel: AbortController | null = null;
   const devFlow = makeDevFlowHandler(
     {
       plan: () => planChild(appDir),
       generate: (request) => generateChild(appDir, request),
+      pluginPlan: () => pluginPlanChild(appDir),
+      applyPlugin: (consent) => applyPluginChild(appDir, consent),
       prompt: async <T,>(form: (ask: Ask) => Promise<T>): Promise<PromptOutcome<T>> => {
         promptCancel = new AbortController();
         try {
@@ -355,9 +423,9 @@ async function dev(appDir: string): Promise<void> {
     () => promptCancel?.abort(),
   );
 
-  console.log(`[dbz] dev watching ${config.appDir}`);
+  console.log(`[dbzz] dev watching ${config.appDir}`);
   if (!(await codegenChild(appDir))) {
-    console.error("[dbz] initial codegen failed — fix the errors above; watching for changes");
+    console.error("[dbzz] initial codegen failed — fix the errors above; watching for changes");
   }
   await startChild();
 
@@ -376,9 +444,9 @@ async function dev(appDir: string): Promise<void> {
       const ok = await codegenChild(appDir);
       if (ok) {
         await startChild();
-        console.log(`[dbz] reloaded in ${Math.round(performance.now() - t0)}ms`);
+        console.log(`[dbzz] reloaded in ${Math.round(performance.now() - t0)}ms`);
       } else {
-        console.error("[dbz] codegen failed — server not restarted; fix and save again");
+        console.error("[dbzz] codegen failed — server not restarted; fix and save again");
       }
     } while (dirty);
     running = false;
@@ -400,12 +468,12 @@ async function dev(appDir: string): Promise<void> {
     trigger();
   });
   // Bun's recursive macOS watcher can start after the server reaches readiness.
-  // Own the schema file separately so an immediate first edit cannot be lost.
-  const schemaWatcher = existsSync(config.schemaPath) ? watch(config.schemaPath, trigger) : null;
+  // Own the manifest separately so an immediate first edit cannot be lost.
+  const appWatcher = existsSync(config.appPath) ? watch(config.appPath, trigger) : null;
 
   const shutdown = () => {
     treeWatcher.close();
-    schemaWatcher?.close();
+    appWatcher?.close();
     if (child !== null) stopped.add(child);
     child?.kill();
     process.exit(0);
@@ -447,13 +515,22 @@ try {
       const t0 = performance.now();
       const { written } = await runCodegen(loadConfig(resolve(args[0] ?? ".")));
       console.log(
-        `[dbz] codegen ${written.length > 0 ? `wrote ${written.join(", ")}` : "up to date"} (${Math.round(performance.now() - t0)}ms)`,
+        `[dbzz] codegen ${written.length > 0 ? `wrote ${written.join(", ")}` : "up to date"} (${Math.round(performance.now() - t0)}ms)`,
       );
       break;
     }
     case "generate": {
       requireArgumentCount(args, 0, 2);
       await generate(args[0], resolve(args[1] ?? "."));
+      break;
+    }
+    case "plugin": {
+      requireArgumentCount(args, 2, 3);
+      const action = args[0];
+      if (action !== "reset" && action !== "drop") usage();
+      const config = loadConfig(resolve(args[2] ?? "."));
+      const requirement = await executePluginStorageCommand(config, action, args[1]!);
+      console.log(`[dbzz] ${action === "reset" ? "reset" : "dropped"} Plugin storage mount "${requirement.mount}"`);
       break;
     }
     case "__plan": {
@@ -476,14 +553,29 @@ try {
       }
       break;
     }
+    case "__plugin_plan": {
+      requireArgumentCount(args, 1, 1);
+      console.log(JSON.stringify(await planPluginStorage(loadConfig(resolve(args[0]!)))));
+      break;
+    }
+    case "__plugin_apply": {
+      requireArgumentCount(args, 2, 2);
+      console.log(JSON.stringify(await applyPluginStorageConsent(
+        loadConfig(resolve(args[0]!)),
+        parsePluginConsent(args[1]!),
+      )));
+      break;
+    }
     case "reset": {
       requireArgumentCount(args, 0, 1);
       const config = loadConfig(resolve(args[0] ?? "."));
-      if (existsSync(config.dbDir)) {
-        rmSync(config.dbDir, { recursive: true, force: true });
-        console.log(`[dbz] removed ${config.dbDir}`);
+      const database = join(config.dbDir, "data.db");
+      const result = resetDatabase(database);
+      if (result.removed.length > 0) {
+        const noun = result.removed.length === 1 ? "artifact" : "artifacts";
+        console.log(`[dbzz] removed ${result.removed.length} database ${noun} for ${database}; coordination retained`);
       } else {
-        console.log(`[dbz] nothing to remove at ${config.dbDir}`);
+        console.log(`[dbzz] nothing to remove for ${database}; coordination retained`);
       }
       break;
     }
@@ -517,6 +609,6 @@ try {
   }
 } catch (error) {
   if (error instanceof StartupInterruptedError) process.exit(0);
-  console.error(`[dbz] ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`[dbzz] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

@@ -16,12 +16,12 @@ export const mcpTokenVaultOwner = Symbol("dbzz.mcpTokenVault");
 export const MCP_TOKEN_INTERNAL_OBJECTS = [
   {
     type: "table" as const,
-    name: "_dbz_mcp_tokens",
-    table: "_dbz_mcp_tokens",
-    sql: `CREATE TABLE _dbz_mcp_tokens (
+    name: "_dbzz_mcp_tokens",
+    table: "_dbzz_mcp_tokens",
+    sql: `CREATE TABLE _dbzz_mcp_tokens (
       creation_seq INTEGER PRIMARY KEY,
       token_id TEXT NOT NULL UNIQUE CHECK (length(token_id) = 22),
-      identity INTEGER NOT NULL REFERENCES _dbz_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      identity INTEGER NOT NULL REFERENCES _dbzz_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
       mcp TEXT NOT NULL CHECK (length(mcp) > 0),
       secret_digest BLOB NOT NULL CHECK (length(secret_digest) = 32),
       name TEXT NOT NULL CHECK (length(name) > 0),
@@ -33,9 +33,9 @@ export const MCP_TOKEN_INTERNAL_OBJECTS = [
   },
   {
     type: "index" as const,
-    name: "ix__dbz_mcp_tokens_owner",
-    table: "_dbz_mcp_tokens",
-    sql: "CREATE INDEX ix__dbz_mcp_tokens_owner ON _dbz_mcp_tokens (identity, mcp, creation_seq)",
+    name: "ix__dbzz_mcp_tokens_owner",
+    table: "_dbzz_mcp_tokens",
+    sql: "CREATE INDEX ix__dbzz_mcp_tokens_owner ON _dbzz_mcp_tokens (identity, mcp, creation_seq)",
   },
 ] as const;
 
@@ -113,7 +113,7 @@ function validateIdentity(identity: unknown): asserts identity is Identity {
 }
 
 function requireIdentity(connection: Database, identity: Identity): void {
-  if (connection.query("SELECT 1 FROM _dbz_identities WHERE identity = ?").get(identity) === null) {
+  if (connection.query("SELECT 1 FROM _dbzz_identities WHERE identity = ?").get(identity) === null) {
     throw new DbzzError("not_found", "Identity not found");
   }
 }
@@ -202,7 +202,7 @@ function invalidCredential(): DbzzError {
 
 export function verifyMcpTokenVaultState(connection: Database): void {
   const rows = connection.query(
-    "SELECT creation_seq, token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _dbz_mcp_tokens",
+    "SELECT creation_seq, token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _dbzz_mcp_tokens",
   );
   for (const row of rows.iterate() as IterableIterator<StoredTokenRow>) {
     if (
@@ -267,7 +267,7 @@ export class McpTokenVault {
     }
     requireIdentity(this.writer, identity);
     const count = this.writer
-      .query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens WHERE identity = ? AND mcp = ?")
+      .query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens WHERE identity = ? AND mcp = ?")
       .get(identity, mcp) as { readonly count: bigint };
     if (count.count >= BigInt(limits.maxTokensPerIdentity)) {
       throw new DbzzError("overloaded", "MCP token capacity is full", { resource: "operation" });
@@ -276,7 +276,7 @@ export class McpTokenVault {
     const id = randomBytes(16).toString("base64url");
     const secret = randomBytes(32).toString("base64url");
     this.writer.query(
-      `INSERT INTO _dbz_mcp_tokens
+      `INSERT INTO _dbzz_mcp_tokens
         (token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, identity, mcp, digest(secret), name, normalizedMetadata.encoded, encode(scopes), now, now);
@@ -302,7 +302,7 @@ export class McpTokenVault {
     requireIdentity(connection, identity);
     const rows = connection.query(
       `SELECT creation_seq, token_id, mcp, name, metadata, scopes, created_at, updated_at
-        FROM _dbz_mcp_tokens
+        FROM _dbzz_mcp_tokens
         WHERE identity = ? AND mcp = ?
         ORDER BY creation_seq`,
     ).all(identity, mcp) as StoredTokenDescriptorRow[];
@@ -355,7 +355,7 @@ export class McpTokenVault {
     assignments.push("updated_at = ?");
     values.push(now, tokenId, identity, mcp);
     const result = this.writer.query(
-      `UPDATE _dbz_mcp_tokens
+      `UPDATE _dbzz_mcp_tokens
         SET ${assignments.join(", ")}
         WHERE token_id = ? AND identity = ? AND mcp = ?`,
     ).run(...(values as never[]));
@@ -374,7 +374,7 @@ export class McpTokenVault {
     validateTokenId(tokenId);
     const scopes = normalizeMcpScopeGrant(scopeDescriptor, value, "MCP token scopes");
     const stored = this.writer.query(
-      `SELECT scopes FROM _dbz_mcp_tokens
+      `SELECT scopes FROM _dbzz_mcp_tokens
         WHERE token_id = ? AND identity = ? AND mcp = ?`,
     ).get(tokenId, identity, mcp) as Pick<StoredTokenRow, "scopes"> | null;
     if (stored === null) throw new DbzzError("not_found", "MCP token not found");
@@ -389,7 +389,7 @@ export class McpTokenVault {
       throw new CorruptDatabaseError("DBZZ MCP token scope grant is invalid for its endpoint");
     }
     const result = this.writer.query(
-      `UPDATE _dbz_mcp_tokens
+      `UPDATE _dbzz_mcp_tokens
         SET scopes = ?, updated_at = ?
         WHERE token_id = ? AND identity = ? AND mcp = ?`,
     ).run(encode(scopes), now, tokenId, identity, mcp);
@@ -403,7 +403,7 @@ export class McpTokenVault {
     validateTokenId(tokenId);
     requireIdentity(this.writer, identity);
     const result = this.writer.query(
-      "DELETE FROM _dbz_mcp_tokens WHERE token_id = ? AND identity = ? AND mcp = ?",
+      "DELETE FROM _dbzz_mcp_tokens WHERE token_id = ? AND identity = ? AND mcp = ?",
     ).run(tokenId, identity, mcp);
     if (result.changes === 0) throw new DbzzError("not_found", "MCP token not found");
   }
@@ -415,7 +415,7 @@ export class McpTokenVault {
     scopeDescriptor: McpScopeDescriptor | undefined,
   ): Readonly<{ identity: Identity; tokenId: string; scopes: readonly string[] }> {
     const row = connection.query(
-      "SELECT identity, mcp, secret_digest, scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
+      "SELECT identity, mcp, secret_digest, scopes FROM _dbzz_mcp_tokens WHERE token_id = ?",
     ).get(parsed.id) as Pick<StoredTokenRow, "identity" | "mcp" | "secret_digest" | "scopes"> | null;
     const expected = row?.secret_digest ?? DUMMY_DIGEST;
     const matches = expected.byteLength === 32 && timingSafeEqual(digest(parsed.secret), expected);

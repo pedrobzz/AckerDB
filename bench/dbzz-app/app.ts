@@ -1,6 +1,6 @@
-import { defineSchema, defineTable, v } from "@dbzz/server";
+import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
 
-export default defineSchema({
+const schema = defineSchema({
   documents: defineTable({
     id: v.primaryKey(),
     partition: v.float(),
@@ -24,3 +24,5 @@ export default defineSchema({
     payload: v.string(),
   }).index("by_channel", ["channel"], { unique: true }),
 });
+
+export default defineApp({ schema });

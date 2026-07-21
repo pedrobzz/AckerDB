@@ -19,6 +19,7 @@ import {
   Engine,
   IncompatibleDatabaseError,
   PRODUCTION_LIMITS,
+  restoreVerifiedDatabase,
   Telemetry,
   isDbzzError,
   type BackupManifest,
@@ -28,7 +29,7 @@ import {
   type TelemetryOutcome,
   type TelemetryTraceContext,
 } from "@dbzz/server";
-import { importSchema } from "./app.ts";
+import { importApp } from "./manifest.ts";
 import type { AppConfig } from "./config.ts";
 
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -62,8 +63,11 @@ async function observeStorageOperation<T>(
     spanId: crypto.randomUUID(),
   };
   const startedAt = performance.now();
+  let failed = false;
+  let failure: unknown;
+  let value: T | undefined;
   try {
-    const value = await work();
+    value = await work();
     const observed = details(value);
     telemetry.recordSpan({
       operation,
@@ -74,31 +78,49 @@ async function observeStorageOperation<T>(
       ...(observed.sizeBytes === undefined ? {} : { sizeBytes: observed.sizeBytes }),
       context: observed.commitId === undefined ? context : { ...context, commitId: observed.commitId },
     });
-    return value;
   } catch (error) {
+    failed = true;
+    failure = error;
     const outcome = operationOutcome(error);
-    telemetry.recordSpan({
-      operation,
-      stage: "storage",
-      outcome,
-      resource: "operation",
-      durationMs: Math.max(0, performance.now() - startedAt),
-      context,
-    });
-    telemetry.recordEvent({
-      name: "failure",
-      level: "error",
-      operation,
-      stage: "storage",
-      outcome,
-      resource: "operation",
-      errorClass: error instanceof Error ? error.name : "UnknownError",
-      context,
-    });
-    throw error;
-  } finally {
-    await telemetry.drain(Date.now() + PRODUCTION_LIMITS.gracefulShutdownMs);
+    try {
+      telemetry.recordSpan({
+        operation,
+        stage: "storage",
+        outcome,
+        resource: "operation",
+        durationMs: Math.max(0, performance.now() - startedAt),
+        context,
+      });
+      telemetry.recordEvent({
+        name: "failure",
+        level: "error",
+        operation,
+        stage: "storage",
+        outcome,
+        resource: "operation",
+        errorClass: error instanceof Error ? error.name : "UnknownError",
+        context,
+      });
+    } catch (telemetryError) {
+      failure = new AggregateError(
+        [error, telemetryError],
+        `${operation} failed and failure telemetry also failed`,
+      );
+    }
   }
+  try {
+    await telemetry.drain(Date.now() + PRODUCTION_LIMITS.gracefulShutdownMs);
+  } catch (drainError) {
+    if (failed) {
+      throw new AggregateError(
+        [failure, drainError],
+        `${operation} failed and telemetry cleanup also failed`,
+      );
+    }
+    throw drainError;
+  }
+  if (failed) throw failure;
+  return value!;
 }
 
 export interface BackupManifestJson {
@@ -237,11 +259,21 @@ function statusJson(status: EngineStatus): EngineStatusJson {
 
 function fsyncPath(path: string): void {
   const fd = openSync(path, "r");
+  let failed = false;
+  let failure: unknown;
   try {
     fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+  } catch (error) {
+    failed = true;
+    failure = error;
   }
+  try {
+    closeSync(fd);
+  } catch (closeError) {
+    if (failed) throw new AggregateError([failure, closeError], `fsync and descriptor close both failed: ${path}`);
+    throw closeError;
+  }
+  if (failed) throw failure;
 }
 
 function publishManifest(path: string, manifest: BackupManifest): void {
@@ -262,70 +294,26 @@ function publishManifest(path: string, manifest: BackupManifest): void {
     unlinkSync(temporary);
     fsyncPath(dirname(path));
   } catch (error) {
-    rmSync(temporary, { force: true });
-    if (published) rmSync(path, { force: true });
-    throw error;
-  }
-}
-
-function assertManifestMatchesEngine(engine: Engine, manifest: BackupManifest): EngineStatus {
-  if (engine.schemaFingerprint() !== manifest.schemaFingerprint) {
-    throw new Error("backup schema fingerprint does not match the target application schema");
-  }
-  const status = engine.status();
-  if (status.commitVersion !== manifest.commitVersion) {
-    throw new Error("restored commit version does not match the backup manifest");
-  }
-  return status;
-}
-
-function proveNextCommit(engine: Engine): void {
-  const terminal = engine.commitVersion();
-  let transactionOpen = false;
-  try {
-    // Exercise DBZZ's version allocator, but roll it back so restoring an
-    // artifact preserves its exact terminal version.
-    engine.writer.exec("BEGIN IMMEDIATE");
-    transactionOpen = true;
-    const next = engine.allocateCommitVersion();
-    if (next !== terminal + 1n) {
-      throw new Error(`next commit version was ${next}; expected ${terminal + 1n}`);
+    const cleanup: unknown[] = [];
+    try {
+      rmSync(temporary, { force: true });
+    } catch (cleanupError) {
+      cleanup.push(cleanupError);
     }
-    engine.writer.exec("ROLLBACK");
-    transactionOpen = false;
-  } catch (error) {
-    if (transactionOpen) {
+    if (published) {
       try {
-        engine.writer.exec("ROLLBACK");
-      } catch {
-        // Preserve the failure that made the transaction unusable.
+        rmSync(path, { force: true });
+      } catch (cleanupError) {
+        cleanup.push(cleanupError);
       }
     }
-    throw error;
-  }
-
-  try {
-    // A committed no-op write proves the restored file can complete a real
-    // durable writer transaction without inventing a user-visible version.
-    engine.writer.exec("BEGIN IMMEDIATE");
-    transactionOpen = true;
-    engine.writer
-      .query("UPDATE _dbz_state SET commit_version = commit_version WHERE singleton = 1")
-      .run();
-    engine.writer.exec("COMMIT");
-    transactionOpen = false;
-  } catch (error) {
-    if (transactionOpen) {
-      try {
-        engine.writer.exec("ROLLBACK");
-      } catch {
-        // Preserve the commit failure.
-      }
+    if (cleanup.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanup],
+        `backup manifest publication and cleanup both failed: ${path}`,
+      );
     }
     throw error;
-  }
-  if (engine.commitVersion() !== terminal) {
-    throw new Error("restore commit probe changed the terminal commit version");
   }
 }
 
@@ -333,22 +321,34 @@ function proveNextCommit(engine: Engine): void {
 export async function inspectDatabase(config: AppConfig): Promise<StatusReport> {
   const path = databasePath(config);
   requireDatabase(path);
-  const schema = await importSchema(config);
+  const schema = (await importApp(config)).schema;
   const engine = new Engine(schema, path, {
     durability: config.durability,
     integrityCheck: "full",
   });
+  let failed = false;
+  let failure: unknown;
+  let report: StatusReport | undefined;
   try {
-    return {
+    report = {
       format: 1,
       operation: "status",
       database: path,
       schemaFingerprint: engine.schemaFingerprint(),
       status: statusJson(engine.status()),
     };
-  } finally {
-    engine.close("clean");
+  } catch (error) {
+    failed = true;
+    failure = error;
   }
+  try {
+    engine.close("clean");
+  } catch (closeError) {
+    if (failed) throw new AggregateError([failure, closeError], `status inspection and database close both failed: ${path}`);
+    throw closeError;
+  }
+  if (failed) throw failure;
+  return report!;
 }
 
 /**
@@ -368,24 +368,59 @@ export async function createVerifiedBackup(
     if (existsSync(artifact)) throw new Error(`backup destination already exists: ${artifact}`);
     if (existsSync(manifestPath)) throw new Error(`backup manifest already exists: ${manifestPath}`);
 
-    const schema = await importSchema(config);
-    let manifest: BackupManifest;
-    const engine = new Engine(schema, source, {
+    const app = await importApp(config);
+    let manifest: BackupManifest | null = null;
+    const engine = new Engine(app.schema, source, {
       durability: config.durability,
       integrityCheck: "full",
     });
+    let backupFailed = false;
+    let backupFailure: unknown;
     try {
       manifest = engine.backup(artifact);
-    } finally {
-      engine.close("clean");
+    } catch (error) {
+      backupFailed = true;
+      backupFailure = error;
     }
+    try {
+      engine.close("clean");
+    } catch (closeError) {
+      if (backupFailed) {
+        backupFailure = new AggregateError(
+          [backupFailure, closeError],
+          `backup and database close both failed: ${source}`,
+        );
+      } else {
+        backupFailure = closeError;
+      }
+      backupFailed = true;
+    }
+    if (backupFailed) {
+      try {
+        rmSync(artifact, { force: true });
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [backupFailure, cleanupError],
+          `backup failed and candidate artifact cleanup also failed: ${artifact}`,
+        );
+      }
+      throw backupFailure;
+    }
+    if (manifest === null) throw new Error("backup completed without a manifest");
 
     try {
       await verify(config, artifact, manifest);
       manifest = { ...manifest, verifiedAt: Date.now() };
       publishManifest(manifestPath, manifest);
     } catch (error) {
-      rmSync(artifact, { force: true });
+      try {
+        rmSync(artifact, { force: true });
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `backup verification and artifact cleanup both failed: ${artifact}`,
+        );
+      }
       throw error;
     }
 
@@ -408,24 +443,28 @@ export async function verifyBackupArtifact(
   artifact: string,
   manifest: BackupManifest,
 ): Promise<void> {
-  const schema = await importSchema(config);
   const temporaryDir = mkdtempSync(join(tmpdir(), "dbzz-verify-"));
   const restored = join(temporaryDir, "data.db");
+  let failed = false;
+  let failure: unknown;
   try {
-    Engine.restore(artifact, restored, manifest);
-    const engine = new Engine(schema, restored, {
-      durability: manifest.durability,
-      integrityCheck: "full",
-    });
-    try {
-      assertManifestMatchesEngine(engine, manifest);
-      proveNextCommit(engine);
-    } finally {
-      engine.close("clean");
-    }
-  } finally {
-    rmSync(temporaryDir, { recursive: true, force: true });
+    await restoreVerifiedDatabase(artifact, restored, manifest, () => importApp(config));
+  } catch (error) {
+    failed = true;
+    failure = error;
   }
+  try {
+    rmSync(temporaryDir, { recursive: true, force: true });
+  } catch (cleanupError) {
+    if (failed) {
+      throw new AggregateError(
+        [failure, cleanupError],
+        `backup verification and temporary cleanup both failed: ${artifact}`,
+      );
+    }
+    throw cleanupError;
+  }
+  if (failed) throw failure;
 }
 
 /** Verify in a fresh process, then atomically restore into a never-used target. */
@@ -440,52 +479,18 @@ export async function restoreVerifiedBackup(
       throw new Error(`backup artifact not found at ${artifact}`);
     }
     const manifest = readBackupManifest(artifact);
-    if (existsSync(config.dbDir)) {
-      throw new Error(`restore requires a fresh target; database directory already exists: ${config.dbDir}`);
-    }
-
     await verify(config, artifact, manifest);
 
     const target = databasePath(config);
-    mkdirSync(dirname(config.dbDir), { recursive: true });
-    try {
-      // Claim the target after verification so a concurrent starter/restorer
-      // cannot appear in the gap between the freshness check and promotion.
-      mkdirSync(config.dbDir);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        throw new Error(`restore requires a fresh target; database directory already exists: ${config.dbDir}`);
-      }
-      throw error;
-    }
-    try {
-      Engine.restore(artifact, target, manifest);
-      const schema = await importSchema(config);
-      const engine = new Engine(schema, target, {
-        durability: manifest.durability,
-        integrityCheck: "full",
-      });
-      let status: EngineStatus;
-      try {
-        status = assertManifestMatchesEngine(engine, manifest);
-        proveNextCommit(engine);
-      } finally {
-        engine.close("clean");
-      }
-      return {
-        format: 1,
-        operation: "restore",
-        artifact,
-        database: target,
-        manifest: serializeBackupManifest(manifest),
-        status: statusJson(status),
-      };
-    } catch (error) {
-      // The target was proven absent above, so every file in this directory was
-      // created by this restore attempt and is safe to remove on failure.
-      rmSync(config.dbDir, { recursive: true, force: true });
-      throw error;
-    }
+    const status = await restoreVerifiedDatabase(artifact, target, manifest, () => importApp(config));
+    return {
+      format: 1,
+      operation: "restore",
+      artifact,
+      database: target,
+      manifest: serializeBackupManifest(manifest),
+      status: statusJson(status),
+    };
   }, (report) => ({
     sizeBytes: report.manifest.bytes,
     commitId: report.manifest.commitVersion,

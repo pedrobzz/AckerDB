@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { cpus, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -151,10 +151,10 @@ function constraintOperations(dsl: ValidatorDsl): readonly [string, Operation, O
   ];
 }
 
-async function loadDsl(path: string, name: "dbz" | "v"): Promise<ValidatorDsl> {
+async function loadDsl(path: string): Promise<ValidatorDsl> {
   const loaded = await import(pathToFileURL(path).href);
-  if (loaded[name] === undefined) throw new Error(`${path} does not export ${name}`);
-  return loaded[name] as ValidatorDsl;
+  if (loaded.v === undefined) throw new Error(`${path} does not export v`);
+  return loaded.v as ValidatorDsl;
 }
 
 function printComparison(
@@ -197,17 +197,12 @@ async function main(): Promise<void> {
     mkdirSync(scope, { recursive: true });
     symlinkSync(join(baseRoot, "packages", "core"), join(scope, "core"), "dir");
 
-    const baseV = join(baseRoot, "packages", "server", "src", "v.ts");
-    const baseName = existsSync(baseV) ? "v" : "dbz";
-    const basePath = baseName === "v"
-      ? baseV
-      : join(baseRoot, "packages", "server", "src", "dbz.ts");
-    const baseDsl = await loadDsl(basePath, baseName);
-    const branchDsl = await loadDsl(join(root, "packages", "server", "src", "v.ts"), "v");
+    const baseDsl = await loadDsl(join(baseRoot, "packages", "server", "src", "v.ts"));
+    const branchDsl = await loadDsl(join(root, "packages", "server", "src", "v.ts"));
 
     console.log("DBzz validator diagnostic (informational only; ±2% is the review/noise band)");
     console.log(`host: Bun ${Bun.version}, ${process.platform}/${process.arch}, ${cpus()[0]?.model ?? "unknown CPU"}`);
-    console.log(`base: ${requestedBase ?? "merge-base(main, HEAD)"} → ${baseCommit} (${baseName})`);
+    console.log(`base: ${requestedBase ?? "merge-base(main, HEAD)"} → ${baseCommit} (v)`);
     console.log(`branch: ${command(["git", "rev-parse", "HEAD"], root)} (working tree v)`);
     console.log(`load: ${iterations.toLocaleString()} checks/sample × ${ROUNDS} alternating samples; ${WARMUP_ITERATIONS.toLocaleString()} warm-up checks`);
     console.log("operation: prebuilt validators, reused valid inputs, synchronous check + output materialization");

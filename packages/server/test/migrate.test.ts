@@ -688,12 +688,12 @@ describe("migrate: renames", () => {
     // ZERO row rewrites: the stored integer is unchanged
     const rawStatus = (engine.writer.query("SELECT status FROM users WHERE id = 1").get() as { status: bigint }).status;
     expect(rawStatus).toBe(0n);
-    // _dbz_tags now maps the NEW name to the OLD tag, and the old name is gone
-    const foo = engine.writer.query("SELECT tag FROM _dbz_tags WHERE type = 'Status' AND variant = 'Foo'").get() as {
+    // _dbzz_tags now maps the NEW name to the OLD tag, and the old name is gone
+    const foo = engine.writer.query("SELECT tag FROM _dbzz_tags WHERE type = 'Status' AND variant = 'Foo'").get() as {
       tag: bigint;
     };
     expect(foo.tag).toBe(0n);
-    expect(engine.writer.query("SELECT 1 FROM _dbz_tags WHERE type = 'Status' AND variant = 'Test'").get()).toBe(null);
+    expect(engine.writer.query("SELECT 1 FROM _dbzz_tags WHERE type = 'Status' AND variant = 'Test'").get()).toBe(null);
     // and the value reads back under the new name
     expect((await d.users.get(1n)).status).toBe("Foo");
     engine.close("clean");
@@ -764,7 +764,7 @@ describe("migrate: renames", () => {
     }])).rejects.toThrow("1 existing row(s) violate the target validator");
     expect(engine.loadSnapshot()).toEqual(snapshotOf(before));
     expect(history(engine)).toEqual([]);
-    expect(engine.writer.query("SELECT variant FROM _dbz_tags WHERE type = 'Body'").all()).toEqual([
+    expect(engine.writer.query("SELECT variant FROM _dbzz_tags WHERE type = 'Body'").all()).toEqual([
       { variant: "legacy" },
     ]);
     engine.close("clean");
@@ -1120,7 +1120,7 @@ describe("migrate: rename validation refuses before touching anything", () => {
     const s2 = defineSchema({ users: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["Live"]) }) });
     const s3 = defineSchema({ users: defineTable({ id: v.primaryKey(), role: v.enum("Role", ["Old"]) }) });
     const path = freshPath();
-    // seed s1 (interns Live=0, Old=1), then retire "Old" — its tag stays in _dbz_tags forever
+    // seed s1 (interns Live=0, Old=1), then retire "Old" — its tag stays in _dbzz_tags forever
     const engine1 = new Engine(s1, path);
     reconcile(engine1);
     engine1.close("clean");
@@ -1150,7 +1150,7 @@ describe("migrate: rename validation refuses before touching anything", () => {
 /** The recorded, ordered migration history of a database. */
 function history(engine: Engine): { number: bigint; name: string; identity: string }[] {
   return engine.writer
-    .query("SELECT number, name, identity FROM _dbz_migrations ORDER BY number ASC")
+    .query("SELECT number, name, identity FROM _dbzz_migrations ORDER BY number ASC")
     .all() as { number: bigint; name: string; identity: string }[];
 }
 
@@ -1459,7 +1459,7 @@ describe("migrate: the chain", () => {
         engine,
         [{ number: 1, name: "parse", pre: snapshotOf(seedS), target: snapshotOf(stepTarget), code: "", migration: defineMigration({ tables: { posts: (row) => ({ n: Number(row.n) }) } }) }],
       ),
-    ).rejects.toThrow(/unsafe schema changes.*dbz reset/s);
+    ).rejects.toThrow(/unsafe schema changes.*dbzz reset/s);
     // the chain step itself still committed (history records it)
     expect(history(engine).map((r) => Number(r.number))).toEqual([1]);
     engine.close("clean");
@@ -2053,6 +2053,45 @@ describe("migrate: frozen before-state (emits never observed by transforms)", ()
     );
     expect(bbSaw).toBe(1); // only the original cc row, not aa's emit
     expect((await d.cc.scan().collect()).map((r: Record<string, unknown>) => r.msg).sort()).toEqual(["from-aa", "orig"]);
+    engine.close("clean");
+  });
+});
+
+describe("migrate: durable transform ordering", () => {
+  test("orders transform emits by UTF-16 source name before assigning target ids", async () => {
+    const before = defineSchema({
+      i: defineTable({ id: v.primaryKey(), value: v.string() }),
+      IA: defineTable({ id: v.primaryKey(), value: v.string() }),
+      markers: defineTable({ id: v.primaryKey(), source: v.string() }),
+    });
+    const target = defineSchema({
+      markers: defineTable({ id: v.primaryKey(), source: v.string() }),
+    });
+    const path = freshPath();
+    await seed(before, path, async (d) => {
+      await d.i.insert({ value: "lower" });
+      await d.IA.insert({ value: "upper" });
+    });
+
+    const engine = new Engine(target, path);
+    await reconcile(engine, [{
+      number: 1,
+      name: "stable-transform-order",
+      pre: snapshotOf(before),
+      target: snapshotOf(target),
+      code: "",
+      migration: defineMigration({
+        tables: {
+          i: (_row, ctx) => ctx.insert("markers", { source: "i" }),
+          IA: (_row, ctx) => ctx.insert("markers", { source: "IA" }),
+        },
+      }),
+    }]);
+
+    expect(await db(engine).markers.scan().collect()).toEqual([
+      { id: 1n, source: "IA" },
+      { id: 2n, source: "i" },
+    ]);
     engine.close("clean");
   });
 });

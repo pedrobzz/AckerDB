@@ -153,13 +153,13 @@ describe("durable provider-neutral Identity", () => {
     expect(aliceIds[0]).not.toBe(bobIds[0]);
 
     const accounts = engine.writer
-      .query("SELECT issuer, subject, identity FROM _dbz_identity_accounts ORDER BY subject")
+      .query("SELECT issuer, subject, identity FROM _dbzz_identity_accounts ORDER BY subject")
       .all() as { issuer: string; subject: string; identity: bigint }[];
     expect(accounts).toEqual([
       { ...alice, identity: aliceIds[0] as bigint },
       { ...bob, identity: bobIds[0] as bigint },
     ]);
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_identities").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_identities").get())
       .toEqual({ count: 2n });
 
     const writerAdmissions = runtime.status().writer.admitted;
@@ -168,10 +168,10 @@ describe("durable provider-neutral Identity", () => {
 
     expect(Object.keys(schema.tables)).toEqual(["owned"]);
     expect([...engine.plans.keys()]).toEqual(["owned"]);
-    expect(runtime.kindOf("_dbz_identities")).toBeNull();
-    expect(runtime.kindOf("_dbz_identity_accounts")).toBeNull();
+    expect(runtime.kindOf("_dbzz_identities")).toBeNull();
+    expect(runtime.kindOf("_dbzz_identity_accounts")).toBeNull();
     expect(
-      (engine.writer.query("PRAGMA table_info('_dbz_identity_accounts')").all() as { name: string }[])
+      (engine.writer.query("PRAGMA table_info('_dbzz_identity_accounts')").all() as { name: string }[])
         .map(({ name }) => name),
     ).toEqual(["issuer", "subject", "identity"]);
   });
@@ -243,10 +243,10 @@ describe("durable provider-neutral Identity", () => {
 
     second.engine.writer.exec("BEGIN IMMEDIATE");
     second.engine.writer
-      .query("DELETE FROM _dbz_identity_accounts WHERE issuer = ? AND subject = ?")
+      .query("DELETE FROM _dbzz_identity_accounts WHERE issuer = ? AND subject = ?")
       .run("https://issuer.example/", "next-user");
     second.engine.writer
-      .query("DELETE FROM _dbz_identities WHERE identity = ?")
+      .query("DELETE FROM _dbzz_identities WHERE identity = ?")
       .run(next);
     second.engine.writer.exec("COMMIT");
     const reprovisioned = await second.runtime.resolveIdentity({

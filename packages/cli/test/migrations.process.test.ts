@@ -14,27 +14,29 @@ const STEP_TIMEOUT_MS = 15_000;
 
 // The on-disk schema sources and the in-process snapshots are the same schema:
 // snapshotOf is deterministic, so PRE/TARGET here equal what the server derives
-// from schema.ts. Only the `count` column type changes (float -> string).
-const SCHEMA_V1 = `import { defineSchema, defineTable, v } from "@dbzz/server";
+// from app.ts. Only the `count` column type changes (float -> string).
+const APP_V1 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
 
-export default defineSchema({
+const schema = defineSchema({
   items: defineTable({
     id: v.primaryKey(),
     label: v.string(),
     count: v.int(),
   }),
 });
+export default defineApp({ schema });
 `;
 
-const SCHEMA_V2 = `import { defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V2 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
 
-export default defineSchema({
+const schema = defineSchema({
   items: defineTable({
     id: v.primaryKey(),
     label: v.string(),
     count: v.string(),
   }),
 });
+export default defineApp({ schema });
 `;
 
 const PRE = snapshotOf(
@@ -205,13 +207,13 @@ async function stopServer(server: ReturnType<typeof spawnServer>, label: string)
   children.delete(server.child);
 }
 
-describe("dbz startup migrations", () => {
+describe("dbzz startup migrations", () => {
   test("loads the chain, migrates data, and serves the transformed rows", async () => {
     const port = await freePort();
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V1,
+      "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -231,7 +233,7 @@ describe("dbz startup migrations", () => {
     await stopServer(first, "v1 server");
 
     // Rewrite the schema to v2 and author the migration answering the refusal.
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    writeFileSync(join(dir, "app.ts"), APP_V2);
     mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
     writeFileSync(join(dir, "migrations", "0001_count_to_string.ts"), MIGRATION_0001);
     writeFileSync(
@@ -271,9 +273,9 @@ describe("dbz startup migrations", () => {
   test("refuses on restart after an applied migration's transform body is edited", async () => {
     const port = await freePort();
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V1,
+      "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -289,7 +291,7 @@ describe("dbz startup migrations", () => {
     await stopServer(first, "v1 server");
 
     // Author v2 + the migration and apply it on the next start.
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    writeFileSync(join(dir, "app.ts"), APP_V2);
     mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
     writeFileSync(join(dir, "migrations", "0001_count_to_string.ts"), MIGRATION_0001);
     writeFileSync(
@@ -313,12 +315,12 @@ describe("dbz startup migrations", () => {
     expect(third.output()).toContain("immutable");
   }, TEST_TIMEOUT_MS);
 
-  test("refuses an unanswered schema change and names dbz generate", async () => {
+  test("refuses an unanswered schema change and names dbzz generate", async () => {
     const port = await freePort();
     const dir = makeFixture({
-      "schema.ts": SCHEMA_V1,
+      "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -334,12 +336,12 @@ describe("dbz startup migrations", () => {
 
     // The type change is shape-unsafe; with no migration file the startup must
     // refuse and end with the exact generation command.
-    writeFileSync(join(dir, "schema.ts"), SCHEMA_V2);
+    writeFileSync(join(dir, "app.ts"), APP_V2);
     const second = spawnServer(dir);
     const exitCode = await withTimeout(second.child.exited, "refused startup exit");
     await withTimeout(second.drained, "refused startup output drain");
     children.delete(second.child);
     expect(exitCode).not.toBe(0);
-    expect(second.output()).toContain("dbz generate");
+    expect(second.output()).toContain("dbzz generate");
   }, TEST_TIMEOUT_MS);
 });

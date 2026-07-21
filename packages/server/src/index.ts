@@ -1,4 +1,29 @@
 export {
+  defineApp,
+  isApp,
+  type App,
+  type AppPluginCapabilities,
+  type AppSchema,
+} from "./app.ts";
+export {
+  assemblePlugins,
+  definePlugin,
+  definePluginContract,
+  pluginMutation,
+  pluginProcedure,
+  pluginQuery,
+  type PluginBuilders,
+  type PluginCleanup,
+  type PluginExportTree,
+  type PluginInstance,
+  type PluginLifecycle,
+  type PluginLifecycleContext,
+  type PluginMutationCtx,
+  type PluginOperationSpec,
+  type PluginProcedureCtx,
+  type PluginQueryCtx,
+} from "./plugins.ts";
+export {
   v,
   ValidationError,
   isValidationError,
@@ -43,6 +68,19 @@ export {
   type TablePlan,
   type TagMap,
 } from "./engine.ts";
+export { restoreVerifiedDatabase } from "./restore.ts";
+export { resetDatabase, type DatabaseResetResult } from "./storage-reset.ts";
+export { DatabaseAlreadyOpenError } from "./storage-ownership.ts";
+export {
+  desiredPluginMounts,
+  dropPluginStorage,
+  PluginStorageRequirementsError,
+  reconcilePluginStorage,
+  resetPluginStorage,
+  type DesiredPluginMounts,
+  type PluginStorageRequirement,
+} from "./plugin-storage.ts";
+export { PluginRuntime } from "./plugin-runtime.ts";
 export type { DurabilityPolicy } from "@dbzz/core";
 export type { TransportSource } from "./caller.ts";
 export {

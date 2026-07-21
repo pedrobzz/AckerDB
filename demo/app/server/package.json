@@ -3,22 +3,23 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "dbz dev .",
-    "start": "dbz start .",
-    "codegen": "dbz codegen .",
+    "dev": "dbzz dev .",
+    "start": "dbzz start .",
+    "codegen": "dbzz codegen .",
     "test": "bun test ../../scripts/backend.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ai-sdk/gateway": "4.0.23",
-    "@dbzz/server": "0.4.1-beta.3",
+    "@dbzz/cache": "0.6.0",
+    "@dbzz/server": "0.6.0",
     "@demo/dbzz-codegen": "workspace:*",
     "ai": "7.0.31",
     "jose": "^6.1.3",
     "just-bash": "3.1.0"
   },
   "devDependencies": {
-    "@dbzz/cli": "0.4.1-beta.3",
+    "@dbzz/cli": "0.6.0",
     "@types/bun": "^1.2.0",
     "typescript": "^5.9.0"
   }

@@ -416,6 +416,58 @@ describe("writes", () => {
     await db.payments.delete(id); // no-op, no throw
   });
 
+  test("deleteMany removes one bounded set and emits keys only for deleted rows", async () => {
+    const first = await pay(1n, "active", 10);
+    const second = await pay(2n, "failed", 20);
+    const survivor = await pay(3n, "active", 30);
+    const batchWrites = newWriteCollector();
+    const observations: DbStatementObservation[] = [];
+    const batchDb: any = makeDbWriter(
+      engine,
+      batchWrites,
+      () => ++eventSeq,
+      (observation) => observations.push(observation),
+    );
+
+    expect(await batchDb.payments.deleteMany([first, second, second, 999n])).toBe(2);
+    expect(await batchDb.payments.scan().collect()).toEqual([
+      expect.objectContaining({ id: survivor }),
+    ]);
+    expect(batchWrites.keys).toContain(idKey("payments", first));
+    expect(batchWrites.keys).toContain(idKey("payments", second));
+    expect(batchWrites.keys).not.toContain(idKey("payments", 999n));
+    expect(observations.filter(({ statement }) => statement === "deleteMany")).toEqual([
+      expect.objectContaining({ kind: "write", outcome: "ok", rowCount: 2 }),
+    ]);
+
+    expect(await batchDb.payments.deleteMany([])).toBe(0);
+    expect(observations.filter(({ statement }) => statement === "deleteMany").at(-1))
+      .toEqual(expect.objectContaining({ outcome: "ok", rowCount: 0 }));
+    await expect(batchDb.payments.deleteMany([survivor, 1]))
+      .rejects.toThrow("expected bigint ids");
+    const failedBulkDelete = observations
+      .filter(({ statement }) => statement === "deleteMany")
+      .at(-1)!;
+    expect(failedBulkDelete).toEqual(expect.objectContaining({ outcome: "failed" }));
+    expect(Object.hasOwn(failedBulkDelete, "rowCount")).toBe(false);
+    expect(await batchDb.payments.get(survivor)).toEqual(expect.objectContaining({ id: survivor }));
+    const oversizedIds: bigint[] = [];
+    for (let index = 0; index < 257; index++) {
+      oversizedIds.push(await pay(BigInt(10_000 + index), "active", index));
+    }
+    await expect(batchDb.payments.deleteMany(oversizedIds))
+      .rejects.toThrow("at most 256 distinct ids");
+    const oversizedFailure = observations
+      .filter(({ statement }) => statement === "deleteMany")
+      .at(-1)!;
+    expect(oversizedFailure).toEqual(expect.objectContaining({ outcome: "failed" }));
+    expect(Object.hasOwn(oversizedFailure, "rowCount")).toBe(false);
+    const remainingIds = new Set(
+      (await batchDb.payments.scan().collect()).map((row: { id: bigint }) => row.id),
+    );
+    expect(oversizedIds.every((id) => remainingIds.has(id))).toBe(true);
+  });
+
   test("unique index violations throw UniqueConstraintError and roll nothing forward", async () => {
     await db.users.insert({ email: "a@x.com", name: "A", payload: { tag: "nothing", value: null } });
     await expect(

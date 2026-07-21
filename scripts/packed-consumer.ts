@@ -91,7 +91,7 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
       dependencies,
       devDependencies: { "@types/bun": bunTypesVersion },
       // The release is intentionally unpublished: force transitive @dbzz exact
-      // versions to the same five tarballs while preserving packed manifests.
+      // versions to the same six tarballs while preserving packed manifests.
       overrides: dependencies,
     }, null, 2));
     await runCommand([

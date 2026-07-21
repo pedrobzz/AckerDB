@@ -117,6 +117,9 @@ export async function _typecheckUsage(): Promise<void> {
   if (removedRow !== null) {
     const _amount: number = removedRow.amount;
   }
+  const _deletedCount: number = await wdb.payments.deleteMany([id]);
+  // @ts-expect-error bulk deletion accepts only primary-key bigints
+  await wdb.payments.deleteMany([1]);
   const upserted = await wdb.users.byEmail
     .upsert({ email: "a@x.com" }, { name: "A", payload: { tag: "nothing", value: null } })
     .returning();

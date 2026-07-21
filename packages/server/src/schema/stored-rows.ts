@@ -49,7 +49,7 @@ export function physicalColumnsOf(table: TableSnapshot): Set<string> {
  */
 export function loadStoredTags(writer: Database): StoredTags {
   const tags = new Map<string, Map<number, string>>();
-  for (const row of writer.query("SELECT type, variant, tag FROM _dbz_tags").all() as {
+  for (const row of writer.query("SELECT type, variant, tag FROM _dbzz_tags").all() as {
     type: string;
     variant: string;
     tag: bigint;
@@ -71,6 +71,7 @@ export function storedColumn(
   physicalCols: ReadonlySet<string>,
   tags: StoredTags,
   physicalName: (name: string) => string = (name) => name,
+  tagIdentity: (typeName: string) => string = (typeName) => typeName,
 ): StoredColumn {
   const base = baseOf(desc);
   const kind = base["k"] as string;
@@ -87,7 +88,7 @@ export function storedColumn(
       decode: (values) => values[0] === null
         ? null
         : {
-            tag: tags.get(typeName)!.get(Number(values[0]))!,
+            tag: tags.get(tagIdentity(typeName))!.get(Number(values[0]))!,
             value: decode(values[1] as string),
           },
     };
@@ -98,7 +99,9 @@ export function storedColumn(
       col,
       phys,
       present,
-      decode: (values) => values[0] === null ? null : tags.get(typeName)!.get(Number(values[0]))!,
+      decode: (values) => values[0] === null
+        ? null
+        : tags.get(tagIdentity(typeName))!.get(Number(values[0]))!,
     };
   }
   const scalar = scalarDecoder(kind);
@@ -121,13 +124,14 @@ export function buildStoredTable(
   tags: StoredTags,
   physicalName: (name: string) => string = (name) => name,
   selected?: ReadonlySet<string>,
+  tagIdentity: (typeName: string) => string = (typeName) => typeName,
 ): StoredTable {
   let pk = "";
   const columns: StoredColumn[] = [];
   for (const [column, desc] of Object.entries(snapshot.columns)) {
     if (desc["k"] === "pk") pk = column;
     if (selected === undefined || selected.has(column) || desc["k"] === "pk") {
-      columns.push(storedColumn(column, desc, physicalCols, tags, physicalName));
+      columns.push(storedColumn(column, desc, physicalCols, tags, physicalName, tagIdentity));
     }
   }
   return { pk, physicalPk: physicalName(pk), columns };

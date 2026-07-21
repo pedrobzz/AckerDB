@@ -85,7 +85,7 @@ describe("Identity-bound MCP owner tokens", () => {
     expect(created).not.toHaveProperty("expiresAt");
 
     const stored = engine.writer.query(
-      "SELECT token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _dbz_mcp_tokens",
+      "SELECT token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _dbzz_mcp_tokens",
     ).get() as {
       token_id: string;
       identity: bigint;
@@ -112,20 +112,20 @@ describe("Identity-bound MCP owner tokens", () => {
     expect(storedText).not.toContain(created.token);
     expect(storedText).not.toContain(secret);
     expect(
-      engine.writer.query("SELECT result_disposition, result, result_bytes FROM _dbz_mutations").get(),
+      engine.writer.query("SELECT result_disposition, result, result_bytes FROM _dbzz_mutations").get(),
     ).toEqual({ result_disposition: "one-time", result: null, result_bytes: 0n });
     expect(() => agentMcp.tokens.create(retainedOwnerContext()!, {
       name: "Escaped context",
       metadata: {},
     })).toThrow("MCP token operations require a DBZZ invocation context");
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens").get())
       .toEqual({ count: 1n });
 
     await expect(runtime.mutation(aliceSession, request(firstMessage))).rejects.toMatchObject({
       code: "conflict",
       message: "mutation committed, but its one-time result is no longer available",
     });
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens").get())
       .toEqual({ count: 1n });
 
     const second = await runtime.mutation(aliceSession, request(mutationMessage(2, "2", {
@@ -183,7 +183,7 @@ describe("Identity-bound MCP owner tokens", () => {
     });
 
     const before = engine.reader.query(
-      "SELECT secret_digest, scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
+      "SELECT secret_digest, scopes FROM _dbzz_mcp_tokens WHERE token_id = ?",
     ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
     const active = await runtime.authenticateMcpToken("agent", created.token, "before-edit");
 
@@ -213,7 +213,7 @@ describe("Identity-bound MCP owner tokens", () => {
     });
 
     const after = engine.reader.query(
-      "SELECT secret_digest, scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
+      "SELECT secret_digest, scopes FROM _dbzz_mcp_tokens WHERE token_id = ?",
     ).get(created.id) as { readonly secret_digest: Uint8Array; readonly scopes: string };
     expect(Buffer.from(after.secret_digest)).toEqual(Buffer.from(before.secret_digest));
     expect(after.scopes).toBe(before.scopes);
@@ -356,7 +356,7 @@ describe("Identity-bound MCP owner tokens", () => {
       { name: "No null sentinel", scopes: null },
       "tokens.createScopedToken",
     )))).rejects.toMatchObject({ code: "validation" });
-    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens").get())
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens").get())
       .toEqual({ count: 0n });
 
     const created = (await runtime.mutation(aliceSession, request(mutationMessage(
@@ -479,10 +479,10 @@ describe("Identity-bound MCP owner tokens", () => {
       code: "unauthorized",
     });
     expect(engine.reader.query(
-      "SELECT scopes FROM _dbz_mcp_tokens WHERE token_id = ?",
+      "SELECT scopes FROM _dbzz_mcp_tokens WHERE token_id = ?",
     ).get(created.id)).toEqual({ scopes: "[]" });
     engine.writer.query(
-      "UPDATE _dbz_mcp_tokens SET scopes = ? WHERE token_id = ?",
+      "UPDATE _dbzz_mcp_tokens SET scopes = ? WHERE token_id = ?",
     ).run(encode(["orders.create"]), created.id);
     await expect(runtime.authenticateMcpToken(
       "scoped",
@@ -674,12 +674,12 @@ describe("Identity-bound MCP owner tokens", () => {
     )).value as { readonly id: string };
     const firstId = "z".repeat(22);
     const secondId = "A".repeat(22);
-    first.engine.writer.query("UPDATE _dbz_mcp_tokens SET token_id = ? WHERE token_id = ?")
+    first.engine.writer.query("UPDATE _dbzz_mcp_tokens SET token_id = ? WHERE token_id = ?")
       .run(firstId, firstCreated.id);
-    first.engine.writer.query("UPDATE _dbz_mcp_tokens SET token_id = ? WHERE token_id = ?")
+    first.engine.writer.query("UPDATE _dbzz_mcp_tokens SET token_id = ? WHERE token_id = ?")
       .run(secondId, secondCreated.id);
     expect(first.engine.reader.query(
-      "SELECT creation_seq, token_id FROM _dbz_mcp_tokens ORDER BY creation_seq",
+      "SELECT creation_seq, token_id FROM _dbzz_mcp_tokens ORDER BY creation_seq",
     ).all()).toEqual([
       { creation_seq: 1n, token_id: firstId },
       { creation_seq: 2n, token_id: secondId },
@@ -828,7 +828,7 @@ describe("Identity-bound MCP owner tokens", () => {
       arguments: {},
     }, created.token);
     expect(await selfAdmin.json()).toMatchObject({ result: { isError: true } });
-    expect(second.engine.reader.query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens").get())
+    expect(second.engine.reader.query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens").get())
       .toEqual({ count: 2n });
 
     const anonymous = await rpc(base, "/agent/mcp", "tools/call", {

@@ -15,11 +15,12 @@ import { makeFixture } from "./fixture.ts";
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 const REPO = new URL("../../..", import.meta.url).pathname;
 const STEP_TIMEOUT_MS = 10_000;
-const SCHEMA = `
-import { v, defineSchema, defineTable } from "@dbzz/server";
-export default defineSchema({
+const APP_SOURCE = `
+import { v, defineApp, defineSchema, defineTable } from "@dbzz/server";
+const schema = defineSchema({
   records: defineTable({ id: v.primaryKey(), value: v.string() }),
 });
+export default defineApp({ schema });
 `;
 const schema = defineSchema({
   records: defineTable({ id: v.primaryKey(), value: v.string() }),
@@ -60,8 +61,8 @@ async function freePort(): Promise<number> {
 
 function fixture(port: number): string {
   const dir = makeFixture({
-    "schema.ts": SCHEMA,
-    ".zdb.config.json": JSON.stringify({ port }),
+    "app.ts": APP_SOURCE,
+    ".dbzz.config.json": JSON.stringify({ port }),
   });
   dirs.push(dir);
   return dir;
@@ -131,7 +132,7 @@ function rollbackJournalCrash(path: string, corruptLedger: boolean): string {
     database.exec("PRAGMA cache_size = 5");
     database.exec("PRAGMA cache_spill = 1");
     ${corruptLedger
-      ? 'database.query("UPDATE _dbz_state SET mutation_records = 999 WHERE singleton = 1").run();'
+      ? 'database.query("UPDATE _dbzz_state SET mutation_records = 999 WHERE singleton = 1").run();'
       : ""}
     database.exec("BEGIN IMMEDIATE");
     const insert = database.query("INSERT INTO records (value) VALUES (?)");
@@ -162,9 +163,9 @@ async function assertFailedStartup(
 
 function cleanDatabase(): Buffer {
   const dir = fixture(32_111);
-  const source = join(dir, ".zdb", "source.db");
+  const source = join(dir, ".dbzz", "source.db");
   const artifact = join(dir, "clean.db");
-  mkdirSync(join(dir, ".zdb"), { recursive: true });
+  mkdirSync(join(dir, ".dbzz"), { recursive: true });
   const engine = new Engine(schema, source);
   reconcile(engine);
   engine.backup(artifact);
@@ -250,8 +251,8 @@ describe("fresh-process storage corruption rejection", () => {
     for (const variant of variants) {
       const port = await freePort();
       const dir = fixture(port);
-      const path = join(dir, ".zdb", "data.db");
-      mkdirSync(join(dir, ".zdb"), { recursive: true });
+      const path = join(dir, ".dbzz", "data.db");
+      mkdirSync(join(dir, ".dbzz"), { recursive: true });
       variant.write(path);
       const before = readFileSync(path);
 
@@ -263,8 +264,8 @@ describe("fresh-process storage corruption rejection", () => {
 
     const orphanPort = await freePort();
     const orphanDir = fixture(orphanPort);
-    const orphanPath = join(orphanDir, ".zdb", "data.db");
-    mkdirSync(join(orphanDir, ".zdb"), { recursive: true });
+    const orphanPath = join(orphanDir, ".dbzz", "data.db");
+    mkdirSync(join(orphanDir, ".dbzz"), { recursive: true });
     const orphanWal = Buffer.from("orphan recovery evidence");
     writeFileSync(`${orphanPath}-wal`, orphanWal);
     await assertFailedStartup(
@@ -277,8 +278,8 @@ describe("fresh-process storage corruption rejection", () => {
 
     const journalPort = await freePort();
     const journalDir = fixture(journalPort);
-    const journalPath = join(journalDir, ".zdb", "data.db");
-    mkdirSync(join(journalDir, ".zdb"), { recursive: true });
+    const journalPath = join(journalDir, ".dbzz", "data.db");
+    mkdirSync(join(journalDir, ".dbzz"), { recursive: true });
     const orphanJournal = Buffer.from("orphan rollback evidence");
     writeFileSync(`${journalPath}-journal`, orphanJournal);
     await assertFailedStartup(
@@ -293,8 +294,8 @@ describe("fresh-process storage corruption rejection", () => {
   test("recovers committed and uncommitted hot WALs but rejects structural damage", async () => {
     const clean = cleanDatabase();
     const crashDir = fixture(await freePort());
-    const source = join(crashDir, ".zdb", "data.db");
-    mkdirSync(join(crashDir, ".zdb"), { recursive: true });
+    const source = join(crashDir, ".dbzz", "data.db");
+    mkdirSync(join(crashDir, ".dbzz"), { recursive: true });
     writeFileSync(source, clean);
     const crashScript = `
       import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
@@ -328,8 +329,8 @@ describe("fresh-process storage corruption rejection", () => {
 
     const validPort = await freePort();
     const validDir = fixture(validPort);
-    const validPath = join(validDir, ".zdb", "data.db");
-    mkdirSync(join(validDir, ".zdb"), { recursive: true });
+    const validPath = join(validDir, ".dbzz", "data.db");
+    mkdirSync(join(validDir, ".dbzz"), { recursive: true });
     writeFileSync(validPath, main);
     writeFileSync(`${validPath}-wal`, Buffer.concat([wal, Buffer.alloc(512, 0xa5)]));
     const valid = spawnStart(validDir);
@@ -339,15 +340,15 @@ describe("fresh-process storage corruption rejection", () => {
     expect(recovered.query("SELECT value FROM records").all()).toEqual([
       { value: "committed-before-crash" },
     ]);
-    expect(recovered.query("SELECT commit_version FROM _dbz_state WHERE singleton = 1").get()).toEqual({
+    expect(recovered.query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1").get()).toEqual({
       commit_version: 1n,
     });
     recovered.close();
 
     const uncommittedPort = await freePort();
     const uncommittedDir = fixture(uncommittedPort);
-    const uncommittedPath = join(uncommittedDir, ".zdb", "data.db");
-    mkdirSync(join(uncommittedDir, ".zdb"), { recursive: true });
+    const uncommittedPath = join(uncommittedDir, ".dbzz", "data.db");
+    mkdirSync(join(uncommittedDir, ".dbzz"), { recursive: true });
     writeFileSync(uncommittedPath, clean);
     const spillScript = `
       import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
@@ -383,15 +384,15 @@ describe("fresh-process storage corruption rejection", () => {
     await stopStarted(uncommitted);
     const rolledBack = new Database(uncommittedPath, { readonly: true, safeIntegers: true });
     expect(rolledBack.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 0n });
-    expect(rolledBack.query("SELECT commit_version FROM _dbz_state WHERE singleton = 1").get()).toEqual({
+    expect(rolledBack.query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1").get()).toEqual({
       commit_version: 0n,
     });
     rolledBack.close();
 
     const resetPort = await freePort();
     const resetDir = fixture(resetPort);
-    const resetPath = join(resetDir, ".zdb", "data.db");
-    mkdirSync(join(resetDir, ".zdb"), { recursive: true });
+    const resetPath = join(resetDir, ".dbzz", "data.db");
+    mkdirSync(join(resetDir, ".dbzz"), { recursive: true });
     writeFileSync(resetPath, clean);
     const resetScript = `
       import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
@@ -433,7 +434,7 @@ describe("fresh-process storage corruption rejection", () => {
     await stopStarted(recoveredReset);
     const resetDatabase = new Database(resetPath, { readonly: true, safeIntegers: true });
     expect(resetDatabase.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 501n });
-    expect(resetDatabase.query("SELECT commit_version FROM _dbz_state WHERE singleton = 1").get()).toEqual({
+    expect(resetDatabase.query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1").get()).toEqual({
       commit_version: 2n,
     });
     resetDatabase.close();
@@ -454,8 +455,8 @@ describe("fresh-process storage corruption rejection", () => {
     for (const variant of variants) {
       const port = await freePort();
       const dir = fixture(port);
-      const path = join(dir, ".zdb", "data.db");
-      mkdirSync(join(dir, ".zdb"), { recursive: true });
+      const path = join(dir, ".dbzz", "data.db");
+      mkdirSync(join(dir, ".dbzz"), { recursive: true });
       writeFileSync(path, main);
       writeFileSync(`${path}-wal`, variant.bytes());
       const beforeMain = readFileSync(path);
@@ -471,15 +472,15 @@ describe("fresh-process storage corruption rejection", () => {
   test("rejects hot-WAL internal corruption without changing any recovery artifact", async () => {
     const port = await freePort();
     const dir = fixture(port);
-    const path = join(dir, ".zdb", "data.db");
-    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    const path = join(dir, ".dbzz", "data.db");
+    mkdirSync(join(dir, ".dbzz"), { recursive: true });
     writeFileSync(path, cleanDatabase());
     const corruptScript = `
       import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
       const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(path)});
       engine.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-      engine.writer.query("UPDATE _dbz_state SET mutation_records = 999 WHERE singleton = 1").run();
+      engine.writer.query("UPDATE _dbzz_state SET mutation_records = 999 WHERE singleton = 1").run();
       process.kill(process.pid, "SIGKILL");
     `;
     const corrupted = Bun.spawn([process.execPath, "-e", corruptScript], {
@@ -514,8 +515,8 @@ describe("fresh-process storage corruption rejection", () => {
   test("recovers hot rollback journals and preserves rejected recovery evidence byte-for-byte", async () => {
     const validPort = await freePort();
     const validDir = fixture(validPort);
-    const validPath = join(validDir, ".zdb", "data.db");
-    mkdirSync(join(validDir, ".zdb"), { recursive: true });
+    const validPath = join(validDir, ".dbzz", "data.db");
+    mkdirSync(join(validDir, ".dbzz"), { recursive: true });
     writeFileSync(validPath, cleanDatabase());
     await runSilentCrash(rollbackJournalCrash(validPath, false), "hot rollback-journal fixture crash");
     expect(readFileSync(`${validPath}-journal`).byteLength).toBeGreaterThan(512);
@@ -526,14 +527,14 @@ describe("fresh-process storage corruption rejection", () => {
     const recoveredDatabase = new Database(validPath, { readonly: true, safeIntegers: true });
     expect(recoveredDatabase.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 0n });
     expect(
-      recoveredDatabase.query("SELECT commit_version FROM _dbz_state WHERE singleton = 1").get(),
+      recoveredDatabase.query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1").get(),
     ).toEqual({ commit_version: 0n });
     recoveredDatabase.close();
 
     const corruptPort = await freePort();
     const corruptDir = fixture(corruptPort);
-    const corruptPath = join(corruptDir, ".zdb", "data.db");
-    mkdirSync(join(corruptDir, ".zdb"), { recursive: true });
+    const corruptPath = join(corruptDir, ".dbzz", "data.db");
+    mkdirSync(join(corruptDir, ".dbzz"), { recursive: true });
     writeFileSync(corruptPath, cleanDatabase());
     await runSilentCrash(
       rollbackJournalCrash(corruptPath, true),

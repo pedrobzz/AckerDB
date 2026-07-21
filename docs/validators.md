@@ -108,23 +108,3 @@ the invalid rows in that table's transform. Every transformed and emitted row
 is checked against the target validator before the migration and its history
 record commit atomically. See [Migrations](migrations.md) for the complete
 workflow.
-
-## Pre-1.0 upgrade break
-
-This validator release is intentionally breaking. There is no `dbz` validator
-alias, `v.number()`, wrapper modifier API, or compatibility path:
-
-- import `v` and replace every validator use of `dbz`;
-- choose `v.int()`, `v.float()`, or `v.bigint()` for every former
-  `dbz.number()` according to the value contract;
-- replace wrappers such as `dbz.nullable(dbz.string())` with
-  `v.string().nullable()`; and
-- run `dbz codegen` after updating the schema and server declarations.
-
-Any pre-upgrade database snapshot containing the removed `number` kind is
-incompatible with this cut. For a disposable development database, run
-`dbz reset` and reseed after the source conversion. If the rows matter, extract
-them while still running the old release, initialize a fresh database with the
-new schema, and import deliberately converted values through the new API. There
-is no in-place migration or automatic reinterpretation of old numeric
-snapshots.

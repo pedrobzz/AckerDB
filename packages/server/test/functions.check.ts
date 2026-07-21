@@ -30,6 +30,70 @@ const typedQuery = query as QueryBuilder<S>;
 const typedMutation = mutation as MutationBuilder<S>;
 const typedProcedure = procedure as ProcedureBuilder<S>;
 
+type QueryPluginCapabilities = {
+  readonly cache: {
+    get(key: string): Promise<string | undefined>;
+  };
+};
+type MutationPluginCapabilities = QueryPluginCapabilities & {
+  readonly cache: QueryPluginCapabilities["cache"] & {
+    set(key: string, value: string): Promise<void>;
+  };
+};
+type ProcedurePluginCapabilities = MutationPluginCapabilities & {
+  readonly external: {
+    fetch(key: string): Promise<string>;
+  };
+};
+
+const pluginQuery = query as QueryBuilder<S, QueryPluginCapabilities>;
+const pluginMutation = mutation as MutationBuilder<S, MutationPluginCapabilities>;
+const pluginProcedure = procedure as ProcedureBuilder<
+  S,
+  ProcedurePluginCapabilities,
+  MutationPluginCapabilities
+>;
+
+pluginQuery({
+  args: {},
+  access: "public",
+  handler: async (ctx) => {
+    const timestamp: number = ctx.timestamp;
+    await ctx.cache.get("key");
+    // @ts-expect-error query contexts receive no mutation Plugin operations
+    ctx.cache.set;
+    // @ts-expect-error procedure-only Plugin mounts are absent from queries
+    ctx.external;
+    return timestamp;
+  },
+});
+
+pluginMutation({
+  args: {},
+  access: "public",
+  handler: async (ctx) => {
+    await ctx.cache.get("key");
+    await ctx.cache.set("key", "value");
+    // @ts-expect-error procedure-only Plugin mounts are absent from mutations
+    ctx.external;
+  },
+});
+
+pluginProcedure({
+  args: {},
+  access: "public",
+  handler: async (ctx) => {
+    await ctx.external.fetch("key");
+    await ctx.tx(async (tx) => {
+      const inheritedTimestamp: number = tx.timestamp;
+      await tx.cache.set("key", "value");
+      // @ts-expect-error explicit tx contexts exclude procedure-only Plugin mounts
+      tx.external;
+      return inheritedTimestamp;
+    });
+  },
+});
+
 const getCounter = typedQuery({
   args: { key: v.string() },
   access: (_ctx, args) => args.key.length > 0,

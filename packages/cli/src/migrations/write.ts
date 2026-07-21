@@ -4,7 +4,7 @@
  * `scaffold.ts`; this module is generation's filesystem half — it reads the stored
  * state and optimistic probes from its sibling `plan.ts`, validates that a new
  * migration may be written at all, and owns the `migrations/` + `meta/` layout.
- * The single generation path behind both `dbz generate` and the `__generate` child.
+ * The single generation path behind both `dbzz generate` and the `__generate` child.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,7 +13,7 @@ import {
   validateHistoryPrefix,
   type Renames,
 } from "@dbzz/server";
-import { importSchema } from "../app.ts";
+import { importApp } from "../manifest.ts";
 import type { AppConfig } from "../config.ts";
 import { loadMigrationChain, migrationArtifactPaths, MIGRATION_NAME } from "./load.ts";
 import { planFingerprint, probeOptimisticRefusals, readStoredState } from "./plan.ts";
@@ -39,7 +39,7 @@ export interface GenerateRequest {
  * `computePlan` flags — no database, a chain that diverged from applied history
  * (the shared `validateHistoryPrefix`, which throws before any file is written),
  * or a chain that is not fully applied — so the recorded `pre` is always the true
- * pre-state. This is the single generation path behind both `dbz generate` and
+ * pre-state. This is the single generation path behind both `dbzz generate` and
  * the `__generate` child.
  */
 export async function writeMigration(config: AppConfig, request: GenerateRequest): Promise<string[]> {
@@ -48,15 +48,15 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
   }
   const state = readStoredState(config);
   if (state === null) {
-    throw new Error(`no database at ${join(config.dbDir, "data.db")}; run \`dbz dev\` to initialize it first`);
+    throw new Error(`no database at ${join(config.dbDir, "data.db")}; run \`dbzz dev\` to initialize it first`);
   }
   const chain = await loadMigrationChain(config);
   const { pending } = validateHistoryPrefix(state.applied, chain);
   if (pending.length > 0) {
-    throw new Error(`apply the ${pending.length} pending migration(s) first — start \`dbz dev\``);
+    throw new Error(`apply the ${pending.length} pending migration(s) first — start \`dbzz dev\``);
   }
 
-  const schema = await importSchema(config);
+  const schema = (await importApp(config)).schema;
   const number = (chain.at(-1)?.number ?? 0) + 1;
   // Generation's classification is pure (no database); optimistic previews run
   // here and its refusals flow into the scaffold alongside the shape-classified

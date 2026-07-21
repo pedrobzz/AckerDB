@@ -33,7 +33,7 @@
  * new-target plan resolver, so no positional threading crosses the seam.
  */
 import type { Database } from "bun:sqlite";
-import { Engine, indexSqlName, type TablePlan } from "../engine.ts";
+import { Engine, indexSqlName, type PhysicalTablePlan } from "../engine.ts";
 import { CorruptDatabaseError } from "../errors.ts";
 import { isValidationError } from "../v.ts";
 import { checkDescriptor } from "./descriptor-kinds.ts";
@@ -55,7 +55,7 @@ export class UnsafeSchemaChange extends Error {
     super(
       `refusing to apply unsafe schema changes; each needs a migration:\n` +
         refusals.map((r) => `  - ${refusalSite(r)}: ${r.question}`).join("\n") +
-        `\n(write a migration to answer these, or wipe local data with \`dbz reset\`)`,
+        `\n(write a migration to answer these, or wipe local data with \`dbzz reset\`)`,
     );
     this.refusals = refusals;
   }
@@ -96,6 +96,8 @@ export interface OptimisticProbeOptions {
   readonly storedTags?: StoredTagNames;
   /** Logical variant renames for a CLI post-answer preview over old tag rows. */
   readonly variantRenames?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /** Resolve logical named types to their storage-scope tag identity. */
+  readonly tagIdentity?: (typeName: string) => string;
 }
 
 /** What the planner needs to translate a classified change into physical work, carried once instead of threaded. */
@@ -107,7 +109,7 @@ export interface PlanContext {
    * Resolve a table name to its NEW-target plan: the live-schema plan for an
    * ordinary reconcile, an intermediate step's target plan inside a migration chain.
    */
-  planOf: (table: string) => TablePlan;
+  planOf: (table: string) => PhysicalTablePlan;
   /** Optional post-rename tag names for migration probes before tag rows move. */
   storedTags?: StoredTags;
 }
@@ -163,9 +165,10 @@ export class SchemaPlanner {
         this._applied.push(`converted ${table} to a table`);
         return;
       case "add-column": {
-        const columnPlan = planOf(table).columns.get(change.column)!;
+        const tablePlan = planOf(table);
+        const columnPlan = tablePlan.columns.get(change.column)!;
         for (const phys of columnPlan.phys) {
-          this._ops.push(() => writer.exec(`ALTER TABLE ${quote(table)} ADD COLUMN ${phys.ddl}`));
+          this._ops.push(() => writer.exec(`ALTER TABLE ${quote(tablePlan.name)} ADD COLUMN ${phys.ddl}`));
         }
         this._applied.push(`added nullable column ${table}.${change.column}`);
         return;
@@ -177,10 +180,12 @@ export class SchemaPlanner {
         rebuild(engine, planOf(table), current.tables[table]!, this._ops);
         this._applied.push(`rebuilt table ${table}`);
         return;
-      case "drop-index":
-        this._ops.push(() => writer.exec(`DROP INDEX IF EXISTS ${quote(indexSqlName(table, change.index))}`));
+      case "drop-index": {
+        const tablePlan = planOf(table);
+        this._ops.push(() => writer.exec(`DROP INDEX IF EXISTS ${quote(indexSqlName(tablePlan.name, change.index))}`));
         this._applied.push(`dropped index ${table}.${change.index}`);
         return;
+      }
       case "create-index":
         this._ops.push(createIndexOp(engine, planOf(table), change.index, change.recreate));
         this._applied.push(`${change.recreate ? "recreated" : "created"} index ${table}.${change.index}`);
@@ -195,10 +200,13 @@ export class SchemaPlanner {
    */
   optimistic(
     opt: OptimisticChange,
-    phys: PhysicalProbeRoute = { table: opt.table, column: (column) => column },
+    phys?: PhysicalProbeRoute,
   ): void {
     if (this.completed !== undefined) throw new Error("cannot add optimistic work after reading the schema plan");
-    this.queued.push({ change: opt, phys });
+    this.queued.push({
+      change: opt,
+      phys: phys ?? { table: this.ctx.planOf(opt.table).name, column: (column) => column },
+    });
   }
 
   private finish(): SchemaPlan {
@@ -208,7 +216,12 @@ export class SchemaPlanner {
       current,
       this.queued,
       (table, index) => planOf(table).indexes.find((candidate) => candidate.name === index)!.columns,
-      { storedTags },
+      {
+        storedTags,
+        tagIdentity: this.queued.length === 0
+          ? undefined
+          : planOf(this.queued[0]!.change.table).tagIdentity,
+      },
     );
     for (const { change } of this.queued) {
       if (change.op === "tighten-constraints") {
@@ -320,16 +333,17 @@ export function probeOptimisticChanges(
   }
 
   if (groups.size > 0) {
+    const tagIdentity = options.tagIdentity ?? ((typeName: string) => typeName);
     const loadedTags = options.storedTags ?? loadStoredTags(writer);
     const tags = options.variantRenames === undefined
       ? loadedTags
-      : renameStoredTagNames(loadedTags, options.variantRenames);
+      : renameStoredTagNames(loadedTags, options.variantRenames, tagIdentity);
     for (const group of groups.values()) {
       const table = current.tables[group.table];
       if (table === undefined || table.kind !== "table") continue;
       const selected = new Set(group.changes.map((change) => change.column));
       const physical = new Set([...physicalColumnsOf(table)].map(group.phys.column));
-      const decoder = buildStoredTable(table, physical, tags, group.phys.column, selected);
+      const decoder = buildStoredTable(table, physical, tags, group.phys.column, selected, tagIdentity);
       const projection = decoder.columns.filter((column) => column.present).flatMap((column) => column.phys);
 
       for (const raw of pageStoredRows(writer, group.phys.table, decoder.physicalPk, projection)) {
@@ -384,15 +398,14 @@ export function probeOptimisticChanges(
 function renameStoredTagNames(
   tags: StoredTagNames,
   renames: NonNullable<OptimisticProbeOptions["variantRenames"]>,
+  tagIdentity: NonNullable<OptimisticProbeOptions["tagIdentity"]>,
 ): StoredTagNames {
-  const renamed = new Map<string, ReadonlyMap<number, string>>();
-  for (const [type, names] of tags) {
-    const variants = Object.hasOwn(renames, type) ? renames[type] : undefined;
-    if (variants === undefined) {
-      renamed.set(type, names);
-      continue;
-    }
-    renamed.set(type, new Map([...names].map(([tag, name]) => [
+  const renamed = new Map(tags);
+  for (const [typeName, variants] of Object.entries(renames)) {
+    const identity = tagIdentity(typeName);
+    const names = tags.get(identity);
+    if (names === undefined) continue;
+    renamed.set(identity, new Map([...names].map(([tag, name]) => [
       tag,
       Object.hasOwn(variants, name) ? variants[name]! : name,
     ])));
@@ -400,7 +413,7 @@ function renameStoredTagNames(
   return renamed;
 }
 
-function createIndexOp(engine: Engine, tablePlan: TablePlan, name: string, recreate: boolean): Op {
+function createIndexOp(engine: Engine, tablePlan: PhysicalTablePlan, name: string, recreate: boolean): Op {
   const index = tablePlan.indexes.find((ix) => ix.name === name)!;
   return () => {
     const writer = engine.writer;
@@ -410,7 +423,7 @@ function createIndexOp(engine: Engine, tablePlan: TablePlan, name: string, recre
 }
 
 /** Rebuild `table` to the new plan, preserving intersecting columns and ids. */
-function rebuild(engine: Engine, tablePlan: TablePlan, oldTable: TableSnapshot, ops: Op[]): void {
+function rebuild(engine: Engine, tablePlan: PhysicalTablePlan, oldTable: TableSnapshot, ops: Op[]): void {
   const writer = engine.writer;
   ops.push(() => {
     const oldPhys = physicalColumnsOf(oldTable);

@@ -9,7 +9,7 @@ import type { CredentialVerifier } from "@dbzz/server";
 import { startApp } from "../src/app.ts";
 import { runCodegen } from "../src/codegen.ts";
 import { loadConfig } from "../src/config.ts";
-import { FIXTURE_ADMIN_USERS, FIXTURE_MESSAGES, FIXTURE_SCHEMA, makeFixture } from "./fixture.ts";
+import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "./fixture.ts";
 
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 
@@ -85,10 +85,10 @@ const reservePort = async (): Promise<{ port: number; release(): Promise<void> }
 
 const fixture = (port: number) => {
   const dir = makeFixture({
-    "schema.ts": FIXTURE_SCHEMA,
+    "app.ts": FIXTURE_APP,
     "functions/messages.ts": FIXTURE_MESSAGES,
     "functions/admin/users.ts": FIXTURE_ADMIN_USERS,
-    ".zdb.config.json": JSON.stringify({ port }),
+    ".dbzz.config.json": JSON.stringify({ port }),
   });
   dirs.push(dir);
   return dir;
@@ -156,9 +156,9 @@ const authenticatedClientFor = (port: number) => new DbzzClient({
 });
 
 function shutdownMarker(dir: string): bigint {
-  const db = new Database(join(dir, ".zdb", "data.db"), { readonly: true, safeIntegers: true });
+  const db = new Database(join(dir, ".dbzz", "data.db"), { readonly: true, safeIntegers: true });
   try {
-    return (db.query("SELECT clean_shutdown FROM _dbz_state WHERE singleton = 1").get() as {
+    return (db.query("SELECT clean_shutdown FROM _dbzz_state WHERE singleton = 1").get() as {
       clean_shutdown: bigint;
     }).clean_shutdown;
   } finally {
@@ -175,15 +175,15 @@ function within<T>(work: Promise<T>, label: string): Promise<T> {
   ]);
 }
 
-describe("dbz CLI", () => {
+describe("dbzz CLI", () => {
   test("start loads a configured verifier and preserves the bearer user's durable Identity", async () => {
     const port = freePort();
     const dir = makeFixture({
-      "schema.ts": FIXTURE_SCHEMA,
+      "app.ts": FIXTURE_APP,
       "functions/identity.ts": IDENTITY_PROCEDURE,
       "functions/messages.ts": FIXTURE_MESSAGES,
       "credential-verifier.ts": CREDENTIAL_VERIFIER_MODULE,
-      ".zdb.config.json": JSON.stringify({
+      ".dbzz.config.json": JSON.stringify({
         port,
         credentialVerifier: "./credential-verifier.ts",
       }),
@@ -216,10 +216,10 @@ describe("dbz CLI", () => {
   test("startApp accepts one programmatic verifier alongside preparation and rejects competition", async () => {
     const port = freePort();
     const dir = makeFixture({
-      "schema.ts": FIXTURE_SCHEMA,
+      "app.ts": FIXTURE_APP,
       "functions/identity.ts": IDENTITY_PROCEDURE,
       "functions/messages.ts": FIXTURE_MESSAGES,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     const config = loadConfig(dir, { DBZZ_TELEMETRY: "disabled" });
@@ -253,9 +253,9 @@ describe("dbz CLI", () => {
   test("startApp rejects a malformed verifier default export before activation", async () => {
     const port = freePort();
     const dir = makeFixture({
-      "schema.ts": FIXTURE_SCHEMA,
+      "app.ts": FIXTURE_APP,
       "credential-verifier.ts": "export default { revocationBound: { kind: 'token-expiration' } };",
-      ".zdb.config.json": JSON.stringify({
+      ".dbzz.config.json": JSON.stringify({
         port,
         credentialVerifier: "./credential-verifier.ts",
       }),
@@ -274,7 +274,7 @@ describe("dbz CLI", () => {
     await rebound.stop(true);
   });
 
-  test("start: codegen + serve, functions callable, reset wipes the db", async () => {
+  test("start: codegen + serve, functions callable, reset clears only exact database artifacts", async () => {
     const port = freePort();
     const dir = fixture(port);
     const started = spawnCli(["start", dir]);
@@ -299,10 +299,16 @@ describe("dbz CLI", () => {
     started.child.kill("SIGTERM");
     expect(await started.child.exited).toBe(0);
 
-    expect(existsSync(join(dir, ".zdb", "data.db"))).toBe(true);
+    const database = join(dir, ".dbzz", "data.db");
+    const unrelated = join(dir, ".dbzz", "keep-me");
+    expect(existsSync(database)).toBe(true);
+    writeFileSync(unrelated, "unrelated");
     const reset = spawnCli(["reset", dir]);
     await reset.child.exited;
-    expect(existsSync(join(dir, ".zdb"))).toBe(false);
+    expect(reset.output()).toContain("coordination retained");
+    expect(existsSync(database)).toBe(false);
+    expect(existsSync(`${database}.dbzz-coordination`)).toBe(true);
+    expect(readFileSync(unrelated, "utf8")).toBe("unrelated");
   });
 
   test("start confirms the effective balanced/no-telemetry profile exactly once before readiness", async () => {
@@ -316,7 +322,7 @@ describe("dbz CLI", () => {
     const marker = '@@dbzz-startup {"telemetry":"disabled","durability":"balanced"}';
     expect(output.split("@@dbzz-startup")).toHaveLength(2);
     expect(output.indexOf(marker)).toBeGreaterThanOrEqual(0);
-    expect(output.indexOf(marker)).toBeLessThan(output.indexOf("[dbz] ready on"));
+    expect(output.indexOf(marker)).toBeLessThan(output.indexOf("[dbzz] ready on"));
     expect(await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).toEqual({
       version: 1,
       ready: true,
@@ -330,11 +336,12 @@ describe("dbz CLI", () => {
   test("failed drain releases ownership without recording a clean shutdown", async () => {
     const port = freePort();
     const dir = makeFixture({
-      "schema.ts": `
-        import { v, defineSchema, defineTable } from "@dbzz/server";
-        export default defineSchema({ records: defineTable({ id: v.primaryKey() }) });
+      "app.ts": `
+        import { v, defineApp, defineSchema, defineTable } from "@dbzz/server";
+        const schema = defineSchema({ records: defineTable({ id: v.primaryKey() }) });
+        export default defineApp({ schema });
       `,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     const config = loadConfig(dir, { DBZZ_TELEMETRY: "disabled" });
@@ -365,10 +372,10 @@ describe("dbz CLI", () => {
     const dir = fixture(port);
     const gate = join(dir, "startup-gate");
     writeFileSync(
-      join(dir, "schema.ts"),
+      join(dir, "app.ts"),
       `import { existsSync } from "node:fs";
 while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
-${FIXTURE_SCHEMA}`,
+${FIXTURE_APP}`,
     );
     const started = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
 
@@ -437,10 +444,10 @@ ${FIXTURE_SCHEMA}`,
     const dir = fixture(port);
     const gate = join(dir, "startup-gate");
     writeFileSync(
-      join(dir, "schema.ts"),
+      join(dir, "app.ts"),
       `import { existsSync } from "node:fs";
 while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
-${FIXTURE_SCHEMA}`,
+${FIXTURE_APP}`,
     );
     const started = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
 
@@ -497,7 +504,7 @@ ${FIXTURE_SCHEMA}`,
     first.child.kill("SIGTERM");
     expect(await first.child.exited).toBe(0);
 
-    const db = new Database(join(dir, ".zdb", "data.db"));
+    const db = new Database(join(dir, ".dbzz", "data.db"));
     db.exec("DROP INDEX ix_messages_by_channel");
     db.close();
 
@@ -520,8 +527,8 @@ ${FIXTURE_SCHEMA}`,
 
     // edit the schema: add a table (a safe change)
     writeFileSync(
-      join(dir, "schema.ts"),
-      FIXTURE_SCHEMA.replace(
+      join(dir, "app.ts"),
+      FIXTURE_APP.replace(
         "typingEvents: defineEventTable({",
         `notes: defineTable({ id: v.primaryKey(), text: v.string() }),
   typingEvents: defineEventTable({`,
@@ -543,7 +550,7 @@ ${FIXTURE_SCHEMA}`,
 
     // codegen picked up the new table
     const types = readFileSync(join(dir, "_generated", "types.ts"), "utf8");
-    expect(types).toContain('export type Note = RowOf<typeof schema, "notes">;');
+    expect(types).toContain('export type Note = RowOf<Schema, "notes">;');
 
     // data survived the reload (safe reconciliation, same database)
     expect(await client.query<unknown, unknown[]>("messages.list", { channelId: 2n })).toHaveLength(1);

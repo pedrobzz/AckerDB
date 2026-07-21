@@ -19,7 +19,7 @@ function assertNoProductionAiDependency(manifest: PackageManifest): void {
 }
 
 async function main(): Promise<void> {
-  const packed = await createPackedConsumer("dbzz-mcp-packed-consumer");
+  const packed = await createPackedConsumer("dbzz-packed-consumer");
   const { consumerDir, root, version } = packed;
   mkdirSync(join(consumerDir, "functions"), { recursive: true });
 
@@ -63,15 +63,30 @@ async function main(): Promise<void> {
     }
     assertNoProductionAiDependency(serverManifest);
 
-    writeFileSync(join(consumerDir, "schema.ts"), `
-import { v, defineSchema, defineTable } from "@dbzz/server";
+    const cacheManifest = readManifest(
+      join(consumerDir, "node_modules/@dbzz/cache/package.json"),
+    );
+    for (const [subpath, target] of Object.entries({
+      ".": "./src/index.ts",
+      "./redis": "./src/redis.ts",
+      "./upstash": "./src/upstash.ts",
+    })) {
+      if (cacheManifest.exports?.[subpath] !== target) {
+        throw new Error(`packed @dbzz/cache does not expose ${subpath} from ${target}`);
+      }
+    }
 
-export default defineSchema({
+    writeFileSync(join(consumerDir, "app.ts"), `
+import { v, defineApp, defineSchema, defineTable } from "@dbzz/server";
+
+const schema = defineSchema({
   orders: defineTable({
     id: v.primaryKey(),
     description: v.string(),
   }),
 });
+
+export default defineApp({ schema });
 `);
     writeFileSync(join(consumerDir, "functions", "orders.ts"), `
 import { v } from "@dbzz/server";
@@ -111,6 +126,9 @@ import {
   createMcp as createMcpFromSubpath,
   mcpTool as mcpToolFromSubpath,
 } from "@dbzz/server/mcp";
+import { cachePlugin, defineCacheStore } from "@dbzz/cache";
+import { redisCacheStore } from "@dbzz/cache/redis";
+import { upstashCacheStore } from "@dbzz/cache/upstash";
 
 if (createMcpFromRoot !== createMcpFromSubpath) {
   throw new Error("@dbzz/server/mcp resolves a different createMcp implementation");
@@ -129,6 +147,47 @@ const endpoint = createMcpFromSubpath({
   },
 });
 if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the wrong path");
+
+let customStoreOpens = 0;
+const customStore = defineCacheStore({
+  keyPrefix: "packed-custom",
+  open() {
+    customStoreOpens++;
+    throw new Error("packed import verification must not open Cache stores");
+  },
+});
+let upstashRequests = 0;
+const redisStore = redisCacheStore({
+  url: "redis://127.0.0.1:1",
+  keyPrefix: "packed-redis",
+});
+const upstashStore = upstashCacheStore({
+  url: "https://packed.example.com",
+  token: "packed-token",
+  keyPrefix: "packed-upstash",
+  fetch: async () => {
+    upstashRequests++;
+    throw new Error("packed import verification must not issue Cache requests");
+  },
+});
+const cacheInstances = [
+  cachePlugin(),
+  cachePlugin({ store: customStore }),
+  cachePlugin({ store: redisStore }),
+  cachePlugin({ store: upstashStore }),
+];
+const cacheDefinitionIds = cacheInstances.map((plugin) => plugin.definitionId);
+if (JSON.stringify(cacheDefinitionIds) !== JSON.stringify([
+  "@dbzz/cache",
+  "@dbzz/cache-external",
+  "@dbzz/cache-external",
+  "@dbzz/cache-external",
+])) {
+  throw new Error("packed @dbzz/cache root export returned the wrong Plugin definition");
+}
+if (customStoreOpens !== 0 || upstashRequests !== 0) {
+  throw new Error("packed Cache imports or construction performed external work");
+}
 `);
     writeFileSync(join(consumerDir, "tsconfig.json"), JSON.stringify({
       compilerOptions: {
@@ -143,7 +202,7 @@ if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the w
         allowImportingTsExtensions: true,
         types: ["bun"],
       },
-      include: ["schema.ts", "functions/**/*.ts", "_generated/**/*.ts"],
+      include: ["app.ts", "functions/**/*.ts", "_generated/**/*.ts", "verify-runtime.ts"],
     }, null, 2));
 
     await runCommand([
@@ -165,7 +224,7 @@ if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the w
     ], consumerDir);
 
     console.log(
-      `Packed MCP gate passed: five @dbzz packages at ${version}, generated types, Bun runtime, SDK 1.29.0, and no server AI production dependency.`,
+      `Packed package gate passed: ${PACKAGES.length} @dbzz packages at ${version}, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.29.0, and no server AI production dependency.`,
     );
   } finally {
     packed.cleanup();

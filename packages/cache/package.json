@@ -1,0 +1,17 @@
+{
+  "name": "@dbzz/cache",
+  "version": "0.5.0",
+  "type": "module",
+  "files": [
+    "src"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./redis": "./src/redis.ts",
+    "./upstash": "./src/upstash.ts"
+  },
+  "dependencies": {
+    "@dbzz/core": "workspace:0.5.0",
+    "@dbzz/server": "workspace:0.5.0"
+  }
+}

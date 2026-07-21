@@ -75,7 +75,7 @@ class BackendHarness {
         DBZZ_DURABILITY: "balanced",
         DBZZ_TELEMETRY: "disabled",
       }),
-      dbDir: join(this.directory, ".zdb"),
+      dbDir: join(this.directory, ".dbzz"),
       port: 0,
     };
   }

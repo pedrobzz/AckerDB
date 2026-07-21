@@ -168,6 +168,8 @@ type TableWriterOf<C extends ObjectShape, I> = {
   patch(id: bigint, partial: PatchShape<C>): WriteResult<void, RowShape<C>>;
   replace(id: bigint, row: InsertShape<C>): WriteResult<void, RowShape<C>>;
   delete(id: bigint): WriteResult<void, RowShape<C> | null>;
+  /** Delete at most 256 distinct rows in one database statement. */
+  deleteMany(ids: readonly bigint[]): Promise<number>;
 } & WriterIndexes<C, I>;
 
 export interface EventWriter<C extends ObjectShape> {

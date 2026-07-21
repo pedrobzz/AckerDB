@@ -25,24 +25,39 @@ import type { Schema } from "./schema.ts";
 
 export type AuthCtx = Principal;
 
-export interface QueryCtx<S extends Schema = Schema> extends InvocationContext {
+type EmptyContextCapabilities = Readonly<Record<never, never>>;
+
+export type QueryCtx<
+  S extends Schema = Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+> = InvocationContext & Capabilities & {
   readonly db: DbReader<S>;
   readonly auth: AuthCtx;
-}
+  readonly timestamp: number;
+};
 
-export interface MutationCtx<S extends Schema = Schema> extends InvocationContext {
+export type MutationCtx<
+  S extends Schema = Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+> = InvocationContext & Capabilities & {
   readonly db: DbWriter<S>;
   readonly auth: AuthCtx;
-}
+  readonly timestamp: number;
+};
 
 /** The context inside `ctx.tx(...)`: a mutation's powers, structurally. */
-export interface TxCtx<S extends Schema = Schema> extends InvocationContext {
-  readonly db: DbWriter<S>;
-  readonly auth: AuthCtx;
-}
+export type TxCtx<
+  S extends Schema = Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+> = MutationCtx<S, Capabilities>;
 
-export interface ProcedureCtx<S extends Schema = Schema> extends InvocationContext {
+export type ProcedureCtx<
+  S extends Schema = Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+  TransactionCapabilities extends object = EmptyContextCapabilities,
+> = InvocationContext & Capabilities & {
   readonly auth: AuthCtx;
+  readonly timestamp: number;
   /** Fires when the request, credential lease, or Runtime shuts down. */
   readonly abortSignal: AbortSignal;
   /** Prove and attach another user account using its raw bearer token, not an Authorization header. */
@@ -50,8 +65,8 @@ export interface ProcedureCtx<S extends Schema = Schema> extends InvocationConte
   /** Remove one exact owned account while retaining the durable application Identity. */
   unlinkAccount(account: ExternalAccount): Promise<void>;
   /** Open a transaction: atomic, consistent, no external calls inside. */
-  tx<T>(fn: (tx: TxCtx<S>) => T | Promise<T>): Promise<T>;
-}
+  tx<T>(fn: (tx: TxCtx<S, TransactionCapabilities>) => T | Promise<T>): Promise<T>;
+};
 
 /**
  * What an SSE handler returns: the chunks the client receives, either as a
@@ -62,7 +77,11 @@ export interface ProcedureCtx<S extends Schema = Schema> extends InvocationConte
  */
 export type SseSource<Chunk> = ReadableStream<Chunk> | AsyncIterable<Chunk>;
 
-export type SseCtx<S extends Schema = Schema> = ProcedureCtx<S>;
+export type SseCtx<
+  S extends Schema = Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+  TransactionCapabilities extends object = EmptyContextCapabilities,
+> = ProcedureCtx<S, Capabilities, TransactionCapabilities>;
 
 /** Args as the caller provides them: only optional/nullish keys may be omitted. */
 export type ArgsInput<A extends ObjectShape> = InferInputShape<A>;
@@ -259,32 +278,55 @@ export function sseProcedure<
   return registered;
 }
 
-export type QueryBuilder<S extends Schema> = <A extends ObjectShape, R>(def: {
+export type QueryBuilder<
+  S extends Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+> = <A extends ObjectShape, R>(def: {
   readonly args: A;
-  readonly access: AccessPolicy<QueryCtx<S>, Expand<InferShape<A>>>;
-  readonly handler: (ctx: QueryCtx<S>, args: Expand<InferShape<A>>) => R;
+  readonly access: AccessPolicy<QueryCtx<S, Capabilities>, Expand<InferShape<A>>>;
+  readonly handler: (ctx: QueryCtx<S, Capabilities>, args: Expand<InferShape<A>>) => R;
 }) => RegisteredQuery<A, Awaited<R>, S> &
-  ((ctx: QueryCtx<S>, args: Expand<ArgsInput<A>>) => Promise<Awaited<R>>);
+  ((ctx: QueryCtx<S, Capabilities>, args: Expand<ArgsInput<A>>) => Promise<Awaited<R>>);
 
-export type MutationBuilder<S extends Schema> = <A extends ObjectShape, R>(def: {
+export type MutationBuilder<
+  S extends Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+> = <A extends ObjectShape, R>(def: {
   readonly args: A;
-  readonly access: AccessPolicy<MutationCtx<S>, Expand<InferShape<A>>>;
-  readonly handler: (ctx: MutationCtx<S>, args: Expand<InferShape<A>>) => R;
+  readonly access: AccessPolicy<MutationCtx<S, Capabilities>, Expand<InferShape<A>>>;
+  readonly handler: (ctx: MutationCtx<S, Capabilities>, args: Expand<InferShape<A>>) => R;
 }) => RegisteredMutation<A, Awaited<R>, S> &
-  ((ctx: MutationCtx<S>, args: Expand<ArgsInput<A>>) => Promise<Awaited<R>>);
+  ((ctx: MutationCtx<S, Capabilities>, args: Expand<ArgsInput<A>>) => Promise<Awaited<R>>);
 
-export type ProcedureBuilder<S extends Schema> = <A extends ObjectShape, R>(def: {
+export type ProcedureBuilder<
+  S extends Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+  TransactionCapabilities extends object = EmptyContextCapabilities,
+> = <A extends ObjectShape, R>(def: {
   readonly args: A;
-  readonly access: AccessPolicy<ProcedureCtx<S>, Expand<InferShape<A>>>;
-  readonly handler: (ctx: ProcedureCtx<S>, args: Expand<InferShape<A>>) => R;
+  readonly access: AccessPolicy<
+    ProcedureCtx<S, Capabilities, TransactionCapabilities>,
+    Expand<InferShape<A>>
+  >;
+  readonly handler: (
+    ctx: ProcedureCtx<S, Capabilities, TransactionCapabilities>,
+    args: Expand<InferShape<A>>,
+  ) => R;
 }) => RegisteredProcedure<A, Awaited<R>, S>;
 
-export type SseBuilder<S extends Schema> = <A extends ObjectShape, Y extends Validator<unknown, string>>(def: {
+export type SseBuilder<
+  S extends Schema,
+  Capabilities extends object = EmptyContextCapabilities,
+  TransactionCapabilities extends object = EmptyContextCapabilities,
+> = <A extends ObjectShape, Y extends Validator<unknown, string>>(def: {
   readonly args: A;
   readonly yields: Y;
-  readonly access: AccessPolicy<SseCtx<S>, Expand<InferShape<A>>>;
+  readonly access: AccessPolicy<
+    SseCtx<S, Capabilities, TransactionCapabilities>,
+    Expand<InferShape<A>>
+  >;
   readonly handler: (
-    ctx: SseCtx<S>,
+    ctx: SseCtx<S, Capabilities, TransactionCapabilities>,
     args: Expand<InferShape<A>>,
   ) => SseSource<InferValidator<Y>> | Promise<SseSource<InferValidator<Y>>>;
 }) => RegisteredSse<A, Expand<InferValidator<Y>>, S>;

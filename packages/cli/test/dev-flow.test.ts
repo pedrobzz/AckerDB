@@ -6,6 +6,10 @@ import {
   type PromptOutcome,
 } from "../src/migrations/dev-flow.ts";
 import type { PlanWire, RenameCandidates } from "../src/migrations/plan.ts";
+import type {
+  PluginApplyResult,
+  PluginPlanWire,
+} from "../src/plugin-storage.ts";
 
 const EMPTY: RenameCandidates = { tables: { dropped: [], added: [] }, columns: {}, variants: {} };
 
@@ -37,6 +41,46 @@ const pendingWire = (identity: string, stale: boolean): PlanWire => ({
   pendingIdentity: identity,
 });
 const stalePendingWire = pendingWire("id-1", true);
+const CLEAN_PLUGIN: PluginPlanWire = { clean: true };
+const pluginWire = (
+  mount: string,
+  currentFingerprint: string,
+  targetFingerprint: string,
+  kind: "reset" | "drop" = "reset",
+): PluginPlanWire => ({
+  clean: false,
+  requirement: kind === "reset"
+    ? {
+        kind,
+        reason: "unsafe-schema",
+        mount,
+        currentDefinitionId: "test/cache",
+        targetDefinitionId: "test/cache",
+        currentFingerprint,
+        targetFingerprint,
+        plan: {
+          currentSchema: "current",
+          targetSchema: "target",
+          applied: [],
+          refusals: [{ table: "entries", reason: "table-dropped", question: "existing rows would be lost" }],
+        },
+      }
+    : {
+        kind,
+        reason: "stale-mount",
+        mount,
+        currentDefinitionId: "test/cache",
+        targetDefinitionId: null,
+        currentFingerprint,
+        targetFingerprint,
+        plan: {
+          currentSchema: "current",
+          targetSchema: null,
+          applied: [],
+          refusals: [],
+        },
+      },
+});
 
 const CONSENT_YES: PromptOutcome<unknown> = { answer: { generate: true, name: "m" } };
 const CONSENT_NO: PromptOutcome<unknown> = { answer: { generate: false } };
@@ -45,7 +89,13 @@ const RENAMES_NONE: PromptOutcome<unknown> = { answer: { renames: {}, dropsAckno
 /** A prompt entry: an immediate outcome, or "open" — held until retracted. */
 type PromptScript = PromptOutcome<unknown> | "open";
 
-function makeHarness(plans: PlanWire[], prompts: PromptScript[], generates: GenerateResult[] = []) {
+function makeHarness(
+  plans: PlanWire[],
+  prompts: PromptScript[],
+  generates: GenerateResult[] = [],
+  pluginPlans: PluginPlanWire[] = [CLEAN_PLUGIN],
+  pluginApplies: PluginApplyResult[] = [],
+) {
   const calls: string[] = [];
   let openPrompt: ((outcome: PromptOutcome<unknown>) => void) | null = null;
   const fx: DevFlowEffects = {
@@ -59,6 +109,18 @@ function makeHarness(plans: PlanWire[], prompts: PromptScript[], generates: Gene
       calls.push(`generate:${request.consent}`);
       const next = generates.shift();
       if (next === undefined) throw new Error("no generate scripted");
+      return next;
+    },
+    pluginPlan: async () => {
+      calls.push("pluginPlan");
+      const next = pluginPlans.shift();
+      if (next === undefined) throw new Error("no Plugin plan scripted");
+      return next;
+    },
+    applyPlugin: async (consent) => {
+      calls.push(`pluginApply:${consent.mount}:${consent.currentFingerprint}:${consent.targetFingerprint}`);
+      const next = pluginApplies.shift();
+      if (next === undefined) throw new Error("no Plugin apply scripted");
       return next;
     },
     prompt: async <T,>(): Promise<PromptOutcome<T>> => {
@@ -75,8 +137,14 @@ function makeHarness(plans: PlanWire[], prompts: PromptScript[], generates: Gene
       calls.push(applyPending ? "start:apply" : "start");
     },
     report: () => calls.push("report"),
-    log: () => calls.push("ledger"),
-    error: (line) => calls.push(line.includes("declined") ? "banner" : "error"),
+    log: (line) => calls.push(line.includes("Plugin storage mount") ? "pluginLedger" : "ledger"),
+    error: (line) => calls.push(
+      line.includes("Plugin storage") && line.includes("declined")
+        ? "pluginBanner"
+        : line.includes("declined")
+          ? "banner"
+          : "error",
+    ),
   };
   const retract = () => {
     calls.push("retract");
@@ -168,7 +236,7 @@ describe("dev flow: retraction and supersede", () => {
       [{ answer: "delete" }],
     );
     await handler.onCrash();
-    expect(calls).toEqual(["plan", "prompt", "delete:3", "plan", "start"]);
+    expect(calls).toEqual(["plan", "prompt", "delete:3", "plan", "pluginPlan", "start"]);
   });
 
   test("keeping a stale scaffold falls through to the apply question; waiting deletes nothing", async () => {
@@ -233,6 +301,65 @@ describe("dev flow: retraction and supersede", () => {
     const again = makeHarness([changesWire("A")], [CONSENT_NO]);
     await again.handler.onCrash();
     expect(again.calls).toEqual(["plan", "ledger", "prompt", "banner"]);
+  });
+
+  test("Plugin consent is fingerprint-bound, stale consent re-plans, and one mount is reset at a time", async () => {
+    const { calls, handler } = makeHarness(
+      [CLEAN, CLEAN],
+      [{ answer: true }, { answer: true }],
+      [],
+      [pluginWire("cache", "current-A", "target-A"), pluginWire("sessions", "current-B", "target-B")],
+      [{ stale: true }, { applied: true }],
+    );
+    await handler.onCrash();
+    expect(calls).toEqual([
+      "plan",
+      "pluginPlan",
+      "pluginLedger",
+      "prompt",
+      "pluginApply:cache:current-A:target-A",
+      "error",
+      "plan",
+      "pluginPlan",
+      "pluginLedger",
+      "prompt",
+      "pluginApply:sessions:current-B:target-B",
+      "start",
+    ]);
+  });
+
+  test("declining or interrupting Plugin consent never invokes destructive apply and remembers only the exact requirement", async () => {
+    const { calls, handler } = makeHarness(
+      [CLEAN, CLEAN, CLEAN],
+      [{ answer: false }, { interrupted: true }],
+      [],
+      [
+        pluginWire("cache", "current-A", "target-A"),
+        pluginWire("cache", "current-A", "target-A"),
+        pluginWire("cache", "current-A", "target-B"),
+      ],
+    );
+    await handler.onCrash();
+    expect(calls).toEqual(["plan", "pluginPlan", "pluginLedger", "prompt", "pluginBanner"]);
+    await handler.onCrash();
+    expect(calls.slice(5)).toEqual(["plan", "pluginPlan", "pluginBanner"]);
+    await handler.onCrash();
+    expect(calls.slice(8)).toEqual(["plan", "pluginPlan", "pluginLedger", "prompt", "pluginBanner"]);
+    expect(calls.some((call) => call.startsWith("pluginApply:"))).toBe(false);
+  });
+
+  test("canceling Plugin consent is a file-change retraction and does not authorize a reset", async () => {
+    const { calls, handler } = makeHarness(
+      [CLEAN, CLEAN],
+      [{ canceled: true }, { answer: false }],
+      [],
+      [pluginWire("cache", "current", "target"), pluginWire("cache", "current", "target")],
+    );
+    await handler.onCrash();
+    expect(calls).toEqual(["plan", "pluginPlan", "pluginLedger", "prompt"]);
+    await handler.onCrash();
+    expect(calls.slice(4)).toEqual(["plan", "pluginPlan", "pluginLedger", "prompt", "pluginBanner"]);
+    expect(calls.some((call) => call.startsWith("pluginApply:"))).toBe(false);
   });
 
   test("the non-TTY gate presents nothing", async () => {

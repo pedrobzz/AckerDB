@@ -1,5 +1,5 @@
 /**
- * App configuration: `.zdb.config.json` in the server app directory. Every
+ * App configuration: `.dbzz.config.json` in the server app directory. Every
  * field is optional; defaults give the layout from the design docs.
  */
 import { existsSync, readFileSync } from "node:fs";
@@ -21,8 +21,8 @@ export type AuthenticationConfig =
 
 export interface AppConfig {
   appDir: string;
-  /** The schema module (default export = defineSchema(...)). */
-  schemaPath: string;
+  /** The application manifest (default export = defineApp(...)). */
+  appPath: string;
   /** Directory of function modules. */
   functionsDir: string;
   /** Directory of migration modules and their `meta/` sidecars. */
@@ -41,7 +41,7 @@ export interface AppConfig {
 }
 
 interface RawConfig {
-  schema?: string;
+  app?: string;
   functions?: string;
   migrations?: string;
   generated?: string;
@@ -52,7 +52,29 @@ interface RawConfig {
   statusScope?: string;
 }
 
+const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
+  "app",
+  "functions",
+  "migrations",
+  "generated",
+  "db",
+  "port",
+  "oidc",
+  "credentialVerifier",
+  "statusScope",
+]);
 const OAUTH_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
+
+function parseRawConfig(value: unknown): RawConfig {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("application configuration must be a JSON object");
+  }
+  const unknown = Object.keys(value).filter((field) => !RAW_CONFIG_FIELDS.has(field));
+  if (unknown.length > 0) {
+    throw new Error(`unknown configuration field: ${unknown.join(", ")}`);
+  }
+  return value as RawConfig;
+}
 
 function statusScope(value: unknown): string {
   const scope = value ?? "dbzz:status";
@@ -96,10 +118,10 @@ export function loadConfig(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): AppConfig {
   const dir = resolve(appDir);
-  const configPath = join(dir, ".zdb.config.json");
+  const configPath = join(dir, ".dbzz.config.json");
   let raw: RawConfig = {};
   if (existsSync(configPath)) {
-    raw = JSON.parse(readFileSync(configPath, "utf8")) as RawConfig;
+    raw = parseRawConfig(JSON.parse(readFileSync(configPath, "utf8")));
   }
   if (raw.oidc !== undefined && raw.credentialVerifier !== undefined) {
     throw new Error("oidc and credentialVerifier are mutually exclusive authentication sources");
@@ -113,11 +135,11 @@ export function loadConfig(
       : { kind: "credential-verifier-module", path: abs(credentialVerifier) };
   return {
     appDir: dir,
-    schemaPath: abs(raw.schema ?? "./schema.ts"),
+    appPath: abs(raw.app ?? "./app.ts"),
     functionsDir: abs(raw.functions ?? "./functions"),
     migrationsDir: abs(raw.migrations ?? "./migrations"),
     generatedDir: abs(raw.generated ?? "./_generated"),
-    dbDir: abs(raw.db ?? "./.zdb"),
+    dbDir: abs(raw.db ?? "./.dbzz"),
     port: listenerPort(raw.port),
     durability: exactProfile(env, "DBZZ_DURABILITY", ["production", "balanced"], "production"),
     telemetry: exactProfile(env, "DBZZ_TELEMETRY", ["enabled", "disabled"], "enabled"),

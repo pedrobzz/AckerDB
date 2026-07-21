@@ -13,7 +13,7 @@ import {
 import { DbzzClient, type DbzzWebSocket } from "@dbzz/client";
 import { runCodegen } from "../src/codegen.ts";
 import { loadConfig } from "../src/config.ts";
-import { FIXTURE_MESSAGES, FIXTURE_SCHEMA, makeFixture } from "./fixture.ts";
+import { FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "./fixture.ts";
 
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 30_000;
@@ -64,7 +64,7 @@ import {
   serve,
   type RuntimeHooks,
 } from "@dbzz/server";
-import schema from "./schema.ts";
+import app from "./app.ts";
 import * as messages from "./functions/messages.ts";
 
 const port = Number(process.argv[2]);
@@ -73,9 +73,9 @@ const durability = process.env.DBZZ_DURABILITY;
 if (durability !== "production" && durability !== "balanced") {
   throw new Error("DBZZ_DURABILITY must be production or balanced");
 }
-const databaseDirectory = join(import.meta.dir, ".zdb");
+const databaseDirectory = join(import.meta.dir, ".dbzz");
 mkdirSync(databaseDirectory, { recursive: true });
-const engine = new Engine(schema, join(databaseDirectory, "data.db"), {
+const engine = new Engine(app.schema, join(databaseDirectory, "data.db"), {
   durability,
   integrityCheck: "full",
 });
@@ -298,7 +298,7 @@ function storageState(database: Database): {
 } {
   const row = database
     .query(
-      "SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbz_state WHERE singleton = 1",
+      "SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbzz_state WHERE singleton = 1",
     )
     .get() as {
       commit_version: number | bigint;
@@ -319,7 +319,7 @@ function storedMutation(
 ): { result: string; commitVersion: number; durability: string } | null {
   const row = database.query(
     `SELECT result, commit_version AS commitVersion, durability
-     FROM _dbz_mutations WHERE session_id = ? AND request_id = ?`,
+     FROM _dbzz_mutations WHERE session_id = ? AND request_id = ?`,
   ).get(sessionId, requestId) as {
     result: string;
     commitVersion: number | bigint;
@@ -330,10 +330,10 @@ function storedMutation(
 
 async function makeCommitFaultFixture(port: number): Promise<string> {
   const dir = makeFixture({
-    "schema.ts": FIXTURE_SCHEMA,
+    "app.ts": FIXTURE_APP,
     "functions/messages.ts": FIXTURE_MESSAGES,
     "commit-fault-server.ts": COMMIT_FAULT_SERVER,
-    ".zdb.config.json": JSON.stringify({ port }),
+    ".dbzz.config.json": JSON.stringify({ port }),
   });
   dirs.push(dir);
   await runCodegen(loadConfig(dir));
@@ -345,10 +345,10 @@ describe("process crash replay", () => {
     const port = await freePort();
     await assertNoServer(port);
     const dir = makeFixture({
-      "schema.ts": FIXTURE_SCHEMA,
+      "app.ts": FIXTURE_APP,
       "functions/messages.ts": FIXTURE_MESSAGES,
       "functions/crash.ts": CRASH_BEFORE_COMMIT_MESSAGES,
-      ".zdb.config.json": JSON.stringify({ port }),
+      ".dbzz.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     const sentinel = join(dir, ".precommit-crash-reached");
@@ -396,7 +396,7 @@ describe("process crash replay", () => {
     expect(observed.receipts).toHaveLength(0);
     expect(mutationSettled).toBe(false);
 
-    const database = new Database(join(dir, ".zdb", "data.db"), { readonly: true });
+    const database = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
     databases.push(database);
     expect(count(
       database,
@@ -407,7 +407,7 @@ describe("process crash replay", () => {
     )).toBe(0);
     expect(count(
       database,
-      "SELECT COUNT(*) AS count FROM _dbz_mutations WHERE session_id = ? AND request_id = ?",
+      "SELECT COUNT(*) AS count FROM _dbzz_mutations WHERE session_id = ? AND request_id = ?",
       client.clientSessionId,
       requestId,
     )).toBe(0);
@@ -452,7 +452,7 @@ describe("process crash replay", () => {
     )).toBe(1);
     expect(count(
       database,
-      "SELECT COUNT(*) AS count FROM _dbz_mutations WHERE session_id = ? AND request_id = ? AND commit_version = 1 AND durability = 'production'",
+      "SELECT COUNT(*) AS count FROM _dbzz_mutations WHERE session_id = ? AND request_id = ? AND commit_version = 1 AND durability = 'production'",
       client.clientSessionId,
       requestId,
     )).toBe(1);
@@ -540,7 +540,7 @@ describe("process crash replay", () => {
     expect(committedSnapshotObserved).toBe(false);
     expect(resolutionOrder).toEqual([]);
 
-    const database = new Database(join(dir, ".zdb", "data.db"), { readonly: true });
+    const database = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
     databases.push(database);
     expect(count(
       database,
@@ -589,7 +589,7 @@ describe("process crash replay", () => {
     )).toBe(1);
     expect(count(
       database,
-      "SELECT COUNT(*) AS count FROM _dbz_mutations WHERE session_id = ? AND request_id = ?",
+      "SELECT COUNT(*) AS count FROM _dbzz_mutations WHERE session_id = ? AND request_id = ?",
       client.clientSessionId,
       requestId,
     )).toBe(1);
@@ -653,7 +653,7 @@ describe("process crash replay", () => {
       children.delete(first.child);
       await assertNoServer(port);
 
-      const database = new Database(join(dir, ".zdb", "data.db"), { readonly: true });
+      const database = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
       databases.push(database);
       expect(storedMutation(database, client.clientSessionId, acknowledgedRequestId)).toEqual({
         result: encode(1n),
@@ -698,7 +698,7 @@ describe("process crash replay", () => {
       )).toBe(1);
       expect(count(
         database,
-        "SELECT COUNT(*) AS count FROM _dbz_mutations WHERE session_id = ?",
+        "SELECT COUNT(*) AS count FROM _dbzz_mutations WHERE session_id = ?",
         client.clientSessionId,
       )).toBe(2);
       expect(storageState(database)).toMatchObject({ commitVersion: 2, mutationRecords: 2 });

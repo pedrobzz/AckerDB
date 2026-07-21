@@ -1,10 +1,11 @@
 /**
- * Schema snapshots: the JSON descriptor of a schema as stored in `_dbz_meta`.
+ * Schema snapshots: the JSON descriptor of a schema as stored in `_dbzz_meta`.
  * Reconciliation diffs the stored snapshot against the live schema's
  * descriptor; equality of descriptors means "nothing changed".
  */
 import type { Descriptor } from "./v.ts";
 import type { Schema } from "./schema.ts";
+import { compareCodeUnits } from "./ordering.ts";
 
 export interface TableSnapshot {
   kind: "table" | "event";
@@ -29,7 +30,7 @@ export function snapshotOf(schema: Schema): SchemaSnapshot {
       kind: table.kind,
       columns,
       indexes: [...table.indexes]
-        .sort((a, b) => a.name.localeCompare(b.name))
+        .sort((a, b) => compareCodeUnits(a.name, b.name))
         .map((ix) => ({
           name: ix.name,
           columns: [...ix.columns],
@@ -39,4 +40,24 @@ export function snapshotOf(schema: Schema): SchemaSnapshot {
     };
   }
   return { version: 1, tables };
+}
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (typeof value !== "object" || value === null) return value;
+  const normalized = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(value).sort()) {
+    normalized[key] = canonicalJson((value as Record<string, unknown>)[key]);
+  }
+  return normalized;
+}
+
+/** Stable snapshot encoding independent of declaration order or package instance. */
+export function canonicalSnapshotJson(snapshot: SchemaSnapshot): string {
+  return JSON.stringify(canonicalJson(snapshot));
+}
+
+/** Stable schema identity derived from the same representation persisted for Plugins. */
+export function canonicalSchemaSnapshot(schema: Schema): string {
+  return canonicalSnapshotJson(snapshotOf(schema));
 }

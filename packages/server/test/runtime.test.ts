@@ -659,7 +659,7 @@ describe("runtime commit and replay ownership", () => {
       now,
     );
     engine.writer.query(
-      "UPDATE _dbz_mutations SET durability = 'balanced' WHERE session_id = ? AND request_id = ?",
+      "UPDATE _dbzz_mutations SET durability = 'balanced' WHERE session_id = ? AND request_id = ?",
     ).run(session.context.clientSessionId, requestId);
     const replay = await session.mutation(
       2,

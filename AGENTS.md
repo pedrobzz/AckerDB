@@ -203,7 +203,7 @@ comparison is evidence about DBZZ itself.
 
 We do not publish to npm. Releases go to a local Verdaccio registry at `http://127.0.0.1:4874`, so real projects on this machine can install `@dbzz/*` like normal npm packages — pinned, with every old version still installable. (4874, not Verdaccio's default 4873: this machine's own Homebrew Verdaccio launchd agent owns 4873.)
 
-The five packages (`@dbzz/core`, `@dbzz/server`, `@dbzz/client`, `@dbzz/client-react`, `@dbzz/cli`) share **one version, always in lockstep**. Bumping one bumps all five (`bun run bump` writes all of them; the merge guard rejects drift). Each published version is also a git tag (`v0.2.0`), so old published code is always recoverable with `git checkout v0.2.0`.
+The six packages (`@dbzz/core`, `@dbzz/server`, `@dbzz/cache`, `@dbzz/client`, `@dbzz/client-react`, `@dbzz/cli`) share **one version, always in lockstep**. Bumping one bumps all six (`bun run bump` writes all of them; the merge guard rejects drift). Each published version is also a git tag (`v0.2.0`), so old published code is always recoverable with `git checkout v0.2.0`.
 
 ## One-time setup (per clone / machine)
 
@@ -225,7 +225,7 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    ```bash
    bun run bump patch   # or: minor | major
    ```
-   This rewrites the version in all 5 packages **and** their inter-deps (pinned as `workspace:X.Y.Z` — never hand-edit these back to `workspace:*`; bun packs `workspace:*` from a bun.lock snapshot that goes stale on version-only edits), then commits everything as `chore(release): vX.Y.Z`.
+   This rewrites the version in all 6 packages **and** their inter-deps (pinned as `workspace:X.Y.Z` — never hand-edit these back to `workspace:*`; bun packs `workspace:*` from a bun.lock snapshot that goes stale on version-only edits), then commits everything as `chore(release): vX.Y.Z`.
 4. **Benchmark the release version**: dispatch this in a background worker or
    subagent; it runs only on Hetzner and compares the pending version with the
    preceding version's final record:
@@ -243,7 +243,7 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    ```
    The `pre-merge-commit` hook (`scripts/merge-guard.ts`) blocks the merge if:
    - the branch has `feat`/`fix`/breaking commits but the version didn't change;
-   - the 5 package versions are not identical;
+   - the 6 package versions are not identical;
    - the new version is not greater than main's, or is already tagged.
    - a completed benchmark did not produce a Hetzner evidence record bound to
      the release version, source, and main's preceding version. Observations,
@@ -254,7 +254,7 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    ```bash
    bun run publish:local
    ```
-   Publishes all 5 packages at the pinned version to Verdaccio (in dependency order: core, server, client, client-react, cli) and tags the commit `vX.Y.Z`. `bun publish` rewrites the `workspace:X.Y.Z` inter-deps to the literal `X.Y.Z` at pack time, so tarballs depend on exact versions.
+   Publishes all 6 packages at the pinned version to Verdaccio (in dependency order: core, server, cache, client, client-react, cli) and tags the commit `vX.Y.Z`. `bun publish` rewrites the `workspace:X.Y.Z` inter-deps to the literal `X.Y.Z` at pack time, so tarballs depend on exact versions.
 
 ## Beta publishing: test a branch without merging
 
@@ -289,7 +289,7 @@ In the consumer project, scope `@dbzz` to the local registry — `.npmrc` in the
 Then install exact (pinned) versions:
 
 ```bash
-bun add --exact @dbzz/server@0.2.0 @dbzz/client@0.2.0 @dbzz/client-react@0.2.0 @dbzz/cli@0.2.0
+bun add --exact @dbzz/server@0.2.0 @dbzz/cache@0.2.0 @dbzz/client@0.2.0 @dbzz/client-react@0.2.0 @dbzz/cli@0.2.0
 ```
 
 **Going back to an old version works**: Verdaccio keeps every published version in `registry/storage/` (gitignored, survives restarts), so `bun add --exact @dbzz/server@0.1.0` keeps working after 0.2.0+ exist. To see the matching source, `git checkout v0.1.0`.
@@ -303,7 +303,7 @@ Consumers must run Bun — packages ship raw TypeScript from `src/`.
 - Prefer plain `git merge` (merge commits) — the merge hooks give clearer errors than the backstop, and history stays legible.
 - Never `npm publish` here (it does not rewrite `workspace:*`) and never pass `--registry` to `bun publish` (it bypasses `.npmrc` and loses the auth token). Always `bun run publish:local`.
 - If a publish is interrupted midway, just re-run `bun run publish:local` — it skips packages already in the registry at the current version and finishes the rest (then tags).
-- To unpublish a broken version: `bunx npm unpublish --force @dbzz/<pkg>@X.Y.Z --registry http://127.0.0.1:4874` (do it for all 5, then delete the tag).
+- To unpublish a broken version: `bunx npm unpublish --force @dbzz/<pkg>@X.Y.Z --registry http://127.0.0.1:4874` (do it for all 6, then delete the tag).
 
 Release plumbing lives in `scripts/` (`bump.ts`, `merge-guard.ts`, `publish-local.ts`, shared `lib.ts`), hooks in `.githooks/`, registry config in `registry/config.yaml`, scope routing in the repo-root `.npmrc`.
 

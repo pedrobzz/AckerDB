@@ -83,4 +83,4 @@ type-soundness are the same property.
   accepted deliberately: the refusal is clean, the recourse mechanical
   (generate, dedupe transform, redeploy).
 - Applied history is append-only; the dev escape hatch for rewriting it stays
-  `dbz reset`.
+  `dbzz reset`.

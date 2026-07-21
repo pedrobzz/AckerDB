@@ -80,7 +80,9 @@ import {
 import type {
   AnyRegistered,
   AnyRegisteredSse,
+  MutationCtx,
   ProcedureCtx,
+  QueryCtx,
   SseCtx,
   SseSource,
   TxCtx,
@@ -117,6 +119,11 @@ import { mcpTokenVaultOwner } from "./mcp-token-vault.ts";
 import { emitWriteKeys } from "./keys.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits, type ServiceLimits } from "./limits.ts";
 import { fitOutcome, outcomeFromError, outcomeHttpStatus } from "./outcome.ts";
+import {
+  PluginRuntime,
+  type PluginReadExecution,
+  type PluginWriteExecution,
+} from "./plugin-runtime.ts";
 import { claimHttpRequestProvenance } from "./request-provenance.ts";
 import {
   OrderedReactive,
@@ -199,6 +206,8 @@ interface DeliveryFailureSummary {
 export interface RuntimeOptions {
   readonly engine: Engine;
   readonly registry: Registry;
+  /** A started Plugin graph bound to this Engine's reconciled private scopes. */
+  readonly pluginRuntime?: PluginRuntime;
   readonly verifier?: CredentialVerifier;
   readonly limits?: ServiceLimits;
   readonly telemetry?: Telemetry | TelemetryOptions | false;
@@ -279,8 +288,8 @@ interface ReactiveContext {
   readonly principal: Principal;
 }
 
-interface QueryExecution {
-  readonly value: unknown;
+interface QueryExecution<T = unknown> {
+  readonly value: T;
   readonly readSet: ReadonlySet<string>;
   readonly commitVersion: bigint;
 }
@@ -621,6 +630,7 @@ export class Runtime implements RuntimePort {
   }
 
   private readonly now: () => number;
+  private readonly pluginRuntime: PluginRuntime | undefined;
   private readonly authInvalidation: AuthInvalidationBoundary;
   private readonly mcpTokenInvalidation = new McpTokenInvalidationBoundary();
   private readonly reader: BoundedExecutor;
@@ -652,6 +662,10 @@ export class Runtime implements RuntimePort {
   constructor(options: RuntimeOptions) {
     this.engine = options.engine;
     this.registry = options.registry;
+    if (options.pluginRuntime !== undefined && options.pluginRuntime.state !== "ready") {
+      throw new TypeError("Runtime requires a ready Plugin runtime");
+    }
+    this.pluginRuntime = options.pluginRuntime;
     this.hasMcpCapabilities = this.registry.mcps.size > 0;
     this.limits = options.limits === undefined ? PRODUCTION_LIMITS : defineServiceLimits(options.limits);
     const mcpToolCounts = new Map<string, number>();
@@ -1161,17 +1175,21 @@ export class Runtime implements RuntimePort {
           functionRef: message.ref,
           argsFingerprint: digest(message.args),
         },
-        work: this.hasMcpCapabilities
-          ? (db, writes) => withMcpTokenCapability(
-            { db, auth: context.principal },
-            this.mcpTokenCapability(context.principal, this.engine.writer, null, writes),
-            (ctx) => invokeFunction(fn, ctx, message.args),
-          )
-          : (db) => invokeFunction(
-            fn,
-            Object.freeze({ db, auth: context.principal }),
-            message.args,
-          ),
+        work: (db, writes) => {
+          const invocation = this.hostMutationContext(
+            db,
+            context.principal,
+            this.readNow(),
+            writes,
+          );
+          return this.hasMcpCapabilities
+            ? withMcpTokenCapability(
+                invocation,
+                this.mcpTokenCapability(context.principal, this.engine.writer, null, writes),
+                (ctx) => invokeFunction(fn, ctx, message.args),
+              )
+            : invokeFunction(fn, invocation, message.args);
+        },
         publication: (_version, writes) => {
           scheduledTouched = writes.scheduledTouched;
           return this.publicationFor(writes, state.subscriber);
@@ -1293,6 +1311,7 @@ export class Runtime implements RuntimePort {
         fairnessKey,
         signal,
         requestBytes,
+        this.readNow(),
         publishInvalidation,
       );
       try {
@@ -1345,7 +1364,13 @@ export class Runtime implements RuntimePort {
         request.mcp,
         request.tool,
         request.args,
-        this.transactionalContext(request.principal, fairnessKey, signal, requestBytes),
+        this.transactionalContext(
+          request.principal,
+          fairnessKey,
+          signal,
+          requestBytes,
+          this.readNow(),
+        ),
         fairnessKey,
         requestBytes,
       );
@@ -1381,13 +1406,14 @@ export class Runtime implements RuntimePort {
     mcp: string,
     name: string,
     args: unknown,
-    context: McpToolCtx,
+    context: McpToolCtx & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
   ): Promise<McpCallToolResult> {
     const toolContext = Object.freeze({
       auth: context.auth,
       abortSignal: context.abortSignal,
+      timestamp: context.timestamp,
       tx: context.tx,
     });
     const release = bindMcpAiContext(
@@ -1678,6 +1704,7 @@ export class Runtime implements RuntimePort {
           fairnessKey,
           producer.signal,
           requestBytes,
+          this.readNow(),
           (account) => this.authInvalidation.publishAccount(account),
         );
         const handler = invokeFunction(
@@ -1841,14 +1868,20 @@ export class Runtime implements RuntimePort {
               if (raw === null) throw STALE_SCHEDULED_CANDIDATE;
               row = this.engine.rowFromSql(plan, raw);
               const fn = this.expect(candidate.address, "mutation");
+              const invocation = this.hostMutationContext(
+                db,
+                SYSTEM_PRINCIPAL,
+                this.readNow(),
+                writes,
+              );
               if (this.hasMcpCapabilities) {
                 await withMcpTokenCapability(
-                  { db, auth: SYSTEM_PRINCIPAL },
+                  invocation,
                   this.mcpTokenCapability(SYSTEM_PRINCIPAL, this.engine.writer, null, writes),
                   (ctx) => invokeFunction(fn, ctx, row),
                 );
               } else {
-                await invokeFunction(fn, Object.freeze({ db, auth: SYSTEM_PRINCIPAL }), row);
+                await invokeFunction(fn, invocation, row);
               }
             },
             finalize: (writes) => {
@@ -1986,13 +2019,15 @@ export class Runtime implements RuntimePort {
     if (this.ownsTelemetry) this.telemetry.stop();
     const reactiveDrain = this.reactive.close();
     let deadlineReached = false;
-    const coreShutdown = Promise.all([
+    const executionShutdown = Promise.all([
       this.waitForActiveOperations(),
       this.coordinator.drain(),
       reactiveDrain,
       this.reader.drain(),
       ...sessionDrains,
     ]).then(() => undefined);
+    const coreShutdown = executionShutdown.then(() =>
+      this.pluginRuntime?.stop(draining));
     const shutdownWork = coreShutdown.then(() => {
       // A core that outlives the Runtime deadline must not start a detached
       // telemetry tail after drain has already failed.
@@ -2017,6 +2052,7 @@ export class Runtime implements RuntimePort {
       timeout = setTimeout(() => {
         deadlineReached = true;
         this.shutdownController.abort(deadlineError);
+        void this.pluginRuntime?.stop(deadlineError).catch(() => {});
         reject(deadlineError);
       }, Math.max(0, deadlineAtMs - Date.now()));
     });
@@ -2378,6 +2414,37 @@ export class Runtime implements RuntimePort {
     requestBytes: number,
   ): Promise<QueryExecution> {
     const fn = this.expect(address, "query");
+    return this.executeRead(operation, fairnessKey, signal, requestBytes, async (execution) => {
+      const db = makeDbReader(
+        this.engine,
+        execution.connection,
+        execution.reads,
+        execution.statementObserver,
+      );
+      const timestamp = this.readNow();
+      const context = this.hostQueryContext(
+        db,
+        principal,
+        timestamp,
+        execution,
+      );
+      return this.hasMcpCapabilities
+        ? withMcpTokenCapability(
+            context,
+            this.mcpTokenCapability(principal, execution.connection, execution.reads, null),
+            (ctx) => invokeFunction(fn, ctx, args),
+          )
+        : invokeFunction(fn, context, args);
+    });
+  }
+
+  private executeRead<T>(
+    operation: "query" | "subscription",
+    fairnessKey: string,
+    signal: AbortSignal | undefined,
+    requestBytes: number,
+    work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
+  ): Promise<QueryExecution<T>> {
     return this.submitRead(async (connection) => {
       throwIfAborted(signal);
       let transactionOpen = false;
@@ -2396,19 +2463,11 @@ export class Runtime implements RuntimePort {
         const readSet = new Set<string>();
         const recorder: ReadRecorder = { add: (key) => readSet.add(key) };
         const version = this.engine.commitVersion(connection);
-        const db = makeDbReader(
-          this.engine,
+        const value = await work(Object.freeze({
           connection,
-          recorder,
-          this.telemetry.enabled ? this.observeStatement : undefined,
-        );
-        const value = this.hasMcpCapabilities
-          ? await withMcpTokenCapability(
-            { db, auth: principal },
-            this.mcpTokenCapability(principal, connection, recorder, null),
-            (ctx) => invokeFunction(fn, ctx, args),
-          )
-          : await invokeFunction(fn, Object.freeze({ db, auth: principal }), args);
+          reads: recorder,
+          ...(this.telemetry.enabled ? { statementObserver: this.observeStatement } : {}),
+        }));
         throwIfAborted(signal);
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
         try {
@@ -2585,53 +2644,129 @@ export class Runtime implements RuntimePort {
     }
   }
 
+  private hostQueryContext(
+    db: unknown,
+    principal: Principal,
+    timestamp: number,
+    execution: Readonly<PluginReadExecution>,
+  ): QueryCtx {
+    const plugins = this.pluginRuntime?.bindQuery({ ...execution, timestamp }) ?? {};
+    return Object.freeze({ db, auth: principal, timestamp, ...plugins }) as QueryCtx;
+  }
+
+  private hostMutationContext(
+    db: unknown,
+    principal: Principal,
+    timestamp: number,
+    writes: WriteCollector,
+  ): MutationCtx {
+    const plugins = this.pluginRuntime?.bindMutation({
+      writes,
+      timestamp,
+      ...(this.telemetry.enabled ? { statementObserver: this.observeStatement } : {}),
+    }) ?? {};
+    return Object.freeze({ db, auth: principal, timestamp, ...plugins }) as MutationCtx;
+  }
+
+  private async executeWrite<T>(
+    operation: "mutation" | "transaction",
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+    work: (db: MutationCtx["db"], writes: WriteCollector) => T | Promise<T>,
+  ): Promise<T> {
+    throwIfAborted(signal);
+    let scheduledTouched = false;
+    const result = await this.coordinator.execute({
+      operation,
+      fairnessKey,
+      requestBytes,
+      ...(this.telemetry.enabled
+        ? {
+            telemetry: this.observeCommit,
+            statementTelemetry: this.observeStatement,
+            run: AsyncLocalStorage.snapshot(),
+          }
+        : {}),
+      admissionSignal: signal,
+      transactionSignal: signal,
+      work,
+      publication: (_version, writes) => {
+        scheduledTouched = writes.scheduledTouched;
+        return this.publicationFor(writes);
+      },
+    });
+    if (scheduledTouched) this.armScheduler();
+    return result.value;
+  }
+
+  private inTransactionTrace<T>(work: () => Promise<T>): Promise<T> {
+    const scope = this.trace.getStore();
+    return scope === undefined
+      ? work()
+      : this.trace.run({ ...scope, operation: "transaction" }, work);
+  }
+
+  /** MCP gets the ordinary transaction capability, never mounted Plugins. */
   private transactionalContext(
     principal: Principal,
     fairnessKey: string,
     signal: AbortSignal,
     requestBytes: number,
-  ): McpToolCtx {
+    timestamp: number,
+  ): McpToolCtx & Pick<ProcedureCtx, "timestamp"> {
     return Object.freeze({
       auth: principal,
       abortSignal: signal,
-      tx: async <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> => {
-        const execute = async (): Promise<T> => {
-          throwIfAborted(signal);
-          let scheduledTouched = false;
-          const result = await this.coordinator.execute({
-            operation: "transaction",
-            fairnessKey,
-            requestBytes,
-            ...(this.telemetry.enabled
-              ? {
-                  telemetry: this.observeCommit,
-                  statementTelemetry: this.observeStatement,
-                  run: AsyncLocalStorage.snapshot(),
-                }
-              : {}),
-            admissionSignal: signal,
-            transactionSignal: signal,
-            work: this.hasMcpCapabilities
-              ? (db, writes) => withMcpTokenCapability(
-                { db, auth: principal },
-                this.mcpTokenCapability(principal, this.engine.writer, null, writes),
-                work,
-              )
-              : (db) => work(Object.freeze({ db, auth: principal })),
-            publication: (_version, writes) => {
-              scheduledTouched = writes.scheduledTouched;
-              return this.publicationFor(writes);
-            },
-          });
-          if (scheduledTouched) this.armScheduler();
-          return result.value;
-        };
-        const scope = this.trace.getStore();
-        return scope === undefined
-          ? execute()
-          : this.trace.run({ ...scope, operation: "transaction" }, execute);
-      },
+      timestamp,
+      tx: <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> =>
+        this.inTransactionTrace(() => this.executeWrite(
+          "transaction",
+          fairnessKey,
+          signal,
+          requestBytes,
+          (db, writes) => {
+            const context = Object.freeze({ db, auth: principal, timestamp }) as TxCtx;
+            return this.hasMcpCapabilities
+              ? withMcpTokenCapability(
+                  context,
+                  this.mcpTokenCapability(principal, this.engine.writer, null, writes),
+                  work,
+                )
+              : work(context);
+          },
+        )),
     });
+  }
+
+  private executePluginQuery<T>(
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+    work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
+  ): Promise<T> {
+    return this.executeRead("query", fairnessKey, signal, requestBytes, work)
+      .then((execution) => execution.value);
+  }
+
+  private executePluginWrite<T>(
+    operation: "mutation" | "transaction",
+    fairnessKey: string,
+    signal: AbortSignal,
+    requestBytes: number,
+    work: (execution: Readonly<PluginWriteExecution>) => T | Promise<T>,
+  ): Promise<T> {
+    const execute = () => this.executeWrite(
+      operation,
+      fairnessKey,
+      signal,
+      requestBytes,
+      (_db, writes) => work(Object.freeze({
+        writes,
+        ...(this.telemetry.enabled ? { statementObserver: this.observeStatement } : {}),
+      })),
+    );
+    return operation === "transaction" ? this.inTransactionTrace(execute) : execute();
   }
 
   private procedureContext(
@@ -2639,10 +2774,50 @@ export class Runtime implements RuntimePort {
     fairnessKey: string,
     signal: AbortSignal,
     requestBytes: number,
+    timestamp: number,
     accountUnlinked: (account: ExternalAccount) => void,
   ): OwnedProcedureContext {
+    const plugins = this.pluginRuntime?.bindProcedure({
+      timestamp,
+      abortSignal: signal,
+      runQuery: (work) => this.executePluginQuery(fairnessKey, signal, requestBytes, work),
+      runMutation: (work) => this.executePluginWrite(
+        "mutation",
+        fairnessKey,
+        signal,
+        requestBytes,
+        work,
+      ),
+      runTransaction: (work) => this.executePluginWrite(
+        "transaction",
+        fairnessKey,
+        signal,
+        requestBytes,
+        work,
+      ),
+    }) ?? {};
     const value = Object.freeze({
-      ...this.transactionalContext(principal, fairnessKey, signal, requestBytes),
+      auth: principal,
+      abortSignal: signal,
+      timestamp,
+      ...plugins,
+      tx: <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> =>
+        this.inTransactionTrace(() => this.executeWrite(
+          "transaction",
+          fairnessKey,
+          signal,
+          requestBytes,
+          (db, writes) => {
+            const context = this.hostMutationContext(db, principal, timestamp, writes) as TxCtx;
+            return this.hasMcpCapabilities
+              ? withMcpTokenCapability(
+                  context,
+                  this.mcpTokenCapability(principal, this.engine.writer, null, writes),
+                  work,
+                )
+              : work(context);
+          },
+        )),
       linkAccount: (rawBearerToken: string) => this.linkAccount(
         principal,
         rawBearerToken,
@@ -2658,7 +2833,7 @@ export class Runtime implements RuntimePort {
         requestBytes,
         accountUnlinked,
       ),
-    });
+    }) as ProcedureCtx;
     const release = this.hasMcpCapabilities
       ? bindMcpAiContext(
         value,
@@ -2669,7 +2844,7 @@ export class Runtime implements RuntimePort {
   }
 
   private mcpAiCapability(
-    context: McpAiContext,
+    context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
   ): McpAiRuntimeCapability {
@@ -2685,7 +2860,13 @@ export class Runtime implements RuntimePort {
           mcp.name,
           tool.name,
           args,
-          this.transactionalContext(context.auth, fairnessKey, signal, requestBytes),
+          this.transactionalContext(
+            context.auth,
+            fairnessKey,
+            signal,
+            requestBytes,
+            context.timestamp,
+          ),
           fairnessKey,
           requestBytes,
         ),

@@ -695,9 +695,9 @@ describe("Protocol-2 HTTP procedures", () => {
       subject: "user-token",
       identity: 1n,
     });
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_identities").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_identities").get())
       .toEqual({ count: 1n });
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbz_identity_accounts").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_identity_accounts").get())
       .toEqual({ count: 1n });
 
     client.socket.close();
@@ -1731,7 +1731,7 @@ describe("lifecycle drain", () => {
     const persisted = new Database(join(dir, "data.db"), { readonly: true, safeIntegers: true });
     try {
       expect(
-        persisted.query("SELECT clean_shutdown FROM _dbz_state WHERE singleton = 1").get(),
+        persisted.query("SELECT clean_shutdown FROM _dbzz_state WHERE singleton = 1").get(),
       ).toEqual({ clean_shutdown: 0n });
     } finally {
       persisted.close();

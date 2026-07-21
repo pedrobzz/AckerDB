@@ -6,9 +6,9 @@
  */
 import type { Database } from "bun:sqlite";
 import { ValidationError, type Validator } from "./v.ts";
-import type { ColumnPlan, Engine, TablePlan } from "./engine.ts";
+import type { ColumnPlan, Engine, StorageScope, TablePlan } from "./engine.ts";
 import { brand, hasBrand } from "./identity.ts";
-import { camelCase, type IndexDef } from "./schema.ts";
+import { camelCase, type IndexDef, type TableDef } from "./schema.ts";
 import { emitWriteKeys, idKey, ixKey, scanKey } from "./keys.ts";
 
 const UNIQUE_CONSTRAINT_ERROR_IDENTITY = Symbol.for("@dbzz/server/UniqueConstraintError/v1");
@@ -172,22 +172,21 @@ function toSqlKey(engine: Engine, plan: TablePlan, column: string, value: unknow
   const columnPlan = plan.columns.get(column)!;
   if (value === null) {
     if (!columnPlan.nullable) {
-      throw new ValidationError(`${plan.name}.${column}: column is not nullable`);
+      throw new ValidationError(`${plan.displayName}.${column}: column is not nullable`);
     }
     return null;
   }
   if (columnPlan.kind === "enum" || columnPlan.kind === "union") {
-    const tags = engine.tags.get(columnPlan.typeName!)!;
+    const tags = engine.tagMap(plan, columnPlan.typeName!);
     if (typeof value !== "string" || !tags.toTag.has(value)) {
       throw new ValidationError(
-        `${plan.name}.${column}: unknown ${columnPlan.typeName} variant ${JSON.stringify(value)}`,
+        `${plan.displayName}.${column}: unknown ${columnPlan.typeName} variant ${JSON.stringify(value)}`,
       );
     }
     return tags.toTag.get(value)!;
   }
-  const table = engine.schema.tables[plan.name]!;
-  const base = unwrapBase(table.columns[column]!);
-  return columnPlan.toSql(base.check(value, `${plan.name}.${column}`))[0];
+  const base = unwrapBase(plan.table.columns[column]!);
+  return columnPlan.toSql(base.check(value, `${plan.displayName}.${column}`))[0];
 }
 
 // ---------------------------------------------------------------------------
@@ -206,18 +205,18 @@ class IndexQb {
   private nextColumn(method: string, column: string): string {
     if (this.range !== null) {
       throw new ValidationError(
-        `${this.plan.name}.${this.index.name}: nothing can follow the range column`,
+        `${this.plan.displayName}.${this.index.name}: nothing can follow the range column`,
       );
     }
     const expected = this.index.columns[this.eqs.length];
     if (expected === undefined) {
       throw new ValidationError(
-        `${this.plan.name}.${this.index.name}: all index columns are already pinned`,
+        `${this.plan.displayName}.${this.index.name}: all index columns are already pinned`,
       );
     }
     if (column !== expected) {
       throw new ValidationError(
-        `${this.plan.name}.${this.index.name}: .${method}("${column}") — expected column "${expected}" (equalities follow index column order)`,
+        `${this.plan.displayName}.${this.index.name}: .${method}("${column}") — expected column "${expected}" (equalities follow index column order)`,
       );
     }
     return column;
@@ -234,7 +233,7 @@ class IndexQb {
     const columnPlan = this.plan.columns.get(column)!;
     if (columnPlan.kind === "enum" || columnPlan.kind === "union") {
       throw new ValidationError(
-        `${this.plan.name}.${column}: range queries on ${columnPlan.kind} tags are not meaningful — use eq`,
+        `${this.plan.displayName}.${column}: range queries on ${columnPlan.kind} tags are not meaningful — use eq`,
       );
     }
     this.range = { column };
@@ -374,7 +373,7 @@ class RangeQueryImpl {
   private uniqueSync(): Record<string, unknown> | null {
     const rows = this.takeSync(2);
     if (rows.length > 1) {
-      throw new Error(`${this.spec.plan.name}: .unique() matched more than one row`);
+      throw new Error(`${this.spec.plan.displayName}: .unique() matched more than one row`);
     }
     return rows[0] ?? null;
   }
@@ -400,7 +399,7 @@ class RangeQueryImpl {
     return observeStatement(
       this.observer,
       "read",
-      this.spec.plan.name,
+      this.spec.plan.displayName,
       statement,
       work,
       rowCount,
@@ -486,7 +485,7 @@ class RangeQueryImpl {
     } finally {
       deliverObservation(this.observer, {
         kind: "read",
-        table: this.spec.plan.name,
+        table: this.spec.plan.displayName,
         statement: "iter",
         outcome: failed ? "failed" : "ok",
         durationMs: Math.max(0, performance.now() - startedAt),
@@ -624,11 +623,11 @@ function readMethods(
       return await observeStatement(
         observer,
         "read",
-        plan.name,
+        plan.displayName,
         "get",
         () => {
           if (typeof id !== "bigint") {
-            throw new ValidationError(`${plan.name}.get: expected a bigint id`);
+            throw new ValidationError(`${plan.displayName}.get: expected a bigint id`);
           }
           reads?.add(idKey(plan.name, id));
           const raw = engine
@@ -658,28 +657,28 @@ function readMethods(
 }
 
 /** Validate a full row (insert/replace): pk must be absent, all else checked. */
-function checkFullRow(plan: TablePlan, engine: Engine, row: unknown, op: string): Record<string, unknown> {
+function checkFullRow(plan: TablePlan, row: unknown, op: string): Record<string, unknown> {
   if (row === null || typeof row !== "object" || Array.isArray(row)) {
-    throw new ValidationError(`${plan.name}.${op}: expected a row object`);
+    throw new ValidationError(`${plan.displayName}.${op}: expected a row object`);
   }
   const input = row as Record<string, unknown>;
   if (Object.hasOwn(input, plan.pk) && input[plan.pk] !== undefined) {
     throw new ValidationError(
-      `${plan.name}.${op}: the primary key "${plan.pk}" is assigned by the database`,
+      `${plan.displayName}.${op}: the primary key "${plan.pk}" is assigned by the database`,
     );
   }
-  const table = engine.schema.tables[plan.name]!;
+  const table = plan.table;
   const out: Record<string, unknown> = {};
   for (const [name, validator] of Object.entries(table.columns)) {
     if (name === plan.pk) continue;
     const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
       ? null
       : input[name];
-    out[name] = validator.check(value, `${plan.name}.${op}.${name}`);
+    out[name] = validator.check(value, `${plan.displayName}.${op}.${name}`);
   }
   for (const key of Object.keys(input)) {
     if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
-      throw new ValidationError(`${plan.name}.${op}: unknown field "${key}"`);
+      throw new ValidationError(`${plan.displayName}.${op}: unknown field "${key}"`);
     }
   }
   return out;
@@ -691,6 +690,10 @@ interface WriteOutcome<T> {
 }
 
 type AnyWriteResult<T> = Promise<T> & { returning(): Promise<Record<string, unknown> | null> };
+
+// Safely below SQLite's historical 999-variable default while large enough to
+// collapse maintenance work into useful set-based batches.
+const DELETE_MANY_LIMIT = 256;
 
 /**
  * The result of a write: a real Promise of the primary value (id / void)
@@ -744,7 +747,7 @@ function writeMethods(
   observer?: DbStatementObserver,
 ) {
   const conn = engine.writer;
-  const table = engine.schema.tables[plan.name]!;
+  const table = plan.table;
   const touch = () => {
     if (plan.scheduleAt !== null) writes.scheduledTouched = true;
   };
@@ -761,14 +764,14 @@ function writeMethods(
 
   return {
     insert(row: unknown): AnyWriteResult<bigint> {
-      return observedWriteResult(observer, plan.name, "insert", () => {
-        const values = checkFullRow(plan, engine, row, "insert");
+      return observedWriteResult(observer, plan.displayName, "insert", () => {
+        const values = checkFullRow(plan, row, "insert");
         const { sql, bind } = engine.insertSql(plan);
         let inserted: { [k: string]: unknown };
         try {
           inserted = engine.statement(conn, sql).get(...(bind(values) as never[])) as never;
         } catch (error) {
-          wrapUnique(plan.name, error);
+          wrapUnique(plan.displayName, error);
         }
         const id = inserted[plan.pk] as bigint;
         const full = { ...values, [plan.pk]: id };
@@ -779,12 +782,12 @@ function writeMethods(
     },
 
     patch(id: bigint, partial: unknown): AnyWriteResult<void> {
-      return observedWriteResult(observer, plan.name, "patch", () => {
+      return observedWriteResult(observer, plan.displayName, "patch", () => {
         if (partial === null || typeof partial !== "object" || Array.isArray(partial)) {
-          throw new ValidationError(`${plan.name}.patch: expected a partial row object`);
+          throw new ValidationError(`${plan.displayName}.patch: expected a partial row object`);
         }
         const old = getRow(id);
-        if (old === null) throw new Error(`${plan.name}.patch: row ${id} not found`);
+        if (old === null) throw new Error(`${plan.displayName}.patch: row ${id} not found`);
         const input = partial as Record<string, unknown>;
         const sets: string[] = [];
         const params: unknown[] = [];
@@ -792,13 +795,13 @@ function writeMethods(
         for (const key of Object.keys(input)) {
           if (input[key] === undefined) continue; // undefined = untouched
           if (key === plan.pk) {
-            throw new ValidationError(`${plan.name}.patch: the primary key cannot be changed`);
+            throw new ValidationError(`${plan.displayName}.patch: the primary key cannot be changed`);
           }
           if (!Object.hasOwn(table.columns, key)) {
-            throw new ValidationError(`${plan.name}.patch: unknown field "${key}"`);
+            throw new ValidationError(`${plan.displayName}.patch: unknown field "${key}"`);
           }
           const validator = table.columns[key]!;
-          const value = validator.check(input[key], `${plan.name}.patch.${key}`);
+          const value = validator.check(input[key], `${plan.displayName}.patch.${key}`);
           updated[key] = value;
           const columnPlan = plan.columns.get(key)!;
           const sqlValues = columnPlan.toSql(value);
@@ -813,7 +816,7 @@ function writeMethods(
             .statement(conn, `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`)
             .run(...(params as never[]), id as never);
         } catch (error) {
-          wrapUnique(plan.name, error);
+          wrapUnique(plan.displayName, error);
         }
         emitWriteKeys(plan, old, writes.keys);
         emitWriteKeys(plan, updated, writes.keys);
@@ -823,10 +826,10 @@ function writeMethods(
     },
 
     replace(id: bigint, row: unknown): AnyWriteResult<void> {
-      return observedWriteResult(observer, plan.name, "replace", () => {
-        const values = checkFullRow(plan, engine, row, "replace");
+      return observedWriteResult(observer, plan.displayName, "replace", () => {
+        const values = checkFullRow(plan, row, "replace");
         const old = getRow(id);
-        if (old === null) throw new Error(`${plan.name}.replace: row ${id} not found`);
+        if (old === null) throw new Error(`${plan.displayName}.replace: row ${id} not found`);
         const sets: string[] = [];
         const params: unknown[] = [];
         for (const columnPlan of plan.columns.values()) {
@@ -842,7 +845,7 @@ function writeMethods(
             .statement(conn, `UPDATE ${quote(plan.name)} SET ${sets.join(", ")} WHERE ${quote(plan.pk)} = ?`)
             .run(...(params as never[]), id as never);
         } catch (error) {
-          wrapUnique(plan.name, error);
+          wrapUnique(plan.displayName, error);
         }
         const full = { ...values, [plan.pk]: id };
         emitWriteKeys(plan, old, writes.keys);
@@ -853,7 +856,7 @@ function writeMethods(
     },
 
     delete(id: bigint): AnyWriteResult<void> {
-      return observedWriteResult(observer, plan.name, "delete", () => {
+      return observedWriteResult(observer, plan.displayName, "delete", () => {
         const old = getRow(id);
         if (old === null) return { value: undefined, row: null }; // idempotent under retry
         engine
@@ -863,6 +866,47 @@ function writeMethods(
         touch();
         return { value: undefined, row: old };
       });
+    },
+
+    async deleteMany(ids: unknown): Promise<number> {
+      return await observeStatement(
+        observer,
+        "write",
+        plan.displayName,
+        "deleteMany",
+        () => {
+          if (!Array.isArray(ids)) {
+            throw new ValidationError(`${plan.displayName}.deleteMany: expected an array of bigint ids`);
+          }
+          const distinct = new Set<bigint>();
+          for (const id of ids) {
+            if (typeof id !== "bigint") {
+              throw new ValidationError(`${plan.displayName}.deleteMany: expected bigint ids`);
+            }
+            distinct.add(id);
+          }
+          if (distinct.size > DELETE_MANY_LIMIT) {
+            throw new ValidationError(
+              `${plan.displayName}.deleteMany: at most ${DELETE_MANY_LIMIT} distinct ids may be deleted at once`,
+            );
+          }
+          const uniqueIds = [...distinct];
+          if (uniqueIds.length === 0) return 0;
+          const placeholders = uniqueIds.map(() => "?").join(", ");
+          const rawRows = engine
+            .statement(
+              conn,
+              `DELETE FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} IN (${placeholders}) RETURNING ${plan.readProjection}`,
+            )
+            .all(...(uniqueIds as never[])) as Record<string, unknown>[];
+          for (const raw of rawRows) {
+            emitWriteKeys(plan, engine.rowFromSql(plan, raw), writes.keys);
+          }
+          if (rawRows.length > 0) touch();
+          return rawRows.length;
+        },
+        (deleted) => deleted,
+      );
     },
   };
 }
@@ -880,19 +924,19 @@ function attachUpsert(
     const name = camelCase(index.name);
     const fn = accessor[name] as Record<string, unknown>;
     fn["upsert"] = (key: Record<string, unknown>, values: unknown): AnyWriteResult<bigint> =>
-      observedWriteResult(observer, plan.name, "upsert", async () => {
+      observedWriteResult(observer, plan.displayName, "upsert", async () => {
         const keyColumns = [...index.columns];
         for (const column of Object.keys(key)) {
           if (!keyColumns.includes(column)) {
             throw new ValidationError(
-              `${plan.name}.${name}.upsert: "${column}" is not part of the unique index`,
+              `${plan.displayName}.${name}.upsert: "${column}" is not part of the unique index`,
             );
           }
         }
         const qb = new IndexQb(engine, plan, index);
         for (const column of keyColumns) {
           if (!Object.hasOwn(key, column) || key[column] === undefined) {
-            throw new ValidationError(`${plan.name}.${name}.upsert: missing key column "${column}"`);
+            throw new ValidationError(`${plan.displayName}.${name}.upsert: missing key column "${column}"`);
           }
           qb.eq(column, key[column]);
         }
@@ -917,21 +961,20 @@ function attachUpsert(
 }
 
 function eventWriteMethods(
-  engine: Engine,
   writes: WriteCollector,
-  tableName: string,
+  table: TableDef,
+  logicalName: string,
   nextEventId: (table: string) => bigint,
 ) {
-  const table = engine.schema.tables[tableName]!;
   const pk = table.primaryKey;
   return Object.assign(Object.create(null) as Record<never, never>, {
     async insert(row: unknown): Promise<void> {
       if (row === null || typeof row !== "object" || Array.isArray(row)) {
-        throw new ValidationError(`${tableName}.insert: expected a row object`);
+        throw new ValidationError(`${logicalName}.insert: expected a row object`);
       }
       const input = row as Record<string, unknown>;
       if (Object.hasOwn(input, pk) && input[pk] !== undefined) {
-        throw new ValidationError(`${tableName}.insert: the primary key "${pk}" is assigned by dbzz`);
+        throw new ValidationError(`${logicalName}.insert: the primary key "${pk}" is assigned by dbzz`);
       }
       const out: Record<string, unknown> = {};
       for (const [name, validator] of Object.entries(table.columns)) {
@@ -939,14 +982,14 @@ function eventWriteMethods(
         const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
           ? null
           : input[name];
-        out[name] = validator.check(value, `${tableName}.insert.${name}`);
+        out[name] = validator.check(value, `${logicalName}.insert.${name}`);
       }
       for (const key of Object.keys(input)) {
         if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
-          throw new ValidationError(`${tableName}.insert: unknown field "${key}"`);
+          throw new ValidationError(`${logicalName}.insert: unknown field "${key}"`);
         }
       }
-      writes.events.push({ table: tableName, row: { [pk]: nextEventId(tableName), ...out } });
+      writes.events.push({ table: logicalName, row: { [pk]: nextEventId(logicalName), ...out } });
     },
   });
 }
@@ -957,10 +1000,11 @@ export function makeDbReader(
   conn: Database,
   reads: ReadRecorder | null,
   observer?: DbStatementObserver,
+  scope: StorageScope = engine.rootScope,
 ): unknown {
   const db: Record<string, unknown> = Object.create(null);
-  for (const plan of engine.plans.values()) {
-    db[plan.name] = readMethods(engine, conn, reads, plan, observer);
+  for (const plan of scope.plans.values()) {
+    db[plan.logicalName] = readMethods(engine, conn, reads, plan, observer);
   }
   return db;
 }
@@ -971,14 +1015,15 @@ export function makeDbWriter(
   writes: WriteCollector,
   nextEventId: (table: string) => bigint,
   observer?: DbStatementObserver,
+  scope: StorageScope = engine.rootScope,
 ): unknown {
   const db: Record<string, unknown> = Object.create(null);
-  for (const [name, table] of Object.entries(engine.schema.tables)) {
+  for (const [name, table] of Object.entries(scope.schema.tables)) {
     if (table.kind === "event") {
-      db[name] = eventWriteMethods(engine, writes, name, nextEventId);
+      db[name] = eventWriteMethods(writes, table, name, nextEventId);
       continue;
     }
-    const plan = engine.plan(name);
+    const plan = scope.plan(name);
     const writer = writeMethods(engine, writes, plan, observer);
     const accessor: Record<string, unknown> = Object.assign(
       Object.create(null),

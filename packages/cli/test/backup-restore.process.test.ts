@@ -10,19 +10,21 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { encode } from "@dbzz/core";
-import { Engine, reconcile, type TelemetryRecord } from "@dbzz/server";
-import { importSchema } from "../src/app.ts";
+import { Engine, reconcile, reconcilePluginStorage, type TelemetryRecord } from "@dbzz/server";
+import { importApp } from "../src/manifest.ts";
 import { loadConfig } from "../src/config.ts";
 import { mutationReplayOwner } from "../../server/src/mutation-replay.ts";
 import {
   backupManifestPath,
   parseBackupManifest,
+  restoreVerifiedBackup,
   type BackupManifestJson,
   type BackupReport,
   type RestoreReport,
   type StatusReport,
 } from "../src/operations.ts";
-import { FIXTURE_SCHEMA, makeFixture } from "./fixture.ts";
+import { FIXTURE_APP, makeFixture } from "./fixture.ts";
+import { desiredPluginMounts } from "@dbzz/server";
 
 const CLI = new URL("../src/main.ts", import.meta.url).pathname;
 const dirs: string[] = [];
@@ -43,19 +45,20 @@ afterEach(() => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-function fixture(schema = FIXTURE_SCHEMA): string {
-  const dir = makeFixture({ "schema.ts": schema });
+function fixture(app = FIXTURE_APP): string {
+  const dir = makeFixture({ "app.ts": app });
   dirs.push(dir);
   return dir;
 }
 
 async function seed(dir: string, durability: "production" | "balanced" = "production"): Promise<void> {
   const config = loadConfig(dir, { DBZZ_DURABILITY: durability });
-  const schema = await importSchema(config);
+  const app = await importApp(config);
   mkdirSync(config.dbDir, { recursive: true });
-  const engine = new Engine(schema, join(config.dbDir, "data.db"), { durability });
+  const engine = new Engine(app.schema, join(config.dbDir, "data.db"), { durability });
   try {
     reconcile(engine);
+    reconcilePluginStorage(engine, desiredPluginMounts(app));
     const role = engine.tags.get("Role")!.toTag.get("member")!;
     const payload = engine.tags.get("Payload")!.toTag.get("nothing")!;
     engine.writer.exec("BEGIN IMMEDIATE");
@@ -89,6 +92,28 @@ async function seed(dir: string, durability: "production" | "balanced" = "produc
   }
 }
 
+function appWithPlugin(
+  mount: string,
+  definitionId: string,
+  valueValidator: "v.string()" | "v.int()" = "v.string()",
+): string {
+  return FIXTURE_APP
+    .replace("defineApp,", "defineApp, definePlugin,")
+    .replace(
+      "export default defineApp({ schema });",
+      `const pluginSchema = defineSchema({
+  entries: defineTable({ id: v.primaryKey(), value: ${valueValidator} }),
+});
+const plugin = definePlugin({
+  id: ${JSON.stringify(definitionId)},
+  schema: pluginSchema,
+  create: () => ({ exports: {} }),
+})();
+
+export default defineApp({ schema, plugins: { ${mount}: plugin } });`,
+    );
+}
+
 async function runCli(
   args: string[],
   env: Readonly<Record<string, string>> = {},
@@ -120,10 +145,10 @@ function telemetryRecords(stdout: string): TelemetryRecord[] {
     .filter((record) => record.schemaVersion === 1);
 }
 
-describe("dbz backup, restore, and status", () => {
+describe("dbzz backup, restore, and status", () => {
   test("status and backup never create a missing source database", async () => {
     const source = fixture();
-    const databaseDir = join(source, ".zdb");
+    const databaseDir = join(source, ".dbzz");
     const status = await runCli(["status", source]);
     expect(status.exitCode).toBe(1);
     expect(status.stderr).toContain("DBZZ database not found");
@@ -202,7 +227,7 @@ describe("dbz backup, restore, and status", () => {
     ]);
 
     const targetConfig = loadConfig(target);
-    const restored = new Engine(await importSchema(targetConfig), join(targetConfig.dbDir, "data.db"), {
+    const restored = new Engine((await importApp(targetConfig)).schema, join(targetConfig.dbDir, "data.db"), {
       integrityCheck: "full",
     });
     try {
@@ -233,6 +258,28 @@ describe("dbz backup, restore, and status", () => {
     } finally {
       restored.close("clean");
     }
+  }, 30_000);
+
+  test("restores into a vacant database directory and refuses unrelated entries without deleting them", async () => {
+    const source = fixture();
+    await seed(source);
+    const artifact = join(source, "backup.db");
+    expect((await runCli(["backup", artifact, source])).exitCode).toBe(0);
+
+    const vacant = fixture();
+    mkdirSync(join(vacant, ".dbzz"));
+    expect((await runCli(["restore", artifact, vacant])).exitCode).toBe(0);
+    expect(existsSync(join(vacant, ".dbzz", "data.db"))).toBe(true);
+
+    const occupied = fixture();
+    mkdirSync(join(occupied, ".dbzz"));
+    const sentinel = join(occupied, ".dbzz", "operator-note");
+    writeFileSync(sentinel, "preserve me");
+    const refused = await runCli(["restore", artifact, occupied]);
+    expect(refused.exitCode).toBe(1);
+    expect(refused.stderr).toContain("unrelated entry");
+    expect(readFileSync(sentinel, "utf8")).toBe("preserve me");
+    expect(existsSync(join(occupied, ".dbzz", "data.db"))).toBe(false);
   }, 30_000);
 
   test("status and backup preserve the explicitly selected balanced durability", async () => {
@@ -306,7 +353,7 @@ describe("dbz backup, restore, and status", () => {
     const corrupt = await runCli(["restore", corruptArtifact, corruptTarget]);
     expect(corrupt.exitCode).toBe(1);
     expect(corrupt.stderr).toContain("artifact does not match its manifest");
-    expect(existsSync(join(corruptTarget, ".zdb"))).toBe(false);
+    expect(existsSync(join(corruptTarget, ".dbzz"))).toBe(false);
 
     const malformedArtifact = join(source, "malformed.db");
     copyFileSync(artifact, malformedArtifact);
@@ -319,10 +366,10 @@ describe("dbz backup, restore, and status", () => {
     const malformedResult = await runCli(["restore", malformedArtifact, malformedTarget]);
     expect(malformedResult.exitCode).toBe(1);
     expect(malformedResult.stderr).toContain("unsupported shape");
-    expect(existsSync(join(malformedTarget, ".zdb"))).toBe(false);
+    expect(existsSync(join(malformedTarget, ".dbzz"))).toBe(false);
 
     const mismatchedTarget = fixture(
-      FIXTURE_SCHEMA.replace(
+      FIXTURE_APP.replace(
         "messages: defineTable({",
         "extra: defineTable({ id: v.primaryKey() }),\n  messages: defineTable({",
       ),
@@ -330,8 +377,47 @@ describe("dbz backup, restore, and status", () => {
     const mismatchedResult = await runCli(["restore", artifact, mismatchedTarget]);
     expect(mismatchedResult.exitCode).toBe(1);
     expect(mismatchedResult.stderr).toContain("schema fingerprint");
-    expect(existsSync(join(mismatchedTarget, ".zdb"))).toBe(false);
+    expect(existsSync(join(mismatchedTarget, ".dbzz"))).toBe(false);
   }, 30_000);
+
+  test("rejects a target App whose Plugin storage layout differs from the backup", async () => {
+    const source = fixture(appWithPlugin("cache", "@test/cache"));
+    await seed(source);
+    const artifact = join(source, "backup.db");
+    expect((await runCli(["backup", artifact, source])).exitCode).toBe(0);
+
+    const targets = [
+      fixture(appWithPlugin("store", "@test/cache")),
+      fixture(appWithPlugin("cache", "@test/cache-next")),
+      fixture(appWithPlugin("cache", "@test/cache", "v.int()")),
+    ];
+    for (const target of targets) {
+      const result = await runCli(["restore", artifact, target]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("storage layout");
+      expect(existsSync(join(target, ".dbzz"))).toBe(false);
+    }
+  }, 30_000);
+
+  test("rechecks App layout after child verification and before canonical publication", async () => {
+    const source = fixture();
+    await seed(source);
+    const artifact = join(source, "backup.db");
+    expect((await runCli(["backup", artifact, source])).exitCode).toBe(0);
+
+    const target = fixture();
+    const config = loadConfig(target);
+    await expect(restoreVerifiedBackup(config, artifact, async () => {
+      writeFileSync(
+        config.appPath,
+        FIXTURE_APP.replace(
+          "messages: defineTable({",
+          "extra: defineTable({ id: v.primaryKey() }),\n  messages: defineTable({",
+        ),
+      );
+    })).rejects.toThrow("storage layout");
+    expect(existsSync(join(config.dbDir, "data.db"))).toBe(false);
+  });
 
   test("never replaces an existing or locked database target", async () => {
     const source = fixture();
@@ -342,13 +428,16 @@ describe("dbz backup, restore, and status", () => {
     const target = fixture();
     await seed(target);
     const config = loadConfig(target);
-    const live = new Engine(await importSchema(config), join(config.dbDir, "data.db"));
+    const live = new Engine((await importApp(config)).schema, join(config.dbDir, "data.db"));
+    const sentinel = join(config.dbDir, "operator-note");
+    writeFileSync(sentinel, "start winner");
     try {
       const result = await runCli(["restore", artifact, target]);
       expect(result.exitCode).toBe(1);
-      expect(result.stderr).toContain("restore requires a fresh target");
+      expect(result.stderr).toContain("database is already open");
       expect(live.commitVersion()).toBe(1n);
       expect(live.writer.query("SELECT COUNT(*) AS count FROM messages").get()).toEqual({ count: 1n });
+      expect(readFileSync(sentinel, "utf8")).toBe("start winner");
     } finally {
       live.close("clean");
     }

@@ -327,19 +327,20 @@ describe("generateMigration: round-trip through loadMigrationChain + reconcile",
 
 describe("computePlan: optimistic unique-index duplicate probe", () => {
   const PROBE_PRE = defineSchema({ users: defineTable({ id: v.primaryKey(), email: v.string().nullable() }) });
-  // The live schema.ts adds a UNIQUE index over the (nullable) email column.
-  const PROBE_SCHEMA_TS = `import { defineSchema, defineTable, v } from "@dbzz/server";
-export default defineSchema({
+  // The live app.ts adds a UNIQUE index over the (nullable) email column.
+  const PROBE_APP_TS = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const schema = defineSchema({
   users: defineTable({ id: v.primaryKey(), email: v.string().nullable() })
     .index("by_email", ["email"], { unique: true }),
 });
+export default defineApp({ schema });
 `;
 
   async function planAfterSeeding(emails: (string | null)[]) {
-    const dir = makeFixture({ "schema.ts": PROBE_SCHEMA_TS });
+    const dir = makeFixture({ "app.ts": PROBE_APP_TS });
     dirs.push(dir);
-    const dbPath = join(dir, ".zdb", "data.db");
-    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    const dbPath = join(dir, ".dbzz", "data.db");
+    mkdirSync(join(dir, ".dbzz"), { recursive: true });
     await seed(PROBE_PRE, dbPath, async (d) => {
       for (const email of emails) await d.users.insert({ email });
     });
@@ -374,17 +375,18 @@ describe("computePlan: optimistic constraint probe", () => {
   const pre = defineSchema({
     items: defineTable({ id: v.primaryKey(), label: v.string().nullable() }),
   });
-  const schemaTs = `import { defineSchema, defineTable, v } from "@dbzz/server";
-export default defineSchema({
+  const appTs = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const schema = defineSchema({
   items: defineTable({ id: v.primaryKey(), label: v.string().min(2).nullable() }),
 });
+export default defineApp({ schema });
 `;
 
   test("reports the exact violating-row count while nullable null is ignored", async () => {
-    const dir = makeFixture({ "schema.ts": schemaTs });
+    const dir = makeFixture({ "app.ts": appTs });
     dirs.push(dir);
-    const dbPath = join(dir, ".zdb", "data.db");
-    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    const dbPath = join(dir, ".dbzz", "data.db");
+    mkdirSync(join(dir, ".dbzz"), { recursive: true });
     await seed(pre, dbPath, async (d) => {
       for (const label of [null, "", "x", "ok"]) await d.items.insert({ label });
     });
@@ -408,15 +410,16 @@ export default defineSchema({
         body: v.union("Body", { legacy: v.object({ label: v.string() }) }),
       }),
     });
-    const targetTs = `import { defineSchema, defineTable, v } from "@dbzz/server";
-export default defineSchema({
+    const targetAppTs = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const schema = defineSchema({
   items: defineTable({
     id: v.primaryKey(),
     body: v.union("Body", { current: v.object({ label: v.string().min(2) }) }),
   }),
 });
+export default defineApp({ schema });
 `;
-    const dir = makeFixture({ "schema.ts": targetTs });
+    const dir = makeFixture({ "app.ts": targetAppTs });
     dirs.push(dir);
     const config = loadConfig(dir);
     mkdirSync(config.dbDir, { recursive: true });
@@ -553,10 +556,11 @@ export default defineMigration({
 describe("computePlan / writeMigration: applied-history prefix validation", () => {
   const B_PRE = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
   const B_TARGET = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
-  const B_SCHEMA_TS = `import { defineSchema, defineTable, v } from "@dbzz/server";
-export default defineSchema({
+  const B_APP_TS = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const schema = defineSchema({
   posts: defineTable({ id: v.primaryKey(), count: v.int() }),
 });
+export default defineApp({ schema });
 `;
 
   /** Scaffold a filled migration, seed at PRE, apply it, and return the app dir + config. */
@@ -567,19 +571,19 @@ export default defineSchema({
       "      return { ...row, count: Number(row.count) || 0 };\n",
     );
     const dir = makeFixture({
-      "schema.ts": B_SCHEMA_TS,
+      "app.ts": B_APP_TS,
       "migrations/0001_parse_count.ts": filled,
       "migrations/meta/0001_parse_count.types.ts": gen.typesTs,
       "migrations/meta/0001_parse_count.json": gen.metaJson,
     });
     dirs.push(dir);
     const config = loadConfig(dir);
-    const dbPath = join(dir, ".zdb", "data.db");
-    mkdirSync(join(dir, ".zdb"), { recursive: true });
+    const dbPath = join(dir, ".dbzz", "data.db");
+    mkdirSync(join(dir, ".dbzz"), { recursive: true });
     await seed(B_PRE, dbPath, async (d) => {
       await d.posts.insert({ count: "5" });
     });
-    // Apply the chain so `_dbz_migrations` records the identity of the ORIGINAL code.
+    // Apply the chain so `_dbzz_migrations` records the identity of the ORIGINAL code.
     const engine = new Engine(B_TARGET, dbPath);
     await reconcile(engine, await loadMigrationChain(config));
     engine.close("clean");
@@ -604,7 +608,7 @@ export default defineSchema({
     expect(outcome.status).toBe("diverged");
     if (outcome.status !== "diverged") throw new Error("unreachable");
     expect(outcome.message).toContain("no longer matches the on-disk chain");
-    expect(outcome.message).toContain("dbz reset");
+    expect(outcome.message).toContain("dbzz reset");
 
     await expect(writeMigration(config, { name: "next" })).rejects.toThrow("no longer matches the on-disk chain");
     // The refusal must scaffold nothing on top of the divergent chain.
@@ -628,35 +632,37 @@ export default defineSchema({
 describe("computePlan: pending staleness + writeMigration: consent", () => {
   const P_PRE = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
   const P_TARGET = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
-  const SCHEMA_AT_TARGET = `import { defineSchema, defineTable, v } from "@dbzz/server";
-export default defineSchema({
+  const APP_AT_TARGET = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const schema = defineSchema({
   posts: defineTable({ id: v.primaryKey(), count: v.int() }),
 });
+export default defineApp({ schema });
 `;
-  const SCHEMA_MOVED_ON = `import { defineSchema, defineTable, v } from "@dbzz/server";
-export default defineSchema({
+  const APP_MOVED_ON = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const schema = defineSchema({
   posts: defineTable({ id: v.primaryKey(), count: v.int(), flag: v.string() }),
 });
+export default defineApp({ schema });
 `;
 
   /** A scaffolded-but-unapplied chain over a database still at PRE. */
-  async function pendingFixture(schemaTs: string): Promise<{ dir: string; config: ReturnType<typeof loadConfig> }> {
+  async function pendingFixture(appTs: string): Promise<{ dir: string; config: ReturnType<typeof loadConfig> }> {
     const gen = generateMigration({ number: 1, name: "parse_count", pre: snapshotOf(P_PRE), schema: P_TARGET });
     const dir = makeFixture({
-      "schema.ts": schemaTs,
+      "app.ts": appTs,
       "migrations/0001_parse_count.ts": gen.migrationTs,
       "migrations/meta/0001_parse_count.types.ts": gen.typesTs,
       "migrations/meta/0001_parse_count.json": gen.metaJson,
     });
     dirs.push(dir);
     const config = loadConfig(dir);
-    mkdirSync(join(dir, ".zdb"), { recursive: true });
-    await seed(P_PRE, join(dir, ".zdb", "data.db"), async () => {});
+    mkdirSync(join(dir, ".dbzz"), { recursive: true });
+    await seed(P_PRE, join(dir, ".dbzz", "data.db"), async () => {});
     return { dir, config };
   }
 
   test("a pending chain whose end-state is the live schema is not stale", async () => {
-    const { config } = await pendingFixture(SCHEMA_AT_TARGET);
+    const { config } = await pendingFixture(APP_AT_TARGET);
     const outcome = await computePlan(config);
     expect(outcome.status).toBe("pending");
     if (outcome.status !== "pending") throw new Error("unreachable");
@@ -675,7 +681,7 @@ export default defineSchema({
   });
 
   test("a schema that moved after the scaffold flags the pending chain stale and names its files", async () => {
-    const { config } = await pendingFixture(SCHEMA_MOVED_ON);
+    const { config } = await pendingFixture(APP_MOVED_ON);
     const outcome = await computePlan(config);
     expect(outcome.status).toBe("pending");
     if (outcome.status !== "pending") throw new Error("unreachable");
@@ -689,11 +695,11 @@ export default defineSchema({
 
   /** A chainless app whose live schema needs a migration: the consent-fingerprint stage. */
   async function changesFixture(): Promise<{ dir: string; config: ReturnType<typeof loadConfig> }> {
-    const dir = makeFixture({ "schema.ts": SCHEMA_AT_TARGET });
+    const dir = makeFixture({ "app.ts": APP_AT_TARGET });
     dirs.push(dir);
     const config = loadConfig(dir);
-    mkdirSync(join(dir, ".zdb"), { recursive: true });
-    await seed(P_PRE, join(dir, ".zdb", "data.db"), async () => {});
+    mkdirSync(join(dir, ".dbzz"), { recursive: true });
+    await seed(P_PRE, join(dir, ".dbzz", "data.db"), async () => {});
     return { dir, config };
   }
 
@@ -725,7 +731,7 @@ export default defineSchema({
     expect(written).toHaveLength(3);
   });
 
-  test("no consent means the invocation is the consent — dbz generate's path still writes", async () => {
+  test("no consent means the invocation is the consent — dbzz generate's path still writes", async () => {
     const { dir, config } = await changesFixture();
     await writeMigration(config, { name: "parse_count" });
     expect(existsSync(join(dir, "migrations", "0001_parse_count.ts"))).toBe(true);

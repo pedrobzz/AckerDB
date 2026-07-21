@@ -25,7 +25,7 @@ import {
   type TableDef as TableDefinition,
 } from "@dbzz/server";
 import { outcomeFromError } from "../../server/src/outcome.ts";
-import { importSchema } from "../src/app.ts";
+import { importApp } from "../src/manifest.ts";
 import { loadConfig } from "../src/config.ts";
 
 const REPO = new URL("../../..", import.meta.url).pathname;
@@ -69,23 +69,24 @@ test("packed @dbzz/server values keep identity across physical package copies", 
       { recursive: true },
     );
 
-    const schemaPath = join(app, "schema.ts");
+    const appPath = join(app, "app.ts");
     writeFileSync(
-      schemaPath,
+      appPath,
       [
-        `import { DbzzError, UniqueConstraintError, ValidationError, v, defineSchema, defineTable } from "@dbzz/server";`,
+        `import { DbzzError, UniqueConstraintError, ValidationError, v, defineApp, defineSchema, defineTable } from "@dbzz/server";`,
         `export const records = defineTable({ id: v.primaryKey() });`,
         `export const conflict = new DbzzError("conflict", "foreign conflict");`,
         `export const invalid = new ValidationError("foreign validation");`,
         `export const unique = new UniqueConstraintError("foreign unique");`,
-        `export default defineSchema({ records });`,
+        `export const schema = defineSchema({ records });`,
+        `export default defineApp({ schema });`,
         "",
       ].join("\n"),
     );
 
     const config = loadConfig(app);
-    const schema = await importSchema(config);
-    const foreign = (await import(pathToFileURL(schemaPath).href)) as {
+    const schema = (await importApp(config)).schema;
+    const foreign = (await import(pathToFileURL(appPath).href)) as {
       records: TableDefinition;
       conflict: unknown;
       invalid: unknown;

@@ -7,16 +7,18 @@ export {
   type GenerateMigrationInput,
 } from "./migrations/scaffold.ts";
 export {
-  importFunctionModules,
-  importSchema,
-  listFunctionModules,
   StartupInterruptedError,
   startApp,
-  type FunctionModuleFile,
   type RunningApp,
   type StartAppOptions,
   type StartupPreparation,
 } from "./app.ts";
+export {
+  importApp,
+  importFunctionModules,
+  listFunctionModules,
+  type FunctionModuleFile,
+} from "./manifest.ts";
 export {
   computePlan,
   deriveSlug,

@@ -6,22 +6,29 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Database } from "bun:sqlite";
 import {
   CorruptDatabaseError,
+  DatabaseAlreadyOpenError,
   v,
+  defineApp,
   defineSchema,
   defineTable,
   Engine,
   IncompatibleDatabaseError,
   reconcile,
+  resetDatabase,
+  restoreVerifiedDatabase,
 } from "@dbzz/server";
+import { DatabaseRestoreTarget } from "../src/engine.ts";
+import { DatabaseOwnership, coordinationDatabasePath } from "../src/storage-ownership.ts";
 import { mutationReplayOwner } from "../src/mutation-replay.ts";
 
 const roots: string[] = [];
@@ -38,6 +45,7 @@ afterEach(() => {
 const schema = defineSchema({
   records: defineTable({ id: v.primaryKey(), value: v.string() }),
 });
+const app = defineApp({ schema });
 
 function catalog(database: string): unknown[] {
   const db = new Database(database, { readonly: true, safeIntegers: true });
@@ -57,10 +65,10 @@ function ownedState(database: string): Record<string, unknown> {
       catalog: db
         .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
         .all(),
-      meta: db.query("SELECT key, value FROM _dbz_meta ORDER BY key").all(),
-      state: db.query("SELECT * FROM _dbz_state ORDER BY singleton").all(),
-      tags: db.query("SELECT type, variant, tag FROM _dbz_tags ORDER BY type, variant").all(),
-      migrations: db.query("SELECT * FROM _dbz_migrations ORDER BY number").all(),
+      meta: db.query("SELECT key, value FROM _dbzz_meta ORDER BY key").all(),
+      state: db.query("SELECT * FROM _dbzz_state ORDER BY singleton").all(),
+      tags: db.query("SELECT type, variant, tag FROM _dbzz_tags ORDER BY type, variant").all(),
+      migrations: db.query("SELECT * FROM _dbzz_migrations ORDER BY number").all(),
     };
   } finally {
     db.close();
@@ -70,7 +78,7 @@ function ownedState(database: string): Record<string, unknown> {
 function cleanShutdown(database: string): bigint {
   const db = new Database(database, { readonly: true, safeIntegers: true });
   try {
-    return (db.query("SELECT clean_shutdown FROM _dbz_state WHERE singleton = 1").get() as {
+    return (db.query("SELECT clean_shutdown FROM _dbzz_state WHERE singleton = 1").get() as {
       clean_shutdown: bigint;
     }).clean_shutdown;
   } finally {
@@ -84,6 +92,7 @@ describe("durability and internal state", () => {
     const production = new Engine(schema, database);
     reconcile(production);
     expect(production.status()).toMatchObject({
+      engineSchemaVersion: 10,
       durability: "production",
       synchronous: "FULL",
       commitVersion: 0n,
@@ -104,23 +113,101 @@ describe("durability and internal state", () => {
     balanced.close("clean");
   });
 
-  test("rejects another process owner and legacy internal schemas", () => {
+  test("rejects another process owner and incomplete internal schemas", () => {
     const { database } = fresh();
     const owner = new Engine(schema, database);
-    expect(() => new Engine(schema, database)).toThrow("already open by process");
+    expect(() => new Engine(schema, database)).toThrow("database is already open");
     owner.close("clean");
 
     const legacy = fresh().database;
     const db = new Database(legacy, { create: true });
-    db.exec("CREATE TABLE _dbz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    db.exec("CREATE TABLE _dbzz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     db.close();
     expect(() => new Engine(schema, legacy)).toThrow(IncompatibleDatabaseError);
+  });
+
+  test("keeps persistent coordination identity while releasing ownership with the process handle", () => {
+    const { database } = fresh();
+    const coordination = coordinationDatabasePath(database);
+    const first = new Engine(schema, database);
+    expect(existsSync(coordination)).toBe(true);
+    first.close("clean");
+    expect(existsSync(coordination)).toBe(true);
+    const replacement = new Engine(schema, database);
+    replacement.close("clean");
+    expect(existsSync(coordination)).toBe(true);
+  });
+
+  test("start, restore, and reset share one ownership lease", () => {
+    const { database } = fresh();
+    const engine = new Engine(schema, database);
+    expect(() => DatabaseRestoreTarget.acquire(database)).toThrow(DatabaseAlreadyOpenError);
+    expect(() => resetDatabase(database)).toThrow(DatabaseAlreadyOpenError);
+    expect(existsSync(database)).toBe(true);
+    engine.close("clean");
+
+    const vacant = fresh().database;
+    const restore = DatabaseRestoreTarget.acquire(vacant);
+    expect(() => new Engine(schema, vacant)).toThrow(DatabaseAlreadyOpenError);
+    expect(() => resetDatabase(vacant)).toThrow(DatabaseAlreadyOpenError);
+    restore.close();
+    const initialized = new Engine(schema, vacant);
+    initialized.close("clean");
+  });
+
+  test("restore vacancy accepts an exact pre-link coordination crash residue", () => {
+    const { database } = fresh();
+    const coordination = coordinationDatabasePath(database);
+    const residue = `${coordination}.dbzz-bootstrap-00000000-0000-4000-8000-000000000001`;
+    const seed = DatabaseOwnership.acquire(database);
+    seed.release();
+    renameSync(coordination, residue);
+
+    const restore = DatabaseRestoreTarget.acquire(database);
+    expect(existsSync(residue)).toBe(true);
+    expect(statSync(residue, { bigint: true }).ino).not.toBe(
+      statSync(coordination, { bigint: true }).ino,
+    );
+    restore.assertVacant();
+    restore.close();
+  });
+
+  test("reset removes only the canonical family and exact DBZZ staging artifacts", () => {
+    const { root, database } = fresh();
+    const engine = new Engine(schema, database);
+    engine.close("clean");
+    const init = `${database}.dbzz-init-00000000-0000-4000-8000-000000000001`;
+    const restore = `${database}.dbzz-restore-00000000-0000-4000-8000-000000000002`;
+    const lookalike = `${database}.dbzz-restore-not-a-uuid`;
+    const unrelated = join(root, "keep-me");
+    for (const artifact of [init, `${init}-journal`, restore, `${restore}-shm`, lookalike, unrelated]) {
+      writeFileSync(artifact, artifact);
+    }
+    writeFileSync(`${database}-wal`, "stale WAL");
+
+    const result = resetDatabase(database);
+    expect(result.removed).toEqual(expect.arrayContaining([
+      database,
+      `${database}-wal`,
+      init,
+      `${init}-journal`,
+      restore,
+      `${restore}-shm`,
+    ]));
+    for (const removed of result.removed) expect(existsSync(removed)).toBe(false);
+    expect(readFileSync(lookalike, "utf8")).toBe(lookalike);
+    expect(readFileSync(unrelated, "utf8")).toBe(unrelated);
+    expect(existsSync(coordinationDatabasePath(database))).toBe(true);
+
+    const repeated = resetDatabase(database);
+    expect(repeated.removed).toEqual([]);
+    expect(existsSync(coordinationDatabasePath(database))).toBe(true);
   });
 
   test("refuses to adopt user or partial internal objects when metadata is absent", () => {
     for (const ddl of [
       "CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
-      "CREATE TABLE _dbz_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL)",
+      "CREATE TABLE _dbzz_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL)",
     ]) {
       const { database } = fresh();
       const db = new Database(database, { create: true });
@@ -138,7 +225,7 @@ describe("durability and internal state", () => {
     reconcile(engine);
     engine.close("clean");
     const db = new Database(database);
-    db.exec("ALTER TABLE _dbz_mutations ADD COLUMN unexpected TEXT");
+    db.exec("ALTER TABLE _dbzz_mutations ADD COLUMN unexpected TEXT");
     db.close();
     const before = ownedState(database);
     expect(() => new Engine(schema, database)).toThrow(IncompatibleDatabaseError);
@@ -194,9 +281,9 @@ describe("durability and internal state", () => {
     const live = new Engine(indexed, database);
     reconcile(live);
     live.writer.exec("DROP INDEX ix_records_by_value");
-    const before = live.writer.query("SELECT key, value FROM _dbz_meta ORDER BY key").all();
+    const before = live.writer.query("SELECT key, value FROM _dbzz_meta ORDER BY key").all();
     expect(() => reconcile(live)).toThrow(CorruptDatabaseError);
-    expect(live.writer.query("SELECT key, value FROM _dbz_meta ORDER BY key").all()).toEqual(before);
+    expect(live.writer.query("SELECT key, value FROM _dbzz_meta ORDER BY key").all()).toEqual(before);
     live.close("clean");
   });
 
@@ -286,17 +373,17 @@ describe("durability and internal state", () => {
       engine.close("clean");
 
       const db = new Database(database, { safeIntegers: true });
-      const row = db.query("SELECT value FROM _dbz_meta WHERE key = 'schema'").get() as {
+      const row = db.query("SELECT value FROM _dbzz_meta WHERE key = 'schema'").get() as {
         value: string;
       };
       db.query(
-        "INSERT INTO _dbz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO _dbzz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
       ).run(1, "existing evidence", "0".repeat(64), 1);
       const snapshot = JSON.parse(row.value) as {
         tables: { records: { columns: Record<string, Record<string, unknown>> } };
       };
       corruption.mutate(snapshot.tables.records.columns);
-      db.query("UPDATE _dbz_meta SET value = ? WHERE key = 'schema'")
+      db.query("UPDATE _dbzz_meta SET value = ? WHERE key = 'schema'")
         .run(JSON.stringify(snapshot));
       db.close();
 
@@ -322,8 +409,8 @@ describe("durability and internal state", () => {
       }),
     });
     for (const corruption of [
-      "UPDATE _dbz_tags SET tag = 0 WHERE type = 'RecordState' AND variant = 'ready'",
-      "DELETE FROM _dbz_tags WHERE type = 'RecordState' AND variant = 'done'",
+      "UPDATE _dbzz_tags SET tag = 0 WHERE type = 'RecordState' AND variant = 'ready'",
+      "DELETE FROM _dbzz_tags WHERE type = 'RecordState' AND variant = 'done'",
     ]) {
       const { database } = fresh();
       const engine = new Engine(tagged, database);
@@ -345,7 +432,7 @@ describe("durability and internal state", () => {
     engine.close("clean");
 
     const db = new Database(database, { safeIntegers: true });
-    db.query("UPDATE _dbz_state SET mutation_records = 1 WHERE singleton = 1").run();
+    db.query("UPDATE _dbzz_state SET mutation_records = 1 WHERE singleton = 1").run();
     db.close();
     expect(() => new Engine(schema, database)).toThrow(CorruptDatabaseError);
   });
@@ -354,7 +441,7 @@ describe("durability and internal state", () => {
     const { database } = fresh();
     const engine = new Engine(schema, database);
     reconcile(engine);
-    expect(engine.writer.query("PRAGMA index_list('_dbz_mutations')").all()).toEqual([]);
+    expect(engine.writer.query("PRAGMA index_list('_dbzz_mutations')").all()).toEqual([]);
     engine.writer.exec("BEGIN IMMEDIATE");
     const staged = engine[mutationReplayOwner].stage({
       sessionId: "session-a",
@@ -510,15 +597,15 @@ describe("durability and internal state", () => {
     };
 
     corrupt(
-      (database) => database.query("UPDATE _dbz_mutations SET request_id = 'request-1' WHERE commit_version = 2").run(),
+      (database) => database.query("UPDATE _dbzz_mutations SET request_id = 'request-1' WHERE commit_version = 2").run(),
       "duplicate scoped request",
     );
     corrupt(
-      (database) => database.query("UPDATE _dbz_state SET commit_version = 1 WHERE singleton = 1").run(),
+      (database) => database.query("UPDATE _dbzz_state SET commit_version = 1 WHERE singleton = 1").run(),
       "invalid commit order",
     );
     corrupt(
-      (database) => database.query("UPDATE _dbz_mutations SET completed_at = 0 WHERE commit_version = 2").run(),
+      (database) => database.query("UPDATE _dbzz_mutations SET completed_at = 0 WHERE commit_version = 2").run(),
       "completion time is not monotonic",
     );
   });
@@ -589,13 +676,25 @@ describe("durability and internal state", () => {
       closeAdditionalReader();
       throw new Error("secondary reader close failure");
     };
-    engine.writer.exec("DROP TABLE _dbz_state");
+    engine.writer.exec("DROP TABLE _dbzz_state");
 
-    expect(() => engine.close("clean")).toThrow("no such table: _dbz_state");
+    let closeFailure: unknown;
+    try {
+      engine.close("clean");
+    } catch (error) {
+      closeFailure = error;
+    }
+    expect(closeFailure).toBeInstanceOf(AggregateError);
+    expect((closeFailure as AggregateError).errors.map(String)).toEqual(expect.arrayContaining([
+      expect.stringContaining("no such table: _dbzz_state"),
+      expect.stringContaining("secondary reader close failure"),
+    ]));
     for (const connection of [engine.writer, engine.reader, additionalReader]) {
       expect(() => connection.query("SELECT 1").get()).toThrow("closed database");
     }
-    expect(existsSync(`${database}.dbzz.lock`)).toBe(false);
+    expect(existsSync(coordinationDatabasePath(database))).toBe(true);
+    const ownership = DatabaseOwnership.acquire(database);
+    ownership.release();
   });
 
   test("scavenges pre-publish and post-publish bootstrap crash remnants", () => {
@@ -613,7 +712,7 @@ describe("durability and internal state", () => {
     reconcile(initialized);
     const lockedArtifact = `${prefix}00000000-0000-4000-8000-000000000004`;
     writeFileSync(lockedArtifact, "must remain while another process owns the lock");
-    expect(() => new Engine(schema, database)).toThrow("already open by process");
+    expect(() => new Engine(schema, database)).toThrow("database is already open");
     expect(existsSync(lockedArtifact)).toBe(true);
     initialized.close("clean");
     expect(existsSync(prePublish)).toBe(false);
@@ -671,7 +770,7 @@ describe("durability and internal state", () => {
 });
 
 describe("checkpoint, backup, and restore", () => {
-  test("reports checkpoint progress and restores a verified continued database", () => {
+  test("reports checkpoint progress and restores a verified continued database", async () => {
     const source = fresh();
     const engine = new Engine(schema, source.database);
     reconcile(engine);
@@ -708,7 +807,7 @@ describe("checkpoint, backup, and restore", () => {
     engine.close("clean");
 
     const restored = fresh().database;
-    Engine.restore(artifact, restored, manifest);
+    await restoreVerifiedDatabase(artifact, restored, manifest, () => app);
     const reopened = new Engine(schema, restored);
     reconcile(reopened);
     expect(reopened.commitVersion()).toBe(1n);
@@ -723,7 +822,7 @@ describe("checkpoint, backup, and restore", () => {
     reopened.close("clean");
   });
 
-  test("refuses an artifact whose manifest digest no longer matches", () => {
+  test("refuses an artifact whose manifest digest no longer matches", async () => {
     const source = fresh();
     const engine = new Engine(schema, source.database);
     reconcile(engine);
@@ -733,6 +832,87 @@ describe("checkpoint, backup, and restore", () => {
     const bytes = readFileSync(artifact);
     bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0xff;
     writeFileSync(artifact, bytes);
-    expect(() => Engine.restore(artifact, fresh().database, manifest)).toThrow(CorruptDatabaseError);
+    await expect(
+      restoreVerifiedDatabase(artifact, fresh().database, manifest, () => app),
+    ).rejects.toThrow(CorruptDatabaseError);
+  });
+
+  test("refuses interrupted restore evidence at startup and safely completes an exact retry", async () => {
+    const source = fresh();
+    const owner = new Engine(schema, source.database);
+    reconcile(owner);
+    owner.writer.query("INSERT INTO records (value) VALUES (?)").run("restored");
+    const artifact = join(source.root, "backup.db");
+    const manifest = owner.backup(artifact);
+    owner.close("clean");
+
+    const target = fresh().database;
+    const interrupted = `${target}.dbzz-restore-00000000-0000-4000-8000-000000000001`;
+    writeFileSync(interrupted, "partial restore");
+    expect(() => new Engine(schema, target)).toThrow("interrupted restore");
+    expect(existsSync(target)).toBe(false);
+    expect(readFileSync(interrupted, "utf8")).toBe("partial restore");
+
+    const importedEntry = join(dirname(target), "created-by-app-import");
+    await expect(restoreVerifiedDatabase(artifact, target, manifest, () => {
+      writeFileSync(importedEntry, "preserve import evidence");
+      return app;
+    })).rejects.toThrow("unrelated entry");
+    expect(readFileSync(importedEntry, "utf8")).toBe("preserve import evidence");
+    expect(existsSync(target)).toBe(false);
+    rmSync(importedEntry);
+
+    let loaderEntered!: () => void;
+    let releaseLoader!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      loaderEntered = resolve;
+    });
+    const loaderGate = new Promise<void>((resolve) => {
+      releaseLoader = resolve;
+    });
+    const restoring = restoreVerifiedDatabase(artifact, target, manifest, async () => {
+      loaderEntered();
+      await loaderGate;
+      return app;
+    });
+    await entered;
+    expect(() => new Engine(schema, target)).toThrow("database is already open");
+    expect(existsSync(target)).toBe(false);
+    releaseLoader();
+    const status = await restoring;
+    expect(status.commitVersion).toBe(manifest.commitVersion);
+    expect(existsSync(interrupted)).toBe(false);
+    expect(existsSync(target)).toBe(true);
+
+    const postLinkEvidence = `${target}.dbzz-restore-00000000-0000-4000-8000-000000000002`;
+    linkSync(target, postLinkEvidence);
+    const reopened = new Engine(schema, target);
+    expect(reopened.writer.query("SELECT value FROM records").get()).toEqual({ value: "restored" });
+    reopened.close("clean");
+    expect(existsSync(postLinkEvidence)).toBe(false);
+  });
+
+  test("no-clobber publication preserves a canonical competitor byte-for-byte", () => {
+    const source = fresh();
+    const owner = new Engine(schema, source.database);
+    reconcile(owner);
+    const artifact = join(source.root, "backup.db");
+    const manifest = owner.backup(artifact);
+    owner.close("clean");
+
+    const target = fresh().database;
+    const restore = DatabaseRestoreTarget.acquire(target);
+    try {
+      restore.restore(artifact, manifest);
+      const staged = restore.open(schema, { integrityCheck: "full" });
+      staged.close("clean");
+      const competitor = Buffer.from("canonical competitor");
+      writeFileSync(target, competitor);
+      expect(() => restore.publish()).toThrow("changed before publication");
+      expect(readFileSync(target)).toEqual(competitor);
+    } finally {
+      restore.close();
+    }
+    expect(readFileSync(target, "utf8")).toBe("canonical competitor");
   });
 });

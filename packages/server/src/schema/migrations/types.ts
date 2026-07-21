@@ -135,7 +135,7 @@ export function migrationFingerprint(target: SchemaSnapshot): string {
  * snapshot, and migration file text (`code`). Each component is netstring-framed
  * (`<byteLength>:<value>,`) before concatenation, so the encoding is injective:
  * no two distinct tuples ever collide, regardless of what any component holds.
- * This is the value `_dbz_migrations` records and `validateHistoryPrefix`
+ * This is the value `_dbzz_migrations` records and `validateHistoryPrefix`
  * compares, so editing an applied migration's pre, renames, or transform code —
  * not just its target — shifts the identity and is refused loudly on the next open.
  */

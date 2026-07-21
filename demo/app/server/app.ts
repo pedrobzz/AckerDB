@@ -1,4 +1,11 @@
-import { v, defineEventTable, defineSchema, defineTable } from "@dbzz/server";
+import { cachePlugin } from "@dbzz/cache";
+import {
+  v,
+  defineApp,
+  defineEventTable,
+  defineSchema,
+  defineTable,
+} from "@dbzz/server";
 import { isStaff, ownsIdentity } from "./lib/access.ts";
 
 export const orderStatus = v.enum("OrderStatus", [
@@ -19,7 +26,7 @@ export const orderEventKind = v.enum("OrderEventKind", [
 ]);
 export const staffEventKind = v.enum("StaffEventKind", ["KITCHEN_REMINDER"]);
 
-export default defineSchema({
+const schema = defineSchema({
   users: defineTable({
     id: v.primaryKey(),
     identity: v.identity().nullable(),
@@ -152,3 +159,11 @@ export default defineSchema({
     },
   ),
 });
+
+const cache = cachePlugin({
+  namespaces: {
+    setupState: v.object({ completedAt: v.int() }),
+  },
+});
+
+export default defineApp({ schema, plugins: { cache } });

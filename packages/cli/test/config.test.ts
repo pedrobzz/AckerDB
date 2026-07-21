@@ -7,10 +7,35 @@ import { loadConfig } from "../src/config.ts";
 describe("production profile configuration", () => {
   test("defaults to production durability with telemetry enabled", () => {
     expect(loadConfig(".", {})).toMatchObject({
+      appPath: resolve("app.ts"),
+      dbDir: resolve(".dbzz"),
       durability: "production",
       telemetry: "enabled",
       statusScope: "dbzz:status",
     });
+  });
+
+  test("selects one application manifest and rejects the removed schema path", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    try {
+      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ app: "./backend.ts" }));
+      expect(loadConfig(dir, {})).toMatchObject({ appPath: resolve(dir, "backend.ts") });
+
+      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ schema: "./schema.ts" }));
+      expect(() => loadConfig(dir, {})).toThrow("unknown configuration field: schema");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects unknown configuration fields", () => {
+    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    try {
+      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ unexpected: true }));
+      expect(() => loadConfig(dir, {})).toThrow("unknown configuration field: unexpected");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("accepts only the named durability and telemetry profiles", () => {
@@ -38,7 +63,7 @@ describe("production profile configuration", () => {
   test("loads external OIDC providers and one exact workload status scope", () => {
     const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
     try {
-      writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({
+      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({
         statusScope: "ops:read",
         oidc: {
           providers: [{
@@ -72,7 +97,7 @@ describe("production profile configuration", () => {
   test("resolves an application credential verifier relative to the app directory", () => {
     const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
     try {
-      writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({
+      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({
         credentialVerifier: "./auth/credential-verifier.ts",
       }));
 
@@ -90,7 +115,7 @@ describe("production profile configuration", () => {
   test("rejects competing or malformed custom authentication configuration", () => {
     const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
     try {
-      writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({
+      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({
         oidc: { providers: [] },
         credentialVerifier: "./auth.ts",
       }));
@@ -99,7 +124,7 @@ describe("production profile configuration", () => {
       );
 
       for (const credentialVerifier of ["", 42, null]) {
-        writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({ credentialVerifier }));
+        writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ credentialVerifier }));
         expect(() => loadConfig(dir, {})).toThrow(
           "credentialVerifier must be a non-empty module path",
         );
@@ -113,7 +138,7 @@ describe("production profile configuration", () => {
     const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
     try {
       for (const invalid of ["ops read", "ops\nread", ""]) {
-        writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({ statusScope: invalid }));
+        writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ statusScope: invalid }));
         expect(() => loadConfig(dir, {})).toThrow("statusScope must be one OAuth scope token");
       }
     } finally {
@@ -125,7 +150,7 @@ describe("production profile configuration", () => {
     const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
     try {
       for (const port of [-1, 0, 1.5, 65_536, "3211"]) {
-        writeFileSync(join(dir, ".zdb.config.json"), JSON.stringify({ port }));
+        writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ port }));
         expect(() => loadConfig(dir, {})).toThrow("port must be an integer from 1 through 65535");
       }
     } finally {

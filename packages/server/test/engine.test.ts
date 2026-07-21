@@ -54,6 +54,35 @@ function insertAndReadBack(engine: Engine, row: Record<string, unknown>) {
 }
 
 describe("engine storage", () => {
+  test("createAll preserves the schema failure when rollback also fails", () => {
+    const engine = new Engine(kitchenSinkSchema(), ":memory:");
+    const primary = new Error("injected schema creation failure");
+    const rollback = new Error("injected schema rollback failure");
+    const originalExec = engine.writer.exec;
+    engine.writer.exec = ((sql: string) => {
+      if (sql.startsWith("CREATE TABLE")) throw primary;
+      if (sql === "ROLLBACK") throw rollback;
+      return originalExec.call(engine.writer, sql);
+    }) as typeof engine.writer.exec;
+
+    let failure: unknown;
+    try {
+      engine.createAll();
+    } catch (error) {
+      failure = error;
+    } finally {
+      engine.writer.exec = originalExec;
+      if (engine.writer.inTransaction) engine.writer.exec("ROLLBACK");
+    }
+
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).message).toBe(
+      "database schema creation and rollback both failed",
+    );
+    expect((failure as AggregateError).errors).toEqual([primary, rollback]);
+    engine.close("unclean");
+  });
+
   test("isolates in-memory reads from an uncommitted writer transaction", () => {
     const engine = new Engine(
       defineSchema({ notes: defineTable({ id: v.primaryKey(), body: v.string() }) }),

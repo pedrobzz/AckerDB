@@ -69,7 +69,7 @@ function toStoredMutation(row: StoredRow): StoredMutation {
 
 export function scanMutationReplay(connection: Database): MutationReplaySnapshot {
   const state = connection
-    .query("SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbz_state WHERE singleton = 1")
+    .query("SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbzz_state WHERE singleton = 1")
     .get() as
     | { commit_version: bigint; mutation_records: bigint; mutation_result_bytes: bigint }
     | null;
@@ -77,7 +77,7 @@ export function scanMutationReplay(connection: Database): MutationReplaySnapshot
 
   const index = new Map<string, Map<string, bigint>>();
   const rows = connection.query(
-    "SELECT session_id, request_id, result_bytes, commit_version, completed_at FROM _dbz_mutations ORDER BY commit_version",
+    "SELECT session_id, request_id, result_bytes, commit_version, completed_at FROM _dbzz_mutations ORDER BY commit_version",
   );
   let records = 0;
   let resultBytes = 0n;
@@ -150,12 +150,12 @@ export class MutationReplayLedger {
     snapshot: MutationReplaySnapshot = scanMutationReplay(connection),
   ) {
     this.index = snapshot.index;
-    this.allocate = connection.query(`UPDATE _dbz_state SET
+    this.allocate = connection.query(`UPDATE _dbzz_state SET
       commit_version = commit_version + 1,
       mutation_records = mutation_records + 1,
       mutation_result_bytes = mutation_result_bytes + ?
       WHERE singleton = 1 RETURNING commit_version`);
-    this.append = connection.query("INSERT INTO _dbz_mutations (commit_version, session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, durability, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    this.append = connection.query("INSERT INTO _dbzz_mutations (commit_version, session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, durability, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     this.recordCount = snapshot.records;
     this.byteCount = snapshot.resultBytes;
     this.lastCompletedAt = snapshot.lastCompletedAt;
@@ -173,7 +173,7 @@ export class MutationReplayLedger {
     const commitVersion = this.index.get(sessionId)?.get(requestId);
     if (commitVersion === undefined) return null;
     const row = this.connection
-      .query("SELECT session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, commit_version, durability, completed_at FROM _dbz_mutations WHERE commit_version = ?")
+      .query("SELECT session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, commit_version, durability, completed_at FROM _dbzz_mutations WHERE commit_version = ?")
       .get(commitVersion) as StoredRow | null;
     if (row === null || row.session_id !== sessionId || row.request_id !== requestId) {
       throw new CorruptDatabaseError("mutation replay index does not match its durable ledger");
@@ -236,7 +236,7 @@ export class MutationReplayLedger {
     }
     const prefix: IndexRow[] = [];
     for (const row of this.connection
-      .query("SELECT session_id, request_id, result_bytes, commit_version, completed_at FROM _dbz_mutations ORDER BY commit_version LIMIT ?")
+      .query("SELECT session_id, request_id, result_bytes, commit_version, completed_at FROM _dbzz_mutations ORDER BY commit_version LIMIT ?")
       .all(limit) as IndexRow[]) {
       if (row.completed_at >= completedBefore) break;
       prefix.push(row);
@@ -246,13 +246,13 @@ export class MutationReplayLedger {
     this.connection.exec("BEGIN IMMEDIATE");
     try {
       const removed = this.connection
-        .query("DELETE FROM _dbz_mutations WHERE commit_version <= ?")
+        .query("DELETE FROM _dbzz_mutations WHERE commit_version <= ?")
         .run(prefix.at(-1)!.commit_version);
       if (removed.changes !== prefix.length) {
         throw new CorruptDatabaseError("mutation replay prefix changed during pruning");
       }
       this.connection
-        .query("UPDATE _dbz_state SET mutation_records = mutation_records - ?, mutation_result_bytes = mutation_result_bytes - ? WHERE singleton = 1")
+        .query("UPDATE _dbzz_state SET mutation_records = mutation_records - ?, mutation_result_bytes = mutation_result_bytes - ? WHERE singleton = 1")
         .run(prefix.length, bytes);
       this.connection.exec("COMMIT");
     } catch (error) {

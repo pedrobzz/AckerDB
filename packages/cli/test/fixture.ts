@@ -10,7 +10,7 @@ export function makeFixture(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "dbzz-cli-"));
   // bare "@dbzz/*" specifiers must resolve from the fixture
   mkdirSync(join(dir, "node_modules", "@dbzz"), { recursive: true });
-  for (const pkg of ["core", "server", "client"]) {
+  for (const pkg of ["core", "server", "client", "cache"]) {
     symlinkSync(join(REPO, "packages", pkg), join(dir, "node_modules", "@dbzz", pkg));
   }
   for (const [path, content] of Object.entries(files)) {
@@ -21,8 +21,8 @@ export function makeFixture(files: Record<string, string>): string {
   return dir;
 }
 
-export const FIXTURE_SCHEMA = `
-import { defineEventTable, defineSchema, defineTable, v } from "@dbzz/server";
+export const FIXTURE_APP = `
+import { defineApp, defineEventTable, defineSchema, defineTable, v } from "@dbzz/server";
 
 const role = v.enum("Role", ["admin", "member"]);
 const payload = v.union("Payload", {
@@ -30,7 +30,7 @@ const payload = v.union("Payload", {
   nothing: v.tag(),
 });
 
-export default defineSchema({
+const schema = defineSchema({
   messages: defineTable({
     id: v.primaryKey(),
     channelId: v.bigint(),
@@ -52,6 +52,8 @@ export default defineSchema({
     matches: (row, args) => row.channelId === args.channelId,
   }),
 });
+
+export default defineApp({ schema });
 `;
 
 export const FIXTURE_MESSAGES = `

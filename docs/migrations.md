@@ -1,8 +1,8 @@
 # Migrations
 
-How dbzz evolves a database when `schema.ts` changes. The model is recorded in
-ADR 0003 and the CONTEXT.md glossary; this document is the operator/developer
-guide.
+How dbzz evolves a database when the root schema in `app.ts` changes. The model
+is recorded in ADR 0003 and the CONTEXT.md glossary; this document is the
+operator/developer guide.
 
 ## The model
 
@@ -27,12 +27,13 @@ only the explicitly optimistic class performs the data probes described below:
   drop-plus-add until declared).
 
 A migration is never a source of structural truth — structure always comes from
-`schema.ts`. The file declares only what a diff cannot infer or must not
-assume: rename declarations, row transforms, and drop acknowledgments.
+the application manifest's root schema. A migration file declares only what a
+diff cannot infer or must not assume: rename declarations, row transforms, and
+drop acknowledgments.
 
 ## Dev flow
 
-`dbz dev` applies shape-safe changes and clean optimistic changes on every
+`dbzz dev` applies shape-safe changes and clean optimistic changes on every
 reload, silently. When a change needs a migration, the server refuses to start
 and — on a real terminal — the supervisor prints the **change ledger**: every
 change that needs a migration (each with its per-row question, plus exact
@@ -41,7 +42,7 @@ ambiguous dropped/added pairs that might be renames, and the shape-safe changes
 that ride along automatically. Then it asks whether to generate the migration
 now. **Nothing is written before you say yes** — a bare Enter declines.
 Non-interactive contexts never prompt; they exit naming the recourse:
-`dbz generate [name]`.
+`dbzz generate [name]`.
 
 Saying yes names the migration (Enter accepts the derived name), answers the
 rename questions (rename, or delete+add? never guessed), and scaffolds.
@@ -50,7 +51,7 @@ the write: if the schema moved while the question was open, the stale yes
 refuses, the fresh ledger prints, and the question is asked again.
 
 Declining leaves the server down with a banner naming the recourses; nothing
-is persisted, and restarting `dbz dev` asks again. Keep editing freely: a
+is persisted, and restarting `dbzz dev` asks again. Keep editing freely: a
 ledger that goes clean starts the server silently, a ledger that changes asks
 again, and an identical ledger only re-prints the banner. Composition falls
 out of declining: change several things across saves, then one yes produces
@@ -69,13 +70,13 @@ is always chain-legal; if nothing needs answering afterwards, the server just
 starts.
 
 Applying gets the same consent: pending migrations rewrite rows, so an
-interactive `dbz dev` never runs them unasked. Each refused start asks
+interactive `dbzz dev` never runs them unasked. Each refused start asks
 `apply pending migration NNNN_name now? [y/N]` — yes applies on the spot, no
 (the default) keeps the server down. A declined apply is remembered against
 the pending chain's identity: unrelated saves only re-print the banner, while
 any edit to the migration file (filling a TODO shifts its identity) asks
 again — so the natural loop is fill, save, answer yes. Withdraw the migration
-by deleting its files, or `dbz reset`. Production `dbz start` and
+by deleting its files, or `dbzz reset`. Production `dbzz start` and
 non-interactive dev apply at startup unattended, exactly as the deploy recipe
 requires.
 
@@ -90,11 +91,11 @@ drops scaffold as a destructuring that names every discarded field; table
 drops scaffold as `null` (replace with a salvage transform to carry rows into
 surviving tables first).
 
-`dbz reset` remains the dev escape hatch: it deletes the local database
+`dbzz reset` remains the dev escape hatch: it deletes the local database
 directory, and the next start initializes fresh (a fresh database stamps the
 whole chain as vacuously applied).
 
-`dbz generate` never asks for consent — invoking it is the consent — but it
+`dbzz generate` never asks for consent — invoking it is the consent — but it
 prints the same ledger before writing, so the record of what a migration
 answers always appears. On a stale unapplied scaffold it makes the same
 delete-or-keep offer (as guidance text without a terminal).
@@ -154,7 +155,7 @@ before writing it.
   race a clean probe, and a refusal leaves all four untouched.
 - After the last migration, the remaining diff to the live schema must be
   shape-safe or pass its optimistic probes; anything else refuses and names
-  `dbz generate`.
+  `dbzz generate`.
 - Safe drift is sound by construction: a migration generated against a dev
   snapshot applies to a production database that lacks later shape-safe
   changes — an absent nullable column reads as `null`, an absent table reads
@@ -175,7 +176,7 @@ Take a verified backup first. A failed migration rolls back cleanly, but a
 migration that *succeeds and was wrong* is only recoverable from a backup:
 
 1. drain and stop the old release (`SIGINT`/`SIGTERM`, wait for exit);
-2. `dbz backup <artifact>` and retain the artifact + manifest
+2. `dbzz backup <artifact>` and retain the artifact + manifest
    (see [operations.md](operations.md));
 3. start the new release; watch `/ready` through `migrating` to serving;
 4. if the migration refuses, the database is untouched — fix and redeploy.

@@ -149,7 +149,7 @@ describe("renderLedger", () => {
       safe: describeSafeChanges(diff, refusals),
       candidates: renameCandidates(diff),
     });
-    expect(text).toContain("[dbz] the change ledger:");
+    expect(text).toContain("[dbzz] the change ledger:");
     expect(text).toContain("  needs a migration:");
     expect(text).toContain("    - t.gone: column dropped; existing rows would lose data");
     expect(text).toContain("  possible renames (asked before generating):");
@@ -174,7 +174,7 @@ describe("renderLedger", () => {
       safe: [],
       candidates: { tables: { dropped: [], added: [] }, columns: {}, variants: {} },
     });
-    expect(text).toBe("[dbz] the change ledger:\n  needs a migration:\n    - t: table dropped; existing rows would be lost");
+    expect(text).toBe("[dbzz] the change ledger:\n  needs a migration:\n    - t: table dropped; existing rows would be lost");
   });
 });
 

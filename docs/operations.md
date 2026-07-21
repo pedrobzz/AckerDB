@@ -81,7 +81,7 @@ stream's bytes.
 
 The stock client has a separate exported `DBZZ_CLIENT_LIMITS` object, and
 `Engine` defaults its SQLite busy timeout to 5 seconds. The CLI does not expose
-arbitrary service-limit overrides in `.zdb.config.json`; programmatic
+arbitrary service-limit overrides in `.dbzz.config.json`; programmatic
 `Runtime` construction does.
 
 ## Typed outcomes
@@ -144,17 +144,42 @@ No software setting can compensate for storage hardware or a filesystem that
 lies about durable sync. `balanced` must not be presented as the same power-loss
 contract as `production`.
 
-At open, the engine first acquires an exclusive DBZZ process lock. A fresh
-database is initialized in a uniquely named file in the target directory,
-fsynced, published with a no-clobber hard link, followed by a parent-directory
-fsync, and then reopened with implicit creation disabled. This makes two
-concurrent initializers converge on one complete database rather than exposing
-a partially initialized file. The database directory and each backup artifact
-directory must support same-directory hard links, atomic rename, and truthful
-file/directory sync. Fresh initialization uses the no-clobber hard link; backup
-publication uses atomic artifact rename plus a no-clobber manifest hard link.
-Exact UUIDv4 initialization artifacts left by a crashed owner are scavenged only
-after the process lock is held; unrelated files are never matched.
+At open, the engine first acquires the canonical data path through a persistent
+same-directory SQLite coordination database (`data.db.dbzz-coordination`). The
+first process initializes the DBZZ-branded, empty rollback-journal database in
+a private same-directory `0600` UUIDv4 staging file, closes and fsyncs it, and
+publishes it with a no-clobber hard link. Before any SQLite connection opens
+the canonical inode, contenders remove only exact staging aliases of that same
+inode, require its hard-link count to be exactly one, and fsync the directory.
+A pre-link crash file has a different inode and is deliberately retained; it
+cannot be mistaken for an alias of the canonical database.
+
+Only after publication has converged does DBZZ open the canonical coordination
+database, validate its immutable `application_id`, empty schema, and DELETE
+journal mode, and hold one `BEGIN IMMEDIATE` transaction for the Engine
+lifetime. A live contender gets a typed already-open refusal with no wait or
+polling. Process death releases SQLite's OS lock immediately; DBZZ never
+deletes, renames, reaps, or reads an owner record from the canonical file.
+Startup, restore, and full reset all use this one ownership primitive, while a
+staged restore Engine borrows the already-held connection.
+
+A fresh database is initialized in a uniquely named file in the target
+directory, fsynced, published with a no-clobber hard link, followed by a
+parent-directory fsync, and then reopened with implicit creation disabled. This
+makes two concurrent initializers converge on one complete database rather than
+exposing a partially initialized file. The database directory and each backup
+artifact directory must support same-directory hard links, atomic rename, and
+truthful file/directory sync. Fresh initialization uses the no-clobber hard
+link; backup publication uses atomic artifact rename plus a no-clobber manifest
+hard link.
+Exact UUIDv4 data-initialization artifacts left by a crashed owner are
+scavenged only after ownership is held; unrelated files are never matched. The
+coordination database normally costs one 4 KiB file and one idle SQLite handle
+per open database, creates no background work, and survives reset so its
+identity never depends on pathname deletion races. An exact pre-link
+coordination staging residue may remain after `SIGKILL`; DBZZ accepts it as an
+internal directory entry but never guesses that a different inode is safe to
+delete.
 
 An existing database is never initialized or repaired in place during
 preflight. Empty, truncated, non-SQLite, incompatible, or internally corrupt
@@ -194,6 +219,58 @@ non-null while `lastCheckpoint` is null. Busy or residual frames mean the
 invocation did not fully checkpoint the WAL; checkpointing is not a substitute
 for a commit acknowledgement or verified backup.
 
+## Plugin storage reconciliation
+
+Each mounted Plugin owns a private SQLite scope identified by its manifest
+mount and stable definition ID. Its physical tables and tag records are
+isolated from the root application schema and from every other mount, including
+another instance of the same Plugin definition. Startup reconciles all desired
+Plugin scopes after the root schema and migration chain are ready and before
+Plugin lifecycle callbacks run.
+
+Safe private-schema changes use the normal schema planner and are applied
+automatically in one Plugin-schema transaction. The v0.6.0 alpha deliberately
+has no Plugin migration or rename API. DBZZ instead produces an exact pending
+requirement when:
+
+- a schema change is unsafe or conflicts with private rows: reset that mount;
+- the definition ID at an existing mount changes: reset that mount; or
+- a stored mount is no longer in `defineApp({ plugins })`: drop that stale
+  mount.
+
+Changing a mount name therefore creates a fresh Plugin instance and leaves the
+old name as a pending drop; DBZZ never guesses that the two names are a rename.
+A reset drops only the named mount's private state and creates its target
+schema. A drop removes only the named stale scope. Neither action grants
+authority over root application tables or another Plugin mount.
+
+Interactive `dbzz dev` prints the affected mount, reason, safe changes that
+would otherwise apply, and data refusals, then asks with a default of no. A
+decline keeps the server down until the manifest changes or the requirement is
+resolved. `dbzz start` and non-interactive development never clear Plugin data;
+startup refuses and prints the exact recovery command instead:
+
+```sh
+dbzz plugin reset <mount> [app-dir]
+dbzz plugin drop <old-mount> [app-dir]
+```
+
+These are not arbitrary deletion commands. Each command re-imports the current
+manifest, re-plans storage in a fresh process, and executes only a currently
+pending requirement whose current and target fingerprints still match. A
+changed manifest or storage state makes old consent stale rather than widening
+it. `dbzz reset [app-dir]` remains the separate development escape hatch that
+acquires the same database ownership and removes only `data.db`, its exact
+SQLite sidecars, and exact UUIDv4 DBZZ initialization/restore staging files.
+It refuses while startup or restore is live, retains the coordination database,
+retains exact coordination crash residues, and leaves every unrelated entry in
+`.dbzz` untouched.
+
+Because unsafe Plugin evolution is reset-only in this alpha, a Plugin's design
+must make that data disposable or keep its durable source of truth elsewhere.
+See [Plugins](plugins.md#private-schema-changes-in-the-alpha) and
+[Cache](cache.md), whose private state is disposable by definition.
+
 ## Health and protected status
 
 The server exposes three versioned JSON endpoints:
@@ -220,7 +297,7 @@ With the CLI and no configured OIDC provider, no bearer can authenticate, so
 operators must configure a workload provider that selects `scope` before
 `/status` is usable.
 
-`dbz start` binds one listener before code generation and keeps that port live
+`dbzz start` binds one listener before code generation and keeps that port live
 through the monotonic startup phases `listening`, `codegen`, `loading`,
 `opening-storage`, `migrating` (when a migration chain is present), and
 `reconciling`. `/live` and `/ready` remain reachable;
@@ -241,7 +318,7 @@ probes should derive them from protected status/telemetry and their own policy.
 
 ## Signals and bounded drain
 
-`dbz start` and the supervised server process install one-shot `SIGINT` and
+`dbzz start` and the supervised server process install one-shot `SIGINT` and
 `SIGTERM` handlers. The first signal starts the idempotent `RunningApp.drain()`
 path and removes those handlers:
 
@@ -286,9 +363,9 @@ The CLI operations are deliberately conservative and produce one JSON report
 on success:
 
 ```sh
-dbz status [app-dir]
-dbz backup <artifact> [app-dir]
-dbz restore <artifact> [app-dir]
+dbzz status [app-dir]
+dbzz backup <artifact> [app-dir]
+dbzz restore <artifact> [app-dir]
 ```
 
 With default telemetry enabled, `backup` and `restore` first emit bounded safe
@@ -300,19 +377,19 @@ error messages. The final line remains the operation report. Setting
 report.
 
 `status` and `backup` require an existing database and never create a missing
-one. The engine's exclusive process lock means these CLI operations are offline
-with respect to a running DBZZ server. They are maintenance writer opens, not
-byte-for-byte read-only inspection: Engine may complete valid SQLite recovery,
-sets WAL/durability pragmas, and updates the clean-shutdown marker. Neither
-operation changes application rows or the logical commit version.
+one. The engine's canonical ownership transaction means these CLI operations
+are offline with respect to a running DBZZ server. They are maintenance writer
+opens, not byte-for-byte read-only inspection: Engine may complete valid SQLite
+recovery, sets WAL/durability pragmas, and updates the clean-shutdown marker.
+Neither operation changes application rows or the logical commit version.
 
 The operator workflow is therefore:
 
-1. send `SIGINT` or `SIGTERM` and wait for `dbz start` to finish its bounded
+1. send `SIGINT` or `SIGTERM` and wait for `dbzz start` to finish its bounded
    drain and exit successfully;
-2. run `dbz backup`, then retain or copy both the artifact and its adjacent
+2. run `dbzz backup`, then retain or copy both the artifact and its adjacent
    `.manifest.json` file;
-3. rehearse recovery with `dbz restore` into a fresh configured database
+3. rehearse recovery with `dbzz restore` into a fresh configured database
    directory; and
 4. start the restored application and check `/live`, `/ready`, and authorized
    `/status` before returning it to service.
@@ -325,7 +402,7 @@ migrations: a refused or failed migration leaves the database untouched, but a
 migration that succeeds with wrong transform logic is only recoverable from a
 verified backup. See [migrations.md](migrations.md) for the deploy sequence.
 
-`dbz backup` performs this acceptance sequence:
+`dbzz backup` performs this acceptance sequence:
 
 1. open the source with a full integrity check;
 2. create a transactionally consistent SQLite artifact with `VACUUM INTO`;
@@ -341,17 +418,36 @@ The exact manifest format is version 1 with `sha256`, `bytes`,
 `verifiedAt`. A failed verification removes the candidate artifact instead of
 publishing an unverified backup.
 
-The artifact is the complete SQLite database, including DBZZ's commit state and
-retained mutation replay ledger. Restore therefore preserves still-retained
-mutation request IDs and their exact-once replay results; the full engine open
-also validates the ledger counters before the artifact is accepted.
+The artifact is the complete SQLite database, including DBZZ's commit state,
+retained mutation replay ledger, stored Plugin inventory, and all private
+tables. Its schema fingerprint covers both the root schema and those Plugin
+scopes. Restore therefore preserves still-retained mutation request IDs and
+their exact-once replay results; the full engine open also validates the ledger
+counters and stored Plugin layouts before the artifact is accepted.
 
-`dbz restore` validates the exact manifest shape, digest, size, schema, and
-commit version in a fresh verification process before claiming the target. The
-configured target database directory must not exist; restore never overwrites
-or merges an existing database. Promotion uses a temporary file, fsync, atomic
-rename, and a second full open/commit probe in the target. A failed attempt
-removes only the fresh directory it created.
+`dbzz restore` validates the exact manifest shape, digest, size, commit version,
+and target App storage layout in a fresh verification process before claiming
+the target. The layout comparison includes the root schema plus every Plugin
+mount, definition ID, and private schema; restore never reconciles either side.
+The configured target database directory may be absent or vacant apart from its
+persistent coordination database and exact coordination staging crash residues.
+Its canonical database and SQLite sidecars must be absent, and unrelated
+directory entries are refused rather than removed.
+After the fresh-process check, restore claims the same canonical ownership used
+by startup, imports and validates the App again while that ownership is held, and
+writes the artifact only to an exact same-directory UUID staging path. It fully
+opens and probes that staged Engine, closes it cleanly, converts the closed copy
+to a self-contained rollback-journal main file, rechecks its manifest identity,
+fsyncs it, and requires no meaningful WAL or journal state. Publication is one
+no-clobber hard link to `data.db` followed by a directory fsync. Before that link,
+failure cleanup removes only the exact staging main and sidecars. After the link,
+the canonical database is never unlinked: a sync or staging-cleanup failure is
+reported as explicit durability/cleanup ambiguity and leaves staging evidence.
+Startup refuses blank initialization when exact interrupted-restore evidence is
+present; a restore retry may clear only those exact artifacts, while startup may
+scavenge them once a complete canonical database exists. The package exposes
+this as one verified restore operation rather than exposing the staging state
+machine, so callers cannot publish without the full open and commit probe.
 
 The operator still owns scheduling, retention, encryption, access control,
 off-machine copies, and periodic disaster-recovery drills. DBZZ currently

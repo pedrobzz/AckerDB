@@ -12,12 +12,12 @@
  *   - bigint / identity      INTEGER
  *   - boolean                INTEGER (0/1)
  *   - bytes                  BLOB
- *   - enum                   INTEGER (stable interned tag, see _dbz_tags)
+ *   - enum                   INTEGER (stable interned tag, see _dbzz_tags)
  *   - union                  INTEGER tag column + TEXT payload column "<col>__p"
  *   - array / object / jsonb TEXT (wire-encoded, so bigints/bytes round-trip)
  *
  * Enum/union tags are interned once per (type name, variant name) in
- * `_dbz_tags` and never change and are never reused: reordering variants is
+ * `_dbzz_tags` and never change and are never reused: reordering variants is
  * cosmetic, renames keep storage, deletions retire the tag forever.
  *
  * Direct indexes execute as SQLite b-tree indexes: same API and semantics;
@@ -25,7 +25,9 @@
  * (the same "only if it wins" rule the wiki applies to sized numerics).
  */
 import { createHash, randomUUID } from "node:crypto";
+import { compareCodeUnits } from "./ordering.ts";
 import {
+  constants as fsConstants,
   closeSync,
   copyFileSync,
   existsSync,
@@ -41,7 +43,6 @@ import {
   renameSync,
   rmSync,
   statSync,
-  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -63,9 +64,22 @@ import {
   verifyMcpTokenVaultState,
 } from "./mcp-token-vault.ts";
 import { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
-import type { IndexDef, Schema, TableDef } from "./schema.ts";
-import { snapshotOf, type SchemaSnapshot } from "./snapshot.ts";
-import { isValidationError } from "./validation-error.ts";
+import { isSchema, type IndexDef, type Schema, type TableDef } from "./schema.ts";
+import {
+  canonicalSnapshotJson,
+  snapshotOf,
+  type SchemaSnapshot,
+} from "./snapshot.ts";
+import { isValidationError, ValidationError } from "./validation-error.ts";
+import {
+  DatabaseOwnership,
+  SQLITE_SIDECAR_SUFFIXES,
+  coordinationDatabaseEntries,
+} from "./storage-ownership.ts";
+import {
+  initializationArtifactPaths,
+  restoreArtifactPaths,
+} from "./storage-artifacts.ts";
 
 export { CorruptDatabaseError, IncompatibleDatabaseError } from "./errors.ts";
 export interface TagMap {
@@ -90,8 +104,16 @@ export interface ColumnPlan {
   fromSql(values: unknown[]): unknown;
 }
 
-export interface TablePlan {
+/** Physical storage and codec ownership shared by live and snapshot-derived plans. */
+export interface PhysicalTablePlan {
+  /** The key exposed on this scope's db object. */
+  logicalName: string;
+  /** The physical SQLite table name. */
   name: string;
+  /** Qualified human-facing name used by validation and telemetry. */
+  displayName: string;
+  /** Resolve a logical named type to this scope's stable storage identity. */
+  tagIdentity(typeName: string): string;
   pk: string;
   scheduleAt: string | null;
   columns: Map<string, ColumnPlan>;
@@ -104,6 +126,40 @@ export interface TablePlan {
    */
   readProjection: string;
   indexes: IndexDef[];
+}
+
+/** A live runtime plan additionally owns the TableDef used at every db validation boundary. */
+export interface TablePlan extends PhysicalTablePlan {
+  table: TableDef;
+}
+
+/** One logical schema bound to its isolated physical storage plans. */
+export interface StorageScope {
+  /** `null` is the application root; Plugin scopes carry their manifest mount. */
+  readonly mount: string | null;
+  readonly schema: Schema;
+  readonly plans: ReadonlyMap<string, TablePlan>;
+  tagIdentity(typeName: string): string;
+  plan(logicalName: string): TablePlan;
+}
+
+/** One verified row from the persisted Plugin storage inventory. */
+export interface StoredPluginStorage {
+  readonly mount: string;
+  readonly definitionId: string;
+  readonly snapshot: SchemaSnapshot;
+  readonly encodedSnapshot: string;
+}
+
+export interface NormalizedPluginSnapshot {
+  readonly snapshot: SchemaSnapshot;
+  readonly encoded: string;
+}
+
+const BORROWED_DATABASE_OWNERSHIP = Symbol("dbzz.borrowedDatabaseOwnership");
+
+interface InternalEngineOptions extends EngineOptions {
+  readonly [BORROWED_DATABASE_OWNERSHIP]?: DatabaseOwnership;
 }
 
 export interface EngineOptions {
@@ -156,16 +212,31 @@ export interface BackupManifest {
   verifiedAt: number;
 }
 
-const ENGINE_SCHEMA_VERSION = 8;
-const LOCK_SUFFIX = ".dbzz.lock";
+const ENGINE_SCHEMA_VERSION = 10;
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
 const WAL_FORMAT_VERSION = 3_007_000;
 const WAL_MAGIC_LITTLE_ENDIAN = 0x377f0682;
 const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
-const SQLITE_SIDECAR_SUFFIXES = ["-wal", "-shm", "-journal"] as const;
+const PLUGIN_TABLE_PREFIX = "_dbzz_plugin_";
+const PLUGIN_INDEX_PREFIX = `ix_${PLUGIN_TABLE_PREFIX}`;
+const PLUGIN_MOUNT = /^[A-Za-z][A-Za-z0-9_]*$/;
+const PLUGIN_DEFINITION_ID = /^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
 
 const quote = (name: string) => `"${name}"`;
+
+/** Length-prefixing makes mount/table boundaries injective even when either contains `_`. */
+function pluginStoragePrefix(mount: string): string {
+  return `${PLUGIN_TABLE_PREFIX}${mount.length}:${mount}`;
+}
+
+export function pluginPhysicalTableName(mount: string, logicalName: string): string {
+  return `${pluginStoragePrefix(mount)}${logicalName}`;
+}
+
+export function pluginTagIdentity(mount: string, typeName: string): string {
+  return `${mount.length}:${mount}${typeName}`;
+}
 
 /** Compile the exact physical row shape expected by `rowFromSql`. */
 export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
@@ -191,21 +262,27 @@ interface StoredObject {
 const INTERNAL_OBJECTS: StoredObject[] = [
   {
     type: "table",
-    name: "_dbz_meta",
-    table: "_dbz_meta",
-    sql: "CREATE TABLE _dbz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    name: "_dbzz_meta",
+    table: "_dbzz_meta",
+    sql: "CREATE TABLE _dbzz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
   },
   {
     type: "table",
-    name: "_dbz_tags",
-    table: "_dbz_tags",
-    sql: "CREATE TABLE _dbz_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL, PRIMARY KEY (type, variant))",
+    name: "_dbzz_tags",
+    table: "_dbzz_tags",
+    sql: "CREATE TABLE _dbzz_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL, PRIMARY KEY (type, variant))",
   },
   {
     type: "table",
-    name: "_dbz_state",
-    table: "_dbz_state",
-    sql: `CREATE TABLE _dbz_state (
+    name: "_dbzz_plugins",
+    table: "_dbzz_plugins",
+    sql: "CREATE TABLE _dbzz_plugins (mount TEXT PRIMARY KEY, definition_identity TEXT NOT NULL, schema TEXT NOT NULL)",
+  },
+  {
+    type: "table",
+    name: "_dbzz_state",
+    table: "_dbzz_state",
+    sql: `CREATE TABLE _dbzz_state (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
       clean_shutdown INTEGER NOT NULL CHECK (clean_shutdown IN (0, 1)),
@@ -216,9 +293,9 @@ const INTERNAL_OBJECTS: StoredObject[] = [
   },
   {
     type: "table",
-    name: "_dbz_mutations",
-    table: "_dbz_mutations",
-    sql: `CREATE TABLE _dbz_mutations (
+    name: "_dbzz_mutations",
+    table: "_dbzz_mutations",
+    sql: `CREATE TABLE _dbzz_mutations (
       commit_version INTEGER PRIMARY KEY CHECK (commit_version > 0),
       session_id TEXT NOT NULL,
       request_id TEXT NOT NULL,
@@ -239,32 +316,32 @@ const INTERNAL_OBJECTS: StoredObject[] = [
   },
   {
     type: "table",
-    name: "_dbz_identities",
-    table: "_dbz_identities",
-    sql: "CREATE TABLE _dbz_identities (identity INTEGER PRIMARY KEY AUTOINCREMENT)",
+    name: "_dbzz_identities",
+    table: "_dbzz_identities",
+    sql: "CREATE TABLE _dbzz_identities (identity INTEGER PRIMARY KEY AUTOINCREMENT)",
   },
   {
     type: "table",
-    name: "_dbz_identity_accounts",
-    table: "_dbz_identity_accounts",
-    sql: `CREATE TABLE _dbz_identity_accounts (
+    name: "_dbzz_identity_accounts",
+    table: "_dbzz_identity_accounts",
+    sql: `CREATE TABLE _dbzz_identity_accounts (
       issuer TEXT NOT NULL CHECK (length(issuer) > 0),
       subject TEXT NOT NULL CHECK (length(subject) > 0),
-      identity INTEGER NOT NULL REFERENCES _dbz_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      identity INTEGER NOT NULL REFERENCES _dbzz_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
       PRIMARY KEY (issuer, subject)
     )`,
   },
   {
     type: "index",
-    name: "ix__dbz_identity_accounts_identity",
-    table: "_dbz_identity_accounts",
-    sql: "CREATE INDEX ix__dbz_identity_accounts_identity ON _dbz_identity_accounts (identity)",
+    name: "ix__dbzz_identity_accounts_identity",
+    table: "_dbzz_identity_accounts",
+    sql: "CREATE INDEX ix__dbzz_identity_accounts_identity ON _dbzz_identity_accounts (identity)",
   },
   {
     type: "table",
-    name: "_dbz_migrations",
-    table: "_dbz_migrations",
-    sql: "CREATE TABLE _dbz_migrations (number INTEGER PRIMARY KEY, name TEXT NOT NULL, identity TEXT NOT NULL, applied_at REAL NOT NULL)",
+    name: "_dbzz_migrations",
+    table: "_dbzz_migrations",
+    sql: "CREATE TABLE _dbzz_migrations (number INTEGER PRIMARY KEY, name TEXT NOT NULL, identity TEXT NOT NULL, applied_at REAL NOT NULL)",
   },
   ...MCP_TOKEN_INTERNAL_OBJECTS,
 ];
@@ -390,36 +467,197 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
   return parsed as unknown as SchemaSnapshot;
 }
 
-function expectedApplicationObjects(snapshot: SchemaSnapshot): StoredObject[] {
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (!storedRecord(value)) return value;
+  const normalized = Object.create(null) as Record<string, unknown>;
+  for (const key of Object.keys(value).sort()) normalized[key] = canonicalJson(value[key]);
+  return normalized;
+}
+
+/** Canonical Plugin inventory representation: validated JSON with recursively sorted object keys. */
+export function normalizePluginSnapshot(snapshot: SchemaSnapshot): NormalizedPluginSnapshot {
+  const encoded = canonicalSnapshotJson(snapshot);
+  return Object.freeze({ snapshot: parseStoredSnapshot(encoded), encoded });
+}
+
+function verifyPluginSnapshotShape(mount: string, snapshot: SchemaSnapshot): void {
+  for (const [tableName, table] of Object.entries(snapshot.tables)) {
+    if (table.kind === "event") {
+      throw new CorruptDatabaseError(
+        `stored Plugin "${mount}" schema contains event table ${tableName}`,
+      );
+    }
+    if (Object.values(table.columns).some((descriptor) => descriptor["k"] === "scheduleAt")) {
+      throw new CorruptDatabaseError(
+        `stored Plugin "${mount}" schema contains scheduled table ${tableName}`,
+      );
+    }
+  }
+}
+
+/** Load and fully validate the persisted Plugin inventory in deterministic mount order. */
+export function readStoredPluginInventory(
+  connection: Database,
+): ReadonlyMap<string, StoredPluginStorage> {
+  const inventory = new Map<string, StoredPluginStorage>();
+  const rows = connection
+    .query("SELECT mount, definition_identity, schema FROM _dbzz_plugins ORDER BY mount")
+    .all() as { mount: unknown; definition_identity: unknown; schema: unknown }[];
+  for (const row of rows) {
+    if (typeof row.mount !== "string" || !PLUGIN_MOUNT.test(row.mount)) {
+      throw new CorruptDatabaseError("stored Plugin inventory contains an invalid mount");
+    }
+    if (
+      typeof row.definition_identity !== "string" ||
+      !PLUGIN_DEFINITION_ID.test(row.definition_identity)
+    ) {
+      throw new CorruptDatabaseError(
+        `stored Plugin "${row.mount}" has an invalid definition identity`,
+      );
+    }
+    if (typeof row.schema !== "string") {
+      throw new CorruptDatabaseError(`stored Plugin "${row.mount}" schema is not text`);
+    }
+    const parsed = parseStoredSnapshot(row.schema);
+    const normalized = normalizePluginSnapshot(parsed);
+    if (row.schema !== normalized.encoded) {
+      throw new CorruptDatabaseError(
+        `stored Plugin "${row.mount}" schema snapshot is not normalized`,
+      );
+    }
+    verifyPluginSnapshotShape(row.mount, normalized.snapshot);
+    inventory.set(row.mount, Object.freeze({
+      mount: row.mount,
+      definitionId: row.definition_identity,
+      snapshot: normalized.snapshot,
+      encodedSnapshot: normalized.encoded,
+    }));
+  }
+  return inventory;
+}
+
+export interface StorageLayoutPlugin {
+  readonly mount: string;
+  readonly definitionId: string;
+  readonly schema: SchemaSnapshot;
+}
+
+/** Hash one complete logical storage layout without consulting or mutating an Engine. */
+export function storageLayoutFingerprint(
+  root: SchemaSnapshot,
+  plugins: readonly StorageLayoutPlugin[],
+): string {
+  const sortedPlugins = [...plugins].sort((left, right) => compareCodeUnits(left.mount, right.mount));
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalJson({ root, plugins: sortedPlugins })))
+    .digest("hex");
+}
+
+function persistedLayoutFingerprint(connection: Database): string {
+  const storedRoot = connection
+    .query("SELECT value FROM _dbzz_meta WHERE key = 'schema'")
+    .get() as { value: string } | null;
+  if (storedRoot === null) throw new CorruptDatabaseError("artifact is missing its schema snapshot");
+  const root = parseStoredSnapshot(storedRoot.value);
+  const plugins = [...readStoredPluginInventory(connection).values()].map((plugin) => ({
+    mount: plugin.mount,
+    definitionId: plugin.definitionId,
+    schema: plugin.snapshot,
+  }));
+  return storageLayoutFingerprint(root, plugins);
+}
+
+interface StoredNamedDefinition {
+  readonly descriptor: string;
+  readonly variants: readonly string[];
+}
+
+function namedDefinitionsOf(snapshot: SchemaSnapshot): ReadonlyMap<string, StoredNamedDefinition> {
+  const definitions = new Map<string, StoredNamedDefinition>();
+  const visit = (descriptor: Descriptor): void => {
+    const kind = descriptor["k"];
+    if (kind === "nullable" || kind === "optional" || kind === "nullish") {
+      visit(descriptor["inner"] as Descriptor);
+      return;
+    }
+    if (kind === "array") {
+      visit(descriptor["el"] as Descriptor);
+      return;
+    }
+    if (kind === "object") {
+      for (const field of Object.values(descriptor["shape"] as Record<string, Descriptor>)) visit(field);
+      return;
+    }
+    if (kind !== "enum" && kind !== "union") return;
+    const name = storedName(descriptor["name"], "named type");
+    const variants = kind === "enum"
+      ? descriptor["values"]
+      : storedRecord(descriptor["members"])
+        ? Object.keys(descriptor["members"])
+        : null;
+    if (
+      !Array.isArray(variants) ||
+      variants.length === 0 ||
+      variants.some((value) => typeof value !== "string")
+    ) {
+      corruptSnapshot(`${name} has invalid variants`);
+    }
+    const definition = {
+      descriptor: JSON.stringify(canonicalJson(descriptor)),
+      variants: variants as string[],
+    };
+    const previous = definitions.get(name);
+    if (previous !== undefined && previous.descriptor !== definition.descriptor) {
+      corruptSnapshot(`named type ${name} has conflicting definitions`);
+    }
+    definitions.set(name, definition);
+    if (kind === "union") {
+      for (const member of Object.values(descriptor["members"] as Record<string, Descriptor>)) visit(member);
+    }
+  };
+  for (const table of Object.values(snapshot.tables)) {
+    for (const descriptor of Object.values(table.columns)) visit(descriptor);
+  }
+  return definitions;
+}
+
+function expectedApplicationObjects(
+  snapshot: SchemaSnapshot,
+  physicalTableName: (logicalName: string) => string = (logicalName) => logicalName,
+  displayTableName: (logicalName: string) => string = (logicalName) => logicalName,
+): StoredObject[] {
   const objects: StoredObject[] = [];
   for (const [tableName, table] of Object.entries(snapshot.tables)) {
     if (table.kind === "event") continue;
+    const physicalName = physicalTableName(tableName);
+    const displayName = displayTableName(tableName);
     const columns = Object.entries(table.columns).flatMap(([column, descriptor]) =>
-      physicalColumnDdl(column, descriptor, `${tableName}.${column}`),
+      physicalColumnDdl(column, descriptor, `${displayName}.${column}`),
     );
     objects.push({
       type: "table",
-      name: tableName,
-      table: tableName,
-      sql: `CREATE TABLE ${quote(tableName)} (${columns.join(", ")})`,
+      name: physicalName,
+      table: physicalName,
+      sql: `CREATE TABLE ${quote(physicalName)} (${columns.join(", ")})`,
     });
     for (const index of table.indexes) {
-      const name = indexSqlName(tableName, index.name);
+      const name = indexSqlName(physicalName, index.name);
       objects.push({
         type: "index",
         name,
-        table: tableName,
-        sql: `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quote(name)} ON ${quote(tableName)} (${index.columns.map(quote).join(", ")})`,
+        table: physicalName,
+        sql: `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quote(name)} ON ${quote(physicalName)} (${index.columns.map(quote).join(", ")})`,
       });
     }
     const scheduleAt = Object.entries(table.columns).find(([, descriptor]) => descriptor["k"] === "scheduleAt")?.[0];
     if (scheduleAt !== undefined) {
-      const name = `ix__sched_${tableName}`;
+      const name = `ix__sched_${physicalName}`;
       objects.push({
         type: "index",
         name,
-        table: tableName,
-        sql: `CREATE INDEX ${quote(name)} ON ${quote(tableName)} (${quote(scheduleAt)})`,
+        table: physicalName,
+        sql: `CREATE INDEX ${quote(name)} ON ${quote(physicalName)} (${quote(scheduleAt)})`,
       });
     }
   }
@@ -452,7 +690,7 @@ function readExactly(fd: number, buffer: Uint8Array, position: number, artifact:
 
 function existingDatabasePageSize(path: string): number {
   const fd = openSync(path, "r");
-  try {
+  return runWithCleanup(() => {
     const status = fstatSync(fd);
     if (!status.isFile()) throw new Error(`database path is not a regular file: ${path}`);
     if (status.size === 0) {
@@ -483,9 +721,7 @@ function existingDatabasePageSize(path: string): number {
       throw new CorruptDatabaseError("database file size does not match its SQLite header");
     }
     return pageSize;
-  } finally {
-    closeSync(fd);
-  }
+  }, () => closeSync(fd), `database header validation and descriptor close both failed: ${path}`);
 }
 
 function walChecksum(
@@ -513,7 +749,7 @@ function existingWalPageSize(path: string): number | null {
   const walPath = `${path}-wal`;
   if (!existsSync(walPath)) return null;
   const fd = openSync(walPath, "r");
-  try {
+  return runWithCleanup(() => {
     const size = fstatSync(fd).size;
     if (size === 0) return null;
     // A crash may leave an incomplete first header. SQLite treats that as no
@@ -538,9 +774,7 @@ function existingWalPageSize(path: string): number | null {
       throw new CorruptDatabaseError("database WAL has an invalid page size");
     }
     return pageSize;
-  } finally {
-    closeSync(fd);
-  }
+  }, () => closeSync(fd), `database WAL validation and descriptor close both failed: ${walPath}`);
 }
 
 function initializeInternalObjects(connection: Database): void {
@@ -548,31 +782,37 @@ function initializeInternalObjects(connection: Database): void {
   try {
     connection.exec(INTERNAL_OBJECTS.map((object) => object.sql).join(";"));
     connection
-      .query("INSERT INTO _dbz_meta (key, value) VALUES ('engine_schema', ?)")
+      .query("INSERT INTO _dbzz_meta (key, value) VALUES ('engine_schema', ?)")
       .run(String(ENGINE_SCHEMA_VERSION));
     connection
-      .query("INSERT INTO _dbz_state (singleton, commit_version, clean_shutdown, mutation_records, mutation_result_bytes, last_checkpoint_at) VALUES (1, 0, 1, 0, 0, NULL)")
+      .query("INSERT INTO _dbzz_state (singleton, commit_version, clean_shutdown, mutation_records, mutation_result_bytes, last_checkpoint_at) VALUES (1, 0, 1, 0, 0, NULL)")
       .run();
     connection.exec("COMMIT");
   } catch (error) {
-    connection.exec("ROLLBACK");
+    try {
+      connection.exec("ROLLBACK");
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "database internal initialization and rollback both failed",
+      );
+    }
     throw error;
   }
 }
 
 function removeStaleInitializationArtifacts(path: string): void {
-  const directory = dirname(path);
-  const prefix = `${basename(path)}.dbzz-init-`;
-  const stagingName = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:-(?:wal|shm|journal))?$/;
-  const stale = readdirSync(directory, { withFileTypes: true }).filter(
-    (entry) =>
-      !entry.isDirectory() &&
-      entry.name.startsWith(prefix) &&
-      stagingName.test(entry.name.slice(prefix.length)),
-  );
+  const stale = initializationArtifactPaths(path);
   if (stale.length === 0) return;
-  for (const entry of stale) rmSync(join(directory, entry.name), { force: true });
-  fsyncPath(directory);
+  for (const artifact of stale) rmSync(artifact, { force: true });
+  fsyncPath(dirname(path));
+}
+
+function removeRestoreArtifacts(path: string): boolean {
+  const artifacts = restoreArtifactPaths(path);
+  for (const artifact of artifacts) rmSync(artifact, { force: true });
+  if (artifacts.length > 0) fsyncPath(dirname(path));
+  return artifacts.length > 0;
 }
 
 function publishMissingDatabase(path: string): boolean {
@@ -583,16 +823,17 @@ function publishMissingDatabase(path: string): boolean {
   const directory = dirname(path);
   const stagingPath = `${path}.dbzz-init-${randomUUID()}`;
   let staged = false;
+  let failed = false;
+  let failure: unknown;
+  let published: boolean | undefined;
   try {
     const fd = openSync(stagingPath, "wx", 0o600);
     closeSync(fd);
     staged = true;
     const database = new Database(stagingPath, { create: true, safeIntegers: true });
-    try {
+    runWithCleanup(() => {
       initializeInternalObjects(database);
-    } finally {
-      database.close(false);
-    }
+    }, () => database.close(false), `database initialization and SQLite close both failed: ${stagingPath}`);
     fsyncPath(stagingPath);
     if (SQLITE_SIDECAR_SUFFIXES.some((suffix) => existsSync(`${path}${suffix}`))) {
       throw new CorruptDatabaseError("database main file is missing while SQLite sidecars exist");
@@ -600,18 +841,52 @@ function publishMissingDatabase(path: string): boolean {
     try {
       linkSync(stagingPath, path);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-      throw error;
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        published = false;
+      } else {
+        throw error;
+      }
     }
-    fsyncPath(directory);
-    return true;
-  } finally {
-    if (staged) {
-      rmSync(stagingPath, { force: true });
-      for (const suffix of SQLITE_SIDECAR_SUFFIXES) rmSync(`${stagingPath}${suffix}`, { force: true });
+    if (published !== false) {
       fsyncPath(directory);
+      published = true;
+    }
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+  const cleanupErrors: unknown[] = [];
+  if (staged) {
+    for (const artifact of [stagingPath, ...SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${stagingPath}${suffix}`)]) {
+      try {
+        rmSync(artifact, { force: true });
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    }
+    try {
+      fsyncPath(directory);
+    } catch (error) {
+      cleanupErrors.push(error);
     }
   }
+  if (failed) {
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [failure, ...cleanupErrors],
+        `database initialization and staging cleanup both failed: ${path}`,
+      );
+    }
+    throw failure;
+  }
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1) {
+    throw new AggregateError(cleanupErrors, `database initialization staging cleanup failed: ${path}`);
+  }
+  if (published === undefined) {
+    throw new Error(`database initialization completed without a publication outcome: ${path}`);
+  }
+  return published;
 }
 
 function normalizeStorageError(error: unknown): unknown {
@@ -628,48 +903,62 @@ function normalizeStorageError(error: unknown): unknown {
   return error;
 }
 
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-function acquireProcessLock(path: string): string | null {
-  if (path === ":memory:") return null;
-  const lockPath = `${path}${LOCK_SUFFIX}`;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      mkdirSync(lockPath);
-      writeFileSync(`${lockPath}/owner.json`, JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }));
-      return lockPath;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      let owner: { pid?: unknown } = {};
-      try {
-        owner = JSON.parse(readFileSync(`${lockPath}/owner.json`, "utf8")) as { pid?: unknown };
-      } catch {
-        const age = Date.now() - statSync(lockPath).mtimeMs;
-        if (age < 5_000) throw new Error(`database is already opening in another process: ${path}`);
-      }
-      if (typeof owner.pid === "number" && processIsAlive(owner.pid)) {
-        throw new Error(`database is already open by process ${owner.pid}: ${path}`);
-      }
-      rmSync(lockPath, { recursive: true, force: true });
-    }
-  }
-  throw new Error(`could not acquire database process lock: ${path}`);
-}
-
 function fsyncPath(path: string): void {
   const fd = openSync(path, "r");
+  let failed = false;
+  let failure: unknown;
   try {
     fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+  } catch (error) {
+    failed = true;
+    failure = error;
   }
+  try {
+    closeSync(fd);
+  } catch (closeError) {
+    if (failed) throw new AggregateError([failure, closeError], `fsync and descriptor close both failed: ${path}`);
+    throw closeError;
+  }
+  if (failed) throw failure;
+}
+
+function runWithCleanup<T>(
+  work: () => T,
+  cleanup: () => void,
+  message: string,
+): T {
+  let failed = false;
+  let failure: unknown;
+  let value: T | undefined;
+  try {
+    value = work();
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+  try {
+    cleanup();
+  } catch (cleanupError) {
+    if (failed) throw new AggregateError([failure, cleanupError], message);
+    throw cleanupError;
+  }
+  if (failed) throw failure;
+  return value!;
+}
+
+/** Roll back an open SQLite transaction without losing the failure that required it. */
+export function rollbackAfterFailure(
+  connection: Database,
+  primary: unknown,
+  message: string,
+): never {
+  if (!connection.inTransaction) throw primary;
+  try {
+    connection.exec("ROLLBACK");
+  } catch (rollbackError) {
+    throw new AggregateError([primary, rollbackError], message);
+  }
+  throw primary;
 }
 
 function sqlString(value: string): string {
@@ -683,29 +972,58 @@ function checkRows(db: Database, pragma: "quick_check" | "integrity_check"): str
 
 function inspectArtifact(path: string): Pick<BackupManifest, "format" | "schemaFingerprint" | "commitVersion"> {
   const db = new Database(path, { readonly: true, safeIntegers: true });
-  try {
+  return runWithCleanup(() => {
     const checks = checkRows(db, "quick_check").filter((value) => value !== "ok");
     const foreignKeys = db.query("PRAGMA foreign_key_check").all() as Record<string, unknown>[];
     if (foreignKeys.length > 0) checks.push(`${foreignKeys.length} foreign-key violation(s)`);
     if (checks.length > 0) throw new CorruptDatabaseError(checks.join("; "));
     const version = db
-      .query("SELECT value FROM _dbz_meta WHERE key = 'engine_schema'")
+      .query("SELECT value FROM _dbzz_meta WHERE key = 'engine_schema'")
       .get() as { value: string } | null;
     if (version?.value !== String(ENGINE_SCHEMA_VERSION)) {
       throw new IncompatibleDatabaseError("artifact has an incompatible DBZZ engine schema");
     }
     const mutationReplay = scanMutationReplay(db);
-    const snapshot = db
-      .query("SELECT value FROM _dbz_meta WHERE key = 'schema'")
-      .get() as { value: string } | null;
-    if (snapshot === null) throw new CorruptDatabaseError("artifact is missing its schema snapshot");
     return {
       format: 1,
-      schemaFingerprint: createHash("sha256").update(snapshot.value).digest("hex"),
+      schemaFingerprint: persistedLayoutFingerprint(db),
       commitVersion: mutationReplay.commitVersion,
     };
-  } finally {
-    db.close();
+  }, () => db.close(false), `backup inspection and SQLite close both failed: ${path}`);
+}
+
+function restoreArtifact(source: string, destination: string, manifest: BackupManifest): void {
+  if (existsSync(destination)) throw new Error(`restore destination already exists: ${destination}`);
+  const bytes = statSync(source).size;
+  const sha256 = createHash("sha256").update(readFileSync(source)).digest("hex");
+  if (bytes !== manifest.bytes || sha256 !== manifest.sha256) {
+    throw new CorruptDatabaseError("backup artifact does not match its manifest");
+  }
+  mkdirSync(dirname(destination), { recursive: true });
+  let copied = false;
+  try {
+    copyFileSync(source, destination, fsConstants.COPYFILE_EXCL);
+    copied = true;
+    fsyncPath(destination);
+    const inspected = inspectArtifact(destination);
+    if (inspected.commitVersion !== manifest.commitVersion) {
+      throw new CorruptDatabaseError("restored commit version does not match the manifest");
+    }
+    if (inspected.schemaFingerprint !== manifest.schemaFingerprint) {
+      throw new CorruptDatabaseError("restored schema does not match the manifest");
+    }
+  } catch (error) {
+    if (copied) {
+      try {
+        rmSync(destination, { force: true });
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          `restore artifact validation and staging cleanup both failed: ${destination}`,
+        );
+      }
+    }
+    throw error;
   }
 }
 
@@ -719,21 +1037,32 @@ export class Engine {
   readonly durability: DurabilityPolicy;
   readonly recoveredFromCrash: boolean;
   readonly tags = new Map<string, TagMap>();
-  readonly plans = new Map<string, TablePlan>();
-  private readonly processLock: string | null;
+  readonly rootScope: StorageScope;
+  /** The application's root physical plans. Plugin plans live on their own StorageScope. */
+  readonly plans: ReadonlyMap<string, TablePlan>;
+  private readonly databaseOwnership: DatabaseOwnership | null;
+  private readonly releasesDatabaseOwnership: boolean;
   private readonly sqlitePath: string;
   private readonly busyTimeoutMs: number;
   private readonly additionalReaders = new Set<Database>();
   private lastCheckpoint: CheckpointReport | null = null;
   private closed = false;
 
-  constructor(schema: Schema, path: string, options: EngineOptions = {}) {
+  constructor(
+    schema: Schema,
+    path: string,
+    options: EngineOptions = {},
+  ) {
     this.schema = schema;
     this.path = path;
     this.durability = options.durability ?? "production";
     const busyTimeoutMs = positiveInt(options.busyTimeoutMs ?? 5_000, "busyTimeoutMs");
     this.busyTimeoutMs = busyTimeoutMs;
-    this.processLock = acquireProcessLock(path);
+    const borrowedOwnership = (options as InternalEngineOptions)[BORROWED_DATABASE_OWNERSHIP];
+    this.databaseOwnership = path === ":memory:"
+      ? null
+      : borrowedOwnership ?? DatabaseOwnership.acquire(path);
+    this.releasesDatabaseOwnership = borrowedOwnership === undefined;
     const sqlitePath = path === ":memory:"
       ? `file:dbzz-${randomUUID()}?mode=memory&cache=shared`
       : path;
@@ -742,7 +1071,16 @@ export class Engine {
     let reader: Database | null = null;
     let mutationReplay: MutationReplaySnapshot | null = null;
     try {
-      if (path !== ":memory:") removeStaleInitializationArtifacts(path);
+      if (path !== ":memory:") {
+        const restoreArtifacts = restoreArtifactPaths(path);
+        if (!existsSync(path) && restoreArtifacts.length > 0) {
+          throw new Error(
+            `database initialization refused because an interrupted restore exists for ${path}; rerun dbzz restore to recover or clear its exact staging files`,
+          );
+        }
+        if (existsSync(path)) removeRestoreArtifacts(path);
+        removeStaleInitializationArtifacts(path);
+      }
       const bootstrap = path === ":memory:" || publishMissingDatabase(path);
       if (path !== ":memory:" && !bootstrap) {
         mutationReplay = this.validateExistingStorage(
@@ -761,8 +1099,8 @@ export class Engine {
       if (mutationReplay === null) throw new Error("mutation replay ledger was not loaded");
       this[mutationReplayOwner] = new MutationReplayLedger(writer, mutationReplay);
       this[mcpTokenVaultOwner] = new McpTokenVault(writer);
-      this.internTags();
-      this.buildPlans();
+      this.rootScope = this.buildStorageScope(null, schema);
+      this.plans = this.rootScope.plans;
       writer.exec("PRAGMA journal_mode = WAL");
       writer.exec(`PRAGMA synchronous = ${this.durability === "production" ? "FULL" : "NORMAL"}`);
       if (path === ":memory:") {
@@ -776,16 +1114,37 @@ export class Engine {
       }
       this.reader = reader;
       const state = this.writer
-        .query("SELECT clean_shutdown FROM _dbz_state WHERE singleton = 1")
+        .query("SELECT clean_shutdown FROM _dbzz_state WHERE singleton = 1")
         .get() as { clean_shutdown: bigint };
       this.recoveredFromCrash = state.clean_shutdown === 0n;
-      this.writer.query("UPDATE _dbz_state SET clean_shutdown = 0 WHERE singleton = 1").run();
+      this.writer.query("UPDATE _dbzz_state SET clean_shutdown = 0 WHERE singleton = 1").run();
     } catch (error) {
       const failure = normalizeStorageError(error);
-      if (reader !== null && reader !== writer) reader.close(false);
-      writer?.close(false);
-      if (this.processLock !== null) rmSync(this.processLock, { recursive: true, force: true });
-      throw failure;
+      const cleanup: unknown[] = [];
+      if (reader !== null && reader !== writer) {
+        try {
+          reader.close(false);
+        } catch (closeError) {
+          cleanup.push(closeError);
+        }
+      }
+      if (writer !== null) {
+        try {
+          writer.close(false);
+        } catch (closeError) {
+          cleanup.push(closeError);
+        }
+      }
+      if (this.releasesDatabaseOwnership && this.databaseOwnership !== null) {
+        try {
+          this.databaseOwnership.release();
+        } catch (releaseError) {
+          cleanup.push(releaseError);
+        }
+      }
+      throw cleanup.length === 0
+        ? failure
+        : new AggregateError([failure, ...cleanup], `database open and cleanup both failed: ${path}`);
     }
   }
 
@@ -801,7 +1160,14 @@ export class Engine {
       this.additionalReaders.add(reader);
       return reader;
     } catch (error) {
-      reader.close(false);
+      try {
+        reader.close(false);
+      } catch (closeError) {
+        throw new AggregateError(
+          [error, closeError],
+          `database reader initialization and close both failed: ${this.path}`,
+        );
+      }
       throw error;
     }
   }
@@ -822,6 +1188,9 @@ export class Engine {
     const validationPath = directory === null ? path : join(directory, "data.db");
     const recoveryFreePageSize = directory === null ? existingDatabasePageSize(path) : null;
     let database: Database | null = null;
+    let failed = false;
+    let failure: unknown;
+    let mutationReplay: MutationReplaySnapshot | undefined;
     try {
       if (directory !== null) {
         copyFileSync(path, validationPath);
@@ -837,16 +1206,42 @@ export class Engine {
       });
       database.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
       database.exec("PRAGMA foreign_keys = ON");
-      const mutationReplay = this.validateStorage(database, integrityCheck, false);
+      mutationReplay = this.validateStorage(database, integrityCheck, false);
       const databasePageSize = recoveryFreePageSize ?? existingDatabasePageSize(validationPath);
       if (walPageSize !== null && walPageSize !== databasePageSize) {
         throw new CorruptDatabaseError("database WAL page size does not match its main file");
       }
-      return mutationReplay;
-    } finally {
-      database?.close(false);
-      if (directory !== null) rmSync(directory, { recursive: true, force: true });
+    } catch (error) {
+      failed = true;
+      failure = error;
     }
+    const cleanup: unknown[] = [];
+    if (database !== null) {
+      try {
+        database.close(false);
+      } catch (closeError) {
+        cleanup.push(closeError);
+      }
+    }
+    if (directory !== null) {
+      try {
+        rmSync(directory, { recursive: true, force: true });
+      } catch (cleanupError) {
+        cleanup.push(cleanupError);
+      }
+    }
+    if (failed) {
+      if (cleanup.length > 0) {
+        throw new AggregateError(
+          [failure, ...cleanup],
+          `database validation and temporary cleanup both failed: ${path}`,
+        );
+      }
+      throw failure;
+    }
+    if (cleanup.length === 1) throw cleanup[0];
+    if (cleanup.length > 1) throw new AggregateError(cleanup, `database validation cleanup failed: ${path}`);
+    return mutationReplay!;
   }
 
   private validateStorage(
@@ -867,7 +1262,7 @@ export class Engine {
     const objects = connection
       .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
       .all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
-    const meta = objects.find((object) => object.type === "table" && object.name === "_dbz_meta");
+    const meta = objects.find((object) => object.type === "table" && object.name === "_dbzz_meta");
     if (meta === undefined) {
       if (!bootstrap || objects.length > 0) {
         throw new CorruptDatabaseError("pre-existing database has no DBZZ metadata; refusing to initialize it");
@@ -878,11 +1273,11 @@ export class Engine {
 
     const expectedMeta = INTERNAL_OBJECTS[0]!;
     if (canonicalSql(meta.sql ?? "") !== canonicalSql(expectedMeta.sql)) {
-      throw new IncompatibleDatabaseError("database internal table _dbz_meta has an incompatible shape");
+      throw new IncompatibleDatabaseError("database internal table _dbzz_meta has an incompatible shape");
     }
 
     const version = connection
-      .query("SELECT value FROM _dbz_meta WHERE key = 'engine_schema'")
+      .query("SELECT value FROM _dbzz_meta WHERE key = 'engine_schema'")
       .get() as { value: string } | null;
     if (version === null || version.value !== String(ENGINE_SCHEMA_VERSION)) {
       throw new IncompatibleDatabaseError(
@@ -905,7 +1300,9 @@ export class Engine {
     }
     const unknown = objects.find(
       (object) =>
-        (object.name.startsWith("_dbz_") || object.name.startsWith("ix__dbz_")) &&
+        (object.name.startsWith("_dbzz_") || object.name.startsWith("ix__dbzz_")) &&
+        !object.name.startsWith(PLUGIN_TABLE_PREFIX) &&
+        !object.name.startsWith(PLUGIN_INDEX_PREFIX) &&
         !INTERNAL_OBJECT_NAMES.has(object.name),
     );
     if (unknown !== undefined) {
@@ -924,21 +1321,21 @@ export class Engine {
 
   private verifyInternalState(connection: Database = this.writer): void {
     const unknownMeta = connection
-      .query("SELECT key FROM _dbz_meta WHERE key NOT IN ('engine_schema', 'schema') LIMIT 1")
+      .query("SELECT key FROM _dbzz_meta WHERE key NOT IN ('engine_schema', 'schema') LIMIT 1")
       .get() as { key: string } | null;
     if (unknownMeta !== null) throw new CorruptDatabaseError(`unknown DBZZ metadata key ${unknownMeta.key}`);
     const stateRows = connection
-      .query("SELECT COUNT(*) AS count FROM _dbz_state")
+      .query("SELECT COUNT(*) AS count FROM _dbzz_state")
       .get() as { count: bigint };
     if (stateRows.count !== 1n) throw new CorruptDatabaseError("DBZZ state must contain exactly one singleton row");
     const invalidTag = connection
       .query(
-        "SELECT 1 FROM _dbz_tags WHERE typeof(type) <> 'text' OR length(type) = 0 OR typeof(variant) <> 'text' OR length(variant) = 0 OR typeof(tag) <> 'integer' OR tag < 0 LIMIT 1",
+        "SELECT 1 FROM _dbzz_tags WHERE typeof(type) <> 'text' OR length(type) = 0 OR typeof(variant) <> 'text' OR length(variant) = 0 OR typeof(tag) <> 'integer' OR tag < 0 LIMIT 1",
       )
       .get();
     const invalidTagGroup = connection
       .query(
-        "SELECT 1 FROM _dbz_tags GROUP BY type HAVING MIN(tag) <> 0 OR MAX(tag) + 1 <> COUNT(*) OR COUNT(DISTINCT tag) <> COUNT(*) LIMIT 1",
+        "SELECT 1 FROM _dbzz_tags GROUP BY type HAVING MIN(tag) <> 0 OR MAX(tag) + 1 <> COUNT(*) OR COUNT(DISTINCT tag) <> COUNT(*) LIMIT 1",
       )
       .get();
     if (invalidTag !== null || invalidTagGroup !== null) {
@@ -946,12 +1343,12 @@ export class Engine {
     }
     const invalidIdentity = connection
       .query(
-        "SELECT 1 FROM _dbz_identities WHERE typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
+        "SELECT 1 FROM _dbzz_identities WHERE typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
       )
       .get();
     const invalidAccount = connection
       .query(
-        "SELECT 1 FROM _dbz_identity_accounts WHERE typeof(issuer) <> 'text' OR length(issuer) = 0 OR typeof(subject) <> 'text' OR length(subject) = 0 OR typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
+        "SELECT 1 FROM _dbzz_identity_accounts WHERE typeof(issuer) <> 'text' OR length(issuer) = 0 OR typeof(subject) <> 'text' OR length(subject) = 0 OR typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
       )
       .get();
     if (invalidIdentity !== null || invalidAccount !== null) {
@@ -959,7 +1356,7 @@ export class Engine {
     }
     const invalidMigration = connection
       .query(
-        "SELECT 1 FROM _dbz_migrations WHERE typeof(number) <> 'integer' OR number <= 0 OR typeof(name) <> 'text' OR length(name) = 0 OR typeof(identity) <> 'text' OR length(identity) <> 64 OR typeof(applied_at) NOT IN ('integer', 'real') LIMIT 1",
+        "SELECT 1 FROM _dbzz_migrations WHERE typeof(number) <> 'integer' OR number <= 0 OR typeof(name) <> 'text' OR length(name) = 0 OR typeof(identity) <> 'text' OR length(identity) <> 64 OR typeof(applied_at) NOT IN ('integer', 'real') LIMIT 1",
       )
       .get();
     if (invalidMigration !== null) throw new CorruptDatabaseError("DBZZ migration history is invalid");
@@ -968,7 +1365,7 @@ export class Engine {
 
   commitVersion(connection: Database = this.writer): bigint {
     const row = connection
-      .query("SELECT commit_version FROM _dbz_state WHERE singleton = 1")
+      .query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1")
       .get() as { commit_version: bigint };
     return row.commit_version;
   }
@@ -976,7 +1373,7 @@ export class Engine {
   /** Allocate the next non-replay version. The caller must own an open writer transaction. */
   allocateCommitVersion(): bigint {
     const row = this.writer
-      .query("UPDATE _dbz_state SET commit_version = commit_version + 1 WHERE singleton = 1 RETURNING commit_version")
+      .query("UPDATE _dbzz_state SET commit_version = commit_version + 1 WHERE singleton = 1 RETURNING commit_version")
       .get() as { commit_version: bigint };
     return row.commit_version;
   }
@@ -984,7 +1381,7 @@ export class Engine {
   /** Look up one exact external account on any Engine-owned connection. */
   identityForAccount(connection: Database, issuer: string, subject: string): Identity | null {
     const account = connection
-      .query("SELECT identity FROM _dbz_identity_accounts WHERE issuer = ? AND subject = ?")
+      .query("SELECT identity FROM _dbzz_identity_accounts WHERE issuer = ? AND subject = ?")
       .get(issuer, subject) as { identity: bigint } | null;
     return account === null ? null : account.identity as Identity;
   }
@@ -995,10 +1392,10 @@ export class Engine {
     if (existing !== null) return existing;
 
     const created = this.writer
-      .query("INSERT INTO _dbz_identities DEFAULT VALUES RETURNING identity")
+      .query("INSERT INTO _dbzz_identities DEFAULT VALUES RETURNING identity")
       .get() as { identity: bigint };
     this.writer
-      .query("INSERT INTO _dbz_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
+      .query("INSERT INTO _dbzz_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
       .run(issuer, subject, created.identity);
     return created.identity as Identity;
   }
@@ -1008,7 +1405,7 @@ export class Engine {
     const existing = this.identityForAccount(this.writer, issuer, subject);
     if (existing !== null) return existing === identity;
     this.writer
-      .query("INSERT INTO _dbz_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
+      .query("INSERT INTO _dbzz_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
       .run(issuer, subject, identity);
     return true;
   }
@@ -1021,28 +1418,29 @@ export class Engine {
   ): "removed" | "not_owned" | "last_account" {
     if (this.identityForAccount(this.writer, issuer, subject) !== identity) return "not_owned";
     const removed = this.writer
-      .query(`DELETE FROM _dbz_identity_accounts
+      .query(`DELETE FROM _dbzz_identity_accounts
         WHERE issuer = ? AND subject = ? AND identity = ?
-          AND 1 < (SELECT COUNT(*) FROM _dbz_identity_accounts WHERE identity = ?)`)
+          AND 1 < (SELECT COUNT(*) FROM _dbzz_identity_accounts WHERE identity = ?)`)
       .run(issuer, subject, identity, identity);
     return removed.changes === 1 ? "removed" : "last_account";
   }
 
   schemaFingerprint(): string {
-    return createHash("sha256").update(JSON.stringify(snapshotOf(this.schema))).digest("hex");
+    return persistedLayoutFingerprint(this.writer);
   }
 
-  /** Assign stable tags to every named enum/union variant. */
-  private internTags(): void {
-    const select = this.writer.query("SELECT variant, tag FROM _dbz_tags WHERE type = ?");
-    for (const [typeName, validator] of this.schema.namedTypes) {
+  /** Assign stable tags to every named enum/union variant in one storage scope. */
+  private internTags(schema: Schema, tagIdentity: StorageScope["tagIdentity"]): void {
+    const select = this.writer.query("SELECT variant, tag FROM _dbzz_tags WHERE type = ?");
+    for (const [typeName, validator] of schema.namedTypes) {
+      const identity = tagIdentity(typeName);
       const variants =
         validator.kind === "enum"
           ? [...(validator as unknown as { values: readonly string[] }).values]
           : Object.keys((validator as unknown as { members: Record<string, unknown> }).members);
       const map: TagMap = { toTag: new Map(), toName: new Map() };
       let max = -1;
-      for (const row of select.all(typeName) as { variant: string; tag: bigint }[]) {
+      for (const row of select.all(identity) as { variant: string; tag: bigint }[]) {
         const tag = Number(row.tag);
         map.toTag.set(row.variant, tag);
         map.toName.set(tag, row.variant);
@@ -1055,49 +1453,114 @@ export class Engine {
           map.toName.set(tag, variant);
         }
       }
-      this.tags.set(typeName, map);
+      this.tags.set(identity, map);
     }
   }
 
   /**
-   * Re-derive every in-memory tag map from `_dbz_tags` + the live schema. Run
-   * after a migration relabels variants (`UPDATE _dbz_tags`) so the renamed-to
+   * Re-derive every in-memory tag map from `_dbzz_tags` + the live schema. Run
+   * after a migration relabels variants (`UPDATE _dbzz_tags`) so the renamed-to
    * variant resolves to its original tag instead of the speculative one the
    * constructor assigned; column plans read `this.tags` lazily, so they pick the
    * rebuilt maps up on their next encode.
    */
-  reinternTags(): void {
-    this.tags.clear();
-    this.internTags();
+  reinternTags(scope: StorageScope = this.rootScope): void {
+    for (const typeName of scope.schema.namedTypes.keys()) {
+      this.tags.delete(scope.tagIdentity(typeName));
+    }
+    this.internTags(scope.schema, scope.tagIdentity);
   }
 
   /** Persist the in-memory tag plan. The caller owns the schema transaction. */
-  persistTags(): void {
+  persistTags(scope: StorageScope = this.rootScope): void {
     const insert = this.writer.query(
-      "INSERT INTO _dbz_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
+      "INSERT INTO _dbzz_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
     );
-    for (const [type, map] of this.tags) {
-      for (const [variant, tag] of map.toTag) insert.run(type, variant, tag);
+    for (const typeName of scope.schema.namedTypes.keys()) {
+      const identity = scope.tagIdentity(typeName);
+      const map = this.tags.get(identity)!;
+      for (const [variant, tag] of map.toTag) insert.run(identity, variant, tag);
     }
   }
 
-  private buildPlans(): void {
-    for (const [tableName, table] of Object.entries(this.schema.tables)) {
+  /** Bind one mounted Plugin schema to deterministic private SQLite storage. */
+  createPluginScope(mount: string, schema: Schema): StorageScope {
+    if (typeof mount !== "string" || !PLUGIN_MOUNT.test(mount)) {
+      throw new ValidationError("Plugin storage mount must be an identifier");
+    }
+    return this.buildStorageScope(mount, schema);
+  }
+
+  /** Resolve the scope-aware tag map used by one table plan. */
+  tagMap(plan: TablePlan, typeName: string): TagMap {
+    return this.tags.get(plan.tagIdentity(typeName))!;
+  }
+
+  private buildStorageScope(mount: string | null, schema: Schema): StorageScope {
+    const tagIdentity: StorageScope["tagIdentity"] = mount === null
+      ? (typeName) => typeName
+      : (typeName) => pluginTagIdentity(mount, typeName);
+    if (mount !== null) {
+      for (const [logicalName, table] of Object.entries(schema.tables)) {
+        const displayName = `${mount}.${logicalName}`;
+        if (table.kind === "event") {
+          throw new ValidationError(`${displayName}: Plugin private schemas cannot contain event tables`);
+        }
+        if (table.scheduleAtColumn !== null) {
+          throw new ValidationError(`${displayName}: Plugin private schemas cannot contain scheduled tables`);
+        }
+      }
+    }
+    this.internTags(schema, tagIdentity);
+    const plans = new Map<string, TablePlan>();
+    for (const [logicalName, table] of Object.entries(schema.tables)) {
       if (table.kind === "event") continue;
-      this.plans.set(tableName, this.planTable(tableName, table));
+      const physicalName = mount === null
+        ? logicalName
+        : pluginPhysicalTableName(mount, logicalName);
+      const displayName = mount === null ? logicalName : `${mount}.${logicalName}`;
+      plans.set(
+        logicalName,
+        this.planTable(table, logicalName, physicalName, displayName, tagIdentity),
+      );
     }
+    const scope: StorageScope = {
+      mount,
+      schema,
+      plans,
+      tagIdentity,
+      plan(logicalName) {
+        const plan = plans.get(logicalName);
+        if (plan === undefined) {
+          const displayName = mount === null ? logicalName : `${mount}.${logicalName}`;
+          throw new Error(`unknown table "${displayName}"`);
+        }
+        return plan;
+      },
+    };
+    return Object.freeze(scope);
   }
 
-  private planTable(tableName: string, table: TableDef): TablePlan {
+  private planTable(
+    table: TableDef,
+    logicalName: string,
+    name: string,
+    displayName: string,
+    tagIdentity: StorageScope["tagIdentity"],
+  ): TablePlan {
     const columns = new Map<string, ColumnPlan>();
     const physOrder: string[] = [];
     for (const [jsName, validator] of Object.entries(table.columns)) {
-      const plan = this.planColumn(jsName, validator);
+      const plan = this.planColumn(jsName, validator, displayName, tagIdentity);
       columns.set(jsName, plan);
       for (const phys of plan.phys) physOrder.push(phys.name);
     }
     return {
-      name: tableName,
+      table,
+      logicalName,
+      name,
+      displayName,
+      tagIdentity,
       pk: table.primaryKey,
       scheduleAt: table.scheduleAtColumn,
       columns,
@@ -1107,7 +1570,12 @@ export class Engine {
     };
   }
 
-  private planColumn(jsName: string, validator: Validator<unknown, string>): ColumnPlan {
+  private planColumn(
+    jsName: string,
+    validator: Validator<unknown, string>,
+    displayName: string,
+    tagIdentity: StorageScope["tagIdentity"],
+  ): ColumnPlan {
     const { base, nullable } = unwrapValidator(validator);
     const notNull = nullable ? "" : " NOT NULL";
 
@@ -1125,7 +1593,7 @@ export class Engine {
     if (base.kind === "union") {
       const typeName = (base as unknown as { name: string }).name;
       const payloadCol = `${jsName}__p`;
-      const tagMap = () => this.tags.get(typeName)!;
+      const tagMap = () => this.tags.get(tagIdentity(typeName))!;
       return {
         jsName,
         kind: "union",
@@ -1139,7 +1607,9 @@ export class Engine {
           if (value === null) return [null, null];
           const { tag, value: payload } = value as { tag: string; value: unknown };
           const tagInt = tagMap().toTag.get(tag);
-          if (tagInt === undefined) throw new Error(`unknown ${typeName} variant "${tag}"`);
+          if (tagInt === undefined) {
+            throw new Error(`${displayName}.${jsName}: unknown ${typeName} variant "${tag}"`);
+          }
           return [tagInt, encode(payload)];
         },
         fromSql: (values) => {
@@ -1154,7 +1624,7 @@ export class Engine {
 
     if (base.kind === "enum") {
       const typeName = (base as unknown as { name: string }).name;
-      const tagMap = () => this.tags.get(typeName)!;
+      const tagMap = () => this.tags.get(tagIdentity(typeName))!;
       return {
         jsName,
         kind: "enum",
@@ -1164,7 +1634,9 @@ export class Engine {
         toSql: (value) => {
           if (value === null) return [null];
           const tagInt = tagMap().toTag.get(value as string);
-          if (tagInt === undefined) throw new Error(`unknown ${typeName} variant "${String(value)}"`);
+          if (tagInt === undefined) {
+            throw new Error(`${displayName}.${jsName}: unknown ${typeName} variant "${String(value)}"`);
+          }
           return [tagInt];
         },
         fromSql: (values) => (values[0] === null ? null : tagMap().toName.get(Number(values[0]))!),
@@ -1187,7 +1659,7 @@ export class Engine {
 
   // -- DDL -------------------------------------------------------------------
 
-  createTableDdl(plan: TablePlan, nameOverride?: string, extraColumnDdls: string[] = []): string {
+  createTableDdl(plan: PhysicalTablePlan, nameOverride?: string, extraColumnDdls: string[] = []): string {
     const cols: string[] = [];
     for (const column of plan.columns.values()) {
       for (const phys of column.phys) cols.push(phys.ddl);
@@ -1197,12 +1669,12 @@ export class Engine {
   }
 
   /** Create one table plus its indexes (user + internal scheduler index). */
-  createTablePhysical(plan: TablePlan): void {
+  createTablePhysical(plan: PhysicalTablePlan): void {
     this.writer.exec(this.createTableDdl(plan));
     this.createIndexesPhysical(plan);
   }
 
-  createIndexesPhysical(plan: TablePlan): void {
+  createIndexesPhysical(plan: PhysicalTablePlan): void {
     for (const index of plan.indexes) this.writer.exec(this.indexDdl(plan, index));
     if (plan.scheduleAt !== null) {
       this.writer.exec(
@@ -1211,7 +1683,7 @@ export class Engine {
     }
   }
 
-  indexDdl(plan: TablePlan, index: IndexDef): string {
+  indexDdl(plan: PhysicalTablePlan, index: IndexDef): string {
     const unique = index.unique ? "UNIQUE " : "";
     const cols = index.columns.map((c) => quote(c)).join(", ");
     return `CREATE ${unique}INDEX IF NOT EXISTS ${quote(indexSqlName(plan.name, index.name))} ON ${quote(plan.name)} (${cols})`;
@@ -1226,29 +1698,48 @@ export class Engine {
       this.saveSnapshot(snapshotOf(this.schema));
       this.writer.exec("COMMIT");
     } catch (error) {
-      this.writer.exec("ROLLBACK");
-      throw error;
+      rollbackAfterFailure(
+        this.writer,
+        error,
+        "database schema creation and rollback both failed",
+      );
     }
   }
 
   // -- Meta ------------------------------------------------------------------
 
   loadSnapshot(connection: Database = this.writer): SchemaSnapshot | null {
-    const row = connection.query("SELECT value FROM _dbz_meta WHERE key = 'schema'").get() as
+    const row = connection.query("SELECT value FROM _dbzz_meta WHERE key = 'schema'").get() as
       | { value: string }
       | null;
     const snapshot = row === null ? null : parseStoredSnapshot(row.value);
-    this.verifyApplicationSchema(snapshot, connection);
-    if (snapshot !== null) this.verifySnapshotTags(snapshot, connection);
+    const plugins = readStoredPluginInventory(connection);
+    this.verifyApplicationSchema(snapshot, plugins, connection);
+    this.verifySnapshotTags(snapshot, plugins, connection);
     return snapshot;
   }
 
-  private verifyApplicationSchema(snapshot: SchemaSnapshot | null, connection: Database): void {
+  private verifyApplicationSchema(
+    snapshot: SchemaSnapshot | null,
+    plugins: ReadonlyMap<string, StoredPluginStorage>,
+    connection: Database,
+  ): void {
     const actual = connection
       .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
       .all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
+    const pluginObjects = [...plugins.values()].flatMap((plugin) =>
+      expectedApplicationObjects(
+        plugin.snapshot,
+        (table) => pluginPhysicalTableName(plugin.mount, table),
+        (table) => `${plugin.mount}.${table}`,
+      )
+    );
     const expected = new Map(
-      [...INTERNAL_OBJECTS, ...(snapshot === null ? [] : expectedApplicationObjects(snapshot))]
+      [
+        ...INTERNAL_OBJECTS,
+        ...(snapshot === null ? [] : expectedApplicationObjects(snapshot)),
+        ...pluginObjects,
+      ]
         .map((object) => [object.name, object]),
     );
     const extra = actual.find((object) => !expected.has(object.name));
@@ -1273,55 +1764,60 @@ export class Engine {
     }
   }
 
-  private verifySnapshotTags(snapshot: SchemaSnapshot, connection: Database): void {
-    const definitions = new Map<string, { descriptor: string; variants: string[] }>();
-    for (const table of Object.values(snapshot.tables)) {
-      for (const descriptor of Object.values(table.columns)) {
-        const base = (descriptor["k"] === "nullable" ? descriptor["inner"] : descriptor) as Descriptor;
-        if (base["k"] !== "enum" && base["k"] !== "union") continue;
-        const name = storedName(base["name"], "named type");
-        const variants = base["k"] === "enum"
-          ? base["values"]
-          : storedRecord(base["members"])
-            ? Object.keys(base["members"])
-            : null;
-        if (!Array.isArray(variants) || variants.length === 0 || variants.some((value) => typeof value !== "string")) {
-          corruptSnapshot(`${name} has invalid variants`);
-        }
-        const signature = JSON.stringify(base);
-        const previous = definitions.get(name);
-        if (previous !== undefined && previous.descriptor !== signature) {
-          corruptSnapshot(`named type ${name} has conflicting definitions`);
-        }
-        definitions.set(name, { descriptor: signature, variants: variants as string[] });
+  private verifySnapshotTags(
+    snapshot: SchemaSnapshot | null,
+    plugins: ReadonlyMap<string, StoredPluginStorage>,
+    connection: Database,
+  ): void {
+    const rootDefinitions: ReadonlyMap<string, StoredNamedDefinition> = snapshot === null
+      ? new Map()
+      : namedDefinitionsOf(snapshot);
+    const pluginDefinitions = new Map<string, StoredNamedDefinition>();
+    for (const plugin of plugins.values()) {
+      for (const [typeName, definition] of namedDefinitionsOf(plugin.snapshot)) {
+        pluginDefinitions.set(pluginTagIdentity(plugin.mount, typeName), definition);
       }
     }
     const stored = new Map<string, Set<string>>();
-    for (const row of connection.query("SELECT type, variant FROM _dbz_tags").all() as { type: string; variant: string }[]) {
+    for (const row of connection.query("SELECT type, variant FROM _dbzz_tags").all() as { type: string; variant: string }[]) {
       const variants = stored.get(row.type) ?? new Set<string>();
       variants.add(row.variant);
       stored.set(row.type, variants);
     }
-    for (const [type, definition] of definitions) {
+    for (const [type, definition] of rootDefinitions) {
       const missing = definition.variants.find((variant) => !stored.get(type)?.has(variant));
       if (missing !== undefined) {
         throw new CorruptDatabaseError(`DBZZ tag assignment is missing ${type}.${missing}`);
       }
     }
+    for (const [identity, definition] of pluginDefinitions) {
+      const variants = stored.get(identity);
+      const missing = definition.variants.find((variant) => !variants?.has(variant));
+      if (missing !== undefined) {
+        throw new CorruptDatabaseError(`DBZZ tag assignment is missing ${identity}.${missing}`);
+      }
+      if (variants!.size !== definition.variants.length) {
+        throw new CorruptDatabaseError(`DBZZ Plugin tag assignment ${identity} has unknown variants`);
+      }
+    }
+    const unknownPluginTag = [...stored.keys()].find(
+      (identity) => !STORED_NAME.test(identity) && !pluginDefinitions.has(identity),
+    );
+    if (unknownPluginTag !== undefined) {
+      throw new CorruptDatabaseError(`DBZZ tag assignment has unknown Plugin identity ${unknownPluginTag}`);
+    }
   }
 
   saveSnapshot(snapshot: SchemaSnapshot): void {
     this.writer
-      .query("INSERT INTO _dbz_meta (key, value) VALUES ('schema', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .query("INSERT INTO _dbzz_meta (key, value) VALUES ('schema', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(JSON.stringify(snapshot));
   }
 
   // -- Row codec + basic CRUD (ctx.db composes richer queries on top) --------
 
   plan(table: string): TablePlan {
-    const plan = this.plans.get(table);
-    if (!plan) throw new Error(`unknown table "${table}"`);
-    return plan;
+    return this.rootScope.plan(table);
   }
 
   /** Decode one SQL result object (keyed by physical column name) to a JS row. */
@@ -1350,7 +1846,7 @@ export class Engine {
 
   status(): EngineStatus {
     const state = this.writer
-      .query("SELECT commit_version, mutation_records, mutation_result_bytes, last_checkpoint_at FROM _dbz_state WHERE singleton = 1")
+      .query("SELECT commit_version, mutation_records, mutation_result_bytes, last_checkpoint_at FROM _dbzz_state WHERE singleton = 1")
       .get() as {
         commit_version: bigint;
         mutation_records: bigint;
@@ -1384,7 +1880,7 @@ export class Engine {
     const totalFrames = Number(row.log ?? values[1] ?? 0);
     const checkpointedFrames = Number(row.checkpointed ?? values[2] ?? 0);
     this.writer
-      .query("UPDATE _dbz_state SET last_checkpoint_at = ? WHERE singleton = 1")
+      .query("UPDATE _dbzz_state SET last_checkpoint_at = ? WHERE singleton = 1")
       .run(Date.now());
     const report: CheckpointReport = Object.freeze({
       mode,
@@ -1405,6 +1901,7 @@ export class Engine {
     if (existsSync(destination)) throw new Error(`backup destination already exists: ${destination}`);
     mkdirSync(dirname(destination), { recursive: true });
     const temporary = `${destination}.tmp-${crypto.randomUUID()}`;
+    let published = false;
     try {
       this.writer.exec(`VACUUM INTO ${sqlString(temporary)}`);
       fsyncPath(temporary);
@@ -1413,6 +1910,7 @@ export class Engine {
         throw new CorruptDatabaseError("backup schema fingerprint does not match the running schema");
       }
       renameSync(temporary, destination);
+      published = true;
       fsyncPath(dirname(destination));
       const bytes = statSync(destination).size;
       const sha256 = createHash("sha256").update(readFileSync(destination)).digest("hex");
@@ -1424,34 +1922,20 @@ export class Engine {
         verifiedAt: Date.now(),
       };
     } catch (error) {
-      rmSync(temporary, { force: true });
-      throw error;
-    }
-  }
-
-  static restore(source: string, destination: string, manifest: BackupManifest): void {
-    if (existsSync(destination)) throw new Error(`restore destination already exists: ${destination}`);
-    const bytes = statSync(source).size;
-    const sha256 = createHash("sha256").update(readFileSync(source)).digest("hex");
-    if (bytes !== manifest.bytes || sha256 !== manifest.sha256) {
-      throw new CorruptDatabaseError("backup artifact does not match its manifest");
-    }
-    mkdirSync(dirname(destination), { recursive: true });
-    const temporary = `${destination}.tmp-${crypto.randomUUID()}`;
-    try {
-      copyFileSync(source, temporary);
-      fsyncPath(temporary);
-      const inspected = inspectArtifact(temporary);
-      if (inspected.commitVersion !== manifest.commitVersion) {
-        throw new CorruptDatabaseError("restored commit version does not match the manifest");
+      const cleanup: unknown[] = [];
+      for (const artifact of published ? [temporary, destination] : [temporary]) {
+        try {
+          rmSync(artifact, { force: true });
+        } catch (cleanupError) {
+          cleanup.push(cleanupError);
+        }
       }
-      if (inspected.schemaFingerprint !== manifest.schemaFingerprint) {
-        throw new CorruptDatabaseError("restored schema does not match the manifest");
+      if (cleanup.length > 0) {
+        throw new AggregateError(
+          [error, ...cleanup],
+          `backup creation and artifact cleanup both failed: ${destination}`,
+        );
       }
-      renameSync(temporary, destination);
-      fsyncPath(dirname(destination));
-    } catch (error) {
-      rmSync(temporary, { force: true });
       throw error;
     }
   }
@@ -1463,19 +1947,17 @@ export class Engine {
     }
     if (this.closed) return;
     this.closed = true;
-    let failed = false;
-    let failure: unknown;
+    const failures: unknown[] = [];
     const attempt = (work: () => void) => {
       try {
         work();
       } catch (error) {
-        if (!failed) failure = error;
-        failed = true;
+        failures.push(error);
       }
     };
     if (shutdown === "clean") {
       attempt(() => {
-        this.writer.query("UPDATE _dbz_state SET clean_shutdown = 1 WHERE singleton = 1").run();
+        this.writer.query("UPDATE _dbzz_state SET clean_shutdown = 1 WHERE singleton = 1").run();
       });
     }
     for (const reader of this.additionalReaders) attempt(() => reader.close());
@@ -1483,12 +1965,331 @@ export class Engine {
     if (this.reader !== this.writer) attempt(() => this.reader.close());
     if (shutdown === "clean") attempt(() => this.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)"));
     attempt(() => this.writer.close());
-    const processLock = this.processLock;
-    if (processLock !== null) {
-      attempt(() => rmSync(processLock, { recursive: true, force: true }));
+    if (this.releasesDatabaseOwnership && this.databaseOwnership !== null) {
+      attempt(() => this.databaseOwnership!.release());
     }
-    if (failed) throw failure;
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, `database close failed: ${this.path}`);
   }
+}
+
+/**
+ * Exclusive, same-directory staging and no-clobber publication for one
+ * canonical restore target. The canonical path is never written directly.
+ */
+export class DatabaseRestoreTarget {
+  readonly path: string;
+  readonly stagingPath: string;
+  private readonly ownership: DatabaseOwnership;
+  private manifest: BackupManifest | null = null;
+  private restored = false;
+  private linked = false;
+  private publicationDurable = false;
+  private closed = false;
+
+  private constructor(path: string, ownership: DatabaseOwnership) {
+    this.path = path;
+    this.ownership = ownership;
+    this.stagingPath = `${path}.dbzz-restore-${randomUUID()}`;
+  }
+
+  static acquire(path: string): DatabaseRestoreTarget {
+    if (path === ":memory:") throw new TypeError("restore requires a file-backed database target");
+    const directory = dirname(path);
+    mkdirSync(directory, { recursive: true });
+    const ownership = DatabaseOwnership.acquire(path);
+    try {
+      const restoreArtifacts = new Set(restoreArtifactPaths(path).map((artifact) => basename(artifact)));
+      assertRestoreTargetFresh(path, restoreArtifacts);
+      removeRestoreArtifacts(path);
+      return new DatabaseRestoreTarget(path, ownership);
+    } catch (error) {
+      try {
+        ownership.release();
+      } catch (releaseError) {
+        throw new AggregateError(
+          [error, releaseError],
+          `restore target acquisition and ownership cleanup both failed: ${path}`,
+        );
+      }
+      throw error;
+    }
+  }
+
+  assertVacant(): void {
+    this.assertOpen();
+    assertRestoreTargetFresh(this.path, new Set());
+  }
+
+  restore(source: string, manifest: BackupManifest): void {
+    this.assertOpen();
+    if (this.restored) throw new Error("restore artifact has already been staged");
+    restoreArtifact(source, this.stagingPath, manifest);
+    this.manifest = manifest;
+    this.restored = true;
+  }
+
+  open(schema: Schema, options: EngineOptions = {}): Engine {
+    this.assertOpen();
+    if (!this.restored || !existsSync(this.stagingPath)) {
+      throw new Error("restore artifact must be staged before it is opened");
+    }
+    return new Engine(schema, this.stagingPath, {
+      ...options,
+      [BORROWED_DATABASE_OWNERSHIP]: this.ownership,
+    } as InternalEngineOptions);
+  }
+
+  publish(): void {
+    this.assertOpen();
+    if (!this.restored || !existsSync(this.stagingPath)) {
+      throw new Error("restore artifact must be staged and verified before publication");
+    }
+    const database = new Database(this.stagingPath, { safeIntegers: true });
+    runWithCleanup(() => {
+      const mode = database.query("PRAGMA journal_mode = DELETE").get() as Record<string, unknown>;
+      if (String(Object.values(mode)[0]).toLowerCase() !== "delete") {
+        throw new Error("restore staging could not become a self-contained SQLite main file");
+      }
+    }, () => database.close(false), `restore finalization and SQLite close both failed: ${this.stagingPath}`);
+    const inspected = inspectArtifact(this.stagingPath);
+    if (
+      this.manifest === null ||
+      inspected.commitVersion !== this.manifest.commitVersion ||
+      inspected.schemaFingerprint !== this.manifest.schemaFingerprint
+    ) {
+      throw new CorruptDatabaseError("restore staging changed during publication finalization");
+    }
+    fsyncPath(this.stagingPath);
+    for (const suffix of SQLITE_SIDECAR_SUFFIXES) {
+      const sidecar = `${this.stagingPath}${suffix}`;
+      if (!existsSync(sidecar)) continue;
+      // SQLite's shared-memory index is reconstructible and carries no commit
+      // state. A nonempty WAL or rollback journal is meaningful and must not
+      // be detached from the staged main file.
+      if (suffix !== "-shm" && statSync(sidecar).size > 0) {
+        throw new Error(`verified restore staging has meaningful SQLite sidecar state: ${sidecar}`);
+      }
+      rmSync(sidecar);
+    }
+    const canonicalSidecar = SQLITE_SIDECAR_SUFFIXES.find((suffix) => existsSync(`${this.path}${suffix}`));
+    if (canonicalSidecar !== undefined) {
+      throw new Error(
+        `restore target changed before publication; canonical SQLite sidecar exists: ${this.path}${canonicalSidecar}`,
+      );
+    }
+    try {
+      linkSync(this.stagingPath, this.path);
+      this.linked = true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(`restore target changed before publication; database already exists: ${this.path}`);
+      }
+      throw error;
+    }
+    try {
+      fsyncPath(dirname(this.path));
+      this.publicationDurable = true;
+    } catch (error) {
+      throw new Error(
+        `restore database was published at ${this.path}, but its directory durability is unknown; staging evidence remains at ${this.stagingPath}`,
+        { cause: error },
+      );
+    }
+    try {
+      rmSync(this.stagingPath);
+      this.restored = false;
+    } catch (error) {
+      throw new Error(
+        `restore database was durably published at ${this.path}, but staging cleanup failed; evidence remains at ${this.stagingPath}`,
+        { cause: error },
+      );
+    }
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    const failures: unknown[] = [];
+    if (!this.linked) {
+      try {
+        this.removeStaging();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    try {
+      this.ownership.release();
+    } catch (error) {
+      failures.push(this.linked
+        ? new Error(
+          this.publicationDurable
+            ? `restore database was already durably published at ${this.path}, but canonical database ownership release failed; the canonical database was not removed`
+            : `restore database was published at ${this.path}, but directory durability remains unknown and canonical database ownership release also failed; the canonical database and staging evidence were not removed`,
+          { cause: error },
+        )
+        : error);
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, `restore target cleanup failed: ${this.path}`);
+  }
+
+  private assertOpen(): void {
+    if (this.closed) throw new Error("restore target is closed");
+    if (this.linked) throw new Error("restore target has already been published");
+  }
+
+  private removeStaging(): void {
+    const failures: unknown[] = [];
+    for (const artifact of [
+      this.stagingPath,
+      ...SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${this.stagingPath}${suffix}`),
+    ]) {
+      try {
+        rmSync(artifact, { force: true });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, `restore staging cleanup failed: ${this.stagingPath}`);
+    }
+  }
+}
+
+function assertRestoreTargetFresh(
+  path: string,
+  allowedEntries: ReadonlySet<string>,
+): void {
+  if (existsSync(path)) {
+    throw new Error(`restore requires a fresh target; database already exists: ${path}`);
+  }
+  const canonicalSidecar = SQLITE_SIDECAR_SUFFIXES.find((suffix) => existsSync(`${path}${suffix}`));
+  if (canonicalSidecar !== undefined) {
+    throw new Error(
+      `restore requires a fresh target; canonical SQLite sidecar exists: ${path}${canonicalSidecar}`,
+    );
+  }
+  const directory = dirname(path);
+  const ownershipEntries = new Set(coordinationDatabaseEntries(path).map((entry) => basename(entry)));
+  const unrelated = readdirSync(directory, { withFileTypes: true }).find(
+    (entry) => !ownershipEntries.has(entry.name) && !allowedEntries.has(entry.name),
+  );
+  if (unrelated !== undefined) {
+    throw new Error(
+      `restore requires a vacant target directory; unrelated entry exists: ${join(directory, unrelated.name)}`,
+    );
+  }
+}
+
+function proveRestoredNextCommit(engine: Engine): void {
+  const terminal = engine.commitVersion();
+  let transactionOpen = false;
+  try {
+    engine.writer.exec("BEGIN IMMEDIATE");
+    transactionOpen = true;
+    const next = engine.allocateCommitVersion();
+    if (next !== terminal + 1n) {
+      throw new Error(`next commit version was ${next}; expected ${terminal + 1n}`);
+    }
+    engine.writer.exec("ROLLBACK");
+    transactionOpen = false;
+
+    engine.writer.exec("BEGIN IMMEDIATE");
+    transactionOpen = true;
+    engine.writer
+      .query("UPDATE _dbzz_state SET commit_version = commit_version WHERE singleton = 1")
+      .run();
+    engine.writer.exec("COMMIT");
+    transactionOpen = false;
+  } catch (error) {
+    if (transactionOpen) {
+      try {
+        engine.writer.exec("ROLLBACK");
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          "restore commit probe and rollback both failed",
+        );
+      }
+    }
+    throw error;
+  }
+  if (engine.commitVersion() !== terminal) {
+    throw new Error("restore commit probe changed the terminal commit version");
+  }
+}
+
+/**
+ * Verify and publish one artifact under canonical database ownership. There is
+ * no public staging state machine: every successful call performs the full
+ * integrity/layout/commit probe before the no-clobber link becomes visible.
+ */
+export async function restoreVerifiedLayout(
+  source: string,
+  target: string,
+  manifest: BackupManifest,
+  loadSchema: () => Schema | Promise<Schema>,
+): Promise<EngineStatus> {
+  const restoreTarget = DatabaseRestoreTarget.acquire(target);
+  let failed = false;
+  let failure: unknown;
+  let status: EngineStatus | undefined;
+  try {
+    const schema = await loadSchema();
+    if (!isSchema(schema)) throw new TypeError("restore schema loader must return a DBZZ schema");
+    restoreTarget.assertVacant();
+    restoreTarget.restore(source, manifest);
+    const engine = restoreTarget.open(schema, {
+      durability: manifest.durability,
+      integrityCheck: "full",
+    });
+    let verificationFailed = false;
+    let verificationFailure: unknown;
+    try {
+      if (engine.schemaFingerprint() !== manifest.schemaFingerprint) {
+        throw new CorruptDatabaseError("restore staging layout does not match the manifest");
+      }
+      status = engine.status();
+      if (status.commitVersion !== manifest.commitVersion) {
+        throw new CorruptDatabaseError("restore staging commit version does not match the manifest");
+      }
+      proveRestoredNextCommit(engine);
+    } catch (error) {
+      verificationFailed = true;
+      verificationFailure = error;
+    }
+    try {
+      engine.close("clean");
+    } catch (closeError) {
+      if (verificationFailed) {
+        throw new AggregateError(
+          [verificationFailure, closeError],
+          `restore staging verification and database close both failed: ${target}`,
+        );
+      }
+      throw closeError;
+    }
+    if (verificationFailed) throw verificationFailure;
+    restoreTarget.publish();
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+  try {
+    restoreTarget.close();
+  } catch (closeError) {
+    if (failed) {
+      throw new AggregateError(
+        [failure, closeError],
+        `restore operation and target cleanup both failed: ${target}`,
+      );
+    }
+    throw closeError;
+  }
+  if (failed) throw failure;
+  return status!;
 }
 
 export function indexSqlName(table: string, index: string): string {

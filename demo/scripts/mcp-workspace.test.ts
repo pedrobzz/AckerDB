@@ -158,7 +158,7 @@ test("oversized output is bounded and flags truncation", async () => {
   });
 });
 
-// Regression: `dbz dev`/`dbz start` run with telemetry enabled, where dbzz
+// Regression: `dbzz dev`/`dbzz start` run with telemetry enabled, where dbzz
 // times reads with performance.now(). just-bash's sandbox blocks that global
 // during exec(), so files must be materialized BEFORE the shell runs — lazy
 // providers die here with a SecurityViolationError surfaced as ENOENT.

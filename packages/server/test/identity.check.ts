@@ -36,7 +36,7 @@ export const _writeOwnedRow = typedMutation({
     if (ctx.auth.kind !== "user") throw new Error("user required");
     const identity: Identity = ctx.auth.identity;
     // @ts-expect-error internal framework tables never enter the generated application database surface
-    void ctx.db._dbz_identities;
+    void ctx.db._dbzz_identities;
     return ctx.db.owned.insert({ userId: identity, value: args.value });
   },
 });

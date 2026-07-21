@@ -297,8 +297,8 @@ async function link(harness: Harness, principal: UserPrincipal, token: string): 
 
 function directoryCounts(engine: Engine): { identities: bigint; accounts: bigint; owned: bigint } {
   return engine.writer.query(`SELECT
-    (SELECT COUNT(*) FROM _dbz_identities) AS identities,
-    (SELECT COUNT(*) FROM _dbz_identity_accounts) AS accounts,
+    (SELECT COUNT(*) FROM _dbzz_identities) AS identities,
+    (SELECT COUNT(*) FROM _dbzz_identity_accounts) AS accounts,
     (SELECT COUNT(*) FROM owned) AS owned`).get() as {
       identities: bigint;
       accounts: bigint;
@@ -422,7 +422,7 @@ describe("transactional external-account unlinking", () => {
     });
 
     harness.engine.writer.exec(`CREATE TEMP TRIGGER fail_identity_unlink
-      AFTER DELETE ON _dbz_identity_accounts
+      AFTER DELETE ON _dbzz_identity_accounts
       WHEN OLD.issuer = '${ROLLBACK_ISSUER}'
       BEGIN
         SELECT RAISE(FAIL, 'forced identity unlink failure');

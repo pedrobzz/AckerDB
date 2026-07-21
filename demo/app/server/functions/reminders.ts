@@ -1,6 +1,6 @@
 import { v } from "@dbzz/server";
 import { mutation } from "@demo/dbzz-codegen/server";
-import { itemStatus } from "../schema.ts";
+import { itemStatus } from "../app.ts";
 
 export const fire = mutation({
   access: "system",

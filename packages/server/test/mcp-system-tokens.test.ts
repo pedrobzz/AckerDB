@@ -332,7 +332,7 @@ describe("system-managed MCP integration tokens", () => {
 
     const secret = created.token.split(".")[2]!;
     const stored = engine.reader.query(
-      "SELECT identity, mcp, secret_digest FROM _dbz_mcp_tokens WHERE token_id = ?",
+      "SELECT identity, mcp, secret_digest FROM _dbzz_mcp_tokens WHERE token_id = ?",
     ).get(created.id) as { identity: bigint; mcp: string; secret_digest: Uint8Array };
     expect(stored.identity).toBe(bob.identity);
     expect(stored.mcp).toBe("agent");
@@ -401,7 +401,7 @@ describe("system-managed MCP integration tokens", () => {
       args: {},
       principal: delegated,
     })).rejects.toMatchObject({ code: "unauthorized" });
-    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens").get())
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens").get())
       .toEqual({ count: 1n });
   });
 
@@ -458,7 +458,7 @@ describe("system-managed MCP integration tokens", () => {
       scopes: ["orders.create"],
     });
     await expect(runtime.runScheduled(at)).rejects.toMatchObject({ code: "validation" });
-    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _dbz_mcp_tokens").get())
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens").get())
       .toEqual({ count: 0n });
   });
 });
