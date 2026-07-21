@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@ai-sdk/react": "4.0.34",
-    "@dbzz/client-react": "0.6.0-beta.1",
+    "@dbzz/client-react": "0.6.0",
     "@demo/dbzz-codegen": "workspace:*",
     "@tanstack/react-router": "1.170.18",
     "@tanstack/react-start": "1.168.28",
