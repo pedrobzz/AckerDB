@@ -23,6 +23,7 @@ export {
   type PluginProcedureCtx,
   type PluginQueryCtx,
 } from "./plugins/definition.ts";
+export { pluginValidator } from "./plugins/validator.ts";
 export {
   v,
   ValidationError,

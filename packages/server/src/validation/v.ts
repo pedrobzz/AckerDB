@@ -105,7 +105,7 @@ const I64_MAX = 2n ** 63n - 1n;
 
 type ModifierMode = "available" | "blocked" | "none";
 
-function makeValidator<
+export function makeValidator<
   T,
   K extends string,
   Extra extends object = object,

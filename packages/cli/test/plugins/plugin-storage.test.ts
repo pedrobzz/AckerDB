@@ -152,8 +152,6 @@ describe("Plugin storage CLI boundary", () => {
       currentFingerprint: "a".repeat(64),
       targetFingerprint: "b".repeat(64),
       plan: {
-        currentSchema: "old",
-        targetSchema: "new",
         applied: ["entries: index added"],
         refusals: [{ table: "entries", column: "value", reason: "column-type-changed", question: "existing values need conversion" }],
       },

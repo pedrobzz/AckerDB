@@ -1,10 +1,9 @@
-import type { StandardValidator } from "@dbzz/server";
+import { pluginValidator, type StandardValidator } from "@dbzz/server";
 import { InvalidCacheExpirationError } from "../storage/errors.ts";
 import {
   isCacheStoreDefinition,
   type CacheStoreDefinition,
 } from "../storage/store.ts";
-import { isStandardValidator } from "./validators.ts";
 
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_ENTRY_BYTES = 1024 * 1024;
@@ -64,11 +63,6 @@ export interface NormalizedExternalConfig {
   readonly store: CacheStoreDefinition;
 }
 
-export interface RuntimeSetOptions {
-  readonly expiresInMs?: number;
-  readonly if?: "missing" | "present";
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
@@ -92,7 +86,7 @@ function normalizeNamespaces(value: unknown): CacheNamespaces | undefined {
     if (!IDENTIFIER.test(name)) {
       throw new TypeError(`cache namespace "${name}" must be an identifier`);
     }
-    if (!isStandardValidator(candidate)) {
+    if (!pluginValidator.is(candidate)) {
       throw new TypeError(`cache namespace "${name}" must be a StandardValidator`);
     }
     let admitsUndefined = true;
@@ -165,7 +159,7 @@ export function normalizeConfig(
   });
 }
 
-export function normalizeSetOptions(value: unknown): RuntimeSetOptions {
+export function normalizeSetOptions(value: unknown): CacheSetOptions {
   if (value === undefined) return {};
   if (!isPlainObject(value)) {
     throw new TypeError("cache set options must be a plain object");

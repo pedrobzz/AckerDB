@@ -1,7 +1,7 @@
 import type { PluginProcedureCtx, StandardValidator } from "@dbzz/server";
 import {
+  type CacheSetOptions,
   type NormalizedExternalConfig,
-  type RuntimeSetOptions,
 } from "../plugin/config.ts";
 import { CacheStoreError } from "./errors.ts";
 import { encodeCacheKey, type CacheKey } from "./key.ts";
@@ -48,7 +48,7 @@ export async function externalSet(
   namespace: string,
   key: CacheKey,
   payload: string,
-  options: RuntimeSetOptions | undefined,
+  options: CacheSetOptions | undefined,
 ): Promise<boolean> {
   const encodedKey = encodeCacheKey(config.store.keyPrefix, ctx.mount, namespace, key);
   try {

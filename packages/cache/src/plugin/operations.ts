@@ -1,6 +1,7 @@
 import {
   pluginMutation,
   pluginProcedure,
+  pluginValidator,
   v,
   type PluginBuilders,
   type PluginExportTree,
@@ -18,21 +19,16 @@ import { assertCacheKey, type CacheKey } from "../storage/key.ts";
 import { encodeCacheValue } from "../storage/payload.ts";
 import { cacheSchema, externalCacheSchema } from "./schema.ts";
 import type { CacheStoreHandle } from "../storage/store.ts";
-import {
-  normalizingValidator,
-  opaqueValidator,
-  optionalValidator,
-} from "./validators.ts";
 
 type EmptyDependencies = Readonly<Record<never, never>>;
 
-const keyValidator = opaqueValidator<CacheKey>((value) => assertCacheKey(value));
-const optionsValidator = optionalValidator(normalizingValidator(
-  opaqueValidator<CacheSetOptions>(),
+const keyValidator = pluginValidator.opaque<CacheKey>((value) => assertCacheKey(value));
+const optionsValidator = pluginValidator.optional(pluginValidator.normalize(
+  pluginValidator.opaque<CacheSetOptions>(),
   normalizeSetOptions,
 ));
-const uncheckedValueValidator = opaqueValidator<unknown>();
-const uncheckedResultValidator = optionalValidator(opaqueValidator<unknown>());
+const uncheckedValueValidator = pluginValidator.opaque<unknown>();
+const uncheckedResultValidator = pluginValidator.optional(pluginValidator.opaque<unknown>());
 
 function namespaceTree(
   namespaces: Readonly<Record<string, StandardValidator<unknown, string>>> | undefined,
@@ -52,7 +48,7 @@ export function mutationExports(
   config: NormalizedBuiltInConfig,
 ): PluginExportTree {
   return namespaceTree(config.namespaces, (namespace, validator) => {
-    const payloadValidator = normalizingValidator(
+    const payloadValidator = pluginValidator.normalize(
       validator ?? uncheckedValueValidator,
       encodeCacheValue,
     );
@@ -62,7 +58,7 @@ export function mutationExports(
           args: { key: keyValidator },
           returns: validator === undefined
             ? uncheckedResultValidator
-            : optionalValidator(validator),
+            : pluginValidator.optional(validator),
           expose: (call) => (key: CacheKey) => call({ key }),
         }),
         (ctx, args) => builtinGet(ctx, namespace, validator, args.key),
@@ -98,7 +94,7 @@ export function procedureExports(
   currentHandle: () => CacheStoreHandle | undefined,
 ): PluginExportTree {
   return namespaceTree(config.namespaces, (namespace, validator) => {
-    const payloadValidator = normalizingValidator(
+    const payloadValidator = pluginValidator.normalize(
       validator ?? uncheckedValueValidator,
       encodeCacheValue,
     );
@@ -108,7 +104,7 @@ export function procedureExports(
           args: { key: keyValidator },
           returns: validator === undefined
             ? uncheckedResultValidator
-            : optionalValidator(validator),
+            : pluginValidator.optional(validator),
           expose: (call) => (key: CacheKey) => call({ key }),
         }),
         (ctx, args) => externalGet(ctx, config, currentHandle(), namespace, validator, args.key),

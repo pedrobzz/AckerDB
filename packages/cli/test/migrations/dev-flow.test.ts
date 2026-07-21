@@ -59,8 +59,6 @@ const pluginWire = (
         currentFingerprint,
         targetFingerprint,
         plan: {
-          currentSchema: "current",
-          targetSchema: "target",
           applied: [],
           refusals: [{ table: "entries", reason: "table-dropped", question: "existing rows would be lost" }],
         },
@@ -74,8 +72,6 @@ const pluginWire = (
         currentFingerprint,
         targetFingerprint,
         plan: {
-          currentSchema: "current",
-          targetSchema: null,
           applied: [],
           refusals: [],
         },

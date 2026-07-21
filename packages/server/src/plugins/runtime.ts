@@ -142,10 +142,6 @@ function cleanupFailure(errors: readonly unknown[]): unknown | undefined {
     : new AggregateError(errors, "One or more Plugin cleanups failed");
 }
 
-function canCall(caller: PluginOperationKind, operation: PluginOperationKind): boolean {
-  return (OPERATION_CALLERS[operation] & CALLER_BIT[caller]) !== 0;
-}
-
 function exposedCall(
   spec: AnyPluginOperationSpec,
   canonical: (args: unknown) => Promise<unknown>,
@@ -385,11 +381,8 @@ export class PluginRuntime {
     const entries: PlannedEntry[] = [];
     for (const [name, requirement] of Object.entries(contract)) {
       const operationPath = `${path}.${name}`;
-      const implementation = exports[name];
+      const implementation = exports[name]!;
       if (isPluginOperationSpec(requirement)) {
-        if (!isPluginOperationImplementation(implementation)) {
-          throw new TypeError(`${operationPath} provider operation is unavailable`);
-        }
         entries.push(Object.freeze({
           name,
           node: Object.freeze({
@@ -397,22 +390,16 @@ export class PluginRuntime {
             callers: OPERATION_CALLERS[requirement.kind],
             instance: provider,
             contract: requirement,
-            implementation,
+            implementation: implementation as AnyPluginOperationImplementation,
             path: operationPath,
           }),
         }));
         continue;
       }
-      if (
-        implementation === undefined ||
-        isPluginOperationImplementation(implementation)
-      ) {
-        throw new TypeError(`${operationPath} provider namespace is unavailable`);
-      }
       const nested = this.planContractTree(
         provider,
         requirement,
-        implementation,
+        implementation as PluginExportTree,
         operationPath,
       );
       if (nested !== undefined) entries.push(Object.freeze({ name, node: nested }));
@@ -429,10 +416,6 @@ export class PluginRuntime {
       instance.dependencies as PluginDependencyContracts,
     )) {
       const provider = instance.providers[slot]!;
-      const providerMount = this.mountOf.get(provider);
-      if (providerMount === undefined) {
-        throw new TypeError(`Plugin "${mount}" dependency "${slot}" is not mounted`);
-      }
       const capability = this.planContractTree(
         provider,
         contract,
@@ -488,36 +471,18 @@ export class PluginRuntime {
     binding: InvocationBinding,
     path: string,
   ): (...args: unknown[]) => Promise<unknown> {
-    if (implementation.spec.kind !== contract.kind) {
-      throw new TypeError(
-        `${path} provider is ${implementation.spec.kind}, expected ${contract.kind}`,
-      );
-    }
     const canonical = (rawArgs: unknown): Promise<unknown> =>
-      this.invokeOperation(instance, contract, implementation, binding, rawArgs, path);
+      this.invokeOperation(instance, implementation, binding, rawArgs);
     return exposedCall(contract, canonical, path);
   }
 
   private invokeOperation(
     instance: AnyPluginInstance,
-    contract: AnyPluginOperationSpec,
     implementation: AnyPluginOperationImplementation,
     binding: InvocationBinding,
     rawArgs: unknown,
-    path: string,
   ): Promise<unknown> {
-    if (implementation.spec.kind !== contract.kind) {
-      return Promise.reject(new TypeError(
-        `${path} provider changed kind from ${contract.kind} to ${implementation.spec.kind}`,
-      ));
-    }
-    if (!canCall(binding.kind, contract.kind)) {
-      return Promise.reject(new TypeError(
-        `${path} ${contract.kind} cannot run from a Plugin ${binding.kind} boundary`,
-      ));
-    }
-
-    if (binding.kind === "procedure" && contract.kind === "query") {
+    if (binding.kind === "procedure" && implementation.spec.kind === "query") {
       return binding.value.runQuery((execution) => this.invokeValidated(
         instance,
         implementation,
@@ -525,7 +490,7 @@ export class PluginRuntime {
         rawArgs,
       ));
     }
-    if (binding.kind === "procedure" && contract.kind === "mutation") {
+    if (binding.kind === "procedure" && implementation.spec.kind === "mutation") {
       return binding.value.runMutation((execution) => this.invokeValidated(
         instance,
         implementation,

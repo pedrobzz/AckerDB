@@ -3,6 +3,7 @@ import type { DbReader, DbWriter } from "../database/types.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import { compareCodeUnits } from "../shared/ordering.ts";
 import { isPluginDefinitionId, isPluginIdentifier } from "./identifiers.ts";
+import { isStandardValidator } from "./validator.ts";
 import { isSchema, type Schema } from "../schema/definition.ts";
 import { canonicalSchemaSnapshot } from "../schema/snapshot.ts";
 import {
@@ -103,19 +104,6 @@ function assertIdentifier(name: string, path: string): void {
   if (!isPluginIdentifier(name)) {
     throw new TypeError(`${path} "${name}" must be an identifier`);
   }
-}
-
-function isStandardValidator(
-  value: unknown,
-): value is StandardValidator<unknown, string> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { kind?: unknown }).kind === "string" &&
-    typeof (value as { check?: unknown }).check === "function" &&
-    typeof (value as { tsType?: unknown }).tsType === "function" &&
-    typeof (value as { descriptor?: unknown }).descriptor === "function"
-  );
 }
 
 function normalizedDescriptor(value: unknown, path: string): Descriptor {

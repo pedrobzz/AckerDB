@@ -2,8 +2,8 @@ import type { PluginMutationCtx, StandardValidator } from "@dbzz/server";
 import {
   expirationDeadline,
   isLive,
+  type CacheSetOptions,
   type NormalizedBuiltInConfig,
-  type RuntimeSetOptions,
 } from "../plugin/config.ts";
 import { CacheEntryTooLargeError, CacheStoreError } from "./errors.ts";
 import { encodeCacheKey, utf8Bytes, type CacheKey } from "./key.ts";
@@ -33,7 +33,7 @@ export async function builtinSet(
   namespace: string,
   key: CacheKey,
   payload: string,
-  options: RuntimeSetOptions | undefined,
+  options: CacheSetOptions | undefined,
 ): Promise<boolean> {
   const expiresAt = expirationDeadline(ctx.timestamp, options?.expiresInMs);
   const encodedKey = encodeCacheKey("", ctx.mount, namespace, key);

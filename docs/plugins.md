@@ -115,6 +115,14 @@ For an injected call, the dependency contract owns that caller-facing adapter
 and proves descriptor compatibility; the provider's own matching validator
 performs runtime validation and normalization before its handler runs.
 
+Plugin packages that need a private normalized handler value can compose the
+declared validator with `pluginValidator.normalize(...)`. Its input type,
+descriptor, and dependency compatibility stay canonical while only the Plugin
+handler sees the normalized result. `pluginValidator.opaque(...)` and
+`pluginValidator.optional(...)` cover values that are intentionally outside
+the application schema DSL; Plugin packages should prefer ordinary `v`
+validators whenever no private normalization is needed.
+
 ## Direct context capabilities
 
 Code generation reads `app.ts` and adds legal mounts directly to generated

@@ -40,8 +40,6 @@ export function desiredPluginMounts(app: App): DesiredPluginMounts {
 }
 
 export interface NormalizedPluginStoragePlan {
-  readonly currentSchema: string | null;
-  readonly targetSchema: string | null;
   readonly applied: readonly string[];
   readonly refusals: readonly Readonly<SchemaRefusal>[];
 }
@@ -172,14 +170,10 @@ function normalizedRefusals(refusals: readonly SchemaRefusal[]): readonly Readon
 }
 
 function normalizedPlan(
-  current: StoredPluginStorage | undefined,
-  target: DesiredMount | undefined,
   plan?: SchemaPlan,
   refusals: readonly SchemaRefusal[] = plan?.refusals ?? [],
 ): NormalizedPluginStoragePlan {
   return Object.freeze({
-    currentSchema: current?.encodedSnapshot ?? null,
-    targetSchema: target?.normalized.encoded ?? null,
     applied: Object.freeze([...(plan?.applied ?? [])]),
     refusals: normalizedRefusals(refusals),
   });
@@ -200,7 +194,7 @@ function resetRequirement(
     targetDefinitionId: target.definitionId,
     currentFingerprint: stateFingerprint(current.mount, current.definitionId, current.encodedSnapshot),
     targetFingerprint: stateFingerprint(target.mount, target.definitionId, target.normalized.encoded),
-    plan: normalizedPlan(current, target, plan, refusals),
+    plan: normalizedPlan(plan, refusals),
   });
 }
 
@@ -213,7 +207,7 @@ function dropRequirement(current: StoredPluginStorage): PluginStorageDropRequire
     targetDefinitionId: null,
     currentFingerprint: stateFingerprint(current.mount, current.definitionId, current.encodedSnapshot),
     targetFingerprint: stateFingerprint(current.mount, null, null),
-    plan: normalizedPlan(current, undefined),
+    plan: normalizedPlan(),
   });
 }
 
@@ -376,8 +370,6 @@ export function resetPluginStorage(
   ) {
     throw new Error(`stale Plugin storage consent for mount "${requirement.mount}"`);
   }
-  assertCurrentConsent(readStoredPluginInventory(engine.writer).get(requirement.mount), requirement);
-
   engine.writer.exec("BEGIN IMMEDIATE");
   try {
     const current = assertCurrentConsent(
@@ -413,8 +405,6 @@ export function dropPluginStorage(
   if (requirement.targetFingerprint !== stateFingerprint(requirement.mount, null, null)) {
     throw new Error(`stale Plugin storage consent for mount "${requirement.mount}"`);
   }
-  assertCurrentConsent(readStoredPluginInventory(engine.writer).get(requirement.mount), requirement);
-
   engine.writer.exec("BEGIN IMMEDIATE");
   try {
     const current = assertCurrentConsent(
