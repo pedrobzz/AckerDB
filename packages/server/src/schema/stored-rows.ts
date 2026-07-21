@@ -5,8 +5,8 @@
  */
 import type { Database } from "bun:sqlite";
 import { decode } from "@dbzz/core";
-import type { Descriptor } from "../v.ts";
-import type { TableSnapshot } from "../snapshot.ts";
+import type { Descriptor } from "../validation/v.ts";
+import type { TableSnapshot } from "./snapshot.ts";
 import { scalarDecoder } from "./descriptor-kinds.ts";
 
 const quote = (name: string) => `"${name}"`;

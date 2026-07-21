@@ -8,12 +8,12 @@ export {
   type CacheSetOptions,
   type ExternalNamespacedCacheOptions,
   type ExternalUncheckedCacheOptions,
-} from "./plugin.ts";
+} from "./plugin/definition.ts";
 export {
   CacheEntryTooLargeError,
   CacheStoreError,
   InvalidCacheExpirationError,
-} from "./errors.ts";
+} from "./storage/errors.ts";
 export {
   defineCacheStore,
   type CacheStoreDefinition,
@@ -21,5 +21,5 @@ export {
   type CacheStoreOpenContext,
   type CacheStoreRequest,
   type CacheStoreSetRequest,
-} from "./store.ts";
-export type { CacheKey } from "./key.ts";
+} from "./storage/store.ts";
+export type { CacheKey } from "./storage/key.ts";

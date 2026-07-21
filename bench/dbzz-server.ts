@@ -12,8 +12,8 @@ import {
   type TelemetryExporter,
   type TelemetryRecord,
 } from "@dbzz/server";
-import { importApp, importFunctionModules } from "../packages/cli/src/manifest.ts";
-import { loadConfig } from "../packages/cli/src/config.ts";
+import { importApp, importFunctionModules } from "../packages/cli/src/app/manifest.ts";
+import { loadConfig } from "../packages/cli/src/app/config.ts";
 import {
   benchmarkProfileFromConfig,
   expectedDbzzStartupMode,

@@ -18,8 +18,8 @@
  * the reconcile entry back.
  */
 import type { Database } from "bun:sqlite";
-import type { Engine } from "../../engine.ts";
-import { snapshotOf } from "../../snapshot.ts";
+import type { Engine } from "../../database/engine.ts";
+import { snapshotOf } from "../snapshot.ts";
 import { planAndReconcile } from "../planner.ts";
 import { applyStep } from "./apply.ts";
 import { migrationIdentity, MigrationError, stepLabel, type MigrationStep } from "./types.ts";

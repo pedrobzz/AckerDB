@@ -9,7 +9,7 @@ import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { AppliedMigrationRow, SchemaSnapshot } from "@dbzz/server";
-import type { AppConfig } from "../config.ts";
+import type { AppConfig } from "../app/config.ts";
 
 export interface StoredState {
   /** The snapshot the database last committed — the pre-state new migrations sit on. */

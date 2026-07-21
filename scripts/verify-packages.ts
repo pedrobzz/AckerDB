@@ -47,8 +47,8 @@ async function main(): Promise<void> {
     const serverManifest = readManifest(
       join(consumerDir, "node_modules/@dbzz/server/package.json"),
     );
-    if (serverManifest.exports?.["./mcp"] !== "./src/mcp.ts") {
-      throw new Error("packed @dbzz/server does not expose ./mcp from ./src/mcp.ts");
+    if (serverManifest.exports?.["./mcp"] !== "./src/mcp/index.ts") {
+      throw new Error("packed @dbzz/server does not expose ./mcp from ./src/mcp/index.ts");
     }
     if (serverManifest.dependencies?.["@modelcontextprotocol/sdk"] !== "1.29.0") {
       throw new Error("packed @dbzz/server must pin @modelcontextprotocol/sdk exactly to 1.29.0");
@@ -68,8 +68,8 @@ async function main(): Promise<void> {
     );
     for (const [subpath, target] of Object.entries({
       ".": "./src/index.ts",
-      "./redis": "./src/redis.ts",
-      "./upstash": "./src/upstash.ts",
+      "./redis": "./src/adapters/redis.ts",
+      "./upstash": "./src/adapters/upstash.ts",
     })) {
       if (cacheManifest.exports?.[subpath] !== target) {
         throw new Error(`packed @dbzz/cache does not expose ${subpath} from ${target}`);
@@ -207,7 +207,7 @@ if (customStoreOpens !== 0 || upstashRequests !== 0) {
 
     await runCommand([
       process.execPath,
-      join(consumerDir, "node_modules/@dbzz/cli/src/main.ts"),
+      join(consumerDir, "node_modules/@dbzz/cli/src/commands/main.ts"),
       "codegen",
       consumerDir,
     ], consumerDir, {

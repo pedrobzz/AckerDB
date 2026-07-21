@@ -4,7 +4,7 @@ export {
   type App,
   type AppPluginCapabilities,
   type AppSchema,
-} from "./app.ts";
+} from "./app/definition.ts";
 export {
   assemblePlugins,
   definePlugin,
@@ -22,7 +22,7 @@ export {
   type PluginOperationSpec,
   type PluginProcedureCtx,
   type PluginQueryCtx,
-} from "./plugins.ts";
+} from "./plugins/definition.ts";
 export {
   v,
   ValidationError,
@@ -52,7 +52,7 @@ export {
   type UnionMembers,
   type UnionValue,
   type UnionNamespace,
-} from "./v.ts";
+} from "./validation/v.ts";
 export {
   CorruptDatabaseError,
   Engine,
@@ -67,10 +67,10 @@ export {
   type IntegrityReport,
   type TablePlan,
   type TagMap,
-} from "./engine.ts";
-export { restoreVerifiedDatabase } from "./restore.ts";
-export { resetDatabase, type DatabaseResetResult } from "./storage-reset.ts";
-export { DatabaseAlreadyOpenError } from "./storage-ownership.ts";
+} from "./database/engine.ts";
+export { restoreVerifiedDatabase } from "./database/restore.ts";
+export { resetDatabase, type DatabaseResetResult } from "./database/reset.ts";
+export { DatabaseAlreadyOpenError } from "./database/ownership.ts";
 export {
   desiredPluginMounts,
   dropPluginStorage,
@@ -79,10 +79,10 @@ export {
   resetPluginStorage,
   type DesiredPluginMounts,
   type PluginStorageRequirement,
-} from "./plugin-storage.ts";
-export { PluginRuntime } from "./plugin-runtime.ts";
+} from "./plugins/storage.ts";
+export { PluginRuntime } from "./plugins/runtime.ts";
 export type { DurabilityPolicy } from "@dbzz/core";
-export type { TransportSource } from "./caller.ts";
+export type { TransportSource } from "./runtime/caller.ts";
 export {
   makeDbReader,
   makeDbWriter,
@@ -94,8 +94,8 @@ export {
   type EventEmit,
   type DbStatementObservation,
   type DbStatementObserver,
-} from "./db.ts";
-export { idKey, ixKey, scanKey, emitWriteKeys } from "./keys.ts";
+} from "./database/access.ts";
+export { idKey, ixKey, scanKey, emitWriteKeys } from "./database/keys.ts";
 export type {
   DbReader,
   DbWriter,
@@ -111,8 +111,8 @@ export type {
   EqValue,
   RangeValue,
   Upsert,
-} from "./dbtypes.ts";
-export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./snapshot.ts";
+} from "./database/types.ts";
+export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./schema/snapshot.ts";
 export {
   probeOptimisticChanges,
   probeUniqueIndex,
@@ -187,15 +187,15 @@ export {
   type VerifiedCredential,
   type VerifiedUserCredential,
   type WorkloadPrincipal,
-} from "./auth.ts";
-export { assertCredentialVerifier } from "./auth-lease.ts";
+} from "./auth/credentials.ts";
+export { assertCredentialVerifier } from "./auth/lease.ts";
 export {
   DbzzError,
   isDbzzError,
   type DbzzErrorCode,
   type DbzzErrorOptions,
   type ResourceClass,
-} from "./errors.ts";
+} from "./shared/errors.ts";
 export {
   PRODUCTION_LIMITS,
   defineServiceLimits,
@@ -203,7 +203,7 @@ export {
   type QueueLimits,
   type ServiceLimits,
   type TelemetryLimits,
-} from "./limits.ts";
+} from "./runtime/limits.ts";
 export {
   captureTelemetryLink,
   Telemetry,
@@ -241,8 +241,8 @@ export {
   type TelemetrySpanRecord,
   type TelemetryStage,
   type TelemetryTraceContext,
-} from "./telemetry.ts";
-export { invokeFunction, type InvocationContext } from "./invocation.ts";
+} from "./telemetry/telemetry.ts";
+export { invokeFunction, type InvocationContext } from "./app/invocation.ts";
 export {
   query,
   mutation,
@@ -270,7 +270,7 @@ export {
   type SseCtx,
   type SseSource,
   type TxCtx,
-} from "./functions.ts";
+} from "./app/functions.ts";
 export {
   createMcp,
   isMcpDeclaration,
@@ -329,7 +329,7 @@ export {
   type RegisteredMcpTools,
   type ScopedCustomMcpConfig,
   type ScopedDefaultMcpConfig,
-} from "./mcp.ts";
+} from "./mcp/index.ts";
 export {
   type StandardJsonCodec,
   type StandardJsonInput,
@@ -340,8 +340,8 @@ export {
   type StandardSchemaOptions,
   type StandardSchemaProperties,
   type StandardSchemaResult,
-} from "./standard-schema.ts";
-export { Registry } from "./registry.ts";
+} from "./validation/standard-schema.ts";
+export { Registry } from "./app/registry.ts";
 export {
   BoundedSseProducer,
   OutboundBudget,
@@ -362,7 +362,7 @@ export {
   type WebSocketDeliverySnapshot,
   type WebSocketDeliverySocket,
   type WebSocketSessionSinkOptions,
-} from "./delivery.ts";
+} from "./realtime/delivery.ts";
 export {
   OrderedReactive,
   ReactiveCommit,
@@ -382,7 +382,7 @@ export {
   type ReactiveObserver,
   type ReactiveSnapshot,
   type Subscriber,
-} from "./reactive.ts";
+} from "./realtime/reactive.ts";
 export {
   prepareRuntimePublication,
   Session,
@@ -401,7 +401,7 @@ export {
   type SessionSnapshot,
   type SessionWireFrame,
   type SubscriptionServerMessage,
-} from "./session.ts";
+} from "./realtime/session.ts";
 export {
   Runtime,
   type RuntimeHookContext,
@@ -416,7 +416,7 @@ export {
   type RuntimeSseRequest,
   type RuntimeSseResponse,
   type RuntimeStatus,
-} from "./runtime.ts";
+} from "./runtime/runtime.ts";
 export {
   DbzzServer,
   serve,
@@ -426,7 +426,7 @@ export {
   type DbzzStartupPhase,
   type McpHttpOptions,
   type ServeOptions,
-} from "./serve.ts";
+} from "./transport/server.ts";
 export {
   defineTable,
   defineEventTable,
@@ -451,4 +451,4 @@ export {
   type RowOf,
   type EventArgsOf,
   type EventSubscriptionDefinition,
-} from "./schema.ts";
+} from "./schema/definition.ts";

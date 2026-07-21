@@ -11,8 +11,8 @@
  * snapshot against the target without ever opening a database.
  */
 import type { Database } from "bun:sqlite";
-import type { Descriptor } from "../../v.ts";
-import type { SchemaSnapshot, TableSnapshot } from "../../snapshot.ts";
+import type { Descriptor } from "../../validation/v.ts";
+import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
 import { namedOf } from "../diff.ts";
 import { MigrationError, type Migration } from "./types.ts";
 

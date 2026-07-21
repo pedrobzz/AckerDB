@@ -321,7 +321,7 @@ This is the smallest complete slice that fixes the root type-model defect. Chang
 
 ### Implementation notes
 
-- Likely surfaces include `packages/server/src/functions.ts`, server invocation/delivery, `packages/core/src/refs.ts`, `packages/cli/src/codegen.ts`, `packages/client`, and the new React hook.
+- Likely surfaces include `packages/server/src/app/functions.ts`, server invocation/delivery, `packages/core/src/refs.ts`, `packages/cli/src/app/codegen.ts`, `packages/client`, and the new React hook.
 - This is an approved breaking correction; do not retain a compatibility overload for the incorrect completion-type model.
 - Preserve the current acknowledgement protocol and high-water behavior.
 - At the release version, run the one full Hetzner benchmark against the

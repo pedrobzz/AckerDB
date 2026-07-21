@@ -13,8 +13,8 @@ import {
   validateHistoryPrefix,
   type Renames,
 } from "@dbzz/server";
-import { importApp } from "../manifest.ts";
-import type { AppConfig } from "../config.ts";
+import { importApp } from "../app/manifest.ts";
+import type { AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths, MIGRATION_NAME } from "./load.ts";
 import { planFingerprint, probeOptimisticRefusals, readStoredState } from "./plan.ts";
 import { generateMigration } from "./scaffold.ts";

@@ -1,7 +1,7 @@
 import { decode, encode } from "@dbzz/core";
-import type { Descriptor } from "../v.ts";
-import { validateConstraintDescriptor } from "../validator-constraints.ts";
-import { ValidationError } from "../validation-error.ts";
+import type { Descriptor } from "../validation/v.ts";
+import { validateConstraintDescriptor } from "../validation/constraints.ts";
+import { ValidationError } from "../validation/error.ts";
 
 type DescriptorRole = "column" | "nested" | "union-member";
 

@@ -50,7 +50,7 @@
       "name": "@dbzz/cli",
       "version": "0.6.0",
       "bin": {
-        "dbzz": "./src/main.ts",
+        "dbzz": "./src/commands/main.ts",
       },
       "dependencies": {
         "@dbzz/core": "workspace:0.6.0",

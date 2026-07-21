@@ -31,8 +31,8 @@
  */
 import type { Database } from "bun:sqlite";
 import { decode, encode } from "@dbzz/core";
-import { ValidationError, type Descriptor } from "../../v.ts";
-import { compareCodeUnits } from "../../ordering.ts";
+import { ValidationError, type Descriptor } from "../../validation/v.ts";
+import { compareCodeUnits } from "../../shared/ordering.ts";
 import { checkDescriptor, scalarDecoder, scalarEncoder } from "../descriptor-kinds.ts";
 import {
   compileReadProjection,
@@ -41,10 +41,10 @@ import {
   type Engine,
   type PhysicalTablePlan,
   type TagMap,
-} from "../../engine.ts";
+} from "../../database/engine.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
 import { constraintDirection, diffSnapshots, namedOf, unwrapDesc } from "../diff.ts";
-import type { SchemaSnapshot, TableSnapshot } from "../../snapshot.ts";
+import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
 import { SchemaPlanner, UnsafeSchemaChange, verifyPlanProbes } from "../planner.ts";
 import {
   buildStoredTable as buildOldTable,

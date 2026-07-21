@@ -22,7 +22,7 @@ import {
   type PluginApplyResult,
   type PluginPlanWire,
   type PluginStorageConsent,
-} from "../plugin-storage.ts";
+} from "../plugins/storage.ts";
 
 /** What a `__generate` child reports: the artifacts it wrote, or a consent gone stale. */
 export type GenerateResult = { written: string[] } | { stale: true };

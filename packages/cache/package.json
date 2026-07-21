@@ -7,8 +7,8 @@
   ],
   "exports": {
     ".": "./src/index.ts",
-    "./redis": "./src/redis.ts",
-    "./upstash": "./src/upstash.ts"
+    "./redis": "./src/adapters/redis.ts",
+    "./upstash": "./src/adapters/upstash.ts"
   },
   "dependencies": {
     "@dbzz/core": "workspace:0.6.0",

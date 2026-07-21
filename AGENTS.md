@@ -5,6 +5,19 @@ Before researching external knowledge or working with a third-party package, alw
 Standing rules for every change. Terms are defined in `CONTEXT.md`
 (Engineering philosophy)—use those names; do not redefine them here.
 
+### Organize every touched neighborhood
+
+Whenever you create or modify a file, inspect its sibling directory
+before finishing. If the touched file or its siblings mix unrelated ownership
+or remain flattened without an obvious module home, organize that neighborhood
+into cohesive domain folders in the same change. A change is not complete while
+the neighborhood it touched is still disorganized.
+
+Folders must represent real module ownership. Do not create one-file wrapper
+folders, barrel-only indirection, or pass-through files merely to make a tree
+look nested. Keep package entrypoints explicit and place implementation files
+beside the behavior, invariants, and tests they belong to.
+
 ### Target and scale
 
 Optimize for the default deployment envelope under the design load: smooth

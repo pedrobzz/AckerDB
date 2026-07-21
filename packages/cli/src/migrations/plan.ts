@@ -40,8 +40,8 @@ import {
   type SchemaSnapshot,
   type TableChange,
 } from "@dbzz/server";
-import { importApp } from "../manifest.ts";
-import type { AppConfig } from "../config.ts";
+import { importApp } from "../app/manifest.ts";
+import type { AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
 import { readStoredState } from "./stored.ts";
 

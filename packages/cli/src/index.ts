@@ -1,5 +1,5 @@
-export { loadConfig, type AppConfig, type AuthenticationConfig } from "./config.ts";
-export { runCodegen, type CodegenResult } from "./codegen.ts";
+export { loadConfig, type AppConfig, type AuthenticationConfig } from "./app/config.ts";
+export { runCodegen, type CodegenResult } from "./app/codegen.ts";
 export {
   generateMigration,
   GenerateError,
@@ -12,13 +12,13 @@ export {
   type RunningApp,
   type StartAppOptions,
   type StartupPreparation,
-} from "./app.ts";
+} from "./app/start.ts";
 export {
   importApp,
   importFunctionModules,
   listFunctionModules,
   type FunctionModuleFile,
-} from "./manifest.ts";
+} from "./app/manifest.ts";
 export {
   computePlan,
   deriveSlug,

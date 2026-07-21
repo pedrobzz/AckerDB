@@ -8,10 +8,10 @@ import {
   type QueryMessage,
   type SubscribeMessage,
 } from "@dbzz/core";
-import type { CredentialVerifier, UserPrincipal } from "../../src/auth.ts";
-import { callerFairnessKey } from "../../src/caller.ts";
-import { v } from "../../src/v.ts";
-import { Engine } from "../../src/engine.ts";
+import type { CredentialVerifier, UserPrincipal } from "../../src/auth/credentials.ts";
+import { callerFairnessKey } from "../../src/runtime/caller.ts";
+import { v } from "../../src/validation/v.ts";
+import { Engine } from "../../src/database/engine.ts";
 import {
   mutation,
   procedure,
@@ -20,24 +20,24 @@ import {
   type MutationCtx,
   type ProcedureBuilder,
   type QueryBuilder,
-} from "../../src/functions.ts";
-import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/limits.ts";
+} from "../../src/app/functions.ts";
+import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {
   createMcp,
   mcpTool,
   type McpBuilder,
   type McpToolBuilder,
-} from "../../src/mcp.ts";
+} from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
-import { Registry } from "../../src/registry.ts";
-import { Runtime, type RuntimeOptions } from "../../src/runtime.ts";
-import { defineSchema, defineTable } from "../../src/schema.ts";
+import { Registry } from "../../src/app/registry.ts";
+import { Runtime, type RuntimeOptions } from "../../src/runtime/runtime.ts";
+import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import type {
   RuntimePublication,
   RuntimeRequest,
   SessionApplicationMessage,
   SessionRuntimeContext,
-} from "../../src/session.ts";
+} from "../../src/realtime/session.ts";
 
 const schema = defineSchema({
   records: defineTable({

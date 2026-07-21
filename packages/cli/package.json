@@ -6,7 +6,7 @@
     "src"
   ],
   "bin": {
-    "dbzz": "./src/main.ts"
+    "dbzz": "./src/commands/main.ts"
   },
   "exports": {
     ".": "./src/index.ts"

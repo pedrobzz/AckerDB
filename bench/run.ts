@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
 import { join, relative } from "node:path";
-import { runCodegen } from "../packages/cli/src/codegen.ts";
-import { loadConfig } from "../packages/cli/src/config.ts";
+import { runCodegen } from "../packages/cli/src/app/codegen.ts";
+import { loadConfig } from "../packages/cli/src/app/config.ts";
 import { benchmarkSourceHashAt } from "../scripts/release-evidence.ts";
 import {
   benchmarkConfigFromEnv,

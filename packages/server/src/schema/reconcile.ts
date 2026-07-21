@@ -19,8 +19,8 @@
  * its own module and folds its trailing safe drift back through that same planner
  * core, so no cycle crosses between reconcile and the migration engine.
  */
-import type { Engine } from "../engine.ts";
-import { snapshotOf } from "../snapshot.ts";
+import type { Engine } from "../database/engine.ts";
+import { snapshotOf } from "./snapshot.ts";
 import { applyChain } from "./migrations/chain.ts";
 import type { MigrationStep } from "./migrations/types.ts";
 import { planAndReconcile } from "./planner.ts";

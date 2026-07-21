@@ -14,7 +14,7 @@
  * digest the meta sidecar recomputes at load time.
  */
 import { createHash } from "node:crypto";
-import type { SchemaSnapshot } from "../../snapshot.ts";
+import type { SchemaSnapshot } from "../snapshot.ts";
 
 export type MigrationRow = Record<string, unknown>;
 
