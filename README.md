@@ -79,6 +79,12 @@ client.close();
 - [Validators](docs/validators.md) is the canonical guide to `v`, numeric
   types, constraints, presence semantics, stored-data enforcement, and the
   deliberate pre-1.0 upgrade break.
+- [Database queries](docs/database-queries.md) documents typed SQL predicates,
+  deterministic ordering and keyset pagination, transparent indexes,
+  conservative reactive dependencies, and structural upsert.
+- [Vectors and exact similarity search](docs/vector-search.md) documents
+  Float32 vector storage, external embedding generation, filtered cosine/L2/dot
+  search, bounded ranking, reactivity, and backfill.
 - [Plugins](docs/plugins.md) documents private schemas, contracts, flat
   dependency injection, direct context mounts, execution boundaries,
   lifecycle, and alpha storage reset/drop behavior.
