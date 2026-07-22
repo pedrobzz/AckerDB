@@ -5,7 +5,6 @@ import {
   defineSchema,
   defineTable,
   rowTypeName,
-  camelCase,
   ValidationError,
 } from "@dbzz/server";
 
@@ -31,21 +30,27 @@ describe("defineTable", () => {
         body: v.string(),
         tags: v.array(v.string()),
       });
-    expect(() => table().index("by_missing", ["nope" as never])).toThrow("unknown column");
-    expect(() => table().index("by_missing", ["toString" as never])).toThrow(
+    expect(() => table().index(["nope" as never])).toThrow("unknown column");
+    expect(() => table().index(["toString" as never])).toThrow(
       'unknown column "toString"',
     );
-    expect(() => table().index("by_missing", ["constructor" as never])).toThrow(
+    expect(() => table().index(["constructor" as never])).toThrow(
       'unknown column "constructor"',
     );
-    expect(() => table().index("by_id", ["id" as never])).toThrow("redundant");
-    expect(() => table().index("by_tags", ["tags"])).toThrow("not indexable");
-    expect(() => table().index("by_c", ["channelId"]).index("by_c", ["channelId"])).toThrow(
-      "duplicate index",
+    expect(() => table().index(["id" as never])).toThrow("redundant");
+    expect(() => table().index(["tags"])).toThrow("not indexable");
+    expect(() => table().index(["channelId"]).index(["channelId"])).toThrow(
+      "duplicate index columns",
     );
-    expect(() => table().index("by_cc", ["channelId", "channelId"])).toThrow("duplicate columns");
-    const ok = table().index("by_channel", ["channelId"]).index("by_channel_body", ["channelId", "body"]);
-    expect(ok.indexes.map((ix) => ix.name)).toEqual(["by_channel", "by_channel_body"]);
+    expect(() => table().index(["channelId", "channelId"])).toThrow("duplicate columns");
+    const ok = table().index(["channelId"]).index(["channelId", "body"]);
+    expect(ok.indexes.map((index) => ({
+      name: index.name,
+      columns: index.columns,
+    }))).toEqual([
+      { name: "s_n_b_9_channelId", columns: ["channelId"] },
+      { name: "s_n_b_9_channelId_4_body", columns: ["channelId", "body"] },
+    ]);
   });
 
   test("direct indexes: single dense-integer column only", () => {
@@ -56,10 +61,10 @@ describe("defineTable", () => {
         role: v.enum("SRole", ["a", "b"]),
         name: v.string(),
       });
-    expect(make().index("by_seq", ["seq"], { algorithm: "direct" }).indexes[0]!.algorithm).toBe("direct");
-    expect(make().index("by_role", ["role"], { algorithm: "direct" }).indexes[0]!.algorithm).toBe("direct");
-    expect(() => make().index("by_name", ["name"], { algorithm: "direct" })).toThrow("dense");
-    expect(() => make().index("by_two", ["seq", "role"] as never, { algorithm: "direct" })).toThrow(
+    expect(make().index(["seq"], { algorithm: "direct" }).indexes[0]!.algorithm).toBe("direct");
+    expect(make().index(["role"], { algorithm: "direct" }).indexes[0]!.algorithm).toBe("direct");
+    expect(() => make().index(["name"], { algorithm: "direct" })).toThrow("dense");
+    expect(() => make().index(["seq", "role"] as never, { algorithm: "direct" })).toThrow(
       "single-column",
     );
   });
@@ -81,7 +86,7 @@ describe("defineTable", () => {
 
   test("event tables: no indexes, no scheduling", () => {
     const subscription = { args: {}, access: "public" as const, matches: () => true };
-    expect(() => defineEventTable(pkCols(), subscription).index("by_name", ["name"])).toThrow("never persist");
+    expect(() => defineEventTable(pkCols(), subscription).index(["name"])).toThrow("never persist");
     expect(() => defineEventTable(pkCols(), subscription).scheduled("x.y")).toThrow("cannot be scheduled");
     expect(() =>
       defineEventTable({ id: v.primaryKey(), at: v.scheduleAt() }, subscription),
@@ -168,9 +173,4 @@ describe("naming", () => {
     expect(rowTypeName("typing_events")).toBe("TypingEvent");
   });
 
-  test("camelCase converts index names", () => {
-    expect(camelCase("by_channel_time")).toBe("byChannelTime");
-    expect(camelCase("by_user")).toBe("byUser");
-    expect(camelCase("byUser")).toBe("byUser");
-  });
 });

@@ -15,7 +15,7 @@ import {
   type ObjectShape,
   type Validator,
 } from "../validation/v.ts";
-import type { DbReader, DbWriter } from "../database/types.ts";
+import type { DbReader, DbWriter } from "../database/query/types.ts";
 import {
   compileInvocation,
   invokeFunction,

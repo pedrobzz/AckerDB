@@ -26,6 +26,7 @@ import {
   defineTable,
   Engine,
   IncompatibleDatabaseError,
+  indexSqlName,
   reconcile,
   resetDatabase,
   restoreVerifiedDatabase,
@@ -321,13 +322,14 @@ describe("durability and internal state", () => {
 
   test("rejects missing and wrong application indexes before ready or reconciliation", () => {
     const indexed = defineSchema({
-      records: defineTable({ id: v.primaryKey(), value: v.string() }).index("by_value", ["value"], {
+      records: defineTable({ id: v.primaryKey(), value: v.string() }).index(["value"], {
         unique: true,
       }),
     });
+    const physicalIndex = indexSqlName("records", indexed.tables.records.indexes[0]!.name);
     const corruptions = [
-      "DROP INDEX ix_records_by_value",
-      "DROP INDEX ix_records_by_value; CREATE INDEX ix_records_by_value ON records (value)",
+      `DROP INDEX "${physicalIndex}"`,
+      `DROP INDEX "${physicalIndex}"; CREATE INDEX "${physicalIndex}" ON records (value)`,
     ];
     for (const corruption of corruptions) {
       const { database } = fresh();
@@ -345,7 +347,7 @@ describe("durability and internal state", () => {
     const { database } = fresh();
     const live = new Engine(indexed, database);
     reconcile(live);
-    live.writer.exec("DROP INDEX ix_records_by_value");
+    live.writer.exec(`DROP INDEX "${physicalIndex}"`);
     const before = live.writer.query("SELECT key, value FROM _dbzz_meta ORDER BY key").all();
     expect(() => reconcile(live)).toThrow(CorruptDatabaseError);
     expect(live.writer.query("SELECT key, value FROM _dbzz_meta ORDER BY key").all()).toEqual(before);
@@ -358,15 +360,16 @@ describe("durability and internal state", () => {
       const engine = new Engine(schema, database);
       reconcile(engine);
       const snapshot = engine.loadSnapshot()!;
+      const malformedIndex = `s_n_b_${inheritedName.length}_${inheritedName}`;
       snapshot.tables.records!.indexes.push({
-        name: "by_missing",
+        name: malformedIndex,
         columns: [inheritedName],
         unique: false,
         algorithm: "btree",
       });
       engine.saveSnapshot(snapshot);
       expect(() => engine.loadSnapshot()).toThrow(
-        "stored schema snapshot is invalid: records.by_missing has an invalid definition",
+        `stored schema snapshot is invalid: records.${malformedIndex} has an invalid definition`,
       );
       engine.close("clean");
     }

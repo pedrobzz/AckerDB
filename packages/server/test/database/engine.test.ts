@@ -40,7 +40,7 @@ const kitchenSinkSchema = () =>
       maybe: v.string().nullable(),
       maybeRole: role().nullable(),
       maybePayload: payload().nullable(),
-    }).index("by_name", ["name"]),
+    }).index(["name"]),
   });
 
 function insertAndReadBack(engine: Engine, row: Record<string, unknown>) {

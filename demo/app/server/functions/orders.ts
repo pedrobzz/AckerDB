@@ -47,8 +47,10 @@ export const history = query({
     const principal = requireUser(ctx.auth);
     const user = await requireCurrentUser(ctx.db, principal.identity);
     const orders = await ctx.db.orders
-      .byUserOpenedAt((q) => q.eq("userId", user.id))
-      .order("desc")
+      .query()
+      .where((order) => order.userId.eq(user.id))
+      .orderBy((order) => order.openedAt.desc())
+      .thenBy((order) => order.id.desc())
       .collect();
     const active = orders.find((order) => order.status === "OPEN") ?? null;
     const closed = orders.filter((order) => order.status !== "OPEN");
@@ -129,7 +131,8 @@ export const closeCancelled = mutation({
       args.orderId,
     );
     const items = await ctx.db.orderItems
-      .byOrder((q) => q.eq("orderId", order.id))
+      .query()
+      .where((item) => item.orderId.eq(order.id))
       .collect();
     if (!items.every((item) => item.status === "CANCELLED")) {
       conflict(
@@ -152,7 +155,8 @@ export const pay = mutation({
       args.orderId,
     );
     const items = await ctx.db.orderItems
-      .byOrder((q) => q.eq("orderId", order.id))
+      .query()
+      .where((item) => item.orderId.eq(order.id))
       .collect();
     if (
       items.length === 0 ||
@@ -177,7 +181,10 @@ export const list = query({
   access: staffAccess,
   args: {},
   handler: async (ctx) => {
-    const orders = await ctx.db.orders.scan().order("desc").collect();
+    const orders = await ctx.db.orders
+      .query()
+      .orderBy((order) => order.id.desc())
+      .collect();
     return Promise.all(orders.map((order) => orderView(ctx.db, order)));
   },
 });

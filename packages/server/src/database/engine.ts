@@ -49,7 +49,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
-import type { Descriptor, Identity, Validator } from "../validation/v.ts";
+import {
+  baseValidator,
+  type Descriptor,
+  type Identity,
+  type Validator,
+} from "../validation/v.ts";
 import { scalarDecoder, scalarEncoder, sqlTypeOf } from "../schema/descriptor-kinds.ts";
 import { validateStoredDescriptor } from "../schema/stored-descriptor.ts";
 import {
@@ -83,6 +88,11 @@ import {
   restoreArtifactPaths,
   SQLITE_SIDECAR_SUFFIXES,
 } from "./artifacts.ts";
+import { loadVectorRuntimeForSchema } from "./query/vector-runtime.ts";
+import {
+  createPredicateEnvironment,
+  type PredicateEnvironment,
+} from "./query/predicate.ts";
 
 export { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
 export interface TagMap {
@@ -91,49 +101,53 @@ export interface TagMap {
 }
 
 interface PhysCol {
-  name: string;
-  ddl: string;
+  readonly name: string;
+  readonly ddl: string;
 }
 
 export interface ColumnPlan {
-  jsName: string;
+  readonly jsName: string;
   /** Unwrapped kind ("nullable" removed). */
-  kind: string;
-  nullable: boolean;
+  readonly kind: string;
+  readonly nullable: boolean;
   /** For enum/union: the declared type name (tag map key). */
-  typeName?: string;
-  phys: PhysCol[];
-  toSql(value: unknown): unknown[];
-  fromSql(values: unknown[]): unknown;
+  readonly typeName?: string;
+  /** For enum/union: encode one declared variant to its stable storage tag. */
+  readonly variantTag?: (variant: string) => number | undefined;
+  readonly phys: readonly PhysCol[];
+  readonly toSql: (value: unknown) => unknown[];
+  readonly fromSql: (values: unknown[]) => unknown;
 }
 
 /** Physical storage and codec ownership shared by live and snapshot-derived plans. */
 export interface PhysicalTablePlan {
   /** The key exposed on this scope's db object. */
-  logicalName: string;
+  readonly logicalName: string;
   /** The physical SQLite table name. */
-  name: string;
+  readonly name: string;
   /** Qualified human-facing name used by validation and telemetry. */
-  displayName: string;
+  readonly displayName: string;
   /** Resolve a logical named type to this scope's stable storage identity. */
   tagIdentity(typeName: string): string;
-  pk: string;
-  scheduleAt: string | null;
-  columns: Map<string, ColumnPlan>;
+  readonly pk: string;
+  readonly scheduleAt: string | null;
+  readonly columns: ReadonlyMap<string, ColumnPlan>;
   /** Physical column names in DDL order (pk first). */
-  physOrder: string[];
+  readonly physOrder: readonly string[];
   /**
    * Runtime row projection. `safeIntegers` must remain enabled for exact i64
    * values, so logical ints are cast at the result boundary to avoid
    * materializing a temporary BigInt for every number-valued cell.
    */
-  readProjection: string;
-  indexes: IndexDef[];
+  readonly readProjection: string;
+  readonly indexes: readonly IndexDef[];
 }
 
 /** A live runtime plan additionally owns the TableDef used at every db validation boundary. */
 export interface TablePlan extends PhysicalTablePlan {
-  table: TableDef;
+  readonly table: TableDef;
+  readonly environment: PredicateEnvironment;
+  readonly hasVectorColumns: boolean;
 }
 
 /** One logical schema bound to its isolated physical storage plans. */
@@ -163,6 +177,25 @@ const BORROWED_DATABASE_OWNERSHIP = Symbol("dbzz.borrowedDatabaseOwnership");
 
 interface InternalEngineOptions extends EngineOptions {
   readonly [BORROWED_DATABASE_OWNERSHIP]?: DatabaseOwnership;
+}
+
+const DEFAULT_SQLITE_PARAMETER_LIMIT = 32_766;
+const BUN_SQLITE_PARAMETER_LIMIT = 65_535;
+
+function sqliteParameterLimit(database: Database): number {
+  const row = database
+    .query(
+      "SELECT compile_options AS value FROM pragma_compile_options WHERE compile_options GLOB 'MAX_VARIABLE_NUMBER=*' LIMIT 1",
+    )
+    .get() as { value: string } | null;
+  const encoded = row?.value.slice("MAX_VARIABLE_NUMBER=".length);
+  const limit = encoded === undefined ? NaN : Number(encoded);
+  const sqliteLimit = Number.isSafeInteger(limit) && limit > 0
+    ? limit
+    : DEFAULT_SQLITE_PARAMETER_LIMIT;
+  // Bun 1.3's positional binder wraps its expected count at 65,536 even when
+  // the linked SQLite library advertises a larger MAX_VARIABLE_NUMBER.
+  return Math.min(sqliteLimit, BUN_SQLITE_PARAMETER_LIMIT);
 }
 
 export interface EngineOptions {
@@ -664,16 +697,6 @@ function expectedApplicationObjects(
   return objects;
 }
 
-function unwrapValidator(validator: Validator<unknown, string>): {
-  base: Validator<unknown, string>;
-  nullable: boolean;
-} {
-  if (validator.kind === "nullable") {
-    return { base: (validator as unknown as { inner: Validator<unknown, string> }).inner, nullable: true };
-  }
-  return { base: validator, nullable: false };
-}
-
 function positiveInt(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive integer`);
   return value;
@@ -1035,6 +1058,8 @@ export class Engine {
   readonly [mcpTokenVaultOwner]: McpTokenVault;
   readonly path: string;
   readonly durability: DurabilityPolicy;
+  /** Maximum bind parameters accepted by one statement in the active SQLite library. */
+  readonly sqliteParameterLimit: number;
   readonly recoveredFromCrash: boolean;
   readonly tags = new Map<string, TagMap>();
   readonly rootScope: StorageScope;
@@ -1054,6 +1079,7 @@ export class Engine {
     options: EngineOptions = {},
   ) {
     this.schema = schema;
+    loadVectorRuntimeForSchema(schema);
     this.durability = options.durability ?? "production";
     const busyTimeoutMs = positiveInt(options.busyTimeoutMs ?? 5_000, "busyTimeoutMs");
     this.busyTimeoutMs = busyTimeoutMs;
@@ -1098,6 +1124,7 @@ export class Engine {
       writer.exec(`PRAGMA busy_timeout = ${busyTimeoutMs}`);
       writer.exec("PRAGMA foreign_keys = ON");
       this.writer = writer;
+      this.sqliteParameterLimit = sqliteParameterLimit(writer);
       if (bootstrap) {
         mutationReplay = this.validateStorage(writer, options.integrityCheck ?? "quick", true);
       }
@@ -1493,6 +1520,7 @@ export class Engine {
     if (typeof mount !== "string" || !isPluginIdentifier(mount)) {
       throw new ValidationError("Plugin storage mount must be an identifier");
     }
+    loadVectorRuntimeForSchema(schema);
     return this.buildStorageScope(mount, schema);
   }
 
@@ -1555,12 +1583,14 @@ export class Engine {
   ): TablePlan {
     const columns = new Map<string, ColumnPlan>();
     const physOrder: string[] = [];
+    let hasVectorColumns = false;
     for (const [jsName, validator] of Object.entries(table.columns)) {
       const plan = this.planColumn(jsName, validator, displayName, tagIdentity);
       columns.set(jsName, plan);
+      if (plan.kind === "vector") hasVectorColumns = true;
       for (const phys of plan.phys) physOrder.push(phys.name);
     }
-    return {
+    return Object.freeze({
       table,
       logicalName,
       name,
@@ -1569,10 +1599,12 @@ export class Engine {
       pk: table.primaryKey,
       scheduleAt: table.scheduleAtColumn,
       columns,
-      physOrder,
+      environment: createPredicateEnvironment({ columns, table, displayName }),
+      hasVectorColumns,
+      physOrder: Object.freeze(physOrder),
       readProjection: compileReadProjection(columns.values()),
-      indexes: table.indexes,
-    };
+      indexes: Object.freeze([...table.indexes]),
+    });
   }
 
   private planColumn(
@@ -1581,7 +1613,8 @@ export class Engine {
     displayName: string,
     tagIdentity: StorageScope["tagIdentity"],
   ): ColumnPlan {
-    const { base, nullable } = unwrapValidator(validator);
+    const nullable = validator.kind === "nullable";
+    const base = baseValidator(validator);
     const notNull = nullable ? "" : " NOT NULL";
 
     if (base.kind === "pk") {
@@ -1604,6 +1637,7 @@ export class Engine {
         kind: "union",
         nullable,
         typeName,
+        variantTag: (variant) => tagMap().toTag.get(variant),
         phys: [
           { name: jsName, ddl: `${quote(jsName)} INTEGER${notNull}` },
           { name: payloadCol, ddl: `${quote(payloadCol)} TEXT${notNull}` },
@@ -1635,6 +1669,7 @@ export class Engine {
         kind: "enum",
         nullable,
         typeName,
+        variantTag: (variant) => tagMap().toTag.get(variant),
         phys: [{ name: jsName, ddl: `${quote(jsName)} INTEGER${notNull}` }],
         toSql: (value) => {
           if (value === null) return [null];
@@ -1650,8 +1685,9 @@ export class Engine {
 
     const sqlType = sqlTypeOf(base.kind);
     if (sqlType === undefined) throw new Error(`unsupported column kind "${base.kind}"`);
-    const encodeScalar = scalarEncoder(base.kind);
-    const decodeScalar = scalarDecoder(base.kind);
+    const descriptor = base.descriptor();
+    const encodeScalar = scalarEncoder(descriptor);
+    const decodeScalar = scalarDecoder(descriptor, `${displayName}.${jsName}`);
     return {
       jsName,
       kind: base.kind,

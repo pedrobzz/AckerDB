@@ -299,7 +299,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     channelId: v.bigint(),
     body: v.string(),
-  }).index("by_channel", ["channelId"]),
+  }).index(["channelId"]),
 });
 
 // Public integration fixtures intentionally exercise inferred application handlers.
@@ -342,9 +342,10 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
           access: "public",
           args: { channelId: v.bigint() },
           handler: async (ctx: Ctx, args: Ctx) => {
-            const rows = await ctx.db.messages.byChannel((builder: Ctx) =>
-              builder.eq("channelId", args.channelId)
-            ).collect();
+            const rows = await ctx.db.messages
+              .query()
+              .where((message: Ctx) => message.channelId.eq(args.channelId))
+              .collect();
             await snapshotGate.pause();
             return rows;
           },
@@ -353,9 +354,10 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
           access: "public",
           args: { channelId: v.bigint() },
           handler: async (ctx: Ctx, args: Ctx) =>
-            (await ctx.db.messages.byChannel((builder: Ctx) =>
-              builder.eq("channelId", args.channelId)
-            ).collect()).length > 0,
+            (await ctx.db.messages
+              .query()
+              .where((message: Ctx) => message.channelId.eq(args.channelId))
+              .collect()).length > 0,
         }),
         identity: query({
           access: "authenticated",

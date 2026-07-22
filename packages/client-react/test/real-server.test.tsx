@@ -45,7 +45,7 @@ function createApp(): App {
       list: query({
         access: "public",
         args: {},
-        handler: (ctx: Ctx) => ctx.db.messages.collect(),
+        handler: (ctx: Ctx) => ctx.db.messages.query().collect(),
       }),
     },
   });

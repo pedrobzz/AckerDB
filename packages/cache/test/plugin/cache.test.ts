@@ -49,14 +49,19 @@ interface TestRange<Row> {
   collect(): Promise<Row[]>;
 }
 
+interface TestEntryQuery extends TestRange<TestEntryRow> {
+  where(
+    predicate: (entry: { readonly key: { eq(value: string): unknown } }) => unknown,
+  ): TestEntryQuery;
+}
+
 interface TestDb {
   readonly entries: {
-    byKey(build: (q: { eq(column: "key", value: string): unknown }) => unknown): TestRange<TestEntryRow>;
-    scan(): TestRange<TestEntryRow>;
+    query(): TestEntryQuery;
     patch(id: bigint, value: Partial<TestEntryRow>): PromiseLike<unknown>;
   };
   readonly state: {
-    scan(): TestRange<TestStateRow>;
+    query(): TestRange<TestStateRow>;
     patch(id: bigint, value: Partial<TestStateRow>): PromiseLike<unknown>;
   };
 }
@@ -356,7 +361,7 @@ describe("built-in cache operations", () => {
         scope,
       ) as TestDb;
       const encodedKey = encodeCacheKey("", "cache", "", "profile");
-      const row = await db.entries.byKey((q) => q.eq("key", encodedKey)).unique();
+      const row = await db.entries.query().where((entry) => entry.key.eq(encodedKey)).unique();
       if (row === null) throw new Error("expected normalized cache entry");
       expect(decode(row.payload)).toEqual({ profile: { name: "Pedro" } });
     } finally {
@@ -465,12 +470,12 @@ describe("built-in cache operations", () => {
 
       const encodedKey = encodeCacheKey("", "cache", "profile", 1);
       await rig.inspect(async (db) => {
-        const row = await db.entries.byKey((q) => q.eq("key", encodedKey)).unique();
+        const row = await db.entries.query().where((entry) => entry.key.eq(encodedKey)).unique();
         if (row === null) throw new Error("expected cache row");
         const payload = encode(42);
         const nextBytes = new TextEncoder().encode(encodedKey).byteLength +
           new TextEncoder().encode(payload).byteLength;
-        const state = await db.state.scan().unique();
+        const state = await db.state.query().unique();
         if (state === null) throw new Error("expected cache state");
         await db.entries.patch(row.id, { payload, bytes: nextBytes });
         await db.state.patch(state.id, {
@@ -519,8 +524,8 @@ describe("built-in cache operations", () => {
       expect(await rig.call(["get"], { key: "fourth" }, 5)).toBe(4);
 
       await rig.inspect(async (db) => {
-        const entries = await db.entries.scan().collect();
-        const state = await db.state.scan().unique();
+        const entries = await db.entries.query().collect();
+        const state = await db.state.query().unique();
         expect(state?.entryCount).toBe(entries.length);
         expect(state?.totalBytes).toBe(entries.reduce((total, row) => total + row.bytes, 0));
       });
@@ -539,8 +544,8 @@ describe("built-in cache operations", () => {
         await rig.call(["set"], { key, value: 1 }, 1);
       }
       const before = await rig.inspect(async (db) => ({
-        entries: await db.entries.scan().collect(),
-        state: await db.state.scan().unique(),
+        entries: await db.entries.query().collect(),
+        state: await db.state.query().unique(),
       }));
       if (before.state === null) throw new Error("expected cache state");
       const incomingPayload = encode("x".repeat(400));
@@ -567,8 +572,8 @@ describe("built-in cache operations", () => {
       expect(sqlStatements.filter((sql) => sql.startsWith("DELETE FROM"))).toHaveLength(1);
 
       await rig.inspect(async (db) => {
-        const entries = await db.entries.scan().collect();
-        const state = await db.state.scan().unique();
+        const entries = await db.entries.query().collect();
+        const state = await db.state.query().unique();
         const remainingIds = new Set(entries.map((row) => row.id));
         for (const evicted of before.entries.slice(0, expectedDeleted)) {
           expect(remainingIds.has(evicted.id)).toBe(false);

@@ -45,7 +45,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     userId: v.identity(),
     value: v.string(),
-  }).index("by_user", ["userId"], { unique: true }),
+  }).index(["userId"], { unique: true }),
 });
 
 // Runtime behavior is exercised here; identity.check.ts proves the public generic context.
@@ -65,7 +65,8 @@ const functions = {
       args: {},
       access: (ctx) => ctx.auth.kind === "user",
       handler: (ctx: Ctx) => ctx.db.owned
-        .byUser((range: Ctx) => range.eq("userId", ctx.auth.identity))
+        .query()
+        .where((row: Ctx) => row.userId.eq(ctx.auth.identity))
         .unique(),
     }),
   },

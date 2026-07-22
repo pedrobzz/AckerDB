@@ -53,7 +53,7 @@ const stateASchema = defineSchema({
     key: v.string(),
     value: v.string(),
     ${STATE_A_SHAPE}
-  }).index("by_key", ["key"], { unique: true }),
+  }).index(["key"], { unique: true }),
 });
 
 const stateAPlugin = definePlugin({
@@ -62,11 +62,12 @@ const stateAPlugin = definePlugin({
   create: ({ query, mutation }) => ({
     exports: {
       read: query(stateContract.read, async (ctx, args) =>
-        (await ctx.db.entries.byKey((range) => range.eq("key", args.key)).unique())?.value
+        (await ctx.db.entries.query().where((entry) => entry.key.eq(args.key)).unique())?.value
       ),
       write: mutation(stateContract.write, async (ctx, args) => {
         const existing = await ctx.db.entries
-          .byKey((range) => range.eq("key", args.key))
+          .query()
+          .where((entry) => entry.key.eq(args.key))
           .unique();
         if (existing === null) {
           await ctx.db.entries.insert({ ...args, marker: null });
@@ -85,7 +86,7 @@ const stateBSchema = defineSchema({
     key: v.string(),
     value: v.string(),
     marker: v.string().nullable(),
-  }).index("by_key", ["key"], { unique: true }),
+  }).index(["key"], { unique: true }),
 });
 
 const stateBPlugin = definePlugin({
@@ -94,11 +95,12 @@ const stateBPlugin = definePlugin({
   create: ({ query, mutation }) => ({
     exports: {
       read: query(stateContract.read, async (ctx, args) =>
-        (await ctx.db.entries.byKey((range) => range.eq("key", args.key)).unique())?.value
+        (await ctx.db.entries.query().where((entry) => entry.key.eq(args.key)).unique())?.value
       ),
       write: mutation(stateContract.write, async (ctx, args) => {
         const existing = await ctx.db.entries
-          .byKey((range) => range.eq("key", args.key))
+          .query()
+          .where((entry) => entry.key.eq(args.key))
           .unique();
         if (existing === null) {
           await ctx.db.entries.insert({ ...args, marker: null });
@@ -167,7 +169,7 @@ export const snapshot = mutation({
   access: "public",
   args: {},
   handler: async (ctx) => {
-    const root = (await ctx.db.roots.scan().collect())[0];
+    const root = (await ctx.db.roots.query().collect())[0];
     return {
       root: root?.value ?? null,
       stateA: (await ctx.consumer.read("shared")) ?? null,

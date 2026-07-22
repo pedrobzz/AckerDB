@@ -13,10 +13,15 @@ Choose the JavaScript type and SQLite storage class deliberately:
 | `v.int()` | `number` | Safe integer | `INTEGER` |
 | `v.float()` | `number` | Finite number | `REAL` |
 | `v.bigint()` | `bigint` | Signed 64-bit integer | `INTEGER` |
+| `v.vector(d)` | `readonly number[]` | Exactly `d` finite Float32 coordinates | `BLOB` |
 
 There is no `v.number()`. Use `v.int()` for ordinary counters, timestamps, and
 other safe-integer values; `v.float()` when fractions are meaningful; and
 `v.bigint()` when the JavaScript value must remain a lossless 64-bit integer.
+Use `v.vector(d)` for fixed-dimensional dense values such as externally
+generated embeddings. Its Float32 normalization, direct-column storage rules,
+and exact-search API are documented in [Vectors and exact similarity
+search](vector-search.md).
 
 ## Constraints and descriptions
 

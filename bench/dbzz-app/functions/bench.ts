@@ -101,8 +101,9 @@ export const search = query({
   args: { partition: v.float(), nonce: v.float() },
   handler: async (ctx, { partition, nonce }) => {
     const documents = await ctx.db.documents
-      .byPartitionRank((q) => q.eq("partition", partition))
-      .order("asc")
+      .query()
+      .where((document) => document.partition.eq(partition))
+      .orderBy((document) => document.rank.asc())
       .take(20);
     const rows = documents.map(({ rank, score, payload }) => ({ rank, score, payload }));
     let checksum = mix(FNV_OFFSET, nonce);
@@ -128,8 +129,8 @@ export const transfer = mutation({
     if (direction !== 0 && direction !== 1) throw new Error(`invalid direction ${direction}`);
     if (!Number.isInteger(amount) || amount <= 0) throw new Error(`invalid amount ${amount}`);
 
-    const left = await ctx.db.accounts.byAccount((q) => q.eq("account", pair * 2)).unique();
-    const right = await ctx.db.accounts.byAccount((q) => q.eq("account", pair * 2 + 1)).unique();
+    const left = await ctx.db.accounts.query().where((account) => account.account.eq(pair * 2)).unique();
+    const right = await ctx.db.accounts.query().where((account) => account.account.eq(pair * 2 + 1)).unique();
     if (left === null || right === null) throw new Error(`account pair ${pair} is not seeded`);
 
     const from = direction === 0 ? left : right;
@@ -150,7 +151,7 @@ export const accountState = query({
   access: "public",
   args: { nonce: v.float() },
   handler: async (ctx, { nonce }) => {
-    const accounts = await ctx.db.accounts.scan().collect();
+    const accounts = await ctx.db.accounts.query().collect();
     accounts.sort((a, b) => a.account - b.account);
     let totalBalance = 0;
     let totalVersion = 0;
@@ -170,7 +171,7 @@ export const channel = query({
   access: "public",
   args: { channel: v.float() },
   handler: async (ctx, { channel }) => {
-    const row = await ctx.db.channels.byChannel((q) => q.eq("channel", channel)).unique();
+    const row = await ctx.db.channels.query().where((row) => row.channel.eq(channel)).unique();
     if (row === null) return null;
     return { channel: row.channel, version: row.version, checksum: row.checksum, payload: row.payload };
   },
@@ -180,7 +181,7 @@ export const updateChannel = mutation({
   access: "public",
   args: { channel: v.float(), nonce: v.float() },
   handler: async (ctx, { channel, nonce }) => {
-    const row = await ctx.db.channels.byChannel((q) => q.eq("channel", channel)).unique();
+    const row = await ctx.db.channels.query().where((row) => row.channel.eq(channel)).unique();
     if (row === null) throw new Error(`channel ${channel} is not seeded`);
     const version = row.version + 1;
     const body = channelPayload(channel, version, nonce);
@@ -211,7 +212,7 @@ export const probe = query({
   args: { nonce: v.float() },
   handler: async (ctx, { nonce }) => {
     const account = ((nonce % ACCOUNT_COUNT) + ACCOUNT_COUNT) % ACCOUNT_COUNT;
-    const row = await ctx.db.accounts.byAccount((q) => q.eq("account", account)).unique();
+    const row = await ctx.db.accounts.query().where((row) => row.account.eq(account)).unique();
     if (row === null) throw new Error(`account ${account} is not seeded`);
     let checksum = mix(FNV_OFFSET, nonce);
     checksum = mix(checksum, row.account);

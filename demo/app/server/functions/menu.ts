@@ -19,8 +19,8 @@ export const catalog = query({
   handler: async (ctx) => {
     const staff = isStaff(ctx.auth);
     const categories = await ctx.db.menuCategories
-      .bySortOrder((q) => q)
-      .order("asc")
+      .query()
+      .orderBy((category) => category.sortOrder.asc())
       .collect();
     return Promise.all(
       categories
@@ -29,8 +29,9 @@ export const catalog = query({
           ...category,
           items: (
             await ctx.db.menuItems
-              .byCategory((q) => q.eq("categoryId", category.id))
-              .order("asc")
+              .query()
+              .where((item) => item.categoryId.eq(category.id))
+              .orderBy((item) => item.sortOrder.asc())
               .collect()
           ).filter((item) => staff || item.active),
         })),
@@ -46,7 +47,8 @@ export const createCategory = mutation({
     const sortOrder = nonNegativeInteger(args.sortOrder, "Sort order");
     if (
       (await ctx.db.menuCategories
-        .byName((q) => q.eq("name", name))
+        .query()
+        .where((category) => category.name.eq(name))
         .unique()) !== null
     ) {
       conflict("This category already exists");
@@ -77,7 +79,7 @@ export const createItem = mutation({
     if (category === null || !category.active) notFound("Category not found");
     const name = cleanName(args.name, "Item name");
     if (
-      (await ctx.db.menuItems.byName((q) => q.eq("name", name)).unique()) !==
+      (await ctx.db.menuItems.query().where((item) => item.name.eq(name)).unique()) !==
       null
     ) {
       conflict("This menu item already exists");
@@ -116,7 +118,8 @@ export const updateItem = mutation({
     if (category === null || !category.active) notFound("Category not found");
     const name = cleanName(args.name, "Item name");
     const duplicate = await ctx.db.menuItems
-      .byName((q) => q.eq("name", name))
+      .query()
+      .where((item) => item.name.eq(name))
       .unique();
     if (duplicate !== null && duplicate.id !== item.id)
       conflict("This menu item already exists");

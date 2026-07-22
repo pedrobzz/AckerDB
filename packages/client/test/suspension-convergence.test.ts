@@ -998,7 +998,7 @@ const realSchema = defineSchema({
     id: v.primaryKey(),
     channelId: v.bigint(),
     body: v.string(),
-  }).index("by_channel", ["channelId"]),
+  }).index(["channelId"]),
   pings: defineEventTable({
     id: v.primaryKey(),
     n: v.int(),
@@ -1055,7 +1055,8 @@ function realRegistry(): Registry {
         args: { channelId: v.bigint() },
         handler: async (ctx: Ctx, args: Ctx) =>
           await ctx.db.messages
-            .byChannel((builder: Ctx) => builder.eq("channelId", args.channelId))
+            .query()
+            .where((message: Ctx) => message.channelId.eq(args.channelId))
             .collect(),
       }),
       send: mutation({

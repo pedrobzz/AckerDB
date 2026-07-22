@@ -23,6 +23,7 @@ import { StaleConsentError, writeMigration } from "../../src/migrations/write.ts
 import { makeFixture } from "../support/fixture.ts";
 
 const REPO = new URL("../../../..", import.meta.url).pathname;
+const UNIQUE_EMAIL_INDEX = "s_u_b_5_email";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -123,7 +124,7 @@ describe("generateMigration: scaffold", () => {
     // sees nothing to refuse — the probed refusal is what forces the transform.
     const pre = defineSchema({ users: defineTable({ id: v.primaryKey(), email: v.string() }) });
     const target = defineSchema({
-      users: defineTable({ id: v.primaryKey(), email: v.string() }).index("by_email", ["email"], { unique: true }),
+      users: defineTable({ id: v.primaryKey(), email: v.string() }).index(["email"], { unique: true }),
     });
     const { migrationTs } = generateMigration({
       number: 1,
@@ -133,7 +134,7 @@ describe("generateMigration: scaffold", () => {
       probedRefusals: [
         {
           table: "users",
-          index: "by_email",
+          index: UNIQUE_EMAIL_INDEX,
           reason: "unique-index-duplicates",
           question: "unique index over (email); 2 duplicate group(s) exist",
           count: 2,
@@ -142,7 +143,7 @@ describe("generateMigration: scaffold", () => {
     });
     expect(migrationTs).toContain("users: (row): UsersRow => {");
     expect(migrationTs).toContain(
-      "// TODO(users.by_email): unique index over (email); 2 duplicate group(s) exist — return the surviving row, or null to drop this one",
+      `// TODO(users.${UNIQUE_EMAIL_INDEX}): unique index over (email); 2 duplicate group(s) exist — return the surviving row, or null to drop this one`,
     );
     // the hole's NEW row type is imported for annotation
     expect(migrationTs).toContain('import { defineMigration, type UsersRow } from "./meta/0001_dedupe_email.types.ts";');
@@ -331,7 +332,7 @@ describe("computePlan: optimistic unique-index duplicate probe", () => {
   const PROBE_APP_TS = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
 const schema = defineSchema({
   users: defineTable({ id: v.primaryKey(), email: v.string().nullable() })
-    .index("by_email", ["email"], { unique: true }),
+    .index(["email"], { unique: true }),
 });
 export default defineApp({ schema });
 `;
@@ -354,7 +355,7 @@ export default defineApp({ schema });
     expect(outcome.refusals).toEqual([
       {
         table: "users",
-        index: "by_email",
+        index: UNIQUE_EMAIL_INDEX,
         reason: "unique-index-duplicates",
         question: "unique index over (email); 1 duplicate group(s) exist",
         count: 1,

@@ -53,6 +53,9 @@ async function main(): Promise<void> {
     if (serverManifest.dependencies?.["@modelcontextprotocol/sdk"] !== "1.29.0") {
       throw new Error("packed @dbzz/server must pin @modelcontextprotocol/sdk exactly to 1.29.0");
     }
+    if (serverManifest.dependencies?.numkong !== "7.7.1") {
+      throw new Error("packed @dbzz/server must pin NumKong exactly to 7.7.1");
+    }
     const sdkManifest = readManifest(
       join(consumerDir, "node_modules/@modelcontextprotocol/sdk/package.json"),
     );
@@ -83,6 +86,7 @@ const schema = defineSchema({
   orders: defineTable({
     id: v.primaryKey(),
     description: v.string(),
+    embedding: v.vector(3).nullable(),
   }),
 });
 
@@ -120,7 +124,14 @@ void invalidScope;
     writeFileSync(join(consumerDir, "verify-runtime.ts"), `
 import {
   createMcp as createMcpFromRoot,
+  defineSchema,
+  defineTable,
+  type DbWriter,
+  Engine,
+  makeDbWriter,
   mcpTool as mcpToolFromRoot,
+  newWriteCollector,
+  v,
 } from "@dbzz/server";
 import {
   createMcp as createMcpFromSubpath,
@@ -188,6 +199,33 @@ if (JSON.stringify(cacheDefinitionIds) !== JSON.stringify([
 if (customStoreOpens !== 0 || upstashRequests !== 0) {
   throw new Error("packed Cache imports or construction performed external work");
 }
+
+const vectorSchema = defineSchema({
+  documents: defineTable({
+    id: v.primaryKey(),
+    accountId: v.bigint(),
+    embedding: v.vector(2),
+  }).index(["accountId"]),
+});
+const engine = new Engine(vectorSchema, ":memory:");
+try {
+  engine.createAll();
+  const db = makeDbWriter(
+    engine,
+    newWriteCollector(),
+    () => 1n,
+  ) as DbWriter<typeof vectorSchema>;
+  await db.documents.insert({ accountId: 1n, embedding: [1, 0] });
+  const match = await db.documents
+    .nearest("embedding", [1, 0], { metric: "cosine" })
+    .where((row) => row.accountId.eq(1n))
+    .first();
+  if (match?.row.accountId !== 1n || match.distance !== 0) {
+    throw new Error("packed NumKong exact-nearest runtime returned the wrong result");
+  }
+} finally {
+  engine.close("clean");
+}
 `);
     writeFileSync(join(consumerDir, "tsconfig.json"), JSON.stringify({
       compilerOptions: {
@@ -224,7 +262,7 @@ if (customStoreOpens !== 0 || upstashRequests !== 0) {
     ], consumerDir);
 
     console.log(
-      `Packed package gate passed: ${PACKAGES.length} @dbzz packages at ${version}, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.29.0, and no server AI production dependency.`,
+      `Packed package gate passed: ${PACKAGES.length} @dbzz packages at ${version}, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.29.0, native NumKong exact search, and no server AI production dependency.`,
     );
   } finally {
     packed.cleanup();

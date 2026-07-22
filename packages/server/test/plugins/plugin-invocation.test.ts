@@ -151,7 +151,7 @@ async function makeHarness(
       id: v.primaryKey(),
       key: v.string(),
       value: v.string(),
-    }).index("by_key", ["key"], { unique: true }),
+    }).index(["key"], { unique: true }),
   });
   const emptySchema = defineSchema({});
   const stamp = () => v.object({
@@ -189,14 +189,7 @@ async function makeHarness(
     create: ({ query: pluginQueryBuilder, mutation: pluginMutationBuilder, procedure: pluginProcedureBuilder }) => ({
       exports: {
         set: pluginMutationBuilder(providerSet, async (ctx, args) => {
-          const existing = await ctx.db.entries
-            .byKey((range) => range.eq("key", args.key))
-            .unique();
-          if (existing === null) {
-            await ctx.db.entries.insert(args);
-          } else {
-            await ctx.db.entries.patch(existing.id, { value: args.value });
-          }
+          await ctx.db.entries.upsert({ key: args.key }, { value: args.value });
           return {
             timestamp: ctx.timestamp,
             mount: ctx.mount,
@@ -205,7 +198,8 @@ async function makeHarness(
         }),
         read: pluginQueryBuilder(providerRead, async (ctx, args) => ({
           value: (await ctx.db.entries
-            .byKey((range) => range.eq("key", args.key))
+            .query()
+            .where((row) => row.key.eq(args.key))
             .unique())?.value,
           timestamp: ctx.timestamp,
           mount: ctx.mount,

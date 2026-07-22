@@ -26,6 +26,13 @@ only the explicitly optimistic class performs the data probes described below:
   payload, dropping a column or table, and any rename (a diff reads it as
   drop-plus-add until declared).
 
+For vectors, adding a nullable direct column is shape-safe. Adding a required
+vector column, tightening it to required, or changing its dimensions/type is
+shape-unsafe. Generate embeddings in bounded application workflows outside a
+database transaction; migrations validate and transform stored values but must
+not call an embedding model. See [Vectors and exact similarity
+search](vector-search.md#backfill-and-schema-evolution).
+
 A migration is never a source of structural truth — structure always comes from
 the application manifest's root schema. A migration file declares only what a
 diff cannot infer or must not assume: rename declarations, row transforms, and

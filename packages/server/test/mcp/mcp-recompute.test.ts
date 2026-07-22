@@ -87,7 +87,7 @@ const actionsMcp = typedMcp({
 const listRecords = typedQuery({
   access: (ctx) => ctx.auth.kind === "user",
   args: {},
-  handler: (ctx) => ctx.db.records.scan().collect(),
+  handler: (ctx) => ctx.db.records.query().collect(),
 });
 
 const commitRecord = typedProcedure({

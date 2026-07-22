@@ -2,19 +2,20 @@ import { describe, expect, test } from "bun:test";
 import { defineSchema, defineTable, snapshotOf, v } from "@dbzz/server";
 
 describe("schema snapshots", () => {
-  test("orders persisted indexes by UTF-16 code units", () => {
+  test("persists and orders stable structural index identities", () => {
     const schema = defineSchema({
       entries: defineTable({
         id: v.primaryKey(),
-        value: v.string(),
+        z: v.string(),
+        aa: v.string(),
       })
-        .index("i", ["value"])
-        .index("IA", ["value"]),
+        .index(["aa"])
+        .index(["z"]),
     });
 
     expect(snapshotOf(schema).tables.entries!.indexes.map((index) => index.name)).toEqual([
-      "IA",
-      "i",
+      "s_n_b_1_z",
+      "s_n_b_2_aa",
     ]);
   });
 });

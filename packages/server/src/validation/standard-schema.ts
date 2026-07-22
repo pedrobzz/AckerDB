@@ -12,6 +12,7 @@ import {
   type OptionalValidator,
   type StandardValidator,
   type UnionValidator,
+  type VectorValidator,
 } from "./v.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { assertStandardJson } from "./standard-json.ts";
@@ -531,6 +532,15 @@ function compileNode(
           return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
         },
       };
+    case "vector": {
+      const dimensions = (validator as VectorValidator).dimensions;
+      return checkedNode(validator, {
+        type: "array",
+        items: { type: "number" },
+        minItems: dimensions,
+        maxItems: dimensions,
+      });
+    }
     case "jsonb":
       return {
         schema: () => described(validator, {}),

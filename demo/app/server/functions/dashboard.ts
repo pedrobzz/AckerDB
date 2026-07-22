@@ -11,9 +11,9 @@ export const overview = query({
     const startOfToday = new Date(now);
     startOfToday.setHours(0, 0, 0, 0);
     const [tables, users, orders] = await Promise.all([
-      ctx.db.restaurantTables.scan().collect(),
-      ctx.db.users.scan().collect(),
-      ctx.db.orders.scan().collect(),
+      ctx.db.restaurantTables.query().collect(),
+      ctx.db.users.query().collect(),
+      ctx.db.orders.query().collect(),
     ]);
     const activeTables = tables.filter((table) => table.active);
     const openOrders = orders.filter((order) => order.status === "OPEN");
@@ -26,7 +26,11 @@ export const overview = query({
     for (const order of openOrders) {
       const [table, items] = await Promise.all([
         ctx.db.restaurantTables.get(order.tableId),
-        ctx.db.orderItems.byOrder((q) => q.eq("orderId", order.id)).collect(),
+        ctx.db.orderItems
+          .query()
+          .where((item) => item.orderId.eq(order.id))
+          .orderBy((item) => item.orderedAt.asc())
+          .collect(),
       ]);
       if (table === null) continue;
       for (const item of items) {

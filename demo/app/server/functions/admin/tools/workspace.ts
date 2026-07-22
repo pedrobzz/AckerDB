@@ -143,12 +143,12 @@ Revenue by dish across all checks (cents), busiest dish first:
 async function buildFiles(db: DatabaseReader, now: number): Promise<InitialFiles> {
   const [tables, categories, menuItems, orders, orderItems, users] =
     await Promise.all([
-      db.restaurantTables.scan().collect(),
-      db.menuCategories.scan().collect(),
-      db.menuItems.scan().collect(),
-      db.orders.scan().collect(),
-      db.orderItems.scan().collect(),
-      db.users.scan().collect(),
+      db.restaurantTables.query().collect(),
+      db.menuCategories.query().collect(),
+      db.menuItems.query().collect(),
+      db.orders.query().collect(),
+      db.orderItems.query().collect(),
+      db.users.query().collect(),
     ]);
   const orderById = new Map(orders.map((order) => [order.id, order]));
   const tableById = new Map(tables.map((table) => [table.id, table]));

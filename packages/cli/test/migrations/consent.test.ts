@@ -36,6 +36,10 @@ function scriptedAsk(answers: string[]): Ask & { prompts: string[] } {
 }
 
 const EVENT_OPTS = { args: {}, access: "public", matches: () => true } as const;
+const NON_UNIQUE_A_INDEX = "s_n_b_1_a";
+const NON_UNIQUE_B_INDEX = "s_n_b_1_b";
+const UNIQUE_AB_INDEX = "s_u_b_1_a_1_b";
+const UNIQUE_A_INDEX = "s_u_b_1_a";
 
 describe("describeSafeChanges", () => {
   test("safe column work renders; refused columns are subtracted by site", () => {
@@ -76,28 +80,28 @@ describe("describeSafeChanges", () => {
 
   test("indexes: drops and non-unique adds render; a clean unique add names the probe result", () => {
     const pre = defineSchema({
-      t: defineTable({ id: v.primaryKey(), a: v.string(), b: v.string() }).index("by_a", ["a"]),
+      t: defineTable({ id: v.primaryKey(), a: v.string(), b: v.string() }).index(["a"]),
     });
     const target = defineSchema({
       t: defineTable({ id: v.primaryKey(), a: v.string(), b: v.string() })
-        .index("by_b", ["b"])
-        .index("by_ab", ["a", "b"], { unique: true }),
+        .index(["b"])
+        .index(["a", "b"], { unique: true }),
     });
     expect(describeOf(pre, target)).toEqual([
-      'index "t.by_a" dropped',
-      'unique index "t.by_ab" added (no duplicates found)',
-      'index "t.by_b" added',
+      `index "t.${NON_UNIQUE_A_INDEX}" dropped`,
+      `index "t.${NON_UNIQUE_B_INDEX}" added`,
+      `unique index "t.${UNIQUE_AB_INDEX}" added (no duplicates found)`,
     ]);
   });
 
   test("a probed duplicate refusal subtracts its unique index from the safe lines", () => {
     const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), a: v.string() }) });
     const target = defineSchema({
-      t: defineTable({ id: v.primaryKey(), a: v.string() }).index("by_a", ["a"], { unique: true }),
+      t: defineTable({ id: v.primaryKey(), a: v.string() }).index(["a"], { unique: true }),
     });
     const probed: SchemaRefusal = {
       table: "t",
-      index: "by_a",
+      index: UNIQUE_A_INDEX,
       reason: "unique-index-duplicates",
       question: "2 duplicate groups",
       count: 2,

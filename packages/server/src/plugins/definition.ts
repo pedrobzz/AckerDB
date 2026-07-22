@@ -1,5 +1,5 @@
 import { validateArgsShape } from "../app/functions.ts";
-import type { DbReader, DbWriter } from "../database/types.ts";
+import type { DbReader, DbWriter } from "../database/query/types.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import { compareCodeUnits } from "../shared/ordering.ts";
 import { isPluginDefinitionId, isPluginIdentifier } from "./identifiers.ts";

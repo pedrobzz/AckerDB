@@ -37,7 +37,7 @@ const schema = defineSchema({
     body: v.string(),
     role,
     payload,
-  }).index("by_channel", ["channelId"]),
+  }).index(["channelId"]),
   jobs: defineTable({
     id: v.primaryKey(),
     note: v.string(),
@@ -73,7 +73,7 @@ export const list = query({
   access: "public",
   args: { channelId: v.bigint() },
   handler: (ctx, args) =>
-    ctx.db.messages.byChannel((q) => q.eq("channelId", args.channelId)).collect(),
+    ctx.db.messages.query().where((message) => message.channelId.eq(args.channelId)).collect(),
 });
 
 export const send = mutation({
@@ -111,6 +111,6 @@ import { query } from "../../_generated/server.ts";
 export const count = query({
   access: "public",
   args: {},
-  handler: (ctx) => ctx.db.messages.scan().count(),
+  handler: (ctx) => ctx.db.messages.query().count(),
 });
 `;

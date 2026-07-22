@@ -22,7 +22,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     key: v.string(),
     value: v.int(),
-  }).index("by_key", ["key"], { unique: true }),
+  }).index(["key"], { unique: true }),
 });
 type S = typeof schema;
 
@@ -97,7 +97,7 @@ pluginProcedure({
 const getCounter = typedQuery({
   args: { key: v.string() },
   access: (_ctx, args) => args.key.length > 0,
-  handler: (ctx, args) => ctx.db.counters.byKey((q) => q.eq("key", args.key)).unique(),
+  handler: (ctx, args) => ctx.db.counters.query().where((row) => row.key.eq(args.key)).unique(),
 });
 
 const bump = typedMutation({
@@ -106,7 +106,7 @@ const bump = typedMutation({
   handler: async (ctx, args) => {
     // a mutation calls a query with its own ctx: read/write ⊇ read-only
     const existing = await getCounter(ctx, { key: args.key });
-    return ctx.db.counters.byKey.upsert({ key: args.key }, { value: (existing?.value ?? 0) + 1 });
+    return ctx.db.counters.upsert({ key: args.key }, { value: (existing?.value ?? 0) + 1 });
   },
 });
 

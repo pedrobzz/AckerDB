@@ -11,6 +11,7 @@ import {
   defineSchema,
   defineTable,
   Engine,
+  indexSqlName,
   makeDbWriter,
   newWriteCollector,
   reconcile,
@@ -53,11 +54,31 @@ const entriesAdditive = defineSchema({
     id: v.primaryKey(),
     value: v.string(),
     note: v.string().nullable(),
-  }).index("by_note", ["note"]),
+  }).index(["note"]),
 });
 
 const entriesUnsafe = defineSchema({
   entries: defineTable({ id: v.primaryKey(), value: v.int() }),
+});
+
+const vectorEntriesBase = defineSchema({
+  entries: defineTable({ id: v.primaryKey(), value: v.string() }),
+});
+
+const vectorEntriesV2 = defineSchema({
+  entries: defineTable({
+    id: v.primaryKey(),
+    value: v.string(),
+    embedding: v.vector(2).nullable(),
+  }),
+});
+
+const vectorEntriesV3 = defineSchema({
+  entries: defineTable({
+    id: v.primaryKey(),
+    value: v.string(),
+    embedding: v.vector(3).nullable(),
+  }),
 });
 
 function desired(
@@ -142,9 +163,9 @@ describe("Plugin storage inventory", () => {
 
     engine = open(path);
     result = reconcilePluginStorage(engine, mounts);
-    expect(await dbFor(engine, result.scopes.get("alpha")!).entries.scan().collect())
+    expect(await dbFor(engine, result.scopes.get("alpha")!).entries.query().collect())
       .toEqual([{ id: 1n, value: "left" }]);
-    expect(await dbFor(engine, result.scopes.get("beta")!).entries.scan().collect())
+    expect(await dbFor(engine, result.scopes.get("beta")!).entries.query().collect())
       .toEqual([{ id: 1n, value: "right" }]);
     engine.close("clean");
   });
@@ -194,12 +215,64 @@ describe("Plugin storage inventory", () => {
 
     const target = desired({ alpha: { definitionId: "cache", schema: entriesAdditive } });
     result = reconcilePluginStorage(engine, target);
+    const noteIndex = entriesAdditive.tables.entries!.indexes[0]!.name;
     expect(result.applied).toEqual([
       "alpha: added nullable column entries.note",
-      "alpha: created index entries.by_note",
+      `alpha: created index entries.${noteIndex}`,
     ]);
-    expect(await dbFor(engine, result.scopes.get("alpha")!).entries.scan().collect())
+    expect(await dbFor(engine, result.scopes.get("alpha")!).entries.query().collect())
       .toEqual([{ id: 1n, value: "kept", note: null }]);
+    engine.close("clean");
+  });
+
+  test("private vector columns share CRUD, reopen, and migration rules", async () => {
+    const path = freshPath();
+    let engine = open(path);
+    const base = {
+      vectors: { definitionId: "vectors", schema: vectorEntriesBase },
+    } satisfies DesiredPluginMounts;
+    let installed = reconcilePluginStorage(engine, base);
+    const id = await dbFor(engine, installed.scopes.get("vectors")!).entries.insert({
+      value: "kept",
+    });
+
+    const withVectors = {
+      vectors: { definitionId: "vectors", schema: vectorEntriesV2 },
+    } satisfies DesiredPluginMounts;
+    installed = reconcilePluginStorage(engine, withVectors);
+    expect(installed.applied).toContain(
+      "vectors: added nullable column entries.embedding",
+    );
+    let entries = dbFor(engine, installed.scopes.get("vectors")!).entries;
+    expect((await entries.get(id)).embedding).toBeNull();
+
+    await entries.patch(id, { embedding: [1.1, -0] });
+    await entries.replace(id, { value: "replaced", embedding: [0, 1] });
+    const disposable = await entries.insert({ value: "delete", embedding: [1, 0] });
+    await entries.delete(disposable);
+    expect(await entries.get(disposable)).toBeNull();
+    expect(await entries
+      .nearest("embedding", [0, 1], { metric: "l2" })
+      .first()).toMatchObject({ row: { id, value: "replaced", embedding: [0, 1] }, distance: 0 });
+    engine.close("clean");
+
+    engine = open(path);
+    installed = reconcilePluginStorage(engine, withVectors);
+    entries = dbFor(engine, installed.scopes.get("vectors")!).entries;
+    expect(await entries.get(id)).toEqual({ id, value: "replaced", embedding: [0, 1] });
+
+    const changedDimensions = {
+      vectors: { definitionId: "vectors", schema: vectorEntriesV3 },
+    } satisfies DesiredPluginMounts;
+    const error = requirementsOf(() => reconcilePluginStorage(engine, changedDimensions));
+    const reset = error.requirements[0] as PluginStorageResetRequirement;
+    expect(reset).toMatchObject({
+      kind: "reset",
+      mount: "vectors",
+      reason: "unsafe-schema",
+    });
+    const resetScope = resetPluginStorage(engine, changedDimensions, reset);
+    expect(await dbFor(engine, resetScope).entries.query().collect()).toEqual([]);
     engine.close("clean");
   });
 
@@ -209,7 +282,7 @@ describe("Plugin storage inventory", () => {
     });
     const uniqueSchema = defineSchema({
       entries: defineTable({ id: v.primaryKey(), value: v.string() })
-        .index("by_value", ["value"], { unique: true }),
+        .index(["value"], { unique: true }),
     });
     const engine = open(freshPath());
     const initial = {
@@ -258,9 +331,9 @@ describe("Plugin storage inventory", () => {
     expect(reset).toMatchObject({ kind: "reset", mount: "alpha", reason: "unsafe-schema" });
     expect(reset.currentFingerprint).not.toBe(reset.targetFingerprint);
     const resetScope = resetPluginStorage(engine, unsafe, reset);
-    expect(await dbFor(engine, resetScope).entries.scan().collect()).toEqual([]);
+    expect(await dbFor(engine, resetScope).entries.query().collect()).toEqual([]);
     expect(engine.writer.query("SELECT value FROM roots").all()).toEqual([{ value: "root" }]);
-    expect(await dbFor(engine, installed.scopes.get("sibling")!).entries.scan().collect())
+    expect(await dbFor(engine, installed.scopes.get("sibling")!).entries.query().collect())
       .toEqual([{ id: 1n, value: "keep" }]);
 
     const changedDefinition = {
@@ -333,8 +406,8 @@ describe("Plugin storage inventory", () => {
     expect(error.requirements).toHaveLength(1);
     dropPluginStorage(engine, target, drop);
     const reconciled = reconcilePluginStorage(engine, target);
-    expect(await dbFor(engine, reconciled.scopes.get("newCache")!).entries.scan().collect()).toEqual([]);
-    expect(await dbFor(engine, reconciled.scopes.get("sibling")!).entries.scan().collect())
+    expect(await dbFor(engine, reconciled.scopes.get("newCache")!).entries.query().collect()).toEqual([]);
+    expect(await dbFor(engine, reconciled.scopes.get("sibling")!).entries.query().collect())
       .toEqual([{ id: 1n, value: "sibling" }]);
     expect(engine.writer.query("SELECT value FROM roots").all()).toEqual([{ value: "root" }]);
     engine.close("clean");
@@ -501,24 +574,25 @@ describe("Plugin storage inventory", () => {
 
   test("malformed inventory, physical objects, and scoped tags fail reopen", () => {
     const corrupt = (
-      mutate: (db: Database, physical: string, tagIdentity: string) => void,
+      mutate: (db: Database, physical: string, tagIdentity: string, physicalIndex: string) => void,
     ): void => {
       const path = freshPath();
       const engine = open(path);
       const tagged = defineSchema({
         entries: defineTable({ id: v.primaryKey(), status: v.enum("Status", ["ready"]) })
-          .index("by_status", ["status"]),
+          .index(["status"]),
       });
       const installed = reconcilePluginStorage(engine, {
         cache: { definitionId: "cache", schema: tagged },
       });
       const scope = installed.scopes.get("cache")!;
       const physical = scope.plan("entries").name;
+      const physicalIndex = indexSqlName(physical, scope.plan("entries").indexes[0]!.name);
       const tagIdentity = scope.tagIdentity("Status");
       engine.close("clean");
 
       const raw = new Database(path, { safeIntegers: true });
-      mutate(raw, physical, tagIdentity);
+      mutate(raw, physical, tagIdentity, physicalIndex);
       raw.close(false);
       expect(() => new Engine(rootSchema, path)).toThrow(CorruptDatabaseError);
     };
@@ -529,8 +603,8 @@ describe("Plugin storage inventory", () => {
     corrupt((db, physical) => {
       db.exec(`DROP TABLE "${physical}"`);
     });
-    corrupt((db, physical) => {
-      db.exec(`DROP INDEX "ix_${physical}_by_status"`);
+    corrupt((db, _physical, _tagIdentity, physicalIndex) => {
+      db.exec(`DROP INDEX "${physicalIndex}"`);
     });
     corrupt((db, _physical, tagIdentity) => {
       db.query("DELETE FROM _dbzz_tags WHERE type = ?").run(tagIdentity);

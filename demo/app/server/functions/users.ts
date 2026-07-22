@@ -39,7 +39,8 @@ export const ensureCurrent = mutation({
       return byIdentity.id;
     }
     const byEmail = await ctx.db.users
-      .byEmail((q) => q.eq("email", email))
+      .query()
+      .where((user) => user.email.eq(email))
       .unique();
     if (byEmail !== null) {
       if (
@@ -85,12 +86,14 @@ export const list = query({
   access: staffAccess,
   args: {},
   handler: async (ctx) => {
-    const users = await ctx.db.users.scan().order("asc").collect();
+    const users = await ctx.db.users.query().collect();
     return Promise.all(
       users.map(async (user) => {
         const [orders, activeOrder] = await Promise.all([
           ctx.db.orders
-            .byUserOpenedAt((q) => q.eq("userId", user.id))
+            .query()
+            .where((order) => order.userId.eq(user.id))
+            .orderBy((order) => order.openedAt.asc())
             .collect(),
           openOrderForUser(ctx.db, user.id),
         ]);
@@ -114,8 +117,10 @@ export const detail = query({
     const user =
       (await ctx.db.users.get(args.id)) ?? notFound("Guest not found");
     const orders = await ctx.db.orders
-      .byUserOpenedAt((q) => q.eq("userId", user.id))
-      .order("desc")
+      .query()
+      .where((order) => order.userId.eq(user.id))
+      .orderBy((order) => order.openedAt.desc())
+      .thenBy((order) => order.id.desc())
       .collect();
     return {
       ...user,
@@ -133,7 +138,7 @@ export const create = mutation({
     const name = cleanName(args.name);
     const email = normalizeEmail(args.email);
     if (
-      (await ctx.db.users.byEmail((q) => q.eq("email", email)).unique()) !==
+      (await ctx.db.users.query().where((user) => user.email.eq(email)).unique()) !==
       null
     ) {
       conflict("A guest with this email already exists");
@@ -161,7 +166,8 @@ export const update = mutation({
       conflict("A linked guest's login email cannot be changed");
     }
     const owner = await ctx.db.users
-      .byEmail((q) => q.eq("email", email))
+      .query()
+      .where((user) => user.email.eq(email))
       .unique();
     if (owner !== null && owner.id !== user.id)
       conflict("A guest with this email already exists");

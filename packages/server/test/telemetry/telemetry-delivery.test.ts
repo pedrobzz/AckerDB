@@ -57,7 +57,7 @@ const functions = {
     list: query({
       access: "public",
       args: {},
-      handler: (ctx: Ctx) => ctx.db.notes.scan().collect(),
+      handler: (ctx: Ctx) => ctx.db.notes.query().collect(),
     }),
     large: query({
       access: "public",

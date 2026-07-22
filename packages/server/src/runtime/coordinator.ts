@@ -9,10 +9,10 @@ import {
 import {
   makeDbWriter,
   newWriteCollector,
-  type DbStatementObserver,
   type WriteCollector,
 } from "../database/access.ts";
-import type { DbWriter } from "../database/types.ts";
+import type { DbStatementObserver } from "../database/statement-observation.ts";
+import type { DbWriter } from "../database/query/types.ts";
 import type { Engine } from "../database/engine.ts";
 import { DbzzError, throwIfAborted } from "../shared/errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";

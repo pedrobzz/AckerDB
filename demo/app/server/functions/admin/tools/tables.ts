@@ -41,13 +41,13 @@ export const getTables = mcpTool({
     ctx.tx(async (tx) => {
       const limit = clampLimit(args.limit);
       const activeOnly = args.activeOnly ?? false;
-      const rows = await tx.db.restaurantTables
-        .byNumber((q) => q)
-        .order("asc")
-        .collect();
-      const selected = rows
-        .filter((table) => (activeOnly ? table.active : true))
-        .slice(0, limit);
+      const query = tx.db.restaurantTables.query();
+      const selectedQuery = activeOnly
+        ? query.where((table) => table.active.eq(true))
+        : query;
+      const selected = await selectedQuery
+        .orderBy((table) => table.number.asc())
+        .take(limit);
       const tables = await Promise.all(
         selected.map(async (table) => {
           const order = await openOrderForTable(tx.db, table.id);

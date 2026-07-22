@@ -118,7 +118,7 @@ function registry(): Registry {
       list: query({
         access: "public",
         args: {},
-        handler: (ctx: Ctx) => ctx.db.messages.scan().collect(),
+        handler: (ctx: Ctx) => ctx.db.messages.query().collect(),
       }),
       add: mutation({
         access: "public",

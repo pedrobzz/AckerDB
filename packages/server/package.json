@@ -1,6 +1,6 @@
 {
   "name": "@dbzz/server",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
   "files": [
     "src"
@@ -10,9 +10,10 @@
     "./mcp": "./src/mcp/index.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:0.6.0",
+    "@dbzz/core": "workspace:0.7.0",
     "@modelcontextprotocol/sdk": "1.29.0",
-    "jose": "6.2.3"
+    "jose": "6.2.3",
+    "numkong": "7.7.1"
   },
   "devDependencies": {
     "ai": "7.0.29"

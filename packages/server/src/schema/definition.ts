@@ -5,6 +5,7 @@
  */
 import type { FunctionReference, RegisteredFunction } from "@dbzz/core";
 import {
+  baseValidator,
   ValidationError,
   type Descriptor,
   type Expand,
@@ -38,6 +39,7 @@ function checkName(name: string, what: string): void {
 function assertStoredValidator(
   validator: Validator<unknown, string>,
   where: string,
+  directColumn = false,
 ): void {
   if (validator.kind === "optional" || validator.kind === "nullish") {
     throw new ValidationError(
@@ -48,13 +50,23 @@ function assertStoredValidator(
     assertStoredValidator(
       (validator as unknown as { readonly inner: Validator<unknown, string> }).inner,
       where,
+      directColumn,
     );
+    return;
+  }
+  if (validator.kind === "vector") {
+    if (!directColumn) {
+      throw new ValidationError(
+        `${where}: v.vector() may only be stored as a direct column, optionally nullable`,
+      );
+    }
     return;
   }
   if (validator.kind === "array") {
     assertStoredValidator(
       (validator as unknown as { readonly element: Validator<unknown, string> }).element,
       `${where}[]`,
+      false,
     );
     return;
   }
@@ -73,13 +85,6 @@ function assertStoredValidator(
       assertStoredValidator(member, `${where}<${name}>`);
     }
   }
-}
-
-/** Unwrap nullable to the underlying validator. */
-function unwrap(validator: Validator<unknown, string>): Validator<unknown, string> {
-  return validator.kind === "nullable"
-    ? (validator as unknown as { inner: Validator<unknown, string> }).inner
-    : validator;
 }
 
 const INDEXABLE = new Set(["string", "int", "float", "bigint", "identity", "boolean", "enum", "union", "scheduleAt"]);
@@ -121,12 +126,27 @@ interface RuntimeEventSubscriptionDefinition {
   readonly matches: (row: unknown, args: unknown) => boolean;
 }
 
-type IndexMeta = { columns: readonly string[]; unique: boolean };
+export type IndexMeta = {
+  readonly columns: readonly string[];
+  readonly unique: boolean;
+  readonly algorithm: "btree" | "direct";
+};
+
+/**
+ * Stable structural identity for an index within a physical table. Column
+ * lengths make the encoding injective without retaining a public name.
+ */
+function structuralIndexName(
+  columns: readonly string[],
+  options: Required<IndexOptions>,
+): string {
+  const encodedColumns = columns.map((column) => `${column.length}_${column}`).join("_");
+  return `s_${options.unique ? "u" : "n"}_${options.algorithm === "direct" ? "d" : "b"}_${encodedColumns}`;
+}
 
 export class TableDef<
   Cols extends ObjectShape = ObjectShape,
-  // eslint-disable-next-line @typescript-eslint/ban-types
-  Ixs extends Record<string, IndexMeta> = {},
+  Ixs extends readonly IndexMeta[] = readonly IndexMeta[],
   Kind extends "table" | "event" = "table" | "event",
   EventArgs extends ObjectShape = ObjectShape,
 > {
@@ -151,7 +171,7 @@ export class TableDef<
     let scheduleAtCount = 0;
     for (const [name, validator] of Object.entries(columns)) {
       checkName(name, "column");
-      assertStoredValidator(validator, `column "${name}"`);
+      assertStoredValidator(validator, `column "${name}"`, true);
       if (validator.kind === "pk") pkCount++;
       if (validator.kind === "scheduleAt") scheduleAtCount++;
       if (validator.kind === "tag") {
@@ -180,65 +200,86 @@ export class TableDef<
   }
 
   index<
-    const N extends string,
     const C extends readonly (keyof Cols & string)[],
     const O extends IndexOptions = Record<never, never>,
   >(
-    name: N,
     columns: C,
     opts?: O,
   ): TableDef<
     Cols,
-    Ixs & Record<N, { columns: C; unique: O["unique"] extends true ? true : false }>,
+    readonly [
+      ...Ixs,
+      {
+        columns: C;
+        unique: O["unique"] extends true ? true : false;
+        algorithm: O["algorithm"] extends "direct" ? "direct" : "btree";
+      },
+    ],
     Kind,
     EventArgs
   > {
-    checkName(name, "index");
     if (this.kind === "event") {
       throw new ValidationError(
-        `index "${name}": event tables never persist rows, so an index could never be used`,
+        "index: event tables never persist rows, so an index could never be used",
       );
     }
-    if (this.indexes.some((ix) => ix.name === name)) {
-      throw new ValidationError(`duplicate index name "${name}"`);
-    }
-    if (columns.length === 0) throw new ValidationError(`index "${name}": no columns`);
+    if (columns.length === 0) throw new ValidationError("index: no columns");
     if (new Set(columns).size !== columns.length) {
-      throw new ValidationError(`index "${name}": duplicate columns`);
+      throw new ValidationError("index: duplicate columns");
+    }
+    if (
+      this.indexes.some(
+        (index) =>
+          index.columns.length === columns.length &&
+          index.columns.every((column, position) => column === columns[position]),
+      )
+    ) {
+      throw new ValidationError(
+        `duplicate index columns [${columns.map((column) => JSON.stringify(column)).join(", ")}]`,
+      );
     }
     for (const column of columns) {
       if (!Object.hasOwn(this.columns, column)) {
-        throw new ValidationError(`index "${name}": unknown column "${column}"`);
+        throw new ValidationError(`index: unknown column "${column}"`);
       }
       const validator = this.columns[column]!;
       if (validator.kind === "pk") {
         throw new ValidationError(
-          `index "${name}": the primary key is already the table's storage key; indexing it is redundant`,
+          "index: the primary key is already the table's storage key; indexing it is redundant",
         );
       }
-      const inner = unwrap(validator);
+      const inner = baseValidator(validator);
       if (!INDEXABLE.has(inner.kind)) {
         throw new ValidationError(
-          `index "${name}": column "${column}" (${inner.kind}) is not indexable — promote the field you need into its own scalar column`,
+          `index: column "${column}" (${inner.kind}) is not indexable — promote the field you need into its own scalar column`,
         );
       }
     }
     const algorithm = opts?.algorithm ?? "btree";
     if (algorithm === "direct") {
       if (columns.length !== 1) {
-        throw new ValidationError(`index "${name}": direct indexes are single-column`);
+        throw new ValidationError("index: direct indexes are single-column");
       }
       const validator = this.columns[columns[0]!]!;
       if (!DIRECT_INDEXABLE.has(validator.kind)) {
         throw new ValidationError(
-          `index "${name}": direct indexes need a dense non-negative integer column (bigint, identity, enum or union tag)`,
+          "index: direct indexes need a dense non-negative integer column (bigint, identity, enum or union tag)",
         );
       }
     }
-    this.indexes.push({ name, columns, unique: opts?.unique ?? false, algorithm });
+    const unique = opts?.unique ?? false;
+    const name = structuralIndexName(columns, { unique, algorithm });
+    this.indexes.push({ name, columns, unique, algorithm });
     return this as unknown as TableDef<
       Cols,
-      Ixs & Record<N, { columns: C; unique: O["unique"] extends true ? true : false }>,
+      readonly [
+        ...Ixs,
+        {
+          columns: C;
+          unique: O["unique"] extends true ? true : false;
+          algorithm: O["algorithm"] extends "direct" ? "direct" : "btree";
+        },
+      ],
       Kind,
       EventArgs
     >;
@@ -266,14 +307,14 @@ export function isTableDef(value: unknown): value is TableDef {
 
 export function defineTable<Cols extends ObjectShape>(
   columns: Cols,
-): TableDef<Cols, Record<never, never>, "table"> {
+): TableDef<Cols, readonly [], "table"> {
   return new TableDef(columns, "table");
 }
 
 export function defineEventTable<Cols extends ObjectShape, Args extends ObjectShape>(
   columns: Cols,
   subscription: EventSubscriptionDefinition<Cols, Args>,
-): TableDef<Cols, Record<never, never>, "event", Args> {
+): TableDef<Cols, readonly [], "event", Args> {
   if (subscription === undefined || subscription === null || typeof subscription !== "object") {
     throw new TypeError("event table subscription metadata is required");
   }
@@ -315,15 +356,6 @@ function singularize(word: string): string {
   if (lower.endsWith("s") && !lower.endsWith("ss")) return word.slice(0, -1);
   return word;
 }
-
-/** Runtime version of the type-level CamelCase: "by_channel_time" -> "byChannelTime". */
-export function camelCase(snake: string): string {
-  return snake.replace(/_([a-zA-Z0-9])/g, (_, c: string) => c.toUpperCase());
-}
-
-export type CamelCase<S extends string> = S extends `${infer H}_${infer T}`
-  ? `${H}${Capitalize<CamelCase<T>>}`
-  : S;
 
 export class Schema<T extends Record<string, TableDef> = Record<string, TableDef>> {
   readonly tables: T;
@@ -458,14 +490,13 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
 // ---------------------------------------------------------------------------
 // Type utilities shared by ctx.db typing and codegen.
 
-export type TableColumns<TD> = TD extends TableDef<infer C, Record<string, IndexMeta>, "table" | "event", ObjectShape>
+export type TableColumns<TD> = TD extends TableDef<infer C, readonly IndexMeta[], "table" | "event", ObjectShape>
   ? C
   : never;
 export type TableIndexes<TD> = TD extends TableDef<ObjectShape, infer I, "table" | "event", ObjectShape> ? I : never;
-export type TableKind<TD> = TD extends TableDef<ObjectShape, Record<string, IndexMeta>, infer K, ObjectShape>
+export type TableKind<TD> = TD extends TableDef<ObjectShape, readonly IndexMeta[], infer K, ObjectShape>
   ? K
   : never;
-export type { IndexMeta };
 
 export type RowShape<C extends ObjectShape> = Expand<{ [K in keyof C]: InferValidator<C[K]> }>;
 
@@ -497,6 +528,6 @@ export type RowOf<S, T extends keyof SchemaTables<S>> = RowShape<TableColumns<Sc
 
 /** Caller input accepted by an event table's subscription argument schema. */
 export type EventArgsOf<S, T extends keyof SchemaTables<S>> =
-  SchemaTables<S>[T] extends TableDef<ObjectShape, Record<string, IndexMeta>, "event", infer A>
+  SchemaTables<S>[T] extends TableDef<ObjectShape, readonly IndexMeta[], "event", infer A>
     ? Expand<InferInputShape<A>>
     : never;

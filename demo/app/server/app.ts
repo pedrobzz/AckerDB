@@ -35,9 +35,9 @@ const schema = defineSchema({
     createdAt: v.int(),
     updatedAt: v.int(),
   })
-    .index("by_identity", ["identity"], { unique: true })
-    .index("by_email", ["email"], { unique: true })
-    .index("by_name", ["name"]),
+    .index(["identity"], { unique: true })
+    .index(["email"], { unique: true })
+    .index(["name"]),
 
   restaurantTables: defineTable({
     id: v.primaryKey(),
@@ -46,7 +46,7 @@ const schema = defineSchema({
     active: v.boolean(),
     createdAt: v.int(),
     updatedAt: v.int(),
-  }).index("by_number", ["number"], { unique: true }),
+  }).index(["number"], { unique: true }),
 
   menuCategories: defineTable({
     id: v.primaryKey(),
@@ -56,8 +56,8 @@ const schema = defineSchema({
     createdAt: v.int(),
     updatedAt: v.int(),
   })
-    .index("by_name", ["name"], { unique: true })
-    .index("by_sort_order", ["sortOrder"]),
+    .index(["name"], { unique: true })
+    .index(["sortOrder"]),
 
   menuItems: defineTable({
     id: v.primaryKey(),
@@ -71,8 +71,8 @@ const schema = defineSchema({
     createdAt: v.int(),
     updatedAt: v.int(),
   })
-    .index("by_category", ["categoryId", "sortOrder"])
-    .index("by_name", ["name"], { unique: true }),
+    .index(["categoryId", "sortOrder"])
+    .index(["name"], { unique: true }),
 
   orders: defineTable({
     id: v.primaryKey(),
@@ -85,10 +85,10 @@ const schema = defineSchema({
     openedAt: v.int(),
     closedAt: v.int().nullable(),
   })
-    .index("by_user_opened_at", ["userId", "openedAt"])
-    .index("by_status_opened_at", ["status", "openedAt"])
-    .index("by_open_user", ["openUserId"], { unique: true })
-    .index("by_open_table", ["openTableId"], { unique: true }),
+    .index(["userId", "openedAt"])
+    .index(["status", "openedAt"])
+    .index(["openUserId"], { unique: true })
+    .index(["openTableId"], { unique: true }),
 
   orderItems: defineTable({
     id: v.primaryKey(),
@@ -103,9 +103,9 @@ const schema = defineSchema({
     orderedAt: v.int(),
     statusChangedAt: v.int(),
   })
-    .index("by_order", ["orderId", "orderedAt"])
-    .index("by_order_status", ["orderId", "status"])
-    .index("by_status_changed_at", ["status", "statusChangedAt"]),
+    .index(["orderId", "orderedAt"])
+    .index(["orderId", "status"])
+    .index(["status", "statusChangedAt"]),
 
   kitchenReminders: defineTable({
     id: v.primaryKey(),
@@ -113,14 +113,14 @@ const schema = defineSchema({
     expectedStatus: itemStatus,
     at: v.scheduleAt(),
   })
-    .index("by_order_item", ["orderItemId"], { unique: true })
+    .index(["orderItemId"], { unique: true })
     .scheduled("reminders.fire"),
 
   setupState: defineTable({
     id: v.primaryKey(),
     key: v.string(),
     completedAt: v.int(),
-  }).index("by_key", ["key"], { unique: true }),
+  }).index(["key"], { unique: true }),
 
   orderEvents: defineEventTable(
     {

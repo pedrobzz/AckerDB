@@ -48,22 +48,18 @@ export const getMenuItems = mcpTool({
       const limit = clampLimit(args.limit);
       const activeOnly = args.activeOnly ?? false;
       const categoryId = args.categoryId;
-      const rows =
-        categoryId === undefined
-          ? (await tx.db.menuItems.scan().collect()).sort((a, b) =>
-              a.categoryId === b.categoryId
-                ? a.sortOrder - b.sortOrder
-                : a.categoryId < b.categoryId
-                  ? -1
-                  : 1,
-            )
-          : await tx.db.menuItems
-              .byCategory((q) => q.eq("categoryId", categoryId))
-              .order("asc")
-              .collect();
+      let query = tx.db.menuItems.query();
+      if (categoryId !== undefined) {
+        query = query.where((item) => item.categoryId.eq(categoryId));
+      }
+      if (activeOnly) {
+        query = query.where((item) => item.active.eq(true));
+      }
+      const rows = await query
+        .orderBy((item) => item.categoryId.asc())
+        .thenBy((item) => item.sortOrder.asc())
+        .take(limit);
       const items = rows
-        .filter((item) => (activeOnly ? item.active : true))
-        .slice(0, limit)
         .map((item) => ({
           id: item.id,
           categoryId: item.categoryId,

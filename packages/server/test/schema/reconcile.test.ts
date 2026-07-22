@@ -8,6 +8,7 @@ import {
   defineSchema,
   defineTable,
   Engine,
+  indexSqlName,
   makeDbWriter,
   newWriteCollector,
   probeUniqueIndex,
@@ -59,7 +60,7 @@ const baseSchema = () =>
       id: v.primaryKey(),
       name: v.string(),
       role: RRole(),
-    }).index("by_name", ["name"]),
+    }).index(["name"]),
   });
 
 describe("reconcile: bootstrap", () => {
@@ -87,7 +88,7 @@ describe("reconcile: shape-safe changes apply with data present", () => {
         name: v.string(),
         role: RRole(),
         bio: v.string().nullable(),
-      }).index("by_name", ["name"]),
+      }).index(["name"]),
       posts: defineTable({ id: v.primaryKey(), title: v.string() }),
       pings: pings(),
     });
@@ -115,7 +116,7 @@ describe("reconcile: shape-safe changes apply with data present", () => {
         name: v.string(),
         bio: v.string().nullable(),
         role: RRole(),
-      }).index("by_name", ["name"]),
+      }).index(["name"]),
     });
     const b = open(grown, path);
     expect(b.applied).toContain("added nullable column users.bio");
@@ -139,7 +140,7 @@ describe("reconcile: shape-safe changes apply with data present", () => {
         id: v.primaryKey(),
         name: v.string().nullable(),
         role: RRole(),
-      }).index("by_name", ["name"]),
+      }).index(["name"]),
     });
     const b = open(widened, path);
     expect(b.applied).toEqual(["rebuilt table users"]);
@@ -152,7 +153,7 @@ describe("reconcile: shape-safe changes apply with data present", () => {
     const path = freshPath();
     const withUnion = (variants: Record<string, ReturnType<typeof v.object> | ReturnType<typeof v.string>>) =>
       defineSchema({
-        users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }).index("by_name", ["name"]),
+        users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }).index(["name"]),
         posts: defineTable({ id: v.primaryKey(), body: v.union("PBody", variants) }),
       });
     const a = open(withUnion({ text: v.string(), image: v.object({ url: v.string() }) }), path);
@@ -166,7 +167,7 @@ describe("reconcile: shape-safe changes apply with data present", () => {
         id: v.primaryKey(),
         name: v.string(),
         role: v.enum("RRole", ["guest", "admin", "trial", "member"]),
-      }).index("by_name", ["name"]),
+      }).index(["name"]),
       posts: defineTable({
         id: v.primaryKey(),
         body: v.union("PBody", { text: v.string(), image: v.object({ url: v.string() }), video: v.string() }),
@@ -182,19 +183,23 @@ describe("reconcile: shape-safe changes apply with data present", () => {
 
   test("non-unique index lifecycle: add, change, drop", async () => {
     const path = freshPath();
-    const a = open(baseSchema(), path);
+    const initial = baseSchema();
+    const a = open(initial, path);
     await a.db.users.insert({ name: "ana", role: "admin" });
     a.engine.close("clean");
 
     // change the existing index's columns, add a second index
     const changed = defineSchema({
       users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() })
-        .index("by_name", ["name", "role"])
-        .index("by_role", ["role"]),
+        .index(["name", "role"])
+        .index(["role"]),
     });
     const b = open(changed, path);
-    expect(b.applied).toContain("recreated index users.by_name");
-    expect(b.applied).toContain("created index users.by_role");
+    const initialName = initial.tables.users!.indexes[0]!.name;
+    const [composite, role] = changed.tables.users!.indexes;
+    expect(b.applied).toContain(`dropped index users.${initialName}`);
+    expect(b.applied).toContain(`created index users.${composite!.name}`);
+    expect(b.applied).toContain(`created index users.${role!.name}`);
     expect(await b.db.users.get(1n)).toMatchObject({ name: "ana" });
     b.engine.close("clean");
 
@@ -203,8 +208,8 @@ describe("reconcile: shape-safe changes apply with data present", () => {
       users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }),
     });
     const c = open(dropped, path);
-    expect(c.applied).toContain("dropped index users.by_name");
-    expect(c.applied).toContain("dropped index users.by_role");
+    expect(c.applied).toContain(`dropped index users.${composite!.name}`);
+    expect(c.applied).toContain(`dropped index users.${role!.name}`);
     c.engine.close("clean");
   });
 
@@ -344,7 +349,7 @@ describe("reconcile: shape-unsafe changes refuse even on an empty table", () => 
 
 describe("reconcile: optimistic unique index", () => {
   const uniqueName = defineSchema({
-    users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }).index("by_name", ["name"], {
+    users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole() }).index(["name"], {
       unique: true,
     }),
   });
@@ -357,9 +362,13 @@ describe("reconcile: optimistic unique index", () => {
     a.engine.close("clean");
 
     const b = open(uniqueName, path);
-    expect(b.applied).toContain("recreated index users.by_name");
+    const baseIndex = baseSchema().tables.users!.indexes[0]!.name;
+    const uniqueIndex = uniqueName.tables.users!.indexes[0]!.name;
+    expect(b.applied).toContain(`dropped index users.${baseIndex}`);
+    expect(b.applied).toContain(`created index users.${uniqueIndex}`);
     const sql = (
-      b.engine.writer.query("SELECT sql FROM sqlite_master WHERE name = 'ix_users_by_name'").get() as { sql: string }
+      b.engine.writer.query("SELECT sql FROM sqlite_master WHERE name = ?")
+        .get(indexSqlName("users", uniqueIndex)) as { sql: string }
     ).sql;
     expect(sql).toContain("UNIQUE");
     b.engine.close("clean");
@@ -375,7 +384,7 @@ describe("reconcile: optimistic unique index", () => {
         name: v.string(),
         role: RRole(),
         nick: v.string().nullable(),
-      }).index("by_nick", ["nick"], { unique: true }),
+      }).index(["nick"], { unique: true }),
     });
     const path = freshPath();
     const a = open(nullable, path);
@@ -385,7 +394,9 @@ describe("reconcile: optimistic unique index", () => {
 
     // two NULL nicks group together in SQL but never collide in a unique index
     const b = open(uniqueNick, path);
-    expect(b.applied).toContain("created index users.by_nick");
+    expect(b.applied).toContain(
+      `created index users.${uniqueNick.tables.users!.indexes[0]!.name}`,
+    );
     b.engine.close("clean");
   });
 
@@ -396,7 +407,7 @@ describe("reconcile: optimistic unique index", () => {
         name: v.string(),
         role: RRole(),
         slug: v.string().nullable(),
-      }).index("by_slug", ["slug"], { unique: true }),
+      }).index(["slug"], { unique: true }),
     });
     const path = freshPath();
     const a = open(baseSchema(), path);
@@ -406,7 +417,9 @@ describe("reconcile: optimistic unique index", () => {
     // the probed column is not physical yet; existing rows will hold NULL
     const b = open(withNew, path);
     expect(b.applied).toContain("added nullable column users.slug");
-    expect(b.applied).toContain("created index users.by_slug");
+    expect(b.applied).toContain(
+      `created index users.${withNew.tables.users!.indexes[0]!.name}`,
+    );
     b.engine.close("clean");
   });
 
@@ -420,8 +433,10 @@ describe("reconcile: optimistic unique index", () => {
     const refusing = new Engine(uniqueName, path);
     expect(() => reconcile(refusing)).toThrow("1 duplicate group(s)");
     // nothing touched: the index is still the old non-unique one
+    const baseIndex = baseSchema().tables.users!.indexes[0]!.name;
     const sql = (
-      refusing.writer.query("SELECT sql FROM sqlite_master WHERE name = 'ix_users_by_name'").get() as { sql: string }
+      refusing.writer.query("SELECT sql FROM sqlite_master WHERE name = ?")
+        .get(indexSqlName("users", baseIndex)) as { sql: string }
     ).sql;
     expect(sql).not.toContain("UNIQUE");
     // both duplicate rows survive
@@ -441,12 +456,13 @@ describe("probeUniqueIndex (the shared duplicate probe)", () => {
     return Object.assign(query, { calls });
   };
   const cols = { email: {} }; // a physically-present column
+  const emailIndex = "s_u_b_5_email";
 
   test("clean → null; duplicates → the target-world refusal carrying the count", () => {
-    expect(probeUniqueIndex(fakeQuery(0), "users", "by_email", ["email"], cols)).toBeNull();
-    expect(probeUniqueIndex(fakeQuery(3), "users", "by_email", ["email"], cols)).toEqual({
+    expect(probeUniqueIndex(fakeQuery(0), "users", emailIndex, ["email"], cols)).toBeNull();
+    expect(probeUniqueIndex(fakeQuery(3), "users", emailIndex, ["email"], cols)).toEqual({
       table: "users",
-      index: "by_email",
+      index: emailIndex,
       reason: "unique-index-duplicates",
       question: "unique index over (email); 3 duplicate group(s) exist",
       count: 3,
@@ -455,19 +471,19 @@ describe("probeUniqueIndex (the shared duplicate probe)", () => {
 
   test("a column not physically present yet cannot have duplicates — no query runs", () => {
     const q = fakeQuery(99); // even if the DB would report dupes, an absent column is never probed
-    expect(probeUniqueIndex(q, "users", "by_slug", ["slug"], cols)).toBeNull();
+    expect(probeUniqueIndex(q, "users", "s_u_b_4_slug", ["slug"], cols)).toBeNull();
     expect(q.calls).toEqual([]);
   });
 
   test("prototype names are not mistaken for physically present columns", () => {
     const q = fakeQuery(99);
-    expect(probeUniqueIndex(q, "users", "by_to_string", ["toString"], {})).toBeNull();
+    expect(probeUniqueIndex(q, "users", "s_u_b_8_toString", ["toString"], {})).toBeNull();
     expect(q.calls).toEqual([]);
   });
 
   test("NULLs are excluded and only present columns are grouped (the constraint's own semantics)", () => {
     const q = fakeQuery(0);
-    probeUniqueIndex(q, "users", "by_email", ["email"], cols);
+    probeUniqueIndex(q, "users", emailIndex, ["email"], cols);
     expect(q.calls[0]).toBe(
       'SELECT COUNT(*) AS n FROM (SELECT 1 FROM "users" WHERE "email" IS NOT NULL GROUP BY "email" HAVING COUNT(*) > 1)',
     );
@@ -475,7 +491,7 @@ describe("probeUniqueIndex (the shared duplicate probe)", () => {
 
   test("a renamed table probes the OLD physical names while the refusal names the target world", () => {
     const q = fakeQuery(2);
-    const refusal = probeUniqueIndex(q, "members", "by_email", ["email"], cols, {
+    const refusal = probeUniqueIndex(q, "members", emailIndex, ["email"], cols, {
       table: "users",
       column: (c) => (c === "email" ? "mail" : c),
     });
@@ -486,7 +502,7 @@ describe("probeUniqueIndex (the shared duplicate probe)", () => {
     // ...but the refusal points at the new (target) site and its logical columns.
     expect(refusal).toEqual({
       table: "members",
-      index: "by_email",
+      index: emailIndex,
       reason: "unique-index-duplicates",
       question: "unique index over (email); 2 duplicate group(s) exist",
       count: 2,
@@ -502,10 +518,8 @@ describe("reconcile: refusal surface", () => {
     a.close("clean");
 
     const withRequired = defineSchema({
-      users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole(), slug: v.string() }).index(
-        "by_name",
-        ["name"],
-      ),
+      users: defineTable({ id: v.primaryKey(), name: v.string(), role: RRole(), slug: v.string() })
+        .index(["name"]),
     });
     const b = new Engine(withRequired, path);
     try {
@@ -542,7 +556,7 @@ describe("reconcile: refusal surface", () => {
         name: v.string(),
         role: RRole(),
         slug: v.string(),
-      }).index("by_name", ["name"]),
+      }).index(["name"]),
       audit: defineTable({ id: v.primaryKey(), line: v.enum("AuditKind", ["created", "deleted"]) }),
     });
     const refusing = new Engine(mixed, path);
