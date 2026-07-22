@@ -40,36 +40,36 @@
     },
     "packages/cache": {
       "name": "@dbzz/cache",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "dependencies": {
-        "@dbzz/core": "workspace:0.6.0",
-        "@dbzz/server": "workspace:0.6.0",
+        "@dbzz/core": "workspace:0.7.0",
+        "@dbzz/server": "workspace:0.7.0",
       },
     },
     "packages/cli": {
       "name": "@dbzz/cli",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "bin": {
         "dbzz": "./src/commands/main.ts",
       },
       "dependencies": {
-        "@dbzz/core": "workspace:0.6.0",
-        "@dbzz/server": "workspace:0.6.0",
+        "@dbzz/core": "workspace:0.7.0",
+        "@dbzz/server": "workspace:0.7.0",
       },
     },
     "packages/client": {
       "name": "@dbzz/client",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "dependencies": {
-        "@dbzz/core": "workspace:0.6.0",
+        "@dbzz/core": "workspace:0.7.0",
       },
     },
     "packages/client-react": {
       "name": "@dbzz/client-react",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "dependencies": {
-        "@dbzz/client": "workspace:0.6.0",
-        "@dbzz/core": "workspace:0.6.0",
+        "@dbzz/client": "workspace:0.7.0",
+        "@dbzz/core": "workspace:0.7.0",
       },
       "devDependencies": {
         "@ai-sdk/react": "4.0.32",
@@ -98,13 +98,13 @@
     },
     "packages/core": {
       "name": "@dbzz/core",
-      "version": "0.6.0",
+      "version": "0.7.0",
     },
     "packages/server": {
       "name": "@dbzz/server",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "dependencies": {
-        "@dbzz/core": "workspace:0.6.0",
+        "@dbzz/core": "workspace:0.7.0",
         "@modelcontextprotocol/sdk": "1.29.0",
         "jose": "6.2.3",
         "numkong": "7.7.1",
