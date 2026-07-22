@@ -30,6 +30,10 @@ const schema = defineSchema({
     title: v.string(),
     embedding: v.vector(2).nullable(),
   }).index(["tenantId", "status"]),
+  permissions: defineTable({
+    id: v.primaryKey(),
+    allowed: v.boolean(),
+  }),
 });
 
 // Runtime integration is the boundary under test, not generated application types.
@@ -47,6 +51,16 @@ const functions = {
           .where((row: Ctx) => row.tenantId.eq(args.tenantId).and(row.status.eq("active")))
           .collect(),
     }),
+    allowedActive: query({
+      access: async (ctx: Ctx, args: Ctx) =>
+        (await ctx.db.permissions.get(args.permissionId))?.allowed === true,
+      args: { tenantId: v.bigint(), permissionId: v.bigint() },
+      handler: (ctx: Ctx, args: Ctx) =>
+        ctx.db.documents
+          .query()
+          .where((row: Ctx) => row.tenantId.eq(args.tenantId).and(row.status.eq("active")))
+          .collect(),
+    }),
     nearest: query({
       access: "public",
       args: { tenantId: v.bigint() },
@@ -55,6 +69,39 @@ const functions = {
           .nearest("embedding", [1, 0], { metric: "l2" })
           .where((row: Ctx) => row.tenantId.eq(args.tenantId))
           .take(1),
+    }),
+    unionBranches: query({
+      access: "public",
+      args: {},
+      handler: (ctx: Ctx) =>
+        ctx.db.documents
+          .query()
+          .where((row: Ctx) =>
+            row.tenantId.eq(1n).and(row.status.eq("active")).or(
+              row.tenantId.eq(2n).and(row.status.eq("archived")),
+            )
+          )
+          .collect(),
+    }),
+    membership: query({
+      access: "public",
+      args: {},
+      handler: (ctx: Ctx) =>
+        ctx.db.documents
+          .query()
+          .where((row: Ctx) =>
+            row.tenantId.in([3n, 4n]).and(row.status.eq("active"))
+          )
+          .collect(),
+    }),
+    range: query({
+      access: "public",
+      args: {},
+      handler: (ctx: Ctx) =>
+        ctx.db.documents
+          .query()
+          .where((row: Ctx) => row.tenantId.eq(5n).and(row.score.between(10, 20)))
+          .collect(),
     }),
     insert: mutation({
       access: "public",
@@ -88,6 +135,12 @@ const functions = {
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.documents.patch(args.id, { embedding: args.embedding }),
     }),
+    setScore: mutation({
+      access: "public",
+      args: { id: v.bigint(), score: v.int() },
+      handler: (ctx: Ctx, args: Ctx) =>
+        ctx.db.documents.patch(args.id, { score: args.score }),
+    }),
     setTitle: mutation({
       access: "public",
       args: { id: v.bigint(), title: v.string() },
@@ -98,6 +151,19 @@ const functions = {
       access: "public",
       args: { id: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.documents.delete(args.id),
+    }),
+  },
+  permissions: {
+    insert: mutation({
+      access: "public",
+      args: { allowed: v.boolean() },
+      handler: (ctx: Ctx, args: Ctx) => ctx.db.permissions.insert(args),
+    }),
+    setAllowed: mutation({
+      access: "public",
+      args: { id: v.bigint(), allowed: v.boolean() },
+      handler: (ctx: Ctx, args: Ctx) =>
+        ctx.db.permissions.patch(args.id, { allowed: args.allowed }),
     }),
   },
 };
@@ -116,9 +182,12 @@ class SessionHarness {
   readonly controller = new AbortController();
   readonly context: SessionRuntimeContext;
 
-  constructor(private readonly runtime: Runtime) {
+  constructor(
+    private readonly runtime: Runtime,
+    clientSessionId = "query-reactivity-session",
+  ) {
     this.context = Object.freeze({
-      clientSessionId: "query-reactivity-session",
+      clientSessionId,
       principal: ANONYMOUS_PRINCIPAL,
       fairnessKey: "query-reactivity-test",
       authEpoch: 0,
@@ -238,6 +307,125 @@ describe("query prefix reactivity", () => {
     expect(session.transitions(10).at(-1)).toMatchObject({
       transition: { kind: "update", value: [] },
     });
+  });
+
+  test("reacts across OR, IN, and range predicates without unrelated-prefix work", async () => {
+    const unionCandidate = await insert(1, 1n, "archived", "union", null);
+    const membershipCandidate = await insert(2, 9n, "active", "membership", null);
+    const rangeCandidate = await insert(3, 5n, "active", "range", null);
+    await session.mutation(4, "documents.setScore", { id: rangeCandidate, score: 5 });
+
+    await session.subscribe(40, "documents.unionBranches", {});
+    await session.subscribe(41, "documents.membership", {});
+    await session.subscribe(42, "documents.range", {});
+    for (const id of [40, 41, 42]) {
+      expect(session.transitions(id).at(-1)).toMatchObject({
+        transition: { kind: "reset", value: [] },
+      });
+    }
+
+    const transitionCounts = [40, 41, 42].map((id) => session.transitions(id).length);
+    const irrelevant = await session.mutation(5, "documents.setTitle", {
+      id: membershipCandidate,
+      title: "still outside",
+    });
+    expect(irrelevant.receipt.obligations).toEqual([]);
+    expect([40, 41, 42].map((id) => session.transitions(id).length)).toEqual(transitionCounts);
+
+    const enteredFirstUnionBranch = await session.mutation(6, "documents.setStatus", {
+      id: unionCandidate,
+      status: "active",
+    });
+    expect(enteredFirstUnionBranch.receipt.obligations).toEqual([40]);
+    expect(session.transitions(40).at(-1)).toMatchObject({
+      transition: { kind: "update", value: [expect.objectContaining({ id: unionCandidate })] },
+    });
+    const leftFirstUnionBranch = await session.mutation(7, "documents.setStatus", {
+      id: unionCandidate,
+      status: "archived",
+    });
+    expect(leftFirstUnionBranch.receipt.obligations).toEqual([40]);
+    expect(session.transitions(40).at(-1)).toMatchObject({
+      transition: { kind: "update", value: [] },
+    });
+    const enteredSecondUnionBranch = await session.mutation(8, "documents.move", {
+      id: unionCandidate,
+      tenantId: 2n,
+    });
+    expect(enteredSecondUnionBranch.receipt.obligations).toEqual([40]);
+    expect(session.transitions(40).at(-1)).toMatchObject({
+      transition: { kind: "update", value: [expect.objectContaining({ id: unionCandidate })] },
+    });
+    const leftSecondUnionBranch = await session.mutation(9, "documents.move", {
+      id: unionCandidate,
+      tenantId: 9n,
+    });
+    expect(leftSecondUnionBranch.receipt.obligations).toEqual([40]);
+    expect(session.transitions(40).at(-1)).toMatchObject({
+      transition: { kind: "update", value: [] },
+    });
+
+    const enteredMembership = await session.mutation(10, "documents.move", {
+      id: membershipCandidate,
+      tenantId: 3n,
+    });
+    expect(enteredMembership.receipt.obligations).toEqual([41]);
+    expect(session.transitions(41).at(-1)).toMatchObject({
+      transition: { kind: "update", value: [expect.objectContaining({ id: membershipCandidate })] },
+    });
+    const leftMembership = await session.mutation(11, "documents.move", {
+      id: membershipCandidate,
+      tenantId: 9n,
+    });
+    expect(leftMembership.receipt.obligations).toEqual([41]);
+    expect(session.transitions(41).at(-1)).toMatchObject({
+      transition: { kind: "update", value: [] },
+    });
+
+    const enteredRange = await session.mutation(12, "documents.setScore", {
+      id: rangeCandidate,
+      score: 15,
+    });
+    expect(enteredRange.receipt.obligations).toEqual([42]);
+    expect(session.transitions(42).at(-1)).toMatchObject({
+      transition: { kind: "update", value: [expect.objectContaining({ id: rangeCandidate })] },
+    });
+    const leftRange = await session.mutation(13, "documents.setScore", {
+      id: rangeCandidate,
+      score: 25,
+    });
+    expect(leftRange.receipt.obligations).toEqual([42]);
+    expect(session.transitions(42).at(-1)).toMatchObject({
+      transition: { kind: "update", value: [] },
+    });
+  });
+
+  test("revokes a subscription when its database-backed access policy changes", async () => {
+    const writer = new SessionHarness(runtime, "query-reactivity-writer");
+    await writer.open();
+    const permission = await writer.mutation(1, "permissions.insert", { allowed: true });
+    await insert(2, 1n, "active", "allowed", null);
+
+    await session.subscribe(30, "documents.allowedActive", {
+      tenantId: 1n,
+      permissionId: permission.value,
+    });
+    expect(session.transitions(30).at(-1)).toMatchObject({
+      transition: {
+        kind: "reset",
+        value: [expect.objectContaining({ title: "allowed" })],
+      },
+    });
+
+    await writer.mutation(3, "permissions.setAllowed", {
+      id: permission.value,
+      allowed: false,
+    });
+
+    expect(session.transitions(30).at(-1)).toMatchObject({
+      transition: { kind: "revoked", outcome: { code: "unauthenticated" } },
+    });
+    expect(runtime.status().reactive.queryListeners).toBe(0);
   });
 
   test("suppresses unrelated writes and re-ranks when a nonwinner becomes nearest", async () => {

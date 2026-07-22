@@ -23,7 +23,9 @@ const active = await ctx.db.documents
 
 The callback builds a typed SQL expression once. It does not receive an
 application row, and DBZZ does not run it once per result in JavaScript.
-Repeated `where` calls combine with `AND`.
+Repeated `where` calls combine with `AND`. The opaque expression may be
+reused by other builders for the same table and engine, but not across tables
+or engines.
 
 Column references expose only meaningful operations:
 

@@ -1123,8 +1123,7 @@ export class Runtime implements RuntimePort {
     let publication: RuntimePublication | undefined;
     return this.runSessionOperation(context, request, "query", message.ref, async (_state, requestBytes) => {
       const signal = this.operationSignal(context.signal);
-      const evaluation = await this.executeQuery(
-        "query",
+      const value = await this.executeQuery(
         message.ref,
         message.args,
         context.principal,
@@ -1137,9 +1136,9 @@ export class Runtime implements RuntimePort {
         t: "ok",
         id: message.id,
         kind: "query",
-        value: evaluation.value,
+        value,
       } satisfies QueryOkMessage, "query result");
-      return evaluation.value;
+      return value;
     }, {
       identifiers: { requestId: String(message.id) },
       successPublication: () => {
@@ -2418,37 +2417,45 @@ export class Runtime implements RuntimePort {
   }
 
   private executeQuery(
-    operation: "query" | "subscription",
     address: string,
     args: unknown,
     principal: Principal,
     fairnessKey: string,
     signal: AbortSignal | undefined,
     requestBytes: number,
-  ): Promise<QueryExecution> {
+  ): Promise<unknown> {
     const fn = this.expect(address, "query");
-    return this.executeRead(operation, fairnessKey, signal, requestBytes, async (execution) => {
-      const db = makeDbReader(
-        this.engine,
-        execution.connection,
-        execution.reads,
-        execution.statementObserver,
-      );
-      const timestamp = this.readNow();
-      const context = this.hostQueryContext(
-        db,
-        principal,
-        timestamp,
-        execution,
-      );
-      return this.hasMcpCapabilities
-        ? withMcpTokenCapability(
-            context,
-            this.mcpTokenCapability(principal, execution.connection, execution.reads, null),
-            (ctx) => invokeFunction(fn, ctx, args),
-          )
-        : invokeFunction(fn, context, args);
-    });
+    return this.executeRead(
+      "query",
+      fairnessKey,
+      signal,
+      requestBytes,
+      null,
+      (execution) => this.invokeQuery(fn, args, principal, execution),
+    );
+  }
+
+  private invokeQuery(
+    fn: AnyRegistered,
+    args: unknown,
+    principal: Principal,
+    execution: Readonly<PluginReadExecution>,
+  ): Promise<unknown> {
+    const db = makeDbReader(
+      this.engine,
+      execution.connection,
+      execution.reads,
+      execution.statementObserver,
+    );
+    const timestamp = this.readNow();
+    const context = this.hostQueryContext(db, principal, timestamp, execution);
+    return this.hasMcpCapabilities
+      ? withMcpTokenCapability(
+          context,
+          this.mcpTokenCapability(principal, execution.connection, execution.reads, null),
+          (ctx) => invokeFunction(fn, ctx, args),
+        )
+      : invokeFunction(fn, context, args);
   }
 
   private executeRead<T>(
@@ -2456,8 +2463,12 @@ export class Runtime implements RuntimePort {
     fairnessKey: string,
     signal: AbortSignal | undefined,
     requestBytes: number,
-    work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
-  ): Promise<QueryExecution<T>> {
+    reads: ReadRecorder | null,
+    work: (
+      execution: Readonly<PluginReadExecution>,
+      commitVersion: bigint,
+    ) => T | Promise<T>,
+  ): Promise<T> {
     return this.submitRead(async (connection) => {
       throwIfAborted(signal);
       let transactionOpen = false;
@@ -2473,14 +2484,13 @@ export class Runtime implements RuntimePort {
             durationMs: Math.max(0, performance.now() - beginAt),
           }, "query");
         }
-        const readSet = new Set<string>();
-        const recorder: ReadRecorder = { add: (key) => readSet.add(key) };
-        const version = this.engine.commitVersion(connection);
+        // A deferred reader pins its snapshot on this first SELECT.
+        const commitVersion = this.engine.commitVersion(connection);
         const value = await work(Object.freeze({
           connection,
-          reads: recorder,
+          reads,
           ...(this.telemetry.enabled ? { statementObserver: this.observeStatement } : {}),
-        }));
+        }), commitVersion);
         throwIfAborted(signal);
         const commitAt = this.telemetry.enabled ? performance.now() : 0;
         try {
@@ -2505,7 +2515,7 @@ export class Runtime implements RuntimePort {
           }
           throw error;
         }
-        return Object.freeze({ value, readSet, commitVersion: version });
+        return value;
       } catch (error) {
         if (transactionOpen) {
           const rollbackAt = this.telemetry.enabled ? performance.now() : 0;
@@ -2600,15 +2610,27 @@ export class Runtime implements RuntimePort {
   }
 
   private evaluateSubscription(input: QueryEvaluationInput<ReactiveContext>): Promise<QueryEvaluation> {
-    const execute = () => this.executeQuery(
-      "subscription",
-      input.address,
-      input.args,
-      input.context.principal,
-      input.fairnessKey,
-      this.shutdownController.signal,
-      byteLength(input.args),
-    ).then((execution) => this.encodeQueryEvaluation(execution));
+    const execute = () => {
+      const fn = this.expect(input.address, "query");
+      const readSet = new Set<string>();
+      const reads: ReadRecorder = { add: (key) => readSet.add(key) };
+      return this.executeRead(
+        "subscription",
+        input.fairnessKey,
+        this.shutdownController.signal,
+        byteLength(input.args),
+        reads,
+        async (execution, commitVersion) => {
+          const value = await this.invokeQuery(
+            fn,
+            input.args,
+            input.context.principal,
+            execution,
+          );
+          return Object.freeze({ value, readSet, commitVersion });
+        },
+      ).then((execution) => this.encodeQueryEvaluation(execution));
+    };
     if (!this.telemetry.enabled) return execute();
     const scope = this.trace.getStore();
     if (scope === undefined) {
@@ -2758,8 +2780,7 @@ export class Runtime implements RuntimePort {
     requestBytes: number,
     work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
   ): Promise<T> {
-    return this.executeRead("query", fairnessKey, signal, requestBytes, work)
-      .then((execution) => execution.value);
+    return this.executeRead("query", fairnessKey, signal, requestBytes, null, work);
   }
 
   private executePluginWrite<T>(

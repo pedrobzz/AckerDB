@@ -1,103 +1,116 @@
-import { stableEncode } from "@dbzz/core";
+import type { IndexDef } from "../../schema/definition.ts";
+import type { ReadRecorder } from "../access.ts";
 import type { TablePlan } from "../engine.ts";
 import { ixKey, scanKey } from "../keys.ts";
 import type { PredicateNode } from "./predicate.ts";
 
 /**
- * Caps both Boolean expansion and the number of reactive index edges recorded
- * by one table read. Crossing the bound deliberately widens to a shorter
- * declared prefix (or the table scan key) instead of retaining unbounded
- * per-subscription state.
+ * Caps both Boolean expansion and reactive index edges for one table read.
+ * Crossing it widens to a shorter declared prefix or the table scan key.
  */
 export const MAX_REACTIVE_DEPENDENCY_KEYS = 64;
 
-interface ExactValue {
-  readonly encoded: string;
-  readonly value: unknown;
+type ScalarStorageValue = null | string | number | bigint;
+type ExactValues = readonly ScalarStorageValue[];
+
+interface ExactConstraint {
+  readonly column: string;
+  readonly values: ExactValues;
 }
 
-type ExactValues = ReadonlyMap<string, ExactValue>;
-type Branch = ReadonlyMap<string, ExactValues>;
+type Branch = ExactConstraint[];
 
-interface CandidateKey {
-  readonly encodedPrefix: readonly string[];
-  readonly key: string;
-}
-
-interface IndexCandidate {
+interface IndexPrefix {
+  readonly branch: Branch;
+  readonly index: IndexDef;
   readonly depth: number;
-  readonly index: string;
-  readonly keys: readonly CandidateKey[];
+  readonly keyCount: number;
 }
 
-const EMPTY_BRANCH: Branch = new Map();
+interface ConcreteIndexPrefix {
+  readonly index: IndexDef;
+  readonly values: readonly ScalarStorageValue[];
+}
 
-function exactValues(values: readonly unknown[]): ExactValues | null {
-  const exact = new Map<string, ExactValue>();
+function isScalarStorageValue(value: unknown): value is ScalarStorageValue {
+  return value === null ||
+    typeof value === "string" ||
+    typeof value === "bigint" ||
+    (typeof value === "number" && Number.isFinite(value));
+}
+
+function exactBranches(column: string, values: readonly unknown[]): Branch[] {
+  const exact: ScalarStorageValue[] = [];
   for (const value of values) {
-    const encoded = stableEncode(value);
-    if (exact.has(encoded)) continue;
-    exact.set(encoded, { encoded, value });
-    if (exact.size > MAX_REACTIVE_DEPENDENCY_KEYS) return null;
+    if (!isScalarStorageValue(value)) return [[]];
+    if (!exact.includes(value)) exact.push(value);
+    if (exact.length > MAX_REACTIVE_DEPENDENCY_KEYS) return [[]];
   }
-  return exact;
+  return exact.length === 0 ? [] : [[{ column, values: exact }]];
 }
 
-function exactBranch(column: string, values: readonly unknown[]): Branch[] {
-  const exact = exactValues(values);
-  if (exact === null) return [EMPTY_BRANCH];
-  if (exact.size === 0) return [];
-  return [new Map([[column, exact]])];
+function exactValueBranch(column: string, value: unknown): Branch[] {
+  return isScalarStorageValue(value) ? [[{ column, values: [value] }]] : [[]];
+}
+
+function constraint(branch: Branch, column: string): ExactConstraint | undefined {
+  for (const candidate of branch) {
+    if (candidate.column === column) return candidate;
+  }
+  return undefined;
 }
 
 function sameValues(left: ExactValues, right: ExactValues): boolean {
-  if (left.size !== right.size) return false;
-  for (const encoded of left.keys()) if (!right.has(encoded)) return false;
-  return true;
+  return left.length === right.length && left.every((value) => right.includes(value));
+}
+
+function sameValueZero(left: ScalarStorageValue, right: ScalarStorageValue): boolean {
+  return Object.is(left, right) || (left === 0 && right === 0);
+}
+
+function isSameValueZeroPrefix(prefix: ExactValues, values: ExactValues): boolean {
+  return prefix.length <= values.length &&
+    prefix.every((value, position) => sameValueZero(value, values[position]!));
 }
 
 /** Exact constraints shared by every alternative remain safe after widening. */
 function commonBranch(branches: readonly Branch[]): Branch {
-  const first = branches[0];
-  if (first === undefined) return EMPTY_BRANCH;
-  const common = new Map<string, ExactValues>();
-  for (const [column, values] of first) {
-    if (branches.every((branch) => {
-      const other = branch.get(column);
-      return other !== undefined && sameValues(values, other);
-    })) {
-      common.set(column, values);
-    }
-  }
-  return common;
+  const first = branches[0] ?? [];
+  if (branches.length === 1) return first;
+  return first.filter((expected) =>
+    branches.every((candidate) => {
+      const actual = constraint(candidate, expected.column);
+      return actual !== undefined && sameValues(expected.values, actual.values);
+    })
+  );
 }
 
 function intersectValues(left: ExactValues, right: ExactValues): ExactValues {
-  const [smaller, larger] = left.size <= right.size ? [left, right] : [right, left];
-  const intersection = new Map<string, ExactValue>();
-  for (const [encoded, value] of smaller) {
-    if (larger.has(encoded)) intersection.set(encoded, value);
-  }
-  return intersection;
+  const [smaller, larger] = left.length <= right.length ? [left, right] : [right, left];
+  return smaller.filter((value) => larger.includes(value));
 }
 
 function mergeBranches(left: Branch, right: Branch): Branch | null {
-  const merged = new Map(left);
-  for (const [column, rightValues] of right) {
-    const leftValues = merged.get(column);
-    if (leftValues === undefined) {
-      merged.set(column, rightValues);
+  const merged = left.slice();
+  for (const rightConstraint of right) {
+    const position = merged.findIndex((candidate) => candidate.column === rightConstraint.column);
+    if (position < 0) {
+      merged.push(rightConstraint);
       continue;
     }
-    const intersection = intersectValues(leftValues, rightValues);
-    if (intersection.size === 0) return null;
-    merged.set(column, intersection);
+    const leftValues = merged[position]!.values;
+    if (sameValues(leftValues, rightConstraint.values)) continue;
+    const intersection = intersectValues(leftValues, rightConstraint.values);
+    if (intersection.length === 0) return null;
+    merged[position] = { column: rightConstraint.column, values: intersection };
   }
   return merged;
 }
 
-function andBranches(left: readonly Branch[], right: readonly Branch[]): Branch[] {
+function andBranches(left: Branch[], right: Branch[]): Branch[] {
   if (left.length === 0 || right.length === 0) return [];
+  if (left.length === 1 && left[0]!.length === 0) return right;
+  if (right.length === 1 && right[0]!.length === 0) return left;
   if (left.length * right.length > MAX_REACTIVE_DEPENDENCY_KEYS) {
     const widened = mergeBranches(commonBranch(left), commonBranch(right));
     return widened === null ? [] : [widened];
@@ -112,28 +125,29 @@ function andBranches(left: readonly Branch[], right: readonly Branch[]): Branch[
   return combined;
 }
 
-function orBranches(left: readonly Branch[], right: readonly Branch[]): Branch[] {
-  const alternatives = [...left, ...right];
-  if (alternatives.length <= MAX_REACTIVE_DEPENDENCY_KEYS) return alternatives;
-  return [commonBranch(alternatives)];
+function orBranches(left: Branch[], right: Branch[]): Branch[] {
+  if (left.length === 0) return right;
+  if (right.length === 0) return left;
+  left.push(...right);
+  return left.length <= MAX_REACTIVE_DEPENDENCY_KEYS ? left : [commonBranch(left)];
 }
 
 /**
- * Convert a predicate to bounded positive exact alternatives. Negative and
- * range predicates intentionally contribute no exact constraint; an enclosing
- * AND may still provide a safe declared-index prefix.
+ * Normalize to bounded positive exact alternatives. Negative and range
+ * predicates contribute no exact constraint, so an enclosing AND may still
+ * retain a safe index prefix.
  */
 function predicateBranches(node: PredicateNode): Branch[] {
   switch (node.kind) {
     case "comparison":
-      return node.op === "eq" ? exactBranch(node.column, [node.value]) : [EMPTY_BRANCH];
+      return node.op === "eq" ? exactValueBranch(node.column, node.value) : [[]];
     case "in":
-      return exactBranch(node.column, node.values);
+      return exactBranches(node.column, node.values);
     case "null":
-      return node.isNull ? exactBranch(node.column, [null]) : [EMPTY_BRANCH];
+      return node.isNull ? exactValueBranch(node.column, null) : [[]];
     case "between":
     case "not":
-      return [EMPTY_BRANCH];
+      return [[]];
     case "and":
       return andBranches(predicateBranches(node.left), predicateBranches(node.right));
     case "or":
@@ -142,114 +156,147 @@ function predicateBranches(node: PredicateNode): Branch[] {
 }
 
 function allPredicateBranches(predicates: readonly PredicateNode[]): Branch[] {
-  let branches: Branch[] = [EMPTY_BRANCH];
-  for (const predicate of predicates) {
-    branches = andBranches(branches, predicateBranches(predicate));
+  if (predicates.length === 0) return [[]];
+  let branches = predicateBranches(predicates[0]!);
+  for (let position = 1; position < predicates.length; position++) {
+    branches = andBranches(branches, predicateBranches(predicates[position]!));
   }
   return branches;
 }
 
-function candidatesForBranch(plan: TablePlan, branch: Branch): IndexCandidate[] {
-  const candidates: IndexCandidate[] = [];
-  for (const index of plan.indexes) {
-    let prefixes: Array<{ encoded: string[]; values: unknown[] }> = [{ encoded: [], values: [] }];
+function bestPrefix(plan: TablePlan, branch: Branch): IndexPrefix | null {
+  let bestIndex = -1;
+  let bestDepth = 0;
+  let bestKeyCount = 0;
+  for (let indexPosition = 0; indexPosition < plan.indexes.length; indexPosition++) {
+    const index = plan.indexes[indexPosition]!;
     let depth = 0;
+    let keyCount = 1;
     for (const column of index.columns) {
-      const values = branch.get(column);
-      if (values === undefined) break;
-      if (values.size > Math.floor(MAX_REACTIVE_DEPENDENCY_KEYS / prefixes.length)) break;
-
-      const expanded: Array<{ encoded: string[]; values: unknown[] }> = [];
-      for (const prefix of prefixes) {
-        for (const value of values.values()) {
-          expanded.push({
-            encoded: [...prefix.encoded, value.encoded],
-            values: [...prefix.values, value.value],
-          });
-        }
-      }
-      prefixes = expanded;
-      depth++;
-      candidates.push({
-        depth,
-        index: index.name,
-        keys: prefixes.map((prefix) => ({
-          encodedPrefix: prefix.encoded,
-          key: ixKey(plan.name, index.name, prefix.values),
-        })),
-      });
-    }
-  }
-  return candidates.sort((left, right) =>
-    right.depth - left.depth || left.keys.length - right.keys.length || left.index.localeCompare(right.index)
-  );
-}
-
-function selectedKeys(candidates: readonly IndexCandidate[]): string[] {
-  const selected = candidates
-    .flatMap((candidate) => candidate.keys.map((key) => ({ ...key, index: candidate.index })))
-    .sort((left, right) => left.encodedPrefix.length - right.encodedPrefix.length);
-  const retained = new Map<string, string>();
-  for (const candidate of selected) {
-    let covered = false;
-    for (let depth = 1; depth < candidate.encodedPrefix.length; depth++) {
-      const prefix = stableEncode([candidate.index, candidate.encodedPrefix.slice(0, depth)]);
-      if (retained.has(prefix)) {
-        covered = true;
+      const values = constraint(branch, column)?.values;
+      if (values === undefined ||
+        values.length > Math.floor(MAX_REACTIVE_DEPENDENCY_KEYS / keyCount)) {
         break;
       }
+      keyCount *= values.length;
+      depth++;
     }
-    if (!covered) {
-      retained.set(
-        stableEncode([candidate.index, candidate.encodedPrefix]),
-        candidate.key,
-      );
+    if (
+      depth > 0 &&
+      (depth > bestDepth || (depth === bestDepth && keyCount < bestKeyCount))
+    ) {
+      bestIndex = indexPosition;
+      bestDepth = depth;
+      bestKeyCount = keyCount;
     }
   }
-  return [...retained.values()];
+  if (bestIndex < 0) return null;
+  return { branch, index: plan.indexes[bestIndex]!, depth: bestDepth, keyCount: bestKeyCount };
 }
 
-function chooseCandidates(candidateSets: readonly (readonly IndexCandidate[])[]): string[] | null {
-  if (candidateSets.some((candidates) => candidates.length === 0)) return null;
-  const selected = candidateSets.map((candidates) => candidates[0]!);
-
-  while (true) {
-    const keys = selectedKeys(selected);
-    if (keys.length <= MAX_REACTIVE_DEPENDENCY_KEYS) return keys;
-
-    let best:
-      | { readonly branch: number; readonly candidate: IndexCandidate; readonly keyCount: number }
-      | undefined;
-    for (let branch = 0; branch < selected.length; branch++) {
-      const current = selected[branch]!;
-      const candidate = candidateSets[branch]!.find(({ depth }) => depth < current.depth);
-      if (candidate === undefined) continue;
-      const next = selected.with(branch, candidate);
-      const keyCount = selectedKeys(next).length;
-      if (
-        best === undefined ||
-        keyCount < best.keyCount ||
-        (keyCount === best.keyCount && candidate.depth > best.candidate.depth)
-      ) {
-        best = { branch, candidate, keyCount };
+function retainPrefixValues(
+  prefix: IndexPrefix,
+  retained: ConcreteIndexPrefix[],
+  values: ScalarStorageValue[],
+  position: number,
+): boolean {
+  if (position === prefix.depth) {
+    for (const candidate of retained) {
+      if (candidate.index === prefix.index && isSameValueZeroPrefix(candidate.values, values)) {
+        return true;
       }
     }
-    if (best === undefined) return null;
-    selected[best.branch] = best.candidate;
+    if (retained.length === MAX_REACTIVE_DEPENDENCY_KEYS) return false;
+    retained.push({ index: prefix.index, values: values.slice(0, prefix.depth) });
+    return true;
   }
+
+  const exact = constraint(prefix.branch, prefix.index.columns[position]!)!.values;
+  for (const value of exact) {
+    values[position] = value;
+    if (!retainPrefixValues(prefix, retained, values, position + 1)) return false;
+  }
+  return true;
 }
 
 /**
- * Reactive dependencies for a filtered table read. The empty array is valid
- * for a statically contradictory predicate; otherwise an unsafe expression
- * widens to the table scan key.
+ * Select every multi-branch winner before recording: the recorder cannot
+ * retract keys if a later uncovered tuple exceeds the retained-key bound.
+ * Branch normalization leaves at most 64 prefixes and each winner has at most
+ * 64 Cartesian tuples, so pathological selection can enumerate ~4,096 tuples,
+ * each with up to 64 retained-prefix short-circuit checks.
  */
-export function predicateDependencyKeys(
+function preciseMultiBranchPrefixes(
+  plan: TablePlan,
+  branches: readonly Branch[],
+): ConcreteIndexPrefix[] | null {
+  const prefixes: IndexPrefix[] = [];
+  for (const branch of branches) {
+    const prefix = bestPrefix(plan, branch);
+    if (prefix === null) return null;
+    prefixes.push(prefix);
+  }
+  // Shallow-first coverage is monotone, so retained tuples never need removal.
+  prefixes.sort((left, right) => left.depth - right.depth);
+
+  const retained: ConcreteIndexPrefix[] = [];
+  for (const prefix of prefixes) {
+    if (!retainPrefixValues(prefix, retained, [], 0)) return null;
+  }
+  return retained;
+}
+
+function recordPrefixValues(
+  table: string,
+  prefix: IndexPrefix,
+  reads: ReadRecorder,
+  values: ScalarStorageValue[],
+  position: number,
+): void {
+  if (position === prefix.depth) {
+    reads.add(ixKey(table, prefix.index.name, values));
+    return;
+  }
+  const exact = constraint(prefix.branch, prefix.index.columns[position]!)!.values;
+  for (const value of exact) {
+    values[position] = value;
+    recordPrefixValues(table, prefix, reads, values, position + 1);
+  }
+}
+
+function recordPrefix(table: string, prefix: IndexPrefix, reads: ReadRecorder): void {
+  recordPrefixValues(table, prefix, reads, [], 0);
+}
+
+/**
+ * Record dependencies directly into the subscription's real recorder.
+ * Contradictions record nothing; unsafe expressions widen once through their
+ * common declared prefix before falling back to the table scan key.
+ */
+export function recordPredicateDependencies(
   plan: TablePlan,
   predicates: readonly PredicateNode[],
-): readonly string[] {
+  reads: ReadRecorder,
+): void {
   const branches = allPredicateBranches(predicates);
-  if (branches.length === 0) return [];
-  const keys = chooseCandidates(branches.map((branch) => candidatesForBranch(plan, branch)));
-  return keys ?? [scanKey(plan.name)];
+  if (branches.length === 0) return;
+
+  if (branches.length === 1) {
+    const prefix = bestPrefix(plan, branches[0]!);
+    if (prefix === null) reads.add(scanKey(plan.name));
+    else recordPrefix(plan.name, prefix, reads);
+    return;
+  }
+
+  const precise = preciseMultiBranchPrefixes(plan, branches);
+  if (precise !== null) {
+    for (const prefix of precise) {
+      reads.add(ixKey(plan.name, prefix.index.name, prefix.values));
+    }
+    return;
+  }
+
+  const prefix = bestPrefix(plan, commonBranch(branches));
+  if (prefix === null) reads.add(scanKey(plan.name));
+  else recordPrefix(plan.name, prefix, reads);
 }

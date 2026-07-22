@@ -90,7 +90,7 @@ function readMethods(
       return createTableQuery(engine, conn, reads, plan, observer);
     },
   });
-  if ([...plan.columns.values()].some((column) => column.kind === "vector")) {
+  if (plan.hasVectorColumns) {
     accessor["nearest"] = (column: unknown, query: unknown, options: unknown): unknown =>
       createNearestQuery(engine, conn, reads, plan, column, query, options, observer);
   }

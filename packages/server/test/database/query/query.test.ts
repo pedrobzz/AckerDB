@@ -13,6 +13,7 @@ import {
   ixKey,
   v,
 } from "@dbzz/server";
+import { compilePredicates } from "../../../src/database/query/predicate.ts";
 
 const schema = defineSchema({
   documents: defineTable({
@@ -170,7 +171,54 @@ describe("table query", () => {
     ).toBe(2);
   });
 
-  test("evaluates callbacks once and rejects non-predicate or foreign expressions", async () => {
+  test("normalizes duplicate IN values before compiling SQLite parameters", async () => {
+    await db.documents.insert({ tenantId: 1n, status: "active", score: 4, label: "a", rank: null });
+    let issuedSql: string | undefined;
+    const statement = engine.statement.bind(engine);
+    engine.statement = (connection, sql) => {
+      if (sql.includes('FROM "documents"') && sql.includes('"score" IN')) issuedSql = sql;
+      return statement(connection, sql);
+    };
+
+    const repeated = Array<number>(500_001).fill(4);
+    const count = await db.documents
+      .query()
+      .where((row: any) => row.score.in(repeated))
+      .count();
+
+    expect(count).toBe(1);
+    expect(issuedSql?.match(/\?/g)).toHaveLength(1);
+  });
+
+  test("rejects a cumulative predicate parameter count above SQLite's capability", () => {
+    expect(() =>
+      compilePredicates(
+        [
+          { kind: "in", column: "score", values: [1, 2] },
+          { kind: "in", column: "rank", values: [3, 4] },
+        ],
+        3,
+        "documents.query",
+      )
+    ).toThrow("SQLite supports at most 3");
+  });
+
+  test("rejects before crossing Bun's positional SQLite bind boundary", async () => {
+    await db.documents.insert({ tenantId: 1n, status: "active", score: 4, label: "a", rank: null });
+    const accepted = Array.from(
+      { length: engine.sqliteParameterLimit },
+      (_, value) => value,
+    );
+
+    expect(
+      await db.documents.query().where((row: any) => row.score.in(accepted)).count(),
+    ).toBe(1);
+    await expect(
+      db.documents.query().where((row: any) => row.score.in([...accepted, accepted.length])).count(),
+    ).rejects.toThrow(`SQLite supports at most ${engine.sqliteParameterLimit}`);
+  });
+
+  test("evaluates callbacks once and scopes reusable predicates to their table and engine", async () => {
     await db.documents.insert({ tenantId: 1n, status: "active", score: 4, label: "a", rank: null });
     let callbackCalls = 0;
     const reusable = db.documents.query().where((row: any) => {
@@ -182,12 +230,25 @@ describe("table query", () => {
     expect(await reusable.collect()).toHaveLength(1);
     expect(callbackCalls).toBe(1);
 
-    let foreign: unknown;
+    let reusablePredicate: unknown;
     db.documents.query().where((row: any) => {
-      foreign = row.status.eq("active");
-      return foreign;
+      reusablePredicate = row.status.eq("active");
+      return reusablePredicate;
     });
-    expect(() => db.documents.query().where(() => foreign)).toThrow("different table queries");
+    expect(await db.documents.query().where(() => reusablePredicate).count()).toBe(1);
+    expect(() => db.users.query().where(() => reusablePredicate)).toThrow("different tables");
+
+    const otherDir = mkdtempSync(join(tmpdir(), "dbzz-foreign-predicate-"));
+    const otherEngine = new Engine(schema, join(otherDir, "data.db"));
+    try {
+      otherEngine.createAll();
+      const otherDb: any = makeDbWriter(otherEngine, newWriteCollector(), () => 1n);
+      expect(() => otherDb.documents.query().where(() => reusablePredicate)).toThrow("different tables");
+    } finally {
+      otherEngine.close("clean");
+      rmSync(otherDir, { recursive: true, force: true });
+    }
+
     expect(() => db.documents.query().where(() => true)).toThrow("predicate expression");
     expect(() => db.documents.query().where(async () => true)).toThrow("must be synchronous");
   });

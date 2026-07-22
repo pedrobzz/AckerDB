@@ -16,12 +16,10 @@ import {
   observeStatement,
   type DbStatementObserver,
 } from "../statement-observation.ts";
-import { predicateDependencyKeys } from "./dependencies.ts";
+import { recordPredicateDependencies } from "./dependencies.ts";
 import {
   compilePredicates,
-  createPredicateEnvironment,
   resolvePredicate,
-  type PredicateEnvironment,
   type PredicateNode,
 } from "./predicate.ts";
 import {
@@ -203,14 +201,13 @@ class NearestQueryRuntime {
     private readonly vector: ReturnType<typeof vectorColumn>,
     private readonly queryVector: Float32Array,
     private readonly metric: VectorMetric,
-    private readonly environment: PredicateEnvironment,
     private readonly state: NearestState,
     private readonly observer?: DbStatementObserver,
   ) {}
 
   where(callback: unknown): NearestQueryRuntime {
     const predicate = resolvePredicate(
-      this.environment,
+      this.plan.environment,
       callback,
       `${this.plan.displayName}.nearest.where`,
     );
@@ -222,7 +219,6 @@ class NearestQueryRuntime {
       this.vector,
       this.queryVector,
       this.metric,
-      this.environment,
       { predicates: [...this.state.predicates, predicate] },
       this.observer,
     );
@@ -250,9 +246,7 @@ class NearestQueryRuntime {
         transactionOpen = true;
       }
       if (this.reads !== null) {
-        for (const key of predicateDependencyKeys(this.plan, this.state.predicates)) {
-          this.reads.add(key);
-        }
+        recordPredicateDependencies(this.plan, this.state.predicates, this.reads);
       }
       const ranked = this.rank(count);
       const rows = this.fetchRows(ranked.winners);
@@ -284,7 +278,11 @@ class NearestQueryRuntime {
   }
 
   private rank(count: number): RankedCandidates {
-    const predicate = compilePredicates(this.state.predicates);
+    const predicate = compilePredicates(
+      this.state.predicates,
+      this.engine.sqliteParameterLimit,
+      `${this.plan.displayName}.nearest`,
+    );
     const where = [
       `${quote(this.vector.physical)} IS NOT NULL`,
       predicate.sql,
@@ -401,7 +399,6 @@ export function createNearestQuery(
     selected,
     queryVector,
     metric,
-    createPredicateEnvironment(engine, plan),
     { predicates: [] },
     observer,
   );

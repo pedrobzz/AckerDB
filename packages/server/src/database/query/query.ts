@@ -7,13 +7,11 @@ import {
   observeStatement,
   type DbStatementObserver,
 } from "../statement-observation.ts";
-import { predicateDependencyKeys } from "./dependencies.ts";
+import { recordPredicateDependencies } from "./dependencies.ts";
 import {
   compilePredicates,
-  createPredicateEnvironment,
   resolveOrder,
   resolvePredicate,
-  type PredicateEnvironment,
   type PredicateNode,
   type QueryOrder,
 } from "./predicate.ts";
@@ -23,7 +21,6 @@ const quote = (name: string): string => `"${name}"`;
 interface QueryState {
   readonly predicates: readonly PredicateNode[];
   readonly order: readonly QueryOrder[];
-  readonly explicitOrder: boolean;
 }
 
 interface PaginationOptions {
@@ -193,7 +190,6 @@ class TableQueryRuntime {
     private readonly conn: Database,
     private readonly reads: ReadRecorder | null,
     private readonly plan: TablePlan,
-    private readonly environment: PredicateEnvironment,
     private readonly state: QueryState,
     private readonly observer?: DbStatementObserver,
   ) {}
@@ -204,7 +200,6 @@ class TableQueryRuntime {
       this.conn,
       this.reads,
       this.plan,
-      this.environment,
       state,
       this.observer,
     );
@@ -212,7 +207,7 @@ class TableQueryRuntime {
 
   where(callback: unknown): TableQueryRuntime {
     const predicate = resolvePredicate(
-      this.environment,
+      this.plan.environment,
       callback,
       `${this.plan.displayName}.query.where`,
     );
@@ -223,22 +218,21 @@ class TableQueryRuntime {
   }
 
   orderBy(callback: unknown): TableQueryRuntime {
-    if (this.state.explicitOrder) {
+    if (this.state.order.length !== 0) {
       throw new ValidationError(`${this.plan.displayName}.query: .orderBy() may only be called once`);
     }
     return this.next({
       ...this.state,
-      explicitOrder: true,
-      order: [resolveOrder(this.environment, callback, `${this.plan.displayName}.query.orderBy`)],
+      order: [resolveOrder(this.plan.environment, callback, `${this.plan.displayName}.query.orderBy`)],
     });
   }
 
   thenBy(callback: unknown): TableQueryRuntime {
-    if (!this.state.explicitOrder) {
+    if (this.state.order.length === 0) {
       throw new ValidationError(`${this.plan.displayName}.query: .thenBy() requires .orderBy()`);
     }
     const order = resolveOrder(
-      this.environment,
+      this.plan.environment,
       callback,
       `${this.plan.displayName}.query.thenBy`,
     );
@@ -250,138 +244,183 @@ class TableQueryRuntime {
     return this.next({ ...this.state, order: [...this.state.order, order] });
   }
 
-  private completeOrder(): QueryOrder[] {
-    const order = this.state.explicitOrder
-      ? [...this.state.order]
-      : [{ column: this.plan.pk, direction: "asc" as const }];
-    if (!order.some(({ column }) => column === this.plan.pk)) {
-      order.push({ column: this.plan.pk, direction: "asc" });
+  private orderSql(): string {
+    const prefix = `${quote(this.plan.name)}.`;
+    if (this.state.order.length === 0) return `${prefix}${quote(this.plan.pk)} ASC`;
+    let sql = "";
+    let includesPrimaryKey = false;
+    for (const { column, direction } of this.state.order) {
+      if (sql !== "") sql += ", ";
+      sql += `${prefix}${quote(column)} ${direction.toUpperCase()}`;
+      if (column === this.plan.pk) includesPrimaryKey = true;
     }
-    return order;
+    if (!includesPrimaryKey) {
+      sql += `, ${prefix}${quote(this.plan.pk)} ASC`;
+    }
+    return sql;
+  }
+
+  private paginationOrder(): readonly QueryOrder[] {
+    if (this.state.order.length === 0) return [{ column: this.plan.pk, direction: "asc" }];
+    if (this.state.order.some(({ column }) => column === this.plan.pk)) return this.state.order;
+    return [...this.state.order, { column: this.plan.pk, direction: "asc" }];
   }
 
   private recordRead(): void {
     if (this.reads === null) return;
-    for (const key of predicateDependencyKeys(this.plan, this.state.predicates)) {
-      this.reads.add(key);
-    }
+    recordPredicateDependencies(this.plan, this.state.predicates, this.reads);
   }
 
   private statement(
     limit: number,
     cursor?: { readonly sql: string; readonly params: readonly unknown[] },
   ): { readonly sql: string; readonly params: readonly unknown[] } {
-    const predicate = compilePredicates(this.state.predicates);
-    const clauses = [predicate.sql, cursor?.sql ?? ""].filter((clause) => clause !== "");
-    const where = clauses.length === 0 ? "" : ` WHERE ${clauses.map((clause) => `(${clause})`).join(" AND ")}`;
-    const order = this.completeOrder();
-    const orderSql = order
-      .map(({ column, direction }) => `${quote(this.plan.name)}.${quote(column)} ${direction.toUpperCase()}`)
-      .join(", ");
+    const path = `${this.plan.displayName}.query`;
+    const predicate = compilePredicates(
+      this.state.predicates,
+      this.engine.sqliteParameterLimit,
+      path,
+    );
+    let where = predicate.sql === "" ? "" : ` WHERE (${predicate.sql})`;
+    let params = predicate.params;
+    if (cursor !== undefined) {
+      where += `${where === "" ? " WHERE" : " AND"} (${cursor.sql})`;
+      params = predicate.params.length === 0
+        ? cursor.params
+        : [...predicate.params, ...cursor.params];
+    }
+    if (params.length > this.engine.sqliteParameterLimit) {
+      throw new ValidationError(
+        `${path}: statement requires ${params.length} parameters; SQLite supports at most ${this.engine.sqliteParameterLimit}`,
+      );
+    }
+    const orderSql = this.orderSql();
     return {
       sql: `SELECT ${this.plan.readProjection} FROM ${quote(this.plan.name)}${where} ORDER BY ${orderSql}${limit >= 0 ? ` LIMIT ${limit}` : ""}`,
-      params: [...predicate.params, ...(cursor?.params ?? [])],
+      params,
     };
   }
 
-  private rows(limit = -1, stream = false, cursor?: { readonly sql: string; readonly params: readonly unknown[] }): Iterable<Record<string, unknown>> {
+  private rowsArray(
+    limit = -1,
+    cursor?: { readonly sql: string; readonly params: readonly unknown[] },
+  ): Record<string, unknown>[] {
     this.recordRead();
     const { sql, params } = this.statement(limit, cursor);
-    if (!stream) {
-      const raws = this.engine.statement(this.conn, sql).all(...(params as never[])) as Record<string, unknown>[];
-      return raws.map((raw) => this.engine.rowFromSql(this.plan, raw));
-    }
-    const engine = this.engine;
-    const plan = this.plan;
-    const conn = this.conn;
-    return {
-      *[Symbol.iterator]() {
-        const prepared = conn.prepare(sql);
-        try {
-          for (const raw of prepared.iterate(...(params as never[]))) {
-            yield engine.rowFromSql(plan, raw as Record<string, unknown>);
-          }
-        } finally {
-          prepared.finalize();
-        }
-      },
-    };
+    const raws = this.engine
+      .statement(this.conn, sql)
+      .all(...(params as never[])) as Record<string, unknown>[];
+    return raws.map((raw) => this.engine.rowFromSql(this.plan, raw));
   }
 
-  private async observed<T>(
-    statement: string,
-    work: () => T | Promise<T>,
-    rowCount: (value: T) => number | undefined,
-  ): Promise<T> {
+  private *streamRows(): IterableIterator<Record<string, unknown>> {
+    this.recordRead();
+    const { sql, params } = this.statement(-1);
+    const prepared = this.conn.prepare(sql);
+    try {
+      for (const raw of prepared.iterate(...(params as never[]))) {
+        yield this.engine.rowFromSql(this.plan, raw as Record<string, unknown>);
+      }
+    } finally {
+      prepared.finalize();
+    }
+  }
+
+  async collect(): Promise<Record<string, unknown>[]> {
+    if (this.observer === undefined) return this.rowsArray();
     return await observeStatement(
       this.observer,
       "read",
       this.plan.displayName,
-      statement,
-      work,
-      rowCount,
+      "collect",
+      () => this.rowsArray(),
+      (rows) => rows.length,
     );
-  }
-
-  async collect(): Promise<Record<string, unknown>[]> {
-    return await this.observed("collect", () => [...this.rows()], (rows) => rows.length);
   }
 
   async take(count: number): Promise<Record<string, unknown>[]> {
     if (!Number.isSafeInteger(count) || count < 0) {
       throw new ValidationError(`${this.plan.displayName}.query.take: count must be a non-negative safe integer`);
     }
-    return await this.observed("take", () => [...this.rows(count)], (rows) => rows.length);
+    if (this.observer === undefined) return this.rowsArray(count);
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
+      "take",
+      () => this.rowsArray(count),
+      (rows) => rows.length,
+    );
   }
 
   async first(): Promise<Record<string, unknown> | null> {
-    return await this.observed(
+    if (this.observer === undefined) return this.rowsArray(1)[0] ?? null;
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
       "first",
-      () => [...this.rows(1)][0] ?? null,
+      () => this.rowsArray(1)[0] ?? null,
       (row) => row === null ? 0 : 1,
     );
+  }
+
+  private uniqueRow(): Record<string, unknown> | null {
+    const rows = this.rowsArray(2);
+    if (rows.length > 1) {
+      throw new Error(`${this.plan.displayName}: .unique() matched more than one row`);
+    }
+    return rows[0] ?? null;
   }
 
   async unique(): Promise<Record<string, unknown> | null> {
-    return await this.observed(
+    if (this.observer === undefined) return this.uniqueRow();
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
       "unique",
-      () => {
-        const rows = [...this.rows(2)];
-        if (rows.length > 1) {
-          throw new Error(`${this.plan.displayName}: .unique() matched more than one row`);
-        }
-        return rows[0] ?? null;
-      },
+      () => this.uniqueRow(),
       (row) => row === null ? 0 : 1,
     );
   }
 
+  private countRows(): number {
+    this.recordRead();
+    const predicate = compilePredicates(
+      this.state.predicates,
+      this.engine.sqliteParameterLimit,
+      `${this.plan.displayName}.query`,
+    );
+    const where = predicate.sql === "" ? "" : ` WHERE ${predicate.sql}`;
+    const row = this.engine
+      .statement(this.conn, `SELECT COUNT(*) AS n FROM ${quote(this.plan.name)}${where}`)
+      .get(...(predicate.params as never[])) as { n: bigint };
+    return Number(row.n);
+  }
+
   async count(): Promise<number> {
-    return await this.observed(
+    if (this.observer === undefined) return this.countRows();
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
       "count",
-      () => {
-        this.recordRead();
-        const predicate = compilePredicates(this.state.predicates);
-        const where = predicate.sql === "" ? "" : ` WHERE ${predicate.sql}`;
-        const row = this.engine
-          .statement(this.conn, `SELECT COUNT(*) AS n FROM ${quote(this.plan.name)}${where}`)
-          .get(...(predicate.params as never[])) as { n: bigint };
-        return Number(row.n);
-      },
+      () => this.countRows(),
       (count) => count,
     );
   }
 
   async *iter(): AsyncGenerator<Record<string, unknown>> {
     if (this.observer === undefined) {
-      yield* this.rows(-1, true);
+      yield* this.streamRows();
       return;
     }
     const startedAt = performance.now();
     let rowCount = 0;
     let failed = false;
     try {
-      for (const row of this.rows(-1, true)) {
+      for (const row of this.streamRows()) {
         rowCount++;
         yield row;
       }
@@ -414,29 +453,35 @@ class TableQueryRuntime {
     if (options.cursor !== undefined && options.cursor !== null && typeof options.cursor !== "string") {
       throw new ValidationError(`${this.plan.displayName}.query.paginate: cursor must be a string or null`);
     }
-    return await this.observed(
+    if (this.observer === undefined) return this.page(options);
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
       "paginate",
-      () => {
-        const order = this.completeOrder();
-        const cursor = options.cursor === undefined || options.cursor === null
-          ? undefined
-          : cursorPredicate(order, parseCursor(options.cursor, this.plan, order));
-        const fetched = [...this.rows(options.pageSize + 1, false, cursor)];
-        const items = fetched.slice(0, options.pageSize);
-        const hasMore = fetched.length > options.pageSize;
-        const last = items[items.length - 1];
-        const nextCursor = !hasMore || last === undefined
-          ? null
-          : opaqueCursor({
-              version: 1,
-              values: order.map(({ column }) =>
-                encodeCursorValue(this.plan.columns.get(column)!.toSql(last[column])[0]),
-              ),
-            });
-        return { items, nextCursor };
-      },
+      () => this.page(options),
       (result) => result.items.length,
     );
+  }
+
+  private page(options: PaginationOptions): PaginationResult {
+    const order = this.paginationOrder();
+    const cursor = options.cursor === undefined || options.cursor === null
+      ? undefined
+      : cursorPredicate(order, parseCursor(options.cursor, this.plan, order));
+    const items = this.rowsArray(options.pageSize + 1, cursor);
+    const hasMore = items.length > options.pageSize;
+    if (hasMore) items.pop();
+    const last = items[items.length - 1];
+    const nextCursor = !hasMore || last === undefined
+      ? null
+      : opaqueCursor({
+          version: 1,
+          values: order.map(({ column }) =>
+            encodeCursorValue(this.plan.columns.get(column)!.toSql(last[column])[0]),
+          ),
+        });
+    return { items, nextCursor };
   }
 }
 
@@ -453,8 +498,7 @@ export function createTableQuery(
     conn,
     reads,
     plan,
-    createPredicateEnvironment(engine, plan),
-    { predicates: [], order: [], explicitOrder: false },
+    { predicates: [], order: [] },
     observer,
   );
 }

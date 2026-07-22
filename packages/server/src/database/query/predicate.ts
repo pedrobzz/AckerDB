@@ -1,4 +1,5 @@
-import type { Engine, TablePlan } from "../engine.ts";
+import type { ColumnPlan } from "../engine.ts";
+import type { TableDef } from "../../schema/definition.ts";
 import { baseValidator, ValidationError } from "../../validation/v.ts";
 
 const quote = (name: string): string => `"${name}"`;
@@ -60,7 +61,6 @@ const ORDERED_KINDS = new Set([
 class RuntimePredicate {
   constructor(meta: PredicateMeta) {
     predicates.set(this, meta);
-    Object.freeze(this);
   }
 
   and(other: unknown): RuntimePredicate {
@@ -99,14 +99,19 @@ function predicateMeta(value: unknown, owner: object, path: string): PredicateMe
     throw new ValidationError(`${path}: expected a database predicate expression`);
   }
   if (meta.owner !== owner) {
-    throw new ValidationError(`${path}: predicates from different table queries cannot be combined`);
+    throw new ValidationError(`${path}: predicates from different tables cannot be combined`);
   }
   return meta;
 }
 
+interface PredicatePlanIngredients {
+  readonly columns: ReadonlyMap<string, ColumnPlan>;
+  readonly table: TableDef;
+  readonly displayName: string;
+}
+
 function toSqlPredicateValue(
-  engine: Engine,
-  plan: TablePlan,
+  plan: PredicatePlanIngredients,
   column: string,
   value: unknown,
   unionDiscriminant: boolean,
@@ -121,8 +126,7 @@ function toSqlPredicateValue(
     if (!unionDiscriminant || typeof value !== "string") {
       throw new ValidationError(`${plan.displayName}.${column}: use .is(variant) for union predicates`);
     }
-    const tags = engine.tagMap(plan, columnPlan.typeName!);
-    const tag = tags.toTag.get(value);
+    const tag = columnPlan.variantTag?.(value);
     if (tag === undefined) {
       throw new ValidationError(
         `${plan.displayName}.${column}: unknown ${columnPlan.typeName} variant ${JSON.stringify(value)}`,
@@ -131,13 +135,13 @@ function toSqlPredicateValue(
     return tag;
   }
   if (columnPlan.kind === "enum") {
-    const tags = engine.tagMap(plan, columnPlan.typeName!);
-    if (typeof value !== "string" || !tags.toTag.has(value)) {
+    const tag = typeof value === "string" ? columnPlan.variantTag?.(value) : undefined;
+    if (tag === undefined) {
       throw new ValidationError(
         `${plan.displayName}.${column}: unknown ${columnPlan.typeName} variant ${JSON.stringify(value)}`,
       );
     }
-    return tags.toTag.get(value)!;
+    return tag;
   }
   const checked = baseValidator(plan.table.columns[column]!).check(
     value,
@@ -151,8 +155,7 @@ function ownMethod(target: object, name: string, method: (...args: never[]) => u
 }
 
 function makeColumnReference(
-  engine: Engine,
-  plan: TablePlan,
+  plan: PredicatePlanIngredients,
   owner: object,
   column: string,
 ): object {
@@ -164,7 +167,7 @@ function makeColumnReference(
   const expression = (node: PredicateNode): RuntimePredicate =>
     new RuntimePredicate({ owner, node });
   const value = (input: unknown): unknown =>
-    toSqlPredicateValue(engine, plan, column, input, false);
+    toSqlPredicateValue(plan, column, input, false);
 
   if (equatable) {
     ownMethod(reference, "eq", ((input: unknown) =>
@@ -175,12 +178,22 @@ function makeColumnReference(
       if (!Array.isArray(inputs)) {
         throw new ValidationError(`${plan.displayName}.${column}.in: expected an array`);
       }
-      return expression({ kind: "in", column, values: inputs.map(value) });
+      const values: unknown[] = [];
+      const seen = new Set<unknown>();
+      for (const input of inputs) {
+        const encoded = value(input);
+        if (seen.has(encoded)) continue;
+        seen.add(encoded);
+        values.push(encoded);
+      }
+      return expression({ kind: "in", column, values });
     }) as never);
   }
   if (orderable) {
-    ownMethod(reference, "asc", (() => makeOrder(owner, column, "asc")) as never);
-    ownMethod(reference, "desc", (() => makeOrder(owner, column, "desc")) as never);
+    const ascending = makeOrder(owner, column, "asc");
+    const descending = makeOrder(owner, column, "desc");
+    ownMethod(reference, "asc", (() => ascending) as never);
+    ownMethod(reference, "desc", (() => descending) as never);
   }
   if (ordered) {
     for (const op of ["lt", "lte", "gt", "gte"] as const) {
@@ -201,7 +214,7 @@ function makeColumnReference(
         kind: "comparison",
         column,
         op: "eq",
-        value: toSqlPredicateValue(engine, plan, column, variant, true),
+        value: toSqlPredicateValue(plan, column, variant, true),
       })) as never);
   }
   if (columnPlan.nullable) {
@@ -217,26 +230,25 @@ function makeColumnReference(
 
 function makeOrder(owner: object, column: string, direction: "asc" | "desc"): object {
   const expression = Object.freeze(Object.create(null) as object);
-  orders.set(expression, { owner, column, direction });
+  orders.set(expression, Object.freeze({ owner, column, direction }));
   return expression;
 }
 
 export interface PredicateEnvironment {
-  readonly owner: object;
   readonly row: Readonly<Record<string, object>>;
 }
 
 /** Build the immutable column-reference object shared by ordinary and nearest predicates. */
-export function createPredicateEnvironment(engine: Engine, plan: TablePlan): PredicateEnvironment {
-  const owner = Object.freeze({});
-  const row = Object.create(null) as Record<string, object>;
+export function createPredicateEnvironment(plan: PredicatePlanIngredients): PredicateEnvironment {
+  const row: Record<string, object> = Object.create(null);
   for (const column of plan.columns.keys()) {
     Object.defineProperty(row, column, {
       enumerable: true,
-      value: makeColumnReference(engine, plan, owner, column),
+      value: makeColumnReference(plan, row, column),
     });
   }
-  return { owner, row: Object.freeze(row) };
+  Object.freeze(row);
+  return Object.freeze({ row });
 }
 
 /** Execute a `.where` callback exactly once and verify its branded result and table origin. */
@@ -256,7 +268,7 @@ export function resolvePredicate(
   ) {
     throw new ValidationError(`${path}: predicate callbacks must be synchronous`);
   }
-  return predicateMeta(result, environment.owner, path).node;
+  return predicateMeta(result, environment.row, path).node;
 }
 
 export interface QueryOrder {
@@ -278,10 +290,10 @@ export function resolveOrder(
     throw new ValidationError(`${path}: expected row.column.asc() or row.column.desc()`);
   }
   const meta = orders.get(result as object);
-  if (meta === undefined || meta.owner !== environment.owner) {
-    throw new ValidationError(`${path}: expected an order expression from this table query`);
+  if (meta === undefined || meta.owner !== environment.row) {
+    throw new ValidationError(`${path}: expected an order expression from this table`);
   }
-  return { column: meta.column, direction: meta.direction };
+  return meta;
 }
 
 export interface CompiledPredicate {
@@ -289,55 +301,72 @@ export interface CompiledPredicate {
   readonly params: readonly unknown[];
 }
 
-/** Compile a branded predicate tree to parameterized SQLite SQL. */
-export function compilePredicate(node: PredicateNode): CompiledPredicate {
+/** Compile one predicate tree while appending parameters in SQL placeholder order. */
+function compilePredicateSql(
+  node: PredicateNode,
+  params: unknown[],
+  parameterLimit: number,
+  path: string,
+): string {
   switch (node.kind) {
-    case "comparison":
-      return {
-        sql: `${quote(node.column)} ${{
-          eq: "=",
-          ne: "<>",
-          lt: "<",
-          lte: "<=",
-          gt: ">",
-          gte: ">=",
-        }[node.op]} ?`,
-        params: [node.value],
-      };
-    case "in":
-      return node.values.length === 0
-        ? { sql: "0", params: [] }
-        : {
-            sql: `${quote(node.column)} IN (${node.values.map(() => "?").join(", ")})`,
-            params: node.values,
-          };
-    case "between":
-      return {
-        sql: `${quote(node.column)} BETWEEN ? AND ?`,
-        params: [node.lower, node.upper],
-      };
-    case "null":
-      return { sql: `${quote(node.column)} IS ${node.isNull ? "" : "NOT "}NULL`, params: [] };
-    case "not": {
-      const compiled = compilePredicate(node.expression);
-      return { sql: `NOT (${compiled.sql})`, params: compiled.params };
+    case "comparison": {
+      params.push(node.value);
+      const operator = {
+        eq: "=",
+        ne: "<>",
+        lt: "<",
+        lte: "<=",
+        gt: ">",
+        gte: ">=",
+      }[node.op];
+      return `${quote(node.column)} ${operator} ?`;
     }
+    case "in": {
+      if (node.values.length === 0) return "0";
+      if (node.values.length > parameterLimit - params.length) {
+        throw new ValidationError(
+          `${path}: statement requires at least ${params.length + node.values.length} parameters; SQLite supports at most ${parameterLimit}`,
+        );
+      }
+      let placeholders = "";
+      for (const value of node.values) {
+        if (placeholders !== "") placeholders += ", ";
+        placeholders += "?";
+        params.push(value);
+      }
+      return `${quote(node.column)} IN (${placeholders})`;
+    }
+    case "between":
+      params.push(node.lower, node.upper);
+      return `${quote(node.column)} BETWEEN ? AND ?`;
+    case "null":
+      return `${quote(node.column)} IS ${node.isNull ? "" : "NOT "}NULL`;
+    case "not":
+      return `NOT (${compilePredicateSql(node.expression, params, parameterLimit, path)})`;
     case "and":
     case "or": {
-      const left = compilePredicate(node.left);
-      const right = compilePredicate(node.right);
-      return {
-        sql: `(${left.sql}) ${node.kind.toUpperCase()} (${right.sql})`,
-        params: [...left.params, ...right.params],
-      };
+      const left = compilePredicateSql(node.left, params, parameterLimit, path);
+      const right = compilePredicateSql(node.right, params, parameterLimit, path);
+      return `(${left}) ${node.kind.toUpperCase()} (${right})`;
     }
   }
 }
 
-export function compilePredicates(nodes: readonly PredicateNode[]): CompiledPredicate {
-  const compiled = nodes.map(compilePredicate);
-  return {
-    sql: compiled.length === 0 ? "" : compiled.map(({ sql }) => `(${sql})`).join(" AND "),
-    params: compiled.flatMap(({ params }) => params),
-  };
+export function compilePredicates(
+  nodes: readonly PredicateNode[],
+  parameterLimit: number,
+  path: string,
+): CompiledPredicate {
+  const params: unknown[] = [];
+  let sql = "";
+  for (const node of nodes) {
+    if (sql !== "") sql += " AND ";
+    sql += `(${compilePredicateSql(node, params, parameterLimit, path)})`;
+  }
+  if (params.length > parameterLimit) {
+    throw new ValidationError(
+      `${path}: statement requires ${params.length} parameters; SQLite supports at most ${parameterLimit}`,
+    );
+  }
+  return { sql, params };
 }

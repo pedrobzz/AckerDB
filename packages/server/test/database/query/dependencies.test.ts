@@ -14,7 +14,7 @@ import {
 } from "@dbzz/server";
 import {
   MAX_REACTIVE_DEPENDENCY_KEYS,
-  predicateDependencyKeys,
+  recordPredicateDependencies,
 } from "../../../src/database/query/dependencies.ts";
 import type { PredicateNode } from "../../../src/database/query/predicate.ts";
 
@@ -29,6 +29,7 @@ const schema = defineSchema({
     metadata: v.object({ source: v.string() }).nullable(),
     embedding: v.vector(2).nullable(),
   })
+    // Equal-depth ties intentionally choose the first declared index.
     .index(["tenantId", "status", "shard"])
     .index(["status", "tenantId"])
     .index(["tenantId"])
@@ -91,7 +92,7 @@ describe("predicate reactive dependencies", () => {
     );
 
     expect(recorded).toEqual(new Set([
-      key(["status", "tenantId"], [statusTag("active"), 7n]),
+      key(["tenantId", "status", "shard"], [7n, statusTag("active")]),
     ]));
   });
 
@@ -105,8 +106,27 @@ describe("predicate reactive dependencies", () => {
     );
 
     expect(recorded).toEqual(new Set([
-      key(["tenantId"], [4n]),
+      key(["tenantId", "status", "shard"], [4n]),
     ]));
+  });
+
+  test("records no dependency for a contradictory exact predicate", async () => {
+    const recorded = await dependencies((documents) =>
+      documents
+        .query()
+        .where((row: any) => row.tenantId.eq(1n).and(row.tenantId.eq(2n)))
+        .first()
+    );
+
+    expect(recorded).toEqual(new Set());
+  });
+
+  test("records no dependency for an empty IN predicate", async () => {
+    const recorded = await dependencies((documents) =>
+      documents.query().where((row: any) => row.tenantId.in([])).first()
+    );
+
+    expect(recorded).toEqual(new Set());
   });
 
   test("uses null as an exact storage value but stops before isNotNull and ranges", async () => {
@@ -130,7 +150,7 @@ describe("predicate reactive dependencies", () => {
       key(["tenantId", "rank"], [3n, null]),
     ]));
     expect(rangeRecorded).toEqual(new Set([
-      key(["tenantId"], [3n]),
+      key(["tenantId", "status", "shard"], [3n]),
     ]));
     expect(unsafeRange).toEqual(new Set([scanKey("documents")]));
   });
@@ -154,10 +174,116 @@ describe("predicate reactive dependencies", () => {
     );
 
     expect(safe).toEqual(new Set([
-      key(["status", "tenantId"], [statusTag("active"), 1n]),
-      key(["status", "tenantId"], [statusTag("archived"), 2n]),
+      key(["tenantId", "status", "shard"], [1n, statusTag("active")]),
+      key(["tenantId", "status", "shard"], [2n, statusTag("archived")]),
     ]));
     expect(unsafe).toEqual(new Set([scanKey("documents")]));
+  });
+
+  test("removes a deeper same-index OR dependency covered by a shallow prefix", async () => {
+    const recorded = await dependencies((documents) =>
+      documents
+        .query()
+        .where((row: any) =>
+          row.tenantId.eq(1n).and(row.status.eq("active")).or(row.tenantId.eq(1n))
+        )
+        .first()
+    );
+
+    expect(recorded).toEqual(new Set([
+      key(["tenantId", "status", "shard"], [1n]),
+    ]));
+  });
+
+  test("keeps only the uncovered tuples from partially overlapping OR prefixes", async () => {
+    const recorded = await dependencies((documents) =>
+      documents
+        .query()
+        .where((row: any) =>
+          row.tenantId.in([1n, 2n]).or(
+            row.tenantId.in([2n, 3n]).and(row.status.eq("active")),
+          )
+        )
+        .first()
+    );
+
+    expect(recorded).toEqual(new Set([
+      key(["tenantId", "status", "shard"], [1n]),
+      key(["tenantId", "status", "shard"], [2n]),
+      key(["tenantId", "status", "shard"], [3n, statusTag("active")]),
+    ]));
+  });
+
+  test("collapses a transitive same-index depth chain to its shallow prefix", async () => {
+    const recorded = await dependencies((documents) =>
+      documents
+        .query()
+        .where((row: any) =>
+          row.tenantId.eq(4n).and(row.status.eq("active")).and(row.shard.eq(7)).or(
+            row.tenantId.eq(4n).and(row.status.eq("active")),
+          ).or(row.tenantId.eq(4n))
+        )
+        .first()
+    );
+
+    expect(recorded).toEqual(new Set([
+      key(["tenantId", "status", "shard"], [4n]),
+    ]));
+  });
+
+  test("does not collapse prefix-like values selected from different indexes", async () => {
+    const recorded = await dependencies((documents) =>
+      documents
+        .query()
+        .where((row: any) =>
+          row.tenantId.eq(8n).and(row.rank.eq(2)).or(row.tenantId.eq(8n))
+        )
+        .first()
+    );
+
+    expect(recorded).toEqual(new Set([
+      key(["tenantId", "status", "shard"], [8n]),
+      key(["tenantId", "rank"], [8n, 2]),
+    ]));
+  });
+
+  test("widens an over-budget OR as one sound dependency", async () => {
+    const firstTenants = Array.from({ length: 33 }, (_, index) => BigInt(index + 1));
+    const secondTenants = Array.from({ length: 33 }, (_, index) => BigInt(index + 34));
+
+    const recorded = await dependencies((documents) =>
+      documents
+        .query()
+        .where((row: any) =>
+          row.tenantId.in(firstTenants).and(row.status.eq("active")).or(
+            row.tenantId.in(secondTenants).and(row.status.eq("archived")),
+          )
+        )
+        .first()
+    );
+
+    expect(recorded).toEqual(new Set([scanKey("documents")]));
+  });
+
+  test("widens more than 64 OR branches to their shared safe prefix", async () => {
+    const recorded = await dependencies((documents) =>
+      documents
+        .query()
+        .where((row: any) => {
+          const branch = (shard: number) =>
+            row.tenantId.eq(12n).and(row.status.eq("active")).and(row.shard.eq(shard));
+          let predicate = branch(0);
+          for (let shard = 1; shard <= MAX_REACTIVE_DEPENDENCY_KEYS; shard++) {
+            predicate = predicate.or(branch(shard));
+          }
+          return predicate;
+        })
+        .first()
+    );
+
+    expect(recorded).toEqual(new Set([
+      key(["tenantId", "status", "shard"], [12n, statusTag("active")]),
+    ]));
   });
 
   test("deduplicates IN values and widens before Cartesian expansion exceeds the budget", async () => {
@@ -186,15 +312,70 @@ describe("predicate reactive dependencies", () => {
     );
 
     expect(bounded).toEqual(new Set([
-      key(["status", "tenantId"], [statusTag("active"), 1n]),
-      key(["status", "tenantId"], [statusTag("active"), 2n]),
-      key(["status", "tenantId"], [statusTag("archived"), 1n]),
-      key(["status", "tenantId"], [statusTag("archived"), 2n]),
+      key(["tenantId", "status", "shard"], [1n, statusTag("active")]),
+      key(["tenantId", "status", "shard"], [1n, statusTag("archived")]),
+      key(["tenantId", "status", "shard"], [2n, statusTag("active")]),
+      key(["tenantId", "status", "shard"], [2n, statusTag("archived")]),
     ]));
     expect(widened).toEqual(new Set([
-      key(["tenantId"], [9n]),
+      key(["tenantId", "status", "shard"], [9n]),
     ]));
     expect(scanned).toEqual(new Set([scanKey("documents")]));
+  });
+
+  test("deduplicates numeric exact values with SameValueZero semantics", async () => {
+    const recorded = await dependencies((documents) =>
+      documents
+        .query()
+        .where((row: any) => row.tenantId.eq(6n).and(row.rank.in([0, -0, 0])))
+        .first()
+    );
+
+    expect(recorded).toEqual(new Set([
+      key(["tenantId", "rank"], [6n, 0]),
+    ]));
+  });
+
+  test("deduplicates repeated branches before applying the retained-key budget", async () => {
+    const tenantIds = Array.from({ length: 40 }, (_, index) => BigInt(index + 1));
+    const recorded = await dependencies((documents) =>
+      documents
+        .query()
+        .where((row: any) => {
+          // Selection deduplicates the second winner's concrete tuples before
+          // enforcing the 64-key budget, so all 40 precise keys survive.
+          const branch = row.tenantId.in(tenantIds);
+          return branch.or(branch);
+        })
+        .first()
+    );
+
+    expect(recorded).toEqual(new Set(
+      tenantIds.map((tenantId) => key(["tenantId", "status", "shard"], [tenantId])),
+    ));
+  });
+
+  test("keeps a boundary-size fanout bounded without missing matching writes", async () => {
+    const tenantIds = Array.from(
+      { length: MAX_REACTIVE_DEPENDENCY_KEYS },
+      (_, index) => BigInt(index + 1),
+    );
+    const recorded = await dependencies((documents) =>
+      documents.query().where((row: any) => row.tenantId.in(tenantIds)).first()
+    );
+
+    expect(recorded.size).toBe(MAX_REACTIVE_DEPENDENCY_KEYS);
+    for (const tenantId of tenantIds) {
+      const writes = new Set<string>();
+      emitWriteKeys(engine.plan("documents"), {
+        id: tenantId,
+        tenantId,
+        status: "active",
+        shard: 0,
+        rank: null,
+      }, writes);
+      expect([...recorded].some((dependency) => writes.has(dependency))).toBe(true);
+    }
   });
 
   test("ordinary and nearest reads extract the same predicate dependencies", async () => {
@@ -210,7 +391,7 @@ describe("predicate reactive dependencies", () => {
 
     expect(nearest).toEqual(ordinary);
     expect(nearest).toEqual(new Set([
-      key(["tenantId"], [5n]),
+      key(["tenantId", "status", "shard"], [5n]),
     ]));
   });
 
@@ -319,7 +500,10 @@ describe("predicate reactive dependencies", () => {
     };
 
     for (const predicates of cases) {
-      const dependencies = new Set(predicateDependencyKeys(plan, predicates));
+      const dependencies = new Set<string>();
+      recordPredicateDependencies(plan, predicates, {
+        add: (dependency) => dependencies.add(dependency),
+      });
       for (const row of rows) {
         if (!predicates.every((predicate) => evaluate(predicate, row))) continue;
         const writes = new Set<string>();
