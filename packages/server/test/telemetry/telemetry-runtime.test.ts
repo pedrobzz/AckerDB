@@ -62,7 +62,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     room: v.bigint(),
     body: v.string(),
-  }).index("by_room", ["room"]),
+  }).index(["room"]),
   signals: defineEventTable({
     id: v.primaryKey(),
     room: v.bigint(),
@@ -110,7 +110,7 @@ const functions = {
       access: "public",
       args: { room: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
-        ctx.db.items.byRoom((builder: Ctx) => builder.eq("room", args.room)).collect(),
+        ctx.db.items.query().where((row: Ctx) => row.room.eq(args.room)).collect(),
     }),
     hold: query({
       access: "public",
@@ -158,7 +158,7 @@ const functions = {
     list: query({
       access: "public",
       args: {},
-      handler: (ctx: Ctx) => ctx.db.audit.scan().collect(),
+      handler: (ctx: Ctx) => ctx.db.audit.query().collect(),
     }),
   },
   jobs: {

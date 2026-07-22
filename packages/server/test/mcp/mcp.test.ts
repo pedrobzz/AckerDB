@@ -48,7 +48,7 @@ const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
 const listNotes = typedQuery({
   access: "public",
   args: {},
-  handler: (ctx) => ctx.db.notes.scan().collect(),
+  handler: (ctx) => ctx.db.notes.query().collect(),
 });
 
 const insertNote = typedMutation({

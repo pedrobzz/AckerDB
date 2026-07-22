@@ -992,7 +992,7 @@ const realSchema = defineSchema({
     id: v.primaryKey(),
     channelId: v.bigint(),
     body: v.string(),
-  }).index("by_channel", ["channelId"]),
+  }).index(["channelId"]),
 });
 
 // Public integration fixtures intentionally exercise inferred application handlers.
@@ -1010,7 +1010,10 @@ describe("suspension against a real dbzz server", () => {
           access: "public",
           args: { channelId: v.bigint() },
           handler: (ctx: Ctx, args: Ctx) =>
-            ctx.db.messages.byChannel((builder: Ctx) => builder.eq("channelId", args.channelId)).collect(),
+            ctx.db.messages
+              .query()
+              .where((message: Ctx) => message.channelId.eq(args.channelId))
+              .collect(),
         }),
       },
     });

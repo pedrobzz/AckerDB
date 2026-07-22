@@ -68,7 +68,7 @@ const privateSchema = defineSchema({
     id: v.primaryKey(),
     key: v.string(),
     value: v.string(),
-  }).index("by_key", ["key"], { unique: true }),
+  }).index(["key"], { unique: true }),
 });
 
 const providerContract = definePluginContract({
@@ -102,7 +102,7 @@ const providerPlugin = definePlugin({
         read: query(providerContract.values.read, async (ctx, args) => {
           const timestamp: number = ctx.timestamp;
           const mount: string = ctx.mount;
-          const row = await ctx.db.entries.byKey((range) => range.eq("key", args.key)).unique();
+          const row = await ctx.db.entries.query().where((row) => row.key.eq(args.key)).unique();
           // @ts-expect-error Plugin handlers receive no ambient application auth
           ctx.auth;
           // @ts-expect-error Plugin private db exposes only its own schema
@@ -112,14 +112,7 @@ const providerPlugin = definePlugin({
           return row?.value;
         }),
         write: mutation(providerContract.values.write, async (ctx, args) => {
-          const existing = await ctx.db.entries
-            .byKey((range) => range.eq("key", args.key))
-            .unique();
-          if (existing === null) {
-            await ctx.db.entries.insert({ key: args.key, value: args.value });
-          } else {
-            await ctx.db.entries.patch(existing.id, { value: args.value });
-          }
+          await ctx.db.entries.upsert({ key: args.key }, { value: args.value });
           return true;
         }),
       },
@@ -127,7 +120,7 @@ const providerPlugin = definePlugin({
         refresh: procedure(providerContract.maintenance.refresh, async (ctx, args) => {
           const aborted: boolean = ctx.abortSignal.aborted;
           const count = await ctx.tx(async (tx) => {
-            const entries = await tx.db.entries.scan().collect();
+            const entries = await tx.db.entries.query().collect();
             // @ts-expect-error transaction contexts do not gain procedure-only fields
             tx.abortSignal;
             return entries.length;

@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { Subprocess } from "bun";
 import { DbzzClient } from "@dbzz/client";
-import { defineSchema, defineTable, v, indexSqlName, migrationFingerprint, snapshotOf } from "@dbzz/server";
+import {
+  defineSchema,
+  defineTable,
+  v,
+  indexSqlName,
+  migrationFingerprint,
+  snapshotOf,
+} from "@dbzz/server";
 import { makeFixture } from "../support/fixture.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
@@ -70,7 +77,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     label: v.string(),
     count: v.int(),
-  }).index("by_label", ["label"], { unique: true }),
+  }).index(["label"], { unique: true }),
 });
 export default defineApp({ schema });
 `;
@@ -87,9 +94,11 @@ export const add = mutation({
 export const list = query({
   access: "public",
   args: {},
-  handler: (ctx) => ctx.db.items.scan().collect(),
+  handler: (ctx) => ctx.db.items.query().collect(),
 });
 `;
+
+const UNIQUE_LABEL_INDEX = "s_u_b_5_label";
 
 const V1 = snapshotOf(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.int() }) }));
 const V2 = snapshotOf(defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.string() }) }));
@@ -331,19 +340,19 @@ describe("dbzz generate", () => {
     // Before the fix computePlan discarded the optimistic bucket and reported clean.
     expect(generated.stdout).not.toContain("nothing to generate");
 
-    const scaffold = join(dir, "migrations", "0001_items_by_label_dedupe.ts");
+    const scaffold = join(dir, "migrations", `0001_items_${UNIQUE_LABEL_INDEX}_dedupe.ts`);
     expect(existsSync(scaffold)).toBe(true);
     const scaffoldSource = readFileSync(scaffold, "utf8");
     // A volunteered typed-hole transform on the offending table, naming the index and count.
     expect(scaffoldSource).toContain("items: (row): ItemsRow => {");
     expect(scaffoldSource).toContain(
-      "// TODO(items.by_label): unique index over (label); 1 duplicate group(s) exist — return the surviving row, or null to drop this one",
+      `// TODO(items.${UNIQUE_LABEL_INDEX}): unique index over (label); 1 duplicate group(s) exist — return the surviving row, or null to drop this one`,
     );
 
     // Fill the hole with a real dedupe: keep the lowest id per label group, drop the rest.
     const filled = scaffoldSource.replace(
       "    items: (row): ItemsRow => {\n" +
-        "      // TODO(items.by_label): unique index over (label); 1 duplicate group(s) exist — return the surviving row, or null to drop this one\n" +
+        `      // TODO(items.${UNIQUE_LABEL_INDEX}): unique index over (label); 1 duplicate group(s) exist — return the surviving row, or null to drop this one\n` +
         "    },",
       "    items: async (row, ctx) => {\n" +
         "      let lowest = row.id;\n" +
@@ -374,7 +383,7 @@ describe("dbzz generate", () => {
     try {
       const row = db
         .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
-        .get(indexSqlName("items", "by_label")) as { sql: string } | null;
+        .get(indexSqlName("items", UNIQUE_LABEL_INDEX)) as { sql: string } | null;
       expect(row?.sql).toContain("UNIQUE");
     } finally {
       db.close();

@@ -14,8 +14,9 @@ export const queue = query({
   args: {},
   handler: async (ctx) => {
     const orders = await ctx.db.orders
-      .byStatusOpenedAt((q) => q.eq("status", "OPEN"))
-      .order("asc")
+      .query()
+      .where((order) => order.status.eq("OPEN"))
+      .orderBy((order) => order.openedAt.asc())
       .collect();
     const rows = [];
     for (const order of orders) {
@@ -23,8 +24,9 @@ export const queue = query({
         ctx.db.restaurantTables.get(order.tableId),
         ctx.db.users.get(order.userId),
         ctx.db.orderItems
-          .byOrder((q) => q.eq("orderId", order.id))
-          .order("asc")
+          .query()
+          .where((item) => item.orderId.eq(order.id))
+          .orderBy((item) => item.orderedAt.asc())
           .collect(),
       ]);
       if (table === null || user === null) continue;

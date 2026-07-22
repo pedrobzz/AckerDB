@@ -45,7 +45,7 @@ export const getGuests = mcpTool({
       const limit = clampLimit(args.limit);
       const email = args.email?.trim().toLowerCase() ?? null;
       const name = args.name?.trim().toLowerCase() ?? null;
-      const rows = await tx.db.users.scan().order("asc").collect();
+      const rows = await tx.db.users.query().collect();
       const guests = rows
         .filter(
           (user) =>

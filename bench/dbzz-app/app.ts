@@ -7,14 +7,14 @@ const schema = defineSchema({
     rank: v.float(),
     score: v.float(),
     payload: v.string(),
-  }).index("by_partition_rank", ["partition", "rank"]),
+  }).index(["partition", "rank"]),
 
   accounts: defineTable({
     id: v.primaryKey(),
     account: v.float(),
     balance: v.float(),
     version: v.float(),
-  }).index("by_account", ["account"], { unique: true }),
+  }).index(["account"], { unique: true }),
 
   channels: defineTable({
     id: v.primaryKey(),
@@ -22,7 +22,7 @@ const schema = defineSchema({
     version: v.float(),
     checksum: v.float(),
     payload: v.string(),
-  }).index("by_channel", ["channel"], { unique: true }),
+  }).index(["channel"], { unique: true }),
 });
 
 export default defineApp({ schema });

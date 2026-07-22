@@ -105,4 +105,3 @@ Adding a nullable vector column is shape-safe. Adding a required vector column,
 tightening nullable to required, or changing vector dimensions/type is
 shape-unsafe and uses a normal forward migration. Migrations must not call an
 embedding model: backfill first, verify completeness, then tighten the schema.
-

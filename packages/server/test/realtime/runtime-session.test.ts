@@ -416,7 +416,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     channelId: v.bigint(),
     body: v.string(),
-  }).index("by_channel", ["channelId"]),
+  }).index(["channelId"]),
   typing: defineEventTable({
     id: v.primaryKey(),
     channelId: v.bigint(),
@@ -489,17 +489,17 @@ async function reconnectTransitionEvidence(
         access: "public",
         args: { channelId: v.bigint() },
         handler: (ctx: Ctx, args: Ctx) =>
-          ctx.db.messages.byChannel((builder: Ctx) =>
-            builder.eq("channelId", args.channelId)
-          ).collect(),
+          ctx.db.messages.query()
+            .where((row: Ctx) => row.channelId.eq(args.channelId))
+            .collect(),
       }),
       nonempty: query({
         access: "public",
         args: { channelId: v.bigint() },
         handler: async (ctx: Ctx, args: Ctx) =>
-          (await ctx.db.messages.byChannel((builder: Ctx) =>
-            builder.eq("channelId", args.channelId)
-          ).collect()).length > 0,
+          (await ctx.db.messages.query()
+            .where((row: Ctx) => row.channelId.eq(args.channelId))
+            .collect()).length > 0,
       }),
       identity: query({
         access: "authenticated",
@@ -701,9 +701,9 @@ describe("Session + Runtime integration", () => {
             access: "public",
             args: { channelId: v.bigint() },
             handler: (ctx: Ctx, args: Ctx) =>
-              ctx.db.messages.byChannel((builder: Ctx) =>
-                builder.eq("channelId", args.channelId)
-              ).collect(),
+              ctx.db.messages.query()
+                .where((row: Ctx) => row.channelId.eq(args.channelId))
+                .collect(),
           }),
         },
       }),
@@ -777,9 +777,9 @@ describe("Session + Runtime integration", () => {
           access: "public",
           args: { channelId: v.bigint() },
           handler: (ctx: Ctx, args: Ctx) =>
-            ctx.db.messages.byChannel((builder: Ctx) =>
-              builder.eq("channelId", args.channelId)
-            ).collect(),
+            ctx.db.messages.query()
+              .where((row: Ctx) => row.channelId.eq(args.channelId))
+              .collect(),
         }),
         identity: query({
           access: "authenticated",
@@ -1070,9 +1070,9 @@ describe("Session + Runtime integration", () => {
           access: "public",
           args: { channelId: v.bigint() },
           handler: (ctx: Ctx, args: Ctx) =>
-            ctx.db.messages.byChannel((builder: Ctx) =>
-              builder.eq("channelId", args.channelId)
-            ).collect(),
+            ctx.db.messages.query()
+              .where((row: Ctx) => row.channelId.eq(args.channelId))
+              .collect(),
         }),
         send: mutation({
           access: "public",

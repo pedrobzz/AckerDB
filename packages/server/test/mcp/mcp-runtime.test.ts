@@ -137,7 +137,7 @@ const insertOwnershipRecord = typedMutation({
 const countOwnershipRecords = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => ctx.db.records.scan().count(),
+  handler: (ctx) => ctx.db.records.query().count(),
 });
 
 const nestedOwnershipWrite = typedMcpTool({

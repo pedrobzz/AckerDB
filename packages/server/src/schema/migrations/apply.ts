@@ -345,8 +345,8 @@ function snapshotColumnPlan(jsName: string, desc: Descriptor, tags: Map<string, 
       fromSql: (values) => (values[0] === null ? null : tags.get(typeName)!.toName.get(Number(values[0]))!),
     };
   }
-  const enc = scalarEncoder(kind);
-  const dec = scalarDecoder(kind);
+  const enc = scalarEncoder(base);
+  const dec = scalarDecoder(base, jsName);
   return {
     ...shared,
     toSql: (value) => [value === null ? null : enc(value)],

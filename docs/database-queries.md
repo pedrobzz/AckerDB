@@ -34,6 +34,9 @@ Column references expose only meaningful operations:
 - union discriminants: `is("variant")`, which narrows the row type positively.
 
 Structured values and vectors do not pretend to have scalar SQL ordering.
+Enum and union labels are also not orderable: their stored tags are stable
+identities, not a logical declaration order. Booleans retain `false` then
+`true` ordering.
 All predicate values cross the column's validator and storage codec before
 SQLite sees them.
 
@@ -110,5 +113,6 @@ const id = await ctx.db.users.upsert(
 The key field set must exactly match one declared non-null unique index;
 property order does not matter. Key fields cannot be changed by the values or
 callback. Nullable unique indexes are not valid upsert targets, and a conflict
-with another unique constraint remains an error.
-
+with another unique constraint remains an error. Union keys compare both tag
+and payload; a same-tag/different-payload key conflicts with the stronger
+tag-only storage constraint rather than updating a different logical value.

@@ -8,8 +8,8 @@ export const cacheSchema = defineSchema({
     bytes: v.int(),
     deadline: v.int().nullable(),
   })
-    .index("by_key", ["key"], { unique: true })
-    .index("by_deadline", ["deadline"]),
+    .index(["key"], { unique: true })
+    .index(["deadline"]),
   state: defineTable({
     id: v.primaryKey(),
     totalBytes: v.int(),

@@ -19,8 +19,8 @@ export const available = query({
     const principal = requireUser(ctx.auth);
     await requireCurrentUser(ctx.db, principal.identity);
     const tables = await ctx.db.restaurantTables
-      .byNumber((q) => q)
-      .order("asc")
+      .query()
+      .orderBy((table) => table.number.asc())
       .collect();
     return Promise.all(
       tables
@@ -40,8 +40,8 @@ export const list = query({
   args: {},
   handler: async (ctx) => {
     const tables = await ctx.db.restaurantTables
-      .byNumber((q) => q)
-      .order("asc")
+      .query()
+      .orderBy((table) => table.number.asc())
       .collect();
     return Promise.all(
       tables
@@ -68,7 +68,8 @@ export const create = mutation({
     const number = positiveInteger(args.number, "Table number", 999);
     const seats = positiveInteger(args.seats, "Seat count", 20);
     const existing = await ctx.db.restaurantTables
-      .byNumber((q) => q.eq("number", number))
+      .query()
+      .where((table) => table.number.eq(number))
       .unique();
     const now = Date.now();
     if (existing !== null) {
@@ -102,7 +103,8 @@ export const update = mutation({
     const number = positiveInteger(args.number, "Table number", 999);
     const seats = positiveInteger(args.seats, "Seat count", 20);
     const duplicate = await ctx.db.restaurantTables
-      .byNumber((q) => q.eq("number", number))
+      .query()
+      .where((candidate) => candidate.number.eq(number))
       .unique();
     if (duplicate !== null && duplicate.id !== table.id)
       conflict("This table number already exists");

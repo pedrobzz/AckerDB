@@ -48,7 +48,7 @@ const readSecrets = secretsMcpTool({
   description: "Read a table that exists only in the source schema.",
   args: {},
   handler: async (ctx) => {
-    const rows = await ctx.tx((tx) => tx.db.secrets.scan().collect());
+    const rows = await ctx.tx((tx) => tx.db.secrets.query().collect());
     return { content: [{ type: "text", text: String(rows.length) }] };
   },
 });

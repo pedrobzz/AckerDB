@@ -58,7 +58,7 @@ export const add = mutation({
 export const list = query({
   access: "public",
   args: {},
-  handler: (ctx) => ctx.db.items.scan().collect(),
+  handler: (ctx) => ctx.db.items.query().collect(),
 });
 `;
 

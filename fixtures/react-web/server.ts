@@ -34,7 +34,7 @@ const registry = new Registry({
       access: "public",
       args: {},
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      handler: (ctx: any) => ctx.db.notes.collect(),
+      handler: (ctx: any) => ctx.db.notes.query().collect(),
     }),
   },
 });

@@ -102,7 +102,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     channelId: v.bigint(),
     body: v.string(),
-  }).index("by_channel", ["channelId"]),
+  }).index(["channelId"]),
   log: defineTable({
     id: v.primaryKey(),
     line: v.string(),
@@ -161,14 +161,15 @@ const functions = {
       access: "public",
       args: { channelId: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
-        ctx.db.messages.byChannel((builder: Ctx) => builder.eq("channelId", args.channelId)).collect(),
+        ctx.db.messages.query().where((row: Ctx) => row.channelId.eq(args.channelId)).collect(),
     }),
     parallelList: query({
       access: "public",
       args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const rows = await ctx.db.messages
-          .byChannel((builder: Ctx) => builder.eq("channelId", args.channelId))
+          .query()
+          .where((row: Ctx) => row.channelId.eq(args.channelId))
           .collect();
         if (args.channelId === 1n && revalidationGate) {
           revalidationEntered?.resolve(undefined);

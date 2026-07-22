@@ -126,6 +126,7 @@ const RENDER_KIND: Record<string, (desc: Descriptor) => string> = {
   scheduleAt: () => "number",
   boolean: () => "boolean",
   bytes: () => "Uint8Array",
+  vector: () => "readonly number[]",
   jsonb: () => "unknown",
   tag: () => "null",
   literal: (desc) => literalTs(decode(JSON.stringify(desc["v"]))),

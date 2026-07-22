@@ -100,7 +100,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     body: v.string(),
     rank: v.bigint(),
-  }).index("by_rank", ["rank"]),
+  }).index(["rank"]),
   beeps: defineEventTable({
     id: v.primaryKey(),
     n: v.float(),
@@ -129,7 +129,7 @@ const functions = {
       access: "public",
       args: { rank: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
-        ctx.db.notes.byRank((builder: Ctx) => builder.eq("rank", args.rank)).collect(),
+        ctx.db.notes.query().where((row: Ctx) => row.rank.eq(args.rank)).collect(),
     }),
     add: mutation({
       access: "public",

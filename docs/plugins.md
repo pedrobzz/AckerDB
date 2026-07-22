@@ -47,7 +47,7 @@ const storeSchema = defineSchema({
     id: v.primaryKey(),
     key: v.string(),
     value: v.int(),
-  }).index("by_key", ["key"], { unique: true }),
+  }).index(["key"], { unique: true }),
 });
 
 const storePlugin = definePlugin({
@@ -56,10 +56,10 @@ const storePlugin = definePlugin({
   create: ({ query, mutation }) => ({
     exports: {
       get: query(storeContract.get, async (ctx, { key }) =>
-        (await ctx.db.entries.byKey((q) => q.eq("key", key)).unique())?.value
+        (await ctx.db.entries.query().where((entry) => entry.key.eq(key)).unique())?.value
       ),
       put: mutation(storeContract.put, async (ctx, { key, value }) => {
-        const row = await ctx.db.entries.byKey((q) => q.eq("key", key)).unique();
+        const row = await ctx.db.entries.query().where((entry) => entry.key.eq(key)).unique();
         if (row === null) await ctx.db.entries.insert({ key, value });
         else await ctx.db.entries.patch(row.id, { value });
         return true;

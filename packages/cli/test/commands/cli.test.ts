@@ -505,7 +505,7 @@ ${FIXTURE_APP}`,
     expect(await first.child.exited).toBe(0);
 
     const db = new Database(join(dir, ".dbzz", "data.db"));
-    db.exec("DROP INDEX ix_messages_by_channel");
+    db.exec("DROP INDEX ix_messages_s_n_b_9_channelId");
     db.close();
 
     const failed = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });

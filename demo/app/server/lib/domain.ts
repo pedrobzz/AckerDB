@@ -85,7 +85,7 @@ export async function userForIdentity(
   db: DatabaseReader,
   identity: Identity,
 ): Promise<User | null> {
-  return db.users.byIdentity((q) => q.eq("identity", identity)).unique();
+  return db.users.query().where((user) => user.identity.eq(identity)).unique();
 }
 
 export async function requireCurrentUser(
@@ -130,14 +130,14 @@ export async function openOrderForUser(
   db: DatabaseReader,
   userId: bigint,
 ): Promise<Order | null> {
-  return db.orders.byOpenUser((q) => q.eq("openUserId", userId)).unique();
+  return db.orders.query().where((order) => order.openUserId.eq(userId)).unique();
 }
 
 export async function openOrderForTable(
   db: DatabaseReader,
   tableId: bigint,
 ): Promise<Order | null> {
-  return db.orders.byOpenTable((q) => q.eq("openTableId", tableId)).unique();
+  return db.orders.query().where((order) => order.openTableId.eq(tableId)).unique();
 }
 
 export async function requireActiveTable(
@@ -193,8 +193,9 @@ export async function orderView(db: DatabaseReader, order: Order) {
     db.users.get(order.userId),
     db.restaurantTables.get(order.tableId),
     db.orderItems
-      .byOrder((q) => q.eq("orderId", order.id))
-      .order("asc")
+      .query()
+      .where((item) => item.orderId.eq(order.id))
+      .orderBy((item) => item.orderedAt.asc())
       .collect(),
   ]);
   if (user === null || table === null)
@@ -337,7 +338,9 @@ export async function cancelOpenOrder(
 ): Promise<{ order: Order; items: OrderItem[] }> {
   const order = await requireOpenOrder(db, orderId);
   const items = await db.orderItems
-    .byOrder((q) => q.eq("orderId", order.id))
+    .query()
+    .where((item) => item.orderId.eq(order.id))
+    .orderBy((item) => item.orderedAt.asc())
     .collect();
   for (const item of items) await clearReminder(db, item.id);
   await closeOrder(
@@ -355,7 +358,8 @@ export async function clearReminder(
   orderItemId: bigint,
 ): Promise<void> {
   const reminder = await db.kitchenReminders
-    .byOrderItem((q) => q.eq("orderItemId", orderItemId))
+    .query()
+    .where((reminder) => reminder.orderItemId.eq(orderItemId))
     .unique();
   if (reminder !== null) await db.kitchenReminders.delete(reminder.id);
 }

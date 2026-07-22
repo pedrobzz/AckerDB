@@ -5,6 +5,7 @@ import {
   defineTable,
   type DbStatementObservation,
   Engine,
+  indexSqlName,
   makeDbReader,
   makeDbWriter,
   newWriteCollector,
@@ -48,10 +49,10 @@ describe("Plugin storage scopes", () => {
       createScopePhysical(engine, beta);
       expect(await alphaDb.entries.insert({ status: "ready", value: "left" })).toBe(1n);
       expect(await betaDb.entries.insert({ status: "blocked", value: "right" })).toBe(1n);
-      expect(await alphaDb.entries.scan().collect()).toEqual([
+      expect(await alphaDb.entries.query().collect()).toEqual([
         { id: 1n, status: "ready", value: "left" },
       ]);
-      expect(await betaDb.entries.scan().collect()).toEqual([
+      expect(await betaDb.entries.query().collect()).toEqual([
         { id: 1n, status: "blocked", value: "right" },
       ]);
       engine.writer.exec("COMMIT");
@@ -93,7 +94,7 @@ describe("Plugin storage scopes", () => {
     expect(Object.keys(secondDb)).toEqual(["entries"]);
     const firstReader: any = makeDbReader(engine, engine.reader, null, undefined, first);
     expect(Object.keys(firstReader)).toEqual(["entries"]);
-    expect(await firstReader.entries.scan().collect()).toEqual([
+    expect(await firstReader.entries.query().collect()).toEqual([
       { id: 1n, status: "ready", value: "one" },
     ]);
     expect(firstPlan.logicalName).toBe("entries");
@@ -125,11 +126,11 @@ describe("Plugin storage scopes", () => {
     engine.createAll();
 
     const additiveBefore = defineSchema({
-      records: defineTable({ id: v.primaryKey(), value: v.string() }).index("by_value", ["value"]),
+      records: defineTable({ id: v.primaryKey(), value: v.string() }).index(["value"]),
     });
     const additiveAfter = defineSchema({
       records: defineTable({ id: v.primaryKey(), value: v.string(), note: v.string().nullable() })
-        .index("by_note", ["note"]),
+        .index(["note"]),
     });
     const additiveCurrent = engine.createPluginScope("additive", additiveBefore);
     const additiveTarget = engine.createPluginScope("additive", additiveAfter);
@@ -148,12 +149,20 @@ describe("Plugin storage scopes", () => {
       throw error;
     }
     const additivePhysical = additiveTarget.plan("records").name;
+    const oldIndexName = indexSqlName(
+      additivePhysical,
+      additiveCurrent.plan("records").indexes[0]!.name,
+    );
+    const newIndexName = indexSqlName(
+      additivePhysical,
+      additiveTarget.plan("records").indexes[0]!.name,
+    );
     expect(engine.writer.query(`PRAGMA table_info("${additivePhysical}")`).all())
       .toContainEqual(expect.objectContaining({ name: "note" }));
     expect(engine.writer.query(`PRAGMA index_list("${additivePhysical}")`).all())
-      .toContainEqual(expect.objectContaining({ name: `ix_${additivePhysical}_by_note` }));
+      .toContainEqual(expect.objectContaining({ name: newIndexName }));
     expect(engine.writer.query(`PRAGMA index_list("${additivePhysical}")`).all())
-      .not.toContainEqual(expect.objectContaining({ name: `ix_${additivePhysical}_by_value` }));
+      .not.toContainEqual(expect.objectContaining({ name: oldIndexName }));
 
     const rebuildBefore = defineSchema({
       records: defineTable({ id: v.primaryKey(), value: v.string() }),
@@ -178,7 +187,7 @@ describe("Plugin storage scopes", () => {
       records: defineTable({ id: v.primaryKey(), value: v.string() }),
     });
     const probeAfter = defineSchema({
-      records: defineTable({ id: v.primaryKey(), value: v.string() }).index("by_value", ["value"], { unique: true }),
+      records: defineTable({ id: v.primaryKey(), value: v.string() }).index(["value"], { unique: true }),
     });
     const probeCurrent = engine.createPluginScope("prober", probeBefore);
     const probeTarget = engine.createPluginScope("prober", probeAfter);

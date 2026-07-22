@@ -53,7 +53,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     userId: v.identity(),
     value: v.string(),
-  }).index("by_user", ["userId"], { unique: true }),
+  }).index(["userId"], { unique: true }),
 });
 
 // Runtime behavior is under test; generated application types are irrelevant here.
@@ -135,7 +135,8 @@ const functions = {
       handler: (ctx: Ctx) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
         return ctx.tx((tx: Ctx) => tx.db.owned
-          .byUser((range: Ctx) => range.eq("userId", ctx.auth.identity))
+          .query()
+          .where((row: Ctx) => row.userId.eq(ctx.auth.identity))
           .unique());
       },
     }),

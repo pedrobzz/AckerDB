@@ -18,6 +18,11 @@ import {
   checkNumberConstraints,
   checkStringConstraints,
 } from "../validation/constraints.ts";
+import {
+  decodeVectorBlob,
+  encodeVectorBlob,
+  normalizeVector,
+} from "../validation/vector.ts";
 
 export type SqlType = "TEXT" | "REAL" | "INTEGER" | "BLOB";
 
@@ -44,9 +49,9 @@ export interface DescriptorKind {
   /** SQLite type of the single-column layout; absent for pk/union (custom DDL) and non-storable kinds. */
   sqlType?: SqlType;
   /** Wire-encode a non-null scalar; absent means identity (or a tag/identity-mapped kind, whose codec lives at its site). */
-  encode?: (value: unknown) => unknown;
+  encode?: (value: unknown, desc: Descriptor) => unknown;
   /** Wire-decode a stored non-null scalar; absent means identity. */
-  decode?: (value: unknown) => unknown;
+  decode?: (value: unknown, desc: Descriptor, path: string) => unknown;
   /** Structural validation against this descriptor; returns the normalized value. */
   check: CheckFn;
 }
@@ -133,6 +138,15 @@ const KINDS: Record<string, DescriptorKind> = {
     check: guard((v) => typeof v === "boolean", "boolean"),
   },
   bytes: { sqlType: "BLOB", check: guard((v) => v instanceof Uint8Array, "Uint8Array") },
+  vector: {
+    sqlType: "BLOB",
+    encode: (value, desc) =>
+      encodeVectorBlob(value as readonly number[], desc["dimensions"] as number),
+    decode: (value, desc, path) =>
+      decodeVectorBlob(value, desc["dimensions"] as number, path),
+    check: ({ desc, value, path }) =>
+      normalizeVector(value, desc["dimensions"] as number, path),
+  },
   enum: {
     sqlType: "INTEGER",
     check: ({ desc, value, expect }) => {
@@ -237,14 +251,16 @@ export function sqlTypeOf(kind: string): SqlType | undefined {
   return KINDS[kind]?.sqlType;
 }
 
-/** The construction-time wire encoder for a scalar `kind` (identity when it stores verbatim). */
-export function scalarEncoder(kind: string): (value: unknown) => unknown {
-  return KINDS[kind]?.encode ?? identity;
+/** The descriptor-owned encoder for a scalar value (identity when it stores verbatim). */
+export function scalarEncoder(desc: Descriptor): (value: unknown) => unknown {
+  const encode = KINDS[desc["k"] as string]?.encode;
+  return encode === undefined ? identity : (value) => encode(value, desc);
 }
 
-/** The construction-time wire decoder for a scalar `kind` (identity when it stores verbatim). */
-export function scalarDecoder(kind: string): (value: unknown) => unknown {
-  return KINDS[kind]?.decode ?? identity;
+/** The descriptor-owned decoder for a scalar value (identity when it stores verbatim). */
+export function scalarDecoder(desc: Descriptor, path: string): (value: unknown) => unknown {
+  const decode = KINDS[desc["k"] as string]?.decode;
+  return decode === undefined ? identity : (value) => decode(value, desc, path);
 }
 
 /**

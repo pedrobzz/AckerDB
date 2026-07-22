@@ -19,7 +19,7 @@ export async function builtinGet(
   const encodedKey = encodeCacheKey("", ctx.mount, namespace, key);
   let row;
   try {
-    row = await ctx.db.entries.byKey((q) => q.eq("key", encodedKey)).unique();
+    row = await ctx.db.entries.query().where((entry) => entry.key.eq(encodedKey)).unique();
   } catch (error) {
     throw new CacheStoreError("cache read failed", error);
   }
@@ -44,7 +44,7 @@ export async function builtinSet(
 
   try {
     const db = ctx.db;
-    const existing = await db.entries.byKey((q) => q.eq("key", encodedKey)).unique();
+    const existing = await db.entries.query().where((entry) => entry.key.eq(encodedKey)).unique();
     const isPresent = existing !== null && isLive(existing.deadline, ctx.timestamp);
     if (
       (options?.if === "missing" && isPresent) ||
@@ -53,7 +53,7 @@ export async function builtinSet(
       return false;
     }
 
-    const state = await db.state.scan().unique();
+    const state = await db.state.query().unique();
     let totalBytes = state?.totalBytes ?? 0;
     let entryCount = state?.entryCount ?? 0;
     if (existing !== null) {
@@ -96,13 +96,15 @@ export async function builtinSet(
     const batchSize = Math.min(256, config.maxEntries);
     while (exceedsCapacity(totalBytes, entryCount)) {
       const expired = await db.entries
-        .byDeadline((q) => q.lte("deadline", ctx.timestamp))
+        .query()
+        .where((entry) => entry.deadline.lte(ctx.timestamp))
+        .orderBy((entry) => entry.deadline.asc())
         .take(batchSize);
       if (expired.length === 0) break;
       await evictCandidates(expired);
     }
     while (exceedsCapacity(totalBytes, entryCount)) {
-      const oldest = await db.entries.scan().order("asc").take(batchSize);
+      const oldest = await db.entries.query().take(batchSize);
       if (oldest.length === 0) break;
       await evictCandidates(oldest);
     }
@@ -129,10 +131,10 @@ export async function builtinDelete(
 ): Promise<boolean> {
   const encodedKey = encodeCacheKey("", ctx.mount, namespace, key);
   try {
-    const row = await ctx.db.entries.byKey((q) => q.eq("key", encodedKey)).unique();
+    const row = await ctx.db.entries.query().where((entry) => entry.key.eq(encodedKey)).unique();
     if (row === null) return false;
     const wasLive = isLive(row.deadline, ctx.timestamp);
-    const state = await ctx.db.state.scan().unique();
+    const state = await ctx.db.state.query().unique();
     if (state === null) {
       throw new Error("cache state is missing while entries exist");
     }

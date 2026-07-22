@@ -9,6 +9,7 @@ import {
   defineTable,
   Engine,
   idKey,
+  indexSqlName,
   ixKey,
   makeDbReader,
   makeDbWriter,
@@ -30,23 +31,23 @@ const schema = () =>
       currency: v.string(),
       note: v.string().nullable(),
     })
-      .index("by_user", ["userId"])
-      .index("by_user_status_amount", ["userId", "status", "amount"]),
+      .index(["userId"])
+      .index(["userId", "status", "amount"]),
     users: defineTable({
       id: v.primaryKey(),
       email: v.string(),
       name: v.string(),
       payload: v.union("UPayload", { text: v.string(), nothing: v.tag() }),
     })
-      .index("by_email", ["email"], { unique: true })
-      .index("by_payload", ["payload"]),
+      .index(["email"], { unique: true })
+      .index(["payload"]),
     numericRows: defineTable({
       id: v.primaryKey(),
       rank: v.int(),
       maybeRank: v.int().nullable(),
       exact: v.bigint(),
       owner: v.identity(),
-    }).index("by_rank", ["rank"]),
+    }).index(["rank"]),
     pings: defineEventTable({
       id: v.primaryKey(),
       channel: v.bigint(),
@@ -143,14 +144,19 @@ describe("writes", () => {
       owner,
     });
     const page = await reader.numericRows
-      .byRank((q: any) => q.gte("rank", min))
-      .paginate({ cursor: null, numItems: 1 });
-    expect(page.page).toEqual([{ id, rank: max, maybeRank: null, exact, owner }]);
+      .query()
+      .where((row: any) => row.rank.gte(min))
+      .orderBy((row: any) => row.rank.asc())
+      .paginate({ pageSize: 1 });
+    expect(page.items).toEqual([{ id, rank: max, maybeRank: null, exact, owner }]);
     expect(indexedSql).toBeDefined();
     const queryPlan = engine.reader
       .query(`EXPLAIN QUERY PLAN ${indexedSql!}`)
       .all(min) as { detail: string }[];
-    expect(queryPlan.some(({ detail }) => detail.includes("ix_numericRows_by_rank"))).toBe(true);
+    const rankIndex = engine.plan("numericRows").indexes[0]!;
+    expect(queryPlan.some(({ detail }) =>
+      detail.includes(indexSqlName("numericRows", rankIndex.name))
+    )).toBe(true);
     expect(queryPlan.some(({ detail }) => detail.includes("USE TEMP B-TREE"))).toBe(false);
 
     await db.numericRows.patch(id, { maybeRank: min });
@@ -245,7 +251,7 @@ describe("writes", () => {
         id: v.primaryKey(),
         externalId: v.string(),
         slug: v.string().min(2).max(4).regex(/^[a-z]+$/),
-      }).index("by_external_id", ["externalId"], { unique: true }),
+      }).index(["externalId"], { unique: true }),
       articleEvents: defineEventTable({
         id: v.primaryKey(),
         slug: v.string().min(2),
@@ -271,11 +277,11 @@ describe("writes", () => {
         .rejects.toThrow("articles.patch.slug");
       await expect(constrainedDb.articles.replace(id, { externalId: "a", slug: "toolong" }))
         .rejects.toThrow("articles.replace.slug");
-      await expect(constrainedDb.articles.byExternalId.upsert(
+      await expect(constrainedDb.articles.upsert(
         { externalId: "b" },
         { slug: "1" },
       )).rejects.toThrow("articles.insert.slug");
-      await expect(constrainedDb.articles.byExternalId.upsert(
+      await expect(constrainedDb.articles.upsert(
         { externalId: "a" },
         { slug: "1" },
       )).rejects.toThrow("articles.patch.slug");
@@ -299,7 +305,7 @@ describe("writes", () => {
       note: canary,
     });
     await observed.payments.get(id);
-    await observed.payments.scan().collect();
+    await observed.payments.query().collect();
     await observed.payments.delete(id);
 
     expect(observations.map((observation) => observation.statement)).toEqual([
@@ -355,12 +361,12 @@ describe("writes", () => {
     const observations: DbStatementObservation[] = [];
     const observed = observedDb((observation) => observations.push(observation));
     const key = { email: "owner@x.com" };
-    const inserted = await observed.users.byEmail.upsert(key, {
+    const inserted = await observed.users.upsert(key, {
       name: "Owner",
       payload: { tag: "nothing", value: null },
     }).returning();
-    await observed.users.byEmail.upsert(key, { name: "Updated" });
-    await expect(observed.users.byEmail.upsert(key, () => {
+    await observed.users.upsert(key, { name: "Updated" });
+    await expect(observed.users.upsert(key, () => {
       throw new Error("resolver failed");
     })).rejects.toThrow("resolver failed");
 
@@ -430,7 +436,7 @@ describe("writes", () => {
     );
 
     expect(await batchDb.payments.deleteMany([first, second, second, 999n])).toBe(2);
-    expect(await batchDb.payments.scan().collect()).toEqual([
+    expect(await batchDb.payments.query().collect()).toEqual([
       expect.objectContaining({ id: survivor }),
     ]);
     expect(batchWrites.keys).toContain(idKey("payments", first));
@@ -463,7 +469,7 @@ describe("writes", () => {
     expect(oversizedFailure).toEqual(expect.objectContaining({ outcome: "failed" }));
     expect(Object.hasOwn(oversizedFailure, "rowCount")).toBe(false);
     const remainingIds = new Set(
-      (await batchDb.payments.scan().collect()).map((row: { id: bigint }) => row.id),
+      (await batchDb.payments.query().collect()).map((row: { id: bigint }) => row.id),
     );
     expect(oversizedIds.every((id) => remainingIds.has(id))).toBe(true);
   });
@@ -478,21 +484,21 @@ describe("writes", () => {
   });
 
   test("upsert: insert path, patch path, function form", async () => {
-    const id = await db.users.byEmail.upsert(
+    const id = await db.users.upsert(
       { email: "ana@x.com" },
       { name: "Ana", payload: { tag: "nothing", value: null } },
     );
     expect(await db.users.get(id)).toMatchObject({ email: "ana@x.com", name: "Ana" });
-    const same = await db.users.byEmail.upsert({ email: "ana@x.com" }, { name: "Ana Maria" });
+    const same = await db.users.upsert({ email: "ana@x.com" }, { name: "Ana Maria" });
     expect(same).toBe(id);
     expect((await db.users.get(id)).name).toBe("Ana Maria");
-    const fn = await db.users.byEmail.upsert({ email: "ana@x.com" }, (existing: { name: string } | null) => ({
+    const fn = await db.users.upsert({ email: "ana@x.com" }, (existing: { name: string } | null) => ({
       name: `${existing?.name ?? ""}!`,
     }));
     expect(fn).toBe(id);
     expect((await db.users.get(id)).name).toBe("Ana Maria!");
-    // upsert only exists on unique accessors
-    expect(db.payments.byUser.upsert).toBeUndefined();
+    // upsert only exists when the table declares a non-null unique index
+    expect(db.payments.upsert).toBeUndefined();
   });
 
   test(".returning() resolves to the full written row on every write", async () => {
@@ -520,18 +526,18 @@ describe("writes", () => {
     expect(await db.payments.delete(inserted.id).returning()).toBe(null);
 
     // upsert: the post-write row on both paths
-    const created = await db.users.byEmail
+    const created = await db.users
       .upsert({ email: "w@x.com" }, { name: "W", payload: { tag: "nothing", value: null } })
       .returning();
     expect(created).toMatchObject({ email: "w@x.com", name: "W" });
-    const updated = await db.users.byEmail.upsert({ email: "w@x.com" }, { name: "W2" }).returning();
+    const updated = await db.users.upsert({ email: "w@x.com" }, { name: "W2" }).returning();
     expect(updated).toMatchObject({ id: created.id, name: "W2" });
   });
 
   test("writes execute eagerly and failures reject instead of throwing", async () => {
     // eager: the write is visible before the returned result is awaited
     const pending = db.payments.insert({ userId: 8n, status: "active", amount: 1, currency: "x", note: null });
-    expect(await db.payments.byUser((q: any) => q.eq("userId", 8n)).count()).toBe(1);
+    expect(await db.payments.query().where((row: any) => row.userId.eq(8n)).count()).toBe(1);
     await pending;
 
     // validation failures reject the promise — .catch() works on both projections
@@ -549,20 +555,21 @@ describe("writes", () => {
     ]);
     expect(engine.writer.query(`SELECT name FROM sqlite_master WHERE name = 'pings'`).get()).toBe(null);
     expect(db.pings.get).toBeUndefined();
-    expect(db.pings.scan).toBeUndefined();
+    expect(db.pings.query).toBeUndefined();
   });
 
   test("write keys cover id, scan and every index prefix level", async () => {
     const id = await pay(5n, "active", 100);
     const tag = engine.tags.get("PayStatus")!.toTag.get("active")!;
+    const [userIndex, compositeIndex] = engine.plan("payments").indexes;
     expect(writes.keys).toEqual(
       new Set([
         idKey("payments", id),
         scanKey("payments"),
-        ixKey("payments", "by_user", [5n]),
-        ixKey("payments", "by_user_status_amount", [5n]),
-        ixKey("payments", "by_user_status_amount", [5n, tag]),
-        ixKey("payments", "by_user_status_amount", [5n, tag, 100]),
+        ixKey("payments", userIndex!.name, [5n]),
+        ixKey("payments", compositeIndex!.name, [5n]),
+        ixKey("payments", compositeIndex!.name, [5n, tag]),
+        ixKey("payments", compositeIndex!.name, [5n, tag, 100]),
       ]),
     );
   });
@@ -586,26 +593,25 @@ describe("reads", () => {
     const observations: DbStatementObservation[] = [];
     const observed = observedDb((observation) => observations.push(observation));
 
-    await observed.payments.scan().collect();
-    await observed.payments.scan().take(2);
-    await observed.payments.byUser((q: any) => q.eq("userId", 2n)).first();
-    await observed.payments.byUser((q: any) => q.eq("userId", 2n)).unique();
-    await observed.payments.scan().count();
-    await observed.payments.scan().filter((row: any) => row.currency === "BRL").count();
-    await observed.payments.scan().paginate({ cursor: null, numItems: 2 });
+    await observed.payments.query().collect();
+    await observed.payments.query().take(2);
+    await observed.payments.query().where((row: any) => row.userId.eq(2n)).first();
+    await observed.payments.query().where((row: any) => row.userId.eq(2n)).unique();
+    await observed.payments.query().count();
+    await observed.payments.query().where((row: any) => row.currency.eq("BRL")).count();
+    await observed.payments.query().paginate({ pageSize: 2 });
 
     let iterated = 0;
-    for await (const _row of observed.payments.scan().iter()) iterated++;
+    for await (const _row of observed.payments.query().iter()) iterated++;
     expect(iterated).toBe(5);
-    for await (const _row of observed.payments.scan().iter()) break;
+    for await (const _row of observed.payments.query().iter()) break;
 
     await expect(
-      observed.payments.byUser((q: any) => q.eq("userId", 1n)).unique(),
+      observed.payments.query().where((row: any) => row.userId.eq(1n)).unique(),
     ).rejects.toThrow("more than one");
-    const failedIter = observed.payments.scan().filter(() => {
-      throw new Error("filter failed");
-    }).iter();
-    await expect(failedIter.next()).rejects.toThrow("filter failed");
+    expect(() => observed.payments.query().where(() => {
+      throw new Error("predicate failed");
+    })).toThrow("predicate failed");
 
     expect(observations.map(({ statement, outcome, rowCount }) => ({
       statement,
@@ -622,97 +628,81 @@ describe("reads", () => {
       { statement: "iter", outcome: "ok", rowCount: 5 },
       { statement: "iter", outcome: "ok", rowCount: 1 },
       { statement: "unique", outcome: "failed", rowCount: undefined },
-      { statement: "iter", outcome: "failed", rowCount: undefined },
     ]);
   });
 
-  test("index eq + range + order + take compose", async () => {
+  test("predicates, ordering, and take compose independently from declared indexes", async () => {
     const rows = await db.payments
-      .byUserStatusAmount((q: any) => q.eq("userId", 1n).eq("status", "active").between("amount", 150, 400))
+      .query()
+      .where((row: any) =>
+        row.userId.eq(1n)
+          .and(row.status.eq("active"))
+          .and(row.amount.between(150, 400)),
+      )
+      .orderBy((row: any) => row.amount.asc())
       .collect();
     expect(rows.map((r: any) => r.amount)).toEqual([200, 300]);
 
     const top = await db.payments
-      .byUserStatusAmount((q: any) => q.eq("userId", 1n).eq("status", "active"))
-      .order("desc")
+      .query()
+      .where((row: any) => row.userId.eq(1n).and(row.status.eq("active")))
+      .orderBy((row: any) => row.amount.desc())
       .take(2);
     expect(top.map((r: any) => r.amount)).toEqual([300, 200]);
 
     const gte = await db.payments
-      .byUserStatusAmount((q: any) => q.eq("userId", 1n).eq("status", "active").gte("amount", 200))
+      .query()
+      .where((row: any) =>
+        row.userId.eq(1n)
+          .and(row.status.eq("active"))
+          .and(row.amount.gte(200)),
+      )
+      .orderBy((row: any) => row.amount.asc())
       .collect();
     expect(gte.map((r: any) => r.amount)).toEqual([200, 300]);
   });
 
-  test("first, unique, count, filter, iter, scan", async () => {
-    expect((await db.payments.byUser((q: any) => q.eq("userId", 2n)).first()).amount).toBe(500);
-    expect(await db.payments.byUser((q: any) => q.eq("userId", 3n)).first()).toBe(null);
-    expect((await db.payments.byUser((q: any) => q.eq("userId", 2n)).unique()).amount).toBe(500);
-    await expect(db.payments.byUser((q: any) => q.eq("userId", 1n)).unique()).rejects.toThrow(
+  test("first, unique, count, predicates, and iter", async () => {
+    expect((await db.payments.query().where((row: any) => row.userId.eq(2n)).first()).amount).toBe(500);
+    expect(await db.payments.query().where((row: any) => row.userId.eq(3n)).first()).toBe(null);
+    expect((await db.payments.query().where((row: any) => row.userId.eq(2n)).unique()).amount).toBe(500);
+    await expect(db.payments.query().where((row: any) => row.userId.eq(1n)).unique()).rejects.toThrow(
       "more than one",
     );
-    expect(await db.payments.byUser((q: any) => q.eq("userId", 1n)).count()).toBe(4);
-    expect(await db.payments.scan().count()).toBe(5);
+    expect(await db.payments.query().where((row: any) => row.userId.eq(1n)).count()).toBe(4);
+    expect(await db.payments.query().count()).toBe(5);
     const brl = await db.payments
-      .byUser((q: any) => q.eq("userId", 1n))
-      .filter((p: any) => p.currency === "BRL")
+      .query()
+      .where((row: any) => row.userId.eq(1n).and(row.currency.eq("BRL")))
       .collect();
     expect(brl).toHaveLength(1);
     const seen: number[] = [];
-    for await (const row of db.payments.byUser((q: any) => q.eq("userId", 1n)).iter()) {
+    for await (const row of db.payments.query().where((column: any) => column.userId.eq(1n)).iter()) {
       seen.push(row.amount);
     }
     expect(seen).toEqual([100, 300, 200, 50]);
   });
 
-  test("nested reads inside filters do not corrupt the outer scan", async () => {
-    const rows = await db.payments
-      .scan()
-      .filter(() => {
-        // same-shape nested read mid-iteration
-        void db.payments.scan().collect();
-        return true;
-      })
-      .collect();
-    expect(rows).toHaveLength(5);
-  });
-
-  test("builder misuse throws with guidance", async () => {
-    expect(() => db.payments.byUserStatusAmount((q: any) => q.eq("status", "active"))).toThrow(
-      'expected column "userId"',
-    );
-    expect(() =>
-      db.payments.byUserStatusAmount((q: any) => q.eq("userId", 1n).gte("status", "active")),
-    ).toThrow("not meaningful");
-    expect(() =>
-      db.payments.byUserStatusAmount((q: any) => q.eq("userId", 1n).gte("amount", 1)),
-    ).toThrow('expected column "status"');
-    expect(() =>
-      db.payments.byUserStatusAmount((q: any) =>
-        q.eq("userId", 1n).eq("status", "active").gte("amount", 1).lt("amount", 2),
-      ),
-    ).toThrow("nothing can follow the range");
-  });
-
-  test("union columns: eq by variant name", async () => {
+  test("union columns use an explicit variant predicate", async () => {
     await db.users.insert({ email: "t@x.com", name: "T", payload: { tag: "text", value: "hi" } });
     await db.users.insert({ email: "n@x.com", name: "N", payload: { tag: "nothing", value: null } });
-    const texts = await db.users.byPayload((q: any) => q.eq("payload", "text")).collect();
+    const texts = await db.users.query().where((row: any) => row.payload.is("text")).collect();
     expect(texts).toHaveLength(1);
     expect(texts[0].payload).toEqual({ tag: "text", value: "hi" });
-    expect(() => db.users.byPayload((q: any) => q.eq("payload", "gif"))).toThrow("variant");
+    expect(() => db.users.query().where((row: any) => row.payload.is("gif"))).toThrow("variant");
   });
 
   test("read set records precise keys", async () => {
     const reads = new Set<string>();
     const reader: any = makeDbReader(engine, engine.reader, reads);
     await reader.payments.get(1n);
-    await reader.payments.byUser((q: any) => q.eq("userId", 1n)).collect();
-    await reader.payments.scan().count();
+    await reader.payments.query().where((row: any) => row.userId.eq(1n)).collect();
+    await reader.payments.query().count();
+    const userIndex = engine.plan("payments").indexes[0]!;
     expect(reads).toEqual(
       new Set([
         idKey("payments", 1n),
-        ixKey("payments", "by_user", [1n]),
+        ixKey("payments", userIndex.name, [1n]),
         scanKey("payments"),
       ]),
     );
@@ -722,36 +712,43 @@ describe("reads", () => {
     const reader: any = makeDbReader(engine, engine.reader, null);
     engine.writer.exec("BEGIN IMMEDIATE");
     await pay(9n, "active", 1);
-    expect(await reader.payments.byUser((q: any) => q.eq("userId", 9n)).count()).toBe(0);
+    expect(await reader.payments.query().where((row: any) => row.userId.eq(9n)).count()).toBe(0);
     engine.writer.exec("COMMIT");
-    expect(await reader.payments.byUser((q: any) => q.eq("userId", 9n)).count()).toBe(1);
+    expect(await reader.payments.query().where((row: any) => row.userId.eq(9n)).count()).toBe(1);
   });
 });
 
 describe("pagination", () => {
   test("pages are exact, terminate, and stay consistent under inserts", async () => {
     for (let i = 0; i < 25; i++) await pay(1n, "active", i);
-    const q = () => db.payments.byUserStatusAmount((q: any) => q.eq("userId", 1n).eq("status", "active"));
+    const q = () => db.payments
+      .query()
+      .where((row: any) => row.userId.eq(1n).and(row.status.eq("active")))
+      .orderBy((row: any) => row.amount.asc());
 
-    const p1 = await q().paginate({ cursor: null, numItems: 10 });
-    expect(p1.page.map((r: any) => r.amount)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    expect(p1.isDone).toBe(false);
+    const p1 = await q().paginate({ pageSize: 10 });
+    expect(p1.items.map((r: any) => r.amount)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(p1.nextCursor).not.toBeNull();
 
     // a row inserted *behind* the cursor must not shift later pages
     await pay(1n, "active", 4.5);
 
-    const p2 = await q().paginate({ cursor: p1.continueCursor, numItems: 10 });
-    expect(p2.page.map((r: any) => r.amount)).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
-    const p3 = await q().paginate({ cursor: p2.continueCursor, numItems: 10 });
-    expect(p3.page.map((r: any) => r.amount)).toEqual([20, 21, 22, 23, 24]);
-    expect(p3.isDone).toBe(true);
+    const p2 = await q().paginate({ cursor: p1.nextCursor, pageSize: 10 });
+    expect(p2.items.map((r: any) => r.amount)).toEqual([10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    const p3 = await q().paginate({ cursor: p2.nextCursor, pageSize: 10 });
+    expect(p3.items.map((r: any) => r.amount)).toEqual([20, 21, 22, 23, 24]);
+    expect(p3.nextCursor).toBeNull();
 
     // desc pagination
-    const d1 = await q().order("desc").paginate({ cursor: null, numItems: 24 });
-    expect(d1.page[0].amount).toBe(24);
-    const d2 = await q().order("desc").paginate({ cursor: d1.continueCursor, numItems: 10 });
-    expect(d2.page.map((r: any) => r.amount)).toEqual([1, 0]);
-    expect(d2.isDone).toBe(true);
+    const descending = db.payments
+      .query()
+      .where((row: any) => row.userId.eq(1n).and(row.status.eq("active")))
+      .orderBy((row: any) => row.amount.desc());
+    const d1 = await descending.paginate({ pageSize: 24 });
+    expect(d1.items[0].amount).toBe(24);
+    const d2 = await descending.paginate({ cursor: d1.nextCursor, pageSize: 10 });
+    expect(d2.items.map((r: any) => r.amount)).toEqual([1, 0]);
+    expect(d2.nextCursor).toBeNull();
   });
 
   test("nullable index columns paginate across the NULL group", async () => {
@@ -759,7 +756,7 @@ describe("pagination", () => {
       notes: defineTable({
         id: v.primaryKey(),
         tag: v.string().nullable(),
-      }).index("by_tag", ["tag"]),
+      }).index(["tag"]),
     });
     const d2 = mkdtempSync(join(tmpdir(), "dbzz-null-"));
     const e2 = new Engine(s, join(d2, "d.db"));
@@ -771,23 +768,25 @@ describe("pagination", () => {
     await dbn.notes.insert({ tag: "a" });
     await dbn.notes.insert({ tag: "b" });
     const all: (string | null)[] = [];
-    let cursor: string | null = null;
+    let cursor: string | undefined;
     for (;;) {
-      const res: any = await dbn.notes.scan().paginate({ cursor, numItems: 1 });
-      // scan paginates by pk; also exercise the index path below
-      all.push(...res.page.map((r: any) => r.tag));
-      cursor = res.continueCursor;
-      if (res.isDone) break;
+      const res: any = await dbn.notes.query().paginate({ cursor, pageSize: 1 });
+      all.push(...res.items.map((r: any) => r.tag));
+      if (res.nextCursor === null) break;
+      cursor = res.nextCursor;
     }
     expect(all).toHaveLength(4);
 
     const viaIndex: (string | null)[] = [];
-    cursor = null;
+    cursor = undefined;
     for (;;) {
-      const res: any = await dbn.notes.byTag((q: any) => q).paginate({ cursor, numItems: 1 });
-      viaIndex.push(...res.page.map((r: any) => r.tag));
-      cursor = res.continueCursor;
-      if (res.isDone) break;
+      const res: any = await dbn.notes
+        .query()
+        .orderBy((row: any) => row.tag.asc())
+        .paginate({ cursor, pageSize: 1 });
+      viaIndex.push(...res.items.map((r: any) => r.tag));
+      if (res.nextCursor === null) break;
+      cursor = res.nextCursor;
     }
     expect(viaIndex).toEqual([null, null, "a", "b"]); // NULLs group first in ASC
     e2.close("clean");

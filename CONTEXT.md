@@ -302,7 +302,8 @@ _Avoid_: JavaScript predicate, row callback
 `.thenBy(...)`. Without one, rows order by primary key ascending; otherwise the
 primary key is an implicit ascending final tie-breaker unless explicitly
 ordered by the caller. Nulls precede values ascending and follow them
-descending.
+descending. Enum and union tags are stable storage identities rather than
+logical sort positions, so enum and union columns are not query-order fields.
 _Avoid_: Index order
 
 **Transparent index** — An exact-result storage optimization selected by the
@@ -316,7 +317,10 @@ _Avoid_: Index accessor, named query
 
 **Structural upsert key** — The exact field set of one declared non-null unique
 index, passed to a writable table's `upsert`. Property order is irrelevant;
-missing, additional, nullable, or ambiguous key fields are invalid.
+missing, additional, nullable, or ambiguous key fields are invalid. A
+union-valued key lookup compares both its discriminant and payload; because the
+declared SQLite index enforces the stronger discriminant uniqueness, the same
+tag with a different payload conflicts instead of updating the wrong row.
 _Avoid_: Named unique-index accessor
 
 ## Vector search

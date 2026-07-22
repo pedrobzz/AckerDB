@@ -21,16 +21,16 @@ const schema = defineSchema({
     amount: v.float(),
     note: v.string().nullable(),
   })
-    .index("by_user", ["userId"])
-    .index("by_user_status_amount", ["userId", "status", "amount"]),
+    .index(["userId"])
+    .index(["userId", "status", "amount"]),
   users: defineTable({
     id: v.primaryKey(),
     email: v.string(),
     name: v.string(),
     payload: v.union("UPayloadT", { text: v.string(), nothing: v.tag() }),
   })
-    .index("by_email", ["email"], { unique: true })
-    .index("by_payload", ["payload"]),
+    .index(["email"], { unique: true })
+    .index(["payload"]),
   pings: defineEventTable({
     id: v.primaryKey(),
     channel: v.bigint(),
@@ -75,28 +75,31 @@ export async function _typecheckUsage(): Promise<void> {
     const _id: bigint = p.id;
   }
 
-  // the builder state machine
+  // typed predicates are independent from declared index order
   const rows = await rdb.payments
-    .byUserStatusAmount((q) => q.eq("userId", 1n).eq("status", "active").between("amount", 1, 2))
+    .query()
+    .where((row) =>
+      row.userId.eq(1n)
+        .and(row.status.eq("active"))
+        .and(row.amount.between(1, 2)),
+    )
     .collect();
   const _amounts: number[] = rows.map((r) => r.amount);
 
-  // shorter prefixes are fine
-  await rdb.payments.byUserStatusAmount((q) => q.eq("userId", 1n)).count();
+  await rdb.payments.query().where((row) => row.userId.eq(1n)).count();
+  await rdb.payments.query().where((row) => row.status.eq("active")).count();
 
-  // @ts-expect-error equalities must follow index column order
-  rdb.payments.byUserStatusAmount((q) => q.eq("status", "active"));
   // @ts-expect-error unknown enum variant
-  rdb.payments.byUserStatusAmount((q) => q.eq("userId", 1n).eq("status", "bogus"));
+  rdb.payments.query().where((row) => row.status.eq("bogus"));
   // @ts-expect-error bigint column takes bigint, not number
-  rdb.payments.byUser((q) => q.eq("userId", 1));
-  // @ts-expect-error nothing can follow the range column
-  rdb.payments.byUserStatusAmount((q) => q.eq("userId", 1n).gte("status", "active").eq("amount", 1));
+  rdb.payments.query().where((row) => row.userId.eq(1));
   // @ts-expect-error ranges over enum tags are not meaningful
-  rdb.payments.byUserStatusAmount((q) => q.eq("userId", 1n).gte("status", "active"));
+  rdb.payments.query().where((row) => row.status.gte("active"));
+  // @ts-expect-error named index accessors are not part of the public API
+  void rdb.payments.byUserStatusAmount;
 
-  // union eq narrows the row type to the variant payload
-  const texts = await rdb.users.byPayload((q) => q.eq("payload", "text")).collect();
+  // union variant predicates narrow the row type to the variant payload
+  const texts = await rdb.users.query().where((row) => row.payload.is("text")).collect();
   const _payloadValue: string = texts[0]!.payload.value;
 
   // @ts-expect-error write methods do not exist on a query's ctx.db
@@ -120,23 +123,23 @@ export async function _typecheckUsage(): Promise<void> {
   const _deletedCount: number = await wdb.payments.deleteMany([id]);
   // @ts-expect-error bulk deletion accepts only primary-key bigints
   await wdb.payments.deleteMany([1]);
-  const upserted = await wdb.users.byEmail
+  const upserted = await wdb.users
     .upsert({ email: "a@x.com" }, { name: "A", payload: { tag: "nothing", value: null } })
     .returning();
   const _upsertEmail: string = upserted.email;
   // @ts-expect-error the primary key is assigned by the database
   await wdb.payments.insert({ id: 1n, userId: 1n, status: "active", amount: 5 });
 
-  await wdb.users.byEmail.upsert(
+  await wdb.users.upsert(
     { email: "a@x.com" },
     { name: "A", payload: { tag: "nothing", value: null } },
   );
-  await wdb.users.byEmail.upsert({ email: "a@x.com" }, (existing) => ({
+  await wdb.users.upsert({ email: "a@x.com" }, (existing) => ({
     name: existing?.name ?? "A",
     payload: { tag: "nothing", value: null },
   }));
-  // @ts-expect-error upsert only exists on unique index accessors
-  void wdb.payments.byUser.upsert;
+  // @ts-expect-error upsert only exists on tables with a non-null unique index
+  void wdb.payments.upsert;
 
   // event tables: writer is insert-only, reader has no accessor at all
   await wdb.pings.insert({ channel: 1n });

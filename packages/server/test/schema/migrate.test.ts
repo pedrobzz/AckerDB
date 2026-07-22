@@ -176,7 +176,7 @@ describe("migrate: rebuild transforms", () => {
     expect(await d.posts.get(2n)).toBe(null);
     expect((await d.posts.get(1n)).count).toBe(1);
     expect((await d.posts.get(3n)).count).toBe(3);
-    expect((await d.posts.scan().collect()).length).toBe(2);
+    expect((await d.posts.query().collect()).length).toBe(2);
     engine.close("clean");
   });
 
@@ -244,7 +244,7 @@ describe("migrate: emits", () => {
         },
       }),
     );
-    const links = await d.post_owners.scan().collect();
+    const links = await d.post_owners.query().collect();
     expect(links.map((l: Record<string, unknown>) => [l.postId, l.ownerId])).toEqual([
       [1n, 7n],
       [2n, 8n],
@@ -280,7 +280,7 @@ describe("migrate: emits", () => {
       }),
     );
     // rebuilt rows keep their ids (1, 2); emitted rows get fresh ids past the high-water (3, 4)
-    const rows = await d.dest.scan().collect();
+    const rows = await d.dest.query().collect();
     expect(rows.map((r: Record<string, unknown>) => [r.id, r.val])).toEqual([
       [1n, 10],
       [2n, 20],
@@ -359,7 +359,7 @@ describe("migrate: drops", () => {
       defineMigration({ tables: { legacy: (row, ctx) => ctx.insert("archive", { data: row.data }) } }),
     );
     expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name = 'legacy'").get()).toBe(null);
-    expect((await d.archive.scan().collect()).map((r: Record<string, unknown>) => r.data)).toEqual(["keep-me", "and-me"]);
+    expect((await d.archive.query().collect()).map((r: Record<string, unknown>) => r.data)).toEqual(["keep-me", "and-me"]);
     engine.close("clean");
   });
 });
@@ -494,7 +494,7 @@ describe("migrate: transactional integrity", () => {
   test("a unique index over duplicate transform output fails the migration cleanly", async () => {
     const a = defineSchema({ users: defineTable({ id: v.primaryKey(), name: v.string() }) });
     const b = defineSchema({
-      users: defineTable({ id: v.primaryKey(), name: v.string() }).index("by_name", ["name"], { unique: true }),
+      users: defineTable({ id: v.primaryKey(), name: v.string() }).index(["name"], { unique: true }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -593,9 +593,9 @@ describe("migrate: renames", () => {
   });
 
   test("a pure table rename keeps rows, ids, and indexes; reopen passes", async () => {
-    const a = defineSchema({ logs: defineTable({ id: v.primaryKey(), msg: v.string() }).index("by_msg", ["msg"]) });
+    const a = defineSchema({ logs: defineTable({ id: v.primaryKey(), msg: v.string() }).index(["msg"]) });
     const b = defineSchema({
-      auditLogs: defineTable({ id: v.primaryKey(), msg: v.string() }).index("by_msg", ["msg"]),
+      auditLogs: defineTable({ id: v.primaryKey(), msg: v.string() }).index(["msg"]),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -616,7 +616,7 @@ describe("migrate: renames", () => {
     expect(await d.auditLogs.get(1n)).toBe(null);
     // old name gone, index usable under the new name
     expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name = 'logs'").get()).toBe(null);
-    const found = await d.auditLogs.byMsg((q: any) => q.eq("msg", "two")).collect();
+    const found = await d.auditLogs.query().where((row: any) => row.msg.eq("two")).collect();
     expect(found.map((r: any) => r.id)).toEqual([2n]);
     // id 1 stays retired: the next insert lands on 4
     expect(await d.auditLogs.insert({ msg: "four" })).toBe(4n);
@@ -627,20 +627,20 @@ describe("migrate: renames", () => {
     again.engine.close("clean");
   });
 
-  test("a pure column rename keeps data for a plain and a union column; reopen passes", async () => {
+  test("a column rename rebuilds its structural index and keeps plain and union data", async () => {
     const a = defineSchema({
       users: defineTable({
         id: v.primaryKey(),
         street: v.string(),
         note: v.union("Payload", { text: v.string(), nothing: v.tag() }),
-      }).index("by_street", ["street"]),
+      }).index(["street"]),
     });
     const b = defineSchema({
       users: defineTable({
         id: v.primaryKey(),
         streetName: v.string(),
         memo: v.union("Payload", { text: v.string(), nothing: v.tag() }),
-      }).index("by_street", ["streetName"]),
+      }).index(["streetName"]),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -653,11 +653,11 @@ describe("migrate: renames", () => {
       path,
       defineMigration({ renames: { columns: { users: { street: "streetName", note: "memo" } } } }),
     );
-    expect(applied).toContain("0001_m: renamed column(s) on users");
+    expect(applied).toContain("0001_m: migrated table users");
     expect(await d.users.get(1n)).toEqual({ id: 1n, streetName: "main", memo: { tag: "text", value: "hi" } });
     expect((await d.users.get(2n)).memo).toEqual({ tag: "nothing", value: null });
     // the index followed the renamed column
-    const found = await d.users.byStreet((q: any) => q.eq("streetName", "main")).collect();
+    const found = await d.users.query().where((row: any) => row.streetName.eq("main")).collect();
     expect(found.map((r: any) => r.id)).toEqual([1n]);
     engine.close("clean");
 
@@ -903,7 +903,7 @@ describe("migrate: renames", () => {
   test("a unique index added on a renamed table probes the old physical names and refuses with counts", async () => {
     const a = defineSchema({ logs: defineTable({ id: v.primaryKey(), msg: v.string() }) });
     const b = defineSchema({
-      auditLogs: defineTable({ id: v.primaryKey(), text: v.string() }).index("by_text", ["text"], { unique: true }),
+      auditLogs: defineTable({ id: v.primaryKey(), text: v.string() }).index(["text"], { unique: true }),
     });
     const path = freshPath();
     await seed(a, path, async (d) => {
@@ -917,7 +917,7 @@ describe("migrate: renames", () => {
     });
     // the counted refusal names the target-world site; the probe read old names
     await expect(reconcile(engine, chain(engine, migration))).rejects.toThrow(
-      /auditLogs\.by_text: unique index over \(text\); 1 duplicate group\(s\) exist/,
+      /auditLogs\.s_u_b_4_text: unique index over \(text\); 1 duplicate group\(s\) exist/,
     );
     expect(engine.loadSnapshot()).toEqual(snapshotOf(a)); // database untouched
     expect(engine.writer.query("SELECT COUNT(*) AS n FROM logs").get()).toEqual({ n: 2n });
@@ -1009,14 +1009,14 @@ describe("migrate: renames", () => {
         tables: { drafts: (row, ctx) => ctx.insert("messages", { text: row.text }) },
       }),
     );
-    const rows = await d.messages.scan().collect();
+    const rows = await d.messages.query().collect();
     expect(rows.map((r: any) => r.text).sort()).toEqual(["draft-a", "draft-b", "hi"]);
     expect((await d.messages.get(1n)).text).toBe("hi"); // original id preserved
     expect(engine.writer.query("SELECT name FROM sqlite_master WHERE name IN ('inbox', 'drafts')").all()).toEqual([]);
     engine.close("clean");
 
     const again = reopen(b, path);
-    expect((await again.db.messages.scan().collect()).length).toBe(3);
+    expect((await again.db.messages.query().collect()).length).toBe(3);
     again.engine.close("clean");
   });
 });
@@ -1507,7 +1507,7 @@ describe("migrate: the chain", () => {
     expect(seen).toEqual([null, null]); // bio read as null for every row
     const d = db(engine);
     expect(await d.users.get(1n)).toEqual({ id: 1n, name: "ana", bio: null, summary: "ana:none:0" });
-    expect((await d.logs.scan().collect()).length).toBe(0);
+    expect((await d.logs.query().collect()).length).toBe(0);
     engine.close("clean");
 
     const again = reopen(live, path);
@@ -1581,7 +1581,7 @@ describe("migrate: the chain", () => {
     ]);
     const d = db(engine);
     expect(await d.users.get(1n)).toEqual({ id: 1n, name: "ana", note: "note-ana" });
-    expect((await d.archive.scan().collect()).length).toBe(0); // created empty, no crash
+    expect((await d.archive.query().collect()).length).toBe(0); // created empty, no crash
     engine.close("clean");
 
     const again = reopen(live, path); // physical archive table verified against the snapshot
@@ -2007,7 +2007,7 @@ describe("migrate: frozen before-state (emits never observed by transforms)", ()
     // every transform sees the single frozen original, never its own or a sibling's emit
     expect(seenCounts).toEqual([1, 1]);
     // the emits still landed after the transforms froze the before-state
-    expect((await d.log.scan().collect()).map((r: Record<string, unknown>) => r.msg).sort()).toEqual([
+    expect((await d.log.query().collect()).map((r: Record<string, unknown>) => r.msg).sort()).toEqual([
       "from-1",
       "from-2",
       "orig",
@@ -2052,7 +2052,7 @@ describe("migrate: frozen before-state (emits never observed by transforms)", ()
       }),
     );
     expect(bbSaw).toBe(1); // only the original cc row, not aa's emit
-    expect((await d.cc.scan().collect()).map((r: Record<string, unknown>) => r.msg).sort()).toEqual(["from-aa", "orig"]);
+    expect((await d.cc.query().collect()).map((r: Record<string, unknown>) => r.msg).sort()).toEqual(["from-aa", "orig"]);
     engine.close("clean");
   });
 });
@@ -2088,7 +2088,7 @@ describe("migrate: durable transform ordering", () => {
       }),
     }]);
 
-    expect(await db(engine).markers.scan().collect()).toEqual([
+    expect(await db(engine).markers.query().collect()).toEqual([
       { id: 1n, source: "IA" },
       { id: 2n, source: "i" },
     ]);
@@ -2113,7 +2113,7 @@ describe("migrate: bounded accumulation (paging + emit spool)", () => {
     });
 
     const { engine, db: d } = await migrate(b, path, defineMigration({ tables: { posts: (row) => ({ val: Number(row.val) }) } }));
-    expect((await d.posts.scan().collect()).length).toBe(n);
+    expect((await d.posts.query().collect()).length).toBe(n);
     // pk preserved and value converted at both page boundaries and the tail
     expect(await d.posts.get(1n)).toEqual({ id: 1n, val: 1 });
     expect(await d.posts.get(BigInt(MIGRATE_BATCH))).toEqual({ id: BigInt(MIGRATE_BATCH), val: MIGRATE_BATCH });
@@ -2187,7 +2187,7 @@ describe("migrate: bounded accumulation (paging + emit spool)", () => {
         },
       }),
     );
-    const rows = (await d.events.scan().collect()) as Record<string, unknown>[];
+    const rows = (await d.events.query().collect()) as Record<string, unknown>[];
     expect(rows.length).toBe(n);
     // enum values round-tripped through the spool, amounts intact
     expect(rows.every((r) => r.kind === ((r.amount as number) % 2 === 0 ? "even" : "odd"))).toBe(true);

@@ -104,7 +104,7 @@ export function storedColumn(
         : tags.get(tagIdentity(typeName))!.get(Number(values[0]))!,
     };
   }
-  const scalar = scalarDecoder(kind);
+  const scalar = scalarDecoder(base, col);
   return {
     col,
     phys,

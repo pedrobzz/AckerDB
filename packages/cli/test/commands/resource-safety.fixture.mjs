@@ -28,7 +28,7 @@ const schema = defineSchema({
     id: v.primaryKey(),
     sequence: v.int(),
     payload: v.string(),
-  }).index("by_sequence", ["sequence"]),
+  }).index(["sequence"]),
 });
 
 const streamPayload = "x".repeat(30 * KiB);
@@ -37,13 +37,13 @@ const functions = {
     list: query({
       access: "public",
       args: {},
-      handler: (ctx) => ctx.db.items.scan().collect(),
+      handler: (ctx) => ctx.db.items.query().collect(),
     }),
     large: query({
       access: "public",
       args: {},
       handler: async (ctx) => {
-        const count = await ctx.db.items.scan().count();
+        const count = await ctx.db.items.query().count();
         console.log("@@large-eval");
         return { count, payload: streamPayload };
       },

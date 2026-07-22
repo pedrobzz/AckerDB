@@ -55,19 +55,19 @@ export const getOrderItems = mcpTool({
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       const limit = clampLimit(args.limit);
-      const statuses = args.status === undefined ? null : new Set(args.status);
       const orderId = args.orderId;
-      const rows =
-        orderId === undefined
-          ? await tx.db.orderItems.scan().collect()
-          : await tx.db.orderItems
-              .byOrder((q) => q.eq("orderId", orderId))
-              .order("asc")
-              .collect();
+      const status = args.status;
+      let query = tx.db.orderItems.query();
+      if (orderId !== undefined) {
+        query = query.where((item) => item.orderId.eq(orderId));
+      }
+      if (status !== undefined) {
+        query = query.where((item) => item.status.in(status));
+      }
+      const rows = await query
+        .orderBy((item) => item.orderedAt.desc())
+        .take(limit);
       const items = rows
-        .filter((item) => statuses === null || statuses.has(item.status))
-        .sort((a, b) => b.orderedAt - a.orderedAt)
-        .slice(0, limit)
         .map((item) => ({
           id: item.id,
           orderId: item.orderId,

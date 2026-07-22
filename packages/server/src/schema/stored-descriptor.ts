@@ -15,6 +15,7 @@ const FIELDS = {
   identity: ["k"],
   boolean: ["k"],
   bytes: ["k"],
+  vector: ["k", "dimensions"],
   enum: ["k", "name", "values"],
   literal: ["k", "v"],
   tag: ["k"],
@@ -128,6 +129,14 @@ function validate(
     case "literal":
       if (role === "column") fail(path, "v.literal() cannot be stored as a top-level column");
       validateLiteral(descriptor["v"], `${path}.v`);
+      return;
+    case "vector":
+      if (role !== "column") {
+        fail(path, "v.vector() must be a direct table column");
+      }
+      if (!Number.isSafeInteger(descriptor["dimensions"]) || (descriptor["dimensions"] as number) <= 0) {
+        fail(`${path}.dimensions`, "expected a positive safe integer");
+      }
       return;
     case "string":
     case "int":

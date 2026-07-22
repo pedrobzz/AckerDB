@@ -83,6 +83,7 @@ import {
   restoreArtifactPaths,
   SQLITE_SIDECAR_SUFFIXES,
 } from "./artifacts.ts";
+import { loadVectorRuntimeForSchema } from "./query/vector-runtime.ts";
 
 export { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
 export interface TagMap {
@@ -1054,6 +1055,7 @@ export class Engine {
     options: EngineOptions = {},
   ) {
     this.schema = schema;
+    loadVectorRuntimeForSchema(schema);
     this.durability = options.durability ?? "production";
     const busyTimeoutMs = positiveInt(options.busyTimeoutMs ?? 5_000, "busyTimeoutMs");
     this.busyTimeoutMs = busyTimeoutMs;
@@ -1493,6 +1495,7 @@ export class Engine {
     if (typeof mount !== "string" || !isPluginIdentifier(mount)) {
       throw new ValidationError("Plugin storage mount must be an identifier");
     }
+    loadVectorRuntimeForSchema(schema);
     return this.buildStorageScope(mount, schema);
   }
 
@@ -1650,8 +1653,9 @@ export class Engine {
 
     const sqlType = sqlTypeOf(base.kind);
     if (sqlType === undefined) throw new Error(`unsupported column kind "${base.kind}"`);
-    const encodeScalar = scalarEncoder(base.kind);
-    const decodeScalar = scalarDecoder(base.kind);
+    const descriptor = base.descriptor();
+    const encodeScalar = scalarEncoder(descriptor);
+    const decodeScalar = scalarDecoder(descriptor, `${displayName}.${jsName}`);
     return {
       jsName,
       kind: base.kind,

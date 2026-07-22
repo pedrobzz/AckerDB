@@ -58,18 +58,31 @@ export const getOrders = mcpTool({
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
       const limit = clampLimit(args.limit);
-      const rows = await tx.db.orders.scan().collect();
+      let query = tx.db.orders.query();
+      if (args.status !== undefined) {
+        const status = args.status;
+        query = query.where((order) => order.status.eq(status));
+      }
+      if (args.tableId !== undefined) {
+        const tableId = args.tableId;
+        query = query.where((order) => order.tableId.eq(tableId));
+      }
+      if (args.userId !== undefined) {
+        const userId = args.userId;
+        query = query.where((order) => order.userId.eq(userId));
+      }
+      if (args.openedAfter !== undefined) {
+        const openedAfter = args.openedAfter;
+        query = query.where((order) => order.openedAt.gte(openedAfter));
+      }
+      if (args.openedBefore !== undefined) {
+        const openedBefore = args.openedBefore;
+        query = query.where((order) => order.openedAt.lte(openedBefore));
+      }
+      const rows = await query
+        .orderBy((order) => order.openedAt.desc())
+        .take(limit);
       const orders = rows
-        .filter(
-          (order) =>
-            (args.status === undefined || order.status === args.status) &&
-            (args.tableId === undefined || order.tableId === args.tableId) &&
-            (args.userId === undefined || order.userId === args.userId) &&
-            (args.openedAfter === undefined || order.openedAt >= args.openedAfter) &&
-            (args.openedBefore === undefined || order.openedAt <= args.openedBefore),
-        )
-        .sort((a, b) => b.openedAt - a.openedAt)
-        .slice(0, limit)
         .map((order) => ({
           id: order.id,
           userId: order.userId,

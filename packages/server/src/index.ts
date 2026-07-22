@@ -43,6 +43,7 @@ export {
   type ChainableValidator,
   type BoundedValidator,
   type StringValidator,
+  type VectorValidator,
   type ArrayValidator,
   type Validator,
   type EnumValidator,
@@ -97,22 +98,25 @@ export {
   type DbStatementObserver,
 } from "./database/access.ts";
 export { idKey, ixKey, scanKey, emitWriteKeys } from "./database/keys.ts";
+export { VectorRuntimeUnavailableError } from "./database/query/vector-runtime.ts";
 export type {
   DbReader,
   DbWriter,
   TableReader,
   TableWriter,
   EventWriter,
-  IndexQb,
-  IndexQbDone,
-  IndexAccessor,
-  RangeQuery,
-  Page,
+  PredicateExpression,
+  OrderExpression,
+  QueryRow,
+  QueryPage,
+  QueryMaterializers,
+  TableQuery,
+  OrderedTableQuery,
+  VectorMetric,
+  NearestMatch,
+  NearestQuery,
   WriteResult,
-  EqValue,
-  RangeValue,
-  Upsert,
-} from "./database/types.ts";
+} from "./database/query/types.ts";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./schema/snapshot.ts";
 export {
   probeOptimisticChanges,
@@ -436,10 +440,8 @@ export {
   isTableDef,
   rowTypeName,
   eventArgsTypeName,
-  camelCase,
   Schema,
   TableDef,
-  type CamelCase,
   type IndexDef,
   type IndexOptions,
   type ScheduledHandler,

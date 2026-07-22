@@ -2701,7 +2701,7 @@ describe("Telemetry", () => {
       stage: "statement",
       outcome: "ok",
       functionName: "items.child",
-      statement: "items.by_room.collect",
+      statement: "items.collect",
       durationMs: 1,
     })).toBe(true);
     expect(telemetry.snapshot().traceRetention).toMatchObject({
@@ -2717,7 +2717,7 @@ describe("Telemetry", () => {
       stage: "statement",
       outcome: "ok",
       functionName: "items.child",
-      statement: "items.by_room.collect",
+      statement: "items.collect",
       durationMs: 1,
     })).toBe(true);
     const operationStagedBytes = telemetry.snapshot().traceRetention.stagedBytes;

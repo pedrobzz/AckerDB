@@ -17,6 +17,7 @@ import {
   checkStringConstraints,
   type ConstraintFields,
 } from "./constraints.ts";
+import { normalizeVector, vectorDimensions } from "./vector.ts";
 
 export type { Identity } from "@dbzz/core";
 export { isValidationError, ValidationError } from "./error.ts";
@@ -84,7 +85,9 @@ export type InferValidatorInput<V> = V extends Validator<unknown, string, infer 
 export type Expand<T> = T extends bigint | string | number | boolean | null | undefined | Uint8Array
   ? T
   : T extends readonly (infer E)[]
-    ? Expand<E>[]
+    ? T extends unknown[]
+      ? Expand<E>[]
+      : readonly Expand<E>[]
     : T extends object
       ? { [K in keyof T]: Expand<T[K]> }
       : T;
@@ -410,6 +413,29 @@ function bytes(): ChainableValidator<Uint8Array, "bytes"> {
     tsType: () => "Uint8Array",
     descriptor: () => ({ k: "bytes" }),
   });
+}
+
+export interface VectorValidator
+  extends ChainableValidator<readonly number[], "vector", readonly number[]> {
+  readonly dimensions: number;
+}
+
+function vector(dimensions: number): VectorValidator {
+  const size = vectorDimensions(dimensions, "v.vector()");
+  return makeValidator<
+    readonly number[],
+    "vector",
+    { readonly dimensions: number },
+    readonly number[]
+  >(
+    "vector",
+    {
+      check: (value, path) => normalizeVector(value, size, path),
+      tsType: () => "readonly number[]",
+      descriptor: () => ({ k: "vector", dimensions: size }),
+    },
+    { dimensions: size },
+  );
 }
 
 function scheduleAt(): StandardValidator<number, "scheduleAt"> {
@@ -1023,6 +1049,7 @@ export const v = {
   identity,
   boolean,
   bytes,
+  vector,
   array,
   object,
   enum: enum_,

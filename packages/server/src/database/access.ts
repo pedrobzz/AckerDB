@@ -1,15 +1,17 @@
 /**
- * The runtime behind `ctx.db`: compiles index-range reads to SQL, applies
- * the write methods, and records read/write sets for reactivity. The typed
- * surface lives in dbtypes.ts; this file is deliberately untyped inside —
- * the generics at the function-constructor boundary keep users honest.
+ * The runtime behind `ctx.db`: assembles table read/write methods and records
+ * write sets for reactivity. Planner-independent reads live in `query/`.
  */
 import type { Database } from "bun:sqlite";
-import { ValidationError, type Validator } from "../validation/v.ts";
+import { ValidationError } from "../validation/v.ts";
 import type { ColumnPlan, Engine, StorageScope, TablePlan } from "./engine.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
-import { camelCase, type IndexDef, type TableDef } from "../schema/definition.ts";
-import { emitWriteKeys, idKey, ixKey, scanKey } from "./keys.ts";
+import type { TableDef } from "../schema/definition.ts";
+import { emitWriteKeys, idKey } from "./keys.ts";
+import { createTableQuery } from "./query/query.ts";
+import { createNearestQuery } from "./query/nearest.ts";
+
+const quote = (name: string): string => `"${name}"`;
 
 const UNIQUE_CONSTRAINT_ERROR_IDENTITY = Symbol.for("@dbzz/server/UniqueConstraintError/v1");
 
@@ -47,6 +49,10 @@ export interface DbStatementObservation {
   readonly outcome: "ok" | "failed";
   readonly durationMs: number;
   readonly rowCount?: number;
+  /** Rows whose vector BLOB reached an exact-nearest ranking operation. */
+  readonly candidateRowCount?: number;
+  /** Peak exact-nearest ranking entries retained at once. */
+  readonly retainedRowCount?: number;
 }
 
 export type DbStatementObserver = (
@@ -130,452 +136,6 @@ function observeStatement<T>(
   }
 }
 
-interface RangeSpec {
-  column: string;
-  lo?: { sql: unknown; inclusive: boolean };
-  hi?: { sql: unknown; inclusive: boolean };
-}
-
-interface QuerySpec {
-  plan: TablePlan;
-  index: IndexDef | null; // null = scan
-  eqs: { column: string; sql: unknown }[];
-  range: RangeSpec | null;
-  order: "asc" | "desc";
-  filters: ((row: Record<string, unknown>) => boolean)[];
-}
-
-interface PaginationOptions {
-  readonly cursor: string | null;
-  readonly numItems: number;
-}
-
-interface PaginationResult {
-  readonly page: Record<string, unknown>[];
-  readonly isDone: boolean;
-  readonly continueCursor: string;
-}
-
-const quote = (name: string) => `"${name}"`;
-
-function unwrapBase(validator: Validator<unknown, string>): Validator<unknown, string> {
-  return validator.kind === "nullable"
-    ? (validator as unknown as { inner: Validator<unknown, string> }).inner
-    : validator;
-}
-
-/**
- * Convert a query value (variant name for enum/union, JS scalar otherwise)
- * to its storage form, validating it against the column on the way.
- */
-function toSqlKey(engine: Engine, plan: TablePlan, column: string, value: unknown): unknown {
-  const columnPlan = plan.columns.get(column)!;
-  if (value === null) {
-    if (!columnPlan.nullable) {
-      throw new ValidationError(`${plan.displayName}.${column}: column is not nullable`);
-    }
-    return null;
-  }
-  if (columnPlan.kind === "enum" || columnPlan.kind === "union") {
-    const tags = engine.tagMap(plan, columnPlan.typeName!);
-    if (typeof value !== "string" || !tags.toTag.has(value)) {
-      throw new ValidationError(
-        `${plan.displayName}.${column}: unknown ${columnPlan.typeName} variant ${JSON.stringify(value)}`,
-      );
-    }
-    return tags.toTag.get(value)!;
-  }
-  const base = unwrapBase(plan.table.columns[column]!);
-  return columnPlan.toSql(base.check(value, `${plan.displayName}.${column}`))[0];
-}
-
-// ---------------------------------------------------------------------------
-// Index query builder (runtime state machine mirroring the typed rules).
-
-class IndexQb {
-  readonly eqs: { column: string; sql: unknown }[] = [];
-  range: RangeSpec | null = null;
-
-  constructor(
-    private readonly engine: Engine,
-    private readonly plan: TablePlan,
-    private readonly index: IndexDef,
-  ) {}
-
-  private nextColumn(method: string, column: string): string {
-    if (this.range !== null) {
-      throw new ValidationError(
-        `${this.plan.displayName}.${this.index.name}: nothing can follow the range column`,
-      );
-    }
-    const expected = this.index.columns[this.eqs.length];
-    if (expected === undefined) {
-      throw new ValidationError(
-        `${this.plan.displayName}.${this.index.name}: all index columns are already pinned`,
-      );
-    }
-    if (column !== expected) {
-      throw new ValidationError(
-        `${this.plan.displayName}.${this.index.name}: .${method}("${column}") — expected column "${expected}" (equalities follow index column order)`,
-      );
-    }
-    return column;
-  }
-
-  eq(column: string, value: unknown): this {
-    this.nextColumn("eq", column);
-    this.eqs.push({ column, sql: toSqlKey(this.engine, this.plan, column, value) });
-    return this;
-  }
-
-  private rangeOn(method: string, column: string): RangeSpec {
-    this.nextColumn(method, column);
-    const columnPlan = this.plan.columns.get(column)!;
-    if (columnPlan.kind === "enum" || columnPlan.kind === "union") {
-      throw new ValidationError(
-        `${this.plan.displayName}.${column}: range queries on ${columnPlan.kind} tags are not meaningful — use eq`,
-      );
-    }
-    this.range = { column };
-    return this.range;
-  }
-
-  gt(column: string, value: unknown): this {
-    this.rangeOn("gt", column).lo = { sql: toSqlKey(this.engine, this.plan, column, value), inclusive: false };
-    return this;
-  }
-  gte(column: string, value: unknown): this {
-    this.rangeOn("gte", column).lo = { sql: toSqlKey(this.engine, this.plan, column, value), inclusive: true };
-    return this;
-  }
-  lt(column: string, value: unknown): this {
-    this.rangeOn("lt", column).hi = { sql: toSqlKey(this.engine, this.plan, column, value), inclusive: false };
-    return this;
-  }
-  lte(column: string, value: unknown): this {
-    this.rangeOn("lte", column).hi = { sql: toSqlKey(this.engine, this.plan, column, value), inclusive: true };
-    return this;
-  }
-  between(column: string, lo: unknown, hi: unknown): this {
-    const range = this.rangeOn("between", column);
-    range.lo = { sql: toSqlKey(this.engine, this.plan, column, lo), inclusive: true };
-    range.hi = { sql: toSqlKey(this.engine, this.plan, column, hi), inclusive: true };
-    return this;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Range query: materializers over a compiled spec.
-
-class RangeQueryImpl {
-  constructor(
-    private readonly engine: Engine,
-    private readonly conn: Database,
-    private readonly reads: ReadRecorder | null,
-    private readonly spec: QuerySpec,
-    private readonly observer?: DbStatementObserver,
-  ) {}
-
-  private recordRead(): void {
-    if (this.reads === null) return;
-    const { plan, index, eqs } = this.spec;
-    if (index === null || eqs.length === 0) {
-      this.reads.add(scanKey(plan.name));
-    } else {
-      this.reads.add(ixKey(plan.name, index.name, eqs.map((eq) => eq.sql)));
-    }
-  }
-
-  private whereAndParams(): { where: string; params: unknown[] } {
-    const clauses: string[] = [];
-    const params: unknown[] = [];
-    for (const eq of this.spec.eqs) {
-      if (eq.sql === null) {
-        clauses.push(`${quote(eq.column)} IS NULL`);
-      } else {
-        clauses.push(`${quote(eq.column)} = ?`);
-        params.push(eq.sql);
-      }
-    }
-    const range = this.spec.range;
-    if (range !== null) {
-      if (range.lo !== undefined) {
-        clauses.push(`${quote(range.column)} ${range.lo.inclusive ? ">=" : ">"} ?`);
-        params.push(range.lo.sql);
-      }
-      if (range.hi !== undefined) {
-        clauses.push(`${quote(range.column)} ${range.hi.inclusive ? "<=" : "<"} ?`);
-        params.push(range.hi.sql);
-      }
-    }
-    return { where: clauses.length > 0 ? ` WHERE ${clauses.join(" AND ")}` : "", params };
-  }
-
-  private orderBy(): string {
-    const dir = this.spec.order === "asc" ? "ASC" : "DESC";
-    const cols = this.spec.index === null ? [] : [...this.spec.index.columns];
-    cols.push(this.spec.plan.pk);
-    const table = quote(this.spec.plan.name);
-    return ` ORDER BY ${cols.map((column) => `${table}.${quote(column)} ${dir}`).join(", ")}`;
-  }
-
-  private sqlFor(extraWhere: string, limit: number): { sql: string; params: unknown[] } {
-    const { where, params } = this.whereAndParams();
-    const glue = extraWhere === "" ? "" : where === "" ? ` WHERE ${extraWhere}` : ` AND ${extraWhere}`;
-    const sql = `SELECT ${this.spec.plan.readProjection} FROM ${quote(this.spec.plan.name)}${where}${glue}${this.orderBy()}${limit >= 0 ? ` LIMIT ${limit}` : ""}`;
-    return { sql, params };
-  }
-
-  /**
-   * Fetch up to `limit` rows (-1 = all) after JS filters.
-   *
-   * Filter-less reads use the cached statement and materialize (`.all()` with
-   * LIMIT pushed down) — no live cursor survives, so reads nested inside a
-   * caller's loop can never collide with it. Filtered reads and `.iter()`
-   * stream on a *fresh* prepared statement (finalized when done) because a
-   * JS filter or consumer can run arbitrary nested reads mid-iteration —
-   * with the shared cached statement those would reset each other's cursor.
-   */
-  private *rows(
-    limit = -1,
-    extraWhere = "",
-    extraParams: unknown[] = [],
-    forceStream = false,
-  ): Generator<Record<string, unknown>> {
-    this.recordRead();
-    const { plan, filters } = this.spec;
-    const pushDown = filters.length === 0 ? limit : -1;
-    const { sql, params } = this.sqlFor(extraWhere, pushDown);
-    const bind = [...params, ...extraParams] as never[];
-    if (filters.length === 0 && !forceStream) {
-      const raws = this.engine.statement(this.conn, sql).all(...bind) as Record<string, unknown>[];
-      for (const raw of raws) yield this.engine.rowFromSql(plan, raw);
-      return;
-    }
-    const stmt = this.conn.prepare(sql);
-    try {
-      let yielded = 0;
-      outer: for (const raw of stmt.iterate(...bind)) {
-        const row = this.engine.rowFromSql(plan, raw as Record<string, unknown>);
-        for (const filter of filters) if (!filter(row)) continue outer;
-        yield row;
-        if (limit >= 0 && ++yielded >= limit) return;
-      }
-    } finally {
-      stmt.finalize();
-    }
-  }
-
-  private takeSync(n: number): Record<string, unknown>[] {
-    return [...this.rows(n)];
-  }
-
-  private uniqueSync(): Record<string, unknown> | null {
-    const rows = this.takeSync(2);
-    if (rows.length > 1) {
-      throw new Error(`${this.spec.plan.displayName}: .unique() matched more than one row`);
-    }
-    return rows[0] ?? null;
-  }
-
-  private countSync(): number {
-    if (this.spec.filters.length > 0) {
-      let count = 0;
-      for (const _ of this.rows()) count++;
-      return count;
-    }
-    this.recordRead();
-    const { where, params } = this.whereAndParams();
-    const sql = `SELECT COUNT(*) AS n FROM ${quote(this.spec.plan.name)}${where}`;
-    const row = this.engine.statement(this.conn, sql).get(...(params as never[])) as { n: bigint };
-    return Number(row.n);
-  }
-
-  private observeRead<T>(
-    statement: string,
-    work: () => T | Promise<T>,
-    rowCount: (value: T) => number | undefined,
-  ): T | Promise<T> {
-    return observeStatement(
-      this.observer,
-      "read",
-      this.spec.plan.displayName,
-      statement,
-      work,
-      rowCount,
-    );
-  }
-
-  order(dir: "asc" | "desc"): RangeQueryImpl {
-    return new RangeQueryImpl(
-      this.engine,
-      this.conn,
-      this.reads,
-      { ...this.spec, order: dir },
-      this.observer,
-    );
-  }
-
-  filter(fn: (row: Record<string, unknown>) => boolean): RangeQueryImpl {
-    return new RangeQueryImpl(
-      this.engine,
-      this.conn,
-      this.reads,
-      {
-        ...this.spec,
-        filters: [...this.spec.filters, fn],
-      },
-      this.observer,
-    );
-  }
-
-  async collect(): Promise<Record<string, unknown>[]> {
-    if (this.observer === undefined) return [...this.rows()];
-    return this.observeRead("collect", () => [...this.rows()], (rows) => rows.length);
-  }
-
-  async take(n: number): Promise<Record<string, unknown>[]> {
-    if (this.observer === undefined) return this.takeSync(n);
-    return this.observeRead("take", () => this.takeSync(n), (rows) => rows.length);
-  }
-
-  async first(): Promise<Record<string, unknown> | null> {
-    if (this.observer === undefined) return this.takeSync(1)[0] ?? null;
-    return this.observeRead(
-      "first",
-      () => this.takeSync(1)[0] ?? null,
-      (row) => row === null ? 0 : 1,
-    );
-  }
-
-  async unique(): Promise<Record<string, unknown> | null> {
-    if (this.observer === undefined) return this.uniqueSync();
-    return this.observeRead(
-      "unique",
-      () => this.uniqueSync(),
-      (row) => row === null ? 0 : 1,
-    );
-  }
-
-  async count(): Promise<number> {
-    if (this.observer === undefined) return this.countSync();
-    return this.observeRead(
-      "count",
-      () => this.countSync(),
-      (count) => count,
-    );
-  }
-
-  async *iter(): AsyncGenerator<Record<string, unknown>> {
-    if (this.observer === undefined) {
-      yield* this.rows(-1, "", [], true);
-      return;
-    }
-    const startedAt = performance.now();
-    let rowCount = 0;
-    let failed = false;
-    try {
-      for (const row of this.rows(-1, "", [], true)) {
-        rowCount++;
-        yield row;
-      }
-    } catch (error) {
-      failed = true;
-      throw error;
-    } finally {
-      deliverObservation(this.observer, {
-        kind: "read",
-        table: this.spec.plan.displayName,
-        statement: "iter",
-        outcome: failed ? "failed" : "ok",
-        durationMs: Math.max(0, performance.now() - startedAt),
-        ...(failed ? {} : { rowCount }),
-      });
-    }
-  }
-
-  private paginateSync(opts: PaginationOptions): PaginationResult {
-    const { plan, index } = this.spec;
-    const cursorCols = index === null ? [plan.pk] : [...index.columns, plan.pk];
-    let extraWhere = "";
-    let extraParams: unknown[] = [];
-    if (opts.cursor !== null) {
-      const values = JSON.parse(opts.cursor) as (string | number | null | { $: string; v: string })[];
-      const sqlValues = values.map((v) =>
-        v !== null && typeof v === "object" ? BigInt((v as { v: string }).v) : v,
-      );
-      const built = cursorComparison(cursorCols, sqlValues, this.spec.order);
-      extraWhere = built.sql;
-      extraParams = built.params;
-    }
-    const page: Record<string, unknown>[] = [];
-    let isDone = true;
-    for (const row of this.rows(opts.numItems + 1, extraWhere, extraParams)) {
-      if (page.length === opts.numItems) {
-        isDone = false;
-        break;
-      }
-      page.push(row);
-    }
-    const last = page[page.length - 1];
-    const continueCursor = last === undefined
-      ? (opts.cursor ?? "[]")
-      : JSON.stringify(
-          cursorCols.map((column) => {
-            const sql = plan.columns.get(column)!.toSql(last[column])[0];
-            return typeof sql === "bigint" ? { $: "b", v: sql.toString() } : sql;
-          }),
-        );
-    return { page, isDone, continueCursor };
-  }
-
-  async paginate(opts: PaginationOptions): Promise<PaginationResult> {
-    if (this.observer === undefined) return this.paginateSync(opts);
-    return this.observeRead(
-      "paginate",
-      () => this.paginateSync(opts),
-      (result) => result.page.length,
-    );
-  }
-}
-
-/**
- * Lexicographic "strictly after the cursor position" comparison, matching
- * SQLite's ordering (ASC: NULLs first; DESC: NULLs last). The final column
- * is the primary key and never NULL.
- */
-function cursorComparison(
-  columns: string[],
-  values: unknown[],
-  order: "asc" | "desc",
-): { sql: string; params: unknown[] } {
-  const params: unknown[] = [];
-  const build = (i: number): string => {
-    const column = quote(columns[i]!);
-    const value = values[i];
-    const last = i === columns.length - 1;
-    if (order === "asc") {
-      if (value === null) {
-        return last ? "0" : `(${column} IS NOT NULL OR (${column} IS NULL AND ${build(i + 1)}))`;
-      }
-      params.push(value);
-      if (last) return `${column} > ?`;
-      params.push(value);
-      return `(${column} > ? OR (${column} = ? AND ${build(i + 1)}))`;
-    }
-    if (value === null) {
-      return last ? "0" : `(${column} IS NULL AND ${build(i + 1)})`;
-    }
-    params.push(value);
-    if (last) return `${column} < ?`;
-    params.push(value);
-    return `(${column} < ? OR ${column} IS NULL OR (${column} = ? AND ${build(i + 1)}))`;
-  };
-  // params are pushed in visit order, which matches "?" order left-to-right
-  const sql = build(0);
-  return { sql: `(${sql})`, params };
-}
-
 // ---------------------------------------------------------------------------
 // Table accessors.
 
@@ -584,31 +144,6 @@ function wrapUnique(table: string, error: unknown): never {
     throw new UniqueConstraintError(`${table}: ${error.message}`);
   }
   throw error;
-}
-
-function makeRangeQuery(
-  engine: Engine,
-  conn: Database,
-  reads: ReadRecorder | null,
-  plan: TablePlan,
-  index: IndexDef | null,
-  qb: IndexQb | null,
-  observer?: DbStatementObserver,
-): RangeQueryImpl {
-  return new RangeQueryImpl(
-    engine,
-    conn,
-    reads,
-    {
-      plan,
-      index,
-      eqs: qb?.eqs ?? [],
-      range: qb?.range ?? null,
-      order: "asc",
-      filters: [],
-    },
-    observer,
-  );
 }
 
 function readMethods(
@@ -641,17 +176,13 @@ function readMethods(
         (row) => row === null ? 0 : 1,
       );
     },
-    scan(): RangeQueryImpl {
-      return makeRangeQuery(engine, conn, reads, plan, null, null, observer);
+    query(): unknown {
+      return createTableQuery(engine, conn, reads, plan, observer);
     },
   });
-  for (const index of plan.indexes) {
-    const run = (fn: (q: IndexQb) => unknown) => {
-      const qb = new IndexQb(engine, plan, index);
-      fn(qb);
-      return makeRangeQuery(engine, conn, reads, plan, index, qb, observer);
-    };
-    accessor[camelCase(index.name)] = run;
+  if ([...plan.columns.values()].some((column) => column.kind === "vector")) {
+    accessor["nearest"] = (column: unknown, query: unknown, options: unknown): unknown =>
+      createNearestQuery(engine, conn, reads, plan, column, query, options, observer);
   }
   return accessor;
 }
@@ -913,51 +444,96 @@ function writeMethods(
 
 function attachUpsert(
   engine: Engine,
-  writes: WriteCollector,
   plan: TablePlan,
   accessor: Record<string, unknown>,
   childWriter: ReturnType<typeof writeMethods>,
   observer?: DbStatementObserver,
 ): void {
-  for (const index of plan.indexes) {
-    if (!index.unique) continue;
-    const name = camelCase(index.name);
-    const fn = accessor[name] as Record<string, unknown>;
-    fn["upsert"] = (key: Record<string, unknown>, values: unknown): AnyWriteResult<bigint> =>
-      observedWriteResult(observer, plan.displayName, "upsert", async () => {
-        const keyColumns = [...index.columns];
-        for (const column of Object.keys(key)) {
-          if (!keyColumns.includes(column)) {
-            throw new ValidationError(
-              `${plan.displayName}.${name}.upsert: "${column}" is not part of the unique index`,
-            );
+  const candidates = plan.indexes.filter(
+    (index) =>
+      index.unique && index.columns.every((column) => !plan.columns.get(column)!.nullable),
+  );
+  if (candidates.length === 0) return;
+  accessor["upsert"] = (key: unknown, values: unknown): AnyWriteResult<bigint> =>
+    observedWriteResult(observer, plan.displayName, "upsert", async () => {
+      if (key === null || typeof key !== "object" || Array.isArray(key)) {
+        throw new ValidationError(`${plan.displayName}.upsert: expected a key object`);
+      }
+      const input = key as Record<string, unknown>;
+      const inputColumns = Object.keys(input);
+      const matches = candidates.filter(
+        (index) =>
+          index.columns.length === inputColumns.length &&
+          index.columns.every((column) => Object.hasOwn(input, column)),
+      );
+      if (matches.length === 0) {
+        throw new ValidationError(
+          `${plan.displayName}.upsert: key fields must exactly match one non-null unique index`,
+        );
+      }
+      if (matches.length > 1) {
+        throw new ValidationError(
+          `${plan.displayName}.upsert: key fields are ambiguous between unique indexes`,
+        );
+      }
+      const index = matches[0]!;
+      const checkedKey: Record<string, unknown> = {};
+      const clauses: string[] = [];
+      const params: unknown[] = [];
+      for (const column of index.columns) {
+        const checked = plan.table.columns[column]!.check(
+          input[column],
+          `${plan.displayName}.upsert.${column}`,
+        );
+        checkedKey[column] = checked;
+        const columnPlan = plan.columns.get(column)!;
+        const sqlValues = columnPlan.toSql(checked);
+        for (let position = 0; position < columnPlan.phys.length; position++) {
+          const physical = quote(columnPlan.phys[position]!.name);
+          const sqlValue = sqlValues[position];
+          if (sqlValue === null) {
+            clauses.push(`${physical} IS NULL`);
+          } else {
+            clauses.push(`${physical} = ?`);
+            params.push(sqlValue);
           }
         }
-        const qb = new IndexQb(engine, plan, index);
-        for (const column of keyColumns) {
-          if (!Object.hasOwn(key, column) || key[column] === undefined) {
-            throw new ValidationError(`${plan.displayName}.${name}.upsert: missing key column "${column}"`);
-          }
-          qb.eq(column, key[column]);
-        }
-        const existing = (await makeRangeQuery(
-          engine,
+      }
+      const where = clauses.join(" AND ");
+      const raws = engine
+        .statement(
           engine.writer,
-          null,
-          plan,
-          index,
-          qb,
-        ).unique()) as
-          | Record<string, unknown>
-          | null;
-        const resolved = typeof values === "function" ? values(existing) : values;
-        const write = existing === null
-          ? childWriter.insert({ ...key, ...resolved })
-          : childWriter.patch(existing[plan.pk] as bigint, resolved);
-        const row = (await write.returning())!;
-        return { value: row[plan.pk] as bigint, row };
-      });
-  }
+          `SELECT ${plan.readProjection} FROM ${quote(plan.name)} WHERE ${where} LIMIT 2`,
+        )
+        .all(...(params as never[])) as Record<string, unknown>[];
+      if (raws.length > 1) {
+        throw new Error(`${plan.displayName}.upsert: unique key matched more than one row`);
+      }
+      const existing = raws[0] === undefined ? null : engine.rowFromSql(plan, raws[0]);
+      const resolved = typeof values === "function" ? values(existing) : values;
+      if (
+        resolved !== null &&
+        (typeof resolved === "object" || typeof resolved === "function") &&
+        typeof (resolved as PromiseLike<unknown>).then === "function"
+      ) {
+        throw new ValidationError(`${plan.displayName}.upsert: values callback must be synchronous`);
+      }
+      if (resolved === null || typeof resolved !== "object" || Array.isArray(resolved)) {
+        throw new ValidationError(`${plan.displayName}.upsert: expected a values object`);
+      }
+      for (const column of index.columns) {
+        if (Object.hasOwn(resolved, column)) {
+          throw new ValidationError(
+            `${plan.displayName}.upsert: key field "${column}" cannot be changed by values`,
+          );
+        }
+      }
+      const write = existing === null
+        ? childWriter.insert({ ...checkedKey, ...(resolved as Record<string, unknown>) })
+        : childWriter.patch(existing[plan.pk] as bigint, resolved);
+      const row = (await write.returning())!;
+      return { value: row[plan.pk] as bigint, row };
+    });
 }
 
 function eventWriteMethods(
@@ -1033,7 +609,7 @@ export function makeDbWriter(
     const upsertWriter = observer === undefined
       ? writer
       : writeMethods(engine, writes, plan);
-    attachUpsert(engine, writes, plan, accessor, upsertWriter, observer);
+    attachUpsert(engine, plan, accessor, upsertWriter, observer);
     db[name] = accessor;
   }
   return db;

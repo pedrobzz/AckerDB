@@ -93,7 +93,7 @@ function createApp(): App {
       list: query({
         access: "authenticated",
         args: {},
-        handler: (ctx: Ctx) => ctx.db.notes.scan().collect(),
+        handler: (ctx: Ctx) => ctx.db.notes.query().collect(),
       }),
     },
   });

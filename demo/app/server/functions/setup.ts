@@ -14,7 +14,8 @@ export const initialize = mutation({
       return { created: false, completedAt: cached.completedAt };
 
     const existing = await ctx.db.setupState
-      .byKey((q) => q.eq("key", SEED_KEY))
+      .query()
+      .where((state) => state.key.eq(SEED_KEY))
       .unique();
     if (existing !== null) {
       await ctx.cache.setupState.set(SEED_KEY, {
