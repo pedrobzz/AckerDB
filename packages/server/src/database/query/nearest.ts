@@ -1,8 +1,8 @@
 import type { Database } from "bun:sqlite";
 import { CorruptDatabaseError } from "../../shared/errors.ts";
 import {
+  baseValidator,
   ValidationError,
-  type Validator,
   type VectorValidator,
 } from "../../validation/v.ts";
 import {
@@ -11,7 +11,11 @@ import {
   vectorBlobKernelView,
 } from "../../validation/vector.ts";
 import type { Engine, TablePlan } from "../engine.ts";
-import type { DbStatementObserver, ReadRecorder } from "../access.ts";
+import type { ReadRecorder } from "../access.ts";
+import {
+  observeStatement,
+  type DbStatementObserver,
+} from "../statement-observation.ts";
 import { predicateDependencyKeys } from "./dependencies.ts";
 import {
   compilePredicates,
@@ -123,12 +127,6 @@ class WinnerHeap {
   }
 }
 
-function baseValidator(validator: Validator<unknown, string>): Validator<unknown, string> {
-  return validator.kind === "nullable"
-    ? (validator as unknown as { readonly inner: Validator<unknown, string> }).inner
-    : validator;
-}
-
 function vectorColumn(
   plan: TablePlan,
   column: unknown,
@@ -171,11 +169,12 @@ function distance(
   query: Float32Array,
   stored: Float32Array,
   storedPath: string,
+  rowId: bigint,
 ): number | null {
   let result: number;
   switch (metric) {
     case "cosine":
-      if (isZeroFiniteVector(stored, storedPath)) return null;
+      if (isZeroFiniteVector(stored, storedPath, rowId)) return null;
       result = runtime.angular(query, stored);
       break;
     case "l2":
@@ -186,7 +185,7 @@ function distance(
       break;
   }
   if (!Number.isFinite(result)) {
-    assertFiniteVector(stored, storedPath);
+    assertFiniteVector(stored, storedPath, rowId);
     throw new VectorRuntimeUnavailableError(
       `NumKong returned a non-finite ${metric} distance for valid stored vectors`,
     );
@@ -294,6 +293,7 @@ class NearestQueryRuntime {
     const statement = this.conn.prepare(sql);
     const runtime = loadVectorRuntime();
     const heap = new WinnerHeap(count);
+    const storedPath = `${this.plan.displayName}.${this.vector.name}`;
     let candidateRowCount = 0;
     try {
       for (const raw of statement.iterate(...(predicate.params as never[])) as Iterable<Record<string, unknown>>) {
@@ -304,11 +304,11 @@ class NearestQueryRuntime {
             `${this.plan.displayName}.nearest: stored primary key is not an integer`,
           );
         }
-        const storedPath = `${this.plan.displayName}.${this.vector.name} at row ${id}`;
         const stored = vectorBlobKernelView(
           raw["__dbzz_vector"],
           this.vector.validator.dimensions,
           storedPath,
+          id,
         );
         const candidateDistance = distance(
           runtime,
@@ -316,6 +316,7 @@ class NearestQueryRuntime {
           this.queryVector,
           stored,
           storedPath,
+          id,
         );
         if (candidateDistance !== null) heap.add(id, candidateDistance);
       }
@@ -356,48 +357,18 @@ class NearestQueryRuntime {
   }
 
   private async observed(work: () => NearestExecution): Promise<NearestExecution> {
-    const startedAt = performance.now();
-    try {
-      const value = work();
-      this.emit("ok", startedAt, value);
-      return value;
-    } catch (error) {
-      this.emit("failed", startedAt);
-      throw error;
-    }
-  }
-
-  private emit(
-    outcome: "ok" | "failed",
-    startedAt: number,
-    execution?: NearestExecution,
-  ): void {
-    if (this.observer === undefined) return;
-    try {
-      const result = this.observer(Object.freeze({
-        kind: "read",
-        table: this.plan.displayName,
-        statement: "nearest",
-        outcome,
-        durationMs: Math.max(0, performance.now() - startedAt),
-        ...(execution === undefined
-          ? {}
-          : {
-              rowCount: execution.matches.length,
-              candidateRowCount: execution.candidateRowCount,
-              retainedRowCount: execution.retainedRowCount,
-            }),
-      }));
-      if (
-        result !== null &&
-        (typeof result === "object" || typeof result === "function") &&
-        typeof (result as PromiseLike<unknown>).then === "function"
-      ) {
-        void Promise.resolve(result).catch(() => {});
-      }
-    } catch {
-      // Diagnostic statement telemetry never owns application work.
-    }
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
+      "nearest",
+      work,
+      (execution) => execution.matches.length,
+      (execution) => ({
+        candidateRowCount: execution.candidateRowCount,
+        retainedRowCount: execution.retainedRowCount,
+      }),
+    );
   }
 }
 

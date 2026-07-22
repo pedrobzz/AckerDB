@@ -52,8 +52,9 @@ export function encodeVectorBlob(value: readonly number[], dimensions: number): 
   return blob;
 }
 
-function corruptVector(path: string, message: string): never {
-  throw new CorruptDatabaseError(`stored vector ${path} is corrupt: ${message}`);
+function corruptVector(path: string, message: string, rowId?: bigint): never {
+  const location = rowId === undefined ? path : `${path} at row ${rowId}`;
+  throw new CorruptDatabaseError(`stored vector ${location} is corrupt: ${message}`);
 }
 
 /**
@@ -67,13 +68,14 @@ export function vectorBlobKernelView(
   value: unknown,
   dimensions: number,
   path: string,
+  rowId?: bigint,
 ): Float32Array {
   if (!(value instanceof Uint8Array)) {
-    corruptVector(path, "expected a BLOB");
+    corruptVector(path, "expected a BLOB", rowId);
   }
   const expectedBytes = dimensions * Float32Array.BYTES_PER_ELEMENT;
   if (value.byteLength !== expectedBytes) {
-    corruptVector(path, `expected ${expectedBytes} bytes, got ${value.byteLength}`);
+    corruptVector(path, `expected ${expectedBytes} bytes, got ${value.byteLength}`, rowId);
   }
 
   const canView = LITTLE_ENDIAN && value.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0;
@@ -88,12 +90,16 @@ export function vectorBlobKernelView(
 }
 
 /** Validate every coordinate, returning whether the finite vector is zero. */
-export function isZeroFiniteVector(vector: Float32Array, path: string): boolean {
+export function isZeroFiniteVector(
+  vector: Float32Array,
+  path: string,
+  rowId?: bigint,
+): boolean {
   let zero = true;
   for (let index = 0; index < vector.length; index++) {
     const coordinate = vector[index]!;
     if (!Number.isFinite(coordinate)) {
-      corruptVector(path, `coordinate ${index} is not finite`);
+      corruptVector(path, `coordinate ${index} is not finite`, rowId);
     }
     if (coordinate !== 0) zero = false;
   }
@@ -101,10 +107,10 @@ export function isZeroFiniteVector(vector: Float32Array, path: string): boolean 
 }
 
 /** Validate coordinates after a native kernel reports a non-finite result. */
-export function assertFiniteVector(vector: Float32Array, path: string): void {
+export function assertFiniteVector(vector: Float32Array, path: string, rowId?: bigint): void {
   for (let index = 0; index < vector.length; index++) {
     if (!Number.isFinite(vector[index])) {
-      corruptVector(path, `coordinate ${index} is not finite`);
+      corruptVector(path, `coordinate ${index} is not finite`, rowId);
     }
   }
 }

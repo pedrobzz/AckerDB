@@ -49,7 +49,12 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
-import type { Descriptor, Identity, Validator } from "../validation/v.ts";
+import {
+  baseValidator,
+  type Descriptor,
+  type Identity,
+  type Validator,
+} from "../validation/v.ts";
 import { scalarDecoder, scalarEncoder, sqlTypeOf } from "../schema/descriptor-kinds.ts";
 import { validateStoredDescriptor } from "../schema/stored-descriptor.ts";
 import {
@@ -663,16 +668,6 @@ function expectedApplicationObjects(
     }
   }
   return objects;
-}
-
-function unwrapValidator(validator: Validator<unknown, string>): {
-  base: Validator<unknown, string>;
-  nullable: boolean;
-} {
-  if (validator.kind === "nullable") {
-    return { base: (validator as unknown as { inner: Validator<unknown, string> }).inner, nullable: true };
-  }
-  return { base: validator, nullable: false };
 }
 
 function positiveInt(value: number, name: string): number {
@@ -1584,7 +1579,8 @@ export class Engine {
     displayName: string,
     tagIdentity: StorageScope["tagIdentity"],
   ): ColumnPlan {
-    const { base, nullable } = unwrapValidator(validator);
+    const nullable = validator.kind === "nullable";
+    const base = baseValidator(validator);
     const notNull = nullable ? "" : " NOT NULL";
 
     if (base.kind === "pk") {

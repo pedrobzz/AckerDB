@@ -993,6 +993,15 @@ export interface NullishValidator<
   readonly inner: V;
 }
 
+/** Return the underlying validator when storage nullability wraps it. */
+export function baseValidator(
+  validator: Validator<unknown, string>,
+): Validator<unknown, string> {
+  return validator.kind === "nullable"
+    ? (validator as NullableValidator).inner
+    : validator;
+}
+
 type ModifiedValidator<V extends StandardValidator<unknown, string>, K extends "nullable" | "optional" | "nullish"> =
   K extends "nullable"
     ? NullableValidator<V>

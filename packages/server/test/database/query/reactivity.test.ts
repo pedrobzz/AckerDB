@@ -88,6 +88,12 @@ const functions = {
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.documents.patch(args.id, { embedding: args.embedding }),
     }),
+    setTitle: mutation({
+      access: "public",
+      args: { id: v.bigint(), title: v.string() },
+      handler: (ctx: Ctx, args: Ctx) =>
+        ctx.db.documents.patch(args.id, { title: args.title }),
+    }),
     remove: mutation({
       access: "public",
       args: { id: v.bigint() },
@@ -235,7 +241,7 @@ describe("query prefix reactivity", () => {
   });
 
   test("suppresses unrelated writes and re-ranks when a nonwinner becomes nearest", async () => {
-    await insert(1, 1n, "active", "current winner", [0, 1]);
+    const winner = await insert(1, 1n, "active", "current winner", [0, 1]);
     const challenger = await insert(2, 1n, "active", "challenger", [-1, 0]);
     await session.subscribe(20, "documents.nearest", { tenantId: 1n });
     expect(session.transitions(20).at(-1)).toMatchObject({
@@ -245,16 +251,28 @@ describe("query prefix reactivity", () => {
       },
     });
 
+    const renamed = await session.mutation(3, "documents.setTitle", {
+      id: winner,
+      title: "renamed winner",
+    });
+    expect(renamed.receipt.obligations).toEqual([20]);
+    expect(session.transitions(20).at(-1)).toMatchObject({
+      transition: {
+        kind: "update",
+        value: [{ row: expect.objectContaining({ id: winner, title: "renamed winner" }) }],
+      },
+    });
+
     const transitionsBeforeUnrelatedWrite = session.transitions(20).length;
-    const unrelated = await insert(3, 2n, "active", "other tenant", [1, 0]);
+    const unrelated = await insert(4, 2n, "active", "other tenant", [1, 0]);
     expect(unrelated).toBeGreaterThan(0n);
     const unrelatedReceipt = session.publications.findLast(
-      (message) => message.t === "ok" && message.kind === "mutation" && message.id === 3,
+      (message) => message.t === "ok" && message.kind === "mutation" && message.id === 4,
     );
     expect(unrelatedReceipt).toMatchObject({ receipt: { obligations: [] } });
     expect(session.transitions(20)).toHaveLength(transitionsBeforeUnrelatedWrite);
 
-    const reranked = await session.mutation(4, "documents.setEmbedding", {
+    const reranked = await session.mutation(5, "documents.setEmbedding", {
       id: challenger,
       embedding: [1, 0],
     });

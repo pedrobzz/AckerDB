@@ -50,11 +50,13 @@ import {
 import { isValidationError, type Identity } from "../validation/v.ts";
 import {
   makeDbReader,
-  type DbStatementObservation,
-  type DbStatementObserver,
   type ReadRecorder,
   type WriteCollector,
 } from "../database/access.ts";
+import type {
+  DbStatementObservation,
+  DbStatementObserver,
+} from "../database/statement-observation.ts";
 import {
   BoundedSseProducer,
   FINALIZE_DELIVERY_OBSERVER,

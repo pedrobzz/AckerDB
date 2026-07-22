@@ -5,6 +5,7 @@
  */
 import type { FunctionReference, RegisteredFunction } from "@dbzz/core";
 import {
+  baseValidator,
   ValidationError,
   type Descriptor,
   type Expand,
@@ -84,13 +85,6 @@ function assertStoredValidator(
       assertStoredValidator(member, `${where}<${name}>`);
     }
   }
-}
-
-/** Unwrap nullable to the underlying validator. */
-function unwrap(validator: Validator<unknown, string>): Validator<unknown, string> {
-  return validator.kind === "nullable"
-    ? (validator as unknown as { inner: Validator<unknown, string> }).inner
-    : validator;
 }
 
 const INDEXABLE = new Set(["string", "int", "float", "bigint", "identity", "boolean", "enum", "union", "scheduleAt"]);
@@ -254,7 +248,7 @@ export class TableDef<
           "index: the primary key is already the table's storage key; indexing it is redundant",
         );
       }
-      const inner = unwrap(validator);
+      const inner = baseValidator(validator);
       if (!INDEXABLE.has(inner.kind)) {
         throw new ValidationError(
           `index: column "${column}" (${inner.kind}) is not indexable — promote the field you need into its own scalar column`,

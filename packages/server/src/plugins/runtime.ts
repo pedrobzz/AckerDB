@@ -2,10 +2,10 @@ import type { Database } from "bun:sqlite";
 import {
   makeDbReader,
   makeDbWriter,
-  type DbStatementObserver,
   type ReadRecorder,
   type WriteCollector,
 } from "../database/access.ts";
+import type { DbStatementObserver } from "../database/statement-observation.ts";
 import type { Engine, StorageScope } from "../database/engine.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import {

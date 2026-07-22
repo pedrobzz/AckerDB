@@ -94,9 +94,11 @@ export {
   type ReadRecorder,
   type WriteCollector,
   type EventEmit,
-  type DbStatementObservation,
-  type DbStatementObserver,
 } from "./database/access.ts";
+export type {
+  DbStatementObservation,
+  DbStatementObserver,
+} from "./database/statement-observation.ts";
 export { idKey, ixKey, scanKey, emitWriteKeys } from "./database/keys.ts";
 export { VectorRuntimeUnavailableError } from "./database/query/vector-runtime.ts";
 export type {

@@ -10,6 +10,10 @@ import type { TableDef } from "../schema/definition.ts";
 import { emitWriteKeys, idKey } from "./keys.ts";
 import { createTableQuery } from "./query/query.ts";
 import { createNearestQuery } from "./query/nearest.ts";
+import {
+  observeStatement,
+  type DbStatementObserver,
+} from "./statement-observation.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -40,100 +44,6 @@ export interface WriteCollector {
   events: EventEmit[];
   /** True when a scheduled table was written — the scheduler re-arms. */
   scheduledTouched: boolean;
-}
-
-export interface DbStatementObservation {
-  readonly kind: "read" | "write";
-  readonly table: string;
-  readonly statement: string;
-  readonly outcome: "ok" | "failed";
-  readonly durationMs: number;
-  readonly rowCount?: number;
-  /** Rows whose vector BLOB reached an exact-nearest ranking operation. */
-  readonly candidateRowCount?: number;
-  /** Peak exact-nearest ranking entries retained at once. */
-  readonly retainedRowCount?: number;
-}
-
-export type DbStatementObserver = (
-  observation: Readonly<DbStatementObservation>,
-) => unknown;
-
-function deliverObservation(
-  observer: DbStatementObserver | undefined,
-  observation: DbStatementObservation,
-): void {
-  if (observer === undefined) return;
-  try {
-    const result = observer(Object.freeze(observation));
-    if (
-      result !== null &&
-      (typeof result === "object" || typeof result === "function") &&
-      typeof (result as PromiseLike<unknown>).then === "function"
-    ) {
-      void Promise.resolve(result).catch(() => {});
-    }
-  } catch {
-    // Statement telemetry is diagnostic and never owns application work.
-  }
-}
-
-function observeStatement<T>(
-  observer: DbStatementObserver | undefined,
-  kind: DbStatementObservation["kind"],
-  table: string,
-  statement: string,
-  work: () => T | Promise<T>,
-  rowCount: (value: T) => number | undefined,
-): T | Promise<T> {
-  if (observer === undefined) return work();
-  const startedAt = performance.now();
-  try {
-    const result = work();
-    if (result && typeof (result as PromiseLike<T>).then === "function") {
-      return Promise.resolve(result).then(
-        (value) => {
-          deliverObservation(observer, {
-            kind,
-            table,
-            statement,
-            outcome: "ok",
-            durationMs: Math.max(0, performance.now() - startedAt),
-            rowCount: rowCount(value),
-          });
-          return value;
-        },
-        (error) => {
-          deliverObservation(observer, {
-            kind,
-            table,
-            statement,
-            outcome: "failed",
-            durationMs: Math.max(0, performance.now() - startedAt),
-          });
-          throw error;
-        },
-      );
-    }
-    deliverObservation(observer, {
-      kind,
-      table,
-      statement,
-      outcome: "ok",
-      durationMs: Math.max(0, performance.now() - startedAt),
-      rowCount: rowCount(result as T),
-    });
-    return result;
-  } catch (error) {
-    deliverObservation(observer, {
-      kind,
-      table,
-      statement,
-      outcome: "failed",
-      durationMs: Math.max(0, performance.now() - startedAt),
-    });
-    throw error;
-  }
 }
 
 // ---------------------------------------------------------------------------

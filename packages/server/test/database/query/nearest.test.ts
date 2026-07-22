@@ -295,16 +295,24 @@ describe("exact nearest search", () => {
     engine.writer.query('UPDATE "documents" SET "embedding" = ? WHERE "id" = ?')
       .run(new Uint8Array([1, 2, 3]), id);
 
-    await expect(db.documents
+    const malformedSearch = db.documents
       .nearest("embedding", [1, 0], { metric: "l2" })
-      .first()).rejects.toBeInstanceOf(CorruptDatabaseError);
+      .first();
+    await expect(malformedSearch).rejects.toBeInstanceOf(CorruptDatabaseError);
+    await expect(malformedSearch).rejects.toThrow(
+      `stored vector documents.embedding at row ${id} is corrupt: expected 8 bytes, got 3`,
+    );
 
     const nonFinite = new Uint8Array(8);
     new DataView(nonFinite.buffer).setFloat32(0, NaN, true);
     engine.writer.query('UPDATE "documents" SET "embedding" = ? WHERE "id" = ?')
       .run(nonFinite, id);
-    await expect(db.documents
+    const nonFiniteSearch = db.documents
       .nearest("embedding", [1, 0], { metric: "l2" })
-      .first()).rejects.toBeInstanceOf(CorruptDatabaseError);
+      .first();
+    await expect(nonFiniteSearch).rejects.toBeInstanceOf(CorruptDatabaseError);
+    await expect(nonFiniteSearch).rejects.toThrow(
+      `stored vector documents.embedding at row ${id} is corrupt: coordinate 0 is not finite`,
+    );
   });
 });

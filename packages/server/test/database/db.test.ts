@@ -19,7 +19,10 @@ import {
   ValidationError,
   type WriteCollector,
 } from "@dbzz/server";
-import type { DbStatementObservation, DbStatementObserver } from "../../src/database/access.ts";
+import type {
+  DbStatementObservation,
+  DbStatementObserver,
+} from "../../src/database/statement-observation.ts";
 
 const schema = () =>
   defineSchema({

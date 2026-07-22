@@ -1,11 +1,12 @@
 import type { Database } from "bun:sqlite";
 import { isValidationError, ValidationError } from "../../validation/v.ts";
 import type { Engine, TablePlan } from "../engine.ts";
-import type {
-  DbStatementObservation,
-  DbStatementObserver,
-  ReadRecorder,
-} from "../access.ts";
+import type { ReadRecorder } from "../access.ts";
+import {
+  deliverObservation,
+  observeStatement,
+  type DbStatementObserver,
+} from "../statement-observation.ts";
 import { predicateDependencyKeys } from "./dependencies.ts";
 import {
   compilePredicates,
@@ -40,25 +41,6 @@ type EncodedCursorValue = null | string | number | { readonly bigint: string };
 interface CursorPayload {
   readonly version: 1;
   readonly values: readonly EncodedCursorValue[];
-}
-
-function emitObservation(
-  observer: DbStatementObserver | undefined,
-  observation: DbStatementObservation,
-): void {
-  if (observer === undefined) return;
-  try {
-    const result = observer(Object.freeze(observation));
-    if (
-      result !== null &&
-      (typeof result === "object" || typeof result === "function") &&
-      typeof (result as PromiseLike<unknown>).then === "function"
-    ) {
-      void Promise.resolve(result).catch(() => {});
-    }
-  } catch {
-    // Statement telemetry is diagnostic and never owns application work.
-  }
 }
 
 function encodeCursorValue(value: unknown): EncodedCursorValue {
@@ -331,29 +313,14 @@ class TableQueryRuntime {
     work: () => T | Promise<T>,
     rowCount: (value: T) => number | undefined,
   ): Promise<T> {
-    if (this.observer === undefined) return await work();
-    const startedAt = performance.now();
-    try {
-      const value = await work();
-      emitObservation(this.observer, {
-        kind: "read",
-        table: this.plan.displayName,
-        statement,
-        outcome: "ok",
-        durationMs: Math.max(0, performance.now() - startedAt),
-        rowCount: rowCount(value),
-      });
-      return value;
-    } catch (error) {
-      emitObservation(this.observer, {
-        kind: "read",
-        table: this.plan.displayName,
-        statement,
-        outcome: "failed",
-        durationMs: Math.max(0, performance.now() - startedAt),
-      });
-      throw error;
-    }
+    return await observeStatement(
+      this.observer,
+      "read",
+      this.plan.displayName,
+      statement,
+      work,
+      rowCount,
+    );
   }
 
   async collect(): Promise<Record<string, unknown>[]> {
@@ -422,7 +389,7 @@ class TableQueryRuntime {
       failed = true;
       throw error;
     } finally {
-      emitObservation(this.observer, {
+      deliverObservation(this.observer, {
         kind: "read",
         table: this.plan.displayName,
         statement: "iter",

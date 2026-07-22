@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { DbzzError } from "../../shared/errors.ts";
 import type { Schema } from "../../schema/definition.ts";
-import type { Validator } from "../../validation/v.ts";
+import { baseValidator } from "../../validation/v.ts";
 
 type DistanceKernel = (left: Float32Array, right: Float32Array) => number;
 
@@ -78,12 +78,6 @@ export function loadVectorRuntime(
       cause,
     );
   }
-}
-
-function baseValidator(validator: Validator<unknown, string>): Validator<unknown, string> {
-  return validator.kind === "nullable"
-    ? (validator as unknown as { readonly inner: Validator<unknown, string> }).inner
-    : validator;
 }
 
 /** Function validators are inert; only a schema with a stored vector loads native code. */

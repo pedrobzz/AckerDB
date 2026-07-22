@@ -1,5 +1,5 @@
 import type { Engine, TablePlan } from "../engine.ts";
-import { ValidationError, type Validator } from "../../validation/v.ts";
+import { baseValidator, ValidationError } from "../../validation/v.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -104,12 +104,6 @@ function predicateMeta(value: unknown, owner: object, path: string): PredicateMe
   return meta;
 }
 
-function unwrap(validator: Validator<unknown, string>): Validator<unknown, string> {
-  return validator.kind === "nullable"
-    ? (validator as unknown as { readonly inner: Validator<unknown, string> }).inner
-    : validator;
-}
-
 function toSqlPredicateValue(
   engine: Engine,
   plan: TablePlan,
@@ -145,7 +139,7 @@ function toSqlPredicateValue(
     }
     return tags.toTag.get(value)!;
   }
-  const checked = unwrap(plan.table.columns[column]!).check(
+  const checked = baseValidator(plan.table.columns[column]!).check(
     value,
     `${plan.displayName}.${column}`,
   );
