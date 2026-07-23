@@ -7,9 +7,10 @@ import { ValidationError } from "../validation/v.ts";
 import type { ColumnPlan, Engine, StorageScope, TablePlan } from "./engine.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import type { TableDef } from "../schema/definition.ts";
-import { emitWriteKeys, idKey } from "./keys.ts";
+import { emitFullTextWriteKeys, emitWriteKeys, idKey } from "./keys.ts";
 import { createTableQuery } from "./query/query.ts";
 import { createNearestQuery } from "./query/nearest.ts";
+import { createFullTextQuery } from "./query/full-text.ts";
 import {
   observeStatement,
   type DbStatementObserver,
@@ -93,6 +94,10 @@ function readMethods(
   if (plan.hasVectorColumns) {
     accessor["nearest"] = (column: unknown, query: unknown, options: unknown): unknown =>
       createNearestQuery(engine, conn, reads, plan, column, query, options, observer);
+  }
+  if (plan.fullText.length > 0) {
+    accessor["fullText"] = (column: unknown, query: unknown): unknown =>
+      createFullTextQuery(engine, conn, reads, plan, column, query, observer);
   }
   return accessor;
 }
@@ -217,6 +222,7 @@ function writeMethods(
         const id = inserted[plan.pk] as bigint;
         const full = { ...values, [plan.pk]: id };
         emitWriteKeys(plan, full, writes.keys);
+        emitFullTextWriteKeys(plan, null, full, writes.keys);
         touch();
         return { value: id, row: full };
       });
@@ -261,6 +267,7 @@ function writeMethods(
         }
         emitWriteKeys(plan, old, writes.keys);
         emitWriteKeys(plan, updated, writes.keys);
+        emitFullTextWriteKeys(plan, old, updated, writes.keys);
         touch();
         return { value: undefined, row: updated };
       });
@@ -291,6 +298,7 @@ function writeMethods(
         const full = { ...values, [plan.pk]: id };
         emitWriteKeys(plan, old, writes.keys);
         emitWriteKeys(plan, full, writes.keys);
+        emitFullTextWriteKeys(plan, old, full, writes.keys);
         touch();
         return { value: undefined, row: full };
       });
@@ -304,6 +312,7 @@ function writeMethods(
           .statement(conn, `DELETE FROM ${quote(plan.name)} WHERE ${quote(plan.pk)} = ?`)
           .run(id as never);
         emitWriteKeys(plan, old, writes.keys);
+        emitFullTextWriteKeys(plan, old, null, writes.keys);
         touch();
         return { value: undefined, row: old };
       });
@@ -341,7 +350,9 @@ function writeMethods(
             )
             .all(...(uniqueIds as never[])) as Record<string, unknown>[];
           for (const raw of rawRows) {
-            emitWriteKeys(plan, engine.rowFromSql(plan, raw), writes.keys);
+            const row = engine.rowFromSql(plan, raw);
+            emitWriteKeys(plan, row, writes.keys);
+            emitFullTextWriteKeys(plan, row, null, writes.keys);
           }
           if (rawRows.length > 0) touch();
           return rawRows.length;

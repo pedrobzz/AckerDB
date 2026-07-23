@@ -69,6 +69,52 @@ describe("defineTable", () => {
     );
   });
 
+  test("full-text declarations accept one explicit set of direct string columns", () => {
+    const table = () =>
+      defineTable({
+        id: v.primaryKey(),
+        title: v.string(),
+        body: v.string().nullable(),
+        count: v.int(),
+      });
+
+    expect(table().fullText(["title", "body"]).fullTextColumns).toEqual([
+      "title",
+      "body",
+    ]);
+    expect(
+      table().fullText(["body"]).index(["title"]).fullTextColumns,
+    ).toEqual(["body"]);
+    expect(() => table().fullText([])).toThrow("no columns");
+    expect(() => table().fullText(["title", "title"])).toThrow(
+      "duplicate columns",
+    );
+    expect(() => table().fullText(["missing" as never])).toThrow(
+      'unknown column "missing"',
+    );
+    expect(() => table().fullText(["count" as never])).toThrow(
+      'column "count" (int) is not a string',
+    );
+    expect(() =>
+      defineTable({ id: v.primaryKey(), rank: v.string() }).fullText(["rank"])
+    ).toThrow(
+      'column name "rank" is reserved by FTS5',
+    );
+    expect(() =>
+      defineTable({ id: v.primaryKey(), rowid: v.string() }).fullText(["rowid"])
+    ).toThrow(
+      'column name "rowid" is reserved by FTS5',
+    );
+    expect(() =>
+      defineTable({ id: v.primaryKey(), Rank: v.string() }).fullText(["Rank"])
+    ).toThrow(
+      'column name "Rank" is reserved by FTS5',
+    );
+    expect(() => table().fullText(["title"]).fullText(["body"])).toThrow(
+      "already has a full-text declaration",
+    );
+  });
+
   test("scheduled tables need scheduleAt and vice versa", () => {
     expect(() =>
       defineTable({ id: v.primaryKey(), at: v.scheduleAt() }),
@@ -87,6 +133,9 @@ describe("defineTable", () => {
   test("event tables: no indexes, no scheduling", () => {
     const subscription = { args: {}, access: "public" as const, matches: () => true };
     expect(() => defineEventTable(pkCols(), subscription).index(["name"])).toThrow("never persist");
+    expect(() => defineEventTable(pkCols(), subscription).fullText(["name"])).toThrow(
+      "event tables never persist rows",
+    );
     expect(() => defineEventTable(pkCols(), subscription).scheduled("x.y")).toThrow("cannot be scheduled");
     expect(() =>
       defineEventTable({ id: v.primaryKey(), at: v.scheduleAt() }, subscription),

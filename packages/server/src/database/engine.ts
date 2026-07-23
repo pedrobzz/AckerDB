@@ -75,6 +75,7 @@ import {
   canonicalSnapshotJson,
   snapshotOf,
   type SchemaSnapshot,
+  type TableSnapshot,
 } from "../schema/snapshot.ts";
 import { isValidationError, ValidationError } from "../validation/error.ts";
 import { isPluginDefinitionId, isPluginIdentifier } from "../plugins/identifiers.ts";
@@ -93,6 +94,15 @@ import {
   createPredicateEnvironment,
   type PredicateEnvironment,
 } from "./query/predicate.ts";
+import {
+  createFullTextTarget,
+  dropFullTextTarget,
+  fullTextCatalogObjects,
+  fullTextTargetPlan,
+  installFullTextSupport,
+  prepareFullTextLiteral as prepareLiteralFullTextQuery,
+  type FullTextTargetPlan,
+} from "./full-text.ts";
 
 export { CorruptDatabaseError, IncompatibleDatabaseError } from "../shared/errors.ts";
 export interface TagMap {
@@ -141,6 +151,7 @@ export interface PhysicalTablePlan {
    */
   readonly readProjection: string;
   readonly indexes: readonly IndexDef[];
+  readonly fullText: readonly FullTextTargetPlan[];
 }
 
 /** A live runtime plan additionally owns the TableDef used at every db validation boundary. */
@@ -248,7 +259,7 @@ export interface BackupManifest {
   verifiedAt: number;
 }
 
-const ENGINE_SCHEMA_VERSION = 10;
+const ENGINE_SCHEMA_VERSION = 11;
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
 const WAL_FORMAT_VERSION = 3_007_000;
@@ -256,6 +267,7 @@ const WAL_MAGIC_LITTLE_ENDIAN = 0x377f0682;
 const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
 const PLUGIN_TABLE_PREFIX = "_dbzz_plugin_";
 const PLUGIN_INDEX_PREFIX = `ix_${PLUGIN_TABLE_PREFIX}`;
+const FULL_TEXT_OBJECT_PREFIX = "_dbzz_fts_";
 const quote = (name: string) => `"${name}"`;
 
 /** Length-prefixing makes mount/table boundaries injective even when either contains `_`. */
@@ -286,7 +298,7 @@ export function compileReadProjection(columns: Iterable<ColumnPlan>): string {
 }
 
 interface StoredObject {
-  type: "table" | "index";
+  type: "table" | "index" | "trigger";
   name: string;
   table: string;
   sql: string;
@@ -444,16 +456,20 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
   } catch {
     corruptSnapshot("JSON cannot be parsed");
   }
-  if (!storedRecord(parsed) || parsed["version"] !== 1 || !storedRecord(parsed["tables"])) {
-    corruptSnapshot("root must contain version 1 and a tables object");
+  if (!storedRecord(parsed) || parsed["version"] !== 2 || !storedRecord(parsed["tables"])) {
+    corruptSnapshot("root must contain version 2 and a tables object");
   }
   for (const [tableName, value] of Object.entries(parsed["tables"])) {
     storedName(tableName, "table name");
     if (!storedRecord(value) || (value["kind"] !== "table" && value["kind"] !== "event")) {
       corruptSnapshot(`${tableName} has an invalid table kind`);
     }
-    if (!storedRecord(value["columns"]) || !Array.isArray(value["indexes"])) {
-      corruptSnapshot(`${tableName} must contain columns and indexes`);
+    if (
+      !storedRecord(value["columns"]) ||
+      !Array.isArray(value["indexes"]) ||
+      !Array.isArray(value["fullText"])
+    ) {
+      corruptSnapshot(`${tableName} must contain columns, indexes, and fullText`);
     }
     const storedColumns = value["columns"];
     let primaryKeys = 0;
@@ -495,6 +511,30 @@ function parseStoredSnapshot(value: string): SchemaSnapshot {
     }
     if (value["kind"] === "event" && value["indexes"].length > 0) {
       corruptSnapshot(`${tableName} event table has physical indexes`);
+    }
+    const fullText = value["fullText"];
+    if (
+      fullText.some((column) =>
+        typeof column !== "string" ||
+        !Object.hasOwn(storedColumns, column) ||
+        column.toLowerCase() === "rank" ||
+        column.toLowerCase() === "rowid"
+      ) ||
+      new Set(fullText).size !== fullText.length
+    ) {
+      corruptSnapshot(`${tableName} has invalid full-text targets`);
+    }
+    for (const column of fullText) {
+      const descriptor = storedColumns[column] as Descriptor;
+      const base = descriptor["k"] === "nullable"
+        ? descriptor["inner"] as Descriptor
+        : descriptor;
+      if (base["k"] !== "string") {
+        corruptSnapshot(`${tableName}.${column} is not a string full-text target`);
+      }
+    }
+    if (value["kind"] === "event" && fullText.length > 0) {
+      corruptSnapshot(`${tableName} event table has full-text targets`);
     }
   }
   return parsed as unknown as SchemaSnapshot;
@@ -692,6 +732,17 @@ function expectedApplicationObjects(
         table: physicalName,
         sql: `CREATE INDEX ${quote(name)} ON ${quote(physicalName)} (${quote(scheduleAt)})`,
       });
+    }
+    const primaryKey = Object.entries(table.columns)
+      .find(([, descriptor]) => descriptor["k"] === "pk")![0];
+    for (const column of table.fullText) {
+      objects.push(
+        ...fullTextCatalogObjects(
+          physicalName,
+          primaryKey,
+          fullTextTargetPlan(physicalName, column),
+        ),
+      );
     }
   }
   return objects;
@@ -1070,6 +1121,7 @@ export class Engine {
   private readonly sqlitePath: string;
   private readonly busyTimeoutMs: number;
   private readonly additionalReaders = new Set<Database>();
+  private fullTextTokenizer: Database | null = null;
   private lastCheckpoint: CheckpointReport | null = null;
   private closed = false;
 
@@ -1133,6 +1185,9 @@ export class Engine {
       this[mcpTokenVaultOwner] = new McpTokenVault(writer);
       this.rootScope = this.buildStorageScope(null, schema);
       this.plans = this.rootScope.plans;
+      if ([...this.plans.values()].some((plan) => plan.fullText.length > 0)) {
+        this.enableFullTextSupport();
+      }
       writer.exec("PRAGMA journal_mode = WAL");
       writer.exec(`PRAGMA synchronous = ${this.durability === "production" ? "FULL" : "NORMAL"}`);
       if (databasePath === ":memory:") {
@@ -1156,6 +1211,14 @@ export class Engine {
       if (reader !== null && reader !== writer) {
         try {
           reader.close(false);
+        } catch (closeError) {
+          cleanup.push(closeError);
+        }
+      }
+      if (this.fullTextTokenizer !== null) {
+        try {
+          this.fullTextTokenizer.close(false);
+          this.fullTextTokenizer = null;
         } catch (closeError) {
           cleanup.push(closeError);
         }
@@ -1335,6 +1398,7 @@ export class Engine {
         (object.name.startsWith("_dbzz_") || object.name.startsWith("ix__dbzz_")) &&
         !object.name.startsWith(PLUGIN_TABLE_PREFIX) &&
         !object.name.startsWith(PLUGIN_INDEX_PREFIX) &&
+        !object.name.startsWith(FULL_TEXT_OBJECT_PREFIX) &&
         !INTERNAL_OBJECT_NAMES.has(object.name),
     );
     if (unknown !== undefined) {
@@ -1515,13 +1579,59 @@ export class Engine {
     }
   }
 
+  private enableFullTextForScope(scope: StorageScope): void {
+    if (![...scope.plans.values()].some((plan) => plan.fullText.length > 0)) return;
+    this.enableFullTextSupport();
+  }
+
+  /**
+   * Literal tokenization never borrows an application reader or the serialized
+   * writer. FTS-enabled Engines own one private, disposable SQLite connection
+   * containing only the native tokenizer interface.
+   */
+  private enableFullTextSupport(): void {
+    if (this.fullTextTokenizer !== null) return;
+    const tokenizer = new Database(":memory:", {
+      create: true,
+      safeIntegers: true,
+    });
+    try {
+      // Literal queries are bounded to 257 tokenizer rows. Keep any native
+      // ORDER BY scratch state in memory so query construction never creates
+      // transient filesystem storage.
+      tokenizer.exec("PRAGMA temp_store = MEMORY");
+      installFullTextSupport(tokenizer);
+      this.fullTextTokenizer = tokenizer;
+    } catch (error) {
+      try {
+        tokenizer.close(false);
+      } catch (closeError) {
+        throw new AggregateError(
+          [error, closeError],
+          "full-text capability initialization and cleanup both failed",
+        );
+      }
+      throw error;
+    }
+  }
+
+  prepareFullTextLiteral(
+    input: unknown,
+    path = "fullText",
+  ): string | null {
+    this.enableFullTextSupport();
+    return prepareLiteralFullTextQuery(this.fullTextTokenizer!, input, path);
+  }
+
   /** Bind one mounted Plugin schema to deterministic private SQLite storage. */
   createPluginScope(mount: string, schema: Schema): StorageScope {
     if (typeof mount !== "string" || !isPluginIdentifier(mount)) {
       throw new ValidationError("Plugin storage mount must be an identifier");
     }
     loadVectorRuntimeForSchema(schema);
-    return this.buildStorageScope(mount, schema);
+    const scope = this.buildStorageScope(mount, schema);
+    this.enableFullTextForScope(scope);
+    return scope;
   }
 
   /** Resolve the scope-aware tag map used by one table plan. */
@@ -1604,6 +1714,11 @@ export class Engine {
       physOrder: Object.freeze(physOrder),
       readProjection: compileReadProjection(columns.values()),
       indexes: Object.freeze([...table.indexes]),
+      fullText: Object.freeze(
+        table.fullTextColumns.map((column) =>
+          fullTextTargetPlan(name, column)
+        ),
+      ),
     });
   }
 
@@ -1709,10 +1824,11 @@ export class Engine {
     return `CREATE TABLE IF NOT EXISTS ${quote(nameOverride ?? plan.name)} (${cols.join(", ")})`;
   }
 
-  /** Create one table plus its indexes (user + internal scheduler index). */
+  /** Create one table plus every ordinary and derived storage artifact it owns. */
   createTablePhysical(plan: PhysicalTablePlan): void {
     this.writer.exec(this.createTableDdl(plan));
     this.createIndexesPhysical(plan);
+    this.createFullTextPhysical(plan);
   }
 
   createIndexesPhysical(plan: PhysicalTablePlan): void {
@@ -1728,6 +1844,37 @@ export class Engine {
     const unique = index.unique ? "UNIQUE " : "";
     const cols = index.columns.map((c) => quote(c)).join(", ");
     return `CREATE ${unique}INDEX IF NOT EXISTS ${quote(indexSqlName(plan.name, index.name))} ON ${quote(plan.name)} (${cols})`;
+  }
+
+  createFullTextPhysical(plan: PhysicalTablePlan): void {
+    for (const target of plan.fullText) this.createFullTextTargetPhysical(plan, target.column);
+  }
+
+  createFullTextTargetPhysical(plan: PhysicalTablePlan, column: string): void {
+    const target = plan.fullText.find((candidate) => candidate.column === column);
+    if (target === undefined) {
+      throw new Error(`${plan.displayName}.${column}: unknown full-text target`);
+    }
+    createFullTextTarget(this.writer, plan.name, plan.pk, target);
+  }
+
+  dropFullTextTargetPhysical(
+    table: string,
+    column: string,
+  ): void {
+    dropFullTextTarget(
+      this.writer,
+      fullTextTargetPlan(table, column),
+    );
+  }
+
+  dropStoredFullTextPhysical(table: string, snapshot: TableSnapshot): void {
+    for (const column of snapshot.fullText) {
+      dropFullTextTarget(
+        this.writer,
+        fullTextTargetPlan(table, column),
+      );
+    }
   }
 
   /** Create all tables and indexes for a fresh database and store the snapshot. */
@@ -2004,6 +2151,10 @@ export class Engine {
     for (const reader of this.additionalReaders) attempt(() => reader.close());
     this.additionalReaders.clear();
     if (this.reader !== this.writer) attempt(() => this.reader.close());
+    if (this.fullTextTokenizer !== null) {
+      attempt(() => this.fullTextTokenizer!.close());
+      this.fullTextTokenizer = null;
+    }
     if (shutdown === "clean") attempt(() => this.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)"));
     attempt(() => this.writer.close());
     if (this.releasesDatabaseOwnership && this.databaseOwnership !== null) {

@@ -1,9 +1,9 @@
 {
   "number": 2,
   "name": "drop_category_slug",
-  "fingerprint": "d7acc2b8c975cded47c84cd3f57299cc8b6b0e17d62b33ef2e86470977d3d119",
+  "fingerprint": "e45aa81ff39e953240c0e0a3eced0084277962570a5399117b102010c4da2b73",
   "pre": {
-    "version": 1,
+    "version": 2,
     "tables": {
       "kitchenReminders": {
         "kind": "table",
@@ -38,7 +38,8 @@
             "unique": true,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "menuCategories": {
         "kind": "table",
@@ -82,7 +83,8 @@
             "unique": false,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "menuItems": {
         "kind": "table",
@@ -136,7 +138,8 @@
             "unique": true,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "orderEvents": {
         "kind": "event",
@@ -174,7 +177,8 @@
             "k": "int"
           }
         },
-        "indexes": []
+        "indexes": [],
+        "fullText": []
       },
       "orderItems": {
         "kind": "table",
@@ -252,7 +256,8 @@
             "unique": false,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "orders": {
         "kind": "table",
@@ -335,7 +340,8 @@
             "unique": false,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "restaurantTables": {
         "kind": "table",
@@ -368,7 +374,8 @@
             "unique": true,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "setupState": {
         "kind": "table",
@@ -392,7 +399,8 @@
             "unique": true,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "staffEvents": {
         "kind": "event",
@@ -437,7 +445,8 @@
             "k": "int"
           }
         },
-        "indexes": []
+        "indexes": [],
+        "fullText": []
       },
       "users": {
         "kind": "table",
@@ -489,12 +498,13 @@
             "unique": false,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       }
     }
   },
   "target": {
-    "version": 1,
+    "version": 2,
     "tables": {
       "kitchenReminders": {
         "kind": "table",
@@ -529,7 +539,8 @@
             "unique": true,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "menuCategories": {
         "kind": "table",
@@ -570,7 +581,8 @@
             "unique": false,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "menuItems": {
         "kind": "table",
@@ -624,7 +636,8 @@
             "unique": true,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "orderEvents": {
         "kind": "event",
@@ -662,7 +675,8 @@
             "k": "int"
           }
         },
-        "indexes": []
+        "indexes": [],
+        "fullText": []
       },
       "orderItems": {
         "kind": "table",
@@ -740,7 +754,8 @@
             "unique": false,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "orders": {
         "kind": "table",
@@ -823,7 +838,8 @@
             "unique": false,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "restaurantTables": {
         "kind": "table",
@@ -856,7 +872,8 @@
             "unique": true,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "setupState": {
         "kind": "table",
@@ -880,7 +897,8 @@
             "unique": true,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       },
       "staffEvents": {
         "kind": "event",
@@ -925,7 +943,8 @@
             "k": "int"
           }
         },
-        "indexes": []
+        "indexes": [],
+        "fullText": []
       },
       "users": {
         "kind": "table",
@@ -977,7 +996,8 @@
             "unique": false,
             "algorithm": "btree"
           }
-        ]
+        ],
+        "fullText": []
       }
     }
   }

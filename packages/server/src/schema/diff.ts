@@ -6,8 +6,8 @@
  * migration generation (which never open a database) consume next. Every
  * distinction reconciliation acts on is recoverable here: table
  * added/dropped/kind-changed, per-column add/drop/type/nullability/variant
- * deltas, and per-index add/drop/change with the uniqueness that governs the
- * change's safety class.
+ * deltas, per-index add/drop/change with the uniqueness that governs the
+ * change's safety class, and full-text target additions/drops.
  */
 import type { Descriptor } from "../validation/v.ts";
 import type { SchemaSnapshot, TableSnapshot } from "./snapshot.ts";
@@ -38,12 +38,23 @@ export interface IndexChange {
   unique: boolean;
 }
 
+export interface FullTextChange {
+  column: string;
+  op: "added" | "dropped";
+}
+
 export type TableChange =
   | { op: "table-added"; table: string; kind: "table" | "event" }
   | { op: "table-dropped"; table: string; kind: "table" | "event" }
   | { op: "table-kind-changed"; table: string; from: "table" | "event"; to: "table" | "event" }
   | { op: "event-updated"; table: string }
-  | { op: "table-altered"; table: string; columns: ColumnChange[]; indexes: IndexChange[] };
+  | {
+      op: "table-altered";
+      table: string;
+      columns: ColumnChange[];
+      indexes: IndexChange[];
+      fullText: FullTextChange[];
+    };
 
 export type SchemaDiff = TableChange[];
 
@@ -218,8 +229,9 @@ export function diffSnapshots(current: SchemaSnapshot, target: SchemaSnapshot): 
     } else {
       const columns = diffColumns(oldTable, newTable);
       const indexes = diffIndexes(oldTable, newTable);
-      if (columns.length > 0 || indexes.length > 0) {
-        diff.push({ op: "table-altered", table, columns, indexes });
+      const fullText = diffFullText(oldTable, newTable);
+      if (columns.length > 0 || indexes.length > 0 || fullText.length > 0) {
+        diff.push({ op: "table-altered", table, columns, indexes, fullText });
       }
     }
   }
@@ -315,6 +327,22 @@ function diffIndexes(oldTable: TableSnapshot, newTable: TableSnapshot): IndexCha
     else if (JSON.stringify(before) !== JSON.stringify(after)) {
       changes.push({ name, op: "changed", unique: after.unique });
     }
+  }
+  return changes;
+}
+
+function diffFullText(
+  oldTable: TableSnapshot,
+  newTable: TableSnapshot,
+): FullTextChange[] {
+  const before = new Set(oldTable.fullText);
+  const after = new Set(newTable.fullText);
+  const changes: FullTextChange[] = [];
+  for (const column of [...before].filter((name) => !after.has(name)).sort()) {
+    changes.push({ column, op: "dropped" });
+  }
+  for (const column of [...after].filter((name) => !before.has(name)).sort()) {
+    changes.push({ column, op: "added" });
   }
   return changes;
 }

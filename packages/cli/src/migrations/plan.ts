@@ -165,6 +165,9 @@ function describeTable(change: TableChange, sites: RefusalSites, lines: string[]
         else if (ix.unique) lines.push(`unique index "${table}.${ix.name}" ${ix.op} (no duplicates found)`);
         else lines.push(`index "${table}.${ix.name}" ${ix.op}`);
       }
+      for (const target of change.fullText) {
+        lines.push(`full-text target "${table}.${target.column}" ${target.op}`);
+      }
       return;
     }
   }

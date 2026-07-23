@@ -42,6 +42,7 @@ import {
   type PhysicalTablePlan,
   type TagMap,
 } from "../../database/engine.ts";
+import { fullTextTargetPlan } from "../../database/full-text.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
 import { constraintDirection, diffSnapshots, namedOf, unwrapDesc } from "../diff.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
@@ -185,15 +186,25 @@ export async function applyStep(
     for (const name of [...tmpOf.keys()].sort()) {
       // IF EXISTS: safe drift may have left this database without the old table,
       // in which case the rebuilt tmp simply becomes the (empty) new table.
-      writer.exec(`DROP TABLE IF EXISTS ${quote(renames.tableOldName.get(name) ?? name)}`);
+      const oldName = renames.tableOldName.get(name) ?? name;
+      const oldSnapshot = stored.tables[oldName];
+      if (oldSnapshot?.kind === "table") {
+        engine.dropStoredFullTextPhysical(oldName, oldSnapshot);
+      }
+      writer.exec(`DROP TABLE IF EXISTS ${quote(oldName)}`);
       writer.exec(`ALTER TABLE ${quote(tmpOf.get(name)!)} RENAME TO ${quote(name)}`);
       engine.createIndexesPhysical(planOf(name)); // a unique index over bad output fails here
+      engine.createFullTextPhysical(planOf(name));
       applied.push(`migrated table ${name}`);
     }
     for (const name of [...renames.renamedTables].filter((t) => !tmpOf.has(t)).sort()) {
       applyPureRename(engine, name, renames, planOf, applied);
     }
     for (const name of [...dropped].sort()) {
+      const oldSnapshot = stored.tables[name];
+      if (oldSnapshot?.kind === "table") {
+        engine.dropStoredFullTextPhysical(name, oldSnapshot);
+      }
       writer.exec(`DROP TABLE ${quote(name)}`);
       applied.push(`dropped table ${name}`);
     }
@@ -226,11 +237,21 @@ function applyPureRename(
 ): void {
   const writer = engine.writer;
   const oldTable = renames.tableOldName.get(newTable);
+  const plan = planOf(newTable);
+  const reverse = renames.columnReverse.get(newTable);
+  const oldPhysicalTable = oldTable ?? newTable;
+  for (const target of plan.fullText) {
+    engine.dropFullTextTargetPhysical(
+      oldPhysicalTable,
+      reverse?.get(target.column) ?? target.column,
+    );
+  }
   if (oldTable !== undefined) writer.exec(`ALTER TABLE ${quote(oldTable)} RENAME TO ${quote(newTable)}`);
   for (const [oldPhys, newPhys] of renames.columnPhys.get(newTable) ?? []) {
     writer.exec(`ALTER TABLE ${quote(newTable)} RENAME COLUMN ${quote(oldPhys)} TO ${quote(newPhys)}`);
   }
   if (oldTable === undefined) {
+    engine.createFullTextPhysical(plan);
     applied.push(`renamed column(s) on ${newTable}`);
     return;
   }
@@ -238,7 +259,8 @@ function applyPureRename(
     .query("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name NOT LIKE 'sqlite_%'")
     .all(newTable) as { name: string }[];
   for (const ix of stale) writer.exec(`DROP INDEX ${quote(ix.name)}`);
-  engine.createIndexesPhysical(planOf(newTable));
+  engine.createIndexesPhysical(plan);
+  engine.createFullTextPhysical(plan);
   applied.push(`renamed table ${oldTable} to ${newTable}`);
 }
 
@@ -303,6 +325,7 @@ function snapshotPlan(name: string, snap: TableSnapshot, tags: Map<string, TagMa
     physOrder,
     readProjection: compileReadProjection(columns.values()),
     indexes: snap.indexes,
+    fullText: snap.fullText.map((column) => fullTextTargetPlan(name, column)),
   };
 }
 
@@ -579,7 +602,7 @@ function augmentSnapshot(target: SchemaSnapshot, driftOf: Map<string, DriftColum
     for (const c of carried) columns[c.jsName] = c.descriptor;
     tables[name] = { ...snap, columns };
   }
-  return { version: 1, tables };
+  return { version: 2, tables };
 }
 
 /**

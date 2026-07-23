@@ -323,6 +323,68 @@ declared SQLite index enforces the stronger discriminant uniqueness, the same
 tag with a different payload conflicts instead of updating the wrong row.
 _Avoid_: Named unique-index accessor
 
+**Ranked retrieval mode** — The caller-selected basis for matching and ordering
+rows. One DBzz ranked retrieval uses either full-text search or exact similarity
+search; it never combines or falls back between them.
+_Avoid_: Unified search
+
+**Top-k bound** — A positive maximum number of matches a ranked retrieval may
+return. Full-text and exact similarity searches require one and expose no
+unbounded collection, iteration, count, or pagination operation; CPU, memory,
+decoded rows, and transport cost grow with the caller's chosen bound.
+
+**Rank fusion** — Application-owned combination of independently executed,
+bounded ranked retrievals by row identity and result position. DBzz supplies
+the retrievals but never chooses candidate depths, fusion rules, weights, or
+fallback behavior.
+_Avoid_: DBzz hybrid search
+
+## Full-text search
+
+**Full-text search** — A ranked retrieval over explicitly indexed text within
+the rows admitted by its database predicates. Predicates determine which rows
+may be returned; they do not redefine the full-text relevance model or its
+target-column-wide corpus statistics.
+
+**Literal full-text query** — Text whose characters always represent searchable
+content, never operators or backend query syntax. SQLite's byte-compatible
+`fts3tokenize(unicode61)` tokenizer supplies the FTS5 tokens; DBzz quotes each
+token as its own phrase and composes them with implicit `AND`. Input that
+produces no tokens produces no matches. Callers do not escape or assemble an
+expression.
+_Avoid_: Raw FTS query, MATCH expression
+
+**Full-text index** — A table's explicit declaration of the string columns
+whose text participates in full-text retrieval. A table without one does not
+support full-text search merely because it contains string columns.
+_Avoid_: Automatic string indexing
+
+**Full-text target column** — The single column selected explicitly by a
+full-text search from its table's full-text index. Other indexed columns do not
+participate in that retrieval, and an undeclared string column is never a valid
+target.
+_Avoid_: Search index name
+
+**Full-text corpus dependency** — The reactive dependency for one selected
+full-text target's complete FTS corpus. It complements ordinary predicate
+dependencies because an indexed-text change outside the eligible population
+can still change that population's ordering through target-wide BM25
+statistics. Corpus dependencies are per target column, not per table.
+
+**Full-text result** — A table row returned directly in relevance order, with
+the application primary key ascending as the deterministic tie-breaker. The
+selected sidecar's `rank` orders matches and its `rowid` restricts them to the
+canonical application row, but DBzz exposes neither private value. Application
+row identity and result position are sufficient for application-owned rank
+fusion.
+_Avoid_: BM25 score, relevance score
+
+**Typo-tolerant query expansion** — An opt-in literal full-text query that
+preserves each caller token and may add at most one vocabulary-backed
+alternative for a token absent from the selected target column. An alternative
+never replaces the caller's text.
+_Avoid_: Autocorrect, query replacement
+
 ## Vector search
 
 **Vector** — A fixed-dimensional dense numeric value that DBzz can store,
@@ -358,11 +420,6 @@ dimensionality for ranking. Every DBzz metric is oriented so a lower distance
 means a nearer match: cosine is one minus cosine similarity, L2 is Euclidean
 distance, and dot is the negative dot product.
 _Avoid_: Similarity score
-
-**Top-k bound** — A positive maximum number of nearest matches a similarity
-search may return. An unbounded similarity search is invalid, but DBzz imposes
-no vector-specific hard maximum: CPU, temporary memory, decoded rows, and
-transport cost grow with the caller's chosen bound.
 
 **Similarity match** — A schema row selected by a similarity search together
 with its exact distance from the query vector.

@@ -94,6 +94,20 @@ describe("describeSafeChanges", () => {
     ]);
   });
 
+  test("full-text target additions and drops render", () => {
+    const titleOnly = defineSchema({
+      documents: defineTable({ id: v.primaryKey(), title: v.string(), body: v.string() }).fullText(["title"]),
+    });
+    const bodyOnly = defineSchema({
+      documents: defineTable({ id: v.primaryKey(), title: v.string(), body: v.string() }).fullText(["body"]),
+    });
+
+    expect(describeOf(titleOnly, bodyOnly)).toEqual([
+      'full-text target "documents.title" dropped',
+      'full-text target "documents.body" added',
+    ]);
+  });
+
   test("a probed duplicate refusal subtracts its unique index from the safe lines", () => {
     const pre = defineSchema({ t: defineTable({ id: v.primaryKey(), a: v.string() }) });
     const target = defineSchema({

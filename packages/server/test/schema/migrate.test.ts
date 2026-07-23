@@ -517,6 +517,48 @@ describe("migrate: transactional integrity", () => {
 });
 
 describe("migrate: renames", () => {
+  test("a pure table and target-column rename rebuilds its private full-text sidecar", async () => {
+    const before = defineSchema({
+      logs: defineTable({
+        id: v.primaryKey(),
+        body: v.string(),
+      }).fullText(["body"]),
+    });
+    const target = defineSchema({
+      auditLogs: defineTable({
+        id: v.primaryKey(),
+        text: v.string(),
+      }).fullText(["text"]),
+    });
+    const path = freshPath();
+    await seed(before, path, async (database) => {
+      await database.logs.insert({ body: "quiet restaurant" });
+    });
+
+    const { engine, db: migrated } = await migrate(
+      target,
+      path,
+      defineMigration({
+        renames: {
+          tables: { logs: "auditLogs" },
+          columns: { auditLogs: { body: "text" } },
+        },
+      }),
+    );
+    expect(await migrated.auditLogs.fullText("text", "restaurant").take(5))
+      .toEqual([{ id: 1n, text: "quiet restaurant" }]);
+    expect(
+      engine.writer
+        .query("SELECT name FROM sqlite_master WHERE name LIKE '_dbzz_fts_4:logs4:body%'")
+        .all(),
+    ).toEqual([]);
+    engine.close("clean");
+
+    const again = reopen(target, path);
+    expect((await again.db.auditLogs.fullText("text", "quiet").first())?.id).toBe(1n);
+    again.engine.close("clean");
+  });
+
   test("prototype-named table, column, type, and untouched siblings survive a combined rename", async () => {
     const before = defineSchema({
       toString: defineTable({
@@ -558,7 +600,7 @@ describe("migrate: renames", () => {
 
   test("applyRenames preserves own __proto__ table, column, and union member keys", () => {
     const current: SchemaSnapshot = {
-      version: 1,
+      version: 2,
       tables: {
         legacy: {
           kind: "table",
@@ -576,6 +618,7 @@ describe("migrate: renames", () => {
             }],
           ]),
           indexes: [],
+          fullText: [],
         },
       },
     };

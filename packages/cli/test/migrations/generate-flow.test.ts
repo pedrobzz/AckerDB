@@ -96,6 +96,7 @@ describe("renameCandidates", () => {
         },
       ],
       indexes: [],
+      fullText: [],
     }]);
     const columns = prototypeCandidates.columns;
     expect(Object.hasOwn(columns, "__proto__")).toBe(true);

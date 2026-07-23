@@ -190,6 +190,20 @@ export class SchemaPlanner {
         this._ops.push(createIndexOp(engine, planOf(table), change.index, change.recreate));
         this._applied.push(`${change.recreate ? "recreated" : "created"} index ${table}.${change.index}`);
         return;
+      case "create-full-text": {
+        const tablePlan = planOf(table);
+        this._ops.push(() => engine.createFullTextTargetPhysical(tablePlan, change.column));
+        this._applied.push(`created full-text target ${table}.${change.column}`);
+        return;
+      }
+      case "drop-full-text": {
+        const tablePlan = planOf(table);
+        this._ops.push(() =>
+          engine.dropFullTextTargetPhysical(tablePlan.name, change.column)
+        );
+        this._applied.push(`dropped full-text target ${table}.${change.column}`);
+        return;
+      }
     }
   }
 
@@ -432,6 +446,7 @@ function rebuild(engine: Engine, tablePlan: PhysicalTablePlan, oldTable: TableSn
     const seqRow = writer
       .query("SELECT seq FROM sqlite_sequence WHERE name = ?")
       .get(tablePlan.name) as { seq: bigint } | null;
+    engine.dropStoredFullTextPhysical(tablePlan.name, oldTable);
     writer.exec(engine.createTableDdl(tablePlan, tmp));
     if (copy.length > 0) {
       writer.exec(`INSERT INTO ${quote(tmp)} (${copy}) SELECT ${copy} FROM ${quote(tablePlan.name)}`);
@@ -451,6 +466,7 @@ function rebuild(engine: Engine, tablePlan: PhysicalTablePlan, oldTable: TableSn
       }
     }
     engine.createIndexesPhysical(tablePlan);
+    engine.createFullTextPhysical(tablePlan);
   });
 }
 
