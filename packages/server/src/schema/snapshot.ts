@@ -11,10 +11,11 @@ export interface TableSnapshot {
   kind: "table" | "event";
   columns: Record<string, Descriptor>;
   indexes: { name: string; columns: string[]; unique: boolean; algorithm: "btree" | "direct" }[];
+  fullText: string[];
 }
 
 export interface SchemaSnapshot {
-  version: 1;
+  version: 2;
   tables: Record<string, TableSnapshot>;
 }
 
@@ -37,9 +38,10 @@ export function snapshotOf(schema: Schema): SchemaSnapshot {
           unique: ix.unique,
           algorithm: ix.algorithm,
         })),
+      fullText: [...table.fullTextColumns].sort(compareCodeUnits),
     };
   }
-  return { version: 1, tables };
+  return { version: 2, tables };
 }
 
 function canonicalJson(value: unknown): unknown {

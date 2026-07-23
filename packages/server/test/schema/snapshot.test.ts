@@ -2,6 +2,26 @@ import { describe, expect, test } from "bun:test";
 import { defineSchema, defineTable, snapshotOf, v } from "@dbzz/server";
 
 describe("schema snapshots", () => {
+  test("records version 2 and sorted full-text targets on every table", () => {
+    const snapshot = snapshotOf(
+      defineSchema({
+        documents: defineTable({
+          id: v.primaryKey(),
+          z: v.string(),
+          aa: v.string(),
+        }).fullText(["z", "aa"]),
+        settings: defineTable({
+          id: v.primaryKey(),
+          value: v.string(),
+        }),
+      }),
+    );
+
+    expect(snapshot.version).toBe(2);
+    expect(snapshot.tables.documents!.fullText).toEqual(["aa", "z"]);
+    expect(snapshot.tables.settings!.fullText).toEqual([]);
+  });
+
   test("persists and orders stable structural index identities", () => {
     const schema = defineSchema({
       entries: defineTable({

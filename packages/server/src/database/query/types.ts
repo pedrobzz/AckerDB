@@ -17,6 +17,7 @@ import type {
   Schema,
   SchemaTables,
   TableColumns,
+  TableFullTextColumns,
   TableIndexes,
   TableKind,
 } from "../../schema/definition.ts";
@@ -171,6 +172,14 @@ export interface NearestQuery<C extends ObjectShape, Row = RowShape<C>> {
   first(): Promise<NearestMatch<Row> | null>;
 }
 
+export interface FullTextQuery<C extends ObjectShape, Row = RowShape<C>> {
+  where<Expression extends PredicateExpression<unknown, RowShape<C>>>(
+    predicate: (row: QueryRow<C>) => Expression,
+  ): FullTextQuery<C, Row & NarrowedRow<Expression>>;
+  take(count: number): Promise<Row[]>;
+  first(): Promise<Row | null>;
+}
+
 type VectorColumnKeys<C extends ObjectShape> = {
   [K in keyof C]: BaseValidator<C[K]> extends Validator<readonly number[], "vector">
     ? K
@@ -185,6 +194,17 @@ type NearestAccessor<C extends ObjectShape> = [VectorColumnKeys<C>] extends [nev
         query: readonly number[],
         options: { readonly metric: VectorMetric },
       ): NearestQuery<C>;
+    };
+
+type FullTextColumnKeys<Table> = TableFullTextColumns<Table>[number] & string;
+
+type FullTextAccessor<Table, C extends ObjectShape> = [FullTextColumnKeys<Table>] extends [never]
+  ? object
+  : {
+      fullText<Column extends FullTextColumnKeys<Table>>(
+        column: Column,
+        query: string,
+      ): FullTextQuery<C>;
     };
 
 /**
@@ -248,14 +268,22 @@ type StructuralUpsert<C extends ObjectShape, Indexes extends readonly IndexMeta[
   ? object
   : { upsert: UnionToIntersection<UpsertCalls<C, Indexes>> };
 
-export type TableReader<Table> = TableReaderOf<TableColumns<Table>>;
-type TableReaderOf<C extends ObjectShape> = {
+export type TableReader<Table> = TableReaderOf<Table, TableColumns<Table>>;
+type TableReaderOf<Table, C extends ObjectShape> = {
   get(id: bigint): Promise<RowShape<C> | null>;
   query(): TableQuery<C>;
-} & NearestAccessor<C>;
+} & NearestAccessor<C> & FullTextAccessor<Table, C>;
 
-export type TableWriter<Table> = TableWriterOf<TableColumns<Table>, TableIndexes<Table>>;
-type TableWriterOf<C extends ObjectShape, Indexes extends readonly IndexMeta[]> = {
+export type TableWriter<Table> = TableWriterOf<
+  Table,
+  TableColumns<Table>,
+  TableIndexes<Table>
+>;
+type TableWriterOf<
+  Table,
+  C extends ObjectShape,
+  Indexes extends readonly IndexMeta[],
+> = {
   get(id: bigint): Promise<RowShape<C> | null>;
   query(): TableQuery<C>;
   insert(row: InsertShape<C>): WriteResult<bigint, RowShape<C>>;
@@ -264,7 +292,7 @@ type TableWriterOf<C extends ObjectShape, Indexes extends readonly IndexMeta[]> 
   delete(id: bigint): WriteResult<void, RowShape<C> | null>;
   /** Delete at most 256 distinct rows in one database statement. */
   deleteMany(ids: readonly bigint[]): Promise<number>;
-} & StructuralUpsert<C, Indexes> & NearestAccessor<C>;
+} & StructuralUpsert<C, Indexes> & NearestAccessor<C> & FullTextAccessor<Table, C>;
 
 export interface EventWriter<C extends ObjectShape> {
   insert(row: InsertShape<C>): Promise<void>;

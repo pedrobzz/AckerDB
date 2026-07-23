@@ -30,7 +30,9 @@ export type SafeChange =
   | { op: "loosen-constraints"; table: string; column: string }
   | { op: "rebuild-table"; table: string }
   | { op: "drop-index"; table: string; index: string }
-  | { op: "create-index"; table: string; index: string; recreate: boolean };
+  | { op: "create-index"; table: string; index: string; recreate: boolean }
+  | { op: "drop-full-text"; table: string; column: string }
+  | { op: "create-full-text"; table: string; column: string };
 
 /**
  * A data-dependent target constraint. The writer probes it transactionally,
@@ -170,8 +172,9 @@ function classifyAltered(change: TableChange & { op: "table-altered" }, c: Class
   }
 
   if (rebuild) {
-    // A rebuild recreates the table from the new plan, absorbing nullable adds
-    // and every index change; only unique adds still need their dupe probe.
+    // A rebuild recreates the table from the new plan, absorbing nullable adds,
+    // index changes, and full-text target changes; only unique adds still need
+    // their dupe probe.
     c.safe.push({ op: "rebuild-table", table });
   } else {
     // Adds land before drops before creates: a freshly indexed column exists by
@@ -179,6 +182,13 @@ function classifyAltered(change: TableChange & { op: "table-altered" }, c: Class
     c.safe.push(...adds);
     for (const ix of change.indexes) {
       if (ix.op === "dropped") c.safe.push({ op: "drop-index", table, index: ix.name });
+    }
+    for (const target of change.fullText) {
+      c.safe.push({
+        op: target.op === "added" ? "create-full-text" : "drop-full-text",
+        table,
+        column: target.column,
+      });
     }
   }
   for (const ix of change.indexes) {

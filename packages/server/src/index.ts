@@ -99,7 +99,14 @@ export type {
   DbStatementObservation,
   DbStatementObserver,
 } from "./database/statement-observation.ts";
-export { idKey, ixKey, scanKey, emitWriteKeys } from "./database/keys.ts";
+export {
+  emitFullTextWriteKeys,
+  emitWriteKeys,
+  ftsCorpusKey,
+  idKey,
+  ixKey,
+  scanKey,
+} from "./database/keys.ts";
 export { VectorRuntimeUnavailableError } from "./database/query/vector-runtime.ts";
 export type {
   DbReader,
@@ -117,6 +124,7 @@ export type {
   VectorMetric,
   NearestMatch,
   NearestQuery,
+  FullTextQuery,
   WriteResult,
 } from "./database/query/types.ts";
 export { snapshotOf, type SchemaSnapshot, type TableSnapshot } from "./schema/snapshot.ts";
@@ -154,6 +162,7 @@ export {
 export {
   diffSnapshots,
   type ColumnChange,
+  type FullTextChange,
   type IndexChange,
   type SchemaDiff,
   type TableChange,
@@ -448,6 +457,7 @@ export {
   type IndexOptions,
   type ScheduledHandler,
   type TableColumns,
+  type TableFullTextColumns,
   type TableIndexes,
   type RowShape,
   type InsertShape,

@@ -44,7 +44,7 @@ describe("structural indexes", () => {
       defineSchema({ entries: defineTable(columns()).index(["tenantId"]) }),
     );
     const current: SchemaSnapshot = {
-      version: 1,
+      version: 2,
       tables: {
         entries: {
           ...target.tables.entries!,

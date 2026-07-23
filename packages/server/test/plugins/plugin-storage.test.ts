@@ -81,6 +81,14 @@ const vectorEntriesV3 = defineSchema({
   }),
 });
 
+const fullTextEntries = defineSchema({
+  entries: defineTable({
+    id: v.primaryKey(),
+    value: v.string(),
+    category: v.string(),
+  }).fullText(["value"]),
+});
+
 function desired(
   mounts: Record<string, { definitionId: string; schema: typeof entriesV1 }>,
 ): DesiredPluginMounts {
@@ -167,6 +175,35 @@ describe("Plugin storage inventory", () => {
       .toEqual([{ id: 1n, value: "left" }]);
     expect(await dbFor(engine, result.scopes.get("beta")!).entries.query().collect())
       .toEqual([{ id: 1n, value: "right" }]);
+    engine.close("clean");
+  });
+
+  test("owns full-text sidecars through install, reopen, and explicit drop", async () => {
+    const path = freshPath();
+    const mounts = {
+      search: { definitionId: "search", schema: fullTextEntries },
+    } satisfies DesiredPluginMounts;
+    let engine = open(path);
+    let installed = reconcilePluginStorage(engine, mounts);
+    let pluginDb = dbFor(engine, installed.scopes.get("search")!);
+    await pluginDb.entries.insert({ value: "quiet restaurant", category: "food" });
+    expect(await pluginDb.entries.fullText("value", "restaurant").take(5))
+      .toEqual([{ id: 1n, value: "quiet restaurant", category: "food" }]);
+    engine.close("clean");
+
+    engine = open(path);
+    installed = reconcilePluginStorage(engine, mounts);
+    pluginDb = dbFor(engine, installed.scopes.get("search")!);
+    expect((await pluginDb.entries.fullText("value", "quiet").first())?.id).toBe(1n);
+
+    const requirement = requirementsOf(() => reconcilePluginStorage(engine, {}))
+      .requirements[0] as PluginStorageDropRequirement;
+    dropPluginStorage(engine, {}, requirement);
+    expect(
+      engine.writer
+        .query("SELECT name FROM sqlite_master WHERE name LIKE '_dbzz_fts_%'")
+        .all(),
+    ).toEqual([]);
     engine.close("clean");
   });
 

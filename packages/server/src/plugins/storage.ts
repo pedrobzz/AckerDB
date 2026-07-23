@@ -229,7 +229,9 @@ function writeInventory(engine: Engine, target: DesiredMount): void {
 function dropPhysicalScope(engine: Engine, mount: string, snapshot: SchemaSnapshot): void {
   for (const [table, definition] of Object.entries(snapshot.tables)) {
     if (definition.kind === "table") {
-      engine.writer.exec(`DROP TABLE ${quote(pluginPhysicalTableName(mount, table))}`);
+      const physicalName = pluginPhysicalTableName(mount, table);
+      engine.dropStoredFullTextPhysical(physicalName, definition);
+      engine.writer.exec(`DROP TABLE ${quote(physicalName)}`);
     }
   }
   const tagPrefix = `${mount.length}:${mount}`;

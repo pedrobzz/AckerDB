@@ -82,6 +82,9 @@ client.close();
 - [Database queries](docs/database-queries.md) documents typed SQL predicates,
   deterministic ordering and keyset pagination, transparent indexes,
   conservative reactive dependencies, and structural upsert.
+- [Full-text search](docs/full-text-search.md) documents explicit FTS5 targets,
+  literal implicit-AND queries, predicate composition, deterministic rank
+  order, reactivity, lifecycle, and application-owned hybrid rank fusion.
 - [Vectors and exact similarity search](docs/vector-search.md) documents
   Float32 vector storage, external embedding generation, filtered cosine/L2/dot
   search, bounded ranking, reactivity, and backfill.

@@ -6,12 +6,13 @@
  * `planRenames` validates the declarations (a `MigrationError` touching nothing)
  * and derives the renamed-stored snapshot the diff runs against, plus the physical
  * rename work the apply performs. `applyRenames` is the pure rewrite at its heart —
- * table keys, column keys, index references, and top-level variant names — reused
- * by migration generation, which classifies the diff of the renamed-stored
- * snapshot against the target without ever opening a database.
+ * table keys, column keys, index/full-text references, and top-level variant
+ * names — reused by migration generation, which classifies the diff of the
+ * renamed-stored snapshot against the target without ever opening a database.
  */
 import type { Database } from "bun:sqlite";
 import type { Descriptor } from "../../validation/v.ts";
+import { compareCodeUnits } from "../../shared/ordering.ts";
 import type { SchemaSnapshot, TableSnapshot } from "../snapshot.ts";
 import { namedOf } from "../diff.ts";
 import { MigrationError, type Migration } from "./types.ts";
@@ -183,9 +184,9 @@ function validateRenames(writer: Database, current: SchemaSnapshot, target: Sche
 }
 
 /**
- * Rewrite table keys, column keys, index column references, and variant names.
- * Exported for migration generation, which classifies the diff of the
- * renamed-stored snapshot against the target without ever opening a database.
+ * Rewrite table keys, column keys, index/full-text column references, and
+ * variant names. Exported for migration generation, which classifies the diff
+ * of the renamed-stored snapshot against the target without opening a database.
  */
 export function applyRenames(current: SchemaSnapshot, raw: NormalizedRenames): SchemaSnapshot {
   const tables = Object.create(null) as Record<string, TableSnapshot>;
@@ -203,13 +204,16 @@ export function applyRenames(current: SchemaSnapshot, raw: NormalizedRenames): S
     for (const [col, desc] of Object.entries(snap.columns)) columns[renamedName(cols, col)] = desc;
     snap.columns = columns;
     snap.indexes = snap.indexes.map((ix) => ({ ...ix, columns: ix.columns.map((column) => renamedName(cols, column)) }));
+    snap.fullText = snap.fullText
+      .map((column) => renamedName(cols, column))
+      .sort(compareCodeUnits);
   }
   for (const [type, vmap] of Object.entries(raw.variants)) {
     for (const snap of Object.values(tables)) {
       for (const col of Object.keys(snap.columns)) snap.columns[col] = renameVariants(snap.columns[col]!, type, vmap);
     }
   }
-  return { version: 1, tables };
+  return { version: 2, tables };
 }
 
 /**

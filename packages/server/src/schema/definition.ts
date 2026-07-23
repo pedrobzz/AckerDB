@@ -132,6 +132,18 @@ export type IndexMeta = {
   readonly algorithm: "btree" | "direct";
 };
 
+type FullTextColumnKey<Cols extends ObjectShape> = {
+  [K in keyof Cols & string]:
+    Cols[K] extends { readonly kind: "string" }
+      ? K
+      : Cols[K] extends {
+          readonly kind: "nullable";
+          readonly inner: { readonly kind: "string" };
+        }
+        ? K
+        : never;
+}[keyof Cols & string];
+
 /**
  * Stable structural identity for an index within a physical table. Column
  * lengths make the encoding injective without retaining a public name.
@@ -149,10 +161,12 @@ export class TableDef<
   Ixs extends readonly IndexMeta[] = readonly IndexMeta[],
   Kind extends "table" | "event" = "table" | "event",
   EventArgs extends ObjectShape = ObjectShape,
+  FullText extends readonly string[] = readonly string[],
 > {
   readonly columns: Cols;
   readonly kind: Kind;
   readonly indexes: IndexDef[] = [];
+  readonly fullTextColumns: string[] = [];
   scheduledHandler: ScheduledHandler | null = null;
   readonly eventSubscription: RuntimeEventSubscriptionDefinition | null;
   /** Type-only carrier used by EventArgsOf. */
@@ -216,7 +230,8 @@ export class TableDef<
       },
     ],
     Kind,
-    EventArgs
+    EventArgs,
+    FullText
   > {
     if (this.kind === "event") {
       throw new ValidationError(
@@ -281,8 +296,44 @@ export class TableDef<
         },
       ],
       Kind,
-      EventArgs
+      EventArgs,
+      FullText
     >;
+  }
+
+  fullText<const C extends readonly FullTextColumnKey<Cols>[]>(
+    columns: C,
+  ): TableDef<Cols, Ixs, Kind, EventArgs, C> {
+    if (this.kind === "event") {
+      throw new ValidationError(
+        "fullText: event tables never persist rows, so a full-text index could never be used",
+      );
+    }
+    if (this.fullTextColumns.length > 0) {
+      throw new ValidationError("table already has a full-text declaration");
+    }
+    if (columns.length === 0) throw new ValidationError("fullText: no columns");
+    if (new Set(columns).size !== columns.length) {
+      throw new ValidationError("fullText: duplicate columns");
+    }
+    for (const column of columns) {
+      if (!Object.hasOwn(this.columns, column)) {
+        throw new ValidationError(`fullText: unknown column "${column}"`);
+      }
+      if (column.toLowerCase() === "rank" || column.toLowerCase() === "rowid") {
+        throw new ValidationError(
+          `fullText: column name "${column}" is reserved by FTS5`,
+        );
+      }
+      const kind = baseValidator(this.columns[column]!).kind;
+      if (kind !== "string") {
+        throw new ValidationError(
+          `fullText: column "${column}" (${kind}) is not a string`,
+        );
+      }
+    }
+    this.fullTextColumns.push(...columns);
+    return this as unknown as TableDef<Cols, Ixs, Kind, EventArgs, C>;
   }
 
   scheduled(handler: ScheduledHandler): this {
@@ -307,14 +358,14 @@ export function isTableDef(value: unknown): value is TableDef {
 
 export function defineTable<Cols extends ObjectShape>(
   columns: Cols,
-): TableDef<Cols, readonly [], "table"> {
+): TableDef<Cols, readonly [], "table", ObjectShape, readonly []> {
   return new TableDef(columns, "table");
 }
 
 export function defineEventTable<Cols extends ObjectShape, Args extends ObjectShape>(
   columns: Cols,
   subscription: EventSubscriptionDefinition<Cols, Args>,
-): TableDef<Cols, readonly [], "event", Args> {
+): TableDef<Cols, readonly [], "event", Args, readonly []> {
   if (subscription === undefined || subscription === null || typeof subscription !== "object") {
     throw new TypeError("event table subscription metadata is required");
   }
@@ -490,11 +541,40 @@ export function defineSchema<T extends Record<string, TableDef>>(tables: T): Sch
 // ---------------------------------------------------------------------------
 // Type utilities shared by ctx.db typing and codegen.
 
-export type TableColumns<TD> = TD extends TableDef<infer C, readonly IndexMeta[], "table" | "event", ObjectShape>
+export type TableColumns<TD> = TD extends TableDef<
+  infer C,
+  readonly IndexMeta[],
+  "table" | "event",
+  ObjectShape,
+  readonly string[]
+>
   ? C
   : never;
-export type TableIndexes<TD> = TD extends TableDef<ObjectShape, infer I, "table" | "event", ObjectShape> ? I : never;
-export type TableKind<TD> = TD extends TableDef<ObjectShape, readonly IndexMeta[], infer K, ObjectShape>
+export type TableIndexes<TD> = TD extends TableDef<
+  ObjectShape,
+  infer I,
+  "table" | "event",
+  ObjectShape,
+  readonly string[]
+>
+  ? I
+  : never;
+export type TableFullTextColumns<TD> = TD extends TableDef<
+  ObjectShape,
+  readonly IndexMeta[],
+  "table" | "event",
+  ObjectShape,
+  infer FullText
+>
+  ? FullText
+  : never;
+export type TableKind<TD> = TD extends TableDef<
+  ObjectShape,
+  readonly IndexMeta[],
+  infer K,
+  ObjectShape,
+  readonly string[]
+>
   ? K
   : never;
 
@@ -528,6 +608,12 @@ export type RowOf<S, T extends keyof SchemaTables<S>> = RowShape<TableColumns<Sc
 
 /** Caller input accepted by an event table's subscription argument schema. */
 export type EventArgsOf<S, T extends keyof SchemaTables<S>> =
-  SchemaTables<S>[T] extends TableDef<ObjectShape, readonly IndexMeta[], "event", infer A>
+  SchemaTables<S>[T] extends TableDef<
+    ObjectShape,
+    readonly IndexMeta[],
+    "event",
+    infer A,
+    readonly string[]
+  >
     ? Expand<InferInputShape<A>>
     : never;
