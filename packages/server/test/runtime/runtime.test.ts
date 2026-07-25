@@ -11,6 +11,7 @@ import {
   parseCallResponse,
   parseSseMessage,
   type MutationMessage,
+  type ProcedureMessage,
   type SseMessage,
 } from "@dbzz/core";
 import {
@@ -1429,6 +1430,45 @@ describe("ordered convergence", () => {
 });
 
 describe("procedures and bounded SSE", () => {
+  test("reports cancellation after handler execution as indeterminate", async () => {
+    await session.open();
+    externalProcedureStarted = deferred<void>();
+    externalProcedureRelease = deferred<void>();
+    const controller = new AbortController();
+    const message: ProcedureMessage = {
+      v: PROTOCOL_VERSION,
+      t: "p",
+      id: 1,
+      ref: "ops.block",
+      args: {},
+    };
+    const completion = runtime.procedure(
+      session.context,
+      { ...request(message), signal: controller.signal },
+    );
+
+    await externalProcedureStarted.promise;
+    controller.abort(new DbzzError("unavailable", "procedure request was canceled", {
+      resource: "operation",
+    }));
+    externalProcedureRelease.resolve(undefined);
+
+    await expect(completion).rejects.toMatchObject({
+      code: "indeterminate",
+      message: "procedure completion is unknown after cancellation",
+      resource: "operation",
+    });
+    expect(session.publications.filter((frame) => frame.id === message.id)).toEqual([
+      expect.objectContaining({
+        t: "err",
+        outcome: expect.objectContaining({
+          code: "indeterminate",
+          resource: "operation",
+        }),
+      }),
+    ]);
+  });
+
   test("runs external work outside an atomic procedure transaction", async () => {
     const response = await runtime.runProcedure({
       id: 1,

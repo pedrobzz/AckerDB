@@ -1226,7 +1226,13 @@ export class Runtime implements RuntimePort {
         );
         try {
           const result = await invokeFunction(fn, procedure.value, message.args);
-          throwIfAborted(signal);
+          if (signal.aborted) {
+            throw new DbzzError(
+              "indeterminate",
+              "procedure completion is unknown after cancellation",
+              { resource: "operation", cause: signal.reason },
+            );
+          }
           if (!isResult(result)) throw new DbzzError("internal", "procedure boundary returned no Result");
           publication = this.prepareFrame(
             result.ok

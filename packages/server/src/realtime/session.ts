@@ -491,11 +491,9 @@ export class Session {
     if (controller !== undefined) {
       aborted(
         controller,
-        new DbzzError(
-          "indeterminate",
-          "procedure completion is unknown after cancellation",
-          { resource: "operation" },
-        ),
+        new DbzzError("unavailable", "procedure request was canceled", {
+          resource: "operation",
+        }),
       );
     }
   }
