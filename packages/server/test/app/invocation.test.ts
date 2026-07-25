@@ -1,17 +1,19 @@
 import { describe, expect, test } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { Database } from "bun:sqlite";
 import { Err, Failure, Status } from "@dbzz/core";
 import { ANONYMOUS_PRINCIPAL, type UserPrincipal } from "../../src/auth/credentials.ts";
 import { v } from "../../src/validation/v.ts";
 import { DbzzError } from "../../src/shared/errors.ts";
 import { mutation, query } from "../../src/app/functions.ts";
 import {
-  withMutationInvocationScope,
   withInvocationObserver,
   type InvocationObservation,
   type InvocationPhaseScope,
 } from "../../src/app/invocation.ts";
 import { Registry } from "../../src/app/registry.ts";
+import { newWriteCollector } from "../../src/database/access.ts";
+import { createMutationInvocationScope } from "../../src/runtime/mutation-scope.ts";
 
 function user(): UserPrincipal {
   return Object.freeze({
@@ -399,23 +401,22 @@ describe("invocation instrumentation", () => {
         return result.ok ? "unexpected" : "queued";
       },
     });
-    const outcomes: boolean[] = [];
+    const statements: string[] = [];
+    const scope = createMutationInvocationScope({
+      exec(statement: string) {
+        statements.push(statement);
+      },
+    } as unknown as Database, newWriteCollector());
 
-    const result = await withMutationInvocationScope({
-      async runRoot(work) {
-        const value = await work();
-        outcomes.push((value as { ok: boolean }).ok);
-        return value;
-      },
-      async run(work) {
-        const value = await work();
-        outcomes.push((value as { ok: boolean }).ok);
-        return value;
-      },
-    }, () => parent({ auth: ANONYMOUS_PRINCIPAL } as never, {}));
+    const result = await scope.runRoot(() =>
+      parent({ auth: ANONYMOUS_PRINCIPAL } as never, {}));
 
     expect(result).toMatchObject({ ok: true, data: "queued" });
-    expect(outcomes).toEqual([false, true]);
+    expect(statements).toEqual([
+      "SAVEPOINT dbzz_result_1",
+      "ROLLBACK TO dbzz_result_1",
+      "RELEASE dbzz_result_1",
+    ]);
   });
 
   test("a throw crossing a nested registered boundary poisons the root invocation", async () => {

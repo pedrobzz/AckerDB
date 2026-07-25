@@ -11,16 +11,16 @@
   },
   "dependencies": {
     "@ai-sdk/gateway": "4.0.23",
-    "@dbzz/cache": "0.9.0-beta.6",
-    "@dbzz/core": "0.9.0-beta.6",
-    "@dbzz/server": "0.9.0-beta.6",
+    "@dbzz/cache": "0.9.0-beta.9",
+    "@dbzz/core": "0.9.0-beta.9",
+    "@dbzz/server": "0.9.0-beta.9",
     "@demo/dbzz-codegen": "workspace:*",
     "ai": "7.0.31",
     "jose": "^6.1.3",
     "just-bash": "3.1.0"
   },
   "devDependencies": {
-    "@dbzz/cli": "0.9.0-beta.6",
+    "@dbzz/cli": "0.9.0-beta.9",
     "@types/bun": "^1.2.0",
     "typescript": "^5.9.0"
   }

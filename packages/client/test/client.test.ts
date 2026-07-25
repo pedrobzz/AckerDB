@@ -120,6 +120,13 @@ class FakeSocket implements DbzzWebSocket {
   }
 
   close(code?: number, reason?: string): void {
+    if (
+      code !== undefined &&
+      code !== 1000 &&
+      (code < 3000 || code > 4999)
+    ) {
+      throw new DOMException("Invalid WebSocket close code", "InvalidAccessError");
+    }
     if (this.closed) return;
     this.closed = true;
     this.closes.push({ code, reason });
@@ -612,7 +619,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       }),
     );
     expect(mustErr(await malformed)).toMatchObject({ code: "malformed" });
-    expect(socket.closes.at(-1)?.code).toBe(1002);
+    expect(socket.closes.at(-1)?.code).toBe(4002);
     expect(mustErr(await client.query("todos.list", {}))).toMatchObject({
       code: "unavailable",
     });
@@ -743,6 +750,10 @@ describe("DbzzClient protocol 2 ownership", () => {
         message: "connection admission is full",
         resource: "connection",
       },
+    });
+    expect(sockets[1]!.closes).toContainEqual({
+      code: 4000,
+      reason: "retry later",
     });
     expect(clock.nextDueIn()).toBe(1_000);
     clock.advance(1_000);

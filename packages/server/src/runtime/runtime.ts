@@ -100,7 +100,6 @@ import {
   currentInvocationTelemetryContext,
   invokeFunction,
   poisonCurrentInvocation,
-  withMutationInvocationScope,
   withInvocationTelemetry,
   type InvocationOutcome,
   type InvocationTelemetryContext,
@@ -1224,7 +1223,7 @@ export class Runtime implements RuntimePort {
             writes,
           );
           const scope = createMutationInvocationScope(this.engine.writer, writes);
-          return withMutationInvocationScope(scope, () =>
+          return scope.runRoot(() =>
             this.hasMcpCapabilities
               ? withMcpTokenCapability(
                   invocation,
@@ -1933,7 +1932,7 @@ export class Runtime implements RuntimePort {
                 writes,
               );
               const scope = createMutationInvocationScope(this.engine.writer, writes);
-              const result = await withMutationInvocationScope(scope, () =>
+              const result = await scope.runRoot(() =>
                 this.hasMcpCapabilities
                   ? withMcpTokenCapability(
                       invocation,
@@ -2925,7 +2924,7 @@ export class Runtime implements RuntimePort {
           (db, writes) => {
             const context = this.hostMutationContext(db, principal, timestamp, writes) as TxCtx;
             const scope = createMutationInvocationScope(this.engine.writer, writes);
-            return withMutationInvocationScope(scope, () => scope.runRoot(async () => {
+            return scope.runRoot(async () => {
               try {
                 const value = await (this.hasMcpCapabilities
                   ? withMcpTokenCapability(
@@ -2938,7 +2937,7 @@ export class Runtime implements RuntimePort {
               } catch (error) {
                 return poisonCurrentInvocation(error);
               }
-            }));
+            });
           },
         )),
       linkAccount: (rawBearerToken: string) => this.linkAccount(

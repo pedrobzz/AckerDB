@@ -142,39 +142,63 @@ export type Result<T, E> = [E] extends [never]
 
 type BrandedResult = Result<unknown, unknown> & { readonly [RESULT]: true };
 
-function result<T, E>(
-  value: { readonly ok: true; readonly data: T } | { readonly ok: false; readonly error: E },
-): Result<T, E> {
-  const branded = value as typeof value & {
-    [RESULT]?: true;
-    mapErr?: (mapping: Readonly<Record<string, (error: E) => ErrResult<unknown>>>) => Result<T, E>;
-  };
-  Object.defineProperty(branded, RESULT, { value: true });
-  Object.defineProperty(branded, "mapErr", {
-    value(mapping: Readonly<Record<string, (error: E) => ErrResult<unknown>>>): Result<T, E> {
-      if (value.ok) return branded as unknown as Result<T, E>;
-      const code = (value.error as { readonly code?: string }).code ?? "";
-      if (!Object.hasOwn(mapping, code)) {
-        return branded as unknown as Result<T, E>;
-      }
-      const mapper = mapping[code];
-      if (mapper === undefined) return branded as unknown as Result<T, E>;
-      const mapped = mapper(value.error);
-      if (
-        !isResult(mapped) ||
-        mapped.ok ||
-        !isApplicationError(mapped.error)
-      ) {
-        throw new TypeError("Result.mapErr callbacks must return Err(...)");
-      }
-      return mapped as Result<T, E>;
-    },
-  });
-  return Object.freeze(branded) as Result<T, E>;
+abstract class ResultValue<T, E> {
+  abstract readonly ok: boolean;
+
+  mapErr<const Mapping extends ErrorMapper<E>>(
+    mapping: Mapping & Record<Exclude<keyof Mapping, ErrorCode<E>>, never>,
+  ): Result<T, ResidualError<E, Mapping> | MappedError<Mapping>>;
+  mapErr(
+    mapping: Readonly<
+      Record<string, ((error: E) => ErrResult<ApplicationError>) | undefined>
+    >,
+  ): Result<T, E | ApplicationError> {
+    if (this.ok) {
+      return this as unknown as Result<T, E | ApplicationError>;
+    }
+    const error = (this as unknown as ErrValue<E, T>).error;
+    const code = (error as { readonly code?: string }).code ?? "";
+    if (!Object.hasOwn(mapping, code)) {
+      return this as unknown as Result<T, E | ApplicationError>;
+    }
+    const mapper = mapping[code];
+    if (mapper === undefined) {
+      return this as unknown as Result<T, E | ApplicationError>;
+    }
+    const mapped = mapper(error);
+    if (!isResult(mapped) || mapped.ok || !isApplicationError(mapped.error)) {
+      throw new TypeError("Result.mapErr callbacks must return Err(...)");
+    }
+    return mapped as Result<T, E | ApplicationError>;
+  }
+}
+
+Object.defineProperty(ResultValue.prototype, RESULT, { value: true });
+
+class OkValue<T, E = never> extends ResultValue<T, E> {
+  readonly ok = true as const;
+  readonly data: T;
+
+  constructor(data: T) {
+    super();
+    this.data = data;
+    Object.freeze(this);
+  }
+}
+
+class ErrValue<E, T = never> extends ResultValue<T, E> {
+  readonly ok = false as const;
+  readonly error: E;
+
+  constructor(error: E) {
+    super();
+    this.error = error;
+    Object.freeze(this);
+  }
 }
 
 export function Ok<T, E = never>(data: T): OkResult<T, E> {
-  return result<T, E>({ ok: true, data }) as OkResult<T, E>;
+  return new OkValue<T, E>(data) as unknown as OkResult<T, E>;
 }
 
 export function Err<
@@ -187,10 +211,9 @@ export function Err<
   body: Body,
   status: HttpStatus,
 ): ErrResult<ApplicationError<Code, Body, HttpStatus>, T> {
-  return result<T, ApplicationError<Code, Body, HttpStatus>>({
-    ok: false,
-    error: Object.freeze({ kind: "application" as const, code, body, status }),
-  }) as ErrResult<ApplicationError<Code, Body, HttpStatus>, T>;
+  return new ErrValue<ApplicationError<Code, Body, HttpStatus>, T>(
+    Object.freeze({ kind: "application" as const, code, body, status }),
+  ) as unknown as ErrResult<ApplicationError<Code, Body, HttpStatus>, T>;
 }
 
 /**
@@ -200,7 +223,7 @@ export function Err<
  * the same exhaustive Result shape.
  */
 export function Failure<E, T = never>(error: E): ErrResult<E, T> {
-  return result<T, E>({ ok: false, error }) as ErrResult<E, T>;
+  return new ErrValue<E, T>(error) as unknown as ErrResult<E, T>;
 }
 
 export function isResult(value: unknown): value is Result<unknown, unknown> {

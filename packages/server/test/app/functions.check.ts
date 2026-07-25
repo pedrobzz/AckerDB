@@ -54,31 +54,37 @@ typedProcedure({
   },
 });
 
-// @ts-expect-error every returned Err code must be declared
 typedProcedure({
   args: {},
-  errors: {
-    declared: { body: v.object({}), status: Status.BadRequest },
-  },
+  // @ts-expect-error handler success must match the returns validator
+  returns: v.string(),
+  access: "public",
+  handler: () => 123,
+});
+
+typedProcedure({
+  args: {},
+  // @ts-expect-error every returned Err code must be declared
+  errors: {},
   access: "public",
   handler: () => Err("undeclared", {}, Status.BadRequest),
 });
 
-// @ts-expect-error every declared error must remain reachable from the handler
 typedProcedure({
   args: {},
   errors: {
+    // @ts-expect-error every declared error must remain reachable from the handler
     unused: { body: v.object({}), status: Status.BadRequest },
   },
   access: "public",
   handler: () => "success",
 });
 
-// @ts-expect-error a returned error body must satisfy its declaration
 typedProcedure({
   args: {},
   errors: {
     invalid: {
+      // @ts-expect-error a returned error body must satisfy its declaration
       body: v.object({ expected: v.string() }),
       status: Status.BadRequest,
     },
@@ -87,19 +93,17 @@ typedProcedure({
   handler: () => Err("invalid", { actual: true }, Status.BadRequest),
 });
 
-// @ts-expect-error registered handlers cannot return non-application Failure Results
 typedProcedure({
   args: {},
   access: "public",
+  // @ts-expect-error registered handlers cannot return non-application Failure Results
   handler: () => Failure(new Error("unexpected")),
 });
 
-// @ts-expect-error errors returned by nested helpers must also be declared
 typedMutation({
   args: {},
-  errors: {
-    "other.error": { body: v.object({}), status: Status.BadRequest },
-  },
+  // @ts-expect-error errors returned by nested helpers must also be declared
+  errors: {},
   access: "public",
   handler: () => nestedProfileRequired(),
 });

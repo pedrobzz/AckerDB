@@ -121,92 +121,94 @@ type DeclaredErrors<Declarations extends ErrorDeclarations> = {
   >;
 }[Extract<keyof Declarations, string>];
 
-declare const ERROR_DECLARATION_MISMATCH: unique symbol;
+type ReturnedErrorCodes<HandlerReturn> =
+  ErrorOfReturn<HandlerReturn> extends infer Error
+    ? Error extends { readonly code: infer Code extends string }
+      ? Code
+      : never
+    : never;
 
-type ExactErrorDeclaration<
+type ReturnedErrorBody<HandlerReturn, Code extends string> =
+  Extract<
+    ErrorOfReturn<HandlerReturn>,
+    { readonly code: Code }
+  > extends { readonly body: infer Body }
+    ? Expand<Body>
+    : never;
+
+type ReturnedErrorStatus<HandlerReturn, Code extends string> =
+  Extract<
+    ErrorOfReturn<HandlerReturn>,
+    { readonly code: Code }
+  > extends { readonly status: infer HttpStatus extends ErrorHttpStatus }
+    ? HttpStatus
+    : never;
+
+type ReturnedErrorDeclarations<HandlerReturn> = {
+  readonly [Code in ReturnedErrorCodes<HandlerReturn>]: {
+    readonly body: Validator<ReturnedErrorBody<HandlerReturn, Code>, string>;
+    readonly status: ReturnedErrorStatus<HandlerReturn, Code>;
+  };
+};
+
+type ExactReturnedErrorDeclarations<
   HandlerReturn,
   Declarations extends ErrorDeclarations,
-> =
-  [ErrorOfReturn<HandlerReturn>] extends [DeclaredErrors<Declarations>]
-    ? [
-        Exclude<
-          Extract<keyof Declarations, string>,
-          ErrorOfReturn<HandlerReturn> extends infer Error
-            ? Error extends { readonly code: infer Code extends string }
-              ? Code
-              : never
-            : never
-        >,
-      ] extends [never]
-      ? unknown
-      : {
-          readonly [ERROR_DECLARATION_MISMATCH]: {
-            readonly declaredButNotReturned: Exclude<
-              Extract<keyof Declarations, string>,
-              ErrorOfReturn<HandlerReturn> extends infer Error
-                ? Error extends { readonly code: infer Code extends string }
-                  ? Code
-                  : never
-                : never
-            >;
-          };
-        }
+> = ReturnedErrorDeclarations<HandlerReturn> & {
+  readonly [Code in Exclude<
+    Extract<keyof Declarations, string>,
+    ReturnedErrorCodes<HandlerReturn>
+  >]: never;
+};
+
+type ReturnDeclarationConstraint<
+  HandlerReturn,
+  Returns extends Validator<unknown, string> | undefined,
+> = Returns extends Validator<unknown, string>
+    ? [SuccessOf<Awaited<HandlerReturn>>] extends [
+      Expand<InferValidator<Returns>>,
+    ]
+    ? unknown
     : {
-        readonly [ERROR_DECLARATION_MISMATCH]: {
-          readonly returnedButNotDeclared: Exclude<
+        readonly returns: Validator<
+          SuccessOf<Awaited<HandlerReturn>>,
+          string
+        >;
+      }
+  : unknown;
+
+type ErrorDeclarationConstraint<
+  HandlerReturn,
+  Declarations extends ErrorDeclarations | undefined,
+> = unknown extends ErrorOfReturn<HandlerReturn>
+  ? unknown
+  : [ErrorOfReturn<HandlerReturn>] extends [ApplicationError]
+    ? Declarations extends ErrorDeclarations
+      ? {
+          readonly errors: ExactReturnedErrorDeclarations<
+            HandlerReturn,
+            Declarations
+          >;
+        }
+      : unknown
+    : {
+        readonly handler: {
+          readonly "DBzz: registered handlers may only return application Err(...) results": Exclude<
             ErrorOfReturn<HandlerReturn>,
-            DeclaredErrors<Declarations>
+            ApplicationError
           >;
         };
       };
 
-type ErrorDeclarationCheck<
-  HandlerReturn,
-  Declarations extends ErrorDeclarations | undefined,
-> = unknown extends ErrorOfReturn<HandlerReturn>
-  ? []
-  : [ErrorOfReturn<HandlerReturn>] extends [ApplicationError]
-  ? Declarations extends ErrorDeclarations
-    ? ExactErrorDeclaration<HandlerReturn, Declarations> extends infer Check
-      ? unknown extends Check
-        ? []
-        : [mismatch: Check]
-      : never
-    : []
-  : [
-      mismatch: {
-        readonly registeredFunctionsMayOnlyReturnApplicationErr: Exclude<
-          ErrorOfReturn<HandlerReturn>,
-          ApplicationError
-        >;
-      },
-    ];
-
-type ReturnDeclarationCheck<
-  HandlerReturn,
-  Returns extends Validator<unknown, string> | undefined,
-> = Returns extends Validator<unknown, string>
-  ? [SuccessOf<Awaited<HandlerReturn>>] extends [
-      Expand<InferValidator<Returns>>,
-    ]
-    ? []
-    : [
-        mismatch: {
-          readonly returnedSuccessDoesNotMatch: SuccessOf<
-            Awaited<HandlerReturn>
-          >;
-          readonly declaredSuccess: Expand<InferValidator<Returns>>;
-        },
-      ]
-  : [];
-
-type DeclarationCheck<
-  HandlerReturn,
-  Returns extends Validator<unknown, string> | undefined,
-  Declarations extends ErrorDeclarations | undefined,
-> = ReturnDeclarationCheck<HandlerReturn, Returns> extends []
-  ? ErrorDeclarationCheck<HandlerReturn, Declarations>
-  : ReturnDeclarationCheck<HandlerReturn, Returns>;
+type DefinitionConstraint<Definition extends { readonly handler: Function }> =
+  ReturnDeclarationConstraint<
+    DefinitionReturn<Definition>,
+    DefinitionReturns<Definition>
+  > &
+    ErrorDeclarationConstraint<
+      DefinitionReturn<Definition>,
+      DefinitionErrors<Definition>
+    >;
 
 type FunctionHandler<
   A extends ObjectShape,
@@ -243,13 +245,6 @@ type DefinitionErrors<Definition> = Definition extends {
 }
   ? Declarations
   : undefined;
-
-type DefinitionCheck<Definition extends { readonly handler: Function }> =
-  DeclarationCheck<
-    DefinitionReturn<NoInfer<Definition>>,
-    DefinitionReturns<NoInfer<Definition>>,
-    DefinitionErrors<NoInfer<Definition>>
-  >;
 
 type ResultOfDefinition<Definition extends { readonly handler: Function }> =
   DeclaredFunctionResult<
@@ -428,8 +423,9 @@ function register<K extends string>(kind: K) {
     Ctx extends InvocationContext,
     const Definition extends FunctionDef<A, Ctx>,
   >(
-    def: { readonly args: A } & Definition,
-    ..._check: DefinitionCheck<Definition>
+    def: { readonly args: A } &
+      Definition &
+      DefinitionConstraint<NoInfer<Definition>>,
   ): Registered<
     K,
     A,
@@ -476,8 +472,9 @@ function registerCallable<K extends string>(kind: K) {
     Ctx extends InvocationContext,
     const Definition extends FunctionDef<A, Ctx>,
   >(
-    def: { readonly args: A } & Definition,
-    ..._check: DefinitionCheck<Definition>
+    def: { readonly args: A } &
+      Definition &
+      DefinitionConstraint<NoInfer<Definition>>,
   ) => Registered<
     K,
     A,
@@ -547,8 +544,9 @@ export type QueryBuilder<
   A extends ObjectShape,
   const Definition extends FunctionDef<A, QueryCtx<S, Capabilities>>,
 >(
-  def: { readonly args: A } & Definition,
-  ..._check: DefinitionCheck<Definition>
+  def: { readonly args: A } &
+    Definition &
+    DefinitionConstraint<NoInfer<Definition>>,
 ) => RegisteredQuery<
   A,
   ResultOfDefinition<Definition>,
@@ -567,8 +565,9 @@ export type MutationBuilder<
   A extends ObjectShape,
   const Definition extends FunctionDef<A, MutationCtx<S, Capabilities>>,
 >(
-  def: { readonly args: A } & Definition,
-  ..._check: DefinitionCheck<Definition>
+  def: { readonly args: A } &
+    Definition &
+    DefinitionConstraint<NoInfer<Definition>>,
 ) => RegisteredMutation<
   A,
   ResultOfDefinition<Definition>,
@@ -591,8 +590,9 @@ export type ProcedureBuilder<
     ProcedureCtx<S, Capabilities, TransactionCapabilities>
   >,
 >(
-  def: { readonly args: A } & Definition,
-  ..._check: DefinitionCheck<Definition>
+  def: { readonly args: A } &
+    Definition &
+    DefinitionConstraint<NoInfer<Definition>>,
 ) => RegisteredProcedure<
   A,
   ResultOfDefinition<Definition>,

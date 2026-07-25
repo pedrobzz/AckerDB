@@ -319,7 +319,7 @@ describe("DbzzClient suspension", () => {
     port.suspend();
     expect(phases).toEqual(["ready", "suspended"]);
     expect(client.currentConnectionState.phase).toBe("suspended");
-    expect(first.closes).toEqual([{ code: 1001, reason: "client suspended" }]);
+    expect(first.closes).toEqual([{ code: 4001, reason: "client suspended" }]);
     expect(clock.taskCount).toBe(0);
 
     // Duplicate background notifications coalesce.
@@ -346,7 +346,7 @@ describe("DbzzClient suspension", () => {
     const first = sockets[0]!;
     expect(first.isClosed()).toBe(false);
     port.suspend();
-    expect(first.closes).toEqual([{ code: 1001, reason: "client suspended" }]);
+    expect(first.closes).toEqual([{ code: 4001, reason: "client suspended" }]);
     expect(clock.taskCount).toBe(0);
     expect(client.currentConnectionState.phase).toBe("suspended");
     port.resume();
@@ -779,7 +779,7 @@ describe("DbzzClient activation", () => {
     clock.advance(30_000);
     const rejection = (await refresh) as DbzzClientError;
     expect(rejection.code).toBe("auth_unavailable");
-    expect(socket.closes).toEqual([{ code: 1008, reason: "authentication timed out" }]);
+    expect(socket.closes).toEqual([{ code: 4008, reason: "authentication timed out" }]);
     expect(client.currentConnectionState.phase).toBe("authentication-blocked");
     const blocked = client.currentConnectionState;
     const sentBefore = socket.sent.length;

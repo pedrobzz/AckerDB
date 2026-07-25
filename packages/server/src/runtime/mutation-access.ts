@@ -10,9 +10,15 @@ export interface MutationAccessState {
   current: MutationAccessFrame | null;
 }
 
+export interface MutationInvocationScope {
+  runRoot<T>(work: () => T | Promise<T>): Promise<T>;
+  run<T>(work: () => T | Promise<T>): Promise<T>;
+}
+
 interface MutationAccessToken {
   readonly state: MutationAccessState;
   readonly frame: MutationAccessFrame;
+  readonly scope: MutationInvocationScope;
 }
 
 const mutationAccess = new AsyncLocalStorage<MutationAccessToken>();
@@ -21,12 +27,17 @@ export function currentMutationAccessFrame(): MutationAccessFrame | undefined {
   return mutationAccess.getStore()?.frame;
 }
 
+export function currentMutationInvocationScope(): MutationInvocationScope | undefined {
+  return mutationAccess.getStore()?.scope;
+}
+
 export function withMutationAccessFrame<T>(
   state: MutationAccessState,
   frame: MutationAccessFrame,
+  scope: MutationInvocationScope,
   work: () => T,
 ): T {
-  return mutationAccess.run({ state, frame }, work);
+  return mutationAccess.run({ state, frame, scope }, work);
 }
 
 /**

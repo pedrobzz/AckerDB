@@ -24,6 +24,10 @@ import type {
 } from "./functions.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
+import {
+  currentMutationInvocationScope,
+  type MutationInvocationScope,
+} from "../runtime/mutation-access.ts";
 
 export interface InvocationContext {
   readonly auth: Principal;
@@ -34,11 +38,6 @@ interface InvocationState {
   readonly root: {
     poison?: unknown;
   };
-}
-
-export interface MutationInvocationScope {
-  runRoot<T>(work: () => T | Promise<T>): Promise<T>;
-  run<T>(work: () => T | Promise<T>): Promise<T>;
 }
 
 type AccessEnforcer<Ctx, Args> = (ctx: Ctx, args: Args) => void | Promise<void>;
@@ -124,16 +123,7 @@ export interface AuthorizedInvocation<Ctx, Args> {
 
 const invocationState = new AsyncLocalStorage<InvocationState>();
 const invocationInstrumentation = new AsyncLocalStorage<InvocationInstrumentationState>();
-const mutationInvocationScope = new AsyncLocalStorage<MutationInvocationScope>();
 const compiledInvocations = new WeakMap<object, CompiledInvocation<InvocationContext, unknown>>();
-
-/** Install the runtime-owned savepoint implementation for one ambient write transaction. */
-export function withMutationInvocationScope<T>(
-  scope: MutationInvocationScope,
-  work: () => T,
-): T {
-  return mutationInvocationScope.run(scope, work);
-}
 
 /** Install one isolated observer scope around a top-level invocation boundary. */
 export function withInvocationObserver<T>(
@@ -510,7 +500,8 @@ function runMutationScope<
   const execute = () => Promise.resolve(work()).then(
     (value) => finishInvocation(fn, value, state),
   );
-  const scope = mutationInvocationScope.getStore();
+  const scope: MutationInvocationScope | undefined =
+    currentMutationInvocationScope();
   if (fn.kind !== "mutation" || scope === undefined) return execute();
   return root ? scope.runRoot(execute) : scope.run(execute);
 }

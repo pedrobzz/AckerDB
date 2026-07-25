@@ -1,6 +1,5 @@
 import type { Database } from "bun:sqlite";
 import { isResult } from "@dbzz/core";
-import type { MutationInvocationScope } from "../app/invocation.ts";
 import {
   checkpointWriteCollector,
   rollbackWriteCollector,
@@ -12,6 +11,7 @@ import {
   withMutationAccessFrame,
   type MutationAccessFrame,
   type MutationAccessState,
+  type MutationInvocationScope,
 } from "./mutation-access.ts";
 
 /**
@@ -27,6 +27,7 @@ export function createMutationInvocationScope(
   const root: MutationAccessFrame = { tail: Promise.resolve() };
   const state: MutationAccessState = { current: null };
   let nextSavepoint = 0;
+  let scope!: MutationInvocationScope;
 
   const runNow = async <T>(
     parent: MutationAccessFrame,
@@ -38,7 +39,7 @@ export function createMutationInvocationScope(
     const frame: MutationAccessFrame = { tail: Promise.resolve() };
     state.current = frame;
     try {
-      const value = await withMutationAccessFrame(state, frame, work);
+      const value = await withMutationAccessFrame(state, frame, scope, work);
       await frame.tail;
       if (isResult(value) && !value.ok) {
         connection.exec(`ROLLBACK TO ${name}`);
@@ -66,11 +67,11 @@ export function createMutationInvocationScope(
     }
   };
 
-  return Object.freeze({
+  scope = Object.freeze({
     async runRoot<T>(work: () => T | Promise<T>): Promise<T> {
       state.current = root;
       try {
-        const value = await withMutationAccessFrame(state, root, work);
+        const value = await withMutationAccessFrame(state, root, scope, work);
         await root.tail;
         return value;
       } catch (error) {
@@ -96,4 +97,5 @@ export function createMutationInvocationScope(
       return turn;
     },
   });
+  return scope;
 }

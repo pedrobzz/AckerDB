@@ -211,6 +211,13 @@ export const DBZZ_RECONNECT_DEFAULTS: DbzzReconnectOptions = Object.freeze({
   stableOpenMs: 10_000,
 });
 
+const CLIENT_CLOSE_CODE = Object.freeze({
+  retryLater: 4000,
+  suspended: 4001,
+  protocolFailure: 4002,
+  authenticationFailed: 4008,
+} as const);
+
 export class DbzzClientError extends Error {
   readonly kind: "framework" | "unhandled" | "transport";
   readonly outcome: Readonly<Outcome>;
@@ -1326,7 +1333,7 @@ export class DbzzClient {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.expiryHandle = undefined;
     }
-    this.retireConnection(1001, "client suspended");
+    this.retireConnection(CLIENT_CLOSE_CODE.suspended, "client suspended");
     // The abort reason marks these settlements as lifecycle interruptions:
     // each in-flight procedure and SSE stream produces its exact typed
     // suspension outcome (never a caller-abort or failure outcome).
@@ -1419,7 +1426,10 @@ export class DbzzClient {
     const error = localError("auth_unavailable", "authentication timed out", "connection");
     this.blockingError = error;
     attempt.reject(error);
-    this.retireConnection(1008, "authentication timed out");
+    this.retireConnection(
+      CLIENT_CLOSE_CODE.authenticationFailed,
+      "authentication timed out",
+    );
     this.publishConnectionState();
   }
 
@@ -1855,7 +1865,7 @@ export class DbzzClient {
           this.serverRetryNotBeforeMs,
           this.now() + Math.min(error.retryAfterMs ?? 0, MAX_RETRY_AFTER_MS),
         );
-        this.socket?.close(1013, "retry later");
+        this.socket?.close(CLIENT_CLOSE_CODE.retryLater, "retry later");
       } else if (
         error.code === "unauthenticated" ||
         error.code === "auth_unavailable" ||
@@ -2049,7 +2059,10 @@ export class DbzzClient {
     // Retired before any externally owned callback runs: an onError handler
     // may reenter refreshCredential in the same turn, and its recovery dial
     // must find the rejected socket already detached or it would never dial.
-    this.retireConnection(1008, "authentication failed");
+    this.retireConnection(
+      CLIENT_CLOSE_CODE.authenticationFailed,
+      "authentication failed",
+    );
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
     this.publishConnectionState();
@@ -2072,7 +2085,7 @@ export class DbzzClient {
       this.releasePersistent(subscription.bytes);
     }
     this.subscriptions.clear();
-    this.retireConnection(1002, "protocol failure");
+    this.retireConnection(CLIENT_CLOSE_CODE.protocolFailure, "protocol failure");
     this.publishConnectionState();
   }
 
