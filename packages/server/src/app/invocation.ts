@@ -37,6 +37,7 @@ interface InvocationState {
 }
 
 export interface MutationInvocationScope {
+  runRoot<T>(work: () => T | Promise<T>): Promise<T>;
   run<T>(work: () => T | Promise<T>): Promise<T>;
 }
 
@@ -504,12 +505,14 @@ function runMutationScope<
   fn: Invocable<K, A, Ctx, R, H>,
   work: () => T | Promise<T>,
   state: InvocationState,
+  root: boolean,
 ): Promise<T | OkResult<T>> {
   const execute = () => Promise.resolve(work()).then(
     (value) => finishInvocation(fn, value, state),
   );
   const scope = mutationInvocationScope.getStore();
-  return fn.kind === "mutation" && scope !== undefined ? scope.run(execute) : execute();
+  if (fn.kind !== "mutation" || scope === undefined) return execute();
+  return root ? scope.runRoot(execute) : scope.run(execute);
 }
 
 function invokeUnobserved<
@@ -538,7 +541,7 @@ function invokeUnobserved<
       }
       return runHandler(fn, safeCtx, args, state, options);
     };
-    return runMutationScope(fn, execute, state).then(
+    return runMutationScope(fn, execute, state, parent === undefined).then(
       (value) => value,
       (error) => poison(
         state,
@@ -616,7 +619,12 @@ export function invokeFunction<
       const execute = () => isPromiseLike(authenticate)
         ? Promise.resolve(authenticate).then(authorize)
         : authorize();
-      const result = runMutationScope(fn, execute, invocation);
+      const result = runMutationScope(
+        fn,
+        execute,
+        invocation,
+        parent === undefined,
+      );
       return result.then(
         (value) => value,
         (error) => poison(

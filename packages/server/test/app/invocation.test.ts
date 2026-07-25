@@ -402,6 +402,11 @@ describe("invocation instrumentation", () => {
     const outcomes: boolean[] = [];
 
     const result = await withMutationInvocationScope({
+      async runRoot(work) {
+        const value = await work();
+        outcomes.push((value as { ok: boolean }).ok);
+        return value;
+      },
       async run(work) {
         const value = await work();
         outcomes.push((value as { ok: boolean }).ok);

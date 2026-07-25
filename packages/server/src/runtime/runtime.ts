@@ -2925,7 +2925,7 @@ export class Runtime implements RuntimePort {
           (db, writes) => {
             const context = this.hostMutationContext(db, principal, timestamp, writes) as TxCtx;
             const scope = createMutationInvocationScope(this.engine.writer, writes);
-            return withMutationInvocationScope(scope, () => scope.run(async () => {
+            return withMutationInvocationScope(scope, () => scope.runRoot(async () => {
               try {
                 const value = await (this.hasMcpCapabilities
                   ? withMcpTokenCapability(

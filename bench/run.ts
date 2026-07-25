@@ -134,11 +134,7 @@ interface TelemetryRunRecord {
   git: { commit: string; dirty: boolean; sourceHash: string };
   machine: MachineRecord;
   executionOrder: BenchmarkExecutionLeg[];
-  profiles: {
-    enabled: DbzzMeasuredDriverResult;
-    exporter: DbzzMeasuredDriverResult;
-    disabled: DbzzMeasuredDriverResult;
-  };
+  profiles: Partial<Record<DbzzBenchmarkProfile, DbzzMeasuredDriverResult>>;
   validation: BenchmarkValidation;
 }
 
@@ -871,17 +867,34 @@ function machineRecord(): MachineRecord {
 }
 
 /**
- * The optional telemetry-cost run: three DBZZ profiles against each other —
- * enabled (runtime default), exporter handoff, and disabled. No comparative
- * release gate; the record lands beside the release evidence as
- * telemetry-v<version>.json and is overwritten freely.
+ * The optional DBZZ-only diagnostic. By default it compares all three
+ * telemetry profiles; BENCH_TELEMETRY_PROFILES can restrict the run to one or
+ * more comma-separated profiles. No comparative release gate; the record
+ * lands beside the release evidence as telemetry-v<version>.json and is
+ * overwritten freely.
  */
 async function runTelemetryBenchmark(version: string): Promise<void> {
+  const requestedProfiles = process.env.BENCH_TELEMETRY_PROFILES === undefined
+    ? ["enabled", "exporter", "disabled"] satisfies DbzzBenchmarkProfile[]
+    : process.env.BENCH_TELEMETRY_PROFILES.split(",") as DbzzBenchmarkProfile[];
+  if (
+    requestedProfiles.length === 0 ||
+    requestedProfiles.some(
+      (profile) => !["enabled", "exporter", "disabled"].includes(profile),
+    ) ||
+    new Set(requestedProfiles).size !== requestedProfiles.length
+  ) {
+    throw new Error(
+      "BENCH_TELEMETRY_PROFILES must contain unique enabled, exporter, or disabled profiles",
+    );
+  }
   await runCodegen(loadConfig(join(BENCH, "dbzz-app"), {
     DBZZ_DURABILITY: "balanced",
-    DBZZ_TELEMETRY: "enabled",
+    DBZZ_TELEMETRY: requestedProfiles.every((profile) => profile === "disabled")
+      ? "disabled"
+      : "enabled",
   }));
-  const executionOrder = benchmarkExecutionOrder(["dbzz"], ["enabled", "exporter", "disabled"], 0);
+  const executionOrder = benchmarkExecutionOrder(["dbzz"], requestedProfiles, 0);
   const measured = new Map<BenchmarkExecutionLeg, DbzzMeasuredDriverResult>();
   for (let index = 0; index < executionOrder.length; index++) {
     const leg = executionOrder[index]!;
@@ -889,16 +902,19 @@ async function runTelemetryBenchmark(version: string): Promise<void> {
     measured.set(leg, await benchDbzz(profile));
     if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
   }
-  const profiles = {
-    enabled: measured.get("dbzz-telemetry-enabled")!,
-    exporter: measured.get("dbzz-telemetry-exporter")!,
-    disabled: measured.get("dbzz-telemetry-disabled")!,
-  };
-  const validation = validateBenchmarkResults([
-    { label: "dbzz/runtime-default", system: "dbzz", workload: profiles.enabled.workload },
-    { label: "dbzz/benchmark-exporter", system: "dbzz", workload: profiles.exporter.workload },
-    { label: "dbzz/disabled", system: "dbzz", workload: profiles.disabled.workload },
-  ]);
+  const profiles = Object.fromEntries(
+    requestedProfiles.map((profile) => [
+      profile,
+      measured.get(`dbzz-telemetry-${profile}`)!,
+    ]),
+  ) as Partial<Record<DbzzBenchmarkProfile, DbzzMeasuredDriverResult>>;
+  const validation = validateBenchmarkResults(
+    requestedProfiles.map((profile) => ({
+      label: `dbzz/${profile}`,
+      system: "dbzz" as const,
+      workload: profiles[profile]!.workload,
+    })),
+  );
 
   const record: TelemetryRunRecord = {
     kind: "telemetry",
@@ -916,7 +932,9 @@ async function runTelemetryBenchmark(version: string): Promise<void> {
   await Bun.write(savedPath, `${JSON.stringify(record, null, 2)}\n`);
   console.log(`\nsaved ${relative(REPO, savedPath)}`);
   console.log(`\n${formatBenchmarkValidation(validation)}`);
-  printDbzzTelemetryStatus([profiles.enabled, profiles.exporter, profiles.disabled]);
+  printDbzzTelemetryStatus(
+    requestedProfiles.map((profile) => profiles[profile]!),
+  );
 }
 
 const requested = process.argv.slice(2) as SystemName[];

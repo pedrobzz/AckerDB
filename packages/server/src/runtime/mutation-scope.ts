@@ -45,7 +45,7 @@ export function createMutationInvocationScope(
         rollbackWriteCollector(writes, before);
       }
       connection.exec(`RELEASE ${name}`);
-      state.current = parent === root ? null : parent;
+      state.current = parent;
       return value;
     } catch (error) {
       try {
@@ -56,7 +56,7 @@ export function createMutationInvocationScope(
         connection.exec(`ROLLBACK TO ${name}`);
         connection.exec(`RELEASE ${name}`);
         rollbackWriteCollector(writes, before);
-        state.current = parent === root ? null : parent;
+        state.current = parent;
       } catch (rollbackError) {
         throw new DbzzError("indeterminate", "mutation scope could not be rolled back", {
           cause: new AggregateError([error, rollbackError]),
@@ -67,8 +67,27 @@ export function createMutationInvocationScope(
   };
 
   return Object.freeze({
+    async runRoot<T>(work: () => T | Promise<T>): Promise<T> {
+      state.current = root;
+      try {
+        const value = await withMutationAccessFrame(state, root, work);
+        await root.tail;
+        return value;
+      } catch (error) {
+        await root.tail;
+        throw error;
+      } finally {
+        state.current = null;
+      }
+    },
     run<T>(work: () => T | Promise<T>): Promise<T> {
-      const parent = currentMutationAccessFrame() ?? root;
+      const parent = currentMutationAccessFrame();
+      if (parent === undefined) {
+        return Promise.reject(new DbzzError(
+          "internal",
+          "nested mutation scope has no owning root transaction",
+        ));
+      }
       const turn = parent.tail.then(() => runNow(parent, work));
       parent.tail = turn.then(
         () => undefined,
