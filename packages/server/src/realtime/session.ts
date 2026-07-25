@@ -489,7 +489,14 @@ export class Session {
   private cancelProcedure(message: ProcedureCancelMessage): void {
     const controller = this.activeProcedures.get(message.id);
     if (controller !== undefined) {
-      aborted(controller, new DbzzError("unavailable", "procedure request was canceled"));
+      aborted(
+        controller,
+        new DbzzError(
+          "indeterminate",
+          "procedure completion is unknown after cancellation",
+          { resource: "operation" },
+        ),
+      );
     }
   }
 

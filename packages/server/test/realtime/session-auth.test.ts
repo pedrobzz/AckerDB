@@ -545,7 +545,11 @@ describe("Session Protocol-2 ownership", () => {
 
     expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(true);
     expect(abortReason).toBeInstanceOf(DbzzError);
-    expect((abortReason as DbzzError).message).toBe("procedure request was canceled");
+    expect(outcomeFromError(abortReason)).toMatchObject({
+      code: "indeterminate",
+      message: "procedure completion is unknown after cancellation",
+      resource: "operation",
+    });
     await session.close();
   });
 
