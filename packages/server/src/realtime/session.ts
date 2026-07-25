@@ -509,8 +509,6 @@ export class Session {
     if (context.signal.aborted || !this.isCurrent(this.authEpoch)) return;
 
     const controller = new AbortController();
-    const abort = () => aborted(controller, context.signal.reason);
-    context.signal.addEventListener("abort", abort, { once: true });
     this.activeProcedures.set(message.id, controller);
     try {
       await this.runtime.procedure(
@@ -520,7 +518,6 @@ export class Session {
     } catch {
       // Runtime publishes every application outcome before rejecting.
     } finally {
-      context.signal.removeEventListener("abort", abort);
       if (this.activeProcedures.get(message.id) === controller) {
         this.activeProcedures.delete(message.id);
       }
@@ -591,8 +588,9 @@ export class Session {
     this.latestAttemptId = message.attemptId;
     this.paused = true;
     this.phase = "refreshing";
-    aborted(this.epochController, authStale());
     const stale = authStale();
+    aborted(this.epochController, stale);
+    this.abortActiveProcedures(stale);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, stale);
     this.finishPendingAuthObservation(undefined, stale);
     const transitionController = new AbortController();
@@ -934,6 +932,10 @@ export class Session {
     void this.terminate(error);
   }
 
+  private abortActiveProcedures(error: DbzzError): void {
+    for (const controller of this.activeProcedures.values()) aborted(controller, error);
+  }
+
   private terminate(error: DbzzError): Promise<void> {
     if (this.closePromise !== null) return this.closePromise;
     const context = this.context;
@@ -945,6 +947,7 @@ export class Session {
       resolveClose = resolve;
     });
     aborted(this.epochController, error);
+    this.abortActiveProcedures(error);
     if (this.pendingAuthController !== null) aborted(this.pendingAuthController, error);
     this.finishPendingAuthObservation(undefined, error);
     const authPublications = this.authPublications;

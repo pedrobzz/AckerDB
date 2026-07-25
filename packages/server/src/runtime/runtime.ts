@@ -668,6 +668,7 @@ export class Runtime implements RuntimePort {
   private readonly now: () => number;
   private readonly pluginRuntime: PluginRuntime | undefined;
   private readonly authInvalidation: AuthInvalidationBoundary;
+  private readonly immediateProcedureInvalidations: ProcedureInvalidations;
   private readonly mcpTokenInvalidation = new McpTokenInvalidationBoundary();
   private readonly reader: BoundedExecutor;
   private readonly availableReaders: Database[];
@@ -718,6 +719,12 @@ export class Runtime implements RuntimePort {
       assertCredentialVerifier(options.verifier, this.limits.auth.revocationDeadlineMs);
     }
     this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
+    this.immediateProcedureInvalidations = Object.freeze({
+      publish: (account: ExternalAccount): void => {
+        this.authInvalidation.publishAccount(account);
+      },
+      finish: (): void => {},
+    });
     this.credentialVerifier = this.authInvalidation.verifier;
     this.now = options.now ?? Date.now;
     this.scheduled = options.registry.resolveScheduled(options.engine.schema);
@@ -2947,26 +2954,24 @@ export class Runtime implements RuntimePort {
     principal: Principal,
     originScope: AuthInvalidationScope | undefined,
   ): ProcedureInvalidations {
+    if (originScope === undefined) return this.immediateProcedureInvalidations;
     const pending = new Map<string, Map<string, ExternalAccount>>();
     return Object.freeze({
       publish: (account: ExternalAccount): void => {
-        const selfScope =
+        const isSelf =
           principal.kind === "user" &&
           principal.issuer === account.issuer &&
-          principal.subject === account.subject
-            ? originScope
-            : undefined;
-        if (!this.authInvalidation.publishAccount(account, selfScope)) return;
+          principal.subject === account.subject;
+        if (!this.authInvalidation.publishAccount(account, isSelf ? originScope : undefined)) return;
+        if (!isSelf) return;
         let subjects = pending.get(account.issuer);
         if (subjects === undefined) pending.set(account.issuer, (subjects = new Map()));
         subjects.set(account.subject, account);
       },
       finish: (): void => {
-        if (originScope !== undefined) {
-          for (const subjects of pending.values()) {
-            for (const account of subjects.values()) {
-              this.authInvalidation.publishAccountTo(account, originScope);
-            }
+        for (const subjects of pending.values()) {
+          for (const account of subjects.values()) {
+            this.authInvalidation.publishAccountTo(account, originScope);
           }
         }
         pending.clear();
