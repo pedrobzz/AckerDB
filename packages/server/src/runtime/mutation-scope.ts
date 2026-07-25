@@ -7,12 +7,11 @@ import {
 } from "../database/access.ts";
 import { DbzzError } from "../shared/errors.ts";
 import {
-  currentMutationAccessFrame,
-  withMutationAccessFrame,
+  type MutationAccess,
   type MutationAccessFrame,
   type MutationAccessState,
   type MutationInvocationScope,
-} from "./mutation-access.ts";
+} from "./invocation-state.ts";
 
 /**
  * Owns automatic savepoints for registered mutations in one writer transaction.
@@ -28,10 +27,15 @@ export function createMutationInvocationScope(
   const state: MutationAccessState = { current: null };
   let nextSavepoint = 0;
   let scope!: MutationInvocationScope;
+  const access = (frame: MutationAccessFrame): MutationAccess => ({
+    state,
+    frame,
+    scope,
+  });
 
   const runNow = async <T>(
     parent: MutationAccessFrame,
-    work: () => T | Promise<T>,
+    work: (access: MutationAccess) => T | Promise<T>,
   ): Promise<T> => {
     const name = `dbzz_result_${++nextSavepoint}`;
     const before = checkpointWriteCollector(writes);
@@ -39,7 +43,7 @@ export function createMutationInvocationScope(
     const frame: MutationAccessFrame = { tail: Promise.resolve() };
     state.current = frame;
     try {
-      const value = await withMutationAccessFrame(state, frame, scope, work);
+      const value = await work(access(frame));
       await frame.tail;
       if (isResult(value) && !value.ok) {
         connection.exec(`ROLLBACK TO ${name}`);
@@ -68,10 +72,12 @@ export function createMutationInvocationScope(
   };
 
   scope = Object.freeze({
-    async runRoot<T>(work: () => T | Promise<T>): Promise<T> {
+    async runRoot<T>(
+      work: (access: MutationAccess) => T | Promise<T>,
+    ): Promise<T> {
       state.current = root;
       try {
-        const value = await withMutationAccessFrame(state, root, scope, work);
+        const value = await work(access(root));
         await root.tail;
         return value;
       } catch (error) {
@@ -82,16 +88,20 @@ export function createMutationInvocationScope(
       }
     },
     run<T>(
-      work: () => T | Promise<T>,
+      parentAccess: MutationAccess,
+      work: (access: MutationAccess) => T | Promise<T>,
       onError?: (error: unknown) => never,
     ): Promise<T> {
-      const parent = currentMutationAccessFrame();
-      if (parent === undefined) {
+      if (
+        parentAccess.scope !== scope ||
+        parentAccess.state !== state
+      ) {
         return Promise.reject(new DbzzError(
           "internal",
           "nested mutation scope has no owning root transaction",
         ));
       }
+      const parent = parentAccess.frame;
       const turn = parent.tail.then(() => runNow(parent, work));
       const result = onError === undefined ? turn : turn.catch(onError);
       parent.tail = result.then(

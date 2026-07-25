@@ -20,8 +20,8 @@ function fixture() {
 test("the root transaction adds no savepoint while a nested mutation owns one", async () => {
   const { scope, statements } = fixture();
 
-  const result = await scope.runRoot(async () => {
-    const nested = await scope.run(() => Ok("nested"));
+  const result = await scope.runRoot(async (root) => {
+    const nested = await scope.run(root, () => Ok("nested"));
     expect(nested.data).toBe("nested");
     return Ok("root");
   });
@@ -36,8 +36,8 @@ test("the root transaction adds no savepoint while a nested mutation owns one", 
 test("a nested Err rolls back only its savepoint", async () => {
   const { scope, statements } = fixture();
 
-  const result = await scope.runRoot(() =>
-    scope.run(() => Err("stock.unavailable", {}, Status.Conflict)),
+  const result = await scope.runRoot((root) =>
+    scope.run(root, () => Err("stock.unavailable", {}, Status.Conflict)),
   );
 
   expect(result).toMatchObject({

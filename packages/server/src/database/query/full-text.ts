@@ -7,7 +7,7 @@ import {
   observeStatement,
   type DbStatementObserver,
 } from "../statement-observation.ts";
-import { assertMutationAccess } from "../../runtime/mutation-access.ts";
+import { assertMutationAccess } from "../../runtime/invocation-state.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
 import {
   compilePredicates,

@@ -7,6 +7,7 @@ import { v } from "../../src/validation/v.ts";
 import { DbzzError } from "../../src/shared/errors.ts";
 import { mutation, query } from "../../src/app/functions.ts";
 import {
+  invokeFunction,
   withInvocationObserver,
   type InvocationObservation,
   type InvocationPhaseScope,
@@ -408,8 +409,13 @@ describe("invocation instrumentation", () => {
       },
     } as unknown as Database, newWriteCollector());
 
-    const result = await scope.runRoot(() =>
-      parent({ auth: ANONYMOUS_PRINCIPAL } as never, {}));
+    const result = await scope.runRoot((mutationAccess) =>
+      invokeFunction(
+        parent as never,
+        { auth: ANONYMOUS_PRINCIPAL } as never,
+        {},
+        { mutationAccess },
+      ));
 
     expect(result).toMatchObject({ ok: true, data: "queued" });
     expect(statements).toEqual([

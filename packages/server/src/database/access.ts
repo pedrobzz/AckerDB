@@ -15,7 +15,7 @@ import {
   observeStatement,
   type DbStatementObserver,
 } from "./statement-observation.ts";
-import { assertMutationAccess } from "../runtime/mutation-access.ts";
+import { assertMutationAccess } from "../runtime/invocation-state.ts";
 import { poisonTransaction } from "../runtime/transaction-context.ts";
 
 const quote = (name: string): string => `"${name}"`;

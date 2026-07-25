@@ -104,6 +104,7 @@ import {
   type InvocationOutcome,
   type InvocationTelemetryContext,
 } from "../app/invocation.ts";
+import { withMutationAccess } from "./invocation-state.ts";
 import { createMutationInvocationScope } from "./mutation-scope.ts";
 import {
   finalizeMcpToolResult,
@@ -1223,14 +1224,18 @@ export class Runtime implements RuntimePort {
             writes,
           );
           const scope = createMutationInvocationScope(this.engine.writer, writes);
-          return scope.runRoot(() =>
+          return scope.runRoot((mutationAccess) =>
             this.hasMcpCapabilities
               ? withMcpTokenCapability(
                   invocation,
                   this.mcpTokenCapability(context.principal, this.engine.writer, null, writes),
-                  (ctx) => invokeFunction(fn, ctx, message.args),
+                  (ctx) => invokeFunction(fn, ctx, message.args, {
+                    mutationAccess,
+                  }),
                 )
-              : invokeFunction(fn, invocation, message.args));
+              : invokeFunction(fn, invocation, message.args, {
+                  mutationAccess,
+                }));
         },
         rollbackWhen: (value) => isResult(value) && !value.ok,
         publication: (_version, writes) => {
@@ -1932,14 +1937,18 @@ export class Runtime implements RuntimePort {
                 writes,
               );
               const scope = createMutationInvocationScope(this.engine.writer, writes);
-              const result = await scope.runRoot(() =>
+              const result = await scope.runRoot((mutationAccess) =>
                 this.hasMcpCapabilities
                   ? withMcpTokenCapability(
                       invocation,
                       this.mcpTokenCapability(SYSTEM_PRINCIPAL, this.engine.writer, null, writes),
-                      (ctx) => invokeFunction(fn, ctx, row),
+                      (ctx) => invokeFunction(fn, ctx, row, {
+                        mutationAccess,
+                      }),
                     )
-                  : invokeFunction(fn, invocation, row));
+                  : invokeFunction(fn, invocation, row, {
+                      mutationAccess,
+                    }));
               if (!result.ok) {
                 throw new DbzzError(
                   "conflict",
@@ -2924,20 +2933,21 @@ export class Runtime implements RuntimePort {
           (db, writes) => {
             const context = this.hostMutationContext(db, principal, timestamp, writes) as TxCtx;
             const scope = createMutationInvocationScope(this.engine.writer, writes);
-            return scope.runRoot(async () => {
-              try {
-                const value = await (this.hasMcpCapabilities
-                  ? withMcpTokenCapability(
-                      context,
-                      this.mcpTokenCapability(principal, this.engine.writer, null, writes),
-                      work,
-                    )
-                  : work(context));
-                return isResult(value) ? value : Ok(value);
-              } catch (error) {
-                return poisonCurrentInvocation(error);
-              }
-            });
+            return scope.runRoot((mutationAccess) =>
+              withMutationAccess(mutationAccess, async () => {
+                try {
+                  const value = await (this.hasMcpCapabilities
+                    ? withMcpTokenCapability(
+                        context,
+                        this.mcpTokenCapability(principal, this.engine.writer, null, writes),
+                        work,
+                      )
+                    : work(context));
+                  return isResult(value) ? value : Ok(value);
+                } catch (error) {
+                  return poisonCurrentInvocation(error);
+                }
+              }));
           },
         )),
       linkAccount: (rawBearerToken: string) => this.linkAccount(
