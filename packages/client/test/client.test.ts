@@ -999,6 +999,33 @@ describe("DbzzClient protocol 2 ownership", () => {
     }
   });
 
+  test("never dispatches an unsent canceled procedure after reconnect", async () => {
+    const abort = new AbortController();
+    const { client, clock, sockets } = harness();
+    client.connect();
+    const completion = client.procedure(
+      "procedure.before-welcome",
+      {},
+      { signal: abort.signal },
+    ).then(mustErr);
+    const first = sockets[0]!;
+    first.open();
+    expect(first.frames().some((frame) => frame.t === "p")).toBe(false);
+
+    first.drop();
+    abort.abort();
+    expect(await completion).toMatchObject({
+      code: "unavailable",
+      resource: "operation",
+    });
+
+    clock.advance(100);
+    const second = sockets[1]!;
+    welcome(client, second);
+    expect(second.frames().some((frame) => frame.t === "p")).toBe(false);
+    client.close();
+  });
+
   test("acknowledges a chunk only after iteration resumes and before yielding the next chunk", async () => {
     const acknowledgmentGate = deferred<Response>();
     const acknowledgments: SseAckRequest[] = [];
