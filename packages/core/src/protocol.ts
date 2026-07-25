@@ -11,7 +11,7 @@ import {
  * TypeScript types; every framework-owned field is validated after wire decode.
  */
 
-export const PROTOCOL_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 4 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;

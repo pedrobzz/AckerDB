@@ -365,14 +365,14 @@ describe("DbzzClient protocol 2 ownership", () => {
     first.open();
     expect(first.frames()).toEqual([
       {
-        v: 3,
+        v: 4,
         t: "hello",
         clientSessionId: "stable-session",
         credential: { kind: "bearer", token: "token-a" },
       },
     ]);
     first.receive({
-      v: 3,
+      v: 4,
       t: "welcome",
       clientSessionId: "stable-session",
       authEpoch: 4,
@@ -389,7 +389,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const secondResult = client.query("todos.list", { list: 2n }).then(mustErr);
     const sentQueriesBeforeConfirmation = first.frames().filter((frame) => frame.t === "q").length;
     first.receive({
-      v: 3,
+      v: 4,
       t: "auth",
       attemptId: auth.attemptId + 10,
       authEpoch: 5,
@@ -402,7 +402,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       );
 
     first.receive({
-      v: 3,
+      v: 4,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 5,
@@ -421,7 +421,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const second = sockets[1]!;
     second.open();
     expect(lastFrame(second, "hello")).toEqual({
-      v: 3,
+      v: 4,
       t: "hello",
       clientSessionId: "stable-session",
       credential: { kind: "anonymous" },
@@ -443,7 +443,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
 
     socket.receive({
-      v: 3,
+      v: 4,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -453,7 +453,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(auth.credential).toEqual({ kind: "bearer", token: "token-b" });
     expect(socket.frames().some((frame) => frame.t === "q")).toBe(false);
     socket.receive({
-      v: 3,
+      v: 4,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 2,
@@ -478,7 +478,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const c3 = cursor(3n);
 
     const initial: ServerMessage = {
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -488,14 +488,14 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(lastFrame(first, "reset")).toEqual({ v: 3, t: "reset", id: subscription.id, cursor: c1 });
+    expect(lastFrame(first, "reset")).toEqual({ v: 4, t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c1, to: c2, value: ["two-too-late"] },
@@ -503,7 +503,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -528,7 +528,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const c1 = cursor(1n);
     const c2 = cursor(2n);
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: [] },
@@ -545,7 +545,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     first.receive({
-      v: 3,
+      v: 4,
       t: "ok",
       id: firstMutation.id,
       kind: "mutation",
@@ -561,7 +561,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     await Promise.resolve();
     expect(resolved).toBe(false);
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
@@ -571,7 +571,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const discharged = client.mutation("todos.add", { text: "bread" });
     const secondMutation = lastFrame(first, "m");
     first.receive({
-      v: 3,
+      v: 4,
       t: "ok",
       id: secondMutation.id,
       kind: "mutation",
@@ -597,7 +597,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(resent.mutationRequestId).toBe(lostFrame.mutationRequestId);
     expect(resent.issuedAt).toBe(lostFrame.issuedAt);
     second.receive({
-      v: 3,
+      v: 4,
       t: "ok",
       id: resent.id,
       kind: "mutation",
@@ -621,7 +621,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     welcome(client, socket);
     const query = lastFrame(socket, "q");
     socket.receive({
-      v: 3,
+      v: 4,
       t: "err",
       id: query.id,
       outcome: {
@@ -646,7 +646,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const malformedFrame = lastFrame(socket, "q");
     socket.receiveRaw(
       encode({
-        v: 3,
+        v: 4,
         t: "ok",
         id: malformedFrame.id,
         kind: "query",
@@ -776,7 +776,7 @@ describe("DbzzClient protocol 2 ownership", () => {
 
     welcome(client, sockets[1]!);
     sockets[1]!.receive({
-      v: 3,
+      v: 4,
       t: "err",
       id: null,
       outcome: {
@@ -818,19 +818,19 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(subscription.cursor).toBeUndefined();
     const firstCursor = { generation: "events-1", commitVersion: 1n, sequence: 1n };
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "event",
       id: subscription.id,
       event: {
@@ -840,7 +840,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       },
     });
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "event",
       id: subscription.id,
       event: {
@@ -871,9 +871,9 @@ describe("DbzzClient protocol 2 ownership", () => {
     unsubscribe();
     expect(
       sockets[0]!.frames().filter((frame) => frame.t === "unsub"),
-    ).toEqual([{ v: 3, t: "unsub", id }]);
+    ).toEqual([{ v: 4, t: "unsub", id }]);
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "event",
       id,
       event: { kind: "reset", cursor: { generation: "g", commitVersion: 0n, sequence: 0n } },
@@ -1009,8 +1009,8 @@ describe("DbzzClient protocol 2 ownership", () => {
       if (url.endsWith("/api/sse")) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
         return sseResponse([
-          { v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: { delta: "a" } },
-          { v: 3, t: "sse_chunk", seq: 2, proof: "proof-2", value: { delta: "b" } },
+          { v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: { delta: "a" } },
+          { v: 4, t: "sse_chunk", seq: 2, proof: "proof-2", value: { delta: "b" } },
         ]);
       }
       expect(url.endsWith("/api/sse/ack")).toBe(true);
@@ -1042,7 +1042,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     await eventually(() => acknowledgments.length === 1, "the first chunk acknowledgment");
     expect(secondSettled).toBe(false);
     expect(acknowledgments).toEqual([
-      { v: 3, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
+      { v: 4, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
     ]);
     expect(streamAuthorization as string | null).toBe("Bearer receiver-token");
     expect(acknowledgmentAuthorizations).toEqual([null]);
@@ -1067,8 +1067,8 @@ describe("DbzzClient protocol 2 ownership", () => {
       if (url.endsWith("/api/sse")) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
         return sseResponse([
-          { v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" },
-          { v: 3, t: "sse_done", seq: 2, proof: "proof-2" },
+          { v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" },
+          { v: 4, t: "sse_done", seq: 2, proof: "proof-2" },
         ]);
       }
       const acknowledgment = parseSseAckRequest(decode(String(init?.body)));
@@ -1082,7 +1082,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         if (firstSequenceAttempts === 2) {
           return new Response(
             encode({
-              v: 3,
+              v: 4,
               t: "err",
               id: null,
               outcome: {
@@ -1150,12 +1150,12 @@ describe("DbzzClient protocol 2 ownership", () => {
     const cases = [
       {
         name: "done",
-        frame: { v: 3, t: "sse_done", seq: 1, proof: "done-proof" },
+        frame: { v: 4, t: "sse_done", seq: 1, proof: "done-proof" },
       },
       {
         name: "error",
         frame: {
-          v: 3,
+          v: 4,
           t: "sse_error",
           seq: 1,
           proof: "error-proof",
@@ -1219,7 +1219,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "missing stream header",
         response: (onCancel) =>
-          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: 4, t: "sse_done", seq: 1, proof: "proof" }], {
             stream: null,
             close: false,
             onCancel,
@@ -1228,7 +1228,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "oversized stream header",
         response: (onCancel) =>
-          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: 4, t: "sse_done", seq: 1, proof: "proof" }], {
             stream: "x".repeat(129),
             close: false,
             onCancel,
@@ -1237,7 +1237,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "missing stall header",
         response: (onCancel) =>
-          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: 4, t: "sse_done", seq: 1, proof: "proof" }], {
             stallMs: null,
             close: false,
             onCancel,
@@ -1255,7 +1255,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "sequence does not begin at one",
         response: (onCancel) =>
-          sseResponse([{ v: 3, t: "sse_done", seq: 2, proof: "proof-2" }], {
+          sseResponse([{ v: 4, t: "sse_done", seq: 2, proof: "proof-2" }], {
             close: false,
             onCancel,
           }),
@@ -1263,7 +1263,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "empty proof",
         response: (onCancel) =>
-          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "" }], {
+          sseResponse([{ v: 4, t: "sse_done", seq: 1, proof: "" }], {
             close: false,
             onCancel,
           }),
@@ -1271,7 +1271,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "unexpected successful status",
         response: (onCancel) =>
-          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: 4, t: "sse_done", seq: 1, proof: "proof" }], {
             status: 201,
             close: false,
             onCancel,
@@ -1300,7 +1300,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       fetch: async (url) =>
         url.endsWith("/api/sse")
           ? sseResponse(
-              [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => cancellations++ },
             )
           : new Response("", { status: 200 }),
@@ -1338,14 +1338,14 @@ describe("DbzzClient protocol 2 ownership", () => {
         fetch: async (url, init) => {
           if (url.endsWith("/api/sse")) {
             return sseResponse(
-              [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
           if (url.endsWith("/api/sse/ack")) return fake204;
           const request = parseCallRequest(decode(String(init?.body)));
           return new Response(
-            encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+            encode({ v: 4, t: "ok", id: request.id, kind: "procedure", value: "available" }),
           );
         },
       });
@@ -1423,7 +1423,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     for (const behavior of ["pending", "reject"] as const) {
       const abort = new AbortController();
       const bytes = sseUtf8.encode(sseEvent({
-        v: 3,
+        v: 4,
         t: "sse_chunk",
         seq: 1,
         proof: "proof-1",
@@ -1503,7 +1503,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           if (url.endsWith("/api/sse")) return response;
           const request = parseCallRequest(decode(String(init?.body)));
           return new Response(
-            encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+            encode({ v: 4, t: "ok", id: request.id, kind: "procedure", value: "available" }),
           );
         },
       });
@@ -1534,7 +1534,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         }
         const request = parseCallRequest(decode(String(init?.body)));
         return new Response(
-          encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+          encode({ v: 4, t: "ok", id: request.id, kind: "procedure", value: "available" }),
         );
       },
     });
@@ -1567,7 +1567,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         }
         const request = parseCallRequest(decode(String(init?.body)));
         return new Response(
-          encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+          encode({ v: 4, t: "ok", id: request.id, kind: "procedure", value: "available" }),
         );
       },
     });
@@ -1640,7 +1640,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (url.endsWith("/api/sse")) {
               return sseResponse(
-                [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: mode }],
+                [{ v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: mode }],
                 {
                   close: false,
                   onCancel: () => {
@@ -1656,7 +1656,7 @@ describe("DbzzClient protocol 2 ownership", () => {
             }
             const request = parseCallRequest(decode(String(init?.body)));
             return new Response(
-              encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+              encode({ v: 4, t: "ok", id: request.id, kind: "procedure", value: "available" }),
             );
           },
         });
@@ -1689,7 +1689,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       fetch: async (url, init) => {
         if (url.endsWith("/api/sse")) {
           return sseResponse(
-            [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false, onCancel: () => cancellations++ },
           );
         }
@@ -1699,7 +1699,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         }
         const request = parseCallRequest(decode(String(init?.body)));
         return new Response(
-          encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+          encode({ v: 4, t: "ok", id: request.id, kind: "procedure", value: "available" }),
         );
       },
     });
@@ -1740,7 +1740,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         fetch: async (url, init) => {
           if (url.endsWith("/api/sse")) {
             return sseResponse(
-              [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
@@ -1752,7 +1752,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           }
           const request = parseCallRequest(decode(String(init?.body)));
           return new Response(
-            encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+            encode({ v: 4, t: "ok", id: request.id, kind: "procedure", value: "available" }),
           );
         },
       });
@@ -1801,7 +1801,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (url.endsWith("/api/sse")) {
               return sseResponse(
-                [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+                [{ v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 {
                   stallMs: "100",
                   close: false,
@@ -1815,7 +1815,7 @@ describe("DbzzClient protocol 2 ownership", () => {
             }
             const request = parseCallRequest(decode(String(init?.body)));
             return new Response(
-              encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+              encode({ v: 4, t: "ok", id: request.id, kind: "procedure", value: "available" }),
             );
           },
         });
@@ -1854,7 +1854,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (url.endsWith("/api/sse")) {
               return sseResponse(
-                [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+                [{ v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 { stallMs: "100", close: false },
               );
             }
@@ -1864,7 +1864,7 @@ describe("DbzzClient protocol 2 ownership", () => {
             }
             const request = parseCallRequest(decode(String(init?.body)));
             return new Response(
-              encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+              encode({ v: 4, t: "ok", id: request.id, kind: "procedure", value: "available" }),
             );
           },
         });
@@ -1886,7 +1886,7 @@ describe("DbzzClient protocol 2 ownership", () => {
 
         late.resolve(openResponse(
           encode({
-            v: 3,
+            v: 4,
             t: "err",
             id: null,
             outcome: {
@@ -1919,7 +1919,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       fetch: async (url, init) => {
         if (url.endsWith("/api/sse")) {
           return sseResponse(
-            [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { stallMs: "100", close: false },
           );
         }
@@ -1962,7 +1962,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       fetch: async (url) => {
         if (url.endsWith("/api/sse")) {
           return sseResponse(
-            [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: 4, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false },
           );
         }
@@ -2104,7 +2104,7 @@ describe("DbzzClient connection state", () => {
       message: "credential expired",
     });
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2121,7 +2121,7 @@ describe("DbzzClient connection state", () => {
     second.open();
     expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: 3,
+      v: 4,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -2174,7 +2174,7 @@ describe("DbzzClient connection state", () => {
     client.connect();
     welcome(client, sockets[0]!);
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2238,7 +2238,7 @@ describe("subscription cursor confirmations", () => {
 
     // Value deliveries keep flowing through onUpdate alone.
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2248,7 +2248,7 @@ describe("subscription cursor confirmations", () => {
 
     // A checkpoint silently advances the cursor and confirms the held value.
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
@@ -2264,7 +2264,7 @@ describe("subscription cursor confirmations", () => {
     welcome(client, second);
     expect(lastFrame(second, "sub").cursor).toEqual(c2);
     second.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "resume", from: c2, to: c2 },
@@ -2294,7 +2294,7 @@ describe("subscription cursor confirmations", () => {
     const c3 = cursor(3n);
 
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2303,14 +2303,14 @@ describe("subscription cursor confirmations", () => {
     // A mismatched predecessor makes the client demand a reset; deliveries
     // landing on the held cursor are no longer trusted as confirmations.
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(lastFrame(first, "reset")).toEqual({ v: 3, t: "reset", id: subscription.id, cursor: c1 });
+    expect(lastFrame(first, "reset")).toEqual({ v: 4, t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c0, to: c1, value: ["one-too-late"] },
@@ -2320,7 +2320,7 @@ describe("subscription cursor confirmations", () => {
     // The authoritative reset delivers through onUpdate; a duplicate of it
     // landing on the now-held cursor confirms again.
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2328,7 +2328,7 @@ describe("subscription cursor confirmations", () => {
     expect(updates).toEqual([["one"], ["three-authoritative"]]);
     expect(confirmations).toBe(0);
     first.receive({
-      v: 3,
+      v: 4,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2434,7 +2434,7 @@ describe("DbzzClient authentication state", () => {
     client.connect();
     sockets[0]!.open();
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 4,
@@ -2499,7 +2499,7 @@ describe("DbzzClient authentication state", () => {
     const signOutFrame = lastFrame(sockets[0]!, "auth");
     expect(signOutFrame.credential).toEqual({ kind: "anonymous" });
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "auth",
       attemptId: signOutFrame.attemptId,
       authEpoch: 1,
@@ -2523,7 +2523,7 @@ describe("DbzzClient authentication state", () => {
     const refreshFrame = lastFrame(sockets[0]!, "auth");
     expect(refreshFrame.credential).toEqual({ kind: "bearer", token: "token-c" });
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "auth",
       attemptId: refreshFrame.attemptId,
       authEpoch: 2,
@@ -2554,7 +2554,7 @@ describe("DbzzClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(1);
     const attempt = lastFrame(sockets[0]!, "auth");
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -2570,7 +2570,7 @@ describe("DbzzClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(2);
     const signOutAttempt = lastFrame(sockets[0]!, "auth");
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "auth",
       attemptId: signOutAttempt.attemptId,
       authEpoch: 2,
@@ -2589,7 +2589,7 @@ describe("DbzzClient authentication state", () => {
     // welcome verifies that value once for both.
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-a" });
     socket.receive({
-      v: 3,
+      v: 4,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 2,
@@ -2608,7 +2608,7 @@ describe("DbzzClient authentication state", () => {
     const detour = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
     const back = client.refreshCredential({ kind: "bearer", token: "token-a" });
     socket.receive({
-      v: 3,
+      v: 4,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -2664,7 +2664,7 @@ describe("DbzzClient authentication state", () => {
     second.open();
     expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: 3,
+      v: 4,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 3,
@@ -2686,7 +2686,7 @@ describe("DbzzClient authentication state", () => {
     client.connect();
     welcome(client, sockets[0]!, "user");
     sockets[0]!.receive({
-      v: 3,
+      v: 4,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2711,7 +2711,7 @@ describe("DbzzClient authentication state", () => {
     // The reconnect hello presents the refreshed credential, so its welcome
     // is the verification: one round-trip, no separate auth frame.
     second.receive({
-      v: 3,
+      v: 4,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 0,

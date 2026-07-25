@@ -42,9 +42,9 @@ function expectProtocolError(run: () => unknown, code: ProtocolError["code"]): v
   }
 }
 
-describe("protocol 3 envelopes", () => {
+describe("protocol 4 envelopes", () => {
   test("requires an explicit versioned hello and bounded credential", () => {
-    expect(PROTOCOL_VERSION).toBe(3);
+    expect(PROTOCOL_VERSION).toBe(4);
     expect(
       parseClientMessage({
         v: PROTOCOL_VERSION,
