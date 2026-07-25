@@ -37,6 +37,7 @@ export interface InvocationState {
 }
 
 const invocation = new AsyncLocalStorage<InvocationState>();
+let activeNestedMutationScopes = 0;
 
 export function currentInvocationState(): InvocationState | undefined {
   return invocation.getStore();
@@ -63,12 +64,21 @@ export function withMutationAccess<T>(
   return invocation.run({ ...state, mutationAccess: access }, work);
 }
 
+export function enterNestedMutationScope(): void {
+  activeNestedMutationScopes++;
+}
+
+export function leaveNestedMutationScope(): void {
+  activeNestedMutationScopes--;
+}
+
 /**
  * Reject database work from an ancestor async continuation while a nested
  * mutation owns the top SQLite savepoint. Otherwise the nested rollback could
  * silently erase writes made concurrently by its parent.
  */
 export function assertMutationAccess(): void {
+  if (activeNestedMutationScopes === 0) return;
   const access = invocation.getStore()?.mutationAccess;
   if (
     access !== undefined &&

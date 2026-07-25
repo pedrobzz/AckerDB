@@ -7,6 +7,8 @@ import {
 } from "../database/access.ts";
 import { DbzzError } from "../shared/errors.ts";
 import {
+  enterNestedMutationScope,
+  leaveNestedMutationScope,
   type MutationAccess,
   type MutationAccessFrame,
   type MutationAccessState,
@@ -42,6 +44,7 @@ export function createMutationInvocationScope(
     connection.exec(`SAVEPOINT ${name}`);
     const frame: MutationAccessFrame = { tail: Promise.resolve() };
     state.current = frame;
+    enterNestedMutationScope();
     try {
       const value = await work(access(frame));
       await frame.tail;
@@ -68,6 +71,8 @@ export function createMutationInvocationScope(
         });
       }
       throw error;
+    } finally {
+      leaveNestedMutationScope();
     }
   };
 
