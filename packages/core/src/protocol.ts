@@ -201,6 +201,12 @@ export interface QueryMessage extends Frame<"q"> {
   args: unknown;
 }
 
+export interface ProcedureMessage extends Frame<"p"> {
+  id: number;
+  ref: string;
+  args: unknown;
+}
+
 export interface MutationMessage extends Frame<"m"> {
   id: number;
   ref: string;
@@ -218,6 +224,7 @@ export type ClientMessage =
   | UnsubscribeMessage
   | ResetRequestMessage
   | QueryMessage
+  | ProcedureMessage
   | MutationMessage
   | PingMessage;
 
@@ -683,6 +690,7 @@ export function parseClientMessage(value: unknown): ClientMessage {
       parseSubscriptionCursor(result.cursor);
       break;
     case "q":
+    case "p":
       exact(result, ["v", "t", "id", "ref", "args"]);
       protocolId(result.id, "request id");
       string(result.ref, "ref", MAX_REFERENCE_LENGTH);

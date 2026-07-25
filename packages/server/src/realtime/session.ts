@@ -17,6 +17,8 @@ import {
   type MutationReceipt,
   type Outcome,
   type PongMessage,
+  type ProcedureMessage,
+  type ProcedureOkMessage,
   type QueryMessage,
   type QueryOkMessage,
   type ResetRequestMessage,
@@ -51,6 +53,7 @@ export type SubscriptionServerMessage = TransitionMessage | EventMessage;
 export type SessionApplicationMessage =
   | SubscriptionServerMessage
   | QueryOkMessage
+  | ProcedureOkMessage
   | MutationOkMessage
   | ApplicationErrorMessage
   | ErrorMessage;
@@ -206,6 +209,8 @@ export interface RuntimePort {
   reset(context: SessionRuntimeContext, request: RuntimeRequest<ResetRequestMessage>): Promise<void>;
   /** Publishes the success or error frame before settling. */
   query(context: SessionRuntimeContext, request: RuntimeRequest<QueryMessage>): Promise<unknown>;
+  /** Publishes the success or error frame before settling. */
+  procedure(context: SessionRuntimeContext, request: RuntimeRequest<ProcedureMessage>): Promise<unknown>;
   /** Publishes the success or error frame before settling. */
   mutation(context: SessionRuntimeContext, request: RuntimeRequest<MutationMessage>): Promise<RuntimeMutationResult>;
   closeSession(context: SessionRuntimeContext, outcome: Outcome): Promise<void>;
@@ -446,6 +451,7 @@ export class Session {
       case "unsub":
       case "reset":
       case "q":
+      case "p":
       case "m":
         if (this.paused) {
           return this.sendControlError(message.id, authStale());
@@ -660,7 +666,7 @@ export class Session {
 
   private async runOperation(
     request: RuntimeRequest<
-      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage
+      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | ProcedureMessage | MutationMessage
     >,
   ): Promise<void> {
     const { message } = request;
@@ -684,6 +690,10 @@ export class Session {
           return;
         case "q": {
           await this.runtime.query(context, request as RuntimeRequest<QueryMessage>);
+          return;
+        }
+        case "p": {
+          await this.runtime.procedure(context, request as RuntimeRequest<ProcedureMessage>);
           return;
         }
         case "m": {

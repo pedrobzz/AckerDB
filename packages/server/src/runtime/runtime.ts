@@ -17,6 +17,7 @@ import {
   type MutationMessage,
   type MutationOkMessage,
   type Outcome,
+  type ProcedureMessage,
   type ProcedureOkMessage,
   type QueryMessage,
   type QueryOkMessage,
@@ -1188,6 +1189,59 @@ export class Runtime implements RuntimePort {
     });
   }
 
+  async procedure(
+    context: SessionRuntimeContext,
+    request: RuntimeRequest<ProcedureMessage>,
+  ): Promise<unknown> {
+    const { message } = request;
+    let publication: RuntimePublication | undefined;
+    return this.runSessionOperation(context, request, "procedure", message.ref, async (_state, requestBytes) => {
+      const fn = this.expect(message.ref, "procedure");
+      const signal = this.operationSignal(context.signal);
+      throwIfAborted(signal);
+      const procedure = this.procedureContext(
+        context.principal,
+        context.fairnessKey,
+        signal,
+        requestBytes,
+        this.readNow(),
+        (account) => this.authInvalidation.publishAccount(account),
+      );
+      try {
+        const result = await invokeFunction(fn, procedure.value, message.args);
+        throwIfAborted(signal);
+        if (!isResult(result)) throw new DbzzError("internal", "procedure boundary returned no Result");
+        publication = this.prepareFrame(
+          result.ok
+            ? {
+                v: PROTOCOL_VERSION,
+                t: "ok",
+                id: message.id,
+                kind: "procedure",
+                value: result.data,
+              } satisfies ProcedureOkMessage
+            : {
+                v: PROTOCOL_VERSION,
+                t: "app_err",
+                id: message.id,
+                kind: "procedure",
+                error: applicationError(result.error),
+              } satisfies ApplicationErrorMessage,
+          "procedure result",
+        );
+        return result.ok ? result.data : result;
+      } finally {
+        procedure.release();
+      }
+    }, {
+      identifiers: { requestId: String(message.id) },
+      successPublication: () => {
+        if (publication === undefined) throw new Error("procedure publication was not prepared");
+        return publication;
+      },
+    });
+  }
+
   async mutation(context: SessionRuntimeContext, request: RuntimeRequest<MutationMessage>): Promise<RuntimeMutationResult> {
     const { message } = request;
     let successPublication: RuntimePublication | undefined;
@@ -2203,9 +2257,9 @@ export class Runtime implements RuntimePort {
   private runSessionOperation<T>(
     context: SessionRuntimeContext,
     request: RuntimeRequest<
-      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage
+      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | ProcedureMessage | MutationMessage
     >,
-    operation: "query" | "mutation" | "subscription",
+    operation: "query" | "mutation" | "procedure" | "subscription",
     functionName: string | undefined,
     work: (state: RuntimeSession, requestBytes: number) => T | Promise<T>,
     options: SessionOperationOptions<T> = {},
@@ -2247,7 +2301,7 @@ export class Runtime implements RuntimePort {
     context: SessionRuntimeContext,
     state: RuntimeSession | null,
     id: number,
-    operation: "query" | "mutation" | "subscription",
+    operation: "query" | "mutation" | "procedure" | "subscription",
     outcome: RuntimeOperationOutcome<T>,
     options: SessionOperationOptions<T>,
   ): Promise<T> {

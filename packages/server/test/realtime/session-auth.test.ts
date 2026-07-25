@@ -6,6 +6,7 @@ import {
   type ErrorMessage,
   type MutationMessage,
   type Outcome,
+  type ProcedureMessage,
   type QueryMessage,
   type ServerMessage,
   type SubscriptionCursor,
@@ -203,6 +204,7 @@ class FakeRuntime implements RuntimePort {
   readonly resets: number[] = [];
   readonly queries: QueryMessage[] = [];
   readonly queryRequests: RuntimeRequest<QueryMessage>[] = [];
+  readonly procedures: ProcedureMessage[] = [];
   readonly mutations: MutationMessage[] = [];
   readonly operationContexts: SessionRuntimeContext[] = [];
   readonly closes: Outcome[] = [];
@@ -311,6 +313,24 @@ class FakeRuntime implements RuntimePort {
       }));
       throw error;
     }
+  }
+
+  async procedure(
+    context: SessionRuntimeContext,
+    request: RuntimeRequest<ProcedureMessage>,
+  ): Promise<unknown> {
+    const { message } = request;
+    this.operationContexts.push(context);
+    this.procedures.push(message);
+    const value = { ref: message.ref, principal: context.principal.kind };
+    await context.publish(prepareRuntimePublication({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: message.id,
+      kind: "procedure",
+      value,
+    }));
+    return value;
   }
 
   async mutation(
