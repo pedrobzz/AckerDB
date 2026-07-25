@@ -32,11 +32,16 @@ cycles. There is no global lookup, implicit installation, inheritance, or
 service container.
 
 Plugin calls preserve the caller's execution boundary. Transactional reads and
-writes use the caller's existing database context without a nested transaction,
-savepoint, or rollback-only marker; a direct procedure call is independent
-unless the caller explicitly opens a transaction. External capabilities are
-procedure-only. Plugins receive no ambient application authentication context,
-so identity and claims cross the boundary only as validated arguments.
+writes use the caller's existing database context; the Plugin boundary itself
+does not add a Result wrapper or child savepoint in the current contract. As
+recorded by
+[ADR 0011](0011-function-results-own-application-errors-and-mutation-scopes.md),
+changing Plugin operations to the application Result contract is a separate
+breaking Plugin API change. A direct procedure call is independent unless the
+caller explicitly opens a transaction. External capabilities are
+procedure-only.
+Plugins receive no ambient application authentication context, so identity and
+claims cross the boundary only as validated arguments.
 
 Application manifests and Plugin construction are pure because DBzz imports
 them during code generation and runtime startup. Runtime resources use an

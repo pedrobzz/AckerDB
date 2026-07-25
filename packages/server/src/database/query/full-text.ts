@@ -7,6 +7,7 @@ import {
   observeStatement,
   type DbStatementObserver,
 } from "../statement-observation.ts";
+import { assertMutationAccess } from "../../runtime/mutation-access.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
 import {
   compilePredicates,
@@ -78,6 +79,7 @@ class FullTextQueryRuntime {
   }
 
   private execute(count: number): Record<string, unknown>[] {
+    assertMutationAccess();
     if (this.expression === null) return [];
     if (this.reads !== null) {
       recordPredicateDependencies(this.plan, this.state.predicates, this.reads);

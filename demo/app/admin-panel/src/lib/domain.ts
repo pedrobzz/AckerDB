@@ -2,7 +2,7 @@ import type { QueryRef } from "@dbzz/client-react";
 import { api } from "@demo/dbzz-codegen/api";
 
 type QueryResult<Ref> =
-  Ref extends QueryRef<unknown, infer Result> ? Result : never;
+  Ref extends QueryRef<unknown, infer Data, unknown> ? Data : never;
 
 export type DashboardOverview = QueryResult<typeof api.dashboard.overview>;
 export type RestaurantTable = QueryResult<typeof api.tables.list>[number];
@@ -79,7 +79,22 @@ export function imageSource(image: string): string {
 }
 
 export function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback;
+  if (error instanceof Error) return error.message;
+  if (typeof error !== "object" || error === null) return fallback;
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly message?: unknown;
+    readonly body?: unknown;
+  };
+  if (typeof candidate.message === "string") return candidate.message;
+  if (
+    typeof candidate.body === "object" &&
+    candidate.body !== null &&
+    typeof (candidate.body as { readonly message?: unknown }).message === "string"
+  ) {
+    return (candidate.body as { readonly message: string }).message;
+  }
+  return typeof candidate.code === "string" ? candidate.code : fallback;
 }
 
 export function statusLabel(status: string): string {

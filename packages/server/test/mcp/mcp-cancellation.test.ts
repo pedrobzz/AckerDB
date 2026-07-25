@@ -314,7 +314,12 @@ async function callProcedure(mode: string, signal?: AbortSignal): Promise<unknow
     respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
   });
   const frame = parseCallResponse(decode(await response.text()));
-  if (frame.t !== "ok") throw Object.assign(new Error(frame.outcome.message), frame.outcome);
+  if (frame.t !== "ok") {
+    const error = frame.t === "err"
+      ? frame.outcome
+      : { message: frame.error.code, code: frame.error.code };
+    throw Object.assign(new Error(error.message), error);
+  }
   return frame.value;
 }
 

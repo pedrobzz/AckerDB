@@ -1,11 +1,10 @@
-import { v } from "@dbzz/server";
+import { DbzzError, v } from "@dbzz/server";
 import { mcpTool } from "@demo/dbzz-codegen/server";
 import {
   advanceOrderItem,
   cancelOpenOrder,
-  isFinal,
-  notFound,
-} from "../../../lib/domain.ts";
+} from "../../../lib/domain/order-workflow.ts";
+import { isFinal } from "../../../lib/domain/order-status.ts";
 import { itemStatus } from "../../../app.ts";
 
 /**
@@ -39,7 +38,16 @@ export const advanceKitchenItem = mcpTool({
     status: itemStatus,
   }),
   handler: (ctx, args) =>
-    ctx.tx((tx) => advanceOrderItem(tx.db, args.orderItemId)),
+    ctx.tx(async (tx) => {
+      const result = await advanceOrderItem(tx.db, args.orderItemId);
+      if (!result.ok) {
+        throw new DbzzError(
+          result.error.status === 404 ? "not_found" : "conflict",
+          result.error.code,
+        );
+      }
+      return result.data;
+    }),
 });
 
 /**
@@ -68,10 +76,18 @@ export const cancelOrder = mcpTool({
   }),
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {
-      const { order, items } = await cancelOpenOrder(tx.db, args.orderId);
-      const table =
-        (await tx.db.restaurantTables.get(order.tableId)) ??
-        notFound("Table not found");
+      const result = await cancelOpenOrder(tx.db, args.orderId);
+      if (!result.ok) {
+        throw new DbzzError(
+          result.error.status === 404 ? "not_found" : "conflict",
+          result.error.code,
+        );
+      }
+      const { order, items } = result.data;
+      const table = await tx.db.restaurantTables.get(order.tableId);
+      if (table === null) {
+        throw new DbzzError("internal", "Order table relation is missing");
+      }
       let itemsCancelled = 0;
       let itemsPreserved = 0;
       for (const item of items) {

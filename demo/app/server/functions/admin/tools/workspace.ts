@@ -1,7 +1,7 @@
 import { Bash, type InitialFiles } from "just-bash";
 import { v } from "@dbzz/server";
 import { mcpTool, type DatabaseReader } from "@demo/dbzz-codegen/server";
-import { isFinal } from "../../../lib/domain.ts";
+import { isFinal } from "../../../lib/domain/order-status.ts";
 
 /**
  * Sane demo caps for the sandboxed shell. Runaway scripts (infinite loops,

@@ -6,6 +6,11 @@ queries, mutations, procedures, event streams, authentication, and connection
 state through hooks. The same imports work in a browser and in an Expo React
 Native application.
 
+This page documents the currently implemented client, including typed
+application errors and exhaustive query failure states. Their server and
+transaction semantics are specified in
+[Typed function results](function-results.md).
+
 ## Supported versions and installation
 
 The package manifest supports these peers:
@@ -25,10 +30,10 @@ React 19.2.7, React Native 0.86.0, Expo 57.0.6, Expo Crypto 57.0.1, AI SDK
 7.0.29, and `@ai-sdk/react` 4.0.32.
 
 Install the React package at the same exact version as every other DBZZ
-package. For example, when the application pins DBZZ 0.2.4:
+package. For example, when the application pins DBZZ 0.9.0:
 
 ```sh
-bun add --exact @dbzz/client-react@0.2.4
+bun add --exact @dbzz/client-react@0.9.0
 ```
 
 An Expo 57 application also needs its native peers:
@@ -145,9 +150,15 @@ function Order({ orderId }: { orderId: string | null }) {
     case "pending":
       return <p>Loading…</p>;
     case "success":
-      return <p>{order.data.name}{order.stale ? " (reconnecting)" : ""}</p>;
-    case "error":
-      return <p>{order.error.message}</p>;
+      return <p>{order.data.name}</p>;
+    case "application-error":
+      return <p>{order.error.code}</p>;
+    case "rejected":
+      return <p>Request rejected: {order.error.code}</p>;
+    case "unavailable":
+      return order.stale
+        ? <p>{order.data.name} (offline)</p>
+        : <p>Temporarily unavailable</p>;
   }
 }
 ```
@@ -156,10 +167,14 @@ function Order({ orderId }: { orderId: string | null }) {
 | --- | --- |
 | `disabled` | The exact `skip` sentinel was passed; no subscription starts. |
 | `pending` | Enabled, but no authoritative value has arrived yet. |
-| `success` | Carries frozen container `data` and `stale`. Binary `Uint8Array` leaves remain usable mutable views. `stale: true` retains the last value while the connection is not authoritative for this query. |
-| `error` | Carries the exact `DbzzClientError` and `staleData` when a value had previously arrived. |
+| `success` | Carries frozen container `data` and `stale: false`. Binary `Uint8Array` leaves remain usable mutable views. |
+| `application-error` | Carries the endpoint's exact typed `ApplicationError` union. `data` is always `undefined`. |
+| `rejected` | Carries an authoritative framework `DbzzClientError`. `data` is always `undefined`. |
+| `unavailable` | Carries an unhandled or transport `DbzzClientError`. When `stale: true`, `data` is defined as the last successful value; when `stale: false`, `data` is `undefined`. |
 
-Returning to connection phase `ready` does not by itself clear `stale`.
+Application and framework errors discard prior data. Transport or unhandled
+unavailability may retain the last success as explicitly stale data. Returning
+to connection phase `ready` does not by itself clear that stale state.
 Freshness returns only when this query receives or confirms its own
 authoritative resume, checkpoint, reset, or update. `skip` is a symbol, not an
 empty argument object; switching between `skip` and real arguments cleanly
@@ -175,7 +190,21 @@ import { api } from "./_generated/api";
 
 function AddOrderButton() {
   const createOrder = useMutation(api.orders.create);
-  return <button onClick={() => void createOrder({ table: 12 })}>Add order</button>;
+
+  async function create() {
+    const result = await createOrder({ table: 12 });
+    if (!result.ok) {
+      if (result.error.kind === "application") {
+        console.log(result.error.code, result.error.body);
+      } else {
+        console.log(result.error.code);
+      }
+      return;
+    }
+    console.log(result.data);
+  }
+
+  return <button onClick={() => void create()}>Add order</button>;
 }
 ```
 
@@ -183,9 +212,11 @@ The promise uses DBZZ's mutation identity and convergence contract. A pending
 mutation retains its original request identity across reconnect and
 process-alive native suspension, and the server deduplicates that identity to
 at most one effect within the configured retained idempotency boundary.
-Mutations have no caller abort option; inspect a rejected
-`DbzzClientError`, including its `committed` field when convergence failed
-after the mutation committed.
+Mutations have no caller abort option. The promise resolves to
+`ClientResult<Data, ApplicationError>` rather than rejecting for an expected
+application error. Its `error.kind` separates application errors from DBZZ
+client failures; client failures include `committed` when convergence failed
+after the mutation may have committed.
 
 ## Procedures
 
@@ -201,8 +232,17 @@ function ExportButton() {
 
   async function run() {
     const abort = new AbortController();
-    const file = await exportOrders({ format: "csv" }, { signal: abort.signal });
-    return file;
+    const result = await exportOrders(
+      { format: "csv" },
+      { signal: abort.signal },
+    );
+    if (!result.ok) {
+      if (result.error.kind === "application") {
+        console.log(result.error.code, result.error.body);
+      }
+      return;
+    }
+    return result.data;
   }
 
   return <button onClick={() => void run()}>Export</button>;

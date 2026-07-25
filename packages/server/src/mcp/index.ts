@@ -40,7 +40,7 @@ import {
   type NormalizedMcpToolAccessPolicy,
 } from "./scopes.ts";
 import type { Schema } from "../schema/definition.ts";
-import type { ProcedureCtx } from "../app/functions.ts";
+import type { ProcedureCtx, TxCtx } from "../app/functions.ts";
 import {
   compileMcpObjectCodec,
   type JsonObjectSchema,
@@ -157,8 +157,11 @@ export interface McpToolAnnotations {
 
 export type McpToolCtx<S extends Schema = Schema> = Pick<
   ProcedureCtx<S>,
-  "auth" | "abortSignal" | "tx"
->;
+  "auth" | "abortSignal"
+> & {
+  /** MCP tools retain their raw transaction callback contract. */
+  tx<R>(work: (tx: TxCtx<S>) => R): Promise<Awaited<R>>;
+};
 
 export type McpInputSchema = JsonObjectSchema;
 export type McpOutputSchema = JsonObjectSchema;

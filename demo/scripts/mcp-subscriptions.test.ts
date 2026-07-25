@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { api } from "@demo/dbzz-codegen/api";
 import { STAFF_TOKEN, issueToken, withBackend } from "./mcp-harness.ts";
+import { expectOk } from "./result.ts";
 
 // The reactive seam: a write committed by an Admin MCP action (over the /mcp
 // HTTP path, under an owner token) shares the store with every live WS
@@ -34,7 +35,9 @@ test("an MCP action over HTTP delivers to a live staff subscription without brea
 
       // Advance a live kitchen item through the raw /mcp surface under an
       // owner token — the exact path an external host would drive.
-      const ordered = (await staff.query(api.kitchen.queue, {})).find(
+      const ordered = expectOk(
+        await staff.query(api.kitchen.queue, {}),
+      ).find(
         (row) => row.status === "ORDERED",
       );
       expect(ordered).toBeDefined();
@@ -71,11 +74,17 @@ test("control: a normal WS mutation from another client delivers without breakin
       await until(() => updates.length >= 1 || errors.length > 0, "first snapshot");
 
       const actor = backend.client(STAFF_TOKEN);
-      const ordered = (await actor.query(api.kitchen.queue, {})).find(
+      const ordered = expectOk(
+        await actor.query(api.kitchen.queue, {}),
+      ).find(
         (row) => row.status === "ORDERED",
       );
       expect(ordered).toBeDefined();
-      await actor.mutation(api.kitchen.advance, { orderItemId: ordered!.id });
+      expectOk(
+        await actor.mutation(api.kitchen.advance, {
+          orderItemId: ordered!.id,
+        }),
+      );
 
       await until(() => updates.length >= 2 || errors.length > 0, "post-mutation delivery");
       expect(errors).toEqual([]);

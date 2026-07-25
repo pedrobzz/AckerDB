@@ -1,4 +1,5 @@
 import type { DbzzQueryState } from "@dbzz/client-react";
+import type { ApplicationError } from "@dbzz/core";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -72,19 +73,35 @@ export function SearchField({
   );
 }
 
-export function QueryContent<Data>({
+export function QueryContent<
+  Data,
+  Error extends ApplicationError = never,
+>({
   state,
   children,
   loadingLabel = "Loading live data…",
 }: Readonly<{
-  state: DbzzQueryState<Data>;
+  state: DbzzQueryState<Data, Error>;
   children: (data: Data) => ReactNode;
   loadingLabel?: string;
 }>) {
   if (state.status === "pending" || state.status === "disabled") {
     return <StatePanel icon={LoaderCircle} title={loadingLabel} spinning />;
   }
-  if (state.status === "error") {
+  if (state.status === "application-error") {
+    return (
+      <StatePanel
+        icon={AlertTriangle}
+        title="Request could not be completed"
+        detail={`Application error: ${state.error.code}`}
+        tone="danger"
+      />
+    );
+  }
+  if (state.status === "rejected" || state.status === "unavailable") {
+    if (state.status === "unavailable" && state.data !== undefined) {
+      return <>{children(state.data)}</>;
+    }
     const unauthorized =
       state.error.code === "unauthenticated" ||
       state.error.code === "unauthorized";

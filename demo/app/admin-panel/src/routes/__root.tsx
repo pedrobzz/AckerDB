@@ -15,6 +15,7 @@ import {
 import { AlertTriangle, ChefHat, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ToastProvider, useToast } from "../components/toast.tsx";
+import { errorMessage } from "../lib/domain.ts";
 import styles from "../styles.css?url";
 import tailwind from "../tailwind.css?url";
 
@@ -85,8 +86,14 @@ function AdminBootstrap() {
     setSetup("pending");
     setSetupError(null);
     void initialize({}).then(
-      () => {
-        if (setupGeneration.current === generation) setSetup("ready");
+      (result) => {
+        if (setupGeneration.current !== generation) return;
+        if (!result.ok) {
+          setSetupError(errorMessage(result.error, "Restaurant setup failed"));
+          setSetup("error");
+          return;
+        }
+        setSetup("ready");
       },
       (error: unknown) => {
         if (setupGeneration.current !== generation) return;

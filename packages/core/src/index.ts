@@ -1,4 +1,18 @@
 export { encode, decode, stableEncode, WireError } from "./wire.ts";
+export {
+  Err,
+  Failure,
+  Ok,
+  Status,
+  isErr,
+  isApplicationError,
+  isResult,
+  type ApplicationError,
+  type ErrorHttpStatus,
+  type ErrResult,
+  type OkResult,
+  type Result,
+} from "./result.ts";
 export type { Identity } from "./identity.ts";
 export {
   anyApi,

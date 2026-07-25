@@ -3,31 +3,81 @@ import {
   type DbzzClient,
   type DbzzConnectionState,
 } from "@dbzz/client";
+import type { ApplicationError } from "@dbzz/core";
+
+type ApplicationErrorState<Error extends ApplicationError> =
+  [Error] extends [never]
+    ? never
+    : {
+      readonly status: "application-error";
+      readonly data: undefined;
+      readonly error: Error;
+      readonly loading: false;
+    };
 
 /**
  * Exhaustive live-query state. Success data is `stale` from the moment the
  * connection leaves ready and returns to fresh only when dbzz's own protocol
  * authoritatively re-confirms or redelivers the subscription state (resume,
- * checkpoint, or reset/update delivery). An error keeps the last authoritative
- * rows as `staleData` where any were ever delivered.
+ * checkpoint, or reset/update delivery). Only transport/unhandled
+ * unavailability may retain the last authoritative data. Application and
+ * framework errors clear it.
  */
-export type DbzzQueryState<Rows> =
-  | { readonly status: "disabled" }
-  | { readonly status: "pending" }
-  | { readonly status: "success"; readonly data: Rows; readonly stale: boolean }
+export type DbzzQueryState<Rows, Error extends ApplicationError = never> =
   | {
-      readonly status: "error";
+      readonly status: "disabled";
+      readonly data: undefined;
+      readonly error: undefined;
+      readonly loading: false;
+    }
+  | {
+      readonly status: "pending";
+      readonly data: undefined;
+      readonly error: undefined;
+      readonly loading: true;
+    }
+  | {
+      readonly status: "success";
+      readonly data: Rows;
+      readonly error: undefined;
+      readonly loading: false;
+      readonly stale: false;
+    }
+  | ApplicationErrorState<Error>
+  | {
+      readonly status: "rejected";
+      readonly data: undefined;
       readonly error: DbzzClientError;
-      readonly staleData: Rows | undefined;
+      readonly loading: false;
+    }
+  | {
+      readonly status: "unavailable";
+      readonly data: Rows;
+      readonly error: DbzzClientError;
+      readonly loading: false;
+      readonly stale: true;
+    }
+  | {
+      readonly status: "unavailable";
+      readonly data: undefined;
+      readonly error: DbzzClientError;
+      readonly loading: false;
+      readonly stale: false;
     };
 
 // Shared frozen snapshots for the two data-free states, so equal-state renders
 // always observe the same reference.
-export const DISABLED_STATE: { readonly status: "disabled" } = Object.freeze({
+export const DISABLED_STATE = Object.freeze({
   status: "disabled",
+  data: undefined,
+  error: undefined,
+  loading: false,
 });
-export const PENDING_STATE: { readonly status: "pending" } = Object.freeze({
+export const PENDING_STATE = Object.freeze({
   status: "pending",
+  data: undefined,
+  error: undefined,
+  loading: true,
 });
 
 // Re-establishing a rejected-but-retryable subscription mirrors the client's
@@ -55,8 +105,8 @@ function deepFreeze<T>(value: T): T {
 }
 
 /** What useQuery observes: an immutable snapshot plus a counted listener slot. */
-export interface QuerySource<Rows> {
-  snapshot(): DbzzQueryState<Rows>;
+export interface QuerySource<Rows, Error extends ApplicationError = never> {
+  snapshot(): DbzzQueryState<Rows, Error>;
   listen(listener: () => void): () => void;
 }
 
@@ -73,9 +123,12 @@ export interface QuerySource<Rows> {
  * its authoritative snapshot, and because socket events arrive as macrotasks,
  * nothing can be delivered while the release is pending.
  */
-export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
+export class QueryStoreEntry<
+  Rows,
+  Error extends ApplicationError = never,
+> implements QuerySource<Rows, Error> {
   private readonly listeners = new Set<() => void>();
-  private state: DbzzQueryState<Rows> = PENDING_STATE;
+  private state: DbzzQueryState<Rows, Error> = PENDING_STATE;
   private started = false;
   private releaseScheduled = false;
   private stopQuery: (() => void) | null = null;
@@ -83,6 +136,7 @@ export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
   private retryHandle: ReturnType<typeof setTimeout> | null = null;
   private retryAttempt = 0;
   private retryDeferred = false;
+  private lastApplicationError: Error | null = null;
 
   constructor(
     private readonly client: DbzzClient,
@@ -92,7 +146,7 @@ export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
   ) {}
 
   /** Immutable snapshot; the same object is returned until the next transition. */
-  snapshot(): DbzzQueryState<Rows> {
+  snapshot(): DbzzQueryState<Rows, Error> {
     return this.state;
   }
 
@@ -132,12 +186,15 @@ export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
 
   private startQuery(): void {
     try {
-      this.stopQuery = this.client.subscribe(
+      this.stopQuery = this.client.subscribe<unknown, Rows, Error>(
         this.address,
         this.args,
-        (value) => this.onUpdate(value as Rows),
+        (value) => this.onSuccess(value as Rows),
         (error) => this.onError(error),
-        { onCursorConfirmed: () => this.onCursorConfirmed() },
+        {
+          onCursorConfirmed: () => this.onCursorConfirmed(),
+          onApplicationError: (error) => this.onApplicationError(error),
+        },
       );
     } catch (error) {
       // subscribe() rejects synchronously with the exact DbzzClientError when
@@ -156,33 +213,91 @@ export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
     this.stopQuery = null;
     this.stopConnectionState?.();
     this.stopConnectionState = null;
+    this.lastApplicationError = null;
   }
 
-  private onUpdate(data: Rows): void {
+  private onApplicationError(error: Error): void {
+    this.settleRetries();
+    this.lastApplicationError = error;
+    // This callback is only present when the reference carries an Error.
+    // TypeScript cannot reduce a conditional type over a still-generic Error,
+    // even though receiving the value proves Error is inhabited.
+    this.replace({
+      status: "application-error",
+      data: undefined,
+      error,
+      loading: false,
+    } as ApplicationErrorState<Error>);
+  }
+
+  private onSuccess(data: Rows): void {
     // Applied reset/update deliveries are authoritative on the live
     // connection: delivered data is always fresh.
     this.settleRetries();
-    this.replace({ status: "success", data: deepFreeze(data), stale: false });
+    this.lastApplicationError = null;
+    this.replace({
+      status: "success",
+      data: deepFreeze(data),
+      error: undefined,
+      loading: false,
+      stale: false,
+    });
   }
 
   private onCursorConfirmed(): void {
     this.settleRetries();
-    if (this.state.status === "success" && this.state.stale) {
-      this.replace({ status: "success", data: this.state.data, stale: false });
+    if (this.state.status !== "unavailable") return;
+    if (this.state.data !== undefined) {
+      this.replace({
+        status: "success",
+        data: this.state.data,
+        error: undefined,
+        loading: false,
+        stale: false,
+      });
+      return;
+    }
+    if (this.lastApplicationError !== null) {
+      this.replace({
+        status: "application-error",
+        data: undefined,
+        error: this.lastApplicationError,
+        loading: false,
+      } as ApplicationErrorState<Error>);
     }
   }
 
   private onError(error: DbzzClientError): void {
-    this.replace({
-      status: "error",
-      error,
-      staleData:
-        this.state.status === "success"
+    if (error.kind === "framework") {
+      this.lastApplicationError = null;
+      this.replace({
+        status: "rejected",
+        data: undefined,
+        error,
+        loading: false,
+      });
+    } else {
+      const data = this.state.status === "success"
+        ? this.state.data
+        : this.state.status === "unavailable"
           ? this.state.data
-          : this.state.status === "error"
-            ? this.state.staleData
-            : undefined,
-    });
+          : undefined;
+      this.replace(data === undefined
+        ? {
+            status: "unavailable",
+            data: undefined,
+            error,
+            loading: false,
+            stale: false,
+          }
+        : {
+            status: "unavailable",
+            data,
+            error,
+            loading: false,
+            stale: true,
+          });
+    }
     // A retryable rejection removed the subscription, but the consumer's
     // demand still stands: re-establish it after the server's hint or the
     // client's own backoff shape, whichever is later.
@@ -247,13 +362,34 @@ export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
     // itself proves nothing for this query — freshness returns only through
     // the subscription's own resume/reset confirmation.
     if (connection.phase === "ready") return;
-    if (this.state.status === "success" && !this.state.stale) {
-      this.replace({ status: "success", data: this.state.data, stale: true });
+    const error = new DbzzClientError({
+      code: "unavailable",
+      retryable: true,
+      message: "query freshness is unavailable while reconnecting",
+      resource: "subscription",
+    });
+    if (this.state.status === "success") {
+      this.replace({
+        status: "unavailable",
+        data: this.state.data,
+        error,
+        loading: false,
+        stale: true,
+      });
+    } else if (this.state.status === "application-error") {
+      this.replace({
+        status: "unavailable",
+        data: undefined,
+        error,
+        loading: false,
+        stale: false,
+      });
     }
   }
 
-  private replace(state: DbzzQueryState<Rows>): void {
-    this.state = Object.freeze(state);
+  private replace(state: DbzzQueryState<Rows, Error>): void {
+    Object.freeze(state);
+    this.state = state;
     for (const listener of [...this.listeners]) listener();
   }
 }
@@ -269,7 +405,7 @@ export class QueryStoreEntry<Rows> implements QuerySource<Rows> {
  * clean new query lifetime.
  */
 export class QueryRegistry {
-  private readonly entries = new Map<string, QueryStoreEntry<unknown>>();
+  private readonly entries = new Map<string, QueryStoreEntry<unknown, ApplicationError>>();
 
   constructor(private readonly client: DbzzClient) {}
 
@@ -278,14 +414,18 @@ export class QueryRegistry {
    * Reading the snapshot never creates an entry; without one the state is the
    * shared pending constant a fresh entry would report anyway.
    */
-  source<Rows>(address: string, argsKey: string, args: unknown): QuerySource<Rows> {
+  source<Rows, Error extends ApplicationError = never>(
+    address: string,
+    argsKey: string,
+    args: unknown,
+  ): QuerySource<Rows, Error> {
     // argsKey is stableEncode output — JSON, whose strings escape control
     // characters — so neither half can contain a literal NUL and structurally
     // similar (address, args) pairs cannot forge each other's key.
     const key = `${address}\u0000${argsKey}`;
     return {
       snapshot: () =>
-        (this.entries.get(key)?.snapshot() ?? PENDING_STATE) as DbzzQueryState<Rows>,
+        (this.entries.get(key)?.snapshot() ?? PENDING_STATE) as DbzzQueryState<Rows, Error>,
       listen: (listener) => {
         const entry = this.entries.get(key) ?? this.register(key, address, args);
         return entry.listen(listener);
@@ -293,8 +433,12 @@ export class QueryRegistry {
     };
   }
 
-  private register(key: string, address: string, args: unknown): QueryStoreEntry<unknown> {
-    const entry = new QueryStoreEntry<unknown>(this.client, address, args, () => {
+  private register(
+    key: string,
+    address: string,
+    args: unknown,
+  ): QueryStoreEntry<unknown, ApplicationError> {
+    const entry = new QueryStoreEntry<unknown, ApplicationError>(this.client, address, args, () => {
       // The entry's release ran with no surviving listeners: its client
       // subscription is gone, so the key must read as a clean lifetime again.
       // The identity check keeps a stale release from evicting a successor.

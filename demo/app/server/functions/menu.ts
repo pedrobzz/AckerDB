@@ -1,14 +1,13 @@
+import { Err, Status } from "@dbzz/core";
 import { v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { isStaff, staffAccess } from "../lib/access.ts";
 import {
-  cleanName,
-  cleanText,
-  conflict,
-  nonNegativeInteger,
-  notFound,
-  positiveInteger,
-} from "../lib/domain.ts";
+  categoryNameInput,
+  descriptionInput,
+  imagePathInput,
+  itemNameInput,
+} from "../lib/inputs.ts";
 
 const authenticatedAccess = (ctx: { auth: { kind: string } }) =>
   ctx.auth.kind === "user";
@@ -41,22 +40,27 @@ export const catalog = query({
 
 export const createCategory = mutation({
   access: staffAccess,
-  args: { name: v.string(), sortOrder: v.int() },
+  args: {
+    name: categoryNameInput,
+    sortOrder: v.int().min(0),
+  },
   handler: async (ctx, args) => {
-    const name = cleanName(args.name, "Category name");
-    const sortOrder = nonNegativeInteger(args.sortOrder, "Sort order");
     if (
       (await ctx.db.menuCategories
         .query()
-        .where((category) => category.name.eq(name))
+        .where((category) => category.name.eq(args.name))
         .unique()) !== null
     ) {
-      conflict("This category already exists");
+      return Err(
+        "menu-category.name-taken",
+        { name: args.name },
+        Status.Conflict,
+      );
     }
     const now = Date.now();
     return ctx.db.menuCategories.insert({
-      name,
-      sortOrder,
+      name: args.name,
+      sortOrder: args.sortOrder,
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -68,30 +72,37 @@ export const createItem = mutation({
   access: staffAccess,
   args: {
     categoryId: v.bigint(),
-    name: v.string(),
-    description: v.string(),
-    image: v.string(),
-    priceCents: v.int(),
-    sortOrder: v.int(),
+    name: itemNameInput,
+    description: descriptionInput,
+    image: imagePathInput,
+    priceCents: v.int().min(1).max(1_000_000),
+    sortOrder: v.int().min(0),
   },
   handler: async (ctx, args) => {
     const category = await ctx.db.menuCategories.get(args.categoryId);
-    if (category === null || !category.active) notFound("Category not found");
-    const name = cleanName(args.name, "Item name");
+    if (category === null || !category.active) {
+      return Err(
+        "menu-category.not-found",
+        { categoryId: args.categoryId },
+        Status.NotFound,
+      );
+    }
     if (
-      (await ctx.db.menuItems.query().where((item) => item.name.eq(name)).unique()) !==
-      null
+      (await ctx.db.menuItems
+        .query()
+        .where((item) => item.name.eq(args.name))
+        .unique()) !== null
     ) {
-      conflict("This menu item already exists");
+      return Err("menu-item.name-taken", { name: args.name }, Status.Conflict);
     }
     const now = Date.now();
     return ctx.db.menuItems.insert({
       categoryId: category.id,
-      name,
-      description: cleanText(args.description, "Description", 240),
-      image: cleanText(args.image, "Image path", 500),
-      priceCents: positiveInteger(args.priceCents, "Price", 1_000_000),
-      sortOrder: nonNegativeInteger(args.sortOrder, "Sort order"),
+      name: args.name,
+      description: args.description,
+      image: args.image,
+      priceCents: args.priceCents,
+      sortOrder: args.sortOrder,
       active: true,
       createdAt: now,
       updatedAt: now,
@@ -104,32 +115,40 @@ export const updateItem = mutation({
   args: {
     id: v.bigint(),
     categoryId: v.bigint(),
-    name: v.string(),
-    description: v.string(),
-    image: v.string(),
-    priceCents: v.int(),
-    sortOrder: v.int(),
+    name: itemNameInput,
+    description: descriptionInput,
+    image: imagePathInput,
+    priceCents: v.int().min(1).max(1_000_000),
+    sortOrder: v.int().min(0),
     active: v.boolean(),
   },
   handler: async (ctx, args) => {
-    const item =
-      (await ctx.db.menuItems.get(args.id)) ?? notFound("Menu item not found");
+    const item = await ctx.db.menuItems.get(args.id);
+    if (item === null) {
+      return Err("menu-item.not-found", { itemId: args.id }, Status.NotFound);
+    }
     const category = await ctx.db.menuCategories.get(args.categoryId);
-    if (category === null || !category.active) notFound("Category not found");
-    const name = cleanName(args.name, "Item name");
+    if (category === null || !category.active) {
+      return Err(
+        "menu-category.not-found",
+        { categoryId: args.categoryId },
+        Status.NotFound,
+      );
+    }
     const duplicate = await ctx.db.menuItems
       .query()
-      .where((item) => item.name.eq(name))
+      .where((candidate) => candidate.name.eq(args.name))
       .unique();
-    if (duplicate !== null && duplicate.id !== item.id)
-      conflict("This menu item already exists");
+    if (duplicate !== null && duplicate.id !== item.id) {
+      return Err("menu-item.name-taken", { name: args.name }, Status.Conflict);
+    }
     await ctx.db.menuItems.patch(item.id, {
       categoryId: category.id,
-      name,
-      description: cleanText(args.description, "Description", 240),
-      image: cleanText(args.image, "Image path", 500),
-      priceCents: positiveInteger(args.priceCents, "Price", 1_000_000),
-      sortOrder: nonNegativeInteger(args.sortOrder, "Sort order"),
+      name: args.name,
+      description: args.description,
+      image: args.image,
+      priceCents: args.priceCents,
+      sortOrder: args.sortOrder,
       active: args.active,
       updatedAt: Date.now(),
     });

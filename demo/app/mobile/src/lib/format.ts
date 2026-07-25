@@ -31,7 +31,24 @@ export function initials(name: string): string {
 }
 
 export function errorMessage(error: unknown): string {
-  return error instanceof Error
-    ? error.message
+  if (error instanceof Error) return error.message;
+  if (typeof error !== "object" || error === null) {
+    return "Something went wrong. Please try again.";
+  }
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly message?: unknown;
+    readonly body?: unknown;
+  };
+  if (typeof candidate.message === "string") return candidate.message;
+  if (
+    typeof candidate.body === "object" &&
+    candidate.body !== null &&
+    typeof (candidate.body as { readonly message?: unknown }).message === "string"
+  ) {
+    return (candidate.body as { readonly message: string }).message;
+  }
+  return typeof candidate.code === "string"
+    ? candidate.code
     : "Something went wrong. Please try again.";
 }

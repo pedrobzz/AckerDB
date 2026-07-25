@@ -611,7 +611,7 @@ async function reconnectTransitionEvidence(
 
     const first = latestSocket();
     await first.settle();
-    let cutSocket: SessionSocket;
+    let cutSocket: SessionSocket = first;
     let refresh: Promise<unknown> | undefined;
 
     switch (transition) {

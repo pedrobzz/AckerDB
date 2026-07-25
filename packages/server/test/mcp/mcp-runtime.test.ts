@@ -152,7 +152,7 @@ const nestedOwnershipWrite = typedMcpTool({
     await insertOwnershipRecord(tx, { value: args.value });
     if (args.gate !== null) await waitAtGate(args.gate, ctx.abortSignal);
     if (!args.commit) throw new Error("ownership rollback fixture");
-    const count = await countOwnershipRecords(tx, {});
+    const count = (await countOwnershipRecords(tx, {})).data;
     return { content: [{ type: "text", text: String(count) }] };
   }),
 });

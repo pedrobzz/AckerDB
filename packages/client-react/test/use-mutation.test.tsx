@@ -11,6 +11,7 @@ import {
 import {
   DbzzClientError,
   anyApi,
+  type ClientResult,
   type DbzzClientClock,
   type DbzzClientLimits,
   type DbzzWebSocket,
@@ -155,7 +156,17 @@ function createHarness(limits?: Partial<DbzzClientLimits>): Harness {
 }
 
 type TodoArgs = { readonly text: string };
-type SendTodo = (args: TodoArgs) => Promise<bigint>;
+type SendTodo = (args: TodoArgs) => Promise<ClientResult<bigint>>;
+
+function mustOk<Data>(result: ClientResult<Data>): Data {
+  if (!result.ok) throw result.error;
+  return result.data;
+}
+
+function mustErr<Data>(result: ClientResult<Data>): DbzzClientError {
+  if (result.ok) throw new Error("expected a failed Result");
+  return result.error;
+}
 
 // A fresh proxy object per call, like generated api property access: the hook
 // must key its identity on the reference address, not the object.
@@ -329,7 +340,7 @@ describe("useMutation", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     socket.receive(mutationOk(frame, 41n));
-    expect(await result).toBe(41n);
+    expect(mustOk(await result)).toBe(41n);
 
     await act(async () => {
       root.unmount();
@@ -353,7 +364,7 @@ describe("useMutation", () => {
     });
 
     // Determinate failure: the server's exact outcome is the rejection.
-    const failed = probe.latest()({ text: "rejected" }).catch((error) => error);
+    const failed = probe.latest()({ text: "rejected" });
     socket.receive({
       v: PROTOCOL_VERSION,
       t: "err",
@@ -365,7 +376,7 @@ describe("useMutation", () => {
         resource: "operation",
       },
     });
-    const failure = await failed;
+    const failure = mustErr(await failed);
     expect(failure).toBeInstanceOf(DbzzClientError);
     expect(failure).toMatchObject({
       code: "validation",
@@ -378,7 +389,7 @@ describe("useMutation", () => {
 
     // Connection-level authentication failure settles the pending mutation
     // with the same distinguishable error the base client reports.
-    const blocked = probe.latest()({ text: "blocked" }).catch((error) => error);
+    const blocked = probe.latest()({ text: "blocked" });
     await act(async () => {
       socket.receive({
         v: PROTOCOL_VERSION,
@@ -392,7 +403,10 @@ describe("useMutation", () => {
         },
       });
     });
-    expect(await blocked).toMatchObject({ code: "unauthenticated", message: "credential expired" });
+    expect(mustErr(await blocked)).toMatchObject({
+      code: "unauthenticated",
+      message: "credential expired",
+    });
     expect(container.textContent).toBe("authentication-blocked:0");
 
     await act(async () => {
@@ -442,7 +456,7 @@ describe("useMutation", () => {
     expect(resent.issuedAt).toBe(lost.issuedAt);
     // Settling the promise causes no React state change, so no act() boundary.
     second.receive(mutationOk(resent, 43n, "replayed"));
-    expect(await result).toBe(43n);
+    expect(mustOk(await result)).toBe(43n);
     await Promise.resolve();
     expect(settlements).toBe(1);
 
@@ -467,9 +481,9 @@ describe("useMutation", () => {
       socket.welcome(SESSION);
     });
 
-    const unknown = probe.latest()({ text: "unknown" }).catch((error) => error);
+    const unknown = probe.latest()({ text: "unknown" });
     harness.clock.advance(10);
-    expect(await unknown).toMatchObject({
+    expect(mustErr(await unknown)).toMatchObject({
       code: "indeterminate",
       resource: "idempotency",
       message: "mutation completion is unknown",
@@ -497,24 +511,24 @@ describe("useMutation", () => {
     });
 
     // Sent: the server may have committed, so shutdown cannot claim failure.
-    const sent = probe.latest()({ text: "sent" }).catch((error) => error);
+    const sent = probe.latest()({ text: "sent" });
     expect(lastMutationFrame(socket).args).toEqual({ text: "sent" });
 
     // Unsent: created while disconnected, so shutdown is a determinate local error.
     await act(async () => {
       socket.close();
     });
-    const unsent = probe.latest()({ text: "unsent" }).catch((error) => error);
+    const unsent = probe.latest()({ text: "unsent" });
 
     await act(async () => {
       root.unmount();
     });
-    expect(await sent).toMatchObject({
+    expect(mustErr(await sent)).toMatchObject({
       code: "indeterminate",
       resource: "idempotency",
       message: "mutation completion is unknown",
     });
-    expect(await unsent).toMatchObject({
+    expect(mustErr(await unsent)).toMatchObject({
       code: "unavailable",
       resource: "operation",
       message: "client closed",
@@ -525,7 +539,7 @@ describe("useMutation", () => {
     const harness = createHarness();
     const container = mountPoint();
     const root = createRoot(container);
-    let result: Promise<bigint> | null = null;
+    let result: Promise<ClientResult<bigint>> | null = null;
     function SendOnMount(): ReactNode {
       const send = useMutation(todosAdd());
       useEffect(() => {
@@ -552,7 +566,7 @@ describe("useMutation", () => {
     expect(frames).toHaveLength(1);
     expect(frames[0]!.args).toEqual({ text: "early" });
     socket.receive(mutationOk(frames[0]!, 7n));
-    expect(await result!).toBe(7n);
+    expect(mustOk(await result!)).toBe(7n);
 
     await act(async () => {
       root.unmount();
@@ -563,7 +577,7 @@ describe("useMutation", () => {
     const harness = createHarness();
     const container = mountPoint();
     const root = createRoot(container);
-    let result: Promise<bigint> | null = null;
+    let result: Promise<ClientResult<bigint>> | null = null;
     function SendOnMount(): ReactNode {
       const send = useMutation(todosAdd());
       useEffect(() => {
@@ -592,7 +606,7 @@ describe("useMutation", () => {
     expect(frames).toHaveLength(1);
     expect(frames[0]!.args).toEqual({ text: "call-time" });
     socket.receive(mutationOk(frames[0]!, 9n));
-    expect(await result!).toBe(9n);
+    expect(mustOk(await result!)).toBe(9n);
 
     await act(async () => {
       root.unmount();
@@ -608,13 +622,13 @@ describe("useMutation", () => {
     const malformed = { $ref: "" } as unknown as MutationRef<TodoArgs, bigint>;
     let poisonedFirst: Promise<unknown> | null = null;
     let poisonedSecond: Promise<unknown> | null = null;
-    let result: Promise<bigint> | null = null;
+    let result: Promise<ClientResult<bigint>> | null = null;
     function SendOnMount(): ReactNode {
       const poison = useMutation(malformed);
       const send = useMutation(todosAdd());
       useEffect(() => {
-        poisonedFirst = poison({ text: "poison-1" }).catch((error) => error);
-        poisonedSecond = poison({ text: "poison-2" }).catch((error) => error);
+        poisonedFirst = poison({ text: "poison-1" });
+        poisonedSecond = poison({ text: "poison-2" });
         result = send({ text: "fine" });
       }, [poison, send]);
       return null;
@@ -633,14 +647,18 @@ describe("useMutation", () => {
 
     // Both malformed dispatches rejected their own calls, both from the same
     // drained queue...
-    expect(String(await poisonedFirst!)).toContain("not a dbzz function reference");
-    expect(String(await poisonedSecond!)).toContain("not a dbzz function reference");
+    expect(String(mustErr(await poisonedFirst! as ClientResult<unknown>))).toContain(
+      "not a dbzz function reference",
+    );
+    expect(String(mustErr(await poisonedSecond! as ClientResult<unknown>))).toContain(
+      "not a dbzz function reference",
+    );
     // ...and the healthy queued call still dispatched and resolves.
     const frames = mutationFrames(socket);
     expect(frames).toHaveLength(1);
     expect(frames[0]!.args).toEqual({ text: "fine" });
     socket.receive(mutationOk(frames[0]!, 5n));
-    expect(await result!).toBe(5n);
+    expect(mustOk(await result!)).toBe(5n);
 
     await act(async () => {
       root.unmount();
@@ -659,7 +677,7 @@ describe("useMutation", () => {
         // state update below deletes this component before the provider's
         // passive effect can construct a client, so the hook's lifetime end
         // is the only owner left to settle the call.
-        settlement = send({ text: "never" }).catch((error) => error);
+        settlement = send({ text: "never" });
         vanish();
       }, [send, vanish]);
       return null;
@@ -676,7 +694,7 @@ describe("useMutation", () => {
         <Gate />
       </DbzzProvider>,
     );
-    const failure = await settlement!;
+    const failure = mustErr(await settlement! as ClientResult<unknown>);
     expect(failure).toBeInstanceOf(DbzzClientError);
     expect(failure).toMatchObject({
       code: "unavailable",
@@ -701,7 +719,7 @@ describe("useMutation", () => {
     const harness = createHarness();
     const container = mountPoint();
     const root = createRoot(container);
-    const results: Promise<bigint>[] = [];
+    const results: Array<Promise<ClientResult<bigint>>> = [];
     function SendOnMount(): ReactNode {
       const send = useMutation(todosAdd());
       useEffect(() => {
@@ -738,7 +756,7 @@ describe("useMutation", () => {
     for (const [index, frame] of frames.entries()) {
       survivor.receive(mutationOk(frame, BigInt(index + 1)));
     }
-    expect(await Promise.all(results)).toEqual([1n, 2n]);
+    expect((await Promise.all(results)).map(mustOk)).toEqual([1n, 2n]);
 
     await act(async () => {
       root.unmount();

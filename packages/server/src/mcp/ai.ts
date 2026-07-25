@@ -75,7 +75,7 @@ export type McpAiToolSet<
 
 export type McpAiContext<S extends Schema = Schema> = Pick<
   ProcedureCtx<S>,
-  "auth" | "abortSignal" | "tx"
+  "auth" | "abortSignal"
 >;
 
 type McpAiToolScopesOption<Scope extends string> = [Scope] extends [never]

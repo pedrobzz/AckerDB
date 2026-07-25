@@ -4,7 +4,14 @@
  * @ts-expect-error) is the test.
  */
 import { DbzzClient } from "@dbzz/client";
-import { anyApi, type ApiFromModules, type MutationReceipt, type SseRef } from "@dbzz/core";
+import {
+  Err,
+  Status,
+  anyApi,
+  type ApiFromModules,
+  type MutationReceipt,
+  type SseRef,
+} from "@dbzz/core";
 import {
   v,
   defineSchema,
@@ -34,19 +41,31 @@ const authorizationSummary = generatedQuery({
 const createItem = generatedMutation({
   args: { label: v.string() },
   access: "authenticated",
-  handler: async (ctx, args) => ({
-    id: 1n,
-    authorization: await authorizationSummary(ctx, args),
-  }),
+  handler: async (ctx, args) => {
+    const authorization = await authorizationSummary(ctx, args);
+    return {
+      id: 1n,
+      authorization: authorization.data,
+    };
+  },
 });
 
 const pipeline = generatedProcedure({
   args: { label: v.string() },
   access: "authenticated",
-  handler: (ctx, args) => ctx.tx(async (tx) => ({
-    item: await createItem(tx, args),
-    committed: true as const,
-  })),
+  handler: (ctx, args) => ctx.tx(async (tx) => {
+    const item = await createItem(tx, args);
+    return { item: item.data, committed: true as const };
+  }),
+});
+
+const findItem = generatedQuery({
+  args: { found: v.boolean() },
+  access: "public",
+  handler: (_ctx, { found }) =>
+    found
+      ? { id: 1n }
+      : Err("item-not-found", { id: 1n }, Status.NotFound),
 });
 
 const generatedSse = sseProcedure as SseBuilder<Schema>;
@@ -65,6 +84,7 @@ const api = anyApi as unknown as ApiFromModules<{
     authorizationSummary: typeof authorizationSummary;
     createItem: typeof createItem;
     pipeline: typeof pipeline;
+    findItem: typeof findItem;
     ticker: typeof ticker;
   };
 }>;
@@ -78,22 +98,31 @@ declare const client: DbzzClient;
 
 export async function _generatedClientInference(): Promise<void> {
   const queryResult = await client.query(api.generated.authorizationSummary, { label: "query" });
-  const _queryLabel: string = queryResult.label;
-  const _principalKind: "anonymous" | "user" | "mcp" | "workload" | "system" = queryResult.kind;
+  if (!queryResult.ok) throw queryResult.error;
+  const _queryLabel: string = queryResult.data.label;
+  const _principalKind: "anonymous" | "user" | "mcp" | "workload" | "system" = queryResult.data.kind;
   // @ts-expect-error query handler inference keeps label as string
-  const _wrongQueryLabel: number = queryResult.label;
+  const _wrongQueryLabel: number = queryResult.data.label;
 
   const mutationResult = await client.mutation(api.generated.createItem, { label: "mutation" });
-  const _mutationId: bigint = mutationResult.id;
-  const _nestedLabel: string = mutationResult.authorization.label;
-  // @ts-expect-error the Protocol 2 receipt does not replace the application result type
+  if (!mutationResult.ok) throw mutationResult.error;
+  const _mutationId: bigint = mutationResult.data.id;
+  const _nestedLabel: string = mutationResult.data.authorization.label;
+  // @ts-expect-error the protocol receipt does not replace the application result type
   const _wrongMutationResult: MutationReceipt = mutationResult;
 
   const procedureResult = await client.procedure(api.generated.pipeline, { label: "procedure" });
-  const _procedureId: bigint = procedureResult.item.id;
-  const _committed: true = procedureResult.committed;
+  if (!procedureResult.ok) throw procedureResult.error;
+  const _procedureId: bigint = procedureResult.data.item.id;
+  const _committed: true = procedureResult.data.committed;
   // @ts-expect-error nested mutation inference remains intact through the procedure result
-  const _wrongProcedureId: string = procedureResult.item.id;
+  const _wrongProcedureId: string = procedureResult.data.item.id;
+
+  const missing = await client.query(api.generated.findItem, { found: false });
+  if (!missing.ok && missing.error.kind === "application") {
+    const _code: "item-not-found" = missing.error.code;
+    const _id: bigint = missing.error.body.id;
+  }
 
   for await (const chunk of client.sse(api.generated.ticker, { label: "sse" })) {
     const _tick: number = chunk.tick;

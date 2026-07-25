@@ -1,6 +1,6 @@
 import { SignJWT, jwtVerify } from "jose";
 import { DbzzError, type VerifiedUserCredential } from "@dbzz/server";
-import { cleanName, normalizeEmail } from "./domain.ts";
+import { emailInput, guestNameInput } from "./inputs.ts";
 
 const ISSUER = "https://demo.dbzz.local/";
 const AUDIENCE = "dbzz-demo";
@@ -21,8 +21,8 @@ export async function issueGuestToken(input: {
   name: string;
   email: string;
 }): Promise<GuestTokenResult> {
-  const name = cleanName(input.name);
-  const email = normalizeEmail(input.email);
+  const name = input.name;
+  const email = input.email.toLowerCase();
   const nowSeconds = Math.floor(Date.now() / 1_000);
   const expiresAtSeconds = nowSeconds + GUEST_TOKEN_LIFETIME_SECONDS;
   const token = await new SignJWT({ role: "guest", email, name })
@@ -73,14 +73,15 @@ export async function verifyDemoCredential(
     ) {
       throw new Error("invalid guest claims");
     }
-    const email = normalizeEmail(payload.email);
+    const email = emailInput.check(payload.email, "credential.email").toLowerCase();
+    const name = guestNameInput.check(payload.name, "credential.name");
     if (payload.sub !== `guest:${email}`)
       throw new Error("subject does not match email");
     return {
       kind: "user",
       issuer: ISSUER,
       subject: payload.sub,
-      claims: { role: "guest", email, name: cleanName(payload.name) },
+      claims: { role: "guest", email, name },
       expiresAt: payload.exp * 1_000,
       tokenId: typeof payload.jti === "string" ? payload.jti : null,
     };

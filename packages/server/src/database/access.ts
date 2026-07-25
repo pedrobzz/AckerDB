@@ -15,6 +15,8 @@ import {
   observeStatement,
   type DbStatementObserver,
 } from "./statement-observation.ts";
+import { assertMutationAccess } from "../runtime/mutation-access.ts";
+import { poisonTransaction } from "../runtime/transaction-context.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
@@ -47,6 +49,59 @@ export interface WriteCollector {
   scheduledTouched: boolean;
 }
 
+export interface WriteCollectorCheckpoint {
+  readonly keys: number;
+  readonly events: number;
+  readonly scheduledTouched: boolean;
+}
+
+class JournaledWriteKeys extends Set<string> {
+  readonly #insertions: string[] = [];
+
+  override add(key: string): this {
+    if (!this.has(key)) this.#insertions.push(key);
+    return super.add(key);
+  }
+
+  checkpoint(): number {
+    return this.#insertions.length;
+  }
+
+  rollback(checkpoint: number): void {
+    for (let index = this.#insertions.length - 1; index >= checkpoint; index--) {
+      super.delete(this.#insertions[index]!);
+    }
+    this.#insertions.length = checkpoint;
+  }
+}
+
+export function checkpointWriteCollector(
+  writes: WriteCollector,
+): WriteCollectorCheckpoint {
+  const keys = writes.keys;
+  if (!(keys instanceof JournaledWriteKeys)) {
+    throw new TypeError("write collector was not created by newWriteCollector()");
+  }
+  return {
+    keys: keys.checkpoint(),
+    events: writes.events.length,
+    scheduledTouched: writes.scheduledTouched,
+  };
+}
+
+export function rollbackWriteCollector(
+  writes: WriteCollector,
+  checkpoint: WriteCollectorCheckpoint,
+): void {
+  const keys = writes.keys;
+  if (!(keys instanceof JournaledWriteKeys)) {
+    throw new TypeError("write collector was not created by newWriteCollector()");
+  }
+  keys.rollback(checkpoint.keys);
+  writes.events.length = checkpoint.events;
+  writes.scheduledTouched = checkpoint.scheduledTouched;
+}
+
 // ---------------------------------------------------------------------------
 // Table accessors.
 
@@ -66,6 +121,7 @@ function readMethods(
 ) {
   const accessor: Record<string, unknown> = Object.assign(Object.create(null), {
     async get(id: unknown): Promise<Record<string, unknown> | null> {
+      assertMutationAccess();
       return await observeStatement(
         observer,
         "read",
@@ -88,6 +144,7 @@ function readMethods(
       );
     },
     query(): unknown {
+      assertMutationAccess();
       return createTableQuery(engine, conn, reads, plan, observer);
     },
   });
@@ -210,6 +267,7 @@ function writeMethods(
 
   return {
     insert(row: unknown): AnyWriteResult<bigint> {
+      assertMutationAccess();
       return observedWriteResult(observer, plan.displayName, "insert", () => {
         const values = checkFullRow(plan, row, "insert");
         const { sql, bind } = engine.insertSql(plan);
@@ -229,6 +287,7 @@ function writeMethods(
     },
 
     patch(id: bigint, partial: unknown): AnyWriteResult<void> {
+      assertMutationAccess();
       return observedWriteResult(observer, plan.displayName, "patch", () => {
         if (partial === null || typeof partial !== "object" || Array.isArray(partial)) {
           throw new ValidationError(`${plan.displayName}.patch: expected a partial row object`);
@@ -274,6 +333,7 @@ function writeMethods(
     },
 
     replace(id: bigint, row: unknown): AnyWriteResult<void> {
+      assertMutationAccess();
       return observedWriteResult(observer, plan.displayName, "replace", () => {
         const values = checkFullRow(plan, row, "replace");
         const old = getRow(id);
@@ -305,6 +365,7 @@ function writeMethods(
     },
 
     delete(id: bigint): AnyWriteResult<void> {
+      assertMutationAccess();
       return observedWriteResult(observer, plan.displayName, "delete", () => {
         const old = getRow(id);
         if (old === null) return { value: undefined, row: null }; // idempotent under retry
@@ -319,6 +380,7 @@ function writeMethods(
     },
 
     async deleteMany(ids: unknown): Promise<number> {
+      assertMutationAccess();
       return await observeStatement(
         observer,
         "write",
@@ -466,27 +528,32 @@ function eventWriteMethods(
   const pk = table.primaryKey;
   return Object.assign(Object.create(null) as Record<never, never>, {
     async insert(row: unknown): Promise<void> {
-      if (row === null || typeof row !== "object" || Array.isArray(row)) {
-        throw new ValidationError(`${logicalName}.insert: expected a row object`);
-      }
-      const input = row as Record<string, unknown>;
-      if (Object.hasOwn(input, pk) && input[pk] !== undefined) {
-        throw new ValidationError(`${logicalName}.insert: the primary key "${pk}" is assigned by dbzz`);
-      }
-      const out: Record<string, unknown> = {};
-      for (const [name, validator] of Object.entries(table.columns)) {
-        if (name === pk) continue;
-        const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
-          ? null
-          : input[name];
-        out[name] = validator.check(value, `${logicalName}.insert.${name}`);
-      }
-      for (const key of Object.keys(input)) {
-        if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
-          throw new ValidationError(`${logicalName}.insert: unknown field "${key}"`);
+      assertMutationAccess();
+      try {
+        if (row === null || typeof row !== "object" || Array.isArray(row)) {
+          throw new ValidationError(`${logicalName}.insert: expected a row object`);
         }
+        const input = row as Record<string, unknown>;
+        if (Object.hasOwn(input, pk) && input[pk] !== undefined) {
+          throw new ValidationError(`${logicalName}.insert: the primary key "${pk}" is assigned by dbzz`);
+        }
+        const out: Record<string, unknown> = {};
+        for (const [name, validator] of Object.entries(table.columns)) {
+          if (name === pk) continue;
+          const value = !Object.hasOwn(input, name) && validator.kind === "nullable"
+            ? null
+            : input[name];
+          out[name] = validator.check(value, `${logicalName}.insert.${name}`);
+        }
+        for (const key of Object.keys(input)) {
+          if (!Object.hasOwn(table.columns, key) && input[key] !== undefined) {
+            throw new ValidationError(`${logicalName}.insert: unknown field "${key}"`);
+          }
+        }
+        writes.events.push({ table: logicalName, row: { [pk]: nextEventId(logicalName), ...out } });
+      } catch (error) {
+        return poisonTransaction(error);
       }
-      writes.events.push({ table: logicalName, row: { [pk]: nextEventId(logicalName), ...out } });
     },
   });
 }
@@ -537,5 +604,5 @@ export function makeDbWriter(
 }
 
 export function newWriteCollector(): WriteCollector {
-  return { keys: new Set(), events: [], scheduledTouched: false };
+  return { keys: new JournaledWriteKeys(), events: [], scheduledTouched: false };
 }

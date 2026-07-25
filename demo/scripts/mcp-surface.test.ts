@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { api } from "@demo/dbzz-codegen/api";
 import { issueToken, listedToolNames, withBackend } from "./mcp-harness.ts";
+import { expectOk } from "./result.ts";
 
 // The Admin MCP's complete tool surface — ADR-0001 calls this a public
 // contract external agents depend on. Per-ticket suites assert containment
@@ -43,9 +44,14 @@ test("a guest credential never reaches the Admin MCP", async () => {
     await backend.staff();
     // A real guest bearer JWT is a valid demo credential, but it is not an
     // owner token — the MCP boundary rejects it outright.
-    const login = await backend
-      .client()
-      .procedure(api.auth.login, { name: "Mallory", email: "mallory@example.com" });
+    const login = expectOk(
+      await backend
+        .client()
+        .procedure(api.auth.login, {
+          name: "Mallory",
+          email: "mallory@example.com",
+        }),
+    );
 
     const discovery = await backend.rpc("tools/list", {}, login.token);
     expect(discovery.status).toBe(401);

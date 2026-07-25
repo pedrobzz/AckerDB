@@ -294,6 +294,14 @@ function expectSuspensionOutcome(
   expect(settled.interruption).toBe("suspension");
 }
 
+function mustErr<E>(result: { readonly ok: true; readonly data: unknown } | {
+  readonly ok: false;
+  readonly error: E;
+}): E {
+  if (result.ok) throw new Error("expected a failed Result");
+  return result.error;
+}
+
 function welcome(client: DbzzClient, socket: FakeSocket): void {
   socket.onopen?.();
   socket.onmessage?.({
@@ -323,8 +331,9 @@ describe("non-resumable work started while suspended", () => {
     });
     port.suspend();
 
-    const refusal = await client.procedure("tools.echo", {}).catch((error) => error);
-    expectSuspensionOutcome(refusal, {
+    const refusal = await client.procedure("tools.echo", {});
+    if (refusal.ok) throw new Error("expected a suspended procedure to fail");
+    expectSuspensionOutcome(refusal.error, {
       code: "unavailable",
       message: "client is suspended",
       resource: "operation",
@@ -339,7 +348,9 @@ describe("non-resumable work started while suspended", () => {
     expect(sockets).toHaveLength(0);
 
     // The client itself is fully usable again after activation.
-    expect(await client.procedure<Record<never, never>, string>("tools.echo", {})).toBe("late");
+    const resumed = await client.procedure<Record<never, never>, string>("tools.echo", {});
+    if (!resumed.ok) throw resumed.error;
+    expect(resumed.data).toBe("late");
     expect(journal.dispatches).toEqual([{ path: "/api/call", id: expect.any(Number) }]);
     client.close();
   });
@@ -430,9 +441,9 @@ describe("non-resumable work started while suspended", () => {
     const controller = new AbortController();
     controller.abort();
 
-    const procedureOutcome = (await client
-      .procedure("tools.echo", {}, { signal: controller.signal })
-      .catch((error) => error)) as DbzzClientError;
+    const procedureOutcome = mustErr(
+      await client.procedure("tools.echo", {}, { signal: controller.signal }),
+    );
     expect(procedureOutcome.message).toBe("procedure request was canceled");
     expect(procedureOutcome.interruption).toBeUndefined();
 
@@ -456,14 +467,14 @@ describe("suspension settles in-flight procedures", () => {
     // A caller abort before suspension keeps the plain indeterminate outcome.
     const canceled = client
       .procedure("tools.echo", {}, { signal: abortable.signal })
-      .catch((error) => error);
+      .then(mustErr);
     abortable.abort();
     const callerOutcome = (await canceled) as DbzzClientError;
     expect(callerOutcome.code).toBe("indeterminate");
     expect(callerOutcome.message).toBe("procedure completion is unknown");
     expect(callerOutcome.interruption).toBeUndefined();
 
-    const suspended = client.procedure("tools.echo", {}).catch((error) => error);
+    const suspended = client.procedure("tools.echo", {}).then(mustErr);
     expect(journal.dispatches).toHaveLength(2);
     port.suspend();
     expectSuspensionOutcome(await suspended, {
@@ -477,7 +488,7 @@ describe("suspension settles in-flight procedures", () => {
 
     // close() on a fresh client settles the same boundary without the marker.
     const closing = harness({ call: () => new Promise<Response>(() => {}) });
-    const closed = closing.client.procedure("tools.echo", {}).catch((error) => error);
+    const closed = closing.client.procedure("tools.echo", {}).then(mustErr);
     closing.client.close();
     const closedOutcome = (await closed) as DbzzClientError;
     expect(closedOutcome.code).toBe("indeterminate");
@@ -488,7 +499,7 @@ describe("suspension settles in-flight procedures", () => {
     const body = openBody({ status: 200, headers: { "content-type": "application/json" } });
     const { client, clock, port } = harness({ call: () => body.response });
 
-    const call = client.procedure("tools.echo", {}).catch((error) => error);
+    const call = client.procedure("tools.echo", {}).then(mustErr);
     // Let the fetch resolve and the bounded body read begin.
     await Bun.sleep(0);
     body.push('{"partial":');
@@ -515,9 +526,11 @@ describe("suspension settles in-flight procedures", () => {
       call: (id) => (++dispatches === 1 ? stale.promise : procedureOk(id, "fresh")),
     });
 
-    const interrupted = client.procedure("tools.echo", {}).catch((error) => error);
+    const interrupted = client.procedure("tools.echo", {});
     port.suspend();
-    expectSuspensionOutcome(await interrupted, {
+    const interruptedResult = await interrupted;
+    if (interruptedResult.ok) throw new Error("expected the interrupted procedure to fail");
+    expectSuspensionOutcome(interruptedResult.error, {
       code: "indeterminate",
       message: "procedure completion is unknown",
       resource: "operation",
@@ -529,7 +542,9 @@ describe("suspension settles in-flight procedures", () => {
     // The retired generation's response arrives late, carrying a live body.
     const staleBody = openBody({ status: 200, headers: { "content-type": "application/json" } });
     stale.resolve(staleBody.response);
-    expect(await replacement).toBe("fresh");
+    const replacementResult = await replacement;
+    if (!replacementResult.ok) throw replacementResult.error;
+    expect(replacementResult.data).toBe("fresh");
     await Bun.sleep(0);
 
     // The stale response settled nothing and its body was released.
@@ -940,7 +955,7 @@ describe("suspension settlement against a real dbzz server", () => {
       await until(() => runtime.status().activeSse === 1, "the server stream to register");
 
       // A real procedure held open on the server at the same moment.
-      const held = client.procedure("tools.hold", {}).catch((error) => error);
+      const held = client.procedure("tools.hold", {}).then(mustErr);
       await withDeadline(procedureStarted.promise, "the held procedure to start");
 
       port!.suspend();

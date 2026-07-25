@@ -26,8 +26,13 @@ import { outcomeFromError } from "./outcome.ts";
 import { isOneTimeResult } from "./one-time-result.ts";
 import type { PublicationReservation } from "../realtime/publication.ts";
 import type { Schema } from "../schema/definition.ts";
+import {
+  assertTransactionHealthy,
+  inTransaction,
+  poisonTransaction,
+  runInTransaction,
+} from "./transaction-context.ts";
 
-const transaction = new AsyncLocalStorage<true>();
 const fetchInstrumentation = new AsyncLocalStorage<FetchObserver>();
 const MAX_MUTATION_CLOCK_SKEW_MS = 5 * 60_000;
 let fetchGuardInstalled = false;
@@ -69,13 +74,13 @@ function installFetchGuard(): void {
   const guarded = ((...args: Parameters<typeof fetch>) => {
     const observer = fetchInstrumentation.getStore();
     const startedAt = observer === undefined ? 0 : performance.now();
-    if (transaction.getStore()) {
+    if (inTransaction()) {
       const error = new DbzzError(
         "validation",
         "fetch is not allowed inside a transaction; use a procedure outside ctx.tx",
       );
       observeFetch(observer, startedAt, error.code);
-      throw error;
+      return poisonTransaction(error);
     }
     const request = original(...args);
     if (observer === undefined) return request;
@@ -124,6 +129,11 @@ export interface CommitRequest<T, Publication> {
   readonly run?: <R>(work: () => R) => R;
   readonly idempotency?: IdempotencyIdentity;
   readonly work: (db: DbWriter<Schema>, writes: WriteCollector) => T | Promise<T>;
+  /**
+   * A handled application outcome that must close the transaction without a
+   * commit, publication, or data-version allocation.
+   */
+  readonly rollbackWhen?: (value: T) => boolean;
   /** Additional storage work, such as deleting a due row, in the same transaction. */
   readonly finalize?: (writes: WriteCollector) => void | Promise<void>;
   readonly publication: (version: bigint, writes: WriteCollector) => Publication;
@@ -276,7 +286,7 @@ export class CommitCoordinator<Publication> {
   }
 
   async execute<T>(request: CommitRequest<T, Publication>): Promise<CommitResult<T, Publication>> {
-    if (transaction.getStore()) {
+    if (inTransaction()) {
       throw new DbzzError(
         "validation",
         "cannot open a transaction inside a transaction; compose calls in the current ctx.tx",
@@ -350,7 +360,7 @@ export class CommitCoordinator<Publication> {
 
   /** Serialize framework-owned storage through the same bounded writer without publishing app state. */
   async transactFramework<T>(request: FrameworkTransactionRequest<T>): Promise<T> {
-    if (transaction.getStore()) {
+    if (inTransaction()) {
       throw new DbzzError("validation", "cannot open a framework transaction inside a transaction");
     }
     return this.writer.submit(async () => {
@@ -359,7 +369,11 @@ export class CommitCoordinator<Publication> {
         throwIfAborted(request.transactionSignal);
         this.engine.writer.exec("BEGIN IMMEDIATE");
         open = true;
-        const value = await transaction.run(true, request.work);
+        const value = await runInTransaction(async () => {
+          const settled = await request.work();
+          assertTransactionHealthy();
+          return settled;
+        });
         throwIfAborted(request.transactionSignal);
         this.engine.writer.exec("COMMIT");
         open = false;
@@ -507,11 +521,114 @@ export class CommitCoordinator<Publication> {
       const executionAt = request.telemetry === undefined ? undefined : performance.now();
       let value: T;
       try {
-        value = await transaction.run(true, async () => {
-          const result = await request.work(db, writes);
-          await request.finalize?.(writes);
-          return result;
+        value = await runInTransaction(async () => {
+          const settled = await request.work(db, writes);
+          assertTransactionHealthy();
+          return settled;
         });
+        throwIfAborted(request.transactionSignal);
+        if (request.rollbackWhen?.(value) === true) {
+          if (executionAt !== undefined) {
+            observeCommit(request, {
+              stage: "execution",
+              outcome: "ok",
+              durationMs: Math.max(0, performance.now() - executionAt),
+              dependencyCount: writes.keys.size,
+            });
+          }
+          const rollbackAt = performance.now();
+          this.engine.writer.exec("ROLLBACK");
+          transactionOpen = false;
+          reservation.cancel();
+          observeCommit(request, {
+            stage: "rollback",
+            outcome: "ok",
+            durationMs: Math.max(0, performance.now() - rollbackAt),
+            dependencyCount: writes.keys.size,
+          });
+          let commitVersion = this.engine.commitVersion();
+          if (idempotency !== undefined) {
+            const encodingAt = performance.now();
+            const resultDisposition = isOneTimeResult(writes)
+              ? "one-time"
+              : "replayable";
+            let result: string | undefined;
+            try {
+              if (resultDisposition === "replayable") result = encode(value);
+            } catch (error) {
+              observeCommit(request, {
+                stage: "encoding",
+                outcome: telemetryOutcome(error),
+                durationMs: Math.max(0, performance.now() - encodingAt),
+              });
+              throw error;
+            }
+            const resultBytes = result === undefined
+              ? 0
+              : this.encoder.encode(result).byteLength;
+            observeCommit(request, {
+              stage: "encoding",
+              outcome: "ok",
+              durationMs: Math.max(0, performance.now() - encodingAt),
+              sizeBytes: resultBytes,
+            });
+            if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
+              throw new DbzzError("overloaded", "mutation result exceeds replay capacity", {
+                retryable: false,
+                resource: "idempotency",
+              });
+            }
+            const available = this.limits.mutationReplay.maxBytes -
+              this.engine[mutationReplayOwner].resultBytes;
+            if (resultBytes > available) {
+              throw new DbzzError("overloaded", "mutation replay capacity is full", {
+                retryable: true,
+                retryAfterMs: 1_000,
+                resource: "idempotency",
+              });
+            }
+            let staged: StagedMutation;
+            try {
+              this.engine.writer.exec("BEGIN IMMEDIATE");
+              transactionOpen = true;
+              staged = this.engine[mutationReplayOwner].stage({
+                ...idempotency,
+                resultDisposition,
+                result: result ?? null,
+                resultBytes,
+                durability: this.engine.durability,
+              }, this.readNow(), "replay");
+              this.engine.writer.exec("COMMIT");
+              transactionOpen = false;
+              this.engine[mutationReplayOwner].committed(staged);
+            } catch (error) {
+              if (transactionOpen) {
+                this.engine.writer.exec("ROLLBACK");
+                transactionOpen = false;
+              }
+              throw error;
+            }
+            commitVersion = staged.commitVersion;
+          }
+          observeCommit(request, {
+            stage: "storage",
+            outcome: "ok",
+            durationMs: Math.max(0, performance.now() - storageAt),
+            dependencyCount: writes.keys.size,
+            replayed: false,
+            commitVersion,
+          });
+          storageObserved = true;
+          return {
+            result: {
+              value,
+              commitVersion,
+              durability: this.engine.durability,
+              replay: "executed",
+            },
+          };
+        }
+        await request.finalize?.(writes);
         if (executionAt !== undefined) {
           observeCommit(request, {
             stage: "execution",

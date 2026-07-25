@@ -13,7 +13,7 @@ import {
 } from "react-native";
 import { AppScreen } from "../components/screen";
 import { ErrorState, LoadingState } from "../components/states";
-import { formatMoney } from "../lib/format";
+import { errorMessage, formatMoney } from "../lib/format";
 import { menuImage } from "../lib/menu-images";
 import { useCart } from "../providers/cart";
 import { useSession } from "../providers/session";
@@ -28,8 +28,8 @@ export default function MenuScreen() {
   const catalog =
     catalogQuery.status === "success"
       ? catalogQuery.data
-      : catalogQuery.status === "error"
-        ? catalogQuery.staleData
+      : catalogQuery.status === "unavailable"
+        ? catalogQuery.data
         : undefined;
   const selected = categoryId ?? catalog?.[0]?.id ?? null;
   const items = useMemo(
@@ -40,8 +40,13 @@ export default function MenuScreen() {
   if (session === null) return <Redirect href="/login" />;
   if (catalog === undefined && catalogQuery.status === "pending")
     return <LoadingState label="Reading tonight’s menu…" />;
-  if (catalog === undefined && catalogQuery.status === "error")
-    return <ErrorState message={catalogQuery.error.message} />;
+  if (
+    catalog === undefined &&
+    (catalogQuery.status === "rejected" ||
+      catalogQuery.status === "unavailable")
+  ) {
+    return <ErrorState message={errorMessage(catalogQuery.error)} />;
+  }
 
   const cartAction =
     cart.count > 0 ? (

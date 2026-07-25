@@ -96,7 +96,7 @@ describe("durability and internal state", () => {
     const production = new Engine(schema, database);
     reconcile(production);
     expect(production.status()).toMatchObject({
-      engineSchemaVersion: 11,
+      engineSchemaVersion: 12,
       durability: "production",
       synchronous: "FULL",
       commitVersion: 0n,

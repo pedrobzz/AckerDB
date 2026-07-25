@@ -584,7 +584,11 @@ function assertForwardedCursorChain(app: PublicApp): void {
       if (transition.from !== null && cursor !== null) expect(sameCursor(transition.from, cursor)).toBe(true);
     } else {
       expect(cursor).not.toBeNull();
-      expect(cursor !== null && sameCursor(transition.from, cursor)).toBe(true);
+      if (cursor === null) throw new Error("a non-reset transition requires a previous cursor");
+      if (transition.from === null) {
+        throw new Error("a non-reset transition requires a source cursor");
+      }
+      expect(sameCursor(transition.from, cursor)).toBe(true);
     }
     if (cursor !== null) {
       expect(transition.to.commitVersion).toBeGreaterThanOrEqual(cursor.commitVersion);
@@ -621,7 +625,8 @@ function beginMutation(app: PublicApp, body: string): TrackedMutation {
   ).then(
     (value) => {
       settlements++;
-      return value;
+      if (!value.ok) throw value.error;
+      return value.data;
     },
     (error) => {
       settlements++;
@@ -669,10 +674,12 @@ async function assertMutation(
   if (expectedReplay !== undefined) expect(acknowledgements[0]!.receipt.replay).toBe(expectedReplay);
   expect(mutationEvidence.settlements()).toBe(1);
 
-  const rows = await app.observer.query<{ channelId: bigint }, readonly MessageRow[]>(
+  const rowsResult = await app.observer.query<{ channelId: bigint }, readonly MessageRow[]>(
     "messages.list",
     { channelId: 1n },
   );
+  if (!rowsResult.ok) throw rowsResult.error;
+  const rows = rowsResult.data;
   const effects = rows.filter(({ body }) => body === mutationEvidence.body);
   expect(effects).toHaveLength(1);
   expect(effects[0]!.id).toBe(result);

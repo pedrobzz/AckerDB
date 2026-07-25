@@ -1,15 +1,13 @@
+import { Err, Status } from "@dbzz/core";
 import { DbzzError, v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { requireUser, staffAccess } from "../lib/access.ts";
 import {
-  cleanName,
-  conflict,
-  normalizeEmail,
-  notFound,
   openOrderForUser,
   orderView,
-  userForIdentity,
-} from "../lib/domain.ts";
+} from "../lib/domain/orders.ts";
+import { userForIdentity } from "../lib/domain/guests.ts";
+import { emailInput, guestNameInput } from "../lib/inputs.ts";
 
 const guestAccess = (ctx: { auth: Parameters<typeof requireUser>[0] }) =>
   ctx.auth.kind === "user";
@@ -27,13 +25,18 @@ export const ensureCurrent = mutation({
         "Guest credential is missing profile claims",
       );
     }
-    const email = normalizeEmail(emailClaim);
-    const name = cleanName(nameClaim);
+    const email = emailClaim.toLowerCase();
+    const name = nameClaim;
     const now = Date.now();
     const byIdentity = await userForIdentity(ctx.db, principal.identity);
     if (byIdentity !== null) {
-      if (byIdentity.email !== email)
-        conflict("This identity is already linked to another email");
+      if (byIdentity.email !== email) {
+        return Err(
+          "guest.identity-email-conflict",
+          { email },
+          Status.Conflict,
+        );
+      }
       if (byIdentity.name !== name)
         await ctx.db.users.patch(byIdentity.id, { name, updatedAt: now });
       return byIdentity.id;
@@ -47,7 +50,11 @@ export const ensureCurrent = mutation({
         byEmail.identity !== null &&
         byEmail.identity !== principal.identity
       ) {
-        conflict("This email already belongs to another guest");
+        return Err(
+          "guest.email-taken",
+          { email },
+          Status.Conflict,
+        );
       }
       await ctx.db.users.patch(byEmail.id, {
         identity: principal.identity,
@@ -113,9 +120,17 @@ export const list = query({
 export const detail = query({
   access: staffAccess,
   args: { id: v.bigint() },
+  errors: {
+    "guest.not-found": {
+      body: v.object({ id: v.bigint() }),
+      status: Status.NotFound,
+    },
+  },
   handler: async (ctx, args) => {
-    const user =
-      (await ctx.db.users.get(args.id)) ?? notFound("Guest not found");
+    const user = await ctx.db.users.get(args.id);
+    if (user === null) {
+      return Err("guest.not-found", { id: args.id }, Status.NotFound);
+    }
     const orders = await ctx.db.orders
       .query()
       .where((order) => order.userId.eq(user.id))
@@ -133,15 +148,15 @@ export const detail = query({
 
 export const create = mutation({
   access: staffAccess,
-  args: { name: v.string(), email: v.string() },
+  args: { name: guestNameInput, email: emailInput },
   handler: async (ctx, args) => {
-    const name = cleanName(args.name);
-    const email = normalizeEmail(args.email);
+    const name = args.name;
+    const email = args.email.toLowerCase();
     if (
       (await ctx.db.users.query().where((user) => user.email.eq(email)).unique()) !==
       null
     ) {
-      conflict("A guest with this email already exists");
+      return Err("guest.email-taken", { email }, Status.Conflict);
     }
     const now = Date.now();
     return ctx.db.users.insert({
@@ -156,21 +171,28 @@ export const create = mutation({
 
 export const update = mutation({
   access: staffAccess,
-  args: { id: v.bigint(), name: v.string(), email: v.string() },
+  args: { id: v.bigint(), name: guestNameInput, email: emailInput },
   handler: async (ctx, args) => {
-    const user =
-      (await ctx.db.users.get(args.id)) ?? notFound("Guest not found");
-    const name = cleanName(args.name);
-    const email = normalizeEmail(args.email);
+    const user = await ctx.db.users.get(args.id);
+    if (user === null) {
+      return Err("guest.not-found", { id: args.id }, Status.NotFound);
+    }
+    const name = args.name;
+    const email = args.email.toLowerCase();
     if (user.identity !== null && email !== user.email) {
-      conflict("A linked guest's login email cannot be changed");
+      return Err(
+        "guest.linked-email-immutable",
+        { id: user.id },
+        Status.Conflict,
+      );
     }
     const owner = await ctx.db.users
       .query()
       .where((user) => user.email.eq(email))
       .unique();
-    if (owner !== null && owner.id !== user.id)
-      conflict("A guest with this email already exists");
+    if (owner !== null && owner.id !== user.id) {
+      return Err("guest.email-taken", { email }, Status.Conflict);
+    }
     await ctx.db.users.patch(user.id, { name, email, updatedAt: Date.now() });
     return user.id;
   },

@@ -328,7 +328,9 @@ async function callAi(mode: string): Promise<unknown> {
     respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
   });
   const frame = parseCallResponse(decode(await response.text()));
-  if (frame.t !== "ok") throw new Error(frame.outcome.message);
+  if (frame.t !== "ok") {
+    throw new Error(frame.t === "err" ? frame.outcome.message : frame.error.code);
+  }
   return frame.value;
 }
 

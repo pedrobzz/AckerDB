@@ -459,11 +459,14 @@ function TokenFormDialog({
     const scopes = scopesFor(choice);
     try {
       if (editing) {
-        await update({ id: token.id, name, scopes });
+        const result = await update({ id: token.id, name, scopes });
+        if (!result.ok) throw result.error;
         toast.success(`"${name}" was updated.`, "Token updated");
         onClose();
       } else {
-        const created = await create({ name, scopes });
+        const result = await create({ name, scopes });
+        if (!result.ok) throw result.error;
+        const created = result.data;
         toast.success(`"${created.name}" is ready to connect.`, "Token created");
         onCreated?.({ name: created.name, choice, token: created.token });
       }
@@ -712,7 +715,8 @@ function RevokeDialog({
   async function confirm() {
     setBusy(true);
     try {
-      await revoke({ id: token.id });
+      const result = await revoke({ id: token.id });
+      if (!result.ok) throw result.error;
       toast.success(
         `"${token.name}" can no longer reach the MCP endpoint.`,
         "Token revoked",

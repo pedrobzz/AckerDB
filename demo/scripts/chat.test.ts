@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 import { api } from "@demo/dbzz-codegen/api";
 import type { InferUIMessageChunk, UIMessage } from "ai";
-import { expectCode, withBackend } from "./mcp-harness.ts";
+import { withBackend } from "./mcp-harness.ts";
+import { expectRejectedCode } from "./result.ts";
 
 // Offline verification of the full chat streaming flow through the sseProcedure,
 // with zero gateway usage: the "mock" model factory swaps the DeepSeek gateway
@@ -83,7 +84,7 @@ test("staff chat streams a get_tables call, its result, then the final text in o
 test("chat rejects an anonymous caller", async () => {
   await withBackend(async (backend) => {
     const anonymous = backend.client();
-    await expectCode(
+    await expectRejectedCode(
       drain(anonymous.sse(api.chat.stream, chatArgs("Who is on the floor?"))),
       "unauthenticated",
     );

@@ -48,28 +48,34 @@ export function observeStatement<T>(
   rowCount: (value: T) => number | undefined,
   extraCounts?: (value: T) => ExtraCounts,
 ): T | Promise<T> {
-  if (observer === undefined) return work();
-  const startedAt = performance.now();
+  const ownedByTransaction = inTransaction();
+  if (observer === undefined && !ownedByTransaction) return work();
+  const startedAt = observer === undefined ? 0 : performance.now();
   const failed = (error: unknown): never => {
-    deliverObservation(observer, {
-      kind,
-      table,
-      statement,
-      outcome: "failed",
-      durationMs: Math.max(0, performance.now() - startedAt),
-    });
+    if (ownedByTransaction) markTransactionPoisoned(error);
+    if (observer !== undefined) {
+      deliverObservation(observer, {
+        kind,
+        table,
+        statement,
+        outcome: "failed",
+        durationMs: Math.max(0, performance.now() - startedAt),
+      });
+    }
     throw error;
   };
   const succeeded = (value: T): T => {
-    deliverObservation(observer, {
-      kind,
-      table,
-      statement,
-      outcome: "ok",
-      durationMs: Math.max(0, performance.now() - startedAt),
-      rowCount: rowCount(value),
-      ...extraCounts?.(value),
-    });
+    if (observer !== undefined) {
+      deliverObservation(observer, {
+        kind,
+        table,
+        statement,
+        outcome: "ok",
+        durationMs: Math.max(0, performance.now() - startedAt),
+        rowCount: rowCount(value),
+        ...extraCounts?.(value),
+      });
+    }
     return value;
   };
   try {
@@ -81,3 +87,7 @@ export function observeStatement<T>(
     return failed(error);
   }
 }
+import {
+  inTransaction,
+  markTransactionPoisoned,
+} from "../runtime/transaction-context.ts";

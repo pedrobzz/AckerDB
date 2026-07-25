@@ -50,6 +50,35 @@ purpose.
 that still enforces the required invariant. DBzz does not add machinery merely
 to imitate another system or erase an acceptable backend difference.
 
+## Function outcomes
+
+**Function result** — The typed outcome of a registered query, mutation, or
+procedure call. Success is `Ok<T>` and an expected application failure is
+`Err<E>`; handler authors may return a raw success value as `Ok` sugar.
+_Avoid_: Transport response, thrown exception
+
+**Application error** — An expected typed failure that application code
+deliberately returns as `Err`. It is part of the function's result contract and
+may be handled or mapped by its caller.
+_Avoid_: Thrown error, framework failure
+
+**Error mapping** — A function seam's deliberate replacement of selected
+application-error variants with errors in its own vocabulary. Unmapped variants
+remain part of the inferred result contract unchanged.
+_Avoid_: Error swallowing, exhaustive redeclaration
+
+**Unhandled failure** — An unexpected thrown defect or framework failure that
+bypasses the application result contract. It poisons any ambient transaction
+and is exposed outside the server only as a sanitized generic failure.
+_Avoid_: Application error, returned `Err`
+
+**Nested mutation scope** — The atomic child scope owned by every nested
+registered application mutation. `Ok` merges its writes into the parent, `Err`
+discards them, and an unhandled failure poisons the whole ambient transaction.
+Plugin operations retain their separate pre-Result contract until that API is
+changed explicitly.
+_Avoid_: Independent transaction, ordinary helper call
+
 ## Framework runtime
 
 **Plugin** — A reusable backend unit that owns isolated state and functions
@@ -112,11 +141,10 @@ procedure returned under `exports` by its plugin factory. The runtime binds
 it under the plugin's mount name while preserving its execution kind and
 isolation.
 
-**Plugin call** — Invocation of an exported plugin function through a
-mounted or injected capability. Queries and mutations use the caller's database
-context exactly like ordinary nested application helpers: the plugin
-boundary adds no transaction, savepoint, or rollback-only state. A procedure
-call starts an independent operation when no transaction exists.
+**Plugin call** — Invocation of an exported plugin function through a mounted
+or injected capability. Queries and mutations use the caller's database context
+without adding a Result boundary or child savepoint. A procedure call starts an
+independent operation when no transaction exists.
 
 **Internal plugin function** — A plugin-owned function omitted from its
 factory's returned `exports`. Only the plugin itself may invoke it.

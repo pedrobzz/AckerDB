@@ -1,5 +1,12 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { Outcome } from "@dbzz/core";
+import {
+  Err,
+  Ok,
+  isApplicationError,
+  isResult,
+  type OkResult,
+  type Outcome,
+} from "@dbzz/core";
 import { isPrincipal, type Principal } from "../auth/credentials.ts";
 import {
   compileShape,
@@ -9,7 +16,12 @@ import {
   type Validator,
 } from "../validation/v.ts";
 import { DbzzError } from "../shared/errors.ts";
-import type { AccessPolicy, AnyInvocable, Invocable } from "./functions.ts";
+import type {
+  AccessPolicy,
+  AnyInvocable,
+  FunctionResult,
+  Invocable,
+} from "./functions.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 
@@ -19,6 +31,13 @@ export interface InvocationContext {
 
 interface InvocationState {
   readonly principal: Principal;
+  readonly root: {
+    poison?: unknown;
+  };
+}
+
+export interface MutationInvocationScope {
+  run<T>(work: () => T | Promise<T>): Promise<T>;
 }
 
 type AccessEnforcer<Ctx, Args> = (ctx: Ctx, args: Args) => void | Promise<void>;
@@ -104,7 +123,16 @@ export interface AuthorizedInvocation<Ctx, Args> {
 
 const invocationState = new AsyncLocalStorage<InvocationState>();
 const invocationInstrumentation = new AsyncLocalStorage<InvocationInstrumentationState>();
+const mutationInvocationScope = new AsyncLocalStorage<MutationInvocationScope>();
 const compiledInvocations = new WeakMap<object, CompiledInvocation<InvocationContext, unknown>>();
+
+/** Install the runtime-owned savepoint implementation for one ambient write transaction. */
+export function withMutationInvocationScope<T>(
+  scope: MutationInvocationScope,
+  work: () => T,
+): T {
+  return mutationInvocationScope.run(scope, work);
+}
 
 /** Install one isolated observer scope around a top-level invocation boundary. */
 export function withInvocationObserver<T>(
@@ -386,15 +414,102 @@ function runHandler<Ctx extends InvocationContext, Args, R>(
   fn: { readonly handler: (ctx: Ctx, args: Args) => R | Promise<R> },
   ctx: Ctx,
   args: Args,
-  parent: InvocationState | undefined,
+  state: InvocationState,
   options: InvocationOptions<Ctx, Args> | undefined,
 ): R | Promise<R> {
   options?.onAuthorized?.(ctx, args);
-  if (parent !== undefined) return fn.handler(ctx, args);
-  return invocationState.run(
-    { principal: ctx.auth },
-    () => fn.handler(ctx, args),
+  return invocationState.run(state, () => fn.handler(ctx, args));
+}
+
+function normalizeFunctionResult<K extends string, T>(kind: K, value: T): T | OkResult<T> {
+  if (kind !== "query" && kind !== "mutation" && kind !== "procedure") return value;
+  return isResult(value) ? value : Ok(value);
+}
+
+function invocationStateFor(ctx: InvocationContext, parent: InvocationState | undefined): InvocationState {
+  return parent ?? { principal: ctx.auth, root: {} };
+}
+
+function poison(
+  state: InvocationState | undefined,
+  error: unknown,
+  poisonTree: boolean,
+): never {
+  if (
+    poisonTree &&
+    state !== undefined &&
+    !Object.hasOwn(state.root, "poison")
+  ) {
+    state.root.poison = error;
+  }
+  throw error;
+}
+
+/** Mark the ambient registered invocation unrecoverable, then rethrow. */
+export function poisonCurrentInvocation(error: unknown): never {
+  return poison(invocationState.getStore(), error, true);
+}
+
+function finishInvocation<K extends string, A extends ObjectShape, Ctx extends InvocationContext, R, H, T>(
+  fn: Invocable<K, A, Ctx, R, H>,
+  value: T,
+  state: InvocationState,
+): T | OkResult<T> {
+  if (Object.hasOwn(state.root, "poison")) throw state.root.poison;
+  const normalized = normalizeFunctionResult(fn.kind, value);
+  if (!isResult(normalized)) return normalized;
+  if (normalized.ok) {
+    return fn.returns === undefined
+      ? normalized
+      : Ok(fn.returns.check(normalized.data, "returns")) as T | OkResult<T>;
+  }
+  if (!isApplicationError(normalized.error)) {
+    throw new DbzzError("validation", "registered Err must contain an application error");
+  }
+  if (fn.errors === undefined) return normalized as T | OkResult<T>;
+  if (!Object.hasOwn(fn.errors, normalized.error.code)) {
+    throw new DbzzError(
+      "validation",
+      `errors does not declare returned code "${normalized.error.code}"`,
+    );
+  }
+  const declaration = fn.errors[normalized.error.code];
+  if (declaration === undefined) {
+    throw new DbzzError(
+      "validation",
+      `errors does not declare returned code "${normalized.error.code}"`,
+    );
+  }
+  if (declaration.status !== normalized.error.status) {
+    throw new DbzzError(
+      "validation",
+      `errors.${normalized.error.code}.status does not match the returned status`,
+    );
+  }
+  return Err(
+    normalized.error.code,
+    declaration.body.check(normalized.error.body, `errors.${normalized.error.code}.body`),
+    normalized.error.status,
+  ) as T | OkResult<T>;
+}
+
+function runMutationScope<
+  K extends string,
+  A extends ObjectShape,
+  Ctx extends InvocationContext,
+  R,
+  H,
+  T,
+>(
+  fn: Invocable<K, A, Ctx, R, H>,
+  work: () => T | Promise<T>,
+  state: InvocationState,
+): Promise<T | OkResult<T>> {
+  const execute = () => Promise.resolve(work()).then(
+    (value) => finishInvocation(fn, value, state),
   );
+  const scope = mutationInvocationScope.getStore();
+  return fn.kind === "mutation" && scope !== undefined ? scope.run(execute) : execute();
 }
 
 function invokeUnobserved<
@@ -408,22 +523,46 @@ function invokeUnobserved<
   ctx: Ctx,
   rawArgs: unknown,
   options: InvocationOptions<Ctx, Expand<InferShape<A>>> | undefined,
-): Promise<Awaited<H>> {
+): Promise<InvokedFunctionResult<K, H>> {
   try {
     const compiled = compiledInvocation(fn);
     const parent = invocationState.getStore();
     const safeCtx = validateContext(ctx, parent);
+    const state = invocationStateFor(safeCtx, parent);
     const args = compiled.validateArgs(rawArgs);
-    const access = compiled.enforceAccess(safeCtx, args);
-    if (isPromiseLike(access)) {
-      return Promise.resolve(access).then(() =>
-        runHandler(fn, safeCtx, args, parent, options)) as Promise<Awaited<H>>;
-    }
-    return Promise.resolve(runHandler(fn, safeCtx, args, parent, options)) as Promise<Awaited<H>>;
+    const execute = () => {
+      const access = compiled.enforceAccess(safeCtx, args);
+      if (isPromiseLike(access)) {
+        return Promise.resolve(access).then(() =>
+          runHandler(fn, safeCtx, args, state, options));
+      }
+      return runHandler(fn, safeCtx, args, state, options);
+    };
+    return runMutationScope(fn, execute, state).then(
+      (value) => value,
+      (error) => poison(
+        state,
+        error,
+        fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
+      ),
+    ) as Promise<InvokedFunctionResult<K, H>>;
   } catch (error) {
-    return Promise.reject(error);
+    try {
+      return Promise.reject(poison(
+        invocationState.getStore(),
+        error,
+        fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
+      ));
+    } catch (poisoned) {
+      return Promise.reject(poisoned);
+    }
   }
 }
+
+type InvokedFunctionResult<K extends string, HandlerReturn> =
+  K extends "query" | "mutation" | "procedure"
+    ? FunctionResult<HandlerReturn>
+    : Awaited<HandlerReturn>;
 
 /** The only args → policy → handler path, shared by top-level and direct nested calls. */
 export function invokeFunction<
@@ -437,7 +576,7 @@ export function invokeFunction<
   ctx: Ctx,
   rawArgs: unknown,
   options?: InvocationOptions<Ctx, Expand<InferShape<A>>>,
-): Promise<Awaited<H>> {
+): Promise<InvokedFunctionResult<K, H>> {
   const instrumentation = invocationInstrumentation.getStore();
   if (instrumentation === undefined) {
     return invokeUnobserved(fn, ctx, rawArgs, options);
@@ -458,26 +597,44 @@ export function invokeFunction<
     try {
       const compiled = compiledInvocation(fn);
       const parent = invocationState.getStore();
+      let invocation!: InvocationState;
       let safeCtx!: Ctx;
       let args!: Expand<InferShape<A>>;
       const authenticate = observePhase(state, observedFn, "auth", () => {
         safeCtx = validateContext(ctx, parent);
+        invocation = invocationStateFor(safeCtx, parent);
         args = compiled.validateArgs(rawArgs);
       });
       const handle = (): H | Promise<H> =>
         observePhase(state, observedFn, "handler", () =>
-          runHandler(fn, safeCtx, args, parent, options));
+          runHandler(fn, safeCtx, args, invocation, options));
       const authorize = (): H | Promise<H> => {
         const access = observePhase(state, observedFn, "policy", () =>
           compiled.enforceAccess(safeCtx, args));
         return isPromiseLike(access) ? Promise.resolve(access).then(handle) : handle();
       };
-      const result = isPromiseLike(authenticate)
+      const execute = () => isPromiseLike(authenticate)
         ? Promise.resolve(authenticate).then(authorize)
         : authorize();
-      return Promise.resolve(result) as Promise<Awaited<H>>;
+      const result = runMutationScope(fn, execute, invocation);
+      return result.then(
+        (value) => value,
+        (error) => poison(
+          invocation ?? parent,
+          error,
+          fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
+        ),
+      ) as Promise<InvokedFunctionResult<K, H>>;
     } catch (error) {
-      return Promise.reject(error);
+      try {
+        return Promise.reject(poison(
+          invocationState.getStore(),
+          error,
+          fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
+        ));
+      } catch (poisoned) {
+        return Promise.reject(poisoned);
+      }
     }
   });
 }

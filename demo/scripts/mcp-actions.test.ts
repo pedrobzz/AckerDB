@@ -8,6 +8,7 @@ import {
   type JsonRpcResponse,
   type McpHarness,
 } from "./mcp-harness.ts";
+import { expectOk } from "./result.ts";
 
 const INSUFFICIENT_SCOPE = 'Bearer realm="admin", error="insufficient_scope"';
 
@@ -82,13 +83,17 @@ test("advance_kitchen_item walks an item to SERVED, visible to staff, then refus
     const operateToken = await issueToken(staff, "Operate", ["operate"]);
 
     // A freshly ORDERED item from the live kitchen queue.
-    const ordered = (await staff.query(api.kitchen.queue, {})).find(
+    const ordered = expectOk(
+      await staff.query(api.kitchen.queue, {}),
+    ).find(
       (row) => row.status === "ORDERED",
     );
     expect(ordered).toBeDefined();
     const orderItemId = ordered!.id;
     const statusOf = async (): Promise<string | undefined> =>
-      (await staff.query(api.kitchen.queue, {})).find((row) => row.id === orderItemId)?.status;
+      expectOk(
+        await staff.query(api.kitchen.queue, {}),
+      ).find((row) => row.id === orderItemId)?.status;
 
     // ORDERED -> PREPARING; the structured output echoes the ids and the new status.
     const first = structuredOf<AdvanceOutput>(
@@ -130,7 +135,9 @@ test("cancel_order cancels an open order, frees its table, and reports the split
     const readToken = await issueToken(staff, "Reader", ["read"]);
     const operateToken = await issueToken(staff, "Operate", ["operate"]);
 
-    const open = (await staff.query(api.orders.list, {})).find((order) => order.status === "OPEN");
+    const open = expectOk(
+      await staff.query(api.orders.list, {}),
+    ).find((order) => order.status === "OPEN");
     expect(open).toBeDefined();
     const orderId = open!.id;
     const tableNumber = open!.table.number;
@@ -155,7 +162,11 @@ test("cancel_order cancels an open order, frees its table, and reports the split
     expect(typeof summary.tableId).toBe("string");
 
     // The order is now CANCELLED...
-    expect((await staff.query(api.orders.detail, { id: orderId })).status).toBe("CANCELLED");
+    expect(
+      expectOk(
+        await staff.query(api.orders.detail, { id: orderId }),
+      ).status,
+    ).toBe("CANCELLED");
     // ...and the table is free, visible through the read tool.
     const after = (await tablesVia(backend, readToken.token)).find((t) => t.number === tableNumber);
     expect(after).toMatchObject({ occupied: false, orderId: null });
@@ -167,7 +178,7 @@ test("cancel_order refuses an order that is not open, with no write", async () =
     const staff = await backend.staff();
     const operateToken = await issueToken(staff, "Operate", ["operate"]);
 
-    const orders = await staff.query(api.orders.list, {});
+    const orders = expectOk(await staff.query(api.orders.list, {}));
     for (const closed of [
       orders.find((order) => order.status === "PAID"),
       orders.find((order) => order.status === "CANCELLED"),
@@ -177,7 +188,11 @@ test("cancel_order refuses an order that is not open, with no write", async () =
       expect(body.result?.isError).toBe(true);
       expect(body.result?.structuredContent).toBeUndefined();
       // The order's status is untouched — the transaction rolled back.
-      expect((await staff.query(api.orders.detail, { id: closed!.id })).status).toBe(closed!.status);
+      expect(
+        expectOk(
+          await staff.query(api.orders.detail, { id: closed!.id }),
+        ).status,
+      ).toBe(closed!.status);
     }
   });
 });
@@ -188,7 +203,9 @@ test("removing the operate scope denies the token's very next action call", asyn
     const token = await issueToken(staff, "Downgradable", ["read", "operate"]);
 
     // While operate-scoped, an action tool runs.
-    const ordered = (await staff.query(api.kitchen.queue, {})).find((row) => row.status === "ORDERED");
+    const ordered = expectOk(
+      await staff.query(api.kitchen.queue, {}),
+    ).find((row) => row.status === "ORDERED");
     expect(ordered).toBeDefined();
     const ok = structuredOf<AdvanceOutput>(
       await backend.call("advance_kitchen_item", { orderItemId: String(ordered!.id) }, token.token),
@@ -196,7 +213,12 @@ test("removing the operate scope denies the token's very next action call", asyn
     expect(ok.status).toBe("PREPARING");
 
     // Drop operate; the reduced scope is authoritative on the next call.
-    await staff.mutation(api.admin.tokens.update, { id: token.id, scopes: ["read"] });
+    expectOk(
+      await staff.mutation(api.admin.tokens.update, {
+        id: token.id,
+        scopes: ["read"],
+      }),
+    );
 
     const denied = await callAction(
       backend,

@@ -40,7 +40,8 @@ function TablesPage() {
   async function confirmRemove(table: RestaurantTable) {
     setBusy(true);
     try {
-      await remove({ id: table.id });
+      const result = await remove({ id: table.id });
+      if (!result.ok) throw result.error;
       toast.success(
         `Table ${table.number} was removed from the active floor.`,
         "Table removed",
@@ -306,8 +307,10 @@ function TableDialog({
     setError(null);
     try {
       const values = { number: Number(number), seats: Number(seats) };
-      if (table) await update({ id: table.id, ...values });
-      else await create(values);
+      const result = table
+        ? await update({ id: table.id, ...values })
+        : await create(values);
+      if (!result.ok) throw result.error;
       toast.success(
         `Table ${values.number} ${table ? "was updated" : "is ready for guests"}.`,
         table ? "Table updated" : "Table added",

@@ -86,7 +86,8 @@ function OrdersPage() {
   async function confirmCancel(order: OrderView) {
     setBusy(true);
     try {
-      await cancelOrder({ orderId: order.id });
+      const result = await cancelOrder({ orderId: order.id });
+      if (!result.ok) throw result.error;
       toast.success(
         `Order #${order.id.toString()} was cancelled and its table is available.`,
         "Order cancelled",
@@ -101,7 +102,8 @@ function OrdersPage() {
 
   async function cancelOrderedItem(orderItemId: bigint, name: string) {
     try {
-      await cancelItem({ orderItemId });
+      const result = await cancelItem({ orderItemId });
+      if (!result.ok) throw result.error;
       toast.success(`${name} was cancelled.`, "Item cancelled");
     } catch (error) {
       toast.error(errorMessage(error, "Could not cancel this item"));
@@ -457,10 +459,12 @@ function CreateOrderDialog({
     setBusy(true);
     setError(null);
     try {
-      const id = await create({
+      const result = await create({
         userId: BigInt(guestId),
         tableId: BigInt(tableId),
       });
+      if (!result.ok) throw result.error;
+      const id = result.data;
       toast.success(
         `Order #${id.toString()} is live in the kitchen.`,
         "Order created",
@@ -573,7 +577,8 @@ function AddItemsDialog({
     setBusy(true);
     setError(null);
     try {
-      await addItems({ orderId: order.id, items });
+      const result = await addItems({ orderId: order.id, items });
+      if (!result.ok) throw result.error;
       toast.success(
         `${selectedCount} item${selectedCount === 1 ? "" : "s"} sent to the kitchen.`,
         "Order updated",

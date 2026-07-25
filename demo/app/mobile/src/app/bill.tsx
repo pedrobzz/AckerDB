@@ -22,13 +22,19 @@ export default function BillScreen() {
   const order =
     orderQuery.status === "success"
       ? orderQuery.data
-      : orderQuery.status === "error"
-        ? orderQuery.staleData
+      : orderQuery.status === "unavailable"
+        ? orderQuery.data
         : undefined;
   if (order === undefined && orderQuery.status === "pending")
     return <LoadingState label="Preparing your bill…" />;
-  if (order === undefined && orderQuery.status === "error")
-    return <ErrorState message={orderQuery.error.message} />;
+  if (
+    order === undefined &&
+    (orderQuery.status === "application-error" ||
+      orderQuery.status === "rejected" ||
+      orderQuery.status === "unavailable")
+  ) {
+    return <ErrorState message={errorMessage(orderQuery.error)} />;
+  }
   if (order === undefined) return <LoadingState label="Preparing your bill…" />;
   if (order === null)
     return (
@@ -70,11 +76,15 @@ export default function BillScreen() {
     setError(null);
     try {
       const result = await pay({ orderId: order.id });
+      if (!result.ok) {
+        setError(errorMessage(result.error));
+        return;
+      }
       router.replace({
         pathname: "/success",
         params: {
-          orderId: result.orderId.toString(),
-          totalCents: String(result.totalCents),
+          orderId: result.data.orderId.toString(),
+          totalCents: String(result.data.totalCents),
         },
       });
     } catch (caught) {

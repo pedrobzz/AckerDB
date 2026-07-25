@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   decode,
   stableEncode,
+  type ApplicationError,
   type LiveEvent,
   type LiveEventCursor,
   type Outcome,
@@ -23,6 +24,7 @@ export interface Subscriber {
 
 export interface QueryEvaluation {
   readonly value: unknown;
+  readonly applicationError?: ApplicationError;
   readonly encoded: string;
   readonly readSet: ReadonlySet<string>;
   readonly commitVersion: bigint;
@@ -205,6 +207,7 @@ interface QueryEntry<C> {
   historyBytes: number;
   initialized: boolean;
   value: unknown;
+  applicationError?: ApplicationError;
   encoded: string;
   resultBytes: number;
   commitVersion: bigint;
@@ -223,6 +226,7 @@ interface HistoryRecord<C> {
   readonly toVersion: bigint;
   readonly kind: "update" | "checkpoint";
   readonly value?: unknown;
+  readonly applicationError?: ApplicationError;
   readonly bytes: number;
   readonly createdAtMs: number;
   previousGlobal?: HistoryRecord<C>;
@@ -830,10 +834,14 @@ export class OrderedReactive<C = unknown> {
     }
 
     const previousVersion = entry.initialized ? entry.commitVersion : undefined;
-    const changed = !entry.initialized || entry.encoded !== evaluated.encoded;
+    const changed =
+      !entry.initialized ||
+      entry.encoded !== evaluated.encoded ||
+      (entry.applicationError === undefined) !== (evaluated.applicationError === undefined);
     this.replaceReadSet(entry, evaluated.readSet);
     this.resultBytes += resultBytes - entry.resultBytes;
     entry.value = evaluated.value;
+    entry.applicationError = evaluated.applicationError;
     entry.encoded = evaluated.encoded;
     entry.resultBytes = resultBytes;
     entry.commitVersion = evaluated.commitVersion;
@@ -845,7 +853,11 @@ export class OrderedReactive<C = unknown> {
         fromVersion: previousVersion,
         toVersion: evaluated.commitVersion,
         kind: changed ? "update" : "checkpoint",
-        ...(changed ? { value: evaluated.value } : {}),
+        ...(changed && evaluated.applicationError !== undefined
+          ? { applicationError: evaluated.applicationError }
+          : changed
+            ? { value: evaluated.value }
+            : {}),
         bytes: changed ? resultBytes : 32,
         createdAtMs: this.readNow(),
         active: true,
@@ -905,7 +917,9 @@ export class OrderedReactive<C = unknown> {
         for (const record of chain) {
           const to = { ...cursor, commitVersion: record.toVersion };
           const transition: SubscriptionTransition = record.kind === "update"
-            ? { kind: "update", from: cursor, to, value: record.value }
+            ? record.applicationError === undefined
+              ? { kind: "update", from: cursor, to, value: record.value }
+              : { kind: "application-error", from: cursor, to, error: record.applicationError }
             : { kind: "checkpoint", from: cursor, to };
           await this.sendTransition(listener, transition);
           cursor = to;
@@ -913,7 +927,17 @@ export class OrderedReactive<C = unknown> {
         return;
       }
     }
-    await this.sendTransition(listener, { kind: "reset", from: from ?? null, to: target, value: entry.value });
+    await this.sendTransition(
+      listener,
+      entry.applicationError === undefined
+        ? { kind: "reset", from: from ?? null, to: target, value: entry.value }
+        : {
+            kind: "application-error",
+            from: from ?? null,
+            to: target,
+            error: entry.applicationError,
+          },
+    );
   }
 
   private async sendTransition(

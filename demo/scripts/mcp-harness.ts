@@ -3,9 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DbzzClient, DbzzClientError } from "@dbzz/client";
+import { DbzzClient } from "@dbzz/client";
 import { loadConfig, startApp, type AppConfig, type RunningApp } from "@dbzz/cli";
 import { api } from "@demo/dbzz-codegen/api";
+import { expectErrorCode, expectOk } from "./result.ts";
 
 const SERVER_DIR = fileURLToPath(new URL("../app/server", import.meta.url));
 export const STAFF_TOKEN = process.env.DBZZ_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
@@ -74,15 +75,17 @@ export class McpHarness {
 
   async staff(): Promise<DbzzClient> {
     const staff = this.client(STAFF_TOKEN);
-    await staff.mutation(api.setup.initialize, {});
+    expectOk(await staff.mutation(api.setup.initialize, {}));
     return staff;
   }
 
   async guest(email: string, name = "MCP Guest"): Promise<DbzzClient> {
-    const login = await this.client().procedure(api.auth.login, { name, email });
+    const login = expectOk(
+      await this.client().procedure(api.auth.login, { name, email }),
+    );
     const client = this.client(login.token);
-    await client.mutation(api.users.ensureCurrent, {});
-    await client.query(api.users.current, {});
+    expectOk(await client.mutation(api.users.ensureCurrent, {}));
+    expectOk(await client.query(api.users.current, {}));
     return client;
   }
 
@@ -138,19 +141,7 @@ export async function withBackend(
   }
 }
 
-export async function expectCode(
-  work: Promise<unknown>,
-  code: DbzzClientError["code"],
-): Promise<void> {
-  try {
-    await work;
-  } catch (error) {
-    expect(error).toBeInstanceOf(DbzzClientError);
-    expect((error as DbzzClientError).code).toBe(code);
-    return;
-  }
-  throw new Error(`expected ${code}`);
-}
+export const expectCode = expectErrorCode;
 
 export function identityOf(client: DbzzClient): bigint {
   const auth = client.currentAuthentication;
@@ -158,8 +149,14 @@ export function identityOf(client: DbzzClient): bigint {
   return auth.identity;
 }
 
-export function issueToken(staff: DbzzClient, name: string, scopes: Scope[]) {
-  return staff.mutation(api.admin.tokens.create, { name, scopes });
+export async function issueToken(
+  staff: DbzzClient,
+  name: string,
+  scopes: Scope[],
+) {
+  return expectOk(
+    await staff.mutation(api.admin.tokens.create, { name, scopes }),
+  );
 }
 
 export async function listedToolNames(response: Response): Promise<readonly string[]> {

@@ -1,6 +1,6 @@
 import { mutation } from "@demo/dbzz-codegen/server";
 import { staffAccess } from "../lib/access.ts";
-import { scheduleReminder } from "../lib/domain.ts";
+import { scheduleReminder } from "../lib/domain/order-workflow.ts";
 import type { ItemStatus } from "@demo/dbzz-codegen/types";
 
 const SEED_KEY = "restaurant-v1";

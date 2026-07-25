@@ -33,7 +33,11 @@ export default function LoginScreen() {
     setError(null);
     try {
       const result = await login({ name, email });
-      await establish(result);
+      if (!result.ok) {
+        setError(errorMessage(result.error));
+        return;
+      }
+      await establish(result.data);
       router.replace("/");
     } catch (caught) {
       setError(errorMessage(caught));

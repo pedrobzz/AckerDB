@@ -250,9 +250,13 @@ function describeQuery(state: DbzzQueryState<Message[]>): string {
     case "pending":
       return state.status;
     case "success":
-      return `${state.stale ? "stale" : "fresh"}:${state.data.map((row) => row.body).join(",")}`;
-    case "error":
+      return `fresh:${state.data.map((row) => row.body).join(",")}`;
+    case "rejected":
       return `error:${state.error.code}`;
+    case "unavailable":
+      return state.data === undefined
+        ? `error:${state.error.code}`
+        : `stale:${state.data.map((row) => row.body).join(",")}`;
   }
 }
 

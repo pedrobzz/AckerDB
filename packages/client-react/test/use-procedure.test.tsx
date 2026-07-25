@@ -3,7 +3,12 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DbzzWebSocket, ProcedureRef } from "@dbzz/client";
+import {
+  DbzzClientError,
+  type ClientResult,
+  type DbzzWebSocket,
+  type ProcedureRef,
+} from "@dbzz/client";
 import {
   DbzzError,
   Engine,
@@ -53,6 +58,16 @@ const api = {
     block: { $ref: "tools.block" } as ProcedureRef<Record<never, never>, string>,
   },
 };
+
+function mustOk<Data>(result: ClientResult<Data>): Data {
+  if (!result.ok) throw result.error;
+  return result.data;
+}
+
+function mustErr<Data>(result: ClientResult<Data>): DbzzClientError {
+  if (result.ok) throw new Error("expected a failed Result");
+  return result.error;
+}
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -186,15 +201,14 @@ describe("useProcedure against a real dbzz server", () => {
         // Mode runs this effect twice; both queued calls wait through the
         // simulated remount (which closes the first client before either
         // could dispatch) and resolve once against the surviving lifetime.
-        echo({ value: "hi" }).then(
-          (value) => {
-            settlements.push({ kind: "ok", value });
-            setText(value);
-          },
-          (error) => {
-            settlements.push({ kind: "error", error });
-          },
-        );
+        echo({ value: "hi" }).then((result) => {
+          if (result.ok) {
+            settlements.push({ kind: "ok", value: result.data });
+            setText(result.data);
+          } else {
+            settlements.push({ kind: "error", error: result.error });
+          }
+        });
       }, [echo]);
       return <output>{text}</output>;
     }
@@ -241,9 +255,9 @@ describe("useProcedure against a real dbzz server", () => {
     );
     await until(() => echo !== null && fail !== null, "the captured callables");
 
-    expect(await echo!({ value: "quiet" })).toBe("QUIET");
+    expect(mustOk(await echo!({ value: "quiet" }))).toBe("QUIET");
 
-    const failure = await fail!({}).catch((error) => error);
+    const failure = mustErr(await fail!({}));
     expect(failure).toMatchObject({
       name: "DbzzClientError",
       code: "conflict",
@@ -277,14 +291,14 @@ describe("useProcedure against a real dbzz server", () => {
 
     const callsBefore = app.calls.length;
     const controller = new AbortController();
-    const completion = block!({}, { signal: controller.signal }).catch((error) => error);
+    const completion = block!({}, { signal: controller.signal });
     await blockStarted.promise; // the real server handler is executing
 
     controller.abort();
     // The handler is still blocked, so prompt settlement proves the abort
     // traveled through the client's fetch rather than waiting on the server.
     await settlesWithin(completion, 500, "the aborted procedure");
-    expect(await completion).toMatchObject({
+    expect(mustErr(await completion)).toMatchObject({
       name: "DbzzClientError",
       code: "indeterminate",
       resource: "operation",
@@ -293,7 +307,7 @@ describe("useProcedure against a real dbzz server", () => {
     expect(app.calls.at(-1)!.signal?.aborted).toBe(true);
 
     // A signal aborted before the call never dispatches a request at all.
-    const preAborted = await block!({}, { signal: controller.signal }).catch((error) => error);
+    const preAborted = mustErr(await block!({}, { signal: controller.signal }));
     expect(preAborted).toMatchObject({
       name: "DbzzClientError",
       code: "unavailable",
@@ -328,7 +342,7 @@ describe("useProcedure against a real dbzz server", () => {
     );
     await until(() => echo !== null, "the captured callable");
 
-    const failure = await echo!({ value: "down" }).catch((error) => error);
+    const failure = mustErr(await echo!({ value: "down" }));
     expect(failure).toMatchObject({
       name: "DbzzClientError",
       code: "indeterminate",
@@ -360,13 +374,13 @@ describe("useProcedure against a real dbzz server", () => {
     );
     await until(() => block !== null && echo !== null, "the captured callables");
 
-    const completion = block!({}).catch((error) => error);
+    const completion = block!({});
     await blockStarted.promise;
 
     await unmount(root);
     // close() aborts the in-flight fetch; the handler is still blocked.
     await settlesWithin(completion, 500, "the provider-closed procedure");
-    expect(await completion).toMatchObject({
+    expect(mustErr(await completion)).toMatchObject({
       name: "DbzzClientError",
       code: "indeterminate",
       resource: "operation",
@@ -375,7 +389,7 @@ describe("useProcedure against a real dbzz server", () => {
     // A stale callable after shutdown settles locally in the hook: its
     // ownership ended with the component, so nothing dispatches.
     const callsBefore = app.calls.length;
-    const stale = await echo!({ value: "late" }).catch((error) => error);
+    const stale = mustErr(await echo!({ value: "late" }));
     expect(stale).toMatchObject({
       name: "DbzzClientError",
       code: "unavailable",
@@ -401,12 +415,12 @@ describe("useProcedure against a real dbzz server", () => {
     const root = createRoot(container);
     root.render(<Host mounted={true} />);
     await until(() => echo !== null, "the captured callable");
-    expect(await echo!({ value: "alive" })).toBe("ALIVE");
+    expect(mustOk(await echo!({ value: "alive" }))).toBe("ALIVE");
 
     root.render(<Host mounted={false} />);
     await Bun.sleep(20); // the consumer's unmount commit, provider untouched
     const callsBefore = app.calls.length;
-    const stale = await echo!({ value: "late" }).catch((error) => error);
+    const stale = mustErr(await echo!({ value: "late" }));
     expect(stale).toMatchObject({
       name: "DbzzClientError",
       code: "unavailable",
@@ -480,14 +494,9 @@ describe("useProcedure against a real dbzz server", () => {
     }): ReactNode {
       useLayoutEffect(() => {
         if (!fire) return;
-        run({ value: "layout" }).then(
-          (value) => {
-            settled = value;
-          },
-          (error) => {
-            settled = error;
-          },
-        );
+        run({ value: "layout" }).then((result) => {
+          settled = result.ok ? result.data : result.error;
+        });
       }, [fire, run]);
       return null;
     }
@@ -505,7 +514,7 @@ describe("useProcedure against a real dbzz server", () => {
     );
     // Prove the first lifetime committed and dispatches before retiring it.
     await until(() => echo !== null, "the captured callable");
-    expect(await echo!({ value: "warm" })).toBe("WARM");
+    expect(mustOk(await echo!({ value: "warm" }))).toBe("WARM");
     expect(dispatches).toEqual(["retired"]);
 
     root.render(
@@ -543,14 +552,20 @@ describe("useProcedure against a real dbzz server", () => {
     function RaceOnMount(): ReactNode {
       const echo = useProcedure(api.tools.echo);
       useEffect(() => {
-        echo({ value: "first" }).then(
-          (value) => settlements.push({ kind: "ok", value }),
-          (error) => settlements.push({ kind: "error", error }),
-        );
-        echo({ value: "second" }, { signal: controller.signal }).then(
-          (value) => settlements.push({ kind: "ok", value }),
-          (error) => settlements.push({ kind: "error", error }),
-        );
+        echo({ value: "first" }).then((result) => {
+          settlements.push(
+            result.ok
+              ? { kind: "ok", value: result.data }
+              : { kind: "error", error: result.error },
+          );
+        });
+        echo({ value: "second" }, { signal: controller.signal }).then((result) => {
+          settlements.push(
+            result.ok
+              ? { kind: "ok", value: result.data }
+              : { kind: "error", error: result.error },
+          );
+        });
       }, [echo]);
       return null;
     }
@@ -592,14 +607,9 @@ describe("useProcedure against a real dbzz server", () => {
     function CallAndVanish({ vanish }: { readonly vanish: () => void }): ReactNode {
       const echo = useProcedure(api.tools.echo);
       useLayoutEffect(() => {
-        echo(args, { signal: controller.signal }).then(
-          (value) => {
-            settled = value;
-          },
-          (error) => {
-            settled = error;
-          },
-        );
+        echo(args, { signal: controller.signal }).then((result) => {
+          settled = result.ok ? result.data : result.error;
+        });
         vanish();
       }, [echo, vanish]);
       return null;

@@ -1,6 +1,7 @@
 import { query } from "@demo/dbzz-codegen/server";
 import { staffAccess } from "../lib/access.ts";
-import { isFinal, orderView, REMINDER_DELAY_MS } from "../lib/domain.ts";
+import { isFinal, REMINDER_DELAY_MS } from "../lib/domain/order-status.ts";
+import { orderView } from "../lib/domain/orders.ts";
 
 
 export const overview = query({

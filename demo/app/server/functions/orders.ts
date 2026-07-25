@@ -1,3 +1,4 @@
+import { Err, Status } from "@dbzz/core";
 import { v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { requireUser, staffAccess } from "../lib/access.ts";
@@ -6,36 +7,39 @@ import {
   cancelOpenOrder,
   cancelOrderItem,
   closeOrder,
-  conflict,
-  isFinal,
-  notFound,
+} from "../lib/domain/order-workflow.ts";
+import {
+  openOrder,
   openOrderForTable,
   openOrderForUser,
   orderView,
-  payableCents,
-  requireActiveTable,
-  requireCurrentUser,
-  requireOpenOrder,
-  requireOwnedOpenOrder,
-} from "../lib/domain.ts";
+  ownedOpenOrder,
+} from "../lib/domain/orders.ts";
+import { currentUser } from "../lib/domain/guests.ts";
+import { isFinal, payableCents } from "../lib/domain/order-status.ts";
+import { activeTable } from "../lib/domain/tables.ts";
 
 const guestAccess = (ctx: { auth: Parameters<typeof requireUser>[0] }) =>
   ctx.auth.kind === "user";
-const cartArgs = v.array(
-  v.object({
-    menuItemId: v.bigint(),
-    quantity: v.int(),
-    note: v.string().nullable(),
-  }),
-);
+const cartArgs = v
+  .array(
+    v.object({
+      menuItemId: v.bigint(),
+      quantity: v.int().min(1).max(20),
+      note: v.string().max(160).nullable(),
+    }),
+  )
+  .min(1)
+  .max(25);
 
 export const current = query({
   access: guestAccess,
   args: {},
   handler: async (ctx) => {
     const principal = requireUser(ctx.auth);
-    const user = await requireCurrentUser(ctx.db, principal.identity);
-    const order = await openOrderForUser(ctx.db, user.id);
+    const user = await currentUser(ctx.db, principal.identity);
+    if (!user.ok) return user;
+    const order = await openOrderForUser(ctx.db, user.data.id);
     return order === null ? null : orderView(ctx.db, order);
   },
 });
@@ -45,10 +49,11 @@ export const history = query({
   args: {},
   handler: async (ctx) => {
     const principal = requireUser(ctx.auth);
-    const user = await requireCurrentUser(ctx.db, principal.identity);
+    const user = await currentUser(ctx.db, principal.identity);
+    if (!user.ok) return user;
     const orders = await ctx.db.orders
       .query()
-      .where((order) => order.userId.eq(user.id))
+      .where((order) => order.userId.eq(user.data.id))
       .orderBy((order) => order.openedAt.desc())
       .thenBy((order) => order.id.desc())
       .collect();
@@ -66,19 +71,49 @@ export const history = query({
 export const sit = mutation({
   access: guestAccess,
   args: { tableId: v.bigint() },
+  returns: v.bigint(),
+  errors: {
+    "order.already-open": {
+      body: v.object({ orderId: v.bigint() }),
+      status: Status.Conflict,
+    },
+    "table.not-found": {
+      body: v.object({ tableId: v.bigint() }),
+      status: Status.NotFound,
+    },
+    "table.unavailable": {
+      body: v.object({ tableId: v.bigint() }),
+      status: Status.Conflict,
+    },
+    "guest.profile-required": {
+      body: v.object({}),
+      status: Status.NotFound,
+    },
+  },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
-    const user = await requireCurrentUser(ctx.db, principal.identity);
-    if ((await openOrderForUser(ctx.db, user.id)) !== null)
-      conflict("You already have an open order");
-    const table = await requireActiveTable(ctx.db, args.tableId);
-    if ((await openOrderForTable(ctx.db, table.id)) !== null)
-      conflict("This table was just taken");
+    const user = await currentUser(ctx.db, principal.identity);
+    if (!user.ok) return user;
+    const openOrder = await openOrderForUser(ctx.db, user.data.id);
+    if (openOrder !== null) {
+      return Err(
+        "order.already-open",
+        { orderId: openOrder.id },
+        Status.Conflict,
+      );
+    }
+    const table = await ctx.db.restaurantTables.get(args.tableId);
+    if (table === null || !table.active) {
+      return Err("table.not-found", { tableId: args.tableId }, Status.NotFound);
+    }
+    if ((await openOrderForTable(ctx.db, table.id)) !== null) {
+      return Err("table.unavailable", { tableId: table.id }, Status.Conflict);
+    }
     const now = Date.now();
     return ctx.db.orders.insert({
-      userId: user.id,
+      userId: user.data.id,
       tableId: table.id,
-      openUserId: user.id,
+      openUserId: user.data.id,
       openTableId: table.id,
       status: "OPEN",
       totalCents: 0,
@@ -93,12 +128,13 @@ export const addItems = mutation({
   args: { orderId: v.bigint(), items: cartArgs },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
-    const { order } = await requireOwnedOpenOrder(
+    const owned = await ownedOpenOrder(
       ctx.db,
       principal.identity,
       args.orderId,
     );
-    return addOrderItems(ctx.db, order, args.items);
+    if (!owned.ok) return owned;
+    return addOrderItems(ctx.db, owned.data.order, args.items);
   },
 });
 
@@ -107,16 +143,26 @@ export const cancelItem = mutation({
   args: { orderId: v.bigint(), orderItemId: v.bigint() },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
-    const { order } = await requireOwnedOpenOrder(
+    const owned = await ownedOpenOrder(
       ctx.db,
       principal.identity,
       args.orderId,
     );
-    const item =
-      (await ctx.db.orderItems.get(args.orderItemId)) ??
-      notFound("Order item not found");
-    if (item.orderId !== order.id) notFound("Order item not found");
-    return cancelOrderItem(ctx.db, order, item, `${item.name} was cancelled`);
+    if (!owned.ok) return owned;
+    const item = await ctx.db.orderItems.get(args.orderItemId);
+    if (item === null || item.orderId !== owned.data.order.id) {
+      return Err(
+        "order-item.not-found",
+        { orderItemId: args.orderItemId },
+        Status.NotFound,
+      );
+    }
+    return cancelOrderItem(
+      ctx.db,
+      owned.data.order,
+      item,
+      `${item.name} was cancelled`,
+    );
   },
 });
 
@@ -125,18 +171,22 @@ export const closeCancelled = mutation({
   args: { orderId: v.bigint() },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
-    const { order } = await requireOwnedOpenOrder(
+    const owned = await ownedOpenOrder(
       ctx.db,
       principal.identity,
       args.orderId,
     );
+    if (!owned.ok) return owned;
+    const order = owned.data.order;
     const items = await ctx.db.orderItems
       .query()
       .where((item) => item.orderId.eq(order.id))
       .collect();
     if (!items.every((item) => item.status === "CANCELLED")) {
-      conflict(
-        "Only an empty or all-cancelled order can be closed without payment",
+      return Err(
+        "order.not-cancellable",
+        { orderId: order.id },
+        Status.Conflict,
       );
     }
     await closeOrder(ctx.db, order, "CANCELLED", 0, "Your order was closed");
@@ -149,11 +199,13 @@ export const pay = mutation({
   args: { orderId: v.bigint() },
   handler: async (ctx, args) => {
     const principal = requireUser(ctx.auth);
-    const { order } = await requireOwnedOpenOrder(
+    const owned = await ownedOpenOrder(
       ctx.db,
       principal.identity,
       args.orderId,
     );
+    if (!owned.ok) return owned;
+    const order = owned.data.order;
     const items = await ctx.db.orderItems
       .query()
       .where((item) => item.orderId.eq(order.id))
@@ -163,7 +215,7 @@ export const pay = mutation({
       !items.every((item) => isFinal(item.status)) ||
       !items.some((item) => item.status === "SERVED")
     ) {
-      conflict("The bill is available after every item is served or cancelled");
+      return Err("order.not-payable", { orderId: order.id }, Status.Conflict);
     }
     const totalCents = payableCents(items);
     await closeOrder(
@@ -192,30 +244,40 @@ export const list = query({
 export const detail = query({
   access: staffAccess,
   args: { id: v.bigint() },
-  handler: async (ctx, args) =>
-    orderView(
-      ctx.db,
-      (await ctx.db.orders.get(args.id)) ?? notFound("Order not found"),
-    ),
+  handler: async (ctx, args) => {
+    const order = await ctx.db.orders.get(args.id);
+    return order === null
+      ? Err("order.not-found", { orderId: args.id }, Status.NotFound)
+      : orderView(ctx.db, order);
+  },
 });
 
 export const create = mutation({
   access: staffAccess,
   args: { userId: v.bigint(), tableId: v.bigint() },
   handler: async (ctx, args) => {
-    const user =
-      (await ctx.db.users.get(args.userId)) ?? notFound("Guest not found");
-    if ((await openOrderForUser(ctx.db, user.id)) !== null)
-      conflict("This guest already has an open order");
-    const table = await requireActiveTable(ctx.db, args.tableId);
-    if ((await openOrderForTable(ctx.db, table.id)) !== null)
-      conflict("This table is already occupied");
+    const user = await ctx.db.users.get(args.userId);
+    if (user === null) {
+      return Err("guest.not-found", { id: args.userId }, Status.NotFound);
+    }
+    if ((await openOrderForUser(ctx.db, user.id)) !== null) {
+      return Err("order.already-open", { userId: user.id }, Status.Conflict);
+    }
+    const table = await activeTable(ctx.db, args.tableId);
+    if (!table.ok) return table;
+    if ((await openOrderForTable(ctx.db, table.data.id)) !== null) {
+      return Err(
+        "table.unavailable",
+        { tableId: table.data.id },
+        Status.Conflict,
+      );
+    }
     const now = Date.now();
     return ctx.db.orders.insert({
       userId: user.id,
-      tableId: table.id,
+      tableId: table.data.id,
       openUserId: user.id,
-      openTableId: table.id,
+      openTableId: table.data.id,
       status: "OPEN",
       totalCents: 0,
       openedAt: now,
@@ -227,17 +289,17 @@ export const create = mutation({
 export const addItemsAsStaff = mutation({
   access: staffAccess,
   args: { orderId: v.bigint(), items: cartArgs },
-  handler: async (ctx, args) =>
-    addOrderItems(
-      ctx.db,
-      await requireOpenOrder(ctx.db, args.orderId),
-      args.items,
-    ),
+  handler: async (ctx, args) => {
+    const order = await openOrder(ctx.db, args.orderId);
+    return order.ok ? addOrderItems(ctx.db, order.data, args.items) : order;
+  },
 });
 
 export const cancel = mutation({
   access: staffAccess,
   args: { orderId: v.bigint() },
-  handler: async (ctx, args) =>
-    (await cancelOpenOrder(ctx.db, args.orderId)).order.id,
+  handler: async (ctx, args) => {
+    const result = await cancelOpenOrder(ctx.db, args.orderId);
+    return result.ok ? result.data.order.id : result;
+  },
 });

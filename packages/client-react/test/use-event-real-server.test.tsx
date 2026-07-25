@@ -147,7 +147,14 @@ describe("useEvent against a real dbzz server", () => {
       credential: { kind: "anonymous" },
       createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
     });
-    const emit = (n: number): Promise<number> => emitter.mutation("pings.emit", { n });
+    const emit = async (n: number): Promise<number> => {
+      const result = await emitter.mutation<{ n: number }, number, never>(
+        "pings.emit",
+        { n },
+      );
+      if (!result.ok) throw result.error;
+      return result.data;
+    };
 
     const view = (marker: string): ReactNode => (
       <StrictMode>

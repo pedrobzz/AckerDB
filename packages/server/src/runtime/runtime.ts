@@ -3,9 +3,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
 import {
   PROTOCOL_VERSION,
+  Failure,
+  Ok,
   decode,
   encode,
+  isApplicationError,
+  isResult,
   stableEncode,
+  type ApplicationErrorMessage,
   type ErrorMessage,
   type EventMessage,
   type LiveEvent,
@@ -15,6 +20,7 @@ import {
   type ProcedureOkMessage,
   type QueryMessage,
   type QueryOkMessage,
+  type Result,
   type ResetRequestMessage,
   type SseAckRequest,
   type SubscribeMessage,
@@ -93,10 +99,13 @@ import {
   authorizeInvocation,
   currentInvocationTelemetryContext,
   invokeFunction,
+  poisonCurrentInvocation,
+  withMutationInvocationScope,
   withInvocationTelemetry,
   type InvocationOutcome,
   type InvocationTelemetryContext,
 } from "../app/invocation.ts";
+import { createMutationInvocationScope } from "./mutation-scope.ts";
 import {
   finalizeMcpToolResult,
   type AnyRegisteredMcpTool,
@@ -178,6 +187,25 @@ const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 /** Package-private transport hook; intentionally absent from the public index. */
 export const CAPTURE_DELIVERY_OBSERVER = Symbol("dbzz.captureDeliveryObserver");
+
+function applicationError(value: unknown) {
+  if (!isApplicationError(value)) {
+    throw new DbzzError("internal", "registered Err contains no application error");
+  }
+  return value;
+}
+
+function restoreMutationResult(value: unknown): Result<unknown, unknown> {
+  if (isResult(value)) return value;
+  if (typeof value !== "object" || value === null || !("ok" in value)) {
+    throw new DbzzError("internal", "stored mutation result has no Result shape");
+  }
+  if (value.ok === true && "data" in value) return Ok(value.data);
+  if (value.ok === false && "error" in value && isApplicationError(value.error)) {
+    return Failure(value.error);
+  }
+  throw new DbzzError("internal", "stored mutation Result is invalid");
+}
 
 export type RuntimeLifecycleState = "ready" | "draining" | "stopped" | "failed";
 
@@ -1123,7 +1151,7 @@ export class Runtime implements RuntimePort {
     let publication: RuntimePublication | undefined;
     return this.runSessionOperation(context, request, "query", message.ref, async (_state, requestBytes) => {
       const signal = this.operationSignal(context.signal);
-      const value = await this.executeQuery(
+      const result = await this.executeQuery(
         message.ref,
         message.args,
         context.principal,
@@ -1131,14 +1159,26 @@ export class Runtime implements RuntimePort {
         signal,
         requestBytes,
       );
-      publication = this.prepareFrame({
-        v: PROTOCOL_VERSION,
-        t: "ok",
-        id: message.id,
-        kind: "query",
-        value,
-      } satisfies QueryOkMessage, "query result");
-      return value;
+      if (!isResult(result)) throw new DbzzError("internal", "query boundary returned no Result");
+      publication = this.prepareFrame(
+        result.ok
+          ? {
+              v: PROTOCOL_VERSION,
+              t: "ok",
+              id: message.id,
+              kind: "query",
+              value: result.data,
+            } satisfies QueryOkMessage
+          : {
+              v: PROTOCOL_VERSION,
+              t: "app_err",
+              id: message.id,
+              kind: "query",
+              error: applicationError(result.error),
+            } satisfies ApplicationErrorMessage,
+        "query result",
+      );
+      return result.ok ? result.data : result;
     }, {
       identifiers: { requestId: String(message.id) },
       successPublication: () => {
@@ -1183,14 +1223,17 @@ export class Runtime implements RuntimePort {
             this.readNow(),
             writes,
           );
-          return this.hasMcpCapabilities
-            ? withMcpTokenCapability(
-                invocation,
-                this.mcpTokenCapability(context.principal, this.engine.writer, null, writes),
-                (ctx) => invokeFunction(fn, ctx, message.args),
-              )
-            : invokeFunction(fn, invocation, message.args);
+          const scope = createMutationInvocationScope(this.engine.writer, writes);
+          return withMutationInvocationScope(scope, () =>
+            this.hasMcpCapabilities
+              ? withMcpTokenCapability(
+                  invocation,
+                  this.mcpTokenCapability(context.principal, this.engine.writer, null, writes),
+                  (ctx) => invokeFunction(fn, ctx, message.args),
+                )
+              : invokeFunction(fn, invocation, message.args));
         },
+        rollbackWhen: (value) => isResult(value) && !value.ok,
         publication: (_version, writes) => {
           scheduledTouched = writes.scheduledTouched;
           return this.publicationFor(writes, state.subscriber);
@@ -1438,17 +1481,31 @@ export class Runtime implements RuntimePort {
     request: RuntimeProcedureRequest,
     outcome: RuntimeOperationOutcome<unknown>,
   ): Response {
-    let frame: ProcedureOkMessage | ErrorMessage;
+    let frame: ProcedureOkMessage | ApplicationErrorMessage | ErrorMessage;
     let status: number;
     if (outcome.ok) {
-      frame = {
-        v: PROTOCOL_VERSION,
-        t: "ok",
-        id: request.id,
-        kind: "procedure",
-        value: outcome.value,
-      };
-      status = 200;
+      if (!isResult(outcome.value)) {
+        throw new DbzzError("internal", "procedure boundary returned no Result");
+      }
+      if (outcome.value.ok) {
+        frame = {
+          v: PROTOCOL_VERSION,
+          t: "ok",
+          id: request.id,
+          kind: "procedure",
+          value: outcome.value.data,
+        };
+        status = 200;
+      } else {
+        frame = {
+          v: PROTOCOL_VERSION,
+          t: "app_err",
+          id: request.id,
+          kind: "procedure",
+          error: applicationError(outcome.value.error),
+        };
+        status = frame.error.status;
+      }
     } else {
       const safe = outcomeFromError(outcome.error);
       frame = { v: PROTOCOL_VERSION, t: "err", id: request.id, outcome: safe };
@@ -1471,7 +1528,7 @@ export class Runtime implements RuntimePort {
   }
 
   private encodeProcedureFrame(
-    frame: ProcedureOkMessage | ErrorMessage,
+    frame: ProcedureOkMessage | ApplicationErrorMessage | ErrorMessage,
   ): Pick<RuntimeProcedureResponse, "body" | "bytes"> {
     const startedAt = this.telemetry.enabled ? performance.now() : 0;
     let bytes: number | undefined;
@@ -1875,14 +1932,20 @@ export class Runtime implements RuntimePort {
                 this.readNow(),
                 writes,
               );
-              if (this.hasMcpCapabilities) {
-                await withMcpTokenCapability(
-                  invocation,
-                  this.mcpTokenCapability(SYSTEM_PRINCIPAL, this.engine.writer, null, writes),
-                  (ctx) => invokeFunction(fn, ctx, row),
+              const scope = createMutationInvocationScope(this.engine.writer, writes);
+              const result = await withMutationInvocationScope(scope, () =>
+                this.hasMcpCapabilities
+                  ? withMcpTokenCapability(
+                      invocation,
+                      this.mcpTokenCapability(SYSTEM_PRINCIPAL, this.engine.writer, null, writes),
+                      (ctx) => invokeFunction(fn, ctx, row),
+                    )
+                  : invokeFunction(fn, invocation, row));
+              if (!result.ok) {
+                throw new DbzzError(
+                  "conflict",
+                  `scheduled mutation returned application error ${result.error.code}`,
                 );
-              } else {
-                await invokeFunction(fn, invocation, row);
               }
             },
             finalize: (writes) => {
@@ -2650,7 +2713,13 @@ export class Runtime implements RuntimePort {
   private encodeQueryEvaluation(execution: QueryExecution): QueryEvaluation {
     const startedAt = this.telemetry.enabled ? performance.now() : 0;
     try {
-      const encoded = encode(execution.value);
+      if (!isResult(execution.value)) {
+        throw new DbzzError("internal", "subscription query boundary returned no Result");
+      }
+      const wireValue = execution.value.ok
+        ? execution.value.data
+        : execution.value.error;
+      const encoded = encode(wireValue);
       if (this.telemetry.enabled) {
         this.traceSpan({
           stage: "encoding",
@@ -2658,14 +2727,21 @@ export class Runtime implements RuntimePort {
           resource: "operation",
           durationMs: Math.max(0, performance.now() - startedAt),
           sizeBytes: Buffer.byteLength(encoded),
-          resultCount: Array.isArray(execution.value)
-            ? execution.value.length
-            : execution.value === null
+          resultCount: Array.isArray(wireValue)
+            ? wireValue.length
+            : wireValue === null
               ? 0
               : 1,
         }, "subscription");
       }
-      return Object.freeze({ ...execution, encoded });
+      return Object.freeze({
+        ...execution,
+        value: execution.value.ok ? execution.value.data : undefined,
+        ...(execution.value.ok
+          ? {}
+          : { applicationError: applicationError(execution.value.error) }),
+        encoded,
+      });
     } catch (error) {
       if (this.telemetry.enabled) {
         this.traceSpan({
@@ -2726,6 +2802,7 @@ export class Runtime implements RuntimePort {
       admissionSignal: signal,
       transactionSignal: signal,
       work,
+      rollbackWhen: (value) => isResult(value) && !value.ok,
       publication: (_version, writes) => {
         scheduledTouched = writes.scheduledTouched;
         return this.publicationFor(writes);
@@ -2754,23 +2831,27 @@ export class Runtime implements RuntimePort {
       auth: principal,
       abortSignal: signal,
       timestamp,
-      tx: <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> =>
-        this.inTransactionTrace(() => this.executeWrite(
+      tx: async <R>(work: (ctx: TxCtx) => R): Promise<Awaited<R>> =>
+        await this.inTransactionTrace(() => this.executeWrite(
           "transaction",
           fairnessKey,
           signal,
           requestBytes,
-          (db, writes) => {
+          async (db, writes) => {
             const context = Object.freeze({ db, auth: principal, timestamp }) as TxCtx;
-            return this.hasMcpCapabilities
-              ? withMcpTokenCapability(
-                  context,
-                  this.mcpTokenCapability(principal, this.engine.writer, null, writes),
-                  work,
-                )
-              : work(context);
+            try {
+              return await (this.hasMcpCapabilities
+                ? withMcpTokenCapability(
+                    context,
+                    this.mcpTokenCapability(principal, this.engine.writer, null, writes),
+                    work,
+                  )
+                : work(context));
+            } catch (error) {
+              return poisonCurrentInvocation(error);
+            }
           },
-        )),
+        )) as Awaited<R>,
     });
   }
 
@@ -2835,7 +2916,7 @@ export class Runtime implements RuntimePort {
       abortSignal: signal,
       timestamp,
       ...plugins,
-      tx: <T>(work: (ctx: TxCtx) => T | Promise<T>): Promise<T> =>
+      tx: <R>(work: (ctx: TxCtx) => R) =>
         this.inTransactionTrace(() => this.executeWrite(
           "transaction",
           fairnessKey,
@@ -2843,13 +2924,21 @@ export class Runtime implements RuntimePort {
           requestBytes,
           (db, writes) => {
             const context = this.hostMutationContext(db, principal, timestamp, writes) as TxCtx;
-            return this.hasMcpCapabilities
-              ? withMcpTokenCapability(
-                  context,
-                  this.mcpTokenCapability(principal, this.engine.writer, null, writes),
-                  work,
-                )
-              : work(context);
+            const scope = createMutationInvocationScope(this.engine.writer, writes);
+            return withMutationInvocationScope(scope, () => scope.run(async () => {
+              try {
+                const value = await (this.hasMcpCapabilities
+                  ? withMcpTokenCapability(
+                      context,
+                      this.mcpTokenCapability(principal, this.engine.writer, null, writes),
+                      work,
+                    )
+                  : work(context));
+                return isResult(value) ? value : Ok(value);
+              } catch (error) {
+                return poisonCurrentInvocation(error);
+              }
+            }));
           },
         )),
       linkAccount: (rawBearerToken: string) => this.linkAccount(
@@ -2940,8 +3029,11 @@ export class Runtime implements RuntimePort {
     result: CommitResult<unknown, ReactiveCommit>,
     executedPublication?: RuntimePublication,
   ): Promise<FinishedRuntimeMutation> {
+    const value = restoreMutationResult(result.value);
     let obligations: readonly number[];
-    if (result.replay === "replayed") {
+    if (!value.ok && result.publication === undefined) {
+      obligations = [];
+    } else if (result.replay === "replayed") {
       const convergence = await this.reactive.converge(state.subscriber, result.commitVersion);
       obligations = convergence.affectedCallerIds;
       this.assertConvergence(state.subscriber, obligations, convergence.deliveryFailures);
@@ -2954,11 +3046,20 @@ export class Runtime implements RuntimePort {
       this.assertConvergence(state.subscriber, obligations, convergence.deliveryFailures);
     }
     let publication = executedPublication;
-    if (result.replay === "replayed") {
+    if (!value.ok && result.publication === undefined) {
+      publication = this.prepareFrame(this.mutationFrame(
+        message,
+        value,
+        result.commitVersion,
+        result.durability,
+        result.replay,
+        obligations,
+      ), "mutation result");
+    } else if (result.replay === "replayed") {
       try {
         publication = this.prepareFrame(this.mutationFrame(
           message,
-          result.value,
+          value,
           result.commitVersion,
           result.durability,
           result.replay,
@@ -2972,13 +3073,16 @@ export class Runtime implements RuntimePort {
     }
     if (
       publication === undefined ||
-      publication.message.t !== "ok" ||
+      (publication.message.t !== "ok" && publication.message.t !== "app_err") ||
       publication.message.kind !== "mutation"
     ) {
       throw convergenceError("committed mutation publication was not prepared");
     }
     return Object.freeze({
-      result: Object.freeze({ value: result.value, receipt: publication.message.receipt }),
+      result: Object.freeze({
+        value: value.ok ? value.data : value,
+        receipt: publication.message.receipt!,
+      }),
       publication,
     });
   }
@@ -2990,20 +3094,32 @@ export class Runtime implements RuntimePort {
     durability: CommitResult<unknown, ReactiveCommit>["durability"],
     replay: "executed" | "replayed",
     obligations: readonly number[],
-  ): MutationOkMessage {
+  ): MutationOkMessage | ApplicationErrorMessage {
+    if (!isResult(value)) throw new DbzzError("internal", "mutation boundary returned no Result");
+    const receipt = {
+      mutationRequestId: message.mutationRequestId,
+      commitVersion,
+      durability,
+      replay,
+      obligations: Object.freeze([...obligations]),
+    };
+    if (!value.ok) {
+      return {
+        v: PROTOCOL_VERSION,
+        t: "app_err",
+        id: message.id,
+        kind: "mutation",
+        error: applicationError(value.error),
+        receipt,
+      };
+    }
     return {
       v: PROTOCOL_VERSION,
       t: "ok",
       id: message.id,
       kind: "mutation",
-      value,
-      receipt: {
-        mutationRequestId: message.mutationRequestId,
-        commitVersion,
-        durability,
-        replay,
-        obligations: Object.freeze([...obligations]),
-      },
+      value: value.data,
+      receipt,
     };
   }
 

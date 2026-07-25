@@ -8,6 +8,14 @@
  */
 import type { ExternalAccount, Principal } from "../auth/credentials.ts";
 import {
+  Status,
+  type ApplicationError,
+  type ErrorHttpStatus,
+  type ErrResult,
+  type OkResult,
+  type Result,
+} from "@dbzz/core";
+import {
   type Expand,
   type InferInputShape,
   type InferShape,
@@ -65,7 +73,9 @@ export type ProcedureCtx<
   /** Remove one exact owned account while retaining the durable application Identity. */
   unlinkAccount(account: ExternalAccount): Promise<void>;
   /** Open a transaction: atomic, consistent, no external calls inside. */
-  tx<T>(fn: (tx: TxCtx<S, TransactionCapabilities>) => T | Promise<T>): Promise<T>;
+  tx<R>(
+    fn: (tx: TxCtx<S, TransactionCapabilities>) => R,
+  ): Promise<FunctionResult<R>>;
 };
 
 /**
@@ -96,11 +106,188 @@ export type AccessPolicy<Ctx, Args> =
   | BuiltinAccessPolicy
   | ((ctx: Ctx, args: Args) => boolean | Promise<boolean>);
 
-interface FunctionDef<A extends ObjectShape, Ctx extends InvocationContext, R> {
-  readonly args: A;
-  readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
-  readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => R;
+export interface ErrorDeclaration {
+  readonly body: Validator<unknown, string>;
+  readonly status: ErrorHttpStatus;
 }
+
+export type ErrorDeclarations = Readonly<Record<string, ErrorDeclaration>>;
+
+type DeclaredErrors<Declarations extends ErrorDeclarations> = {
+  readonly [Code in Extract<keyof Declarations, string>]: ApplicationError<
+    Code,
+    Expand<InferValidator<Declarations[Code]["body"]>>,
+    Declarations[Code]["status"]
+  >;
+}[Extract<keyof Declarations, string>];
+
+declare const ERROR_DECLARATION_MISMATCH: unique symbol;
+
+type ExactErrorDeclaration<
+  HandlerReturn,
+  Declarations extends ErrorDeclarations,
+> =
+  [ErrorOfReturn<HandlerReturn>] extends [DeclaredErrors<Declarations>]
+    ? [
+        Exclude<
+          Extract<keyof Declarations, string>,
+          ErrorOfReturn<HandlerReturn> extends infer Error
+            ? Error extends { readonly code: infer Code extends string }
+              ? Code
+              : never
+            : never
+        >,
+      ] extends [never]
+      ? unknown
+      : {
+          readonly [ERROR_DECLARATION_MISMATCH]: {
+            readonly declaredButNotReturned: Exclude<
+              Extract<keyof Declarations, string>,
+              ErrorOfReturn<HandlerReturn> extends infer Error
+                ? Error extends { readonly code: infer Code extends string }
+                  ? Code
+                  : never
+                : never
+            >;
+          };
+        }
+    : {
+        readonly [ERROR_DECLARATION_MISMATCH]: {
+          readonly returnedButNotDeclared: Exclude<
+            ErrorOfReturn<HandlerReturn>,
+            DeclaredErrors<Declarations>
+          >;
+        };
+      };
+
+type ErrorDeclarationCheck<
+  HandlerReturn,
+  Declarations extends ErrorDeclarations | undefined,
+> = unknown extends ErrorOfReturn<HandlerReturn>
+  ? []
+  : [ErrorOfReturn<HandlerReturn>] extends [ApplicationError]
+  ? Declarations extends ErrorDeclarations
+    ? ExactErrorDeclaration<HandlerReturn, Declarations> extends infer Check
+      ? unknown extends Check
+        ? []
+        : [mismatch: Check]
+      : never
+    : []
+  : [
+      mismatch: {
+        readonly registeredFunctionsMayOnlyReturnApplicationErr: Exclude<
+          ErrorOfReturn<HandlerReturn>,
+          ApplicationError
+        >;
+      },
+    ];
+
+type ReturnDeclarationCheck<
+  HandlerReturn,
+  Returns extends Validator<unknown, string> | undefined,
+> = Returns extends Validator<unknown, string>
+  ? [SuccessOf<Awaited<HandlerReturn>>] extends [
+      Expand<InferValidator<Returns>>,
+    ]
+    ? []
+    : [
+        mismatch: {
+          readonly returnedSuccessDoesNotMatch: SuccessOf<
+            Awaited<HandlerReturn>
+          >;
+          readonly declaredSuccess: Expand<InferValidator<Returns>>;
+        },
+      ]
+  : [];
+
+type DeclarationCheck<
+  HandlerReturn,
+  Returns extends Validator<unknown, string> | undefined,
+  Declarations extends ErrorDeclarations | undefined,
+> = ReturnDeclarationCheck<HandlerReturn, Returns> extends []
+  ? ErrorDeclarationCheck<HandlerReturn, Declarations>
+  : ReturnDeclarationCheck<HandlerReturn, Returns>;
+
+type FunctionHandler<
+  A extends ObjectShape,
+  Ctx extends InvocationContext,
+> = (
+  ctx: Ctx,
+  args: Expand<InferShape<A>>,
+) => unknown;
+
+type FunctionDef<
+  A extends ObjectShape,
+  Ctx extends InvocationContext,
+> = {
+  readonly args: A;
+  readonly returns?: Validator<unknown, string>;
+  readonly errors?: ErrorDeclarations;
+  readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
+  readonly handler: FunctionHandler<A, Ctx>;
+};
+
+type DefinitionReturn<Definition extends { readonly handler: Function }> =
+  Definition["handler"] extends (...args: never[]) => infer HandlerReturn
+    ? HandlerReturn
+    : never;
+
+type DefinitionReturns<Definition> = Definition extends {
+  readonly returns: infer Returns extends Validator<unknown, string>;
+}
+  ? Returns
+  : undefined;
+
+type DefinitionErrors<Definition> = Definition extends {
+  readonly errors: infer Declarations extends ErrorDeclarations;
+}
+  ? Declarations
+  : undefined;
+
+type DefinitionCheck<Definition extends { readonly handler: Function }> =
+  DeclarationCheck<
+    DefinitionReturn<NoInfer<Definition>>,
+    DefinitionReturns<NoInfer<Definition>>,
+    DefinitionErrors<NoInfer<Definition>>
+  >;
+
+type ResultOfDefinition<Definition extends { readonly handler: Function }> =
+  DeclaredFunctionResult<
+    DefinitionReturn<Definition>,
+    DefinitionReturns<Definition>,
+    DefinitionErrors<Definition>
+  >;
+
+type SuccessOf<Value> = Value extends ErrResult<unknown, infer _Data>
+  ? never
+  : Value extends OkResult<infer Data, infer _Error>
+    ? Data
+    : Value;
+
+type ErrorOf<Value> = Value extends ErrResult<infer Error, infer _Data> ? Error : never;
+
+type ErrorOfReturn<Value> = Value extends PromiseLike<infer AwaitedValue>
+  ? ErrorOfReturn<AwaitedValue>
+  : ErrorOf<Value>;
+
+/** The registered-call Result produced from a handler's raw/Ok/Err union. */
+export type FunctionResult<HandlerReturn> = Result<
+  SuccessOf<Awaited<HandlerReturn>>,
+  ErrorOf<Awaited<HandlerReturn>>
+>;
+
+type DeclaredFunctionResult<
+  HandlerReturn,
+  Returns extends Validator<unknown, string> | undefined,
+  Declarations extends ErrorDeclarations | undefined,
+> = Result<
+  Returns extends Validator<unknown, string>
+    ? Expand<InferValidator<Returns>>
+    : SuccessOf<Awaited<HandlerReturn>>,
+  Declarations extends ErrorDeclarations
+    ? DeclaredErrors<Declarations>
+    : ErrorOf<Awaited<HandlerReturn>>
+>;
 
 /** Marker-neutral execution contract shared by functions and server-only tools. */
 export interface Invocable<
@@ -114,6 +301,8 @@ export interface Invocable<
   readonly args: A;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
   readonly handler: (ctx: Ctx, args: Expand<InferShape<A>>) => H | Promise<H>;
+  readonly returns?: Validator<unknown, string>;
+  readonly errors?: ErrorDeclarations;
   readonly _argsType?: ArgsInput<A>;
   readonly _retType?: R;
 }
@@ -134,23 +323,41 @@ export interface Registered<
   readonly isDbzz: true;
 }
 
-export type RegisteredQuery<A extends ObjectShape, R, S extends Schema = Schema> = Registered<
+export type RegisteredQuery<
+  A extends ObjectShape,
+  R,
+  S extends Schema = Schema,
+  H = R,
+> = Registered<
   "query",
   A,
   QueryCtx<S>,
-  R
+  R,
+  H
 >;
-export type RegisteredMutation<A extends ObjectShape, R, S extends Schema = Schema> = Registered<
+export type RegisteredMutation<
+  A extends ObjectShape,
+  R,
+  S extends Schema = Schema,
+  H = R,
+> = Registered<
   "mutation",
   A,
   MutationCtx<S>,
-  R
+  R,
+  H
 >;
-export type RegisteredProcedure<A extends ObjectShape, R, S extends Schema = Schema> = Registered<
+export type RegisteredProcedure<
+  A extends ObjectShape,
+  R,
+  S extends Schema = Schema,
+  H = R,
+> = Registered<
   "procedure",
   A,
   ProcedureCtx<S>,
-  R
+  R,
+  H
 >;
 export interface RegisteredSse<A extends ObjectShape, Chunk, S extends Schema = Schema>
   extends Registered<"sse", A, SseCtx<S>, Chunk, SseSource<Chunk>> {
@@ -185,6 +392,27 @@ function isValidator(value: unknown): value is Validator<unknown, string> {
   );
 }
 
+function validateOutputDeclarations(def: Pick<
+  FunctionDef<ObjectShape, InvocationContext>,
+  "returns" | "errors"
+>): void {
+  if (def.returns !== undefined && !isValidator(def.returns)) {
+    throw new TypeError("returns must be a v validator");
+  }
+  if (def.errors === undefined) return;
+  for (const [code, declaration] of Object.entries(def.errors)) {
+    if (code.length === 0) throw new TypeError("error codes must be non-empty strings");
+    if (
+      declaration === null ||
+      typeof declaration !== "object" ||
+      !isValidator(declaration.body) ||
+      !Object.values(Status).includes(declaration.status)
+    ) {
+      throw new TypeError(`errors.${code} must declare a body validator and named Status`);
+    }
+  }
+}
+
 export function validateYields(yields: unknown): asserts yields is Validator<unknown, string> {
   if (!isValidator(yields)) {
     throw new TypeError("sse yields must be a v validator for the chunks the stream emits");
@@ -195,16 +423,28 @@ export function validateYields(yields: unknown): asserts yields is Validator<unk
 }
 
 function register<K extends string>(kind: K) {
-  return <A extends ObjectShape, Ctx extends InvocationContext, R>(
-    def: FunctionDef<A, Ctx, R>,
-  ): Registered<K, A, Ctx, Awaited<R>> => {
+  return <
+    A extends ObjectShape,
+    Ctx extends InvocationContext,
+    const Definition extends FunctionDef<A, Ctx>,
+  >(
+    def: { readonly args: A } & Definition,
+    ..._check: DefinitionCheck<Definition>
+  ): Registered<
+    K,
+    A,
+    Ctx,
+    ResultOfDefinition<Definition>,
+    DefinitionReturn<Definition>
+  > => {
     if (!isAccessPolicy(def.access)) {
       throw new TypeError(`${kind} access must be public, authenticated, system, or a policy callback`);
     }
     validateArgsShape(def.args);
+    validateOutputDeclarations(def as never);
 
     const callable =
-      kind === "query" || kind === "mutation"
+      kind === "query" || kind === "mutation" || kind === "procedure"
         ? (ctx: Ctx, args: unknown) => invokeFunction(registered, ctx, args)
         : () => {
             throw new Error(`${kind}s cannot be called in-process — they exist at the transport boundary`);
@@ -213,9 +453,17 @@ function register<K extends string>(kind: K) {
       isDbzz: true as const,
       kind,
       args: def.args,
+      ...(def.returns === undefined ? {} : { returns: def.returns }),
+      ...(def.errors === undefined ? {} : { errors: def.errors }),
       access: def.access,
       handler: def.handler,
-    }) as unknown as Registered<K, A, Ctx, Awaited<R>>;
+    }) as unknown as Registered<
+      K,
+      A,
+      Ctx,
+      ResultOfDefinition<Definition>,
+      DefinitionReturn<Definition>
+    >;
     compileInvocation(registered);
     return registered;
   };
@@ -223,15 +471,29 @@ function register<K extends string>(kind: K) {
 
 /** Schema-agnostic constructors; queries and mutations are directly callable. */
 function registerCallable<K extends string>(kind: K) {
-  return register(kind) as <A extends ObjectShape, Ctx extends InvocationContext, R>(
-    def: FunctionDef<A, Ctx, R>,
-  ) => Registered<K, A, Ctx, Awaited<R>> &
-    ((ctx: Ctx, args: Expand<ArgsInput<A>>) => Promise<Awaited<R>>);
+  return register(kind) as <
+    A extends ObjectShape,
+    Ctx extends InvocationContext,
+    const Definition extends FunctionDef<A, Ctx>,
+  >(
+    def: { readonly args: A } & Definition,
+    ..._check: DefinitionCheck<Definition>
+  ) => Registered<
+    K,
+    A,
+    Ctx,
+    ResultOfDefinition<Definition>,
+    DefinitionReturn<Definition>
+  > &
+    ((
+      ctx: Ctx,
+      args: Expand<ArgsInput<A>>,
+    ) => Promise<ResultOfDefinition<Definition>>);
 }
 
 export const query = registerCallable("query");
 export const mutation = registerCallable("mutation");
-export const procedure = register("procedure");
+export const procedure = registerCallable("procedure");
 
 interface SseDef<
   A extends ObjectShape,
@@ -281,38 +543,66 @@ export function sseProcedure<
 export type QueryBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
-> = <A extends ObjectShape, R>(def: {
-  readonly args: A;
-  readonly access: AccessPolicy<QueryCtx<S, Capabilities>, Expand<InferShape<A>>>;
-  readonly handler: (ctx: QueryCtx<S, Capabilities>, args: Expand<InferShape<A>>) => R;
-}) => RegisteredQuery<A, Awaited<R>, S> &
-  ((ctx: QueryCtx<S, Capabilities>, args: Expand<ArgsInput<A>>) => Promise<Awaited<R>>);
+> = <
+  A extends ObjectShape,
+  const Definition extends FunctionDef<A, QueryCtx<S, Capabilities>>,
+>(
+  def: { readonly args: A } & Definition,
+  ..._check: DefinitionCheck<Definition>
+) => RegisteredQuery<
+  A,
+  ResultOfDefinition<Definition>,
+  S,
+  DefinitionReturn<Definition>
+> &
+  ((
+    ctx: QueryCtx<S, Capabilities>,
+    args: Expand<ArgsInput<A>>,
+  ) => Promise<ResultOfDefinition<Definition>>);
 
 export type MutationBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
-> = <A extends ObjectShape, R>(def: {
-  readonly args: A;
-  readonly access: AccessPolicy<MutationCtx<S, Capabilities>, Expand<InferShape<A>>>;
-  readonly handler: (ctx: MutationCtx<S, Capabilities>, args: Expand<InferShape<A>>) => R;
-}) => RegisteredMutation<A, Awaited<R>, S> &
-  ((ctx: MutationCtx<S, Capabilities>, args: Expand<ArgsInput<A>>) => Promise<Awaited<R>>);
+> = <
+  A extends ObjectShape,
+  const Definition extends FunctionDef<A, MutationCtx<S, Capabilities>>,
+>(
+  def: { readonly args: A } & Definition,
+  ..._check: DefinitionCheck<Definition>
+) => RegisteredMutation<
+  A,
+  ResultOfDefinition<Definition>,
+  S,
+  DefinitionReturn<Definition>
+> &
+  ((
+    ctx: MutationCtx<S, Capabilities>,
+    args: Expand<ArgsInput<A>>,
+  ) => Promise<ResultOfDefinition<Definition>>);
 
 export type ProcedureBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
-> = <A extends ObjectShape, R>(def: {
-  readonly args: A;
-  readonly access: AccessPolicy<
-    ProcedureCtx<S, Capabilities, TransactionCapabilities>,
-    Expand<InferShape<A>>
-  >;
-  readonly handler: (
+> = <
+  A extends ObjectShape,
+  const Definition extends FunctionDef<
+    A,
+    ProcedureCtx<S, Capabilities, TransactionCapabilities>
+  >,
+>(
+  def: { readonly args: A } & Definition,
+  ..._check: DefinitionCheck<Definition>
+) => RegisteredProcedure<
+  A,
+  ResultOfDefinition<Definition>,
+  S,
+  DefinitionReturn<Definition>
+> &
+  ((
     ctx: ProcedureCtx<S, Capabilities, TransactionCapabilities>,
-    args: Expand<InferShape<A>>,
-  ) => R;
-}) => RegisteredProcedure<A, Awaited<R>, S>;
+    args: Expand<ArgsInput<A>>,
+  ) => Promise<ResultOfDefinition<Definition>>);
 
 export type SseBuilder<
   S extends Schema,

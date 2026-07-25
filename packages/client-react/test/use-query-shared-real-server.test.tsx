@@ -92,11 +92,17 @@ function Board({ id }: { id: string }): ReactNode {
     case "success":
       return (
         <span>
-          {id}={state.stale ? "stale" : "fresh"}:{state.data.map((row) => row.body).join(",")};
+          {id}=fresh:{state.data.map((row) => row.body).join(",")};
         </span>
       );
-    case "error":
+    case "rejected":
       return <span>{`${id}=error:${state.error.code};`}</span>;
+    case "unavailable":
+      return (
+        <span>
+          {id}={state.data === undefined ? `error:${state.error.code}` : `stale:${state.data.map((row) => row.body).join(",")}`};
+        </span>
+      );
   }
 }
 

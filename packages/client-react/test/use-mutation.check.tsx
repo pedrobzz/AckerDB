@@ -1,7 +1,11 @@
 // Compile-time contract for useMutation. This file is typechecked (see the
 // package tsconfig) and never executed — `bun run typecheck` failing
 // (including an unused @ts-expect-error) is the test.
-import { anyApi, type ApiFromModules } from "@dbzz/client";
+import {
+  anyApi,
+  type ApiFromModules,
+  type ClientResult,
+} from "@dbzz/client";
 import {
   v,
   defineSchema,
@@ -15,7 +19,10 @@ import {
   type SseBuilder,
 } from "@dbzz/server";
 import type { ReactNode } from "react";
-import { useMutation } from "@dbzz/client-react";
+import {
+  useMutation,
+  type DbzzClientError,
+} from "@dbzz/client-react";
 
 const schema = defineSchema({});
 type Schema = typeof schema;
@@ -77,10 +84,15 @@ export function InferredMutation(): ReactNode {
 
   const settle = async (): Promise<void> => {
     const result = await send({ channelId: 1n, body: "hello" });
-    const _id: bigint = result.id;
-    const _body: string = result.body;
+    if (!result.ok) {
+      const _error: DbzzClientError = result.error;
+      void _error;
+      return;
+    }
+    const _id: bigint = result.data.id;
+    const _body: string = result.data.body;
     // @ts-expect-error the handler result keeps body as string
-    const _wrongBody: number = result.body;
+    const _wrongBody: number = result.data.body;
   };
   void settle;
   return null;
@@ -104,7 +116,9 @@ export function WrongReferenceKinds(): ReactNode {
 
 export function CallableShape(): ReactNode {
   const send = useMutation(api.messages.send);
-  const _callable: (args: { channelId: bigint; body: string }) => Promise<{ id: bigint; body: string }> = send;
+  const _callable: (
+    args: { channelId: bigint; body: string },
+  ) => Promise<ClientResult<{ id: bigint; body: string }>> = send;
   // @ts-expect-error the callable takes exactly one argument object; there is no options parameter
   void send({ channelId: 1n, body: "hello" }, { signal: undefined });
   void _callable;
