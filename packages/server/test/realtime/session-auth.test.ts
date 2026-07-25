@@ -573,6 +573,17 @@ describe("Session Protocol-2 ownership", () => {
 
   test("auth pauses and aborts the old epoch synchronously", async () => {
     const runtime = new FakeRuntime();
+    const procedureStarted = deferred<void>();
+    runtime.procedureHook = async (_context, request) => {
+      const signal = request.signal;
+      if (signal === undefined) throw new Error("procedure request has no cancellation signal");
+      procedureStarted.resolve(undefined);
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      throw signal.reason;
+    };
     const sink = new FakeSink();
     const verifier = new FakeVerifier();
     const verified = deferred<VerifiedCredential>();
@@ -581,14 +592,23 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
     await handle(session, hello());
 
+    const runningProcedure = handle(session, {
+      v: PROTOCOL_VERSION,
+      t: "p",
+      id: 8,
+      ref: "messages.hold",
+      args: {},
+    });
+    await procedureStarted.promise;
     const refreshing = handle(session, auth(1, { kind: "bearer", token: "next" }));
     expect(runtime.opens[0]!.signal.aborted).toBe(true);
+    expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(true);
     expect(session.snapshot().phase).toBe("refreshing");
     const blockedData = handle(session, query(9));
     expect(runtime.queries).toHaveLength(0);
     expect((sink.controls.at(-1) as ErrorMessage).outcome.code).toBe("auth_stale");
 
-    await Promise.all([refreshing, blockedData]);
+    await Promise.all([runningProcedure, refreshing, blockedData]);
     await settle();
     expect(runtime.transitions).toHaveLength(0);
 
