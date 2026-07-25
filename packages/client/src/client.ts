@@ -2020,7 +2020,12 @@ export class DbzzClient {
     }
     for (const request of [...this.pending.values()]) {
       if (request.expiresAtMs <= now) this.expireRequest(request);
-      else if (request.sentGeneration !== this.connectionGeneration) this.sendRequest(request);
+      else if (
+        this.pending.get(request.id) === request &&
+        request.sentGeneration !== this.connectionGeneration
+      ) {
+        this.sendRequest(request);
+      }
     }
   }
 

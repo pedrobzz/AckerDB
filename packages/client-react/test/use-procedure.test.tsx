@@ -3,6 +3,7 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { decode, parseClientMessage } from "@dbzz/core";
 import {
   DbzzClientError,
   type ClientResult,
@@ -92,7 +93,7 @@ interface RecordedCall {
 
 interface App {
   readonly base: string;
-  /** Every /api/call dispatch the client actually made, in order. */
+  /** Every procedure handler the server actually admitted, in order. */
   readonly calls: RecordedCall[];
   config(overrides?: Partial<DbzzProviderConfig>): DbzzProviderConfig;
   close(): Promise<void>;
@@ -102,24 +103,30 @@ function createApp(): App {
   const directory = mkdtempSync(join(tmpdir(), "dbzz-react-procedure-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
+  const calls: RecordedCall[] = [];
   const registry = new Registry({
     tools: {
       echo: procedure({
         access: "public",
         args: { value: v.string() },
-        handler: (_ctx: Ctx, args: Ctx) => args.value.toUpperCase(),
+        handler: (ctx: Ctx, args: Ctx) => {
+          calls.push({ signal: ctx.abortSignal });
+          return args.value.toUpperCase();
+        },
       }),
       fail: procedure({
         access: "public",
         args: {},
-        handler: () => {
+        handler: (ctx: Ctx) => {
+          calls.push({ signal: ctx.abortSignal });
           throw new DbzzError("conflict", "flux capacitor offline");
         },
       }),
       block: procedure({
         access: "public",
         args: {},
-        handler: async () => {
+        handler: async (ctx: Ctx) => {
+          calls.push({ signal: ctx.abortSignal });
           blockStarted?.resolve();
           await blockRelease?.promise;
           return "released";
@@ -130,7 +137,6 @@ function createApp(): App {
   const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
   const server = serve({ runtime, port: 0 });
   const base = `http://127.0.0.1:${server.port}`;
-  const calls: RecordedCall[] = [];
   return {
     base,
     calls,
@@ -139,10 +145,6 @@ function createApp(): App {
         url: base,
         credential: { kind: "anonymous" },
         createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
-        fetch: (url, init) => {
-          if (url.endsWith("/api/call")) calls.push({ signal: init?.signal ?? undefined });
-          return fetch(url, init);
-        },
         ...overrides,
       };
     },
@@ -152,6 +154,28 @@ function createApp(): App {
       rmSync(directory, { recursive: true, force: true });
     },
   };
+}
+
+function observingSocket(url: string, onProcedure: () => void): DbzzWebSocket {
+  const native = new NativeWebSocket(url);
+  const socket: DbzzWebSocket = {
+    onopen: null,
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+    send(data) {
+      if (parseClientMessage(decode(data)).t === "p") onProcedure();
+      native.send(data);
+    },
+    close(code, reason) {
+      native.close(code, reason);
+    },
+  };
+  native.onopen = () => socket.onopen?.();
+  native.onmessage = (event) => socket.onmessage?.({ data: event.data });
+  native.onclose = () => socket.onclose?.();
+  native.onerror = () => socket.onerror?.();
+  return socket;
 }
 
 async function until(predicate: () => boolean, description: string): Promise<void> {
@@ -296,7 +320,7 @@ describe("useProcedure against a real dbzz server", () => {
 
     controller.abort();
     // The handler is still blocked, so prompt settlement proves the abort
-    // traveled through the client's fetch rather than waiting on the server.
+    // traveled through the session rather than waiting on the server.
     await settlesWithin(completion, 500, "the aborted procedure");
     expect(mustErr(await completion)).toMatchObject({
       name: "DbzzClientError",
@@ -304,7 +328,7 @@ describe("useProcedure against a real dbzz server", () => {
       resource: "operation",
     });
     expect(app.calls.length - callsBefore).toBe(1);
-    expect(app.calls.at(-1)!.signal?.aborted).toBe(true);
+    await until(() => app.calls.at(-1)!.signal?.aborted === true, "the server procedure cancellation");
 
     // A signal aborted before the call never dispatches a request at all.
     const preAborted = mustErr(await block!({}, { signal: controller.signal }));
@@ -320,7 +344,7 @@ describe("useProcedure against a real dbzz server", () => {
     await unmount(root);
   });
 
-  test("a disconnected procedure reports the typed outcome and is never silently replayed", async () => {
+  test("a procedure that never reaches a session expires determinately without execution", async () => {
     // A real dbzz server that has come and gone: its port now refuses every
     // connection, so the failure happens at the network rather than through a
     // fake transport. (Draining the shared server instead would leave Bun's
@@ -336,7 +360,10 @@ describe("useProcedure against a real dbzz server", () => {
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
-      <DbzzProvider config={island.config({ reconnect: { baseDelayMs: 2_500, maxDelayMs: 10_000 } })}>
+      <DbzzProvider config={island.config({
+        limits: { maxQueryAgeMs: 100 },
+        reconnect: { baseDelayMs: 2_500, maxDelayMs: 10_000 },
+      })}>
         <Capture />
       </DbzzProvider>,
     );
@@ -345,12 +372,11 @@ describe("useProcedure against a real dbzz server", () => {
     const failure = mustErr(await echo!({ value: "down" }));
     expect(failure).toMatchObject({
       name: "DbzzClientError",
-      code: "indeterminate",
-      message: "procedure completion is unknown",
+      code: "deadline_exceeded",
+      message: "client request deadline exceeded",
       resource: "operation",
     });
-    // Exactly one dispatch: dbzz cannot prove a safe replay, so none happens.
-    expect(island.calls.length).toBe(1);
+    expect(island.calls).toHaveLength(0);
     await unmount(root);
   });
 
@@ -378,7 +404,7 @@ describe("useProcedure against a real dbzz server", () => {
     await blockStarted.promise;
 
     await unmount(root);
-    // close() aborts the in-flight fetch; the handler is still blocked.
+    // close() aborts the session epoch; the handler is still blocked.
     await settlesWithin(completion, 500, "the provider-closed procedure");
     expect(mustErr(await completion)).toMatchObject({
       name: "DbzzClientError",
@@ -468,16 +494,13 @@ describe("useProcedure against a real dbzz server", () => {
   });
 
   test("a layout-effect call during reconfiguration never dispatches through the retired client", async () => {
-    // Tag each lifetime with its own fetch recorder so the dispatching client
-    // is observable per request.
+    // Tag each lifetime's session frames so the dispatching client is
+    // observable per request.
     const dispatches: string[] = [];
     const tagged = (tag: string, sessionId: string): DbzzProviderConfig =>
       app.config({
         clientSessionId: sessionId,
-        fetch: (url, init) => {
-          if (url.endsWith("/api/call")) dispatches.push(tag);
-          return fetch(url, init);
-        },
+        createWebSocket: (url) => observingSocket(url, () => dispatches.push(tag)),
       });
 
     // The owning parent passes the callable down; the child's layout effect
@@ -531,20 +554,18 @@ describe("useProcedure against a real dbzz server", () => {
 
   test("an abort racing the arrival drain settles its call exactly once and never dispatches it", async () => {
     // Two calls queued before the client exists; the first one's dispatch
-    // reaches the injected fetch synchronously inside the arrival drain and
+    // reaches the injected session synchronously inside the arrival drain and
     // aborts the second — after the queue was cleared, before the second
     // dispatch runs. Exactly one owner must settle the aborted call, and its
     // request must never reach the network.
     const controller = new AbortController();
     let dispatches = 0;
     const config = app.config({
-      fetch: (url, init) => {
-        if (url.endsWith("/api/call")) {
+      createWebSocket: (url) =>
+        observingSocket(url, () => {
           dispatches++;
           controller.abort();
-        }
-        return fetch(url, init);
-      },
+        }),
     });
 
     const settlements: Array<{ kind: "ok"; value: string } | { kind: "error"; error: unknown }> =
