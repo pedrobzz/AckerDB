@@ -73,7 +73,7 @@ function MenuPage() {
           return (
             <div className="menu-layout">
               <aside className="surface category-panel">
-                <span className="text-ink-500 text-[9px] font-extrabold tracking-[0.1em] uppercase">
+                <span className="text-ink-500 text-[9px] font-extrabold tracking-widest uppercase">
                   Categories
                 </span>
                 <div className="category-list">
