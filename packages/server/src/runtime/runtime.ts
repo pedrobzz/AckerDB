@@ -1225,7 +1225,20 @@ export class Runtime implements RuntimePort {
           invalidations.publish,
         );
         try {
-          const result = await invokeFunction(fn, procedure.value, message.args);
+          let handlerStarted = false;
+          const result = await invokeFunction(fn, procedure.value, message.args, {
+            onAuthorized: () => {
+              throwIfAborted(signal);
+              handlerStarted = true;
+            },
+          }).catch((cause) => {
+            if (!handlerStarted || !signal.aborted) throw cause;
+            throw new DbzzError(
+              "indeterminate",
+              "procedure completion is unknown after cancellation",
+              { resource: "operation", cause },
+            );
+          });
           if (signal.aborted) {
             throw new DbzzError(
               "indeterminate",
