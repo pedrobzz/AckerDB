@@ -222,7 +222,7 @@ describe("useAuthentication against a real dbzz server", () => {
       "the signed-out anonymous state",
     );
     // The authenticated query lost access with the retired epoch.
-    await until(() => captured.query === "error", "the revoked authenticated query");
+    await until(() => captured.query === "rejected", "the revoked authenticated query");
 
     const refreshed = await operations().refresh({ kind: "bearer", token: "user-b" });
     expect(refreshed).toMatchObject({

@@ -1,4 +1,4 @@
-import { WireError, getRef, stableEncode } from "@dbzz/core";
+import { WireError, getRef, stableEncode, type ApplicationError } from "@dbzz/core";
 import type { QueryRef } from "@dbzz/client";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useProviderClient } from "./provider.tsx";
@@ -38,10 +38,10 @@ function argsKeyOf(args: unknown): string {
  * exhaustive disabled/pending/success/error union with reconnect-aware
  * stale/fresh success data.
  */
-export function useQuery<Args, Rows>(
-  ref: QueryRef<Args, Rows>,
+export function useQuery<Args, Rows, Error extends ApplicationError = never>(
+  ref: QueryRef<Args, Rows, Error>,
   args: Args | typeof skip,
-): DbzzQueryState<Rows> {
+): DbzzQueryState<Rows, Error> {
   const client = useProviderClient("useQuery");
   const address = getRef(ref);
   const argsKey = args === skip ? null : argsKeyOf(args);
@@ -53,13 +53,13 @@ export function useQuery<Args, Rows>(
   // exact validation error. Entries only subscribe once a listener commits,
   // so renders React discards never start or register work.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const source = useMemo<QuerySource<Rows> | null>(
+  const source = useMemo<QuerySource<Rows, Error> | null>(
     () =>
       client === null || argsKey === null
         ? null
         : argsKey === UNENCODABLE
-          ? new QueryStoreEntry<Rows>(client, address, args)
-          : queryRegistryFor(client).source<Rows>(address, argsKey, args),
+          ? new QueryStoreEntry<Rows, Error>(client, address, args)
+          : queryRegistryFor(client).source<Rows, Error>(address, argsKey, args),
     [client, address, argsKey],
   );
   const subscribe = useCallback(
@@ -70,12 +70,12 @@ export function useQuery<Args, Rows>(
   // Without a source the snapshot is deterministic: disabled while skipped,
   // pending during the commit gap before the provider constructs its client.
   const getSnapshot = useCallback(
-    (): DbzzQueryState<Rows> =>
+    (): DbzzQueryState<Rows, Error> =>
       source !== null ? source.snapshot() : argsKey === null ? DISABLED_STATE : PENDING_STATE,
     [source, argsKey],
   );
   const getServerSnapshot = useCallback(
-    (): DbzzQueryState<Rows> => (argsKey === null ? DISABLED_STATE : PENDING_STATE),
+    (): DbzzQueryState<Rows, Error> => (argsKey === null ? DISABLED_STATE : PENDING_STATE),
     [argsKey],
   );
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);

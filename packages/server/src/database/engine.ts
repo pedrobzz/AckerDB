@@ -259,7 +259,7 @@ export interface BackupManifest {
   verifiedAt: number;
 }
 
-const ENGINE_SCHEMA_VERSION = 11;
+const ENGINE_SCHEMA_VERSION = 12;
 const SQLITE_HEADER = Buffer.from("SQLite format 3\0");
 const WAL_HEADER_BYTES = 32;
 const WAL_FORMAT_VERSION = 3_007_000;
@@ -330,6 +330,7 @@ const INTERNAL_OBJECTS: StoredObject[] = [
     sql: `CREATE TABLE _dbzz_state (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
+      mutation_sequence INTEGER NOT NULL CHECK (mutation_sequence >= 0),
       clean_shutdown INTEGER NOT NULL CHECK (clean_shutdown IN (0, 1)),
       mutation_records INTEGER NOT NULL CHECK (mutation_records >= 0),
       mutation_result_bytes INTEGER NOT NULL CHECK (mutation_result_bytes >= 0),
@@ -341,7 +342,8 @@ const INTERNAL_OBJECTS: StoredObject[] = [
     name: "_dbzz_mutations",
     table: "_dbzz_mutations",
     sql: `CREATE TABLE _dbzz_mutations (
-      commit_version INTEGER PRIMARY KEY CHECK (commit_version > 0),
+      sequence INTEGER PRIMARY KEY CHECK (sequence > 0),
+      commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
       session_id TEXT NOT NULL,
       request_id TEXT NOT NULL,
       issued_at REAL NOT NULL,
@@ -859,7 +861,7 @@ function initializeInternalObjects(connection: Database): void {
       .query("INSERT INTO _dbzz_meta (key, value) VALUES ('engine_schema', ?)")
       .run(String(ENGINE_SCHEMA_VERSION));
     connection
-      .query("INSERT INTO _dbzz_state (singleton, commit_version, clean_shutdown, mutation_records, mutation_result_bytes, last_checkpoint_at) VALUES (1, 0, 1, 0, 0, NULL)")
+      .query("INSERT INTO _dbzz_state (singleton, commit_version, mutation_sequence, clean_shutdown, mutation_records, mutation_result_bytes, last_checkpoint_at) VALUES (1, 0, 0, 1, 0, 0, NULL)")
       .run();
     connection.exec("COMMIT");
   } catch (error) {

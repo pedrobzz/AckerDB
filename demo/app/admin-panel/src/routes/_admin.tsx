@@ -48,7 +48,7 @@ const navigation: readonly NavigationItem[] = [
 ];
 
 const navLinkClasses =
-  "flex min-h-11 items-center gap-[11px] rounded-[11px] px-[13px] text-[13px] font-[550] text-pine-nav transition-colors duration-150 " +
+  "flex min-h-11 items-center gap-2.75 rounded-[11px] px-[13px] text-[13px] font-[550] text-pine-nav transition-colors duration-150 " +
   "[&_svg]:size-[17px] [&_svg]:text-pine-faint " +
   "hover:bg-white/[0.07] hover:text-warm-white " +
   "data-[status=active]:bg-warm-white data-[status=active]:font-[750] data-[status=active]:text-forest-950 " +
@@ -72,7 +72,7 @@ function AdminLayout() {
     <AdminChatProvider>
       <div className="flex min-h-screen bg-cream-50">
       <button
-        className="hidden max-[900px]:fixed max-[900px]:left-[14px] max-[900px]:top-[14px] max-[900px]:z-[24] max-[900px]:inline-flex max-[900px]:size-[42px] max-[900px]:items-center max-[900px]:justify-center max-[900px]:rounded-xl max-[900px]:bg-forest-900 max-[900px]:text-white max-[900px]:shadow-[0_18px_60px_rgb(29_41_37/0.08)] print:!hidden"
+        className="hidden max-[900px]:fixed max-[900px]:left-3.5 max-[900px]:top-3.5 max-[900px]:z-24 max-[900px]:inline-flex max-[900px]:size-10.5 max-[900px]:items-center max-[900px]:justify-center max-[900px]:rounded-xl max-[900px]:bg-forest-900 max-[900px]:text-white max-[900px]:shadow-[0_18px_60px_rgb(29_41_37/0.08)] print:hidden!"
         type="button"
         onClick={() => setOpen(true)}
         aria-expanded={open}
@@ -84,7 +84,7 @@ function AdminLayout() {
 
       {open && (
         <button
-          className="hidden max-[900px]:fixed max-[900px]:inset-0 max-[900px]:z-[29] max-[900px]:block max-[900px]:border-0 max-[900px]:bg-[rgb(16_42_36/0.48)]"
+          className="hidden max-[900px]:fixed max-[900px]:inset-0 max-[900px]:z-29 max-[900px]:block max-[900px]:border-0 max-[900px]:bg-[rgb(16_42_36/0.48)]"
           type="button"
           aria-label="Close navigation"
           onClick={() => setOpen(false)}
@@ -92,17 +92,17 @@ function AdminLayout() {
       )}
       <aside
         className={[
-          "fixed inset-y-0 left-0 z-30 flex w-[238px] flex-col overflow-y-auto bg-forest-950 px-[18px] pb-[22px] pt-[27px] text-warm-white print:!hidden",
+          "fixed inset-y-0 left-0 z-30 flex w-59.5 flex-col overflow-y-auto bg-forest-950 px-4.5 pb-5.5 pt-6.75 text-warm-white print:hidden!",
           "max-[900px]:transition-transform max-[900px]:duration-200",
           open
             ? "max-[900px]:visible max-[900px]:translate-x-0"
-            : "max-[900px]:invisible max-[900px]:-translate-x-[105%]",
+            : "max-[900px]:invisible max-[900px]:translate-x-[-105%]",
         ].join(" ")}
         id="admin-sidebar"
         ref={sidebar}
       >
-        <div className="flex items-start justify-between px-2 pb-[30px]">
-          <div className="flex items-center gap-[11px]">
+        <div className="flex items-start justify-between px-2 pb-7.5">
+          <div className="flex items-center gap-2.75">
             <span
               className="inline-flex size-10 items-center justify-center rounded-full bg-warm-white text-forest-900 [&_svg]:size-5"
               aria-hidden="true"
@@ -113,7 +113,7 @@ function AdminLayout() {
               <strong className="block font-display text-[27px] font-semibold leading-none tracking-[-0.035em]">
                 Savoria
               </strong>
-              <span className="mt-[7px] block text-[8px] font-[750] uppercase tracking-[0.15em] text-pine-muted">
+              <span className="mt-1.75 block text-[8px] font-[750] uppercase tracking-[0.15em] text-pine-muted">
                 Restaurant OS
               </span>
             </div>
@@ -128,7 +128,7 @@ function AdminLayout() {
           </button>
         </div>
 
-        <nav className="flex flex-col gap-[5px]" aria-label="Restaurant admin">
+        <nav className="flex flex-col gap-1.25" aria-label="Restaurant admin">
           {navigation.map((item) => {
             const Icon = item.icon;
             return (
@@ -155,7 +155,7 @@ function AdminLayout() {
         </nav>
 
         <div
-          className="mt-auto flex items-center gap-2 px-[11px] pb-3 pt-[18px] text-[10px] capitalize text-pine-muted [&_svg]:text-pine-live"
+          className="mt-auto flex items-center gap-2 px-2.75 pb-3 pt-4.5 text-[10px] capitalize text-pine-muted [&_svg]:text-pine-live"
           title={`Connection: ${connection.phase}`}
         >
           {connected ? (
@@ -168,23 +168,23 @@ function AdminLayout() {
           </span>
         </div>
 
-        <div className="flex items-center gap-2.5 border-t border-pine-divider px-[11px] pb-1 pt-4">
+        <div className="flex items-center gap-2.5 border-t border-pine-divider px-2.75 pb-1 pt-4">
           <span
-            className="inline-flex size-[34px] flex-none items-center justify-center rounded-full bg-clay-500 text-[11px] font-extrabold"
+            className="inline-flex size-8.5 flex-none items-center justify-center rounded-full bg-clay-500 text-[11px] font-extrabold"
             aria-hidden="true"
           >
             AM
           </span>
           <div className="min-w-0">
             <strong className="block text-[11px]">Amelia Morgan</strong>
-            <small className="mt-[3px] block text-[9px] text-pine-faint">
+            <small className="mt-0.75 block text-[9px] text-pine-faint">
               General manager
             </small>
           </div>
         </div>
       </aside>
 
-      <main className="ml-[238px] w-[calc(100%-238px)] min-w-0 max-[900px]:ml-0 max-[900px]:w-full print:!m-0 print:!w-full">
+      <main className="ml-59.5 w-[calc(100%-238px)] min-w-0 max-[900px]:ml-0 max-[900px]:w-full print:m-0! print:w-full!">
         <Outlet />
       </main>
       </div>

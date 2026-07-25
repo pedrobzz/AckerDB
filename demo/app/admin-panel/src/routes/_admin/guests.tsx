@@ -336,9 +336,11 @@ function GuestDialog({
     setBusy(true);
     setError(null);
     try {
-      const id = guest
+      const result = guest
         ? await update({ id: guest.id, name, email })
         : await create({ name, email });
+      if (!result.ok) throw result.error;
+      const id = result.data;
       toast.success(
         `${name.trim()} ${guest ? "was updated" : "was added to Savoria"}.`,
         guest ? "Guest updated" : "Guest created",

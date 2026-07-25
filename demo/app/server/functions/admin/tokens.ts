@@ -1,7 +1,8 @@
+import { Err, Status } from "@dbzz/core";
 import { v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { staffAccess } from "../../lib/access.ts";
-import { invalid } from "../../lib/domain.ts";
+import { tokenNameInput } from "../../lib/inputs.ts";
 import { admin } from "./mcp.ts";
 
 /**
@@ -20,7 +21,7 @@ export const list = query({
 
 export const create = mutation({
   access: staffAccess,
-  args: { name: v.string(), scopes: v.array(admin.scopes) },
+  args: { name: tokenNameInput, scopes: v.array(admin.scopes).min(1) },
   handler: (ctx, args) =>
     admin.tokens.create(ctx, { name: args.name, scopes: args.scopes }),
 });
@@ -28,13 +29,13 @@ export const create = mutation({
 export const update = mutation({
   access: staffAccess,
   args: {
-    id: v.string(),
-    name: v.string().optional(),
-    scopes: v.array(admin.scopes).optional(),
+    id: v.string().min(1),
+    name: tokenNameInput.optional(),
+    scopes: v.array(admin.scopes).min(1).optional(),
   },
   handler: (ctx, args) => {
     if (args.name === undefined && args.scopes === undefined) {
-      invalid("Provide a new name or scopes to update the token");
+      return Err("token.update-empty", {}, Status.BadRequest);
     }
     if (args.name !== undefined) admin.tokens.update(ctx, args.id, { name: args.name });
     if (args.scopes !== undefined) admin.tokens.updateScopes(ctx, args.id, args.scopes);
@@ -44,7 +45,7 @@ export const update = mutation({
 
 export const revoke = mutation({
   access: staffAccess,
-  args: { id: v.string() },
+  args: { id: v.string().min(1) },
   handler: (ctx, args) => {
     admin.tokens.revoke(ctx, args.id);
     return args.id;

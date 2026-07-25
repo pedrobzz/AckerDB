@@ -24,19 +24,26 @@ export default function TablesScreen() {
   const tables =
     tablesQuery.status === "success"
       ? tablesQuery.data
-      : tablesQuery.status === "error"
-        ? tablesQuery.staleData
+      : tablesQuery.status === "unavailable"
+        ? tablesQuery.data
         : undefined;
   if (tables === undefined && tablesQuery.status === "pending")
     return <LoadingState label="Finding open tables…" />;
-  if (tables === undefined && tablesQuery.status === "error")
-    return <ErrorState message={tablesQuery.error.message} />;
+  if (
+    tables === undefined &&
+    (tablesQuery.status === "application-error" ||
+      tablesQuery.status === "rejected" ||
+      tablesQuery.status === "unavailable")
+  ) {
+    return <ErrorState message={errorMessage(tablesQuery.error)} />;
+  }
 
   const select = async (tableId: bigint) => {
     setSelecting(tableId);
     setError(null);
     try {
-      await sit({ tableId });
+      const result = await sit({ tableId });
+      if (!result.ok) throw result.error;
       router.replace("/(tabs)/order");
     } catch (caught) {
       setError(errorMessage(caught));

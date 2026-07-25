@@ -1,12 +1,17 @@
 import type { Identity } from "./identity.ts";
+import {
+  Status,
+  type ApplicationError,
+  type ErrorHttpStatus,
+} from "./result.ts";
 
 /**
- * Protocol 2 is the executable client/server envelope contract. Application
+ * Protocol 3 is the executable client/server envelope contract. Application
  * arguments, results, and event rows remain opaque and keep their inferred
  * TypeScript types; every framework-owned field is validated after wire decode.
  */
 
-export const PROTOCOL_VERSION = 2 as const;
+export const PROTOCOL_VERSION = 3 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;
@@ -131,6 +136,12 @@ export type SubscriptionTransition =
       from: SubscriptionCursor;
       to: SubscriptionCursor;
       outcome: Outcome;
+    }
+  | {
+      kind: "application-error";
+      from: SubscriptionCursor | null;
+      to: SubscriptionCursor;
+      error: ApplicationError;
     };
 
 export interface LiveEventCursor {
@@ -249,6 +260,14 @@ export interface MutationOkMessage extends Frame<"ok"> {
   receipt: MutationReceipt;
 }
 
+export interface ApplicationErrorMessage extends Frame<"app_err"> {
+  id: number;
+  kind: "query" | "mutation" | "procedure";
+  error: ApplicationError;
+  /** Present only for idempotent mutations. */
+  receipt?: MutationReceipt;
+}
+
 export interface ErrorMessage extends Frame<"err"> {
   /** Null identifies a connection-level failure rather than one operation. */
   id: number | null;
@@ -265,6 +284,7 @@ export type ServerMessage =
   | QueryOkMessage
   | ProcedureOkMessage
   | MutationOkMessage
+  | ApplicationErrorMessage
   | ErrorMessage
   | PongMessage;
 
@@ -275,7 +295,7 @@ export interface CallRequest extends Frame<"call"> {
   args: unknown;
 }
 
-export type CallResponse = ProcedureOkMessage | ErrorMessage;
+export type CallResponse = ProcedureOkMessage | ApplicationErrorMessage | ErrorMessage;
 
 interface SseFrame<T extends string> extends Frame<T> {
   seq: number;
@@ -313,6 +333,7 @@ type ObjectValue = Record<string, unknown>;
 const outcomeCodes = new Set<string>(OUTCOME_CODES);
 const resourceClasses = new Set<string>(RESOURCE_CLASSES);
 const durabilityPolicies = new Set<string>(DURABILITY_POLICIES);
+const errorHttpStatuses = new Set<number>(Object.values(Status));
 const uuidV7 = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /** Extract the embedded Unix-millisecond timestamp from a validated UUIDv7. */
@@ -476,6 +497,21 @@ export function parseOutcome(value: unknown): Outcome {
   return result as unknown as Outcome;
 }
 
+export function parseApplicationError(value: unknown): ApplicationError {
+  const result = object(value, "application error");
+  exact(result, ["kind", "code", "body", "status"]);
+  if (result.kind !== "application") malformed("application error kind must be application");
+  string(result.code, "application error code", MAX_REFERENCE_LENGTH);
+  payload(result.body, "application error body");
+  if (
+    !Number.isInteger(result.status) ||
+    !errorHttpStatuses.has(result.status as number)
+  ) {
+    malformed("application error status must be a supported named error status");
+  }
+  return result as unknown as ApplicationError<string, unknown, ErrorHttpStatus>;
+}
+
 export function parseSubscriptionCursor(value: unknown): SubscriptionCursor {
   const result = object(value, "subscription cursor");
   exact(result, ["generation", "commitVersion", "authEpoch", "identity"]);
@@ -553,6 +589,18 @@ export function parseSubscriptionTransition(value: unknown): SubscriptionTransit
       ].includes(outcome.code)) {
         malformed("revoked requires an authentication or authorization outcome");
       }
+      return result as unknown as SubscriptionTransition;
+    }
+    case "application-error": {
+      exact(result, ["kind", "from", "to", "error"]);
+      if (result.from !== null) {
+        const from = parseSubscriptionCursor(result.from);
+        const to = parseSubscriptionCursor(result.to);
+        sameStream(from, to);
+      } else {
+        parseSubscriptionCursor(result.to);
+      }
+      parseApplicationError(result.error);
       return result as unknown as SubscriptionTransition;
     }
     default:
@@ -694,6 +742,18 @@ export function parseServerMessage(value: unknown): ServerMessage {
       protocolId(result.id, "request id");
       payload(result.value, "result value");
       break;
+    case "app_err":
+      if (result.kind === "mutation") {
+        exact(result, ["v", "t", "id", "kind", "error", "receipt"]);
+        parseMutationReceipt(result.receipt);
+      } else if (result.kind === "query" || result.kind === "procedure") {
+        exact(result, ["v", "t", "id", "kind", "error"]);
+      } else {
+        return malformed("unknown application-error frame kind");
+      }
+      protocolId(result.id, "request id");
+      parseApplicationError(result.error);
+      break;
     case "err":
       exact(result, ["v", "t", "id", "outcome"]);
       if (result.id !== null) protocolId(result.id, "request id");
@@ -720,7 +780,10 @@ export function parseCallRequest(value: unknown): CallRequest {
 
 export function parseCallResponse(value: unknown): CallResponse {
   const result = parseServerMessage(value);
-  if (result.t === "err" || (result.t === "ok" && result.kind === "procedure")) return result;
+  if (
+    result.t === "err" ||
+    ((result.t === "ok" || result.t === "app_err") && result.kind === "procedure")
+  ) return result;
   return malformed("HTTP response must be a procedure result or error");
 }
 

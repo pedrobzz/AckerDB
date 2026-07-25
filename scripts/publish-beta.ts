@@ -133,7 +133,15 @@ for (const path of demoManifests) {
   }
 }
 
-const install = Bun.spawnSync(["bun", "install"], { cwd: "demo", stdout: "inherit", stderr: "inherit" });
+// A beta is created moments before this install. Bun's manifest cache can
+// still describe the previous registry state and reject the exact fresh
+// version even though Verdaccio already serves it, so this boundary must fetch
+// current registry metadata.
+const install = Bun.spawnSync(["bun", "install", "--no-cache"], {
+  cwd: "demo",
+  stdout: "inherit",
+  stderr: "inherit",
+});
 if (install.exitCode !== 0) {
   fail(`demo bun install failed — the pins are already at ${version}; fix the cause and re-run bun install in demo/`);
 }

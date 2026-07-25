@@ -1,13 +1,12 @@
+import { Err, Status } from "@dbzz/core";
 import { v } from "@dbzz/server";
 import { mutation, query } from "@demo/dbzz-codegen/server";
 import { staffAccess } from "../lib/access.ts";
 import {
   advanceOrderItem,
   cancelOrderItem,
-  notFound,
-  requireOpenOrder,
-} from "../lib/domain.ts";
-
+} from "../lib/domain/order-workflow.ts";
+import { openOrder } from "../lib/domain/orders.ts";
 
 export const queue = query({
   access: staffAccess,
@@ -46,21 +45,29 @@ export const queue = query({
 export const advance = mutation({
   access: staffAccess,
   args: { orderItemId: v.bigint() },
-  handler: async (ctx, args) =>
-    (await advanceOrderItem(ctx.db, args.orderItemId)).status,
+  handler: async (ctx, args) => {
+    const result = await advanceOrderItem(ctx.db, args.orderItemId);
+    return result.ok ? result.data.status : result;
+  },
 });
 
 export const cancel = mutation({
   access: staffAccess,
   args: { orderItemId: v.bigint() },
   handler: async (ctx, args) => {
-    const item =
-      (await ctx.db.orderItems.get(args.orderItemId)) ??
-      notFound("Order item not found");
-    const order = await requireOpenOrder(ctx.db, item.orderId);
+    const item = await ctx.db.orderItems.get(args.orderItemId);
+    if (item === null) {
+      return Err(
+        "order-item.not-found",
+        { orderItemId: args.orderItemId },
+        Status.NotFound,
+      );
+    }
+    const order = await openOrder(ctx.db, item.orderId);
+    if (!order.ok) return order;
     return cancelOrderItem(
       ctx.db,
-      order,
+      order.data,
       item,
       `${item.name} was cancelled by the kitchen`,
     );

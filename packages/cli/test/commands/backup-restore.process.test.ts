@@ -237,6 +237,7 @@ describe("dbzz backup, restore, and status", () => {
       const expectedReplay = {
         ...replayRecord,
         resultDisposition: "replayable" as const,
+        sequence: 1n,
         commitVersion: 1n,
         durability: "production" as const,
       };

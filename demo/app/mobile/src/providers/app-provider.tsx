@@ -19,6 +19,7 @@ import {
 } from "react";
 import { View } from "react-native";
 import { ErrorState, LoadingState } from "../components/states";
+import { errorMessage } from "../lib/format";
 import { CartProvider } from "./cart";
 import { SessionProvider, useSession } from "./session";
 import { ToastProvider, useToast } from "./toast";
@@ -85,7 +86,7 @@ function AuthenticatedBootstrap({
   const profile = useQuery(api.users.current, session === null ? skip : {});
   const ensureCurrent = useMutation(api.users.ensureCurrent);
   const attempted = useRef(false);
-  const [ensureError, setEnsureError] = useState<Error | null>(null);
+  const [ensureError, setEnsureError] = useState<unknown>(null);
   const [clearError, setClearError] = useState<Error | null>(null);
 
   const clearSession = useCallback(async () => {
@@ -105,13 +106,12 @@ function AuthenticatedBootstrap({
     attempted.current = true;
     setEnsureError(null);
     try {
-      await ensureCurrent({});
+      const result = await ensureCurrent({});
+      if (!result.ok) {
+        setEnsureError(result.error);
+      }
     } catch (error) {
-      setEnsureError(
-        error instanceof Error
-          ? error
-          : new Error("Could not create your guest profile"),
-      );
+      setEnsureError(error);
     }
   }, [ensureCurrent]);
 
@@ -146,7 +146,7 @@ function AuthenticatedBootstrap({
   if (ensureError !== null) {
     return (
       <ErrorState
-        message={ensureError.message}
+        message={errorMessage(ensureError)}
         actionLabel="Retry profile setup"
         onAction={() => void ensure()}
       />
@@ -168,16 +168,24 @@ function AuthenticatedBootstrap({
   ) {
     return <LoadingState label="Opening your live table…" />;
   }
-  if (profile.status === "error") {
+  if (
+    profile.status === "rejected" ||
+    (profile.status === "unavailable" && profile.data === undefined)
+  ) {
     return (
       <ErrorState
-        message={profile.error.message}
+        message={errorMessage(profile.error)}
         actionLabel="Log in again"
         onAction={() => void clearSession()}
       />
     );
   }
-  if (profile.status !== "success") return <LoadingState />;
+  if (
+    profile.status !== "success" &&
+    !(profile.status === "unavailable" && profile.data !== undefined)
+  ) {
+    return <LoadingState />;
+  }
 
   const auth = authentication.state.authentication;
   return (

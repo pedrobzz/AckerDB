@@ -209,6 +209,14 @@ function harness(overrides: Partial<DbzzClientOptions> = {}): Harness {
   };
 }
 
+function mustErr<E>(result: { readonly ok: true; readonly data: unknown } | {
+  readonly ok: false;
+  readonly error: E;
+}): E {
+  if (result.ok) throw new Error("expected a failed Result");
+  return result.error;
+}
+
 function welcome(client: DbzzClient, socket: FakeSocket, authEpoch = 0): void {
   socket.open();
   socket.receive({
@@ -311,7 +319,7 @@ describe("DbzzClient suspension", () => {
     port.suspend();
     expect(phases).toEqual(["ready", "suspended"]);
     expect(client.currentConnectionState.phase).toBe("suspended");
-    expect(first.closes).toEqual([{ code: 1001, reason: "client suspended" }]);
+    expect(first.closes).toEqual([{ code: 4001, reason: "client suspended" }]);
     expect(clock.taskCount).toBe(0);
 
     // Duplicate background notifications coalesce.
@@ -338,7 +346,7 @@ describe("DbzzClient suspension", () => {
     const first = sockets[0]!;
     expect(first.isClosed()).toBe(false);
     port.suspend();
-    expect(first.closes).toEqual([{ code: 1001, reason: "client suspended" }]);
+    expect(first.closes).toEqual([{ code: 4001, reason: "client suspended" }]);
     expect(clock.taskCount).toBe(0);
     expect(client.currentConnectionState.phase).toBe("suspended");
     port.resume();
@@ -452,7 +460,7 @@ describe("DbzzClient suspension", () => {
 
   test("pending request deadlines stay absolute across suspension", async () => {
     const { client, clock, port } = harness();
-    const result = client.query("todos.list", { list: 1n }).catch((error) => error);
+    const result = client.query("todos.list", { list: 1n }).then(mustErr);
     port.suspend();
     clock.advance(30_000);
     const rejection = (await result) as DbzzClientError;
@@ -469,7 +477,7 @@ describe("DbzzClient suspension", () => {
         return new Promise<Response>(() => {});
       },
     });
-    const call = client.procedure("todos.tally", {}).catch((error) => error);
+    const call = client.procedure("todos.tally", {}).then(mustErr);
     expect(fetches).toBe(1);
     port.suspend();
     const rejection = (await call) as DbzzClientError;
@@ -771,7 +779,7 @@ describe("DbzzClient activation", () => {
     clock.advance(30_000);
     const rejection = (await refresh) as DbzzClientError;
     expect(rejection.code).toBe("auth_unavailable");
-    expect(socket.closes).toEqual([{ code: 1008, reason: "authentication timed out" }]);
+    expect(socket.closes).toEqual([{ code: 4008, reason: "authentication timed out" }]);
     expect(client.currentConnectionState.phase).toBe("authentication-blocked");
     const blocked = client.currentConnectionState;
     const sentBefore = socket.sent.length;
@@ -932,7 +940,9 @@ describe("DbzzClient activation", () => {
         obligations: [],
       },
     });
-    expect(await result).toBe(7n);
+    const mutationResult = await result;
+    if (!mutationResult.ok) throw mutationResult.error;
+    expect(mutationResult.data).toBe(7n);
     client.close();
   });
 

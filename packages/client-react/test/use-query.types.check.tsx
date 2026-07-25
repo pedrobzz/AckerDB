@@ -8,6 +8,7 @@ import {
   type DbzzQueryState,
   type QueryRef,
 } from "@dbzz/client-react";
+import type { ApplicationError } from "@dbzz/core";
 import type { EventRef, MutationRef } from "@dbzz/client";
 
 interface Todo {
@@ -16,7 +17,8 @@ interface Todo {
 }
 type TodoArgs = { readonly list: bigint };
 
-declare const todos: QueryRef<TodoArgs, Todo[]>;
+type TodoNotFound = ApplicationError<"todo.not-found", { readonly id: bigint }, 404>;
+declare const todos: QueryRef<TodoArgs, Todo[], TodoNotFound>;
 declare const addTodo: MutationRef<TodoArgs, bigint>;
 declare const todoEvents: EventRef<TodoArgs, Todo>;
 
@@ -27,19 +29,33 @@ function Inferred(): string {
   const state = useQuery(todos, { list: 1n });
   if (state.status === "success") {
     const rows: Todo[] = state.data;
-    const marker: boolean = state.stale;
-    return `${rows.length}:${marker}`;
+    return `${rows.length}`;
   }
-  if (state.status === "error") {
-    // The error is the exact DbzzClientError value, not a widened Error.
+  if (state.status === "application-error") {
+    const exact: TodoNotFound = state.error;
+    const absent: undefined = state.data;
+    return `${exact.code}:${exact.body.id}:${String(absent)}`;
+  }
+  if (state.status === "rejected") {
     const exact: DbzzClientError = state.error;
-    const retained: Todo[] | undefined = state.staleData;
-    return `${exact.code}:${exact.outcome.retryable}:${retained?.length ?? 0}`;
+    const absent: undefined = state.data;
+    return `${exact.code}:${exact.outcome.retryable}:${String(absent)}`;
+  }
+  if (state.status === "unavailable") {
+    const retained: Todo[] | undefined = state.data;
+    if (state.stale) {
+      const staleRows: Todo[] = state.data;
+      void staleRows;
+    } else {
+      const absent: undefined = state.data;
+      void absent;
+    }
+    return `${state.error.code}:${state.stale}:${retained?.length ?? 0}`;
   }
   return state.status;
 }
 
-const skipped: DbzzQueryState<Todo[]> = useQuery(todos, skip);
+const skipped: DbzzQueryState<Todo[], TodoNotFound> = useQuery(todos, skip);
 
 // --- rejected references and arguments ---------------------------------------
 
@@ -63,13 +79,18 @@ useQuery(todos, Symbol("skip"));
 
 // --- state narrowing and exhaustiveness --------------------------------------
 
-declare const state: DbzzQueryState<Todo[]>;
+declare const state: DbzzQueryState<Todo[], TodoNotFound>;
 
-// @ts-expect-error data exists only after narrowing to success
-state.data;
+const maybeRows: Todo[] | undefined = state.data;
+// @ts-expect-error data is not always defined before state narrowing
+const alwaysRows: Todo[] = state.data;
 
-// @ts-expect-error the pending state carries no data
-declare const pending: Extract<DbzzQueryState<Todo[]>, { status: "pending" }>["data"];
+declare const pending: Extract<
+  DbzzQueryState<Todo[], TodoNotFound>,
+  { status: "pending" }
+>;
+// @ts-expect-error the pending state carries no rows
+const pendingRows: Todo[] = pending.data;
 
 // @ts-expect-error rows keep their reference type; they are not strings
 const wrongRows: string[] = useQuery(todos, skip).status === "success" && state.data;
@@ -78,31 +99,44 @@ function assertNever(value: never): never {
   throw new Error(String(value));
 }
 
-function describeState(value: DbzzQueryState<Todo[]>): string {
+function describeState(value: DbzzQueryState<Todo[], TodoNotFound>): string {
   switch (value.status) {
     case "disabled":
       return "disabled";
     case "pending":
       return "pending";
     case "success":
-      return `${value.stale}:${value.data.length}`;
-    case "error":
-      return `${value.error.code}:${value.staleData?.length ?? 0}`;
+      return `${value.data.length}`;
+    case "application-error":
+      return `${value.error.code}:${value.error.body.id}`;
+    case "rejected":
+      return value.error.code;
+    case "unavailable":
+      return `${value.error.code}:${value.data?.length ?? 0}`;
     default:
       return assertNever(value);
   }
 }
 
-function missesErrorState(value: DbzzQueryState<Todo[]>): string {
+function missesErrorState(value: DbzzQueryState<Todo[], TodoNotFound>): string {
   switch (value.status) {
     case "disabled":
     case "pending":
     case "success":
       return value.status;
     default:
-      // @ts-expect-error the error state makes this handling non-exhaustive
+      // @ts-expect-error error and unavailable states make this handling non-exhaustive
       return assertNever(value);
   }
 }
 
-export { Inferred, describeState, missesErrorState, skipped, wrongRows };
+export {
+  Inferred,
+  alwaysRows,
+  describeState,
+  maybeRows,
+  missesErrorState,
+  pendingRows,
+  skipped,
+  wrongRows,
+};

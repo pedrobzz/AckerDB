@@ -91,11 +91,17 @@ function MessageBoard(): ReactNode {
     case "success":
       return (
         <span>
-          {state.stale ? "stale" : "fresh"}:{state.data.map((row) => row.body).join(",")}
+          fresh:{state.data.map((row) => row.body).join(",")}
         </span>
       );
-    case "error":
+    case "rejected":
       return <span>error:{state.error.code}</span>;
+    case "unavailable":
+      return (
+        <span>
+          {state.data === undefined ? `error:${state.error.code}` : `stale:${state.data.map((row) => row.body).join(",")}`}
+        </span>
+      );
   }
 }
 
@@ -139,8 +145,8 @@ describe("useQuery against a real dbzz server", () => {
     sockets.findLast((socket) => socket.readyState === WebSocket.OPEN)!.close();
     await until(() => container.textContent === "stale:hello", "the stale snapshot");
     const stale = observed!;
-    if (stale.status !== "success" || delivered.status !== "success") {
-      throw new Error("expected retained success data");
+    if (stale.status !== "unavailable" || delivered.status !== "success") {
+      throw new Error("expected retained unavailable data");
     }
     expect(stale.data).toBe(delivered.data);
 

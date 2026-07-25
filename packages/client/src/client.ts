@@ -4,6 +4,9 @@ import {
   PROTOCOL_VERSION,
   ProtocolError,
   WireError,
+  Err,
+  Failure,
+  Ok,
   decode,
   encode,
   getRef,
@@ -14,11 +17,12 @@ import {
   parseServerMessage,
   parseSseMessage,
   type AuthenticatedMessage,
+  type ApplicationError,
+  type ApplicationErrorMessage,
   type AuthenticationDescriptor,
   type ClientMessage,
   type Credential,
   type EventRef,
-  type FunctionReference,
   type LiveEventCursor,
   type MutationOkMessage,
   type MutationReceipt,
@@ -28,6 +32,7 @@ import {
   type ProcedureRef,
   type QueryRef,
   type ResourceClass,
+  type Result,
   type ServerMessage,
   type SseAckRequest,
   type SseChunkMessage,
@@ -175,7 +180,7 @@ export interface DbzzCallOptions {
   readonly signal?: AbortSignal;
 }
 
-export interface DbzzSubscribeOptions {
+export interface DbzzSubscribeOptions<Error extends ApplicationError = ApplicationError> {
   /**
    * Fires when the server authoritatively confirms the already-held value
    * without redelivering it: applied `resume` and `checkpoint` transitions,
@@ -186,6 +191,8 @@ export interface DbzzSubscribeOptions {
    * `onUpdate`; this never carries data.
    */
   readonly onCursorConfirmed?: () => void;
+  /** Receives an authoritative application Err while keeping the live subscription active. */
+  readonly onApplicationError?: (error: Error) => void;
 }
 
 export const DBZZ_CLIENT_LIMITS: DbzzClientLimits = Object.freeze({
@@ -204,7 +211,15 @@ export const DBZZ_RECONNECT_DEFAULTS: DbzzReconnectOptions = Object.freeze({
   stableOpenMs: 10_000,
 });
 
+const CLIENT_CLOSE_CODE = Object.freeze({
+  retryLater: 4000,
+  suspended: 4001,
+  protocolFailure: 4002,
+  authenticationFailed: 4008,
+} as const);
+
 export class DbzzClientError extends Error {
+  readonly kind: "framework" | "unhandled" | "transport";
   readonly outcome: Readonly<Outcome>;
   readonly code: OutcomeCode;
   readonly retryable: boolean;
@@ -226,6 +241,19 @@ export class DbzzClientError extends Error {
   constructor(outcome: Outcome, interruption?: "suspension") {
     super(outcome.message);
     this.name = "DbzzClientError";
+    this.kind = outcome.code === "internal"
+      ? "unhandled"
+      : outcome.code === "malformed" ||
+          outcome.code === "validation" ||
+          outcome.code === "unsupported_protocol" ||
+          outcome.code === "unauthenticated" ||
+          outcome.code === "auth_unavailable" ||
+          outcome.code === "auth_stale" ||
+          outcome.code === "unauthorized" ||
+          outcome.code === "not_found" ||
+          outcome.code === "conflict"
+        ? "framework"
+        : "transport";
     this.outcome = Object.freeze({ ...outcome });
     this.code = outcome.code;
     this.retryable = outcome.retryable;
@@ -236,12 +264,18 @@ export class DbzzClientError extends Error {
   }
 }
 
+export type ClientResult<Data, Error extends ApplicationError = never> = Result<
+  Data,
+  Error | DbzzClientError
+>;
+
 interface QuerySubscription {
   readonly kind: "query";
   readonly id: number;
   readonly ref: string;
   readonly args: unknown;
   readonly onUpdate: (value: unknown) => void;
+  readonly onApplicationError?: (error: ApplicationError) => void;
   readonly onError?: (error: DbzzClientError) => void;
   readonly onCursorConfirmed?: () => void;
   cursor?: SubscriptionCursor;
@@ -753,16 +787,16 @@ export class DbzzClient {
     return result;
   }
 
-  subscribe<A, R = unknown>(
-    ref: QueryRef<A, R> | string,
+  subscribe<A, Data = unknown, Error extends ApplicationError = never>(
+    ref: QueryRef<A, Data, Error> | string,
     args: A,
-    onUpdate: (value: R) => void,
+    onUpdate: (value: Data) => void,
     onError?: (error: DbzzClientError) => void,
-    options: DbzzSubscribeOptions = {},
+    options: DbzzSubscribeOptions<Error> = {},
   ): () => void {
     this.assertUsable();
     const id = this.allocateId();
-    const address = getRef(ref as FunctionReference | string);
+    const address = getRef(ref);
     const frame = this.encodeSubscriptionOrReject(id, address, args);
     const bytes = this.reservePersistent(frame, "subscription");
     const subscription: QuerySubscription = {
@@ -771,6 +805,9 @@ export class DbzzClient {
       ref: address,
       args,
       onUpdate: onUpdate as (value: unknown) => void,
+      onApplicationError: options.onApplicationError as
+        | ((error: ApplicationError) => void)
+        | undefined,
       onError,
       onCursorConfirmed: options.onCursorConfirmed,
       resetRequested: false,
@@ -791,7 +828,7 @@ export class DbzzClient {
   ): () => void {
     this.assertUsable();
     const id = this.allocateId();
-    const address = getRef(ref as FunctionReference | string);
+    const address = getRef(ref);
     const frame = this.encodeSubscriptionOrReject(id, address, args);
     const bytes = this.reservePersistent(frame, "subscription");
     const subscription: EventSubscription = {
@@ -809,19 +846,30 @@ export class DbzzClient {
     return () => this.removeSubscription(id, true);
   }
 
-  query<A, R = unknown>(ref: QueryRef<A, R> | string, args: A): Promise<R> {
-    return this.request("query", getRef(ref as FunctionReference | string), args) as Promise<R>;
+  query<A, Data = unknown, Error extends ApplicationError = never>(
+    ref: QueryRef<A, Data, Error> | string,
+    args: A,
+  ): Promise<ClientResult<Data, Error>> {
+    return this.request("query", getRef(ref), args).catch(
+      (error) => Failure(this.asClientError(error)),
+    ) as Promise<ClientResult<Data, Error>>;
   }
 
-  mutation<A, R = unknown>(ref: MutationRef<A, R> | string, args: A): Promise<R> {
-    return this.request("mutation", getRef(ref as FunctionReference | string), args) as Promise<R>;
+  mutation<A, Data = unknown, Error extends ApplicationError = never>(
+    ref: MutationRef<A, Data, Error> | string,
+    args: A,
+  ): Promise<ClientResult<Data, Error>> {
+    return this.request("mutation", getRef(ref), args).catch(
+      (error) => Failure(this.asClientError(error)),
+    ) as Promise<ClientResult<Data, Error>>;
   }
 
-  async procedure<A, R = unknown>(
-    ref: ProcedureRef<A, R> | string,
+  async procedure<A, Data = unknown, Error extends ApplicationError = never>(
+    ref: ProcedureRef<A, Data, Error> | string,
     args: A,
     options: DbzzCallOptions = {},
-  ): Promise<R> {
+  ): Promise<ClientResult<Data, Error>> {
+    try {
     this.assertUsable();
     if (options.signal?.aborted) {
       throw localError("unavailable", "procedure request was canceled", "operation");
@@ -836,7 +884,7 @@ export class DbzzClient {
       throw suspensionError("unavailable", "client is suspended", "operation");
     }
     const id = this.allocateId();
-    const body = this.encodeCall(id, getRef(ref as FunctionReference | string), args);
+    const body = this.encodeCall(id, getRef(ref), args);
     const release = this.reserveTransient(body, "operation");
     const fetchControl = this.createFetchController(options.signal, this.limits.maxQueryAgeMs);
     // Suspension settles this call with its exact typed indeterminate outcome
@@ -892,13 +940,26 @@ export class DbzzClient {
         }
         throw new DbzzClientError(parsed.outcome);
       }
+      if (parsed.t === "app_err") {
+        if (parsed.id !== id) {
+          throw localError("malformed", "procedure error does not match its request", "operation");
+        }
+        return Err(
+          parsed.error.code,
+          parsed.error.body,
+          parsed.error.status,
+        ) as ClientResult<Data, Error>;
+      }
       if (!response.ok || parsed.id !== id) {
         throw localError("malformed", "procedure response does not match its request", "operation");
       }
-      return parsed.value as R;
+      return Ok(parsed.value as Data) as ClientResult<Data, Error>;
     } finally {
       this.releaseFetchController(fetchControl);
       release();
+    }
+    } catch (error) {
+      return Failure(this.asClientError(error)) as ClientResult<Data, Error>;
     }
   }
 
@@ -933,7 +994,7 @@ export class DbzzClient {
       throw suspensionError("unavailable", "client is suspended", "sse");
     }
     const id = this.allocateId();
-    const body = this.encodeCall(id, getRef(ref as FunctionReference | string), args);
+    const body = this.encodeCall(id, getRef(ref), args);
     const releaseReservation = this.reserveTransient(body, "sse");
     const fetchControl = this.createFetchController(options.signal);
     let responseBody: CancelableResponse | undefined;
@@ -1272,7 +1333,7 @@ export class DbzzClient {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.expiryHandle = undefined;
     }
-    this.retireConnection(1001, "client suspended");
+    this.retireConnection(CLIENT_CLOSE_CODE.suspended, "client suspended");
     // The abort reason marks these settlements as lifecycle interruptions:
     // each in-flight procedure and SSE stream produces its exact typed
     // suspension outcome (never a caller-abort or failure outcome).
@@ -1365,7 +1426,10 @@ export class DbzzClient {
     const error = localError("auth_unavailable", "authentication timed out", "connection");
     this.blockingError = error;
     attempt.reject(error);
-    this.retireConnection(1008, "authentication timed out");
+    this.retireConnection(
+      CLIENT_CLOSE_CODE.authenticationFailed,
+      "authentication timed out",
+    );
     this.publishConnectionState();
   }
 
@@ -1646,6 +1710,9 @@ export class DbzzClient {
       case "ok":
         this.applyResult(frame);
         return;
+      case "app_err":
+        this.applyApplicationError(frame);
+        return;
       case "err":
         this.applyError(frame.id, new DbzzClientError(frame.outcome));
         return;
@@ -1688,6 +1755,9 @@ export class DbzzClient {
       case "reset":
       case "update":
         subscription.onUpdate(transition.value);
+        break;
+      case "application-error":
+        subscription.onApplicationError?.(transition.error);
         break;
       case "revoked":
         subscription.onError?.(new DbzzClientError(transition.outcome));
@@ -1736,19 +1806,42 @@ export class DbzzClient {
       return;
     }
     if (frame.kind === "query") {
-      this.finishRequest(request, frame.value);
+      this.finishRequest(request, Ok(frame.value));
       return;
     }
-    this.applyMutationReceipt(request, frame);
+    this.applyMutationReceipt(request, frame, Ok(frame.value));
   }
 
-  private applyMutationReceipt(request: PendingRequest, frame: MutationOkMessage): void {
+  private applyApplicationError(frame: ApplicationErrorMessage): void {
+    const request = this.pending.get(frame.id);
+    if (!request) return;
+    if (frame.kind !== request.kind) {
+      this.failPermanently(localError("malformed", "error kind does not match its request", "operation"));
+      return;
+    }
+    const result = Err(frame.error.code, frame.error.body, frame.error.status);
+    if (frame.kind === "query") {
+      this.finishRequest(request, result);
+      return;
+    }
+    this.applyMutationReceipt(request, frame, result);
+  }
+
+  private applyMutationReceipt(
+    request: PendingRequest,
+    frame: MutationOkMessage | ApplicationErrorMessage,
+    result: Result<unknown, unknown>,
+  ): void {
+    if (frame.receipt === undefined) {
+      this.failPermanently(localError("malformed", "mutation result has no receipt", "idempotency"));
+      return;
+    }
     if (frame.receipt.mutationRequestId !== request.mutationRequestId) {
       this.failPermanently(localError("malformed", "mutation receipt changed its request identity", "idempotency"));
       return;
     }
     request.receipt = frame.receipt;
-    request.result = frame.value;
+    request.result = result;
     const obligations = new Set<number>();
     for (const id of frame.receipt.obligations) {
       const subscription = this.subscriptions.get(id);
@@ -1762,7 +1855,7 @@ export class DbzzClient {
       }
     }
     request.obligations = obligations;
-    if (obligations.size === 0) this.finishRequest(request, frame.value);
+    if (obligations.size === 0) this.finishRequest(request, result);
   }
 
   private applyError(id: number | null, error: DbzzClientError): void {
@@ -1772,7 +1865,7 @@ export class DbzzClient {
           this.serverRetryNotBeforeMs,
           this.now() + Math.min(error.retryAfterMs ?? 0, MAX_RETRY_AFTER_MS),
         );
-        this.socket?.close(1013, "retry later");
+        this.socket?.close(CLIENT_CLOSE_CODE.retryLater, "retry later");
       } else if (
         error.code === "unauthenticated" ||
         error.code === "auth_unavailable" ||
@@ -1966,7 +2059,10 @@ export class DbzzClient {
     // Retired before any externally owned callback runs: an onError handler
     // may reenter refreshCredential in the same turn, and its recovery dial
     // must find the rejected socket already detached or it would never dial.
-    this.retireConnection(1008, "authentication failed");
+    this.retireConnection(
+      CLIENT_CLOSE_CODE.authenticationFailed,
+      "authentication failed",
+    );
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
     this.publishConnectionState();
@@ -1989,7 +2085,7 @@ export class DbzzClient {
       this.releasePersistent(subscription.bytes);
     }
     this.subscriptions.clear();
-    this.retireConnection(1002, "protocol failure");
+    this.retireConnection(CLIENT_CLOSE_CODE.protocolFailure, "protocol failure");
     this.publishConnectionState();
   }
 
@@ -2204,6 +2300,12 @@ export class DbzzClient {
     return error instanceof ProtocolError
       ? localError(error.code, error.message, resource)
       : localError("malformed", "invalid protocol payload", resource);
+  }
+
+  private asClientError(error: unknown): DbzzClientError {
+    return error instanceof DbzzClientError
+      ? error
+      : localError("internal", "client operation failed unexpectedly", "operation");
   }
 
   private sseStream(response: Response): string {

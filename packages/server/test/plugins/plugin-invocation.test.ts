@@ -429,14 +429,17 @@ async function makeHarness(
       procedureVocabulary: procedure({
         args: {},
         access: "public",
-        handler: async (ctx: AnyContext) => ({
-          storeOperations: Object.keys(ctx.store).sort(),
-          facadeOperations: Object.keys(ctx.facade).sort(),
-          transaction: await ctx.tx((tx: AnyContext) => ({
+        handler: async (ctx: AnyContext) => {
+          const transaction = await ctx.tx((tx: AnyContext) => ({
             storeOperations: Object.keys(tx.store).sort(),
             facadeOperations: Object.keys(tx.facade).sort(),
-          })),
-        }),
+          }));
+          return {
+            storeOperations: Object.keys(ctx.store).sort(),
+            facadeOperations: Object.keys(ctx.facade).sort(),
+            transaction: transaction.data,
+          };
+        },
       }),
     },
   };

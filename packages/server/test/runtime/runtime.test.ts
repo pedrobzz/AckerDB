@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   PROTOCOL_VERSION,
+  Err,
+  Status,
   decode,
   encode,
   parseCallResponse,
@@ -150,10 +152,13 @@ let externalProcedureStarted: Deferred<void> | null = null;
 let externalProcedureRelease: Deferred<void> | null = null;
 let externalSseStarted: Deferred<void> | null = null;
 let externalSseReturned: Deferred<void> | null = null;
+let nestedMutationEntered: Deferred<void> | null = null;
+let nestedMutationRelease: Deferred<void> | null = null;
 let scheduledAttempts = 0;
 let scheduledAttempt: number | null = null;
 let mutationResultReads = 0;
 let mutationResultValue: object = {};
+let writeThenErrCalls = 0;
 
 const functions = {
   messages: {
@@ -210,6 +215,12 @@ const functions = {
       args: {},
       handler: () => Number.NaN,
     }),
+    missing: query({
+      access: "public",
+      args: { id: v.bigint() },
+      handler: (_ctx: Ctx, args: Ctx) =>
+        Err("message-not-found", { id: args.id }, Status.NotFound),
+    }),
     send: mutation({
       access: "public",
       args: { channelId: v.bigint(), body: v.string() },
@@ -242,6 +253,103 @@ const functions = {
       handler: async (ctx: Ctx, args: Ctx) => {
         await functions.messages.send(ctx, { channelId: args.channelId, body: "rollback" });
         throw new Error("compose failed");
+      },
+    }),
+    writeThenErr: mutation({
+      access: "public",
+      args: { channelId: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        writeThenErrCalls++;
+        await ctx.db.messages.insert({ channelId: args.channelId, body: "child-rolled-back" });
+        return Err("stock-unavailable", { channelId: args.channelId }, Status.Conflict);
+      },
+    }),
+    handleChildErr: mutation({
+      access: "public",
+      args: { channelId: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx): Promise<string> => {
+        await ctx.db.messages.insert({ channelId: args.channelId, body: "parent-before" });
+        const child = await functions.messages.writeThenErr(ctx, args);
+        if (!child.ok) {
+          await ctx.db.messages.insert({ channelId: args.channelId, body: "parent-after" });
+          return "queued";
+        }
+        return "unexpected";
+      },
+    }),
+    propagateChildErr: mutation({
+      access: "public",
+      args: { channelId: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx): Promise<unknown> => {
+        await ctx.db.messages.insert({ channelId: args.channelId, body: "parent-rolled-back" });
+        return functions.messages.writeThenErr(ctx, args);
+      },
+    }),
+    throwAfterWrite: mutation({
+      access: "public",
+      args: { channelId: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db.messages.insert({ channelId: args.channelId, body: "throw-rolled-back" });
+        throw new Error("storage exploded");
+      },
+    }),
+    catchNestedThrow: mutation({
+      access: "public",
+      args: { channelId: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db.messages.insert({ channelId: args.channelId, body: "root-rolled-back" });
+        try {
+          await functions.messages.throwAfterWrite(ctx, args);
+        } catch {
+          return "claimed success";
+        }
+        return "unreachable";
+      },
+    }),
+    catchDatabaseThrow: mutation({
+      access: "public",
+      args: { channelId: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db.messages.insert({
+          channelId: args.channelId,
+          body: "root-must-roll-back",
+        });
+        try {
+          await ctx.db.messages.patch(9_999n, { body: "missing" });
+        } catch {
+          return "claimed success";
+        }
+        return "unreachable";
+      },
+    }),
+    waitThenErr: mutation({
+      access: "public",
+      args: { channelId: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db.messages.insert({
+          channelId: args.channelId,
+          body: "nested-rolled-back",
+        });
+        nestedMutationEntered?.resolve(undefined);
+        await nestedMutationRelease?.promise;
+        return Err("stock-unavailable", { channelId: args.channelId }, Status.Conflict);
+      },
+    }),
+    overlapNestedMutation: mutation({
+      access: "public",
+      args: { channelId: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx): Promise<unknown> => {
+        const child: Promise<unknown> = functions.messages.waitThenErr(ctx, args);
+        await nestedMutationEntered?.promise;
+        try {
+          await ctx.db.messages.insert({
+            channelId: args.channelId,
+            body: "must-not-cross-child-savepoint",
+          });
+        } finally {
+          nestedMutationRelease?.resolve(undefined);
+        }
+        return child;
       },
     }),
     largeResult: mutation({
@@ -281,6 +389,12 @@ const functions = {
       args: { value: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
+    reject: procedure({
+      access: "public",
+      args: { reason: v.string() },
+      handler: (_ctx: Ctx, args: Ctx) =>
+        Err("procedure-rejected", { reason: args.reason }, Status.UnprocessableContent),
+    }),
     block: procedure({
       access: "public",
       args: {},
@@ -295,17 +409,40 @@ const functions = {
       args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const external = await (await fetch("data:text/plain,external")).text();
-        const body = await ctx.tx(async (tx: Ctx) => {
-          const id = await functions.messages.send(tx, { channelId: args.channelId, body: external });
-          return (await tx.db.messages.get(id)).body;
+        const transaction = await ctx.tx(async (tx: Ctx) => {
+          const sent = await functions.messages.send(
+            tx,
+            { channelId: args.channelId, body: external },
+          );
+          if (!sent.ok) return sent;
+          return (await tx.db.messages.get(sent.data)).body;
         });
-        return { external, body };
+        if (!transaction.ok) return transaction;
+        return { external, body: transaction.data };
       },
     }),
     nestedTx: procedure({
       access: "public",
       args: {},
       handler: (ctx: Ctx) => ctx.tx(() => ctx.tx(() => 1)),
+    }),
+    catchTxThrow: procedure({
+      access: "public",
+      args: { channelId: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        try {
+          await ctx.tx(async (tx: Ctx) => {
+            await tx.db.messages.insert({
+              channelId: args.channelId,
+              body: "tx-must-roll-back",
+            });
+            throw new Error("transaction storage failed");
+          });
+        } catch {
+          return "claimed success";
+        }
+        return "unreachable";
+      },
     }),
     failEmoji: procedure({
       access: "public",
@@ -568,9 +705,12 @@ beforeEach(() => {
   externalProcedureRelease = null;
   externalSseStarted = null;
   externalSseReturned = null;
+  nestedMutationEntered = null;
+  nestedMutationRelease = null;
   scheduledAttempts = 0;
   scheduledAttempt = null;
   mutationResultReads = 0;
+  writeThenErrCalls = 0;
   mutationResultValue = Object.defineProperty({}, "payload", {
     enumerable: true,
     get() {
@@ -622,6 +762,44 @@ describe("runtime commit and replay ownership", () => {
     ]);
   });
 
+  test("publishes application errors separately and uses a procedure's named HTTP status", async () => {
+    await session.open();
+    const queryResult = await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 10,
+      ref: "messages.missing",
+      args: { id: 99n },
+    }));
+    expect(queryResult).toMatchObject({
+      ok: false,
+      error: { code: "message-not-found", body: { id: 99n }, status: 404 },
+    });
+    expect(session.publications.at(-1)).toMatchObject({
+      t: "app_err",
+      kind: "query",
+      error: { code: "message-not-found", status: 404 },
+    });
+
+    const response = await runtime.runProcedure({
+      id: 11,
+      address: "ops.reject",
+      args: { reason: "not now" },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+    expect(response.status).toBe(422);
+    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
+      t: "app_err",
+      kind: "procedure",
+      error: {
+        code: "procedure-rejected",
+        body: { reason: "not now" },
+        status: 422,
+      },
+    });
+  });
+
   test("validates queries and keeps failed transaction writes invisible", async () => {
     await session.open();
     const first = await session.mutation(1, "messages.send", { channelId: 1n, body: "hello" });
@@ -646,6 +824,125 @@ describe("runtime commit and replay ownership", () => {
       args: { channelId: 2n },
     })) as unknown[];
     expect(rolledBack).toEqual([]);
+  });
+
+  test("rolls back returned Err scopes and poisons caught nested throws", async () => {
+    await session.open();
+
+    const handled = await session.mutation(20, "messages.handleChildErr", { channelId: 20n });
+    expect(handled.value).toBe("queued");
+    const handledRows = await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 21,
+      ref: "messages.list",
+      args: { channelId: 20n },
+    })) as Array<{ body: string }>;
+    expect(handledRows.map((row) => row.body)).toEqual(["parent-before", "parent-after"]);
+
+    const versionBeforeErr = engine.commitVersion();
+    const recordsBeforeErr = engine.writer
+      .query("SELECT COUNT(*) AS count FROM _dbzz_mutations")
+      .get() as { count: bigint };
+    const errIssuedAt = Date.now();
+    const errRequestId = uuidV7(errIssuedAt, 22);
+    const propagated = await session.mutation(
+      22,
+      "messages.propagateChildErr",
+      { channelId: 22n },
+      errRequestId,
+      errIssuedAt,
+    );
+    expect(propagated.value).toMatchObject({
+      ok: false,
+      error: { code: "stock-unavailable", status: 409 },
+    });
+    expect(session.publications.at(-1)).toMatchObject({
+      t: "app_err",
+      kind: "mutation",
+      error: { code: "stock-unavailable", status: 409 },
+    });
+    expect(engine.commitVersion()).toBe(versionBeforeErr);
+    expect(propagated.receipt.commitVersion).toBe(versionBeforeErr);
+    expect(
+      (engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_mutations").get() as {
+        count: bigint;
+      }).count,
+    ).toBe(recordsBeforeErr.count + 1n);
+    const callsAfterErr = writeThenErrCalls;
+    const replayedErr = await session.mutation(
+      23,
+      "messages.propagateChildErr",
+      { channelId: 22n },
+      errRequestId,
+      errIssuedAt,
+    );
+    expect(replayedErr.value).toMatchObject({
+      ok: false,
+      error: { code: "stock-unavailable", status: 409 },
+    });
+    expect(replayedErr.receipt).toMatchObject({
+      replay: "replayed",
+      commitVersion: versionBeforeErr,
+    });
+    expect(writeThenErrCalls).toBe(callsAfterErr);
+    expect(await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 24,
+      ref: "messages.list",
+      args: { channelId: 22n },
+    }))).toEqual([]);
+
+    await expect(session.mutation(
+      25,
+      "messages.catchNestedThrow",
+      { channelId: 24n },
+    )).rejects.toThrow("storage exploded");
+    expect(await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 26,
+      ref: "messages.list",
+      args: { channelId: 24n },
+    }))).toEqual([]);
+  });
+
+  test("rejects parent database work while a nested mutation owns the savepoint", async () => {
+    await session.open();
+    nestedMutationEntered = deferred<void>();
+    nestedMutationRelease = deferred<void>();
+
+    await expect(session.mutation(
+      27,
+      "messages.overlapNestedMutation",
+      { channelId: 27n },
+    )).rejects.toThrow(
+      "concurrent database access crossed a nested mutation boundary",
+    );
+    expect(await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 28,
+      ref: "messages.list",
+      args: { channelId: 27n },
+    }))).toEqual([]);
+  });
+
+  test("a caught database failure still poisons and rolls back the mutation", async () => {
+    await session.open();
+    await expect(session.mutation(
+      29,
+      "messages.catchDatabaseThrow",
+      { channelId: 29n },
+    )).rejects.toThrow("row 9999 not found");
+    expect(await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 30,
+      ref: "messages.list",
+      args: { channelId: 29n },
+    }))).toEqual([]);
   });
 
   test("replays one scoped mutation exactly and rejects semantic reuse", async () => {
@@ -1162,6 +1459,30 @@ describe("procedures and bounded SSE", () => {
       id: 2,
       outcome: { code: "validation" },
     });
+  });
+
+  test("a caught ctx.tx throw still poisons the procedure and rolls back", async () => {
+    const response = await runtime.runProcedure({
+      id: 3,
+      address: "ops.catchTxThrow",
+      args: { channelId: 30n },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+    expect(response.status).toBe(500);
+    expect(decode(await response.text())).toMatchObject({
+      t: "err",
+      outcome: { code: "internal" },
+    });
+
+    await session.open();
+    expect(await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 31,
+      ref: "messages.list",
+      args: { channelId: 30n },
+    }))).toEqual([]);
   });
 
   test("reserves Runtime operation capacity for an unrelated external caller", async () => {

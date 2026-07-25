@@ -1,11 +1,11 @@
-// bun run bench:hetzner [--bootstrap <released-version> | --baseline | --telemetry]
+// bun run bench:hetzner [--bootstrap <released-version> | --baseline | --telemetry [enabled|exporter|disabled]]
 //
 // --bootstrap re-establishes an already-released version's final record at its
 // tag; --baseline runs HEAD's pending version with no predecessor comparison —
 // the run itself becomes the final evidence (the first release under the
 // policy, or a deliberate baseline reset); --telemetry runs the optional
-// DBZZ-only telemetry-cost comparison (telemetry-v<version>.json, freely
-// rerun, never release evidence).
+// DBZZ-only diagnostic (telemetry-v<version>.json, freely rerun, never release
+// evidence). A profile argument limits the diagnostic to that one DBZZ profile.
 //
 // This command is deliberately synchronous: release automation starts it in a
 // background worker/subagent, while this process owns the remote worktree and
@@ -18,7 +18,9 @@ import { PACKAGES, fail, git, syncedVersion } from "./lib.ts";
 
 const HETZNER = "htz";
 const RESULTS = "bench/results";
-const USAGE = "usage: bun run bench:hetzner [--bootstrap <released-version> | --baseline | --telemetry]";
+const TELEMETRY_PROFILES = ["enabled", "exporter", "disabled"] as const;
+type TelemetryProfile = (typeof TELEMETRY_PROFILES)[number];
+const USAGE = "usage: bun run bench:hetzner [--bootstrap <released-version> | --baseline | --telemetry [enabled|exporter|disabled]]";
 const args = process.argv.slice(2);
 const mode =
   args[0] === "--bootstrap" ? "bootstrap"
@@ -27,7 +29,21 @@ const mode =
   : "release";
 const bootstrap = mode === "bootstrap";
 if (bootstrap && args.length !== 2) fail(USAGE);
-if (!bootstrap && args.length !== (mode === "release" ? 0 : 1)) fail(USAGE);
+if (
+  !bootstrap &&
+  (
+    mode === "release"
+      ? args.length !== 0
+      : mode === "telemetry"
+        ? args.length < 1 || args.length > 2
+        : args.length !== 1
+  )
+) fail(USAGE);
+const telemetryProfile = args[1] as TelemetryProfile | undefined;
+if (
+  telemetryProfile !== undefined &&
+  !TELEMETRY_PROFILES.includes(telemetryProfile)
+) fail(USAGE);
 
 const sources = new Map<string, string>();
 if (!bootstrap) {
@@ -76,11 +92,15 @@ try {
     `git checkout -q ${harnessCommit}`,
     ...(bootstrap ? [`git checkout -q ${productCommit} -- packages`] : []),
     "bun install --frozen-lockfile",
-    "cd bench/convex-app && bun install --frozen-lockfile",
-    "cd ../spacetime-app && bun install --frozen-lockfile",
-    "cd spacetimedb && bun install --frozen-lockfile",
+    ...(mode === "telemetry"
+      ? []
+      : [
+          "cd bench/convex-app && bun install --frozen-lockfile",
+          "cd ../spacetime-app && bun install --frozen-lockfile",
+          "cd spacetimedb && bun install --frozen-lockfile",
+        ]),
     `cd ${remoteRepo}`,
-    `BENCH_EXECUTION_HOST=hetzner BENCH_RELEASE_VERSION=${version} BENCH_RELEASE_SOURCE_COMMIT=${productCommit}${bootstrap || mode === "baseline" ? " BENCH_RELEASE_BOOTSTRAP=1" : ""}${mode === "telemetry" ? " BENCH_RUN_KIND=telemetry" : ""} bun bench/run.ts`,
+    `BENCH_EXECUTION_HOST=hetzner BENCH_RELEASE_VERSION=${version} BENCH_RELEASE_SOURCE_COMMIT=${productCommit}${bootstrap || mode === "baseline" ? " BENCH_RELEASE_BOOTSTRAP=1" : ""}${mode === "telemetry" ? ` BENCH_RUN_KIND=telemetry${telemetryProfile === undefined ? "" : ` BENCH_TELEMETRY_PROFILES=${telemetryProfile}`}` : ""} bun bench/run.ts`,
   ].join("; "));
 
   const destination = join(RESULTS, resultName);

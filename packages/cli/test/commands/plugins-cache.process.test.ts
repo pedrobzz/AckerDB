@@ -212,7 +212,14 @@ afterEach(async () => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+type UnwrappedResult<T> =
+  T extends { readonly ok: true; readonly data: infer Data }
+    ? Data
+    : T extends { readonly ok: false }
+      ? never
+      : T;
+
+async function withTimeout<T>(promise: Promise<T>, label: string): Promise<UnwrappedResult<T>> {
   let handle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     handle = setTimeout(
@@ -220,7 +227,16 @@ function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
       STEP_TIMEOUT_MS,
     );
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
+  const value = await Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "ok" in value
+  ) {
+    if (value.ok === true && "data" in value) return value.data as UnwrappedResult<T>;
+    if (value.ok === false && "error" in value) throw value.error;
+  }
+  return value as UnwrappedResult<T>;
 }
 
 async function eventually(assertion: () => void | Promise<void>, label: string): Promise<void> {
@@ -408,8 +424,12 @@ describe("Plugins + built-in Cache real process lifecycle", () => {
       racerA.mutation<{ value: string }, boolean>("state.raceCache", { value: "racer-a" }),
       racerB.mutation<{ value: string }, boolean>("state.raceCache", { value: "racer-b" }),
     ]), "concurrent if-missing writes");
-    expect([...attempts].sort()).toEqual([false, true]);
-    const winner = attempts[0] ? "racer-a" : "racer-b";
+    const attemptValues = attempts.map((attempt) => {
+      if (!attempt.ok) throw attempt.error;
+      return attempt.data;
+    });
+    expect([...attemptValues].sort()).toEqual([false, true]);
+    const winner = attemptValues[0] ? "racer-a" : "racer-b";
 
     expect(await snapshot(seed)).toEqual({
       root: "root-value",

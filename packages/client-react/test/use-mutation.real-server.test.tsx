@@ -4,7 +4,14 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientMessage } from "@dbzz/core";
-import { DbzzClient, anyApi, type DbzzWebSocket, type MutationRef, type QueryRef } from "@dbzz/client";
+import {
+  DbzzClient,
+  anyApi,
+  type ClientResult,
+  type DbzzWebSocket,
+  type MutationRef,
+  type QueryRef,
+} from "@dbzz/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -114,7 +121,14 @@ async function createApp(): Promise<App> {
   };
 }
 
-type SendMessage = (args: { readonly channelId: bigint; readonly body: string }) => Promise<bigint>;
+type SendMessage = (
+  args: { readonly channelId: bigint; readonly body: string },
+) => Promise<ClientResult<bigint>>;
+
+function mustOk<Data>(result: ClientResult<Data>): Data {
+  if (!result.ok) throw result.error;
+  return result.data;
+}
 
 interface Mounted {
   readonly root: Root;
@@ -188,11 +202,11 @@ afterAll(async () => {
 describe("useMutation against a real dbzz server", () => {
   test("runs a real mutation through the rendered hook", async () => {
     const mounted = await mount(app);
-    const id = await withDeadline(
+    const id = mustOk(await withDeadline(
       mounted.send()({ channelId: 1n, body: "first" }),
       "first mutation settlement",
-    );
-    const rows = await app.observer.query(listRef, { channelId: 1n });
+    ));
+    const rows = mustOk(await app.observer.query(listRef, { channelId: 1n }));
     expect(rows.filter(({ body }) => body === "first")).toEqual([
       { id, channelId: 1n, body: "first" },
     ]);
@@ -217,7 +231,7 @@ describe("useMutation against a real dbzz server", () => {
       // The server commits and acknowledges, but the acknowledgment dies with
       // the connection; the client must replay under the original identity.
       await cut;
-      const id = await withDeadline(result, "severed mutation settlement");
+      const id = mustOk(await withDeadline(result, "severed mutation settlement"));
 
       const requests = mutationRequests(app, "replayed");
       expect(requests.length).toBeGreaterThanOrEqual(2);
@@ -239,7 +253,7 @@ describe("useMutation against a real dbzz server", () => {
       expect(ack.receipt.replay).toBe("replayed");
 
       // Exactly one server effect exists for the interrupted mutation.
-      const rows = await app.observer.query(listRef, { channelId: 1n });
+      const rows = mustOk(await app.observer.query(listRef, { channelId: 1n }));
       expect(rows.filter(({ body }) => body === "replayed")).toEqual([
         { id, channelId: 1n, body: "replayed" },
       ]);
@@ -261,10 +275,13 @@ describe("useMutation against a real dbzz server", () => {
         // Mode runs this effect twice; both queued calls wait through the
         // simulated remount (which closes the first client before either
         // could dispatch) and commit once each on the surviving lifetime.
-        send({ channelId: 2n, body: "queued" }).then(
-          (value) => settlements.push({ kind: "ok", value }),
-          (error) => settlements.push({ kind: "error", error }),
-        );
+        send({ channelId: 2n, body: "queued" }).then((result) => {
+          settlements.push(
+            result.ok
+              ? { kind: "ok", value: result.data }
+              : { kind: "error", error: result.error },
+          );
+        });
       }, [send]);
       return null;
     }
@@ -297,7 +314,7 @@ describe("useMutation against a real dbzz server", () => {
     expect(new Set(requests.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(2);
 
     // Exactly one server effect per call, and the resolutions name the rows.
-    const rows = await app.observer.query(listRef, { channelId: 2n });
+    const rows = mustOk(await app.observer.query(listRef, { channelId: 2n }));
     const committed = rows.filter(({ body }) => body === "queued");
     expect(committed).toHaveLength(2);
     expect(settlements.map(({ kind }) => kind)).toEqual(["ok", "ok"]);

@@ -16,6 +16,7 @@ import {
   observeStatement,
   type DbStatementObserver,
 } from "../statement-observation.ts";
+import { assertMutationAccess } from "../../runtime/invocation-state.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
 import {
   compilePredicates,
@@ -238,6 +239,7 @@ class NearestQueryRuntime {
   }
 
   private execute(count: number): NearestExecution {
+    assertMutationAccess();
     const ownsTransaction = !this.conn.inTransaction;
     let transactionOpen = false;
     try {

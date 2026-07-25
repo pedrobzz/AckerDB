@@ -16,6 +16,7 @@ import {
   parseSseAckRequest,
   parseSseMessage,
   parseSubscriptionTransition,
+  Status,
   uuidV7Timestamp,
   type AuthenticatedMessage,
   type Identity,
@@ -41,18 +42,18 @@ function expectProtocolError(run: () => unknown, code: ProtocolError["code"]): v
   }
 }
 
-describe("protocol 2 envelopes", () => {
+describe("protocol 3 envelopes", () => {
   test("requires an explicit versioned hello and bounded credential", () => {
-    expect(PROTOCOL_VERSION).toBe(2);
+    expect(PROTOCOL_VERSION).toBe(3);
     expect(
       parseClientMessage({
-        v: 2,
+        v: PROTOCOL_VERSION,
         t: "hello",
         clientSessionId: "client-1",
         credential: { kind: "anonymous" },
       }),
     ).toEqual({
-      v: 2,
+      v: PROTOCOL_VERSION,
       t: "hello",
       clientSessionId: "client-1",
       credential: { kind: "anonymous" },
@@ -69,10 +70,10 @@ describe("protocol 2 envelopes", () => {
 
   test("rejects old versions, unknown frame types, unknown fields, and unbounded IDs", () => {
     expectProtocolError(() => parseClientMessage({ v: 1, t: "ping" }), "unsupported_protocol");
-    expectProtocolError(() => parseClientMessage({ v: 2, t: "wat" }), "malformed");
-    expectProtocolError(() => parseClientMessage({ v: 2, t: "ping", legacy: true }), "malformed");
+    expectProtocolError(() => parseClientMessage({ v: PROTOCOL_VERSION, t: "wat" }), "malformed");
+    expectProtocolError(() => parseClientMessage({ v: PROTOCOL_VERSION, t: "ping", legacy: true }), "malformed");
     expectProtocolError(
-      () => parseClientMessage({ v: 2, t: "q", id: MAX_PROTOCOL_ID + 1, ref: "a.b", args: null }),
+      () => parseClientMessage({ v: PROTOCOL_VERSION, t: "q", id: MAX_PROTOCOL_ID + 1, ref: "a.b", args: null }),
       "malformed",
     );
   });
@@ -85,20 +86,20 @@ describe("protocol 2 envelopes", () => {
     );
     expect(
       parseClientMessage({
-        v: 2,
+        v: PROTOCOL_VERSION,
         t: "auth",
         attemptId: 2,
         credential: { kind: "bearer", token: "token" },
       }).t,
     ).toBe("auth");
     expect(
-      parseClientMessage({ v: 2, t: "sub", id: 1, ref: "messages.list", args: {}, cursor: cursor(2n) }).t,
+      parseClientMessage({ v: PROTOCOL_VERSION, t: "sub", id: 1, ref: "messages.list", args: {}, cursor: cursor(2n) }).t,
     ).toBe("sub");
-    expect(parseClientMessage({ v: 2, t: "reset", id: 1, cursor: cursor(2n) }).t).toBe("reset");
-    expect(parseClientMessage({ v: 2, t: "q", id: 2, ref: "messages.list", args: {} }).t).toBe("q");
+    expect(parseClientMessage({ v: PROTOCOL_VERSION, t: "reset", id: 1, cursor: cursor(2n) }).t).toBe("reset");
+    expect(parseClientMessage({ v: PROTOCOL_VERSION, t: "q", id: 2, ref: "messages.list", args: {} }).t).toBe("q");
     expect(
       parseClientMessage({
-        v: 2,
+        v: PROTOCOL_VERSION,
         t: "m",
         id: 3,
         ref: "messages.send",
@@ -107,7 +108,7 @@ describe("protocol 2 envelopes", () => {
         issuedAt: 1_688_000_000_000,
       }).t,
     ).toBe("m");
-    expect(parseCallRequest({ v: 2, t: "call", id: 4, ref: "reports.create", args: {} }).t).toBe("call");
+    expect(parseCallRequest({ v: PROTOCOL_VERSION, t: "call", id: 4, ref: "reports.create", args: {} }).t).toBe("call");
   });
 });
 
@@ -169,49 +170,49 @@ describe("structured outcomes", () => {
 describe("SSE receiver acknowledgments", () => {
   test("parses exact chunk, completion, error, and cumulative acknowledgment envelopes", () => {
     expect(parseSseMessage({
-      v: 2,
+      v: PROTOCOL_VERSION,
       t: "sse_chunk",
       seq: 1,
       proof: "proof-1",
       value: { id: 1n },
-    })).toEqual({ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: { id: 1n } });
-    expect(parseSseMessage({ v: 2, t: "sse_done", seq: 2, proof: "proof-2" })).toEqual({
-      v: 2,
+    })).toEqual({ v: PROTOCOL_VERSION, t: "sse_chunk", seq: 1, proof: "proof-1", value: { id: 1n } });
+    expect(parseSseMessage({ v: PROTOCOL_VERSION, t: "sse_done", seq: 2, proof: "proof-2" })).toEqual({
+      v: PROTOCOL_VERSION,
       t: "sse_done",
       seq: 2,
       proof: "proof-2",
     });
     expect(parseSseMessage({
-      v: 2,
+      v: PROTOCOL_VERSION,
       t: "sse_error",
       seq: 3,
       proof: "proof-3",
       outcome: { code: "slow_consumer", retryable: false, message: "stalled", resource: "sse" },
     }).t).toBe("sse_error");
     expect(parseSseAckRequest({
-      v: 2,
+      v: PROTOCOL_VERSION,
       t: "sse_ack",
       stream: "stream-1",
       seq: 3,
       proof: "proof-3",
-    })).toEqual({ v: 2, t: "sse_ack", stream: "stream-1", seq: 3, proof: "proof-3" });
+    })).toEqual({ v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream-1", seq: 3, proof: "proof-3" });
   });
 
   test("rejects unknown fields, unsafe sequences, empty tokens, and the wrong envelope kind", () => {
     for (const value of [
-      { v: 2, t: "sse_chunk", seq: 0, proof: "proof", value: null },
-      { v: 2, t: "sse_done", seq: Number.MAX_SAFE_INTEGER + 1, proof: "proof" },
-      { v: 2, t: "sse_done", seq: 1, proof: "" },
-      { v: 2, t: "sse_done", seq: 1, proof: "proof", legacy: true },
-      { v: 2, t: "sse_error", seq: 1, proof: "proof", outcome: { code: "wat" } },
+      { v: PROTOCOL_VERSION, t: "sse_chunk", seq: 0, proof: "proof", value: null },
+      { v: PROTOCOL_VERSION, t: "sse_done", seq: Number.MAX_SAFE_INTEGER + 1, proof: "proof" },
+      { v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "" },
+      { v: PROTOCOL_VERSION, t: "sse_done", seq: 1, proof: "proof", legacy: true },
+      { v: PROTOCOL_VERSION, t: "sse_error", seq: 1, proof: "proof", outcome: { code: "wat" } },
     ]) {
       expectProtocolError(() => parseSseMessage(value), "malformed");
     }
     for (const value of [
-      { v: 2, t: "call", stream: "stream", seq: 1, proof: "proof" },
-      { v: 2, t: "sse_ack", stream: "", seq: 1, proof: "proof" },
-      { v: 2, t: "sse_ack", stream: "stream", seq: -1, proof: "proof" },
-      { v: 2, t: "sse_ack", stream: "stream", seq: 1, proof: "x".repeat(129) },
+      { v: PROTOCOL_VERSION, t: "call", stream: "stream", seq: 1, proof: "proof" },
+      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "", seq: 1, proof: "proof" },
+      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream", seq: -1, proof: "proof" },
+      { v: PROTOCOL_VERSION, t: "sse_ack", stream: "stream", seq: 1, proof: "x".repeat(129) },
     ]) {
       expectProtocolError(() => parseSseAckRequest(value), "malformed");
     }
@@ -219,7 +220,7 @@ describe("SSE receiver acknowledgments", () => {
 });
 
 describe("ordered subscription state", () => {
-  test("accepts reset, update, checkpoint, resume, and authorization revocation", () => {
+  test("accepts success, application errors, checkpoints, resume, and authorization revocation", () => {
     expect(
       parseSubscriptionTransition({ kind: "reset", from: null, to: cursor(1n), value: ["initial"] }).kind,
     ).toBe("reset");
@@ -240,6 +241,19 @@ describe("ordered subscription state", () => {
         outcome: { code: "unauthorized", retryable: false, message: "access revoked" },
       }).kind,
     ).toBe("revoked");
+    expect(
+      parseSubscriptionTransition({
+        kind: "application-error",
+        from: cursor(3n),
+        to: cursor(4n),
+        error: {
+          kind: "application",
+          code: "message-not-found",
+          body: { id: 7n },
+          status: Status.NotFound,
+        },
+      }).kind,
+    ).toBe("application-error");
   });
 
   test("rejects a regressing or cross-stream best-effort update", () => {
@@ -270,7 +284,7 @@ describe("ordered subscription state", () => {
 
   test("preserves opaque application payloads through wire decode and envelope validation", () => {
     const message: TransitionMessage = {
-      v: 2,
+      v: PROTOCOL_VERSION,
       t: "transition",
       id: 8,
       transition: {
@@ -288,7 +302,7 @@ describe("live events and operation results", () => {
   test("validates session acceptance, auth rotation, and structured errors", () => {
     expect(
       parseServerMessage({
-        v: 2,
+        v: PROTOCOL_VERSION,
         t: "welcome",
         clientSessionId: "client-1",
         authEpoch: 0,
@@ -296,7 +310,7 @@ describe("live events and operation results", () => {
       }).t,
     ).toBe("welcome");
     const userAuthentication = {
-      v: 2,
+      v: PROTOCOL_VERSION,
       t: "auth",
       attemptId: 2,
       authEpoch: 1,
@@ -307,7 +321,7 @@ describe("live events and operation results", () => {
     expect(parseServerMessage(decode(encode(userAuthentication)))).toEqual(userAuthentication);
     expect(
       parseServerMessage({
-        v: 2,
+        v: PROTOCOL_VERSION,
         t: "err",
         id: null,
         outcome: { code: "unauthenticated", retryable: false, message: "authentication required" },
@@ -318,7 +332,7 @@ describe("live events and operation results", () => {
   test("validates the exact secret-free authentication descriptor union", () => {
     expect(
       parseServerMessage({
-        v: 2,
+        v: PROTOCOL_VERSION,
         t: "welcome",
         clientSessionId: "client-1",
         authEpoch: 0,
@@ -351,7 +365,7 @@ describe("live events and operation results", () => {
       expectProtocolError(
         () =>
           parseServerMessage({
-            v: 2,
+            v: PROTOCOL_VERSION,
             t: "auth",
             attemptId: 1,
             authEpoch: 1,
@@ -369,14 +383,14 @@ describe("live events and operation results", () => {
       { kind: "gap", cursor: position },
       { kind: "reset", cursor: position },
     ]) {
-      expect(parseServerMessage({ v: 2, t: "event", id: 4, event }).t).toBe("event");
+      expect(parseServerMessage({ v: PROTOCOL_VERSION, t: "event", id: 4, event }).t).toBe("event");
     }
   });
 
   test("validates query and mutation ok variants and the exact receipt", () => {
-    expect(parseServerMessage({ v: 2, t: "ok", id: 1, kind: "query", value: [1, 2] }).t).toBe("ok");
+    expect(parseServerMessage({ v: PROTOCOL_VERSION, t: "ok", id: 1, kind: "query", value: [1, 2] }).t).toBe("ok");
     const procedure = parseCallResponse({
-      v: 2,
+      v: PROTOCOL_VERSION,
       t: "ok",
       id: 9,
       kind: "procedure",
@@ -394,14 +408,47 @@ describe("live events and operation results", () => {
     });
     expect(
       parseServerMessage({
-        v: 2,
+        v: PROTOCOL_VERSION,
         t: "ok",
         id: 2,
         kind: "mutation",
         value: { created: 1n },
         receipt,
       }),
-    ).toEqual({ v: 2, t: "ok", id: 2, kind: "mutation", value: { created: 1n }, receipt });
+    ).toEqual({ v: PROTOCOL_VERSION, t: "ok", id: 2, kind: "mutation", value: { created: 1n }, receipt });
+  });
+
+  test("validates application-error frames and preserves procedure HTTP metadata", () => {
+    const error = {
+      kind: "application" as const,
+      code: "order-not-found",
+      body: { orderId: "order-1" },
+      status: Status.NotFound,
+    };
+    const procedure = parseCallResponse({
+      v: PROTOCOL_VERSION,
+      t: "app_err",
+      id: 9,
+      kind: "procedure",
+      error,
+    });
+    expect(procedure).toEqual({
+      v: PROTOCOL_VERSION,
+      t: "app_err",
+      id: 9,
+      kind: "procedure",
+      error,
+    });
+    expectProtocolError(
+      () => parseServerMessage({
+        v: PROTOCOL_VERSION,
+        t: "app_err",
+        id: 9,
+        kind: "query",
+        error: { ...error, status: 200 },
+      }),
+      "malformed",
+    );
   });
 
   test("rejects non-v7 mutation IDs, duplicate obligations, and unknown result variants", () => {
@@ -428,7 +475,7 @@ describe("live events and operation results", () => {
       "malformed",
     );
     expectProtocolError(
-      () => parseServerMessage({ v: 2, t: "ok", id: 1, kind: "legacy", value: null }),
+      () => parseServerMessage({ v: PROTOCOL_VERSION, t: "ok", id: 1, kind: "legacy", value: null }),
       "malformed",
     );
   });

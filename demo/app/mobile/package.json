@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dbzz/client": "0.6.0",
-    "@dbzz/client-react": "0.6.0",
+    "@dbzz/client": "0.9.0-beta.11",
+    "@dbzz/client-react": "0.9.0-beta.11",
     "@demo/dbzz-codegen": "workspace:*",
     "@expo/ui": "57.0.6",
     "expo": "57.0.6",

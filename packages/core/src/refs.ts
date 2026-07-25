@@ -1,33 +1,42 @@
 /**
  * Function references: the typed, opaque addresses clients use to name server
  * functions. At runtime a reference is just a dot-joined address string
- * ("messages.list"); the generic parameters carry kind/args/return types so
+ * ("messages.list"); the generic parameters carry kind/args/data/error types so
  * every call is end-to-end typed through codegen.
  */
+
+import type { ErrResult, OkResult } from "./result.ts";
 
 export type FunctionKind = "query" | "mutation" | "procedure" | "sse" | "event";
 
 export interface FunctionReference<
   K extends FunctionKind = FunctionKind,
   A = unknown,
-  R = unknown,
+  Data = unknown,
+  Error = never,
 > {
   readonly $ref: string;
   readonly _kind?: K;
   readonly _args?: A;
-  readonly _ret?: R;
+  readonly _ret?: Data;
+  readonly _error?: Error;
 }
 
-export type QueryRef<A = unknown, R = unknown> = FunctionReference<"query", A, R>;
-export type MutationRef<A = unknown, R = unknown> = FunctionReference<"mutation", A, R>;
-export type ProcedureRef<A = unknown, R = unknown> = FunctionReference<"procedure", A, R>;
+export type QueryRef<A = unknown, Data = unknown, Error = never> =
+  FunctionReference<"query", A, Data, Error>;
+export type MutationRef<A = unknown, Data = unknown, Error = never> =
+  FunctionReference<"mutation", A, Data, Error>;
+export type ProcedureRef<A = unknown, Data = unknown, Error = never> =
+  FunctionReference<"procedure", A, Data, Error>;
 /** An SSE reference's second parameter is the validated per-chunk type the
  *  stream yields to clients — never the handler's completion value. */
 export type SseRef<A = unknown, Chunk = unknown> = FunctionReference<"sse", A, Chunk>;
 export type EventRef<A = unknown, Row = unknown> = FunctionReference<"event", A, Row>;
 
 /** Accepts a reference object or a raw address string; returns the address. */
-export function getRef(ref: FunctionReference | string): string {
+export function getRef(
+  ref: FunctionReference<FunctionKind, unknown, unknown, unknown> | string,
+): string {
   if (typeof ref === "string") return ref;
   const address = ref.$ref;
   if (typeof address !== "string" || address.length === 0) {
@@ -77,6 +86,9 @@ export interface RegisteredServerOnly {
   readonly isDbzzServerOnly: true;
 }
 
+type ResultData<Value> = Value extends OkResult<infer Data, infer _Error> ? Data : never;
+type ResultError<Value> = Value extends ErrResult<infer Error, infer _Data> ? Error : never;
+
 /**
  * Maps a record of module namespaces (arbitrarily nested) to the typed `api`
  * shape. Function files should export only dbzz functions (same convention as
@@ -85,6 +97,8 @@ export interface RegisteredServerOnly {
 export type ApiFromModules<T> = {
   [K in keyof T as T[K] extends RegisteredServerOnly ? never : K]:
   T[K] extends RegisteredFunction<infer Kd, infer A, infer R>
-    ? FunctionReference<Kd, A, R>
+    ? Kd extends "query" | "mutation" | "procedure"
+      ? FunctionReference<Kd, A, ResultData<R>, ResultError<R>>
+      : FunctionReference<Kd, A, R>
     : ApiFromModules<T[K]>;
 };

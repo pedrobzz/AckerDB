@@ -102,7 +102,7 @@ function AgentsPage() {
         action={<CreateButton onClick={() => setCreating(true)} />}
       />
 
-      <div className="flex flex-col gap-[18px]">
+      <div className="flex flex-col gap-4.5">
         <EndpointCard onCopy={() => copy(MCP_ENDPOINT, "Endpoint URL")} />
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
@@ -141,7 +141,7 @@ function AgentsPage() {
               <button
                 type="button"
                 onClick={() => setCreating(true)}
-                className="inline-flex h-[34px] items-center gap-1.5 rounded-[10px] bg-forest-900 px-[13px] text-[10px] font-[750] text-warm-white transition-colors hover:bg-forest-800"
+                className="inline-flex h-8.5 items-center gap-1.5 rounded-[10px] bg-forest-900 px-3.25 text-[10px] font-[750] text-warm-white transition-colors hover:bg-forest-800"
               >
                 <Plus className="size-3" aria-hidden="true" /> New token
               </button>
@@ -150,7 +150,7 @@ function AgentsPage() {
             <QueryContent state={tokens} loadingLabel="Loading owner tokens…">
               {(rows) =>
                 rows.length === 0 ? (
-                  <div className="grid min-h-[260px] place-items-center px-6 py-10">
+                  <div className="grid min-h-65 place-items-center px-6 py-10">
                     <StatePanel
                       icon={KeyRound}
                       title="No owner tokens yet"
@@ -159,7 +159,7 @@ function AgentsPage() {
                         <button
                           type="button"
                           onClick={() => setCreating(true)}
-                          className="mt-4 inline-flex min-h-[42px] items-center justify-center gap-2 rounded-xl bg-forest-900 px-4 text-xs font-[750] text-warm-white transition-colors hover:bg-forest-800"
+                          className="mt-4 inline-flex min-h-10.5 items-center justify-center gap-2 rounded-xl bg-forest-900 px-4 text-xs font-[750] text-warm-white transition-colors hover:bg-forest-800"
                         >
                           <Plus className="size-3.5" aria-hidden="true" /> Create token
                         </button>
@@ -168,7 +168,7 @@ function AgentsPage() {
                   </div>
                 ) : (
                   <>
-                    <div className="grid grid-cols-[1.5fr_1fr_0.9fr_104px] gap-3 border-b border-line px-4 py-[9px] text-[8px] font-extrabold uppercase tracking-[0.08em] text-ink-500">
+                    <div className="grid grid-cols-[1.5fr_1fr_0.9fr_104px] gap-3 border-b border-line px-4 py-2.25 text-[8px] font-extrabold uppercase tracking-[0.08em] text-ink-500">
                       <span>Name</span>
                       <span>Scope</span>
                       <span>Created</span>
@@ -224,7 +224,7 @@ function CreateButton({ onClick }: Readonly<{ onClick: () => void }>) {
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex min-h-[42px] items-center justify-center gap-2 rounded-xl bg-forest-900 px-4 text-xs font-[750] text-warm-white transition-colors hover:bg-forest-800"
+      className="inline-flex min-h-10.5 items-center justify-center gap-2 rounded-xl bg-forest-900 px-4 text-xs font-[750] text-warm-white transition-colors hover:bg-forest-800"
     >
       <Plus className="size-3.5" aria-hidden="true" /> Create token
     </button>
@@ -234,18 +234,18 @@ function CreateButton({ onClick }: Readonly<{ onClick: () => void }>) {
 function EndpointCard({ onCopy }: Readonly<{ onCopy: () => void }>) {
   return (
     <section className="flex flex-col gap-4 rounded-[17px] border border-line bg-warm-white p-5 sm:flex-row sm:items-center">
-      <span className="inline-flex size-[46px] flex-none items-center justify-center rounded-[13px] bg-forest-950 text-warm-white">
+      <span className="inline-flex size-11.5 flex-none items-center justify-center rounded-[13px] bg-forest-950 text-warm-white">
         <Waypoints className="size-5" aria-hidden="true" />
       </span>
       <div className="min-w-0 flex-1">
-        <span className="text-[9px] font-extrabold uppercase tracking-[0.1em] text-ink-500">
+        <span className="text-[9px] font-extrabold uppercase tracking-widest text-ink-500">
           Admin MCP endpoint
         </span>
         <div className="mt-1.5 flex flex-wrap items-center gap-2.5">
           <code className="font-mono text-[15px] font-bold text-forest-900">
             {MCP_ENDPOINT}
           </code>
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-sage-100 px-2 py-[3px] text-[8px] font-extrabold uppercase tracking-[0.04em] text-forest-800">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-sage-100 px-2 py-0.75 text-[8px] font-extrabold uppercase tracking-[0.04em] text-forest-800">
             <i className="size-1.5 rounded-full bg-sage-500" aria-hidden="true" />
             Live
           </span>
@@ -257,7 +257,7 @@ function EndpointCard({ onCopy }: Readonly<{ onCopy: () => void }>) {
       <button
         type="button"
         onClick={onCopy}
-        className="inline-flex h-[38px] flex-none items-center gap-1.5 self-start rounded-[11px] border border-line bg-warm-white px-3.5 text-[10px] font-extrabold text-forest-800 transition-colors hover:bg-cream-50 sm:self-auto"
+        className="inline-flex h-9.5 flex-none items-center gap-1.5 self-start rounded-[11px] border border-line bg-warm-white px-3.5 text-[10px] font-extrabold text-forest-800 transition-colors hover:bg-cream-50 sm:self-auto"
       >
         <Copy className="size-3" aria-hidden="true" /> Copy URL
       </button>
@@ -282,8 +282,8 @@ function InstallSnippet({
 }>) {
   return (
     <div className="flex flex-col overflow-hidden rounded-2xl border border-line bg-warm-white">
-      <div className="flex items-center gap-[11px] px-4 py-3.5">
-        <span className="inline-flex size-[34px] flex-none items-center justify-center rounded-[10px] bg-forest-950 text-warm-white">
+      <div className="flex items-center gap-2.75 px-4 py-3.5">
+        <span className="inline-flex size-8.5 flex-none items-center justify-center rounded-[10px] bg-forest-950 text-warm-white">
           <Icon className="size-4" aria-hidden="true" />
         </span>
         <div className="min-w-0 flex-1">
@@ -293,23 +293,23 @@ function InstallSnippet({
         <button
           type="button"
           onClick={onCopy}
-          className="inline-flex h-[30px] flex-none items-center gap-1.5 rounded-[9px] border border-line bg-warm-white px-[11px] text-[9px] font-extrabold text-forest-800 transition-colors hover:bg-cream-50"
+          className="inline-flex h-7.5 flex-none items-center gap-1.5 rounded-[9px] border border-line bg-warm-white px-2.75 text-[9px] font-extrabold text-forest-800 transition-colors hover:bg-cream-50"
         >
-          <Copy className="size-[11px]" aria-hidden="true" /> Copy
+          <Copy className="size-2.75" aria-hidden="true" /> Copy
         </button>
       </div>
       <div className="mx-3.5 mb-3.5 overflow-hidden rounded-xl border border-pine-border bg-forest-950">
-        <div className="flex items-center justify-between border-b border-pine-border px-3 py-[7px]">
+        <div className="flex items-center justify-between border-b border-pine-border px-3 py-1.75">
           <span className="text-[8px] font-extrabold uppercase tracking-[0.12em] text-pine-dim">
             {language}
           </span>
           <span className="flex gap-1" aria-hidden="true">
-            <i className="size-[7px] rounded-full bg-pine-dot" />
-            <i className="size-[7px] rounded-full bg-pine-dot" />
-            <i className="size-[7px] rounded-full bg-pine-dot" />
+            <i className="size-1.75 rounded-full bg-pine-dot" />
+            <i className="size-1.75 rounded-full bg-pine-dot" />
+            <i className="size-1.75 rounded-full bg-pine-dot" />
           </span>
         </div>
-        <pre className="m-0 overflow-x-auto whitespace-pre-wrap break-words px-[13px] py-3 font-mono text-[10px] leading-[1.6] text-pine-bright">
+        <pre className="m-0 overflow-x-auto whitespace-pre-wrap wrap-break-word px-3.25 py-3 font-mono text-[10px] leading-[1.6] text-pine-bright">
           {code}
         </pre>
       </div>
@@ -324,8 +324,8 @@ function TokenRow({
 }: Readonly<{ token: OwnerToken; onEdit: () => void; onRevoke: () => void }>) {
   return (
     <div className="grid grid-cols-[1.5fr_1fr_0.9fr_104px] items-center gap-3 border-b border-line px-4 py-3.5 last:border-b-0">
-      <div className="flex min-w-0 items-center gap-[11px]">
-        <span className="inline-flex size-[34px] flex-none items-center justify-center rounded-[10px] bg-cream-100 text-forest-800">
+      <div className="flex min-w-0 items-center gap-2.75">
+        <span className="inline-flex size-8.5 flex-none items-center justify-center rounded-[10px] bg-cream-100 text-forest-800">
           <KeyRound className="size-3.5" aria-hidden="true" />
         </span>
         <div className="min-w-0">
@@ -344,7 +344,7 @@ function TokenRow({
           type="button"
           onClick={onEdit}
           title={`Edit ${token.name}`}
-          className="inline-flex size-[30px] flex-none items-center justify-center rounded-[9px] border border-line bg-warm-white text-ink-700 transition-colors hover:bg-cream-100"
+          className="inline-flex size-7.5 flex-none items-center justify-center rounded-[9px] border border-line bg-warm-white text-ink-700 transition-colors hover:bg-cream-100"
         >
           <span className="sr-only">Edit {token.name}</span>
           <Pencil className="size-3.5" aria-hidden="true" />
@@ -352,7 +352,7 @@ function TokenRow({
         <button
           type="button"
           onClick={onRevoke}
-          className="inline-flex h-[30px] items-center rounded-[9px] border border-line bg-warm-white px-2.5 text-[9px] font-extrabold text-rose-500 transition-colors hover:bg-rose-100"
+          className="inline-flex h-7.5 items-center rounded-[9px] border border-line bg-warm-white px-2.5 text-[9px] font-extrabold text-rose-500 transition-colors hover:bg-rose-100"
         >
           Revoke
         </button>
@@ -365,7 +365,7 @@ function ScopeBadge({ scopes }: Readonly<{ scopes: readonly string[] }>) {
   const operate = scopes.includes("operate");
   return (
     <span
-      className={`inline-flex w-fit items-center gap-1.5 whitespace-nowrap rounded-full px-[9px] py-[5px] text-[9px] font-extrabold uppercase tracking-[0.04em] ${
+      className={`inline-flex w-fit items-center gap-1.5 whitespace-nowrap rounded-full px-2.25 py-1.25 text-[9px] font-extrabold uppercase tracking-[0.04em] ${
         operate ? "bg-clay-100 text-clay-500" : "bg-sky-100 text-sky-500"
       }`}
     >
@@ -381,13 +381,13 @@ function ScopeBadge({ scopes }: Readonly<{ scopes: readonly string[] }>) {
 
 function ScopesCard() {
   return (
-    <section className="flex flex-col gap-3.5 rounded-[17px] border border-line bg-warm-white p-[18px]">
+    <section className="flex flex-col gap-3.5 rounded-[17px] border border-line bg-warm-white p-4.5">
       <h3 className="text-[13px] font-semibold text-ink-900">About scopes</h3>
       <div className="rounded-xl bg-sky-100 p-3.5">
         <span className="inline-flex items-center gap-1.5 text-[10px] font-extrabold text-sky-500">
           <Eye className="size-3" aria-hidden="true" /> Read only
         </span>
-        <p className="mt-1.5 text-[9px] leading-[1.5] text-ink-700">
+        <p className="mt-1.5 text-[9px] leading-normal text-ink-700">
           Query orders, tables, the kitchen queue, and revenue. Cannot change any state.
         </p>
       </div>
@@ -395,7 +395,7 @@ function ScopesCard() {
         <span className="inline-flex items-center gap-1.5 text-[10px] font-extrabold text-clay-500">
           <Wrench className="size-3" aria-hidden="true" /> Read + operate
         </span>
-        <p className="mt-1.5 text-[9px] leading-[1.5] text-ink-700">
+        <p className="mt-1.5 text-[9px] leading-normal text-ink-700">
           Also advance kitchen items and cancel orders. Each write asks the host to approve.
         </p>
       </div>
@@ -415,7 +415,7 @@ function DialogShell({
   const panel = useFocusBoundary<HTMLDivElement>(true, onClose);
   return (
     <div
-      className="fixed inset-0 z-[80] grid place-items-center overflow-y-auto bg-[rgba(16,42,36,0.42)] p-5"
+      className="fixed inset-0 z-80 grid place-items-center overflow-y-auto bg-[rgba(16,42,36,0.42)] p-5"
       onMouseDown={(event) =>
         event.target === event.currentTarget && onClose()
       }
@@ -424,7 +424,7 @@ function DialogShell({
         ref={panel}
         role="dialog"
         aria-modal="true"
-        className={`w-full ${width} rounded-[20px] bg-warm-white p-[22px] font-sans shadow-[0_30px_80px_rgba(16,42,36,0.30)]`}
+        className={`w-full ${width} rounded-[20px] bg-warm-white p-5.5 font-sans shadow-[0_30px_80px_rgba(16,42,36,0.30)]`}
       >
         {children}
       </div>
@@ -459,11 +459,14 @@ function TokenFormDialog({
     const scopes = scopesFor(choice);
     try {
       if (editing) {
-        await update({ id: token.id, name, scopes });
+        const result = await update({ id: token.id, name, scopes });
+        if (!result.ok) throw result.error;
         toast.success(`"${name}" was updated.`, "Token updated");
         onClose();
       } else {
-        const created = await create({ name, scopes });
+        const result = await create({ name, scopes });
+        if (!result.ok) throw result.error;
+        const created = result.data;
         toast.success(`"${created.name}" is ready to connect.`, "Token created");
         onCreated?.({ name: created.name, choice, token: created.token });
       }
@@ -486,7 +489,7 @@ function TokenFormDialog({
           <h2 className="font-display text-[22px] text-ink-900">
             {editing ? "Edit owner token" : "Create owner token"}
           </h2>
-          <p className="mt-[5px] text-[10px] text-ink-500">
+          <p className="mt-1.25 text-[10px] text-ink-500">
             Name it and choose what an agent may do with it.
           </p>
         </div>
@@ -496,12 +499,12 @@ function TokenFormDialog({
           className="inline-flex size-8 flex-none items-center justify-center rounded-[10px] border border-line bg-warm-white text-ink-700 transition-colors hover:bg-cream-50"
         >
           <span className="sr-only">Close dialog</span>
-          <X className="size-[13px]" aria-hidden="true" />
+          <X className="size-3.25" aria-hidden="true" />
         </button>
       </div>
 
       <form onSubmit={submit}>
-        <label className="mb-[7px] mt-[18px] block text-[9px] font-extrabold uppercase tracking-[0.05em] text-ink-700">
+        <label className="mb-1.75 mt-4.5 block text-[9px] font-extrabold uppercase tracking-wider text-ink-700">
           Token name
         </label>
         <input
@@ -511,13 +514,13 @@ function TokenFormDialog({
           required
           autoFocus
           maxLength={120}
-          className="h-11 w-full rounded-xl border border-forest-900 bg-warm-white px-[13px] text-xs text-ink-900 outline-none placeholder:text-ink-300 focus:ring-2 focus:ring-sage-500/25"
+          className="h-11 w-full rounded-xl border border-forest-900 bg-warm-white px-3.25 text-xs text-ink-900 outline-none placeholder:text-ink-300 focus:ring-2 focus:ring-sage-500/25"
         />
 
-        <span className="mb-2 mt-[18px] block text-[9px] font-extrabold uppercase tracking-[0.05em] text-ink-700">
+        <span className="mb-2 mt-4.5 block text-[9px] font-extrabold uppercase tracking-wider text-ink-700">
           What can it do?
         </span>
-        <div className="flex flex-col gap-[9px]">
+        <div className="flex flex-col gap-2.25">
           <ScopeOption
             selected={choice === "read"}
             onSelect={() => setChoice("read")}
@@ -559,7 +562,7 @@ function TokenFormDialog({
             disabled={busy || name.trim() === ""}
             className="inline-flex h-11 flex-[1.6] items-center justify-center gap-2 rounded-xl bg-forest-900 text-[11px] font-[750] text-warm-white transition-colors hover:bg-forest-800 disabled:opacity-50"
           >
-            <KeyRound className="size-[13px]" aria-hidden="true" />
+            <KeyRound className="size-3.25" aria-hidden="true" />
             {busy
               ? editing
                 ? "Saving…"
@@ -594,14 +597,14 @@ function ScopeOption({
       type="button"
       aria-pressed={selected}
       onClick={onSelect}
-      className={`flex items-center gap-[11px] rounded-[13px] p-[13px] text-left transition-colors ${
+      className={`flex items-center gap-2.75 rounded-[13px] p-3.25 text-left transition-colors ${
         selected
           ? "border-[1.5px] border-forest-900 bg-sage-100"
           : "border border-line bg-warm-white hover:bg-cream-50"
       }`}
     >
       <span
-        className={`inline-flex size-[34px] flex-none items-center justify-center rounded-[10px] ${iconWrap}`}
+        className={`inline-flex size-8.5 flex-none items-center justify-center rounded-[10px] ${iconWrap}`}
       >
         <Icon className="size-3.5" aria-hidden="true" />
       </span>
@@ -618,7 +621,7 @@ function ScopeOption({
           selected ? "bg-forest-900" : "border-2 border-line"
         }`}
       >
-        {selected && <Check className="size-[11px] text-warm-white" aria-hidden="true" />}
+        {selected && <Check className="size-2.75 text-warm-white" aria-hidden="true" />}
       </span>
     </button>
   );
@@ -637,7 +640,7 @@ function SecretRevealDialog({
 }>) {
   return (
     <DialogShell width="max-w-[476px]" onClose={onClose}>
-      <div className="flex items-center gap-[13px]">
+      <div className="flex items-center gap-3.25">
         <span className="inline-flex size-11 flex-none items-center justify-center rounded-[13px] bg-sage-100 text-forest-800">
           <BadgeCheck className="size-5" aria-hidden="true" />
         </span>
@@ -649,34 +652,34 @@ function SecretRevealDialog({
         </div>
       </div>
 
-      <div className="mt-[18px] flex gap-2.5 rounded-[13px] bg-amber-100 px-[13px] py-3">
-        <TriangleAlert className="size-[15px] flex-none text-amber-500" aria-hidden="true" />
+      <div className="mt-4.5 flex gap-2.5 rounded-[13px] bg-amber-100 px-3.25 py-3">
+        <TriangleAlert className="size-3.75 flex-none text-amber-500" aria-hidden="true" />
         <div>
           <strong className="block text-[10px] text-amber-500">
             Copy this secret now
           </strong>
-          <span className="mt-[3px] block text-[9px] leading-[1.5] text-ink-700">
+          <span className="mt-0.75 block text-[9px] leading-normal text-ink-700">
             Savoria stores only a hash. It cannot be shown again — if you lose it, revoke this token and create a new one.
           </span>
         </div>
       </div>
 
-      <span className="mb-[7px] mt-4 block text-[9px] font-extrabold uppercase tracking-[0.05em] text-ink-700">
+      <span className="mb-1.75 mt-4 block text-[9px] font-extrabold uppercase tracking-wider text-ink-700">
         Secret token
       </span>
-      <div className="flex items-center gap-3 rounded-[13px] border border-pine-border bg-forest-950 px-3.5 py-[13px]">
+      <div className="flex items-center gap-3 rounded-[13px] border border-pine-border bg-forest-950 px-3.5 py-3.25">
         <code className="min-w-0 flex-1 break-all font-mono text-xs text-pine-bright">
           {reveal.token}
         </code>
         <button
           type="button"
           onClick={onCopy}
-          className="inline-flex h-9 flex-none items-center gap-1.5 rounded-[10px] bg-clay-500 px-[13px] text-[10px] font-extrabold text-warm-white transition-opacity hover:opacity-90"
+          className="inline-flex h-9 flex-none items-center gap-1.5 rounded-[10px] bg-clay-500 px-3.25 text-[10px] font-extrabold text-warm-white transition-opacity hover:opacity-90"
         >
           <Copy className="size-3" aria-hidden="true" /> Copy
         </button>
       </div>
-      <div className="mt-[9px] flex flex-wrap items-center gap-1.5 text-[9px] text-ink-500">
+      <div className="mt-2.25 flex flex-wrap items-center gap-1.5 text-[9px] text-ink-500">
         <Terminal className="size-3 flex-none" aria-hidden="true" />
         Set it as{" "}
         <code className="font-mono text-[9px] text-forest-800">{TOKEN_ENV_VAR}</code>{" "}
@@ -712,7 +715,8 @@ function RevokeDialog({
   async function confirm() {
     setBusy(true);
     try {
-      await revoke({ id: token.id });
+      const result = await revoke({ id: token.id });
+      if (!result.ok) throw result.error;
       toast.success(
         `"${token.name}" can no longer reach the MCP endpoint.`,
         "Token revoked",
@@ -729,7 +733,7 @@ function RevokeDialog({
       <h2 className="font-display text-[22px] text-ink-900">
         Revoke “{token.name}”?
       </h2>
-      <p className="mt-[5px] text-[10px] leading-[1.5] text-ink-500">
+      <p className="mt-1.25 text-[10px] leading-normal text-ink-500">
         The next call made with this token fails with HTTP 401. This cannot be undone — issue a new token to reconnect.
       </p>
       <div className="mt-5 flex justify-end gap-2.5">

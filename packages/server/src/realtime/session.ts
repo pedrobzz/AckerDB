@@ -6,6 +6,7 @@ import {
   parseClientMessage,
   type AuthenticationDescriptor,
   type AuthenticatedMessage,
+  type ApplicationErrorMessage,
   type ClientAuthMessage,
   type ClientMessage,
   type Credential,
@@ -51,6 +52,7 @@ export type SessionApplicationMessage =
   | SubscriptionServerMessage
   | QueryOkMessage
   | MutationOkMessage
+  | ApplicationErrorMessage
   | ErrorMessage;
 const RUNTIME_PUBLICATION_BRAND: unique symbol = Symbol("dbzz.runtimePublication");
 const runtimePublications = new WeakSet<object>();

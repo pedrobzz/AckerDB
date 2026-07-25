@@ -6,6 +6,7 @@ import {
   parseCallRequest,
   parseClientMessage,
   parseSseAckRequest,
+  type ApplicationError,
   type AuthenticationDescriptor,
   type ClientMessage,
   type Credential,
@@ -119,6 +120,13 @@ class FakeSocket implements DbzzWebSocket {
   }
 
   close(code?: number, reason?: string): void {
+    if (
+      code !== undefined &&
+      code !== 1000 &&
+      (code < 3000 || code > 4999)
+    ) {
+      throw new DOMException("Invalid WebSocket close code", "InvalidAccessError");
+    }
     if (this.closed) return;
     this.closed = true;
     this.closes.push({ code, reason });
@@ -165,6 +173,22 @@ function harness(
     ...overrides,
   });
   return { client, clock, sockets };
+}
+
+function mustOk<T>(result: { readonly ok: true; readonly data: T } | {
+  readonly ok: false;
+  readonly error: unknown;
+}): T {
+  if (!result.ok) throw result.error;
+  return result.data;
+}
+
+function mustErr<E>(result: { readonly ok: true; readonly data: unknown } | {
+  readonly ok: false;
+  readonly error: E;
+}): E {
+  if (result.ok) throw new Error("expected a failed Result");
+  return result.error;
 }
 
 function welcome(client: DbzzClient, socket: FakeSocket, principal: "anonymous" | "user" = "anonymous"): void {
@@ -300,19 +324,19 @@ describe("DbzzClient protocol 2 ownership", () => {
       credential: { kind: "bearer", token: "token-a" },
       clientSessionId: "stable-session",
     });
-    const firstResult = client.query("todos.list", { list: 1n }).catch((error) => error);
+    const firstResult = client.query("todos.list", { list: 1n }).then(mustErr);
     const first = sockets[0]!;
     first.open();
     expect(first.frames()).toEqual([
       {
-        v: 2,
+        v: 3,
         t: "hello",
         clientSessionId: "stable-session",
         credential: { kind: "bearer", token: "token-a" },
       },
     ]);
     first.receive({
-      v: 2,
+      v: 3,
       t: "welcome",
       clientSessionId: "stable-session",
       authEpoch: 4,
@@ -326,10 +350,10 @@ describe("DbzzClient protocol 2 ownership", () => {
       return authentication;
     });
     const auth = lastFrame(first, "auth");
-    const secondResult = client.query("todos.list", { list: 2n }).catch((error) => error);
+    const secondResult = client.query("todos.list", { list: 2n }).then(mustErr);
     const sentQueriesBeforeConfirmation = first.frames().filter((frame) => frame.t === "q").length;
     first.receive({
-      v: 2,
+      v: 3,
       t: "auth",
       attemptId: auth.attemptId + 10,
       authEpoch: 5,
@@ -342,7 +366,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       );
 
     first.receive({
-      v: 2,
+      v: 3,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 5,
@@ -361,7 +385,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const second = sockets[1]!;
     second.open();
     expect(lastFrame(second, "hello")).toEqual({
-      v: 2,
+      v: 3,
       t: "hello",
       clientSessionId: "stable-session",
       credential: { kind: "anonymous" },
@@ -376,14 +400,14 @@ describe("DbzzClient protocol 2 ownership", () => {
     const { client, sockets } = harness({
       credential: { kind: "bearer", token: "token-a" },
     });
-    const query = client.query("todos.list", {}).catch((error) => error);
+    const query = client.query("todos.list", {}).then(mustErr);
     const socket = sockets[0]!;
     socket.open();
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
     expect(socket.frames().some((frame) => frame.t === "auth")).toBe(false);
 
     socket.receive({
-      v: 2,
+      v: 3,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -393,7 +417,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(auth.credential).toEqual({ kind: "bearer", token: "token-b" });
     expect(socket.frames().some((frame) => frame.t === "q")).toBe(false);
     socket.receive({
-      v: 2,
+      v: 3,
       t: "auth",
       attemptId: auth.attemptId,
       authEpoch: 2,
@@ -418,7 +442,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const c3 = cursor(3n);
 
     const initial: ServerMessage = {
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -428,14 +452,14 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(lastFrame(first, "reset")).toEqual({ v: 2, t: "reset", id: subscription.id, cursor: c1 });
+    expect(lastFrame(first, "reset")).toEqual({ v: 3, t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c1, to: c2, value: ["two-too-late"] },
@@ -443,7 +467,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(updates).toEqual([["one"]]);
 
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -468,7 +492,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const c1 = cursor(1n);
     const c2 = cursor(2n);
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: [] },
@@ -485,7 +509,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
     first.receive({
-      v: 2,
+      v: 3,
       t: "ok",
       id: firstMutation.id,
       kind: "mutation",
@@ -501,17 +525,17 @@ describe("DbzzClient protocol 2 ownership", () => {
     await Promise.resolve();
     expect(resolved).toBe(false);
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
     });
-    expect(await mutation).toBe(41n);
+    expect(mustOk(await mutation)).toBe(41n);
 
     const discharged = client.mutation("todos.add", { text: "bread" });
     const secondMutation = lastFrame(first, "m");
     first.receive({
-      v: 2,
+      v: 3,
       t: "ok",
       id: secondMutation.id,
       kind: "mutation",
@@ -525,7 +549,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       },
     });
     unsubscribe();
-    expect(await discharged).toBe(42n);
+    expect(mustOk(await discharged)).toBe(42n);
 
     const replayed = client.mutation("todos.add", { text: "lost-ack" });
     const lostFrame = lastFrame(first, "m");
@@ -537,7 +561,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(resent.mutationRequestId).toBe(lostFrame.mutationRequestId);
     expect(resent.issuedAt).toBe(lostFrame.issuedAt);
     second.receive({
-      v: 2,
+      v: 3,
       t: "ok",
       id: resent.id,
       kind: "mutation",
@@ -550,7 +574,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         obligations: [],
       },
     });
-    expect(await replayed).toBe(43n);
+    expect(mustOk(await replayed)).toBe(43n);
     client.close();
   });
 
@@ -561,7 +585,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     welcome(client, socket);
     const query = lastFrame(socket, "q");
     socket.receive({
-      v: 2,
+      v: 3,
       t: "err",
       id: query.id,
       outcome: {
@@ -571,7 +595,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         resource: "operation",
       },
     });
-    const exact = await rejected.catch((error) => error);
+    const exact = mustErr(await rejected);
     expect(exact).toBeInstanceOf(DbzzClientError);
     expect(exact).toMatchObject({
       code: "unauthorized",
@@ -586,7 +610,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const malformedFrame = lastFrame(socket, "q");
     socket.receiveRaw(
       encode({
-        v: 2,
+        v: 3,
         t: "ok",
         id: malformedFrame.id,
         kind: "query",
@@ -594,11 +618,79 @@ describe("DbzzClient protocol 2 ownership", () => {
         unexpected: true,
       }),
     );
-    expect(await malformed.catch((error) => error)).toMatchObject({ code: "malformed" });
-    expect(socket.closes.at(-1)?.code).toBe(1002);
-    expect(await client.query("todos.list", {}).catch((error) => error)).toMatchObject({
+    expect(mustErr(await malformed)).toMatchObject({ code: "malformed" });
+    expect(socket.closes.at(-1)?.code).toBe(4002);
+    expect(mustErr(await client.query("todos.list", {}))).toMatchObject({
       code: "unavailable",
     });
+    client.close();
+  });
+
+  test("resolves query and mutation application errors as typed Results", async () => {
+    type Missing = ApplicationError<
+      "todo.not-found",
+      { readonly id: bigint },
+      404
+    >;
+    const { client, sockets } = harness();
+    const queryResult = client.query<Record<never, never>, { id: bigint }, Missing>(
+      "todos.find",
+      {},
+    );
+    const socket = sockets[0]!;
+    welcome(client, socket);
+    const query = lastFrame(socket, "q");
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "app_err",
+      id: query.id,
+      kind: "query",
+      error: {
+        kind: "application",
+        code: "todo.not-found",
+        body: { id: 7n },
+        status: 404,
+      },
+    });
+    const missing = await queryResult;
+    if (missing.ok) throw new Error("expected the query to fail");
+    expect(missing.error).toEqual({
+      kind: "application",
+      code: "todo.not-found",
+      body: { id: 7n },
+      status: 404,
+    });
+
+    const mutationResult = client.mutation<Record<never, never>, bigint, Missing>(
+      "todos.remove",
+      {},
+    );
+    const mutation = lastFrame(socket, "m");
+    socket.receive({
+      v: PROTOCOL_VERSION,
+      t: "app_err",
+      id: mutation.id,
+      kind: "mutation",
+      error: {
+        kind: "application",
+        code: "todo.not-found",
+        body: { id: 8n },
+        status: 404,
+      },
+      receipt: {
+        mutationRequestId: mutation.mutationRequestId,
+        commitVersion: 1n,
+        durability: "production",
+        replay: "executed",
+        obligations: [],
+      },
+    });
+    const removed = await mutationResult;
+    if (removed.ok) throw new Error("expected the mutation to fail");
+    if (removed.error.kind !== "application") {
+      throw new Error("expected an application error");
+    }
+    expect(removed.error.body.id).toBe(8n);
     client.close();
   });
 
@@ -606,8 +698,8 @@ describe("DbzzClient protocol 2 ownership", () => {
     const { client, clock } = harness({
       limits: { maxPendingItems: 1, maxQueryAgeMs: 10 },
     });
-    const aging = client.query("todos.list", {}).catch((error) => error);
-    expect(await client.query("todos.list", {}).catch((error) => error)).toMatchObject({
+    const aging = client.query("todos.list", {}).then(mustErr);
+    expect(mustErr(await client.query("todos.list", {}))).toMatchObject({
       code: "overloaded",
       retryable: true,
     });
@@ -616,7 +708,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     client.close();
 
     const sentMutation = harness({ limits: { maxMutationAgeMs: 10 } });
-    const unknown = sentMutation.client.mutation("todos.add", {}).catch((error) => error);
+    const unknown = sentMutation.client.mutation("todos.add", {}).then(mustErr);
     welcome(sentMutation.client, sentMutation.sockets[0]!);
     sentMutation.clock.advance(10);
     expect(await unknown).toMatchObject({ code: "indeterminate", resource: "idempotency" });
@@ -627,7 +719,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     byteBound.close();
 
     const inbound = harness({ limits: { maxFrameBytes: 256 } });
-    const inboundResult = inbound.client.query("todos.list", {}).catch((error) => error);
+    const inboundResult = inbound.client.query("todos.list", {}).then(mustErr);
     welcome(inbound.client, inbound.sockets[0]!);
     inbound.sockets[0]!.receiveRaw("x".repeat(257));
     expect(await inboundResult).toMatchObject({ code: "malformed" });
@@ -637,7 +729,7 @@ describe("DbzzClient protocol 2 ownership", () => {
   test("uses deterministic exponential jitter, retry floors, stable reset, and cancels timers", async () => {
     const randomValues = [0.5, 0.25, 0];
     const { client, clock, sockets } = harness({ random: () => randomValues.shift() ?? 0 });
-    const result = client.query("todos.list", {}).catch((error) => error);
+    const result = client.query("todos.list", {}).then(mustErr);
     welcome(client, sockets[0]!);
     sockets[0]!.drop();
     expect(clock.nextDueIn()).toBe(150);
@@ -648,7 +740,7 @@ describe("DbzzClient protocol 2 ownership", () => {
 
     welcome(client, sockets[1]!);
     sockets[1]!.receive({
-      v: 2,
+      v: 3,
       t: "err",
       id: null,
       outcome: {
@@ -658,6 +750,10 @@ describe("DbzzClient protocol 2 ownership", () => {
         message: "connection admission is full",
         resource: "connection",
       },
+    });
+    expect(sockets[1]!.closes).toContainEqual({
+      code: 4000,
+      reason: "retry later",
     });
     expect(clock.nextDueIn()).toBe(1_000);
     clock.advance(1_000);
@@ -686,19 +782,19 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(subscription.cursor).toBeUndefined();
     const firstCursor = { generation: "events-1", commitVersion: 1n, sequence: 1n };
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "event",
       id: subscription.id,
       event: { kind: "row", cursor: firstCursor, row: { x: 1 } },
     });
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "event",
       id: subscription.id,
       event: {
@@ -708,7 +804,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       },
     });
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "event",
       id: subscription.id,
       event: {
@@ -739,9 +835,9 @@ describe("DbzzClient protocol 2 ownership", () => {
     unsubscribe();
     expect(
       sockets[0]!.frames().filter((frame) => frame.t === "unsub"),
-    ).toEqual([{ v: 2, t: "unsub", id }]);
+    ).toEqual([{ v: 3, t: "unsub", id }]);
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "event",
       id,
       event: { kind: "reset", cursor: { generation: "g", commitVersion: 0n, sequence: 0n } },
@@ -769,7 +865,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       if (request.ref === "todos.denied") {
         return new Response(
           encode({
-            v: 2,
+            v: 3,
             t: "err",
             id: request.id,
             outcome: { code: "unauthorized", retryable: false, message: "denied" },
@@ -777,8 +873,25 @@ describe("DbzzClient protocol 2 ownership", () => {
           { status: 403 },
         );
       }
+      if (request.ref === "todos.missing") {
+        return new Response(
+          encode({
+            v: 3,
+            t: "app_err",
+            id: request.id,
+            kind: "procedure",
+            error: {
+              kind: "application",
+              code: "todo.not-found",
+              body: { id: 9n },
+              status: 404,
+            },
+          }),
+          { status: 404 },
+        );
+      }
       return new Response(
-        encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: { count: 2 } }),
+        encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: { count: 2 } }),
       );
     };
     const { client, sockets } = harness({
@@ -786,11 +899,23 @@ describe("DbzzClient protocol 2 ownership", () => {
       fetch: fetcher,
     });
 
-    expect(await client.procedure<{}, { count: number }>("todos.stats", {})).toEqual({ count: 2 });
+    expect(mustOk(await client.procedure<{}, { count: number }>("todos.stats", {}))).toEqual({ count: 2 });
     expect(authorization as string | null).toBe("Bearer http-token");
-    expect(await client.procedure("todos.denied", {}).catch((error) => error)).toMatchObject({
+    expect(mustErr(await client.procedure("todos.denied", {}))).toMatchObject({
       code: "unauthorized",
       message: "denied",
+    });
+    type Missing = ApplicationError<"todo.not-found", { readonly id: bigint }, 404>;
+    const missing = await client.procedure<Record<never, never>, never, Missing>(
+      "todos.missing",
+      {},
+    );
+    if (missing.ok) throw new Error("expected the procedure to fail");
+    expect(missing.error).toEqual({
+      kind: "application",
+      code: "todo.not-found",
+      body: { id: 9n },
+      status: 404,
     });
     expect(sockets).toHaveLength(0);
     client.close();
@@ -827,13 +952,13 @@ describe("DbzzClient protocol 2 ownership", () => {
           }
           const request = parseCallRequest(decode(String(init?.body)));
           return new Response(
-            encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+            encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
           );
         },
       });
       const completion = client.procedure("procedure.response-interrupted", {}, {
         signal: abort.signal,
-      }).catch((error) => error);
+      }).then(mustErr);
       await eventually(() => pulls === 1, `${mode} procedure response read`);
 
       if (mode === "abort") abort.abort();
@@ -841,7 +966,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       await settlesPromptly(completion, `${mode} procedure response interruption`);
       expect(await completion).toMatchObject({ code: "indeterminate", resource: "operation" });
       expect(cancellations).toBe(1);
-      expect(await client.procedure<{}, string>("procedure.after-interruption", {})).toBe("available");
+      expect(mustOk(await client.procedure<{}, string>("procedure.after-interruption", {}))).toBe("available");
       client.close();
     }
   });
@@ -856,8 +981,8 @@ describe("DbzzClient protocol 2 ownership", () => {
       if (url.endsWith("/api/sse")) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
         return sseResponse([
-          { v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: { delta: "a" } },
-          { v: 2, t: "sse_chunk", seq: 2, proof: "proof-2", value: { delta: "b" } },
+          { v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: { delta: "a" } },
+          { v: 3, t: "sse_chunk", seq: 2, proof: "proof-2", value: { delta: "b" } },
         ]);
       }
       expect(url.endsWith("/api/sse/ack")).toBe(true);
@@ -889,7 +1014,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     await eventually(() => acknowledgments.length === 1, "the first chunk acknowledgment");
     expect(secondSettled).toBe(false);
     expect(acknowledgments).toEqual([
-      { v: 2, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
+      { v: 3, t: "sse_ack", stream: "stream-1", seq: 1, proof: "proof-1" },
     ]);
     expect(streamAuthorization as string | null).toBe("Bearer receiver-token");
     expect(acknowledgmentAuthorizations).toEqual([null]);
@@ -914,8 +1039,8 @@ describe("DbzzClient protocol 2 ownership", () => {
       if (url.endsWith("/api/sse")) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
         return sseResponse([
-          { v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" },
-          { v: 2, t: "sse_done", seq: 2, proof: "proof-2" },
+          { v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" },
+          { v: 3, t: "sse_done", seq: 2, proof: "proof-2" },
         ]);
       }
       const acknowledgment = parseSseAckRequest(decode(String(init?.body)));
@@ -929,7 +1054,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         if (firstSequenceAttempts === 2) {
           return new Response(
             encode({
-              v: 2,
+              v: 3,
               t: "err",
               id: null,
               outcome: {
@@ -997,12 +1122,12 @@ describe("DbzzClient protocol 2 ownership", () => {
     const cases = [
       {
         name: "done",
-        frame: { v: 2, t: "sse_done", seq: 1, proof: "done-proof" },
+        frame: { v: 3, t: "sse_done", seq: 1, proof: "done-proof" },
       },
       {
         name: "error",
         frame: {
-          v: 2,
+          v: 3,
           t: "sse_error",
           seq: 1,
           proof: "error-proof",
@@ -1066,7 +1191,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "missing stream header",
         response: (onCancel) =>
-          sseResponse([{ v: 2, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "proof" }], {
             stream: null,
             close: false,
             onCancel,
@@ -1075,7 +1200,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "oversized stream header",
         response: (onCancel) =>
-          sseResponse([{ v: 2, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "proof" }], {
             stream: "x".repeat(129),
             close: false,
             onCancel,
@@ -1084,7 +1209,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "missing stall header",
         response: (onCancel) =>
-          sseResponse([{ v: 2, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "proof" }], {
             stallMs: null,
             close: false,
             onCancel,
@@ -1102,7 +1227,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "sequence does not begin at one",
         response: (onCancel) =>
-          sseResponse([{ v: 2, t: "sse_done", seq: 2, proof: "proof-2" }], {
+          sseResponse([{ v: 3, t: "sse_done", seq: 2, proof: "proof-2" }], {
             close: false,
             onCancel,
           }),
@@ -1110,7 +1235,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "empty proof",
         response: (onCancel) =>
-          sseResponse([{ v: 2, t: "sse_done", seq: 1, proof: "" }], {
+          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "" }], {
             close: false,
             onCancel,
           }),
@@ -1118,7 +1243,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         name: "unexpected successful status",
         response: (onCancel) =>
-          sseResponse([{ v: 2, t: "sse_done", seq: 1, proof: "proof" }], {
+          sseResponse([{ v: 3, t: "sse_done", seq: 1, proof: "proof" }], {
             status: 201,
             close: false,
             onCancel,
@@ -1147,7 +1272,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       fetch: async (url) =>
         url.endsWith("/api/sse")
           ? sseResponse(
-              [{ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => cancellations++ },
             )
           : new Response("", { status: 200 }),
@@ -1185,14 +1310,14 @@ describe("DbzzClient protocol 2 ownership", () => {
         fetch: async (url, init) => {
           if (url.endsWith("/api/sse")) {
             return sseResponse(
-              [{ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
           if (url.endsWith("/api/sse/ack")) return fake204;
           const request = parseCallRequest(decode(String(init?.body)));
           return new Response(
-            encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+            encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
           );
         },
       });
@@ -1206,7 +1331,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       expect(await completion).toMatchObject({ code: "malformed", resource: "sse" });
       expect(acknowledgmentCancellations).toBe(1);
       expect(streamCancellations).toBe(1);
-      expect(await client.procedure<{}, string>("procedure.after-body-204", {})).toBe("available");
+      expect(mustOk(await client.procedure<{}, string>("procedure.after-body-204", {}))).toBe("available");
       client.close();
     }
   });
@@ -1270,7 +1395,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     for (const behavior of ["pending", "reject"] as const) {
       const abort = new AbortController();
       const bytes = sseUtf8.encode(sseEvent({
-        v: 2,
+        v: 3,
         t: "sse_chunk",
         seq: 1,
         proof: "proof-1",
@@ -1350,7 +1475,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           if (url.endsWith("/api/sse")) return response;
           const request = parseCallRequest(decode(String(init?.body)));
           return new Response(
-            encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+            encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
           );
         },
       });
@@ -1363,7 +1488,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       await settlesPromptly(completion, `${behavior} open error response abort`);
       expect(await completion).toMatchObject({ code: "unavailable", resource: "sse" });
       expect(cancellations).toBe(1);
-      expect(await client.procedure<{}, string>("procedure.after-open-error", {})).toBe("available");
+      expect(mustOk(await client.procedure<{}, string>("procedure.after-open-error", {}))).toBe("available");
       client.close();
     }
   });
@@ -1381,11 +1506,11 @@ describe("DbzzClient protocol 2 ownership", () => {
         }
         const request = parseCallRequest(decode(String(init?.body)));
         return new Response(
-          encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+          encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
         );
       },
     });
-    const occupied = client.query("query.occupies-capacity", {}).catch((error) => error);
+    const occupied = client.query("query.occupies-capacity", {}).then(mustErr);
     const completion = client.sse("stream.pre-aborted", {}, { signal: abort.signal })[
       Symbol.asyncIterator
     ]().next().catch((error) => error);
@@ -1395,7 +1520,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(streamFetches).toBe(0);
     clock.advance(1);
     expect(await occupied).toMatchObject({ code: "deadline_exceeded" });
-    expect(await client.procedure<{}, string>("procedure.after-pre-abort", {})).toBe("available");
+    expect(mustOk(await client.procedure<{}, string>("procedure.after-pre-abort", {}))).toBe("available");
     client.close();
   });
 
@@ -1414,7 +1539,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         }
         const request = parseCallRequest(decode(String(init?.body)));
         return new Response(
-          encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+          encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
         );
       },
     });
@@ -1426,7 +1551,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     abort.abort();
     await settlesPromptly(completion, "aborted hanging SSE fetch");
     expect(await completion).toMatchObject({ code: "unavailable", resource: "sse" });
-    expect(await client.procedure<{}, string>("procedure.after-hanging-abort", {})).toBe("available");
+    expect(mustOk(await client.procedure<{}, string>("procedure.after-hanging-abort", {}))).toBe("available");
 
     hanging.resolve(sseResponse([], {
       close: false,
@@ -1487,7 +1612,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (url.endsWith("/api/sse")) {
               return sseResponse(
-                [{ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: mode }],
+                [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: mode }],
                 {
                   close: false,
                   onCancel: () => {
@@ -1503,7 +1628,7 @@ describe("DbzzClient protocol 2 ownership", () => {
             }
             const request = parseCallRequest(decode(String(init?.body)));
             return new Response(
-              encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+              encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
             );
           },
         });
@@ -1520,7 +1645,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         expect(cancellations).toBe(1);
         expect(acknowledgments).toBe(0);
         if (mode !== "close") {
-          expect(await client.procedure<{}, string>("procedure.after-sse", {})).toBe("available");
+          expect(mustOk(await client.procedure<{}, string>("procedure.after-sse", {}))).toBe("available");
         }
         client.close();
       }
@@ -1536,7 +1661,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       fetch: async (url, init) => {
         if (url.endsWith("/api/sse")) {
           return sseResponse(
-            [{ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false, onCancel: () => cancellations++ },
           );
         }
@@ -1546,7 +1671,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         }
         const request = parseCallRequest(decode(String(init?.body)));
         return new Response(
-          encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+          encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
         );
       },
     });
@@ -1557,7 +1682,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(await iterator.next()).toEqual({ value: "chunk", done: false });
     abort.abort();
     await eventually(() => cancellations === 1, "suspended SSE cleanup");
-    expect(await client.procedure<{}, string>("procedure.after-abort", {})).toBe("available");
+    expect(mustOk(await client.procedure<{}, string>("procedure.after-abort", {}))).toBe("available");
     expect(cancellations).toBe(1);
     expect(acknowledgments).toBe(0);
     client.close();
@@ -1579,16 +1704,16 @@ describe("DbzzClient protocol 2 ownership", () => {
           }
           const request = parseCallRequest(decode(String(init?.body)));
           return new Response(
-            encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+            encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
           );
         },
       });
-      const oversized = client.procedure("procedure.oversized", {}).catch((error) => error);
+      const oversized = client.procedure("procedure.oversized", {}).then(mustErr);
 
       await settlesPromptly(oversized, `${behavior} oversized procedure cancellation`);
       expect(await oversized).toMatchObject({ code: "overloaded", resource: "operation" });
       expect(cancellations).toBe(1);
-      expect(await client.procedure<{}, string>("procedure.after-oversized", {})).toBe("available");
+      expect(mustOk(await client.procedure<{}, string>("procedure.after-oversized", {}))).toBe("available");
       client.close();
     }
   });
@@ -1602,7 +1727,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         fetch: async (url, init) => {
           if (url.endsWith("/api/sse")) {
             return sseResponse(
-              [{ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+              [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
@@ -1614,7 +1739,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           }
           const request = parseCallRequest(decode(String(init?.body)));
           return new Response(
-            encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+            encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
           );
         },
       });
@@ -1628,7 +1753,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       expect(await completion).toMatchObject({ code: "overloaded", resource: "sse" });
       expect(acknowledgmentCancellations).toBe(1);
       expect(streamCancellations).toBe(1);
-      expect(await client.procedure<{}, string>("procedure.after-ack", {})).toBe("available");
+      expect(mustOk(await client.procedure<{}, string>("procedure.after-ack", {}))).toBe("available");
       client.close();
     }
   });
@@ -1663,7 +1788,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (url.endsWith("/api/sse")) {
               return sseResponse(
-                [{ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+                [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 {
                   stallMs: "100",
                   close: false,
@@ -1677,7 +1802,7 @@ describe("DbzzClient protocol 2 ownership", () => {
             }
             const request = parseCallRequest(decode(String(init?.body)));
             return new Response(
-              encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+              encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
             );
           },
         });
@@ -1698,7 +1823,7 @@ describe("DbzzClient protocol 2 ownership", () => {
         expect(acknowledgmentAttempts).toBe(1);
         expect(bodyCancellations).toBe(1);
         expect(streamCancellations).toBe(1);
-        expect(await client.procedure<{}, string>("procedure.after-open-ack", {})).toBe("available");
+        expect(mustOk(await client.procedure<{}, string>("procedure.after-open-ack", {}))).toBe("available");
         client.close();
       }
     }
@@ -1716,7 +1841,7 @@ describe("DbzzClient protocol 2 ownership", () => {
           fetch: async (url, init) => {
             if (url.endsWith("/api/sse")) {
               return sseResponse(
-                [{ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+                [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 { stallMs: "100", close: false },
               );
             }
@@ -1726,7 +1851,7 @@ describe("DbzzClient protocol 2 ownership", () => {
             }
             const request = parseCallRequest(decode(String(init?.body)));
             return new Response(
-              encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+              encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
             );
           },
         });
@@ -1744,11 +1869,11 @@ describe("DbzzClient protocol 2 ownership", () => {
           code: mode === "deadline" ? "deadline_exceeded" : "unavailable",
           resource: "sse",
         });
-        expect(await client.procedure<{}, string>("procedure.after-late-ack", {})).toBe("available");
+        expect(mustOk(await client.procedure<{}, string>("procedure.after-late-ack", {}))).toBe("available");
 
         late.resolve(openResponse(
           encode({
-            v: 2,
+            v: 3,
             t: "err",
             id: null,
             outcome: {
@@ -1781,7 +1906,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       fetch: async (url, init) => {
         if (url.endsWith("/api/sse")) {
           return sseResponse(
-            [{ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { stallMs: "100", close: false },
           );
         }
@@ -1824,7 +1949,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       fetch: async (url) => {
         if (url.endsWith("/api/sse")) {
           return sseResponse(
-            [{ v: 2, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
+            [{ v: 3, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false },
           );
         }
@@ -1852,18 +1977,18 @@ describe("DbzzClient protocol 2 ownership", () => {
         calls++;
         const request = parseCallRequest(decode(String(init?.body)));
         return new Response(
-          encode({ v: 2, t: "ok", id: request.id, kind: "procedure", value: "available" }),
+          encode({ v: 3, t: "ok", id: request.id, kind: "procedure", value: "available" }),
         );
       },
     });
     const completion = client
       .procedure("procedure.pre-aborted", {}, { signal: abort.signal })
-      .catch((error) => error);
+      .then(mustErr);
 
     await settlesPromptly(completion, "pre-aborted procedure completion");
     expect(await completion).toMatchObject({ code: "unavailable", resource: "operation" });
     expect(calls).toBe(0);
-    expect(await client.procedure<{}, string>("procedure.after-pre-abort", {})).toBe("available");
+    expect(mustOk(await client.procedure<{}, string>("procedure.after-pre-abort", {}))).toBe("available");
     expect(calls).toBe(1);
     client.close();
   });
@@ -1879,7 +2004,7 @@ describe("DbzzClient protocol 2 ownership", () => {
       });
       const completion = client
         .procedure("procedure.hanging-fetch", {}, { signal: abort.signal })
-        .catch((error) => error);
+        .then(mustErr);
       await Promise.resolve();
 
       if (shutdown === "abort") abort.abort();
@@ -1985,7 +2110,7 @@ describe("DbzzClient connection state", () => {
       message: "credential expired",
     });
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2002,7 +2127,7 @@ describe("DbzzClient connection state", () => {
     second.open();
     expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: 2,
+      v: 3,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -2055,7 +2180,7 @@ describe("DbzzClient connection state", () => {
     client.connect();
     welcome(client, sockets[0]!);
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2119,7 +2244,7 @@ describe("subscription cursor confirmations", () => {
 
     // Value deliveries keep flowing through onUpdate alone.
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2129,7 +2254,7 @@ describe("subscription cursor confirmations", () => {
 
     // A checkpoint silently advances the cursor and confirms the held value.
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "checkpoint", from: c1, to: c2 },
@@ -2145,7 +2270,7 @@ describe("subscription cursor confirmations", () => {
     welcome(client, second);
     expect(lastFrame(second, "sub").cursor).toEqual(c2);
     second.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "resume", from: c2, to: c2 },
@@ -2175,7 +2300,7 @@ describe("subscription cursor confirmations", () => {
     const c3 = cursor(3n);
 
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c1, value: ["one"] },
@@ -2184,14 +2309,14 @@ describe("subscription cursor confirmations", () => {
     // A mismatched predecessor makes the client demand a reset; deliveries
     // landing on the held cursor are no longer trusted as confirmations.
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c2, to: c3, value: ["three-untrusted"] },
     });
-    expect(lastFrame(first, "reset")).toEqual({ v: 2, t: "reset", id: subscription.id, cursor: c1 });
+    expect(lastFrame(first, "reset")).toEqual({ v: 3, t: "reset", id: subscription.id, cursor: c1 });
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "update", from: c0, to: c1, value: ["one-too-late"] },
@@ -2201,7 +2326,7 @@ describe("subscription cursor confirmations", () => {
     // The authoritative reset delivers through onUpdate; a duplicate of it
     // landing on the now-held cursor confirms again.
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2209,7 +2334,7 @@ describe("subscription cursor confirmations", () => {
     expect(updates).toEqual([["one"], ["three-authoritative"]]);
     expect(confirmations).toBe(0);
     first.receive({
-      v: 2,
+      v: 3,
       t: "transition",
       id: subscription.id,
       transition: { kind: "reset", from: null, to: c3, value: ["three-authoritative"] },
@@ -2242,14 +2367,14 @@ describe("subscription argument encoding", () => {
 describe("DbzzClient close-time mutation settlement", () => {
   test("close settles sent mutations as indeterminate and unsent mutations as unavailable", async () => {
     const { client, sockets } = harness();
-    const sent = client.mutation("todos.add", { text: "sent" }).catch((error) => error);
+    const sent = client.mutation("todos.add", { text: "sent" }).then(mustErr);
     welcome(client, sockets[0]!);
     expect(lastFrame(sockets[0]!, "m").args).toEqual({ text: "sent" });
 
     // Written to a connection that dropped: the server may have committed.
     sockets[0]!.drop();
     // Created while disconnected: provably never reached the server.
-    const unsent = client.mutation("todos.add", { text: "unsent" }).catch((error) => error);
+    const unsent = client.mutation("todos.add", { text: "unsent" }).then(mustErr);
 
     client.close();
     expect(await sent).toMatchObject({
@@ -2315,7 +2440,7 @@ describe("DbzzClient authentication state", () => {
     client.connect();
     sockets[0]!.open();
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 4,
@@ -2380,7 +2505,7 @@ describe("DbzzClient authentication state", () => {
     const signOutFrame = lastFrame(sockets[0]!, "auth");
     expect(signOutFrame.credential).toEqual({ kind: "anonymous" });
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "auth",
       attemptId: signOutFrame.attemptId,
       authEpoch: 1,
@@ -2404,7 +2529,7 @@ describe("DbzzClient authentication state", () => {
     const refreshFrame = lastFrame(sockets[0]!, "auth");
     expect(refreshFrame.credential).toEqual({ kind: "bearer", token: "token-c" });
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "auth",
       attemptId: refreshFrame.attemptId,
       authEpoch: 2,
@@ -2435,7 +2560,7 @@ describe("DbzzClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(1);
     const attempt = lastFrame(sockets[0]!, "auth");
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "auth",
       attemptId: attempt.attemptId,
       authEpoch: 1,
@@ -2451,7 +2576,7 @@ describe("DbzzClient authentication state", () => {
     expect(sockets[0]!.frames().filter((frame) => frame.t === "auth")).toHaveLength(2);
     const signOutAttempt = lastFrame(sockets[0]!, "auth");
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "auth",
       attemptId: signOutAttempt.attemptId,
       authEpoch: 2,
@@ -2470,7 +2595,7 @@ describe("DbzzClient authentication state", () => {
     // welcome verifies that value once for both.
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-a" });
     socket.receive({
-      v: 2,
+      v: 3,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 2,
@@ -2489,7 +2614,7 @@ describe("DbzzClient authentication state", () => {
     const detour = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
     const back = client.refreshCredential({ kind: "bearer", token: "token-a" });
     socket.receive({
-      v: 2,
+      v: 3,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 1,
@@ -2545,7 +2670,7 @@ describe("DbzzClient authentication state", () => {
     second.open();
     expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-b" });
     second.receive({
-      v: 2,
+      v: 3,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 3,
@@ -2567,7 +2692,7 @@ describe("DbzzClient authentication state", () => {
     client.connect();
     welcome(client, sockets[0]!, "user");
     sockets[0]!.receive({
-      v: 2,
+      v: 3,
       t: "err",
       id: null,
       outcome: { code: "unauthenticated", retryable: false, message: "credential expired" },
@@ -2592,7 +2717,7 @@ describe("DbzzClient authentication state", () => {
     // The reconnect hello presents the refreshed credential, so its welcome
     // is the verification: one round-trip, no separate auth frame.
     second.receive({
-      v: 2,
+      v: 3,
       t: "welcome",
       clientSessionId: client.clientSessionId,
       authEpoch: 0,

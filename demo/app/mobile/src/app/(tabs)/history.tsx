@@ -5,7 +5,12 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { AppScreen } from "../../components/screen";
 import { EmptyState, ErrorState, LoadingState } from "../../components/states";
 import { StatusPill } from "../../components/status-pill";
-import { formatDate, formatMoney, formatOrder } from "../../lib/format";
+import {
+  errorMessage,
+  formatDate,
+  formatMoney,
+  formatOrder,
+} from "../../lib/format";
 import { useSession } from "../../providers/session";
 import { colors, displayFont } from "../../theme";
 
@@ -19,13 +24,19 @@ export default function HistoryScreen() {
   const history =
     historyQuery.status === "success"
       ? historyQuery.data
-      : historyQuery.status === "error"
-        ? historyQuery.staleData
+      : historyQuery.status === "unavailable"
+        ? historyQuery.data
         : undefined;
   if (history === undefined && historyQuery.status === "pending")
     return <LoadingState label="Gathering your visits…" />;
-  if (history === undefined && historyQuery.status === "error")
-    return <ErrorState message={historyQuery.error.message} />;
+  if (
+    history === undefined &&
+    (historyQuery.status === "application-error" ||
+      historyQuery.status === "rejected" ||
+      historyQuery.status === "unavailable")
+  ) {
+    return <ErrorState message={errorMessage(historyQuery.error)} />;
+  }
 
   return (
     <AppScreen title="Your visits" eyebrow={session.name} name={session.name}>

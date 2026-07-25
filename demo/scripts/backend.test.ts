@@ -11,6 +11,7 @@ import type {
   OrderEvent,
   StaffEvent,
 } from "@demo/dbzz-codegen/types";
+import { expectErrorCode, expectOk } from "./result.ts";
 
 const SERVER_DIR = fileURLToPath(new URL("../app/server", import.meta.url));
 const STAFF_TOKEN =
@@ -46,20 +47,6 @@ async function within<T>(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
-}
-
-async function expectCode(
-  work: Promise<unknown>,
-  code: DbzzClientError["code"],
-): Promise<DbzzClientError> {
-  try {
-    await work;
-  } catch (error) {
-    expect(error).toBeInstanceOf(DbzzClientError);
-    expect((error as DbzzClientError).code).toBe(code);
-    return error as DbzzClientError;
-  }
-  throw new Error(`Expected ${code}`);
 }
 
 class BackendHarness {
@@ -105,7 +92,7 @@ class BackendHarness {
 
   async initialize(): Promise<DbzzClient> {
     const staff = this.client(STAFF_TOKEN);
-    await staff.mutation(api.setup.initialize, {});
+    expectOk(await staff.mutation(api.setup.initialize, {}));
     return staff;
   }
 
@@ -119,10 +106,14 @@ class BackendHarness {
     userId: bigint;
   }> {
     const anonymous = this.client();
-    const login = await anonymous.procedure(api.auth.login, { name, email });
+    const login = expectOk(
+      await anonymous.procedure(api.auth.login, { name, email }),
+    );
     const client = this.client(login.token);
-    const userId = await client.mutation(api.users.ensureCurrent, {});
-    await client.query(api.users.current, {});
+    const userId = expectOk(
+      await client.mutation(api.users.ensureCurrent, {}),
+    );
+    expectOk(await client.query(api.users.current, {}));
     const authentication = client.currentAuthentication;
     if (authentication?.principal !== "user")
       throw new Error("guest did not establish a durable Identity");
@@ -175,11 +166,13 @@ async function tableFor(
   staff: DbzzClient,
   number: number,
 ): Promise<bigint> {
-  return staff.mutation(api.tables.create, { number, seats: 4 });
+  return expectOk(
+    await staff.mutation(api.tables.create, { number, seats: 4 }),
+  );
 }
 
 async function firstMenuItem(client: DbzzClient) {
-  const catalog = await client.query(api.menu.catalog, {});
+  const catalog = expectOk(await client.query(api.menu.catalog, {}));
   const item = catalog.flatMap((category) => category.items)[0];
   if (item === undefined) throw new Error("seed menu is empty");
   return item;
@@ -188,21 +181,33 @@ async function firstMenuItem(client: DbzzClient) {
 test("credentials map to one durable Identity and policies separate guests from staff", async () => {
   await withBackend(async (backend) => {
     const anonymous = backend.client();
-    await expectCode(anonymous.query(api.dashboard.overview, {}), "unauthenticated");
+    await expectErrorCode(
+      anonymous.query(api.dashboard.overview, {}),
+      "unauthenticated",
+    );
 
     const staff = await backend.initialize();
-    expect((await staff.query(api.dashboard.overview, {})).tableCount).toBe(12);
+    expect(
+      expectOk(await staff.query(api.dashboard.overview, {})).tableCount,
+    ).toBe(12);
 
     const guest = await backend.guest("Identity.Guest@Example.com", "Identity Guest");
-    await expectCode(guest.client.query(api.dashboard.overview, {}), "unauthorized");
-    const before = await guest.client.query(api.users.current, {});
+    await expectErrorCode(
+      guest.client.query(api.dashboard.overview, {}),
+      "unauthorized",
+    );
+    const before = expectOk(
+      await guest.client.query(api.users.current, {}),
+    );
     expect(before?.id).toBe(guest.userId);
     const identity = guest.identity;
 
     await backend.restart();
 
     const afterRestart = backend.client(guest.token);
-    const after = await afterRestart.query(api.users.current, {});
+    const after = expectOk(
+      await afterRestart.query(api.users.current, {}),
+    );
     expect(after?.id).toBe(guest.userId);
     expect(afterRestart.currentAuthentication).toMatchObject({
       principal: "user",
@@ -210,14 +215,16 @@ test("credentials map to one durable Identity and policies separate guests from 
     });
 
     const relogin = await backend.guest(
-      " identity.guest@example.com ",
+      "identity.guest@example.com",
       "Identity Guest Updated",
     );
     expect(relogin.userId).toBe(guest.userId);
     expect(relogin.identity).toBe(identity);
-    expect((await relogin.client.query(api.users.current, {}))?.name).toBe(
-      "Identity Guest Updated",
-    );
+    expect(
+      expectOk(
+        await relogin.client.query(api.users.current, {}),
+      )?.name,
+    ).toBe("Identity Guest Updated");
   });
 });
 
@@ -228,28 +235,32 @@ test("concurrent seating admits exactly one guest and releases the table on clos
     const first = await backend.guest("seat-one@example.com", "Seat One");
     const second = await backend.guest("seat-two@example.com", "Seat Two");
 
-    const attempts = await Promise.allSettled([
+    const attempts = await Promise.all([
       first.client.mutation(api.orders.sit, { tableId }),
       second.client.mutation(api.orders.sit, { tableId }),
     ]);
-    const fulfilled = attempts.filter(
-      (attempt): attempt is PromiseFulfilledResult<bigint> =>
-        attempt.status === "fulfilled",
-    );
-    const rejected = attempts.filter(
-      (attempt): attempt is PromiseRejectedResult => attempt.status === "rejected",
-    );
-    expect(fulfilled).toHaveLength(1);
-    expect(rejected).toHaveLength(1);
-    expect(rejected[0]!.reason).toBeInstanceOf(DbzzClientError);
-    expect((rejected[0]!.reason as DbzzClientError).code).toBe("conflict");
+    const accepted = attempts.filter((attempt) => attempt.ok);
+    const refused = attempts.filter((attempt) => !attempt.ok);
+    expect(accepted).toHaveLength(1);
+    expect(refused).toHaveLength(1);
+    expect(refused[0]!.error).toMatchObject({
+      kind: "application",
+      code: "table.unavailable",
+      status: 409,
+      body: { tableId },
+    });
+    const orderId = accepted[0]!.data;
 
-    const occupied = (await staff.query(api.tables.list, {})).find(
+    const occupied = expectOk(
+      await staff.query(api.tables.list, {}),
+    ).find(
       (table) => table.id === tableId,
     );
-    expect(occupied?.orderId).toBe(fulfilled[0]!.value);
-    await staff.mutation(api.orders.cancel, { orderId: fulfilled[0]!.value });
-    const released = (await staff.query(api.tables.list, {})).find(
+    expect(occupied?.orderId).toBe(orderId);
+    expectOk(await staff.mutation(api.orders.cancel, { orderId }));
+    const released = expectOk(
+      await staff.query(api.tables.list, {}),
+    ).find(
       (table) => table.id === tableId,
     );
     expect(released?.orderId).toBeNull();
@@ -262,24 +273,32 @@ test("line snapshots survive menu edits and only legal kitchen transitions can b
     const guest = await backend.guest("snapshot@example.com", "Snapshot Guest");
     const tableId = await tableFor(staff, 902);
     const item = await firstMenuItem(guest.client);
-    const orderId = await guest.client.mutation(api.orders.sit, { tableId });
-    const [orderItemId] = await guest.client.mutation(api.orders.addItems, {
-      orderId,
-      items: [{ menuItemId: item.id, quantity: 2, note: "No garnish" }],
-    });
+    const orderId = expectOk(
+      await guest.client.mutation(api.orders.sit, { tableId }),
+    );
+    const [orderItemId] = expectOk(
+      await guest.client.mutation(api.orders.addItems, {
+        orderId,
+        items: [{ menuItemId: item.id, quantity: 2, note: "No garnish" }],
+      }),
+    );
     if (orderItemId === undefined) throw new Error("order item was not created");
 
-    await staff.mutation(api.menu.updateItem, {
-      id: item.id,
-      categoryId: item.categoryId,
-      name: `${item.name} Revised`,
-      description: item.description,
-      image: item.image,
-      priceCents: item.priceCents + 777,
-      sortOrder: item.sortOrder,
-      active: true,
-    });
-    const snapshot = await guest.client.query(api.orders.current, {});
+    expectOk(
+      await staff.mutation(api.menu.updateItem, {
+        id: item.id,
+        categoryId: item.categoryId,
+        name: `${item.name} Revised`,
+        description: item.description,
+        image: item.image,
+        priceCents: item.priceCents + 777,
+        sortOrder: item.sortOrder,
+        active: true,
+      }),
+    );
+    const snapshot = expectOk(
+      await guest.client.query(api.orders.current, {}),
+    );
     expect(snapshot?.items[0]).toMatchObject({
       id: orderItemId,
       name: item.name,
@@ -288,44 +307,57 @@ test("line snapshots survive menu edits and only legal kitchen transitions can b
       note: "No garnish",
     });
     expect(snapshot?.totalCents).toBe(item.priceCents * 2);
-    await expectCode(
+    await expectErrorCode(
       guest.client.mutation(api.orders.pay, { orderId }),
-      "conflict",
+      "order.not-payable",
     );
 
-    expect(await staff.mutation(api.kitchen.advance, { orderItemId })).toBe(
-      "PREPARING",
-    );
-    await expectCode(
+    expect(
+      expectOk(
+        await staff.mutation(api.kitchen.advance, { orderItemId }),
+      ),
+    ).toBe("PREPARING");
+    await expectErrorCode(
       guest.client.mutation(api.orders.cancelItem, { orderId, orderItemId }),
-      "conflict",
+      "order-item.not-cancellable",
     );
-    await expectCode(
+    await expectErrorCode(
       staff.mutation(api.kitchen.cancel, { orderItemId }),
-      "conflict",
+      "order-item.not-cancellable",
     );
-    expect(await staff.mutation(api.kitchen.advance, { orderItemId })).toBe(
-      "PREPARED",
-    );
-    expect(await staff.mutation(api.kitchen.advance, { orderItemId })).toBe(
-      "SERVED",
-    );
-    await expectCode(
+    expect(
+      expectOk(
+        await staff.mutation(api.kitchen.advance, { orderItemId }),
+      ),
+    ).toBe("PREPARED");
+    expect(
+      expectOk(
+        await staff.mutation(api.kitchen.advance, { orderItemId }),
+      ),
+    ).toBe("SERVED");
+    await expectErrorCode(
       staff.mutation(api.kitchen.advance, { orderItemId }),
-      "conflict",
+      "order-item.final",
     );
 
-    expect(await guest.client.mutation(api.orders.pay, { orderId })).toEqual({
-      orderId,
-      totalCents: item.priceCents * 2,
-    });
-    expect((await guest.client.query(api.orders.history, {})).closed[0]).toMatchObject({
+    expect(
+      expectOk(
+        await guest.client.mutation(api.orders.pay, { orderId }),
+      ),
+    ).toEqual({ orderId, totalCents: item.priceCents * 2 });
+    expect(
+      expectOk(
+        await guest.client.query(api.orders.history, {}),
+      ).closed[0],
+    ).toMatchObject({
       id: orderId,
       status: "PAID",
       totalCents: item.priceCents * 2,
     });
     expect(
-      (await staff.query(api.tables.list, {})).find(
+      expectOk(
+        await staff.query(api.tables.list, {}),
+      ).find(
         (table) => table.id === tableId,
       )?.orderId,
     ).toBeNull();
@@ -342,27 +374,39 @@ test("aggregate cancellation preserves line history while guest cancellation clo
       "Aggregate Guest",
     );
     const aggregateTable = await tableFor(staff, 903);
-    const aggregateOrder = await aggregateGuest.client.mutation(api.orders.sit, {
-      tableId: aggregateTable,
-    });
-    const aggregateItems = await aggregateGuest.client.mutation(
-      api.orders.addItems,
-      {
-        orderId: aggregateOrder,
-        items: [
-          { menuItemId: item.id, quantity: 1, note: null },
-          { menuItemId: item.id, quantity: 2, note: "Second line" },
-        ],
-      },
+    const aggregateOrder = expectOk(
+      await aggregateGuest.client.mutation(api.orders.sit, {
+        tableId: aggregateTable,
+      }),
     );
-    await staff.mutation(api.kitchen.advance, {
-      orderItemId: aggregateItems[0]!,
-    });
-    await staff.mutation(api.orders.cancel, { orderId: aggregateOrder });
+    const aggregateItems = expectOk(
+      await aggregateGuest.client.mutation(
+        api.orders.addItems,
+        {
+          orderId: aggregateOrder,
+          items: [
+            { menuItemId: item.id, quantity: 1, note: null },
+            { menuItemId: item.id, quantity: 2, note: "Second line" },
+          ],
+        },
+      ),
+    );
+    expectOk(
+      await staff.mutation(api.kitchen.advance, {
+        orderItemId: aggregateItems[0]!,
+      }),
+    );
+    expectOk(
+      await staff.mutation(api.orders.cancel, {
+        orderId: aggregateOrder,
+      }),
+    );
 
-    const cancelled = await staff.query(api.orders.detail, {
-      id: aggregateOrder,
-    });
+    const cancelled = expectOk(
+      await staff.query(api.orders.detail, {
+        id: aggregateOrder,
+      }),
+    );
     expect(cancelled).toMatchObject({
       status: "CANCELLED",
       totalCents: 0,
@@ -374,15 +418,17 @@ test("aggregate cancellation preserves line history while guest cancellation clo
       "ORDERED",
     ]);
     expect(
-      (await staff.query(api.kitchen.queue, {})).some(
+      expectOk(
+        await staff.query(api.kitchen.queue, {}),
+      ).some(
         (line) => line.orderId === aggregateOrder,
       ),
     ).toBe(false);
-    await expectCode(
+    await expectErrorCode(
       staff.mutation(api.kitchen.advance, {
         orderItemId: aggregateItems[1]!,
       }),
-      "conflict",
+      "order.closed",
     );
 
     const selfGuest = await backend.guest(
@@ -390,21 +436,33 @@ test("aggregate cancellation preserves line history while guest cancellation clo
       "Self Cancel Guest",
     );
     const selfTable = await tableFor(staff, 904);
-    const selfOrder = await selfGuest.client.mutation(api.orders.sit, {
-      tableId: selfTable,
-    });
-    const [selfItem] = await selfGuest.client.mutation(api.orders.addItems, {
-      orderId: selfOrder,
-      items: [{ menuItemId: item.id, quantity: 1, note: null }],
-    });
-    await selfGuest.client.mutation(api.orders.cancelItem, {
-      orderId: selfOrder,
-      orderItemId: selfItem!,
-    });
-    await selfGuest.client.mutation(api.orders.closeCancelled, {
-      orderId: selfOrder,
-    });
-    expect((await selfGuest.client.query(api.orders.history, {})).closed[0]).toMatchObject({
+    const selfOrder = expectOk(
+      await selfGuest.client.mutation(api.orders.sit, {
+        tableId: selfTable,
+      }),
+    );
+    const [selfItem] = expectOk(
+      await selfGuest.client.mutation(api.orders.addItems, {
+        orderId: selfOrder,
+        items: [{ menuItemId: item.id, quantity: 1, note: null }],
+      }),
+    );
+    expectOk(
+      await selfGuest.client.mutation(api.orders.cancelItem, {
+        orderId: selfOrder,
+        orderItemId: selfItem!,
+      }),
+    );
+    expectOk(
+      await selfGuest.client.mutation(api.orders.closeCancelled, {
+        orderId: selfOrder,
+      }),
+    );
+    expect(
+      expectOk(
+        await selfGuest.client.query(api.orders.history, {}),
+      ).closed[0],
+    ).toMatchObject({
       id: selfOrder,
       status: "CANCELLED",
       totalCents: 0,
@@ -423,11 +481,15 @@ test("order events are owner-isolated and staff reminders reject guest subscribe
     );
     const tableId = await tableFor(staff, 905);
     const item = await firstMenuItem(owner.client);
-    const orderId = await owner.client.mutation(api.orders.sit, { tableId });
-    const [orderItemId] = await owner.client.mutation(api.orders.addItems, {
-      orderId,
-      items: [{ menuItemId: item.id, quantity: 1, note: null }],
-    });
+    const orderId = expectOk(
+      await owner.client.mutation(api.orders.sit, { tableId }),
+    );
+    const [orderItemId] = expectOk(
+      await owner.client.mutation(api.orders.addItems, {
+        orderId,
+        items: [{ menuItemId: item.id, quantity: 1, note: null }],
+      }),
+    );
 
     const ownerReset = deferred<void>();
     const ownerEvent = deferred<OrderEvent>();
@@ -484,7 +546,11 @@ test("order events are owner-isolated and staff reminders reject guest subscribe
         (await within(staffForbidden.promise, 5_000, "staff event rejection")).code,
       ).toBe("unauthorized");
 
-      await staff.mutation(api.kitchen.advance, { orderItemId: orderItemId! });
+      expectOk(
+        await staff.mutation(api.kitchen.advance, {
+          orderItemId: orderItemId!,
+        }),
+      );
       expect(
         await within(ownerEvent.promise, 5_000, "owner kitchen event"),
       ).toMatchObject({
@@ -542,14 +608,20 @@ test(
 
         try {
           await within(reset.promise, 5_000, "staff reminder reset");
-          const orderId = await guest.client.mutation(api.orders.sit, {
-            tableId,
-          });
-          [orderItemId] = await guest.client.mutation(api.orders.addItems, {
-            orderId,
-            items: [{ menuItemId: item.id, quantity: 1, note: null }],
-          });
-          const current = await guest.client.query(api.orders.current, {});
+          const orderId = expectOk(
+            await guest.client.mutation(api.orders.sit, {
+              tableId,
+            }),
+          );
+          [orderItemId] = expectOk(
+            await guest.client.mutation(api.orders.addItems, {
+              orderId,
+              items: [{ menuItemId: item.id, quantity: 1, note: null }],
+            }),
+          );
+          const current = expectOk(
+            await guest.client.query(api.orders.current, {}),
+          );
           const orderedAt = current?.items.find(
             (line) => line.id === orderItemId,
           )?.statusChangedAt;
@@ -562,7 +634,9 @@ test(
 
           now += 30_000;
           expect(
-            await staff.mutation(api.kitchen.advance, { orderItemId }),
+            expectOk(
+              await staff.mutation(api.kitchen.advance, { orderItemId }),
+            ),
           ).toBe("PREPARING");
           const advancedAt = now;
 

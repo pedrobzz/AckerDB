@@ -32,13 +32,19 @@ export default function OrderScreen() {
   const order =
     orderQuery.status === "success"
       ? orderQuery.data
-      : orderQuery.status === "error"
-        ? orderQuery.staleData
+      : orderQuery.status === "unavailable"
+        ? orderQuery.data
         : undefined;
   if (order === undefined && orderQuery.status === "pending")
     return <LoadingState label="Loading your live order…" />;
-  if (order === undefined && orderQuery.status === "error")
-    return <ErrorState message={orderQuery.error.message} />;
+  if (
+    order === undefined &&
+    (orderQuery.status === "application-error" ||
+      orderQuery.status === "rejected" ||
+      orderQuery.status === "unavailable")
+  ) {
+    return <ErrorState message={errorMessage(orderQuery.error)} />;
+  }
   if (order === undefined)
     return <LoadingState label="Loading your live order…" />;
   if (order === null) {

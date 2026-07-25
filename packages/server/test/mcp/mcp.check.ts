@@ -142,17 +142,17 @@ const localAiTools = typedProcedure({
     scopedMcp.aiTools(ctx, { includeUnavailable: "yes" });
   },
 });
-const createdToken: string = createAgentToken._retType!.token;
-const createdSystemToken: string = createSystemAgentToken._retType!.token;
-const listedTokenId: string = listAgentTokens._retType![0]!.id;
-const createdScope: AgentScope = createScopedToken._retType!.scopes[0]!;
-const createdSystemScope: AgentScope = createSystemScopedToken._retType!.scopes[0]!;
+const createdToken: string = createAgentToken._retType!.data.token;
+const createdSystemToken: string = createSystemAgentToken._retType!.data.token;
+const listedTokenId: string = listAgentTokens._retType!.data[0]!.id;
+const createdScope: AgentScope = createScopedToken._retType!.data.scopes[0]!;
+const createdSystemScope: AgentScope = createSystemScopedToken._retType!.data.scopes[0]!;
 // @ts-expect-error listing descriptors never recover the plaintext secret
-void listAgentTokens._retType![0]!.token;
+void listAgentTokens._retType!.data[0]!.token;
 // @ts-expect-error system listing descriptors never recover the plaintext secret
-void listSystemAgentTokens._retType![0]!.token;
+void listSystemAgentTokens._retType!.data[0]!.token;
 // @ts-expect-error scope-free descriptors do not expose a grant
-void listAgentTokens._retType![0]!.scopes;
+void listAgentTokens._retType!.data[0]!.scopes;
 void createdToken;
 void createdSystemToken;
 void listedTokenId;

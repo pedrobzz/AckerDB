@@ -49,7 +49,9 @@ function KitchenPage() {
   async function advanceItem(item: KitchenItem) {
     setBusyId(item.id.toString());
     try {
-      const next = await advance({ orderItemId: item.id });
+      const result = await advance({ orderItemId: item.id });
+      if (!result.ok) throw result.error;
+      const next = result.data;
       toast.success(
         `${item.name} moved to ${next.toLowerCase()}.`,
         `Table ${item.tableNumber}`,
@@ -64,7 +66,8 @@ function KitchenPage() {
   async function cancelKitchenItem(item: KitchenItem) {
     setBusyId(item.id.toString());
     try {
-      await cancel({ orderItemId: item.id });
+      const result = await cancel({ orderItemId: item.id });
+      if (!result.ok) throw result.error;
       toast.success(`${item.name} was cancelled.`, `Table ${item.tableNumber}`);
     } catch (error) {
       toast.error(errorMessage(error, "Could not cancel this item"));

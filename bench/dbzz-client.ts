@@ -1,5 +1,11 @@
-import { anyApi } from "@dbzz/core";
-import { DbzzClient } from "@dbzz/client";
+import {
+  anyApi,
+  type ApplicationError,
+} from "@dbzz/core";
+import {
+  DbzzClient,
+  type ClientResult,
+} from "@dbzz/client";
 import {
   ACCOUNT_BALANCE,
   ACCOUNT_COUNT,
@@ -17,24 +23,61 @@ import { runWorkload } from "./workload.ts";
 
 const url = process.env.DBZZ_URL ?? "http://127.0.0.1:3311";
 
+async function expectSuccess<
+  Data,
+  Error extends ApplicationError = never,
+>(
+  pending: Promise<ClientResult<Data, Error>>,
+): Promise<Data> {
+  const result = await pending;
+  if (!result.ok) throw result.error;
+  return result.data;
+}
+
 function connection(client: DbzzClient): BenchConnection {
   return {
     search: (partition, nonce) =>
-      client.query<{ partition: number; nonce: number }, SearchResult>(anyApi.bench.search, { partition, nonce }),
+      expectSuccess(
+        client.query<{ partition: number; nonce: number }, SearchResult>(
+          anyApi.bench.search,
+          { partition, nonce },
+        ),
+      ),
     transfer: async (pair, direction, amount, nonce) => {
-      await client.mutation<{ pair: number; direction: number; amount: number; nonce: number }, null>(
-        anyApi.bench.transfer,
-        { pair, direction, amount, nonce },
+      await expectSuccess(
+        client.mutation<
+          { pair: number; direction: number; amount: number; nonce: number },
+          null
+        >(
+          anyApi.bench.transfer,
+          { pair, direction, amount, nonce },
+        ),
       );
     },
-    accountState: (nonce) => client.query<{ nonce: number }, AccountState>(anyApi.bench.accountState, { nonce }),
+    accountState: (nonce) =>
+      expectSuccess(
+        client.query<{ nonce: number }, AccountState>(
+          anyApi.bench.accountState,
+          { nonce },
+        ),
+      ),
     compute: (nonce, seed, payload, rounds) =>
-      client.procedure<{ nonce: number; seed: number; payload: string; rounds: number }, ComputeResult>(
-        anyApi.bench.compute,
-        { nonce, seed, payload, rounds },
+      expectSuccess(
+        client.procedure<
+          { nonce: number; seed: number; payload: string; rounds: number },
+          ComputeResult
+        >(
+          anyApi.bench.compute,
+          { nonce, seed, payload, rounds },
+        ),
       ),
     updateChannel: async (channel, nonce) => {
-      await client.mutation<{ channel: number; nonce: number }, null>(anyApi.bench.updateChannel, { channel, nonce });
+      await expectSuccess(
+        client.mutation<{ channel: number; nonce: number }, null>(
+          anyApi.bench.updateChannel,
+          { channel, nonce },
+        ),
+      );
     },
     subscribeChannels: async (channels, onUpdate) => {
       const pending = new Set(channels);
@@ -68,13 +111,19 @@ function connection(client: DbzzClient): BenchConnection {
       };
     },
     seedDocuments: async (start, count) => {
-      await client.mutation(anyApi.bench.seedDocuments, { start, count });
+      await expectSuccess(
+        client.mutation(anyApi.bench.seedDocuments, { start, count }),
+      );
     },
     seedAccounts: async (start, count) => {
-      await client.mutation(anyApi.bench.seedAccounts, { start, count });
+      await expectSuccess(
+        client.mutation(anyApi.bench.seedAccounts, { start, count }),
+      );
     },
     seedChannels: async (start, count) => {
-      await client.mutation(anyApi.bench.seedChannels, { start, count });
+      await expectSuccess(
+        client.mutation(anyApi.bench.seedChannels, { start, count }),
+      );
     },
     close: async () => client.close(),
   };
@@ -87,7 +136,12 @@ const adapter: BenchAdapter = {
     const connected = connection(client);
     try {
       if (seeded) {
-        const probe = await client.query<{ nonce: number }, ProbeResult>(anyApi.bench.probe, { nonce });
+        const probe = await expectSuccess(
+          client.query<{ nonce: number }, ProbeResult>(
+            anyApi.bench.probe,
+            { nonce },
+          ),
+        );
         const expectedAccount = nonce % ACCOUNT_COUNT;
         const expectedChecksum = probeChecksum(nonce, expectedAccount, probe.balance, probe.version);
         if (

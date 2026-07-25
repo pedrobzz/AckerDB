@@ -182,7 +182,10 @@ const functions = {
           `data:text/plain,${encodeURIComponent(args.payload)}`,
         )).text();
         return ctx.tx(async (tx: Ctx) => {
-          const id = await addItem(tx, { room: args.room, body: external });
+          const id = (await addItem(tx, {
+            room: args.room,
+            body: external,
+          })).data;
           const row = await tx.db.items.get(id);
           return { id, body: row.body };
         });

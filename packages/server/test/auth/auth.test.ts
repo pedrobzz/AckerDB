@@ -215,7 +215,7 @@ describe("principals and invocation access", () => {
     );
     expect(policyCalls).toBe(0);
     expect(handlerCalls).toBe(0);
-    expect(await fn({ auth: ANONYMOUS_PRINCIPAL }, { value: "allowed" })).toBe("allowed");
+    expect((await fn({ auth: ANONYMOUS_PRINCIPAL }, { value: "allowed" })).data).toBe("allowed");
   });
 
   test("authorization hooks run after policy and before the handler", async () => {
@@ -233,14 +233,14 @@ describe("principals and invocation access", () => {
     });
     const context = { auth: userPrincipal(), db: Object.freeze({}) as never };
 
-    expect(await invokeFunction(fn, context, { value: "allowed" }, {
+    expect((await invokeFunction(fn, context, { value: "allowed" }, {
       onAuthorized: (safeContext, args) => {
         expect(Object.isFrozen(safeContext)).toBe(true);
         expect(safeContext).not.toBe(context);
         expect(Object.isFrozen(args)).toBe(true);
         order.push(`authorized:${args.value}`);
       },
-    })).toBe("allowed");
+    })).data).toBe("allowed");
     expect(order).toEqual(["policy:allowed", "authorized:allowed", "handler:allowed"]);
 
     await expect(invokeFunction(fn, context, { value: "denied" }, {
@@ -257,9 +257,9 @@ describe("principals and invocation access", () => {
       handler: () => "ok",
     });
 
-    expect(await invokeFunction(fn, context, {}, {
+    expect((await invokeFunction(fn, context, {}, {
       onAuthorized: (safeContext) => expect(safeContext).toBe(context),
-    })).toBe("ok");
+    })).data).toBe("ok");
   });
 
   test("authorization cannot mutate validated byte inputs", async () => {
@@ -276,7 +276,10 @@ describe("principals and invocation access", () => {
       handler: (_ctx, args) => [...args.value],
     });
 
-    expect(await fn({ auth: ANONYMOUS_PRINCIPAL }, { value: new Uint8Array([1, 2]) })).toEqual([1, 2]);
+    expect((await fn(
+      { auth: ANONYMOUS_PRINCIPAL },
+      { value: new Uint8Array([1, 2]) },
+    )).data).toEqual([1, 2]);
   });
 
   test("builtin policies distinguish unauthenticated from unauthorized", async () => {
@@ -292,11 +295,11 @@ describe("principals and invocation access", () => {
     });
 
     await expectDbzzError(authenticated({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthenticated");
-    expect(await authenticated({ auth: userPrincipal() }, {})).toBe("user");
-    expect(await authenticated({ auth: SYSTEM_PRINCIPAL }, {})).toBe("system");
+    expect((await authenticated({ auth: userPrincipal() }, {})).data).toBe("user");
+    expect((await authenticated({ auth: SYSTEM_PRINCIPAL }, {})).data).toBe("system");
     await expectDbzzError(system({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthenticated");
     await expectDbzzError(system({ auth: userPrincipal() }, {}), "unauthorized");
-    expect(await system({ auth: SYSTEM_PRINCIPAL }, {})).toBe("system");
+    expect((await system({ auth: SYSTEM_PRINCIPAL }, {})).data).toBe("system");
   });
 
   test("callback denial and exceptions fail closed", async () => {
@@ -352,7 +355,7 @@ describe("principals and invocation access", () => {
       handler: () => callee({ auth: { kind: "anonymous" } }, {}),
     });
 
-    expect(await samePrincipal({ auth: ANONYMOUS_PRINCIPAL }, {})).toBe("anonymous");
+    expect((await samePrincipal({ auth: ANONYMOUS_PRINCIPAL }, {})).data).toBe("anonymous");
     expect(calleePolicyCalls).toBe(1);
     await expectDbzzError(replacedPrincipal({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthorized");
     expect(calleePolicyCalls).toBe(1);

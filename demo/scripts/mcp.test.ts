@@ -11,6 +11,7 @@ import {
   type JsonRpcResponse,
   type McpHarness,
 } from "./mcp-harness.ts";
+import { expectOk } from "./result.ts";
 
 interface TableRow {
   readonly id: string;
@@ -42,14 +43,18 @@ test("staff resolves to one shared durable user Identity", async () => {
     const identity = identityOf(staff);
 
     // Existing staff flows still work under the user-kind principal.
-    expect((await staff.query(api.dashboard.overview, {})).tableCount).toBe(12);
+    expect(
+      expectOk(await staff.query(api.dashboard.overview, {})).tableCount,
+    ).toBe(12);
 
     // A second staff session shares the same durable Identity and token vault.
     const created = await issueToken(staff, "Shared identity", ["read"]);
     const otherStaff = backend.client(STAFF_TOKEN);
-    await otherStaff.query(api.users.current, {});
+    expectOk(await otherStaff.query(api.users.current, {}));
     expect(identityOf(otherStaff)).toBe(identity);
-    const seen = await otherStaff.query(api.admin.tokens.list, {});
+    const seen = expectOk(
+      await otherStaff.query(api.admin.tokens.list, {}),
+    );
     expect(seen.map((token) => token.id)).toContain(created.id);
   });
 });
@@ -132,7 +137,9 @@ test("get_tables answers over authenticated tools/call with seeded occupancy", a
     expect(limited.map((table) => table.number)).toEqual([1, 2, 3]);
 
     // Retiring a free table lets the active-only filter exclude it.
-    await staff.mutation(api.tables.remove, { id: BigInt(free!.id) });
+    expectOk(
+      await staff.mutation(api.tables.remove, { id: BigInt(free!.id) }),
+    );
     const activeOnly = tablesFrom(
       (await (await callTables(backend, readToken.token, { activeOnly: true }, 3)).json()) as JsonRpcResponse,
     );
@@ -168,7 +175,9 @@ test("owner tokens: create reveals the secret once, list hides it, revoke ends a
     expect(created.scopes).toEqual(["read"]);
 
     // The descriptor is listable, but the secret is never retrievable again.
-    const listed = await staff.query(api.admin.tokens.list, {});
+    const listed = expectOk(
+      await staff.query(api.admin.tokens.list, {}),
+    );
     const descriptor = listed.find((token) => token.id === created.id);
     expect(descriptor).toMatchObject({ name: "Codex", scopes: ["read"] });
     expect(descriptor).not.toHaveProperty("token");
@@ -177,12 +186,16 @@ test("owner tokens: create reveals the secret once, list hides it, revoke ends a
     expect((await callTables(backend, created.token, {})).status).toBe(200);
 
     // Update renames and rescopes in place.
-    await staff.mutation(api.admin.tokens.update, {
-      id: created.id,
-      name: "Codex (renamed)",
-      scopes: ["read", "operate"],
-    });
-    const afterUpdate = (await staff.query(api.admin.tokens.list, {})).find(
+    expectOk(
+      await staff.mutation(api.admin.tokens.update, {
+        id: created.id,
+        name: "Codex (renamed)",
+        scopes: ["read", "operate"],
+      }),
+    );
+    const afterUpdate = expectOk(
+      await staff.query(api.admin.tokens.list, {}),
+    ).find(
       (token) => token.id === created.id,
     );
     expect(afterUpdate).toMatchObject({
@@ -191,10 +204,14 @@ test("owner tokens: create reveals the secret once, list hides it, revoke ends a
     });
 
     // Revocation takes effect on the very next call.
-    await staff.mutation(api.admin.tokens.revoke, { id: created.id });
+    expectOk(
+      await staff.mutation(api.admin.tokens.revoke, { id: created.id }),
+    );
     expect((await callTables(backend, created.token, {}, 9)).status).toBe(401);
     expect(
-      (await staff.query(api.admin.tokens.list, {})).some(
+      expectOk(
+        await staff.query(api.admin.tokens.list, {}),
+      ).some(
         (token) => token.id === created.id,
       ),
     ).toBe(false);

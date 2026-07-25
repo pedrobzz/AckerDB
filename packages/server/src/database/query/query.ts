@@ -7,6 +7,8 @@ import {
   observeStatement,
   type DbStatementObserver,
 } from "../statement-observation.ts";
+import { assertMutationAccess } from "../../runtime/invocation-state.ts";
+import { markTransactionPoisoned } from "../../runtime/transaction-context.ts";
 import { recordPredicateDependencies } from "./dependencies.ts";
 import {
   compilePredicates,
@@ -305,6 +307,7 @@ class TableQueryRuntime {
     limit = -1,
     cursor?: { readonly sql: string; readonly params: readonly unknown[] },
   ): Record<string, unknown>[] {
+    assertMutationAccess();
     this.recordRead();
     const { sql, params } = this.statement(limit, cursor);
     const raws = this.engine
@@ -314,6 +317,7 @@ class TableQueryRuntime {
   }
 
   private *streamRows(): IterableIterator<Record<string, unknown>> {
+    assertMutationAccess();
     this.recordRead();
     const { sql, params } = this.statement(-1);
     const prepared = this.conn.prepare(sql);
@@ -327,7 +331,6 @@ class TableQueryRuntime {
   }
 
   async collect(): Promise<Record<string, unknown>[]> {
-    if (this.observer === undefined) return this.rowsArray();
     return await observeStatement(
       this.observer,
       "read",
@@ -342,7 +345,6 @@ class TableQueryRuntime {
     if (!Number.isSafeInteger(count) || count < 0) {
       throw new ValidationError(`${this.plan.displayName}.query.take: count must be a non-negative safe integer`);
     }
-    if (this.observer === undefined) return this.rowsArray(count);
     return await observeStatement(
       this.observer,
       "read",
@@ -354,7 +356,6 @@ class TableQueryRuntime {
   }
 
   async first(): Promise<Record<string, unknown> | null> {
-    if (this.observer === undefined) return this.rowsArray(1)[0] ?? null;
     return await observeStatement(
       this.observer,
       "read",
@@ -374,7 +375,6 @@ class TableQueryRuntime {
   }
 
   async unique(): Promise<Record<string, unknown> | null> {
-    if (this.observer === undefined) return this.uniqueRow();
     return await observeStatement(
       this.observer,
       "read",
@@ -386,6 +386,7 @@ class TableQueryRuntime {
   }
 
   private countRows(): number {
+    assertMutationAccess();
     this.recordRead();
     const predicate = compilePredicates(
       this.state.predicates,
@@ -400,7 +401,6 @@ class TableQueryRuntime {
   }
 
   async count(): Promise<number> {
-    if (this.observer === undefined) return this.countRows();
     return await observeStatement(
       this.observer,
       "read",
@@ -412,11 +412,7 @@ class TableQueryRuntime {
   }
 
   async *iter(): AsyncGenerator<Record<string, unknown>> {
-    if (this.observer === undefined) {
-      yield* this.streamRows();
-      return;
-    }
-    const startedAt = performance.now();
+    const startedAt = this.observer === undefined ? 0 : performance.now();
     let rowCount = 0;
     let failed = false;
     try {
@@ -426,16 +422,19 @@ class TableQueryRuntime {
       }
     } catch (error) {
       failed = true;
+      markTransactionPoisoned(error);
       throw error;
     } finally {
-      deliverObservation(this.observer, {
-        kind: "read",
-        table: this.plan.displayName,
-        statement: "iter",
-        outcome: failed ? "failed" : "ok",
-        durationMs: Math.max(0, performance.now() - startedAt),
-        ...(failed ? {} : { rowCount }),
-      });
+      if (this.observer !== undefined) {
+        deliverObservation(this.observer, {
+          kind: "read",
+          table: this.plan.displayName,
+          statement: "iter",
+          outcome: failed ? "failed" : "ok",
+          durationMs: Math.max(0, performance.now() - startedAt),
+          ...(failed ? {} : { rowCount }),
+        });
+      }
     }
   }
 
@@ -453,7 +452,6 @@ class TableQueryRuntime {
     if (options.cursor !== undefined && options.cursor !== null && typeof options.cursor !== "string") {
       throw new ValidationError(`${this.plan.displayName}.query.paginate: cursor must be a string or null`);
     }
-    if (this.observer === undefined) return this.page(options);
     return await observeStatement(
       this.observer,
       "read",

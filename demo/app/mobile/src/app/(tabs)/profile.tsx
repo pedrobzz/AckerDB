@@ -22,13 +22,18 @@ export default function ProfileScreen() {
   const profile =
     profileQuery.status === "success"
       ? profileQuery.data
-      : profileQuery.status === "error"
-        ? profileQuery.staleData
+      : profileQuery.status === "unavailable"
+        ? profileQuery.data
         : undefined;
   if (profile === undefined && profileQuery.status === "pending")
     return <LoadingState label="Loading your profile…" />;
-  if (profile === undefined && profileQuery.status === "error")
-    return <ErrorState message={profileQuery.error.message} />;
+  if (
+    profile === undefined &&
+    (profileQuery.status === "rejected" ||
+      profileQuery.status === "unavailable")
+  ) {
+    return <ErrorState message={errorMessage(profileQuery.error)} />;
+  }
   if (profile === undefined)
     return <LoadingState label="Loading your profile…" />;
   if (profile === null)

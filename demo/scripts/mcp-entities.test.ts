@@ -6,6 +6,7 @@ import {
   structuredOf,
   withBackend,
 } from "./mcp-harness.ts";
+import { expectOk } from "./result.ts";
 
 // Each test boots the real backend once (withBackend) against the seeded world
 // from functions/setup.ts: 4 menu categories, 6 menu items, 12 tables, 6 guests
@@ -102,20 +103,22 @@ test("get_menu_items exposes prices and category / active filters", async () => 
     expect(await itemsOf({ limit: 2 })).toHaveLength(2);
 
     // Retiring an item lets active-only exclude it, while the default keeps it.
-    const catalog = await staff.query(api.menu.catalog, {});
+    const catalog = expectOk(await staff.query(api.menu.catalog, {}));
     const focaccia = catalog
       .flatMap((c) => c.items)
       .find((i) => i.name === "Rosemary Focaccia")!;
-    await staff.mutation(api.menu.updateItem, {
-      id: focaccia.id,
-      categoryId: focaccia.categoryId,
-      name: focaccia.name,
-      description: focaccia.description,
-      image: focaccia.image,
-      priceCents: focaccia.priceCents,
-      sortOrder: focaccia.sortOrder,
-      active: false,
-    });
+    expectOk(
+      await staff.mutation(api.menu.updateItem, {
+        id: focaccia.id,
+        categoryId: focaccia.categoryId,
+        name: focaccia.name,
+        description: focaccia.description,
+        image: focaccia.image,
+        priceCents: focaccia.priceCents,
+        sortOrder: focaccia.sortOrder,
+        active: false,
+      }),
+    );
     const activeItems = await itemsOf({ activeOnly: true });
     expect(activeItems.some((i) => i.name === "Rosemary Focaccia")).toBe(false);
     expect(activeItems).toHaveLength(5);

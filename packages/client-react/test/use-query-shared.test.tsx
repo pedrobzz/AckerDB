@@ -165,9 +165,13 @@ function describeState(state: DbzzQueryState<string[]>): string {
     case "pending":
       return "pending";
     case "success":
-      return `${state.stale ? "stale" : "fresh"}:${state.data.join(",")}`;
-    case "error":
-      return `error:${state.error.code}:${state.staleData ? state.staleData.join(",") : "-"}`;
+      return `fresh:${state.data.join(",")}`;
+    case "rejected":
+      return `error:${state.error.code}:-`;
+    case "unavailable":
+      return state.data === undefined
+        ? `error:${state.error.code}:-`
+        : `stale:${state.data.join(",")}`;
   }
 }
 

@@ -5,6 +5,7 @@ import {
   decode,
   encode,
   parseClientMessage,
+  type ApplicationError,
   type ClientMessage,
   type ServerMessage,
   type SubscriptionCursor,
@@ -161,7 +162,12 @@ function createHarness(): Harness {
 }
 
 type TodoArgs = { readonly list: bigint };
-const todos = { $ref: "todos.list" } as QueryRef<TodoArgs, string[]>;
+type TodoNotFound = ApplicationError<
+  "todo.not-found",
+  { readonly list: bigint },
+  404
+>;
+const todos = { $ref: "todos.list" } as QueryRef<TodoArgs, string[], TodoNotFound>;
 
 function cursor(commitVersion: bigint): SubscriptionCursor {
   return {
@@ -172,18 +178,24 @@ function cursor(commitVersion: bigint): SubscriptionCursor {
   };
 }
 
-let observed: DbzzQueryState<string[]> | undefined;
+let observed: DbzzQueryState<string[], TodoNotFound> | undefined;
 
-function describeState(state: DbzzQueryState<string[]>): string {
+function describeState(state: DbzzQueryState<string[], TodoNotFound>): string {
   switch (state.status) {
     case "disabled":
       return "disabled";
     case "pending":
       return "pending";
     case "success":
-      return `${state.stale ? "stale" : "fresh"}:${state.data.join(",")}`;
-    case "error":
-      return `error:${state.error.code}:${state.staleData ? state.staleData.join(",") : "-"}`;
+      return `fresh:${state.data.join(",")}`;
+    case "application-error":
+      return `application-error:${state.error.code}`;
+    case "rejected":
+      return `error:${state.error.code}:-`;
+    case "unavailable":
+      return state.data === undefined
+        ? `error:${state.error.code}:-`
+        : `stale:${state.data.join(",")}`;
   }
 }
 
@@ -283,9 +295,9 @@ describe("useQuery state transitions", () => {
     });
     expect(container.textContent).toBe("stale:one");
     const stale = observed!;
-    expect(stale.status).toBe("success");
+    expect(stale.status).toBe("unavailable");
     // Retained rows are the same authoritative array, only the marker moved.
-    expect((stale as Extract<typeof stale, { status: "success" }>).data).toBe(
+    expect((stale as Extract<typeof stale, { status: "unavailable" }>).data).toBe(
       (fresh as Extract<typeof fresh, { status: "success" }>).data,
     );
 
@@ -360,7 +372,7 @@ describe("useQuery state transitions", () => {
     await render(root, <></>);
   });
 
-  test("a subscription error retains the last rows with the exact error value", async () => {
+  test("a framework rejection clears prior rows and preserves the exact error", async () => {
     const harness = createHarness();
     const container = mountPoint();
     const root = createRoot(container);
@@ -372,11 +384,104 @@ describe("useQuery state transitions", () => {
       id,
       outcome: { code: "unauthorized", retryable: false, message: "access denied" },
     });
-    expect(container.textContent).toBe("error:unauthorized:one");
+    expect(container.textContent).toBe("error:unauthorized:-");
     const state = observed!;
-    if (state.status !== "error") throw new Error("expected an error state");
+    if (state.status !== "rejected") throw new Error("expected a rejected state");
     expect(state.error.message).toBe("access denied");
     expect(state.error.outcome).toMatchObject({ code: "unauthorized", retryable: false });
+    await render(root, <></>);
+  });
+
+  test("an application error clears prior data, narrows its body, and can recover", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const id = await bootToSuccess(harness, root, container);
+
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id,
+      transition: {
+        kind: "application-error",
+        from: cursor(1n),
+        to: cursor(2n),
+        error: {
+          kind: "application",
+          code: "todo.not-found",
+          body: { list: 1n },
+          status: 404,
+        },
+      },
+    });
+    expect(container.textContent).toBe("application-error:todo.not-found");
+    const failed = observed!;
+    if (failed.status !== "application-error") {
+      throw new Error("expected an application-error state");
+    }
+    expect(failed.data).toBeUndefined();
+    expect(failed.error.body.list).toBe(1n);
+
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id,
+      transition: { kind: "reset", from: null, to: cursor(3n), value: ["restored"] },
+    });
+    expect(container.textContent).toBe("fresh:restored");
+    await render(root, <></>);
+  });
+
+  test("disconnect hides an application error until cursor confirmation restores it", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const id = await bootToSuccess(harness, root, container);
+
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id,
+      transition: {
+        kind: "application-error",
+        from: cursor(1n),
+        to: cursor(2n),
+        error: {
+          kind: "application",
+          code: "todo.not-found",
+          body: { list: 1n },
+          status: 404,
+        },
+      },
+    });
+    expect(container.textContent).toBe("application-error:todo.not-found");
+
+    await act(async () => {
+      harness.live().close();
+    });
+    expect(container.textContent).toBe("error:unavailable:-");
+    const disconnected = observed!;
+    if (disconnected.status !== "unavailable") {
+      throw new Error("expected unavailable application-error state");
+    }
+    expect(disconnected).toMatchObject({
+      data: undefined,
+      stale: false,
+      error: { code: "unavailable" },
+    });
+
+    await act(async () => {
+      harness.clock.advance(200);
+    });
+    await ready(harness);
+    expect(harness.live().framesOf("sub")[0]!.cursor).toEqual(cursor(2n));
+    await receive(harness, {
+      v: PROTOCOL_VERSION,
+      t: "transition",
+      id,
+      transition: { kind: "resume", from: cursor(2n), to: cursor(2n) },
+    });
+    expect(container.textContent).toBe("application-error:todo.not-found");
     await render(root, <></>);
   });
 
@@ -399,7 +504,7 @@ describe("useQuery state transitions", () => {
         message: "subscription rejected",
       },
     });
-    expect(container.textContent).toBe("error:overloaded:one");
+    expect(container.textContent).toBe("stale:one");
 
     const deadline = Date.now() + 2_000;
     while (harness.subFrames("sub").length < 2 && Date.now() < deadline) {
@@ -456,7 +561,7 @@ describe("useQuery state transitions", () => {
     await render(root, <></>);
   });
 
-  test("a revoked transition becomes an error with retained rows, and a later reset recovers", async () => {
+  test("a revoked transition clears prior rows, and a later reset recovers", async () => {
     const harness = createHarness();
     const container = mountPoint();
     const root = createRoot(container);
@@ -473,16 +578,16 @@ describe("useQuery state transitions", () => {
         outcome: { code: "unauthorized", retryable: false, message: "revoked" },
       },
     });
-    expect(container.textContent).toBe("error:unauthorized:one");
+    expect(container.textContent).toBe("error:unauthorized:-");
 
-    // A checkpoint cannot clear the revocation: the held rows predate it.
+    // A checkpoint cannot clear the revocation.
     await receive(harness, {
       v: PROTOCOL_VERSION,
       t: "transition",
       id,
       transition: { kind: "checkpoint", from: cursor(2n), to: cursor(3n) },
     });
-    expect(container.textContent).toBe("error:unauthorized:one");
+    expect(container.textContent).toBe("error:unauthorized:-");
 
     await receive(harness, {
       v: PROTOCOL_VERSION,
@@ -718,7 +823,7 @@ describe("useQuery state transitions", () => {
     function BadArgs(): ReactNode {
       const state = useQuery(numbers, { score: Number.NaN });
       captured = state;
-      return <span>{state.status === "error" ? `error:${state.error.code}` : state.status}</span>;
+      return <span>{state.status === "rejected" ? `error:${state.error.code}` : state.status}</span>;
     }
 
     await render(
@@ -728,7 +833,7 @@ describe("useQuery state transitions", () => {
       </DbzzProvider>,
     );
     expect(container.textContent).toBe("error:validation");
-    if (captured?.status !== "error") throw new Error("expected an error state");
+    if (captured?.status !== "rejected") throw new Error("expected a rejected state");
     expect(captured.error.message).toBe("cannot encode non-finite number NaN");
     expect(captured.error.outcome).toMatchObject({ retryable: false, resource: "subscription" });
     expect(harness.subFrames("sub")).toHaveLength(0);

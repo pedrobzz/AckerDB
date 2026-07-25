@@ -8,6 +8,7 @@ import type {
   SseRef,
 } from "@dbzz/client";
 import { useProcedure, type DbzzCallOptions, type DbzzProcedure } from "@dbzz/client-react";
+import type { DbzzClientError } from "@dbzz/client";
 import type { ReactNode } from "react";
 
 // Generated references as codegen would emit them for one procedure address.
@@ -57,11 +58,16 @@ function Inference(): ReactNode {
 
   void (async () => {
     const result = await run({ prefix: "a" });
-    const count: number = result.count;
+    if (!result.ok) {
+      const error: DbzzClientError = result.error;
+      void error;
+      return;
+    }
+    const count: number = result.data.count;
     // @ts-expect-error the result carries no other fields
-    result.total;
+    result.data.total;
     // @ts-expect-error the result field types are exact
-    const text: string = result.count;
+    const text: string = result.data.count;
     void count;
     void text;
   })();

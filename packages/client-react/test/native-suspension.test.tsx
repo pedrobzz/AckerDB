@@ -20,6 +20,7 @@ import {
   type ServerMessage,
 } from "@dbzz/core";
 import type {
+  ClientResult,
   DbzzClientClock,
   DbzzLiveEvent,
   DbzzWebSocket,
@@ -233,14 +234,17 @@ interface Settlements {
   readonly errors: unknown[];
 }
 
-function track(promise: Promise<bigint>, into: Settlements): void {
-  promise.then(
-    (value) => into.values.push(value),
-    (error) => into.errors.push(error),
-  );
+function track(promise: Promise<ClientResult<bigint>>, into: Settlements): void {
+  promise.then((result) => {
+    if (result.ok) into.values.push(result.data);
+    else into.errors.push(result.error);
+  });
 }
 
-const captured: { send?: (args: TodoArgs) => Promise<bigint>; phase?: string } = {};
+const captured: {
+  send?: (args: TodoArgs) => Promise<ClientResult<bigint>>;
+  phase?: string;
+} = {};
 
 function MutationProbe(): ReactNode {
   captured.send = useMutation(todosAdd);

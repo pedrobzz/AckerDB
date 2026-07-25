@@ -81,7 +81,7 @@ const writeNote = typedMcpTool({
       if (args.body === "reject") throw new DbzzError("conflict", "note rejected");
       if (args.body === "secret-crash") throw new Error("sensitive implementation detail");
       const rows = await listNotes(tx, {});
-      return { content: [{ type: "text", text: `${ctx.auth.kind}:${rows.length}` }] };
+      return { content: [{ type: "text", text: `${ctx.auth.kind}:${rows.data.length}` }] };
     });
   },
 });

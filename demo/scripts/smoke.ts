@@ -1,6 +1,7 @@
-import { DbzzClient, DbzzClientError, type DbzzLiveEvent } from "@dbzz/client";
+import { DbzzClient, type DbzzLiveEvent } from "@dbzz/client";
 import { api } from "@demo/dbzz-codegen/api";
 import type { OrderEvent } from "@demo/dbzz-codegen/types";
+import { expectErrorCode, expectOk } from "./result.ts";
 
 const url = process.env.DBZZ_URL ?? "http://127.0.0.1:3212";
 const staffToken = process.env.DBZZ_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
@@ -15,16 +16,6 @@ function client(token?: string): DbzzClient {
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
-}
-
-async function expectCode(work: Promise<unknown>, code: string): Promise<void> {
-  try {
-    await work;
-  } catch (error) {
-    if (error instanceof DbzzClientError && error.code === code) return;
-    throw error;
-  }
-  throw new Error(`Expected ${code}`);
 }
 
 function deferred<T>() {
@@ -44,22 +35,27 @@ let secondGuest: DbzzClient | undefined;
 let unsubscribe: (() => void) | undefined;
 
 try {
-  await expectCode(
+  await expectErrorCode(
     anonymous.query(api.dashboard.overview, {}),
     "unauthenticated",
   );
-  await staff.mutation(api.setup.initialize, {});
+  expectOk(await staff.mutation(api.setup.initialize, {}));
 
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const login = await anonymous.procedure(api.auth.login, {
-    name: "Smoke Guest",
-    email: `smoke-${suffix}@example.com`,
-  });
+  const login = expectOk(
+    await anonymous.procedure(api.auth.login, {
+      name: "Smoke Guest",
+      email: `smoke-${suffix}@example.com`,
+    }),
+  );
   guest = client(login.token);
-  await guest.mutation(api.users.ensureCurrent, {});
-  await expectCode(guest.query(api.dashboard.overview, {}), "unauthorized");
+  expectOk(await guest.mutation(api.users.ensureCurrent, {}));
+  await expectErrorCode(
+    guest.query(api.dashboard.overview, {}),
+    "unauthorized",
+  );
 
-  const profile = await guest.query(api.users.current, {});
+  const profile = expectOk(await guest.query(api.users.current, {}));
   assert(profile !== null, "guest profile was not created");
   const authentication = guest.currentAuthentication;
   assert(
@@ -67,27 +63,33 @@ try {
     "guest Identity was not established",
   );
 
-  const tables = await guest.query(api.tables.available, {});
+  const tables = expectOk(await guest.query(api.tables.available, {}));
   const table = tables.find((candidate) => candidate.available);
   assert(table !== undefined, "seed did not leave an available table");
-  const orderId = await guest.mutation(api.orders.sit, { tableId: table.id });
+  const orderId = expectOk(
+    await guest.mutation(api.orders.sit, { tableId: table.id }),
+  );
 
-  const catalog = await guest.query(api.menu.catalog, {});
+  const catalog = expectOk(await guest.query(api.menu.catalog, {}));
   const menuItem = catalog.flatMap((category) => category.items)[0];
   assert(menuItem !== undefined, "menu seed is empty");
-  const [orderItemId] = await guest.mutation(api.orders.addItems, {
-    orderId,
-    items: [{ menuItemId: menuItem.id, quantity: 1, note: "Smoke flow" }],
-  });
+  const [orderItemId] = expectOk(
+    await guest.mutation(api.orders.addItems, {
+      orderId,
+      items: [{ menuItemId: menuItem.id, quantity: 1, note: "Smoke flow" }],
+    }),
+  );
   assert(orderItemId !== undefined, "order item was not created");
 
-  const secondLogin = await anonymous.procedure(api.auth.login, {
-    name: "Second Smoke Guest",
-    email: `smoke-second-${suffix}@example.com`,
-  });
+  const secondLogin = expectOk(
+    await anonymous.procedure(api.auth.login, {
+      name: "Second Smoke Guest",
+      email: `smoke-second-${suffix}@example.com`,
+    }),
+  );
   secondGuest = client(secondLogin.token);
-  await secondGuest.mutation(api.users.ensureCurrent, {});
-  await expectCode(
+  expectOk(await secondGuest.mutation(api.users.ensureCurrent, {}));
+  await expectErrorCode(
     secondGuest.mutation(api.orders.addItems, {
       orderId,
       items: [{ menuItemId: menuItem.id, quantity: 1, note: null }],
@@ -110,13 +112,15 @@ try {
   );
   await reset.promise;
 
-  const queue = await staff.query(api.kitchen.queue, {});
+  const queue = expectOk(await staff.query(api.kitchen.queue, {}));
   assert(
     queue.some((item) => item.id === orderItemId),
     "kitchen did not receive the order item",
   );
   assert(
-    (await staff.mutation(api.kitchen.advance, { orderItemId })) ===
+    expectOk(
+      await staff.mutation(api.kitchen.advance, { orderItemId }),
+    ) ===
       "PREPARING",
     "invalid first kitchen transition",
   );
@@ -126,22 +130,26 @@ try {
     "guest did not receive the realtime kitchen event",
   );
   assert(
-    (await staff.mutation(api.kitchen.advance, { orderItemId })) === "PREPARED",
+    expectOk(
+      await staff.mutation(api.kitchen.advance, { orderItemId }),
+    ) === "PREPARED",
     "invalid second kitchen transition",
   );
   assert(
-    (await staff.mutation(api.kitchen.advance, { orderItemId })) === "SERVED",
+    expectOk(
+      await staff.mutation(api.kitchen.advance, { orderItemId }),
+    ) === "SERVED",
     "invalid final kitchen transition",
   );
 
-  const ready = await guest.query(api.orders.current, {});
+  const ready = expectOk(await guest.query(api.orders.current, {}));
   assert(ready?.readyToPay === true, "served order did not become payable");
-  const paid = await guest.mutation(api.orders.pay, { orderId });
+  const paid = expectOk(await guest.mutation(api.orders.pay, { orderId }));
   assert(
     paid.totalCents === menuItem.priceCents,
     "payment total did not use the price snapshot",
   );
-  const history = await guest.query(api.orders.history, {});
+  const history = expectOk(await guest.query(api.orders.history, {}));
   assert(
     history.closed.some(
       (order) => order.id === orderId && order.status === "PAID",
@@ -149,25 +157,37 @@ try {
     "paid order was not persisted in history",
   );
 
-  const secondTables = await secondGuest.query(api.tables.available, {});
+  const secondTables = expectOk(
+    await secondGuest.query(api.tables.available, {}),
+  );
   const released = secondTables.find((candidate) => candidate.id === table.id);
   assert(released?.available === true, "payment did not release the table");
-  const cancelledOrderId = await secondGuest.mutation(api.orders.sit, {
-    tableId: table.id,
-  });
-  const [cancelledItemId] = await secondGuest.mutation(api.orders.addItems, {
-    orderId: cancelledOrderId,
-    items: [{ menuItemId: menuItem.id, quantity: 1, note: null }],
-  });
+  const cancelledOrderId = expectOk(
+    await secondGuest.mutation(api.orders.sit, {
+      tableId: table.id,
+    }),
+  );
+  const [cancelledItemId] = expectOk(
+    await secondGuest.mutation(api.orders.addItems, {
+      orderId: cancelledOrderId,
+      items: [{ menuItemId: menuItem.id, quantity: 1, note: null }],
+    }),
+  );
   assert(cancelledItemId !== undefined, "cancel flow item was not created");
-  await secondGuest.mutation(api.orders.cancelItem, {
-    orderId: cancelledOrderId,
-    orderItemId: cancelledItemId,
-  });
-  await secondGuest.mutation(api.orders.closeCancelled, {
-    orderId: cancelledOrderId,
-  });
-  const cancelledHistory = await secondGuest.query(api.orders.history, {});
+  expectOk(
+    await secondGuest.mutation(api.orders.cancelItem, {
+      orderId: cancelledOrderId,
+      orderItemId: cancelledItemId,
+    }),
+  );
+  expectOk(
+    await secondGuest.mutation(api.orders.closeCancelled, {
+      orderId: cancelledOrderId,
+    }),
+  );
+  const cancelledHistory = expectOk(
+    await secondGuest.query(api.orders.history, {}),
+  );
   assert(
     cancelledHistory.closed.some(
       (order) => order.id === cancelledOrderId && order.status === "CANCELLED",

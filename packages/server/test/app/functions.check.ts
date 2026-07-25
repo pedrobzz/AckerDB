@@ -3,6 +3,7 @@
  * calls with the context lattice enforcing the calling rules. Never
  * executed — `bun run typecheck` failing is the test.
  */
+import { Err, Failure, Status } from "@dbzz/core";
 import {
   v,
   defineSchema,
@@ -29,6 +30,127 @@ type S = typeof schema;
 const typedQuery = query as QueryBuilder<S>;
 const typedMutation = mutation as MutationBuilder<S>;
 const typedProcedure = procedure as ProcedureBuilder<S>;
+
+const nestedProfileRequired = () =>
+  Err("guest.profile-required", {}, Status.NotFound);
+
+// `returns` constrains only successful values; declared application errors
+// remain valid branches of an async handler.
+typedProcedure({
+  args: { found: v.boolean() },
+  returns: v.object({ value: v.string() }),
+  errors: {
+    "value.not-found": {
+      body: v.object({}),
+      status: Status.NotFound,
+    },
+  },
+  access: "public",
+  handler: async (_ctx, args) => {
+    if (!args.found) {
+      return Err("value.not-found", {}, Status.NotFound);
+    }
+    return { value: "found" };
+  },
+});
+
+typedProcedure({
+  args: {},
+  // @ts-expect-error handler success must match the returns validator
+  returns: v.string(),
+  access: "public",
+  handler: () => 123,
+});
+
+typedProcedure({
+  args: {},
+  // @ts-expect-error every returned Err code must be declared
+  errors: {},
+  access: "public",
+  handler: () => Err("undeclared", {}, Status.BadRequest),
+});
+
+typedProcedure({
+  args: {},
+  errors: {
+    // @ts-expect-error every declared error must remain reachable from the handler
+    unused: { body: v.object({}), status: Status.BadRequest },
+  },
+  access: "public",
+  handler: () => "success",
+});
+
+typedProcedure({
+  args: {},
+  errors: {
+    invalid: {
+      // @ts-expect-error a returned error body must satisfy its declaration
+      body: v.object({ expected: v.string() }),
+      status: Status.BadRequest,
+    },
+  },
+  access: "public",
+  handler: () => Err("invalid", { actual: true }, Status.BadRequest),
+});
+
+typedProcedure({
+  args: {},
+  access: "public",
+  // @ts-expect-error registered handlers cannot return non-application Failure Results
+  handler: () => Failure(new Error("unexpected")),
+});
+
+typedMutation({
+  args: {},
+  // @ts-expect-error errors returned by nested helpers must also be declared
+  errors: {},
+  access: "public",
+  handler: () => nestedProfileRequired(),
+});
+
+const chargePayment = typedMutation({
+  args: { available: v.boolean() },
+  errors: {
+    "stripe.timeout": {
+      body: v.object({ retryAfterMs: v.int() }),
+      status: Status.ServiceUnavailable,
+    },
+  },
+  access: "public",
+  handler: (_ctx, args) =>
+    args.available
+      ? { chargeId: "charge-1" }
+      : Err(
+          "stripe.timeout",
+          { retryAfterMs: 500 },
+          Status.ServiceUnavailable,
+        ),
+});
+
+typedMutation({
+  args: {},
+  errors: {
+    "payment.unavailable": {
+      body: v.object({ retryAfterMs: v.int() }),
+      status: Status.ServiceUnavailable,
+    },
+  },
+  access: "public",
+  handler: async (ctx) => {
+    const payment = await chargePayment(ctx, { available: false });
+    if (!payment.ok) {
+      return payment.mapErr({
+        "stripe.timeout": (error) =>
+          Err(
+            "payment.unavailable",
+            { retryAfterMs: error.body.retryAfterMs },
+            Status.ServiceUnavailable,
+          ),
+      });
+    }
+    return payment.data;
+  },
+});
 
 type QueryPluginCapabilities = {
   readonly cache: {
@@ -106,7 +228,7 @@ const bump = typedMutation({
   handler: async (ctx, args) => {
     // a mutation calls a query with its own ctx: read/write ⊇ read-only
     const existing = await getCounter(ctx, { key: args.key });
-    return ctx.db.counters.upsert({ key: args.key }, { value: (existing?.value ?? 0) + 1 });
+    return ctx.db.counters.upsert({ key: args.key }, { value: (existing.data?.value ?? 0) + 1 });
   },
 });
 
@@ -119,11 +241,11 @@ export const _pipeline = typedProcedure({
     const value = await ctx.tx(async (tx) => {
       await bump(tx, { key: args.key });
       const row = await getCounter(tx, { key: args.key });
-      return row!.value;
+      return row.data!.value;
     });
     // @ts-expect-error refs/addresses are for clients; the old runQuery is gone
     void ctx.runQuery;
-    // @ts-expect-error procedures cannot be called in-process
+    // Registered procedures compose in-process with the same Result boundary.
     void _pipeline(ctx, { key: args.key });
     return value;
   },
@@ -161,7 +283,7 @@ export const _ticker = typedSse({
   access: "public",
   handler: async function* (ctx, args) {
     const row = await ctx.tx((tx) => getCounter(tx, { key: args.key }));
-    yield { key: args.key, value: row?.value ?? 0 };
+    yield { key: args.key, value: row.data?.value ?? 0 };
   },
 });
 

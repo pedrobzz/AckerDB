@@ -311,6 +311,13 @@ async function settled(): Promise<void> {
   await Promise.resolve();
 }
 
+function mustOk<Data>(
+  result: { readonly ok: true; readonly data: Data } | { readonly ok: false; readonly error: unknown },
+): Data {
+  if (!result.ok) throw result.error;
+  return result.data;
+}
+
 describe("mutation convergence across suspension", () => {
   test("boundary before send: a mutation issued while backgrounded is sent exactly once, on the recovery connection", async () => {
     const { client, sockets, port } = harness();
@@ -321,7 +328,8 @@ describe("mutation convergence across suspension", () => {
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
       settlements++;
-      return value;
+      if (!value.ok) throw value.error;
+      return value.data;
     });
     await settled();
     // Nothing was sent and nothing dialed: the identity exists only locally.
@@ -349,7 +357,8 @@ describe("mutation convergence across suspension", () => {
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
       settlements++;
-      return value;
+      if (!value.ok) throw value.error;
+      return value.data;
     });
     const issued = lastFrame(first, "m");
 
@@ -390,7 +399,8 @@ describe("mutation convergence across suspension", () => {
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
       settlements++;
-      return value;
+      if (!value.ok) throw value.error;
+      return value.data;
     });
     const issued = lastFrame(first, "m");
     // The server committed and receipted; the subscription has not yet
@@ -442,7 +452,8 @@ describe("mutation convergence across suspension", () => {
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
       settlements++;
-      return value;
+      if (!value.ok) throw value.error;
+      return value.data;
     });
     const issued = lastFrame(first, "m");
     first.receive(
@@ -473,7 +484,7 @@ describe("mutation convergence across suspension", () => {
     const first = sockets[0]!;
     welcome(client, first);
 
-    const result = client.mutation("todos.add", { text: "milk" });
+    const result = client.mutation("todos.add", { text: "milk" }).then(mustOk);
     const issued = lastFrame(first, "m");
     first.receive(mutationOk(issued, 7n));
     expect(await result).toBe(7n);
@@ -502,7 +513,8 @@ describe("mutation convergence across suspension", () => {
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
       settlements++;
-      return value;
+      if (!value.ok) throw value.error;
+      return value.data;
     });
     const issued = lastFrame(first, "m");
 
@@ -564,7 +576,8 @@ describe("mutation convergence across suspension", () => {
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
       settlements++;
-      return value;
+      if (!value.ok) throw value.error;
+      return value.data;
     });
     const issued = lastFrame(first, "m");
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
@@ -600,12 +613,15 @@ describe("mutation convergence across suspension", () => {
     client.connect();
     const first = sockets[0]!;
     welcome(client, first);
-    const result = client.mutation("todos.add", { text: "milk" }).catch((error) => error);
+    const result = client.mutation("todos.add", { text: "milk" });
     const issued = lastFrame(first, "m");
 
     port.suspend();
     clock.advance(10_000);
-    const rejection = (await result) as DbzzClientError;
+    const rejectionResult = await result;
+    expect(rejectionResult.ok).toBe(false);
+    if (rejectionResult.ok) throw new Error("expected an indeterminate mutation");
+    const rejection = rejectionResult.error;
     expect(rejection).toBeInstanceOf(DbzzClientError);
     expect(rejection.code).toBe("indeterminate");
     expect(rejection.resource).toBe("idempotency");
@@ -622,12 +638,15 @@ describe("mutation convergence across suspension", () => {
     const { client, sockets, port } = harness();
     client.connect();
     welcome(client, sockets[0]!);
-    const sent = client.mutation("todos.add", { text: "milk" }).catch((error) => error);
+    const sent = client.mutation("todos.add", { text: "milk" });
     port.suspend();
-    const unsent = client.mutation("todos.add", { text: "bread" }).catch((error) => error);
+    const unsent = client.mutation("todos.add", { text: "bread" });
     client.close();
-    expect(((await sent) as DbzzClientError).code).toBe("indeterminate");
-    expect(((await unsent) as DbzzClientError).code).toBe("unavailable");
+    const sentResult = await sent;
+    const unsentResult = await unsent;
+    if (sentResult.ok || unsentResult.ok) throw new Error("expected both mutations to fail");
+    expect(sentResult.error.code).toBe("indeterminate");
+    expect(unsentResult.error.code).toBe("unavailable");
   });
 
   test("a server Retry-After deadline holds recovery for both families, then one replay and one fresh reset land", async () => {
@@ -643,7 +662,8 @@ describe("mutation convergence across suspension", () => {
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
       settlements++;
-      return value;
+      if (!value.ok) throw value.error;
+      return value.data;
     });
     const issued = lastFrame(first, "m");
     first.receive({
@@ -871,7 +891,8 @@ describe("event convergence across suspension", () => {
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
       settlements++;
-      return value;
+      if (!value.ok) throw value.error;
+      return value.data;
     });
     const issued = lastFrame(first, "m");
 
@@ -1187,7 +1208,7 @@ function proxiedMutations(proxy: FrameProxy, body: string): Extract<ClientMessag
 }
 
 async function committedRows(app: RealApp, channelId: bigint, body: string): Promise<MessageRow[]> {
-  const rows = (await app.observer.query("messages.list", { channelId })) as MessageRow[];
+  const rows = mustOk(await app.observer.query("messages.list", { channelId })) as MessageRow[];
   return rows.filter((row) => row.body === body);
 }
 
@@ -1211,7 +1232,8 @@ describe("mutation boundaries against a real dbzz server", () => {
       .mutation("messages.send", { channelId: 10n, body: "before-send" })
       .then((value) => {
         settlements++;
-        return value;
+        if (!value.ok) throw value.error;
+        return value.data;
       });
     await Bun.sleep(20);
     expect(proxiedMutations(app.proxy, "before-send")).toHaveLength(0);
@@ -1240,7 +1262,8 @@ describe("mutation boundaries against a real dbzz server", () => {
       .mutation("messages.send", { channelId: 11n, body: "held-send" })
       .then((value) => {
         settlements++;
-        return value;
+        if (!value.ok) throw value.error;
+        return value.data;
       });
     // The frame left the client but never reached the server.
     const captured = await held;
@@ -1300,7 +1323,8 @@ describe("mutation boundaries against a real dbzz server", () => {
           .mutation("messages.send", { channelId: 15n, body: "in-flight" })
           .then((value) => {
             settlements++;
-            return value;
+            if (!value.ok) throw value.error;
+            return value.data;
           });
         // The server admitted the mutation and its handler is executing.
         await withDeadline(gate.entered, "the gated handler entry");
@@ -1392,7 +1416,8 @@ describe("mutation boundaries against a real dbzz server", () => {
       .mutation("messages.send", { channelId: 12n, body: "held-receipt" })
       .then((value) => {
         settlements++;
-        return value;
+        if (!value.ok) throw value.error;
+        return value.data;
       });
     // The server committed and acknowledged; the acknowledgment never arrives.
     const captured = await held;
@@ -1448,7 +1473,8 @@ describe("mutation boundaries against a real dbzz server", () => {
       .mutation("messages.send", { channelId: 14n, body: "converge" })
       .then((value) => {
         settlements++;
-        return value;
+        if (!value.ok) throw value.error;
+        return value.data;
       });
     const captured = await held;
     await settled();
@@ -1485,7 +1511,8 @@ describe("mutation boundaries against a real dbzz server", () => {
       .mutation("messages.send", { channelId: 13n, body: "settled" })
       .then((value) => {
         settlements++;
-        return value;
+        if (!value.ok) throw value.error;
+        return value.data;
       });
     const id = await withDeadline(result, "the settled mutation");
     expect(proxiedMutations(app.proxy, "settled")).toHaveLength(1);
@@ -1632,7 +1659,8 @@ describe("server unavailable at activation against a real dbzz server", () => {
           .mutation("messages.send", { channelId: 30n, body: "restart" })
           .then((value) => {
             settlements++;
-            return value;
+            if (!value.ok) throw value.error;
+            return value.data;
           });
 
         // The server goes away entirely while the application is backgrounded.
@@ -1675,7 +1703,9 @@ describe("server unavailable at activation against a real dbzz server", () => {
           credential: { kind: "anonymous" },
         });
         try {
-          const rows = (await observer.query("messages.list", { channelId: 30n })) as MessageRow[];
+          const rows = mustOk(
+            await observer.query("messages.list", { channelId: 30n }),
+          ) as MessageRow[];
           expect(rows.filter(({ body }) => body === "restart")).toEqual([
             { id: id as bigint, channelId: 30n, body: "restart" },
           ]);
@@ -1741,7 +1771,8 @@ describe("server unavailable at activation against a real dbzz server", () => {
           .mutation("messages.send", { channelId: 40n, body: "durable" })
           .then((value) => {
             settlements++;
-            return value;
+            if (!value.ok) throw value.error;
+            return value.data;
           });
         const captured = await held;
         port.suspend();
@@ -1756,9 +1787,9 @@ describe("server unavailable at activation against a real dbzz server", () => {
         });
         let committedId: bigint;
         try {
-          const rows = (await observerBefore.query("messages.list", {
-            channelId: 40n,
-          })) as MessageRow[];
+          const rows = mustOk(
+            await observerBefore.query("messages.list", { channelId: 40n }),
+          ) as MessageRow[];
           expect(rows.filter(({ body }) => body === "durable")).toHaveLength(1);
           committedId = rows.find(({ body }) => body === "durable")!.id;
         } finally {
@@ -1814,9 +1845,9 @@ describe("server unavailable at activation against a real dbzz server", () => {
           credential: { kind: "anonymous" },
         });
         try {
-          const rows = (await observerAfter.query("messages.list", {
-            channelId: 40n,
-          })) as MessageRow[];
+          const rows = mustOk(
+            await observerAfter.query("messages.list", { channelId: 40n }),
+          ) as MessageRow[];
           expect(rows.filter(({ body }) => body === "durable")).toEqual([
             { id: committedId, channelId: 40n, body: "durable" },
           ]);

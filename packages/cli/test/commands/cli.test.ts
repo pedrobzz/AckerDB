@@ -193,9 +193,11 @@ describe("dbzz CLI", () => {
     const first = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
     await first.waitFor("ready on");
     const firstClient = authenticatedClientFor(port);
-    const firstIdentity = await firstClient.procedure<Record<string, never>, bigint>(
-      "identity.current",
-      {},
+    const firstIdentity = mustOk(
+      await firstClient.procedure<Record<string, never>, bigint>(
+        "identity.current",
+        {},
+      ),
     );
     firstClient.close();
     first.child.kill("SIGTERM");
@@ -204,10 +206,14 @@ describe("dbzz CLI", () => {
     const second = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
     await second.waitFor("ready on");
     const secondClient = authenticatedClientFor(port);
-    expect(await secondClient.procedure<Record<string, never>, bigint>(
-      "identity.current",
-      {},
-    )).toBe(firstIdentity);
+    expect(
+      mustOk(
+        await secondClient.procedure<Record<string, never>, bigint>(
+          "identity.current",
+          {},
+        ),
+      ),
+    ).toBe(firstIdentity);
     secondClient.close();
     second.child.kill("SIGTERM");
     expect(await second.child.exited).toBe(0);
@@ -227,10 +233,10 @@ describe("dbzz CLI", () => {
     const app = await startApp(config, { prepare: runCodegen, credentialVerifier });
     try {
       const client = authenticatedClientFor(port);
-      expect(await client.procedure<Record<string, never>, bigint>(
+      expect(mustOk(await client.procedure<Record<string, never>, bigint>(
         "identity.current",
         {},
-      )).toBe(1n);
+      ))).toBe(1n);
       client.close();
     } finally {
       await app.drain();
@@ -285,12 +291,18 @@ describe("dbzz CLI", () => {
     expect(existsSync(join(dir, "_generated", "api.ts"))).toBe(true);
 
     const client = clientFor(port);
-    expect(await client.mutation<{ channelId: bigint; body: string }, bigint>(
+    expect(mustOk(await client.mutation<{ channelId: bigint; body: string }, bigint>(
       "messages.send",
       { channelId: 1n, body: "hi" },
-    )).toBe(1n);
-    expect(await client.query<unknown, unknown[]>("messages.list", { channelId: 1n })).toHaveLength(1);
-    expect(await client.query<Record<never, never>, number>("admin.users.count", {})).toBe(1);
+    ))).toBe(1n);
+    expect(mustOk(await client.query<unknown, unknown[]>(
+      "messages.list",
+      { channelId: 1n },
+    ))).toHaveLength(1);
+    expect(mustOk(await client.query<Record<never, never>, number>(
+      "admin.users.count",
+      {},
+    ))).toBe(1);
     const chunks: unknown[] = [];
     for await (const chunk of client.sse("messages.tail", { channelId: 1n })) chunks.push(chunk);
     expect(chunks).toEqual([{ body: "channel 1" }]);
@@ -553,7 +565,20 @@ ${FIXTURE_APP}`,
     expect(types).toContain('export type Note = RowOf<Schema, "notes">;');
 
     // data survived the reload (safe reconciliation, same database)
-    expect(await client.query<unknown, unknown[]>("messages.list", { channelId: 2n })).toHaveLength(1);
+    expect(
+      mustOk(
+        await client.query<unknown, unknown[]>("messages.list", {
+          channelId: 2n,
+        }),
+      ),
+    ).toHaveLength(1);
     client.close();
   }, 20_000);
 });
+function mustOk<T>(result: { readonly ok: true; readonly data: T } | {
+  readonly ok: false;
+  readonly error: unknown;
+}): T {
+  if (!result.ok) throw result.error;
+  return result.data;
+}

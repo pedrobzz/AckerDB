@@ -73,7 +73,7 @@ function MenuPage() {
           return (
             <div className="menu-layout">
               <aside className="surface category-panel">
-                <span className="text-ink-500 text-[9px] font-extrabold tracking-[0.1em] uppercase">
+                <span className="text-ink-500 text-[9px] font-extrabold tracking-widest uppercase">
                   Categories
                 </span>
                 <div className="category-list">
@@ -257,7 +257,8 @@ function CategoryDialog({
     setBusy(true);
     setError(null);
     try {
-      await create({ name, sortOrder: categories.length });
+      const result = await create({ name, sortOrder: categories.length });
+      if (!result.ok) throw result.error;
       toast.success(
         `${name.trim()} is ready for menu items.`,
         "Category created",
@@ -348,8 +349,10 @@ function ItemDialog({
       sortOrder: item?.sortOrder ?? selectedCategory?.items.length ?? 0,
     };
     try {
-      if (item) await update({ id: item.id, ...values, active });
-      else await create(values);
+      const result = item
+        ? await update({ id: item.id, ...values, active })
+        : await create(values);
+      if (!result.ok) throw result.error;
       toast.success(
         `${name.trim()} ${item ? "was updated" : "was added to the menu"}.`,
         item ? "Item updated" : "Item created",

@@ -1,5 +1,14 @@
-import { DbzzClientError, type DbzzClient } from "@dbzz/client";
-import { decode, encode } from "@dbzz/core";
+import {
+  DbzzClientError,
+  type ClientResult,
+  type DbzzClient,
+} from "@dbzz/client";
+import {
+  Failure,
+  decode,
+  encode,
+  type ApplicationError,
+} from "@dbzz/core";
 import { useEffect, useInsertionEffect, useState } from "react";
 import { useProviderClient } from "./provider.tsx";
 
@@ -141,6 +150,42 @@ export function callThroughCell<Ref, A, R>(
     }
     cell.waiters.add(waiter);
   });
+}
+
+function asHookClientError(error: unknown): DbzzClientError {
+  return error instanceof DbzzClientError
+    ? error
+    : new DbzzClientError({
+        code: "internal",
+        message: error instanceof Error ? error.message : "hook call failed unexpectedly",
+        retryable: false,
+        resource: "operation",
+      });
+}
+
+/**
+ * Result-preserving call ownership for mutations and procedures. Base-client
+ * calls already resolve to Results; this also converts hook-owned queued-call,
+ * abort, and lifetime settlements into the same non-rejecting shape.
+ */
+export function callResultThroughCell<
+  Ref,
+  A,
+  Data,
+  Error extends ApplicationError = never,
+>(
+  cell: LifetimeCell<Ref>,
+  args: A,
+  dispatch: (client: DbzzClient, args: A) => Promise<ClientResult<Data, Error>>,
+  abort?: QueueAbort,
+): Promise<ClientResult<Data, Error>> {
+  try {
+    return callThroughCell(cell, args, dispatch, abort).catch(
+      (error) => Failure(asHookClientError(error)),
+    ) as Promise<ClientResult<Data, Error>>;
+  } catch (error) {
+    return Promise.resolve(Failure(asHookClientError(error))) as Promise<ClientResult<Data, Error>>;
+  }
 }
 
 /**

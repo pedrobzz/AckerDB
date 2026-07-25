@@ -145,12 +145,32 @@ afterEach(async () => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
 
-function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = STEP_TIMEOUT_MS): Promise<T> {
+type UnwrappedResult<T> =
+  T extends { readonly ok: true; readonly data: infer Data }
+    ? Data
+    : T extends { readonly ok: false }
+      ? never
+      : T;
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  label: string,
+  timeoutMs = STEP_TIMEOUT_MS,
+): Promise<UnwrappedResult<T>> {
   let handle: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     handle = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), timeoutMs);
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
+  const value = await Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "ok" in value
+  ) {
+    if (value.ok === true && "data" in value) return value.data as UnwrappedResult<T>;
+    if (value.ok === false && "error" in value) throw value.error;
+  }
+  return value as UnwrappedResult<T>;
 }
 
 async function eventually(assertion: () => void | Promise<void>, label: string): Promise<void> {
@@ -549,7 +569,7 @@ describe("process crash replay", () => {
       "post-commit-sigkill",
     )).toBe(1);
     expect(storedMutation(database, client.clientSessionId, requestId)).toEqual({
-      result: encode(1n),
+      result: encode({ ok: true, data: 1n }),
       commitVersion: 1,
       durability: "production",
     });
@@ -656,7 +676,7 @@ describe("process crash replay", () => {
       const database = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
       databases.push(database);
       expect(storedMutation(database, client.clientSessionId, acknowledgedRequestId)).toEqual({
-        result: encode(1n),
+        result: encode({ ok: true, data: 1n }),
         commitVersion: 1,
         durability,
       });
