@@ -81,7 +81,10 @@ export function createMutationInvocationScope(
         state.current = null;
       }
     },
-    run<T>(work: () => T | Promise<T>): Promise<T> {
+    run<T>(
+      work: () => T | Promise<T>,
+      onError?: (error: unknown) => never,
+    ): Promise<T> {
       const parent = currentMutationAccessFrame();
       if (parent === undefined) {
         return Promise.reject(new DbzzError(
@@ -90,11 +93,12 @@ export function createMutationInvocationScope(
         ));
       }
       const turn = parent.tail.then(() => runNow(parent, work));
-      parent.tail = turn.then(
+      const result = onError === undefined ? turn : turn.catch(onError);
+      parent.tail = result.then(
         () => undefined,
         () => undefined,
       );
-      return turn;
+      return result;
     },
   });
   return scope;

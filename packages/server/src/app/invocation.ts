@@ -421,11 +421,11 @@ function invocationStateFor(ctx: InvocationContext, parent: InvocationState | un
   return parent ?? { principal: ctx.auth, root: {} };
 }
 
-function poison(
+function markPoisoned(
   state: InvocationState | undefined,
   error: unknown,
   poisonTree: boolean,
-): never {
+): unknown {
   if (
     poisonTree &&
     state !== undefined &&
@@ -433,12 +433,12 @@ function poison(
   ) {
     state.root.poison = error;
   }
-  throw error;
+  return error;
 }
 
 /** Mark the ambient registered invocation unrecoverable, then rethrow. */
 export function poisonCurrentInvocation(error: unknown): never {
-  return poison(invocationState.getStore(), error, true);
+  throw markPoisoned(invocationState.getStore(), error, true);
 }
 
 function finishInvocation<K extends string, A extends ObjectShape, Ctx extends InvocationContext, R, H, T>(
@@ -484,7 +484,7 @@ function finishInvocation<K extends string, A extends ObjectShape, Ctx extends I
   ) as T | OkResult<T>;
 }
 
-function runMutationScope<
+function runInvocation<
   K extends string,
   A extends ObjectShape,
   Ctx extends InvocationContext,
@@ -497,13 +497,30 @@ function runMutationScope<
   state: InvocationState,
   root: boolean,
 ): Promise<T | OkResult<T>> {
-  const execute = () => Promise.resolve(work()).then(
-    (value) => finishInvocation(fn, value, state),
-  );
+  const poisonTree =
+    fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure";
+  const execute = (): Promise<T | OkResult<T>> => {
+    try {
+      const result = work();
+      if (isPromiseLike(result)) {
+        return Promise.resolve(result).then(
+          (value) => finishInvocation(fn, value, state),
+          (error) => {
+            throw markPoisoned(state, error, poisonTree);
+          },
+        );
+      }
+      return Promise.resolve(finishInvocation(fn, result, state));
+    } catch (error) {
+      return Promise.reject(markPoisoned(state, error, poisonTree));
+    }
+  };
   const scope: MutationInvocationScope | undefined =
     currentMutationInvocationScope();
-  if (fn.kind !== "mutation" || scope === undefined) return execute();
-  return root ? scope.runRoot(execute) : scope.run(execute);
+  if (fn.kind !== "mutation" || scope === undefined || root) return execute();
+  return scope.run(execute, (error) => {
+    throw markPoisoned(state, error, poisonTree);
+  });
 }
 
 function invokeUnobserved<
@@ -532,24 +549,18 @@ function invokeUnobserved<
       }
       return runHandler(fn, safeCtx, args, state, options);
     };
-    return runMutationScope(fn, execute, state, parent === undefined).then(
-      (value) => value,
-      (error) => poison(
-        state,
-        error,
-        fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
-      ),
+    return runInvocation(
+      fn,
+      execute,
+      state,
+      parent === undefined,
     ) as Promise<InvokedFunctionResult<K, H>>;
   } catch (error) {
-    try {
-      return Promise.reject(poison(
-        invocationState.getStore(),
-        error,
-        fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
-      ));
-    } catch (poisoned) {
-      return Promise.reject(poisoned);
-    }
+    return Promise.reject(markPoisoned(
+      invocationState.getStore(),
+      error,
+      fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
+    ));
   }
 }
 
@@ -610,30 +621,18 @@ export function invokeFunction<
       const execute = () => isPromiseLike(authenticate)
         ? Promise.resolve(authenticate).then(authorize)
         : authorize();
-      const result = runMutationScope(
+      return runInvocation(
         fn,
         execute,
         invocation,
         parent === undefined,
-      );
-      return result.then(
-        (value) => value,
-        (error) => poison(
-          invocation ?? parent,
-          error,
-          fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
-        ),
       ) as Promise<InvokedFunctionResult<K, H>>;
     } catch (error) {
-      try {
-        return Promise.reject(poison(
-          invocationState.getStore(),
-          error,
-          fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
-        ));
-      } catch (poisoned) {
-        return Promise.reject(poisoned);
-      }
+      return Promise.reject(markPoisoned(
+        invocationState.getStore(),
+        error,
+        fn.kind === "query" || fn.kind === "mutation" || fn.kind === "procedure",
+      ));
     }
   });
 }

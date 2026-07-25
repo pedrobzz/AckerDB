@@ -12,7 +12,10 @@ export interface MutationAccessState {
 
 export interface MutationInvocationScope {
   runRoot<T>(work: () => T | Promise<T>): Promise<T>;
-  run<T>(work: () => T | Promise<T>): Promise<T>;
+  run<T>(
+    work: () => T | Promise<T>,
+    onError?: (error: unknown) => never,
+  ): Promise<T>;
 }
 
 interface MutationAccessToken {
