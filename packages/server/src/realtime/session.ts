@@ -16,6 +16,7 @@ import {
   type MutationOkMessage,
   type MutationReceipt,
   type Outcome,
+  type ProcedureCancelMessage,
   type PongMessage,
   type ProcedureMessage,
   type ProcedureOkMessage,
@@ -39,6 +40,10 @@ import {
   MAX_REVOCATION_DEADLINE_MS,
   validateCredentialVerifierRevocation,
 } from "../auth/lease.ts";
+import {
+  subscribeAuthInvalidation,
+  type AuthInvalidationScope,
+} from "../auth/invalidation.ts";
 import {
   callerFairnessKey,
   transportSource,
@@ -158,6 +163,8 @@ export interface SessionRuntimeContext {
   readonly authEpoch: number;
   /** Aborted as soon as an auth refresh, expiry, invalidation, or close starts. */
   readonly signal: AbortSignal;
+  /** Package-owned verifier subscription identity for delayed self-invalidation. */
+  readonly invalidationScope?: AuthInvalidationScope;
   /** Publishes an application frame only while this exact epoch is current. */
   publish(message: RuntimePublication): Promise<boolean>;
 }
@@ -181,12 +188,21 @@ export type SessionWireFrame = string | Uint8Array;
 export interface RuntimeRequest<Message> {
   readonly message: Message;
   readonly bytes: number;
+  readonly signal?: AbortSignal;
 }
 
 const runtimeRequestBytes = new WeakMap<object, number>();
 
-function prepareRuntimeRequest<Message>(message: Message, bytes: number): RuntimeRequest<Message> {
-  const request = Object.freeze({ message, bytes });
+function prepareRuntimeRequest<Message>(
+  message: Message,
+  bytes: number,
+  signal?: AbortSignal,
+): RuntimeRequest<Message> {
+  const request = Object.freeze({
+    message,
+    bytes,
+    ...(signal === undefined ? {} : { signal }),
+  });
   runtimeRequestBytes.set(request, bytes);
   return request;
 }
@@ -323,6 +339,8 @@ export class Session {
   private opening: Promise<void> = Promise.resolve();
   private closePromise: Promise<void> | null = null;
   private unsubscribeInvalidation: (() => void) | null = null;
+  private invalidationScope: AuthInvalidationScope | undefined;
+  private readonly activeProcedures = new Map<number, AbortController>();
 
   constructor(options: SessionOptions) {
     const revocationDeadlineMs = options.revocationDeadlineMs ?? MAX_REVOCATION_DEADLINE_MS;
@@ -337,9 +355,11 @@ export class Session {
     this.maxFrameBytes = positiveInteger(limits.maxFrameBytes, "maxFrameBytes");
     this.revocationDeadlineMs = revocationDeadlineMs;
     if (this.runtime.credentialVerifier !== undefined) {
-      this.unsubscribeInvalidation = this.runtime.credentialVerifier.subscribeInvalidation((invalidation) => {
+      const subscription = subscribeAuthInvalidation(this.runtime.credentialVerifier, (invalidation) => {
         this.onInvalidation(invalidation);
       });
+      this.unsubscribeInvalidation = subscription.unsubscribe;
+      this.invalidationScope = subscription.scope;
     }
   }
 
@@ -447,16 +467,63 @@ export class Session {
         return this.acceptAuth(message);
       case "ping":
         return this.sendControl({ v: PROTOCOL_VERSION, t: "pong" });
+      case "cancel":
+        return this.cancelProcedure(message);
       case "sub":
       case "unsub":
       case "reset":
       case "q":
-      case "p":
       case "m":
         if (this.paused) {
           return this.sendControlError(message.id, authStale());
         }
         return this.runOperation(prepareRuntimeRequest(message, bytes));
+      case "p":
+        if (this.paused) {
+          return this.sendControlError(message.id, authStale());
+        }
+        return this.runProcedure(message, bytes);
+    }
+  }
+
+  private cancelProcedure(message: ProcedureCancelMessage): void {
+    const controller = this.activeProcedures.get(message.id);
+    if (controller !== undefined) {
+      aborted(controller, new DbzzError("unavailable", "procedure request was canceled"));
+    }
+  }
+
+  private async runProcedure(message: ProcedureMessage, bytes: number): Promise<void> {
+    const context = this.context;
+    if (this.principal === null || this.clientSessionId === null || context === null) {
+      void this.terminate(internalError(new Error("procedure started before hello")));
+      return;
+    }
+    if (this.activeProcedures.has(message.id)) {
+      await this.sendControlError(
+        message.id,
+        new DbzzError("conflict", "procedure request ID is already active"),
+      );
+      return;
+    }
+    if (context.signal.aborted || !this.isCurrent(this.authEpoch)) return;
+
+    const controller = new AbortController();
+    const abort = () => aborted(controller, context.signal.reason);
+    context.signal.addEventListener("abort", abort, { once: true });
+    this.activeProcedures.set(message.id, controller);
+    try {
+      await this.runtime.procedure(
+        context,
+        prepareRuntimeRequest(message, bytes, controller.signal),
+      );
+    } catch {
+      // Runtime publishes every application outcome before rejecting.
+    } finally {
+      context.signal.removeEventListener("abort", abort);
+      if (this.activeProcedures.get(message.id) === controller) {
+        this.activeProcedures.delete(message.id);
+      }
     }
   }
 
@@ -666,7 +733,7 @@ export class Session {
 
   private async runOperation(
     request: RuntimeRequest<
-      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | ProcedureMessage | MutationMessage
+      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage
     >,
   ): Promise<void> {
     const { message } = request;
@@ -690,10 +757,6 @@ export class Session {
           return;
         case "q": {
           await this.runtime.query(context, request as RuntimeRequest<QueryMessage>);
-          return;
-        }
-        case "p": {
-          await this.runtime.procedure(context, request as RuntimeRequest<ProcedureMessage>);
           return;
         }
         case "m": {
@@ -720,6 +783,9 @@ export class Session {
       fairnessKey: callerFairnessKey(principal, this.source),
       authEpoch,
       signal: controller.signal,
+      ...(this.invalidationScope === undefined
+        ? {}
+        : { invalidationScope: this.invalidationScope }),
       publish: (publication: RuntimePublication) => this.sendApplication(authEpoch, publication),
     });
   }
@@ -887,6 +953,7 @@ export class Session {
     this.clearExpiry();
     const unsubscribe = this.unsubscribeInvalidation;
     this.unsubscribeInvalidation = null;
+    this.invalidationScope = undefined;
     try {
       unsubscribe?.();
     } catch {

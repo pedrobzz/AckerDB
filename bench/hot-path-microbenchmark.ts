@@ -40,6 +40,12 @@ const WARMUP_MS = 500;
 const STEADY_MS = 2_000;
 const TRIALS = 3;
 const COMPUTE_ROUNDS = 8;
+const CLOCK_TICKS_PER_SEC = Number(
+  Bun.spawnSync(["getconf", "CLK_TCK"], { stdout: "pipe" }).stdout.toString().trim(),
+);
+if (!Number.isFinite(CLOCK_TICKS_PER_SEC) || CLOCK_TICKS_PER_SEC <= 0) {
+  throw new Error("could not resolve process clock ticks");
+}
 
 interface Profile {
   readonly name: "latency" | "saturation";
@@ -70,6 +76,17 @@ function rssBytes(pid: number): number {
   return kib * 1024;
 }
 
+async function processCpuTicks(pid: number): Promise<number> {
+  const text = await Bun.file(`/proc/${pid}/stat`).text();
+  const fields = text.slice(text.lastIndexOf(")") + 2).trim().split(/\s+/);
+  const user = Number(fields[11]);
+  const system = Number(fields[12]);
+  if (!Number.isFinite(user) || !Number.isFinite(system)) {
+    throw new Error(`could not read CPU ticks for server pid ${pid}`);
+  }
+  return user + system;
+}
+
 async function runWindow(
   clients: readonly DbzzClient[],
   profile: Profile,
@@ -78,7 +95,9 @@ async function runWindow(
   serverPid: number,
 ) {
   const payload = fixedPayload("procedure-payload:", PROCEDURE_PAYLOAD_BYTES);
-  const deadline = performance.now() + durationMs;
+  const startedAt = performance.now();
+  const startedCpuTicks = await processCpuTicks(serverPid);
+  const deadline = startedAt + durationMs;
   let completed = 0;
   const latencies: number[] = [];
   const rss: number[] = [];
@@ -115,8 +134,18 @@ async function runWindow(
     clearInterval(sampler);
     rss.push(rssBytes(serverPid));
   }
+  const endedAt = performance.now();
+  const consumedCpuTicks = await processCpuTicks(serverPid) - startedCpuTicks;
+  const elapsedMs = endedAt - startedAt;
+  const averageCpuCores = consumedCpuTicks / CLOCK_TICKS_PER_SEC / (elapsedMs / 1_000);
   return {
     throughputPerSec: completed / (durationMs / 1_000),
+    cpu: {
+      averageCores: averageCpuCores,
+      coreMicrosPerCompletion: completed === 0
+        ? 0
+        : (consumedCpuTicks / CLOCK_TICKS_PER_SEC * 1_000_000) / completed,
+    },
     latency: latencyStats(latencies),
     rss: {
       baselineBytes: rss[0]!,

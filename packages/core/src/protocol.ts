@@ -207,6 +207,10 @@ export interface ProcedureMessage extends Frame<"p"> {
   args: unknown;
 }
 
+export interface ProcedureCancelMessage extends Frame<"cancel"> {
+  id: number;
+}
+
 export interface MutationMessage extends Frame<"m"> {
   id: number;
   ref: string;
@@ -225,6 +229,7 @@ export type ClientMessage =
   | ResetRequestMessage
   | QueryMessage
   | ProcedureMessage
+  | ProcedureCancelMessage
   | MutationMessage
   | PingMessage;
 
@@ -695,6 +700,10 @@ export function parseClientMessage(value: unknown): ClientMessage {
       protocolId(result.id, "request id");
       string(result.ref, "ref", MAX_REFERENCE_LENGTH);
       payload(result.args, "args");
+      break;
+    case "cancel":
+      exact(result, ["v", "t", "id"]);
+      protocolId(result.id, "request id");
       break;
     case "m": {
       exact(result, ["v", "t", "id", "ref", "args", "mutationRequestId", "issuedAt"]);

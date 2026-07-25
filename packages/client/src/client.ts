@@ -1256,6 +1256,11 @@ export class DbzzClient {
    */
   private suspendTransport(): void {
     if (this.closed || this.suspended) return;
+    for (const request of this.pending.values()) {
+      if (request.kind === "procedure" && request.sentGeneration !== undefined) {
+        this.sendProcedureCancel(request);
+      }
+    }
     this.suspended = true;
     this.resuming = false;
     this.clearReconnectTimer();
@@ -1963,6 +1968,7 @@ export class DbzzClient {
     const committed = request.receipt !== undefined;
     const mutationMayHaveCommitted = request.kind === "mutation" && request.sentGeneration !== undefined;
     const procedureMayHaveCompleted = request.kind === "procedure" && request.sentGeneration !== undefined;
+    if (procedureMayHaveCompleted) this.sendProcedureCancel(request);
     this.finishRequest(
       request,
       undefined,
@@ -1983,6 +1989,7 @@ export class DbzzClient {
 
   private cancelProcedure(request: PendingRequest): void {
     if (request.kind !== "procedure" || this.pending.get(request.id) !== request) return;
+    this.sendProcedureCancel(request);
     this.finishRequest(
       request,
       undefined,
@@ -1990,6 +1997,19 @@ export class DbzzClient {
         ? localError("unavailable", "procedure request was canceled", "operation")
         : localError("indeterminate", "procedure completion is unknown", "operation"),
     );
+  }
+
+  private sendProcedureCancel(request: PendingRequest): void {
+    if (
+      request.kind !== "procedure" ||
+      request.sentGeneration !== this.connectionGeneration ||
+      !this.canSendOperations()
+    ) return;
+    try {
+      this.sendFrame({ v: PROTOCOL_VERSION, t: "cancel", id: request.id });
+    } catch {
+      // Cancellation is best effort; the local outcome remains indeterminate.
+    }
   }
 
   private flushState(): void {

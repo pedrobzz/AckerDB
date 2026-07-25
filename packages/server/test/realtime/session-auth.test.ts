@@ -205,6 +205,7 @@ class FakeRuntime implements RuntimePort {
   readonly queries: QueryMessage[] = [];
   readonly queryRequests: RuntimeRequest<QueryMessage>[] = [];
   readonly procedures: ProcedureMessage[] = [];
+  readonly procedureRequests: RuntimeRequest<ProcedureMessage>[] = [];
   readonly mutations: MutationMessage[] = [];
   readonly operationContexts: SessionRuntimeContext[] = [];
   readonly closes: Outcome[] = [];
@@ -213,6 +214,9 @@ class FakeRuntime implements RuntimePort {
   transitionReleaseCount = 0;
   subscribeHook: ((context: SessionRuntimeContext, id: number) => Promise<void>) | null = null;
   queryHook: ((context: SessionRuntimeContext, message: QueryMessage) => Promise<unknown>) | null = null;
+  procedureHook: (
+    (context: SessionRuntimeContext, request: RuntimeRequest<ProcedureMessage>) => Promise<unknown>
+  ) | null = null;
   resolveIdentityHook: (
     (account: ExternalAccount, signal?: AbortSignal) => Promise<Identity>
   ) | null = null;
@@ -322,6 +326,8 @@ class FakeRuntime implements RuntimePort {
     const { message } = request;
     this.operationContexts.push(context);
     this.procedures.push(message);
+    this.procedureRequests.push(request);
+    if (this.procedureHook !== null) return this.procedureHook(context, request);
     const value = { ref: message.ref, principal: context.principal.kind };
     await context.publish(prepareRuntimePublication({
       v: PROTOCOL_VERSION,
@@ -503,6 +509,43 @@ describe("Session Protocol-2 ownership", () => {
 
     gate.resolve(undefined);
     await Promise.all(queries);
+    await session.close();
+  });
+
+  test("cancels only the matching in-flight procedure", async () => {
+    const runtime = new FakeRuntime();
+    const started = deferred<void>();
+    let abortReason: unknown;
+    runtime.procedureHook = async (_context, request) => {
+      const signal = request.signal;
+      if (signal === undefined) throw new Error("procedure request has no cancellation signal");
+      started.resolve(undefined);
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      abortReason = signal.reason;
+      throw signal.reason;
+    };
+    const session = new Session({ runtime, sink: new FakeSink(), source: TEST_SOURCE });
+    await handle(session, hello());
+
+    const running = handle(session, {
+      v: PROTOCOL_VERSION,
+      t: "p",
+      id: 41,
+      ref: "messages.hold",
+      args: {},
+    });
+    await started.promise;
+    await handle(session, { v: PROTOCOL_VERSION, t: "cancel", id: 42 });
+    expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(false);
+    await handle(session, { v: PROTOCOL_VERSION, t: "cancel", id: 41 });
+    await running;
+
+    expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(true);
+    expect(abortReason).toBeInstanceOf(DbzzError);
+    expect((abortReason as DbzzError).message).toBe("procedure request was canceled");
     await session.close();
   });
 

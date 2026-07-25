@@ -78,7 +78,7 @@ describe("protocol 3 envelopes", () => {
     );
   });
 
-  test("parses auth, subscribe, reset, query, mutation, and HTTP call frames", () => {
+  test("parses auth, subscribe, reset, query, procedure, cancel, mutation, and HTTP call frames", () => {
     expect(uuidV7Timestamp(mutationRequestId)).toBe(1_688_096_058_518);
     expectProtocolError(
       () => uuidV7Timestamp("01890a5d-ac96-474b-b4c0-123456789abc"),
@@ -98,17 +98,21 @@ describe("protocol 3 envelopes", () => {
     expect(parseClientMessage({ v: PROTOCOL_VERSION, t: "reset", id: 1, cursor: cursor(2n) }).t).toBe("reset");
     expect(parseClientMessage({ v: PROTOCOL_VERSION, t: "q", id: 2, ref: "messages.list", args: {} }).t).toBe("q");
     expect(
+      parseClientMessage({ v: PROTOCOL_VERSION, t: "p", id: 3, ref: "reports.create", args: {} }).t,
+    ).toBe("p");
+    expect(parseClientMessage({ v: PROTOCOL_VERSION, t: "cancel", id: 3 }).t).toBe("cancel");
+    expect(
       parseClientMessage({
         v: PROTOCOL_VERSION,
         t: "m",
-        id: 3,
+        id: 4,
         ref: "messages.send",
         args: { body: "hello" },
         mutationRequestId,
         issuedAt: 1_688_000_000_000,
       }).t,
     ).toBe("m");
-    expect(parseCallRequest({ v: PROTOCOL_VERSION, t: "call", id: 4, ref: "reports.create", args: {} }).t).toBe("call");
+    expect(parseCallRequest({ v: PROTOCOL_VERSION, t: "call", id: 5, ref: "reports.create", args: {} }).t).toBe("call");
   });
 });
 

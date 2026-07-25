@@ -296,6 +296,11 @@ interface OwnedProcedureContext {
   readonly release: () => void;
 }
 
+interface ProcedureInvalidations {
+  publish(account: ExternalAccount): void;
+  finish(): void;
+}
+
 export interface RuntimeStatus {
   readonly state: RuntimeLifecycleState;
   readonly connections: number;
@@ -1195,51 +1200,59 @@ export class Runtime implements RuntimePort {
   ): Promise<unknown> {
     const { message } = request;
     let publication: RuntimePublication | undefined;
-    return this.runSessionOperation(context, request, "procedure", message.ref, async (_state, requestBytes) => {
-      const fn = this.expect(message.ref, "procedure");
-      const signal = this.operationSignal(context.signal);
-      throwIfAborted(signal);
-      const procedure = this.procedureContext(
-        context.principal,
-        context.fairnessKey,
-        signal,
-        requestBytes,
-        this.readNow(),
-        (account) => this.authInvalidation.publishAccount(account),
-      );
-      try {
-        const result = await invokeFunction(fn, procedure.value, message.args);
+    const invalidations = this.procedureInvalidations(
+      context.principal,
+      context.invalidationScope,
+    );
+    try {
+      return await this.runSessionOperation(context, request, "procedure", message.ref, async (_state, requestBytes) => {
+        const fn = this.expect(message.ref, "procedure");
+        const signal = this.operationSignal(request.signal ?? context.signal);
         throwIfAborted(signal);
-        if (!isResult(result)) throw new DbzzError("internal", "procedure boundary returned no Result");
-        publication = this.prepareFrame(
-          result.ok
-            ? {
-                v: PROTOCOL_VERSION,
-                t: "ok",
-                id: message.id,
-                kind: "procedure",
-                value: result.data,
-              } satisfies ProcedureOkMessage
-            : {
-                v: PROTOCOL_VERSION,
-                t: "app_err",
-                id: message.id,
-                kind: "procedure",
-                error: applicationError(result.error),
-              } satisfies ApplicationErrorMessage,
-          "procedure result",
+        const procedure = this.procedureContext(
+          context.principal,
+          context.fairnessKey,
+          signal,
+          requestBytes,
+          this.readNow(),
+          invalidations.publish,
         );
-        return result.ok ? result.data : result;
-      } finally {
-        procedure.release();
-      }
-    }, {
-      identifiers: { requestId: String(message.id) },
-      successPublication: () => {
-        if (publication === undefined) throw new Error("procedure publication was not prepared");
-        return publication;
-      },
-    });
+        try {
+          const result = await invokeFunction(fn, procedure.value, message.args);
+          throwIfAborted(signal);
+          if (!isResult(result)) throw new DbzzError("internal", "procedure boundary returned no Result");
+          publication = this.prepareFrame(
+            result.ok
+              ? {
+                  v: PROTOCOL_VERSION,
+                  t: "ok",
+                  id: message.id,
+                  kind: "procedure",
+                  value: result.data,
+                } satisfies ProcedureOkMessage
+              : {
+                  v: PROTOCOL_VERSION,
+                  t: "app_err",
+                  id: message.id,
+                  kind: "procedure",
+                  error: applicationError(result.error),
+                } satisfies ApplicationErrorMessage,
+            "procedure result",
+          );
+          return result.ok ? result.data : result;
+        } finally {
+          procedure.release();
+        }
+      }, {
+        identifiers: { requestId: String(message.id) },
+        successPublication: () => {
+          if (publication === undefined) throw new Error("procedure publication was not prepared");
+          return publication;
+        },
+      });
+    } finally {
+      invalidations.finish();
+    }
   }
 
   async mutation(context: SessionRuntimeContext, request: RuntimeRequest<MutationMessage>): Promise<RuntimeMutationResult> {
@@ -1384,26 +1397,10 @@ export class Runtime implements RuntimePort {
       request.principal,
       DIRECT_RUNTIME_SOURCE,
     );
-    const originScope = provenance?.invalidationScope;
-    const invalidations = new Map<string, Map<string, ExternalAccount>>();
-    const publishInvalidation = (account: ExternalAccount): void => {
-      const selfScope =
-        request.principal.kind === "user" &&
-        request.principal.issuer === account.issuer &&
-        request.principal.subject === account.subject
-          ? originScope
-          : undefined;
-      if (!this.authInvalidation.publishAccount(account, selfScope)) return;
-      let subjects = invalidations.get(account.issuer);
-      if (subjects === undefined) invalidations.set(account.issuer, (subjects = new Map()));
-      subjects.set(account.subject, account);
-    };
-    const publishOriginInvalidations = (scope: AuthInvalidationScope): void => {
-      for (const subjects of invalidations.values()) {
-        for (const account of subjects.values()) this.authInvalidation.publishAccountTo(account, scope);
-      }
-      invalidations.clear();
-    };
+    const invalidations = this.procedureInvalidations(
+      request.principal,
+      provenance?.invalidationScope,
+    );
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
@@ -1414,7 +1411,7 @@ export class Runtime implements RuntimePort {
         signal,
         requestBytes,
         this.readNow(),
-        publishInvalidation,
+        invalidations.publish,
       );
       try {
         const value = await invokeFunction(fn, context.value, request.args);
@@ -1429,7 +1426,7 @@ export class Runtime implements RuntimePort {
         try {
           return this.respondProcedure(request, outcome);
         } finally {
-          if (originScope !== undefined) publishOriginInvalidations(originScope);
+          invalidations.finish();
         }
       },
       claimedTrace,
@@ -2944,6 +2941,37 @@ export class Runtime implements RuntimePort {
       })),
     );
     return operation === "transaction" ? this.inTransactionTrace(execute) : execute();
+  }
+
+  private procedureInvalidations(
+    principal: Principal,
+    originScope: AuthInvalidationScope | undefined,
+  ): ProcedureInvalidations {
+    const pending = new Map<string, Map<string, ExternalAccount>>();
+    return Object.freeze({
+      publish: (account: ExternalAccount): void => {
+        const selfScope =
+          principal.kind === "user" &&
+          principal.issuer === account.issuer &&
+          principal.subject === account.subject
+            ? originScope
+            : undefined;
+        if (!this.authInvalidation.publishAccount(account, selfScope)) return;
+        let subjects = pending.get(account.issuer);
+        if (subjects === undefined) pending.set(account.issuer, (subjects = new Map()));
+        subjects.set(account.subject, account);
+      },
+      finish: (): void => {
+        if (originScope !== undefined) {
+          for (const subjects of pending.values()) {
+            for (const account of subjects.values()) {
+              this.authInvalidation.publishAccountTo(account, originScope);
+            }
+          }
+        }
+        pending.clear();
+      },
+    });
   }
 
   private procedureContext(
