@@ -1,0 +1,4939 @@
+{
+  "schemaVersion": 10,
+  "release": {
+    "version": "0.11.0",
+    "host": "hetzner",
+    "previousVersion": "0.10.0"
+  },
+  "timestamp": "2026-07-26T14:20:03.522Z",
+  "git": {
+    "commit": "ea041a0ba349f004ea39201e8798c9e86017ffb6",
+    "dirty": false,
+    "sourceHash": "be29e4663704a4f3dabb7c8019e1ae7de5bd7b75c9e60d6178d7abef00adee14"
+  },
+  "machine": {
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "AMD EPYC-Rome Processor",
+    "logicalCpus": 3,
+    "memGb": 4,
+    "osRelease": "6.8.0-106-generic",
+    "fileDescriptorLimit": 1048576
+  },
+  "versions": {
+    "bun": "1.3.14",
+    "bunRevision": "1.3.14+0d9b296af",
+    "convexClient": "1.42.1",
+    "convexBackend": "precompiled-2026-07-21-82d5e9f",
+    "spacetimedbCli": "2.6.1",
+    "spacetimedbClient": "2.6.1",
+    "spacetimedbModule": "2.6.1"
+  },
+  "methodology": {
+    "serverResources": "250ms shared ps process-tree sampling; RSS is sampled summed per-process RSS (shared pages may be counted more than once) and CPU is cumulative user+system time",
+    "loadGeneratorResources": "same shared process-table samples, reported separately from server resources to expose client-side saturation",
+    "sampleIntervalMs": 250,
+    "durability": {
+      "ackerdb": "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
+      "convex": "current local backend native default",
+      "spacetimedb": "confirmed reads explicitly enabled; standalone native durable commit log"
+    },
+    "ackerDBProfiles": "apples-to-apples: systems.ackerdb runs telemetry=false because the comparative targets ship no equivalent always-on telemetry; telemetry cost is measured by the separate optional telemetry run (telemetry-v<version>.json), not re-proven on every release",
+    "ackerDBTelemetryValidation": "the parent streams AckerDB stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; the release leg runs telemetry=false and must prove it stays entirely inactive; enabled-profile accounting is validated by the telemetry run",
+    "spacetimeQueryTransport": "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
+    "subscriptionCapacity": "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery"
+  },
+  "executionOrder": [
+    "ackerdb-telemetry-disabled",
+    "convex",
+    "spacetimedb"
+  ],
+  "systems": {
+    "ackerdb": {
+      "workload": {
+        "system": "ackerdb",
+        "config": {
+          "profile": "default",
+          "seed": 56098,
+          "operation": {
+            "warmupMs": 500,
+            "steadyMs": 2000,
+            "trials": 1,
+            "drainTimeoutMs": 30000,
+            "profiles": [
+              {
+                "name": "latency",
+                "connections": 1,
+                "inFlightPerConnection": 1
+              },
+              {
+                "name": "saturation",
+                "connections": 32,
+                "inFlightPerConnection": 4
+              }
+            ]
+          },
+          "connections": {
+            "levels": [
+              1,
+              1000
+            ],
+            "batchSize": 100,
+            "workMs": 1000,
+            "timeoutMs": 120000
+          },
+          "subscriptions": {
+            "users": 500,
+            "queriesPerUser": 10,
+            "durationMs": 2000,
+            "sharedUpdatesPerSec": 20,
+            "partitionedUpdatesPerSec": 100,
+            "capacityDurationMs": 2000,
+            "capacitySlots": [
+              1,
+              32,
+              512
+            ],
+            "setupTimeoutMs": 120000,
+            "drainTimeoutMs": 30000,
+            "patterns": [
+              "shared",
+              "partitioned"
+            ]
+          },
+          "resources": {
+            "idleMs": 1000
+          },
+          "seedBatchSize": 256
+        },
+        "snapshots": {
+          "seededIdle": "server:seeded-idle",
+          "seededIdlePhaseId": "server:seeded-idle-window",
+          "connectionBaselineIdlePhaseId": "connections:baseline-idle"
+        },
+        "operations": [
+          {
+            "operation": "query",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075361650.8218,
+                "windowEndedAtMs": 1785075363650.8218,
+                "wallMs": 2000,
+                "attempted": 7785,
+                "completedInWindow": 7784,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 3892,
+                "latency": {
+                  "count": 7785,
+                  "minMs": 0.1779660000001968,
+                  "p50Ms": 0.2357440000000679,
+                  "p95Ms": 0.33568300000024465,
+                  "p99Ms": 0.7957280000000537,
+                  "maxMs": 2.779649000000063
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:query:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 3892,
+            "medianLatencyP50Ms": 0.2357440000000679,
+            "medianLatencyP95Ms": 0.33568300000024465,
+            "medianLatencyP99Ms": 0.7957280000000537
+          },
+          {
+            "operation": "query",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075364181.2012,
+                "windowEndedAtMs": 1785075366181.2012,
+                "wallMs": 2000,
+                "attempted": 21948,
+                "completedInWindow": 21820,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 10910,
+                "latency": {
+                  "count": 21948,
+                  "minMs": 1.7603269999999611,
+                  "p50Ms": 11.228674999999384,
+                  "p95Ms": 15.37902799999938,
+                  "p99Ms": 22.71173799999997,
+                  "maxMs": 31.496397999999317
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:query:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 10910,
+            "medianLatencyP50Ms": 11.228674999999384,
+            "medianLatencyP95Ms": 15.37902799999938,
+            "medianLatencyP99Ms": 22.71173799999997
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075366704.9973,
+                "windowEndedAtMs": 1785075368704.9973,
+                "wallMs": 2000,
+                "attempted": 4096,
+                "completedInWindow": 4095,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 2047.5,
+                "latency": {
+                  "count": 4096,
+                  "minMs": 0.32036300000072515,
+                  "p50Ms": 0.42007200000080047,
+                  "p95Ms": 0.7024750000000495,
+                  "p99Ms": 1.5766110000004119,
+                  "maxMs": 8.424057999999604
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-uncontended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 2047.5,
+            "medianLatencyP50Ms": 0.42007200000080047,
+            "medianLatencyP95Ms": 0.7024750000000495,
+            "medianLatencyP99Ms": 1.5766110000004119
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075369268.6643,
+                "windowEndedAtMs": 1785075371268.6643,
+                "wallMs": 2000,
+                "attempted": 6555,
+                "completedInWindow": 6427,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 3213.5,
+                "latency": {
+                  "count": 6555,
+                  "minMs": 4.260881000000154,
+                  "p50Ms": 39.47987599999942,
+                  "p95Ms": 48.46081299999969,
+                  "p99Ms": 74.2872239999997,
+                  "maxMs": 85.86794200000077
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-uncontended:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 3213.5,
+            "medianLatencyP50Ms": 39.47987599999942,
+            "medianLatencyP95Ms": 48.46081299999969,
+            "medianLatencyP99Ms": 74.2872239999997
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075371823.4717,
+                "windowEndedAtMs": 1785075373823.4717,
+                "wallMs": 2000,
+                "attempted": 4403,
+                "completedInWindow": 4402,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 2201,
+                "latency": {
+                  "count": 4403,
+                  "minMs": 0.30755999999928463,
+                  "p50Ms": 0.3908480000009149,
+                  "p95Ms": 0.6571579999999813,
+                  "p99Ms": 1.4385419999998703,
+                  "maxMs": 7.438621000001149
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-contended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 2201,
+            "medianLatencyP50Ms": 0.3908480000009149,
+            "medianLatencyP95Ms": 0.6571579999999813,
+            "medianLatencyP99Ms": 1.4385419999998703
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075374373.529,
+                "windowEndedAtMs": 1785075376373.529,
+                "wallMs": 2000,
+                "attempted": 6497,
+                "completedInWindow": 6369,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 3184.5,
+                "latency": {
+                  "count": 6497,
+                  "minMs": 3.0046839999995427,
+                  "p50Ms": 39.04926400000113,
+                  "p95Ms": 56.29826700000012,
+                  "p99Ms": 75.83003200000167,
+                  "maxMs": 95.22703499999989
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-contended:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 3184.5,
+            "medianLatencyP50Ms": 39.04926400000113,
+            "medianLatencyP95Ms": 56.29826700000012,
+            "medianLatencyP99Ms": 75.83003200000167
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075376921.7346,
+                "windowEndedAtMs": 1785075378921.7346,
+                "wallMs": 2000,
+                "attempted": 11423,
+                "completedInWindow": 11422,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 5711,
+                "latency": {
+                  "count": 11423,
+                  "minMs": 0.1086250000007567,
+                  "p50Ms": 0.1590089999990596,
+                  "p95Ms": 0.2323690000011993,
+                  "p99Ms": 0.6663549999975658,
+                  "maxMs": 1.9693330000009155
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:procedure:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 5711,
+            "medianLatencyP50Ms": 0.1590089999990596,
+            "medianLatencyP95Ms": 0.2323690000011993,
+            "medianLatencyP99Ms": 0.6663549999975658
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075379447.9702,
+                "windowEndedAtMs": 1785075381447.9702,
+                "wallMs": 2000,
+                "attempted": 52814,
+                "completedInWindow": 52686,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 26343,
+                "latency": {
+                  "count": 52814,
+                  "minMs": 0.5355190000009316,
+                  "p50Ms": 4.449197000001732,
+                  "p95Ms": 8.389103000001342,
+                  "p99Ms": 10.19321299999865,
+                  "maxMs": 17.123256999999285
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:procedure:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 26343,
+            "medianLatencyP50Ms": 4.449197000001732,
+            "medianLatencyP95Ms": 8.389103000001342,
+            "medianLatencyP99Ms": 10.19321299999865
+          }
+        ],
+        "connections": [
+          {
+            "targetConnections": 1,
+            "connected": 1,
+            "addedConnections": 1,
+            "setupMs": 46.71300000001065,
+            "readyConnectionsPerSec": 428.14634041905765,
+            "readyLatency": {
+              "count": 20,
+              "minMs": 1.5160179999984393,
+              "p50Ms": 2.2957880000030855,
+              "p95Ms": 3.0090720000007423,
+              "p99Ms": 3.9797009999965667,
+              "maxMs": 3.9797009999965667
+            },
+            "connectedSnapshotId": "connections:1:connected",
+            "connectedIdlePhaseId": "connections:1:idle",
+            "work": {
+              "windowStartedAtMs": 1785075402522.9163,
+              "windowEndedAtMs": 1785075403522.9163,
+              "wallMs": 1000,
+              "attempted": 3207,
+              "completedInWindow": 3206,
+              "completedAfterWindow": 1,
+              "failed": 0,
+              "throughputPerSec": 3206,
+              "latency": {
+                "count": 3207,
+                "minMs": 0.1822939999983646,
+                "p50Ms": 0.2686459999968065,
+                "p95Ms": 0.5246179999958258,
+                "p99Ms": 1.0345999999990454,
+                "maxMs": 3.458980999996129
+              },
+              "errors": [],
+              "interruption": null,
+              "phaseId": "connections:1:work"
+            },
+            "errors": []
+          },
+          {
+            "targetConnections": 1000,
+            "connected": 1000,
+            "addedConnections": 999,
+            "setupMs": 358.5500849999953,
+            "readyConnectionsPerSec": 2786.221623681983,
+            "readyLatency": {
+              "count": 999,
+              "minMs": 14.311367000002065,
+              "p50Ms": 20.94064200000139,
+              "p95Ms": 41.785296000001836,
+              "p99Ms": 42.24453199999698,
+              "maxMs": 43.33122000000003
+            },
+            "connectedSnapshotId": "connections:1000:connected",
+            "connectedIdlePhaseId": "connections:1000:idle",
+            "work": {
+              "windowStartedAtMs": 1785075404884.1277,
+              "windowEndedAtMs": 1785075405884.1277,
+              "wallMs": 1000,
+              "attempted": 8905,
+              "completedInWindow": 7905,
+              "completedAfterWindow": 1000,
+              "failed": 0,
+              "throughputPerSec": 7905,
+              "latency": {
+                "count": 8905,
+                "minMs": 24.247556000002078,
+                "p50Ms": 116.38841200000024,
+                "p95Ms": 149.72217599999567,
+                "p99Ms": 180.51947899999504,
+                "maxMs": 187.31367600000522
+              },
+              "errors": [],
+              "interruption": null,
+              "phaseId": "connections:1000:work"
+            },
+            "errors": []
+          }
+        ],
+        "subscriptions": [
+          {
+            "pattern": "shared",
+            "users": 500,
+            "queriesPerUser": 10,
+            "logicalSubscriptions": 5000,
+            "distinctQueryArguments": 10,
+            "baselineIdlePhaseId": "subscriptions:shared:baseline-idle",
+            "setupMs": 310.9530569999988,
+            "setupConnectionsPerSec": 1607.959750657804,
+            "subscribedSnapshotId": "subscriptions:shared:subscribed",
+            "subscribedIdlePhaseId": "subscriptions:shared:idle",
+            "phaseId": "subscriptions:shared:updates",
+            "updates": 40,
+            "updateThroughputPerSec": 20,
+            "expectedDeliveries": 20000,
+            "observedDeliveries": 20000,
+            "duplicateDeliveries": 0,
+            "unexpectedDeliveries": 0,
+            "corruptDeliveries": 0,
+            "missingDeliveries": 0,
+            "deliveryThroughputPerSec": 10000.356512709657,
+            "updateAckLatency": {
+              "count": 40,
+              "minMs": 12.08940900000016,
+              "p50Ms": 15.759376999994856,
+              "p95Ms": 23.54553300000407,
+              "p99Ms": 28.429120000000694,
+              "maxMs": 28.429120000000694
+            },
+            "deliveryLatency": {
+              "count": 20000,
+              "minMs": 1.3109409999960917,
+              "p50Ms": 9.256248999998206,
+              "p95Ms": 18.127100000005157,
+              "p99Ms": 22.006211999992956,
+              "maxMs": 27.065168000000995
+            },
+            "timeToAll": {
+              "count": 40,
+              "minMs": 11.28342999999586,
+              "p50Ms": 15.719200999999885,
+              "p95Ms": 22.787854999995034,
+              "p99Ms": 27.065168000000995,
+              "maxMs": 27.065168000000995
+            },
+            "capacity": [
+              {
+                "windowStartedAtMs": 1785075410358.7778,
+                "windowEndedAtMs": 1785075412358.7778,
+                "wallMs": 2000,
+                "attempted": 141,
+                "completedInWindow": 140,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 70,
+                "latency": {
+                  "count": 141,
+                  "minMs": 10.030957000002672,
+                  "p50Ms": 13.79794899999979,
+                  "p95Ms": 17.473158000000694,
+                  "p99Ms": 19.9028460000045,
+                  "maxMs": 23.879903000000922
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 1,
+                "phaseId": "subscriptions:shared:capacity-1",
+                "deliveriesPerUpdate": 500,
+                "deliveryThroughputPerSec": 35000,
+                "updateAckLatency": {
+                  "count": 141,
+                  "minMs": 9.939897999996901,
+                  "p50Ms": 13.748035000004165,
+                  "p95Ms": 17.42422400000214,
+                  "p99Ms": 19.845289000004414,
+                  "maxMs": 23.835239
+                },
+                "deliveryLatency": {
+                  "count": 70500,
+                  "minMs": 0.6442349999997532,
+                  "p50Ms": 7.738227000001643,
+                  "p95Ms": 14.061486999999033,
+                  "p99Ms": 16.348257000005106,
+                  "maxMs": 23.792388999994728
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              },
+              {
+                "windowStartedAtMs": 1785075412376.8088,
+                "windowEndedAtMs": 1785075414376.8088,
+                "wallMs": 2000,
+                "attempted": 210,
+                "completedInWindow": 200,
+                "completedAfterWindow": 10,
+                "failed": 0,
+                "throughputPerSec": 100,
+                "latency": {
+                  "count": 210,
+                  "minMs": 13.0715410000048,
+                  "p50Ms": 91.2863870000001,
+                  "p95Ms": 161.54600700000447,
+                  "p99Ms": 185.30946200000471,
+                  "maxMs": 222.78510400000232
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 10,
+                "phaseId": "subscriptions:shared:capacity-10",
+                "deliveriesPerUpdate": 500,
+                "deliveryThroughputPerSec": 50000,
+                "updateAckLatency": {
+                  "count": 210,
+                  "minMs": 12.945642999999109,
+                  "p50Ms": 91.24458800000139,
+                  "p95Ms": 161.52151000000595,
+                  "p99Ms": 185.27074800000264,
+                  "maxMs": 222.7554799999998
+                },
+                "deliveryLatency": {
+                  "count": 105000,
+                  "minMs": 0.739173000001756,
+                  "p50Ms": 78.23987299999862,
+                  "p95Ms": 151.7184019999986,
+                  "p99Ms": 179.2547080000004,
+                  "maxMs": 222.72022299999662
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "correctness": {
+              "ok": true,
+              "errors": []
+            }
+          },
+          {
+            "pattern": "partitioned",
+            "users": 500,
+            "queriesPerUser": 10,
+            "logicalSubscriptions": 5000,
+            "distinctQueryArguments": 5000,
+            "baselineIdlePhaseId": "subscriptions:partitioned:baseline-idle",
+            "setupMs": 825.2988379999952,
+            "setupConnectionsPerSec": 605.8411535046932,
+            "subscribedSnapshotId": "subscriptions:partitioned:subscribed",
+            "subscribedIdlePhaseId": "subscriptions:partitioned:idle",
+            "phaseId": "subscriptions:partitioned:updates",
+            "updates": 200,
+            "updateThroughputPerSec": 100,
+            "expectedDeliveries": 200,
+            "observedDeliveries": 200,
+            "duplicateDeliveries": 0,
+            "unexpectedDeliveries": 0,
+            "corruptDeliveries": 0,
+            "missingDeliveries": 0,
+            "deliveryThroughputPerSec": 99.97958711770828,
+            "updateAckLatency": {
+              "count": 200,
+              "minMs": 0.9601610000026994,
+              "p50Ms": 1.4261579999947571,
+              "p95Ms": 1.9897490000003017,
+              "p99Ms": 2.2406340000015916,
+              "maxMs": 2.610510999998951
+            },
+            "deliveryLatency": {
+              "count": 200,
+              "minMs": 0.632951999999932,
+              "p50Ms": 0.927267999999458,
+              "p95Ms": 1.437459000000672,
+              "p99Ms": 1.7382369999977527,
+              "maxMs": 2.1319389999989653
+            },
+            "timeToAll": {
+              "count": 200,
+              "minMs": 0.632951999999932,
+              "p50Ms": 0.927267999999458,
+              "p95Ms": 1.437459000000672,
+              "p99Ms": 1.7382369999977527,
+              "maxMs": 2.1319389999989653
+            },
+            "capacity": [
+              {
+                "windowStartedAtMs": 1785075419379.5017,
+                "windowEndedAtMs": 1785075421379.5017,
+                "wallMs": 2000,
+                "attempted": 2136,
+                "completedInWindow": 2135,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 1067.5,
+                "latency": {
+                  "count": 2136,
+                  "minMs": 0.6144190000050003,
+                  "p50Ms": 0.7918019999997341,
+                  "p95Ms": 1.8542159999997239,
+                  "p99Ms": 2.771432999994431,
+                  "maxMs": 10.577719000000798
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 1,
+                "phaseId": "subscriptions:partitioned:capacity-1",
+                "deliveriesPerUpdate": 1,
+                "deliveryThroughputPerSec": 1067.5,
+                "updateAckLatency": {
+                  "count": 2136,
+                  "minMs": 0.6097890000019106,
+                  "p50Ms": 0.7808319999967352,
+                  "p95Ms": 1.835841000000073,
+                  "p99Ms": 2.7518360000030953,
+                  "maxMs": 10.558583000005456
+                },
+                "deliveryLatency": {
+                  "count": 2136,
+                  "minMs": 0.40642700000171317,
+                  "p50Ms": 0.5496259999999893,
+                  "p95Ms": 1.5063289999961853,
+                  "p99Ms": 2.2103470000001835,
+                  "maxMs": 10.214153999993869
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              },
+              {
+                "windowStartedAtMs": 1785075421393.5547,
+                "windowEndedAtMs": 1785075423393.5547,
+                "wallMs": 2000,
+                "attempted": 2655,
+                "completedInWindow": 2623,
+                "completedAfterWindow": 32,
+                "failed": 0,
+                "throughputPerSec": 1311.5,
+                "latency": {
+                  "count": 2655,
+                  "minMs": 1.5449530000041705,
+                  "p50Ms": 23.507102000003215,
+                  "p95Ms": 32.37140200000431,
+                  "p99Ms": 45.82411000000138,
+                  "maxMs": 57.72224900000583
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 32,
+                "phaseId": "subscriptions:partitioned:capacity-32",
+                "deliveriesPerUpdate": 1,
+                "deliveryThroughputPerSec": 1311.5,
+                "updateAckLatency": {
+                  "count": 2655,
+                  "minMs": 1.4971020000011777,
+                  "p50Ms": 23.48961799999961,
+                  "p95Ms": 32.363045999998576,
+                  "p99Ms": 45.816967000006116,
+                  "maxMs": 57.713261999997485
+                },
+                "deliveryLatency": {
+                  "count": 2655,
+                  "minMs": 1.455813999993552,
+                  "p50Ms": 23.220522000003257,
+                  "p95Ms": 32.08893900000112,
+                  "p99Ms": 45.57661399999779,
+                  "maxMs": 57.526370999999926
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              },
+              {
+                "windowStartedAtMs": 1785075423544.2056,
+                "windowEndedAtMs": 1785075425544.2056,
+                "wallMs": 2000,
+                "attempted": 3135,
+                "completedInWindow": 2635,
+                "completedAfterWindow": 500,
+                "failed": 0,
+                "throughputPerSec": 1317.5,
+                "latency": {
+                  "count": 3135,
+                  "minMs": 14.622364000002563,
+                  "p50Ms": 371.95688700000755,
+                  "p95Ms": 408.62514699999883,
+                  "p99Ms": 415.99265500000183,
+                  "maxMs": 437.139516999996
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 500,
+                "phaseId": "subscriptions:partitioned:capacity-500",
+                "deliveriesPerUpdate": 1,
+                "deliveryThroughputPerSec": 1317.5,
+                "updateAckLatency": {
+                  "count": 3135,
+                  "minMs": 14.567601000002469,
+                  "p50Ms": 371.9499139999971,
+                  "p95Ms": 408.61794299999747,
+                  "p99Ms": 415.9855519999983,
+                  "maxMs": 437.1326049999989
+                },
+                "deliveryLatency": {
+                  "count": 3135,
+                  "minMs": 14.531523000005109,
+                  "p50Ms": 371.70430000001215,
+                  "p95Ms": 408.3387369999982,
+                  "p99Ms": 415.64601100000436,
+                  "maxMs": 437.1111329999985
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "correctness": {
+              "ok": true,
+              "errors": []
+            }
+          }
+        ],
+        "failures": []
+      },
+      "resources": {
+        "server": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1785075361148.6926,
+              "rootPid": 2547787,
+              "rssKind": "sumProcessRss",
+              "rssMb": 86.9765625,
+              "cumulativeCpuSeconds": 1,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1785075402528.4172,
+              "rootPid": 2547787,
+              "rssKind": "sumProcessRss",
+              "rssMb": 112.80859375,
+              "cumulativeCpuSeconds": 19,
+              "processCount": 1
+            },
+            "connections:1000:connected": {
+              "timestampMs": 1785075404889.802,
+              "rootPid": 2547787,
+              "rssKind": "sumProcessRss",
+              "rssMb": 118.08203125,
+              "cumulativeCpuSeconds": 20,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1785075408363.1956,
+              "rootPid": 2547787,
+              "rssKind": "sumProcessRss",
+              "rssMb": 130.8359375,
+              "cumulativeCpuSeconds": 22,
+              "processCount": 1
+            },
+            "subscriptions:partitioned:subscribed": {
+              "timestampMs": 1785075417384.2146,
+              "rootPid": 2547787,
+              "rssKind": "sumProcessRss",
+              "rssMb": 141.55078125,
+              "cumulativeCpuSeconds": 28,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 1001.504150390625,
+              "cpuSeconds": 0.9335161378888507,
+              "cpuCores": 0.9321140981040803,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 90.51953125,
+                "peak": 95.9296875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1.9406475347603518,
+              "cpuCores": 0.9703237673801759,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 94.546875,
+                "peak": 97.05078125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:query:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 117.28515625,
+                "peak": 121.640625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1.9619921797758542,
+              "cpuCores": 0.9809960898879271,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 121.34375,
+                "peak": 125.2734375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 134.265625,
+                "peak": 149.23828125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 134.71484375,
+                "peak": 139.2265625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 138.64453125,
+                "peak": 141.53515625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 139.53515625,
+                "peak": 141.71484375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 155.84765625,
+                "peak": 157.3046875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 1000.534423828125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 154.6484375,
+                "peak": 155.9140625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:ramp": {
+              "wallMs": 19053.305419921875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 127.18359375,
+                "peak": 127.39453125
+              },
+              "sampleCount": 78,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 1000.276123046875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 118.83984375,
+                "peak": 118.84765625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 1,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 114.74609375,
+                "peak": 119.66015625
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "connections:1000:ramp": {
+              "wallMs": 358.49755859375,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 119.12890625,
+                "peak": 121.24609375
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1000:idle": {
+              "wallMs": 1000.46533203125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 119.078125,
+                "peak": 121.50390625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1000:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 1.0563295976881122,
+              "cpuCores": 1.0563295976881122,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 137.86328125,
+                "peak": 140.0625
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 1000.5810546875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 129.09375,
+                "peak": 143.64453125
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:setup": {
+              "wallMs": 310.953125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 125.06640625,
+                "peak": 129.1328125
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 1000.580078125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 134.2734375,
+                "peak": 136.7734375
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 1999.9287109375,
+              "cpuSeconds": 1,
+              "cpuCores": 0.500017822900914,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 132.34765625,
+                "peak": 132.81640625
+              },
+              "sampleCount": 11,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 1.9594760467921475,
+              "cpuCores": 0.9797380233960737,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 135.60546875,
+                "peak": 137.2265625
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-10": {
+              "wallMs": 2000,
+              "cpuSeconds": 1.823421025992431,
+              "cpuCores": 0.9117105129962155,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 156.71875,
+                "peak": 164.21484375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:baseline-idle": {
+              "wallMs": 1001.807373046875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 165.14453125,
+                "peak": 166.49609375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:setup": {
+              "wallMs": 825.298828125,
+              "cpuSeconds": 1,
+              "cpuCores": 1.2116823215075978,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 142.61328125,
+                "peak": 155.93359375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:idle": {
+              "wallMs": 1000.9130859375,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 157.5546875,
+                "peak": 159.0390625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:updates": {
+              "wallMs": 2000.408203125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 141.828125,
+                "peak": 142.98046875
+              },
+              "sampleCount": 11,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 147.7578125,
+                "peak": 150.078125
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-32": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 166.6484375,
+                "peak": 174.046875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-500": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 180.4921875,
+                "peak": 185.5859375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            }
+          }
+        },
+        "loadGenerator": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1785075361148.6926,
+              "rootPid": 2547806,
+              "rssKind": "sumProcessRss",
+              "rssMb": 49.3359375,
+              "cumulativeCpuSeconds": 0,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1785075402528.4172,
+              "rootPid": 2547806,
+              "rssKind": "sumProcessRss",
+              "rssMb": 57.08984375,
+              "cumulativeCpuSeconds": 9,
+              "processCount": 1
+            },
+            "connections:1000:connected": {
+              "timestampMs": 1785075404889.802,
+              "rootPid": 2547806,
+              "rssKind": "sumProcessRss",
+              "rssMb": 66.59765625,
+              "cumulativeCpuSeconds": 10,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1785075408363.1956,
+              "rootPid": 2547806,
+              "rssKind": "sumProcessRss",
+              "rssMb": 82.55859375,
+              "cumulativeCpuSeconds": 11,
+              "processCount": 1
+            },
+            "subscriptions:partitioned:subscribed": {
+              "timestampMs": 1785075417384.2146,
+              "rootPid": 2547806,
+              "rssKind": "sumProcessRss",
+              "rssMb": 81.28125,
+              "cumulativeCpuSeconds": 17,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 1001.504150390625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 49.44921875,
+                "peak": 49.76953125
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 56.8359375,
+                "peak": 60.28515625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:query:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 100.875,
+                "peak": 104.68359375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 94.00390625,
+                "peak": 94.60546875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 94.8203125,
+                "peak": 98.234375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 93.984375,
+                "peak": 94.74609375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 96.67578125,
+                "peak": 97.5
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 95.90625,
+                "peak": 96.61328125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 107.78515625,
+                "peak": 112.4921875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 1000.534423828125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 115.6875,
+                "peak": 118.7890625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:ramp": {
+              "wallMs": 19053.305419921875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 56.64453125,
+                "peak": 65.33203125
+              },
+              "sampleCount": 78,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 1000.276123046875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 56.68359375,
+                "peak": 56.6953125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 57.3984375,
+                "peak": 58.06640625
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "connections:1000:ramp": {
+              "wallMs": 358.49755859375,
+              "cpuSeconds": 1,
+              "cpuCores": 2.789419275050633,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 59.51171875,
+                "peak": 69.328125
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1000:idle": {
+              "wallMs": 1000.46533203125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 67.28125,
+                "peak": 69.33203125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1000:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 1,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 79.93359375,
+                "peak": 103.66796875
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 1000.5810546875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 108.6875,
+                "peak": 109.29296875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:setup": {
+              "wallMs": 310.953125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 72.2421875,
+                "peak": 75.91015625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 1000.580078125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 85.83984375,
+                "peak": 86.2109375
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 1999.9287109375,
+              "cpuSeconds": 1,
+              "cpuCores": 0.500017822900914,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 88.28125,
+                "peak": 94.91015625
+              },
+              "sampleCount": 11,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 114.734375,
+                "peak": 136.41015625
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-10": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 142.9375,
+                "peak": 155.0703125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:baseline-idle": {
+              "wallMs": 1001.807373046875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 146.12109375,
+                "peak": 154.44140625
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:setup": {
+              "wallMs": 825.298828125,
+              "cpuSeconds": 1,
+              "cpuCores": 1.2116823215075978,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 75.65625,
+                "peak": 79.54296875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:idle": {
+              "wallMs": 1000.9130859375,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 81.26953125,
+                "peak": 81.51953125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:updates": {
+              "wallMs": 2000.408203125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 81.48046875,
+                "peak": 81.828125
+              },
+              "sampleCount": 11,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 83.79296875,
+                "peak": 86.40625
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-32": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 89.69140625,
+                "peak": 94.66796875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-500": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 108.9296875,
+                "peak": 112.76953125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            }
+          }
+        }
+      },
+      "startupIdle": {
+        "snapshot": {
+          "timestampMs": 1785075359476.6987,
+          "rootPid": 2547787,
+          "rssKind": "sumProcessRss",
+          "rssMb": 65.19140625,
+          "cumulativeCpuSeconds": 0,
+          "processCount": 1
+        },
+        "window": {
+          "wallMs": 1000.54833984375,
+          "cpuSeconds": 0,
+          "cpuCores": 0,
+          "rssKind": "sumProcessRss",
+          "rssMb": {
+            "p50": 65.46875,
+            "peak": 65.4765625
+          },
+          "sampleCount": 3,
+          "processCountPeak": 1
+        }
+      },
+      "implementationVersion": "workspace",
+      "startupMode": {
+        "telemetry": "disabled",
+        "durability": "balanced",
+        "telemetryProfile": "disabled",
+        "runtimeTelemetry": "false",
+        "exporter": "unconfigured",
+        "localSink": "disabled",
+        "telemetryLimits": null,
+        "gracefulShutdownMs": 10000
+      },
+      "telemetryReport": {
+        "schemaVersion": 1,
+        "startupMode": {
+          "telemetry": "disabled",
+          "durability": "balanced",
+          "telemetryProfile": "disabled",
+          "runtimeTelemetry": "false",
+          "exporter": "unconfigured",
+          "localSink": "disabled",
+          "telemetryLimits": null,
+          "gracefulShutdownMs": 10000
+        },
+        "runtime": {
+          "beforeDrain": {
+            "enabled": false,
+            "queuedRecords": 0,
+            "queuedBytes": 0,
+            "oldestAgeMs": 0,
+            "metricSeries": 0,
+            "traceRetention": {
+              "maxTraces": 0,
+              "maxStagedRecords": 0,
+              "maxStagedBytes": 0,
+              "decisionRetentionMs": 0,
+              "activeTraces": 0,
+              "completedDecisions": 0,
+              "stagedRecords": 0,
+              "stagedBytes": 0,
+              "promotedTraces": 0,
+              "discardedTraces": 0,
+              "discardedRecords": 0,
+              "dropped": {
+                "activeOverflow": 0,
+                "stagedOverflow": 0,
+                "decisionOverflow": 0,
+                "expiredDecisions": 0,
+                "drain": 0,
+                "invalid": 0
+              }
+            },
+            "localSink": {
+              "configured": false,
+              "inFlight": false,
+              "pendingRecords": 0,
+              "pendingBytes": 0,
+              "oldestAgeMs": 0,
+              "deliveredRecords": 0,
+              "failures": 0,
+              "timeouts": 0,
+              "dropped": {
+                "overflow": 0,
+                "expired": 0,
+                "failure": 0,
+                "drain": 0
+              }
+            },
+            "dropped": {
+              "overflow": 0,
+              "expired": 0,
+              "oversized": 0,
+              "invalid": 0,
+              "exporter": 0,
+              "cardinality": 0,
+              "drain": 0
+            },
+            "exporter": {
+              "configured": false,
+              "inFlight": false,
+              "attempts": 0,
+              "failures": 0,
+              "timeouts": 0,
+              "exportedRecords": 0,
+              "failedRecords": 0,
+              "aggregateSnapshotPending": false,
+              "exportedAggregateSnapshots": 0,
+              "failedAggregateSnapshots": 0
+            }
+          },
+          "afterDrain": {
+            "enabled": false,
+            "queuedRecords": 0,
+            "queuedBytes": 0,
+            "oldestAgeMs": 0,
+            "metricSeries": 0,
+            "traceRetention": {
+              "maxTraces": 0,
+              "maxStagedRecords": 0,
+              "maxStagedBytes": 0,
+              "decisionRetentionMs": 0,
+              "activeTraces": 0,
+              "completedDecisions": 0,
+              "stagedRecords": 0,
+              "stagedBytes": 0,
+              "promotedTraces": 0,
+              "discardedTraces": 0,
+              "discardedRecords": 0,
+              "dropped": {
+                "activeOverflow": 0,
+                "stagedOverflow": 0,
+                "decisionOverflow": 0,
+                "expiredDecisions": 0,
+                "drain": 0,
+                "invalid": 0
+              }
+            },
+            "localSink": {
+              "configured": false,
+              "inFlight": false,
+              "pendingRecords": 0,
+              "pendingBytes": 0,
+              "oldestAgeMs": 0,
+              "deliveredRecords": 0,
+              "failures": 0,
+              "timeouts": 0,
+              "dropped": {
+                "overflow": 0,
+                "expired": 0,
+                "failure": 0,
+                "drain": 0
+              }
+            },
+            "dropped": {
+              "overflow": 0,
+              "expired": 0,
+              "oversized": 0,
+              "invalid": 0,
+              "exporter": 0,
+              "cardinality": 0,
+              "drain": 0
+            },
+            "exporter": {
+              "configured": false,
+              "inFlight": false,
+              "attempts": 0,
+              "failures": 0,
+              "timeouts": 0,
+              "exportedRecords": 0,
+              "failedRecords": 0,
+              "aggregateSnapshotPending": false,
+              "exportedAggregateSnapshots": 0,
+              "failedAggregateSnapshots": 0
+            }
+          }
+        },
+        "aggregates": {
+          "maxSeries": 0,
+          "overflowedRecords": 0,
+          "spans": 0,
+          "durationMs": 0,
+          "operations": {
+            "query": {
+              "count": 0,
+              "durationMs": 0,
+              "stages": {
+                "admission": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "auth": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "policy": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "handler": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "execution": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "fetch": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "statement": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "storage": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "commit": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "rollback": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "publication": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "match": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "evaluation": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "changed": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "unchanged": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "encoding": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "fanout": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "queue": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "delivery": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "export": {
+                  "count": 0,
+                  "durationMs": 0
+                }
+              }
+            },
+            "mutation": {
+              "count": 0,
+              "durationMs": 0,
+              "stages": {
+                "admission": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "auth": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "policy": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "handler": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "execution": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "fetch": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "statement": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "storage": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "commit": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "rollback": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "publication": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "match": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "evaluation": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "changed": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "unchanged": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "encoding": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "fanout": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "queue": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "delivery": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "export": {
+                  "count": 0,
+                  "durationMs": 0
+                }
+              }
+            },
+            "procedure": {
+              "count": 0,
+              "durationMs": 0,
+              "stages": {
+                "admission": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "auth": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "policy": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "handler": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "execution": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "fetch": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "statement": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "storage": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "commit": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "rollback": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "publication": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "match": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "evaluation": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "changed": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "unchanged": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "encoding": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "fanout": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "queue": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "delivery": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "export": {
+                  "count": 0,
+                  "durationMs": 0
+                }
+              }
+            },
+            "subscription": {
+              "count": 0,
+              "durationMs": 0,
+              "stages": {
+                "admission": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "auth": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "policy": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "handler": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "execution": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "fetch": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "statement": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "storage": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "commit": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "rollback": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "publication": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "match": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "evaluation": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "changed": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "unchanged": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "encoding": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "fanout": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "queue": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "delivery": {
+                  "count": 0,
+                  "durationMs": 0
+                },
+                "export": {
+                  "count": 0,
+                  "durationMs": 0
+                }
+              }
+            }
+          }
+        },
+        "localOutput": {
+          "records": 0,
+          "bytes": 0,
+          "invalidRecords": 0,
+          "oversizedLines": 0,
+          "controlOverflow": 0,
+          "peakPendingChars": 0,
+          "diagnosticTailChars": 33,
+          "byKind": {
+            "span": 0,
+            "event": 0,
+            "metric": 0
+          },
+          "byOperation": {
+            "query": 0,
+            "mutation": 0,
+            "procedure": 0,
+            "sse": 0,
+            "transaction": 0,
+            "scheduled": 0,
+            "subscription": 0,
+            "backup": 0,
+            "restore": 0,
+            "lifecycle": 0
+          },
+          "byStage": {
+            "admission": 0,
+            "auth": 0,
+            "policy": 0,
+            "handler": 0,
+            "execution": 0,
+            "fetch": 0,
+            "statement": 0,
+            "storage": 0,
+            "commit": 0,
+            "rollback": 0,
+            "publication": 0,
+            "match": 0,
+            "evaluation": 0,
+            "changed": 0,
+            "unchanged": 0,
+            "encoding": 0,
+            "fanout": 0,
+            "queue": 0,
+            "delivery": 0,
+            "export": 0
+          }
+        },
+        "drainAccounting": {
+          "retainedBeforeDrain": 0,
+          "exportedDuringDrain": 0,
+          "drainDropDelta": 0,
+          "overflowDropDelta": 0,
+          "expiredDropDelta": 0,
+          "drainTimeAdditionsOrRemovals": 0
+        }
+      }
+    },
+    "convex": {
+      "workload": {
+        "system": "convex",
+        "config": {
+          "profile": "default",
+          "seed": 56098,
+          "operation": {
+            "warmupMs": 500,
+            "steadyMs": 2000,
+            "trials": 1,
+            "drainTimeoutMs": 30000,
+            "profiles": [
+              {
+                "name": "latency",
+                "connections": 1,
+                "inFlightPerConnection": 1
+              },
+              {
+                "name": "saturation",
+                "connections": 32,
+                "inFlightPerConnection": 4
+              }
+            ]
+          },
+          "connections": {
+            "levels": [
+              1,
+              1000
+            ],
+            "batchSize": 100,
+            "workMs": 1000,
+            "timeoutMs": 120000
+          },
+          "subscriptions": {
+            "users": 500,
+            "queriesPerUser": 10,
+            "durationMs": 2000,
+            "sharedUpdatesPerSec": 20,
+            "partitionedUpdatesPerSec": 100,
+            "capacityDurationMs": 2000,
+            "capacitySlots": [
+              1,
+              32,
+              512
+            ],
+            "setupTimeoutMs": 120000,
+            "drainTimeoutMs": 30000,
+            "patterns": [
+              "shared",
+              "partitioned"
+            ]
+          },
+          "resources": {
+            "idleMs": 1000
+          },
+          "seedBatchSize": 256
+        },
+        "snapshots": {
+          "seededIdle": "server:seeded-idle",
+          "seededIdlePhaseId": "server:seeded-idle-window",
+          "connectionBaselineIdlePhaseId": "connections:baseline-idle"
+        },
+        "operations": [
+          {
+            "operation": "query",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075436196.6409,
+                "windowEndedAtMs": 1785075438196.6409,
+                "wallMs": 2000,
+                "attempted": 336,
+                "completedInWindow": 335,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 167.5,
+                "latency": {
+                  "count": 336,
+                  "minMs": 3.9626409999991665,
+                  "p50Ms": 5.937641999999869,
+                  "p95Ms": 7.612600000000384,
+                  "p99Ms": 9.11905999999999,
+                  "maxMs": 10.625520999999935
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:query:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 167.5,
+            "medianLatencyP50Ms": 5.937641999999869,
+            "medianLatencyP95Ms": 7.612600000000384,
+            "medianLatencyP99Ms": 9.11905999999999
+          },
+          {
+            "operation": "query",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075439110.7217,
+                "windowEndedAtMs": 1785075441110.7217,
+                "wallMs": 2000,
+                "attempted": 916,
+                "completedInWindow": 788,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 394,
+                "latency": {
+                  "count": 916,
+                  "minMs": 30.226840000000266,
+                  "p50Ms": 309.3229100000008,
+                  "p95Ms": 380.95288900000014,
+                  "p99Ms": 403.79389600000013,
+                  "maxMs": 434.9383950000001
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:query:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 394,
+            "medianLatencyP50Ms": 309.3229100000008,
+            "medianLatencyP95Ms": 380.95288900000014,
+            "medianLatencyP99Ms": 403.79389600000013
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075442095.7363,
+                "windowEndedAtMs": 1785075444095.7363,
+                "wallMs": 2000,
+                "attempted": 185,
+                "completedInWindow": 184,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 92,
+                "latency": {
+                  "count": 185,
+                  "minMs": 7.45339999999851,
+                  "p50Ms": 10.051527000001443,
+                  "p95Ms": 14.964721000000281,
+                  "p99Ms": 23.254778000000442,
+                  "maxMs": 66.87724999999955
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-uncontended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 92,
+            "medianLatencyP50Ms": 10.051527000001443,
+            "medianLatencyP95Ms": 14.964721000000281,
+            "medianLatencyP99Ms": 23.254778000000442
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075445662.122,
+                "windowEndedAtMs": 1785075447662.122,
+                "wallMs": 2000,
+                "attempted": 466,
+                "completedInWindow": 338,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 169,
+                "latency": {
+                  "count": 466,
+                  "minMs": 82.79884500000117,
+                  "p50Ms": 691.5215380000009,
+                  "p95Ms": 805.8422250000003,
+                  "p99Ms": 865.052674999999,
+                  "maxMs": 902.5652580000005
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-uncontended:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 169,
+            "medianLatencyP50Ms": 691.5215380000009,
+            "medianLatencyP95Ms": 805.8422250000003,
+            "medianLatencyP99Ms": 865.052674999999
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075449081.8687,
+                "windowEndedAtMs": 1785075451081.8687,
+                "wallMs": 2000,
+                "attempted": 183,
+                "completedInWindow": 182,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 91,
+                "latency": {
+                  "count": 183,
+                  "minMs": 6.842659999998432,
+                  "p50Ms": 9.476033000002644,
+                  "p95Ms": 16.69894899999781,
+                  "p99Ms": 22.508089999999356,
+                  "maxMs": 75.95195899999817
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-contended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 91,
+            "medianLatencyP50Ms": 9.476033000002644,
+            "medianLatencyP95Ms": 16.69894899999781,
+            "medianLatencyP99Ms": 22.508089999999356
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075454425.4949,
+                "windowEndedAtMs": 1785075456425.4949,
+                "wallMs": 2000,
+                "attempted": 290,
+                "completedInWindow": 162,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 81,
+                "latency": {
+                  "count": 290,
+                  "minMs": 34.60859100000016,
+                  "p50Ms": 679.5254190000014,
+                  "p95Ms": 4251.574443999998,
+                  "p99Ms": 5475.882495000002,
+                  "maxMs": 6038.265466000001
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-contended:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 81,
+            "medianLatencyP50Ms": 679.5254190000014,
+            "medianLatencyP95Ms": 4251.574443999998,
+            "medianLatencyP99Ms": 5475.882495000002
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075461215.3215,
+                "windowEndedAtMs": 1785075463215.3215,
+                "wallMs": 2000,
+                "attempted": 627,
+                "completedInWindow": 626,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 313,
+                "latency": {
+                  "count": 627,
+                  "minMs": 1.9593339999992168,
+                  "p50Ms": 2.894695999999385,
+                  "p95Ms": 5.486202999996749,
+                  "p99Ms": 6.500393999998778,
+                  "maxMs": 7.343553999999131
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:procedure:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 313,
+            "medianLatencyP50Ms": 2.894695999999385,
+            "medianLatencyP95Ms": 5.486202999996749,
+            "medianLatencyP99Ms": 6.500393999998778
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075464012.173,
+                "windowEndedAtMs": 1785075466012.173,
+                "wallMs": 2000,
+                "attempted": 796,
+                "completedInWindow": 668,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 334,
+                "latency": {
+                  "count": 796,
+                  "minMs": 9.508173000001989,
+                  "p50Ms": 304.50826199999574,
+                  "p95Ms": 676.435590000001,
+                  "p99Ms": 1042.3215090000012,
+                  "maxMs": 1503.640625
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:procedure:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 334,
+            "medianLatencyP50Ms": 304.50826199999574,
+            "medianLatencyP95Ms": 676.435590000001,
+            "medianLatencyP99Ms": 1042.3215090000012
+          }
+        ],
+        "connections": [
+          {
+            "targetConnections": 1,
+            "connected": 1,
+            "addedConnections": 1,
+            "setupMs": 120.98905700001342,
+            "readyConnectionsPerSec": 165.30420598284175,
+            "readyLatency": {
+              "count": 20,
+              "minMs": 4.514239999996789,
+              "p50Ms": 5.516488000001118,
+              "p95Ms": 8.343480000003183,
+              "p99Ms": 8.459156999997504,
+              "maxMs": 8.459156999997504
+            },
+            "connectedSnapshotId": "connections:1:connected",
+            "connectedIdlePhaseId": "connections:1:idle",
+            "work": {
+              "windowStartedAtMs": 1785075487450.6887,
+              "windowEndedAtMs": 1785075488450.6887,
+              "wallMs": 1000,
+              "attempted": 181,
+              "completedInWindow": 180,
+              "completedAfterWindow": 1,
+              "failed": 0,
+              "throughputPerSec": 180,
+              "latency": {
+                "count": 181,
+                "minMs": 3.9871770000027027,
+                "p50Ms": 5.215041999996174,
+                "p95Ms": 7.753507000001264,
+                "p99Ms": 9.74054199999955,
+                "maxMs": 10.84899199999927
+              },
+              "errors": [],
+              "interruption": null,
+              "phaseId": "connections:1:work"
+            },
+            "errors": []
+          },
+          {
+            "targetConnections": 1000,
+            "connected": 1000,
+            "addedConnections": 999,
+            "setupMs": 1947.192842999997,
+            "readyConnectionsPerSec": 513.0462571241083,
+            "readyLatency": {
+              "count": 999,
+              "minMs": 53.13696399999753,
+              "p50Ms": 126.16898399999627,
+              "p95Ms": 186.1705079999956,
+              "p99Ms": 211.37643799999933,
+              "maxMs": 215.92317000000185
+            },
+            "connectedSnapshotId": "connections:1000:connected",
+            "connectedIdlePhaseId": "connections:1000:idle",
+            "work": {
+              "windowStartedAtMs": 1785075491403.2722,
+              "windowEndedAtMs": 1785075492403.2722,
+              "wallMs": 1000,
+              "attempted": 1302,
+              "completedInWindow": 302,
+              "completedAfterWindow": 1000,
+              "failed": 0,
+              "throughputPerSec": 302,
+              "latency": {
+                "count": 1302,
+                "minMs": 102.54369600000064,
+                "p50Ms": 1904.1518159999978,
+                "p95Ms": 2878.2901950000014,
+                "p99Ms": 2952.834364000002,
+                "maxMs": 3047.1394500000024
+              },
+              "errors": [],
+              "interruption": null,
+              "phaseId": "connections:1000:work"
+            },
+            "errors": []
+          }
+        ],
+        "subscriptions": [
+          {
+            "pattern": "shared",
+            "users": 500,
+            "queriesPerUser": 10,
+            "logicalSubscriptions": 5000,
+            "distinctQueryArguments": 10,
+            "baselineIdlePhaseId": "subscriptions:shared:baseline-idle",
+            "setupMs": 1349.047329999994,
+            "setupConnectionsPerSec": 370.6319184516693,
+            "subscribedSnapshotId": "subscriptions:shared:subscribed",
+            "subscribedIdlePhaseId": "subscriptions:shared:idle",
+            "phaseId": "subscriptions:shared:updates",
+            "updates": 40,
+            "updateThroughputPerSec": 6.741424509521437,
+            "expectedDeliveries": 20000,
+            "observedDeliveries": 20000,
+            "duplicateDeliveries": 0,
+            "unexpectedDeliveries": 0,
+            "corruptDeliveries": 0,
+            "missingDeliveries": 0,
+            "deliveryThroughputPerSec": 2372.6875793821105,
+            "updateAckLatency": {
+              "count": 40,
+              "minMs": 8.54715299999225,
+              "p50Ms": 13.361668999990798,
+              "p95Ms": 21.610419999997248,
+              "p99Ms": 29.668842999992194,
+              "maxMs": 29.668842999992194
+            },
+            "deliveryLatency": {
+              "count": 20000,
+              "minMs": 14.923152999996091,
+              "p50Ms": 333.9525089999952,
+              "p95Ms": 1099.740718000001,
+              "p99Ms": 1516.3532569999952,
+              "maxMs": 2508.1782359999925
+            },
+            "timeToAll": {
+              "count": 40,
+              "minMs": 1301.7019660000078,
+              "p50Ms": 1659.2451109999965,
+              "p95Ms": 2029.675218000004,
+              "p99Ms": 2508.1782359999925,
+              "maxMs": 2508.1782359999925
+            },
+            "capacity": [
+              {
+                "windowStartedAtMs": 1785075507048.7476,
+                "windowEndedAtMs": 1785075509048.7476,
+                "wallMs": 2000,
+                "attempted": 1,
+                "completedInWindow": 0,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 0,
+                "latency": {
+                  "count": 1,
+                  "minMs": 2517.339611999996,
+                  "p50Ms": 2517.339611999996,
+                  "p95Ms": 2517.339611999996,
+                  "p99Ms": 2517.339611999996,
+                  "maxMs": 2517.339611999996
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 1,
+                "phaseId": "subscriptions:shared:capacity-1",
+                "deliveriesPerUpdate": 500,
+                "deliveryThroughputPerSec": 0,
+                "updateAckLatency": {
+                  "count": 1,
+                  "minMs": 15.085981000011088,
+                  "p50Ms": 15.085981000011088,
+                  "p95Ms": 15.085981000011088,
+                  "p99Ms": 15.085981000011088,
+                  "maxMs": 15.085981000011088
+                },
+                "deliveryLatency": {
+                  "count": 500,
+                  "minMs": 28.136524000001373,
+                  "p50Ms": 1336.3426319999999,
+                  "p95Ms": 2397.9540509999933,
+                  "p99Ms": 2496.165473999994,
+                  "maxMs": 2516.3426130000007
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              },
+              {
+                "windowStartedAtMs": 1785075509594.9329,
+                "windowEndedAtMs": 1785075511594.9329,
+                "wallMs": 2000,
+                "attempted": 10,
+                "completedInWindow": 0,
+                "completedAfterWindow": 10,
+                "failed": 0,
+                "throughputPerSec": 0,
+                "latency": {
+                  "count": 10,
+                  "minMs": 2358.0156690000003,
+                  "p50Ms": 2358.0368200000084,
+                  "p95Ms": 3395.5166009999957,
+                  "p99Ms": 3395.5166009999957,
+                  "maxMs": 3395.5166009999957
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 10,
+                "phaseId": "subscriptions:shared:capacity-10",
+                "deliveriesPerUpdate": 500,
+                "deliveryThroughputPerSec": 0,
+                "updateAckLatency": {
+                  "count": 10,
+                  "minMs": 20.45515300000261,
+                  "p50Ms": 58.238905000005616,
+                  "p95Ms": 78.93766600001254,
+                  "p99Ms": 78.93766600001254,
+                  "maxMs": 78.93766600001254
+                },
+                "deliveryLatency": {
+                  "count": 5000,
+                  "minMs": 71.90118200000143,
+                  "p50Ms": 413.9765380000026,
+                  "p95Ms": 1376.0714479999879,
+                  "p99Ms": 2171.354364999992,
+                  "maxMs": 3395.3821069999976
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "correctness": {
+              "ok": true,
+              "errors": []
+            }
+          },
+          {
+            "pattern": "partitioned",
+            "users": 500,
+            "queriesPerUser": 10,
+            "logicalSubscriptions": 5000,
+            "distinctQueryArguments": 5000,
+            "baselineIdlePhaseId": "subscriptions:partitioned:baseline-idle",
+            "setupMs": 8402.895692999999,
+            "setupConnectionsPerSec": 59.503297228421296,
+            "subscribedSnapshotId": "subscriptions:partitioned:subscribed",
+            "subscribedIdlePhaseId": "subscriptions:partitioned:idle",
+            "phaseId": "subscriptions:partitioned:updates",
+            "updates": 200,
+            "updateThroughputPerSec": 100,
+            "expectedDeliveries": 200,
+            "observedDeliveries": 200,
+            "duplicateDeliveries": 0,
+            "unexpectedDeliveries": 0,
+            "corruptDeliveries": 0,
+            "missingDeliveries": 0,
+            "deliveryThroughputPerSec": 99.9572182106486,
+            "updateAckLatency": {
+              "count": 200,
+              "minMs": 6.263658999989275,
+              "p50Ms": 7.912858000010601,
+              "p95Ms": 10.66238200000953,
+              "p99Ms": 13.083235000012792,
+              "maxMs": 15.087483999988763
+            },
+            "deliveryLatency": {
+              "count": 200,
+              "minMs": 8.602738999994472,
+              "p50Ms": 10.875543000001926,
+              "p95Ms": 16.04151300000376,
+              "p99Ms": 19.8759599999903,
+              "maxMs": 22.718540000001667
+            },
+            "timeToAll": {
+              "count": 200,
+              "minMs": 8.602738999994472,
+              "p50Ms": 10.875543000001926,
+              "p95Ms": 16.04151300000376,
+              "p99Ms": 19.8759599999903,
+              "maxMs": 22.718540000001667
+            },
+            "capacity": [
+              {
+                "windowStartedAtMs": 1785075525508.4407,
+                "windowEndedAtMs": 1785075527508.4407,
+                "wallMs": 2000,
+                "attempted": 175,
+                "completedInWindow": 174,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 87,
+                "latency": {
+                  "count": 175,
+                  "minMs": 8.926208000004408,
+                  "p50Ms": 10.983537000007345,
+                  "p95Ms": 14.511809000003268,
+                  "p99Ms": 18.102106999998796,
+                  "maxMs": 18.133084999994026
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 1,
+                "phaseId": "subscriptions:partitioned:capacity-1",
+                "deliveriesPerUpdate": 1,
+                "deliveryThroughputPerSec": 87,
+                "updateAckLatency": {
+                  "count": 175,
+                  "minMs": 6.498500999994576,
+                  "p50Ms": 8.14981399998942,
+                  "p95Ms": 11.460535999998683,
+                  "p99Ms": 11.875427999999374,
+                  "maxMs": 13.382469999996829
+                },
+                "deliveryLatency": {
+                  "count": 175,
+                  "minMs": 8.892975999988266,
+                  "p50Ms": 10.942149999988033,
+                  "p95Ms": 14.454802000007476,
+                  "p99Ms": 18.065649000011035,
+                  "maxMs": 18.090253999995184
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              },
+              {
+                "windowStartedAtMs": 1785075527582.786,
+                "windowEndedAtMs": 1785075529582.786,
+                "wallMs": 2000,
+                "attempted": 296,
+                "completedInWindow": 264,
+                "completedAfterWindow": 32,
+                "failed": 0,
+                "throughputPerSec": 132,
+                "latency": {
+                  "count": 296,
+                  "minMs": 92.46996200000285,
+                  "p50Ms": 228.8297700000112,
+                  "p95Ms": 320.66775100000086,
+                  "p99Ms": 351.40135299999383,
+                  "maxMs": 361.84200599999167
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 32,
+                "phaseId": "subscriptions:partitioned:capacity-32",
+                "deliveriesPerUpdate": 1,
+                "deliveryThroughputPerSec": 132,
+                "updateAckLatency": {
+                  "count": 296,
+                  "minMs": 49.45031800000288,
+                  "p50Ms": 157.42726599999878,
+                  "p95Ms": 211.17574700000114,
+                  "p99Ms": 257.5578109999915,
+                  "maxMs": 286.9312379999901
+                },
+                "deliveryLatency": {
+                  "count": 296,
+                  "minMs": 92.43414499999199,
+                  "p50Ms": 228.80235800000082,
+                  "p95Ms": 320.61664599999494,
+                  "p99Ms": 351.37403999999515,
+                  "maxMs": 361.8256560000009
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              },
+              {
+                "windowStartedAtMs": 1785075530724.6748,
+                "windowEndedAtMs": 1785075532724.6748,
+                "wallMs": 2000,
+                "attempted": 748,
+                "completedInWindow": 248,
+                "completedAfterWindow": 500,
+                "failed": 0,
+                "throughputPerSec": 124,
+                "latency": {
+                  "count": 748,
+                  "minMs": 315.53227999999945,
+                  "p50Ms": 2896.291233000011,
+                  "p95Ms": 3576.1214860000036,
+                  "p99Ms": 3710.0467000000062,
+                  "maxMs": 3826.9795109999977
+                },
+                "errors": [],
+                "interruption": null,
+                "slots": 500,
+                "phaseId": "subscriptions:partitioned:capacity-500",
+                "deliveriesPerUpdate": 1,
+                "deliveryThroughputPerSec": 124,
+                "updateAckLatency": {
+                  "count": 748,
+                  "minMs": 253.15944899999886,
+                  "p50Ms": 2645.175583999997,
+                  "p95Ms": 3330.509628,
+                  "p99Ms": 3579.3306870000088,
+                  "maxMs": 3623.200024000005
+                },
+                "deliveryLatency": {
+                  "count": 748,
+                  "minMs": 312.98662100000365,
+                  "p50Ms": 2896.2522409999947,
+                  "p95Ms": 3576.103252000001,
+                  "p99Ms": 3710.0324929999915,
+                  "maxMs": 3826.9575900000054
+                },
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "correctness": {
+              "ok": true,
+              "errors": []
+            }
+          }
+        ],
+        "failures": []
+      },
+      "resources": {
+        "server": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1785075435685.5986,
+              "rootPid": 2548262,
+              "rssKind": "sumProcessRss",
+              "rssMb": 144.875,
+              "cumulativeCpuSeconds": 3,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1785075487457.2432,
+              "rootPid": 2548262,
+              "rssKind": "sumProcessRss",
+              "rssMb": 1360.09765625,
+              "cumulativeCpuSeconds": 47,
+              "processCount": 1
+            },
+            "connections:1000:connected": {
+              "timestampMs": 1785075491409.7507,
+              "rootPid": 2548262,
+              "rssKind": "sumProcessRss",
+              "rssMb": 1907.79296875,
+              "cumulativeCpuSeconds": 53,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1785075498627.6924,
+              "rootPid": 2548262,
+              "rssKind": "sumProcessRss",
+              "rssMb": 2095.203125,
+              "cumulativeCpuSeconds": 66,
+              "processCount": 1
+            },
+            "subscriptions:partitioned:subscribed": {
+              "timestampMs": 1785075523512.2822,
+              "rootPid": 2548262,
+              "rssKind": "sumProcessRss",
+              "rssMb": 2250.87109375,
+              "cumulativeCpuSeconds": 97,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 1000.531982421875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 144.375,
+                "peak": 144.375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 158.68359375,
+                "peak": 164.6796875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:query:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 5.004157375526811,
+              "cpuCores": 2.5020786877634054,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 459.703125,
+                "peak": 494.546875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 491.6640625,
+                "peak": 493.41796875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2.014084424433076,
+              "cpuCores": 1.007042212216538,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 550.515625,
+                "peak": 559.33203125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 592.83984375,
+                "peak": 596.09375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 627.87890625,
+                "peak": 634.484375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 3.9716013166842146,
+              "cpuCores": 1.9858006583421073,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 644.68359375,
+                "peak": 644.87890625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 5,
+              "cpuCores": 2.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1145.59375,
+                "peak": 1344.40234375
+              },
+              "sampleCount": 8,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 1000.892822265625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1377.328125,
+                "peak": 1377.328125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:ramp": {
+              "wallMs": 19128.3984375,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1376.4296875,
+                "peak": 1377.5703125
+              },
+              "sampleCount": 78,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 1000.297119140625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1360.05078125,
+                "peak": 1360.05078125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 1.89266229874341,
+              "cpuCores": 1.89266229874341,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1360.6328125,
+                "peak": 1362.67578125
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "connections:1000:ramp": {
+              "wallMs": 1947.160400390625,
+              "cpuSeconds": 4.067030034168155,
+              "cpuCores": 2.088698000099148,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1603.6875,
+                "peak": 1907.4453125
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "connections:1000:idle": {
+              "wallMs": 1001.3779296875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1907.4453125,
+                "peak": 1907.4453125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1000:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 2.98367568322503,
+              "cpuCores": 2.98367568322503,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1908.26171875,
+                "peak": 1963.87890625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 1000.94384765625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1978.92578125,
+                "peak": 1978.92578125
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:setup": {
+              "wallMs": 1349.04736328125,
+              "cpuSeconds": 3,
+              "cpuCores": 2.2237914558486547,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 1995.765625,
+                "peak": 2083.87109375
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 1000.62109375,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2095.06640625,
+                "peak": 2095.06640625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 8429.259765625,
+              "cpuSeconds": 6,
+              "cpuCores": 0.7118062756196387,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2099.71484375,
+                "peak": 2101.0078125
+              },
+              "sampleCount": 37,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2100.78125,
+                "peak": 2100.78125
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-10": {
+              "wallMs": 2000,
+              "cpuSeconds": 1.3513354070578174,
+              "cpuCores": 0.6756677035289087,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2101.5625,
+                "peak": 2101.5625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:baseline-idle": {
+              "wallMs": 1001.1455078125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2103.27734375,
+                "peak": 2108.77734375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:setup": {
+              "wallMs": 8402.895751953125,
+              "cpuSeconds": 23,
+              "cpuCores": 2.7371516533040414,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2172.47265625,
+                "peak": 2251.74609375
+              },
+              "sampleCount": 35,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:idle": {
+              "wallMs": 1001.055419921875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2250.85546875,
+                "peak": 2250.85546875
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:updates": {
+              "wallMs": 2000.85595703125,
+              "cpuSeconds": 2,
+              "cpuCores": 0.9995722045716275,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2251.83984375,
+                "peak": 2252.19921875
+              },
+              "sampleCount": 11,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2252.28515625,
+                "peak": 2252.6875
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-32": {
+              "wallMs": 2000,
+              "cpuSeconds": 3.8106017246931145,
+              "cpuCores": 1.9053008623465573,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2258.46875,
+                "peak": 2262.87890625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-500": {
+              "wallMs": 2000,
+              "cpuSeconds": 3.248787803976029,
+              "cpuCores": 1.6243939019880145,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 2413.89453125,
+                "peak": 2424.39453125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            }
+          }
+        },
+        "loadGenerator": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1785075435685.5986,
+              "rootPid": 2548307,
+              "rssKind": "sumProcessRss",
+              "rssMb": 58.38671875,
+              "cumulativeCpuSeconds": 0,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1785075487457.2432,
+              "rootPid": 2548307,
+              "rssKind": "sumProcessRss",
+              "rssMb": 74.7734375,
+              "cumulativeCpuSeconds": 3,
+              "processCount": 1
+            },
+            "connections:1000:connected": {
+              "timestampMs": 1785075491409.7507,
+              "rootPid": 2548307,
+              "rssKind": "sumProcessRss",
+              "rssMb": 295.62109375,
+              "cumulativeCpuSeconds": 4,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1785075498627.6924,
+              "rootPid": 2548307,
+              "rssKind": "sumProcessRss",
+              "rssMb": 199.75390625,
+              "cumulativeCpuSeconds": 5,
+              "processCount": 1
+            },
+            "subscriptions:partitioned:subscribed": {
+              "timestampMs": 1785075523512.2822,
+              "rootPid": 2548307,
+              "rssKind": "sumProcessRss",
+              "rssMb": 199.44140625,
+              "cumulativeCpuSeconds": 8,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 1000.531982421875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 58.56640625,
+                "peak": 58.71875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 66.15234375,
+                "peak": 67.97265625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:query:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 81.046875,
+                "peak": 87.57421875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 86.61328125,
+                "peak": 86.83984375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 88.62109375,
+                "peak": 89.59375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0.9321791183776287,
+              "cpuCores": 0.46608955918881434,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 87.08984375,
+                "peak": 87.34765625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 75.76171875,
+                "peak": 76.55859375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 76.17578125,
+                "peak": 76.5234375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 80.4296875,
+                "peak": 81.85546875
+              },
+              "sampleCount": 8,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 1000.892822265625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 82.3515625,
+                "peak": 82.6171875
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:ramp": {
+              "wallMs": 19128.3984375,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 74.7265625,
+                "peak": 74.82421875
+              },
+              "sampleCount": 78,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 1000.297119140625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 74.75390625,
+                "peak": 74.76953125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 75.46484375,
+                "peak": 75.625
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "connections:1000:ramp": {
+              "wallMs": 1947.160400390625,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5135683736169795,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 162.60546875,
+                "peak": 296.08203125
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "connections:1000:idle": {
+              "wallMs": 1001.3779296875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 295.57421875,
+                "peak": 296.08203125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1000:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 296.921875,
+                "peak": 304.1328125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 1000.94384765625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 317.6640625,
+                "peak": 318.77734375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:setup": {
+              "wallMs": 1349.04736328125,
+              "cpuSeconds": 1,
+              "cpuCores": 0.7412638186162183,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 181.671875,
+                "peak": 312.38671875
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 1000.62109375,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 203.81640625,
+                "peak": 213.23828125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 8429.259765625,
+              "cpuSeconds": 1,
+              "cpuCores": 0.11863437926993979,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 211.07421875,
+                "peak": 219.67578125
+              },
+              "sampleCount": 37,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 211.8359375,
+                "peak": 212.34765625
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-10": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 217.3515625,
+                "peak": 218.75390625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:baseline-idle": {
+              "wallMs": 1001.1455078125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 218.81640625,
+                "peak": 220.35546875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:setup": {
+              "wallMs": 8402.895751953125,
+              "cpuSeconds": 1,
+              "cpuCores": 0.11900659362191483,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 167.671875,
+                "peak": 211.40234375
+              },
+              "sampleCount": 35,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:idle": {
+              "wallMs": 1001.055419921875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 200.33984375,
+                "peak": 200.8046875
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:updates": {
+              "wallMs": 2000.85595703125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 199.73828125,
+                "peak": 200.41796875
+              },
+              "sampleCount": 11,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 201.3359375,
+                "peak": 201.56640625
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-32": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 209.43359375,
+                "peak": 210.6796875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "subscriptions:partitioned:capacity-500": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 318.6328125,
+                "peak": 319.5390625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            }
+          }
+        }
+      },
+      "startupIdle": {
+        "snapshot": {
+          "timestampMs": 1785075431244.0852,
+          "rootPid": 2548262,
+          "rssKind": "sumProcessRss",
+          "rssMb": 90.8359375,
+          "cumulativeCpuSeconds": 0,
+          "processCount": 1
+        },
+        "window": {
+          "wallMs": 1001.14892578125,
+          "cpuSeconds": 0,
+          "cpuCores": 0,
+          "rssKind": "sumProcessRss",
+          "rssMb": {
+            "p50": 90.8359375,
+            "peak": 90.8359375
+          },
+          "sampleCount": 3,
+          "processCountPeak": 1
+        }
+      },
+      "implementationVersion": "precompiled-2026-07-21-82d5e9f"
+    },
+    "spacetimedb": {
+      "workload": {
+        "system": "spacetimedb",
+        "config": {
+          "profile": "default",
+          "seed": 56098,
+          "operation": {
+            "warmupMs": 500,
+            "steadyMs": 2000,
+            "trials": 1,
+            "drainTimeoutMs": 30000,
+            "profiles": [
+              {
+                "name": "latency",
+                "connections": 1,
+                "inFlightPerConnection": 1
+              },
+              {
+                "name": "saturation",
+                "connections": 32,
+                "inFlightPerConnection": 4
+              }
+            ]
+          },
+          "connections": {
+            "levels": [
+              1,
+              1000
+            ],
+            "batchSize": 100,
+            "workMs": 1000,
+            "timeoutMs": 120000
+          },
+          "subscriptions": {
+            "users": 500,
+            "queriesPerUser": 10,
+            "durationMs": 2000,
+            "sharedUpdatesPerSec": 20,
+            "partitionedUpdatesPerSec": 100,
+            "capacityDurationMs": 2000,
+            "capacitySlots": [
+              1,
+              32,
+              512
+            ],
+            "setupTimeoutMs": 120000,
+            "drainTimeoutMs": 30000,
+            "patterns": [
+              "shared",
+              "partitioned"
+            ]
+          },
+          "resources": {
+            "idleMs": 1000
+          },
+          "seedBatchSize": 256
+        },
+        "snapshots": {
+          "seededIdle": "server:seeded-idle",
+          "seededIdlePhaseId": "server:seeded-idle-window",
+          "connectionBaselineIdlePhaseId": "connections:baseline-idle"
+        },
+        "operations": [
+          {
+            "operation": "query",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075545222.8552,
+                "windowEndedAtMs": 1785075547222.8552,
+                "wallMs": 2000,
+                "attempted": 866,
+                "completedInWindow": 865,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 432.5,
+                "latency": {
+                  "count": 866,
+                  "minMs": 0.6398749999998472,
+                  "p50Ms": 2.240913999999975,
+                  "p95Ms": 3.4995480000002317,
+                  "p99Ms": 4.766225999999733,
+                  "maxMs": 9.238658000000214
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:query:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 432.5,
+            "medianLatencyP50Ms": 2.240913999999975,
+            "medianLatencyP95Ms": 3.4995480000002317,
+            "medianLatencyP99Ms": 4.766225999999733
+          },
+          {
+            "operation": "query",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075547800.861,
+                "windowEndedAtMs": 1785075549800.861,
+                "wallMs": 2000,
+                "attempted": 10338,
+                "completedInWindow": 10210,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 5105,
+                "latency": {
+                  "count": 10338,
+                  "minMs": 5.91180600000007,
+                  "p50Ms": 23.544068000000152,
+                  "p95Ms": 38.93933399999969,
+                  "p99Ms": 46.225618999999824,
+                  "maxMs": 60.7529599999998
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:query:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 5105,
+            "medianLatencyP50Ms": 23.544068000000152,
+            "medianLatencyP95Ms": 38.93933399999969,
+            "medianLatencyP99Ms": 46.225618999999824
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075550337.299,
+                "windowEndedAtMs": 1785075552337.299,
+                "wallMs": 2000,
+                "attempted": 1430,
+                "completedInWindow": 1429,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 714.5,
+                "latency": {
+                  "count": 1430,
+                  "minMs": 0.9677560000000085,
+                  "p50Ms": 1.305913000000146,
+                  "p95Ms": 2.0367899999992005,
+                  "p99Ms": 2.6015449999995326,
+                  "maxMs": 5.0068389999996725
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-uncontended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 714.5,
+            "medianLatencyP50Ms": 1.305913000000146,
+            "medianLatencyP95Ms": 2.0367899999992005,
+            "medianLatencyP99Ms": 2.6015449999995326
+          },
+          {
+            "operation": "mutation-uncontended",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075552882.1177,
+                "windowEndedAtMs": 1785075554882.1177,
+                "wallMs": 2000,
+                "attempted": 68272,
+                "completedInWindow": 68144,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 34072,
+                "latency": {
+                  "count": 68272,
+                  "minMs": 1.268591000000015,
+                  "p50Ms": 3.5711510000001,
+                  "p95Ms": 5.771280999999362,
+                  "p99Ms": 8.407090000000608,
+                  "maxMs": 11.640177000001131
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-uncontended:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 34072,
+            "medianLatencyP50Ms": 3.5711510000001,
+            "medianLatencyP95Ms": 5.771280999999362,
+            "medianLatencyP99Ms": 8.407090000000608
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075555414.386,
+                "windowEndedAtMs": 1785075557414.386,
+                "wallMs": 2000,
+                "attempted": 1201,
+                "completedInWindow": 1200,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 600,
+                "latency": {
+                  "count": 1201,
+                  "minMs": 0.9405640000004496,
+                  "p50Ms": 1.380221999999776,
+                  "p95Ms": 2.607636000000639,
+                  "p99Ms": 3.66954700000133,
+                  "maxMs": 7.611280000000988
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-contended:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 600,
+            "medianLatencyP50Ms": 1.380221999999776,
+            "medianLatencyP95Ms": 2.607636000000639,
+            "medianLatencyP99Ms": 3.66954700000133
+          },
+          {
+            "operation": "mutation-contended",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075557962.0396,
+                "windowEndedAtMs": 1785075559962.0396,
+                "wallMs": 2000,
+                "attempted": 69086,
+                "completedInWindow": 68958,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 34479,
+                "latency": {
+                  "count": 69086,
+                  "minMs": 1.4992280000005849,
+                  "p50Ms": 3.5456749999993917,
+                  "p95Ms": 5.477557000000161,
+                  "p99Ms": 7.567928000000393,
+                  "maxMs": 13.061605000000782
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:mutation-contended:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 34479,
+            "medianLatencyP50Ms": 3.5456749999993917,
+            "medianLatencyP95Ms": 5.477557000000161,
+            "medianLatencyP99Ms": 7.567928000000393
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "latency",
+              "connections": 1,
+              "inFlightPerConnection": 1
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075560491.8137,
+                "windowEndedAtMs": 1785075562491.8137,
+                "wallMs": 2000,
+                "attempted": 1585,
+                "completedInWindow": 1584,
+                "completedAfterWindow": 1,
+                "failed": 0,
+                "throughputPerSec": 792,
+                "latency": {
+                  "count": 1585,
+                  "minMs": 0.3230779999976221,
+                  "p50Ms": 1.4364880000030098,
+                  "p95Ms": 1.966057000001456,
+                  "p99Ms": 2.428297999998904,
+                  "maxMs": 2.9238120000009076
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:procedure:latency:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 792,
+            "medianLatencyP50Ms": 1.4364880000030098,
+            "medianLatencyP95Ms": 1.966057000001456,
+            "medianLatencyP99Ms": 2.428297999998904
+          },
+          {
+            "operation": "procedure",
+            "profile": {
+              "name": "saturation",
+              "connections": 32,
+              "inFlightPerConnection": 4
+            },
+            "trials": [
+              {
+                "windowStartedAtMs": 1785075563041.2383,
+                "windowEndedAtMs": 1785075565041.2383,
+                "wallMs": 2000,
+                "attempted": 25068,
+                "completedInWindow": 24940,
+                "completedAfterWindow": 128,
+                "failed": 0,
+                "throughputPerSec": 12470,
+                "latency": {
+                  "count": 25068,
+                  "minMs": 1.6988320000018575,
+                  "p50Ms": 9.86514900000111,
+                  "p95Ms": 16.07861299999786,
+                  "p99Ms": 20.972038999996585,
+                  "maxMs": 33.00272100000075
+                },
+                "errors": [],
+                "interruption": null,
+                "phaseId": "operation:procedure:saturation:trial-0",
+                "correctness": {
+                  "ok": true,
+                  "errors": []
+                }
+              }
+            ],
+            "medianThroughputPerSec": 12470,
+            "medianLatencyP50Ms": 9.86514900000111,
+            "medianLatencyP95Ms": 16.07861299999786,
+            "medianLatencyP99Ms": 20.972038999996585
+          }
+        ],
+        "connections": [
+          {
+            "targetConnections": 1,
+            "connected": 1,
+            "addedConnections": 1,
+            "setupMs": 79.25147599998672,
+            "readyConnectionsPerSec": 252.36123047100537,
+            "readyLatency": {
+              "count": 20,
+              "minMs": 2.8121809999975085,
+              "p50Ms": 3.6978309999976773,
+              "p95Ms": 5.169686000001093,
+              "p99Ms": 5.440817999999126,
+              "maxMs": 5.440817999999126
+            },
+            "connectedSnapshotId": "connections:1:connected",
+            "connectedIdlePhaseId": "connections:1:idle",
+            "work": {
+              "windowStartedAtMs": 1785075586147.4536,
+              "windowEndedAtMs": 1785075587147.4536,
+              "wallMs": 1000,
+              "attempted": 497,
+              "completedInWindow": 496,
+              "completedAfterWindow": 1,
+              "failed": 0,
+              "throughputPerSec": 496,
+              "latency": {
+                "count": 497,
+                "minMs": 0.6281549999985145,
+                "p50Ms": 1.8782329999958165,
+                "p95Ms": 2.973084999997809,
+                "p99Ms": 3.62700799999584,
+                "maxMs": 5.274484999994456
+              },
+              "errors": [],
+              "interruption": null,
+              "phaseId": "connections:1:work"
+            },
+            "errors": []
+          },
+          {
+            "targetConnections": 1000,
+            "connected": 1000,
+            "addedConnections": 999,
+            "setupMs": 560.7363239999977,
+            "readyConnectionsPerSec": 1781.5860275889743,
+            "readyLatency": {
+              "count": 999,
+              "minMs": 28.533257000002777,
+              "p50Ms": 46.657649000000674,
+              "p95Ms": 65.51920000000246,
+              "p99Ms": 67.28540999999677,
+              "maxMs": 68.95766299999377
+            },
+            "connectedSnapshotId": "connections:1000:connected",
+            "connectedIdlePhaseId": "connections:1000:idle",
+            "work": {
+              "windowStartedAtMs": 1785075588711.6675,
+              "windowEndedAtMs": 1785075589711.6675,
+              "wallMs": 1000,
+              "attempted": 5658,
+              "completedInWindow": 4658,
+              "completedAfterWindow": 1000,
+              "failed": 0,
+              "throughputPerSec": 4658,
+              "latency": {
+                "count": 5658,
+                "minMs": 65.0844900000011,
+                "p50Ms": 177.22452099999646,
+                "p95Ms": 328.3576380000013,
+                "p99Ms": 367.5259260000021,
+                "maxMs": 388.4749740000043
+              },
+              "errors": [],
+              "interruption": null,
+              "phaseId": "connections:1000:work"
+            },
+            "errors": []
+          }
+        ],
+        "subscriptions": [],
+        "failures": [
+          {
+            "kind": "subscription",
+            "pattern": "shared",
+            "stage": "cleanup",
+            "message": "shared subscription release timed out after 5000ms",
+            "terminal": true
+          },
+          {
+            "kind": "subscription",
+            "pattern": "partitioned",
+            "stage": "cleanup",
+            "message": "not measured after terminal failure: shared subscription release timed out after 5000ms",
+            "terminal": false
+          }
+        ]
+      },
+      "resources": {
+        "server": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1785075544731.0461,
+              "rootPid": 2549076,
+              "rssKind": "sumProcessRss",
+              "rssMb": 111.8828125,
+              "cumulativeCpuSeconds": 0,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1785075586156.8958,
+              "rootPid": 2549076,
+              "rssKind": "sumProcessRss",
+              "rssMb": 144.0390625,
+              "cumulativeCpuSeconds": 16,
+              "processCount": 1
+            },
+            "connections:1000:connected": {
+              "timestampMs": 1785075588722.1113,
+              "rootPid": 2549076,
+              "rssKind": "sumProcessRss",
+              "rssMb": 320.05078125,
+              "cumulativeCpuSeconds": 17,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1785075592320.116,
+              "rootPid": 2549076,
+              "rssKind": "sumProcessRss",
+              "rssMb": 330.70703125,
+              "cumulativeCpuSeconds": 19,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 1001.0498046875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 111.25390625,
+                "peak": 111.25390625
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 116.9375,
+                "peak": 117.3359375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:query:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2.0576783461474375,
+              "cpuCores": 1.0288391730737187,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 143.6328125,
+                "peak": 143.78125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 143.0625,
+                "peak": 144.09375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 144.703125,
+                "peak": 144.76171875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 144.34765625,
+                "peak": 144.51171875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 144.67578125,
+                "peak": 144.69921875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 143.09765625,
+                "peak": 144.34765625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 144.91015625,
+                "peak": 145.67578125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 1000.481201171875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 144.60546875,
+                "peak": 144.60546875
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:ramp": {
+              "wallMs": 19086.075439453125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 144.0703125,
+                "peak": 144.6328125
+              },
+              "sampleCount": 78,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 1000.38330078125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 144.0703125,
+                "peak": 144.0703125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 1,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 141.8828125,
+                "peak": 144.0390625
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "connections:1000:ramp": {
+              "wallMs": 560.690673828125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 140.75,
+                "peak": 284.21875
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1000:idle": {
+              "wallMs": 1002.0703125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 320.05078125,
+                "peak": 320.05078125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1000:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 2,
+              "cpuCores": 2,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 324.14453125,
+                "peak": 326.81640625
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 1002.24853515625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 327.16796875,
+                "peak": 327.16796875
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:setup": {
+              "wallMs": 413.7470703125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 327.3046875,
+                "peak": 329.34765625
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 1002.22900390625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 330.5078125,
+                "peak": 330.53515625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 2001.716064453125,
+              "cpuSeconds": 1,
+              "cpuCores": 0.4995713516807905,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 330.5625,
+                "peak": 330.7109375
+              },
+              "sampleCount": 11,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 330.203125,
+                "peak": 330.5859375
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-10": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 285.69921875,
+                "peak": 298.5625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            }
+          }
+        },
+        "loadGenerator": {
+          "snapshots": {
+            "server:seeded-idle": {
+              "timestampMs": 1785075544731.0461,
+              "rootPid": 2549157,
+              "rssKind": "sumProcessRss",
+              "rssMb": 51.015625,
+              "cumulativeCpuSeconds": 0,
+              "processCount": 1
+            },
+            "connections:1:connected": {
+              "timestampMs": 1785075586156.8958,
+              "rootPid": 2549157,
+              "rssKind": "sumProcessRss",
+              "rssMb": 81.11328125,
+              "cumulativeCpuSeconds": 10,
+              "processCount": 1
+            },
+            "connections:1000:connected": {
+              "timestampMs": 1785075588722.1113,
+              "rootPid": 2549157,
+              "rssKind": "sumProcessRss",
+              "rssMb": 113.70703125,
+              "cumulativeCpuSeconds": 10,
+              "processCount": 1
+            },
+            "subscriptions:shared:subscribed": {
+              "timestampMs": 1785075592320.116,
+              "rootPid": 2549157,
+              "rssKind": "sumProcessRss",
+              "rssMb": 143.3984375,
+              "cumulativeCpuSeconds": 12,
+              "processCount": 1
+            }
+          },
+          "phases": {
+            "server:seeded-idle-window": {
+              "wallMs": 1001.0498046875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 50.265625,
+                "peak": 50.87109375
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "operation:query:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 66.65625,
+                "peak": 70.66015625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:query:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 107.86328125,
+                "peak": 126.8203125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 100.6015625,
+                "peak": 101.640625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-uncontended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0.876938542144142,
+              "cpuCores": 0.438469271072071,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 116.19921875,
+                "peak": 125.28515625
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 123.390625,
+                "peak": 124.8203125
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:mutation-contended:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 126.453125,
+                "peak": 132.76171875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:latency:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 132.4921875,
+                "peak": 132.9375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "operation:procedure:saturation:trial-0": {
+              "wallMs": 2000,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 138.640625,
+                "peak": 143.4375
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            },
+            "connections:baseline-idle": {
+              "wallMs": 1000.481201171875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 109.24609375,
+                "peak": 144.1484375
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:ramp": {
+              "wallMs": 19086.075439453125,
+              "cpuSeconds": 1,
+              "cpuCores": 0.05239421813941301,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 88.46484375,
+                "peak": 89.51171875
+              },
+              "sampleCount": 78,
+              "processCountPeak": 1
+            },
+            "connections:1:idle": {
+              "wallMs": 1000.38330078125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 81.265625,
+                "peak": 81.2890625
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 81.66015625,
+                "peak": 82.44921875
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "connections:1000:ramp": {
+              "wallMs": 560.690673828125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 84.953125,
+                "peak": 114.43359375
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "connections:1000:idle": {
+              "wallMs": 1002.0703125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 114.9921875,
+                "peak": 117.55078125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "connections:1000:work": {
+              "wallMs": 1000,
+              "cpuSeconds": 1.460856556364858,
+              "cpuCores": 1.460856556364858,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 127.5390625,
+                "peak": 206.4140625
+              },
+              "sampleCount": 7,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:baseline-idle": {
+              "wallMs": 1002.24853515625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 194.8671875,
+                "peak": 198.34375
+              },
+              "sampleCount": 5,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:setup": {
+              "wallMs": 413.7470703125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 132.28125,
+                "peak": 134.296875
+              },
+              "sampleCount": 3,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:idle": {
+              "wallMs": 1002.22900390625,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 144.76171875,
+                "peak": 146.14453125
+              },
+              "sampleCount": 6,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:updates": {
+              "wallMs": 2001.716064453125,
+              "cpuSeconds": 1,
+              "cpuCores": 0.4995713516807905,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 153.171875,
+                "peak": 163.43359375
+              },
+              "sampleCount": 11,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-1": {
+              "wallMs": 2000,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 167.39453125,
+                "peak": 183.3671875
+              },
+              "sampleCount": 10,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:capacity-10": {
+              "wallMs": 2000,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 210.72265625,
+                "peak": 223.796875
+              },
+              "sampleCount": 9,
+              "processCountPeak": 1
+            }
+          }
+        }
+      },
+      "startupIdle": {
+        "snapshot": {
+          "timestampMs": 1785075543168.6382,
+          "rootPid": 2549076,
+          "rssKind": "sumProcessRss",
+          "rssMb": 92.48828125,
+          "cumulativeCpuSeconds": 0,
+          "processCount": 1
+        },
+        "window": {
+          "wallMs": 1001.080322265625,
+          "cpuSeconds": 0,
+          "cpuCores": 0,
+          "rssKind": "sumProcessRss",
+          "rssMb": {
+            "p50": 92.48828125,
+            "peak": 92.48828125
+          },
+          "sampleCount": 3,
+          "processCountPeak": 1
+        }
+      },
+      "implementationVersion": "2.6.1"
+    }
+  },
+  "validation": {
+    "failures": [
+      {
+        "target": "spacetimedb",
+        "system": "spacetimedb",
+        "kind": "subscription",
+        "case": "subscriptions/shared",
+        "errors": [
+          "shared subscription release timed out after 5000ms"
+        ]
+      },
+      {
+        "target": "spacetimedb",
+        "system": "spacetimedb",
+        "kind": "subscription",
+        "case": "subscriptions/partitioned",
+        "errors": [
+          "not measured after terminal failure: shared subscription release timed out after 5000ms"
+        ]
+      }
+    ],
+    "integrityAnomalies": []
+  }
+}
