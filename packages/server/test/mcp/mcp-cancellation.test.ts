@@ -414,7 +414,11 @@ describe("MCP local cancellation ownership", () => {
     const call = callProcedure("parent", parent.signal);
     await entered.get("parent")!.promise;
     parent.abort(new Error("parent request canceled"));
-    await expect(call).rejects.toMatchObject({ code: "unavailable" });
+    await expect(call).rejects.toMatchObject({
+      code: "indeterminate",
+      message: "procedure completion is unknown after cancellation",
+      resource: "operation",
+    });
     expect(observedSignals.get("parent")?.aborted).toBe(true);
   });
 });

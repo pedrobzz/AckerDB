@@ -196,10 +196,36 @@ function applicationError(value: unknown) {
   return value;
 }
 
+function canceledHandlerOutcome(
+  signal: AbortSignal,
+  kind: "procedure" | "MCP tool",
+  cause: unknown,
+): DbzzError {
+  const reason = signal.reason;
+  if (
+    isDbzzError(reason) &&
+    (
+      reason.code === "unauthenticated" ||
+      reason.code === "unauthorized" ||
+      reason.code === "auth_unavailable"
+    )
+  ) {
+    // Revocation and expiry are authoritative security outcomes, not transport
+    // guesses. They must remain fail-closed even if the handler already ran.
+    return reason;
+  }
+  return new DbzzError(
+    "indeterminate",
+    `${kind} completion is unknown after cancellation`,
+    { resource: "operation", cause },
+  );
+}
+
 /**
  * Cancellation is determinate until policy admits the handler. Once the
  * handler starts, its external effects cannot be inferred from how its promise
- * settles, so every cancellation path must preserve that ambiguity.
+ * settles. Transport cancellation therefore preserves ambiguity, while an
+ * authoritative authentication revocation remains fail-closed.
  */
 async function invokeSideEffectingHandler<T>(
   signal: AbortSignal,
@@ -215,18 +241,10 @@ async function invokeSideEffectingHandler<T>(
     });
   } catch (cause) {
     if (!handlerStarted || !signal.aborted) throw cause;
-    throw new DbzzError(
-      "indeterminate",
-      `${kind} completion is unknown after cancellation`,
-      { resource: "operation", cause },
-    );
+    throw canceledHandlerOutcome(signal, kind, cause);
   }
   if (signal.aborted) {
-    throw new DbzzError(
-      "indeterminate",
-      `${kind} completion is unknown after cancellation`,
-      { resource: "operation", cause: signal.reason },
-    );
+    throw canceledHandlerOutcome(signal, kind, signal.reason);
   }
   return value;
 }
