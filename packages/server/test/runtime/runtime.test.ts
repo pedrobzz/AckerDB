@@ -11,6 +11,7 @@ import {
   parseCallResponse,
   parseSseMessage,
   type MutationMessage,
+  type ProcedureMessage,
   type SseMessage,
 } from "@dbzz/core";
 import {
@@ -401,6 +402,16 @@ const functions = {
       handler: async () => {
         externalProcedureStarted?.resolve(undefined);
         await externalProcedureRelease?.promise;
+        return "released";
+      },
+    }),
+    blockRejectingCancellation: procedure({
+      access: "public",
+      args: {},
+      handler: async (ctx: Ctx) => {
+        externalProcedureStarted?.resolve(undefined);
+        await externalProcedureRelease?.promise;
+        if (ctx.signal.aborted) throw ctx.signal.reason;
         return "released";
       },
     }),
@@ -1429,6 +1440,77 @@ describe("ordered convergence", () => {
 });
 
 describe("procedures and bounded SSE", () => {
+  test("reports cancellation after every handler completion path as indeterminate", async () => {
+    await session.open();
+    for (const [index, ref] of ["ops.block", "ops.blockRejectingCancellation"].entries()) {
+      externalProcedureStarted = deferred<void>();
+      externalProcedureRelease = deferred<void>();
+      const controller = new AbortController();
+      const message: ProcedureMessage = {
+        v: PROTOCOL_VERSION,
+        t: "p",
+        id: index + 1,
+        ref,
+        args: {},
+      };
+      const completion = runtime.procedure(
+        session.context,
+        { ...request(message), signal: controller.signal },
+      );
+
+      await externalProcedureStarted.promise;
+      controller.abort(new DbzzError("unavailable", "procedure request was canceled", {
+        resource: "operation",
+      }));
+      externalProcedureRelease.resolve(undefined);
+
+      await expect(completion).rejects.toMatchObject({
+        code: "indeterminate",
+        message: "procedure completion is unknown after cancellation",
+        resource: "operation",
+      });
+      expect(session.publications.filter((frame) => frame.id === message.id)).toEqual([
+        expect.objectContaining({
+          t: "err",
+          outcome: expect.objectContaining({
+            code: "indeterminate",
+            resource: "operation",
+          }),
+        }),
+      ]);
+    }
+
+    for (const [index, ref] of ["ops.block", "ops.blockRejectingCancellation"].entries()) {
+      externalProcedureStarted = deferred<void>();
+      externalProcedureRelease = deferred<void>();
+      const controller = new AbortController();
+      const response = runtime.runProcedure({
+        id: index + 10,
+        address: ref,
+        args: {},
+        principal: ANONYMOUS_PRINCIPAL,
+        signal: controller.signal,
+        respond: ({ body, status }) => new Response(body, { status }),
+      });
+
+      await externalProcedureStarted.promise;
+      controller.abort(new DbzzError("unavailable", "procedure request was canceled", {
+        resource: "operation",
+      }));
+      externalProcedureRelease.resolve(undefined);
+
+      expect(decode(await (await response).text())).toMatchObject({
+        t: "err",
+        id: index + 10,
+        outcome: {
+          code: "indeterminate",
+          message: "procedure completion is unknown after cancellation",
+          resource: "operation",
+        },
+      });
+    }
+  });
+
   test("runs external work outside an atomic procedure transaction", async () => {
     const response = await runtime.runProcedure({
       id: 1,

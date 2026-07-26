@@ -6,6 +6,7 @@ import {
   type ErrorMessage,
   type MutationMessage,
   type Outcome,
+  type ProcedureMessage,
   type QueryMessage,
   type ServerMessage,
   type SubscriptionCursor,
@@ -203,6 +204,8 @@ class FakeRuntime implements RuntimePort {
   readonly resets: number[] = [];
   readonly queries: QueryMessage[] = [];
   readonly queryRequests: RuntimeRequest<QueryMessage>[] = [];
+  readonly procedures: ProcedureMessage[] = [];
+  readonly procedureRequests: RuntimeRequest<ProcedureMessage>[] = [];
   readonly mutations: MutationMessage[] = [];
   readonly operationContexts: SessionRuntimeContext[] = [];
   readonly closes: Outcome[] = [];
@@ -211,6 +214,9 @@ class FakeRuntime implements RuntimePort {
   transitionReleaseCount = 0;
   subscribeHook: ((context: SessionRuntimeContext, id: number) => Promise<void>) | null = null;
   queryHook: ((context: SessionRuntimeContext, message: QueryMessage) => Promise<unknown>) | null = null;
+  procedureHook: (
+    (context: SessionRuntimeContext, request: RuntimeRequest<ProcedureMessage>) => Promise<unknown>
+  ) | null = null;
   resolveIdentityHook: (
     (account: ExternalAccount, signal?: AbortSignal) => Promise<Identity>
   ) | null = null;
@@ -311,6 +317,26 @@ class FakeRuntime implements RuntimePort {
       }));
       throw error;
     }
+  }
+
+  async procedure(
+    context: SessionRuntimeContext,
+    request: RuntimeRequest<ProcedureMessage>,
+  ): Promise<unknown> {
+    const { message } = request;
+    this.operationContexts.push(context);
+    this.procedures.push(message);
+    this.procedureRequests.push(request);
+    if (this.procedureHook !== null) return this.procedureHook(context, request);
+    const value = { ref: message.ref, principal: context.principal.kind };
+    await context.publish(prepareRuntimePublication({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: message.id,
+      kind: "procedure",
+      value,
+    }));
+    return value;
   }
 
   async mutation(
@@ -421,7 +447,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(runtime.queries).toHaveLength(0);
     expect(sink.controls).toEqual([
       {
-        v: 3,
+        v: 4,
         t: "err",
         id: null,
         outcome: { code: "malformed", retryable: false, message: "hello must be the first frame" },
@@ -437,12 +463,12 @@ describe("Session Protocol-2 ownership", () => {
     expect(session.currentClientSessionId).toBeNull();
 
     await handle(session, hello());
-    await handle(session, { v: 3, t: "sub", id: 1, ref: "messages.list", args: {} });
-    await handle(session, { v: 3, t: "reset", id: 1, cursor: cursor(0) });
+    await handle(session, { v: 4, t: "sub", id: 1, ref: "messages.list", args: {} });
+    await handle(session, { v: 4, t: "reset", id: 1, cursor: cursor(0) });
     await handle(session, query(2));
     await handle(session, mutation(3));
-    await handle(session, { v: 3, t: "unsub", id: 1 });
-    await handle(session, { v: 3, t: "ping" });
+    await handle(session, { v: 4, t: "unsub", id: 1 });
+    await handle(session, { v: 4, t: "ping" });
     await settle();
 
     expect(session.snapshot()).toMatchObject({
@@ -486,6 +512,47 @@ describe("Session Protocol-2 ownership", () => {
     await session.close();
   });
 
+  test("cancels only the matching in-flight procedure", async () => {
+    const runtime = new FakeRuntime();
+    const started = deferred<void>();
+    let abortReason: unknown;
+    runtime.procedureHook = async (_context, request) => {
+      const signal = request.signal;
+      if (signal === undefined) throw new Error("procedure request has no cancellation signal");
+      started.resolve(undefined);
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      abortReason = signal.reason;
+      throw signal.reason;
+    };
+    const session = new Session({ runtime, sink: new FakeSink(), source: TEST_SOURCE });
+    await handle(session, hello());
+
+    const running = handle(session, {
+      v: PROTOCOL_VERSION,
+      t: "p",
+      id: 41,
+      ref: "messages.hold",
+      args: {},
+    });
+    await started.promise;
+    await handle(session, { v: PROTOCOL_VERSION, t: "cancel", id: 42 });
+    expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(false);
+    await handle(session, { v: PROTOCOL_VERSION, t: "cancel", id: 41 });
+    await running;
+
+    expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(true);
+    expect(abortReason).toBeInstanceOf(DbzzError);
+    expect(outcomeFromError(abortReason)).toMatchObject({
+      code: "unavailable",
+      message: "procedure request was canceled",
+      resource: "operation",
+    });
+    await session.close();
+  });
+
   test("admits distinct subscription ids concurrently", async () => {
     const runtime = new FakeRuntime();
     const gate = deferred<void>();
@@ -494,7 +561,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, hello());
 
     const subscriptions = [1, 2].map((id) => handle(session, {
-      v: 3,
+      v: 4,
       t: "sub",
       id,
       ref: "messages.list",
@@ -510,6 +577,17 @@ describe("Session Protocol-2 ownership", () => {
 
   test("auth pauses and aborts the old epoch synchronously", async () => {
     const runtime = new FakeRuntime();
+    const procedureStarted = deferred<void>();
+    runtime.procedureHook = async (_context, request) => {
+      const signal = request.signal;
+      if (signal === undefined) throw new Error("procedure request has no cancellation signal");
+      procedureStarted.resolve(undefined);
+      await new Promise<void>((resolve) => {
+        if (signal.aborted) resolve();
+        else signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      throw signal.reason;
+    };
     const sink = new FakeSink();
     const verifier = new FakeVerifier();
     const verified = deferred<VerifiedCredential>();
@@ -518,14 +596,23 @@ describe("Session Protocol-2 ownership", () => {
     const session = new Session({ runtime, sink, source: TEST_SOURCE, clock: new ManualClock() });
     await handle(session, hello());
 
+    const runningProcedure = handle(session, {
+      v: PROTOCOL_VERSION,
+      t: "p",
+      id: 8,
+      ref: "messages.hold",
+      args: {},
+    });
+    await procedureStarted.promise;
     const refreshing = handle(session, auth(1, { kind: "bearer", token: "next" }));
     expect(runtime.opens[0]!.signal.aborted).toBe(true);
+    expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(true);
     expect(session.snapshot().phase).toBe("refreshing");
     const blockedData = handle(session, query(9));
     expect(runtime.queries).toHaveLength(0);
     expect((sink.controls.at(-1) as ErrorMessage).outcome.code).toBe("auth_stale");
 
-    await Promise.all([refreshing, blockedData]);
+    await Promise.all([runningProcedure, refreshing, blockedData]);
     await settle();
     expect(runtime.transitions).toHaveLength(0);
 
@@ -1117,7 +1204,7 @@ describe("Session Protocol-2 ownership", () => {
       "err",
     )[0];
     expect(error).toEqual({
-      v: 3,
+      v: 4,
       t: "err",
       id: 7,
       outcome: { code: "unauthorized", retryable: false, message: "access denied" },

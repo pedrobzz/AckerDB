@@ -470,23 +470,19 @@ describe("DbzzClient suspension", () => {
   });
 
   test("in-flight procedures settle promptly at suspension and never restart", async () => {
-    let fetches = 0;
-    const { client, sockets, port } = harness({
-      fetch: () => {
-        fetches++;
-        return new Promise<Response>(() => {});
-      },
-    });
+    const { client, sockets, port } = harness();
     const call = client.procedure("todos.tally", {}).then(mustErr);
-    expect(fetches).toBe(1);
+    expect(sockets).toHaveLength(1);
+    welcome(client, sockets[0]!);
+    const request = lastFrame(sockets[0]!, "p");
     port.suspend();
     const rejection = (await call) as DbzzClientError;
     expect(rejection).toBeInstanceOf(DbzzClientError);
     expect(rejection.code).toBe("indeterminate");
+    expect(lastFrame(sockets[0]!, "cancel").id).toBe(request.id);
     port.resume();
-    // A settled procedure is not demand: no fetch restarts and nothing dials.
-    expect(fetches).toBe(1);
-    expect(sockets).toHaveLength(0);
+    // A settled procedure is not demand: activation does not dial or replay it.
+    expect(sockets).toHaveLength(1);
     client.close();
   });
 

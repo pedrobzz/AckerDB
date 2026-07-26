@@ -11,7 +11,7 @@ import {
  * TypeScript types; every framework-owned field is validated after wire decode.
  */
 
-export const PROTOCOL_VERSION = 3 as const;
+export const PROTOCOL_VERSION = 4 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;
@@ -201,6 +201,16 @@ export interface QueryMessage extends Frame<"q"> {
   args: unknown;
 }
 
+export interface ProcedureMessage extends Frame<"p"> {
+  id: number;
+  ref: string;
+  args: unknown;
+}
+
+export interface ProcedureCancelMessage extends Frame<"cancel"> {
+  id: number;
+}
+
 export interface MutationMessage extends Frame<"m"> {
   id: number;
   ref: string;
@@ -218,6 +228,8 @@ export type ClientMessage =
   | UnsubscribeMessage
   | ResetRequestMessage
   | QueryMessage
+  | ProcedureMessage
+  | ProcedureCancelMessage
   | MutationMessage
   | PingMessage;
 
@@ -683,10 +695,15 @@ export function parseClientMessage(value: unknown): ClientMessage {
       parseSubscriptionCursor(result.cursor);
       break;
     case "q":
+    case "p":
       exact(result, ["v", "t", "id", "ref", "args"]);
       protocolId(result.id, "request id");
       string(result.ref, "ref", MAX_REFERENCE_LENGTH);
       payload(result.args, "args");
+      break;
+    case "cancel":
+      exact(result, ["v", "t", "id"]);
+      protocolId(result.id, "request id");
       break;
     case "m": {
       exact(result, ["v", "t", "id", "ref", "args", "mutationRequestId", "issuedAt"]);

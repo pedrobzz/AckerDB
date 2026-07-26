@@ -124,6 +124,10 @@ class FakeSocket implements DbzzWebSocket {
     this.onclose?.();
   }
 
+  receive(frame: ServerMessage): void {
+    this.onmessage?.({ data: encode(frame) });
+  }
+
   frames(): ClientMessage[] {
     return this.sent.map((text) => parseClientMessage(decode(text)));
   }
@@ -144,9 +148,9 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
-/** A scripted HTTP exchange journal shared by every fake-fetch harness. */
+/** A scripted SSE exchange journal shared by every fake-fetch harness. */
 interface HttpJournal {
-  /** Chronological `/api/call` and `/api/sse` dispatches with their request ids. */
+  /** Chronological `/api/sse` dispatches with their request ids. */
   readonly dispatches: Array<{ readonly path: string; readonly id: number }>;
   /** Every `/api/sse/ack` request the client issued, parsed. */
   readonly acknowledgments: SseAckRequest[];
@@ -163,7 +167,7 @@ interface Harness {
 }
 
 function harness(
-  routes: { readonly call?: Route; readonly sse?: Route },
+  routes: { readonly sse?: Route },
   overrides: Partial<DbzzClientOptions> = {},
 ): Harness {
   const clock = new ManualClock();
@@ -176,9 +180,10 @@ function harness(
       journal.acknowledgments.push(parseSseAckRequest(decode(String(init?.body))));
       return Promise.resolve(new Response(null, { status: 204 }));
     }
+    if (path !== "/api/sse") throw new Error(`unexpected HTTP route ${path}`);
     const request = parseCallRequest(decode(String(init?.body)));
     journal.dispatches.push({ path, id: request.id });
-    const route = path === "/api/call" ? routes.call : routes.sse;
+    const route = routes.sse;
     if (!route) throw new Error(`no scripted route for ${path}`);
     return Promise.resolve(route(request.id, init));
   };
@@ -210,13 +215,6 @@ function harness(
     },
     journal,
   };
-}
-
-function procedureOk(id: number, value: unknown): Response {
-  return new Response(encode({ v: PROTOCOL_VERSION, t: "ok", id, kind: "procedure", value }), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
 }
 
 /** A response body whose delivery and cancellation the test controls exactly. */
@@ -315,6 +313,15 @@ function welcome(client: DbzzClient, socket: FakeSocket): void {
   });
 }
 
+function lastFrame<T extends ClientMessage["t"]>(
+  socket: FakeSocket,
+  type: T,
+): Extract<ClientMessage, { t: T }> {
+  const frame = socket.frames().findLast((candidate) => candidate.t === type);
+  if (!frame) throw new Error(`No ${type} frame`);
+  return frame as Extract<ClientMessage, { t: T }>;
+}
+
 function cursor(commitVersion: bigint): SubscriptionCursor {
   return {
     generation: "generation-1",
@@ -326,9 +333,7 @@ function cursor(commitVersion: bigint): SubscriptionCursor {
 
 describe("non-resumable work started while suspended", () => {
   test("a procedure settles determinately with the marked refusal and never dispatches", async () => {
-    const { client, clock, sockets, port, journal } = harness({
-      call: (id) => procedureOk(id, "late"),
-    });
+    const { client, clock, sockets, port, journal } = harness({});
     port.suspend();
 
     const refusal = await client.procedure("tools.echo", {});
@@ -348,10 +353,21 @@ describe("non-resumable work started while suspended", () => {
     expect(sockets).toHaveLength(0);
 
     // The client itself is fully usable again after activation.
-    const resumed = await client.procedure<Record<never, never>, string>("tools.echo", {});
-    if (!resumed.ok) throw resumed.error;
-    expect(resumed.data).toBe("late");
-    expect(journal.dispatches).toEqual([{ path: "/api/call", id: expect.any(Number) }]);
+    const resumed = client.procedure<Record<never, never>, string>("tools.echo", {});
+    expect(sockets).toHaveLength(1);
+    welcome(client, sockets[0]!);
+    const request = lastFrame(sockets[0]!, "p");
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: request.id,
+      kind: "procedure",
+      value: "late",
+    });
+    const resumedResult = await resumed;
+    if (!resumedResult.ok) throw resumedResult.error;
+    expect(resumedResult.data).toBe("late");
+    expect(journal.dispatches).toEqual([]);
     client.close();
   });
 
@@ -458,75 +474,75 @@ describe("non-resumable work started while suspended", () => {
 });
 
 describe("suspension settles in-flight procedures", () => {
-  test("during response acquisition the outcome is marked; caller aborts and close stay unmarked", async () => {
+  test("after dispatch the outcome is marked; caller aborts and close stay unmarked", async () => {
     const abortable = new AbortController();
-    const { client, clock, port, journal } = harness({
-      call: () => new Promise<Response>(() => {}),
-    });
+    const { client, clock, sockets, port } = harness({});
 
     // A caller abort before suspension keeps the plain indeterminate outcome.
     const canceled = client
       .procedure("tools.echo", {}, { signal: abortable.signal })
       .then(mustErr);
+    welcome(client, sockets[0]!);
+    const canceledRequest = lastFrame(sockets[0]!, "p");
     abortable.abort();
     const callerOutcome = (await canceled) as DbzzClientError;
     expect(callerOutcome.code).toBe("indeterminate");
     expect(callerOutcome.message).toBe("procedure completion is unknown");
     expect(callerOutcome.interruption).toBeUndefined();
+    expect(lastFrame(sockets[0]!, "cancel").id).toBe(canceledRequest.id);
 
     const suspended = client.procedure("tools.echo", {}).then(mustErr);
-    expect(journal.dispatches).toHaveLength(2);
+    const suspendedRequest = lastFrame(sockets[0]!, "p");
     port.suspend();
     expectSuspensionOutcome(await suspended, {
       code: "indeterminate",
       message: "procedure completion is unknown",
       resource: "operation",
     });
+    expect(lastFrame(sockets[0]!, "cancel").id).toBe(suspendedRequest.id);
     // Settlement released the request's own deadline timer with it.
     expect(clock.taskCount).toBe(0);
     client.close();
 
     // close() on a fresh client settles the same boundary without the marker.
-    const closing = harness({ call: () => new Promise<Response>(() => {}) });
+    const closing = harness({});
     const closed = closing.client.procedure("tools.echo", {}).then(mustErr);
+    welcome(closing.client, closing.sockets[0]!);
     closing.client.close();
     const closedOutcome = (await closed) as DbzzClientError;
     expect(closedOutcome.code).toBe("indeterminate");
     expect(closedOutcome.interruption).toBeUndefined();
   });
 
-  test("during the response body read the outcome is marked and the body is canceled", async () => {
-    const body = openBody({ status: 200, headers: { "content-type": "application/json" } });
-    const { client, clock, port } = harness({ call: () => body.response });
-
+  test("suspension sends a best-effort cancel and a late result is inert", async () => {
+    const { client, clock, sockets, port } = harness({});
     const call = client.procedure("tools.echo", {}).then(mustErr);
-    // Let the fetch resolve and the bounded body read begin.
-    await Bun.sleep(0);
-    body.push('{"partial":');
-    await Bun.sleep(0);
-
+    welcome(client, sockets[0]!);
+    const request = lastFrame(sockets[0]!, "p");
     port.suspend();
     expectSuspensionOutcome(await call, {
       code: "indeterminate",
-      message: "procedure response was interrupted",
+      message: "procedure completion is unknown",
       resource: "operation",
     });
-    // Cancellation reached the response source carrying the marked reason.
-    await Bun.sleep(0);
-    expect(body.cancels).toHaveLength(1);
-    expect((body.cancels[0] as DbzzClientError).interruption).toBe("suspension");
+    expect(lastFrame(sockets[0]!, "cancel").id).toBe(request.id);
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: request.id,
+      kind: "procedure",
+      value: "late",
+    });
     expect(clock.taskCount).toBe(0);
     client.close();
   });
 
-  test("a stale response resolving after resume settles nothing and its body is canceled", async () => {
-    const stale = deferred<Response>();
-    let dispatches = 0;
-    const { client, port, journal } = harness({
-      call: (id) => (++dispatches === 1 ? stale.promise : procedureOk(id, "fresh")),
-    });
+  test("a stale frame after resume settles nothing on the replacement generation", async () => {
+    const { client, sockets, port, journal } = harness({});
 
     const interrupted = client.procedure("tools.echo", {});
+    welcome(client, sockets[0]!);
+    const staleRequest = lastFrame(sockets[0]!, "p");
     port.suspend();
     const interruptedResult = await interrupted;
     if (interruptedResult.ok) throw new Error("expected the interrupted procedure to fail");
@@ -538,18 +554,28 @@ describe("suspension settles in-flight procedures", () => {
 
     port.resume();
     const replacement = client.procedure("tools.echo", {});
+    expect(sockets).toHaveLength(2);
+    welcome(client, sockets[1]!);
+    const replacementRequest = lastFrame(sockets[1]!, "p");
 
-    // The retired generation's response arrives late, carrying a live body.
-    const staleBody = openBody({ status: 200, headers: { "content-type": "application/json" } });
-    stale.resolve(staleBody.response);
+    sockets[0]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: staleRequest.id,
+      kind: "procedure",
+      value: "stale",
+    });
+    sockets[1]!.receive({
+      v: PROTOCOL_VERSION,
+      t: "ok",
+      id: replacementRequest.id,
+      kind: "procedure",
+      value: "fresh",
+    });
     const replacementResult = await replacement;
     if (!replacementResult.ok) throw replacementResult.error;
     expect(replacementResult.data).toBe("fresh");
-    await Bun.sleep(0);
-
-    // The stale response settled nothing and its body was released.
-    expect(staleBody.cancels).toHaveLength(1);
-    expect(journal.dispatches).toHaveLength(2);
+    expect(journal.dispatches).toHaveLength(0);
     client.close();
   });
 });

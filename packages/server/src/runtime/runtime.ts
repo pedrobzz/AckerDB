@@ -17,6 +17,7 @@ import {
   type MutationMessage,
   type MutationOkMessage,
   type Outcome,
+  type ProcedureMessage,
   type ProcedureOkMessage,
   type QueryMessage,
   type QueryOkMessage,
@@ -195,6 +196,59 @@ function applicationError(value: unknown) {
   return value;
 }
 
+function canceledHandlerOutcome(
+  signal: AbortSignal,
+  kind: "procedure" | "MCP tool",
+  cause: unknown,
+): DbzzError {
+  const reason = signal.reason;
+  if (
+    isDbzzError(reason) &&
+    (
+      reason.code === "unauthenticated" ||
+      reason.code === "unauthorized" ||
+      reason.code === "auth_unavailable"
+    )
+  ) {
+    // Revocation and expiry are authoritative security outcomes, not transport
+    // guesses. They must remain fail-closed even if the handler already ran.
+    return reason;
+  }
+  return new DbzzError(
+    "indeterminate",
+    `${kind} completion is unknown after cancellation`,
+    { resource: "operation", cause },
+  );
+}
+
+/**
+ * Cancellation is determinate until policy admits the handler. Once the
+ * handler starts, its external effects cannot be inferred from how its promise
+ * settles. Transport cancellation therefore preserves ambiguity, while an
+ * authoritative authentication revocation remains fail-closed.
+ */
+async function invokeSideEffectingHandler<T>(
+  signal: AbortSignal,
+  kind: "procedure" | "MCP tool",
+  invoke: (onAuthorized: () => void) => Promise<T>,
+): Promise<T> {
+  let handlerStarted = false;
+  let value: T;
+  try {
+    value = await invoke(() => {
+      throwIfAborted(signal);
+      handlerStarted = true;
+    });
+  } catch (cause) {
+    if (!handlerStarted || !signal.aborted) throw cause;
+    throw canceledHandlerOutcome(signal, kind, cause);
+  }
+  if (signal.aborted) {
+    throw canceledHandlerOutcome(signal, kind, signal.reason);
+  }
+  return value;
+}
+
 function restoreMutationResult(value: unknown): Result<unknown, unknown> {
   if (isResult(value)) return value;
   if (typeof value !== "object" || value === null || !("ok" in value)) {
@@ -293,6 +347,11 @@ export interface RuntimeSseResponse {
 interface OwnedProcedureContext {
   readonly value: ProcedureCtx;
   readonly release: () => void;
+}
+
+interface ProcedureInvalidations {
+  publish(account: ExternalAccount): void;
+  finish(): void;
 }
 
 export interface RuntimeStatus {
@@ -662,6 +721,7 @@ export class Runtime implements RuntimePort {
   private readonly now: () => number;
   private readonly pluginRuntime: PluginRuntime | undefined;
   private readonly authInvalidation: AuthInvalidationBoundary;
+  private readonly immediateProcedureInvalidations: ProcedureInvalidations;
   private readonly mcpTokenInvalidation = new McpTokenInvalidationBoundary();
   private readonly reader: BoundedExecutor;
   private readonly availableReaders: Database[];
@@ -712,6 +772,12 @@ export class Runtime implements RuntimePort {
       assertCredentialVerifier(options.verifier, this.limits.auth.revocationDeadlineMs);
     }
     this.authInvalidation = new AuthInvalidationBoundary(options.verifier);
+    this.immediateProcedureInvalidations = Object.freeze({
+      publish: (account: ExternalAccount): void => {
+        this.authInvalidation.publishAccount(account);
+      },
+      finish: (): void => {},
+    });
     this.credentialVerifier = this.authInvalidation.verifier;
     this.now = options.now ?? Date.now;
     this.scheduled = options.registry.resolveScheduled(options.engine.schema);
@@ -1188,6 +1254,71 @@ export class Runtime implements RuntimePort {
     });
   }
 
+  async procedure(
+    context: SessionRuntimeContext,
+    request: RuntimeRequest<ProcedureMessage>,
+  ): Promise<unknown> {
+    const { message } = request;
+    let publication: RuntimePublication | undefined;
+    const invalidations = this.procedureInvalidations(
+      context.principal,
+      context.invalidationScope,
+    );
+    try {
+      return await this.runSessionOperation(context, request, "procedure", message.ref, async (_state, requestBytes) => {
+        const fn = this.expect(message.ref, "procedure");
+        const signal = this.operationSignal(request.signal ?? context.signal);
+        throwIfAborted(signal);
+        const procedure = this.procedureContext(
+          context.principal,
+          context.fairnessKey,
+          signal,
+          requestBytes,
+          this.readNow(),
+          invalidations.publish,
+        );
+        try {
+          const result = await invokeSideEffectingHandler(
+            signal,
+            "procedure",
+            (onAuthorized) =>
+              invokeFunction(fn, procedure.value, message.args, { onAuthorized }),
+          );
+          if (!isResult(result)) throw new DbzzError("internal", "procedure boundary returned no Result");
+          publication = this.prepareFrame(
+            result.ok
+              ? {
+                  v: PROTOCOL_VERSION,
+                  t: "ok",
+                  id: message.id,
+                  kind: "procedure",
+                  value: result.data,
+                } satisfies ProcedureOkMessage
+              : {
+                  v: PROTOCOL_VERSION,
+                  t: "app_err",
+                  id: message.id,
+                  kind: "procedure",
+                  error: applicationError(result.error),
+                } satisfies ApplicationErrorMessage,
+            "procedure result",
+          );
+          return result.ok ? result.data : result;
+        } finally {
+          procedure.release();
+        }
+      }, {
+        identifiers: { requestId: String(message.id) },
+        successPublication: () => {
+          if (publication === undefined) throw new Error("procedure publication was not prepared");
+          return publication;
+        },
+      });
+    } finally {
+      invalidations.finish();
+    }
+  }
+
   async mutation(context: SessionRuntimeContext, request: RuntimeRequest<MutationMessage>): Promise<RuntimeMutationResult> {
     const { message } = request;
     let successPublication: RuntimePublication | undefined;
@@ -1330,26 +1461,10 @@ export class Runtime implements RuntimePort {
       request.principal,
       DIRECT_RUNTIME_SOURCE,
     );
-    const originScope = provenance?.invalidationScope;
-    const invalidations = new Map<string, Map<string, ExternalAccount>>();
-    const publishInvalidation = (account: ExternalAccount): void => {
-      const selfScope =
-        request.principal.kind === "user" &&
-        request.principal.issuer === account.issuer &&
-        request.principal.subject === account.subject
-          ? originScope
-          : undefined;
-      if (!this.authInvalidation.publishAccount(account, selfScope)) return;
-      let subjects = invalidations.get(account.issuer);
-      if (subjects === undefined) invalidations.set(account.issuer, (subjects = new Map()));
-      subjects.set(account.subject, account);
-    };
-    const publishOriginInvalidations = (scope: AuthInvalidationScope): void => {
-      for (const subjects of invalidations.values()) {
-        for (const account of subjects.values()) this.authInvalidation.publishAccountTo(account, scope);
-      }
-      invalidations.clear();
-    };
+    const invalidations = this.procedureInvalidations(
+      request.principal,
+      provenance?.invalidationScope,
+    );
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
@@ -1360,12 +1475,15 @@ export class Runtime implements RuntimePort {
         signal,
         requestBytes,
         this.readNow(),
-        publishInvalidation,
+        invalidations.publish,
       );
       try {
-        const value = await invokeFunction(fn, context.value, request.args);
-        throwIfAborted(signal);
-        return value;
+        return await invokeSideEffectingHandler(
+          signal,
+          "procedure",
+          (onAuthorized) =>
+            invokeFunction(fn, context.value, request.args, { onAuthorized }),
+        );
       } finally {
         context.release();
       }
@@ -1375,7 +1493,7 @@ export class Runtime implements RuntimePort {
         try {
           return this.respondProcedure(request, outcome);
         } finally {
-          if (originScope !== undefined) publishOriginInvalidations(originScope);
+          invalidations.finish();
         }
       },
       claimedTrace,
@@ -1471,10 +1589,19 @@ export class Runtime implements RuntimePort {
     try {
       const tool = this.authorizeMcpTool(mcp, name, toolContext.auth);
       throwIfAborted(toolContext.abortSignal);
-      const value = await invokeFunction(tool, toolContext, args);
-      throwIfAborted(toolContext.abortSignal);
+      const value = await invokeSideEffectingHandler(
+        toolContext.abortSignal,
+        "MCP tool",
+        (onAuthorized) => invokeFunction(tool, toolContext, args, { onAuthorized }),
+      );
       const result = finalizeMcpToolResult(tool, value);
-      throwIfAborted(toolContext.abortSignal);
+      if (toolContext.abortSignal.aborted) {
+        throw canceledHandlerOutcome(
+          toolContext.abortSignal,
+          "MCP tool",
+          toolContext.abortSignal.reason,
+        );
+      }
       return result;
     } finally {
       release();
@@ -2203,9 +2330,9 @@ export class Runtime implements RuntimePort {
   private runSessionOperation<T>(
     context: SessionRuntimeContext,
     request: RuntimeRequest<
-      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | MutationMessage
+      SubscribeMessage | UnsubscribeMessage | ResetRequestMessage | QueryMessage | ProcedureMessage | MutationMessage
     >,
-    operation: "query" | "mutation" | "subscription",
+    operation: "query" | "mutation" | "procedure" | "subscription",
     functionName: string | undefined,
     work: (state: RuntimeSession, requestBytes: number) => T | Promise<T>,
     options: SessionOperationOptions<T> = {},
@@ -2247,7 +2374,7 @@ export class Runtime implements RuntimePort {
     context: SessionRuntimeContext,
     state: RuntimeSession | null,
     id: number,
-    operation: "query" | "mutation" | "subscription",
+    operation: "query" | "mutation" | "procedure" | "subscription",
     outcome: RuntimeOperationOutcome<T>,
     options: SessionOperationOptions<T>,
   ): Promise<T> {
@@ -2890,6 +3017,35 @@ export class Runtime implements RuntimePort {
       })),
     );
     return operation === "transaction" ? this.inTransactionTrace(execute) : execute();
+  }
+
+  private procedureInvalidations(
+    principal: Principal,
+    originScope: AuthInvalidationScope | undefined,
+  ): ProcedureInvalidations {
+    if (originScope === undefined) return this.immediateProcedureInvalidations;
+    const pending = new Map<string, Map<string, ExternalAccount>>();
+    return Object.freeze({
+      publish: (account: ExternalAccount): void => {
+        const isSelf =
+          principal.kind === "user" &&
+          principal.issuer === account.issuer &&
+          principal.subject === account.subject;
+        if (!this.authInvalidation.publishAccount(account, isSelf ? originScope : undefined)) return;
+        if (!isSelf) return;
+        let subjects = pending.get(account.issuer);
+        if (subjects === undefined) pending.set(account.issuer, (subjects = new Map()));
+        subjects.set(account.subject, account);
+      },
+      finish: (): void => {
+        for (const subjects of pending.values()) {
+          for (const account of subjects.values()) {
+            this.authInvalidation.publishAccountTo(account, originScope);
+          }
+        }
+        pending.clear();
+      },
+    });
   }
 
   private procedureContext(

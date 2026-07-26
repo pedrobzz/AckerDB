@@ -11,7 +11,6 @@ import {
   encode,
   getRef,
   parseCallRequest,
-  parseCallResponse,
   parseClientMessage,
   parseCredential,
   parseServerMessage,
@@ -301,7 +300,7 @@ type Subscription = QuerySubscription | EventSubscription;
 
 interface PendingRequest {
   readonly id: number;
-  readonly kind: "query" | "mutation";
+  readonly kind: "query" | "mutation" | "procedure";
   readonly frame: string;
   readonly bytes: number;
   readonly createdAtMs: number;
@@ -314,6 +313,8 @@ interface PendingRequest {
   receipt?: MutationReceipt;
   result?: unknown;
   obligations?: Set<number>;
+  abortSignal?: AbortSignal;
+  abortListener?: () => void;
 }
 
 interface AuthAttempt {
@@ -864,102 +865,24 @@ export class DbzzClient {
     ) as Promise<ClientResult<Data, Error>>;
   }
 
-  async procedure<A, Data = unknown, Error extends ApplicationError = never>(
+  procedure<A, Data = unknown, Error extends ApplicationError = never>(
     ref: ProcedureRef<A, Data, Error> | string,
     args: A,
     options: DbzzCallOptions = {},
   ): Promise<ClientResult<Data, Error>> {
     try {
-    this.assertUsable();
-    if (options.signal?.aborted) {
-      throw localError("unavailable", "procedure request was canceled", "operation");
-    }
-    // Procedures are non-resumable: while the application is backgrounded no
-    // transport work may start, and queueing until activation would silently
-    // dispatch work whose caller stopped observing it minutes ago — the same
-    // hidden-restart class suspension settlement exists to prevent. A call
-    // that starts while suspended settles now, determinately (the server
-    // never saw it), with the typed suspension outcome.
-    if (this.suspended) {
-      throw suspensionError("unavailable", "client is suspended", "operation");
-    }
-    const id = this.allocateId();
-    const body = this.encodeCall(id, getRef(ref), args);
-    const release = this.reserveTransient(body, "operation");
-    const fetchControl = this.createFetchController(options.signal, this.limits.maxQueryAgeMs);
-    // Suspension settles this call with its exact typed indeterminate outcome
-    // (marked, so consumers can tell lifecycle interruption from failure); a
-    // caller abort or an ordinary network failure keeps the plain one.
-    const indeterminate = (message: string): DbzzClientError =>
-      fetchControl.controller.signal.reason === SUSPENSION_INTERRUPTION
-        ? suspensionError("indeterminate", message, "operation")
-        : localError("indeterminate", message, "operation");
-    try {
-      let response: Response;
-      try {
-        // Response acquisition must settle through the owned controller even
-        // when the injected fetch ignores its signal, so abort and close()
-        // cannot leave the caller or its transient reservation pending.
-        response = await raceWithAbort(
-          (async () =>
-            this.fetcher(`${this.httpUrl}/api/call`, {
-              method: "POST",
-              headers: this.httpHeaders(),
-              body,
-              signal: fetchControl.controller.signal,
-            }))(),
-          fetchControl.controller.signal,
-          localError("indeterminate", "procedure completion is unknown", "operation"),
-          (late) => {
-            if (late.body) cancelWithoutWaiting(late.body, fetchControl.controller.signal.reason);
-          },
-        );
-      } catch {
-        throw indeterminate("procedure completion is unknown");
+      this.assertUsable();
+      if (options.signal?.aborted) {
+        throw localError("unavailable", "procedure request was canceled", "operation");
       }
-      let text: string;
-      try {
-        text = await this.readBoundedResponse(
-          response,
-          this.limits.maxFrameBytes,
-          fetchControl.controller.signal,
-        );
-      } catch (error) {
-        if (error instanceof DbzzClientError && error.code !== "unavailable") throw error;
-        throw indeterminate("procedure response was interrupted");
+      if (this.suspended) {
+        throw suspensionError("unavailable", "client is suspended", "operation");
       }
-      let parsed;
-      try {
-        parsed = parseCallResponse(decode(text));
-      } catch (error) {
-        throw this.protocolError(error);
-      }
-      if (parsed.t === "err") {
-        if (parsed.id !== null && parsed.id !== id) {
-          throw localError("malformed", "procedure error does not match its request", "operation");
-        }
-        throw new DbzzClientError(parsed.outcome);
-      }
-      if (parsed.t === "app_err") {
-        if (parsed.id !== id) {
-          throw localError("malformed", "procedure error does not match its request", "operation");
-        }
-        return Err(
-          parsed.error.code,
-          parsed.error.body,
-          parsed.error.status,
-        ) as ClientResult<Data, Error>;
-      }
-      if (!response.ok || parsed.id !== id) {
-        throw localError("malformed", "procedure response does not match its request", "operation");
-      }
-      return Ok(parsed.value as Data) as ClientResult<Data, Error>;
-    } finally {
-      this.releaseFetchController(fetchControl);
-      release();
-    }
+      return this.request("procedure", getRef(ref), args, options.signal).catch(
+        (error) => Failure(this.asClientError(error)),
+      ) as Promise<ClientResult<Data, Error>>;
     } catch (error) {
-      return Failure(this.asClientError(error)) as ClientResult<Data, Error>;
+      return Promise.resolve(Failure(this.asClientError(error)) as ClientResult<Data, Error>);
     }
   }
 
@@ -1280,14 +1203,21 @@ export class DbzzClient {
       this.authAttempt = undefined;
     }
     for (const request of [...this.pending.values()]) {
-      const indeterminate = request.kind === "mutation" && request.sentGeneration !== undefined;
+      const indeterminate =
+        (request.kind === "mutation" || request.kind === "procedure") &&
+        request.sentGeneration !== undefined;
+      const message = request.kind === "mutation"
+        ? "mutation completion is unknown"
+        : request.kind === "procedure"
+          ? "procedure completion is unknown"
+          : "client closed";
       this.finishRequest(
         request,
         undefined,
         localError(
           indeterminate ? "indeterminate" : "unavailable",
-          indeterminate ? "mutation completion is unknown" : "client closed",
-          indeterminate ? "idempotency" : "operation",
+          indeterminate ? message : "client closed",
+          request.kind === "mutation" && indeterminate ? "idempotency" : "operation",
         ),
       );
     }
@@ -1326,12 +1256,27 @@ export class DbzzClient {
    */
   private suspendTransport(): void {
     if (this.closed || this.suspended) return;
+    for (const request of this.pending.values()) {
+      if (request.kind === "procedure" && request.sentGeneration !== undefined) {
+        this.sendProcedureCancel(request);
+      }
+    }
     this.suspended = true;
     this.resuming = false;
     this.clearReconnectTimer();
     if (this.authAttempt !== undefined) {
       this.clock.clearTimeout(this.authAttempt.expiryHandle);
       this.authAttempt.expiryHandle = undefined;
+    }
+    for (const request of [...this.pending.values()]) {
+      if (request.kind !== "procedure") continue;
+      this.finishRequest(
+        request,
+        undefined,
+        request.sentGeneration === undefined
+          ? suspensionError("unavailable", "client is suspended", "operation")
+          : suspensionError("indeterminate", "procedure completion is unknown", "operation"),
+      );
     }
     this.retireConnection(CLIENT_CLOSE_CODE.suspended, "client suspended");
     // The abort reason marks these settlements as lifecycle interruptions:
@@ -1433,7 +1378,12 @@ export class DbzzClient {
     this.publishConnectionState();
   }
 
-  private request(kind: "query" | "mutation", ref: string, args: unknown): Promise<unknown> {
+  private request(
+    kind: "query" | "mutation" | "procedure",
+    ref: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
     let unownedReservation = 0;
     try {
       this.assertUsable();
@@ -1443,6 +1393,8 @@ export class DbzzClient {
       const frame = this.encodeClient(
         kind === "query"
           ? { v: PROTOCOL_VERSION, t: "q", id, ref, args }
+          : kind === "procedure"
+            ? { v: PROTOCOL_VERSION, t: "p", id, ref, args }
           : {
               v: PROTOCOL_VERSION,
               t: "m",
@@ -1455,7 +1407,7 @@ export class DbzzClient {
       );
       const bytes = this.reservePersistent(frame, "operation");
       unownedReservation = bytes;
-      const maxAge = kind === "query" ? this.limits.maxQueryAgeMs : this.limits.maxMutationAgeMs;
+      const maxAge = kind === "mutation" ? this.limits.maxMutationAgeMs : this.limits.maxQueryAgeMs;
       let resolve!: (value: unknown) => void;
       let reject!: (error: DbzzClientError) => void;
       const result = new Promise<unknown>((promiseResolve, promiseReject) => {
@@ -1474,8 +1426,17 @@ export class DbzzClient {
         mutationRequestId,
       };
       pending.expiryHandle = this.clock.setTimeout(() => this.expireRequest(pending), maxAge);
+      if (signal !== undefined) {
+        pending.abortSignal = signal;
+        pending.abortListener = () => this.cancelProcedure(pending);
+        signal.addEventListener("abort", pending.abortListener, { once: true });
+      }
       this.pending.set(id, pending);
       unownedReservation = 0;
+      if (signal?.aborted) {
+        this.cancelProcedure(pending);
+        return result;
+      }
       this.ensureConnected();
       if (this.canSendOperations()) this.sendRequest(pending);
       return result;
@@ -1631,6 +1592,18 @@ export class DbzzClient {
     this.clearConnectionTimers();
     for (const subscription of this.subscriptions.values()) {
       if (subscription.kind === "event") subscription.cursor = undefined;
+    }
+    for (const request of [...this.pending.values()]) {
+      if (
+        request.kind === "procedure" &&
+        request.sentGeneration === this.connectionGeneration
+      ) {
+        this.finishRequest(
+          request,
+          undefined,
+          localError("indeterminate", "procedure completion is unknown", "operation"),
+        );
+      }
     }
     if (!this.closed && !this.permanentFailure && !this.authBlocked && this.hasReconnectWork()) {
       this.scheduleReconnect();
@@ -1805,7 +1778,7 @@ export class DbzzClient {
       this.failPermanently(localError("malformed", "result kind does not match its request", "operation"));
       return;
     }
-    if (frame.kind === "query") {
+    if (frame.kind === "query" || frame.kind === "procedure") {
       this.finishRequest(request, Ok(frame.value));
       return;
     }
@@ -1820,7 +1793,7 @@ export class DbzzClient {
       return;
     }
     const result = Err(frame.error.code, frame.error.body, frame.error.status);
-    if (frame.kind === "query") {
+    if (frame.kind === "query" || frame.kind === "procedure") {
       this.finishRequest(request, result);
       return;
     }
@@ -1982,6 +1955,9 @@ export class DbzzClient {
   ): void {
     if (!this.pending.delete(request.id)) return;
     this.clock.clearTimeout(request.expiryHandle);
+    if (request.abortSignal !== undefined && request.abortListener !== undefined) {
+      request.abortSignal.removeEventListener("abort", request.abortListener);
+    }
     this.releasePersistent(request.bytes);
     if (error) request.reject(error);
     else request.resolve(value);
@@ -1991,6 +1967,8 @@ export class DbzzClient {
     if (this.pending.get(request.id) !== request) return;
     const committed = request.receipt !== undefined;
     const mutationMayHaveCommitted = request.kind === "mutation" && request.sentGeneration !== undefined;
+    const procedureMayHaveCompleted = request.kind === "procedure" && request.sentGeneration !== undefined;
+    if (procedureMayHaveCompleted) this.sendProcedureCancel(request);
     this.finishRequest(
       request,
       undefined,
@@ -2003,8 +1981,35 @@ export class DbzzClient {
           )
         : mutationMayHaveCommitted
           ? localError("indeterminate", "mutation completion is unknown", "idempotency")
-          : localError("deadline_exceeded", "client request deadline exceeded", "operation"),
+          : procedureMayHaveCompleted
+            ? localError("indeterminate", "procedure completion is unknown", "operation")
+            : localError("deadline_exceeded", "client request deadline exceeded", "operation"),
     );
+  }
+
+  private cancelProcedure(request: PendingRequest): void {
+    if (request.kind !== "procedure" || this.pending.get(request.id) !== request) return;
+    this.sendProcedureCancel(request);
+    this.finishRequest(
+      request,
+      undefined,
+      request.sentGeneration === undefined
+        ? localError("unavailable", "procedure request was canceled", "operation")
+        : localError("indeterminate", "procedure completion is unknown", "operation"),
+    );
+  }
+
+  private sendProcedureCancel(request: PendingRequest): void {
+    if (
+      request.kind !== "procedure" ||
+      request.sentGeneration !== this.connectionGeneration ||
+      !this.canSendOperations()
+    ) return;
+    try {
+      this.sendFrame({ v: PROTOCOL_VERSION, t: "cancel", id: request.id });
+    } catch {
+      // Cancellation is best effort; the local outcome remains indeterminate.
+    }
   }
 
   private flushState(): void {
@@ -2015,7 +2020,12 @@ export class DbzzClient {
     }
     for (const request of [...this.pending.values()]) {
       if (request.expiresAtMs <= now) this.expireRequest(request);
-      else if (request.sentGeneration !== this.connectionGeneration) this.sendRequest(request);
+      else if (
+        this.pending.get(request.id) === request &&
+        request.sentGeneration !== this.connectionGeneration
+      ) {
+        this.sendRequest(request);
+      }
     }
   }
 
