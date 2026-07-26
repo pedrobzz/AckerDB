@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/client",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "type": "module",
   "files": [
     "src"
@@ -9,6 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.10.0"
+    "@ackerdb/core": "workspace:0.11.0"
   }
 }
