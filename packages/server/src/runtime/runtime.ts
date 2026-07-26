@@ -1595,7 +1595,13 @@ export class Runtime implements RuntimePort {
         (onAuthorized) => invokeFunction(tool, toolContext, args, { onAuthorized }),
       );
       const result = finalizeMcpToolResult(tool, value);
-      throwIfAborted(toolContext.abortSignal);
+      if (toolContext.abortSignal.aborted) {
+        throw canceledHandlerOutcome(
+          toolContext.abortSignal,
+          "MCP tool",
+          toolContext.abortSignal.reason,
+        );
+      }
       return result;
     } finally {
       release();
