@@ -1,6 +1,6 @@
-# dbzz Demo
+# AckerDB Demo
 
-A restaurant ordering system that puts **one live dbzz backend** behind two clients: an **Admin Panel** for staff and a **Customer App** for guests. Both share the same users, tables, menu, and orders — so the floor, the kitchen, and the guest phone stay in sync in realtime.
+A restaurant ordering system that puts **one live AckerDB backend** behind two clients: an **Admin Panel** for staff and a **Customer App** for guests. Both share the same users, tables, menu, and orders — so the floor, the kitchen, and the guest phone stay in sync in realtime.
 
 UI is designed in Canvazz under `app/design`. Runnable apps and the server live under `app/admin-panel`, `app/server`, and related packages.
 
@@ -79,7 +79,7 @@ demo/
 │   ├── design/        # Canvazz UI (Admin + Customer artboards)
 │   ├── admin-panel/   # Runnable admin client
 │   ├── mobile/        # Expo development-build customer app
-│   └── server/        # dbzz backend (schema + functions)
+│   └── server/        # AckerDB backend (schema + functions)
 ├── packages/          # Shared demo packages (e.g. codegen)
 └── scripts/           # Smoke / tooling
 ```
@@ -90,11 +90,11 @@ Both clients consume the same server — that shared live model is the point of 
 
 ## What this demo showcases
 
-The restaurant domain is a thin shell around the dbzz features we care about. Each section below maps a product moment to the mechanism behind it.
+The restaurant domain is a thin shell around the AckerDB features we care about. Each section below maps a product moment to the mechanism behind it.
 
 ### Multi-framework clients
 
-dbzz is client-agnostic: one schema and one set of queries/mutations, used from whatever UI stack you pick. This demo runs:
+AckerDB is client-agnostic: one schema and one set of queries/mutations, used from whatever UI stack you pick. This demo runs:
 
 - **Admin** — React + TanStack Start (web)
 - **Customer** — React Native + Expo (Expo is required for Expo fetch)
@@ -103,7 +103,7 @@ Same backend, same realtime contract, two frameworks.
 
 ### Custom auth
 
-Guests sign in with name + email only — deliberately minimal, not production auth. The point is the integration: a custom auth provider plugged into dbzz so identity flows through queries and mutations without baking a specific auth vendor into the core.
+Guests sign in with name + email only — deliberately minimal, not production auth. The point is the integration: a custom auth provider plugged into AckerDB so identity flows through queries and mutations without baking a specific auth vendor into the core.
 
 ### Realtime queries
 
@@ -115,11 +115,11 @@ Order and item status changes are recorded as events. The Customer App listens o
 
 ### Schedule tables
 
-When a guest orders an item, a schedule is set. If that item sits without a status advance for more than **2 minutes**, the Admin Panel gets a toast reminding staff to pick it up — a small ops nudge powered by dbzz schedules, not a client-side timer.
+When a guest orders an item, a schedule is set. If that item sits without a status advance for more than **2 minutes**, the Admin Panel gets a toast reminding staff to pick it up — a small ops nudge powered by AckerDB schedules, not a client-side timer.
 
 ### Plugin-mounted Cache
 
-The server manifest mounts `@dbzz/cache` with a validated `setupState`
+The server manifest mounts `@ackerdb/cache` with a validated `setupState`
 namespace. The idempotent seed mutation checks that Cache before reading the
 immutable setup marker from SQLite, fills it after a database hit, and writes it
 alongside a newly created marker. The database remains authoritative: clearing
@@ -137,7 +137,7 @@ From `demo/`:
 | `bun run design:dev` | Open the Canvazz design project |
 | `bun run admin:dev` | Run the Admin Panel |
 | `bun run mobile:dev` | Start Metro for the installed Expo development build |
-| `bun run server:dev` | Run the dbzz server |
+| `bun run server:dev` | Run the AckerDB server |
 | `bun run codegen` | Regenerate client types from the server |
 | `bun run typecheck` | Typecheck the workspace |
 | `bun run smoke` | Smoke test |
@@ -145,7 +145,7 @@ From `demo/`:
 
 ### Backend setup
 
-The demo manifests pin the exact `@dbzz/*@0.10.0` artifacts from the local
+The demo manifests pin the exact `@ackerdb/*@0.10.0` artifacts from the local
 registry at `http://127.0.0.1:4874`. From `demo/`:
 
 ```sh
@@ -153,8 +153,8 @@ bun install --frozen-lockfile
 bun run server:start
 ```
 
-The normal `dbzz start` path loads `app/server/credential-verifier.ts`, opens
-the durable database under `app/server/.dbzz`, and listens on
+The normal `acker start` path loads `app/server/credential-verifier.ts`, opens
+the durable database under `app/server/.ackerdb`, and listens on
 `http://127.0.0.1:3212`. In another terminal, create the idempotent restaurant
 dataset:
 
@@ -164,10 +164,10 @@ bun run seed
 
 Guest login is intentionally passwordless for this local product demo. The
 login procedure issues a signed bearer credential whose stable issuer and
-subject resolve to a durable dbzz `Identity`; the application `users` row is
+subject resolve to a durable AckerDB `Identity`; the application `users` row is
 then linked to that Identity. Staff operations require
-`DBZZ_DEMO_STAFF_TOKEN` (default `savoria-demo-staff`). Set
-`DBZZ_DEMO_SIGNING_SECRET` and `DBZZ_DEMO_STAFF_TOKEN` before exposing the demo
+`ACKERDB_DEMO_STAFF_TOKEN` (default `savoria-demo-staff`). Set
+`ACKERDB_DEMO_SIGNING_SECRET` and `ACKERDB_DEMO_STAFF_TOKEN` before exposing the demo
 outside a local development machine.
 
 Run the focused backend gate without touching the development server:
@@ -176,7 +176,7 @@ Run the focused backend gate without touching the development server:
 bun run --cwd app/server test
 ```
 
-It starts the real app through the installed `@dbzz/cli@0.10.0` on ephemeral
+It starts the real app through the installed `@ackerdb/cli@0.10.0` on ephemeral
 ports and temporary durable databases. The suite covers durable Identity
 across restart, authorization, atomic seating conflicts, price snapshots,
 item/order transitions, payment, owner-isolated events, and the real schedule
@@ -185,7 +185,7 @@ runtime scheduler directly, while production continues to use the fixed
 two-minute delay.
 
 The mobile client defaults to `http://127.0.0.1:3212`. Set
-`EXPO_PUBLIC_DBZZ_URL` to the machine-reachable backend URL when running a
+`EXPO_PUBLIC_ACKERDB_URL` to the machine-reachable backend URL when running a
 development build on a physical device. Create that native development build
 from `app/mobile` with `bunx expo run:ios` or `bunx expo run:android`; the app
 is not configured as an Expo Go workflow.

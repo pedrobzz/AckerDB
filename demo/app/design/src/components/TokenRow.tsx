@@ -12,7 +12,7 @@ export const TokenRow = component({
   },
   defaultProps: {
     name: "Amelia — Claude Code",
-    preview: "dbzz_owner_••••4f2a",
+    preview: "ackerdb_owner_••••4f2a",
     scope: "operate",
     created: "Jul 12, 2026",
     lastUsed: "2 hours ago",

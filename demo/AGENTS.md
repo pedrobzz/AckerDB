@@ -1,6 +1,6 @@
-# dbzz Demo — agent instructions
+# AckerDB Demo — agent instructions
 
-This is the restaurant demo (Admin Panel, Customer App, dbzz server, Canvazz
+This is the restaurant demo (Admin Panel, Customer App, AckerDB server, Canvazz
 design). See [README.md](README.md) for the domain model, the apps, and the
 scripts. The repo-root [AGENTS.md](../AGENTS.md) still applies here.
 

@@ -123,7 +123,7 @@ export function assertReleaseEvidence(source: string, expected: ExpectedReleaseE
   if (
     typeof evidence.timestamp !== "string" ||
     !hasObject(evidence.machine) ||
-    !hasSystem("dbzz") ||
+    !hasSystem("ackerdb") ||
     !hasSystem("convex") ||
     !hasSystem("spacetimedb") ||
     !hasObject(validation) ||

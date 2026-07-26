@@ -1,4 +1,4 @@
-import { DbzzError } from "../shared/errors.ts";
+import { AckerDBError } from "../shared/errors.ts";
 import { outcomeFromError, outcomeHttpStatus } from "../runtime/outcome.ts";
 
 type CorsHeaders = Readonly<Record<string, string>>;
@@ -12,7 +12,7 @@ export function parseMcpJson(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch (cause) {
-    throw new DbzzError("malformed", "malformed JSON request body", { cause });
+    throw new AckerDBError("malformed", "malformed JSON request body", { cause });
   }
 }
 

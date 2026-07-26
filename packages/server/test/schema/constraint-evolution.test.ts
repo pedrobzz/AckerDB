@@ -18,7 +18,7 @@ import {
   UnsafeSchemaChange,
   type OptimisticChange,
   type Schema,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { commitPlan, planDiff, SchemaPlanner } from "../../src/schema/planner.ts";
 import { constraintDirection } from "../../src/schema/diff.ts";
 
@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 function freshPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), "dbzz-constraints-"));
+  const dir = mkdtempSync(join(tmpdir(), "ackerdb-constraints-"));
   dirs.push(dir);
   return join(dir, "data.db");
 }

@@ -11,9 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  DbzzError,
+  AckerDBError,
   defineSchema,
-  isDbzzError,
+  isAckerDBError,
   isSchema,
   isTableDef,
   isUniqueConstraintError,
@@ -23,7 +23,7 @@ import {
   UniqueConstraintError,
   ValidationError,
   type TableDef as TableDefinition,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { outcomeFromError } from "../../../server/src/runtime/outcome.ts";
 import { importApp } from "../../src/app/manifest.ts";
 import { loadConfig } from "../../src/app/config.ts";
@@ -51,13 +51,13 @@ function installPackedPackage(app: string, tarballs: string, name: "core" | "ser
     .find((line) => line.endsWith(".tgz"));
   if (tarball === undefined) throw new Error(`bun pm pack did not report a ${name} tarball`);
 
-  const target = join(app, "node_modules", "@dbzz", name);
+  const target = join(app, "node_modules", "@ackerdb", name);
   mkdirSync(target, { recursive: true });
   run(["tar", "-xzf", tarball, "-C", target, "--strip-components=1"], app);
 }
 
-test("packed @dbzz/server values keep identity across physical package copies", async () => {
-  const app = mkdtempSync(join(tmpdir(), "dbzz-schema-identity-"));
+test("packed @ackerdb/server values keep identity across physical package copies", async () => {
+  const app = mkdtempSync(join(tmpdir(), "ackerdb-schema-identity-"));
   try {
     const tarballs = join(app, "tarballs");
     mkdirSync(tarballs);
@@ -73,9 +73,9 @@ test("packed @dbzz/server values keep identity across physical package copies", 
     writeFileSync(
       appPath,
       [
-        `import { DbzzError, UniqueConstraintError, ValidationError, v, defineApp, defineSchema, defineTable } from "@dbzz/server";`,
+        `import { AckerDBError, UniqueConstraintError, ValidationError, v, defineApp, defineSchema, defineTable } from "@ackerdb/server";`,
         `export const records = defineTable({ id: v.primaryKey() });`,
-        `export const conflict = new DbzzError("conflict", "foreign conflict");`,
+        `export const conflict = new AckerDBError("conflict", "foreign conflict");`,
         `export const invalid = new ValidationError("foreign validation");`,
         `export const unique = new UniqueConstraintError("foreign unique");`,
         `export const schema = defineSchema({ records });`,
@@ -98,10 +98,10 @@ test("packed @dbzz/server values keep identity across physical package copies", 
     expect(isSchema(schema)).toBe(true);
     expect(isTableDef(foreign.records)).toBe(true);
     expect(defineSchema({ records: foreign.records }).tables.records.primaryKey).toBe("id");
-    expect(foreign.conflict).not.toBeInstanceOf(DbzzError);
+    expect(foreign.conflict).not.toBeInstanceOf(AckerDBError);
     expect(foreign.invalid).not.toBeInstanceOf(ValidationError);
     expect(foreign.unique).not.toBeInstanceOf(UniqueConstraintError);
-    expect(isDbzzError(foreign.conflict)).toBe(true);
+    expect(isAckerDBError(foreign.conflict)).toBe(true);
     expect(isValidationError(foreign.invalid)).toBe(true);
     expect(isUniqueConstraintError(foreign.unique)).toBe(true);
     expect(outcomeFromError(foreign.conflict)).toMatchObject({ code: "conflict" });
@@ -109,7 +109,7 @@ test("packed @dbzz/server values keep identity across physical package copies", 
 
     expect(isSchema({ tables: schema.tables, namedTypes: schema.namedTypes })).toBe(false);
     expect(isTableDef({ columns: foreign.records.columns })).toBe(false);
-    expect(isDbzzError({ code: "conflict", message: "lookalike" })).toBe(false);
+    expect(isAckerDBError({ code: "conflict", message: "lookalike" })).toBe(false);
     expect(isValidationError(new Error("lookalike"))).toBe(false);
     expect(isUniqueConstraintError(new Error("lookalike"))).toBe(false);
   } finally {

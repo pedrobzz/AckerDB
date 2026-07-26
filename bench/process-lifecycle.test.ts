@@ -80,7 +80,7 @@ describe("bounded process diagnostics", () => {
     const shutdown = new Error("graceful shutdown timed out");
     const starts = new Map([["completed", 1], ["subscriptions:partitioned:capacity-500", 2]]);
     const completed = new Map([["completed", { startMs: 1, endMs: 2 }]]);
-    const error = benchmarkFailure("dbzz benchmark", [
+    const error = benchmarkFailure("ackerdb benchmark", [
       { stage: "workload", error: workload },
       { stage: "shutdown", error: shutdown },
     ], {

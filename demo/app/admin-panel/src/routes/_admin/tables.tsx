@@ -1,5 +1,5 @@
-import { useMutation, useQuery } from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
+import { useMutation, useQuery } from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   LockKeyhole,

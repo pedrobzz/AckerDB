@@ -1,4 +1,4 @@
-import { DbzzError, type Identity, type Principal } from "@dbzz/server";
+import { AckerDBError, type Identity, type Principal } from "@ackerdb/server";
 
 export function isStaff(auth: Principal): boolean {
   return auth.kind === "user" && auth.claims.role === "staff";
@@ -10,7 +10,7 @@ export function ownsIdentity(auth: Principal, identity: Identity): boolean {
 
 export function requireUser(auth: Principal) {
   if (auth.kind !== "user") {
-    throw new DbzzError("unauthorized", "A guest account is required");
+    throw new AckerDBError("unauthorized", "A guest account is required");
   }
   return auth;
 }

@@ -6,15 +6,15 @@ import {
   encode,
   parseClientMessage,
   type ServerMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import type {
-  DbzzClientClock,
-  DbzzConnectionState,
-  DbzzWebSocket,
-} from "@dbzz/client";
+  AckerDBClientClock,
+  AckerDBConnectionState,
+  AckerDBWebSocket,
+} from "@ackerdb/client";
 import { Component, StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { DbzzProvider, useConnectionState, type DbzzProviderConfig } from "@dbzz/client-react";
+import { AckerDBProvider, useConnectionState, type AckerDBProviderConfig } from "@ackerdb/client-react";
 
 interface ClockTask {
   at: number;
@@ -22,7 +22,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
   private time = 0;
@@ -56,7 +56,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -90,7 +90,7 @@ class FakeSocket implements DbzzWebSocket {
 interface Harness {
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  config(url: string): DbzzProviderConfig;
+  config(url: string): AckerDBProviderConfig;
   live(): FakeSocket[];
 }
 
@@ -142,7 +142,7 @@ async function render(root: Root, element: ReactNode): Promise<void> {
 beforeAll(() => actEnvironment(true));
 afterAll(() => actEnvironment(false));
 
-describe("DbzzProvider lifecycle", () => {
+describe("AckerDBProvider lifecycle", () => {
   test("Strict Mode mount and unmount leave one live client and no timers or sockets", async () => {
     const harness = createHarness();
     const container = mountPoint();
@@ -150,9 +150,9 @@ describe("DbzzProvider lifecycle", () => {
     await render(
       root,
       <StrictMode>
-        <DbzzProvider config={harness.config("http://one.test")}>
+        <AckerDBProvider config={harness.config("http://one.test")}>
           <ConnectionPhase />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
 
@@ -183,9 +183,9 @@ describe("DbzzProvider lifecycle", () => {
     const root = createRoot(container);
     const app = (url: string): ReactNode => (
       <StrictMode>
-        <DbzzProvider config={harness.config(url)}>
+        <AckerDBProvider config={harness.config(url)}>
           <ConnectionPhase />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>
     );
 
@@ -240,9 +240,9 @@ describe("DbzzProvider lifecycle", () => {
     }
 
     const app = (url: string): ReactNode => (
-      <DbzzProvider config={harness.config(url)}>
+      <AckerDBProvider config={harness.config(url)}>
         <LifetimeProbe url={url} />
-      </DbzzProvider>
+      </AckerDBProvider>
     );
 
     await render(root, app("http://one.test"));
@@ -273,10 +273,10 @@ describe("DbzzProvider lifecycle", () => {
     const root = createRoot(container);
     await render(
       root,
-      <DbzzProvider config={harness.config("http://one.test")}>
+      <AckerDBProvider config={harness.config("http://one.test")}>
         <ConnectionPhase />
         <AuthenticationBadge />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     expect(container.textContent).toBe("connecting-");
     const live = harness.live()[0]!;
@@ -323,7 +323,7 @@ describe("DbzzProvider lifecycle", () => {
       </Boundary>,
     );
     expect(container.textContent).toBe("failed");
-    expect(String(caught)).toContain("useConnectionState requires a <DbzzProvider> ancestor");
+    expect(String(caught)).toContain("useConnectionState requires a <AckerDBProvider> ancestor");
     await act(async () => {
       root.unmount();
     });

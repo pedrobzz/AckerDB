@@ -1,6 +1,6 @@
-import { skip, useQuery } from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
-import type { MenuItem } from "@demo/dbzz-codegen/types";
+import { skip, useQuery } from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
+import type { MenuItem } from "@demo/ackerdb-codegen/types";
 import { Redirect, router } from "expo-router";
 import { useMemo, useState } from "react";
 import {

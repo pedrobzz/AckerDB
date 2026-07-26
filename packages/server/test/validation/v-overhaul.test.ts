@@ -7,7 +7,7 @@ import {
   makeDbWriter,
   newWriteCollector,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const check = <T>(validator: { check(value: unknown, path: string): T }, value: unknown) =>
   validator.check(value, "value");

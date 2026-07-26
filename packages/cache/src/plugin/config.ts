@@ -1,4 +1,4 @@
-import { pluginValidator, type StandardValidator } from "@dbzz/server";
+import { pluginValidator, type StandardValidator } from "@ackerdb/server";
 import { InvalidCacheExpirationError } from "../storage/errors.ts";
 import {
   isCacheStoreDefinition,

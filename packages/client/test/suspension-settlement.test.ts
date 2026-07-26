@@ -22,16 +22,16 @@ import {
   type ServerMessage,
   type SseAckRequest,
   type SubscriptionCursor,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
-  DbzzClient,
-  DbzzClientError,
-  type DbzzClientClock,
-  type DbzzClientOptions,
-  type DbzzFetch,
-  type DbzzLifecyclePort,
-  type DbzzWebSocket,
-} from "@dbzz/client";
+  AckerDBClient,
+  AckerDBClientError,
+  type AckerDBClientClock,
+  type AckerDBClientOptions,
+  type AckerDBFetch,
+  type AckerDBLifecyclePort,
+  type AckerDBWebSocket,
+} from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -44,7 +44,7 @@ import {
   serve,
   sseProcedure,
   type SseCtx,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 interface ClockTask {
   at: number;
@@ -52,7 +52,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
 
@@ -104,7 +104,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -159,22 +159,22 @@ interface HttpJournal {
 type Route = (id: number, init: RequestInit | undefined) => Promise<Response> | Response;
 
 interface Harness {
-  readonly client: DbzzClient;
+  readonly client: AckerDBClient;
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  readonly port: DbzzLifecyclePort;
+  readonly port: AckerDBLifecyclePort;
   readonly journal: HttpJournal;
 }
 
 function harness(
   routes: { readonly sse?: Route },
-  overrides: Partial<DbzzClientOptions> = {},
+  overrides: Partial<AckerDBClientOptions> = {},
 ): Harness {
   const clock = new ManualClock();
   const sockets: FakeSocket[] = [];
-  let port: DbzzLifecyclePort | undefined;
+  let port: AckerDBLifecyclePort | undefined;
   const journal: HttpJournal = { dispatches: [], acknowledgments: [] };
-  const fetcher: DbzzFetch = (url, init) => {
+  const fetcher: AckerDBFetch = (url, init) => {
     const path = new URL(url).pathname;
     if (path === "/api/sse/ack") {
       journal.acknowledgments.push(parseSseAckRequest(decode(String(init?.body))));
@@ -187,8 +187,8 @@ function harness(
     if (!route) throw new Error(`no scripted route for ${path}`);
     return Promise.resolve(route(request.id, init));
   };
-  const client = new DbzzClient({
-    url: "http://dbzz.test",
+  const client = new AckerDBClient({
+    url: "http://ackerdb.test",
     credential: { kind: "anonymous" },
     clientSessionId: "settlement-session",
     clock,
@@ -209,7 +209,7 @@ function harness(
     client,
     clock,
     sockets,
-    get port(): DbzzLifecyclePort {
+    get port(): AckerDBLifecyclePort {
       if (!port) throw new Error("the lifecycle source was overridden");
       return port;
     },
@@ -264,8 +264,8 @@ function openSse(stream = "stream-1"): OpenBody & { chunk(seq: number, value: un
     status: 200,
     headers: {
       "content-type": "text/event-stream",
-      "x-dbzz-sse-stream": stream,
-      "x-dbzz-sse-max-stall-ms": "5000",
+      "x-ackerdb-sse-stream": stream,
+      "x-ackerdb-sse-max-stall-ms": "5000",
     },
   });
   return {
@@ -283,11 +283,11 @@ function expectSuspensionOutcome(
   error: unknown,
   expected: { code: string; message: string; resource: string },
 ): void {
-  expect(error).toBeInstanceOf(DbzzClientError);
-  const settled = error as DbzzClientError;
-  expect(settled.code).toBe(expected.code as DbzzClientError["code"]);
+  expect(error).toBeInstanceOf(AckerDBClientError);
+  const settled = error as AckerDBClientError;
+  expect(settled.code).toBe(expected.code as AckerDBClientError["code"]);
   expect(settled.message).toBe(expected.message);
-  expect(settled.resource).toBe(expected.resource as DbzzClientError["resource"]);
+  expect(settled.resource).toBe(expected.resource as AckerDBClientError["resource"]);
   expect(settled.retryable).toBe(false);
   expect(settled.interruption).toBe("suspension");
 }
@@ -300,7 +300,7 @@ function mustErr<E>(result: { readonly ok: true; readonly data: unknown } | {
   return result.error;
 }
 
-function welcome(client: DbzzClient, socket: FakeSocket): void {
+function welcome(client: AckerDBClient, socket: FakeSocket): void {
   socket.onopen?.();
   socket.onmessage?.({
     data: encode({
@@ -466,7 +466,7 @@ describe("non-resumable work started while suspended", () => {
     const sseOutcome = (await client
       .sse("stream.ticks", {}, { signal: controller.signal })
       .next()
-      .catch((error) => error)) as DbzzClientError;
+      .catch((error) => error)) as AckerDBClientError;
     expect(sseOutcome.message).toBe("SSE request was canceled");
     expect(sseOutcome.interruption).toBeUndefined();
     client.close();
@@ -485,7 +485,7 @@ describe("suspension settles in-flight procedures", () => {
     welcome(client, sockets[0]!);
     const canceledRequest = lastFrame(sockets[0]!, "p");
     abortable.abort();
-    const callerOutcome = (await canceled) as DbzzClientError;
+    const callerOutcome = (await canceled) as AckerDBClientError;
     expect(callerOutcome.code).toBe("indeterminate");
     expect(callerOutcome.message).toBe("procedure completion is unknown");
     expect(callerOutcome.interruption).toBeUndefined();
@@ -509,7 +509,7 @@ describe("suspension settles in-flight procedures", () => {
     const closed = closing.client.procedure("tools.echo", {}).then(mustErr);
     welcome(closing.client, closing.sockets[0]!);
     closing.client.close();
-    const closedOutcome = (await closed) as DbzzClientError;
+    const closedOutcome = (await closed) as AckerDBClientError;
     expect(closedOutcome.code).toBe("indeterminate");
     expect(closedOutcome.interruption).toBeUndefined();
   });
@@ -606,7 +606,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     pending.resolve(late.response);
     await Bun.sleep(0);
     expect(late.cancels).toHaveLength(1);
-    expect((late.cancels[0] as DbzzClientError).interruption).toBe("suspension");
+    expect((late.cancels[0] as AckerDBClientError).interruption).toBe("suspension");
     expect(journal.acknowledgments).toEqual([]);
     expect(journal.dispatches).toHaveLength(1);
     client.close();
@@ -629,7 +629,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     // Cancellation reached the source reader promptly — the server-side
     // release signal — carrying the marked reason.
     expect(scripted.cancels).toHaveLength(1);
-    expect((scripted.cancels[0] as DbzzClientError).interruption).toBe("suspension");
+    expect((scripted.cancels[0] as AckerDBClientError).interruption).toBe("suspension");
     // A phantom chunk can no longer be delivered through the retired stream.
     expect(scripted.chunk(2, { tick: 1 })).toBe(false);
 
@@ -903,9 +903,9 @@ function waitForAbort(signal: AbortSignal): Promise<void> {
   });
 }
 
-describe("suspension settlement against a real dbzz server", () => {
+describe("suspension settlement against a real ackerdb server", () => {
   test("mid-stream suspension releases the server iterator and settles the client stream once", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-settlement-real-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-settlement-real-"));
     const engine = new Engine(defineSchema({}), join(directory, "data.db"));
     reconcile(engine);
     const holdReleased = deferred<void>();
@@ -952,9 +952,9 @@ describe("suspension settlement against a real dbzz server", () => {
     // A fake clock against the real server: settlement reaching the caller
     // proves the whole progression runs on abort events alone — no timers.
     const clock = new ManualClock(Date.now());
-    let port: DbzzLifecyclePort | undefined;
+    let port: AckerDBLifecyclePort | undefined;
     const requests: string[] = [];
-    const client = new DbzzClient({
+    const client = new AckerDBClient({
       url: `http://127.0.0.1:${server.port}`,
       credential: { kind: "anonymous" },
       clock,

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { anyApi, getRef } from "@dbzz/core";
+import { anyApi, getRef } from "@ackerdb/core";
 
 describe("function references", () => {
   test("anyApi builds dot-joined addresses", () => {
@@ -14,6 +14,6 @@ describe("function references", () => {
   });
 
   test("getRef rejects non-references", () => {
-    expect(() => getRef({} as never)).toThrow("not a dbzz function reference");
+    expect(() => getRef({} as never)).toThrow("not a ackerdb function reference");
   });
 });

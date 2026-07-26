@@ -14,7 +14,7 @@ import {
   reconcile,
   snapshotOf,
   type Schema,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { loadConfig } from "../../src/app/config.ts";
 import { generateMigration } from "../../src/migrations/scaffold.ts";
 import { loadMigrationChain } from "../../src/migrations/load.ts";
@@ -329,7 +329,7 @@ describe("generateMigration: round-trip through loadMigrationChain + reconcile",
 describe("computePlan: optimistic unique-index duplicate probe", () => {
   const PROBE_PRE = defineSchema({ users: defineTable({ id: v.primaryKey(), email: v.string().nullable() }) });
   // The live app.ts adds a UNIQUE index over the (nullable) email column.
-  const PROBE_APP_TS = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+  const PROBE_APP_TS = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 const schema = defineSchema({
   users: defineTable({ id: v.primaryKey(), email: v.string().nullable() })
     .index(["email"], { unique: true }),
@@ -340,8 +340,8 @@ export default defineApp({ schema });
   async function planAfterSeeding(emails: (string | null)[]) {
     const dir = makeFixture({ "app.ts": PROBE_APP_TS });
     dirs.push(dir);
-    const dbPath = join(dir, ".dbzz", "data.db");
-    mkdirSync(join(dir, ".dbzz"), { recursive: true });
+    const dbPath = join(dir, ".ackerdb", "data.db");
+    mkdirSync(join(dir, ".ackerdb"), { recursive: true });
     await seed(PROBE_PRE, dbPath, async (d) => {
       for (const email of emails) await d.users.insert({ email });
     });
@@ -376,7 +376,7 @@ describe("computePlan: optimistic constraint probe", () => {
   const pre = defineSchema({
     items: defineTable({ id: v.primaryKey(), label: v.string().nullable() }),
   });
-  const appTs = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+  const appTs = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 const schema = defineSchema({
   items: defineTable({ id: v.primaryKey(), label: v.string().min(2).nullable() }),
 });
@@ -386,8 +386,8 @@ export default defineApp({ schema });
   test("reports the exact violating-row count while nullable null is ignored", async () => {
     const dir = makeFixture({ "app.ts": appTs });
     dirs.push(dir);
-    const dbPath = join(dir, ".dbzz", "data.db");
-    mkdirSync(join(dir, ".dbzz"), { recursive: true });
+    const dbPath = join(dir, ".ackerdb", "data.db");
+    mkdirSync(join(dir, ".ackerdb"), { recursive: true });
     await seed(pre, dbPath, async (d) => {
       for (const label of [null, "", "x", "ok"]) await d.items.insert({ label });
     });
@@ -411,7 +411,7 @@ export default defineApp({ schema });
         body: v.union("Body", { legacy: v.object({ label: v.string() }) }),
       }),
     });
-    const targetAppTs = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+    const targetAppTs = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 const schema = defineSchema({
   items: defineTable({
     id: v.primaryKey(),
@@ -459,7 +459,7 @@ describe("generateMigration: compile-time gate (single tsc --noEmit)", () => {
     });
     const b = generateMigration({ number: 2, name: "b", pre: snapshotOf(preB), schema: targetB });
 
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-gen-tsc-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-gen-tsc-"));
     dirs.push(dir);
     mkdirSync(join(dir, "meta"), { recursive: true });
 
@@ -510,8 +510,8 @@ export default defineMigration({
           allowImportingTsExtensions: true,
           baseUrl: REPO,
           paths: {
-            "@dbzz/core": ["packages/core/src/index.ts"],
-            "@dbzz/server": ["packages/server/src/index.ts"],
+            "@ackerdb/core": ["packages/core/src/index.ts"],
+            "@ackerdb/server": ["packages/server/src/index.ts"],
           },
         },
         include: ["./**/*.ts"],
@@ -557,7 +557,7 @@ export default defineMigration({
 describe("computePlan / writeMigration: applied-history prefix validation", () => {
   const B_PRE = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
   const B_TARGET = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
-  const B_APP_TS = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+  const B_APP_TS = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 const schema = defineSchema({
   posts: defineTable({ id: v.primaryKey(), count: v.int() }),
 });
@@ -579,12 +579,12 @@ export default defineApp({ schema });
     });
     dirs.push(dir);
     const config = loadConfig(dir);
-    const dbPath = join(dir, ".dbzz", "data.db");
-    mkdirSync(join(dir, ".dbzz"), { recursive: true });
+    const dbPath = join(dir, ".ackerdb", "data.db");
+    mkdirSync(join(dir, ".ackerdb"), { recursive: true });
     await seed(B_PRE, dbPath, async (d) => {
       await d.posts.insert({ count: "5" });
     });
-    // Apply the chain so `_dbzz_migrations` records the identity of the ORIGINAL code.
+    // Apply the chain so `_ackerdb_migrations` records the identity of the ORIGINAL code.
     const engine = new Engine(B_TARGET, dbPath);
     await reconcile(engine, await loadMigrationChain(config));
     engine.close("clean");
@@ -609,7 +609,7 @@ export default defineApp({ schema });
     expect(outcome.status).toBe("diverged");
     if (outcome.status !== "diverged") throw new Error("unreachable");
     expect(outcome.message).toContain("no longer matches the on-disk chain");
-    expect(outcome.message).toContain("dbzz reset");
+    expect(outcome.message).toContain("acker reset");
 
     await expect(writeMigration(config, { name: "next" })).rejects.toThrow("no longer matches the on-disk chain");
     // The refusal must scaffold nothing on top of the divergent chain.
@@ -633,13 +633,13 @@ export default defineApp({ schema });
 describe("computePlan: pending staleness + writeMigration: consent", () => {
   const P_PRE = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.string() }) });
   const P_TARGET = defineSchema({ posts: defineTable({ id: v.primaryKey(), count: v.int() }) });
-  const APP_AT_TARGET = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+  const APP_AT_TARGET = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 const schema = defineSchema({
   posts: defineTable({ id: v.primaryKey(), count: v.int() }),
 });
 export default defineApp({ schema });
 `;
-  const APP_MOVED_ON = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+  const APP_MOVED_ON = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 const schema = defineSchema({
   posts: defineTable({ id: v.primaryKey(), count: v.int(), flag: v.string() }),
 });
@@ -657,8 +657,8 @@ export default defineApp({ schema });
     });
     dirs.push(dir);
     const config = loadConfig(dir);
-    mkdirSync(join(dir, ".dbzz"), { recursive: true });
-    await seed(P_PRE, join(dir, ".dbzz", "data.db"), async () => {});
+    mkdirSync(join(dir, ".ackerdb"), { recursive: true });
+    await seed(P_PRE, join(dir, ".ackerdb", "data.db"), async () => {});
     return { dir, config };
   }
 
@@ -699,8 +699,8 @@ export default defineApp({ schema });
     const dir = makeFixture({ "app.ts": APP_AT_TARGET });
     dirs.push(dir);
     const config = loadConfig(dir);
-    mkdirSync(join(dir, ".dbzz"), { recursive: true });
-    await seed(P_PRE, join(dir, ".dbzz", "data.db"), async () => {});
+    mkdirSync(join(dir, ".ackerdb"), { recursive: true });
+    await seed(P_PRE, join(dir, ".ackerdb", "data.db"), async () => {});
     return { dir, config };
   }
 
@@ -732,7 +732,7 @@ export default defineApp({ schema });
     expect(written).toHaveLength(3);
   });
 
-  test("no consent means the invocation is the consent — dbzz generate's path still writes", async () => {
+  test("no consent means the invocation is the consent — acker generate's path still writes", async () => {
     const { dir, config } = await changesFixture();
     await writeMigration(config, { name: "parse_count" });
     expect(existsSync(join(dir, "migrations", "0001_parse_count.ts"))).toBe(true);

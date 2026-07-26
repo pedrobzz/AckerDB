@@ -1,4 +1,4 @@
-import type { PluginMutationCtx, StandardValidator } from "@dbzz/server";
+import type { PluginMutationCtx, StandardValidator } from "@ackerdb/server";
 import {
   expirationDeadline,
   isLive,

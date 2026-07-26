@@ -3,24 +3,24 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "dbzz dev .",
-    "start": "dbzz start .",
-    "codegen": "dbzz codegen .",
+    "dev": "acker dev .",
+    "start": "acker start .",
+    "codegen": "acker codegen .",
     "test": "bun test ../../scripts/backend.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@ai-sdk/gateway": "4.0.23",
-    "@dbzz/cache": "0.10.0",
-    "@dbzz/core": "0.10.0",
-    "@dbzz/server": "0.10.0",
-    "@demo/dbzz-codegen": "workspace:*",
+    "@ackerdb/cache": "0.10.0",
+    "@ackerdb/core": "0.10.0",
+    "@ackerdb/server": "0.10.0",
+    "@demo/ackerdb-codegen": "workspace:*",
     "ai": "7.0.31",
     "jose": "^6.1.3",
     "just-bash": "3.1.0"
   },
   "devDependencies": {
-    "@dbzz/cli": "0.10.0",
+    "@ackerdb/cli": "0.10.0",
     "@types/bun": "^1.2.0",
     "typescript": "^5.9.0"
   }

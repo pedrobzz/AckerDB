@@ -6,7 +6,7 @@ read/revalidation work, and bounded transport delivery.
 
 The backend and CLI are Bun-only: the engine uses `bun:sqlite`, and the packages
 ship source TypeScript. One process must exclusively own the configured
-database. Running multiple DBZZ servers against one file, putting that file on
+database. Running multiple AckerDB servers against one file, putting that file on
 shared storage as a scaling mechanism, or starting the server under Node.js is
 outside the production contract.
 
@@ -69,7 +69,7 @@ external-account identity resolution has its own fixed-width pre-principal key.
 Anonymous HTTP and WebSocket callers are instead grouped by their transport
 source/socket address, while WebSocket retains a separate per-connection
 ceiling. HTTP source admission is applied before authentication and transferred
-to the stable caller afterward. DBZZ does not trust `Forwarded` or
+to the stable caller afterward. AckerDB does not trust `Forwarded` or
 `X-Forwarded-For`; clients behind one reverse proxy therefore share that
 proxy's anonymous source group. Fairness is among admitted groups, not a
 latency SLA.
@@ -79,9 +79,9 @@ rather than repeating bearer verification. They still pass through finite HTTP
 admission, and malformed or invalid capabilities cannot release another
 stream's bytes.
 
-The stock client has a separate exported `DBZZ_CLIENT_LIMITS` object, and
+The stock client has a separate exported `ACKERDB_CLIENT_LIMITS` object, and
 `Engine` defaults its SQLite busy timeout to 5 seconds. The CLI does not expose
-arbitrary service-limit overrides in `.dbzz.config.json`; programmatic
+arbitrary service-limit overrides in `.ackerdb.config.json`; programmatic
 `Runtime` construction does.
 
 ## Typed outcomes
@@ -125,12 +125,12 @@ outcomes close with 1008.
 
 `retryable` is explicit per occurrence rather than inferred solely from the
 code. Queue item/byte pressure is retryable with a bounded hint; an expired
-queue deadline is not. `DbzzClientError` exposes `outcome`, `code`,
+queue deadline is not. `AckerDBClientError` exposes `outcome`, `code`,
 `retryable`, `retryAfterMs`, `resource`, and `committed`.
 
 ## Durability profiles
 
-`DBZZ_DURABILITY` accepts exactly `production` or `balanced`; omitted means
+`ACKERDB_DURABILITY` accepts exactly `production` or `balanced`; omitted means
 `production`. Both profiles use SQLite WAL and acknowledge a mutation only
 after SQLite `COMMIT` succeeds. The selected value is included in every
 mutation receipt and storage status.
@@ -145,8 +145,8 @@ lies about durable sync. `balanced` must not be presented as the same power-loss
 contract as `production`.
 
 At open, the engine first acquires the canonical data path through a persistent
-same-directory SQLite coordination database (`data.db.dbzz-coordination`). The
-first process initializes the DBZZ-branded, empty rollback-journal database in
+same-directory SQLite coordination database (`data.db.ackerdb-coordination`). The
+first process initializes the AckerDB-branded, empty rollback-journal database in
 a private same-directory `0600` UUIDv4 staging file, closes and fsyncs it, and
 publishes it with a no-clobber hard link. Before any SQLite connection opens
 the canonical inode, contenders remove only exact staging aliases of that same
@@ -154,11 +154,11 @@ inode, require its hard-link count to be exactly one, and fsync the directory.
 A pre-link crash file has a different inode and is deliberately retained; it
 cannot be mistaken for an alias of the canonical database.
 
-Only after publication has converged does DBZZ open the canonical coordination
+Only after publication has converged does AckerDB open the canonical coordination
 database, validate its immutable `application_id`, empty schema, and DELETE
 journal mode, and hold one `BEGIN IMMEDIATE` transaction for the Engine
 lifetime. A live contender gets a typed already-open refusal with no wait or
-polling. Process death releases SQLite's OS lock immediately; DBZZ never
+polling. Process death releases SQLite's OS lock immediately; AckerDB never
 deletes, renames, reaps, or reads an owner record from the canonical file.
 Startup, restore, and full reset all use this one ownership primitive, while a
 staged restore Engine borrows the already-held connection.
@@ -177,7 +177,7 @@ scavenged only after ownership is held; unrelated files are never matched. The
 coordination database normally costs one 4 KiB file and one idle SQLite handle
 per open database, creates no background work, and survives reset so its
 identity never depends on pathname deletion races. An exact pre-link
-coordination staging residue may remain after `SIGKILL`; DBZZ accepts it as an
+coordination staging residue may remain after `SIGKILL`; AckerDB accepts it as an
 internal directory entry but never guesses that a different inode is safe to
 delete.
 
@@ -185,24 +185,24 @@ An existing database is never initialized or repaired in place during
 preflight. Empty, truncated, non-SQLite, incompatible, or internally corrupt
 main files are rejected. A missing main file with a WAL, shared-memory file, or
 rollback journal is also rejected. When a nonempty WAL or rollback journal may
-require recovery, DBZZ copies the main file and relevant recovery evidence to a
+require recovery, AckerDB copies the main file and relevant recovery evidence to a
 disposable directory and lets SQLite recover and validate that copy before the
 original writer is opened. Rejection therefore preserves the original main,
 WAL, and rollback-journal bytes for diagnosis. A clean main file with no
 nonempty recovery journal is validated read-only in place without a whole-file
 copy. Validation includes a quick or full integrity check,
-`foreign_key_check`, the exact DBZZ internal schema, application schema, tag
+`foreign_key_check`, the exact AckerDB internal schema, application schema, tag
 registry, and mutation-ledger counters before WAL mode is enabled and the
 previous clean-shutdown marker is read.
 
-SQLite owns valid-prefix WAL recovery. DBZZ rejects a valid WAL header whose
+SQLite owns valid-prefix WAL recovery. AckerDB rejects a valid WAL header whose
 page size is incompatible with the main file, but an incomplete header,
 checksum-invalid tail, salt change, or truncated final frame can be ordinary
 crash residue. Without a separately durable expected-end watermark, no engine
 can prove that an attacker or failed device did not remove an entire otherwise
 valid WAL suffix; backups and storage controls remain necessary.
 
-If DBZZ rejects storage, stop automated restart attempts and preserve the main
+If AckerDB rejects storage, stop automated restart attempts and preserve the main
 file with its `-wal`, `-shm`, and `-journal` sidecars as one evidence set. Do not
 delete sidecars or attempt an in-place repair. Retain a copy for diagnosis, then
 restore a verified artifact into a fresh configured database directory.
@@ -230,7 +230,7 @@ Plugin lifecycle callbacks run.
 
 Safe private-schema changes use the normal schema planner and are applied
 automatically in one Plugin-schema transaction. The v0.6.0 alpha deliberately
-has no Plugin migration or rename API. DBZZ instead produces an exact pending
+has no Plugin migration or rename API. AckerDB instead produces an exact pending
 requirement when:
 
 - a schema change is unsafe or conflicts with private rows: reset that mount;
@@ -239,32 +239,32 @@ requirement when:
   mount.
 
 Changing a mount name therefore creates a fresh Plugin instance and leaves the
-old name as a pending drop; DBZZ never guesses that the two names are a rename.
+old name as a pending drop; AckerDB never guesses that the two names are a rename.
 A reset drops only the named mount's private state and creates its target
 schema. A drop removes only the named stale scope. Neither action grants
 authority over root application tables or another Plugin mount.
 
-Interactive `dbzz dev` prints the affected mount, reason, safe changes that
+Interactive `acker dev` prints the affected mount, reason, safe changes that
 would otherwise apply, and data refusals, then asks with a default of no. A
 decline keeps the server down until the manifest changes or the requirement is
-resolved. `dbzz start` and non-interactive development never clear Plugin data;
+resolved. `acker start` and non-interactive development never clear Plugin data;
 startup refuses and prints the exact recovery command instead:
 
 ```sh
-dbzz plugin reset <mount> [app-dir]
-dbzz plugin drop <old-mount> [app-dir]
+acker plugin reset <mount> [app-dir]
+acker plugin drop <old-mount> [app-dir]
 ```
 
 These are not arbitrary deletion commands. Each command re-imports the current
 manifest, re-plans storage in a fresh process, and executes only a currently
 pending requirement whose current and target fingerprints still match. A
 changed manifest or storage state makes old consent stale rather than widening
-it. `dbzz reset [app-dir]` remains the separate development escape hatch that
+it. `acker reset [app-dir]` remains the separate development escape hatch that
 acquires the same database ownership and removes only `data.db`, its exact
-SQLite sidecars, and exact UUIDv4 DBZZ initialization/restore staging files.
+SQLite sidecars, and exact UUIDv4 AckerDB initialization/restore staging files.
 It refuses while startup or restore is live, retains the coordination database,
 retains exact coordination crash residues, and leaves every unrelated entry in
-`.dbzz` untouched.
+`.ackerdb` untouched.
 
 Because unsafe Plugin evolution is reset-only in this alpha, a Plugin's design
 must make that data disposable or keep its durable source of truth elsewhere.
@@ -283,7 +283,7 @@ The server exposes three versioned JSON endpoints:
 
 `/status` requires the external workload principal and selected scope described
 in [Authentication](authentication.md#operational-status-authority). Its body
-is the full `DbzzServer.status()` snapshot with `version: 1` added: transport
+is the full `AckerDBServer.status()` snapshot with `version: 1` added: transport
 connection count, HTTP ingress/fairness and rejection counts, SSE
 acknowledgement ingress/no-op counts, global WebSocket outbound bytes, and the
 runtime queue, publication, reactivity, SSE, telemetry, and storage snapshots.
@@ -297,10 +297,13 @@ With the CLI and no configured OIDC provider, no bearer can authenticate, so
 operators must configure a workload provider that selects `scope` before
 `/status` is usable.
 
-`dbzz start` binds one listener before code generation and keeps that port live
+`acker start` binds one listener before code generation and keeps that port live
 through the monotonic startup phases `listening`, `codegen`, `loading`,
 `opening-storage`, `migrating` (when a migration chain is present), and
-`reconciling`. `/live` and `/ready` remain reachable;
+`reconciling`, followed by `loading-runtime` for credential verifiers and
+function modules. Runtime-only modules load after durable schema work commits,
+so their configuration cannot block a pending migration. `/live` and `/ready`
+remain reachable;
 `OPTIONS` receives its finite control response, and a syntactically valid SSE
 acknowledgement passes bounded admission but is an oracle-free no-op before a
 Runtime producer exists. Application, WebSocket, and protected-status traffic
@@ -318,7 +321,7 @@ probes should derive them from protected status/telemetry and their own policy.
 
 ## Signals and bounded drain
 
-`dbzz start` and the supervised server process install one-shot `SIGINT` and
+`acker start` and the supervised server process install one-shot `SIGINT` and
 `SIGTERM` handlers. The first signal starts the idempotent `RunningApp.drain()`
 path and removes those handlers:
 
@@ -363,9 +366,9 @@ The CLI operations are deliberately conservative and produce one JSON report
 on success:
 
 ```sh
-dbzz status [app-dir]
-dbzz backup <artifact> [app-dir]
-dbzz restore <artifact> [app-dir]
+acker status [app-dir]
+acker backup <artifact> [app-dir]
+acker restore <artifact> [app-dir]
 ```
 
 With default telemetry enabled, `backup` and `restore` first emit bounded safe
@@ -373,23 +376,23 @@ JSON telemetry records: one `storage` span with duration/outcome and, on
 failure, one sanitized event. Successful spans may include artifact byte count
 and commit-version correlation, but never paths, contents, schema literals, or
 error messages. The final line remains the operation report. Setting
-`DBZZ_TELEMETRY=disabled` removes those records exactly and leaves only the
+`ACKERDB_TELEMETRY=disabled` removes those records exactly and leaves only the
 report.
 
 `status` and `backup` require an existing database and never create a missing
 one. The engine's canonical ownership transaction means these CLI operations
-are offline with respect to a running DBZZ server. They are maintenance writer
+are offline with respect to a running AckerDB server. They are maintenance writer
 opens, not byte-for-byte read-only inspection: Engine may complete valid SQLite
 recovery, sets WAL/durability pragmas, and updates the clean-shutdown marker.
 Neither operation changes application rows or the logical commit version.
 
 The operator workflow is therefore:
 
-1. send `SIGINT` or `SIGTERM` and wait for `dbzz start` to finish its bounded
+1. send `SIGINT` or `SIGTERM` and wait for `acker start` to finish its bounded
    drain and exit successfully;
-2. run `dbzz backup`, then retain or copy both the artifact and its adjacent
+2. run `acker backup`, then retain or copy both the artifact and its adjacent
    `.manifest.json` file;
-3. rehearse recovery with `dbzz restore` into a fresh configured database
+3. rehearse recovery with `acker restore` into a fresh configured database
    directory; and
 4. start the restored application and check `/live`, `/ready`, and authorized
    `/status` before returning it to service.
@@ -402,7 +405,7 @@ migrations: a refused or failed migration leaves the database untouched, but a
 migration that succeeds with wrong transform logic is only recoverable from a
 verified backup. See [migrations.md](migrations.md) for the deploy sequence.
 
-`dbzz backup` performs this acceptance sequence:
+`acker backup` performs this acceptance sequence:
 
 1. open the source with a full integrity check;
 2. create a transactionally consistent SQLite artifact with `VACUUM INTO`;
@@ -418,14 +421,14 @@ The exact manifest format is version 1 with `sha256`, `bytes`,
 `verifiedAt`. A failed verification removes the candidate artifact instead of
 publishing an unverified backup.
 
-The artifact is the complete SQLite database, including DBZZ's commit state,
+The artifact is the complete SQLite database, including AckerDB's commit state,
 retained mutation replay ledger, stored Plugin inventory, and all private
 tables. Its schema fingerprint covers both the root schema and those Plugin
 scopes. Restore therefore preserves still-retained mutation request IDs and
 their exact-once replay results; the full engine open also validates the ledger
 counters and stored Plugin layouts before the artifact is accepted.
 
-`dbzz restore` validates the exact manifest shape, digest, size, commit version,
+`acker restore` validates the exact manifest shape, digest, size, commit version,
 and target App storage layout in a fresh verification process before claiming
 the target. The layout comparison includes the root schema plus every Plugin
 mount, definition ID, and private schema; restore never reconciles either side.
@@ -450,7 +453,7 @@ this as one verified restore operation rather than exposing the staging state
 machine, so callers cannot publish without the full open and commit probe.
 
 The operator still owns scheduling, retention, encryption, access control,
-off-machine copies, and periodic disaster-recovery drills. DBZZ currently
+off-machine copies, and periodic disaster-recovery drills. AckerDB currently
 provides verified artifacts, not a backup service or point-in-time recovery.
 
 ## Remaining limitations

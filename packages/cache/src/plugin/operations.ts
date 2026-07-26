@@ -6,7 +6,7 @@ import {
   type PluginBuilders,
   type PluginExportTree,
   type StandardValidator,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { builtinDelete, builtinGet, builtinSet } from "../storage/built-in.ts";
 import {
   normalizeSetOptions,

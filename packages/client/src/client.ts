@@ -41,9 +41,9 @@ import {
   type SubscriptionCursor,
   type SubscriptionTransition,
   type WelcomeMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 
-export interface DbzzClientLimits {
+export interface AckerDBClientLimits {
   readonly maxPendingItems: number;
   readonly maxPendingBytes: number;
   readonly maxQueryAgeMs: number;
@@ -53,13 +53,13 @@ export interface DbzzClientLimits {
   readonly maxSseAckAgeMs: number;
 }
 
-export interface DbzzReconnectOptions {
+export interface AckerDBReconnectOptions {
   readonly baseDelayMs: number;
   readonly maxDelayMs: number;
   readonly stableOpenMs: number;
 }
 
-export interface DbzzClientClock {
+export interface AckerDBClientClock {
   now(): number;
   setTimeout(callback: () => void, delayMs: number): unknown;
   clearTimeout(handle: unknown): void;
@@ -67,7 +67,7 @@ export interface DbzzClientClock {
   clearInterval(handle: unknown): void;
 }
 
-export interface DbzzWebSocket {
+export interface AckerDBWebSocket {
   onopen: (() => void) | null;
   onmessage: ((event: { readonly data: unknown }) => void) | null;
   onclose: (() => void) | null;
@@ -76,8 +76,8 @@ export interface DbzzWebSocket {
   close(code?: number, reason?: string): void;
 }
 
-export type DbzzWebSocketFactory = (url: string) => DbzzWebSocket;
-export type DbzzFetch = (url: string, init?: RequestInit) => Promise<Response>;
+export type AckerDBWebSocketFactory = (url: string) => AckerDBWebSocket;
+export type AckerDBFetch = (url: string, init?: RequestInit) => Promise<Response>;
 
 /**
  * Application-lifecycle notifications, driven by an injected platform
@@ -88,7 +88,7 @@ export type DbzzFetch = (url: string, init?: RequestInit) => Promise<Response>;
  * Both coalesce duplicates, so the adapter may forward platform events
  * verbatim.
  */
-export interface DbzzLifecyclePort {
+export interface AckerDBLifecyclePort {
   suspend(): void;
   resume(): void;
 }
@@ -100,26 +100,26 @@ export interface DbzzLifecyclePort {
  * other teardown in close() — so the observer exists exactly as long as the
  * client does.
  */
-export type DbzzLifecycleSource = (port: DbzzLifecyclePort) => () => void;
+export type AckerDBLifecycleSource = (port: AckerDBLifecyclePort) => () => void;
 
-export interface DbzzClientOptions {
+export interface AckerDBClientOptions {
   /** Server base URL, for example `http://127.0.0.1:3211`. */
   readonly url: string;
   /** Every connection starts with this explicit anonymous or bearer credential. */
   readonly credential: Credential;
   /** Stable for this logical client across every reconnect. Generated once when omitted. */
   readonly clientSessionId?: string;
-  readonly limits?: Partial<DbzzClientLimits>;
-  readonly reconnect?: Partial<DbzzReconnectOptions>;
-  readonly clock?: DbzzClientClock;
+  readonly limits?: Partial<AckerDBClientLimits>;
+  readonly reconnect?: Partial<AckerDBReconnectOptions>;
+  readonly clock?: AckerDBClientClock;
   readonly random?: () => number;
-  readonly createWebSocket?: DbzzWebSocketFactory;
-  readonly fetch?: DbzzFetch;
-  readonly lifecycle?: DbzzLifecycleSource;
+  readonly createWebSocket?: AckerDBWebSocketFactory;
+  readonly fetch?: AckerDBFetch;
+  readonly lifecycle?: AckerDBLifecycleSource;
 }
 
 /** Server-confirmed, secret-free principal descriptor for one auth epoch. */
-export type DbzzAuthentication = AuthenticationDescriptor & { readonly authEpoch: number };
+export type AckerDBAuthentication = AuthenticationDescriptor & { readonly authEpoch: number };
 
 /**
  * Public connection lifecycle. `suspended` and `resuming` are produced by the
@@ -127,19 +127,19 @@ export type DbzzAuthentication = AuthenticationDescriptor & { readonly authEpoch
  * backgrounding retires the transport and publishes `suspended`; activation
  * with demand publishes `resuming` until the fresh handshake completes.
  */
-export type DbzzConnectionState =
+export type AckerDBConnectionState =
   | { readonly phase: "connecting" }
-  | { readonly phase: "ready"; readonly authentication: DbzzAuthentication }
+  | { readonly phase: "ready"; readonly authentication: AckerDBAuthentication }
   | { readonly phase: "reconnecting" }
-  | { readonly phase: "authentication-blocked"; readonly error: DbzzClientError }
-  | { readonly phase: "terminal-error"; readonly error: DbzzClientError }
+  | { readonly phase: "authentication-blocked"; readonly error: AckerDBClientError }
+  | { readonly phase: "terminal-error"; readonly error: AckerDBClientError }
   | { readonly phase: "closed" }
   | { readonly phase: "suspended" }
   | { readonly phase: "resuming" };
 
 /**
  * Public authentication lifecycle, derived from the same protocol facts as
- * {@link DbzzConnectionState} and published in the same transition turns.
+ * {@link AckerDBConnectionState} and published in the same transition turns.
  *
  * - `authenticating`: a credential presentation is in flight — the connect
  *   handshake (`hello`/`welcome`) or an explicit `refreshCredential` attempt.
@@ -156,30 +156,30 @@ export type DbzzConnectionState =
  * - `failed`: the client stopped permanently; no credential can recover it.
  * - `closed`: the client was closed.
  */
-export type DbzzAuthenticationState =
+export type AckerDBAuthenticationState =
   | { readonly phase: "authenticating"; readonly credential: Credential["kind"] }
   | {
       readonly phase: "unauthenticated";
-      readonly authentication: Extract<DbzzAuthentication, { principal: "anonymous" }>;
+      readonly authentication: Extract<AckerDBAuthentication, { principal: "anonymous" }>;
     }
   | {
       readonly phase: "authenticated";
-      readonly authentication: Exclude<DbzzAuthentication, { principal: "anonymous" }>;
+      readonly authentication: Exclude<AckerDBAuthentication, { principal: "anonymous" }>;
     }
-  | { readonly phase: "refresh-required"; readonly error: DbzzClientError }
-  | { readonly phase: "failed"; readonly error: DbzzClientError }
+  | { readonly phase: "refresh-required"; readonly error: AckerDBClientError }
+  | { readonly phase: "failed"; readonly error: AckerDBClientError }
   | { readonly phase: "closed" };
 
-export type DbzzLiveEvent<Row> =
+export type AckerDBLiveEvent<Row> =
   | { readonly kind: "row"; readonly cursor: LiveEventCursor; readonly row: Row }
   | { readonly kind: "gap"; readonly cursor: LiveEventCursor }
   | { readonly kind: "reset"; readonly cursor: LiveEventCursor };
 
-export interface DbzzCallOptions {
+export interface AckerDBCallOptions {
   readonly signal?: AbortSignal;
 }
 
-export interface DbzzSubscribeOptions<Error extends ApplicationError = ApplicationError> {
+export interface AckerDBSubscribeOptions<Error extends ApplicationError = ApplicationError> {
   /**
    * Fires when the server authoritatively confirms the already-held value
    * without redelivering it: applied `resume` and `checkpoint` transitions,
@@ -194,7 +194,7 @@ export interface DbzzSubscribeOptions<Error extends ApplicationError = Applicati
   readonly onApplicationError?: (error: Error) => void;
 }
 
-export const DBZZ_CLIENT_LIMITS: DbzzClientLimits = Object.freeze({
+export const ACKERDB_CLIENT_LIMITS: AckerDBClientLimits = Object.freeze({
   maxPendingItems: 4_096,
   maxPendingBytes: 16 * 1024 * 1024,
   maxQueryAgeMs: 30_000,
@@ -204,7 +204,7 @@ export const DBZZ_CLIENT_LIMITS: DbzzClientLimits = Object.freeze({
   maxSseAckAgeMs: 5_000,
 });
 
-export const DBZZ_RECONNECT_DEFAULTS: DbzzReconnectOptions = Object.freeze({
+export const ACKERDB_RECONNECT_DEFAULTS: AckerDBReconnectOptions = Object.freeze({
   baseDelayMs: 100,
   maxDelayMs: 3_000,
   stableOpenMs: 10_000,
@@ -217,7 +217,7 @@ const CLIENT_CLOSE_CODE = Object.freeze({
   authenticationFailed: 4008,
 } as const);
 
-export class DbzzClientError extends Error {
+export class AckerDBClientError extends Error {
   readonly kind: "framework" | "unhandled" | "transport";
   readonly outcome: Readonly<Outcome>;
   readonly code: OutcomeCode;
@@ -239,7 +239,7 @@ export class DbzzClientError extends Error {
 
   constructor(outcome: Outcome, interruption?: "suspension") {
     super(outcome.message);
-    this.name = "DbzzClientError";
+    this.name = "AckerDBClientError";
     this.kind = outcome.code === "internal"
       ? "unhandled"
       : outcome.code === "malformed" ||
@@ -265,7 +265,7 @@ export class DbzzClientError extends Error {
 
 export type ClientResult<Data, Error extends ApplicationError = never> = Result<
   Data,
-  Error | DbzzClientError
+  Error | AckerDBClientError
 >;
 
 interface QuerySubscription {
@@ -275,7 +275,7 @@ interface QuerySubscription {
   readonly args: unknown;
   readonly onUpdate: (value: unknown) => void;
   readonly onApplicationError?: (error: ApplicationError) => void;
-  readonly onError?: (error: DbzzClientError) => void;
+  readonly onError?: (error: AckerDBClientError) => void;
   readonly onCursorConfirmed?: () => void;
   cursor?: SubscriptionCursor;
   resetRequested: boolean;
@@ -288,8 +288,8 @@ interface EventSubscription {
   readonly kind: "event";
   readonly id: number;
   readonly ref: string;
-  readonly onEvent: (event: DbzzLiveEvent<unknown>) => void;
-  readonly onError?: (error: DbzzClientError) => void;
+  readonly onEvent: (event: AckerDBLiveEvent<unknown>) => void;
+  readonly onError?: (error: AckerDBClientError) => void;
   cursor?: LiveEventCursor;
   frame: string;
   bytes: number;
@@ -306,7 +306,7 @@ interface PendingRequest {
   readonly createdAtMs: number;
   readonly expiresAtMs: number;
   readonly resolve: (value: unknown) => void;
-  readonly reject: (error: DbzzClientError) => void;
+  readonly reject: (error: AckerDBClientError) => void;
   readonly mutationRequestId?: string;
   expiryHandle?: unknown;
   sentGeneration?: number;
@@ -320,9 +320,9 @@ interface PendingRequest {
 interface AuthAttempt {
   readonly id: number;
   readonly credential: Credential;
-  readonly result: Promise<DbzzAuthentication>;
-  readonly resolve: (authentication: DbzzAuthentication) => void;
-  readonly reject: (error: DbzzClientError) => void;
+  readonly result: Promise<AckerDBAuthentication>;
+  readonly resolve: (authentication: AckerDBAuthentication) => void;
+  readonly reject: (error: AckerDBClientError) => void;
   /** Absolute deadline: the timer pauses across suspension, this does not. */
   readonly expiresAtMs: number;
   expiryHandle?: unknown;
@@ -355,8 +355,8 @@ interface SseResponseReader extends CancelableResponse {
 
 const encoder = new TextEncoder();
 const UUID_RANDOM_MASK = (1n << 74n) - 1n;
-const SSE_STREAM_HEADER = "x-dbzz-sse-stream";
-const SSE_STALL_HEADER = "x-dbzz-sse-max-stall-ms";
+const SSE_STREAM_HEADER = "x-ackerdb-sse-stream";
+const SSE_STALL_HEADER = "x-ackerdb-sse-max-stall-ms";
 const MAX_SSE_TOKEN_LENGTH = 128;
 const MAX_SSE_ACK_ATTEMPTS = 8;
 
@@ -371,8 +371,8 @@ function localError(
   message: string,
   resource?: ResourceClass,
   committed?: true,
-): DbzzClientError {
-  return new DbzzClientError({ code, message, retryable: false, resource, committed });
+): AckerDBClientError {
+  return new AckerDBClientError({ code, message, retryable: false, resource, committed });
 }
 
 /**
@@ -385,14 +385,14 @@ function suspensionError(
   code: OutcomeCode,
   message: string,
   resource?: ResourceClass,
-): DbzzClientError {
-  return new DbzzClientError({ code, message, retryable: false, resource }, "suspension");
+): AckerDBClientError {
+  return new AckerDBClientError({ code, message, retryable: false, resource }, "suspension");
 }
 
 /**
  * The reason suspendTransport gives every in-flight fetch controller.
  * Settlement paths compare the signal's reason against this exact value, so
- * suspension-caused outcomes carry their {@link DbzzClientError.interruption}
+ * suspension-caused outcomes carry their {@link AckerDBClientError.interruption}
  * marker while caller aborts and close() keep their plain outcomes.
  */
 const SUSPENSION_INTERRUPTION = suspensionError(
@@ -420,7 +420,7 @@ function releaseReaderLock(reader: SseResponseReader): void {
 async function raceWithAbort<T>(
   promise: Promise<T>,
   signal: AbortSignal,
-  error: DbzzClientError,
+  error: AckerDBClientError,
   onLate?: (value: T) => void,
 ): Promise<T> {
   const discard = (value: T): never => {
@@ -526,7 +526,7 @@ class UuidV7Factory {
   }
 }
 
-const SYSTEM_CLOCK: DbzzClientClock = {
+const SYSTEM_CLOCK: AckerDBClientClock = {
   now: Date.now,
   setTimeout(callback, delayMs) {
     const handle = setTimeout(callback, delayMs);
@@ -542,25 +542,25 @@ const SYSTEM_CLOCK: DbzzClientClock = {
   clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
 };
 
-const CONNECTING_STATE: DbzzConnectionState = Object.freeze({ phase: "connecting" });
-const RECONNECTING_STATE: DbzzConnectionState = Object.freeze({ phase: "reconnecting" });
-const CLOSED_STATE: DbzzConnectionState = Object.freeze({ phase: "closed" });
-const SUSPENDED_STATE: DbzzConnectionState = Object.freeze({ phase: "suspended" });
-const RESUMING_STATE: DbzzConnectionState = Object.freeze({ phase: "resuming" });
+const CONNECTING_STATE: AckerDBConnectionState = Object.freeze({ phase: "connecting" });
+const RECONNECTING_STATE: AckerDBConnectionState = Object.freeze({ phase: "reconnecting" });
+const CLOSED_STATE: AckerDBConnectionState = Object.freeze({ phase: "closed" });
+const SUSPENDED_STATE: AckerDBConnectionState = Object.freeze({ phase: "suspended" });
+const RESUMING_STATE: AckerDBConnectionState = Object.freeze({ phase: "resuming" });
 
-const AUTHENTICATING_ANONYMOUS: DbzzAuthenticationState = Object.freeze({
+const AUTHENTICATING_ANONYMOUS: AckerDBAuthenticationState = Object.freeze({
   phase: "authenticating",
   credential: "anonymous",
 });
-const AUTHENTICATING_BEARER: DbzzAuthenticationState = Object.freeze({
+const AUTHENTICATING_BEARER: AckerDBAuthenticationState = Object.freeze({
   phase: "authenticating",
   credential: "bearer",
 });
-const CLOSED_AUTHENTICATION_STATE: DbzzAuthenticationState = Object.freeze({ phase: "closed" });
+const CLOSED_AUTHENTICATION_STATE: AckerDBAuthenticationState = Object.freeze({ phase: "closed" });
 
 function authenticationFromFrame(
   frame: WelcomeMessage | AuthenticatedMessage,
-): DbzzAuthentication {
+): AckerDBAuthentication {
   if (frame.principal === "anonymous") {
     return Object.freeze({ authEpoch: frame.authEpoch, principal: "anonymous" });
   }
@@ -575,26 +575,26 @@ function authenticationFromFrame(
     : Object.freeze({ authEpoch: frame.authEpoch, principal: "workload", provenance });
 }
 
-const SYSTEM_SOCKET_FACTORY: DbzzWebSocketFactory = (url) =>
-  new WebSocket(url) as unknown as DbzzWebSocket;
-const SYSTEM_FETCH: DbzzFetch = (url, init) => fetch(url, init);
+const SYSTEM_SOCKET_FACTORY: AckerDBWebSocketFactory = (url) =>
+  new WebSocket(url) as unknown as AckerDBWebSocket;
+const SYSTEM_FETCH: AckerDBFetch = (url, init) => fetch(url, init);
 const SYSTEM_RANDOM = (): number => {
   const value = new Uint32Array(1);
   crypto.getRandomValues(value);
   return value[0]! / 0x1_0000_0000;
 };
 
-export class DbzzClient {
+export class AckerDBClient {
   readonly clientSessionId: string;
 
   private readonly httpUrl: string;
   private readonly wsUrl: string;
-  private readonly limits: DbzzClientLimits;
-  private readonly reconnect: DbzzReconnectOptions;
-  private readonly clock: DbzzClientClock;
+  private readonly limits: AckerDBClientLimits;
+  private readonly reconnect: AckerDBReconnectOptions;
+  private readonly clock: AckerDBClientClock;
   private readonly random: () => number;
-  private readonly createWebSocket: DbzzWebSocketFactory;
-  private readonly fetcher: DbzzFetch;
+  private readonly createWebSocket: AckerDBWebSocketFactory;
+  private readonly fetcher: AckerDBFetch;
   private readonly uuid: UuidV7Factory;
   private readonly subscriptions = new Map<number, Subscription>();
   private readonly pending = new Map<number, PendingRequest>();
@@ -603,7 +603,7 @@ export class DbzzClient {
   private credential: Credential;
   /** The credential the current connection's hello presented. */
   private helloCredential?: Credential;
-  private socket: DbzzWebSocket | null = null;
+  private socket: AckerDBWebSocket | null = null;
   private socketOpen = false;
   private ready = false;
   private closed = false;
@@ -639,17 +639,17 @@ export class DbzzClient {
   private reconnectHandle?: unknown;
   private stableHandle?: unknown;
   private pingHandle?: unknown;
-  private authentication?: DbzzAuthentication;
-  private connectionState: DbzzConnectionState = CONNECTING_STATE;
-  private readonly connectionStateListeners = new Set<(state: DbzzConnectionState) => void>();
-  private authenticationState: DbzzAuthenticationState;
-  private readonly authenticationStateListeners = new Set<(state: DbzzAuthenticationState) => void>();
+  private authentication?: AckerDBAuthentication;
+  private connectionState: AckerDBConnectionState = CONNECTING_STATE;
+  private readonly connectionStateListeners = new Set<(state: AckerDBConnectionState) => void>();
+  private authenticationState: AckerDBAuthenticationState;
+  private readonly authenticationStateListeners = new Set<(state: AckerDBAuthenticationState) => void>();
   private connectRequested = false;
   private everReady = false;
-  private blockingError?: DbzzClientError;
-  private terminalError?: DbzzClientError;
+  private blockingError?: AckerDBClientError;
+  private terminalError?: AckerDBClientError;
 
-  constructor(options: DbzzClientOptions) {
+  constructor(options: AckerDBClientOptions) {
     this.httpUrl = options.url.replace(/\/$/, "");
     if (!/^https?:\/\//.test(this.httpUrl)) throw new TypeError("url must use http or https");
     this.wsUrl = `${this.httpUrl.replace(/^http/, "ws")}/ws`;
@@ -660,8 +660,8 @@ export class DbzzClient {
     this.credential = freezeCredential(options.credential);
     this.authenticationState =
       this.credential.kind === "anonymous" ? AUTHENTICATING_ANONYMOUS : AUTHENTICATING_BEARER;
-    this.limits = Object.freeze({ ...DBZZ_CLIENT_LIMITS, ...options.limits });
-    this.reconnect = Object.freeze({ ...DBZZ_RECONNECT_DEFAULTS, ...options.reconnect });
+    this.limits = Object.freeze({ ...ACKERDB_CLIENT_LIMITS, ...options.limits });
+    this.reconnect = Object.freeze({ ...ACKERDB_RECONNECT_DEFAULTS, ...options.reconnect });
     for (const [name, value] of Object.entries(this.limits)) positiveInteger(value, name);
     for (const [name, value] of Object.entries(this.reconnect)) positiveInteger(value, name);
     if (this.reconnect.baseDelayMs > this.reconnect.maxDelayMs) {
@@ -684,17 +684,17 @@ export class DbzzClient {
     });
   }
 
-  get currentAuthentication(): DbzzAuthentication | undefined {
+  get currentAuthentication(): AckerDBAuthentication | undefined {
     return this.authentication === undefined ? undefined : Object.freeze({ ...this.authentication });
   }
 
   /** Immutable snapshot; the same object is returned until the next transition. */
-  get currentConnectionState(): DbzzConnectionState {
+  get currentConnectionState(): AckerDBConnectionState {
     return this.connectionState;
   }
 
   /** Notifies on connection-state transitions only; read the snapshot for the current value. */
-  subscribeConnectionState(listener: (state: DbzzConnectionState) => void): () => void {
+  subscribeConnectionState(listener: (state: AckerDBConnectionState) => void): () => void {
     this.connectionStateListeners.add(listener);
     return () => {
       this.connectionStateListeners.delete(listener);
@@ -702,12 +702,12 @@ export class DbzzClient {
   }
 
   /** Immutable snapshot; the same object is returned until the next transition. */
-  get currentAuthenticationState(): DbzzAuthenticationState {
+  get currentAuthenticationState(): AckerDBAuthenticationState {
     return this.authenticationState;
   }
 
   /** Notifies on authentication-state transitions only; read the snapshot for the current value. */
-  subscribeAuthenticationState(listener: (state: DbzzAuthenticationState) => void): () => void {
+  subscribeAuthenticationState(listener: (state: AckerDBAuthenticationState) => void): () => void {
     this.authenticationStateListeners.add(listener);
     return () => {
       this.authenticationStateListeners.delete(listener);
@@ -733,7 +733,7 @@ export class DbzzClient {
    * with the credential already in flight joins that attempt; a different
    * credential supersedes it with an `auth_stale` rejection.
    */
-  refreshCredential(credential: Credential): Promise<DbzzAuthentication> {
+  refreshCredential(credential: Credential): Promise<AckerDBAuthentication> {
     if (this.closed) throw localError("unavailable", "client is closed", "connection");
     if (this.permanentFailure) {
       throw localError("unavailable", "client stopped after a protocol failure", "connection");
@@ -757,9 +757,9 @@ export class DbzzClient {
     this.credential = nextCredential;
     this.authBlocked = false;
     this.blockingError = undefined;
-    let resolve!: (authentication: DbzzAuthentication) => void;
-    let reject!: (error: DbzzClientError) => void;
-    const result = new Promise<DbzzAuthentication>((promiseResolve, promiseReject) => {
+    let resolve!: (authentication: AckerDBAuthentication) => void;
+    let reject!: (error: AckerDBClientError) => void;
+    const result = new Promise<AckerDBAuthentication>((promiseResolve, promiseReject) => {
       resolve = promiseResolve;
       reject = promiseReject;
     });
@@ -792,8 +792,8 @@ export class DbzzClient {
     ref: QueryRef<A, Data, Error> | string,
     args: A,
     onUpdate: (value: Data) => void,
-    onError?: (error: DbzzClientError) => void,
-    options: DbzzSubscribeOptions<Error> = {},
+    onError?: (error: AckerDBClientError) => void,
+    options: AckerDBSubscribeOptions<Error> = {},
   ): () => void {
     this.assertUsable();
     const id = this.allocateId();
@@ -824,8 +824,8 @@ export class DbzzClient {
   subscribeEvent<A, Row = unknown>(
     ref: EventRef<A, Row> | string,
     args: A,
-    onEvent: (event: DbzzLiveEvent<Row>) => void,
-    onError?: (error: DbzzClientError) => void,
+    onEvent: (event: AckerDBLiveEvent<Row>) => void,
+    onError?: (error: AckerDBClientError) => void,
   ): () => void {
     this.assertUsable();
     const id = this.allocateId();
@@ -836,7 +836,7 @@ export class DbzzClient {
       kind: "event",
       id,
       ref: address,
-      onEvent: onEvent as (event: DbzzLiveEvent<unknown>) => void,
+      onEvent: onEvent as (event: AckerDBLiveEvent<unknown>) => void,
       onError,
       frame,
       bytes,
@@ -868,7 +868,7 @@ export class DbzzClient {
   procedure<A, Data = unknown, Error extends ApplicationError = never>(
     ref: ProcedureRef<A, Data, Error> | string,
     args: A,
-    options: DbzzCallOptions = {},
+    options: AckerDBCallOptions = {},
   ): Promise<ClientResult<Data, Error>> {
     try {
       this.assertUsable();
@@ -903,7 +903,7 @@ export class DbzzClient {
   async *sse<A, Chunk = unknown>(
     ref: SseRef<A, Chunk> | string,
     args: A,
-    options: DbzzCallOptions = {},
+    options: AckerDBCallOptions = {},
   ): AsyncGenerator<Chunk, void, undefined> {
     this.assertUsable();
     if (options.signal?.aborted) {
@@ -1037,7 +1037,7 @@ export class DbzzClient {
         if (parsed.t !== "err" || (parsed.id !== null && parsed.id !== id)) {
           throw localError("malformed", "SSE error response does not match its request", "sse");
         }
-        throw new DbzzClientError(parsed.outcome);
+        throw new AckerDBClientError(parsed.outcome);
       }
       if (response.status !== 200) {
         throw localError("malformed", "SSE endpoint returned an unexpected success status", "sse");
@@ -1172,10 +1172,10 @@ export class DbzzClient {
         }
         await acknowledge(frame);
         if (frame.t === "sse_done") return;
-        throw new DbzzClientError(frame.outcome);
+        throw new AckerDBClientError(frame.outcome);
       }
     } catch (error) {
-      if (error instanceof DbzzClientError) throw error;
+      if (error instanceof AckerDBClientError) throw error;
       throw localError("indeterminate", "SSE response was interrupted", "sse");
     } finally {
       cleanup();
@@ -1409,7 +1409,7 @@ export class DbzzClient {
       unownedReservation = bytes;
       const maxAge = kind === "mutation" ? this.limits.maxMutationAgeMs : this.limits.maxQueryAgeMs;
       let resolve!: (value: unknown) => void;
-      let reject!: (error: DbzzClientError) => void;
+      let reject!: (error: AckerDBClientError) => void;
       const result = new Promise<unknown>((promiseResolve, promiseReject) => {
         resolve = promiseResolve;
         reject = promiseReject;
@@ -1443,7 +1443,7 @@ export class DbzzClient {
     } catch (error) {
       if (unownedReservation) this.releasePersistent(unownedReservation);
       return Promise.reject(
-        error instanceof DbzzClientError
+        error instanceof AckerDBClientError
           ? error
           : localError("validation", "request cannot be encoded", "operation"),
       );
@@ -1476,7 +1476,7 @@ export class DbzzClient {
     }
   }
 
-  private deriveConnectionState(current: DbzzConnectionState): DbzzConnectionState {
+  private deriveConnectionState(current: AckerDBConnectionState): AckerDBConnectionState {
     if (this.closed) return CLOSED_STATE;
     if (this.permanentFailure) {
       return current.phase === "terminal-error" && current.error === this.terminalError
@@ -1503,7 +1503,7 @@ export class DbzzClient {
     return this.everReady ? RECONNECTING_STATE : CONNECTING_STATE;
   }
 
-  private deriveAuthenticationState(current: DbzzAuthenticationState): DbzzAuthenticationState {
+  private deriveAuthenticationState(current: AckerDBAuthenticationState): AckerDBAuthenticationState {
     if (this.closed) return CLOSED_AUTHENTICATION_STATE;
     if (this.permanentFailure) {
       return current.phase === "failed" && current.error === this.terminalError
@@ -1549,7 +1549,7 @@ export class DbzzClient {
       return;
     }
     this.clearReconnectTimer();
-    let socket: DbzzWebSocket;
+    let socket: AckerDBWebSocket;
     try {
       socket = this.createWebSocket(this.wsUrl);
     } catch {
@@ -1564,7 +1564,7 @@ export class DbzzClient {
     socket.onclose = () => this.handleClose(socket);
   }
 
-  private handleOpen(socket: DbzzWebSocket): void {
+  private handleOpen(socket: AckerDBWebSocket): void {
     if (this.socket !== socket || this.closed) return;
     this.socketOpen = true;
     this.helloCredential = this.credential;
@@ -1576,11 +1576,11 @@ export class DbzzClient {
         credential: this.credential,
       });
     } catch (error) {
-      this.failPermanently(error instanceof DbzzClientError ? error : this.protocolError(error));
+      this.failPermanently(error instanceof AckerDBClientError ? error : this.protocolError(error));
     }
   }
 
-  private handleClose(socket: DbzzWebSocket): void {
+  private handleClose(socket: AckerDBWebSocket): void {
     if (this.socket !== socket) return;
     this.socket = null;
     this.socketOpen = false;
@@ -1611,7 +1611,7 @@ export class DbzzClient {
     this.publishConnectionState();
   }
 
-  private handleIncoming(socket: DbzzWebSocket, data: unknown): void {
+  private handleIncoming(socket: AckerDBWebSocket, data: unknown): void {
     if (this.socket !== socket || this.closed) return;
     if (typeof data !== "string" || encoder.encode(data).byteLength > this.limits.maxFrameBytes) {
       this.failPermanently(localError("malformed", "server frame exceeds the client limit", "connection"));
@@ -1687,7 +1687,7 @@ export class DbzzClient {
         this.applyApplicationError(frame);
         return;
       case "err":
-        this.applyError(frame.id, new DbzzClientError(frame.outcome));
+        this.applyError(frame.id, new AckerDBClientError(frame.outcome));
         return;
       case "pong":
         return;
@@ -1733,7 +1733,7 @@ export class DbzzClient {
         subscription.onApplicationError?.(transition.error);
         break;
       case "revoked":
-        subscription.onError?.(new DbzzClientError(transition.outcome));
+        subscription.onError?.(new AckerDBClientError(transition.outcome));
         break;
       case "checkpoint":
       case "resume":
@@ -1831,7 +1831,7 @@ export class DbzzClient {
     if (obligations.size === 0) this.finishRequest(request, result);
   }
 
-  private applyError(id: number | null, error: DbzzClientError): void {
+  private applyError(id: number | null, error: AckerDBClientError): void {
     if (id === null) {
       if (error.retryable) {
         this.serverRetryNotBeforeMs = Math.max(
@@ -1891,7 +1891,7 @@ export class DbzzClient {
       bytes = this.frameBytes(frame, "subscription");
     } catch (error) {
       subscription.onError?.(
-        error instanceof DbzzClientError
+        error instanceof AckerDBClientError
           ? error
           : localError("overloaded", "subscription cursor exceeds the client state limit", "subscription"),
       );
@@ -1901,7 +1901,7 @@ export class DbzzClient {
     const nextTotal = this.pendingBytes - subscription.bytes + bytes;
     if (nextTotal > this.limits.maxPendingBytes) {
       subscription.onError?.(
-        new DbzzClientError({
+        new AckerDBClientError({
           code: "overloaded",
           retryable: true,
           retryAfterMs: this.reconnect.baseDelayMs,
@@ -1951,7 +1951,7 @@ export class DbzzClient {
   private finishRequest(
     request: PendingRequest,
     value?: unknown,
-    error?: DbzzClientError,
+    error?: AckerDBClientError,
   ): void {
     if (!this.pending.delete(request.id)) return;
     this.clock.clearTimeout(request.expiryHandle);
@@ -2049,14 +2049,14 @@ export class DbzzClient {
     attempt.sentGeneration = this.connectionGeneration;
   }
 
-  private resolveAuth(attempt: AuthAttempt, authentication: DbzzAuthentication): void {
+  private resolveAuth(attempt: AuthAttempt, authentication: AckerDBAuthentication): void {
     if (this.authAttempt !== attempt) return;
     this.clock.clearTimeout(attempt.expiryHandle);
     this.authAttempt = undefined;
     attempt.resolve(Object.freeze({ ...authentication }));
   }
 
-  private blockAuthentication(error: DbzzClientError): void {
+  private blockAuthentication(error: AckerDBClientError): void {
     this.authBlocked = true;
     this.ready = false;
     this.resuming = false;
@@ -2078,7 +2078,7 @@ export class DbzzClient {
     this.publishConnectionState();
   }
 
-  private failPermanently(error: DbzzClientError): void {
+  private failPermanently(error: AckerDBClientError): void {
     if (this.permanentFailure || this.closed) return;
     this.permanentFailure = true;
     this.resuming = false;
@@ -2246,7 +2246,7 @@ export class DbzzClient {
       this.pendingItems >= this.limits.maxPendingItems ||
       bytes > this.limits.maxPendingBytes - this.pendingBytes
     ) {
-      throw new DbzzClientError({
+      throw new AckerDBClientError({
         code: "overloaded",
         retryable: true,
         retryAfterMs: this.reconnect.baseDelayMs,
@@ -2277,7 +2277,7 @@ export class DbzzClient {
   private frameBytes(frame: string, resource: ResourceClass): number {
     const bytes = encoder.encode(frame).byteLength;
     if (bytes > this.limits.maxFrameBytes) {
-      throw new DbzzClientError({
+      throw new AckerDBClientError({
         code: "overloaded",
         retryable: false,
         message: "client frame exceeds the configured limit",
@@ -2306,14 +2306,14 @@ export class DbzzClient {
     return now;
   }
 
-  private protocolError(error: unknown, resource: ResourceClass = "connection"): DbzzClientError {
+  private protocolError(error: unknown, resource: ResourceClass = "connection"): AckerDBClientError {
     return error instanceof ProtocolError
       ? localError(error.code, error.message, resource)
       : localError("malformed", "invalid protocol payload", resource);
   }
 
-  private asClientError(error: unknown): DbzzClientError {
-    return error instanceof DbzzClientError
+  private asClientError(error: unknown): AckerDBClientError {
+    return error instanceof AckerDBClientError
       ? error
       : localError("internal", "client operation failed unexpectedly", "operation");
   }
@@ -2431,7 +2431,7 @@ export class DbzzClient {
           if (parsed.t !== "err" || parsed.id !== null) {
             throw localError("malformed", "SSE acknowledgment returned an invalid response", "sse");
           }
-          const error = new DbzzClientError(parsed.outcome);
+          const error = new AckerDBClientError(parsed.outcome);
           if ((response.status === 429 || response.status === 503) && error.retryable) {
             return Math.max(error.retryAfterMs ?? 0, this.retryAfter(response));
           }
@@ -2440,7 +2440,7 @@ export class DbzzClient {
         if (result === null) return;
         retryAfterMs = result;
       } catch (error) {
-        if (error instanceof DbzzClientError) throw error;
+        if (error instanceof AckerDBClientError) throw error;
         if (signal.aborted) {
           throw localError("unavailable", "SSE acknowledgment was canceled", "sse");
         }
@@ -2484,7 +2484,7 @@ export class DbzzClient {
     }
     const controller = new AbortController();
     let timeoutHandle: unknown;
-    let rejectInterrupted!: (error: DbzzClientError) => void;
+    let rejectInterrupted!: (error: AckerDBClientError) => void;
     const interrupted = new Promise<never>((_resolve, reject) => {
       rejectInterrupted = reject;
     });

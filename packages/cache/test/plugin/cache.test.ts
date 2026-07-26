@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { decode, encode } from "@dbzz/core";
+import { decode, encode } from "@ackerdb/core";
 import {
   assemblePlugins,
   definePlugin,
@@ -15,7 +15,7 @@ import {
   type DbStatementObservation,
   type PluginExportTree,
   type PluginInstance,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import {
   CacheEntryTooLargeError,
   CacheStoreError,
@@ -162,7 +162,7 @@ function createBuiltInRig(
 }
 
 describe("cachePlugin configuration and keys", () => {
-  test("puts external prefixes first and frames DBZZ-owned key segments", () => {
+  test("puts external prefixes first and frames AckerDB-owned key segments", () => {
     const frame = (
       key: string | number | bigint,
       namespace = "profiles",
@@ -173,10 +173,10 @@ describe("cachePlugin configuration and keys", () => {
     expect(frame("1", "profiles")).not.toBe(frame("1", "settings"));
     expect(frame("a|1:b")).not.toBe(frame("a") + frame("b"));
     expect(frame("key")).toBe(
-      "prefix|dbzz-cache:v1|5:cache|8:profiles|string|3:key",
+      "prefix|ackerdb-cache:v1|5:cache|8:profiles|string|3:key",
     );
     expect(encodeCacheKey("", "cache", "profiles", "key")).toBe(
-      "dbzz-cache:v1|5:cache|8:profiles|string|3:key",
+      "ackerdb-cache:v1|5:cache|8:profiles|string|3:key",
     );
     expect(() => frame(Number.NaN)).toThrow("finite");
   });
@@ -197,8 +197,8 @@ describe("cachePlugin configuration and keys", () => {
 
     const builtin = cachePlugin();
     const plugin = cachePlugin({ store });
-    expect(builtin.definitionId).toBe("@dbzz/cache");
-    expect(plugin.definitionId).toBe("@dbzz/cache-external");
+    expect(builtin.definitionId).toBe("@ackerdb/cache");
+    expect(plugin.definitionId).toBe("@ackerdb/cache-external");
     expect(opens).toBe(0);
     expect(Object.isFrozen(store)).toBe(true);
     expect(() => cachePlugin({ maxBytes: 0 })).toThrow("positive safe integer");
@@ -808,7 +808,7 @@ describe("external cache store contract", () => {
     ).toBe(true);
     expect(seenRequestSignals.every((signal) => signal === requestAbort.signal)).toBe(true);
     expect(
-      [...rows.keys()].every((key) => key.startsWith("ext|dbzz-cache:v1|")),
+      [...rows.keys()].every((key) => key.startsWith("ext|ackerdb-cache:v1|")),
     ).toBe(true);
 
     if (typeof cleanup === "function") await cleanup();
@@ -851,7 +851,7 @@ describe("external cache store contract", () => {
     await invoke(plugin, ["set"], ctx, { key: 1n, value: "bigint" });
     expect(rows.size).toBe(3);
     expect(
-      [...rows.keys()].every((key) => key.startsWith("errors|dbzz-cache:v1|")),
+      [...rows.keys()].every((key) => key.startsWith("errors|ackerdb-cache:v1|")),
     ).toBe(true);
     expect(await invoke(plugin, ["get"], ctx, { key: "1" })).toBe("string");
     expect(await invoke(plugin, ["get"], ctx, { key: 1 })).toBe("number");

@@ -10,7 +10,7 @@ import {
   validateQueueLimits,
   validateTelemetryLimits,
 } from "../../src/runtime/limits.ts";
-import { DbzzError, isDbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError, isAckerDBError } from "../../src/shared/errors.ts";
 import { BoundedExecutor } from "../../src/runtime/executor.ts";
 
 function settled<T>(ticket: Promise<T>): Promise<T | AdmissionRejected> {
@@ -88,8 +88,8 @@ describe("AdmissionQueue", () => {
     );
 
     expect(rejected).toBeInstanceOf(AdmissionRejected);
-    expect(rejected).toBeInstanceOf(DbzzError);
-    expect(isDbzzError(rejected)).toBe(true);
+    expect(rejected).toBeInstanceOf(AckerDBError);
+    expect(isAckerDBError(rejected)).toBe(true);
     expect(rejected).toMatchObject({
       reason: "items",
       code: "overloaded",

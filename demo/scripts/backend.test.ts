@@ -3,19 +3,19 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DbzzClient, DbzzClientError, type DbzzLiveEvent } from "@dbzz/client";
-import { loadConfig, startApp, type AppConfig, type RunningApp } from "@dbzz/cli";
-import { api } from "@demo/dbzz-codegen/api";
+import { AckerDBClient, AckerDBClientError, type AckerDBLiveEvent } from "@ackerdb/client";
+import { loadConfig, startApp, type AppConfig, type RunningApp } from "@ackerdb/cli";
+import { api } from "@demo/ackerdb-codegen/api";
 import type {
   Identity,
   OrderEvent,
   StaffEvent,
-} from "@demo/dbzz-codegen/types";
+} from "@demo/ackerdb-codegen/types";
 import { expectErrorCode, expectOk } from "./result.ts";
 
 const SERVER_DIR = fileURLToPath(new URL("../app/server", import.meta.url));
 const STAFF_TOKEN =
-  process.env.DBZZ_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
+  process.env.ACKERDB_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
 const REMINDER_DELAY_MS = 2 * 60_000;
 
 function deferred<T>() {
@@ -50,19 +50,19 @@ async function within<T>(
 }
 
 class BackendHarness {
-  readonly directory = mkdtempSync(join(tmpdir(), "dbzz-demo-backend-"));
+  readonly directory = mkdtempSync(join(tmpdir(), "ackerdb-demo-backend-"));
   readonly config: AppConfig;
   private app: RunningApp | undefined;
-  private readonly clients = new Set<DbzzClient>();
+  private readonly clients = new Set<AckerDBClient>();
 
   private constructor() {
     this.config = {
       ...loadConfig(SERVER_DIR, {
         ...process.env,
-        DBZZ_DURABILITY: "balanced",
-        DBZZ_TELEMETRY: "disabled",
+        ACKERDB_DURABILITY: "balanced",
+        ACKERDB_TELEMETRY: "disabled",
       }),
-      dbDir: join(this.directory, ".dbzz"),
+      dbDir: join(this.directory, ".ackerdb"),
       port: 0,
     };
   }
@@ -78,8 +78,8 @@ class BackendHarness {
     return `http://127.0.0.1:${this.app.server.port}`;
   }
 
-  client(token?: string): DbzzClient {
-    const client = new DbzzClient({
+  client(token?: string): AckerDBClient {
+    const client = new AckerDBClient({
       url: this.url,
       credential:
         token === undefined
@@ -90,7 +90,7 @@ class BackendHarness {
     return client;
   }
 
-  async initialize(): Promise<DbzzClient> {
+  async initialize(): Promise<AckerDBClient> {
     const staff = this.client(STAFF_TOKEN);
     expectOk(await staff.mutation(api.setup.initialize, {}));
     return staff;
@@ -100,7 +100,7 @@ class BackendHarness {
     email: string,
     name = "Backend Guest",
   ): Promise<{
-    client: DbzzClient;
+    client: AckerDBClient;
     identity: Identity;
     token: string;
     userId: bigint;
@@ -163,7 +163,7 @@ async function withBackend(
 }
 
 async function tableFor(
-  staff: DbzzClient,
+  staff: AckerDBClient,
   number: number,
 ): Promise<bigint> {
   return expectOk(
@@ -171,7 +171,7 @@ async function tableFor(
   );
 }
 
-async function firstMenuItem(client: DbzzClient) {
+async function firstMenuItem(client: AckerDBClient) {
   const catalog = expectOk(await client.query(api.menu.catalog, {}));
   const item = catalog.flatMap((category) => category.items)[0];
   if (item === undefined) throw new Error("seed menu is empty");
@@ -496,7 +496,7 @@ test("order events are owner-isolated and staff reminders reject guest subscribe
     const ownerUnsubscribe = owner.client.subscribeEvent(
       api.events.orderEvents,
       { identity: owner.identity },
-      (event: DbzzLiveEvent<OrderEvent>) => {
+      (event: AckerDBLiveEvent<OrderEvent>) => {
         if (event.kind === "reset") ownerReset.resolve();
         if (
           event.kind === "row" &&
@@ -513,20 +513,20 @@ test("order events are owner-isolated and staff reminders reject guest subscribe
     const strangerUnsubscribe = stranger.client.subscribeEvent(
       api.events.orderEvents,
       { identity: stranger.identity },
-      (event: DbzzLiveEvent<OrderEvent>) => {
+      (event: AckerDBLiveEvent<OrderEvent>) => {
         if (event.kind === "reset") strangerReset.resolve();
         if (event.kind === "row") strangerRows++;
       },
       strangerReset.reject,
     );
-    const forbidden = deferred<DbzzClientError>();
+    const forbidden = deferred<AckerDBClientError>();
     const forbiddenUnsubscribe = stranger.client.subscribeEvent(
       api.events.orderEvents,
       { identity: owner.identity },
       () => forbidden.reject(new Error("forbidden subscription delivered data")),
       forbidden.resolve,
     );
-    const staffForbidden = deferred<DbzzClientError>();
+    const staffForbidden = deferred<AckerDBClientError>();
     const staffEventUnsubscribe = stranger.client.subscribeEvent(
       api.events.staffEvents,
       {},
@@ -593,7 +593,7 @@ test(
         const unsubscribe = staff.subscribeEvent(
           api.events.staffEvents,
           {},
-          (event: DbzzLiveEvent<StaffEvent>) => {
+          (event: AckerDBLiveEvent<StaffEvent>) => {
             if (event.kind === "reset") reset.resolve();
             if (
               event.kind === "row" &&

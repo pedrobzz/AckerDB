@@ -1,4 +1,4 @@
-import type { Credential } from "@dbzz/core";
+import type { Credential } from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   verifyClientCredential,
@@ -12,7 +12,7 @@ import {
   subscribeAuthInvalidation,
   type AuthInvalidationScope,
 } from "./invalidation.ts";
-import { DbzzError, isDbzzError } from "../shared/errors.ts";
+import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 
 export interface AuthLeaseClock {
   now(): number;
@@ -50,27 +50,27 @@ const SYSTEM_CLOCK: AuthLeaseClock = Object.freeze({
   clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 });
 
-function verifierUnavailable(cause: unknown): DbzzError {
-  return isDbzzError(cause)
+function verifierUnavailable(cause: unknown): AckerDBError {
+  return isAckerDBError(cause)
     ? cause
-    : new DbzzError("auth_unavailable", "credential verification is temporarily unavailable", {
+    : new AckerDBError("auth_unavailable", "credential verification is temporarily unavailable", {
         retryable: true,
         cause,
       });
 }
 
-function canceled(reason: unknown): DbzzError {
-  return isDbzzError(reason)
+function canceled(reason: unknown): AckerDBError {
+  return isAckerDBError(reason)
     ? reason
-    : new DbzzError("unavailable", "operation was canceled", { resource: "operation" });
+    : new AckerDBError("unavailable", "operation was canceled", { resource: "operation" });
 }
 
-function revoked(): DbzzError {
-  return new DbzzError("unauthenticated", "credential revoked");
+function revoked(): AckerDBError {
+  return new AckerDBError("unauthenticated", "credential revoked");
 }
 
-function expired(): DbzzError {
-  return new DbzzError("unauthenticated", "credential expired");
+function expired(): AckerDBError {
+  return new AckerDBError("unauthenticated", "credential expired");
 }
 
 function matches(principal: AuthenticatedPrincipal, invalidation: PrincipalInvalidation): boolean {
@@ -163,7 +163,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
   let callerListening = false;
   let ended = false;
   let acquiring = true;
-  let interrupt!: (error: DbzzError) => void;
+  let interrupt!: (error: AckerDBError) => void;
   const interrupted = new Promise<never>((_resolve, reject) => {
     interrupt = reject;
   });
@@ -200,7 +200,7 @@ export async function acquireAuthLease(options: AcquireAuthLeaseOptions): Promis
     }
   };
 
-  const abort = (error: DbzzError): void => {
+  const abort = (error: AckerDBError): void => {
     if (ended) return;
     controller.abort(error);
     if (acquiring) interrupt(error);

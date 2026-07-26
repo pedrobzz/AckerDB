@@ -3,7 +3,7 @@
 How an application declares one typed MCP tool surface and consumes it locally
 with AI SDK. The demo's Admin Chat under `demo/app/server` is the reference
 implementation. The model, streaming, and sandbox notes record application-side
-integration constraints; the declaration and typing sections define DBZZ's
+integration constraints; the declaration and typing sections define AckerDB's
 public API.
 
 ## Surface tool errors to the client
@@ -24,7 +24,7 @@ last step can only produce text. The demo uses `N = 16`.
 
 ## Sandboxed CLI tools: materialize eagerly
 
-just-bash blocks `globalThis.performance.now` while `exec()` runs. dbzz reads
+just-bash blocks `globalThis.performance.now` while `exec()` runs. AckerDB reads
 are telemetry-timed, so *lazy* file providers that query the database from
 inside the sandbox die mid-command (surfacing as `ENOENT`). Materialize every
 workspace file eagerly — inside one `ctx.tx`, before constructing the sandbox
@@ -33,17 +33,17 @@ workspace transactionally consistent: one snapshot, no torn reads.
 
 ## Dev database across engine-schema bumps
 
-Pre-1.0, a dbzz upgrade that bumps the storage engine's internal schema
-refuses to open older `.dbzz` files (the error names both versions). The dev
+Pre-1.0, an AckerDB upgrade that bumps the storage engine's internal schema
+refuses to open older `.ackerdb` files (the error names both versions). The dev
 workflow is wipe + reseed; there is no migration story before 1.0 by design.
 
 ## Declare MCP tools at the endpoint
 
-`dbzz codegen` emits schema-bound `mcpTool` and `createMcp` builders. A tool
+`acker codegen` emits schema-bound `mcpTool` and `createMcp` builders. A tool
 module exports an inert blueprint with no wire name and no endpoint import:
 
 ```ts
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import { mcpTool } from "../_generated/server";
 
 export const getOrder = mcpTool({
@@ -102,7 +102,7 @@ share one contract.
 This is a deliberate pre-1.0 source break. Convert old endpoint `.tool(...)`
 calls into `mcpTool(...)` blueprints, remove each definition's `name`, assemble
 them under `createMcp({ tools: { wire_name: blueprint } })`, and run
-`dbzz codegen`. There is no legacy registration shim.
+`acker codegen`. There is no legacy registration shim.
 
 ## Exact local AI tools
 
@@ -126,12 +126,12 @@ type, but execution still enforces endpoint, principal, and scope authority.
 
 Tool inputs and structured outputs retain their exact Standard JSON types.
 Tools without a declared output keep the raw MCP content-result type. The
-adapter runs through the active DBZZ procedure context and shared dispatcher;
+adapter runs through the active AckerDB procedure context and shared dispatcher;
 it does not open an HTTP connection or weaken the caller's authority.
 
 ## Model compatibility: optional and nullable tool arguments
 
-DBzz keeps omission and null explicit in tool contracts. Use
+AckerDB keeps omission and null explicit in tool contracts. Use
 `v.boolean().optional()` when a property may be omitted,
 `v.boolean().nullable()` when it is required but may be `null`, and
 `v.boolean().nullish()` when both forms are accepted. Optional properties are

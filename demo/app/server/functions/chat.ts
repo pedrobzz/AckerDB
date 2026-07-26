@@ -1,5 +1,5 @@
-import { v } from "@dbzz/server";
-import { sseProcedure } from "@demo/dbzz-codegen/server";
+import { v } from "@ackerdb/server";
+import { sseProcedure } from "@demo/ackerdb-codegen/server";
 import {
   convertToModelMessages,
   stepCountIs,
@@ -41,7 +41,7 @@ const SYSTEM_PROMPT = [
 
 /**
  * Admin Chat backend: a staff-only SSE procedure that runs the Admin MCP agent
- * and streams AI SDK v7 UI-message chunks. Its arguments are the standard dbzz
+ * and streams AI SDK v7 UI-message chunks. Its arguments are the standard ackerdb
  * chat-transport shape, so the front-end wires it with `useChatTransport` and no
  * `prepareArgs` mapper.
  *

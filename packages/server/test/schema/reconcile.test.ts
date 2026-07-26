@@ -15,7 +15,7 @@ import {
   reconcile,
   UnsafeSchemaChange,
   type Schema,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 function freshPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), "dbzz-rec-"));
+  const dir = mkdtempSync(join(tmpdir(), "ackerdb-rec-"));
   dirs.push(dir);
   return join(dir, "data.db");
 }
@@ -511,7 +511,7 @@ describe("probeUniqueIndex (the shared duplicate probe)", () => {
 });
 
 describe("reconcile: refusal surface", () => {
-  test("the message names the migration recourse and the dbzz reset escape hatch", () => {
+  test("the message names the migration recourse and the acker reset escape hatch", () => {
     const path = freshPath();
     const a = new Engine(baseSchema(), path);
     reconcile(a);
@@ -538,7 +538,7 @@ describe("reconcile: refusal surface", () => {
       ]);
       expect(refusal.message).toContain("users.slug: required column added");
       expect(refusal.message).toContain("migration");
-      expect(refusal.message).toContain("dbzz reset");
+      expect(refusal.message).toContain("acker reset");
     }
     b.close("clean");
   });
@@ -562,7 +562,7 @@ describe("reconcile: refusal surface", () => {
     const refusing = new Engine(mixed, path);
     expect(() => reconcile(refusing)).toThrow(UnsafeSchemaChange);
     expect(refusing.writer.query("SELECT name FROM sqlite_master WHERE name = 'audit'").get()).toBe(null);
-    expect(refusing.writer.query("SELECT COUNT(*) AS count FROM _dbzz_tags WHERE type = 'AuditKind'").get()).toEqual({
+    expect(refusing.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_tags WHERE type = 'AuditKind'").get()).toEqual({
       count: 0n,
     });
     refusing.close("clean");

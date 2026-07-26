@@ -55,7 +55,7 @@ export class UnsafeSchemaChange extends Error {
     super(
       `refusing to apply unsafe schema changes; each needs a migration:\n` +
         refusals.map((r) => `  - ${refusalSite(r)}: ${r.question}`).join("\n") +
-        `\n(write a migration to answer these, or wipe local data with \`dbzz reset\`)`,
+        `\n(write a migration to answer these, or wipe local data with \`acker reset\`)`,
     );
     this.refusals = refusals;
   }

@@ -14,19 +14,19 @@ import {
   type SystemName,
 } from "./benchmark.ts";
 import {
-  assertDbzzStartup,
+  assertAckerDBStartup,
   benchmarkExecutionOrder,
-  expectedDbzzStartupMode,
+  expectedAckerDBStartupMode,
   type BenchmarkExecutionLeg,
-  type DbzzBenchmarkProfile,
-  type DbzzStartupMode,
-} from "./dbzz-profile.ts";
+  type AckerDBBenchmarkProfile,
+  type AckerDBStartupMode,
+} from "./ackerdb-profile.ts";
 import {
-  assertDbzzTelemetryWorkload,
-  DbzzOutputCollector,
-  parseDbzzTelemetryReport,
-  type DbzzTelemetryReport,
-} from "./dbzz-telemetry.ts";
+  assertAckerDBTelemetryWorkload,
+  AckerDBOutputCollector,
+  parseAckerDBTelemetryReport,
+  type AckerDBTelemetryReport,
+} from "./ackerdb-telemetry.ts";
 import {
   ProcessTreeMonitor,
   readProcessTable,
@@ -58,14 +58,14 @@ import {
 const BENCH = import.meta.dir;
 const REPO = join(BENCH, "..");
 const RESULTS_DIR = join(BENCH, "results");
-const DBZZ_PORT = 3311;
+const ACKERDB_PORT = 3311;
 const CONVEX_PORTS = [3210, 3211];
 const SPACETIME_PORT = 5321;
 const REQUIRED_SPACETIME_VERSION = "2.6.1";
 const RESOURCE_SAMPLE_MS = Number(process.env.BENCH_RESOURCE_SAMPLE_MS ?? 250);
 const COOLDOWN_MS = Number(process.env.BENCH_COOLDOWN_MS ?? 2_000);
-const DBZZ_SHUTDOWN_SLACK_MS = 2_000;
-const ALL_SYSTEMS: SystemName[] = ["dbzz", "convex", "spacetimedb"];
+const ACKERDB_SHUTDOWN_SLACK_MS = 2_000;
+const ALL_SYSTEMS: SystemName[] = ["ackerdb", "convex", "spacetimedb"];
 
 interface ResourceCollection {
   snapshots: Record<string, ProcessTreeSnapshot>;
@@ -79,13 +79,13 @@ interface MeasuredDriverResult {
   implementationVersion?: string;
 }
 
-interface DbzzMeasuredDriverResult extends MeasuredDriverResult {
-  startupMode: DbzzStartupMode;
-  telemetryReport: DbzzTelemetryReport;
+interface AckerDBMeasuredDriverResult extends MeasuredDriverResult {
+  startupMode: AckerDBStartupMode;
+  telemetryReport: AckerDBTelemetryReport;
 }
 
 type SystemResults = Partial<Record<SystemName, MeasuredDriverResult>> & {
-  dbzz?: DbzzMeasuredDriverResult;
+  ackerdb?: AckerDBMeasuredDriverResult;
 };
 
 interface MachineRecord {
@@ -99,7 +99,7 @@ interface MachineRecord {
 }
 
 /**
- * The release evidence: apples-to-apples. The DBZZ leg runs telemetry=false
+ * The release evidence: apples-to-apples. The AckerDB leg runs telemetry=false
  * because the comparative targets ship no equivalent always-on telemetry;
  * telemetry cost has its own optional run (`TelemetryRunRecord`).
  */
@@ -115,8 +115,8 @@ interface RunRecord {
     loadGeneratorResources: string;
     sampleIntervalMs: number;
     durability: Record<SystemName, string>;
-    dbzzProfiles: string;
-    dbzzTelemetryValidation: string;
+    ackerDBProfiles: string;
+    ackerDBTelemetryValidation: string;
     spacetimeQueryTransport: string;
     subscriptionCapacity: string;
   };
@@ -125,7 +125,7 @@ interface RunRecord {
   validation: BenchmarkValidation;
 }
 
-/** The optional telemetry-cost run: DBZZ against itself, no comparative legs. */
+/** The optional telemetry-cost run: AckerDB against itself, no comparative legs. */
 interface TelemetryRunRecord {
   kind: "telemetry";
   schemaVersion: 1;
@@ -134,7 +134,7 @@ interface TelemetryRunRecord {
   git: { commit: string; dirty: boolean; sourceHash: string };
   machine: MachineRecord;
   executionOrder: BenchmarkExecutionLeg[];
-  profiles: Partial<Record<DbzzBenchmarkProfile, DbzzMeasuredDriverResult>>;
+  profiles: Partial<Record<AckerDBBenchmarkProfile, AckerDBMeasuredDriverResult>>;
   validation: BenchmarkValidation;
 }
 
@@ -387,30 +387,30 @@ async function runMeasuredClient(
   };
 }
 
-async function benchDbzz(profile: DbzzBenchmarkProfile): Promise<DbzzMeasuredDriverResult> {
-  const expectedMode = expectedDbzzStartupMode(profile, "balanced");
+async function benchAckerDB(profile: AckerDBBenchmarkProfile): Promise<AckerDBMeasuredDriverResult> {
+  const expectedMode = expectedAckerDBStartupMode(profile, "balanced");
   const telemetry = profile === "disabled" ? "disabled" : "enabled";
-  const reportPath = join(tmpdir(), `dbzz-benchmark-telemetry-${process.pid}-${randomUUID()}.json`);
-  assertPortsFree([DBZZ_PORT]);
+  const reportPath = join(tmpdir(), `ackerdb-benchmark-telemetry-${process.pid}-${randomUUID()}.json`);
+  assertPortsFree([ACKERDB_PORT]);
   console.log(
-    `→ dbzz: fresh server (telemetry=${telemetry}, profile=${expectedMode.telemetryProfile}, durability=balanced)`,
+    `→ ackerdb: fresh server (telemetry=${telemetry}, profile=${expectedMode.telemetryProfile}, durability=balanced)`,
   );
-  rmSync(join(BENCH, "dbzz-app", ".dbzz"), { recursive: true, force: true });
+  rmSync(join(BENCH, "ackerdb-app", ".ackerdb"), { recursive: true, force: true });
   const server = Bun.spawn(
-    [process.execPath, join(BENCH, "dbzz-server.ts"), join(BENCH, "dbzz-app")],
+    [process.execPath, join(BENCH, "ackerdb-server.ts"), join(BENCH, "ackerdb-app")],
     {
       stdout: "pipe",
       stderr: "pipe",
       env: {
         ...process.env,
-        DBZZ_TELEMETRY: telemetry,
-        DBZZ_BENCH_EXPORTER: profile === "exporter" ? "in-process" : "disabled",
-        DBZZ_DURABILITY: "balanced",
-        DBZZ_BENCH_TELEMETRY_REPORT: reportPath,
+        ACKERDB_TELEMETRY: telemetry,
+        ACKERDB_BENCH_EXPORTER: profile === "exporter" ? "in-process" : "disabled",
+        ACKERDB_DURABILITY: "balanced",
+        ACKERDB_BENCH_TELEMETRY_REPORT: reportPath,
       },
     },
   );
-  const output = new DbzzOutputCollector();
+  const output = new AckerDBOutputCollector();
   const outputDone = Promise.allSettled([
     (async () => {
       for await (const chunk of server.stdout) output.writeStdout(chunk);
@@ -421,19 +421,19 @@ async function benchDbzz(profile: DbzzBenchmarkProfile): Promise<DbzzMeasuredDri
   ]).then((readers) => {
     output.finish();
     const errors = readers.flatMap((reader) => reader.status === "rejected" ? [reader.reason] : []);
-    if (errors.length > 0) throw new AggregateError(errors, "dbzz output readers failed");
+    if (errors.length > 0) throw new AggregateError(errors, "ackerdb output readers failed");
   });
-  let startupMode: DbzzStartupMode | undefined;
+  let startupMode: AckerDBStartupMode | undefined;
   let startupIdle: MeasuredDriverResult["startupIdle"] | undefined;
   let measured: Omit<MeasuredDriverResult, "startupIdle" | "implementationVersion"> | undefined;
   const failures: BenchmarkFailurePart[] = [];
   try {
     await waitFor(() => output.output(), "ready on", 15_000);
-    startupMode = assertDbzzStartup(output.output(), expectedMode);
+    startupMode = assertAckerDBStartup(output.output(), expectedMode);
     startupIdle = await measureStartupIdle(server.pid);
     measured = await runMeasuredClient(
-      [process.execPath, join(BENCH, "dbzz-client.ts")],
-      { DBZZ_URL: `http://127.0.0.1:${DBZZ_PORT}` },
+      [process.execPath, join(BENCH, "ackerdb-client.ts")],
+      { ACKERDB_URL: `http://127.0.0.1:${ACKERDB_PORT}` },
       server.pid,
     );
   } catch (error) {
@@ -445,7 +445,7 @@ async function benchDbzz(profile: DbzzBenchmarkProfile): Promise<DbzzMeasuredDri
   try {
     stopped = await stopSubprocess(
       server,
-      expectedMode.gracefulShutdownMs + DBZZ_SHUTDOWN_SLACK_MS,
+      expectedMode.gracefulShutdownMs + ACKERDB_SHUTDOWN_SLACK_MS,
     );
     serverStopped = true;
   } catch (error) {
@@ -462,33 +462,33 @@ async function benchDbzz(profile: DbzzBenchmarkProfile): Promise<DbzzMeasuredDri
     failures.push({
       stage: "shutdown",
       error: new Error(
-        `dbzz benchmark server exceeded its ${expectedMode.gracefulShutdownMs}ms graceful shutdown deadline`,
+        `ackerdb benchmark server exceeded its ${expectedMode.gracefulShutdownMs}ms graceful shutdown deadline`,
       ),
     });
   } else if (stopped !== undefined && stopped.exitCode !== 0) {
     failures.push({
       stage: "server exit",
-      error: new Error(`dbzz benchmark server failed with exit code ${stopped.exitCode}`),
+      error: new Error(`ackerdb benchmark server failed with exit code ${stopped.exitCode}`),
     });
   }
   try {
-    await withTimeout(outputDone, 2_000, "dbzz output drain");
+    await withTimeout(outputDone, 2_000, "ackerdb output drain");
   } catch (error) {
     failures.push({ stage: "server output", error });
   }
 
-  let result: DbzzMeasuredDriverResult | undefined;
+  let result: AckerDBMeasuredDriverResult | undefined;
   if (failures.length === 0) {
     try {
       if (startupMode === undefined || startupIdle === undefined || measured === undefined) {
-        throw new Error("dbzz benchmark server did not complete its measured workload");
+        throw new Error("ackerdb benchmark server did not complete its measured workload");
       }
-      const telemetryReport = parseDbzzTelemetryReport(
+      const telemetryReport = parseAckerDBTelemetryReport(
         readFileSync(reportPath, "utf8"),
         startupMode,
         output.snapshot(),
       );
-      assertDbzzTelemetryWorkload(telemetryReport, measured.workload);
+      assertAckerDBTelemetryWorkload(telemetryReport, measured.workload);
       result = { ...measured, startupIdle, implementationVersion: "workspace", startupMode, telemetryReport };
     } catch (error) {
       failures.push({ stage: "validation", error });
@@ -500,16 +500,16 @@ async function benchDbzz(profile: DbzzBenchmarkProfile): Promise<DbzzMeasuredDri
     failures.push({ stage: "report cleanup", error });
   }
   try {
-    assertPortFree(DBZZ_PORT);
+    assertPortFree(ACKERDB_PORT);
   } catch (error) {
     failures.push({ stage: "port cleanup", error });
   }
   if (failures.length > 0) {
-    throw benchmarkFailure("dbzz benchmark", failures, {
+    throw benchmarkFailure("ackerdb benchmark", failures, {
       tail: `server output tail:\n${output.output()}`,
     });
   }
-  if (result === undefined) throw new Error("dbzz benchmark completed without a result");
+  if (result === undefined) throw new Error("ackerdb benchmark completed without a result");
   return result;
 }
 
@@ -584,7 +584,7 @@ async function benchSpacetime(): Promise<MeasuredDriverResult> {
       [
         "spacetime",
         "publish",
-        "dbzz-bench",
+        "ackerdb-bench",
         "--module-path",
         moduleDir,
         "-s",
@@ -600,7 +600,7 @@ async function benchSpacetime(): Promise<MeasuredDriverResult> {
     const startupIdle = await measureStartupIdle(pid);
     const measured = await runMeasuredClient(
       [process.execPath, join(appDir, "client.ts")],
-      { SPACETIMEDB_URL: `ws://127.0.0.1:${SPACETIME_PORT}`, SPACETIMEDB_DB: "dbzz-bench" },
+      { SPACETIMEDB_URL: `ws://127.0.0.1:${SPACETIME_PORT}`, SPACETIMEDB_DB: "ackerdb-bench" },
       pid,
     );
     return { ...measured, startupIdle, implementationVersion: version };
@@ -661,8 +661,8 @@ function aggregateCell(cell: { readonly count: number; readonly durationMs: numb
   return `${cell.count}/${fmt(cell.count === 0 ? 0 : cell.durationMs / cell.count)}`;
 }
 
-function printDbzzTelemetryStatus(results: readonly DbzzMeasuredDriverResult[]): void {
-  console.log("\nDBZZ default-local telemetry validation and bounded retention status");
+function printAckerDBTelemetryStatus(results: readonly AckerDBMeasuredDriverResult[]): void {
+  console.log("\nACKERDB default-local telemetry validation and bounded retention status");
   console.log(
     "| profile | local records | serialized MB | retained before drain | exported during drain | drain drops | overflow drops | query queue count/mean ms | mutation queue count/mean ms | procedure admission | subscription queue count/mean ms | trace promoted/discarded | exporter records |",
   );
@@ -867,7 +867,7 @@ function machineRecord(): MachineRecord {
 }
 
 /**
- * The optional DBZZ-only diagnostic. By default it compares all three
+ * The optional AckerDB-only diagnostic. By default it compares all three
  * telemetry profiles; BENCH_TELEMETRY_PROFILES can restrict the run to one or
  * more comma-separated profiles. No comparative release gate; the record
  * lands beside the release evidence as telemetry-v<version>.json and is
@@ -875,8 +875,8 @@ function machineRecord(): MachineRecord {
  */
 async function runTelemetryBenchmark(version: string): Promise<void> {
   const requestedProfiles = process.env.BENCH_TELEMETRY_PROFILES === undefined
-    ? ["enabled", "exporter", "disabled"] satisfies DbzzBenchmarkProfile[]
-    : process.env.BENCH_TELEMETRY_PROFILES.split(",") as DbzzBenchmarkProfile[];
+    ? ["enabled", "exporter", "disabled"] satisfies AckerDBBenchmarkProfile[]
+    : process.env.BENCH_TELEMETRY_PROFILES.split(",") as AckerDBBenchmarkProfile[];
   if (
     requestedProfiles.length === 0 ||
     requestedProfiles.some(
@@ -888,30 +888,30 @@ async function runTelemetryBenchmark(version: string): Promise<void> {
       "BENCH_TELEMETRY_PROFILES must contain unique enabled, exporter, or disabled profiles",
     );
   }
-  await runCodegen(loadConfig(join(BENCH, "dbzz-app"), {
-    DBZZ_DURABILITY: "balanced",
-    DBZZ_TELEMETRY: requestedProfiles.every((profile) => profile === "disabled")
+  await runCodegen(loadConfig(join(BENCH, "ackerdb-app"), {
+    ACKERDB_DURABILITY: "balanced",
+    ACKERDB_TELEMETRY: requestedProfiles.every((profile) => profile === "disabled")
       ? "disabled"
       : "enabled",
   }));
-  const executionOrder = benchmarkExecutionOrder(["dbzz"], requestedProfiles, 0);
-  const measured = new Map<BenchmarkExecutionLeg, DbzzMeasuredDriverResult>();
+  const executionOrder = benchmarkExecutionOrder(["ackerdb"], requestedProfiles, 0);
+  const measured = new Map<BenchmarkExecutionLeg, AckerDBMeasuredDriverResult>();
   for (let index = 0; index < executionOrder.length; index++) {
     const leg = executionOrder[index]!;
-    const profile = leg.replace("dbzz-telemetry-", "") as DbzzBenchmarkProfile;
-    measured.set(leg, await benchDbzz(profile));
+    const profile = leg.replace("ackerdb-telemetry-", "") as AckerDBBenchmarkProfile;
+    measured.set(leg, await benchAckerDB(profile));
     if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
   }
   const profiles = Object.fromEntries(
     requestedProfiles.map((profile) => [
       profile,
-      measured.get(`dbzz-telemetry-${profile}`)!,
+      measured.get(`ackerdb-telemetry-${profile}`)!,
     ]),
-  ) as Partial<Record<DbzzBenchmarkProfile, DbzzMeasuredDriverResult>>;
+  ) as Partial<Record<AckerDBBenchmarkProfile, AckerDBMeasuredDriverResult>>;
   const validation = validateBenchmarkResults(
     requestedProfiles.map((profile) => ({
-      label: `dbzz/${profile}`,
-      system: "dbzz" as const,
+      label: `ackerdb/${profile}`,
+      system: "ackerdb" as const,
       workload: profiles[profile]!.workload,
     })),
   );
@@ -932,7 +932,7 @@ async function runTelemetryBenchmark(version: string): Promise<void> {
   await Bun.write(savedPath, `${JSON.stringify(record, null, 2)}\n`);
   console.log(`\nsaved ${relative(REPO, savedPath)}`);
   console.log(`\n${formatBenchmarkValidation(validation)}`);
-  printDbzzTelemetryStatus(
+  printAckerDBTelemetryStatus(
     requestedProfiles.map((profile) => profiles[profile]!),
   );
 }
@@ -942,7 +942,7 @@ for (const name of requested) {
   if (!ALL_SYSTEMS.includes(name)) throw new Error(`unknown system ${JSON.stringify(name)}`);
 }
 if (new Set(requested).size !== requested.length) throw new Error("each requested system may appear only once");
-if (requested.length > 0) throw new Error("release benchmarks always run DBZZ, Convex, and SpacetimeDB together");
+if (requested.length > 0) throw new Error("release benchmarks always run AckerDB, Convex, and SpacetimeDB together");
 
 const benchmarkConfig = benchmarkConfigFromEnv();
 if (benchmarkConfig.profile !== "default") {
@@ -961,9 +961,9 @@ const previous = bootstrap ? undefined : previousFinalBenchmark(RESULTS_DIR, rel
 // Apples-to-apples: the comparative targets ship no equivalent always-on
 // telemetry, so the release leg runs telemetry=false. Telemetry cost is the
 // separate optional run above.
-await runCodegen(loadConfig(join(BENCH, "dbzz-app"), {
-  DBZZ_DURABILITY: "balanced",
-  DBZZ_TELEMETRY: "disabled",
+await runCodegen(loadConfig(join(BENCH, "ackerdb-app"), {
+  ACKERDB_DURABILITY: "balanced",
+  ACKERDB_TELEMETRY: "disabled",
 }));
 const spacetimeVersion = assertSpacetimeVersionAlignment();
 const executionOrder = benchmarkExecutionOrder(ALL_SYSTEMS, ["disabled"], 0);
@@ -971,8 +971,8 @@ const systems: SystemResults = {};
 for (let index = 0; index < executionOrder.length; index++) {
   const leg = executionOrder[index]!;
   switch (leg) {
-    case "dbzz-telemetry-disabled":
-      systems.dbzz = await benchDbzz("disabled");
+    case "ackerdb-telemetry-disabled":
+      systems.ackerdb = await benchAckerDB("disabled");
       break;
     case "convex":
       systems.convex = await benchConvex();
@@ -986,11 +986,11 @@ for (let index = 0; index < executionOrder.length; index++) {
   if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
 }
 
-if (systems.dbzz === undefined) {
-  throw new Error("release benchmark DBZZ measurements are missing");
+if (systems.ackerdb === undefined) {
+  throw new Error("release benchmark AckerDB measurements are missing");
 }
 const validationTargets: BenchmarkValidationTarget[] = [
-  { label: "dbzz", system: "dbzz", workload: systems.dbzz.workload },
+  { label: "ackerdb", system: "ackerdb", workload: systems.ackerdb.workload },
   { label: "convex", system: "convex", workload: systems.convex!.workload },
   { label: "spacetimedb", system: "spacetimedb", workload: systems.spacetimedb!.workload },
 ];
@@ -1016,12 +1016,12 @@ const record: RunRecord = {
     loadGeneratorResources: "same shared process-table samples, reported separately from server resources to expose client-side saturation",
     sampleIntervalMs: RESOURCE_SAMPLE_MS,
     durability: {
-      dbzz: "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
+      ackerdb: "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
       convex: "current local backend native default",
       spacetimedb: "confirmed reads explicitly enabled; standalone native durable commit log",
     },
-    dbzzProfiles: "apples-to-apples: systems.dbzz runs telemetry=false because the comparative targets ship no equivalent always-on telemetry; telemetry cost is measured by the separate optional telemetry run (telemetry-v<version>.json), not re-proven on every release",
-    dbzzTelemetryValidation: "the parent streams DBZZ stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; the release leg runs telemetry=false and must prove it stays entirely inactive; enabled-profile accounting is validated by the telemetry run",
+    ackerDBProfiles: "apples-to-apples: systems.ackerdb runs telemetry=false because the comparative targets ship no equivalent always-on telemetry; telemetry cost is measured by the separate optional telemetry run (telemetry-v<version>.json), not re-proven on every release",
+    ackerDBTelemetryValidation: "the parent streams AckerDB stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; the release leg runs telemetry=false and must prove it stays entirely inactive; enabled-profile accounting is validated by the telemetry run",
     spacetimeQueryTransport: "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
     subscriptionCapacity: "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery",
   },
@@ -1034,5 +1034,5 @@ const savedPath = await retainReleaseBenchmark(RESULTS_DIR, releaseContext, reco
 console.log(`\nsaved ${relative(REPO, savedPath)}`);
 printResults(systems);
 console.log(`\n${formatBenchmarkValidation(validation)}`);
-printDbzzTelemetryStatus([systems.dbzz]);
+printAckerDBTelemetryStatus([systems.ackerdb]);
 console.log(`\nrelease benchmark evidence recorded for human interpretation.`);

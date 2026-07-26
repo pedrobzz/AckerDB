@@ -6,8 +6,8 @@ import {
   type Outcome,
   type SseDoneMessage,
   type SseErrorMessage,
-} from "@dbzz/core";
-import { DbzzError, isDbzzError } from "../shared/errors.ts";
+} from "@ackerdb/core";
+import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import type { ServiceLimits } from "../runtime/limits.ts";
 import {
   PUBLIC_ERROR_FALLBACK,
@@ -45,7 +45,7 @@ export interface DeliveryObservation {
 export type DeliveryObserver = (observation: DeliveryObservation) => unknown;
 
 /** Package-private terminal ownership released even when diagnostics are dropped. */
-export const FINALIZE_DELIVERY_OBSERVER = Symbol("dbzz.finalizeDeliveryObserver");
+export const FINALIZE_DELIVERY_OBSERVER = Symbol("ackerdb.finalizeDeliveryObserver");
 
 /** Captures the observer that owns one frame before any delivery work begins. */
 export type DeliveryObserverCapture = (lane: OutboundLane) => DeliveryObserver | undefined;
@@ -470,19 +470,19 @@ interface BufferedFrame {
 
 const utf8 = new TextEncoder();
 
-function slowConsumer(resource: "outbound" | "sse", message: string): DbzzError {
-  return new DbzzError("slow_consumer", message, { retryable: true, resource });
+function slowConsumer(resource: "outbound" | "sse", message: string): AckerDBError {
+  return new AckerDBError("slow_consumer", message, { retryable: true, resource });
 }
 
-function overloaded(resource: "outbound" | "sse", message: string): DbzzError {
-  return new DbzzError("overloaded", message, { retryable: true, resource });
+function overloaded(resource: "outbound" | "sse", message: string): AckerDBError {
+  return new AckerDBError("overloaded", message, { retryable: true, resource });
 }
 
-function unavailable(resource: "outbound" | "sse", message: string): DbzzError {
-  return new DbzzError("unavailable", message, { retryable: true, resource });
+function unavailable(resource: "outbound" | "sse", message: string): AckerDBError {
+  return new AckerDBError("unavailable", message, { retryable: true, resource });
 }
 
-function webSocketErrorText(error: DbzzError, maxBytes: number): string | null {
+function webSocketErrorText(error: AckerDBError, maxBytes: number): string | null {
   const outcome = outcomeFromError(error);
   return fitOutcome(outcome, maxBytes, (candidate) => {
     const value = encode({
@@ -512,7 +512,7 @@ export class WebSocketSessionSink implements SessionSink {
   private blocked = false;
   private closed = false;
   private pumping = false;
-  private terminalError: DbzzError | null = null;
+  private terminalError: AckerDBError | null = null;
   private stallSince: number | null = null;
   private stallTimer: unknown;
 
@@ -800,7 +800,7 @@ export class WebSocketSessionSink implements SessionSink {
   }
 
   private releasePending(
-    error: DbzzError,
+    error: AckerDBError,
     outcome: DeliveryOutcome = safeDeliveryOutcome(error),
   ): void {
     for (const frame of this.queue.splice(0)) {
@@ -862,12 +862,12 @@ export class WebSocketSessionSink implements SessionSink {
     this.fail(slowConsumer("outbound", "WebSocket consumer stalled"));
   }
 
-  private fail(error: DbzzError, cause?: unknown): void {
+  private fail(error: AckerDBError, cause?: unknown): void {
     if (this.closed) return;
     const terminal =
       cause === undefined
         ? error
-        : new DbzzError(error.code, error.message, {
+        : new AckerDBError(error.code, error.message, {
             retryable: error.retryable,
             resource: error.resource,
             cause,
@@ -1027,7 +1027,7 @@ function sseDoneBytes(seq: number, proof: string): Uint8Array {
   return sseFrameBytes({ v: PROTOCOL_VERSION, t: "sse_done", seq, proof });
 }
 
-function sseErrorBytes(error: DbzzError, maxBytes: number, seq: number, proof: string): Uint8Array {
+function sseErrorBytes(error: AckerDBError, maxBytes: number, seq: number, proof: string): Uint8Array {
   const outcome = outcomeFromError(error);
   const fitted = fitOutcome(outcome, maxBytes, (candidate) => {
     const value = sseFrameBytes({
@@ -1051,12 +1051,12 @@ const MAXIMUM_SSE_RESOURCE = RESOURCE_CLASSES.reduce(
   (longest, resource) => resource.length > longest.length ? resource : longest,
 );
 const MINIMUM_SSE_CONTROL_BYTES = Math.max(
-  sseErrorBytes(new DbzzError("unsupported_protocol", PUBLIC_ERROR_FALLBACK, {
+  sseErrorBytes(new AckerDBError("unsupported_protocol", PUBLIC_ERROR_FALLBACK, {
     retryable: true,
     retryAfterMs: 30_000,
     resource: MAXIMUM_SSE_RESOURCE,
   }), Number.MAX_SAFE_INTEGER, MAXIMUM_SSE_SEQUENCE, MAXIMUM_SSE_PROOF).byteLength,
-  sseErrorBytes(new DbzzError("convergence_unavailable", PUBLIC_ERROR_FALLBACK, {
+  sseErrorBytes(new AckerDBError("convergence_unavailable", PUBLIC_ERROR_FALLBACK, {
     committed: true,
     resource: "subscription",
   }), Number.MAX_SAFE_INTEGER, MAXIMUM_SSE_SEQUENCE, MAXIMUM_SSE_PROOF).byteLength,
@@ -1094,8 +1094,8 @@ export class BoundedSseProducer {
   private nextSequence = 1;
   private acknowledgedSequence = 0;
   private state: "open" | "ending" | "closed" = "open";
-  private failure: DbzzError | null = null;
-  private closureError: DbzzError | null = null;
+  private failure: AckerDBError | null = null;
+  private closureError: AckerDBError | null = null;
   private activeMerge: Promise<void> | null = null;
   private activeReader: SseSourceReader | null = null;
   private emptyWaiter: Waiter | null = null;
@@ -1186,7 +1186,7 @@ export class BoundedSseProducer {
 
   fail(error: unknown): void {
     this.terminate(
-      isDbzzError(error) ? error : new DbzzError("internal", "SSE producer failed", { cause: error }),
+      isAckerDBError(error) ? error : new AckerDBError("internal", "SSE producer failed", { cause: error }),
     );
   }
 
@@ -1250,9 +1250,9 @@ export class BoundedSseProducer {
         this.enqueueApplication(frame);
       }
     } catch (error) {
-      const terminal = isDbzzError(error)
+      const terminal = isAckerDBError(error)
         ? error
-        : new DbzzError("internal", "SSE merge failed", { cause: error });
+        : new AckerDBError("internal", "SSE merge failed", { cause: error });
       this.terminate(terminal);
       throw terminal;
     } finally {
@@ -1467,9 +1467,9 @@ export class BoundedSseProducer {
   }
 
   private failWrite(error: unknown): never {
-    const terminal = isDbzzError(error)
+    const terminal = isAckerDBError(error)
       ? error
-      : new DbzzError("internal", "SSE producer failed", { cause: error });
+      : new AckerDBError("internal", "SSE producer failed", { cause: error });
     this.terminate(terminal);
     throw terminal;
   }
@@ -1569,16 +1569,16 @@ export class BoundedSseProducer {
     try {
       this.enqueue(frame, reservation);
     } catch (error) {
-      const terminal = isDbzzError(error)
+      const terminal = isAckerDBError(error)
         ? error
-        : new DbzzError("internal", "SSE producer failed", { cause: error });
+        : new AckerDBError("internal", "SSE producer failed", { cause: error });
       this.forceClose(terminal, "internal");
       throw terminal;
     }
     await this.waitForClosed();
   }
 
-  private terminate(error: DbzzError): void {
+  private terminate(error: AckerDBError): void {
     if (this.state !== "open") return;
     this.failure = error;
     this.state = "ending";
@@ -1635,17 +1635,17 @@ export class BoundedSseProducer {
     this.closedWaiter = null;
     this.clearStall();
     if (terminateStream) {
-      // A DbzzError reason (other than the caller canceling its own request)
+      // A AckerDBError reason (other than the caller canceling its own request)
       // is a server-decided outcome the consumer may still observe. Anything
       // else is the transport reporting that the consumer is already gone
       // (e.g. Bun aborts request.signal with a DOMException on disconnect);
       // erroring the detached response stream then only manufactures
       // unhandled rejections inside the HTTP server, so close it instead —
-      // dbzz clients treat a close without sse_done as truncation anyway.
-      const canceledRequest = isDbzzError(reason) &&
+      // ackerdb clients treat a close without sse_done as truncation anyway.
+      const canceledRequest = isAckerDBError(reason) &&
         reason.code === "unavailable" &&
         reason.resource === "operation";
-      if (canceledRequest || !isDbzzError(reason)) this.controller.close();
+      if (canceledRequest || !isAckerDBError(reason)) this.controller.close();
       else this.controller.error(reason);
     }
     this.releaseAll("unavailable");
@@ -1663,7 +1663,7 @@ export class BoundedSseProducer {
     }
   }
 
-  private forceClose(error: DbzzError, outcome: DeliveryOutcome): void {
+  private forceClose(error: AckerDBError, outcome: DeliveryOutcome): void {
     if (this.state === "closed") return;
     this.failure ??= error;
     this.closureError = error;

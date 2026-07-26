@@ -3,13 +3,13 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "dbzz-demo",
+      "name": "ackerdb-demo",
       "dependencies": {
-        "@dbzz/cli": "0.10.0",
-        "@dbzz/client": "0.10.0",
-        "@dbzz/client-react": "0.10.0",
-        "@dbzz/core": "0.10.0",
-        "@dbzz/server": "0.10.0",
+        "@ackerdb/cli": "0.10.0",
+        "@ackerdb/client": "0.10.0",
+        "@ackerdb/client-react": "0.10.0",
+        "@ackerdb/core": "0.10.0",
+        "@ackerdb/server": "0.10.0",
       },
       "devDependencies": {
         "@types/bun": "^1.2.0",
@@ -20,9 +20,9 @@
       "name": "@demo/admin-panel",
       "dependencies": {
         "@ai-sdk/react": "4.0.34",
-        "@dbzz/client-react": "0.10.0",
-        "@dbzz/core": "0.10.0",
-        "@demo/dbzz-codegen": "workspace:*",
+        "@ackerdb/client-react": "0.10.0",
+        "@ackerdb/core": "0.10.0",
+        "@demo/ackerdb-codegen": "workspace:*",
         "@tanstack/react-router": "1.170.18",
         "@tanstack/react-start": "1.168.28",
         "ai": "7.0.31",
@@ -60,9 +60,9 @@
       "name": "@demo/mobile",
       "version": "1.0.0",
       "dependencies": {
-        "@dbzz/client": "0.10.0",
-        "@dbzz/client-react": "0.10.0",
-        "@demo/dbzz-codegen": "workspace:*",
+        "@ackerdb/client": "0.10.0",
+        "@ackerdb/client-react": "0.10.0",
+        "@demo/ackerdb-codegen": "workspace:*",
         "@expo/ui": "57.0.6",
         "expo": "57.0.6",
         "expo-build-properties": "57.0.5",
@@ -88,28 +88,28 @@
       "name": "@demo/server",
       "dependencies": {
         "@ai-sdk/gateway": "4.0.23",
-        "@dbzz/cache": "0.10.0",
-        "@dbzz/core": "0.10.0",
-        "@dbzz/server": "0.10.0",
-        "@demo/dbzz-codegen": "workspace:*",
+        "@ackerdb/cache": "0.10.0",
+        "@ackerdb/core": "0.10.0",
+        "@ackerdb/server": "0.10.0",
+        "@demo/ackerdb-codegen": "workspace:*",
         "ai": "7.0.31",
         "jose": "^6.1.3",
         "just-bash": "3.1.0",
       },
       "devDependencies": {
-        "@dbzz/cli": "0.10.0",
+        "@ackerdb/cli": "0.10.0",
         "@types/bun": "^1.2.0",
         "typescript": "^5.9.0",
       },
     },
-    "packages/dbzz-codegen": {
-      "name": "@demo/dbzz-codegen",
+    "packages/ackerdb-codegen": {
+      "name": "@demo/ackerdb-codegen",
       "devDependencies": {
         "typescript": "^5.9.0",
       },
       "peerDependencies": {
-        "@dbzz/core": "0.10.0",
-        "@dbzz/server": "0.10.0",
+        "@ackerdb/core": "0.10.0",
+        "@ackerdb/server": "0.10.0",
       },
     },
   },
@@ -272,21 +272,21 @@
 
     "@borewit/text-codec": ["@borewit/text-codec@0.2.2", "http://127.0.0.1:4873/@borewit/text-codec/-/text-codec-0.2.2.tgz", {}, "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ=="],
 
-    "@dbzz/cache": ["@dbzz/cache@0.10.0", "http://127.0.0.1:4874/@dbzz/cache/-/cache-0.10.0.tgz", { "dependencies": { "@dbzz/core": "0.10.0", "@dbzz/server": "0.10.0" } }, "sha512-36/PDDK0WGa9wGIA9EpWlo37NCHcqtFu/ZSkPpnEkl0rp6sknutmK5j++Q46ohA8yxD3IsAFTOBe1kB9q1haEg=="],
+    "@ackerdb/cache": ["@ackerdb/cache@0.10.0", "http://127.0.0.1:4874/@ackerdb/cache/-/cache-0.10.0.tgz", { "dependencies": { "@ackerdb/core": "0.10.0", "@ackerdb/server": "0.10.0" } }, "sha512-36/PDDK0WGa9wGIA9EpWlo37NCHcqtFu/ZSkPpnEkl0rp6sknutmK5j++Q46ohA8yxD3IsAFTOBe1kB9q1haEg=="],
 
-    "@dbzz/cli": ["@dbzz/cli@0.10.0", "http://127.0.0.1:4874/@dbzz/cli/-/cli-0.10.0.tgz", { "dependencies": { "@dbzz/core": "0.10.0", "@dbzz/server": "0.10.0" }, "bin": { "dbzz": "src/commands/main.ts" } }, "sha512-WMjLh5qVXT5z9/7jxEBior9ghfo4Bzv6j8essXKfRTOAyZgFhSIIVO2gGy0SoanOx8qihZPcwRZEiw9A7jlKOg=="],
+    "@ackerdb/cli": ["@ackerdb/cli@0.10.0", "http://127.0.0.1:4874/@ackerdb/cli/-/cli-0.10.0.tgz", { "dependencies": { "@ackerdb/core": "0.10.0", "@ackerdb/server": "0.10.0" }, "bin": { "acker": "src/commands/main.ts" } }, "sha512-WMjLh5qVXT5z9/7jxEBior9ghfo4Bzv6j8essXKfRTOAyZgFhSIIVO2gGy0SoanOx8qihZPcwRZEiw9A7jlKOg=="],
 
-    "@dbzz/client": ["@dbzz/client@0.10.0", "http://127.0.0.1:4874/@dbzz/client/-/client-0.10.0.tgz", { "dependencies": { "@dbzz/core": "0.10.0" } }, "sha512-OrhNQ2/gwGVGYUxMAdQnScD6FC6mIKGFTSMX85NsQBGFbt5YqIHqakfgTr9M9gMT52sr75xA6FjlgqXU6vnm6A=="],
+    "@ackerdb/client": ["@ackerdb/client@0.10.0", "http://127.0.0.1:4874/@ackerdb/client/-/client-0.10.0.tgz", { "dependencies": { "@ackerdb/core": "0.10.0" } }, "sha512-OrhNQ2/gwGVGYUxMAdQnScD6FC6mIKGFTSMX85NsQBGFbt5YqIHqakfgTr9M9gMT52sr75xA6FjlgqXU6vnm6A=="],
 
-    "@dbzz/client-react": ["@dbzz/client-react@0.10.0", "http://127.0.0.1:4874/@dbzz/client-react/-/client-react-0.10.0.tgz", { "dependencies": { "@dbzz/client": "0.10.0", "@dbzz/core": "0.10.0" }, "peerDependencies": { "ai": "^7.0.0", "expo": "^57.0.0", "expo-crypto": "^57.0.0", "react": "^19.2.3", "react-native": "^0.86.0" }, "optionalPeers": ["ai", "expo", "expo-crypto", "react-native"] }, "sha512-InZprdp7cvB368HA3CBXe+yfFGuFprDQs4wQtVKYHh7f8iOTpR84AQyNbrRnJwUQ3hpweNiJL5kiRwVcScMZzQ=="],
+    "@ackerdb/client-react": ["@ackerdb/client-react@0.10.0", "http://127.0.0.1:4874/@ackerdb/client-react/-/client-react-0.10.0.tgz", { "dependencies": { "@ackerdb/client": "0.10.0", "@ackerdb/core": "0.10.0" }, "peerDependencies": { "ai": "^7.0.0", "expo": "^57.0.0", "expo-crypto": "^57.0.0", "react": "^19.2.3", "react-native": "^0.86.0" }, "optionalPeers": ["ai", "expo", "expo-crypto", "react-native"] }, "sha512-InZprdp7cvB368HA3CBXe+yfFGuFprDQs4wQtVKYHh7f8iOTpR84AQyNbrRnJwUQ3hpweNiJL5kiRwVcScMZzQ=="],
 
-    "@dbzz/core": ["@dbzz/core@0.10.0", "http://127.0.0.1:4874/@dbzz/core/-/core-0.10.0.tgz", {}, "sha512-ap3yyjVLcy762QmgZcvArzy/Q7OHry6mvpl8ovKRrRvThGaiSjfvSv/N1foa3FTycXfZhn/MdEoiK6MkGttRvA=="],
+    "@ackerdb/core": ["@ackerdb/core@0.10.0", "http://127.0.0.1:4874/@ackerdb/core/-/core-0.10.0.tgz", {}, "sha512-ap3yyjVLcy762QmgZcvArzy/Q7OHry6mvpl8ovKRrRvThGaiSjfvSv/N1foa3FTycXfZhn/MdEoiK6MkGttRvA=="],
 
-    "@dbzz/server": ["@dbzz/server@0.10.0", "http://127.0.0.1:4874/@dbzz/server/-/server-0.10.0.tgz", { "dependencies": { "@dbzz/core": "0.10.0", "@modelcontextprotocol/sdk": "1.29.0", "jose": "6.2.3", "numkong": "7.7.1" } }, "sha512-kka2pTUW7AbgCJ6UICKYcoZjF/CFiuH/9T2XlVQ6RK9ylG5QwHf4QpJzMH6DHDFQ6HRi+dgGKnBH70W00L3h3Q=="],
+    "@ackerdb/server": ["@ackerdb/server@0.10.0", "http://127.0.0.1:4874/@ackerdb/server/-/server-0.10.0.tgz", { "dependencies": { "@ackerdb/core": "0.10.0", "@modelcontextprotocol/sdk": "1.29.0", "jose": "6.2.3", "numkong": "7.7.1" } }, "sha512-kka2pTUW7AbgCJ6UICKYcoZjF/CFiuH/9T2XlVQ6RK9ylG5QwHf4QpJzMH6DHDFQ6HRi+dgGKnBH70W00L3h3Q=="],
 
     "@demo/admin-panel": ["@demo/admin-panel@workspace:app/admin-panel"],
 
-    "@demo/dbzz-codegen": ["@demo/dbzz-codegen@workspace:packages/dbzz-codegen"],
+    "@demo/ackerdb-codegen": ["@demo/ackerdb-codegen@workspace:packages/ackerdb-codegen"],
 
     "@demo/design": ["@demo/design@workspace:app/design"],
 

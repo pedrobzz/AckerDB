@@ -289,7 +289,7 @@ class NearestQueryRuntime {
       `${quote(this.vector.physical)} IS NOT NULL`,
       predicate.sql,
     ].filter((clause) => clause !== "").map((clause) => `(${clause})`).join(" AND ");
-    const sql = `SELECT ${quote(this.plan.pk)} AS "__dbzz_pk", ${quote(this.vector.physical)} AS "__dbzz_vector" FROM ${quote(this.plan.name)} WHERE ${where}`;
+    const sql = `SELECT ${quote(this.plan.pk)} AS "__ackerdb_pk", ${quote(this.vector.physical)} AS "__ackerdb_vector" FROM ${quote(this.plan.name)} WHERE ${where}`;
     const statement = this.conn.prepare(sql);
     const runtime = loadVectorRuntime();
     const heap = new WinnerHeap(count);
@@ -298,14 +298,14 @@ class NearestQueryRuntime {
     try {
       for (const raw of statement.iterate(...(predicate.params as never[])) as Iterable<Record<string, unknown>>) {
         candidateRowCount++;
-        const id = raw["__dbzz_pk"];
+        const id = raw["__ackerdb_pk"];
         if (typeof id !== "bigint") {
           throw new CorruptDatabaseError(
             `${this.plan.displayName}.nearest: stored primary key is not an integer`,
           );
         }
         const stored = vectorBlobKernelView(
-          raw["__dbzz_vector"],
+          raw["__ackerdb_vector"],
           this.vector.validator.dimensions,
           storedPath,
           id,

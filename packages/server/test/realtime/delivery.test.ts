@@ -6,7 +6,7 @@ import {
   parseServerMessage,
   parseSseMessage,
   type SseMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   BoundedSseProducer,
   FINALIZE_DELIVERY_OBSERVER,
@@ -16,7 +16,7 @@ import {
   type DeliveryObservation,
   type WebSocketDeliverySocket,
 } from "../../src/realtime/delivery.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {
   prepareRuntimePublication,
@@ -256,7 +256,7 @@ describe("WebSocketSessionSink", () => {
     } as unknown as RuntimePublication;
 
     await expect(sink.sendApplication(1, forged)).rejects.toThrow(
-      "application publication was not prepared by dbzz",
+      "application publication was not prepared by ackerdb",
     );
     expect(socket.sent).toEqual([]);
     expect(budget.snapshot().bytes).toBe(0);
@@ -598,7 +598,7 @@ describe("WebSocketSessionSink", () => {
     const budget = new OutboundBudget(limits.webSocket.maxBytes, maxFrameBytes);
     const socket = new FakeSocket();
     const sink = new WebSocketSessionSink({ socket, budget, limits });
-    const error = new DbzzError("unsupported_protocol", "💥".repeat(512), {
+    const error = new AckerDBError("unsupported_protocol", "💥".repeat(512), {
       retryable: true,
       retryAfterMs: 30_000,
       resource: "subscription",
@@ -791,7 +791,7 @@ describe("BoundedSseProducer", () => {
         return Number.NaN;
       },
     });
-    expect(() => producer.write(unread)).toThrow(DbzzError);
+    expect(() => producer.write(unread)).toThrow(AckerDBError);
     expect(traversals).toBe(0);
 
     const reader = producer.stream.getReader();
@@ -886,7 +886,7 @@ describe("BoundedSseProducer", () => {
     const limits = testLimits();
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);
     const direct = new BoundedSseProducer({ budget, limits });
-    direct.fail(new DbzzError("unavailable", "closed", { resource: "sse" }));
+    direct.fail(new AckerDBError("unavailable", "closed", { resource: "sse" }));
     let directTraversals = 0;
     const directValue = Object.defineProperty({}, "unsafe", {
       enumerable: true,
@@ -920,7 +920,7 @@ describe("BoundedSseProducer", () => {
       },
     });
     sourceController.enqueue(mergeValue);
-    merged.fail(new DbzzError("unavailable", "stopped", { resource: "sse" }));
+    merged.fail(new AckerDBError("unavailable", "stopped", { resource: "sse" }));
     await expect(mergeCompletion).rejects.toThrow("stopped");
     expect(mergeTraversals).toBe(0);
     const mergeReader = merged.stream.getReader();
@@ -1080,7 +1080,7 @@ describe("BoundedSseProducer", () => {
     await Promise.resolve();
     expect(await state(merged)).toBe("pending");
 
-    expect(() => producer.write({ text: "c".repeat(80) })).toThrow(DbzzError);
+    expect(() => producer.write({ text: "c".repeat(80) })).toThrow(AckerDBError);
     const terminal = sseMessage((await reader.read()).value!);
     expect([first.seq, terminal.seq]).toEqual([1, 2]);
     expect(terminal).toMatchObject({ t: "sse_error", outcome: { code: "slow_consumer" } });
@@ -1160,7 +1160,7 @@ describe("BoundedSseProducer", () => {
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);
     const producer = new BoundedSseProducer({ budget, limits });
     producer.write({ value: "before failure" });
-    producer.fail(new DbzzError("internal", "handler failed"));
+    producer.fail(new AckerDBError("internal", "handler failed"));
     const completion = producer.complete();
     expect(await state(completion)).toBe("pending");
 
@@ -1185,7 +1185,7 @@ describe("BoundedSseProducer", () => {
     const acknowledged = new BoundedSseProducer({ budget, limits });
     acknowledged.write({ value: "before failure" });
     const acknowledgedCompletion = acknowledged.complete();
-    acknowledged.fail(new DbzzError("internal", "handler failed"));
+    acknowledged.fail(new AckerDBError("internal", "handler failed"));
     expect(await state(acknowledgedCompletion)).toBe("pending");
     const acknowledgedReader = acknowledged.stream.getReader();
     const application = sseMessage((await acknowledgedReader.read()).value!);
@@ -1327,7 +1327,7 @@ describe("BoundedSseProducer", () => {
         producer.write(chunk);
         writes++;
       } catch (error) {
-        expect(error).toBeInstanceOf(DbzzError);
+        expect(error).toBeInstanceOf(AckerDBError);
         break;
       }
     }
@@ -1370,7 +1370,7 @@ describe("BoundedSseProducer", () => {
     const chunk = { text: "x".repeat(55) };
     first.write(chunk);
 
-    expect(() => second.write(chunk)).toThrow(DbzzError);
+    expect(() => second.write(chunk)).toThrow(AckerDBError);
     expect(second.signal.reason).toMatchObject({ code: "overloaded", resource: "sse" });
     expect(budget.snapshot().bytes).toBeLessThanOrEqual(600);
     const secondReader = second.stream.getReader();
@@ -1412,7 +1412,7 @@ describe("BoundedSseProducer", () => {
     } catch (error) {
       admissionError = error;
     }
-    expect(admissionError).toBeInstanceOf(DbzzError);
+    expect(admissionError).toBeInstanceOf(AckerDBError);
     expect(admissionError).toMatchObject({
       code: "overloaded",
       retryable: true,
@@ -1420,7 +1420,7 @@ describe("BoundedSseProducer", () => {
       message: "global SSE control byte limit exceeded",
     });
 
-    const worstCase = new DbzzError("convergence_unavailable", "x".repeat(512), {
+    const worstCase = new AckerDBError("convergence_unavailable", "x".repeat(512), {
       committed: true,
       resource: "subscription",
     });
@@ -1456,7 +1456,7 @@ describe("BoundedSseProducer", () => {
     const budget = new OutboundBudget(limits.sse.maxBytes, 512);
 
     const empty = new BoundedSseProducer({ budget, limits });
-    empty.fail(new DbzzError("unavailable", "", { resource: "sse" }));
+    empty.fail(new AckerDBError("unavailable", "", { resource: "sse" }));
     const emptyReader = empty.stream.getReader();
     const emptyTerminal = sseMessage((await emptyReader.read()).value!);
     expect(emptyTerminal).toMatchObject({
@@ -1470,7 +1470,7 @@ describe("BoundedSseProducer", () => {
     const tight = new BoundedSseProducer({ budget, limits });
     Reflect.set(tight, "nextSequence", Number.MAX_SAFE_INTEGER);
     Reflect.set(tight, "acknowledgedSequence", Number.MAX_SAFE_INTEGER - 1);
-    tight.fail(new DbzzError("unsupported_protocol", "💥".repeat(512), {
+    tight.fail(new AckerDBError("unsupported_protocol", "💥".repeat(512), {
       retryable: true,
       retryAfterMs: 30_000,
       resource: "subscription",
@@ -1560,7 +1560,7 @@ describe("BoundedSseProducer", () => {
     const reader = producer.stream.getReader();
     const pending = reader.read();
 
-    external.abort(new DbzzError("unavailable", "operation was canceled", {
+    external.abort(new AckerDBError("unavailable", "operation was canceled", {
       resource: "operation",
     }));
 

@@ -1,5 +1,5 @@
 /**
- * Targeted development microbenchmark for production DBzz hot paths.
+ * Targeted development microbenchmark for production AckerDB hot paths.
  *
  * Question: how much useful procedure throughput, latency, and server RSS does
  * the branch's real client/server implementation sustain without the release
@@ -11,8 +11,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { anyApi, type ApplicationError } from "@dbzz/core";
-import { DbzzClient, type ClientResult } from "@dbzz/client";
+import { anyApi, type ApplicationError } from "@ackerdb/core";
+import { AckerDBClient, type ClientResult } from "@ackerdb/client";
 import {
   Engine,
   Registry,
@@ -20,7 +20,7 @@ import {
   reconcile,
   serve,
   type EngineCloseDisposition,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { loadConfig } from "../packages/cli/src/app/config.ts";
 import { runCodegen } from "../packages/cli/src/app/codegen.ts";
 import {
@@ -34,7 +34,7 @@ import {
 } from "./benchmark.ts";
 import { latencyStats } from "./load-engine.ts";
 
-const APP = join(import.meta.dir, "dbzz-app");
+const APP = join(import.meta.dir, "ackerdb-app");
 const PORT = 3311;
 const WARMUP_MS = 500;
 const STEADY_MS = 2_000;
@@ -88,7 +88,7 @@ async function processCpuTicks(pid: number): Promise<number> {
 }
 
 async function runWindow(
-  clients: readonly DbzzClient[],
+  clients: readonly AckerDBClient[],
   profile: Profile,
   durationMs: number,
   nonce: { value: number },
@@ -158,7 +158,7 @@ async function runClient(serverPid: number) {
   const nonce = { value: 1 };
   const clients = Array.from(
     { length: Math.max(...PROFILES.map((profile) => profile.connections)) },
-    () => new DbzzClient({
+    () => new AckerDBClient({
       url: `http://127.0.0.1:${PORT}`,
       credential: { kind: "anonymous" },
     }),
@@ -248,7 +248,7 @@ async function main(): Promise<void> {
   }
 
   await runCodegen(loadConfig(APP));
-  const scratch = mkdtempSync(join(tmpdir(), "dbzz-hot-path-"));
+  const scratch = mkdtempSync(join(tmpdir(), "ackerdb-hot-path-"));
   const child = Bun.spawn(
     [process.execPath, import.meta.path, "--server", scratch],
     { stdout: "pipe", stderr: "pipe" },

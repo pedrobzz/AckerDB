@@ -3,11 +3,11 @@ import {
   defineSchema,
   v,
   type AppPluginCapabilities,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { cachePlugin, defineCacheStore } from "../../src/index.ts";
 
 const unchecked = cachePlugin();
-const builtinDefinitionId: "@dbzz/cache" = unchecked.definitionId;
+const builtinDefinitionId: "@ackerdb/cache" = unchecked.definitionId;
 const uncheckedApp = defineApp({
   schema: defineSchema({}),
   plugins: { cache: unchecked },
@@ -57,7 +57,7 @@ const externalStore = defineCacheStore({
   }),
 });
 const externalCache = cachePlugin({ store: externalStore });
-const externalDefinitionId: "@dbzz/cache-external" = externalCache.definitionId;
+const externalDefinitionId: "@ackerdb/cache-external" = externalCache.definitionId;
 const externalApp = defineApp({
   schema: defineSchema({}),
   plugins: { cache: externalCache },

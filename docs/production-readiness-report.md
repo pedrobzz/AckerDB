@@ -7,17 +7,17 @@
 > describe the old state and must not be followed; see [the benchmark contract](../bench/README.md).
 
 - Date: 2026-07-14
-- PRD: [GitHub issue #1 — Production safety and full operational visibility](https://github.com/pedrobzz/dbzz/issues/1)
+- PRD: [GitHub issue #1 — Production safety and full operational visibility](https://github.com/pedrobzz/ackerdb/issues/1)
 - Whole-branch comparison: `4aa2b1e` through audited snapshot `17a2524`
 - Issue #1 starting HEAD: `74d8554`
 - Branch: `codex/benchmark-capacity`
 - Product scope: single-node, self-hosted Bun + SQLite alpha
-- Benchmark scope: DBZZ versus the Convex local development backend and
+- Benchmark scope: AckerDB versus the Convex local development backend and
   SpacetimeDB 2.6.1 on the same machine
 
 ## Executive assessment
 
-This milestone changed DBZZ from a fast prototype with several implicit
+This milestone changed AckerDB from a fast prototype with several implicit
 behaviors into a credible **single-node production-safety foundation**. It now
 has strict authentication boundaries, ordered realtime convergence,
 crash-safe mutation replay, finite resource ownership, explicit lifecycle and
@@ -25,7 +25,7 @@ durability states, verified backup/restore, and privacy-safe correlated
 telemetry. Those guarantees are enforced at public boundaries and exercised by
 fault tests rather than being documentation-only claims.
 
-It did **not** turn DBZZ into a managed database platform. DBZZ remains behind
+It did **not** turn AckerDB into a managed database platform. AckerDB remains behind
 Convex Cloud and SpacetimeDB Maincloud in the operational product around the
 engine: hosted deployment, replication and failover, automated backup
 retention, deployment environments, secrets and access administration,
@@ -35,12 +35,12 @@ multi-writer partitioned-subscription shapes measured on Hetzner.
 
 The current honest product statement is:
 
-> DBZZ is a bounded, observable, crash-tested single-node backend alpha with a
+> AckerDB is a bounded, observable, crash-tested single-node backend alpha with a
 > strong local performance profile. It is not yet a managed, highly available,
 > horizontally scalable database service.
 
 The Hetzner diagnostic supports the performance half of that statement. On one
-idle 3-vCPU/3.7-GiB host, the successful 4m12s same reduced-workload run put DBZZ at
+idle 3-vCPU/3.7-GiB host, the successful 4m12s same reduced-workload run put AckerDB at
 5.11×–20.60× the throughput of the Convex local backend across 16 operation
 cells, with a 13.42× median, while using much less memory at 500 connections.
 This is not a hosted Convex comparison. SpacetimeDB retained clear wins in the
@@ -94,7 +94,7 @@ tests; most were proved with process, socket, or fault-injection boundaries.
 
 ## Starting point
 
-Before this milestone, DBZZ already had four useful foundations:
+Before this milestone, AckerDB already had four useful foundations:
 
 1. mutation results and idempotency keys were stored in the same SQLite
    transaction as application writes;
@@ -130,7 +130,7 @@ delivery, lifecycle/storage health, and telemetry.
 ## Decision ledger
 
 The table below records the material decisions made during implementation and
-benchmarking, why they were made, and what DBZZ gained.
+benchmarking, why they were made, and what AckerDB gained.
 
 | Decision | Why | Gain | Cost or limitation |
 | --- | --- | --- | --- |
@@ -149,25 +149,25 @@ benchmarking, why they were made, and what DBZZ gained.
 | Separate node capacity, caller fairness, and connection containment. | One user can open many sockets or switch transports to multiply a naive per-connection share. | Stable principal/source ownership preserves cold-caller progress while per-connection limits contain local abuse. | Callers behind one reverse proxy share its anonymous fairness key because forwarded headers are deliberately untrusted. |
 | Use round-robin/yielding work turns instead of draining hot groups. | A permanently dirty query or hot writer can starve unrelated work. | Measurable progress across writers, principals, and subscription groups. | No weighted tenant plans or distributed scheduler. |
 | Treat WebSocket transport pressure as a mechanism, not the product contract. | A successful `send` or socket ordering does not prove application delivery or reconnect correctness. | Application frames retain exact budget ownership through buffered delivery and terminate explicitly on overload. | Depends on the pinned Bun transport behavior and requires runtime-specific tests. |
-| Add receiver-confirmed cumulative credit to SSE. | Bun may pull response chunks into hidden HTTP buffering; stream `desiredSize` alone is not a peer-pressure proof. | Exact DBZZ-owned bytes, bounded unacknowledged windows, terminal `slow_consumer`, and deterministic release. | This is a fetch-based DBZZ protocol, not native EventSource semantics; it confirms capability-holder receipt and Protocol-2 parsing, not durable application processing. |
-| Remove whole-process RSS from the narrow SSE proof. | After exact DBZZ counters and descriptors recovered, Bun/macOS allocator phases still moved by MiB—far above the 96-KiB ownership under test. | A direct, stable ownership proof with 195 fewer lines and no allocator model. | Coarse RSS remains only in the broader combined-pressure and comparative suites. |
+| Add receiver-confirmed cumulative credit to SSE. | Bun may pull response chunks into hidden HTTP buffering; stream `desiredSize` alone is not a peer-pressure proof. | Exact AckerDB-owned bytes, bounded unacknowledged windows, terminal `slow_consumer`, and deterministic release. | This is a fetch-based AckerDB protocol, not native EventSource semantics; it confirms capability-holder receipt and Protocol-2 parsing, not durable application processing. |
+| Remove whole-process RSS from the narrow SSE proof. | After exact AckerDB counters and descriptors recovered, Bun/macOS allocator phases still moved by MiB—far above the 96-KiB ownership under test. | A direct, stable ownership proof with 195 fewer lines and no allocator model. | Coarse RSS remains only in the broader combined-pressure and comparative suites. |
 | Make lifecycle a monotonic state machine with one absolute drain deadline. | “Stop accepting” without bounded ownership can hang deploys and write a false clean marker. | Separate liveness/readiness, startup phases, admission stop, finite drain, forced unclean close, and exact listener release. | Synchronously blocking JavaScript still requires an outer supervisor hard-kill deadline. |
 | Default to SQLite `FULL` durability and make `NORMAL` an explicit balanced profile. | Benchmark settings must not silently become production guarantees. | Acknowledgement has an observable power-loss policy; benchmark trade-offs are explicit. | SQLite still has one writer and local-disk failure-domain limits. |
 | Preserve suspicious main/WAL/journal files instead of repairing startup evidence. | Deleting or normalizing corruption can destroy the only incident evidence and serve untrusted state. | Startup refuses malformed internal schemas, inconsistent ledgers, unsupported WALs, and structural damage without clobbering artifacts. | Operators need a documented recovery path and disk capacity for preserved evidence. |
 | Record clean versus unclean shutdown explicitly. | Process exit alone does not prove that admitted work, publication, delivery, and storage completed. | Restart knows when crash recovery is required; marker-write failure cannot strand ownership or overwrite the first error. | The marker is local evidence, not a distributed lease. |
 | Serialize checkpoints through the owning writer and report progress. | Concurrent WAL-reset/checkpoint ownership is unsafe on affected SQLite 3.51.0–3.51.2 builds, and “checkpoint returned” is not the same as “WAL fully checkpointed.” | One checkpoint owner plus busy, total/checkpointed/residual frames, duration, age, and outcome makes incomplete progress visible without racing the writer. | Long readers can still pin WAL progress; operators must monitor and respond rather than spin. |
-| Verify backups by restoring in a fresh process. | Successfully creating a file does not prove it can replace a failed primary. | Digest, schema/runtime metadata, terminal commit, SQLite/DBZZ invariants, and representative reads are checked before acceptance. | Backups are manual/local; retention, scheduling, offsite copy, encryption, and RPO/RTO automation remain external. |
+| Verify backups by restoring in a fresh process. | Successfully creating a file does not prove it can replace a failed primary. | Digest, schema/runtime metadata, terminal commit, SQLite/AckerDB invariants, and representative reads are checked before acceptance. | Backups are manual/local; retention, scheduling, offsite copy, encryption, and RPO/RTO automation remain external. |
 | Execute scheduled mutations atomically with durable row handling. | Deleting a job before invoking it can lose work on crash. | Handler writes and schedule-row removal commit or roll back together; failures back off instead of hot-looping. | There is no managed scheduler dashboard or cross-node lease. |
 | Enable telemetry by default but make it bounded, asynchronous, and fail-open. | Visibility is a production requirement, but an exporter outage must never block commits or delivery. | Complete operation/stage coverage with finite memory, exporter health, deadlines, and a truly disabled mode. | The callback is backend-neutral but not a bundled OTLP exporter or hosted observability product. |
 | Keep high-cardinality identifiers in traces/events and aggregates low-cardinality. | Putting request/user/subscription IDs in metrics creates unbounded series cost and privacy risk. | Stable dashboards plus incident correlation without raw credentials, arguments, results, or literal SQL. | Payload debugging remains deliberately limited. |
 | Retain slow/failed whole-operation traces; aggregate fast success paths. | Serializing every successful span erased much of the performance advantage. | Default diagnostic value with bounded overhead; deferred materialization, prepared frames, and cached contexts preserve the hot path. | Tail retention is an in-process bounded policy, not durable trace storage. |
 | Preserve TypeScript return inference and validate wire representability, not speculative runtime output schemas. | The PRD required evidence before paying runtime and authoring cost for redundant output declarations. | Query/mutation/procedure return types flow from handlers through codegen with no duplicate schema. | Runtime cannot prove a handler result matches a declared output type; it only proves safe encoding and bounds. |
-| Compare equivalent logical work on the same machine. | Cross-machine or unequal durability/concurrency claims would be marketing rather than measurement. | DBZZ, Convex, and SpacetimeDB share dataset, operation shape, offered load, correctness checks, and resource accounting. | Microbenchmarks still do not model hosted WAN, multi-node, auth-heavy, or application-specific workloads. |
+| Compare equivalent logical work on the same machine. | Cross-machine or unequal durability/concurrency claims would be marketing rather than measurement. | AckerDB, Convex, and SpacetimeDB share dataset, operation shape, offered load, correctness checks, and resource accounting. | Microbenchmarks still do not model hosted WAN, multi-node, auth-heavy, or application-specific workloads. |
 | Separate benchmark workload identity from measurement effort. | Requiring the historical warmup/duration/trial count made a full run needlessly slow without changing what was exercised. | The full 351-path acceptance keeps all dimensions while fixed windows fall from ~23m23s to ~6m13s. | Short runs increase statistical noise; apparent regressions still need reruns. |
 | Add `BENCH_COMPARISON=current` instead of pretending Hetzner could satisfy the frozen M2 gate. | Historical wins are machine-bound and invalid across macOS/ARM and Linux/x64. | A current three-system same-host diagnostic can answer “are we still decisively ahead of Convex?” without saving a false acceptance result. | It does not close historical story 47. |
-| Exclude exporter/disabled DBZZ legs from the current margin diagnostic. | Those legs measure telemetry cost, not the requested DBZZ/Convex/SpacetimeDB margin, and an exporter diagnostic dropped records under the tiny host's pressure. | The relevant diagnostic completes in minutes without changing product code for a non-user-facing benchmark artifact. | The default acceptance still needs all telemetry-cost legs. |
+| Exclude exporter/disabled AckerDB legs from the current margin diagnostic. | Those legs measure telemetry cost, not the requested AckerDB/Convex/SpacetimeDB margin, and an exporter diagnostic dropped records under the tiny host's pressure. | The relevant diagnostic completes in minutes without changing product code for a non-user-facing benchmark artifact. | The default acceptance still needs all telemetry-cost legs. |
 | Reduce the Hetzner offered shape equally after swap/correctness failure. | At 500 users × 50 queries, Convex pushed the 3.7-GiB host into swap and produced duplicate/unexpected shared deliveries. | A valid zero-swap comparison at 500 connections and 2,000 subscriptions, with identical overrides for every system. | The successful run is a small-host capacity sample, not the full default subscription population. |
-| Generate DBZZ bindings inside the benchmark runner. | A clean remote checkout lacked ignored generated bindings. | Fresh-clone runs no longer depend on local generated state. | The frozen baseline artifact remains a separate clean-clone problem. |
+| Generate AckerDB bindings inside the benchmark runner. | A clean remote checkout lacked ignored generated bindings. | Fresh-clone runs no longer depend on local generated state. | The frozen baseline artifact remains a separate clean-clone problem. |
 | Keep changes atomic and preserve unrelated dirty work. | The worktree contained user-owned package/release changes and staged state is authoritative. | 126 traceable issue-work commits after the pre-existing benchmark baseline and no accidental release/publishing changes. | The branch still contains unrelated dirty/untracked user work outside this milestone. |
 
 ## What was implemented
@@ -207,7 +207,7 @@ creates a new immutable epoch, and revokes/recomputes live subscriptions.
 Sign-out cannot leak old-epoch updates. HTTP and SSE use the same verifier and
 retain a credential lease until the actual operation/body ownership ends.
 
-What this does not provide is a hosted user system. DBZZ does not create users,
+What this does not provide is a hosted user system. AckerDB does not create users,
 issue credentials, host login UI, rotate provider secrets, or operate the
 upstream revocation service.
 
@@ -290,11 +290,11 @@ traversing more application input when credit is exhausted, emits a reserved
 terminal `slow_consumer`, and force-closes after a finite grace period.
 
 The final raw-TCP test pauses immediately after headers, never acknowledges,
-and repeats eight cycles. It proves the configured DBZZ-owned byte ceiling,
+and repeats eight cycles. It proves the configured AckerDB-owned byte ceiling,
 exact terminal framing, zero current ownership after closure, continued
 liveness, and descriptor recovery. The earlier attempt to correlate this small
 application-owned contract with whole-process RSS was abandoned because the
-allocator signal was orders of magnitude coarser and unrelated to DBZZ-owned
+allocator signal was orders of magnitude coarser and unrelated to AckerDB-owned
 counters.
 
 ### Storage, startup, health, shutdown, backup, and restore
@@ -310,7 +310,7 @@ requires safe storage, schema reconciliation, and a non-draining runtime.
 Protected status uses a workload credential and exact scope rather than making
 internal capacity or storage details public.
 
-Storage opening validates the DBZZ internal schema, singleton invariants,
+Storage opening validates the AckerDB internal schema, singleton invariants,
 application schema/index shape, mutation ledger, tags, WAL/recovery state, and
 prior clean marker. It refuses legacy/partial/foreign/corrupt layouts and
 preserves main/WAL/journal evidence. Single-process ownership is explicit.
@@ -433,9 +433,9 @@ is absent.
 
 The original default performed five full legs:
 
-1. DBZZ with default telemetry/local sink;
-2. DBZZ with an explicit in-process exporter;
-3. DBZZ with telemetry disabled;
+1. AckerDB with default telemetry/local sink;
+2. AckerDB with an explicit in-process exporter;
+3. AckerDB with telemetry disabled;
 4. Convex; and
 5. SpacetimeDB.
 
@@ -467,7 +467,7 @@ exact configuration parity; the historical selector still requires the same
 dataset, seed, operation/profile shapes, connection levels, subscription
 population/patterns/rates/slots, durability, and setup semantics.
 
-The new `BENCH_COMPARISON=current` mode asks a different question: how do DBZZ,
+The new `BENCH_COMPARISON=current` mode asks a different question: how do AckerDB,
 Convex, and SpacetimeDB compare on the same host now? It runs only those three
 legs, preserves correctness/telemetry/workload checks, prints the comparison,
 and explicitly skips historical-machine acceptance and result persistence.
@@ -484,7 +484,7 @@ The failures were handled as evidence, not papered over:
 
 | Failure | Root cause | Decision | Gain |
 | --- | --- | --- | --- |
-| DBZZ did not start in a fresh checkout. | Ignored generated bindings existed locally but not remotely. | Run DBZZ codegen from the benchmark runner before DBZZ legs. | Fresh-checkout reproducibility. |
+| AckerDB did not start in a fresh checkout. | Ignored generated bindings existed locally but not remotely. | Run AckerDB codegen from the benchmark runner before AckerDB legs. | Fresh-checkout reproducibility. |
 | Convex CLI failed before workload. | Ubuntu Node 18 lacked syntax required by a Convex dependency. | Install verified Node 24 LTS on the isolated host. | Correct vendor runtime without changing benchmark logic. |
 | Five-leg current diagnostic rejected the exporter leg. | The tiny host caused a benchmark-exporter dropped-record diagnostic. | Keep strict exporter validation in default acceptance; omit telemetry-cost legs from current performance-margin mode. | Answer the user's actual comparison question without product changes for a diagnostic-only artifact. |
 | Full 500 × 50 subscription run became invalid. | Convex consumed the 3.7-GiB host into ~384 MiB swap and later produced duplicate/unexpected shared-capacity deliveries. | Do not retry or weaken correctness; reduce connection/subscription/capacity overrides equally for every system. | A valid zero-swap same-host comparison. |
@@ -504,11 +504,11 @@ The final command used the same overrides for all three systems:
   necessary.
 
 The run completed in 252 seconds, exited 0, passed workload correctness and
-default DBZZ telemetry validation, used zero swap, and left no benchmark process
+default AckerDB telemetry validation, used zero swap, and left no benchmark process
 or listener. The remote log SHA-256 is
 `737d7bd21300546a94d208b2d3af28bd59115f41b6dc57a9845eb37d348ccd45`.
 
-All DBZZ benchmark legs explicitly use the `balanced` durability profile
+All AckerDB benchmark legs explicitly use the `balanced` durability profile
 (`SQLite WAL + synchronous=NORMAL`). This is process-crash consistent but is not
 the default `production` power-loss durability claim. Convex uses its local
 backend default; SpacetimeDB uses its own default. The suite documents this
@@ -520,34 +520,34 @@ is equivalent, but the transport is not identical. Process-tree RSS is summed
 sampled RSS and can double-count shared pages, so it is a comparative process
 accounting signal rather than exact unique physical memory.
 
-### DBZZ versus Convex local backend
+### AckerDB versus Convex local backend
 
 | Area | Result |
 | --- | --- |
-| Operation throughput, 16 cells | DBZZ 5.11×–20.60× higher; 13.42× median |
+| Operation throughput, 16 cells | AckerDB 5.11×–20.60× higher; 13.42× median |
 | Operation p95 latency, 16 cells | Convex 3.88×–95.82× higher; 9.75× median |
-| 1/100/500 connection throughput | DBZZ 13.46× / 13.72× / 15.90× higher |
-| 1/100/500 connection p95 | DBZZ 8.51× / 11.95× / 15.18× lower |
-| 500-connection server RSS | DBZZ 111.3 MiB; Convex 1,829.9 MiB (16.44×) |
-| Saturated-operation server RSS | Convex 3.73×–8.81× DBZZ |
-| Shared capacity throughput | DBZZ 5.40× / 4.22× / 3.21× at 1/8/20 writers |
-| Partitioned capacity throughput | DBZZ 14.17× / 8.92× / 9.17× at 1/8/32 writers |
-| Fixed shared delivery p95 | DBZZ 17.04 ms; Convex 40.44 ms |
-| Fixed partitioned delivery p95 | DBZZ 2.61 ms; Convex 20.65 ms |
+| 1/100/500 connection throughput | AckerDB 13.46× / 13.72× / 15.90× higher |
+| 1/100/500 connection p95 | AckerDB 8.51× / 11.95× / 15.18× lower |
+| 500-connection server RSS | AckerDB 111.3 MiB; Convex 1,829.9 MiB (16.44×) |
+| Saturated-operation server RSS | Convex 3.73×–8.81× AckerDB |
+| Shared capacity throughput | AckerDB 5.40× / 4.22× / 3.21× at 1/8/20 writers |
+| Partitioned capacity throughput | AckerDB 14.17× / 8.92× / 9.17× at 1/8/32 writers |
+| Fixed shared delivery p95 | AckerDB 17.04 ms; Convex 40.44 ms |
+| Fixed partitioned delivery p95 | AckerDB 2.61 ms; Convex 20.65 ms |
 
-The valid conclusion is narrow but valuable: DBZZ is decisively faster and more
+The valid conclusion is narrow but valuable: AckerDB is decisively faster and more
 memory-efficient than the Convex **local development backend** on this tested
 single-host workload. Convex explicitly describes local deployments as beta and
 development-oriented, so these numbers say nothing about Convex Cloud latency,
 capacity, availability, durability, security, or SLA.
 
-### DBZZ versus local Standalone SpacetimeDB 2.6.1
+### AckerDB versus local Standalone SpacetimeDB 2.6.1
 
 SpacetimeDB remained the stronger reference for saturated mutations, server
-compute/procedures, and multi-writer partitioned subscriptions. DBZZ remained
+compute/procedures, and multi-writer partitioned subscriptions. AckerDB remained
 competitive on indexed queries and used materially less RSS at connection and
 subscription plateaus. That is consistent with the project benchmark policy:
-SpacetimeDB is the “excellent performance” reference, not the product that DBZZ
+SpacetimeDB is the “excellent performance” reference, not the product that AckerDB
 must beat on every new metric.
 
 The result suggests where architectural headroom exists—write execution,
@@ -562,41 +562,41 @@ latency, capacity, replication, backup, or SLA behavior.
 
 ### The correct comparison boundary
 
-Convex Cloud and SpacetimeDB Maincloud are managed products. DBZZ is currently
+Convex Cloud and SpacetimeDB Maincloud are managed products. AckerDB is currently
 an engine, client, CLI, and operating contract. Comparing only database code
 understates the competitors' most important production advantage: they operate
 infrastructure and a control plane on behalf of the customer.
 
-Conversely, comparing DBZZ's same-host numbers to hosted WAN endpoints would
+Conversely, comparing AckerDB's same-host numbers to hosted WAN endpoints would
 mix network, hardware, service, durability, and tenancy differences. The table
 therefore separates local engine guarantees from managed-platform readiness.
 
-| Area | DBZZ today | Convex Cloud | SpacetimeDB / Maincloud | Assessment |
+| Area | AckerDB today | Convex Cloud | SpacetimeDB / Maincloud | Assessment |
 | --- | --- | --- | --- | --- |
-| Deployment model | Self-hosted one Bun process + one SQLite file | Managed deployments with dev/prod/custom/preview environments | Managed Maincloud plus documented self-hosting | DBZZ is far behind in operational product, though simpler to inspect locally. |
+| Deployment model | Self-hosted one Bun process + one SQLite file | Managed deployments with dev/prod/custom/preview environments | Managed Maincloud plus documented self-hosting | AckerDB is far behind in operational product, though simpler to inspect locally. |
 | High availability | No replica, consensus, or automatic failover | Official docs state durable replication across multiple physical availability zones | Paid Maincloud advertises automatic replication; public sources reviewed do not specify topology or failover behavior. Standalone uses one replica and no replication. | Independent-failure-domain gap versus managed services; like-for-like standalone remains single-replica. |
-| Availability commitment | No SLA | Noncontractual 99.99% target; Business/Enterprise deployment-class SLA 99.9%–99.95% | Maincloud Pro has a 99.5% monthly uptime commitment with credit-only remedies; Team/Enterprise advertise additional/custom SLAs | DBZZ must state “no SLA,” not invent one. |
-| Durability | SQLite `FULL` by default; crash/corruption evidence and acknowledged-write tests on one failure domain | Encrypted at rest, multi-AZ durability, periodic/incremental backups | Committed transactions persist to an append-only commit log and restart recovery replays it; the format supports replication but does not make Standalone highly available | DBZZ's local semantics are strong, but one machine/disk remains the decisive risk. |
-| Backups and recovery | Verified local artifact and fresh-process restore; operator owns schedule/retention/offsite/encryption | Manual and periodic managed backups; dedicated physical backups; dashboard restore | Paid Maincloud advertises automatic backups and point-in-time retention; public restore workflow/RPO/RTO details remain limited | DBZZ has a strong primitive but lacks the routine automation that makes it operationally useful. |
+| Availability commitment | No SLA | Noncontractual 99.99% target; Business/Enterprise deployment-class SLA 99.9%–99.95% | Maincloud Pro has a 99.5% monthly uptime commitment with credit-only remedies; Team/Enterprise advertise additional/custom SLAs | AckerDB must state “no SLA,” not invent one. |
+| Durability | SQLite `FULL` by default; crash/corruption evidence and acknowledged-write tests on one failure domain | Encrypted at rest, multi-AZ durability, periodic/incremental backups | Committed transactions persist to an append-only commit log and restart recovery replays it; the format supports replication but does not make Standalone highly available | AckerDB's local semantics are strong, but one machine/disk remains the decisive risk. |
+| Backups and recovery | Verified local artifact and fresh-process restore; operator owns schedule/retention/offsite/encryption | Manual and periodic managed backups; dedicated physical backups; dashboard restore | Paid Maincloud advertises automatic backups and point-in-time retention; public restore workflow/RPO/RTO details remain limited | AckerDB has a strong primitive but lacks the routine automation that makes it operationally useful. |
 | Point-in-time recovery | No packaged PITR | Public backup UI is snapshot-oriented; official pages reviewed do not promise customer-selectable PITR | Maincloud pricing advertises PITR retention of 7 days on Pro, 30 days on Team, and custom Enterprise retention | SpacetimeDB has the published feature lead; exact restore workflow, RPO, and RTO still need confirmation. |
-| Deploy/rollback | Reconcile at startup, health/readiness, bounded drain; no controller, previews, rolling rollout, or automated rollback | CI deploy, generated code, schema/index push, scoped keys, previews/staging/custom deployments | Publish/hot-swap, automatic compatible migrations, incremental migration pattern | DBZZ needs one reproducible deployment recipe before it needs sophisticated rollout infrastructure. |
-| Schema evolution | Safe reconciliation/refusal for supported local changes; no compatibility layer by design | Managed validation/index lifecycle and deployment tooling | Automatic compatible migrations; complex changes use incremental migration pattern | DBZZ is adequate for alpha but lacks staged/backfilled zero-downtime operations and client-version orchestration. |
+| Deploy/rollback | Reconcile at startup, health/readiness, bounded drain; no controller, previews, rolling rollout, or automated rollback | CI deploy, generated code, schema/index push, scoped keys, previews/staging/custom deployments | Publish/hot-swap, automatic compatible migrations, incremental migration pattern | AckerDB needs one reproducible deployment recipe before it needs sophisticated rollout infrastructure. |
+| Schema evolution | Safe reconciliation/refusal for supported local changes; no compatibility layer by design | Managed validation/index lifecycle and deployment tooling | Automatic compatible migrations; complex changes use incremental migration pattern | AckerDB is adequate for alpha but lacks staged/backfilled zero-downtime operations and client-version orchestration. |
 | TLS/network edge | Plaintext listener intended for loopback/private hop; operator terminates TLS | Hosted TLS and managed endpoint/network settings | Maincloud hosted endpoint; self-host guide covers Nginx/Let's Encrypt/firewall | Immediate invited-alpha gap: ship and test a reference edge configuration. |
-| Authentication | Strict OIDC/JWKS verification, mandatory function policy, epochs, leases, revocation hooks | Hosted identity verification; application still performs authorization checks | OIDC and beta SpacetimeAuth; application authorization; private tables and filtered views. RLS is experimental/unstable and official guidance prefers views. | DBZZ data-plane contract is credible; identity provisioning and platform administration are absent. |
+| Authentication | Strict OIDC/JWKS verification, mandatory function policy, epochs, leases, revocation hooks | Hosted identity verification; application still performs authorization checks | OIDC and beta SpacetimeAuth; application authorization; private tables and filtered views. RLS is experimental/unstable and official guidance prefers views. | AckerDB data-plane contract is credible; identity provisioning and platform administration are absent. |
 | Control-plane security | No team/project RBAC, scoped deploy keys, SSO, or control-plane audit | Team/project roles, scoped deployment keys, settings and audit capabilities; enterprise durable audit path | Maincloud account/dashboard and database ownership; exact enterprise control matrix needs confirmation | Large platform gap, not a local transaction bug. |
-| Overload/backpressure | Explicit finite item/byte/age limits, typed outcomes, principal fairness, receiver-confirmed SSE | Managed limits/classes; internal platform handles service capacity | Managed/server runtime capacity and transaction model | DBZZ has unusually explicit local contracts, but no fleet-level autoscaling or admission control. |
+| Overload/backpressure | Explicit finite item/byte/age limits, typed outcomes, principal fairness, receiver-confirmed SSE | Managed limits/classes; internal platform handles service capacity | Managed/server runtime capacity and transaction model | AckerDB has unusually explicit local contracts, but no fleet-level autoscaling or admission control. |
 | Horizontal scaling | None | Serverless/dedicated classes up to documented 100,000 concurrent sessions; applications can shard across deployments | Maincloud manages placement/scaling and applications can distribute work across databases, but each database is bounded by its scheduled machine; Standalone is single-replica | Do not build this for zero users; measure the single node first. |
-| Realtime correctness | Ordered resume/reset query streams, exact predecessor checks, mutation convergence; finite history resets after restart | Mature reactive queries, consistent snapshots, managed client ecosystem | Incremental subscription deltas and typed client cache | DBZZ now has a defensible correctness contract; durability/efficiency of history and ecosystem maturity still lag. |
+| Realtime correctness | Ordered resume/reset query streams, exact predecessor checks, mutation convergence; finite history resets after restart | Mature reactive queries, consistent snapshots, managed client ecosystem | Incremental subscription deltas and typed client cache | AckerDB now has a defensible correctness contract; durability/efficiency of history and ecosystem maturity still lag. |
 | External side effects | Procedures are explicit and never automatically retried | Actions separate external I/O from deterministic mutations | Procedures separate external I/O from transactional reducers | Similar conceptual boundary; competitors have broader mature tooling. |
-| Observability data | Detailed bounded stages, queue/resource metrics, protected status, exporter callback | Hosted dashboard/logs/health plus paid streams and exception integrations; built-in metrics still described as basic | Maincloud dashboard has logs, CCU, rows, transactions, and energy/resource usage | DBZZ may expose richer engine-stage semantics, but has no turnkey backend, durable spool, dashboard, or alerts. |
-| Audit/compliance | Privacy-safe telemetry but no compliance program or durable administrative audit product | Enterprise durable audit logging, hosted access controls, contractual/compliance options | Managed identity/dashboard; exact compliance/SLA controls require plan-specific confirmation | DBZZ is not ready for regulated or procurement-heavy workloads. |
+| Observability data | Detailed bounded stages, queue/resource metrics, protected status, exporter callback | Hosted dashboard/logs/health plus paid streams and exception integrations; built-in metrics still described as basic | Maincloud dashboard has logs, CCU, rows, transactions, and energy/resource usage | AckerDB may expose richer engine-stage semantics, but has no turnkey backend, durable spool, dashboard, or alerts. |
+| Audit/compliance | Privacy-safe telemetry but no compliance program or durable administrative audit product | Enterprise durable audit logging, hosted access controls, contractual/compliance options | Managed identity/dashboard; exact compliance/SLA controls require plan-specific confirmation | AckerDB is not ready for regulated or procurement-heavy workloads. |
 | Files/search/vector | Not part of current product | Managed file storage, full-text and vector search, components/integrations | SQL, typed subscriptions, multi-language SDKs; feature set oriented to realtime state | Significant ecosystem/product breadth gap, not required for the current safety milestone. |
 | SDK ecosystem | TypeScript/Bun server, web-platform client, raw TS packages | React, Next.js, React Native, JS, Vue, Svelte, Python, Swift, Kotlin, Rust, OpenAPI and integrations | TypeScript, C#, Rust, C++, engines/game ecosystem | Adoption and integration gap. |
-| Operations/support | User operates and debugs everything; no formal support channel | Paid plans, dashboard support, documented SLAs | Managed tiers/community/team support | DBZZ needs a named alpha support/incident path and explicit expectations. |
+| Operations/support | User operates and debugs everything; no formal support channel | Paid plans, dashboard support, documented SLAs | Managed tiers/community/team support | AckerDB needs a named alpha support/incident path and explicit expectations. |
 
-### Where DBZZ is already strong
+### Where AckerDB is already strong
 
-DBZZ should not describe itself only as “behind.” It has several good
+AckerDB should not describe itself only as “behind.” It has several good
 foundations that are appropriate for its scope:
 
 - Production durability is a named, observable default rather than a hidden
@@ -615,7 +615,7 @@ foundations that are appropriate for its scope:
 - The local architecture is small enough to deploy without a separate database,
   cache, queue, or function-runtime cluster.
 
-These strengths make DBZZ a plausible invited self-hosted alpha once the small
+These strengths make AckerDB a plausible invited self-hosted alpha once the small
 operational wrapper below exists. They do not compensate for a missing
 independent failure domain.
 
@@ -639,7 +639,7 @@ independent failure domain.
    liability blocker.
 2. **The Hetzner raw log is not in repository evidence.** The workflow stores
    its summary and SHA-256, but the cited raw file remains only at
-   `/root/dbzz-current-007a44a-scaled.log`. Preserving it is optional evidence
+   `/root/ackerdb-current-007a44a-scaled.log`. Preserving it is optional evidence
    hardening, not an alpha blocker.
 3. **The broad process-RSS test is flaky.** Its direct ownership proofs pass,
    but allocator stabilization can exceed the wall-time cap. Keep it broad and
@@ -698,7 +698,7 @@ functions or parallel abstractions.
 ### Benchmark limitations
 
 - Convex was its local development backend, not Convex Cloud.
-- DBZZ used balanced/NORMAL durability, not its production/FULL default.
+- AckerDB used balanced/NORMAL durability, not its production/FULL default.
 - The successful Hetzner shape was reduced to fit a 3.7-GiB host.
 - The workload is a microbenchmark: small dataset, known operations, local
   network, no bearer auth, no multi-region, no hosted tenancy, and no long-term
@@ -777,16 +777,16 @@ Do not build consensus, active-active regions, automatic failover, sharding,
 cross-shard transactions, a hosted dashboard, a billing/control plane, every
 SDK, or elaborate zero-downtime deployment machinery before demand exists. Also
 do not add further SSE allocator/RSS heuristics without evidence of retained
-DBZZ ownership in production.
+AckerDB ownership in production.
 
 ## Completion status against issue #1
 
 | Stories | Status | Evidence/remaining work |
 | --- | --- | --- |
 | 1–44 | Implementation and behavioral proof complete | Public/fault tests cover identity, ordering, overload, lifecycle, durability, recovery, telemetry, and privacy boundaries. |
-| 45 | Benchmark machinery complete; empirical acceptance pending | Default/exporter/disabled DBZZ legs and exact cost reporting exist, but no accepted post-change schema-v6 result has been saved. |
+| 45 | Benchmark machinery complete; empirical acceptance pending | Default/exporter/disabled AckerDB legs and exact cost reporting exist, but no accepted post-change schema-v6 result has been saved. |
 | 46 | Strong current-host diagnostic; frozen acceptance pending | Hetzner proves a decisive local-Convex margin on the reduced valid shape; it is not the default frozen acceptance workload. |
-| 47 | Explicitly deferred | Requires the shortened full run on the frozen Apple M2 host to preserve all 273 prior DBZZ-over-SpacetimeDB wins. |
+| 47 | Explicitly deferred | Requires the shortened full run on the frozen Apple M2 host to preserve all 273 prior AckerDB-over-SpacetimeDB wins. |
 | 48–50 | Complete | Return inference is proved, speculative runtime output schemas were excluded, and remaining production limitations are documented. |
 
 Therefore:
@@ -878,13 +878,13 @@ SpacetimeDB:
 
 ## Final conclusion
 
-The milestone achieved its most important architectural objective: DBZZ no
+The milestone achieved its most important architectural objective: AckerDB no
 longer relies on performance as a substitute for explicit behavior. The
 single-node engine now has a coherent answer for identity, ordering, retry,
 overload, shutdown, corruption, backup, and diagnosis. The performance margin
 against local Convex remains large in the valid same-host diagnostic, and the
 SpacetimeDB comparison shows both competitive query/resource behavior and clear
-areas where DBZZ is behind.
+areas where AckerDB is behind.
 
 The next valuable step is not another broad engine rewrite. It is to close the
 clean-clone benchmark artifact problem, record the performance acceptance status

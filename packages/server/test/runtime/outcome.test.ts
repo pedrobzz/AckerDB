@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { ProtocolError, decode, encode, parseOutcome } from "@dbzz/core";
+import { ProtocolError, decode, encode, parseOutcome } from "@ackerdb/core";
 import { AdmissionRejected } from "../../src/runtime/admission.ts";
 import { ValidationError } from "../../src/validation/v.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import {
   fitOutcome,
   outcomeFromError,
@@ -14,7 +14,7 @@ describe("structured transport outcomes", () => {
   test("preserves stable typed details and hides unexpected exceptions", () => {
     expect(
       outcomeFromError(
-        new DbzzError("overloaded", "writer full", {
+        new AckerDBError("overloaded", "writer full", {
           retryable: true,
           retryAfterMs: 7,
           resource: "writer",
@@ -32,7 +32,7 @@ describe("structured transport outcomes", () => {
       retryable: false,
       message: "internal server error",
     });
-    expect(outcomeFromError(new DbzzError("unavailable", ""))).toEqual({
+    expect(outcomeFromError(new AckerDBError("unavailable", ""))).toEqual({
       code: "unavailable",
       retryable: false,
       message: "err",
@@ -66,7 +66,7 @@ describe("structured transport outcomes", () => {
   });
 
   test("bounds long emoji messages without splitting a public parser code point", () => {
-    const outcome = outcomeFromError(new DbzzError("unavailable", "💥".repeat(300)));
+    const outcome = outcomeFromError(new AckerDBError("unavailable", "💥".repeat(300)));
     expect(outcome.message.length).toBeLessThanOrEqual(512);
     expect(outcome.message).not.toContain("�");
     expect([...outcome.message].some((character) => {

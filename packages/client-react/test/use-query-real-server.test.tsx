@@ -3,7 +3,7 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DbzzClient, type DbzzWebSocket, type QueryRef } from "@dbzz/client";
+import { AckerDBClient, type AckerDBWebSocket, type QueryRef } from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -16,10 +16,10 @@ import {
   query,
   reconcile,
   serve,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { DbzzProvider, useQuery, type DbzzQueryState } from "@dbzz/client-react";
+import { AckerDBProvider, useQuery, type AckerDBQueryState } from "@ackerdb/client-react";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -38,7 +38,7 @@ interface App {
 }
 
 function createApp(): App {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-react-query-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-query-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const registry = new Registry({
@@ -79,7 +79,7 @@ async function until(predicate: () => boolean, description: string): Promise<voi
 type Message = { readonly id: bigint; readonly body: string };
 const messagesList = { $ref: "messages.list" } as QueryRef<Record<never, never>, Message[]>;
 
-let observed: DbzzQueryState<Message[]> | undefined;
+let observed: AckerDBQueryState<Message[]> | undefined;
 
 function MessageBoard(): ReactNode {
   const state = useQuery(messagesList, {});
@@ -111,26 +111,26 @@ beforeAll(() => {
 });
 afterAll(() => app.close());
 
-describe("useQuery against a real dbzz server", () => {
+describe("useQuery against a real ackerdb server", () => {
   test("delivers live data, keeps it stale across a dropped socket, and resumes fresh", async () => {
     const sockets: WebSocket[] = [];
     const container = mountPoint();
     const root = createRoot(container);
-    const writer = new DbzzClient({ url: app.base, credential: { kind: "anonymous" } });
+    const writer = new AckerDBClient({ url: app.base, credential: { kind: "anonymous" } });
     root.render(
-      <DbzzProvider
+      <AckerDBProvider
         config={{
           url: app.base,
           credential: { kind: "anonymous" },
           createWebSocket: (url) => {
             const socket = new NativeWebSocket(url);
             sockets.push(socket);
-            return socket as unknown as DbzzWebSocket;
+            return socket as unknown as AckerDBWebSocket;
           },
         }}
       >
         <MessageBoard />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     // The pending -> success transition itself is covered deterministically in
     // use-query.test.tsx; a real server can outrun a polling assertion here.

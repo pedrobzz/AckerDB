@@ -1,12 +1,12 @@
 import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { DbzzProvider, useConnectionState } from "@dbzz/client-react";
+import { AckerDBProvider, useConnectionState } from "@ackerdb/client-react";
 
 function ConnectionBadge(): ReactNode {
   const state = useConnectionState();
   return (
     <main>
-      <h1>dbzz react fixture</h1>
+      <h1>AckerDB React fixture</h1>
       <p>
         connection: <strong id="phase">{state.phase}</strong>
       </p>
@@ -17,8 +17,8 @@ function ConnectionBadge(): ReactNode {
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <DbzzProvider config={{ url: "http://127.0.0.1:3211", credential: { kind: "anonymous" } }}>
+    <AckerDBProvider config={{ url: "http://127.0.0.1:3211", credential: { kind: "anonymous" } }}>
       <ConnectionBadge />
-    </DbzzProvider>
+    </AckerDBProvider>
   </StrictMode>,
 );

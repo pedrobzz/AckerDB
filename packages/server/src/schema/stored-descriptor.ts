@@ -1,4 +1,4 @@
-import { decode, encode } from "@dbzz/core";
+import { decode, encode } from "@ackerdb/core";
 import type { Descriptor } from "../validation/v.ts";
 import { validateConstraintDescriptor } from "../validation/constraints.ts";
 import { ValidationError } from "../validation/error.ts";

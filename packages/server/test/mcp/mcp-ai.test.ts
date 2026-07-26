@@ -8,7 +8,7 @@ import {
   parseCallResponse,
   parseSseMessage,
   type SseMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
@@ -80,7 +80,7 @@ let operationCounts: number[] = [];
 
 const roundTrip = typedMcpTool({
   title: "Round trip canonical values",
-  description: "Round-trip lossless DBZZ values through one local MCP dispatch.",
+  description: "Round-trip lossless AckerDB values through one local MCP dispatch.",
   args: {
     large: v.bigint(),
     identity: v.identity(),
@@ -119,7 +119,7 @@ const richOutput = typedMcpTool({
       { type: "audio" as const, data: "BAUG", mimeType: "audio/wav" },
       {
         type: "resource_link" as const,
-        uri: "dbzz://calls/1",
+        uri: "ackerdb://calls/1",
         name: "call-one",
       },
     ],
@@ -290,7 +290,7 @@ let engine: Engine;
 let telemetry: TelemetryRecord[];
 
 beforeEach(() => {
-  directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-ai-"));
+  directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-ai-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   telemetry = [];
@@ -473,7 +473,7 @@ describe("MCP zero-hop AI SDK tools", () => {
         { type: "text", text: "hello" },
         { type: "image", data: "AQID", mimeType: "image/png" },
         { type: "audio", data: "BAUG", mimeType: "audio/wav" },
-        { type: "resource_link", uri: "dbzz://calls/1", name: "call-one" },
+        { type: "resource_link", uri: "ackerdb://calls/1", name: "call-one" },
       ],
       isError: true,
       _meta: { source: "fixture" },
@@ -497,7 +497,7 @@ describe("MCP zero-hop AI SDK tools", () => {
         },
         {
           type: "text",
-          text: JSON.stringify({ type: "resource_link", uri: "dbzz://calls/1", name: "call-one" }),
+          text: JSON.stringify({ type: "resource_link", uri: "ackerdb://calls/1", name: "call-one" }),
         },
       ],
     });
@@ -557,6 +557,6 @@ describe("MCP zero-hop AI SDK tools", () => {
     await expect(retainedTools!.round_trip!.execute(canonicalInput)).rejects.toThrow(
       "no longer active",
     );
-    expect(() => agentMcp.aiTools({} as never)).toThrow("active DBZZ procedure context");
+    expect(() => agentMcp.aiTools({} as never)).toThrow("active AckerDB procedure context");
   });
 });

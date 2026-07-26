@@ -4,7 +4,7 @@
  * `scaffold.ts`; this module is generation's filesystem half — it reads the stored
  * state and optimistic probes from its sibling `plan.ts`, validates that a new
  * migration may be written at all, and owns the `migrations/` + `meta/` layout.
- * The single generation path behind both `dbzz generate` and the `__generate` child.
+ * The single generation path behind both `acker generate` and the `__generate` child.
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -12,7 +12,7 @@ import {
   snapshotOf,
   validateHistoryPrefix,
   type Renames,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { importApp } from "../app/manifest.ts";
 import type { AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths, MIGRATION_NAME } from "./load.ts";
@@ -39,7 +39,7 @@ export interface GenerateRequest {
  * `computePlan` flags — no database, a chain that diverged from applied history
  * (the shared `validateHistoryPrefix`, which throws before any file is written),
  * or a chain that is not fully applied — so the recorded `pre` is always the true
- * pre-state. This is the single generation path behind both `dbzz generate` and
+ * pre-state. This is the single generation path behind both `acker generate` and
  * the `__generate` child.
  */
 export async function writeMigration(config: AppConfig, request: GenerateRequest): Promise<string[]> {
@@ -48,12 +48,12 @@ export async function writeMigration(config: AppConfig, request: GenerateRequest
   }
   const state = readStoredState(config);
   if (state === null) {
-    throw new Error(`no database at ${join(config.dbDir, "data.db")}; run \`dbzz dev\` to initialize it first`);
+    throw new Error(`no database at ${join(config.dbDir, "data.db")}; run \`acker dev\` to initialize it first`);
   }
   const chain = await loadMigrationChain(config);
   const { pending } = validateHistoryPrefix(state.applied, chain);
   if (pending.length > 0) {
-    throw new Error(`apply the ${pending.length} pending migration(s) first — start \`dbzz dev\``);
+    throw new Error(`apply the ${pending.length} pending migration(s) first — start \`acker dev\``);
   }
 
   const schema = (await importApp(config)).schema;

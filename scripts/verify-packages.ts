@@ -12,32 +12,32 @@ function assertNoProductionAiDependency(manifest: PackageManifest): void {
   for (const field of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
     for (const dependency of Object.keys(manifest[field] ?? {})) {
       if (dependency === "ai" || dependency.startsWith("@ai-sdk/")) {
-        throw new Error(`packed @dbzz/server has production AI dependency ${field}.${dependency}`);
+        throw new Error(`packed @ackerdb/server has production AI dependency ${field}.${dependency}`);
       }
     }
   }
 }
 
 async function main(): Promise<void> {
-  const packed = await createPackedConsumer("dbzz-packed-consumer");
+  const packed = await createPackedConsumer("ackerdb-packed-consumer");
   const { consumerDir, root, version } = packed;
   mkdirSync(join(consumerDir, "functions"), { recursive: true });
 
   try {
     for (const pkg of PACKAGES) {
       const manifest = readManifest(
-        join(consumerDir, "node_modules", "@dbzz", pkg, "package.json"),
+        join(consumerDir, "node_modules", "@ackerdb", pkg, "package.json"),
       );
-      if (manifest.name !== `@dbzz/${pkg}` || manifest.version !== version) {
+      if (manifest.name !== `@ackerdb/${pkg}` || manifest.version !== version) {
         throw new Error(
-          `packed @dbzz/${pkg} resolved as ${String(manifest.name)}@${String(manifest.version)}, expected ${version}`,
+          `packed @ackerdb/${pkg} resolved as ${String(manifest.name)}@${String(manifest.version)}, expected ${version}`,
         );
       }
       for (const field of ["dependencies", "peerDependencies"] as const) {
         for (const [name, specifier] of Object.entries(manifest[field] ?? {})) {
-          if (name.startsWith("@dbzz/") && specifier !== version) {
+          if (name.startsWith("@ackerdb/") && specifier !== version) {
             throw new Error(
-              `packed @dbzz/${pkg} ${field}.${name} is ${specifier}, expected exact ${version}`,
+              `packed @ackerdb/${pkg} ${field}.${name} is ${specifier}, expected exact ${version}`,
             );
           }
         }
@@ -45,16 +45,16 @@ async function main(): Promise<void> {
     }
 
     const serverManifest = readManifest(
-      join(consumerDir, "node_modules/@dbzz/server/package.json"),
+      join(consumerDir, "node_modules/@ackerdb/server/package.json"),
     );
     if (serverManifest.exports?.["./mcp"] !== "./src/mcp/index.ts") {
-      throw new Error("packed @dbzz/server does not expose ./mcp from ./src/mcp/index.ts");
+      throw new Error("packed @ackerdb/server does not expose ./mcp from ./src/mcp/index.ts");
     }
     if (serverManifest.dependencies?.["@modelcontextprotocol/sdk"] !== "1.29.0") {
-      throw new Error("packed @dbzz/server must pin @modelcontextprotocol/sdk exactly to 1.29.0");
+      throw new Error("packed @ackerdb/server must pin @modelcontextprotocol/sdk exactly to 1.29.0");
     }
     if (serverManifest.dependencies?.numkong !== "7.7.1") {
-      throw new Error("packed @dbzz/server must pin NumKong exactly to 7.7.1");
+      throw new Error("packed @ackerdb/server must pin NumKong exactly to 7.7.1");
     }
     const sdkManifest = readManifest(
       join(consumerDir, "node_modules/@modelcontextprotocol/sdk/package.json"),
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     assertNoProductionAiDependency(serverManifest);
 
     const cacheManifest = readManifest(
-      join(consumerDir, "node_modules/@dbzz/cache/package.json"),
+      join(consumerDir, "node_modules/@ackerdb/cache/package.json"),
     );
     for (const [subpath, target] of Object.entries({
       ".": "./src/index.ts",
@@ -75,12 +75,12 @@ async function main(): Promise<void> {
       "./upstash": "./src/adapters/upstash.ts",
     })) {
       if (cacheManifest.exports?.[subpath] !== target) {
-        throw new Error(`packed @dbzz/cache does not expose ${subpath} from ${target}`);
+        throw new Error(`packed @ackerdb/cache does not expose ${subpath} from ${target}`);
       }
     }
 
     writeFileSync(join(consumerDir, "app.ts"), `
-import { v, defineApp, defineSchema, defineTable } from "@dbzz/server";
+import { v, defineApp, defineSchema, defineTable } from "@ackerdb/server";
 
 const schema = defineSchema({
   orders: defineTable({
@@ -93,7 +93,7 @@ const schema = defineSchema({
 export default defineApp({ schema });
 `);
     writeFileSync(join(consumerDir, "functions", "orders.ts"), `
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import { createMcp, mcpTool, type McpToolCtx } from "../_generated/server.ts";
 
 export const getOrder = mcpTool({
@@ -132,20 +132,20 @@ import {
   mcpTool as mcpToolFromRoot,
   newWriteCollector,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import {
   createMcp as createMcpFromSubpath,
   mcpTool as mcpToolFromSubpath,
-} from "@dbzz/server/mcp";
-import { cachePlugin, defineCacheStore } from "@dbzz/cache";
-import { redisCacheStore } from "@dbzz/cache/redis";
-import { upstashCacheStore } from "@dbzz/cache/upstash";
+} from "@ackerdb/server/mcp";
+import { cachePlugin, defineCacheStore } from "@ackerdb/cache";
+import { redisCacheStore } from "@ackerdb/cache/redis";
+import { upstashCacheStore } from "@ackerdb/cache/upstash";
 
 if (createMcpFromRoot !== createMcpFromSubpath) {
-  throw new Error("@dbzz/server/mcp resolves a different createMcp implementation");
+  throw new Error("@ackerdb/server/mcp resolves a different createMcp implementation");
 }
 if (mcpToolFromRoot !== mcpToolFromSubpath) {
-  throw new Error("@dbzz/server/mcp resolves a different mcpTool implementation");
+  throw new Error("@ackerdb/server/mcp resolves a different mcpTool implementation");
 }
 const endpoint = createMcpFromSubpath({
   name: "package_probe",
@@ -189,12 +189,12 @@ const cacheInstances = [
 ];
 const cacheDefinitionIds = cacheInstances.map((plugin) => plugin.definitionId);
 if (JSON.stringify(cacheDefinitionIds) !== JSON.stringify([
-  "@dbzz/cache",
-  "@dbzz/cache-external",
-  "@dbzz/cache-external",
-  "@dbzz/cache-external",
+  "@ackerdb/cache",
+  "@ackerdb/cache-external",
+  "@ackerdb/cache-external",
+  "@ackerdb/cache-external",
 ])) {
-  throw new Error("packed @dbzz/cache root export returned the wrong Plugin definition");
+  throw new Error("packed @ackerdb/cache root export returned the wrong Plugin definition");
 }
 if (customStoreOpens !== 0 || upstashRequests !== 0) {
   throw new Error("packed Cache imports or construction performed external work");
@@ -245,13 +245,13 @@ try {
 
     await runCommand([
       process.execPath,
-      join(consumerDir, "node_modules/@dbzz/cli/src/commands/main.ts"),
+      join(consumerDir, "node_modules/@ackerdb/cli/src/commands/main.ts"),
       "codegen",
       consumerDir,
     ], consumerDir, {
       ...process.env,
-      DBZZ_DURABILITY: "balanced",
-      DBZZ_TELEMETRY: "disabled",
+      ACKERDB_DURABILITY: "balanced",
+      ACKERDB_TELEMETRY: "disabled",
     });
     await runCommand([process.execPath, "verify-runtime.ts"], consumerDir);
     await runCommand([
@@ -262,7 +262,7 @@ try {
     ], consumerDir);
 
     console.log(
-      `Packed package gate passed: ${PACKAGES.length} @dbzz packages at ${version}, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.29.0, native NumKong exact search, and no server AI production dependency.`,
+      `Packed package gate passed: ${PACKAGES.length} @ackerdb packages at ${version}, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.29.0, native NumKong exact search, and no server AI production dependency.`,
     );
   } finally {
     packed.cleanup();

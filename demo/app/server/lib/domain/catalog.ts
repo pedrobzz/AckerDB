@@ -1,5 +1,5 @@
-import { Err, Ok, Status } from "@dbzz/core";
-import type { DatabaseReader } from "@demo/dbzz-codegen/server";
+import { Err, Ok, Status } from "@ackerdb/core";
+import type { DatabaseReader } from "@demo/ackerdb-codegen/server";
 
 export async function activeMenuItem(
   db: DatabaseReader,

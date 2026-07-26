@@ -10,14 +10,14 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
-import { DbzzServer, serve, type McpHttpOptions } from "../../src/transport/server.ts";
+import { AckerDBServer, serve, type McpHttpOptions } from "../../src/transport/server.ts";
 import type { TelemetryRecord } from "../../src/telemetry/telemetry.ts";
 
 const PROTOCOL_VERSION = "2025-11-25";
 const ARGUMENT_CANARY = "private-mcp-argument-canary";
 const RESULT_CANARY = "private-mcp-result-canary";
 const HANDLER_ERROR_CANARY = "private-mcp-handler-error-canary";
-const TOKEN_CANARY = `dbzz_mcp.${"A".repeat(22)}.${"B".repeat(43)}`;
+const TOKEN_CANARY = `ackerdb_mcp.${"A".repeat(22)}.${"B".repeat(43)}`;
 const PROVIDER_CREDENTIAL_CANARY = "private-provider-credential-canary";
 
 const schema = defineSchema({});
@@ -48,7 +48,7 @@ interface Fixture {
   readonly directory: string;
   readonly engine: Engine;
   readonly runtime: Runtime;
-  readonly server: DbzzServer;
+  readonly server: AckerDBServer;
   readonly base: string;
 }
 
@@ -64,7 +64,7 @@ function fixture(options: {
   readonly mcpHttp?: McpHttpOptions;
   readonly telemetry?: ConstructorParameters<typeof Runtime>[0]["telemetry"];
 } = {}): Fixture {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-security-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-security-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const runtime = new Runtime({
@@ -200,7 +200,7 @@ describe("MCP HTTP security boundary", () => {
   });
 
   test("requires an explicit trusted HTTPS proxy posture only when MCP is exported", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-deployment-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-deployment-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     const runtime = new Runtime({ engine, registry: new Registry(modules), telemetry: false });
@@ -240,7 +240,7 @@ describe("MCP HTTP security boundary", () => {
       "x-forwarded-proto": "https",
     })).status).toBe(403);
 
-    const noMcpDirectory = mkdtempSync(join(tmpdir(), "dbzz-no-mcp-deployment-"));
+    const noMcpDirectory = mkdtempSync(join(tmpdir(), "ackerdb-no-mcp-deployment-"));
     const noMcpEngine = new Engine(schema, join(noMcpDirectory, "data.db"));
     reconcile(noMcpEngine);
     const noMcpRuntime = new Runtime({
@@ -266,7 +266,7 @@ describe("MCP HTTP security boundary", () => {
       { transport: "plaintext" },
       { unknown: true },
     ]) {
-      expect(() => new DbzzServer({
+      expect(() => new AckerDBServer({
         limits: PRODUCTION_LIMITS,
         port: 0,
         mcpHttp: mcpHttp as never,
@@ -302,7 +302,7 @@ describe("MCP HTTP security boundary", () => {
       path: "/limited",
       tools: { one, two },
     });
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-tool-limit-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-tool-limit-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     expect(() => new Runtime({

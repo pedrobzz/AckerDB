@@ -9,8 +9,8 @@ import {
   type Outcome,
   type SubscriptionCursor,
   type SubscriptionTransition,
-} from "@dbzz/core";
-import { DbzzError, isDbzzError } from "../shared/errors.ts";
+} from "@ackerdb/core";
+import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "../runtime/executor.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../runtime/limits.ts";
@@ -390,8 +390,8 @@ export class OrderedReactive<C = unknown> {
 
   async reset(subscriber: Subscriber, subscriptionId: number, from: SubscriptionCursor): Promise<void> {
     const binding = this.bySubscriber.get(subscriber)?.get(subscriptionId);
-    if (!binding) throw new DbzzError("not_found", "Subscription is not active");
-    if (binding.kind !== "query") throw new DbzzError("conflict", "Only query subscriptions have reset cursors");
+    if (!binding) throw new AckerDBError("not_found", "Subscription is not active");
+    if (binding.kind !== "query") throw new AckerDBError("conflict", "Only query subscriptions have reset cursors");
     await this.sendTransition(binding, {
       kind: "reset",
       from,
@@ -424,7 +424,7 @@ export class OrderedReactive<C = unknown> {
       throw new RangeError("minimumVersion must be a non-negative bigint");
     }
     if (minimumVersion > this.publication.snapshot().highWater) {
-      throw new DbzzError("convergence_unavailable", "Commit is newer than the publication high-water", {
+      throw new AckerDBError("convergence_unavailable", "Commit is newer than the publication high-water", {
         committed: true,
         resource: "publication",
       });
@@ -709,7 +709,7 @@ export class OrderedReactive<C = unknown> {
         this.validateEvaluation(evaluated);
         const highWater = this.publication.snapshot().highWater;
         if (evaluated.commitVersion > highWater) {
-          throw new DbzzError("internal", "Query observed a future commit");
+          throw new AckerDBError("internal", "Query observed a future commit");
         }
       } catch (error) {
         if (this.observer) {
@@ -1297,7 +1297,7 @@ export class OrderedReactive<C = unknown> {
   private assertSubscriptionAdmission(subscriber: Subscriber, id: number): void {
     if (!Number.isSafeInteger(id) || id <= 0) throw new RangeError("subscription id must be positive");
     const mine = this.bySubscriber.get(subscriber);
-    if (mine?.has(id)) throw new DbzzError("conflict", "Subscription id is already active");
+    if (mine?.has(id)) throw new AckerDBError("conflict", "Subscription id is already active");
     if ((mine?.size ?? 0) >= this.limits.maxSubscriptionsPerConnection) {
       throw overloaded("Per-connection subscription capacity is full");
     }
@@ -1307,13 +1307,13 @@ export class OrderedReactive<C = unknown> {
   }
 
   private validateEvaluation(evaluation: QueryEvaluation): void {
-    if (typeof evaluation.encoded !== "string") throw new DbzzError("internal", "Query encoding is invalid");
+    if (typeof evaluation.encoded !== "string") throw new AckerDBError("internal", "Query encoding is invalid");
     if (typeof evaluation.commitVersion !== "bigint" || evaluation.commitVersion < 0n) {
-      throw new DbzzError("internal", "Query commit version is invalid");
+      throw new AckerDBError("internal", "Query commit version is invalid");
     }
-    if (!(evaluation.readSet instanceof Set)) throw new DbzzError("internal", "Query read set is invalid");
+    if (!(evaluation.readSet instanceof Set)) throw new AckerDBError("internal", "Query read set is invalid");
     for (const key of evaluation.readSet) {
-      if (typeof key !== "string") throw new DbzzError("internal", "Query read set contains a non-string key");
+      if (typeof key !== "string") throw new AckerDBError("internal", "Query read set contains a non-string key");
     }
   }
 
@@ -1523,7 +1523,7 @@ function failure<C>(
 }
 
 function observationOutcome(error: unknown): Outcome["code"] {
-  return isDbzzError(error) ? error.code : "internal";
+  return isAckerDBError(error) ? error.code : "internal";
 }
 
 function isAuthFailure(outcome: Outcome): boolean {
@@ -1548,7 +1548,7 @@ function overloadOutcome(message: string): Outcome {
 }
 
 function errorOutcome(error: unknown): Outcome {
-  if (isDbzzError(error)) {
+  if (isAckerDBError(error)) {
     return Object.freeze({
       code: error.code,
       retryable: error.retryable,
@@ -1561,14 +1561,14 @@ function errorOutcome(error: unknown): Outcome {
   return Object.freeze({ code: "internal", retryable: false, message: "Subscription evaluation failed" });
 }
 
-function overloaded(message: string): DbzzError {
-  return new DbzzError("overloaded", message, {
+function overloaded(message: string): AckerDBError {
+  return new AckerDBError("overloaded", message, {
     retryable: true,
     retryAfterMs: 0,
     resource: "subscription",
   });
 }
 
-function unavailable(message: string): DbzzError {
-  return new DbzzError("unavailable", message, { resource: "subscription" });
+function unavailable(message: string): AckerDBError {
+  return new AckerDBError("unavailable", message, { resource: "subscription" });
 }

@@ -1,7 +1,7 @@
-import { mutation } from "@demo/dbzz-codegen/server";
+import { mutation } from "@demo/ackerdb-codegen/server";
 import { staffAccess } from "../lib/access.ts";
 import { scheduleReminder } from "../lib/domain/order-workflow.ts";
-import type { ItemStatus } from "@demo/dbzz-codegen/types";
+import type { ItemStatus } from "@demo/ackerdb-codegen/types";
 
 const SEED_KEY = "restaurant-v1";
 

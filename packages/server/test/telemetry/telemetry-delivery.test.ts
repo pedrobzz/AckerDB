@@ -8,10 +8,10 @@ import {
   encode,
   parseCallResponse,
   type ServerMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
-  DbzzError,
+  AckerDBError,
   Engine,
   OutboundBudget,
   PRODUCTION_LIMITS,
@@ -35,7 +35,7 @@ import {
   type TelemetryRecord,
   type TelemetrySpanRecord,
   type WebSocketDeliverySocket,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { CAPTURE_DELIVERY_OBSERVER } from "../../src/runtime/runtime.ts";
 
 const encoder = new TextEncoder();
@@ -80,14 +80,14 @@ const functions = {
       access: "public",
       args: {},
       handler: () => {
-        throw new DbzzError("conflict", "already exists");
+        throw new AckerDBError("conflict", "already exists");
       },
     }),
     failLarge: procedure({
       access: "public",
       args: {},
       handler: () => {
-        throw new DbzzError("overloaded", "safe detail ".repeat(100), {
+        throw new AckerDBError("overloaded", "safe detail ".repeat(100), {
           retryable: true,
           retryAfterMs: 125,
           resource: "operation",
@@ -203,7 +203,7 @@ function delivery(
 }
 
 test("Runtime prepares one canonical query frame for WebSocket delivery", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-query-publication-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-query-publication-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const payload = {
@@ -281,7 +281,7 @@ test("Runtime prepares one canonical query frame for WebSocket delivery", async 
 });
 
 test("Runtime owns correlated WebSocket outcomes through delayed physical delivery", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-delivery-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-delivery-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const exported: TelemetryRecord[] = [];
@@ -463,7 +463,7 @@ test("Runtime owns correlated WebSocket outcomes through delayed physical delive
 });
 
 test("Runtime releases fast WebSocket tails after final physical delivery", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-delivery-lease-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-delivery-lease-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const exported: TelemetryRecord[] = [];
@@ -576,8 +576,8 @@ test("Runtime releases fast WebSocket tails after final physical delivery", asyn
   }
 });
 
-test("DbzzServer correlates bounded procedure encoding and Response handoff inside operation ownership", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-procedure-delivery-"));
+test("AckerDBServer correlates bounded procedure encoding and Response handoff inside operation ownership", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-procedure-delivery-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const exported: TelemetryRecord[] = [];

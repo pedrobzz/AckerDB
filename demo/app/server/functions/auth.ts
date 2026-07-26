@@ -1,5 +1,5 @@
-import { v } from "@dbzz/server";
-import { procedure } from "@demo/dbzz-codegen/server";
+import { v } from "@ackerdb/server";
+import { procedure } from "@demo/ackerdb-codegen/server";
 import { emailInput, guestNameInput } from "../lib/inputs.ts";
 import { issueGuestToken } from "../lib/token.ts";
 

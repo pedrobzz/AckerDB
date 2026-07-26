@@ -1,6 +1,6 @@
-// Manual demo: one process serving a real dbzz server plus the React page.
+// Manual demo: one process serving a real AckerDB server plus the React page.
 // Run from the repo root with `bun fixtures/react-web/server.ts`, then open
-// http://localhost:3210 — the page connects through DbzzProvider and shows the
+// http://localhost:3210 — the page connects through AckerDBProvider and shows the
 // live connection state (stop/restart this process to watch it change).
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,7 +16,7 @@ import {
   query,
   reconcile,
   serve,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import index from "./index.html";
 
 const schema = defineSchema({
@@ -26,7 +26,7 @@ const schema = defineSchema({
   }),
 });
 
-const engine = new Engine(schema, join(mkdtempSync(join(tmpdir(), "dbzz-react-web-")), "data.db"));
+const engine = new Engine(schema, join(mkdtempSync(join(tmpdir(), "ackerdb-react-web-")), "data.db"));
 reconcile(engine);
 const registry = new Registry({
   notes: {
@@ -42,5 +42,5 @@ const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telem
 serve({ runtime, port: 3211 });
 
 Bun.serve({ port: 3210, routes: { "/": index }, development: true });
-console.log("dbzz server:  http://127.0.0.1:3211");
+console.log("AckerDB server:  http://127.0.0.1:3211");
 console.log("react fixture: http://localhost:3210");

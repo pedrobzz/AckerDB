@@ -1,4 +1,4 @@
-import type { CredentialVerifier } from "@dbzz/server";
+import type { CredentialVerifier } from "@ackerdb/server";
 import { verifyDemoCredential } from "./lib/token.ts";
 
 const verifier = {

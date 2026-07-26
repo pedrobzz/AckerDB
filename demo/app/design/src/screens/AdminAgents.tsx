@@ -443,7 +443,7 @@ export const AdminAgentsSecretReveal = artboard({
                 }}
                 data-cz-id="cz_ag2i"
               >
-                dbzz_owner_f2a9c7e41b0d8836a5140f7c9e2b6d33
+                ackerdb_owner_f2a9c7e41b0d8836a5140f7c9e2b6d33
               </code>
               <button
                 style={{

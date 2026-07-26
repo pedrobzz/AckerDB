@@ -20,12 +20,12 @@ The Start and Router version numbers intentionally differ. Start 1.168.28 direct
 
 ## Recommended runtime model for this demo
 
-The admin panel is an authenticated, realtime application whose authoritative data and mutations already live in the separate dbzz server. It has no SEO requirement. Use **TanStack Start SPA mode** so the document shell is generated once and the dbzz React provider runs only in the browser.
+The admin panel is an authenticated, realtime application whose authoritative data and mutations already live in the separate AckerDB server. It has no SEO requirement. Use **TanStack Start SPA mode** so the document shell is generated once and the AckerDB React provider runs only in the browser.
 
 This avoids two incorrect architectures:
 
-- Do not proxy ordinary dbzz reads/writes through TanStack server functions. That adds a second network and authorization path and breaks the direct realtime client model.
-- Do not make isomorphic route loaders create browser-only dbzz clients. TanStack loaders can execute in both environments.
+- Do not proxy ordinary AckerDB reads/writes through TanStack server functions. That adds a second network and authorization path and breaks the direct realtime client model.
+- Do not make isomorphic route loaders create browser-only AckerDB clients. TanStack loaders can execute in both environments.
 
 If a future public route needs SSR, keep SPA mode as an explicit product decision or switch deliberately to selective SSR and place only the browser-dependent provider subtree behind `ClientOnly`/`ssr: false`. Do not scatter environment checks through query code.
 
@@ -40,10 +40,10 @@ If a future public route needs SSR, keep SPA mode as an explicit product decisio
 
 ## Server/client boundary
 
-- `VITE_DBZZ_URL` is intentionally public client configuration. Never put secrets behind a `VITE_` prefix.
-- Keep authentication credentials in the dbzz client's intended credential transport; do not duplicate them in a TanStack cookie/session unless a real server-rendered flow requires it.
+- `VITE_ACKERDB_URL` is intentionally public client configuration. Never put secrets behind a `VITE_` prefix.
+- Keep authentication credentials in the AckerDB client's intended credential transport; do not duplicate them in a TanStack cookie/session unless a real server-rendered flow requires it.
 - Server functions are same-origin RPC endpoints for Start code, not a generic backend. Use them only for genuinely Start-owned server behavior.
-- Server routes are for raw/external HTTP endpoints; the demo already has a dbzz backend and should not add parallel APIs.
+- Server routes are for raw/external HTTP endpoints; the demo already has an AckerDB backend and should not add parallel APIs.
 - Custom `src/client.tsx` and `src/server.ts` are optional. Keep the defaults unless the app needs custom hydration, error boundaries, request context, or server rendering behavior.
 
 ## Build and serving choices

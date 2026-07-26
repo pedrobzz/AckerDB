@@ -8,13 +8,13 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { AppliedMigrationRow, SchemaSnapshot } from "@dbzz/server";
+import type { AppliedMigrationRow, SchemaSnapshot } from "@ackerdb/server";
 import type { AppConfig } from "../app/config.ts";
 
 export interface StoredState {
   /** The snapshot the database last committed — the pre-state new migrations sit on. */
   snapshot: SchemaSnapshot;
-  /** The `_dbzz_migrations` rows — the applied prefix, by positional (number, identity). */
+  /** The `_ackerdb_migrations` rows — the applied prefix, by positional (number, identity). */
   applied: AppliedMigrationRow[];
 }
 
@@ -23,7 +23,7 @@ export interface StoredState {
  * (number, identity) rows — not a bare COUNT — lets callers run the server's
  * exact prefix validation, so an edited applied migration cannot masquerade as
  * fully applied. `null` when there is no database yet (nothing to migrate —
- * `dbzz dev` initializes a fresh one), or when the file exists but holds no
+ * `acker dev` initializes a fresh one), or when the file exists but holds no
  * snapshot.
  */
 export function readStoredState(config: AppConfig): StoredState | null {
@@ -31,12 +31,12 @@ export function readStoredState(config: AppConfig): StoredState | null {
   if (!existsSync(path)) return null;
   const db = new Database(path, { readonly: true });
   try {
-    const row = db.query("SELECT value FROM _dbzz_meta WHERE key = 'schema'").get() as
+    const row = db.query("SELECT value FROM _ackerdb_meta WHERE key = 'schema'").get() as
       | { value: string }
       | null;
     if (row === null) return null;
     const applied = (
-      db.query("SELECT number, name, identity FROM _dbzz_migrations ORDER BY number ASC").all() as {
+      db.query("SELECT number, name, identity FROM _ackerdb_migrations ORDER BY number ASC").all() as {
         number: bigint;
         name: string;
         identity: string;

@@ -79,9 +79,9 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
       ], join(root, "packages", pkg));
       const tarball = output.split("\n").at(-1)?.trim();
       if (tarball === undefined || tarball === "") {
-        throw new Error(`bun pm pack did not report a tarball for @dbzz/${pkg}`);
+        throw new Error(`bun pm pack did not report a tarball for @ackerdb/${pkg}`);
       }
-      dependencies[`@dbzz/${pkg}`] = `file:${tarball}`;
+      dependencies[`@ackerdb/${pkg}`] = `file:${tarball}`;
     }
 
     writeFileSync(join(consumerDir, "package.json"), JSON.stringify({
@@ -90,7 +90,7 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
       type: "module",
       dependencies,
       devDependencies: { "@types/bun": bunTypesVersion },
-      // The release is intentionally unpublished: force transitive @dbzz exact
+      // The release is intentionally unpublished: force transitive @ackerdb exact
       // versions to the same six tarballs while preserving packed manifests.
       overrides: dependencies,
     }, null, 2));

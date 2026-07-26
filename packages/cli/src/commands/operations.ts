@@ -21,14 +21,14 @@ import {
   PRODUCTION_LIMITS,
   restoreVerifiedDatabase,
   Telemetry,
-  isDbzzError,
+  isAckerDBError,
   type BackupManifest,
   type DurabilityPolicy,
   type EngineStatus,
   type TelemetryOperation,
   type TelemetryOutcome,
   type TelemetryTraceContext,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { importApp } from "../app/manifest.ts";
 import type { AppConfig } from "../app/config.ts";
 
@@ -42,7 +42,7 @@ interface OperationTelemetryDetails {
 }
 
 function operationOutcome(error: unknown): TelemetryOutcome {
-  if (isDbzzError(error)) return error.code;
+  if (isAckerDBError(error)) return error.code;
   if (error instanceof CorruptDatabaseError || error instanceof IncompatibleDatabaseError) {
     return "validation";
   }
@@ -178,7 +178,7 @@ export function backupManifestPath(artifact: string): string {
 
 function requireDatabase(path: string): void {
   if (!existsSync(path) || !statSync(path).isFile() || statSync(path).size === 0) {
-    throw new Error(`DBZZ database not found at ${path}`);
+    throw new Error(`AckerDB database not found at ${path}`);
   }
 }
 
@@ -317,7 +317,7 @@ function publishManifest(path: string, manifest: BackupManifest): void {
   }
 }
 
-/** Open and inspect an existing DBZZ database without starting the app server. */
+/** Open and inspect an existing AckerDB database without starting the app server. */
 export async function inspectDatabase(config: AppConfig): Promise<StatusReport> {
   const path = databasePath(config);
   requireDatabase(path);
@@ -443,7 +443,7 @@ export async function verifyBackupArtifact(
   artifact: string,
   manifest: BackupManifest,
 ): Promise<void> {
-  const temporaryDir = mkdtempSync(join(tmpdir(), "dbzz-verify-"));
+  const temporaryDir = mkdtempSync(join(tmpdir(), "ackerdb-verify-"));
   const restored = join(temporaryDir, "data.db");
   let failed = false;
   let failure: unknown;

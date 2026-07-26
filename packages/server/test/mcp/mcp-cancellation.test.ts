@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode, parseCallResponse } from "@dbzz/core";
+import { decode, parseCallResponse } from "@ackerdb/core";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
@@ -258,7 +258,7 @@ const modules = {
 };
 
 beforeEach(() => {
-  directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-cancellation-"));
+  directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-cancellation-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   pauseAfterCommit = false;

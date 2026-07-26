@@ -1,14 +1,14 @@
 {
   "expo": {
     "name": "Savoria",
-    "slug": "dbzz-savoria",
+    "slug": "ackerdb-savoria",
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "savoria",
     "userInterfaceStyle": "light",
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "dev.dbzz.savoria",
+      "bundleIdentifier": "dev.ackerdb.savoria",
       "infoPlist": {
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
@@ -16,7 +16,7 @@
       }
     },
     "android": {
-      "package": "dev.dbzz.savoria"
+      "package": "dev.ackerdb.savoria"
     },
     "plugins": [
       "expo-router",

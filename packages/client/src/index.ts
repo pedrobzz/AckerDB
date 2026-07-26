@@ -1,5 +1,5 @@
 export * from "./client.ts";
-export { anyApi, getRef, stableEncode } from "@dbzz/core";
+export { anyApi, getRef, stableEncode } from "@ackerdb/core";
 export type {
   ApiFromModules,
   AuthenticationDescriptor,
@@ -11,4 +11,4 @@ export type {
   ProcedureRef,
   QueryRef,
   SseRef,
-} from "@dbzz/core";
+} from "@ackerdb/core";

@@ -3,15 +3,15 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ClientMessage } from "@dbzz/core";
+import type { ClientMessage } from "@ackerdb/core";
 import {
-  DbzzClient,
+  AckerDBClient,
   anyApi,
   type ClientResult,
-  type DbzzWebSocket,
+  type AckerDBWebSocket,
   type MutationRef,
   type QueryRef,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -24,10 +24,10 @@ import {
   query,
   reconcile,
   serve,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { DbzzProvider, useConnectionState, useMutation } from "@dbzz/client-react";
+import { AckerDBProvider, useConnectionState, useMutation } from "@ackerdb/client-react";
 import { FrameProxy, assertTcpPortReleased } from "../../server/test/support/frame-proxy.ts";
 
 const WAIT_DEADLINE_MS = 5_000;
@@ -69,12 +69,12 @@ const sendRef = anyApi.messages.send as MutationRef<
 
 interface App {
   readonly proxy: FrameProxy;
-  readonly observer: DbzzClient;
+  readonly observer: AckerDBClient;
   close(): Promise<void>;
 }
 
 async function createApp(): Promise<App> {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-react-mutation-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-mutation-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const registry = new Registry({
@@ -98,10 +98,10 @@ async function createApp(): Promise<App> {
   const runtime = new Runtime({ engine, registry, limits: PRODUCTION_LIMITS, telemetry: false });
   const server = serve({ runtime, port: 0 });
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
-  const observer = new DbzzClient({
+  const observer = new AckerDBClient({
     url: `http://127.0.0.1:${server.port}`,
     credential: { kind: "anonymous" },
-    createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+    createWebSocket: (url) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
   });
   return {
     proxy,
@@ -153,7 +153,7 @@ async function mount(app: App): Promise<Mounted> {
   const root = createRoot(container);
   root.render(
     <StrictMode>
-      <DbzzProvider
+      <AckerDBProvider
         config={{
           url: app.proxy.url,
           credential: { kind: "anonymous" },
@@ -161,11 +161,11 @@ async function mount(app: App): Promise<Mounted> {
           // identity, not backoff policy.
           reconnect: { baseDelayMs: 1, maxDelayMs: 1, stableOpenMs: 60_000 },
           random: () => 0,
-          createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+          createWebSocket: (url) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
         }}
       >
         <MutationHarness />
-      </DbzzProvider>
+      </AckerDBProvider>
     </StrictMode>,
   );
   const deadline = Date.now() + WAIT_DEADLINE_MS;
@@ -199,7 +199,7 @@ afterAll(async () => {
   await app.close();
 });
 
-describe("useMutation against a real dbzz server", () => {
+describe("useMutation against a real ackerdb server", () => {
   test("runs a real mutation through the rendered hook", async () => {
     const mounted = await mount(app);
     const id = mustOk(await withDeadline(
@@ -290,15 +290,15 @@ describe("useMutation against a real dbzz server", () => {
     const root = createRoot(container);
     root.render(
       <StrictMode>
-        <DbzzProvider
+        <AckerDBProvider
           config={{
             url: app.proxy.url,
             credential: { kind: "anonymous" },
-            createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+            createWebSocket: (url) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
           }}
         >
           <SendOnMount />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
     const deadline = Date.now() + WAIT_DEADLINE_MS;

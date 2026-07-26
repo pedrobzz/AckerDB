@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ts from "typescript";
-import { Registry } from "@dbzz/server";
-import { importFunctionModules, loadConfig, runCodegen } from "@dbzz/cli";
+import { Registry } from "@ackerdb/server";
+import { importFunctionModules, loadConfig, runCodegen } from "@ackerdb/cli";
 import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
 
 const REPO = new URL("../../../..", import.meta.url).pathname;
@@ -136,7 +136,7 @@ describe("codegen", () => {
     const dir = makeFixture({
       "app.ts": FIXTURE_APP,
       "functions/agent.ts": `
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import { createMcp, mcpTool } from "../_generated/server.ts";
 
 export const echo = mcpTool({
@@ -173,7 +173,7 @@ export const agentMcp = createMcp({
   test("derives exact local Plugin capabilities without exposing them remotely or to MCP", async () => {
     const dir = makeFixture({
       "app.ts": `
-import { defineApp, definePlugin, defineSchema, v } from "@dbzz/server";
+import { defineApp, definePlugin, defineSchema, v } from "@ackerdb/server";
 
 const cachePlugin = definePlugin({
   id: "@fixture/cache",
@@ -242,7 +242,7 @@ export default defineApp({
 });
 `,
       "functions/surface.ts": `
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import {
   mcpTool,
   mutation,
@@ -391,12 +391,12 @@ api.surface.echo;
       'export type TypingEventArgs = EventArgsOf<Schema, "typingEvents">;',
     );
     expect(types).toContain("export type { Identity };");
-    // no runtime import of @dbzz/server anywhere in client-facing files
+    // no runtime import of @ackerdb/server anywhere in client-facing files
     const api = readFileSync(join(config.generatedDir, "api.ts"), "utf8");
     for (const file of [types, api]) {
       for (const line of file.split("\n")) {
         if (line.startsWith("import ") && !line.startsWith("import type")) {
-          expect(line).toContain("@dbzz/core");
+          expect(line).toContain("@ackerdb/core");
         }
       }
     }
@@ -414,7 +414,7 @@ export default {};
 `,
     );
     writeFileSync(
-      join(dir, ".dbzz.config.json"),
+      join(dir, ".ackerdb.config.json"),
       JSON.stringify({ credentialVerifier: "./credential-verifier.ts" }),
     );
 
@@ -429,7 +429,7 @@ export default {};
 import { writeFileSync } from "node:fs";
 writeFileSync(new URL("../../function-imported", import.meta.url), "imported");
 `,
-      ".dbzz.config.json": JSON.stringify({ app: "./backend.ts" }),
+      ".ackerdb.config.json": JSON.stringify({ app: "./backend.ts" }),
     });
     dirs.push(dir);
 

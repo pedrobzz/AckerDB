@@ -1,27 +1,27 @@
-// Compile-time contract for the public @dbzz/client-react surface. This file
+// Compile-time contract for the public @ackerdb/client-react surface. This file
 // is typechecked (see the package tsconfig) and never executed.
-import type { SseRef } from "@dbzz/client";
+import type { SseRef } from "@ackerdb/client";
 import {
-  DbzzProvider,
+  AckerDBProvider,
   useConnectionState,
   useEvent,
   useSseProcedure,
-  type DbzzConnectionState,
-  type DbzzLiveEvent,
-  type DbzzProviderConfig,
+  type AckerDBConnectionState,
+  type AckerDBLiveEvent,
+  type AckerDBProviderConfig,
   type EventRef,
   type SseProcedureCall,
-} from "@dbzz/client-react";
+} from "@ackerdb/client-react";
 import type { ReactElement, ReactNode } from "react";
 
 // --- provider configuration -------------------------------------------------
 
-const config: DbzzProviderConfig = {
+const config: AckerDBProviderConfig = {
   url: "http://127.0.0.1:3211",
   credential: { kind: "anonymous" },
 };
 
-const fullConfig: DbzzProviderConfig = {
+const fullConfig: AckerDBProviderConfig = {
   url: "http://127.0.0.1:3211",
   credential: { kind: "bearer", token: "token-a" },
   clientSessionId: "session-1",
@@ -30,15 +30,15 @@ const fullConfig: DbzzProviderConfig = {
 };
 
 // @ts-expect-error the server URL is required
-const missingUrl: DbzzProviderConfig = { credential: { kind: "anonymous" } };
+const missingUrl: AckerDBProviderConfig = { credential: { kind: "anonymous" } };
 
 // @ts-expect-error an explicit credential is required
-const missingCredential: DbzzProviderConfig = { url: "http://127.0.0.1:3211" };
+const missingCredential: AckerDBProviderConfig = { url: "http://127.0.0.1:3211" };
 
 // @ts-expect-error bearer credentials carry a token
-const tokenless: DbzzProviderConfig = { url: "http://x", credential: { kind: "bearer" } };
+const tokenless: AckerDBProviderConfig = { url: "http://x", credential: { kind: "bearer" } };
 
-const badReconnect: DbzzProviderConfig = {
+const badReconnect: AckerDBProviderConfig = {
   url: "http://x",
   credential: { kind: "anonymous" },
   // @ts-expect-error reconnect options are numbers
@@ -47,24 +47,24 @@ const badReconnect: DbzzProviderConfig = {
 
 // --- provider element and React 19 types ------------------------------------
 
-const bare: ReactElement = <DbzzProvider config={config} />;
+const bare: ReactElement = <AckerDBProvider config={config} />;
 const withChildren: ReactElement = (
-  <DbzzProvider config={fullConfig}>
+  <AckerDBProvider config={fullConfig}>
     <div />
     {"text"}
-  </DbzzProvider>
+  </AckerDBProvider>
 );
 
 // @ts-expect-error config is required
-const missingConfig = <DbzzProvider />;
+const missingConfig = <AckerDBProvider />;
 
 // @ts-expect-error the provider owns the client; no imperative client prop exists
-const clientProp = <DbzzProvider config={config} client={null} />;
+const clientProp = <AckerDBProvider config={config} client={null} />;
 
 // --- connection-state exhaustiveness ----------------------------------------
 
 function Consumer(): ReactNode {
-  const state: DbzzConnectionState = useConnectionState();
+  const state: AckerDBConnectionState = useConnectionState();
   return describePhase(state);
 }
 
@@ -72,7 +72,7 @@ function assertNever(value: never): never {
   throw new Error(String(value));
 }
 
-function describePhase(state: DbzzConnectionState): string {
+function describePhase(state: AckerDBConnectionState): string {
   switch (state.phase) {
     case "connecting":
       return "connecting";
@@ -95,7 +95,7 @@ function describePhase(state: DbzzConnectionState): string {
   }
 }
 
-function missesNativePhases(state: DbzzConnectionState): string {
+function missesNativePhases(state: AckerDBConnectionState): string {
   switch (state.phase) {
     case "connecting":
     case "ready":
@@ -110,11 +110,11 @@ function missesNativePhases(state: DbzzConnectionState): string {
   }
 }
 
-declare const connecting: Extract<DbzzConnectionState, { phase: "connecting" }>;
+declare const connecting: Extract<AckerDBConnectionState, { phase: "connecting" }>;
 // @ts-expect-error only the ready state carries an authentication
 connecting.authentication;
 
-declare const ready: Extract<DbzzConnectionState, { phase: "ready" }>;
+declare const ready: Extract<AckerDBConnectionState, { phase: "ready" }>;
 // @ts-expect-error the ready state carries no error
 ready.error;
 
@@ -152,7 +152,7 @@ function MistypedEventConsumers(): ReactNode {
   // @ts-expect-error arguments are inferred from the event reference
   useEvent(pingEvents, { min: "low" }, () => {});
   useEvent(pingEvents, { min: 1 }, (event) => {
-    // @ts-expect-error dbzz event streams are append-only: the protocol
+    // @ts-expect-error ackerdb event streams are append-only: the protocol
     // carries no insert/update/delete kinds to compare against
     void (event.kind === "delete");
     if (event.kind === "row") {
@@ -167,7 +167,7 @@ function MistypedEventConsumers(): ReactNode {
   return null;
 }
 
-function ignoresGap(event: DbzzLiveEvent<{ n: number }>): string {
+function ignoresGap(event: AckerDBLiveEvent<{ n: number }>): string {
   switch (event.kind) {
     case "row":
     case "reset":
@@ -202,7 +202,7 @@ function StreamConsumer(): ReactNode {
 
 // --- forbidden imperative escape hatches ------------------------------------
 
-type PublicExports = keyof typeof import("@dbzz/client-react");
+type PublicExports = keyof typeof import("@ackerdb/client-react");
 type AssertNever<T extends never> = T;
 
 // The value surface is exactly the provider and its hooks: no client getter,
@@ -210,7 +210,7 @@ type AssertNever<T extends never> = T;
 type UnexpectedExports = AssertNever<
   Exclude<
     PublicExports,
-    | "DbzzProvider"
+    | "AckerDBProvider"
     | "useAuthentication"
     | "useConnectionState"
     | "useEvent"
@@ -222,7 +222,7 @@ type UnexpectedExports = AssertNever<
   >
 >;
 type NoImperativeEscape = AssertNever<
-  Extract<PublicExports, "useDbzzClient" | "useClient" | "useClose" | "close" | "DbzzClient">
+  Extract<PublicExports, "useAckerDBClient" | "useClient" | "useClose" | "close" | "AckerDBClient">
 >;
 
 export {

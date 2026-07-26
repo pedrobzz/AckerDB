@@ -22,7 +22,7 @@ import {
   type Identity,
   type SubscriptionCursor,
   type TransitionMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 
 const mutationRequestId = "01890a5d-ac96-774b-b4c0-123456789abc";
 const cursor = (commitVersion: bigint): SubscriptionCursor => ({

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import type { Subprocess } from "bun";
-import { DbzzClient } from "@dbzz/client";
+import { AckerDBClient } from "@ackerdb/client";
 import {
   defineSchema,
   defineTable,
@@ -11,14 +11,14 @@ import {
   indexSqlName,
   migrationFingerprint,
   snapshotOf,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { makeFixture } from "../support/fixture.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 60_000;
 const STEP_TIMEOUT_MS = 15_000;
 
-const APP_V1 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V1 = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const schema = defineSchema({
   items: defineTable({
@@ -30,7 +30,7 @@ const schema = defineSchema({
 export default defineApp({ schema });
 `;
 
-const APP_V2 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V2 = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const schema = defineSchema({
   items: defineTable({
@@ -43,7 +43,7 @@ export default defineApp({ schema });
 `;
 
 // A third state so numbering can increment on a fully-applied chain (string -> float).
-const APP_V3 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V3 = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const schema = defineSchema({
   items: defineTable({
@@ -56,7 +56,7 @@ export default defineApp({ schema });
 `;
 
 // v2 plus a required column — the schema "moving on" after a v2 ledger was consented to.
-const APP_V2_MOVED = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V2_MOVED = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const schema = defineSchema({
   items: defineTable({
@@ -70,7 +70,7 @@ export default defineApp({ schema });
 `;
 
 // v1 plus a UNIQUE index over `label` — an optimistic change whose stored rows may already collide.
-const APP_UNIQUE = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const APP_UNIQUE = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const schema = defineSchema({
   items: defineTable({
@@ -82,7 +82,7 @@ const schema = defineSchema({
 export default defineApp({ schema });
 `;
 
-const ITEMS_FUNCTIONS = `import { v } from "@dbzz/server";
+const ITEMS_FUNCTIONS = `import { v } from "@ackerdb/server";
 import { mutation, query } from "../_generated/server.ts";
 
 export const add = mutation({
@@ -107,7 +107,7 @@ type CliProcess = Subprocess<"ignore", "pipe", "pipe">;
 type Item = { id: bigint; label: string; count: unknown };
 
 const dirs: string[] = [];
-const clients: DbzzClient[] = [];
+const clients: AckerDBClient[] = [];
 const children = new Set<CliProcess>();
 
 afterEach(async () => {
@@ -188,7 +188,7 @@ async function runCli(args: string[]): Promise<RanCli> {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, DBZZ_DURABILITY: "production", DBZZ_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(),
@@ -202,7 +202,7 @@ function spawnServer(dir: string): { child: CliProcess; waitReady(): Promise<voi
   const child = Bun.spawn([process.execPath, CLI, "start", dir], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, DBZZ_DURABILITY: "production", DBZZ_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
   }) as CliProcess;
   children.add(child);
   let stdout = "";
@@ -235,8 +235,8 @@ function spawnServer(dir: string): { child: CliProcess; waitReady(): Promise<voi
   };
 }
 
-function makeClient(port: number, session: string): DbzzClient {
-  const client = new DbzzClient({
+function makeClient(port: number, session: string): AckerDBClient {
+  const client = new AckerDBClient({
     url: `http://127.0.0.1:${port}`,
     credential: { kind: "anonymous" },
     clientSessionId: session,
@@ -265,13 +265,13 @@ async function seedV1(dir: string, port: number): Promise<void> {
   await stopServer(server);
 }
 
-describe("dbzz generate", () => {
+describe("acker generate", () => {
   test("writes the three artifacts for a type change, numbered 0001, and applies once filled", async () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -279,7 +279,7 @@ describe("dbzz generate", () => {
     writeFileSync(join(dir, "app.ts"), APP_V2);
 
     // Non-TTY generate: no renames, just the scaffold for the count type change.
-    const generated = await withTimeout(runCli(["generate", "", dir]), "dbzz generate");
+    const generated = await withTimeout(runCli(["generate", "", dir]), "acker generate");
     expect(generated.code).toBe(0);
 
     const scaffold = join(dir, "migrations", "0001_items_count_retype.ts");
@@ -325,7 +325,7 @@ describe("dbzz generate", () => {
 
     // With the chain fully applied, a second change generates 0002 (numbering increments).
     writeFileSync(join(dir, "app.ts"), APP_V3);
-    const second = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (second)");
+    const second = await withTimeout(runCli(["generate", "", dir]), "acker generate (second)");
     expect(second.code).toBe(0);
     expect(existsSync(join(dir, "migrations", "0002_items_count_retype.ts"))).toBe(true);
   }, TEST_TIMEOUT_MS);
@@ -335,7 +335,7 @@ describe("dbzz generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -355,7 +355,7 @@ describe("dbzz generate", () => {
     // Add the unique index; the optimistic change refuses because stored rows collide.
     writeFileSync(join(dir, "app.ts"), APP_UNIQUE);
 
-    const generated = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (dedupe)");
+    const generated = await withTimeout(runCli(["generate", "", dir]), "acker generate (dedupe)");
     expect(generated.code).toBe(0);
     // Before the fix computePlan discarded the optimistic bucket and reported clean.
     expect(generated.stdout).not.toContain("nothing to generate");
@@ -399,7 +399,7 @@ describe("dbzz generate", () => {
     await stopServer(applied);
 
     // The physical index is now UNIQUE — the final enforcer the migration satisfied.
-    const db = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
+    const db = new Database(join(dir, ".ackerdb", "data.db"), { readonly: true });
     try {
       const row = db
         .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
@@ -415,7 +415,7 @@ describe("dbzz generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -426,14 +426,14 @@ describe("dbzz generate", () => {
     mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
     writeFileSync(
       join(dir, "migrations", "0001_count_to_string.ts"),
-      `import { defineMigration } from "@dbzz/server";\nexport default defineMigration({ tables: { items: (row) => ({ ...row, count: String(row.count) }) } });\n`,
+      `import { defineMigration } from "@ackerdb/server";\nexport default defineMigration({ tables: { items: (row) => ({ ...row, count: String(row.count) }) } });\n`,
     );
     writeFileSync(
       join(dir, "migrations", "meta", "0001_count_to_string.json"),
       JSON.stringify({ number: 1, name: "count_to_string", fingerprint: migrationFingerprint(V2), pre: V1, target: V2 }),
     );
 
-    const result = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (pending)");
+    const result = await withTimeout(runCli(["generate", "", dir]), "acker generate (pending)");
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("pending migration");
   }, TEST_TIMEOUT_MS);
@@ -443,7 +443,7 @@ describe("dbzz generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     await seedV1(dir, port);
@@ -489,13 +489,13 @@ describe("dbzz generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     await seedV1(dir, port);
 
     writeFileSync(join(dir, "app.ts"), APP_V2);
-    const first = await withTimeout(runCli(["generate", "count_to_string", dir]), "dbzz generate (scaffold)");
+    const first = await withTimeout(runCli(["generate", "count_to_string", dir]), "acker generate (scaffold)");
     expect(first.code).toBe(0);
     // Invocation is the consent, but the ledger is still the record of what it answers.
     expect(first.stdout).toContain("the change ledger");
@@ -503,7 +503,7 @@ describe("dbzz generate", () => {
 
     // The schema moves on with the scaffold still unapplied.
     writeFileSync(join(dir, "app.ts"), APP_V2_MOVED);
-    const second = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (stale pending)");
+    const second = await withTimeout(runCli(["generate", "", dir]), "acker generate (stale pending)");
     expect(second.code).not.toBe(0);
     expect(second.stderr).toContain("pending migration");
     expect(second.stderr).toContain("delete its files to re-derive");
@@ -515,7 +515,7 @@ describe("dbzz generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     await seedV1(dir, port);
@@ -525,7 +525,7 @@ describe("dbzz generate", () => {
     mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
     writeFileSync(
       join(dir, "migrations", "0001_count_to_string.ts"),
-      `import { defineMigration } from "@dbzz/server";\nexport default defineMigration({ tables: { items: (row) => ({ ...row, count: String(row.count) }) } });\n`,
+      `import { defineMigration } from "@ackerdb/server";\nexport default defineMigration({ tables: { items: (row) => ({ ...row, count: String(row.count) }) } });\n`,
     );
     writeFileSync(
       join(dir, "migrations", "meta", "0001_count_to_string.json"),
@@ -536,10 +536,10 @@ describe("dbzz generate", () => {
     expect(held.code).not.toBe(0);
     expect(held.stderr).toContain("held for confirmation");
 
-    const db = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
+    const db = new Database(join(dir, ".ackerdb", "data.db"), { readonly: true });
     try {
       // Nothing applied, nothing transformed: rows still hold numbers.
-      expect(Number((db.query("SELECT COUNT(*) AS n FROM _dbzz_migrations").get() as { n: number | bigint }).n)).toBe(0);
+      expect(Number((db.query("SELECT COUNT(*) AS n FROM _ackerdb_migrations").get() as { n: number | bigint }).n)).toBe(0);
       expect((db.query('SELECT "count" FROM "items" WHERE "id" = 1').get() as { count: number }).count).toBe(5);
     } finally {
       db.close();
@@ -550,11 +550,11 @@ describe("dbzz generate", () => {
     const dir = makeFixture({
       "app.ts": APP_V2,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port: 3999 }),
+      ".ackerdb.config.json": JSON.stringify({ port: 3999 }),
     });
     dirs.push(dir);
 
-    const result = await withTimeout(runCli(["generate", "", dir]), "dbzz generate (no db)");
+    const result = await withTimeout(runCli(["generate", "", dir]), "acker generate (no db)");
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain("no database");
   }, TEST_TIMEOUT_MS);

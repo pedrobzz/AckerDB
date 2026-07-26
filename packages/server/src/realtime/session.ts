@@ -27,7 +27,7 @@ import {
   type TransitionMessage,
   type UnsubscribeMessage,
   type WelcomeMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   verifyClientCredential,
   type ClientPrincipal,
@@ -49,7 +49,7 @@ import {
   transportSource,
   type TransportSource,
 } from "../runtime/caller.ts";
-import { DbzzError, isDbzzError } from "../shared/errors.ts";
+import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../runtime/limits.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import type { Identity } from "../validation/v.ts";
@@ -62,7 +62,7 @@ export type SessionApplicationMessage =
   | MutationOkMessage
   | ApplicationErrorMessage
   | ErrorMessage;
-const RUNTIME_PUBLICATION_BRAND: unique symbol = Symbol("dbzz.runtimePublication");
+const RUNTIME_PUBLICATION_BRAND: unique symbol = Symbol("ackerdb.runtimePublication");
 const runtimePublications = new WeakSet<object>();
 
 export interface RuntimePublication {
@@ -87,7 +87,7 @@ export function prepareRuntimePublication(message: SessionApplicationMessage): R
 
 export function assertRuntimePublication(publication: RuntimePublication): void {
   if (!runtimePublications.has(publication)) {
-    throw new TypeError("application publication was not prepared by dbzz");
+    throw new TypeError("application publication was not prepared by ackerdb");
   }
 }
 /**
@@ -144,7 +144,7 @@ export type SessionAuthObserver = (
   input: SessionAuthAttemptInput,
 ) => SessionAuthAttemptObservation | undefined;
 
-const SESSION_AUTH_OBSERVER: unique symbol = Symbol("dbzz.sessionAuthObserver");
+const SESSION_AUTH_OBSERVER: unique symbol = Symbol("ackerdb.sessionAuthObserver");
 
 interface InternalSessionOptions {
   readonly [SESSION_AUTH_OBSERVER]?: SessionAuthObserver;
@@ -276,32 +276,32 @@ const SYSTEM_CLOCK: SessionClock = Object.freeze({
   clearTimeout: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 });
 
-function internalError(cause: unknown): DbzzError {
-  return new DbzzError("internal", "internal error", { cause });
+function internalError(cause: unknown): AckerDBError {
+  return new AckerDBError("internal", "internal error", { cause });
 }
 
-function verifierError(cause: unknown): DbzzError {
-  return isDbzzError(cause)
+function verifierError(cause: unknown): AckerDBError {
+  return isAckerDBError(cause)
     ? cause
-    : new DbzzError("auth_unavailable", "credential verification is temporarily unavailable", {
+    : new AckerDBError("auth_unavailable", "credential verification is temporarily unavailable", {
         retryable: true,
         cause,
       });
 }
 
-function operationError(cause: unknown): DbzzError {
-  return isDbzzError(cause) ? cause : internalError(cause);
+function operationError(cause: unknown): AckerDBError {
+  return isAckerDBError(cause) ? cause : internalError(cause);
 }
 
-function protocolError(error: ProtocolError): DbzzError {
-  return new DbzzError(error.code, error.message, { cause: error });
+function protocolError(error: ProtocolError): AckerDBError {
+  return new AckerDBError(error.code, error.message, { cause: error });
 }
 
-function authStale(): DbzzError {
-  return new DbzzError("auth_stale", "authentication state changed");
+function authStale(): AckerDBError {
+  return new AckerDBError("auth_stale", "authentication state changed");
 }
 
-function aborted(controller: AbortController, reason: DbzzError): void {
+function aborted(controller: AbortController, reason: AckerDBError): void {
   if (!controller.signal.aborted) controller.abort(reason);
 }
 
@@ -385,17 +385,17 @@ export class Session {
     } else if (raw instanceof Uint8Array) {
       bytes = raw.byteLength;
     } else {
-      return this.rejectFrame(new DbzzError("malformed", "client frame must be text or binary"));
+      return this.rejectFrame(new AckerDBError("malformed", "client frame must be text or binary"));
     }
     if (bytes > this.maxFrameBytes) {
-      return this.rejectFrame(new DbzzError("overloaded", "client frame exceeds maxFrameBytes", {
+      return this.rejectFrame(new AckerDBError("overloaded", "client frame exceeds maxFrameBytes", {
         retryable: true,
         retryAfterMs: 0,
         resource: "connection",
       }));
     }
     if (bytes > this.maxRequestBytes) {
-      return this.rejectFrame(new DbzzError("overloaded", "client request exceeds maxRequestBytes", {
+      return this.rejectFrame(new AckerDBError("overloaded", "client request exceeds maxRequestBytes", {
         resource: "operation",
       }));
     }
@@ -404,7 +404,7 @@ export class Session {
     try {
       text = typeof raw === "string" ? raw : STRICT_UTF8.decode(raw);
     } catch (cause) {
-      return this.rejectFrame(new DbzzError("malformed", "client frame is not valid UTF-8", { cause }));
+      return this.rejectFrame(new AckerDBError("malformed", "client frame is not valid UTF-8", { cause }));
     }
     let message: ClientMessage;
     try {
@@ -412,7 +412,7 @@ export class Session {
     } catch (cause) {
       const error = cause instanceof ProtocolError
         ? protocolError(cause)
-        : new DbzzError("malformed", "malformed client frame", { cause });
+        : new AckerDBError("malformed", "malformed client frame", { cause });
       return this.rejectFrame(error);
     }
 
@@ -428,7 +428,7 @@ export class Session {
     return result;
   }
 
-  private rejectFrame(error: DbzzError): Promise<never> {
+  private rejectFrame(error: AckerDBError): Promise<never> {
     const rejected = Promise.reject(error);
     // Keep the transport outcome owned by Session even when its caller does
     // not observe the returned rejection.
@@ -437,7 +437,7 @@ export class Session {
     return rejected;
   }
 
-  close(error: DbzzError = new DbzzError("draining", "session closed")): Promise<void> {
+  close(error: AckerDBError = new AckerDBError("draining", "session closed")): Promise<void> {
     return this.terminate(error);
   }
 
@@ -446,7 +446,7 @@ export class Session {
 
     if (this.phase === "awaiting_hello") {
       if (message.t !== "hello") {
-        void this.terminate(new DbzzError("malformed", "hello must be the first frame"));
+        void this.terminate(new AckerDBError("malformed", "hello must be the first frame"));
         return;
       }
       this.phase = "opening";
@@ -454,11 +454,11 @@ export class Session {
       return this.opening;
     }
     if (this.phase === "opening") {
-      void this.terminate(new DbzzError("malformed", "welcome must precede further client frames"));
+      void this.terminate(new AckerDBError("malformed", "welcome must precede further client frames"));
       return;
     }
     if (message.t === "hello") {
-      void this.terminate(new DbzzError("malformed", "hello has already been received"));
+      void this.terminate(new AckerDBError("malformed", "hello has already been received"));
       return;
     }
 
@@ -491,7 +491,7 @@ export class Session {
     if (controller !== undefined) {
       aborted(
         controller,
-        new DbzzError("unavailable", "procedure request was canceled", {
+        new AckerDBError("unavailable", "procedure request was canceled", {
           resource: "operation",
         }),
       );
@@ -507,7 +507,7 @@ export class Session {
     if (this.activeProcedures.has(message.id)) {
       await this.sendControlError(
         message.id,
-        new DbzzError("conflict", "procedure request ID is already active"),
+        new AckerDBError("conflict", "procedure request ID is already active"),
       );
       return;
     }
@@ -636,7 +636,7 @@ export class Session {
   private queueAuthCompletion(
     message: ClientAuthMessage,
     controller: AbortController,
-    result: ClientPrincipal | DbzzError,
+    result: ClientPrincipal | AckerDBError,
   ): void {
     void this.enqueueAuth(() => this.completeAuth(message, controller, result));
   }
@@ -644,10 +644,10 @@ export class Session {
   private async completeAuth(
     message: ClientAuthMessage,
     transitionController: AbortController,
-    result: ClientPrincipal | DbzzError,
+    result: ClientPrincipal | AckerDBError,
   ): Promise<void> {
     if (this.isClosed() || message.attemptId !== this.latestAttemptId) return;
-    if (isDbzzError(result)) {
+    if (isAckerDBError(result)) {
       void this.terminate(result);
       return;
     }
@@ -656,7 +656,7 @@ export class Session {
       return;
     }
     if (result.kind !== "anonymous" && result.expiresAt <= this.readNow()) {
-      void this.terminate(new DbzzError("unauthenticated", "credential expired"));
+      void this.terminate(new AckerDBError("unauthenticated", "credential expired"));
       return;
     }
     if (this.authEpoch >= Number.MAX_SAFE_INTEGER) {
@@ -808,7 +808,7 @@ export class Session {
     }
   }
 
-  private sendControlError(id: number, error: DbzzError): Promise<void> {
+  private sendControlError(id: number, error: AckerDBError): Promise<void> {
     return this.sendControl({
       v: PROTOCOL_VERSION,
       t: "err",
@@ -900,7 +900,7 @@ export class Session {
       if (this.phase === "closed" || this.authEpoch !== authEpoch || this.principal !== principal) return;
       const remaining = principal.expiresAt - this.readNow();
       if (remaining <= 0) {
-        void this.terminate(new DbzzError("unauthenticated", "credential expired"));
+        void this.terminate(new AckerDBError("unauthenticated", "credential expired"));
         return;
       }
       this.expiryTimer = this.clock.setTimeout(schedule, Math.min(remaining, MAX_TIMER_DELAY_MS));
@@ -915,7 +915,7 @@ export class Session {
   }
 
   private onInvalidation(invalidation: PrincipalInvalidation): void {
-    const error = new DbzzError("unauthenticated", "credential revoked");
+    const error = new AckerDBError("unauthenticated", "credential revoked");
     if (this.pendingAuthController !== null) {
       aborted(this.pendingAuthController, error);
       void this.terminate(error);
@@ -937,11 +937,11 @@ export class Session {
     void this.terminate(error);
   }
 
-  private abortActiveProcedures(error: DbzzError): void {
+  private abortActiveProcedures(error: AckerDBError): void {
     for (const controller of this.activeProcedures.values()) aborted(controller, error);
   }
 
-  private terminate(error: DbzzError): Promise<void> {
+  private terminate(error: AckerDBError): Promise<void> {
     if (this.closePromise !== null) return this.closePromise;
     const context = this.context;
     const outcome = outcomeFromError(error);

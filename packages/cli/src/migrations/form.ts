@@ -12,7 +12,7 @@
  * runtime expects, plus the drops the developer explicitly chose to keep (which
  * the scaffold acknowledges anyway — this list is for the summary line).
  */
-import type { Renames } from "@dbzz/server";
+import type { Renames } from "@ackerdb/server";
 import type { CandidateGroup, RenameCandidates } from "./plan.ts";
 
 export type Ask = (prompt: string) => Promise<string>;

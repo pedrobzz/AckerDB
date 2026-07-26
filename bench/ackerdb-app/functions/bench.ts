@@ -1,4 +1,4 @@
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import { mutation, procedure, query } from "../_generated/server.ts";
 
 const DOCUMENT_PARTITIONS = 64;

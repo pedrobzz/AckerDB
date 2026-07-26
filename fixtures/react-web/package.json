@@ -1,10 +1,10 @@
 {
-  "name": "dbzz-fixture-react-web",
+  "name": "ackerdb-fixture-react-web",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@dbzz/client-react": "workspace:*",
-    "@dbzz/server": "workspace:*",
+    "@ackerdb/client-react": "workspace:*",
+    "@ackerdb/server": "workspace:*",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },

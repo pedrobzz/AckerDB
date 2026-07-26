@@ -1,4 +1,4 @@
-import type { MenuItem } from "@demo/dbzz-codegen/types";
+import type { MenuItem } from "@demo/ackerdb-codegen/types";
 import {
   createContext,
   useCallback,

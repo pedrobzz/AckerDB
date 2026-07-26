@@ -1,5 +1,5 @@
 import { AppState } from "react-native";
-import type { DbzzLifecycleSource } from "@dbzz/client";
+import type { AckerDBLifecycleSource } from "@ackerdb/client";
 
 /**
  * The Expo lifecycle source: exactly one React Native `AppState` listener per
@@ -14,7 +14,7 @@ import type { DbzzLifecycleSource } from "@dbzz/client";
  * churn it. Platform emissions are forwarded verbatim: the client coalesces
  * duplicate suspend/resume notifications, so this observer stays stateless.
  */
-export const appStateLifecycle: DbzzLifecycleSource = (port) => {
+export const appStateLifecycle: AckerDBLifecycleSource = (port) => {
   // A client constructed while the application is already backgrounded (for
   // example inside a brief background execution window) must not dial until
   // the application actually becomes active.

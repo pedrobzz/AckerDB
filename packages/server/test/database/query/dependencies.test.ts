@@ -11,7 +11,7 @@ import {
   makeDbReader,
   scanKey,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import {
   MAX_REACTIVE_DEPENDENCY_KEYS,
   recordPredicateDependencies,
@@ -41,7 +41,7 @@ describe("predicate reactive dependencies", () => {
   let engine: Engine;
 
   beforeEach(() => {
-    directory = mkdtempSync(join(tmpdir(), "dbzz-query-dependencies-"));
+    directory = mkdtempSync(join(tmpdir(), "ackerdb-query-dependencies-"));
     engine = new Engine(schema, join(directory, "data.db"));
     engine.createAll();
   });

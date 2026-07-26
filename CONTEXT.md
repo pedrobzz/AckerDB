@@ -8,7 +8,7 @@ Glossary of domain terms. Definitions only — no implementation details.
 predictable, economical, and safe at the intended load—not a narrow throughput
 result that saturates a host.
 
-**Default deployment envelope** — The default machine size DBzz optimizes for:
+**Default deployment envelope** — The default machine size AckerDB optimizes for:
 4 vCPU / 4 GiB RAM.
 
 **Design load** — Near-term sizing for the default deployment envelope: about
@@ -47,7 +47,7 @@ still satisfies the required invariant, not against the decision's stated
 purpose.
 
 **Simplest sufficient design** — The implementation with the fewest mechanisms
-that still enforces the required invariant. DBzz does not add machinery merely
+that still enforces the required invariant. AckerDB does not add machinery merely
 to imitate another system or erase an acceptable backend difference.
 
 ## Function outcomes
@@ -159,13 +159,13 @@ functions, and transactions inherit the same value explicitly as
 `ctx.timestamp`.
 
 **Plugin schema reset** — The v0.6.0 alpha recovery for an unsafe private
-schema change. After explicit operator consent, DBzz deletes only that mounted
+schema change. After explicit operator consent, AckerDB deletes only that mounted
 plugin's private data and recreates its current schema. Safe changes
 reconcile without data loss; plugins have no migration API or history in
 this alpha. Development may request consent interactively; non-interactive
-startup refuses until `dbzz plugin reset <mount>` is run explicitly.
+startup refuses until `acker plugin reset <mount>` is run explicitly.
 
-**Plugin lifecycle** — The DBzz-managed startup and shutdown boundary for a
+**Plugin lifecycle** — The AckerDB-managed startup and shutdown boundary for a
 plugin's external resources. Plugin construction is side-effect free;
 resources start only after dependencies and private schemas are ready and stop
 in reverse dependency order.
@@ -175,7 +175,7 @@ in the caller's database transaction. It may be available to queries and
 mutations, with each function receiving only the operations its execution kind
 permits.
 
-**External capability** — A plugin capability that crosses the DBzz process
+**External capability** — A plugin capability that crosses the AckerDB process
 boundary to another service. It is available only to procedures and never from
 inside a database transaction.
 
@@ -216,28 +216,28 @@ store on its write path. Cache reads never delete, update metadata, start a
 timer, or perform a background sweep; external stores own their physical TTL
 and eviction machinery.
 
-**Cache API** — DBzz's small TypeScript-native interface for key/value cache
+**Cache API** — AckerDB's small TypeScript-native interface for key/value cache
 operations, expiration, and conditional writes. Its semantics are familiar to
 Redis users, but it is not a Redis command or protocol compatibility surface.
-It is not a query capability: DBzz queries read the source database directly.
+It is not a query capability: AckerDB queries read the source database directly.
 _Avoid_: Redis client, Redis-compatible API
 
 **Cache store** — The backend-independent storage contract required by a cache
-plugin instance. The built-in store uses plugin-owned DBzz storage;
+plugin instance. The built-in store uses plugin-owned AckerDB storage;
 external stores cross the procedure-only capability boundary. A custom store is
 defined by `defineCacheStore({ keyPrefix, open })`; `open` returns only `get`,
 atomic conditional `set`, `delete`, and an optional `close`.
 
 **Cache-store adapter** — A bridge from an external cache service or client to
 the Cache store contract. It owns vendor serialization and semantics without
-exposing the vendor client through DBzz. Every external adapter requires an
+exposing the vendor client through AckerDB. Every external adapter requires an
 explicit application-and-environment key prefix; Cache appends its encoding
-version, plugin mount, namespace, key type, and key. DBzz owns the adapter's
+version, plugin mount, namespace, key type, and key. AckerDB owns the adapter's
 resource lifecycle.
 
-**Cache package** — The lockstep `@dbzz/cache` package. Its root exports the
-Cache plugin and store-authoring contract; `@dbzz/cache/redis` and
-`@dbzz/cache/upstash` expose first-party adapters without creating separate
+**Cache package** — The lockstep `@ackerdb/cache` package. Its root exports the
+Cache plugin and store-authoring contract; `@ackerdb/cache/redis` and
+`@ackerdb/cache/upstash` expose first-party adapters without creating separate
 packages or vendor-specific context APIs.
 
 **Cache namespace** — A named key partition declared by a cache plugin
@@ -252,7 +252,7 @@ numbers, and bigints with the same visible text remain distinct; numeric `0`
 and `-0` intentionally share a key. Compound identity is an explicit string
 composed by the caller.
 
-**Cache payload** — A cache value encoded exactly once with the DBzz wire
+**Cache payload** — A cache value encoded exactly once with the AckerDB wire
 format before it reaches a Cache store. Stores treat the encoded string as
 opaque and return it unchanged for decoding.
 
@@ -336,7 +336,7 @@ _Avoid_: Index order
 
 **Transparent index** — An exact-result storage optimization selected by the
 database planner. Public schema declarations identify indexes by their ordered
-columns and configuration rather than a user-chosen name; DBzz derives the
+columns and configuration rather than a user-chosen name; AckerDB derives the
 physical identifier. Composite indexes and multiple indexes per table remain
 supported. Application queries never name an index, and adding, changing, or
 removing one never changes exact results or the storage structure's
@@ -352,7 +352,7 @@ tag with a different payload conflicts instead of updating the wrong row.
 _Avoid_: Named unique-index accessor
 
 **Ranked retrieval mode** — The caller-selected basis for matching and ordering
-rows. One DBzz ranked retrieval uses either full-text search or exact similarity
+rows. One AckerDB ranked retrieval uses either full-text search or exact similarity
 search; it never combines or falls back between them.
 _Avoid_: Unified search
 
@@ -362,10 +362,10 @@ unbounded collection, iteration, count, or pagination operation; CPU, memory,
 decoded rows, and transport cost grow with the caller's chosen bound.
 
 **Rank fusion** — Application-owned combination of independently executed,
-bounded ranked retrievals by row identity and result position. DBzz supplies
+bounded ranked retrievals by row identity and result position. AckerDB supplies
 the retrievals but never chooses candidate depths, fusion rules, weights, or
 fallback behavior.
-_Avoid_: DBzz hybrid search
+_Avoid_: AckerDB hybrid search
 
 ## Full-text search
 
@@ -376,7 +376,7 @@ target-column-wide corpus statistics.
 
 **Literal full-text query** — Text whose characters always represent searchable
 content, never operators or backend query syntax. SQLite's byte-compatible
-`fts3tokenize(unicode61)` tokenizer supplies the FTS5 tokens; DBzz quotes each
+`fts3tokenize(unicode61)` tokenizer supplies the FTS5 tokens; AckerDB quotes each
 token as its own phrase and composes them with implicit `AND`. Input that
 produces no tokens produces no matches. Callers do not escape or assemble an
 expression.
@@ -402,7 +402,7 @@ statistics. Corpus dependencies are per target column, not per table.
 **Full-text result** — A table row returned directly in relevance order, with
 the application primary key ascending as the deterministic tie-breaker. The
 selected sidecar's `rank` orders matches and its `rowid` restricts them to the
-canonical application row, but DBzz exposes neither private value. Application
+canonical application row, but AckerDB exposes neither private value. Application
 row identity and result position are sufficient for application-owned rank
 fusion.
 _Avoid_: BM25 score, relevance score
@@ -415,7 +415,7 @@ _Avoid_: Autocorrect, query replacement
 
 ## Vector search
 
-**Vector** — A fixed-dimensional dense numeric value that DBzz can store,
+**Vector** — A fixed-dimensional dense numeric value that AckerDB can store,
 validate, manipulate, and compare. A vector may represent an embedding, but is
 not inherently model-generated.
 _Avoid_: Embedding, when the value's model origin is irrelevant
@@ -427,24 +427,24 @@ read operations as other stored fields.
 _Avoid_: Embedding column
 
 **Vector value boundary** — Inserts, updates, and similarity query vectors
-accept a `readonly number[]` of exactly the declared dimensionality. DBzz
+accept a `readonly number[]` of exactly the declared dimensionality. AckerDB
 rejects non-finite coordinates and values that overflow Float32, rounds every
 accepted coordinate to Float32 once at the boundary, canonicalizes negative
 zero to zero, and returns stored vectors as ordinary readonly number arrays
 containing those Float32 values.
 
-**Embedding** — A vector generated outside DBzz by an AI SDK or another model
-library. DBzz stores and manipulates embeddings but never generates them.
-_Avoid_: DBzz-generated embedding, derived embedding column
+**Embedding** — A vector generated outside AckerDB by an AI SDK or another model
+library. AckerDB stores and manipulates embeddings but never generates them.
+_Avoid_: AckerDB-generated embedding, derived embedding column
 
 **Embedding backfill** — An application-owned batch workflow that generates
 missing embeddings outside database transactions and persists them through
-ordinary DBzz mutations. Existing tables normally add a nullable vector column,
+ordinary AckerDB mutations. Existing tables normally add a nullable vector column,
 backfill it in bounded batches, and optionally tighten nullability afterward;
 migrations never call an embedding model.
 
 **Distance metric** — A rule that assigns a distance to two vectors of equal
-dimensionality for ranking. Every DBzz metric is oriented so a lower distance
+dimensionality for ranking. Every AckerDB metric is oriented so a lower distance
 means a nearer match: cosine is one minus cosine similarity, L2 is Euclidean
 distance, and dot is the negative dot product.
 _Avoid_: Similarity score

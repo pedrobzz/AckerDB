@@ -1,13 +1,13 @@
 # Authentication and authorization
 
-DBZZ accepts exactly two remote credential forms: explicit anonymous access or
+AckerDB accepts exactly two remote credential forms: explicit anonymous access or
 a bearer token verified by a configured `CredentialVerifier`. Authentication
 establishes an immutable principal; each function's `access` policy separately
 decides whether that principal may perform the operation.
 
 ## Credentials and principals
 
-`DbzzClientOptions.credential` is required. A WebSocket sends that credential
+`AckerDBClientOptions.credential` is required. A WebSocket sends that credential
 in its Protocol 2 `hello` frame and can replace it in-band with
 `client.refreshCredential(...)`. HTTP procedures and SSE procedures send the
 same credential as an `Authorization` header on every request.
@@ -22,14 +22,14 @@ HTTP parsing is intentionally strict:
 
 All transports then use `verifyClientCredential`. A bearer credential without
 a configured verifier fails closed as `unauthenticated`. A verified user result
-is credential evidence, not yet an application principal: DBZZ snapshots that
+is credential evidence, not yet an application principal: AckerDB snapshots that
 evidence, then transactionally resolves its exact `(issuer, subject)` through
 the Engine-owned identity directory before constructing the user principal.
 
 ### Trust boundary
 
 Credentials, token claims, and authorization arguments are untrusted until the
-owning boundary has validated them. With the built-in OIDC verifier, DBZZ owns
+owning boundary has validated them. With the built-in OIDC verifier, AckerDB owns
 the exact issuer registry, JWT/JWS verification, selected-claim allowlist, and
 expiry check; the configured HTTPS JWKS endpoint is the external trust and
 availability dependency. A token's unverified `iss` value can select only an
@@ -38,7 +38,7 @@ already configured provider and cannot choose a network destination.
 The CLI listener itself is plaintext HTTP/WebSocket on loopback and does not
 terminate TLS. A bearer deployment must keep that hop private or place it behind
 a trusted TLS terminator; otherwise Authorization headers and WebSocket hello
-credentials cross the network without transport encryption. DBZZ derives
+credentials cross the network without transport encryption. AckerDB derives
 anonymous fairness identity from the peer socket and ignores `Forwarded` and
 `X-Forwarded-For`, so callers behind one reverse proxy share the proxy's source
 group rather than trusting a spoofable header.
@@ -46,15 +46,15 @@ group rather than trusting a spoofable header.
 An MCP-exporting programmatic server may bind outside loopback only with an
 exact `mcpHttp.allowedHosts` list and
 `mcpHttp.transport: "trusted-https-proxy"`. That setting is an operator
-assertion, not a proxy implementation: DBZZ still listens on a private
+assertion, not a proxy implementation: AckerDB still listens on a private
 plaintext hop, validates the actual `Host` header, and ignores every
 `Forwarded`/`X-Forwarded-*` header. The trusted terminator must expose HTTPS and
-must not make the private DBZZ listener directly reachable. Browser Origins are
+must not make the private AckerDB listener directly reachable. Browser Origins are
 denied unless listed explicitly; native MCP clients remain usable without an
 `Origin` header after Host validation. CLI-created servers stay on loopback and
 derive their safe local Host and same-origin policy automatically.
 
-`CredentialVerifier` is the extension boundary. A custom verifier—not DBZZ—is
+`CredentialVerifier` is the extension boundary. A custom verifier—not AckerDB—is
 responsible for authenticating the credential, validating issuer/audience and
 any deployment-specific claims. It must expose `revocationBound` metadata and
 an invalidation subscription. An invalidation-based verifier must advertise a
@@ -62,7 +62,7 @@ positive finite `deadlineMs` no greater than the configured
 `revocationDeadlineMs`; the Runtime owns the single configured verifier and
 validates that declaration before application traffic is activated. Sessions
 and remote credential leases enforce expiry and react immediately to matching callbacks,
-but DBZZ neither creates nor measures the external invalidation feed or its
+but AckerDB neither creates nor measures the external invalidation feed or its
 upstream propagation latency. Delivering invalidations within the advertised
 bound remains the verifier's responsibility. `verifyClientCredential` rejects
 invalid evidence and results that expire before or during Identity resolution,
@@ -93,12 +93,12 @@ account's raw bearer token, not an `Authorization` header. The capability exists
 only on procedure and SSE contexts; query, mutation, and transaction contexts
 cannot invoke it.
 
-DBZZ first verifies the token through the Runtime's same configured verifier,
+AckerDB first verifies the token through the Runtime's same configured verifier,
 with no writer transaction open. It then enters the canonical writer and
 atomically attaches the verified exact `(issuer, subject)` to the current
 user's durable Identity. Linking is idempotent when that account already belongs
 to the same Identity. An account owned by another Identity returns a generic
-conflict without revealing its owner. DBZZ never allocates a new Identity,
+conflict without revealing its owner. AckerDB never allocates a new Identity,
 auto-links by mutable claims, merges Identities, or rewrites application rows
 through this primitive.
 
@@ -110,7 +110,7 @@ own that exact account, and the same transaction refuses to remove the
 Identity's final account. A successful unlink deletes only the directory link:
 the durable Identity and every application row owned by it remain unchanged.
 
-After commit, DBZZ publishes an exact-account invalidation through the
+After commit, AckerDB publishes an exact-account invalidation through the
 Runtime's canonical authentication boundary, so matching sessions and remote
 credential leases fail closed; rollback publishes nothing. Authenticating
 later with the removed credential follows normal first-login resolution and
@@ -120,7 +120,7 @@ provider-side revocation, or application-data erasure.
 ## Application-defined credential verifier
 
 An application can make its own `CredentialVerifier` the CLI server's single
-authentication authority by setting a module path in `.dbzz.config.json`:
+authentication authority by setting a module path in `.ackerdb.config.json`:
 
 ```json
 {
@@ -132,7 +132,7 @@ The path is resolved relative to the application directory. The module must
 default-export the verifier object itself—not a factory or promise:
 
 ```ts
-import type { CredentialVerifier } from "@dbzz/server";
+import type { CredentialVerifier } from "@ackerdb/server";
 import { verifyApplicationToken } from "./tokens.ts";
 
 const verifier = {
@@ -144,9 +144,9 @@ const verifier = {
 export default verifier;
 ```
 
-`dbzz dev` and `dbzz start` load that default export through the same Runtime
-pipeline as the built-in OIDC verifier. `dbzz codegen` never imports or executes
-the verifier module; during `dbzz start`, codegen finishes before application
+`acker dev` and `acker start` load that default export through the same Runtime
+pipeline as the built-in OIDC verifier. `acker codegen` never imports or executes
+the verifier module; during `acker start`, codegen finishes before application
 modules and the verifier are loaded.
 
 `oidc` and `credentialVerifier` are mutually exclusive because one Runtime has
@@ -154,7 +154,7 @@ one credential authority. Programmatic startup follows the same rule and can
 inject an already-constructed verifier without a parallel server path:
 
 ```ts
-import { loadConfig, runCodegen, startApp } from "@dbzz/cli";
+import { loadConfig, runCodegen, startApp } from "@ackerdb/cli";
 import credentialVerifier from "./auth/credential-verifier.ts";
 
 await startApp(loadConfig("."), {
@@ -166,7 +166,7 @@ await startApp(loadConfig("."), {
 The programmatic `credentialVerifier` option cannot be combined with either
 configured source. Application verifiers own token parsing, cryptographic
 verification, issuer and audience policy, expiry, selected claims, and any
-advertised invalidation feed. DBZZ still validates returned credential evidence,
+advertised invalidation feed. AckerDB still validates returned credential evidence,
 resolves user `(issuer, subject)` pairs to durable Identities, and enforces the
 declared revocation bound before activation.
 
@@ -191,8 +191,8 @@ validation and policy too.
 
 ## External OIDC configuration
 
-The CLI reads OIDC configuration from `.dbzz.config.json` and passes it to
-`createOidcVerifier`. DBZZ is a relying party only: it does not implement login,
+The CLI reads OIDC configuration from `.ackerdb.config.json` and passes it to
+`createOidcVerifier`. AckerDB is a relying party only: it does not implement login,
 passwords, passkeys, token issuance, or OIDC discovery.
 
 ```json
@@ -202,7 +202,7 @@ passwords, passkeys, token issuance, or OIDC discovery.
       {
         "issuer": "https://identity.example.com/",
         "jwksUri": "https://identity.example.com/.well-known/jwks.json",
-        "audiences": ["dbzz-api"],
+        "audiences": ["ackerdb-api"],
         "algorithms": ["RS256"],
         "tokenType": "at+jwt",
         "principalKind": "user",
@@ -213,7 +213,7 @@ passwords, passkeys, token issuance, or OIDC discovery.
       {
         "issuer": "https://workloads.example.com/",
         "jwksUri": "https://workloads.example.com/jwks.json",
-        "audiences": ["dbzz-operations"],
+        "audiences": ["ackerdb-operations"],
         "algorithms": ["ES256"],
         "tokenType": "at+jwt",
         "principalKind": "workload",
@@ -225,7 +225,7 @@ passwords, passkeys, token issuance, or OIDC discovery.
     "jwksCacheMaxAgeMs": 600000,
     "clockToleranceSeconds": 5
   },
-  "statusScope": "dbzz:status"
+  "statusScope": "ackerdb:status"
 }
 ```
 
@@ -305,12 +305,12 @@ A custom `CredentialVerifier` can instead declare
 `{ kind: "invalidation", deadlineMs }` and publish invalidations by issuer and
 optionally subject or token ID. `deadlineMs` must be positive and finite and
 cannot exceed the Session `revocationDeadlineMs` ceiling (5 seconds by default
-and at most); DBZZ rejects a missing, malformed, or over-ceiling advertisement
+and at most); AckerDB rejects a missing, malformed, or over-ceiling advertisement
 before the Runtime is activated. Matching connected sessions
 begin their reserved fail-closed path immediately when the callback fires. The
 advertisement is the verifier's integration contract: the deployment remains
 responsible for the invalidation source and for delivering its callback to
-DBZZ within the advertised bound.
+AckerDB within the advertised bound.
 
 ## HTTP and SSE credential leases
 
@@ -319,7 +319,7 @@ remote HTTP path that verifies a bearer credential owns a credential lease
 with an exact expiry timer and a matching invalidation subscription. An
 anonymous request allocates neither a verifier listener nor an expiry timer.
 
-For an HTTP procedure, DBZZ holds the lease through Runtime execution,
+For an HTTP procedure, AckerDB holds the lease through Runtime execution,
 Protocol 2 encoding, and handoff of the constructed `Response`. Expiry, a
 matching invalidation, or caller cancellation aborts the Runtime signal and
 prevents it from accepting a stale result. The lease releases at that encoded
@@ -365,18 +365,18 @@ stages, ownership, and limitations.
 
 `GET /status` is not a user endpoint. It requires a `workload` principal whose
 selected string `scope` claim contains the exact configured `statusScope` token
-(default `dbzz:status`, split on spaces). Anonymous callers, user principals,
+(default `ackerdb:status`, split on spaces). Anonymous callers, user principals,
 and workloads without that scope receive an authorization failure. Liveness
 and readiness are intentionally unauthenticated; see
 [Operations](operations.md#health-and-protected-status).
 
 ## Authentication limitations
 
-- DBZZ consumes external JWT access tokens; it does not issue credentials or
+- AckerDB consumes external JWT access tokens; it does not issue credentials or
   manage browser sessions.
 - The built-in OIDC path uses configured issuer/JWKS entries, not discovery,
   introspection, refresh tokens, or logout protocols.
 - Built-in revocation is bounded by token expiry. Immediate invalidation needs
   a custom verifier and an external source of truth.
-- Authorization is function/event-policy based. DBZZ does not expose a
+- Authorization is function/event-policy based. AckerDB does not expose a
   general-purpose row-level-security engine for arbitrary client SQL.

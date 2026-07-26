@@ -1,4 +1,4 @@
-Before researching external knowledge or working with a third-party package, always read the [LLM Wiki Skill](.agents/skills/llm-wiki/SKILL.md) and the relevant existing wiki pages. The LLM Wiki is read for those tasks; write to `raw/` or `wiki/` only when the user explicitly asks to ingest, archive, or lint it. It records external knowledge and third-party packages, not DBzz decisions or domain modeling.
+Before researching external knowledge or working with a third-party package, always read the [LLM Wiki Skill](.agents/skills/llm-wiki/SKILL.md) and the relevant existing wiki pages. The LLM Wiki is read for those tasks; write to `raw/` or `wiki/` only when the user explicitly asks to ingest, archive, or lint it. It records external knowledge and third-party packages, not AckerDB decisions or domain modeling.
 
 ## Performance, correctness, and code quality
 
@@ -56,7 +56,7 @@ across every dimension of the performance vector:
 Convex is a useful contrast: measure the CPU/RAM and fan-out cost of equivalent
 work rather than inheriting its architecture by default. SpacetimeDB is a
 useful performance reference, not a claim that every one of its tradeoffs
-belongs in DBzz. Compare the same workload on the same machine; the repository
+belongs in AckerDB. Compare the same workload on the same machine; the repository
 benchmark is the authoritative comparison method (see Benchmarks).
 
 ### Judge by net-effect judgment
@@ -82,7 +82,7 @@ all score above 5 in every dimension, the review is not judging its tradeoffs.
 
 ### Correct code
 
-Correctness is broader than “the happy-path test passed.” Correct DBzz code:
+Correctness is broader than “the happy-path test passed.” Correct AckerDB code:
 
 1. **Does not lose data silently.** Persisted state, migrations, retries,
    ordering, recovery, and destructive operations must be explicit. A failure
@@ -144,8 +144,8 @@ correctness gain that justifies permanent maintenance.
 Most mature systems problems already have prior art. Before inventing, inspect
 current OpenSRC snapshots and primary sources. When the user explicitly asks to
 capture the research, put external source material and compiled findings in the
-LLM Wiki (`raw/` and `wiki/`); put DBzz terminology and settled domain
-boundaries in `CONTEXT.md`; put material DBzz tradeoffs in the decision ledger.
+LLM Wiki (`raw/` and `wiki/`); put AckerDB terminology and settled domain
+boundaries in `CONTEXT.md`; put material AckerDB tradeoffs in the decision ledger.
 Revisit all three when later evidence changes a decision.
 
 Verify at the boundary that previously failed; prove the old failure path is
@@ -159,7 +159,7 @@ Before accepting a performance/correctness change, answer:
    schema change?
 4. Does it preserve data and make ambiguity explicit?
 5. Does it remove a model problem or create another branch around it?
-6. Which OpenSRC/primary-source decision or DBzz ledger entry supports it?
+6. Which OpenSRC/primary-source decision or AckerDB ledger entry supports it?
 7. What boundary test and, when relevant, benchmark prove the claim?
 
 
@@ -169,8 +169,8 @@ Benchmarks are a release-only last resort. Run them only for a major, minor,
 or patch version change—never before or after ordinary implementation work.
 The final benchmark from the preceding version is the before-state.
 
-Every release benchmark runs all of DBZZ, Convex, and SpacetimeDB on Hetzner
-only, with the same workload, **apples-to-apples**: the DBZZ leg runs
+Every release benchmark runs all of AckerDB, Convex, and SpacetimeDB on Hetzner
+only, with the same workload, **apples-to-apples**: the AckerDB leg runs
 `telemetry=false` because the comparative targets ship no equivalent always-on
 telemetry. The whole run is budgeted at five minutes on Hetzner (eight is the
 ceiling); the default workload measures the decision points only — single-user
@@ -182,7 +182,7 @@ version-, host-, and source-bound result to exist, but it must never interpret
 benchmark values or use them to approve or block a release.
 
 Telemetry cost is *not* re-proven on every release: `bun run bench:hetzner
---telemetry` is the optional DBZZ-only run (enabled vs exporter vs disabled)
+--telemetry` is the optional AckerDB-only run (enabled vs exporter vs disabled)
 whenever telemetry code actually changed. Its record —
 `bench/results/telemetry-v<version>.json` — is diagnostic, freely rerun, and
 never release evidence.
@@ -207,16 +207,16 @@ work, and record the reasoning in the release handoff. If the evidence reveals
 a design problem, redesign the hot path rather than patching around it, but the
 script itself must not make that judgment or veto the release.
 
-SpacetimeDB remains an excellent reference, not a product DBZZ must beat on
+SpacetimeDB remains an excellent reference, not a product AckerDB must beat on
 every metric. Convex remains the main comparative target. Their same-run
-measurements make the DBZZ result interpretable; the version-to-version
-comparison is evidence about DBZZ itself.
+measurements make the AckerDB result interpretable; the version-to-version
+comparison is evidence about AckerDB itself.
 
 # Local Publishing
 
-We do not publish to npm. Releases go to a local Verdaccio registry at `http://127.0.0.1:4874`, so real projects on this machine can install `@dbzz/*` like normal npm packages — pinned, with every old version still installable. (4874, not Verdaccio's default 4873: this machine's own Homebrew Verdaccio launchd agent owns 4873.)
+We do not publish to npm. Releases go to a local Verdaccio registry at `http://127.0.0.1:4874`, so real projects on this machine can install `@ackerdb/*` like normal npm packages — pinned, with every old version still installable. (4874, not Verdaccio's default 4873: this machine's own Homebrew Verdaccio launchd agent owns 4873.)
 
-The six packages (`@dbzz/core`, `@dbzz/server`, `@dbzz/cache`, `@dbzz/client`, `@dbzz/client-react`, `@dbzz/cli`) share **one version, always in lockstep**. Bumping one bumps all six (`bun run bump` writes all of them; the merge guard rejects drift). Each published version is also a git tag (`v0.2.0`), so old published code is always recoverable with `git checkout v0.2.0`.
+The six packages (`@ackerdb/core`, `@ackerdb/server`, `@ackerdb/cache`, `@ackerdb/client`, `@ackerdb/client-react`, `@ackerdb/cli`) share **one version, always in lockstep**. Bumping one bumps all six (`bun run bump` writes all of them; the merge guard rejects drift). Each published version is also a git tag (`v0.2.0`), so old published code is always recoverable with `git checkout v0.2.0`.
 
 ## One-time setup (per clone / machine)
 
@@ -226,7 +226,7 @@ bun run registry                             # starts Verdaccio (keep it running
 bunx npm adduser --registry http://127.0.0.1:4874   # any username/password; token lands in ~/.npmrc
 ```
 
-The committed repo-root `.npmrc` routes the `@dbzz` scope to the local registry — that line is what `bun publish` uses to pick the target registry (and to find the adduser token in `~/.npmrc`). The release scripts read the same line, so `.npmrc` is the single place the registry URL lives.
+The committed repo-root `.npmrc` routes the `@ackerdb` scope to the local registry — that line is what `bun publish` uses to pick the target registry (and to find the adduser token in `~/.npmrc`). The release scripts read the same line, so `.npmrc` is the single place the registry URL lives.
 
 ## Workflow: every change goes through a branch
 
@@ -272,7 +272,7 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
 ## Beta publishing: test a branch without merging
 
 `bun run publish:beta` publishes the **working tree** — any branch, dirty is
-fine — as `@dbzz/*@<base>-beta.N` under the `beta` dist-tag. None of the
+fine — as `@ackerdb/*@<base>-beta.N` under the `beta` dist-tag. None of the
 release gates apply (no main-only, no clean tree, no bench evidence, no git
 tag); `latest` never moves, so real consumers are untouched. The registry's
 version list is the beta counter: every run takes a fresh `N`, and a failed
@@ -284,39 +284,39 @@ bun run publish:beta          # publish only; prints the version
 bun run publish:beta --demo   # also repin the demo to it and reinstall
 ```
 
-`--demo` rewrites every demo workspace's `@dbzz/*` pins **that sit at the
+`--demo` rewrites every demo workspace's `@ackerdb/*` pins **that sit at the
 current base version** to the fresh beta (deliberate divergences are reported,
 not overwritten) and runs `bun install` in `demo/`. The pin edits are ordinary
 tracked changes — restore them when done testing. Betas accumulate in
 `registry/storage/` like any published version; they are throwaway by
 convention, unpublishable with the usual `npm unpublish` line below.
 
-## Using dbzz in a real project
+## Using AckerDB in a real project
 
-In the consumer project, scope `@dbzz` to the local registry — `.npmrc` in the project root:
+In the consumer project, scope `@ackerdb` to the local registry — `.npmrc` in the project root:
 
 ```ini
-@dbzz:registry=http://127.0.0.1:4874
+@ackerdb:registry=http://127.0.0.1:4874
 ```
 
 Then install exact (pinned) versions:
 
 ```bash
-bun add --exact @dbzz/server@0.2.0 @dbzz/cache@0.2.0 @dbzz/client@0.2.0 @dbzz/client-react@0.2.0 @dbzz/cli@0.2.0
+bun add --exact @ackerdb/server@0.2.0 @ackerdb/cache@0.2.0 @ackerdb/client@0.2.0 @ackerdb/client-react@0.2.0 @ackerdb/cli@0.2.0
 ```
 
-**Going back to an old version works**: Verdaccio keeps every published version in `registry/storage/` (gitignored, survives restarts), so `bun add --exact @dbzz/server@0.1.0` keeps working after 0.2.0+ exist. To see the matching source, `git checkout v0.1.0`.
+**Going back to an old version works**: Verdaccio keeps every published version in `registry/storage/` (gitignored, survives restarts), so `bun add --exact @ackerdb/server@0.1.0` keeps working after 0.2.0+ exist. To see the matching source, `git checkout v0.1.0`.
 
 Consumers must run Bun — packages ship raw TypeScript from `src/`.
 
 ## Escape hatches & caveats
 
 - The guard runs at two layers: the merge hooks (nice errors, right timing), plus a `reference-transaction` backstop that checks **every** update to `refs/heads/main` — so fast-forward merges (`--ff`/`--ff-only` override the no-ff config), cherry-picks onto main, rebases, and even `--no-verify` merges (which skip commit hooks but not this) are blocked mechanically if they'd land feat/fix commits without a bump. When the backstop aborts one of these, git may leave staged changes behind — `git reset --hard` restores main.
-- `DBZZ_ALLOW_MAIN=1` is the deliberate escape: it bypasses both the direct-commit block and the backstop (use sparingly; this is how repo-meta changes like this tooling land).
+- `ACKERDB_ALLOW_MAIN=1` is the deliberate escape: it bypasses both the direct-commit block and the backstop (use sparingly; this is how repo-meta changes like this tooling land).
 - Prefer plain `git merge` (merge commits) — the merge hooks give clearer errors than the backstop, and history stays legible.
 - Never `npm publish` here (it does not rewrite `workspace:*`) and never pass `--registry` to `bun publish` (it bypasses `.npmrc` and loses the auth token). Always `bun run publish:local`.
 - If a publish is interrupted midway, just re-run `bun run publish:local` — it skips packages already in the registry at the current version and finishes the rest (then tags).
-- To unpublish a broken version: `bunx npm unpublish --force @dbzz/<pkg>@X.Y.Z --registry http://127.0.0.1:4874` (do it for all 6, then delete the tag).
+- To unpublish a broken version: `bunx npm unpublish --force @ackerdb/<pkg>@X.Y.Z --registry http://127.0.0.1:4874` (do it for all 6, then delete the tag).
 
 Release plumbing lives in `scripts/` (`bump.ts`, `merge-guard.ts`, `publish-local.ts`, shared `lib.ts`), hooks in `.githooks/`, registry config in `registry/config.yaml`, scope routing in the repo-root `.npmrc`.
 
@@ -324,7 +324,7 @@ Release plumbing lives in `scripts/` (`bump.ts`, `merge-guard.ts`, `publish-loca
 
 ### Issue tracker
 
-Issues live in this repo's GitHub Issues (`pedrobzz/dbzz`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+Issues live in this repo's GitHub Issues (`pedrobzz/ackerdb`, via the `gh` CLI). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

@@ -680,7 +680,7 @@ class AuthenticTelemetryTraceContext implements PreparedTelemetryTraceContext {
   }
 }
 
-const OPERATION_TRACE_HANDLE: unique symbol = Symbol("dbzz.operationTraceHandle");
+const OPERATION_TRACE_HANDLE: unique symbol = Symbol("ackerdb.operationTraceHandle");
 
 /** Package-internal ownership handle for one Runtime operation. */
 export interface OperationTraceHandle {
@@ -709,12 +709,12 @@ export interface OperationTelemetrySpanInput extends Omit<
   readonly subscriptionId?: string;
 }
 
-export const OPEN_OPERATION_TRACE = Symbol("dbzz.openOperationTrace");
-export const FINISH_OPERATION_TRACE = Symbol("dbzz.finishOperationTrace");
-export const OPERATION_INVOCATION_NODE = Symbol("dbzz.operationInvocationNode");
-export const RECORD_OPERATION_SPAN = Symbol("dbzz.recordOperationSpan");
-export const RECORD_OPERATION_EVENT = Symbol("dbzz.recordOperationEvent");
-export const CLAIM_OPERATION_DELIVERY_LEASE = Symbol("dbzz.claimOperationDeliveryLease");
+export const OPEN_OPERATION_TRACE = Symbol("ackerdb.openOperationTrace");
+export const FINISH_OPERATION_TRACE = Symbol("ackerdb.finishOperationTrace");
+export const OPERATION_INVOCATION_NODE = Symbol("ackerdb.operationInvocationNode");
+export const RECORD_OPERATION_SPAN = Symbol("ackerdb.recordOperationSpan");
+export const RECORD_OPERATION_EVENT = Symbol("ackerdb.recordOperationEvent");
+export const CLAIM_OPERATION_DELIVERY_LEASE = Symbol("ackerdb.claimOperationDeliveryLease");
 
 const INVOCATION_PHASE_CODES = Object.freeze({ auth: 0, policy: 1, handler: 2 } as const);
 
@@ -853,7 +853,7 @@ class OperationTraceContext implements TelemetryRecordContext {
 }
 
 /** Package-private entry point for spans carrying an authenticated prepared context. */
-export const RECORD_PREPARED_SPAN = Symbol("dbzz.recordPreparedTelemetrySpan");
+export const RECORD_PREPARED_SPAN = Symbol("ackerdb.recordPreparedTelemetrySpan");
 
 declare const TELEMETRY_DELIVERY_LEASE: unique symbol;
 export interface TelemetryDeliveryLease {
@@ -861,8 +861,8 @@ export interface TelemetryDeliveryLease {
 }
 
 /** Package-private ownership for one Runtime frame awaiting terminal delivery observation. */
-export const CLAIM_DELIVERY_LEASE = Symbol("dbzz.claimTelemetryDeliveryLease");
-export const RELEASE_DELIVERY_LEASE = Symbol("dbzz.releaseTelemetryDeliveryLease");
+export const CLAIM_DELIVERY_LEASE = Symbol("ackerdb.claimTelemetryDeliveryLease");
+export const RELEASE_DELIVERY_LEASE = Symbol("ackerdb.releaseTelemetryDeliveryLease");
 
 const SYSTEM_SCHEDULER: TelemetryScheduler = {
   setInterval: (callback, delayMs) => setInterval(callback, delayMs),

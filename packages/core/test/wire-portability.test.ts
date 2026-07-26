@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import * as ambientWire from "@dbzz/core";
+import * as ambientWire from "@ackerdb/core";
 
 // The wire codec must run identically on every runtime: engines with the ES
 // Uint8Array base64 API (Bun, modern browsers) take the native path, and

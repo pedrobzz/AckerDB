@@ -1,5 +1,5 @@
-import { DbzzClient, type DbzzClientOptions } from "@dbzz/client";
-import type { Credential } from "@dbzz/core";
+import { AckerDBClient, type AckerDBClientOptions } from "@ackerdb/client";
+import type { Credential } from "@ackerdb/core";
 import {
   createContext,
   useContext,
@@ -11,26 +11,26 @@ import {
 } from "react";
 
 /** Immutable configuration for one provider-owned client lifetime. */
-export type DbzzProviderConfig = DbzzClientOptions;
+export type AckerDBProviderConfig = AckerDBClientOptions;
 
-export interface DbzzProviderProps {
-  readonly config: DbzzProviderConfig;
+export interface AckerDBProviderProps {
+  readonly config: AckerDBProviderConfig;
   readonly children?: ReactNode;
 }
 
-interface DbzzContextValue {
-  readonly client: DbzzClient | null;
+interface AckerDBContextValue {
+  readonly client: AckerDBClient | null;
   /** The rendering configuration's credential kind, known before the client exists. */
   readonly credential: Credential["kind"];
 }
 
-const DbzzContext = createContext<DbzzContextValue | null>(null);
+const AckerDBContext = createContext<AckerDBContextValue | null>(null);
 
 // Value identity for the immutable configuration surface: equal values continue
 // the current lifetime, different values close the old client and start a new
 // one. Injected capabilities (clock, random, createWebSocket, fetch, lifecycle)
 // are captured when a lifetime starts and do not participate in identity.
-function lifetimeKey(config: DbzzProviderConfig): string {
+function lifetimeKey(config: AckerDBProviderConfig): string {
   const limits = config.limits;
   const reconnect = config.reconnect;
   return JSON.stringify([
@@ -54,21 +54,21 @@ function lifetimeKey(config: DbzzProviderConfig): string {
 }
 
 /**
- * Constructs, owns, and closes exactly one DbzzClient per immutable
+ * Constructs, owns, and closes exactly one AckerDBClient per immutable
  * configuration lifetime. The client is created in a commit-phase effect, so
  * server rendering never constructs it or touches runtime globals.
  */
-interface DbzzLifetime {
+interface AckerDBLifetime {
   readonly key: string;
-  readonly client: DbzzClient;
+  readonly client: AckerDBClient;
 }
 
-export function DbzzProvider({ config, children }: DbzzProviderProps): ReactElement {
+export function AckerDBProvider({ config, children }: AckerDBProviderProps): ReactElement {
   const key = lifetimeKey(config);
-  const [lifetime, setLifetime] = useState<DbzzLifetime | null>(null);
+  const [lifetime, setLifetime] = useState<AckerDBLifetime | null>(null);
 
   useEffect(() => {
-    const instance = new DbzzClient(config);
+    const instance = new AckerDBClient(config);
     instance.connect();
     setLifetime({ key, client: instance });
     return () => {
@@ -84,20 +84,20 @@ export function DbzzProvider({ config, children }: DbzzProviderProps): ReactElem
   // the previous lifetime's state.
   const client = lifetime !== null && lifetime.key === key ? lifetime.client : null;
   const credential = config.credential.kind;
-  const value = useMemo<DbzzContextValue>(() => ({ client, credential }), [client, credential]);
-  return <DbzzContext.Provider value={value}>{children}</DbzzContext.Provider>;
+  const value = useMemo<AckerDBContextValue>(() => ({ client, credential }), [client, credential]);
+  return <AckerDBContext.Provider value={value}>{children}</AckerDBContext.Provider>;
 }
 
 /** Module-internal: the context (and any client access) is never exported publicly. */
-export function useProviderClient(hook: string): DbzzClient | null {
-  const value = useContext(DbzzContext);
-  if (value === null) throw new Error(`${hook} requires a <DbzzProvider> ancestor`);
+export function useProviderClient(hook: string): AckerDBClient | null {
+  const value = useContext(AckerDBContext);
+  if (value === null) throw new Error(`${hook} requires a <AckerDBProvider> ancestor`);
   return value.client;
 }
 
 /** Module-internal: the configured credential kind for deterministic pre-client snapshots. */
 export function useProviderCredentialKind(hook: string): Credential["kind"] {
-  const value = useContext(DbzzContext);
-  if (value === null) throw new Error(`${hook} requires a <DbzzProvider> ancestor`);
+  const value = useContext(AckerDBContext);
+  if (value === null) throw new Error(`${hook} requires a <AckerDBProvider> ancestor`);
   return value.credential;
 }

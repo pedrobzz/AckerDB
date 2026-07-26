@@ -1,12 +1,12 @@
-import { DbzzClient } from "@dbzz/client";
-import { api } from "@demo/dbzz-codegen/api";
+import { AckerDBClient } from "@ackerdb/client";
+import { api } from "@demo/ackerdb-codegen/api";
 import { expectOk } from "./result.ts";
 
-const client = new DbzzClient({
-  url: process.env.DBZZ_URL ?? "http://127.0.0.1:3212",
+const client = new AckerDBClient({
+  url: process.env.ACKERDB_URL ?? "http://127.0.0.1:3212",
   credential: {
     kind: "bearer",
-    token: process.env.DBZZ_DEMO_STAFF_TOKEN ?? "savoria-demo-staff",
+    token: process.env.ACKERDB_DEMO_STAFF_TOKEN ?? "savoria-demo-staff",
   },
 });
 

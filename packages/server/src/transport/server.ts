@@ -9,7 +9,7 @@ import {
   stableEncode,
   type ErrorMessage,
   type SseAckRequest,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   credentialFromAuthorization,
@@ -26,7 +26,7 @@ import {
   type TransportSource,
 } from "../runtime/caller.ts";
 import { OutboundBudget, WebSocketSessionSink } from "../realtime/delivery.ts";
-import { DbzzError } from "../shared/errors.ts";
+import { AckerDBError } from "../shared/errors.ts";
 import {
   beginHttpTrace,
   beginSessionAuthTrace,
@@ -36,7 +36,7 @@ import {
   recordHttpTraceFailure,
 } from "../telemetry/external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "../runtime/limits.ts";
-import { DBZZ_HTTP_ROUTES } from "./http-routes.ts";
+import { ACKERDB_HTTP_ROUTES } from "./http-routes.ts";
 import type { McpEndpointDeclaration } from "../mcp/index.ts";
 import { mcpCredentialFromAuthorization } from "../mcp/credential.ts";
 import {
@@ -60,16 +60,17 @@ import {
 } from "../runtime/runtime.ts";
 import { Session, withSessionAuthObserver } from "../realtime/session.ts";
 
-export type DbzzServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
-export type DbzzStartupPhase =
+export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
+export type AckerDBStartupPhase =
   | "listening"
   | "codegen"
   | "loading"
   | "opening-storage"
   | "migrating"
-  | "reconciling";
+  | "reconciling"
+  | "loading-runtime";
 
-export interface DbzzServerOptions {
+export interface AckerDBServerOptions {
   readonly limits: ServiceLimits;
   readonly port: number;
   readonly hostname?: string;
@@ -89,9 +90,9 @@ export interface ServeOptions {
 
 export type { McpHttpOptions } from "../mcp/http-boundary.ts";
 
-export interface DbzzServerStatus {
-  readonly state: DbzzServerState;
-  readonly startupPhase: DbzzStartupPhase | null;
+export interface AckerDBServerStatus {
+  readonly state: AckerDBServerState;
+  readonly startupPhase: AckerDBStartupPhase | null;
   readonly connections: number;
   readonly preHelloConnections: number;
   readonly connectionRejections: number;
@@ -112,7 +113,7 @@ interface WsData {
   session: Session | null;
 }
 
-const DEFAULT_STATUS_SCOPE = "dbzz:status";
+const DEFAULT_STATUS_SCOPE = "ackerdb:status";
 const STATUS_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
@@ -120,7 +121,7 @@ const CORS = Object.freeze({
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "GET, POST, OPTIONS",
   "access-control-allow-headers": "content-type, authorization, mcp-protocol-version",
-  "access-control-expose-headers": "x-dbzz-sse-stream, x-dbzz-sse-max-stall-ms",
+  "access-control-expose-headers": "x-ackerdb-sse-stream, x-ackerdb-sse-max-stall-ms",
 });
 
 const SSE_HEADERS = Object.freeze({
@@ -131,13 +132,14 @@ const SSE_HEADERS = Object.freeze({
 });
 
 const DRAIN_RETRY_AFTER_MS = 1_000;
-const STARTUP_PHASE_ORDER: Readonly<Record<DbzzStartupPhase, number>> = Object.freeze({
+const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Object.freeze({
   listening: 0,
   codegen: 1,
   loading: 2,
   "opening-storage": 3,
   migrating: 4,
   reconciling: 5,
+  "loading-runtime": 6,
 });
 
 function json(value: unknown, status = 200): Response {
@@ -153,22 +155,22 @@ function protocolError(error: unknown, id: number | null = null): Response {
   return json(frame, outcomeHttpStatus(outcome));
 }
 
-function unavailableWhile(state: DbzzServerState): DbzzError {
+function unavailableWhile(state: AckerDBServerState): AckerDBError {
   if (state === "draining") {
-    return new DbzzError("draining", "server is draining", {
+    return new AckerDBError("draining", "server is draining", {
       retryable: true,
       retryAfterMs: DRAIN_RETRY_AFTER_MS,
       resource: "connection",
     });
   }
-  return new DbzzError("unavailable", "server is not ready", {
+  return new AckerDBError("unavailable", "server is not ready", {
     retryable: true,
     resource: "connection",
   });
 }
 
-function requestTooLarge(): DbzzError {
-  return new DbzzError("overloaded", "request exceeds maxRequestBytes", {
+function requestTooLarge(): AckerDBError {
+  return new AckerDBError("overloaded", "request exceeds maxRequestBytes", {
     resource: "operation",
   });
 }
@@ -261,7 +263,7 @@ class HttpAdmission {
 
   admit(fairnessKey: string): HttpAdmissionLease {
     if (!this.accepting) {
-      throw new DbzzError("draining", "HTTP ingress is draining", {
+      throw new AckerDBError("draining", "HTTP ingress is draining", {
         retryable: true,
         retryAfterMs: DRAIN_RETRY_AFTER_MS,
         resource: "connection",
@@ -269,7 +271,7 @@ class HttpAdmission {
     }
     if ((this.callers.get(fairnessKey) ?? 0) >= this.maxOperationsPerCaller) {
       this.fairShareRejections = Math.min(Number.MAX_SAFE_INTEGER, this.fairShareRejections + 1);
-      throw new DbzzError("overloaded", "HTTP source capacity is full", {
+      throw new AckerDBError("overloaded", "HTTP source capacity is full", {
         retryable: true,
         retryAfterMs: 0,
         resource: "connection",
@@ -277,7 +279,7 @@ class HttpAdmission {
     }
     if (this.active >= this.maxOperations) {
       this.globalRejections = Math.min(Number.MAX_SAFE_INTEGER, this.globalRejections + 1);
-      throw new DbzzError("overloaded", "HTTP ingress capacity is full", {
+      throw new AckerDBError("overloaded", "HTTP ingress capacity is full", {
         retryable: true,
         retryAfterMs: 0,
         resource: "connection",
@@ -293,7 +295,7 @@ class HttpAdmission {
         if (!owned || nextKey === currentKey) return;
         if ((this.callers.get(nextKey) ?? 0) >= this.maxOperationsPerCaller) {
           this.fairShareRejections = Math.min(Number.MAX_SAFE_INTEGER, this.fairShareRejections + 1);
-          throw new DbzzError("overloaded", "per-caller HTTP capacity is full", {
+          throw new AckerDBError("overloaded", "per-caller HTTP capacity is full", {
             retryable: true,
             retryAfterMs: 0,
             resource: "operation",
@@ -361,11 +363,11 @@ async function readBoundedBody(
   const declared = request.headers.get("content-length");
   if (declared !== null) {
     if (!/^\d+$/.test(declared)) {
-      throw new DbzzError("malformed", "invalid Content-Length header");
+      throw new AckerDBError("malformed", "invalid Content-Length header");
     }
     if (Number(declared) > maxBytes) throw requestTooLarge();
   }
-  if (request.body === null) throw new DbzzError("malformed", "request body is required");
+  if (request.body === null) throw new AckerDBError("malformed", "request body is required");
 
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -373,7 +375,7 @@ async function readBoundedBody(
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const expired = new Promise<never>((_, reject) => {
     timeout = setTimeout(() => {
-      reject(new DbzzError("deadline_exceeded", "request body read deadline exceeded", {
+      reject(new AckerDBError("deadline_exceeded", "request body read deadline exceeded", {
         resource: "operation",
       }));
     }, maxAgeMs);
@@ -403,7 +405,7 @@ async function readBoundedBody(
   try {
     return { text: strictUtf8.decode(body), bytes };
   } catch (cause) {
-    throw new DbzzError("malformed", "request body is not valid UTF-8", { cause });
+    throw new AckerDBError("malformed", "request body is not valid UTF-8", { cause });
   }
 }
 
@@ -418,7 +420,7 @@ async function parseHttpBody<T>(
   try {
     decoded = decode(body.text);
   } catch (cause) {
-    throw new DbzzError("malformed", "malformed request body", { cause });
+    throw new AckerDBError("malformed", "malformed request body", { cause });
   }
   return { value: parse(decoded), bytes: body.bytes };
 }
@@ -449,21 +451,21 @@ function oneByteTransportLimit(value: number, name: string): number {
 }
 
 function internalErrorResponse(cause: unknown): Response {
-  return protocolError(new DbzzError("internal", "internal server error", { cause }));
+  return protocolError(new AckerDBError("internal", "internal server error", { cause }));
 }
 
 function requireStatusScope(principal: ClientPrincipal, required: string): void {
   if (principal.kind !== "workload") {
-    throw new DbzzError("unauthorized", "status requires a workload identity");
+    throw new AckerDBError("unauthorized", "status requires a workload identity");
   }
   const claim = principal.claims.scope;
   if (typeof claim !== "string" || !claim.split(" ").includes(required)) {
-    throw new DbzzError("unauthorized", "status scope is required");
+    throw new AckerDBError("unauthorized", "status scope is required");
   }
 }
 
 /** Owns listener admission, every WebSocket Session, and graceful Runtime drain. */
-export class DbzzServer {
+export class AckerDBServer {
   readonly limits: ServiceLimits;
   readonly hostname: string;
   readonly statusScope: string;
@@ -474,15 +476,15 @@ export class DbzzServer {
   private readonly mcpHttp: McpHttpBoundary;
   private listener: Server<WsData> | null = null;
   private activeRuntime: Runtime | null = null;
-  private lifecycle: DbzzServerState = "starting";
-  private startup: DbzzStartupPhase | null = "listening";
+  private lifecycle: AckerDBServerState = "starting";
+  private startup: AckerDBStartupPhase | null = "listening";
   private connectionRejections = 0;
   private sseAckIngress = 0;
   private sseAckNoops = 0;
   private transportSampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
 
-  constructor(options: DbzzServerOptions) {
+  constructor(options: AckerDBServerOptions) {
     this.limits = defineServiceLimits(options.limits);
     this.hostname = options.hostname ?? "127.0.0.1";
     this.statusScope = configuredStatusScope(options.statusScope);
@@ -527,11 +529,11 @@ export class DbzzServer {
     }
   }
 
-  get state(): DbzzServerState {
+  get state(): AckerDBServerState {
     return this.lifecycle;
   }
 
-  get startupPhase(): DbzzStartupPhase | null {
+  get startupPhase(): AckerDBStartupPhase | null {
     return this.startup;
   }
 
@@ -545,7 +547,7 @@ export class DbzzServer {
     return port;
   }
 
-  status(): DbzzServerStatus {
+  status(): AckerDBServerStatus {
     const http = this.httpAdmission.snapshot();
     return Object.freeze({
       state: this.lifecycle,
@@ -565,7 +567,7 @@ export class DbzzServer {
   }
 
   /** Publish one monotonic, non-sensitive startup phase while the listener owns its port. */
-  advanceStartup(phase: Exclude<DbzzStartupPhase, "listening">): void {
+  advanceStartup(phase: Exclude<AckerDBStartupPhase, "listening">): void {
     if (this.lifecycle !== "starting" || this.startup === null) {
       throw new Error("server is not starting");
     }
@@ -602,7 +604,7 @@ export class DbzzServer {
     if (this.drainPromise !== null) return this.drainPromise;
     if (this.lifecycle === "stopped") return Promise.resolve();
     if (this.lifecycle === "failed") {
-      return Promise.reject(new DbzzError("unavailable", "server has failed", { resource: "connection" }));
+      return Promise.reject(new AckerDBError("unavailable", "server has failed", { resource: "connection" }));
     }
 
     // Readiness and every admission path observe this before the first await.
@@ -615,11 +617,11 @@ export class DbzzServer {
   private async fetch(request: Request, listener: Server<WsData>): Promise<Response | undefined> {
     const url = new URL(request.url);
 
-    if (url.pathname === DBZZ_HTTP_ROUTES.live && request.method === "GET") {
+    if (url.pathname === ACKERDB_HTTP_ROUTES.live && request.method === "GET") {
       const live = this.lifecycle !== "failed" && this.lifecycle !== "stopped";
       return json({ version: 1, live }, live ? 200 : 503);
     }
-    if (url.pathname === DBZZ_HTTP_ROUTES.ready && request.method === "GET") {
+    if (url.pathname === ACKERDB_HTTP_ROUTES.ready && request.method === "GET") {
       const runtimeState = this.activeRuntime?.status().state;
       const ready = this.lifecycle === "ready" && runtimeState === "ready";
       const state = this.lifecycle === "ready" && runtimeState !== "ready"
@@ -654,7 +656,7 @@ export class DbzzServer {
       );
     }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
-    if (url.pathname === DBZZ_HTTP_ROUTES.sseAck) {
+    if (url.pathname === ACKERDB_HTTP_ROUTES.sseAck) {
       if (request.method !== "POST") {
         return new Response("method not allowed", {
           status: 405,
@@ -667,7 +669,7 @@ export class DbzzServer {
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
       return protocolError(unavailableWhile(this.lifecycle));
     }
-    if (url.pathname === DBZZ_HTTP_ROUTES.status && request.method === "GET") {
+    if (url.pathname === ACKERDB_HTTP_ROUTES.status && request.method === "GET") {
       let admission: HttpAdmissionLease | undefined;
       let lease: AuthLease | undefined;
       try {
@@ -684,21 +686,21 @@ export class DbzzServer {
         admission?.release();
       }
     }
-    if (url.pathname === DBZZ_HTTP_ROUTES.websocket) {
+    if (url.pathname === ACKERDB_HTTP_ROUTES.websocket) {
       return this.upgradeWebSocket(request, listener);
     }
-    if (url.pathname === DBZZ_HTTP_ROUTES.call && request.method === "POST") {
+    if (url.pathname === ACKERDB_HTTP_ROUTES.call && request.method === "POST") {
       return this.call(request, false, this.requestSource(request, listener));
     }
-    if (url.pathname === DBZZ_HTTP_ROUTES.sse && request.method === "POST") {
+    if (url.pathname === ACKERDB_HTTP_ROUTES.sse && request.method === "POST") {
       return this.call(request, true, this.requestSource(request, listener));
     }
     if (
-      url.pathname === DBZZ_HTTP_ROUTES.live ||
-      url.pathname === DBZZ_HTTP_ROUTES.ready ||
-      url.pathname === DBZZ_HTTP_ROUTES.status ||
-      url.pathname === DBZZ_HTTP_ROUTES.call ||
-      url.pathname === DBZZ_HTTP_ROUTES.sse
+      url.pathname === ACKERDB_HTTP_ROUTES.live ||
+      url.pathname === ACKERDB_HTTP_ROUTES.ready ||
+      url.pathname === ACKERDB_HTTP_ROUTES.status ||
+      url.pathname === ACKERDB_HTTP_ROUTES.call ||
+      url.pathname === ACKERDB_HTTP_ROUTES.sse
     ) {
       return new Response("method not allowed", {
         status: 405,
@@ -763,8 +765,8 @@ export class DbzzServer {
           return new Response(body, {
             headers: {
               ...SSE_HEADERS,
-              "x-dbzz-sse-stream": streamId,
-              "x-dbzz-sse-max-stall-ms": String(runtime.limits.sse.maxStallMs),
+              "x-ackerdb-sse-stream": streamId,
+              "x-ackerdb-sse-max-stall-ms": String(runtime.limits.sse.maxStallMs),
             },
           });
         } catch (error) {
@@ -872,7 +874,7 @@ export class DbzzServer {
     if (this.lifecycle !== "ready") return protocolError(unavailableWhile(this.lifecycle));
     if (this.connections.size >= this.limits.maxConnections) {
       this.connectionRejections = Math.min(Number.MAX_SAFE_INTEGER, this.connectionRejections + 1);
-      return protocolError(new DbzzError("overloaded", "connection capacity is full", {
+      return protocolError(new AckerDBError("overloaded", "connection capacity is full", {
         retryable: true,
         retryAfterMs: 0,
         resource: "connection",
@@ -946,7 +948,7 @@ export class DbzzServer {
   private closeWebSocket(socket: ServerWebSocket<WsData>): void {
     const { data } = socket;
     this.connections.delete(data);
-    void data.session?.close(new DbzzError("unavailable", "WebSocket disconnected", {
+    void data.session?.close(new AckerDBError("unavailable", "WebSocket disconnected", {
       resource: "connection",
     }));
   }
@@ -1007,7 +1009,7 @@ export class DbzzServer {
     const listener = this.listener!;
     const runtime = this.activeRuntime;
     const deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs;
-    const reason = new DbzzError("draining", "server is draining", {
+    const reason = new AckerDBError("draining", "server is draining", {
       retryable: true,
       retryAfterMs: DRAIN_RETRY_AFTER_MS,
       resource: "connection",
@@ -1031,7 +1033,7 @@ export class DbzzServer {
         await listener.stop(true);
       });
 
-    const deadlineError = new DbzzError("deadline_exceeded", "graceful shutdown deadline exceeded", {
+    const deadlineError = new AckerDBError("deadline_exceeded", "graceful shutdown deadline exceeded", {
       resource: "connection",
     });
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -1063,11 +1065,11 @@ export class DbzzServer {
   }
 }
 
-export function serve(options: ServeOptions): DbzzServer {
+export function serve(options: ServeOptions): AckerDBServer {
   if (options.runtime.state !== "ready") {
     throw new Error("Runtime must be ready before serving");
   }
-  const server = new DbzzServer({
+  const server = new AckerDBServer({
     limits: options.runtime.limits,
     port: options.port,
     ...(options.hostname === undefined ? {} : { hostname: options.hostname }),

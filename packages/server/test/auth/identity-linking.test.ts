@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode } from "@dbzz/core";
+import { decode } from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   verifyClientCredential,
@@ -14,7 +14,7 @@ import {
 } from "../../src/auth/credentials.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { procedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
@@ -117,7 +117,7 @@ class LinkingVerifier implements CredentialVerifier {
     this.verifiedInsideWriter.push(this.engine.writer.inTransaction);
     const credential = this.credentials.get(rawBearerToken);
     if (credential === undefined) {
-      throw new DbzzError("unauthenticated", "invalid credential");
+      throw new AckerDBError("unauthenticated", "invalid credential");
     }
     return credential;
   }
@@ -137,7 +137,7 @@ interface Harness {
 const harnesses: Harness[] = [];
 
 function open(): Harness {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-identity-linking-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-linking-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const verifier = new LinkingVerifier(engine);
@@ -199,8 +199,8 @@ async function invoke(
 function directoryCounts(engine: Engine): { identities: bigint; accounts: bigint } {
   return engine.writer
     .query(`SELECT
-      (SELECT COUNT(*) FROM _dbzz_identities) AS identities,
-      (SELECT COUNT(*) FROM _dbzz_identity_accounts) AS accounts`)
+      (SELECT COUNT(*) FROM _ackerdb_identities) AS identities,
+      (SELECT COUNT(*) FROM _ackerdb_identity_accounts) AS accounts`)
     .get() as { identities: bigint; accounts: bigint };
 }
 
@@ -289,7 +289,7 @@ describe("explicit provider-neutral account linking", () => {
     const { engine, runtime, verifier } = open();
     const alice = await authenticate(runtime, verifier, "alice-a");
     engine.writer.exec(`CREATE TEMP TRIGGER fail_identity_link
-      AFTER INSERT ON _dbzz_identity_accounts
+      AFTER INSERT ON _ackerdb_identity_accounts
       WHEN NEW.issuer = '${ROLLBACK_ISSUER}'
       BEGIN
         SELECT RAISE(FAIL, 'forced identity link failure');

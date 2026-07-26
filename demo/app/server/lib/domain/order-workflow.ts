@@ -1,11 +1,11 @@
-import { Err, Ok, Status } from "@dbzz/core";
-import type { DatabaseWriter } from "@demo/dbzz-codegen/server";
+import { Err, Ok, Status } from "@ackerdb/core";
+import type { DatabaseWriter } from "@demo/ackerdb-codegen/server";
 import type {
   ItemStatus,
   MenuItem,
   Order,
   OrderItem,
-} from "@demo/dbzz-codegen/types";
+} from "@demo/ackerdb-codegen/types";
 import { activeMenuItem } from "./catalog.ts";
 import {
   isFinal,

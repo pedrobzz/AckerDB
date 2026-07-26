@@ -33,7 +33,7 @@ describe("the /ai subpath is isolated from the base entry", () => {
 
   test("the /ai subpath itself stays type-only over the ai package", () => {
     // The transport implements the ChatTransport contract without any AI SDK
-    // runtime import, so even /ai consumers ship no ai code through dbzz.
+    // runtime import, so even /ai consumers ship no ai code through ackerdb.
     const subpath = bundle("../../src/ai/index.ts");
     for (const marker of AI_MARKERS) {
       expect(subpath).not.toContain(marker);

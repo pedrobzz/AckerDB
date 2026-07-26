@@ -7,7 +7,7 @@ import {
   makeDbWriter,
   newWriteCollector,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 function writable(engine: Engine) {
   // Generated contexts own the public table shape; this seam exercises that

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { stableEncode } from "@dbzz/core";
+import { stableEncode } from "@ackerdb/core";
 import type { ExternalAccount, Principal } from "../auth/credentials.ts";
 
 /** Network identity used only to group anonymous transport work fairly. */

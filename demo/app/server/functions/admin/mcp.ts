@@ -1,4 +1,4 @@
-import { createMcp } from "@demo/dbzz-codegen/server";
+import { createMcp } from "@demo/ackerdb-codegen/server";
 import { advanceKitchenItem, cancelOrder } from "./tools/actions.ts";
 import { getGuests } from "./tools/guests.ts";
 import { getMenuCategories } from "./tools/menuCategories.ts";

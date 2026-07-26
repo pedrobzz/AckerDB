@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { api } from "@demo/dbzz-codegen/api";
+import { api } from "@demo/ackerdb-codegen/api";
 import {
   expectCode,
   identityOf,
@@ -170,7 +170,7 @@ test("owner tokens: create reveals the secret once, list hides it, revoke ends a
     const staff = await backend.staff();
 
     const created = await issueToken(staff, "Codex", ["read"]);
-    expect(created.token).toMatch(/^dbzz_mcp\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
+    expect(created.token).toMatch(/^ackerdb_mcp\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
     expect(created.token.split(".")[1]).toBe(created.id);
     expect(created.scopes).toEqual(["read"]);
 

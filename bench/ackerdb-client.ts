@@ -1,11 +1,11 @@
 import {
   anyApi,
   type ApplicationError,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
-  DbzzClient,
+  AckerDBClient,
   type ClientResult,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import {
   ACCOUNT_BALANCE,
   ACCOUNT_COUNT,
@@ -21,7 +21,7 @@ import {
 import { waitForBenchmarkStart } from "./process-lifecycle.ts";
 import { runWorkload } from "./workload.ts";
 
-const url = process.env.DBZZ_URL ?? "http://127.0.0.1:3311";
+const url = process.env.ACKERDB_URL ?? "http://127.0.0.1:3311";
 
 async function expectSuccess<
   Data,
@@ -34,7 +34,7 @@ async function expectSuccess<
   return result.data;
 }
 
-function connection(client: DbzzClient): BenchConnection {
+function connection(client: AckerDBClient): BenchConnection {
   return {
     search: (partition, nonce) =>
       expectSuccess(
@@ -130,9 +130,9 @@ function connection(client: DbzzClient): BenchConnection {
 }
 
 const adapter: BenchAdapter = {
-  system: "dbzz",
+  system: "ackerdb",
   connect: async (nonce, seeded) => {
-    const client = new DbzzClient({ url, credential: { kind: "anonymous" } });
+    const client = new AckerDBClient({ url, credential: { kind: "anonymous" } });
     const connected = connection(client);
     try {
       if (seeded) {
@@ -151,11 +151,11 @@ const adapter: BenchAdapter = {
           probe.balance > ACCOUNT_BALANCE * 2 ||
           probe.checksum !== expectedChecksum
         ) {
-          throw new Error(`invalid dbzz connection probe`);
+          throw new Error(`invalid ackerdb connection probe`);
         }
       } else {
         const state = await connected.accountState(nonce);
-        if (state.nonce !== nonce || state.count !== 0) throw new Error(`dbzz seed connection was not empty`);
+        if (state.nonce !== nonce || state.count !== 0) throw new Error(`ackerdb seed connection was not empty`);
       }
       return connected;
     } catch (error) {

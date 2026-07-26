@@ -8,20 +8,20 @@ describe("production profile configuration", () => {
   test("defaults to production durability with telemetry enabled", () => {
     expect(loadConfig(".", {})).toMatchObject({
       appPath: resolve("app.ts"),
-      dbDir: resolve(".dbzz"),
+      dbDir: resolve(".ackerdb"),
       durability: "production",
       telemetry: "enabled",
-      statusScope: "dbzz:status",
+      statusScope: "ackerdb:status",
     });
   });
 
   test("selects one application manifest and rejects the removed schema path", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
-      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ app: "./backend.ts" }));
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ app: "./backend.ts" }));
       expect(loadConfig(dir, {})).toMatchObject({ appPath: resolve(dir, "backend.ts") });
 
-      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ schema: "./schema.ts" }));
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ schema: "./schema.ts" }));
       expect(() => loadConfig(dir, {})).toThrow("unknown configuration field: schema");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -29,9 +29,9 @@ describe("production profile configuration", () => {
   });
 
   test("rejects unknown configuration fields", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
-      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ unexpected: true }));
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ unexpected: true }));
       expect(() => loadConfig(dir, {})).toThrow("unknown configuration field: unexpected");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -40,8 +40,8 @@ describe("production profile configuration", () => {
 
   test("accepts only the named durability and telemetry profiles", () => {
     expect(loadConfig(".", {
-      DBZZ_DURABILITY: "balanced",
-      DBZZ_TELEMETRY: "disabled",
+      ACKERDB_DURABILITY: "balanced",
+      ACKERDB_TELEMETRY: "disabled",
     })).toMatchObject({
       durability: "balanced",
       telemetry: "disabled",
@@ -49,27 +49,27 @@ describe("production profile configuration", () => {
   });
 
   test("rejects an unknown durability profile without normalization", () => {
-    expect(() => loadConfig(".", { DBZZ_DURABILITY: "Production" })).toThrow(
-      'DBZZ_DURABILITY must be exactly production or balanced; received "Production"',
+    expect(() => loadConfig(".", { ACKERDB_DURABILITY: "Production" })).toThrow(
+      'ACKERDB_DURABILITY must be exactly production or balanced; received "Production"',
     );
   });
 
   test("rejects an unknown telemetry profile without normalization", () => {
-    expect(() => loadConfig(".", { DBZZ_TELEMETRY: "off" })).toThrow(
-      'DBZZ_TELEMETRY must be exactly enabled or disabled; received "off"',
+    expect(() => loadConfig(".", { ACKERDB_TELEMETRY: "off" })).toThrow(
+      'ACKERDB_TELEMETRY must be exactly enabled or disabled; received "off"',
     );
   });
 
   test("loads external OIDC providers and one exact workload status scope", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
-      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
         statusScope: "ops:read",
         oidc: {
           providers: [{
             issuer: "https://identity.example.test",
             jwksUri: "https://identity.example.test/.well-known/jwks.json",
-            audiences: ["dbzz"],
+            audiences: ["ackerdb"],
             algorithms: ["RS256"],
             tokenType: "at+jwt",
             principalKind: "workload",
@@ -95,9 +95,9 @@ describe("production profile configuration", () => {
   });
 
   test("resolves an application credential verifier relative to the app directory", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
-      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
         credentialVerifier: "./auth/credential-verifier.ts",
       }));
 
@@ -113,9 +113,9 @@ describe("production profile configuration", () => {
   });
 
   test("rejects competing or malformed custom authentication configuration", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
-      writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
         oidc: { providers: [] },
         credentialVerifier: "./auth.ts",
       }));
@@ -124,7 +124,7 @@ describe("production profile configuration", () => {
       );
 
       for (const credentialVerifier of ["", 42, null]) {
-        writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ credentialVerifier }));
+        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ credentialVerifier }));
         expect(() => loadConfig(dir, {})).toThrow(
           "credentialVerifier must be a non-empty module path",
         );
@@ -135,10 +135,10 @@ describe("production profile configuration", () => {
   });
 
   test("rejects status scope lists and control characters", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
       for (const invalid of ["ops read", "ops\nread", ""]) {
-        writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ statusScope: invalid }));
+        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ statusScope: invalid }));
         expect(() => loadConfig(dir, {})).toThrow("statusScope must be one OAuth scope token");
       }
     } finally {
@@ -147,10 +147,10 @@ describe("production profile configuration", () => {
   });
 
   test("rejects listener ports that Bun would otherwise coerce", () => {
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-config-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
     try {
       for (const port of [-1, 0, 1.5, 65_536, "3211"]) {
-        writeFileSync(join(dir, ".dbzz.config.json"), JSON.stringify({ port }));
+        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ port }));
         expect(() => loadConfig(dir, {})).toThrow("port must be an integer from 1 through 65535");
       }
     } finally {

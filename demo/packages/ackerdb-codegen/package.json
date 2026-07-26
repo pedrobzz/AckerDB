@@ -1,5 +1,5 @@
 {
-  "name": "@demo/dbzz-codegen",
+  "name": "@demo/ackerdb-codegen",
   "private": true,
   "type": "module",
   "exports": {
@@ -11,8 +11,8 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@dbzz/core": "0.10.0",
-    "@dbzz/server": "0.10.0"
+    "@ackerdb/core": "0.10.0",
+    "@ackerdb/server": "0.10.0"
   },
   "devDependencies": {
     "typescript": "^5.9.0"

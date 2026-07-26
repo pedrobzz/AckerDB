@@ -108,7 +108,7 @@ function workload(system: SystemName): DriverResult {
 }
 
 function targets(): BenchmarkValidationTarget[] {
-  return (["dbzz", "convex", "spacetimedb"] as const).map((system) => ({ label: system, system, workload: workload(system) }));
+  return (["ackerdb", "convex", "spacetimedb"] as const).map((system) => ({ label: system, system, workload: workload(system) }));
 }
 
 describe("benchmark result validation", () => {
@@ -127,7 +127,7 @@ describe("benchmark result validation", () => {
     trial.correctness = { ok: false, errors: ["query checksum mismatch"] };
     const validation = validateBenchmarkResults(results);
     expect(validation).toMatchObject({
-      failures: [{ target: "dbzz", system: "dbzz", kind: "operation", case: "query/latency/trial-0", errors: ["query checksum mismatch", "1 request failed"] }],
+      failures: [{ target: "ackerdb", system: "ackerdb", kind: "operation", case: "query/latency/trial-0", errors: ["query checksum mismatch", "1 request failed"] }],
       integrityAnomalies: [],
     });
   });
@@ -154,7 +154,7 @@ describe("benchmark result validation", () => {
     const accountingMismatch = targets();
     accountingMismatch[0]!.workload.connections[0]!.work.attempted = 2;
     expect(validateBenchmarkResults(accountingMismatch).integrityAnomalies).toContainEqual(
-      expect.objectContaining({ target: "dbzz", system: "dbzz", message: expect.stringContaining("request accounting mismatch") }),
+      expect.objectContaining({ target: "ackerdb", system: "ackerdb", message: expect.stringContaining("request accounting mismatch") }),
     );
   });
 });

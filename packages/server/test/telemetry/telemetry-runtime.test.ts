@@ -8,7 +8,7 @@ import {
   encode,
   parseSseMessage,
   type MutationMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   Engine,
@@ -36,7 +36,7 @@ import {
   type TelemetryRecord,
   type TelemetryScheduler,
   type TelemetrySpanRecord,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 
 const PRIMARY_SESSION = "telemetry-acceptance-primary-session";
@@ -214,7 +214,7 @@ interface TestSession {
 }
 
 class RuntimeHarness {
-  readonly directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-runtime-"));
+  readonly directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-runtime-"));
   readonly engine = new Engine(schema, join(this.directory, "data.db"));
   readonly runtime: Runtime;
   private readonly sessions: TestSession[] = [];

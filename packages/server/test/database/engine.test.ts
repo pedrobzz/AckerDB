@@ -2,11 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+import { v, defineSchema, defineTable, Engine } from "@ackerdb/server";
 
 const dirs: string[] = [];
 const freshPath = () => {
-  const dir = mkdtempSync(join(tmpdir(), "dbzz-engine-"));
+  const dir = mkdtempSync(join(tmpdir(), "ackerdb-engine-"));
   dirs.push(dir);
   return join(dir, "data.db");
 };

@@ -1,15 +1,15 @@
 /**
- * The dbzz wire format: JSON plus escape objects for values JSON cannot carry.
+ * The ackerdb wire format: JSON plus escape objects for values JSON cannot carry.
  *
  *   bigint      -> { "$": "b", "v": "<decimal string>" }
  *   Uint8Array  -> { "$": "x", "v": "<base64>" }
  *   user object -> { "$": "o", "v": { ... } }   (only when it has an own "$" key)
  *
- * `undefined` fields are dropped (matching dbzz's "undefined = absent" write
+ * `undefined` fields are dropped (matching ackerdb's "undefined = absent" write
  * semantics). Non-finite numbers are rejected: they are not representable in
  * JSON and `v.float()` only admits finite values.
  *
- * This module runs on every dbzz runtime — Bun servers, browsers, and React
+ * This module runs on every ackerdb runtime — Bun servers, browsers, and React
  * Native's Hermes engine — so it is written against bare ECMAScript plus
  * `Uint8Array`: no Node `Buffer`, no `btoa`/`atob`, no text codec globals.
  */
@@ -44,7 +44,7 @@ const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 const BASE64_PAD = 0x3d; // "="
 
 // Feature-detected and captured once at load. The structural casts keep this
-// module independent of ambient lib typings: dbzz ships raw TypeScript, and a
+// module independent of ambient lib typings: ackerdb ships raw TypeScript, and a
 // consumer's tsc must not need a lib that already declares the ES Uint8Array
 // base64 API (as of TS 5.9 only the Bun type augmentations carry it).
 const NATIVE_TO_BASE64 = (

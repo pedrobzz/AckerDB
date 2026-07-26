@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { DbzzClient } from "@dbzz/client";
+import type { AckerDBClient } from "@ackerdb/client";
 import { callThroughCell, type LifetimeCell } from "../src/lifetime-call.ts";
 
 // Direct exercises of the shared queue's re-entrancy edges: snapshotting a
@@ -10,7 +10,7 @@ import { callThroughCell, type LifetimeCell } from "../src/lifetime-call.ts";
 // flushes — but the exactly-one-owner invariant is the module's, so it is
 // pinned here.
 
-const fakeClient = {} as DbzzClient;
+const fakeClient = {} as AckerDBClient;
 
 function liveCell(): LifetimeCell<string> {
   return { ref: "tools.echo", client: null, ended: false, waiters: new Set() };
@@ -34,7 +34,7 @@ describe("callThroughCell snapshot re-entrancy", () => {
       return "never";
     });
     expect(await result.catch((error) => error)).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "unavailable",
       message: "client closed",
       resource: "operation",

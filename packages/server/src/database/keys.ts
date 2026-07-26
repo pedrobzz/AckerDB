@@ -19,7 +19,7 @@
  * over-invalidation (a re-run that finds an identical result is deduped
  * before fan-out, never shipped).
  */
-import { stableEncode } from "@dbzz/core";
+import { stableEncode } from "@ackerdb/core";
 import type { TablePlan } from "./engine.ts";
 
 export function idKey(table: string, id: bigint): string {

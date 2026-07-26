@@ -6,7 +6,7 @@ import {
   type InferValidatorInput,
   type RowOf,
   type VectorValidator,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const vector: VectorValidator = v.vector(3);
 const input: InferValidatorInput<typeof vector> = [1, 2, 3] as const;

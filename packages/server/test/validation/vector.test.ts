@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 
 describe("v.vector", () => {
   test("normalizes coordinates once to canonical Float32 values", () => {

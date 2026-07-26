@@ -34,24 +34,24 @@
     "loadGeneratorResources": "same shared process-table samples, reported separately from server resources to expose client-side saturation",
     "sampleIntervalMs": 250,
     "durability": {
-      "dbzz": "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
+      "ackerdb": "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
       "convex": "current local backend native default",
       "spacetimedb": "confirmed reads explicitly enabled; standalone native durable commit log"
     },
-    "dbzzProfiles": "apples-to-apples: systems.dbzz runs telemetry=false because the comparative targets ship no equivalent always-on telemetry; telemetry cost is measured by the separate optional telemetry run (telemetry-v<version>.json), not re-proven on every release",
-    "dbzzTelemetryValidation": "the parent streams DBZZ stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; the release leg runs telemetry=false and must prove it stays entirely inactive; enabled-profile accounting is validated by the telemetry run",
+    "ackerDBProfiles": "apples-to-apples: systems.ackerdb runs telemetry=false because the comparative targets ship no equivalent always-on telemetry; telemetry cost is measured by the separate optional telemetry run (telemetry-v<version>.json), not re-proven on every release",
+    "ackerDBTelemetryValidation": "the parent streams AckerDB stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; the release leg runs telemetry=false and must prove it stays entirely inactive; enabled-profile accounting is validated by the telemetry run",
     "spacetimeQueryTransport": "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
     "subscriptionCapacity": "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery"
   },
   "executionOrder": [
-    "dbzz-telemetry-disabled",
+    "ackerdb-telemetry-disabled",
     "convex",
     "spacetimedb"
   ],
   "systems": {
-    "dbzz": {
+    "ackerdb": {
       "workload": {
-        "system": "dbzz",
+        "system": "ackerdb",
         "config": {
           "profile": "default",
           "seed": 56098,

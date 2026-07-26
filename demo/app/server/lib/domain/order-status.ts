@@ -1,4 +1,4 @@
-import type { ItemStatus, OrderItem } from "@demo/dbzz-codegen/types";
+import type { ItemStatus, OrderItem } from "@demo/ackerdb-codegen/types";
 
 export const REMINDER_DELAY_MS = 2 * 60_000;
 

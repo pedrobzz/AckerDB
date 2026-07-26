@@ -5,7 +5,7 @@ import {
   anyApi,
   type ApiFromModules,
   type ClientResult,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import {
   v,
   defineSchema,
@@ -17,12 +17,12 @@ import {
   type ProcedureBuilder,
   type QueryBuilder,
   type SseBuilder,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type { ReactNode } from "react";
 import {
   useMutation,
-  type DbzzClientError,
-} from "@dbzz/client-react";
+  type AckerDBClientError,
+} from "@ackerdb/client-react";
 
 const schema = defineSchema({});
 type Schema = typeof schema;
@@ -85,7 +85,7 @@ export function InferredMutation(): ReactNode {
   const settle = async (): Promise<void> => {
     const result = await send({ channelId: 1n, body: "hello" });
     if (!result.ok) {
-      const _error: DbzzClientError = result.error;
+      const _error: AckerDBClientError = result.error;
       void _error;
       return;
     }

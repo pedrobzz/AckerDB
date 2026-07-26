@@ -8,7 +8,7 @@ import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 
 /**
  * The Admin Chat's model factory — the single seam between the demo backend and
- * a language model, selected by the `DBZZ_DEMO_CHAT_MODEL` environment variable:
+ * a language model, selected by the `ACKERDB_DEMO_CHAT_MODEL` environment variable:
  *
  * - unset / `"gateway"` → DeepSeek V4 Flash on the Vercel AI Gateway with
  *   reasoning disabled. The gateway reads `AI_GATEWAY_API_KEY` from the
@@ -18,7 +18,7 @@ import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
  *   mechanical streaming loop under test and says nothing about answer quality.
  */
 export function createChatModel(): LanguageModel {
-  const selection = process.env.DBZZ_DEMO_CHAT_MODEL ?? "gateway";
+  const selection = process.env.ACKERDB_DEMO_CHAT_MODEL ?? "gateway";
   switch (selection) {
     case "gateway":
       return gatewayModel();
@@ -26,7 +26,7 @@ export function createChatModel(): LanguageModel {
       return mockModel();
     default:
       throw new Error(
-        `DBZZ_DEMO_CHAT_MODEL must be "gateway" or "mock", got "${selection}"`,
+        `ACKERDB_DEMO_CHAT_MODEL must be "gateway" or "mock", got "${selection}"`,
       );
   }
 }
@@ -57,7 +57,7 @@ const MOCK_USAGE = {
 
 function mockModel(): LanguageModel {
   return new MockLanguageModelV4({
-    modelId: "dbzz-demo-mock-chat",
+    modelId: "ackerdb-demo-mock-chat",
     doStream: async ({ prompt }) => {
       // streamText appends the executed tool's result as a `tool`-role message
       // before the next step. First step → call get_tables; once its result is
@@ -97,7 +97,7 @@ function mockModel(): LanguageModel {
               toolCallId: "call-get-tables",
               toolName: "get_tables",
               // Real typed JSON — booleans and numbers, not stringified scalars.
-              // dbzz's nullable tool args now emit JSON Schema type arrays, so a
+              // ackerdb's nullable tool args now emit JSON Schema type arrays, so a
               // model targets the true type and this passes strict validation.
               input: '{"activeOnly":true,"limit":50}',
             },

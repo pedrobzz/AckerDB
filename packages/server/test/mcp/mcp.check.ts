@@ -1,5 +1,5 @@
 /** Compile-time contract for schema-bound MCP tools and client API erasure. */
-import type { ApiFromModules, Identity } from "@dbzz/core";
+import type { ApiFromModules, Identity } from "@ackerdb/core";
 import {
   createMcp,
   v,
@@ -16,7 +16,7 @@ import {
   type ProcedureBuilder,
   type QueryBuilder,
   type Validator,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const schema = defineSchema({
   notes: defineTable({
@@ -302,21 +302,21 @@ const richResult = {
     mimeType: "audio/wav",
   }, {
     type: "resource",
-    resource: { uri: "dbzz://notes/1", mimeType: "text/plain", text: "note" },
+    resource: { uri: "ackerdb://notes/1", mimeType: "text/plain", text: "note" },
   }, {
     type: "resource",
     resource: {
-      uri: "dbzz://notes/2",
+      uri: "ackerdb://notes/2",
       mimeType: "application/octet-stream",
       blob: "AQID",
     },
   }, {
     type: "resource_link",
-    uri: "https://dbzz.dev/notes/1",
+    uri: "https://ackerdb.dev/notes/1",
     name: "note-one",
     title: "Note one",
     size: 3,
-    icons: [{ src: "https://dbzz.dev/note.png", sizes: ["48x48"], theme: "light" }],
+    icons: [{ src: "https://ackerdb.dev/note.png", sizes: ["48x48"], theme: "light" }],
   }],
   _meta: { request: { id: 1 } },
 } satisfies McpToolResult;

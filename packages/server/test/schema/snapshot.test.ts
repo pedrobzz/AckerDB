@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { defineSchema, defineTable, snapshotOf, v } from "@dbzz/server";
+import { defineSchema, defineTable, snapshotOf, v } from "@ackerdb/server";
 
 describe("schema snapshots", () => {
   test("records version 2 and sorted full-text targets on every table", () => {

@@ -1,10 +1,10 @@
 {
-  "name": "dbzz-fixture-expo-app",
+  "name": "ackerdb-fixture-expo-app",
   "private": true,
   "version": "1.0.0",
   "main": "index.ts",
   "dependencies": {
-    "@dbzz/client-react": "workspace:*",
+    "@ackerdb/client-react": "workspace:*",
     "expo": "~57.0.6",
     "expo-crypto": "~57.0.1",
     "react": "19.2.7",

@@ -1,6 +1,6 @@
 import { Bash, type InitialFiles } from "just-bash";
-import { v } from "@dbzz/server";
-import { mcpTool, type DatabaseReader } from "@demo/dbzz-codegen/server";
+import { v } from "@ackerdb/server";
+import { mcpTool, type DatabaseReader } from "@demo/ackerdb-codegen/server";
 import { isFinal } from "../../../lib/domain/order-status.ts";
 
 /**
@@ -132,7 +132,7 @@ Revenue by dish across all checks (cents), busiest dish first:
  * Materialization is EAGER — every file is rendered here, inside the open read
  * transaction, before the shell runs. Lazy per-file providers would query less,
  * but just-bash's sandbox lockdown blocks `globalThis.performance.now` while a
- * script executes, and dbzz's read path times its reads with `performance.now()`
+ * script executes, and ackerdb's read path times its reads with `performance.now()`
  * whenever telemetry is enabled — so any database read issued from inside
  * `exec()` dies with a SecurityViolationError (surfaced to the script as
  * ENOENT). Host reads happen out here instead, where the sandbox has no say;

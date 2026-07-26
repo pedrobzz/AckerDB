@@ -1,5 +1,6 @@
 {
-  "name": "dbzz",
+  "name": "ackerdb",
+  "description": "AckerDB - The All-in-One Back-End Framework",
   "private": true,
   "workspaces": [
     "packages/*",

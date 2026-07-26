@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { Credential } from "@dbzz/core";
+import type { Credential } from "@ackerdb/core";
 import {
   acquireAuthLease,
   assertCredentialVerifier,
@@ -16,7 +16,7 @@ import {
   type RevocationBound,
   type VerifiedCredential,
 } from "../../src/auth/credentials.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 
 const BEARER: Credential = Object.freeze({ kind: "bearer", token: "credential" });
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
@@ -45,15 +45,15 @@ function user(expiresAt: number): VerifiedCredential {
   };
 }
 
-async function dbzzRejection(promise: Promise<unknown>): Promise<DbzzError> {
+async function ackerDBRejection(promise: Promise<unknown>): Promise<AckerDBError> {
   let caught: unknown;
   try {
     await promise;
   } catch (error) {
     caught = error;
   }
-  expect(caught).toBeInstanceOf(DbzzError);
-  return caught as DbzzError;
+  expect(caught).toBeInstanceOf(AckerDBError);
+  return caught as AckerDBError;
 }
 
 interface Timer {
@@ -290,7 +290,7 @@ describe("auth lease", () => {
     expect(verifier.events).toEqual(["subscribe", "verify:credential"]);
 
     verifier.emit({ issuer: "unrelated-before-principal-is-known" });
-    const error = await dbzzRejection(pendingLease);
+    const error = await ackerDBRejection(pendingLease);
     expect(error).toMatchObject({ code: "unauthenticated", message: "credential revoked" });
     expect(error.cause).toBeUndefined();
     expect(verifier.unsubscribeCalls).toBe(1);
@@ -375,7 +375,7 @@ describe("auth lease", () => {
 
   test("preserves credential verification error mapping and cleans failures", async () => {
     const unavailableVerifier = new FakeVerifier(new Error("private verifier failure"));
-    const unavailable = await dbzzRejection(acquireAuthLease(options(unavailableVerifier, new ManualClock())));
+    const unavailable = await ackerDBRejection(acquireAuthLease(options(unavailableVerifier, new ManualClock())));
     expect(unavailable).toMatchObject({
       code: "auth_unavailable",
       message: "credential verification is temporarily unavailable",
@@ -383,13 +383,13 @@ describe("auth lease", () => {
     });
     expect(unavailableVerifier.unsubscribeCalls).toBe(1);
 
-    const denied = new DbzzError("unauthenticated", "invalid credential");
+    const denied = new AckerDBError("unauthenticated", "invalid credential");
     const deniedVerifier = new FakeVerifier(denied);
-    expect(await dbzzRejection(acquireAuthLease(options(deniedVerifier, new ManualClock())))).toBe(denied);
+    expect(await ackerDBRejection(acquireAuthLease(options(deniedVerifier, new ManualClock())))).toBe(denied);
     expect(deniedVerifier.unsubscribeCalls).toBe(1);
 
     const expiredVerifier = new FakeVerifier(user(100));
-    const expiredAtAcquisition = await dbzzRejection(
+    const expiredAtAcquisition = await ackerDBRejection(
       acquireAuthLease(options(expiredVerifier, new ManualClock(100))),
     );
     expect(expiredAtAcquisition).toMatchObject({ code: "unauthenticated", message: "invalid credential" });

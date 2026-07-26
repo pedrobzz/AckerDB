@@ -10,8 +10,8 @@ import {
   parseServerMessage,
   type CallResponse,
   type ServerMessage,
-} from "@dbzz/core";
-import type { DbzzServerStatus, RuntimeStatus } from "@dbzz/server";
+} from "@ackerdb/core";
+import type { AckerDBServerStatus, RuntimeStatus } from "@ackerdb/server";
 import {
   ProcessTreeMonitor,
   PROCESS_TREE_RSS_KIND,
@@ -96,7 +96,7 @@ interface ProcessHarness {
   readonly drained: Promise<void>;
 }
 
-type ResourceStatus = Omit<DbzzServerStatus, "runtime"> & { readonly runtime: RuntimeStatus };
+type ResourceStatus = Omit<AckerDBServerStatus, "runtime"> & { readonly runtime: RuntimeStatus };
 
 interface WsClient {
   readonly socket: WebSocket;
@@ -200,7 +200,7 @@ function spawnFixture(dir: string, port: number): ProcessHarness {
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, DBZZ_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
   }) as FixtureProcess;
   let stdout = "";
   let stderr = "";
@@ -909,9 +909,9 @@ test(
       });
       expect(paused.headers).toStartWith("HTTP/1.1 200");
       expect(paused.headers.toLowerCase()).toContain("transfer-encoding: chunked");
-      expect(paused.headers).toMatch(/\r\nx-dbzz-sse-stream: [^\r\n]+\r\n/i);
+      expect(paused.headers).toMatch(/\r\nx-ackerdb-sse-stream: [^\r\n]+\r\n/i);
       expect(paused.headers.toLowerCase()).toContain(
-        `x-dbzz-sse-max-stall-ms: ${SSE_STALL_MS}`,
+        `x-ackerdb-sse-max-stall-ms: ${SSE_STALL_MS}`,
       );
       const headerBytes = Buffer.byteLength(paused.headers);
       expect(headerBytes).toBeLessThanOrEqual(SSE_HTTP_HEADER_BYTES);
@@ -933,7 +933,7 @@ test(
       expect(budget.peakBytes).toBeLessThanOrEqual(LIMITS.sseBytesPerStream);
       expect(budget.peakBytes).toBeLessThanOrEqual(LIMITS.sseBytes);
 
-      // Reading the transport does not grant DBZZ receiver credit; no ACK
+      // Reading the transport does not grant AckerDB receiver credit; no ACK
       // endpoint is called before or after the complete bounded response.
       const wireBody = await paused.resumeAndRead();
 

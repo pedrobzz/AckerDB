@@ -1,8 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Database } from "bun:sqlite";
-import { decode, encode } from "@dbzz/core";
+import { decode, encode } from "@ackerdb/core";
 import type { Identity } from "../validation/v.ts";
-import { CorruptDatabaseError, DbzzError } from "../shared/errors.ts";
+import { CorruptDatabaseError, AckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { MCP_TOKEN_PREFIX, type ParsedMcpToken } from "./credential.ts";
 import {
@@ -11,17 +11,17 @@ import {
   type McpScopeDescriptor,
 } from "./scopes.ts";
 
-export const mcpTokenVaultOwner = Symbol("dbzz.mcpTokenVault");
+export const mcpTokenVaultOwner = Symbol("ackerdb.mcpTokenVault");
 
 export const MCP_TOKEN_INTERNAL_OBJECTS = [
   {
     type: "table" as const,
-    name: "_dbzz_mcp_tokens",
-    table: "_dbzz_mcp_tokens",
-    sql: `CREATE TABLE _dbzz_mcp_tokens (
+    name: "_ackerdb_mcp_tokens",
+    table: "_ackerdb_mcp_tokens",
+    sql: `CREATE TABLE _ackerdb_mcp_tokens (
       creation_seq INTEGER PRIMARY KEY,
       token_id TEXT NOT NULL UNIQUE CHECK (length(token_id) = 22),
-      identity INTEGER NOT NULL REFERENCES _dbzz_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      identity INTEGER NOT NULL REFERENCES _ackerdb_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
       mcp TEXT NOT NULL CHECK (length(mcp) > 0),
       secret_digest BLOB NOT NULL CHECK (length(secret_digest) = 32),
       name TEXT NOT NULL CHECK (length(name) > 0),
@@ -33,9 +33,9 @@ export const MCP_TOKEN_INTERNAL_OBJECTS = [
   },
   {
     type: "index" as const,
-    name: "ix__dbzz_mcp_tokens_owner",
-    table: "_dbzz_mcp_tokens",
-    sql: "CREATE INDEX ix__dbzz_mcp_tokens_owner ON _dbzz_mcp_tokens (identity, mcp, creation_seq)",
+    name: "ix__ackerdb_mcp_tokens_owner",
+    table: "_ackerdb_mcp_tokens",
+    sql: "CREATE INDEX ix__ackerdb_mcp_tokens_owner ON _ackerdb_mcp_tokens (identity, mcp, creation_seq)",
   },
 ] as const;
 
@@ -108,29 +108,29 @@ function digest(secret: string): Uint8Array {
 
 function validateIdentity(identity: unknown): asserts identity is Identity {
   if (typeof identity !== "bigint" || identity <= 0n) {
-    throw new DbzzError("validation", "MCP token Identity must be a positive bigint");
+    throw new AckerDBError("validation", "MCP token Identity must be a positive bigint");
   }
 }
 
 function requireIdentity(connection: Database, identity: Identity): void {
-  if (connection.query("SELECT 1 FROM _dbzz_identities WHERE identity = ?").get(identity) === null) {
-    throw new DbzzError("not_found", "Identity not found");
+  if (connection.query("SELECT 1 FROM _ackerdb_identities WHERE identity = ?").get(identity) === null) {
+    throw new AckerDBError("not_found", "Identity not found");
   }
 }
 
 function validateTokenId(tokenId: unknown): asserts tokenId is string {
   if (typeof tokenId !== "string" || !/^[A-Za-z0-9_-]{22}$/.test(tokenId)) {
-    throw new DbzzError("validation", "MCP token ID is invalid");
+    throw new AckerDBError("validation", "MCP token ID is invalid");
   }
 }
 
 function tokenName(value: unknown, maxBytes: number): string {
   if (typeof value !== "string" || value.trim() === "") {
-    throw new DbzzError("validation", "MCP token name must be non-empty");
+    throw new AckerDBError("validation", "MCP token name must be non-empty");
   }
   const name = value.trim();
   if (utf8.encode(name).byteLength > maxBytes) {
-    throw new DbzzError("validation", `MCP token name exceeds ${maxBytes} UTF-8 bytes`);
+    throw new AckerDBError("validation", `MCP token name exceeds ${maxBytes} UTF-8 bytes`);
   }
   return name;
 }
@@ -140,16 +140,16 @@ function metadata(value: unknown, maxBytes: number): {
   readonly value: Readonly<Record<string, unknown>>;
 } {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new DbzzError("validation", "MCP token metadata must be an object");
+    throw new AckerDBError("validation", "MCP token metadata must be an object");
   }
   let encoded: string;
   try {
     encoded = encode(value);
   } catch (cause) {
-    throw new DbzzError("validation", "MCP token metadata must be wire-encodable", { cause });
+    throw new AckerDBError("validation", "MCP token metadata must be wire-encodable", { cause });
   }
   if (utf8.encode(encoded).byteLength > maxBytes) {
-    throw new DbzzError("validation", `MCP token metadata exceeds ${maxBytes} UTF-8 bytes`);
+    throw new AckerDBError("validation", `MCP token metadata exceeds ${maxBytes} UTF-8 bytes`);
   }
   return { encoded, value: deepFreeze(decode(encoded) as Record<string, unknown>) };
 }
@@ -159,10 +159,10 @@ function storedScopes(encoded: string): readonly string[] {
   try {
     value = decode(encoded);
   } catch {
-    throw new CorruptDatabaseError("DBZZ MCP token scope grant is invalid");
+    throw new CorruptDatabaseError("AckerDB MCP token scope grant is invalid");
   }
   if (!isMcpScopeGrant(value)) {
-    throw new CorruptDatabaseError("DBZZ MCP token scope grant is invalid");
+    throw new CorruptDatabaseError("AckerDB MCP token scope grant is invalid");
   }
   return Object.freeze([...value]);
 }
@@ -182,7 +182,7 @@ function descriptor<Scope extends string>(
     try {
       scopes = normalizeMcpScopeGrant(scopeDescriptor, grant, "stored MCP token scopes");
     } catch {
-      throw new CorruptDatabaseError("DBZZ MCP token scope grant is invalid for its endpoint");
+      throw new CorruptDatabaseError("AckerDB MCP token scope grant is invalid for its endpoint");
     }
   }
   return Object.freeze({
@@ -196,13 +196,13 @@ function descriptor<Scope extends string>(
   }) as McpTokenDescriptor<Scope>;
 }
 
-function invalidCredential(): DbzzError {
-  return new DbzzError("unauthenticated", "invalid MCP credential");
+function invalidCredential(): AckerDBError {
+  return new AckerDBError("unauthenticated", "invalid MCP credential");
 }
 
 export function verifyMcpTokenVaultState(connection: Database): void {
   const rows = connection.query(
-    "SELECT creation_seq, token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _dbzz_mcp_tokens",
+    "SELECT creation_seq, token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at FROM _ackerdb_mcp_tokens",
   );
   for (const row of rows.iterate() as IterableIterator<StoredTokenRow>) {
     if (
@@ -224,13 +224,13 @@ export function verifyMcpTokenVaultState(connection: Database): void {
       !Number.isFinite(row.updated_at) ||
       row.updated_at < row.created_at
     ) {
-      throw new CorruptDatabaseError("DBZZ MCP token vault is invalid");
+      throw new CorruptDatabaseError("AckerDB MCP token vault is invalid");
     }
     try {
       const decoded = decode(row.metadata);
       if (decoded === null || typeof decoded !== "object" || Array.isArray(decoded)) throw new Error();
     } catch {
-      throw new CorruptDatabaseError("DBZZ MCP token vault metadata is invalid");
+      throw new CorruptDatabaseError("AckerDB MCP token vault metadata is invalid");
     }
     storedScopes(row.scopes);
   }
@@ -250,11 +250,11 @@ export class McpTokenVault {
   ): CreatedMcpToken<Scope> {
     validateIdentity(identity);
     if (input === null || typeof input !== "object" || Array.isArray(input)) {
-      throw new DbzzError("validation", "MCP token create input must be an object");
+      throw new AckerDBError("validation", "MCP token create input must be an object");
     }
     for (const key of Object.keys(input)) {
       if (key !== "name" && key !== "metadata" && !(key === "scopes" && scopeDescriptor !== undefined)) {
-        throw new DbzzError("validation", `unknown MCP token field "${key}"`);
+        throw new AckerDBError("validation", `unknown MCP token field "${key}"`);
       }
     }
     const name = tokenName(input.name, limits.maxNameBytes);
@@ -267,16 +267,16 @@ export class McpTokenVault {
     }
     requireIdentity(this.writer, identity);
     const count = this.writer
-      .query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens WHERE identity = ? AND mcp = ?")
+      .query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens WHERE identity = ? AND mcp = ?")
       .get(identity, mcp) as { readonly count: bigint };
     if (count.count >= BigInt(limits.maxTokensPerIdentity)) {
-      throw new DbzzError("overloaded", "MCP token capacity is full", { resource: "operation" });
+      throw new AckerDBError("overloaded", "MCP token capacity is full", { resource: "operation" });
     }
 
     const id = randomBytes(16).toString("base64url");
     const secret = randomBytes(32).toString("base64url");
     this.writer.query(
-      `INSERT INTO _dbzz_mcp_tokens
+      `INSERT INTO _ackerdb_mcp_tokens
         (token_id, identity, mcp, secret_digest, name, metadata, scopes, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(id, identity, mcp, digest(secret), name, normalizedMetadata.encoded, encode(scopes), now, now);
@@ -302,7 +302,7 @@ export class McpTokenVault {
     requireIdentity(connection, identity);
     const rows = connection.query(
       `SELECT creation_seq, token_id, mcp, name, metadata, scopes, created_at, updated_at
-        FROM _dbzz_mcp_tokens
+        FROM _ackerdb_mcp_tokens
         WHERE identity = ? AND mcp = ?
         ORDER BY creation_seq`,
     ).all(identity, mcp) as StoredTokenDescriptorRow[];
@@ -320,15 +320,15 @@ export class McpTokenVault {
     validateIdentity(identity);
     validateTokenId(tokenId);
     if (input === null || typeof input !== "object" || Array.isArray(input)) {
-      throw new DbzzError("validation", "MCP token update input must be an object");
+      throw new AckerDBError("validation", "MCP token update input must be an object");
     }
     const keys = Object.keys(input);
     if (keys.length === 0) {
-      throw new DbzzError("validation", "MCP token update requires name or metadata");
+      throw new AckerDBError("validation", "MCP token update requires name or metadata");
     }
     for (const key of keys) {
       if (key !== "name" && key !== "metadata") {
-        throw new DbzzError("validation", `unknown MCP token field "${key}"`);
+        throw new AckerDBError("validation", `unknown MCP token field "${key}"`);
       }
     }
     const name = Object.hasOwn(input, "name")
@@ -355,11 +355,11 @@ export class McpTokenVault {
     assignments.push("updated_at = ?");
     values.push(now, tokenId, identity, mcp);
     const result = this.writer.query(
-      `UPDATE _dbzz_mcp_tokens
+      `UPDATE _ackerdb_mcp_tokens
         SET ${assignments.join(", ")}
         WHERE token_id = ? AND identity = ? AND mcp = ?`,
     ).run(...(values as never[]));
-    if (result.changes === 0) throw new DbzzError("not_found", "MCP token not found");
+    if (result.changes === 0) throw new AckerDBError("not_found", "MCP token not found");
   }
 
   updateScopes<Scope extends string>(
@@ -374,10 +374,10 @@ export class McpTokenVault {
     validateTokenId(tokenId);
     const scopes = normalizeMcpScopeGrant(scopeDescriptor, value, "MCP token scopes");
     const stored = this.writer.query(
-      `SELECT scopes FROM _dbzz_mcp_tokens
+      `SELECT scopes FROM _ackerdb_mcp_tokens
         WHERE token_id = ? AND identity = ? AND mcp = ?`,
     ).get(tokenId, identity, mcp) as Pick<StoredTokenRow, "scopes"> | null;
-    if (stored === null) throw new DbzzError("not_found", "MCP token not found");
+    if (stored === null) throw new AckerDBError("not_found", "MCP token not found");
     let previous: readonly Scope[];
     try {
       previous = normalizeMcpScopeGrant(
@@ -386,14 +386,14 @@ export class McpTokenVault {
         "stored MCP token scopes",
       );
     } catch {
-      throw new CorruptDatabaseError("DBZZ MCP token scope grant is invalid for its endpoint");
+      throw new CorruptDatabaseError("AckerDB MCP token scope grant is invalid for its endpoint");
     }
     const result = this.writer.query(
-      `UPDATE _dbzz_mcp_tokens
+      `UPDATE _ackerdb_mcp_tokens
         SET scopes = ?, updated_at = ?
         WHERE token_id = ? AND identity = ? AND mcp = ?`,
     ).run(encode(scopes), now, tokenId, identity, mcp);
-    if (result.changes === 0) throw new DbzzError("not_found", "MCP token not found");
+    if (result.changes === 0) throw new AckerDBError("not_found", "MCP token not found");
     const next = new Set(scopes);
     return previous.some((scope) => !next.has(scope));
   }
@@ -403,9 +403,9 @@ export class McpTokenVault {
     validateTokenId(tokenId);
     requireIdentity(this.writer, identity);
     const result = this.writer.query(
-      "DELETE FROM _dbzz_mcp_tokens WHERE token_id = ? AND identity = ? AND mcp = ?",
+      "DELETE FROM _ackerdb_mcp_tokens WHERE token_id = ? AND identity = ? AND mcp = ?",
     ).run(tokenId, identity, mcp);
-    if (result.changes === 0) throw new DbzzError("not_found", "MCP token not found");
+    if (result.changes === 0) throw new AckerDBError("not_found", "MCP token not found");
   }
 
   authenticate(
@@ -415,7 +415,7 @@ export class McpTokenVault {
     scopeDescriptor: McpScopeDescriptor | undefined,
   ): Readonly<{ identity: Identity; tokenId: string; scopes: readonly string[] }> {
     const row = connection.query(
-      "SELECT identity, mcp, secret_digest, scopes FROM _dbzz_mcp_tokens WHERE token_id = ?",
+      "SELECT identity, mcp, secret_digest, scopes FROM _ackerdb_mcp_tokens WHERE token_id = ?",
     ).get(parsed.id) as Pick<StoredTokenRow, "identity" | "mcp" | "secret_digest" | "scopes"> | null;
     const expected = row?.secret_digest ?? DUMMY_DIGEST;
     const matches = expected.byteLength === 32 && timingSafeEqual(digest(parsed.secret), expected);

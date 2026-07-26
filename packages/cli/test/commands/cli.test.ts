@@ -4,8 +4,8 @@ import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
-import { DbzzClient } from "@dbzz/client";
-import type { CredentialVerifier } from "@dbzz/server";
+import { AckerDBClient } from "@ackerdb/client";
+import type { CredentialVerifier } from "@ackerdb/server";
 import { startApp } from "../../src/app/start.ts";
 import { runCodegen } from "../../src/app/codegen.ts";
 import { loadConfig } from "../../src/app/config.ts";
@@ -88,13 +88,13 @@ const fixture = (port: number) => {
     "app.ts": FIXTURE_APP,
     "functions/messages.ts": FIXTURE_MESSAGES,
     "functions/admin/users.ts": FIXTURE_ADMIN_USERS,
-    ".dbzz.config.json": JSON.stringify({ port }),
+    ".ackerdb.config.json": JSON.stringify({ port }),
   });
   dirs.push(dir);
   return dir;
 };
 
-const clientFor = (port: number) => new DbzzClient({
+const clientFor = (port: number) => new AckerDBClient({
   url: `http://127.0.0.1:${port}`,
   credential: { kind: "anonymous" },
 });
@@ -113,7 +113,7 @@ export const current = procedure({
 `;
 
 const CREDENTIAL_VERIFIER_MODULE = `
-import type { CredentialVerifier } from "@dbzz/server";
+import type { CredentialVerifier } from "@ackerdb/server";
 
 const verifier = {
   revocationBound: { kind: "token-expiration" },
@@ -150,15 +150,15 @@ const verifierFor = (subject: string): CredentialVerifier => ({
   subscribeInvalidation: () => () => {},
 });
 
-const authenticatedClientFor = (port: number) => new DbzzClient({
+const authenticatedClientFor = (port: number) => new AckerDBClient({
   url: `http://127.0.0.1:${port}`,
   credential: { kind: "bearer", token: "accepted-token" },
 });
 
 function shutdownMarker(dir: string): bigint {
-  const db = new Database(join(dir, ".dbzz", "data.db"), { readonly: true, safeIntegers: true });
+  const db = new Database(join(dir, ".ackerdb", "data.db"), { readonly: true, safeIntegers: true });
   try {
-    return (db.query("SELECT clean_shutdown FROM _dbzz_state WHERE singleton = 1").get() as {
+    return (db.query("SELECT clean_shutdown FROM _ackerdb_state WHERE singleton = 1").get() as {
       clean_shutdown: bigint;
     }).clean_shutdown;
   } finally {
@@ -175,7 +175,7 @@ function within<T>(work: Promise<T>, label: string): Promise<T> {
   ]);
 }
 
-describe("dbzz CLI", () => {
+describe("ackerdb CLI", () => {
   test("start loads a configured verifier and preserves the bearer user's durable Identity", async () => {
     const port = freePort();
     const dir = makeFixture({
@@ -183,14 +183,14 @@ describe("dbzz CLI", () => {
       "functions/identity.ts": IDENTITY_PROCEDURE,
       "functions/messages.ts": FIXTURE_MESSAGES,
       "credential-verifier.ts": CREDENTIAL_VERIFIER_MODULE,
-      ".dbzz.config.json": JSON.stringify({
+      ".ackerdb.config.json": JSON.stringify({
         port,
         credentialVerifier: "./credential-verifier.ts",
       }),
     });
     dirs.push(dir);
 
-    const first = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    const first = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
     await first.waitFor("ready on");
     const firstClient = authenticatedClientFor(port);
     const firstIdentity = mustOk(
@@ -203,7 +203,7 @@ describe("dbzz CLI", () => {
     first.child.kill("SIGTERM");
     expect(await first.child.exited).toBe(0);
 
-    const second = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    const second = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
     await second.waitFor("ready on");
     const secondClient = authenticatedClientFor(port);
     expect(
@@ -225,10 +225,10 @@ describe("dbzz CLI", () => {
       "app.ts": FIXTURE_APP,
       "functions/identity.ts": IDENTITY_PROCEDURE,
       "functions/messages.ts": FIXTURE_MESSAGES,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
-    const config = loadConfig(dir, { DBZZ_TELEMETRY: "disabled" });
+    const config = loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" });
     const credentialVerifier = verifierFor("injected-user");
     const app = await startApp(config, { prepare: runCodegen, credentialVerifier });
     try {
@@ -261,14 +261,14 @@ describe("dbzz CLI", () => {
     const dir = makeFixture({
       "app.ts": FIXTURE_APP,
       "credential-verifier.ts": "export default { revocationBound: { kind: 'token-expiration' } };",
-      ".dbzz.config.json": JSON.stringify({
+      ".ackerdb.config.json": JSON.stringify({
         port,
         credentialVerifier: "./credential-verifier.ts",
       }),
     });
     dirs.push(dir);
 
-    await expect(startApp(loadConfig(dir, { DBZZ_TELEMETRY: "disabled" }))).rejects.toThrow(
+    await expect(startApp(loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }))).rejects.toThrow(
       "must implement verify(credential)",
     );
 
@@ -286,7 +286,7 @@ describe("dbzz CLI", () => {
     const started = spawnCli(["start", dir]);
     await started.waitFor("ready on");
     expect(started.output()).toContain(
-      '@@dbzz-startup {"telemetry":"enabled","durability":"production"}',
+      '@@ackerdb-startup {"telemetry":"enabled","durability":"production"}',
     );
     expect(existsSync(join(dir, "_generated", "api.ts"))).toBe(true);
 
@@ -311,15 +311,15 @@ describe("dbzz CLI", () => {
     started.child.kill("SIGTERM");
     expect(await started.child.exited).toBe(0);
 
-    const database = join(dir, ".dbzz", "data.db");
-    const unrelated = join(dir, ".dbzz", "keep-me");
+    const database = join(dir, ".ackerdb", "data.db");
+    const unrelated = join(dir, ".ackerdb", "keep-me");
     expect(existsSync(database)).toBe(true);
     writeFileSync(unrelated, "unrelated");
     const reset = spawnCli(["reset", dir]);
     await reset.child.exited;
     expect(reset.output()).toContain("coordination retained");
     expect(existsSync(database)).toBe(false);
-    expect(existsSync(`${database}.dbzz-coordination`)).toBe(true);
+    expect(existsSync(`${database}.ackerdb-coordination`)).toBe(true);
     expect(readFileSync(unrelated, "utf8")).toBe("unrelated");
   });
 
@@ -327,14 +327,14 @@ describe("dbzz CLI", () => {
     const port = freePort();
     const dir = fixture(port);
     const started = spawnCli(["start", dir], {
-      DBZZ_DURABILITY: "balanced",
-      DBZZ_TELEMETRY: "disabled",
+      ACKERDB_DURABILITY: "balanced",
+      ACKERDB_TELEMETRY: "disabled",
     });
     const output = await started.waitFor("ready on");
-    const marker = '@@dbzz-startup {"telemetry":"disabled","durability":"balanced"}';
-    expect(output.split("@@dbzz-startup")).toHaveLength(2);
+    const marker = '@@ackerdb-startup {"telemetry":"disabled","durability":"balanced"}';
+    expect(output.split("@@ackerdb-startup")).toHaveLength(2);
     expect(output.indexOf(marker)).toBeGreaterThanOrEqual(0);
-    expect(output.indexOf(marker)).toBeLessThan(output.indexOf("[dbzz] ready on"));
+    expect(output.indexOf(marker)).toBeLessThan(output.indexOf("[ackerdb] ready on"));
     expect(await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).toEqual({
       version: 1,
       ready: true,
@@ -349,14 +349,14 @@ describe("dbzz CLI", () => {
     const port = freePort();
     const dir = makeFixture({
       "app.ts": `
-        import { v, defineApp, defineSchema, defineTable } from "@dbzz/server";
+        import { v, defineApp, defineSchema, defineTable } from "@ackerdb/server";
         const schema = defineSchema({ records: defineTable({ id: v.primaryKey() }) });
         export default defineApp({ schema });
       `,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
-    const config = loadConfig(dir, { DBZZ_TELEMETRY: "disabled" });
+    const config = loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" });
     const failed = await startApp(config);
     const failure = new Error("injected drain failure");
     const drainServer = failed.server.drain.bind(failed.server);
@@ -389,7 +389,7 @@ describe("dbzz CLI", () => {
 while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
 ${FIXTURE_APP}`,
     );
-    const started = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    const started = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
 
     const deadline = Date.now() + 5_000;
     let starting: Response | undefined;
@@ -461,7 +461,7 @@ ${FIXTURE_APP}`,
 while (!existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
 ${FIXTURE_APP}`,
     );
-    const started = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    const started = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
 
     const deadline = Date.now() + 5_000;
     let observedStartup = false;
@@ -486,7 +486,7 @@ ${FIXTURE_APP}`,
     ]);
     expect(exitCode).toBe(0);
     await started.drained;
-    expect(started.output()).not.toContain("@@dbzz-startup");
+    expect(started.output()).not.toContain("@@ackerdb-startup");
     expect(started.output()).not.toContain("ready on");
 
     const rebound = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response("ok") });
@@ -496,13 +496,13 @@ ${FIXTURE_APP}`,
   test("a startup failure releases Runtime and storage ownership before retry", async () => {
     const reservation = await reservePort();
     const dir = fixture(reservation.port);
-    const failed = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    const failed = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
     expect(await failed.child.exited).toBe(1);
     await failed.drained;
-    expect(failed.output()).not.toContain("@@dbzz-startup");
+    expect(failed.output()).not.toContain("@@ackerdb-startup");
 
     await reservation.release();
-    const retried = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    const retried = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
     await retried.waitFor("ready on");
     retried.child.kill("SIGTERM");
     expect(await retried.child.exited).toBe(0);
@@ -511,19 +511,19 @@ ${FIXTURE_APP}`,
   test("start exits without readiness when the live database schema is corrupt", async () => {
     const port = freePort();
     const dir = fixture(port);
-    const first = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    const first = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
     await first.waitFor("ready on");
     first.child.kill("SIGTERM");
     expect(await first.child.exited).toBe(0);
 
-    const db = new Database(join(dir, ".dbzz", "data.db"));
+    const db = new Database(join(dir, ".ackerdb", "data.db"));
     db.exec("DROP INDEX ix_messages_s_n_b_9_channelId");
     db.close();
 
-    const failed = spawnCli(["start", dir], { DBZZ_TELEMETRY: "disabled" });
+    const failed = spawnCli(["start", dir], { ACKERDB_TELEMETRY: "disabled" });
     expect(await failed.child.exited).toBe(1);
     await failed.drained;
-    expect(failed.output()).not.toContain("@@dbzz-startup");
+    expect(failed.output()).not.toContain("@@ackerdb-startup");
     expect(failed.output()).not.toContain("ready on");
   }, 20_000);
 

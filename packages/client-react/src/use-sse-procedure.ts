@@ -1,9 +1,9 @@
 import {
-  DbzzClientError,
+  AckerDBClientError,
   getRef,
-  type DbzzCallOptions,
+  type AckerDBCallOptions,
   type SseRef,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import { useCallback } from "react";
 import { useProviderClient } from "./provider.tsx";
 import { erroredReadableStream, sseReadableStream } from "./sse-stream.ts";
@@ -14,7 +14,7 @@ import { erroredReadableStream, sseReadableStream } from "./sse-stream.ts";
  */
 export type SseProcedureCall<A, Chunk> = (
   args: A,
-  options?: DbzzCallOptions,
+  options?: AckerDBCallOptions,
 ) => ReadableStream<Chunk>;
 
 /**
@@ -41,7 +41,7 @@ export function useSseProcedure<A, Chunk>(
         // rendering) there is no client to stream from; report the same
         // typed error channel every other stream failure uses.
         return erroredReadableStream(
-          new DbzzClientError({
+          new AckerDBClientError({
             code: "unavailable",
             retryable: false,
             message: "the provider has not created its client yet",

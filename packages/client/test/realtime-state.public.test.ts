@@ -9,13 +9,13 @@ import {
   type MutationOkMessage,
   type SubscriptionCursor,
   type SubscriptionTransition,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
-  DbzzClient,
-  type DbzzClientClock,
-  type DbzzWebSocket,
-  type DbzzWebSocketFactory,
-} from "@dbzz/client";
+  AckerDBClient,
+  type AckerDBClientClock,
+  type AckerDBWebSocket,
+  type AckerDBWebSocketFactory,
+} from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -34,7 +34,7 @@ import {
   type RuntimeHooks,
   type VerifiedCredential,
   type VerifiedUserCredential,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import {
   FrameProxy,
   assertTcpPortReleased,
@@ -61,7 +61,7 @@ interface ClockTask {
   readonly intervalMs?: number;
 }
 
-class ReconnectClock implements DbzzClientClock {
+class ReconnectClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
   private readonly changes = new Set<() => void>();
@@ -201,14 +201,14 @@ interface InterceptedWrite {
   readonly message: ClientMessage;
 }
 
-class InterceptingSocket implements DbzzWebSocket {
+class InterceptingSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
   onerror: (() => void) | null = null;
 
   constructor(
-    private readonly socket: DbzzWebSocket,
+    private readonly socket: AckerDBWebSocket,
     private readonly sendText: (text: string) => boolean,
   ) {
     socket.onopen = () => this.onopen?.();
@@ -236,8 +236,8 @@ class BeforeWriteController {
 
   constructor(private readonly proxy: FrameProxy) {}
 
-  readonly factory: DbzzWebSocketFactory = (url) => {
-    const socket = new WebSocket(url) as unknown as DbzzWebSocket;
+  readonly factory: AckerDBWebSocketFactory = (url) => {
+    const socket = new WebSocket(url) as unknown as AckerDBWebSocket;
     return new InterceptingSocket(socket, (text) => this.send(text));
   };
 
@@ -284,7 +284,7 @@ class TestVerifier implements CredentialVerifier {
       return { ...common, kind: "user", claims: { role: "member" } } satisfies VerifiedUserCredential;
     }
     if (token === "status") {
-      return { ...common, kind: "workload", claims: { scope: "dbzz:status" } };
+      return { ...common, kind: "workload", claims: { scope: "ackerdb:status" } };
     }
     throw new Error("unknown test credential");
   }
@@ -323,8 +323,8 @@ interface PublicApp {
   readonly clock: ReconnectClock;
   readonly proxy: FrameProxy;
   readonly beforeWrite: BeforeWriteController;
-  readonly client: DbzzClient;
-  readonly observer: DbzzClient;
+  readonly client: AckerDBClient;
+  readonly observer: AckerDBClient;
   readonly base: string;
   close(): Promise<void>;
 }
@@ -333,7 +333,7 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
   const snapshotGate = new OneShotGate();
   const mutationGate = new OneShotGate();
   const commitGate = new OneShotGate();
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-realtime-public-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-realtime-public-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const registry = new Registry({
@@ -398,7 +398,7 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
   const clock = new ReconnectClock();
   const beforeWrite = new BeforeWriteController(proxy);
-  const client = new DbzzClient({
+  const client = new AckerDBClient({
     url: proxy.url,
     credential: { kind: "bearer", token: "alice" },
     clientSessionId: `public-transition-${crypto.randomUUID()}`,
@@ -411,7 +411,7 @@ async function createPublicApp(options: PublicAppOptions = {}): Promise<PublicAp
     },
     createWebSocket: beforeWrite.factory,
   });
-  const observer = new DbzzClient({
+  const observer = new AckerDBClient({
     url: base,
     credential: { kind: "anonymous" },
     clientSessionId: `observer-${crypto.randomUUID()}`,

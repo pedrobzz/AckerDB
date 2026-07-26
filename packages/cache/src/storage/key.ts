@@ -31,7 +31,7 @@ export function encodeCacheKey(
   key: CacheKey,
 ): string {
   const [type, text] = keyParts(key);
-  const suffix = `dbzz-cache:v1|${frame(mount)}|${frame(namespace)}|${type}|${frame(text)}`;
+  const suffix = `ackerdb-cache:v1|${frame(mount)}|${frame(namespace)}|${type}|${frame(text)}`;
   return keyPrefix === "" ? suffix : `${keyPrefix}|${suffix}`;
 }
 

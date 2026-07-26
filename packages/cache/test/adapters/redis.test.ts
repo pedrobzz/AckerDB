@@ -1,7 +1,7 @@
 import { Buffer } from "node:buffer";
 import { RedisClient } from "bun";
 import { describe, expect, spyOn, test } from "bun:test";
-import type { PluginCleanup, PluginExportTree } from "@dbzz/server";
+import type { PluginCleanup, PluginExportTree } from "@ackerdb/server";
 import { CacheStoreError, cachePlugin } from "../../src/index.ts";
 import { redisCacheStore } from "../../src/adapters/redis.ts";
 

@@ -18,18 +18,18 @@ import {
   type ClientMessage,
   type LiveEventCursor,
   type ServerMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import type {
   ClientResult,
-  DbzzClientClock,
-  DbzzLiveEvent,
-  DbzzWebSocket,
+  AckerDBClientClock,
+  AckerDBLiveEvent,
+  AckerDBWebSocket,
   EventRef,
   MutationRef,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { DbzzProviderConfig } from "@dbzz/client-react";
+import type { AckerDBProviderConfig } from "@ackerdb/client-react";
 
 // The native entry composes the Expo/React Native platform modules, which
 // only exist inside a React Native app; mocks stand in for all three. The
@@ -46,7 +46,7 @@ mock.module("expo-crypto", () => ({
   },
 }));
 
-const { DbzzProvider, useConnectionState, useEvent, useMutation } = await import(
+const { AckerDBProvider, useConnectionState, useEvent, useMutation } = await import(
   "../src/index.native.ts"
 );
 
@@ -56,7 +56,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
   private time = 1_700_000_000_000;
@@ -86,7 +86,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -138,7 +138,7 @@ const SESSION = "native-suspension-session";
 interface Harness {
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  readonly config: DbzzProviderConfig;
+  readonly config: AckerDBProviderConfig;
   live(): FakeSocket;
 }
 
@@ -263,9 +263,9 @@ describe("useMutation across native AppState suspension", () => {
     await render(
       root,
       <StrictMode>
-        <DbzzProvider config={harness.config}>
+        <AckerDBProvider config={harness.config}>
           <MutationProbe />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
     await act(async () => {
@@ -321,9 +321,9 @@ describe("useMutation across native AppState suspension", () => {
     await render(
       root,
       <StrictMode>
-        <DbzzProvider config={harness.config}>
+        <AckerDBProvider config={harness.config}>
           <MutationProbe />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
     await act(async () => {
@@ -361,7 +361,7 @@ describe("useMutation across native AppState suspension", () => {
 });
 
 interface EventProbeProps {
-  readonly onEvent: (event: DbzzLiveEvent<PingRow>) => void;
+  readonly onEvent: (event: AckerDBLiveEvent<PingRow>) => void;
 }
 
 function EventProbe({ onEvent }: EventProbeProps): ReactNode {
@@ -377,13 +377,13 @@ describe("useEvent across native AppState suspension", () => {
     const harness = createHarness();
     const container = mountPoint();
     const root = createRoot(container);
-    const events: DbzzLiveEvent<PingRow>[] = [];
+    const events: AckerDBLiveEvent<PingRow>[] = [];
     await render(
       root,
       <StrictMode>
-        <DbzzProvider config={harness.config}>
+        <AckerDBProvider config={harness.config}>
           <EventProbe onEvent={(event) => events.push(event)} />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
     const first = harness.live();
@@ -448,13 +448,13 @@ describe("useEvent across native AppState suspension", () => {
     const harness = createHarness();
     const container = mountPoint();
     const root = createRoot(container);
-    const events: DbzzLiveEvent<PingRow>[] = [];
+    const events: AckerDBLiveEvent<PingRow>[] = [];
     await render(
       root,
       <StrictMode>
-        <DbzzProvider config={harness.config}>
+        <AckerDBProvider config={harness.config}>
           <EventProbe onEvent={(event) => events.push(event)} />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
     const first = harness.live();

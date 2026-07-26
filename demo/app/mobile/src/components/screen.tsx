@@ -1,4 +1,4 @@
-import { useConnectionState } from "@dbzz/client-react";
+import { useConnectionState } from "@ackerdb/client-react";
 import { router } from "expo-router";
 import type { ReactNode } from "react";
 import {

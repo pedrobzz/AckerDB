@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, encode } from "@dbzz/core";
+import { PROTOCOL_VERSION, encode } from "@ackerdb/core";
 import type { UserPrincipal } from "../../src/auth/credentials.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import { v } from "../../src/validation/v.ts";
@@ -111,7 +111,7 @@ afterEach(async () => {
 });
 
 function fixture(): { runtime: Runtime } {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-recompute-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-recompute-"));
   directories.push(directory);
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);

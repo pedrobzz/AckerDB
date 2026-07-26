@@ -3,11 +3,11 @@
 import {
   useAuthentication,
   type Credential,
-  type DbzzAuthentication,
-  type DbzzAuthenticationState,
+  type AckerDBAuthentication,
+  type AckerDBAuthenticationState,
   type Identity,
   type UseAuthenticationResult,
-} from "@dbzz/client-react";
+} from "@ackerdb/client-react";
 import type { ReactNode } from "react";
 
 function assertNever(value: never): never {
@@ -16,7 +16,7 @@ function assertNever(value: never): never {
 
 // --- state exhaustiveness -----------------------------------------------------
 
-function describeAuthentication(state: DbzzAuthenticationState): string {
+function describeAuthentication(state: AckerDBAuthenticationState): string {
   switch (state.phase) {
     case "authenticating":
       return state.credential;
@@ -35,7 +35,7 @@ function describeAuthentication(state: DbzzAuthenticationState): string {
   }
 }
 
-function missesBlockedPhases(state: DbzzAuthenticationState): string {
+function missesBlockedPhases(state: AckerDBAuthenticationState): string {
   switch (state.phase) {
     case "authenticating":
     case "unauthenticated":
@@ -48,7 +48,7 @@ function missesBlockedPhases(state: DbzzAuthenticationState): string {
   }
 }
 
-function describeConfirmed(authentication: DbzzAuthentication): string {
+function describeConfirmed(authentication: AckerDBAuthentication): string {
   switch (authentication.principal) {
     case "anonymous":
       // @ts-expect-error anonymous state cannot carry a user Identity
@@ -78,34 +78,34 @@ function describeConfirmed(authentication: DbzzAuthentication): string {
 }
 
 // @ts-expect-error system principals are local-only and cannot enter client state
-const systemAuthentication: DbzzAuthentication = { authEpoch: 0, principal: "system" };
+const systemAuthentication: AckerDBAuthentication = { authEpoch: 0, principal: "system" };
 void systemAuthentication;
 
 // --- per-phase payloads -------------------------------------------------------
 
-declare const authenticating: Extract<DbzzAuthenticationState, { phase: "authenticating" }>;
+declare const authenticating: Extract<AckerDBAuthenticationState, { phase: "authenticating" }>;
 authenticating.credential satisfies "anonymous" | "bearer";
 // @ts-expect-error only failure phases carry an error
 authenticating.error;
 // @ts-expect-error only confirmed phases carry an authentication
 authenticating.authentication;
 
-declare const authenticated: Extract<DbzzAuthenticationState, { phase: "authenticated" }>;
+declare const authenticated: Extract<AckerDBAuthenticationState, { phase: "authenticated" }>;
 authenticated.authentication.authEpoch satisfies number;
 authenticated.authentication.principal satisfies "user" | "workload";
 // @ts-expect-error an authenticated phase can never carry the anonymous descriptor
-authenticated.authentication satisfies Extract<DbzzAuthentication, { principal: "anonymous" }>;
+authenticated.authentication satisfies Extract<AckerDBAuthentication, { principal: "anonymous" }>;
 // @ts-expect-error a confirmed principal carries no error
 authenticated.error;
 
-declare const unauthenticated: Extract<DbzzAuthenticationState, { phase: "unauthenticated" }>;
+declare const unauthenticated: Extract<AckerDBAuthenticationState, { phase: "unauthenticated" }>;
 unauthenticated.authentication.principal satisfies "anonymous";
 // @ts-expect-error an anonymous phase never exposes user Identity
 void unauthenticated.authentication.identity;
 // @ts-expect-error an anonymous phase never exposes credential provenance
 void unauthenticated.authentication.provenance;
 
-declare const blocked: Extract<DbzzAuthenticationState, { phase: "refresh-required" }>;
+declare const blocked: Extract<AckerDBAuthenticationState, { phase: "refresh-required" }>;
 blocked.error.code satisfies string;
 blocked.error.retryable satisfies boolean;
 // @ts-expect-error a blocked client has no confirmed authentication
@@ -116,11 +116,11 @@ blocked.authentication;
 function Operations(): ReactNode {
   const { state, refresh, signOut } = useAuthentication();
   const result: UseAuthenticationResult = useAuthentication();
-  const observed: DbzzAuthenticationState = state;
+  const observed: AckerDBAuthenticationState = state;
 
-  const bearer: Promise<DbzzAuthentication> = refresh({ kind: "bearer", token: "token-a" });
-  const anonymous: Promise<DbzzAuthentication> = refresh({ kind: "anonymous" });
-  const signedOut: Promise<DbzzAuthentication> = signOut();
+  const bearer: Promise<AckerDBAuthentication> = refresh({ kind: "bearer", token: "token-a" });
+  const anonymous: Promise<AckerDBAuthentication> = refresh({ kind: "anonymous" });
+  const signedOut: Promise<AckerDBAuthentication> = signOut();
 
   // @ts-expect-error refresh requires a credential
   refresh();

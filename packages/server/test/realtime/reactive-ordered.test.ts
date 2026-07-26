@@ -4,9 +4,9 @@ import type {
   Outcome,
   SubscriptionCursor,
   SubscriptionTransition,
-} from "@dbzz/core";
-import { stableEncode } from "@dbzz/core";
-import { DbzzError } from "../../src/shared/errors.ts";
+} from "@ackerdb/core";
+import { stableEncode } from "@ackerdb/core";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {
   OrderedReactive,
@@ -1181,7 +1181,7 @@ describe("ordered reactive ownership", () => {
     const reactive = new OrderedReactive({
       generation: generationSequence(),
       evaluate: async () => {
-        if (authFailure) throw new DbzzError("unauthorized", "Room access was revoked");
+        if (authFailure) throw new AckerDBError("unauthorized", "Room access was revoked");
         return evaluation("visible", version, "messages");
       },
     });

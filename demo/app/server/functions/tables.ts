@@ -1,6 +1,6 @@
-import { Err, Status } from "@dbzz/core";
-import { v } from "@dbzz/server";
-import { mutation, query } from "@demo/dbzz-codegen/server";
+import { Err, Status } from "@ackerdb/core";
+import { v } from "@ackerdb/server";
+import { mutation, query } from "@demo/ackerdb-codegen/server";
 import { requireUser, staffAccess } from "../lib/access.ts";
 import { currentUser } from "../lib/domain/guests.ts";
 import { openOrderForTable } from "../lib/domain/orders.ts";

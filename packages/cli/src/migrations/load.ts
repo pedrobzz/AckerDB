@@ -27,7 +27,7 @@ import {
   type Migration,
   type MigrationStep,
   type SchemaSnapshot,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type { AppConfig } from "../app/config.ts";
 
 /** The one grammar a migration's name obeys, everywhere it is asked for or parsed. */

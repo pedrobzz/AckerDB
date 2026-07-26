@@ -10,23 +10,23 @@ import {
   type Credential,
   type Identity,
   type ServerMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import type {
-  DbzzAuthentication,
-  DbzzAuthenticationState,
-  DbzzClientClock,
-  DbzzClientError,
-  DbzzWebSocket,
-} from "@dbzz/client";
+  AckerDBAuthentication,
+  AckerDBAuthenticationState,
+  AckerDBClientClock,
+  AckerDBClientError,
+  AckerDBWebSocket,
+} from "@ackerdb/client";
 import { StrictMode, act, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
-  DbzzProvider,
+  AckerDBProvider,
   useAuthentication,
   useConnectionState,
-  type DbzzProviderConfig,
+  type AckerDBProviderConfig,
   type UseAuthenticationResult,
-} from "@dbzz/client-react";
+} from "@ackerdb/client-react";
 
 const SESSION_ID = "react-auth-session";
 const USER_AUTHENTICATION = {
@@ -46,7 +46,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
   private time = 0;
@@ -97,7 +97,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -139,7 +139,7 @@ function lastAuthFrame(socket: FakeSocket): Extract<ClientMessage, { t: "auth" }
 interface Harness {
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  config(credential: Credential, url?: string): DbzzProviderConfig;
+  config(credential: Credential, url?: string): AckerDBProviderConfig;
   live(): FakeSocket;
   authFrames(): Extract<ClientMessage, { t: "auth" }>[];
 }
@@ -196,7 +196,7 @@ function welcome(
   });
 }
 
-function describeAuthentication(state: DbzzAuthenticationState): string {
+function describeAuthentication(state: AckerDBAuthenticationState): string {
   switch (state.phase) {
     case "authenticating":
       return `authenticating:${state.credential}`;
@@ -232,7 +232,7 @@ function ConnectionProbe(): ReactNode {
 
 // An operation initiated from an effect: Strict Mode replays the effect, so
 // this is the doubled-invocation scenario single-flight must absorb.
-const effectSignOuts: Promise<DbzzAuthentication>[] = [];
+const effectSignOuts: Promise<AckerDBAuthentication>[] = [];
 
 function AutoSignOut(): ReactNode {
   const { signOut } = useAuthentication();
@@ -242,13 +242,13 @@ function AutoSignOut(): ReactNode {
   return null;
 }
 
-function app(config: DbzzProviderConfig): ReactNode {
+function app(config: AckerDBProviderConfig): ReactNode {
   return (
     <StrictMode>
-      <DbzzProvider config={config}>
+      <AckerDBProvider config={config}>
         <AuthProbe />
         <ConnectionProbe />
-      </DbzzProvider>
+      </AckerDBProvider>
     </StrictMode>
   );
 }
@@ -313,7 +313,7 @@ describe("useAuthentication", () => {
     });
 
     operationIdentities.length = 0;
-    let refresh!: Promise<DbzzAuthentication>;
+    let refresh!: Promise<AckerDBAuthentication>;
     await act(async () => {
       refresh = operations().refresh({ kind: "bearer", token: "token-b" });
     });
@@ -363,11 +363,11 @@ describe("useAuthentication", () => {
     const config = harness.config({ kind: "bearer", token: "token-a" });
     const tree = (auto: boolean): ReactNode => (
       <StrictMode>
-        <DbzzProvider config={config}>
+        <AckerDBProvider config={config}>
           <AuthProbe />
           <ConnectionProbe />
           {auto ? <AutoSignOut /> : null}
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>
     );
     await render(root, tree(false));
@@ -431,7 +431,7 @@ describe("useAuthentication", () => {
     expect(container.textContent).toBe("refresh-required:unauthenticated|authentication-blocked");
     const state = operations().state;
     if (state.phase !== "refresh-required") throw new Error(`unexpected ${state.phase}`);
-    expect(state.error).toBe(rejection as DbzzClientError);
+    expect(state.error).toBe(rejection as AckerDBClientError);
     await act(async () => {
       root.unmount();
     });
@@ -448,7 +448,7 @@ describe("useAuthentication", () => {
     });
     expect(container.textContent).toBe("authenticated:user@0|ready");
 
-    let signOut!: Promise<DbzzAuthentication>;
+    let signOut!: Promise<AckerDBAuthentication>;
     await act(async () => {
       signOut = operations().signOut();
     });
@@ -523,7 +523,7 @@ describe("useAuthentication", () => {
     });
     expect(container.textContent).toBe("refresh-required:unauthenticated|authentication-blocked");
 
-    let refresh!: Promise<DbzzAuthentication>;
+    let refresh!: Promise<AckerDBAuthentication>;
     await act(async () => {
       refresh = operations().refresh({ kind: "bearer", token: "token-fresh" });
     });
@@ -589,6 +589,6 @@ describe("useAuthentication", () => {
       act(() => {
         root.render(<AuthProbe />);
       });
-    }).toThrow("useAuthentication requires a <DbzzProvider> ancestor");
+    }).toThrow("useAuthentication requires a <AckerDBProvider> ancestor");
   });
 });

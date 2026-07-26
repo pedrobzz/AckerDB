@@ -1,5 +1,5 @@
-import { DbzzError, v } from "@dbzz/server";
-import { mcpTool } from "@demo/dbzz-codegen/server";
+import { AckerDBError, v } from "@ackerdb/server";
+import { mcpTool } from "@demo/ackerdb-codegen/server";
 import {
   advanceOrderItem,
   cancelOpenOrder,
@@ -41,7 +41,7 @@ export const advanceKitchenItem = mcpTool({
     ctx.tx(async (tx) => {
       const result = await advanceOrderItem(tx.db, args.orderItemId);
       if (!result.ok) {
-        throw new DbzzError(
+        throw new AckerDBError(
           result.error.status === 404 ? "not_found" : "conflict",
           result.error.code,
         );
@@ -78,7 +78,7 @@ export const cancelOrder = mcpTool({
     ctx.tx(async (tx) => {
       const result = await cancelOpenOrder(tx.db, args.orderId);
       if (!result.ok) {
-        throw new DbzzError(
+        throw new AckerDBError(
           result.error.status === 404 ? "not_found" : "conflict",
           result.error.code,
         );
@@ -86,7 +86,7 @@ export const cancelOrder = mcpTool({
       const { order, items } = result.data;
       const table = await tx.db.restaurantTables.get(order.tableId);
       if (table === null) {
-        throw new DbzzError("internal", "Order table relation is missing");
+        throw new AckerDBError("internal", "Order table relation is missing");
       }
       let itemsCancelled = 0;
       let itemsPreserved = 0;

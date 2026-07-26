@@ -1,11 +1,11 @@
 # Plugins are isolated capabilities assembled by the application
 
-DBzz backend extensions are named Plugin instances that own private state and
+AckerDB backend extensions are named Plugin instances that own private state and
 functions and expose only a declared server-side capability contract. The
 application assembles its root schema and every Plugin instance in one
 executable `app.ts` manifest; Plugins never mutate a global registry or gain
 implicit access to application state. This takes the useful isolation property
-from systems such as Convex while keeping DBzz's direct context API and explicit
+from systems such as Convex while keeping AckerDB's direct context API and explicit
 dependency injection.
 
 ## Consequences
@@ -43,15 +43,15 @@ procedure-only.
 Plugins receive no ambient application authentication context, so identity and
 claims cross the boundary only as validated arguments.
 
-Application manifests and Plugin construction are pure because DBzz imports
+Application manifests and Plugin construction are pure because AckerDB imports
 them during code generation and runtime startup. Runtime resources use an
-explicit DBzz-managed lifecycle: dependencies and private schemas become ready
+explicit AckerDB-managed lifecycle: dependencies and private schemas become ready
 before startup, cancellation is propagated, startup failures tear down already
 started resources, and shutdown runs in reverse dependency order.
 
-The v0.6.0 alpha has no Plugin migration API. DBzz reconciles safe private-schema
+The v0.6.0 alpha has no Plugin migration API. AckerDB reconciles safe private-schema
 changes; an unsafe change requires explicit consent to reset only the affected
-mount. Non-interactive startup refuses until `dbzz plugin reset <mount>` is run.
+mount. Non-interactive startup refuses until `acker plugin reset <mount>` is run.
 Changing a mount name creates a fresh instance, and removing the old mount
-requires an explicit `dbzz plugin drop <old-mount>`; DBzz never guesses renames
+requires an explicit `acker plugin drop <old-mount>`; AckerDB never guesses renames
 or preserves Plugin data through compatibility machinery.

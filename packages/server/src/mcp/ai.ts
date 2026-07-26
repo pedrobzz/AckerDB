@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Principal } from "../auth/credentials.ts";
-import { DbzzError, throwIfAborted } from "../shared/errors.ts";
+import { AckerDBError, throwIfAborted } from "../shared/errors.ts";
 import type { ProcedureCtx } from "../app/functions.ts";
 import type {
   AnyMcpDeclaration,
@@ -213,7 +213,7 @@ function normalizeOptions(
       `MCP "${mcp.name}" local scopes`,
     );
   } catch (error) {
-    if (error instanceof DbzzError) throw new TypeError(error.message);
+    if (error instanceof AckerDBError) throw new TypeError(error.message);
     throw error;
   }
   return Object.freeze({
@@ -279,7 +279,7 @@ export function createMcpAiTools(
 ): McpAiToolSet {
   const capability = capabilities.get(context);
   if (capability === undefined) {
-    throw new TypeError("mcp.aiTools(ctx) requires an active DBZZ procedure context");
+    throw new TypeError("mcp.aiTools(ctx) requires an active AckerDB procedure context");
   }
   capability.assertActive();
   const registered = capability.toolsFor(mcp);

@@ -1,5 +1,5 @@
 import { validateQueueLimits, type QueueLimits } from "./limits.ts";
-import { DbzzError } from "../shared/errors.ts";
+import { AckerDBError } from "../shared/errors.ts";
 import type { TelemetryOperation, TelemetryResource } from "../telemetry/telemetry.ts";
 
 export type AdmissionDiscipline = "fifo" | "round-robin";
@@ -63,7 +63,7 @@ export interface AdmissionQueueSnapshot {
 
 type AdmissionOutcomeCode = "overloaded" | "deadline_exceeded" | "draining" | "unavailable";
 
-export class AdmissionRejected extends DbzzError {
+export class AdmissionRejected extends AckerDBError {
   declare readonly code: AdmissionOutcomeCode;
   declare readonly resource: TelemetryResource;
 

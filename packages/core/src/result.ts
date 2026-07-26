@@ -95,7 +95,7 @@ export type ApplicationError<
   status: HttpStatus;
 }>;
 
-const RESULT = Symbol("@dbzz/core/Result");
+const RESULT = Symbol("@ackerdb/core/Result");
 
 type ErrorCode<E> = E extends { readonly code: infer Code extends string } ? Code : never;
 type ErrorMapper<E> = {
@@ -219,7 +219,7 @@ export function Err<
 /**
  * Construct a non-application failure Result at a transport adapter boundary.
  * Application functions should use {@link Err}; this primitive exists so
- * DBzz clients can preserve framework, unhandled, and transport failures in
+ * AckerDB clients can preserve framework, unhandled, and transport failures in
  * the same exhaustive Result shape.
  */
 export function Failure<E, T = never>(error: E): ErrResult<E, T> {

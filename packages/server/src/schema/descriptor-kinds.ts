@@ -10,7 +10,7 @@
  * (a codegen concern owning its own error type), so it stays co-located in the
  * CLI as a table keyed by these same kinds. DDL type and `check` still live here.
  */
-import { decode, encode, WireError } from "@dbzz/core";
+import { decode, encode, WireError } from "@ackerdb/core";
 import { ValidationError, type Descriptor } from "../validation/v.ts";
 import {
   checkArrayConstraints,

@@ -12,7 +12,7 @@ import {
   newWriteCollector,
   ixKey,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { compilePredicates } from "../../../src/database/query/predicate.ts";
 
 const schema = defineSchema({
@@ -61,7 +61,7 @@ describe("table query", () => {
   let db: any;
 
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "dbzz-table-query-"));
+    dir = mkdtempSync(join(tmpdir(), "ackerdb-table-query-"));
     engine = new Engine(schema, join(dir, "data.db"));
     engine.createAll();
     db = makeDbWriter(engine, newWriteCollector(), () => 1n);
@@ -238,7 +238,7 @@ describe("table query", () => {
     expect(await db.documents.query().where(() => reusablePredicate).count()).toBe(1);
     expect(() => db.users.query().where(() => reusablePredicate)).toThrow("different tables");
 
-    const otherDir = mkdtempSync(join(tmpdir(), "dbzz-foreign-predicate-"));
+    const otherDir = mkdtempSync(join(tmpdir(), "ackerdb-foreign-predicate-"));
     const otherEngine = new Engine(schema, join(otherDir, "data.db"));
     try {
       otherEngine.createAll();

@@ -1,6 +1,6 @@
 # Validator constraints are data, and stored tightenings are optimistic
 
-DBzz admits only declarative, serializable validator constraints: the same
+AckerDB admits only declarative, serializable validator constraints: the same
 constraint must drive runtime validation, generated protocol schemas, schema
 snapshots, and migration checks. Arbitrary closure-based refinements are
 excluded because they cannot become durable schema facts. Loosening a stored

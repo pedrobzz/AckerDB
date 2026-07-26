@@ -1,4 +1,4 @@
-# dbzz local registry (Verdaccio). Start it with: bun run registry
+# ackerdb local registry (Verdaccio). Start it with: bun run registry
 # Storage and user file live next to this config and are gitignored —
 # every published version is kept on disk, so old versions stay installable.
 # 4874 on purpose: 4873 belongs to this machine's own Homebrew Verdaccio
@@ -8,7 +8,7 @@ listen: 127.0.0.1:4874
 storage: ./storage
 
 web:
-  title: dbzz local registry
+  title: ackerdb local registry
 
 auth:
   htpasswd:
@@ -20,8 +20,8 @@ uplinks:
     url: https://registry.npmjs.org/
 
 packages:
-  '@dbzz/*':
-    # local-only: no proxy, so @dbzz never leaks to / resolves from npmjs
+  '@ackerdb/*':
+    # local-only: no proxy, so @ackerdb never leaks to / resolves from npmjs
     access: $all
     publish: $authenticated
     unpublish: $authenticated

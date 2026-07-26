@@ -77,7 +77,7 @@ function subscriptionWorkload(
   failures: DriverResult["failures"] = [],
 ): DriverResult {
   return {
-    system: "dbzz",
+    system: "ackerdb",
     config,
     snapshots: {
       seededIdle: "seeded",
@@ -96,7 +96,7 @@ function subscriptionAdapter(mode: "normal" | "corrupt-fixed" | "drop-capacity" 
   const versions = new Map<number, number>();
   let updates = 0;
   return {
-    system: "dbzz",
+    system: "ackerdb",
     connect: async () => connection({
       subscribeChannels: async (channels, onUpdate) => {
         const listener = { channels: new Set(channels), onUpdate };
@@ -137,7 +137,7 @@ describe("measured workload failures", () => {
     benchmarkConfig.connections.workMs = 15;
     let attempts = 0;
     const adapter: BenchAdapter = {
-      system: "dbzz",
+      system: "ackerdb",
       connect: async () => {
         if (attempts++ === 0) throw new Error("connection refused");
         return connection();
@@ -148,7 +148,7 @@ describe("measured workload failures", () => {
     const outcome = await runConnectionScale(adapter, benchmarkConfig, () => nonce++);
     const connections = outcome.measurements;
     const workload: DriverResult = {
-      system: "dbzz",
+      system: "ackerdb",
       config: benchmarkConfig,
       snapshots: {
         seededIdle: "seeded",
@@ -160,7 +160,7 @@ describe("measured workload failures", () => {
       subscriptions: [],
       failures: outcome.failures,
     };
-    const validation = validateBenchmarkResults([{ label: "dbzz", system: "dbzz", workload }]);
+    const validation = validateBenchmarkResults([{ label: "ackerdb", system: "ackerdb", workload }]);
 
     expect(connections.map((result) => result.targetConnections)).toEqual([3]);
     expect(connections[0]).toMatchObject({ connected: 3, errors: [] });
@@ -184,7 +184,7 @@ describe("measured workload failures", () => {
     benchmarkConfig.connections.timeoutMs = 1;
     let closed = 0;
     const adapter: BenchAdapter = {
-      system: "dbzz",
+      system: "ackerdb",
       connect: async () => {
         await Bun.sleep(10);
         return connection({ close: async () => { closed++; } });
@@ -210,7 +210,7 @@ describe("measured workload failures", () => {
     benchmarkConfig.connections.levels = [1];
     benchmarkConfig.operation.drainTimeoutMs = 2;
     const adapter: BenchAdapter = {
-      system: "dbzz",
+      system: "ackerdb",
       connect: async () => connection({ close: () => new Promise<void>(() => {}) }),
     };
 
@@ -238,7 +238,7 @@ describe("measured workload failures", () => {
     let closed = 0;
     let unsubscribed = 0;
     const adapter: BenchAdapter = {
-      system: "dbzz",
+      system: "ackerdb",
       connect: async () => connection({
         subscribeChannels: async (channels, onUpdate) => {
           if (readinessAttempts++ === 0) throw new Error("readiness rejected");
@@ -293,15 +293,15 @@ describe("measured workload failures", () => {
     );
     const subscription = outcome.measurement!;
     const validation = validateBenchmarkResults([{
-      label: "dbzz",
-      system: "dbzz",
+      label: "ackerdb",
+      system: "ackerdb",
       workload: subscriptionWorkload(benchmarkConfig, subscription, outcome.failures),
     }]);
 
     expect(subscription).toMatchObject({ corruptDeliveries: 1, missingDeliveries: 1 });
     expect(validation.failures[0]).toMatchObject({ kind: "subscription", case: "subscriptions/shared" });
 
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-workload-failure-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-workload-failure-"));
     try {
       const path = await retainReleaseBenchmark(directory, {
         version: "0.3.3",
@@ -332,7 +332,7 @@ describe("measured workload failures", () => {
     const base = subscriptionAdapter("normal");
     let connects = 0;
     const adapter: BenchAdapter = {
-      system: "dbzz",
+      system: "ackerdb",
       connect: async (nonce, seeded) => {
         connects++;
         if (connects === 5) throw new Error("capacity writer refused");
@@ -349,8 +349,8 @@ describe("measured workload failures", () => {
     );
     const subscription = outcome.measurement!;
     const validation = validateBenchmarkResults([{
-      label: "dbzz",
-      system: "dbzz",
+      label: "ackerdb",
+      system: "ackerdb",
       workload: subscriptionWorkload(benchmarkConfig, subscription, outcome.failures),
     }]);
 
@@ -386,8 +386,8 @@ describe("measured workload failures", () => {
     );
     const subscription = outcome.measurement!;
     const validation = validateBenchmarkResults([{
-      label: "dbzz",
-      system: "dbzz",
+      label: "ackerdb",
+      system: "ackerdb",
       workload: subscriptionWorkload(benchmarkConfig, subscription, outcome.failures),
     }]);
 

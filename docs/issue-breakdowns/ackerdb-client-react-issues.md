@@ -1,33 +1,33 @@
-# Provider-neutral Identity and `@dbzz/client-react` — issue breakdown
+# Provider-neutral Identity and `@ackerdb/client-react` — issue breakdown
 
-- Parent PRD: `PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming`
+- Parent PRD: `PRD: Provider-neutral Identity and @ackerdb/client-react for web, Expo, and AI streaming`
 - Source PRDs: `.workflow/react-client-prd/final-report.md` and the approved provider-neutral Identity extension published in parent issue #3
-- Parent GitHub issue: [#3](https://github.com/pedrobzz/dbzz/issues/3)
+- Parent GitHub issue: [#3](https://github.com/pedrobzz/ackerdb/issues/3)
 - Date generated: 2026-07-15
 - Identity extension added: 2026-07-16
 
 | ID | GitHub | Title | Type | Blocked by | User stories |
 | --- | --- | --- | --- | --- | --- |
-| ISSUE-01 | [#4](https://github.com/pedrobzz/dbzz/issues/4) | Installable browser provider and connection state | AFK | None | 1, 4–9, 37, 45, 66–67 |
-| ISSUE-02 | [#5](https://github.com/pedrobzz/dbzz/issues/5) | Typed live-query state and reconnect semantics | AFK | ISSUE-01 | 10–14, 19–20 |
-| ISSUE-03 | [#6](https://github.com/pedrobzz/dbzz/issues/6) | Shared concurrent query registry | AFK | ISSUE-02 | 15–18 |
-| ISSUE-04 | [#7](https://github.com/pedrobzz/dbzz/issues/7) | Typed mutations with replay identity | AFK | ISSUE-01 | 21–23 |
-| ISSUE-05 | [#8](https://github.com/pedrobzz/dbzz/issues/8) | Typed procedures with cancellation | AFK | ISSUE-01 | 24–25 |
-| ISSUE-06 | [#9](https://github.com/pedrobzz/dbzz/issues/9) | Typed SSE from schema declaration to React stream | AFK | ISSUE-01 | 26–32, 67 |
-| ISSUE-07 | [#10](https://github.com/pedrobzz/dbzz/issues/10) | Typed row-event subscriptions and reset boundaries | AFK | ISSUE-01 | 33–34 |
-| ISSUE-08 | [#11](https://github.com/pedrobzz/dbzz/issues/11) | Authentication state and operations hook | AFK | ISSUE-01 | 35–37 |
-| ISSUE-09 | [#12](https://github.com/pedrobzz/dbzz/issues/12) | AI SDK v7 chat transport over dbzz SSE | AFK | ISSUE-06 | 38–44 |
-| ISSUE-10 | [#13](https://github.com/pedrobzz/dbzz/issues/13) | Single-package Expo runtime adapter | AFK | ISSUE-01 | 2–4, 45–48, 67, 69–70 |
-| ISSUE-11 | [#14](https://github.com/pedrobzz/dbzz/issues/14) | Query-safe Expo suspension and immediate recovery | AFK | ISSUE-02, ISSUE-03, ISSUE-08, ISSUE-10 | 49–54, 59–62, 65, 70 |
-| ISSUE-12 | [#15](https://github.com/pedrobzz/dbzz/issues/15) | Foreground mutation and event convergence | AFK | ISSUE-04, ISSUE-07, ISSUE-08, ISSUE-11 | 53, 55–56, 58–61 |
-| ISSUE-13 | [#16](https://github.com/pedrobzz/dbzz/issues/16) | Settle procedures, SSE, and AI streams during suspension | AFK | ISSUE-05, ISSUE-06, ISSUE-09, ISSUE-11 | 57, 61 |
-| ISSUE-14 | [#17](https://github.com/pedrobzz/dbzz/issues/17) | Physical-device lifecycle acceptance and hardening | HITL | ISSUE-11, ISSUE-12, ISSUE-13, ISSUE-18 | 49, 51–65, 90 |
-| ISSUE-15 | [#18](https://github.com/pedrobzz/dbzz/issues/18) | Publish-ready cross-runtime package | AFK | ISSUE-03 through ISSUE-14, ISSUE-16 through ISSUE-20 | 1–4, 45–48, 63, 67–90 |
-| ISSUE-16 | [#21](https://github.com/pedrobzz/dbzz/issues/21) | Durable Identity from first login to row ownership | AFK | None | 71–73, 75–80 |
-| ISSUE-17 | [#22](https://github.com/pedrobzz/dbzz/issues/22) | Exact-account convergence across configured providers | AFK | ISSUE-16 | 74–75, 81–82, 86 |
-| ISSUE-18 | [#23](https://github.com/pedrobzz/dbzz/issues/23) | Identity-aware client and React authentication lifecycle | AFK | ISSUE-08, ISSUE-11, ISSUE-16, ISSUE-17 | 71, 73–74, 79, 90 |
-| ISSUE-19 | [#24](https://github.com/pedrobzz/dbzz/issues/24) | Opt-in cross-provider account linking | AFK | ISSUE-16, ISSUE-17 | 83–88 |
-| ISSUE-20 | [#25](https://github.com/pedrobzz/dbzz/issues/25) | Safe external-account unlinking | AFK | ISSUE-19 | 85, 89 |
+| ISSUE-01 | [#4](https://github.com/pedrobzz/ackerdb/issues/4) | Installable browser provider and connection state | AFK | None | 1, 4–9, 37, 45, 66–67 |
+| ISSUE-02 | [#5](https://github.com/pedrobzz/ackerdb/issues/5) | Typed live-query state and reconnect semantics | AFK | ISSUE-01 | 10–14, 19–20 |
+| ISSUE-03 | [#6](https://github.com/pedrobzz/ackerdb/issues/6) | Shared concurrent query registry | AFK | ISSUE-02 | 15–18 |
+| ISSUE-04 | [#7](https://github.com/pedrobzz/ackerdb/issues/7) | Typed mutations with replay identity | AFK | ISSUE-01 | 21–23 |
+| ISSUE-05 | [#8](https://github.com/pedrobzz/ackerdb/issues/8) | Typed procedures with cancellation | AFK | ISSUE-01 | 24–25 |
+| ISSUE-06 | [#9](https://github.com/pedrobzz/ackerdb/issues/9) | Typed SSE from schema declaration to React stream | AFK | ISSUE-01 | 26–32, 67 |
+| ISSUE-07 | [#10](https://github.com/pedrobzz/ackerdb/issues/10) | Typed row-event subscriptions and reset boundaries | AFK | ISSUE-01 | 33–34 |
+| ISSUE-08 | [#11](https://github.com/pedrobzz/ackerdb/issues/11) | Authentication state and operations hook | AFK | ISSUE-01 | 35–37 |
+| ISSUE-09 | [#12](https://github.com/pedrobzz/ackerdb/issues/12) | AI SDK v7 chat transport over AckerDB SSE | AFK | ISSUE-06 | 38–44 |
+| ISSUE-10 | [#13](https://github.com/pedrobzz/ackerdb/issues/13) | Single-package Expo runtime adapter | AFK | ISSUE-01 | 2–4, 45–48, 67, 69–70 |
+| ISSUE-11 | [#14](https://github.com/pedrobzz/ackerdb/issues/14) | Query-safe Expo suspension and immediate recovery | AFK | ISSUE-02, ISSUE-03, ISSUE-08, ISSUE-10 | 49–54, 59–62, 65, 70 |
+| ISSUE-12 | [#15](https://github.com/pedrobzz/ackerdb/issues/15) | Foreground mutation and event convergence | AFK | ISSUE-04, ISSUE-07, ISSUE-08, ISSUE-11 | 53, 55–56, 58–61 |
+| ISSUE-13 | [#16](https://github.com/pedrobzz/ackerdb/issues/16) | Settle procedures, SSE, and AI streams during suspension | AFK | ISSUE-05, ISSUE-06, ISSUE-09, ISSUE-11 | 57, 61 |
+| ISSUE-14 | [#17](https://github.com/pedrobzz/ackerdb/issues/17) | Physical-device lifecycle acceptance and hardening | HITL | ISSUE-11, ISSUE-12, ISSUE-13, ISSUE-18 | 49, 51–65, 90 |
+| ISSUE-15 | [#18](https://github.com/pedrobzz/ackerdb/issues/18) | Publish-ready cross-runtime package | AFK | ISSUE-03 through ISSUE-14, ISSUE-16 through ISSUE-20 | 1–4, 45–48, 63, 67–90 |
+| ISSUE-16 | [#21](https://github.com/pedrobzz/ackerdb/issues/21) | Durable Identity from first login to row ownership | AFK | None | 71–73, 75–80 |
+| ISSUE-17 | [#22](https://github.com/pedrobzz/ackerdb/issues/22) | Exact-account convergence across configured providers | AFK | ISSUE-16 | 74–75, 81–82, 86 |
+| ISSUE-18 | [#23](https://github.com/pedrobzz/ackerdb/issues/23) | Identity-aware client and React authentication lifecycle | AFK | ISSUE-08, ISSUE-11, ISSUE-16, ISSUE-17 | 71, 73–74, 79, 90 |
+| ISSUE-19 | [#24](https://github.com/pedrobzz/ackerdb/issues/24) | Opt-in cross-provider account linking | AFK | ISSUE-16, ISSUE-17 | 83–88 |
+| ISSUE-20 | [#25](https://github.com/pedrobzz/ackerdb/issues/25) | Safe external-account unlinking | AFK | ISSUE-19 | 85, 89 |
 
 ## ISSUE-01: Installable browser provider and connection state
 
@@ -37,11 +37,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
-Deliver the first installable browser React path: a new lockstep `@dbzz/client-react` package with `DbzzProvider` and `useConnectionState`. The provider must construct, own, configure, and close one dbzz client per immutable configuration lifetime. A real browser React fixture must connect through the provider and render observable connection state without exposing an imperative client.
+Deliver the first installable browser React path: a new lockstep `@ackerdb/client-react` package with `AckerDBProvider` and `useConnectionState`. The provider must construct, own, configure, and close one AckerDB client per immutable configuration lifetime. A real browser React fixture must connect through the provider and render observable connection state without exposing an imperative client.
 
 ### Why this slice exists
 
@@ -49,13 +49,13 @@ Every later hook needs a correct React ownership boundary. This slice proves pac
 
 ## Acceptance criteria
 
-- [ ] `@dbzz/client-react` installs with the supported React version and exposes `DbzzProvider` plus `useConnectionState` from its browser entry.
+- [ ] `@ackerdb/client-react` installs with the supported React version and exposes `AckerDBProvider` plus `useConnectionState` from its browser entry.
 - [ ] The provider accepts the PRD configuration surface, creates one client for that immutable configuration, and owns shutdown on unmount or explicit lifetime replacement.
 - [ ] No imperative client getter or public close hook is exported.
 - [ ] Connection state is an exhaustive typed value that includes connecting, ready, reconnecting, authentication-blocked, terminal-error, and closed; native-only states may already exist in the type without requiring native behavior here.
 - [ ] Strict Mode setup/cleanup and provider reconfiguration leave no duplicate sockets, timers, or listeners.
 - [ ] Server rendering does not access runtime globals or start a connection and returns a deterministic non-ready snapshot.
-- [ ] A browser consumer fixture connects to a real dbzz server and displays ready state.
+- [ ] A browser consumer fixture connects to a real AckerDB server and displays ready state.
 
 ### Implementation notes
 
@@ -92,11 +92,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
-Add `useQuery` as a complete single-consumer path from a generated query reference to rendered React state. It must infer arguments and rows, support a typed skip sentinel, expose disabled/pending/success/error unions, retain authoritative data as stale across reconnect, and become fresh only after dbzz resume or reset confirms state.
+Add `useQuery` as a complete single-consumer path from a generated query reference to rendered React state. It must infer arguments and rows, support a typed skip sentinel, expose disabled/pending/success/error unions, retain authoritative data as stale across reconnect, and become fresh only after AckerDB resume or reset confirms state.
 
 ### Why this slice exists
 
@@ -104,11 +104,11 @@ Live queries are the central React value proposition. This slice delivers the en
 
 ## Acceptance criteria
 
-- [ ] Generated query references infer arguments, rows, and exact `DbzzClientError` values without manual generics.
+- [ ] Generated query references infer arguments, rows, and exact `AckerDBClientError` values without manual generics.
 - [ ] A typed skip sentinel produces a disabled state and no underlying subscription.
 - [ ] Pending, success, and error states form an exhaustive discriminated union.
 - [ ] Success identifies fresh versus retained stale data; errors may retain the last authoritative data.
-- [ ] Disconnect preserves last data as stale and reconnect uses dbzz's existing resume/reset protocol.
+- [ ] Disconnect preserves last data as stale and reconnect uses AckerDB's existing resume/reset protocol.
 - [ ] Data becomes fresh only after authoritative resumed or reset delivery.
 - [ ] Unmount releases the single-consumer subscription.
 
@@ -146,7 +146,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -198,22 +198,22 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
-Add `useMutation` as a stable typed callable over generated mutation references. A mutation interrupted by connection loss must retain the identifier assigned by the base client, converge according to existing dbzz replay behavior, and preserve determinate versus indeterminate results and exact errors.
+Add `useMutation` as a stable typed callable over generated mutation references. A mutation interrupted by connection loss must retain the identifier assigned by the base client, converge according to existing AckerDB replay behavior, and preserve determinate versus indeterminate results and exact errors.
 
 ### Why this slice exists
 
-Mutations are independent of query caching and can ship as a complete write path once provider ownership exists. This slice proves React ergonomics without redefining dbzz's delivery contract.
+Mutations are independent of query caching and can ship as a complete write path once provider ownership exists. This slice proves React ergonomics without redefining AckerDB's delivery contract.
 
 ## Acceptance criteria
 
 - [ ] Generated mutation references infer arguments and result values.
 - [ ] The hook returns a stable callable across renders while using the current provider lifetime.
 - [ ] Interrupted mutations retain their original identifier across reconnect and do not duplicate server effects.
-- [ ] Determinate success, determinate failure, indeterminate outcome, cancellation, and connection errors remain distinguishable exactly as in `@dbzz/client`.
+- [ ] Determinate success, determinate failure, indeterminate outcome, cancellation, and connection errors remain distinguishable exactly as in `@ackerdb/client`.
 - [ ] Provider shutdown settles pending mutation promises according to the base client contract.
 
 ### Implementation notes
@@ -250,7 +250,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -265,7 +265,7 @@ The PRD intentionally excludes one-off queries, making procedures the complete e
 - [ ] Generated procedure references infer arguments and result values.
 - [ ] The returned callable is stable across renders and accepts an abort signal through the supported call contract.
 - [ ] Abort reaches the underlying procedure and settles the caller promptly.
-- [ ] Disconnect never silently replays the call and reports the existing dbzz typed outcome.
+- [ ] Disconnect never silently replays the call and reports the existing AckerDB typed outcome.
 - [ ] Wrong reference kinds and argument/result assumptions fail at compile time.
 
 ### Implementation notes
@@ -284,7 +284,7 @@ The PRD intentionally excludes one-off queries, making procedures the complete e
 
 ### Test plan
 
-- Execute successful, server-error, aborted, disconnected, and provider-closed procedures against a real dbzz server.
+- Execute successful, server-error, aborted, disconnected, and provider-closed procedures against a real AckerDB server.
 - Assert callable stability and TypeScript inference in rendered hook fixtures.
 
 ### Out of scope
@@ -299,11 +299,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
-Correct SSE typing end to end: require a yielded-value validator in the server declaration, validate every server chunk, generate an `SseRef<Arguments, Chunk>`, and expose `useSseProcedure` as a stable callable returning `ReadableStream<Chunk>`. Pull, acknowledgement, cancellation, validation failure, and disconnect must preserve dbzz semantics.
+Correct SSE typing end to end: require a yielded-value validator in the server declaration, validate every server chunk, generate an `SseRef<Arguments, Chunk>`, and expose `useSseProcedure` as a stable callable returning `ReadableStream<Chunk>`. Pull, acknowledgement, cancellation, validation failure, and disconnect must preserve AckerDB semantics.
 
 ### Why this slice exists
 
@@ -354,7 +354,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -362,7 +362,7 @@ Add `useEvent` for typed insert, update, delete, and reset events. Reconnection 
 
 ### Why this slice exists
 
-Row events are a separate dbzz capability from current-state queries. This slice makes their weaker replay guarantee explicit and independently testable instead of hiding events inside query behavior.
+Row events are a separate AckerDB capability from current-state queries. This slice makes their weaker replay guarantee explicit and independently testable instead of hiding events inside query behavior.
 
 ## Acceptance criteria
 
@@ -404,7 +404,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -418,7 +418,7 @@ Authentication affects every reconnect but is independently demoable as a browse
 
 - [ ] The hook exposes exhaustive unauthenticated, authenticating, authenticated, refresh-required/blocked, failed, and closed outcomes matching base-client semantics.
 - [ ] Refresh and sign-out are fully typed and use the provider-owned client lifetime.
-- [ ] Authentication failures preserve exact dbzz errors and appear coherently in `useConnectionState`.
+- [ ] Authentication failures preserve exact AckerDB errors and appear coherently in `useConnectionState`.
 - [ ] Reconnect performs the existing credential handshake before restoring authenticated work.
 - [ ] Strict Mode, rerender, and unmount do not duplicate refresh operations or leak authentication timers/listeners.
 
@@ -446,7 +446,7 @@ Authentication affects every reconnect but is independently demoable as a browse
 
 - UI forms, external identity-provider widgets, disk persistence, and native background behavior.
 
-## ISSUE-09: AI SDK v7 chat transport over dbzz SSE
+## ISSUE-09: AI SDK v7 chat transport over AckerDB SSE
 
 ### Type
 
@@ -454,11 +454,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
-Add `@dbzz/client-react/ai` with a hook that implements AI SDK v7's chat transport over a generated dbzz SSE procedure. Standard chat request data and abort signals must flow directly into dbzz, validated `UIMessageChunk` objects must flow directly out, custom procedure arguments must use a typed mapper, and reconnect must explicitly report unsupported.
+Add `@ackerdb/client-react/ai` with a hook that implements AI SDK v7's chat transport over a generated AckerDB SSE procedure. Standard chat request data and abort signals must flow directly into AckerDB, validated `UIMessageChunk` objects must flow directly out, custom procedure arguments must use a typed mapper, and reconnect must explicitly report unsupported.
 
 ### Why this slice exists
 
@@ -468,17 +468,17 @@ AI SDK is the primary SSE use case, but it should remain an adapter over the gen
 
 - [ ] The `/ai` subpath is isolated from the base React entry and implements the AI SDK v7 chat transport contract.
 - [ ] Standard chat identifiers, messages, trigger data, headers, credentials, metadata, and abort signals are forwarded.
-- [ ] A typed mapper supports custom dbzz arguments without losing procedure/chunk inference.
+- [ ] A typed mapper supports custom AckerDB arguments without losing procedure/chunk inference.
 - [ ] Text, reasoning, tool, source, file, data, metadata, and error chunks pass through as validated `UIMessageChunk` values without re-encoding SSE.
-- [ ] Cancelling generation cancels the dbzz stream.
+- [ ] Cancelling generation cancels the AckerDB stream.
 - [ ] AI SDK stream reconnection returns unsupported/null rather than starting a hidden replacement procedure.
 - [ ] Browser consumers not importing `/ai` do not resolve AI SDK runtime code.
 
 ### Implementation notes
 
 - Keep AI SDK dependencies scoped to the conditional subpath and appropriate peer/optional dependency declarations.
-- The server handler may return the stream produced by AI SDK directly; dbzz's yielded validator remains authoritative.
-- Do not introduce `@dbzz/ai-sdk` unless packaging evidence proves the subpath impossible.
+- The server handler may return the stream produced by AI SDK directly; AckerDB's yielded validator remains authoritative.
+- Do not introduce `@ackerdb/ai-sdk` unless packaging evidence proves the subpath impossible.
 
 ## Blocked by
 
@@ -490,7 +490,7 @@ AI SDK is the primary SSE use case, but it should remain an adapter over the gen
 
 ### Test plan
 
-- Run AI SDK v7 `useChat` against a real dbzz SSE procedure for text, reasoning, tool, source, file, data, metadata, and error streams.
+- Run AI SDK v7 `useChat` against a real AckerDB SSE procedure for text, reasoning, tool, source, file, data, metadata, and error streams.
 - Verify standard request forwarding, a custom argument mapper, cancellation at multiple points, malformed chunks, and server failures.
 - Assert reconnection is explicitly unsupported and no second stream begins.
 
@@ -506,11 +506,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
-Make the same `@dbzz/client-react` package connect from a current Expo React Native application through the `react-native` export condition. The native entry must compose the shared provider/hooks with named Expo fetch and Expo cryptographic randomness, while the browser entry remains free of Expo modules. Shared wire code must work without Node `Buffer`.
+Make the same `@ackerdb/client-react` package connect from a current Expo React Native application through the `react-native` export condition. The native entry must compose the shared provider/hooks with named Expo fetch and Expo cryptographic randomness, while the browser entry remains free of Expo modules. Shared wire code must work without Node `Buffer`.
 
 ### Why this slice exists
 
@@ -523,7 +523,7 @@ This is the decisive packaging tracer bullet: one package, one public API, two r
 - [ ] Browser bundling never resolves, executes, or includes Expo/React Native modules.
 - [ ] Wire encoding is based on portable bytes/base64 and has no Node `Buffer` dependency in either client runtime.
 - [ ] Missing native peers fail clearly during installation or resolution rather than during a request.
-- [ ] A minimal Expo development build connects through `DbzzProvider` and reaches ready on a physical device without Expo Go.
+- [ ] A minimal Expo development build connects through `AckerDBProvider` and reaches ready on a physical device without Expo Go.
 - [ ] Real packed browser and Metro fixtures prove exports and type declarations resolve correctly.
 
 ### Implementation notes
@@ -561,7 +561,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -619,7 +619,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -676,7 +676,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -730,7 +730,7 @@ HITL
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -747,7 +747,7 @@ Simulated lifecycle events cannot prove operating-system timer, socket, and proc
 - [ ] A reachable server receives the first attempt in the activation event turn and reaches ready within the handshake deadline and ten-second ceiling.
 - [ ] Server unavailable/restart, airplane mode, Wi-Fi/cellular transitions, Android forced Doze, and App Standby all recover automatically when connectivity/server returns.
 - [ ] Credential expiry, query resume/reset, mutation convergence, event reset, and procedure/SSE/AI settlement match their issue contracts.
-- [ ] Foreground reauthentication may refresh credential provenance but preserves the same durable DBZZ Identity before authenticated work resumes.
+- [ ] Foreground reauthentication may refresh credential provenance but preserves the same durable AckerDB Identity before authenticated work resumes.
 - [ ] Rapid repeated cycles and suspension during handshake, authentication, subscription application, mutation response, SSE acknowledgement, and AI streaming create no parallel sockets, leaks, duplicate effects, or stale delivery.
 - [ ] The test record distinguishes process-alive recovery from expected fresh launch after OS process termination.
 
@@ -789,12 +789,12 @@ AFK
 
 ### Parent PRD
 
-`PRD: @dbzz/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: @ackerdb/client-react for React, Expo, and AI SDK streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
-Finish the feature as a releasable fifth lockstep dbzz package. Wire
-`@dbzz/client-react` into version bumping, merge validation, local Verdaccio
+Finish the feature as a releasable fifth lockstep AckerDB package. Wire
+`@ackerdb/client-react` into version bumping, merge validation, local Verdaccio
 publishing, root typechecks, packed consumer verification, documentation, and
 wiki quality checks. Prove the final tarball supports browser React, Expo React
 Native, and the optional AI subpath at one exact version; retain the release's
@@ -802,18 +802,18 @@ version-bound Hetzner evidence for explicit human or agent interpretation.
 
 ### Why this slice exists
 
-Individual hooks are not a product until real consumers can install the exact artifact through dbzz's release workflow. This final slice verifies the assembled vertical paths and makes the package recoverable and repeatable like the existing four packages.
+Individual hooks are not a product until real consumers can install the exact artifact through AckerDB's release workflow. This final slice verifies the assembled vertical paths and makes the package recoverable and repeatable like the existing four packages.
 
 ## Acceptance criteria
 
-- [ ] All five `@dbzz` packages share one exact version, and bump/merge guard/publish scripts reject drift.
-- [ ] Local publication includes `@dbzz/client-react` in dependency order and can resume safely after interruption.
+- [ ] All five `@ackerdb` packages share one exact version, and bump/merge guard/publish scripts reject drift.
+- [ ] Local publication includes `@ackerdb/client-react` in dependency order and can resume safely after interruption.
 - [ ] Packed clean browser and Expo consumers resolve the correct exports, peers, raw TypeScript/types, and optional `/ai` subpath.
 - [ ] Browser output contains no Expo/React Native code; the Expo fixture uses Expo fetch/crypto and passes Metro resolution.
 - [ ] Root typecheck/test workflows cover all hooks, generated references, runtime conditions, and AI integration.
 - [ ] Packed server/client/React consumers agree on the provider-neutral principal, durable Identity, credential-provenance, and account-linking contracts.
 - [ ] The completed benchmark produced the release's single version-, host-,
-      source-, and predecessor-bound Hetzner dbzz/Convex/SpacetimeDB record,
+      source-, and predecessor-bound Hetzner AckerDB/Convex/SpacetimeDB record,
       and its full performance vector and anomaly observations are interpreted
       with explicit reasoning rather than an automated benchmark verdict.
 - [ ] User-facing documentation covers durable Identity, provider-account linking boundaries, supported versions, Expo requirements, hooks, query states, SSE/AI usage, mobile recovery guarantees, and explicit out-of-scope behavior.
@@ -859,11 +859,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: Provider-neutral Identity and @ackerdb/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
-Deliver the minimum complete provider-neutral Identity path: after a configured external user credential is cryptographically verified, DBZZ transactionally resolves or provisions an immutable internal Identity, constructs a typed user principal containing that Identity, and lets a normal authenticated mutation store and retrieve application rows keyed by it. Workload, system, and anonymous principals remain distinct.
+Deliver the minimum complete provider-neutral Identity path: after a configured external user credential is cryptographically verified, AckerDB transactionally resolves or provisions an immutable internal Identity, constructs a typed user principal containing that Identity, and lets a normal authenticated mutation store and retrieve application rows keyed by it. Workload, system, and anonymous principals remain distinct.
 
 ### Why this slice exists
 
@@ -872,7 +872,7 @@ Every provider-neutral and MCP capability depends on a durable application user 
 ## Acceptance criteria
 
 - [ ] A first verified external-user login atomically creates one internal Identity and one exact issuer/subject account link before the application principal is constructed.
-- [ ] The authenticated user principal exposes a typed, non-null DBZZ Identity that can be stored in and compared against application `userId` columns.
+- [ ] The authenticated user principal exposes a typed, non-null AckerDB Identity that can be stored in and compared against application `userId` columns.
 - [ ] Identity and link records use reserved internal storage and are absent from application schema declarations, generated table APIs, and raw client subscriptions.
 - [ ] Identity values are immutable, monotonically allocated, and never reused.
 - [ ] Provider claims remain current credential provenance and are not copied into durable Identity records or treated as application ownership authority.
@@ -913,11 +913,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: Provider-neutral Identity and @ackerdb/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
-Extend the first-login tracer bullet across the complete exact-account matrix. Repeated and concurrent authentication for one issuer/subject must converge after restart; provider-managed Clerk login methods that emit the same issuer/subject must remain one DBZZ Identity; distinct configured OIDC/JWT issuers and subjects must remain separate unless explicitly linked later.
+Extend the first-login tracer bullet across the complete exact-account matrix. Repeated and concurrent authentication for one issuer/subject must converge after restart; provider-managed Clerk login methods that emit the same issuer/subject must remain one AckerDB Identity; distinct configured OIDC/JWT issuers and subjects must remain separate unless explicitly linked later.
 
 ### Why this slice exists
 
@@ -926,7 +926,7 @@ The first slice proves one credential path. This slice proves the provider-neutr
 ## Acceptance criteria
 
 - [ ] Repeated, refreshed, concurrent, and post-restart authentication for one exact issuer/subject always resolves the original Identity.
-- [ ] Several Clerk-managed login methods producing the same Clerk issuer/subject resolve one DBZZ account link.
+- [ ] Several Clerk-managed login methods producing the same Clerk issuer/subject resolve one AckerDB account link.
 - [ ] Better Auth, Auth0, WorkOS, Keycloak, and custom OIDC/JWT-style fixtures use the same verification-to-Identity contract without provider SDK branches.
 - [ ] The same subject under different issuers and different subjects under one issuer remain distinct.
 - [ ] Matching email, phone, display name, or another mutable claim never causes automatic linking.
@@ -964,7 +964,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: Provider-neutral Identity and @ackerdb/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -1019,7 +1019,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: Provider-neutral Identity and @ackerdb/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 
@@ -1036,7 +1036,7 @@ Cross-provider continuity is valuable but security-sensitive and optional. Keepi
 - [ ] Authenticating with either linked account reaches the same application-owned rows.
 - [ ] Email, phone, display name, or another claim cannot substitute for proof of the second credential.
 - [ ] Linking fails without mutation/transaction authority or when the account is already owned by another Identity.
-- [ ] DBZZ never performs a generic merge or rewrites application-owned rows after a conflict.
+- [ ] AckerDB never performs a generic merge or rewrites application-owned rows after a conflict.
 - [ ] Applications choose whether and through which mutation to expose linking.
 
 ### Implementation notes
@@ -1072,7 +1072,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: Provider-neutral Identity and @dbzz/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/dbzz/issues/3))
+`PRD: Provider-neutral Identity and @ackerdb/client-react for web, Expo, and AI streaming` ([#3](https://github.com/pedrobzz/ackerdb/issues/3))
 
 ## What to build
 

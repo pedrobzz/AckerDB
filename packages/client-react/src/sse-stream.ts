@@ -1,6 +1,6 @@
 /**
- * Adapts DbzzClient.sse's acknowledged async generator into a standard
- * `ReadableStream<Chunk>` without changing dbzz's delivery semantics:
+ * Adapts AckerDBClient.sse's acknowledged async generator into a standard
+ * `ReadableStream<Chunk>` without changing ackerdb's delivery semantics:
  *
  * - Zero high-water mark and no priming read: nothing is requested from the
  *   server until the consumer pulls, and each pull advances the generator by
@@ -11,7 +11,7 @@
  * - `cancel()` aborts the in-flight request/acknowledgement and returns the
  *   generator so the client releases its reader, reservation, and fetch.
  * - Generator failures (validation, disconnect, terminal outcomes) surface
- *   as the stream's error with the exact `DbzzClientError` value.
+ *   as the stream's error with the exact `AckerDBClientError` value.
  *
  * The controller is aborted at every terminal point (done, failure, cancel),
  * which also releases anything the caller registered against its signal.

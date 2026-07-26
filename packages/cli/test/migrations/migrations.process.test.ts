@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { DbzzClient } from "@dbzz/client";
-import { v, defineSchema, defineTable, migrationFingerprint, snapshotOf } from "@dbzz/server";
+import { Database } from "bun:sqlite";
+import { AckerDBClient } from "@ackerdb/client";
+import { v, defineSchema, defineTable, migrationFingerprint, snapshotOf } from "@ackerdb/server";
 import { loadConfig } from "../../src/app/config.ts";
 import { inspectDatabase, type StatusReport } from "../../src/commands/operations.ts";
 import { makeFixture } from "../support/fixture.ts";
@@ -15,7 +16,7 @@ const STEP_TIMEOUT_MS = 15_000;
 // The on-disk schema sources and the in-process snapshots are the same schema:
 // snapshotOf is deterministic, so PRE/TARGET here equal what the server derives
 // from app.ts. Only the `count` column type changes (float -> string).
-const APP_V1 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V1 = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const schema = defineSchema({
   items: defineTable({
@@ -27,7 +28,7 @@ const schema = defineSchema({
 export default defineApp({ schema });
 `;
 
-const APP_V2 = `import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+const APP_V2 = `import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const schema = defineSchema({
   items: defineTable({
@@ -46,7 +47,7 @@ const TARGET = snapshotOf(
   defineSchema({ items: defineTable({ id: v.primaryKey(), label: v.string(), count: v.string() }) }),
 );
 
-const ITEMS_FUNCTIONS = `import { v } from "@dbzz/server";
+const ITEMS_FUNCTIONS = `import { v } from "@ackerdb/server";
 import { mutation, query } from "../_generated/server.ts";
 
 export const add = mutation({
@@ -63,7 +64,7 @@ export const list = query({
 `;
 
 // Answers the count float -> string refusal by stringifying every old row.
-const MIGRATION_0001 = `import { defineMigration } from "@dbzz/server";
+const MIGRATION_0001 = `import { defineMigration } from "@ackerdb/server";
 
 export default defineMigration({
   tables: {
@@ -74,7 +75,7 @@ export default defineMigration({
 
 // Same PRE/TARGET, same meta: only the transform body differs (still valid, same
 // end result). Its file text shifts the applied identity, so a restart refuses.
-const MIGRATION_0001_EDITED = `import { defineMigration } from "@dbzz/server";
+const MIGRATION_0001_EDITED = `import { defineMigration } from "@ackerdb/server";
 
 export default defineMigration({
   tables: {
@@ -87,7 +88,7 @@ type CliProcess = Subprocess<"ignore", "pipe", "pipe">;
 type Item = { id: bigint; label: string; count: unknown };
 
 const dirs: string[] = [];
-const clients: DbzzClient[] = [];
+const clients: AckerDBClient[] = [];
 const children = new Set<CliProcess>();
 
 afterEach(async () => {
@@ -156,6 +157,13 @@ async function freePort(): Promise<number> {
   return port;
 }
 
+async function waitForReady(port: number): Promise<void> {
+  await eventually(async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/ready`);
+    expect(response.status).toBe(200);
+  }, `server on port ${port} to become ready`);
+}
+
 function spawnServer(dir: string): {
   child: CliProcess;
   output(): string;
@@ -165,7 +173,7 @@ function spawnServer(dir: string): {
   const child = Bun.spawn([process.execPath, CLI, "start", dir], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, DBZZ_DURABILITY: "production", DBZZ_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_DURABILITY: "production", ACKERDB_TELEMETRY: "disabled" },
   }) as CliProcess;
   children.add(child);
   let stdout = "";
@@ -203,8 +211,8 @@ function spawnServer(dir: string): {
   };
 }
 
-function makeClient(port: number, clientSessionId: string): DbzzClient {
-  const client = new DbzzClient({
+function makeClient(port: number, clientSessionId: string): AckerDBClient {
+  const client = new AckerDBClient({
     url: `http://127.0.0.1:${port}`,
     credential: { kind: "anonymous" },
     clientSessionId,
@@ -214,7 +222,7 @@ function makeClient(port: number, clientSessionId: string): DbzzClient {
   return client;
 }
 
-function closeClient(client: DbzzClient): void {
+function closeClient(client: AckerDBClient): void {
   client.close();
   const index = clients.indexOf(client);
   if (index >= 0) clients.splice(index, 1);
@@ -227,13 +235,13 @@ async function stopServer(server: ReturnType<typeof spawnServer>, label: string)
   children.delete(server.child);
 }
 
-describe("dbzz startup migrations", () => {
+describe("ackerdb startup migrations", () => {
   test("loads the chain, migrates data, and serves the transformed rows", async () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -290,12 +298,74 @@ describe("dbzz startup migrations", () => {
     expect(status.status.commitVersion).toBe("2");
   }, TEST_TIMEOUT_MS);
 
+  test("applies pending migrations before loading runtime-only modules", async () => {
+    const port = await freePort();
+    const dir = makeFixture({
+      "app.ts": APP_V1,
+      "functions/items.ts": ITEMS_FUNCTIONS,
+      ".ackerdb.config.json": JSON.stringify({ port }),
+    });
+    dirs.push(dir);
+
+    const first = spawnServer(dir);
+    await waitForReady(port);
+    const seeder = makeClient(port, "runtime-loading-seed");
+    expect(await withTimeout(
+      seeder.mutation<{ label: string; count: number }, bigint>("items.add", { label: "alpha", count: 5 }),
+      "seed before runtime loading failure",
+    )).toBe(1n);
+    closeClient(seeder);
+    await stopServer(first, "pre-migration server");
+
+    writeFileSync(join(dir, "app.ts"), APP_V2);
+    mkdirSync(join(dir, "migrations", "meta"), { recursive: true });
+    writeFileSync(join(dir, "migrations", "0001_count_to_string.ts"), MIGRATION_0001);
+    writeFileSync(
+      join(dir, "migrations", "meta", "0001_count_to_string.json"),
+      JSON.stringify({
+        number: 1,
+        name: "count_to_string",
+        fingerprint: migrationFingerprint(TARGET),
+        pre: PRE,
+        target: TARGET,
+      }),
+    );
+    writeFileSync(
+      join(dir, "credential-verifier.ts"),
+      `
+import { writeFileSync } from "node:fs";
+writeFileSync(new URL("./verifier-loaded", import.meta.url), "");
+throw new Error("runtime-only verifier failure");
+`,
+    );
+    writeFileSync(
+      join(dir, ".ackerdb.config.json"),
+      JSON.stringify({ port, credentialVerifier: "./credential-verifier.ts" }),
+    );
+
+    const failed = spawnServer(dir);
+    expect(await withTimeout(failed.child.exited, "runtime-only module failure")).not.toBe(0);
+    await withTimeout(failed.drained, "runtime-only module failure output");
+    children.delete(failed.child);
+    expect(existsSync(join(dir, "verifier-loaded"))).toBe(true);
+
+    const database = new Database(join(dir, ".ackerdb", "data.db"), { readonly: true });
+    try {
+      expect(database.query("SELECT number, name FROM _ackerdb_migrations").all()).toEqual([
+        { number: 1, name: "count_to_string" },
+      ]);
+      expect(database.query("SELECT count FROM items").all()).toEqual([{ count: "5" }]);
+    } finally {
+      database.close();
+    }
+  }, TEST_TIMEOUT_MS);
+
   test("refuses on restart after an applied migration's transform body is edited", async () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -335,12 +405,12 @@ describe("dbzz startup migrations", () => {
     expect(third.output()).toContain("immutable");
   }, TEST_TIMEOUT_MS);
 
-  test("refuses an unanswered schema change and names dbzz generate", async () => {
+  test("refuses an unanswered schema change and names acker generate", async () => {
     const port = await freePort();
     const dir = makeFixture({
       "app.ts": APP_V1,
       "functions/items.ts": ITEMS_FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -362,6 +432,6 @@ describe("dbzz startup migrations", () => {
     await withTimeout(second.drained, "refused startup output drain");
     children.delete(second.child);
     expect(exitCode).not.toBe(0);
-    expect(second.output()).toContain("dbzz generate");
+    expect(second.output()).toContain("acker generate");
   }, TEST_TIMEOUT_MS);
 });

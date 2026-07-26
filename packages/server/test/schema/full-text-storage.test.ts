@@ -11,7 +11,7 @@ import {
   newWriteCollector,
   reconcile,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const directories: string[] = [];
 
@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 function databasePath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-full-text-storage-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-full-text-storage-"));
   directories.push(directory);
   return join(directory, "data.db");
 }
@@ -48,7 +48,7 @@ describe("full-text physical storage", () => {
     ).toBeNull();
     expect(
       engine.writer
-        .query("SELECT name FROM temp.sqlite_temp_master WHERE name LIKE '__dbzz_fts%'")
+        .query("SELECT name FROM temp.sqlite_temp_master WHERE name LIKE '__ackerdb_fts%'")
         .all(),
     ).toEqual([]);
     expect(db.documents.fullText).toBeUndefined();
@@ -184,7 +184,7 @@ describe("full-text physical storage", () => {
     expect(attempted.loadSnapshot()).toEqual(oldSnapshot);
     expect(
       attempted.writer
-        .query("SELECT name FROM sqlite_master WHERE name LIKE '_dbzz_fts_%'")
+        .query("SELECT name FROM sqlite_master WHERE name LIKE '_ackerdb_fts_%'")
         .all(),
     ).toEqual([]);
     expect(

@@ -4,7 +4,7 @@
 # merges (--ff/--ff-only override the no-ff config), cherry-picks, or rebases
 # onto main — this catches all of them, and --no-verify does not skip it.
 [ "$1" = "prepared" ] || exit 0
-[ "$DBZZ_ALLOW_MAIN" = "1" ] && exit 0
+[ "$ACKERDB_ALLOW_MAIN" = "1" ] && exit 0
 
 ZEROS=0000000000000000000000000000000000000000
 while read -r old new ref; do

@@ -1,4 +1,4 @@
-import { defineSchema, defineTable, v } from "@dbzz/server";
+import { defineSchema, defineTable, v } from "@ackerdb/server";
 
 export const cacheSchema = defineSchema({
   entries: defineTable({

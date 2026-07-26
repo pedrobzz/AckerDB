@@ -1,6 +1,6 @@
 import type { Principal } from "../auth/credentials.ts";
 import { v, type EnumValidator } from "../validation/v.ts";
-import { DbzzError } from "../shared/errors.ts";
+import { AckerDBError } from "../shared/errors.ts";
 
 export const MAX_MCP_SCOPES = 128;
 export const MAX_MCP_SCOPE_BYTES = 256;
@@ -74,18 +74,18 @@ export function normalizeMcpScopeGrant<Scope extends string>(
   where: string,
 ): readonly Scope[] {
   if (!Array.isArray(value)) {
-    throw new DbzzError("validation", `${where} must be an array`);
+    throw new AckerDBError("validation", `${where} must be an array`);
   }
   if (value.length > descriptor.values.length) {
-    throw new DbzzError("validation", `${where} contains too many values`);
+    throw new AckerDBError("validation", `${where} contains too many values`);
   }
   const requested = new Set<Scope>();
   for (const scope of value) {
     if (typeof scope !== "string" || !descriptor.values.includes(scope as Scope)) {
-      throw new DbzzError("validation", `${where} contains undeclared scope ${JSON.stringify(scope)}`);
+      throw new AckerDBError("validation", `${where} contains undeclared scope ${JSON.stringify(scope)}`);
     }
     if (requested.has(scope as Scope)) {
-      throw new DbzzError("validation", `${where} must not contain duplicate values`);
+      throw new AckerDBError("validation", `${where} must not contain duplicate values`);
     }
     requested.add(scope as Scope);
   }
@@ -124,7 +124,7 @@ export function normalizeMcpToolAccess(
       `MCP tool "${tool}" ${kind}`,
     );
   } catch (error) {
-    if (error instanceof DbzzError) throw new TypeError(error.message);
+    if (error instanceof AckerDBError) throw new TypeError(error.message);
     throw error;
   }
   if (scopes.length === 0) {

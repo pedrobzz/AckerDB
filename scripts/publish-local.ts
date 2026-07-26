@@ -74,21 +74,21 @@ await assertRegistryReachable(REGISTRY);
 // A previous run may have been interrupted mid-publish: skip packages that
 // already have this version so a re-run resumes instead of dead-ending.
 async function isPublished(pkg: string): Promise<boolean> {
-  const res = await fetch(`${REGISTRY}/@dbzz/${pkg}`);
+  const res = await fetch(`${REGISTRY}/@ackerdb/${pkg}`);
   if (res.status === 404) return false;
-  if (!res.ok) fail(`registry query for @dbzz/${pkg} failed with ${res.status}`);
+  if (!res.ok) fail(`registry query for @ackerdb/${pkg} failed with ${res.status}`);
   return Boolean((await res.json()).versions?.[version]);
 }
 const alreadyPublished = new Set<string>();
 for (const pkg of PACKAGES) if (await isPublished(pkg)) alreadyPublished.add(pkg);
 
 if (alreadyPublished.size === PACKAGES.length && tagCommit) {
-  fail(`@dbzz/*@${version} is already published to ${REGISTRY} — bump before publishing.`);
+  fail(`@ackerdb/*@${version} is already published to ${REGISTRY} — bump before publishing.`);
 }
 
 const published: string[] = [];
 for (const pkg of PACKAGES) {
-  const name = `@dbzz/${pkg}`;
+  const name = `@ackerdb/${pkg}`;
   if (alreadyPublished.has(pkg)) {
     console.log(`skipping ${name}@${version} — already in the registry (resuming an interrupted publish)`);
     published.push(name);
@@ -96,7 +96,7 @@ for (const pkg of PACKAGES) {
   }
   console.log(`\npublishing ${name}@${version} → ${REGISTRY}`);
   // no --registry flag: it would bypass .npmrc and lose the auth token.
-  // bun publish resolves the @dbzz scope from the repo-root .npmrc instead.
+  // bun publish resolves the @ackerdb scope from the repo-root .npmrc instead.
   const res = Bun.spawnSync(["bun", "publish"], {
     cwd: `packages/${pkg}`,
     stdout: "inherit",
@@ -119,5 +119,5 @@ for (const pkg of PACKAGES) {
 
 if (!tagCommit) git("tag", tag);
 console.log(`\n✔ published ${published.join(", ")} at ${version} and tagged ${tag}`);
-console.log(`\nUse it in a project (with @dbzz scoped to ${REGISTRY} in its .npmrc):`);
-console.log(`  bun add --exact @dbzz/server@${version} @dbzz/client-react@${version}`);
+console.log(`\nUse it in a project (with @ackerdb scoped to ${REGISTRY} in its .npmrc):`);
+console.log(`  bun add --exact @ackerdb/server@${version} @ackerdb/client-react@${version}`);

@@ -1,9 +1,9 @@
 import {
-  DbzzClientError,
-  type DbzzAuthentication,
-  type DbzzAuthenticationState,
-} from "@dbzz/client";
-import type { Credential } from "@dbzz/core";
+  AckerDBClientError,
+  type AckerDBAuthentication,
+  type AckerDBAuthenticationState,
+} from "@ackerdb/client";
+import type { Credential } from "@ackerdb/core";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useProviderClient, useProviderCredentialKind } from "./provider.tsx";
 
@@ -11,21 +11,21 @@ import { useProviderClient, useProviderCredentialKind } from "./provider.tsx";
  * The complete React authentication surface: observable state plus the two
  * protocol-supported operations. `refresh` presents a new credential through
  * the base client's `refreshCredential`; `signOut` presents the anonymous
- * credential, which the dbzz server classifies as a sign-out — it retires the
+ * credential, which the ackerdb server classifies as a sign-out — it retires the
  * current auth epoch and transitions the session to the anonymous principal.
  * Both resolve with the server-confirmed authentication and reject with the
- * exact `DbzzClientError`.
+ * exact `AckerDBClientError`.
  */
 export interface UseAuthenticationResult {
-  readonly state: DbzzAuthenticationState;
-  readonly refresh: (credential: Credential) => Promise<DbzzAuthentication>;
-  readonly signOut: () => Promise<DbzzAuthentication>;
+  readonly state: AckerDBAuthenticationState;
+  readonly refresh: (credential: Credential) => Promise<AckerDBAuthentication>;
+  readonly signOut: () => Promise<AckerDBAuthentication>;
 }
 
 // Deterministic snapshots for server rendering and for the commit gap before
 // the provider's effect constructs the client: the configured credential is
 // about to be presented, which is exactly what "authenticating" means.
-const DETACHED_STATES: Readonly<Record<Credential["kind"], DbzzAuthenticationState>> =
+const DETACHED_STATES: Readonly<Record<Credential["kind"], AckerDBAuthenticationState>> =
   Object.freeze({
     anonymous: Object.freeze({ phase: "authenticating" as const, credential: "anonymous" as const }),
     bearer: Object.freeze({ phase: "authenticating" as const, credential: "bearer" as const }),
@@ -40,7 +40,7 @@ const noSubscription = (): (() => void) => () => {};
 // credential was presented and nothing reached the network.
 function detachedOperation(): Promise<never> {
   return Promise.reject(
-    new DbzzClientError({
+    new AckerDBClientError({
       code: "unavailable",
       message: "the provider has not constructed its client yet",
       retryable: false,
@@ -76,7 +76,7 @@ export function useAuthentication(): UseAuthenticationResult {
   const state = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   const refresh = useCallback(
-    (credential: Credential): Promise<DbzzAuthentication> => {
+    (credential: Credential): Promise<AckerDBAuthentication> => {
       if (client === null) return detachedOperation();
       // A closed or permanently failed client rejects synchronously with the
       // exact error; a React operation surfaces it as the rejection instead.

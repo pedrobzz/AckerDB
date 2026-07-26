@@ -13,7 +13,7 @@ import {
   type MutationMessage,
   type ProcedureMessage,
   type SseMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   type Principal,
@@ -22,7 +22,7 @@ import {
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -459,7 +459,7 @@ const functions = {
       access: "public",
       args: {},
       handler: () => {
-        throw new DbzzError("conflict", "💥".repeat(512));
+        throw new AckerDBError("conflict", "💥".repeat(512));
       },
     }),
     stream: sseProcedure({
@@ -594,7 +594,7 @@ class SessionHarness {
   }
 
   close(): Promise<void> {
-    this.controller.abort(new DbzzError("draining", "session closed"));
+    this.controller.abort(new AckerDBError("draining", "session closed"));
     return this.runtime.closeSession(this.context, {
       code: "draining",
       retryable: false,
@@ -701,12 +701,12 @@ async function restart(
   await runtime.drain().catch(() => {});
   engine.close("clean");
   rmSync(directory, { recursive: true, force: true });
-  directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-restart-"));
+  directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-restart-"));
   start(customLimits, telemetry);
 }
 
 beforeEach(() => {
-  directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-"));
+  directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-"));
   queryGate = null;
   queryFailureGate = null;
   queryFailureEntered = null;
@@ -853,7 +853,7 @@ describe("runtime commit and replay ownership", () => {
 
     const versionBeforeErr = engine.commitVersion();
     const recordsBeforeErr = engine.writer
-      .query("SELECT COUNT(*) AS count FROM _dbzz_mutations")
+      .query("SELECT COUNT(*) AS count FROM _ackerdb_mutations")
       .get() as { count: bigint };
     const errIssuedAt = Date.now();
     const errRequestId = uuidV7(errIssuedAt, 22);
@@ -876,7 +876,7 @@ describe("runtime commit and replay ownership", () => {
     expect(engine.commitVersion()).toBe(versionBeforeErr);
     expect(propagated.receipt.commitVersion).toBe(versionBeforeErr);
     expect(
-      (engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_mutations").get() as {
+      (engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_mutations").get() as {
         count: bigint;
       }).count,
     ).toBe(recordsBeforeErr.count + 1n);
@@ -968,7 +968,7 @@ describe("runtime commit and replay ownership", () => {
       now,
     );
     engine.writer.query(
-      "UPDATE _dbzz_mutations SET durability = 'balanced' WHERE session_id = ? AND request_id = ?",
+      "UPDATE _ackerdb_mutations SET durability = 'balanced' WHERE session_id = ? AND request_id = ?",
     ).run(session.context.clientSessionId, requestId);
     const replay = await session.mutation(
       2,
@@ -1459,7 +1459,7 @@ describe("procedures and bounded SSE", () => {
       );
 
       await externalProcedureStarted.promise;
-      controller.abort(new DbzzError("unavailable", "procedure request was canceled", {
+      controller.abort(new AckerDBError("unavailable", "procedure request was canceled", {
         resource: "operation",
       }));
       externalProcedureRelease.resolve(undefined);
@@ -1494,7 +1494,7 @@ describe("procedures and bounded SSE", () => {
       });
 
       await externalProcedureStarted.promise;
-      controller.abort(new DbzzError("unavailable", "procedure request was canceled", {
+      controller.abort(new AckerDBError("unavailable", "procedure request was canceled", {
         resource: "operation",
       }));
       externalProcedureRelease.resolve(undefined);
@@ -1735,7 +1735,7 @@ describe("procedures and bounded SSE", () => {
     });
   });
 
-  test("turns a post-start SSE failure into a terminal dbzz-error event", async () => {
+  test("turns a post-start SSE failure into a terminal ackerdb-error event", async () => {
     const response = await runtime.runSse({
       id: 1,
       address: "ops.failingStream",
@@ -2191,7 +2191,7 @@ describe("configured capacity", () => {
     await runtime.drain();
     engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
-    directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-capacity-"));
+    directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-capacity-"));
     start(limits({ maxConnections: 1, maxFrameBytes: 256 }));
   });
 
@@ -2440,7 +2440,7 @@ describe("configured capacity", () => {
     await runtime.drain();
     engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
-    directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-auth-capture-"));
+    directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-auth-capture-"));
     start(limits({
       maxFrameBytes: 1_024,
       webSocket: {

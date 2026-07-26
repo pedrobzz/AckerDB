@@ -9,14 +9,14 @@ import {
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
-import { v, defineSchema, defineTable, Engine, reconcile } from "@dbzz/server";
+import { v, defineSchema, defineTable, Engine, reconcile } from "@ackerdb/server";
 import { makeFixture } from "../support/fixture.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const REPO = new URL("../../../..", import.meta.url).pathname;
 const STEP_TIMEOUT_MS = 10_000;
 const APP_SOURCE = `
-import { v, defineApp, defineSchema, defineTable } from "@dbzz/server";
+import { v, defineApp, defineSchema, defineTable } from "@ackerdb/server";
 const schema = defineSchema({
   records: defineTable({ id: v.primaryKey(), value: v.string() }),
 });
@@ -62,7 +62,7 @@ async function freePort(): Promise<number> {
 function fixture(port: number): string {
   const dir = makeFixture({
     "app.ts": APP_SOURCE,
-    ".dbzz.config.json": JSON.stringify({ port }),
+    ".ackerdb.config.json": JSON.stringify({ port }),
   });
   dirs.push(dir);
   return dir;
@@ -73,7 +73,7 @@ function spawnStart(dir: string) {
     cwd: REPO,
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, DBZZ_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
   }) as CliProcess;
   children.add(child);
   let output = "";
@@ -132,7 +132,7 @@ function rollbackJournalCrash(path: string, corruptLedger: boolean): string {
     database.exec("PRAGMA cache_size = 5");
     database.exec("PRAGMA cache_spill = 1");
     ${corruptLedger
-      ? 'database.query("UPDATE _dbzz_state SET mutation_records = 999 WHERE singleton = 1").run();'
+      ? 'database.query("UPDATE _ackerdb_state SET mutation_records = 999 WHERE singleton = 1").run();'
       : ""}
     database.exec("BEGIN IMMEDIATE");
     const insert = database.query("INSERT INTO records (value) VALUES (?)");
@@ -151,7 +151,7 @@ async function assertFailedStartup(
   await withTimeout(failed.drained, "corrupt startup output drain");
   children.delete(failed.child);
   expect(failed.output()).toContain(diagnostic);
-  expect(failed.output()).not.toContain("@@dbzz-startup");
+  expect(failed.output()).not.toContain("@@ackerdb-startup");
   expect(failed.output()).not.toContain("ready on");
   try {
     await fetch(`http://127.0.0.1:${port}/live`, { signal: AbortSignal.timeout(200) });
@@ -163,9 +163,9 @@ async function assertFailedStartup(
 
 function cleanDatabase(): Buffer {
   const dir = fixture(32_111);
-  const source = join(dir, ".dbzz", "source.db");
+  const source = join(dir, ".ackerdb", "source.db");
   const artifact = join(dir, "clean.db");
-  mkdirSync(join(dir, ".dbzz"), { recursive: true });
+  mkdirSync(join(dir, ".ackerdb"), { recursive: true });
   const engine = new Engine(schema, source);
   reconcile(engine);
   engine.backup(artifact);
@@ -206,7 +206,7 @@ describe("fresh-process storage corruption rejection", () => {
       },
       {
         name: "valid empty SQLite",
-        diagnostic: "pre-existing database has no DBZZ metadata",
+        diagnostic: "pre-existing database has no AckerDB metadata",
         write: (path) => {
           const database = new Database(path, { create: true });
           database.exec("VACUUM");
@@ -215,7 +215,7 @@ describe("fresh-process storage corruption rejection", () => {
       },
       {
         name: "foreign SQLite",
-        diagnostic: "pre-existing database has no DBZZ metadata",
+        diagnostic: "pre-existing database has no AckerDB metadata",
         write: (path) => {
           const database = new Database(path, { create: true });
           database.exec("CREATE TABLE foreign_records (id INTEGER PRIMARY KEY)");
@@ -251,8 +251,8 @@ describe("fresh-process storage corruption rejection", () => {
     for (const variant of variants) {
       const port = await freePort();
       const dir = fixture(port);
-      const path = join(dir, ".dbzz", "data.db");
-      mkdirSync(join(dir, ".dbzz"), { recursive: true });
+      const path = join(dir, ".ackerdb", "data.db");
+      mkdirSync(join(dir, ".ackerdb"), { recursive: true });
       variant.write(path);
       const before = readFileSync(path);
 
@@ -264,8 +264,8 @@ describe("fresh-process storage corruption rejection", () => {
 
     const orphanPort = await freePort();
     const orphanDir = fixture(orphanPort);
-    const orphanPath = join(orphanDir, ".dbzz", "data.db");
-    mkdirSync(join(orphanDir, ".dbzz"), { recursive: true });
+    const orphanPath = join(orphanDir, ".ackerdb", "data.db");
+    mkdirSync(join(orphanDir, ".ackerdb"), { recursive: true });
     const orphanWal = Buffer.from("orphan recovery evidence");
     writeFileSync(`${orphanPath}-wal`, orphanWal);
     await assertFailedStartup(
@@ -278,8 +278,8 @@ describe("fresh-process storage corruption rejection", () => {
 
     const journalPort = await freePort();
     const journalDir = fixture(journalPort);
-    const journalPath = join(journalDir, ".dbzz", "data.db");
-    mkdirSync(join(journalDir, ".dbzz"), { recursive: true });
+    const journalPath = join(journalDir, ".ackerdb", "data.db");
+    mkdirSync(join(journalDir, ".ackerdb"), { recursive: true });
     const orphanJournal = Buffer.from("orphan rollback evidence");
     writeFileSync(`${journalPath}-journal`, orphanJournal);
     await assertFailedStartup(
@@ -294,11 +294,11 @@ describe("fresh-process storage corruption rejection", () => {
   test("recovers committed and uncommitted hot WALs but rejects structural damage", async () => {
     const clean = cleanDatabase();
     const crashDir = fixture(await freePort());
-    const source = join(crashDir, ".dbzz", "data.db");
-    mkdirSync(join(crashDir, ".dbzz"), { recursive: true });
+    const source = join(crashDir, ".ackerdb", "data.db");
+    mkdirSync(join(crashDir, ".ackerdb"), { recursive: true });
     writeFileSync(source, clean);
     const crashScript = `
-      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      import { v, defineSchema, defineTable, Engine } from "@ackerdb/server";
       const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(source)});
       engine.writer.exec("PRAGMA wal_autocheckpoint = 0");
@@ -329,8 +329,8 @@ describe("fresh-process storage corruption rejection", () => {
 
     const validPort = await freePort();
     const validDir = fixture(validPort);
-    const validPath = join(validDir, ".dbzz", "data.db");
-    mkdirSync(join(validDir, ".dbzz"), { recursive: true });
+    const validPath = join(validDir, ".ackerdb", "data.db");
+    mkdirSync(join(validDir, ".ackerdb"), { recursive: true });
     writeFileSync(validPath, main);
     writeFileSync(`${validPath}-wal`, Buffer.concat([wal, Buffer.alloc(512, 0xa5)]));
     const valid = spawnStart(validDir);
@@ -340,18 +340,18 @@ describe("fresh-process storage corruption rejection", () => {
     expect(recovered.query("SELECT value FROM records").all()).toEqual([
       { value: "committed-before-crash" },
     ]);
-    expect(recovered.query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1").get()).toEqual({
+    expect(recovered.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get()).toEqual({
       commit_version: 1n,
     });
     recovered.close();
 
     const uncommittedPort = await freePort();
     const uncommittedDir = fixture(uncommittedPort);
-    const uncommittedPath = join(uncommittedDir, ".dbzz", "data.db");
-    mkdirSync(join(uncommittedDir, ".dbzz"), { recursive: true });
+    const uncommittedPath = join(uncommittedDir, ".ackerdb", "data.db");
+    mkdirSync(join(uncommittedDir, ".ackerdb"), { recursive: true });
     writeFileSync(uncommittedPath, clean);
     const spillScript = `
-      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      import { v, defineSchema, defineTable, Engine } from "@ackerdb/server";
       const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(uncommittedPath)});
       engine.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)");
@@ -384,18 +384,18 @@ describe("fresh-process storage corruption rejection", () => {
     await stopStarted(uncommitted);
     const rolledBack = new Database(uncommittedPath, { readonly: true, safeIntegers: true });
     expect(rolledBack.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 0n });
-    expect(rolledBack.query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1").get()).toEqual({
+    expect(rolledBack.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get()).toEqual({
       commit_version: 0n,
     });
     rolledBack.close();
 
     const resetPort = await freePort();
     const resetDir = fixture(resetPort);
-    const resetPath = join(resetDir, ".dbzz", "data.db");
-    mkdirSync(join(resetDir, ".dbzz"), { recursive: true });
+    const resetPath = join(resetDir, ".ackerdb", "data.db");
+    mkdirSync(join(resetDir, ".ackerdb"), { recursive: true });
     writeFileSync(resetPath, clean);
     const resetScript = `
-      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      import { v, defineSchema, defineTable, Engine } from "@ackerdb/server";
       const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(resetPath)});
       engine.writer.exec("PRAGMA wal_autocheckpoint = 0");
@@ -434,7 +434,7 @@ describe("fresh-process storage corruption rejection", () => {
     await stopStarted(recoveredReset);
     const resetDatabase = new Database(resetPath, { readonly: true, safeIntegers: true });
     expect(resetDatabase.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 501n });
-    expect(resetDatabase.query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1").get()).toEqual({
+    expect(resetDatabase.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get()).toEqual({
       commit_version: 2n,
     });
     resetDatabase.close();
@@ -455,8 +455,8 @@ describe("fresh-process storage corruption rejection", () => {
     for (const variant of variants) {
       const port = await freePort();
       const dir = fixture(port);
-      const path = join(dir, ".dbzz", "data.db");
-      mkdirSync(join(dir, ".dbzz"), { recursive: true });
+      const path = join(dir, ".ackerdb", "data.db");
+      mkdirSync(join(dir, ".ackerdb"), { recursive: true });
       writeFileSync(path, main);
       writeFileSync(`${path}-wal`, variant.bytes());
       const beforeMain = readFileSync(path);
@@ -472,15 +472,15 @@ describe("fresh-process storage corruption rejection", () => {
   test("rejects hot-WAL internal corruption without changing any recovery artifact", async () => {
     const port = await freePort();
     const dir = fixture(port);
-    const path = join(dir, ".dbzz", "data.db");
-    mkdirSync(join(dir, ".dbzz"), { recursive: true });
+    const path = join(dir, ".ackerdb", "data.db");
+    mkdirSync(join(dir, ".ackerdb"), { recursive: true });
     writeFileSync(path, cleanDatabase());
     const corruptScript = `
-      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      import { v, defineSchema, defineTable, Engine } from "@ackerdb/server";
       const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(path)});
       engine.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-      engine.writer.query("UPDATE _dbzz_state SET mutation_records = 999 WHERE singleton = 1").run();
+      engine.writer.query("UPDATE _ackerdb_state SET mutation_records = 999 WHERE singleton = 1").run();
       process.kill(process.pid, "SIGKILL");
     `;
     const corrupted = Bun.spawn([process.execPath, "-e", corruptScript], {
@@ -515,8 +515,8 @@ describe("fresh-process storage corruption rejection", () => {
   test("recovers hot rollback journals and preserves rejected recovery evidence byte-for-byte", async () => {
     const validPort = await freePort();
     const validDir = fixture(validPort);
-    const validPath = join(validDir, ".dbzz", "data.db");
-    mkdirSync(join(validDir, ".dbzz"), { recursive: true });
+    const validPath = join(validDir, ".ackerdb", "data.db");
+    mkdirSync(join(validDir, ".ackerdb"), { recursive: true });
     writeFileSync(validPath, cleanDatabase());
     await runSilentCrash(rollbackJournalCrash(validPath, false), "hot rollback-journal fixture crash");
     expect(readFileSync(`${validPath}-journal`).byteLength).toBeGreaterThan(512);
@@ -527,14 +527,14 @@ describe("fresh-process storage corruption rejection", () => {
     const recoveredDatabase = new Database(validPath, { readonly: true, safeIntegers: true });
     expect(recoveredDatabase.query("SELECT COUNT(*) AS count FROM records").get()).toEqual({ count: 0n });
     expect(
-      recoveredDatabase.query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1").get(),
+      recoveredDatabase.query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1").get(),
     ).toEqual({ commit_version: 0n });
     recoveredDatabase.close();
 
     const corruptPort = await freePort();
     const corruptDir = fixture(corruptPort);
-    const corruptPath = join(corruptDir, ".dbzz", "data.db");
-    mkdirSync(join(corruptDir, ".dbzz"), { recursive: true });
+    const corruptPath = join(corruptDir, ".ackerdb", "data.db");
+    mkdirSync(join(corruptDir, ".ackerdb"), { recursive: true });
     writeFileSync(corruptPath, cleanDatabase());
     await runSilentCrash(
       rollbackJournalCrash(corruptPath, true),

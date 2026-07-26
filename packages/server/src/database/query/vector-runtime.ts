@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { DbzzError } from "../../shared/errors.ts";
+import { AckerDBError } from "../../shared/errors.ts";
 import type { Schema } from "../../schema/definition.ts";
 import { baseValidator } from "../../validation/v.ts";
 
@@ -11,7 +11,7 @@ export interface VectorRuntime {
   readonly euclidean: DistanceKernel;
 }
 
-export class VectorRuntimeUnavailableError extends DbzzError {
+export class VectorRuntimeUnavailableError extends AckerDBError {
   constructor(message: string, cause?: unknown) {
     super("unavailable", message, { resource: "operation", cause });
     this.name = "VectorRuntimeUnavailableError";

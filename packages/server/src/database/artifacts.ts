@@ -11,7 +11,7 @@ function exactStagingArtifacts(
 ): string[] {
   const directory = dirname(path);
   if (!existsSync(directory)) return [];
-  const prefix = `${basename(path)}.dbzz-${kind}-`;
+  const prefix = `${basename(path)}.ackerdb-${kind}-`;
   return readdirSync(directory, { withFileTypes: true })
     .filter((entry) => {
       if (entry.isDirectory() || !entry.name.startsWith(prefix)) return false;
@@ -31,7 +31,7 @@ export function restoreArtifactPaths(path: string): string[] {
   return exactStagingArtifacts(path, "restore", true);
 }
 
-/** Main-file stages that can remain hard-linked after DBZZ publication crashes. */
+/** Main-file stages that can remain hard-linked after AckerDB publication crashes. */
 export function databasePublicationArtifactPaths(path: string): string[] {
   return [
     ...exactStagingArtifacts(path, "init", false),

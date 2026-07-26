@@ -5,7 +5,7 @@ import {
   encode,
   parseSseMessage,
   type SseMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 
 export interface PausedSse {
   readonly socket: Socket;

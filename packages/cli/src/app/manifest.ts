@@ -2,7 +2,7 @@
 import { existsSync, readdirSync } from "node:fs";
 import { join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { isApp, type App } from "@dbzz/server";
+import { isApp, type App } from "@ackerdb/server";
 import type { AppConfig } from "./config.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;

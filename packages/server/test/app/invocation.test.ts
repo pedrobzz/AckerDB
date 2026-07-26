@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Database } from "bun:sqlite";
-import { Err, Failure, Status } from "@dbzz/core";
+import { Err, Failure, Status } from "@ackerdb/core";
 import { ANONYMOUS_PRINCIPAL, type UserPrincipal } from "../../src/auth/credentials.ts";
 import { v } from "../../src/validation/v.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { mutation, query } from "../../src/app/functions.ts";
 import {
   invokeFunction,
@@ -251,7 +251,7 @@ describe("invocation instrumentation", () => {
       args: {},
       access: "public",
       handler: () => {
-        throw new DbzzError("conflict", "private handler detail");
+        throw new AckerDBError("conflict", "private handler detail");
       },
     });
 
@@ -419,9 +419,9 @@ describe("invocation instrumentation", () => {
 
     expect(result).toMatchObject({ ok: true, data: "queued" });
     expect(statements).toEqual([
-      "SAVEPOINT dbzz_result_1",
-      "ROLLBACK TO dbzz_result_1",
-      "RELEASE dbzz_result_1",
+      "SAVEPOINT ackerdb_result_1",
+      "ROLLBACK TO ackerdb_result_1",
+      "RELEASE ackerdb_result_1",
     ]);
   });
 

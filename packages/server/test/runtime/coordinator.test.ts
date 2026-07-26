@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stableEncode } from "@dbzz/core";
+import { stableEncode } from "@ackerdb/core";
 import {
   CommitCoordinator,
   withFetchObserver,
@@ -11,7 +11,7 @@ import {
 } from "../../src/runtime/coordinator.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits } from "../../src/runtime/limits.ts";
 import { mutationReplayOwner } from "../../src/database/mutation-replay.ts";
 import { OrderedPublication } from "../../src/realtime/publication.ts";
@@ -30,7 +30,7 @@ afterEach(() => {
 });
 
 function fixture(overrides: Partial<typeof PRODUCTION_LIMITS> = {}) {
-  const dir = mkdtempSync(join(tmpdir(), "dbzz-coordinator-"));
+  const dir = mkdtempSync(join(tmpdir(), "ackerdb-coordinator-"));
   dirs.push(dir);
   const engine = new Engine(schema, join(dir, "data.db"));
   engines.push(engine);
@@ -141,7 +141,7 @@ describe("CommitCoordinator", () => {
   });
 
   test("releases the writer turn after handoff while ordered publication is pending", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-coordinator-handoff-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-coordinator-handoff-"));
     dirs.push(dir);
     const engine = new Engine(schema, join(dir, "data.db"));
     engines.push(engine);
@@ -388,7 +388,7 @@ describe("CommitCoordinator", () => {
       work: (db: any) => db.notes.insert({ body: "must disappear" }),
       publication: (version) => ({ version }),
       validate: () => {
-        throw new DbzzError("overloaded", "response is too large", { resource: "operation" });
+        throw new AckerDBError("overloaded", "response is too large", { resource: "operation" });
       },
     })).rejects.toMatchObject({ code: "overloaded", resource: "operation" });
     expect(engine.commitVersion()).toBe(0n);
@@ -413,7 +413,7 @@ describe("CommitCoordinator", () => {
     await expect(coordinator.execute({
       ...request,
       validate: () => {
-        throw new DbzzError("overloaded", "response is too large", { resource: "operation" });
+        throw new AckerDBError("overloaded", "response is too large", { resource: "operation" });
       },
     })).rejects.toMatchObject({ code: "overloaded" });
     expect(engine[mutationReplayOwner].lookup(identity.sessionId, identity.requestId)).toBeNull();
@@ -470,7 +470,7 @@ describe("CommitCoordinator", () => {
         work: () => fetch("data:text/plain,nope"),
         publication: (version) => ({ version }),
       }),
-    )).rejects.toBeInstanceOf(DbzzError);
+    )).rejects.toBeInstanceOf(AckerDBError);
     expect(observations).toEqual([expect.objectContaining({ outcome: "validation" })]);
     expect(observations.every(Object.isFrozen)).toBe(true);
 
@@ -505,7 +505,7 @@ describe("CommitCoordinator", () => {
   test("an unknown expired request is never re-executed after ledger pruning", async () => {
     const now = identity.issuedAt + 100;
     const { coordinator, engine } = (() => {
-      const dir = mkdtempSync(join(tmpdir(), "dbzz-coordinator-expired-"));
+      const dir = mkdtempSync(join(tmpdir(), "ackerdb-coordinator-expired-"));
       dirs.push(dir);
       const engine = new Engine(schema, join(dir, "data.db"));
       engines.push(engine);
@@ -549,7 +549,7 @@ describe("CommitCoordinator", () => {
 
   test("uses the UUID timestamp rather than a forgeable issuedAt for replay age", async () => {
     const now = identity.issuedAt + PRODUCTION_LIMITS.mutationReplay.maxAgeMs + 1;
-    const dir = mkdtempSync(join(tmpdir(), "dbzz-coordinator-uuid-age-"));
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-coordinator-uuid-age-"));
     dirs.push(dir);
     const engine = new Engine(schema, join(dir, "data.db"));
     engines.push(engine);

@@ -45,7 +45,7 @@ export interface StandardJsonSchemaOptions {
 
 export interface StandardSchemaProperties<Input, Output = Input> {
   readonly version: 1;
-  readonly vendor: "dbzz";
+  readonly vendor: "ackerdb";
   readonly validate: (
     value: unknown,
     options?: StandardSchemaOptions,
@@ -66,8 +66,8 @@ export interface JsonObjectSchema extends Readonly<Record<string, unknown>> {
 }
 
 /**
- * One lossless standard-JSON boundary compiled from a DBZZ validator. HTTP and
- * local model adapters consume the same codec; DBZZ's ordinary runtime input
+ * One lossless standard-JSON boundary compiled from a AckerDB validator. HTTP and
+ * local model adapters consume the same codec; AckerDB's ordinary runtime input
  * type remains unchanged.
  */
 export interface StandardJsonCodec<
@@ -97,7 +97,7 @@ type OmissibleProtocolKey<S extends ObjectShape> = {
 
 type RequiredProtocolKey<S extends ObjectShape> = Exclude<keyof S, OmissibleProtocolKey<S>>;
 
-/** Standard-JSON values accepted before DBZZ converts lossless wire forms. */
+/** Standard-JSON values accepted before AckerDB converts lossless wire forms. */
 export type StandardJsonInput<V extends StandardValidator> =
   V extends NullableValidator<infer Inner> ? StandardJsonInput<Inner> | null
     : V extends OptionalValidator<infer Inner> ? StandardJsonInput<Inner>
@@ -121,7 +121,7 @@ export type StandardJsonInput<V extends StandardValidator> =
                     : V extends StandardValidator<infer Value, string, unknown> ? Value
                       : never;
 
-/** Canonical Standard-JSON values emitted after DBZZ encodes native values. */
+/** Canonical Standard-JSON values emitted after AckerDB encodes native values. */
 export type StandardJsonOutput<V extends StandardValidator> =
   V extends NullableValidator<infer Inner> ? StandardJsonOutput<Inner> | null
     : V extends OptionalValidator<infer Inner> ? StandardJsonOutput<Inner>
@@ -667,7 +667,7 @@ function compileNode(
 function schemaUri(options: StandardJsonSchemaOptions): string {
   if (options?.target === "draft-2020-12") return JSON_SCHEMA_2020_12;
   if (options?.target === "draft-07") return JSON_SCHEMA_DRAFT_07;
-  throw new TypeError("DBZZ validators support JSON Schema draft-2020-12 and draft-07");
+  throw new TypeError("AckerDB validators support JSON Schema draft-2020-12 and draft-07");
 }
 
 /** Standard Schema consumers may normalize in place, so every call owns a fresh graph. */
@@ -701,7 +701,7 @@ export function createStandardSchemaProperties<Input, Output>(
 ): StandardSchemaProperties<Input, Output> {
   return Object.freeze({
     version: 1 as const,
-    vendor: "dbzz" as const,
+    vendor: "ackerdb" as const,
     validate(value: unknown): StandardSchemaResult<Output> {
       try {
         return { value: validator.check(value, "$input") };
@@ -736,7 +736,7 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
   const protocolSchema = <Value>(mode: SchemaMode): StandardJsonProtocolSchema<Value> => Object.freeze({
     "~standard": Object.freeze({
       version: 1 as const,
-      vendor: "dbzz" as const,
+      vendor: "ackerdb" as const,
       validate(value: unknown): StandardSchemaResult<Value> {
         const path = mode === "input" ? "$input" : "$output";
         try {
@@ -767,7 +767,7 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
     outputProtocolSchema: protocolSchema<StandardJsonOutput<V>>("output"),
     "~standard": Object.freeze({
       version: 1 as const,
-      vendor: "dbzz" as const,
+      vendor: "ackerdb" as const,
       validate(value: unknown): StandardSchemaResult<InferValidator<V>> {
         try {
           return { value: decode(value) };

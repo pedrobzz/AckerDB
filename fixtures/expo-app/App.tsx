@@ -1,12 +1,12 @@
 import type { ReactElement } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import {
-  DbzzProvider,
+  AckerDBProvider,
   useConnectionState,
   useQuery,
-  type DbzzProviderConfig,
+  type AckerDBProviderConfig,
   type QueryRef,
-} from "@dbzz/client-react";
+} from "@ackerdb/client-react";
 
 // Point this at a machine running `bun fixtures/react-web/server.ts` — it
 // serves the matching `notes.list` query on port 3211. A physical device
@@ -22,14 +22,14 @@ interface Note {
 // application imports its generated api object from its server project.
 const notesList = { $ref: "notes.list" } as QueryRef<Record<never, never>, Note[]>;
 
-const config: DbzzProviderConfig = { url: SERVER_URL, credential: { kind: "anonymous" } };
+const config: AckerDBProviderConfig = { url: SERVER_URL, credential: { kind: "anonymous" } };
 
 function Screen(): ReactElement {
   const connection = useConnectionState();
   const notes = useQuery(notesList, {});
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>dbzz expo fixture</Text>
+      <Text style={styles.title}>AckerDB Expo fixture</Text>
       <Text>connection: {connection.phase}</Text>
       {connection.phase === "ready" && (
         <Text>principal: {connection.authentication.principal}</Text>
@@ -48,9 +48,9 @@ function Screen(): ReactElement {
 
 export function App(): ReactElement {
   return (
-    <DbzzProvider config={config}>
+    <AckerDBProvider config={config}>
       <Screen />
-    </DbzzProvider>
+    </AckerDBProvider>
   );
 }
 

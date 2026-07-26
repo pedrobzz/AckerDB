@@ -1,5 +1,5 @@
-import { v } from "@dbzz/server";
-import { mutation } from "@demo/dbzz-codegen/server";
+import { v } from "@ackerdb/server";
+import { mutation } from "@demo/ackerdb-codegen/server";
 import { itemStatus } from "../app.ts";
 
 export const fire = mutation({

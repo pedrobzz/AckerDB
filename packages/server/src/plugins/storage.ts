@@ -144,7 +144,7 @@ function prepareDesired(engine: Engine, desired: DesiredPluginMounts): DesiredMo
 
 /** Fingerprint the exact storage layout requested by an App without touching storage. */
 export function desiredStorageFingerprint(root: Schema, desired: DesiredPluginMounts): string {
-  if (!isSchema(root)) throw new TypeError("root schema must be a DBZZ schema");
+  if (!isSchema(root)) throw new TypeError("root schema must be a AckerDB schema");
   return storageLayoutFingerprint(
     snapshotOf(root),
     normalizeDesiredMounts(desired).map((entry) => ({
@@ -219,7 +219,7 @@ function sortedRequirements(
 
 function writeInventory(engine: Engine, target: DesiredMount): void {
   engine.writer.query(
-    `INSERT INTO _dbzz_plugins (mount, definition_identity, schema) VALUES (?, ?, ?)
+    `INSERT INTO _ackerdb_plugins (mount, definition_identity, schema) VALUES (?, ?, ?)
       ON CONFLICT(mount) DO UPDATE SET
         definition_identity = excluded.definition_identity,
         schema = excluded.schema`,
@@ -236,9 +236,9 @@ function dropPhysicalScope(engine: Engine, mount: string, snapshot: SchemaSnapsh
   }
   const tagPrefix = `${mount.length}:${mount}`;
   engine.writer
-    .query("DELETE FROM _dbzz_tags WHERE substr(type, 1, ?) = ?")
+    .query("DELETE FROM _ackerdb_tags WHERE substr(type, 1, ?) = ?")
     .run(tagPrefix.length, tagPrefix);
-  engine.writer.query("DELETE FROM _dbzz_plugins WHERE mount = ?").run(mount);
+  engine.writer.query("DELETE FROM _ackerdb_plugins WHERE mount = ?").run(mount);
 }
 
 function quote(name: string): string {

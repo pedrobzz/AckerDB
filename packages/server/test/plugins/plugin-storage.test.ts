@@ -18,7 +18,7 @@ import {
   restoreVerifiedDatabase,
   snapshotOf,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import {
   desiredStorageFingerprint,
   dropPluginStorage,
@@ -36,9 +36,9 @@ afterAll(() => {
 });
 
 function freshPath(): string {
-  const root = mkdtempSync(join(tmpdir(), "dbzz-plugin-storage-test-"));
+  const root = mkdtempSync(join(tmpdir(), "ackerdb-plugin-storage-test-"));
   roots.push(root);
-  return join(root, "data.dbzz");
+  return join(root, "data.ackerdb");
 }
 
 const rootSchema = defineSchema({
@@ -201,7 +201,7 @@ describe("Plugin storage inventory", () => {
     dropPluginStorage(engine, {}, requirement);
     expect(
       engine.writer
-        .query("SELECT name FROM sqlite_master WHERE name LIKE '_dbzz_fts_%'")
+        .query("SELECT name FROM sqlite_master WHERE name LIKE '_ackerdb_fts_%'")
         .all(),
     ).toEqual([]);
     engine.close("clean");
@@ -221,7 +221,7 @@ describe("Plugin storage inventory", () => {
     let engine = open(path);
     reconcilePluginStorage(engine, mounts);
     const inventory = engine.writer
-      .query("SELECT schema FROM _dbzz_plugins WHERE mount = 'cache'")
+      .query("SELECT schema FROM _ackerdb_plugins WHERE mount = 'cache'")
       .get() as { schema: string };
     const stored = JSON.parse(inventory.schema) as any;
     expect(Object.hasOwn(stored.tables.entries.columns.payload.shape, "__proto__")).toBe(true);
@@ -522,7 +522,7 @@ describe("Plugin storage inventory", () => {
       ...mounts,
       alpha: { ...mounts.alpha, schema: entriesAdditive },
     })).not.toBe(withPlugins);
-    const artifact = join(roots.at(-1)!, "backup.dbzz");
+    const artifact = join(roots.at(-1)!, "backup.ackerdb");
     const manifest = engine.backup(artifact);
     expect(manifest.schemaFingerprint).toBe(withPlugins);
     engine.close("clean");
@@ -573,7 +573,7 @@ describe("Plugin storage inventory", () => {
     reconcilePluginStorage(engine, {
       alpha: { definitionId: "cache", schema: entriesV1 },
     });
-    const artifact = join(roots.at(-1)!, "layout-backup.dbzz");
+    const artifact = join(roots.at(-1)!, "layout-backup.ackerdb");
     const manifest = engine.backup(artifact);
     engine.close("clean");
 
@@ -635,7 +635,7 @@ describe("Plugin storage inventory", () => {
     };
 
     corrupt((db) => {
-      db.query("UPDATE _dbzz_plugins SET schema = '{bad json'").run();
+      db.query("UPDATE _ackerdb_plugins SET schema = '{bad json'").run();
     });
     corrupt((db, physical) => {
       db.exec(`DROP TABLE "${physical}"`);
@@ -644,13 +644,13 @@ describe("Plugin storage inventory", () => {
       db.exec(`DROP INDEX "${physicalIndex}"`);
     });
     corrupt((db, _physical, tagIdentity) => {
-      db.query("DELETE FROM _dbzz_tags WHERE type = ?").run(tagIdentity);
+      db.query("DELETE FROM _ackerdb_tags WHERE type = ?").run(tagIdentity);
     });
     corrupt((db) => {
-      db.exec('CREATE TABLE "_dbzz_plugin_5:ghostentries" ("id" INTEGER PRIMARY KEY AUTOINCREMENT)');
+      db.exec('CREATE TABLE "_ackerdb_plugin_5:ghostentries" ("id" INTEGER PRIMARY KEY AUTOINCREMENT)');
     });
     corrupt((db) => {
-      db.query("INSERT INTO _dbzz_tags (type, variant, tag) VALUES ('5:ghostStatus', 'ready', 0)").run();
+      db.query("INSERT INTO _ackerdb_tags (type, variant, tag) VALUES ('5:ghostStatus', 'ready', 0)").run();
     });
   });
 });

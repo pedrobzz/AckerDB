@@ -1,4 +1,4 @@
-import { DbzzError } from "../shared/errors.ts";
+import { AckerDBError } from "../shared/errors.ts";
 import { validateCapacityLimits, type CapacityLimits } from "../runtime/limits.ts";
 
 export interface Publication<T> {
@@ -336,8 +336,8 @@ function unavailable(
   code: "overloaded" | "draining" | "unavailable",
   message: string,
   retryable = false,
-): DbzzError {
-  return new DbzzError(code, message, {
+): AckerDBError {
+  return new AckerDBError(code, message, {
     retryable,
     ...(retryable ? { retryAfterMs: 0 } : {}),
     resource: "publication",

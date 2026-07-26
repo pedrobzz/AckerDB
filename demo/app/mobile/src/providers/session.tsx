@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 
-const SESSION_KEY = "dbzz.savoria.guest-session";
+const SESSION_KEY = "ackerdb.savoria.guest-session";
 
 export interface GuestSession {
   readonly token: string;

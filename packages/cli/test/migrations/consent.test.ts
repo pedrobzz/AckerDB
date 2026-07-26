@@ -9,7 +9,7 @@ import {
   snapshotOf,
   type Schema,
   type SchemaRefusal,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { renderLedger, runApplyForm, runConsentForm, runDivergenceForm } from "../../src/migrations/consent.ts";
 import type { Ask } from "../../src/migrations/form.ts";
 import { describeSafeChanges, planFingerprint, renameCandidates } from "../../src/migrations/plan.ts";
@@ -167,7 +167,7 @@ describe("renderLedger", () => {
       safe: describeSafeChanges(diff, refusals),
       candidates: renameCandidates(diff),
     });
-    expect(text).toContain("[dbzz] the change ledger:");
+    expect(text).toContain("[ackerdb] the change ledger:");
     expect(text).toContain("  needs a migration:");
     expect(text).toContain("    - t.gone: column dropped; existing rows would lose data");
     expect(text).toContain("  possible renames (asked before generating):");
@@ -192,7 +192,7 @@ describe("renderLedger", () => {
       safe: [],
       candidates: { tables: { dropped: [], added: [] }, columns: {}, variants: {} },
     });
-    expect(text).toBe("[dbzz] the change ledger:\n  needs a migration:\n    - t: table dropped; existing rows would be lost");
+    expect(text).toBe("[ackerdb] the change ledger:\n  needs a migration:\n    - t: table dropped; existing rows would be lost");
   });
 });
 

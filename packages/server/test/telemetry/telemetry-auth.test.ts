@@ -12,7 +12,7 @@ import {
   parseSseMessage,
   type ServerMessage,
   type SseMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -34,7 +34,7 @@ import {
   type TelemetrySpanRecord,
   type ServiceLimits,
   type VerifiedCredential,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const VALID_PROCEDURE_TOKEN = "valid-procedure-token-canary";
 const INVALID_PROCEDURE_TOKEN = "invalid-procedure-token-canary";
@@ -124,7 +124,7 @@ function fixture(
   sampleIntervalMs = 60_000,
   limits?: ServiceLimits,
 ): Fixture {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-telemetry-auth-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-telemetry-auth-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const exported: TelemetryRecord[] = [];
@@ -320,7 +320,7 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
 
     const stream = await call("/api/sse", 103, "ops.stream", VALID_SSE_TOKEN);
     expect(stream.status).toBe(200);
-    const streamId = stream.headers.get("x-dbzz-sse-stream");
+    const streamId = stream.headers.get("x-ackerdb-sse-stream");
     if (streamId === null || stream.body === null) throw new Error("missing SSE response ownership");
     const streamReader = stream.body.getReader();
     const chunk = await readSseMessage(streamReader);

@@ -12,7 +12,7 @@ import {
   newWriteCollector,
   v,
   type DbStatementObservation,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { ftsCorpusKey } from "../../../src/database/keys.ts";
 
 const schema = defineSchema({
@@ -32,7 +32,7 @@ describe("literal full-text search", () => {
   let db: any;
 
   beforeEach(() => {
-    directory = mkdtempSync(join(tmpdir(), "dbzz-full-text-query-"));
+    directory = mkdtempSync(join(tmpdir(), "ackerdb-full-text-query-"));
     engine = new Engine(schema, join(directory, "data.db"));
     engine.createAll();
     db = makeDbWriter(engine, newWriteCollector(), () => 1n);
@@ -109,7 +109,7 @@ describe("literal full-text search", () => {
     const prepare = engine.reader.prepare.bind(engine.reader);
     engine.reader.prepare = ((sql) => {
       const statement = prepare(sql);
-      if (sql.includes('"__dbzz_fts_matches"')) {
+      if (sql.includes('"__ackerdb_fts_matches"')) {
         issued.push(sql);
         rankedStatement = statement;
       }
@@ -131,7 +131,7 @@ describe("literal full-text search", () => {
 
     expect(rows).toHaveLength(1);
     expect(issued).toHaveLength(1);
-    expect(issued[0]).toContain('ORDER BY "__dbzz_fts_matches"."__dbzz_fts_rank" ASC');
+    expect(issued[0]).toContain('ORDER BY "__ackerdb_fts_matches"."__ackerdb_fts_rank" ASC');
     expect(issued[0]).toContain('"documents"."id" ASC');
     expect(() => rankedStatement!.all()).toThrow("Statement has finalized");
     expect(dependencies).toEqual(new Set([
@@ -173,7 +173,7 @@ describe("literal full-text search", () => {
     });
     const writerQuery = engine.writer.query.bind(engine.writer);
     engine.writer.query = ((sql) => {
-      if (sql.includes("__dbzz_fts_literal_tokens")) {
+      if (sql.includes("__ackerdb_fts_literal_tokens")) {
         throw new Error("literal preparation touched the application writer");
       }
       return writerQuery(sql);

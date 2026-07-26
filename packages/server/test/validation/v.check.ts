@@ -3,7 +3,7 @@ import {
   v,
   type InferInputShape,
   type InferShape,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const fields = {
   required: v.string(),

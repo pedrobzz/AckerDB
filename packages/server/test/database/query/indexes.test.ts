@@ -6,7 +6,7 @@ import {
   snapshotOf,
   v,
   type SchemaSnapshot,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const columns = () => ({
   id: v.primaryKey(),

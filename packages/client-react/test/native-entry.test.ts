@@ -39,10 +39,10 @@ describe("index.native entry", () => {
     expect(Object.keys(nativeEntry).sort()).toEqual(Object.keys(browserEntry).sort());
   });
 
-  test("shadows only DbzzProvider; every other export is the shared object", () => {
-    expect(nativeEntry.DbzzProvider).not.toBe(browserEntry.DbzzProvider);
+  test("shadows only AckerDBProvider; every other export is the shared object", () => {
+    expect(nativeEntry.AckerDBProvider).not.toBe(browserEntry.AckerDBProvider);
     for (const key of Object.keys(browserEntry)) {
-      if (key === "DbzzProvider") continue;
+      if (key === "AckerDBProvider") continue;
       expect(nativeEntry[key as keyof typeof nativeEntry]).toBe(
         browserEntry[key as keyof typeof browserEntry],
       );

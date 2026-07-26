@@ -1,11 +1,11 @@
 import type { Database } from "bun:sqlite";
-import { isResult } from "@dbzz/core";
+import { isResult } from "@ackerdb/core";
 import {
   checkpointWriteCollector,
   rollbackWriteCollector,
   type WriteCollector,
 } from "../database/access.ts";
-import { DbzzError } from "../shared/errors.ts";
+import { AckerDBError } from "../shared/errors.ts";
 import {
   enterNestedMutationScope,
   leaveNestedMutationScope,
@@ -39,7 +39,7 @@ export function createMutationInvocationScope(
     parent: MutationAccessFrame,
     work: (access: MutationAccess) => T | Promise<T>,
   ): Promise<T> => {
-    const name = `dbzz_result_${++nextSavepoint}`;
+    const name = `ackerdb_result_${++nextSavepoint}`;
     const before = checkpointWriteCollector(writes);
     connection.exec(`SAVEPOINT ${name}`);
     const frame: MutationAccessFrame = { tail: Promise.resolve() };
@@ -66,7 +66,7 @@ export function createMutationInvocationScope(
         rollbackWriteCollector(writes, before);
         state.current = parent;
       } catch (rollbackError) {
-        throw new DbzzError("indeterminate", "mutation scope could not be rolled back", {
+        throw new AckerDBError("indeterminate", "mutation scope could not be rolled back", {
           cause: new AggregateError([error, rollbackError]),
         });
       }
@@ -101,7 +101,7 @@ export function createMutationInvocationScope(
         parentAccess.scope !== scope ||
         parentAccess.state !== state
       ) {
-        return Promise.reject(new DbzzError(
+        return Promise.reject(new AckerDBError(
           "internal",
           "nested mutation scope has no owning root transaction",
         ));

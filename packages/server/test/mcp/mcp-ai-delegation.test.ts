@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode, parseCallResponse } from "@dbzz/core";
+import { decode, parseCallResponse } from "@ackerdb/core";
 import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import {
@@ -419,7 +419,7 @@ let engine: Engine;
 let telemetry: TelemetryRecord[];
 
 beforeEach(() => {
-  directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-ai-delegation-"));
+  directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-ai-delegation-"));
   engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   telemetry = [];

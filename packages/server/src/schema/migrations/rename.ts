@@ -158,7 +158,7 @@ function validateRenames(writer: Database, current: SchemaSnapshot, target: Sche
   const currentVariants = variantSets(current);
   const targetVariants = variantSets(target);
   const taggedVariants = new Map<string, Set<string>>();
-  for (const row of writer.query("SELECT type, variant FROM _dbzz_tags").all() as { type: string; variant: string }[]) {
+  for (const row of writer.query("SELECT type, variant FROM _ackerdb_tags").all() as { type: string; variant: string }[]) {
     (taggedVariants.get(row.type) ?? taggedVariants.set(row.type, new Set()).get(row.type)!).add(row.variant);
   }
   for (const [type, vmap] of Object.entries(raw.variants)) {

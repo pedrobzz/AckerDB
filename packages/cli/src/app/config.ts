@@ -1,11 +1,11 @@
 /**
- * App configuration: `.dbzz.config.json` in the server app directory. Every
+ * App configuration: `.ackerdb.config.json` in the server app directory. Every
  * field is optional; defaults give the layout from the design docs.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import type { DurabilityPolicy } from "@dbzz/core";
-import type { OidcVerifierOptions } from "@dbzz/server";
+import type { DurabilityPolicy } from "@ackerdb/core";
+import type { OidcVerifierOptions } from "@ackerdb/server";
 
 export type TelemetryMode = "enabled" | "disabled";
 
@@ -77,7 +77,7 @@ function parseRawConfig(value: unknown): RawConfig {
 }
 
 function statusScope(value: unknown): string {
-  const scope = value ?? "dbzz:status";
+  const scope = value ?? "ackerdb:status";
   if (typeof scope !== "string" || !OAUTH_SCOPE_TOKEN.test(scope)) {
     throw new Error("statusScope must be one OAuth scope token of at most 128 characters");
   }
@@ -118,7 +118,7 @@ export function loadConfig(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): AppConfig {
   const dir = resolve(appDir);
-  const configPath = join(dir, ".dbzz.config.json");
+  const configPath = join(dir, ".ackerdb.config.json");
   let raw: RawConfig = {};
   if (existsSync(configPath)) {
     raw = parseRawConfig(JSON.parse(readFileSync(configPath, "utf8")));
@@ -139,10 +139,10 @@ export function loadConfig(
     functionsDir: abs(raw.functions ?? "./functions"),
     migrationsDir: abs(raw.migrations ?? "./migrations"),
     generatedDir: abs(raw.generated ?? "./_generated"),
-    dbDir: abs(raw.db ?? "./.dbzz"),
+    dbDir: abs(raw.db ?? "./.ackerdb"),
     port: listenerPort(raw.port),
-    durability: exactProfile(env, "DBZZ_DURABILITY", ["production", "balanced"], "production"),
-    telemetry: exactProfile(env, "DBZZ_TELEMETRY", ["enabled", "disabled"], "enabled"),
+    durability: exactProfile(env, "ACKERDB_DURABILITY", ["production", "balanced"], "production"),
+    telemetry: exactProfile(env, "ACKERDB_TELEMETRY", ["enabled", "disabled"], "enabled"),
     ...(authentication === undefined ? {} : { authentication }),
     statusScope: statusScope(raw.statusScope),
   };

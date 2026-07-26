@@ -30,7 +30,7 @@
  * transform, rename, and drop work a migration alone performs.
  */
 import type { Database } from "bun:sqlite";
-import { decode, encode } from "@dbzz/core";
+import { decode, encode } from "@ackerdb/core";
 import { ValidationError, type Descriptor } from "../../validation/v.ts";
 import { compareCodeUnits } from "../../shared/ordering.ts";
 import { checkDescriptor, scalarDecoder, scalarEncoder } from "../descriptor-kinds.ts";
@@ -173,11 +173,11 @@ export async function applyStep(
     // The CLI/read-only plan is advisory. Re-run every data-dependent guard
     // under the writer lock before tags, rows, snapshots, or history can move.
     verifyPlanProbes(plan);
-    // Variant renames keep their interned tag: relabel _dbzz_tags so the
+    // Variant renames keep their interned tag: relabel _ackerdb_tags so the
     // renamed-to variant resolves to the old integer, then persist this step's
     // target tags (renamed and new alike) before any write.
     for (const { type, from, to } of renames.variants) {
-      writer.query("UPDATE _dbzz_tags SET variant = ? WHERE type = ? AND variant = ?").run(to, type, from);
+      writer.query("UPDATE _ackerdb_tags SET variant = ? WHERE type = ? AND variant = ?").run(to, type, from);
       applied.push(`renamed variant ${type}.${from} to ${to}`);
     }
     persistTagMaps(writer, stepTags);
@@ -210,7 +210,7 @@ export async function applyStep(
     }
     engine.saveSnapshot(saved);
     writer
-      .query("INSERT INTO _dbzz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)")
+      .query("INSERT INTO _ackerdb_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)")
       .run(step.number, step.name, migrationIdentity(step), Date.now());
     writer.exec("COMMIT");
   } catch (error) {
@@ -676,12 +676,12 @@ async function runTransforms(
   // and flush after every transform has run; emits into rebuilt tables go to the
   // (invisible) tmp and stay immediate. The spool stores the wire-encoded
   // *validated* row — before `toSql`, so enum/union values survive as their JS
-  // forms and the plan's tag maps resolve them at flush. `_dbzz_emit_spool` is
-  // `_dbzz`-prefixed, so `ctx.before` (which reads only named old tables) never
+  // forms and the plan's tag maps resolve them at flush. `_ackerdb_emit_spool` is
+  // `_ackerdb`-prefixed, so `ctx.before` (which reads only named old tables) never
   // sees it. The whole step is one transaction, so a rollback discards the spool;
   // the success path drops it below.
-  writer.exec("CREATE TEMP TABLE _dbzz_emit_spool (target TEXT NOT NULL, row TEXT NOT NULL)");
-  const spoolInsert = writer.query("INSERT INTO _dbzz_emit_spool (target, row) VALUES (?, ?)");
+  writer.exec("CREATE TEMP TABLE _ackerdb_emit_spool (target TEXT NOT NULL, row TEXT NOT NULL)");
+  const spoolInsert = writer.query("INSERT INTO _ackerdb_emit_spool (target, row) VALUES (?, ?)");
   const ctx: MigrationContext = {
     before: buildBefore(engine, pre, stored, oldTags),
     insert(table, row) {
@@ -747,20 +747,20 @@ async function runTransforms(
     const where = lastRowid === undefined ? "" : "WHERE rowid > ? ";
     const params = lastRowid === undefined ? [] : [lastRowid as never];
     const spooled = writer
-      .query(`SELECT rowid, target, row FROM _dbzz_emit_spool ${where}ORDER BY rowid ASC LIMIT ${MIGRATE_BATCH}`)
+      .query(`SELECT rowid, target, row FROM _ackerdb_emit_spool ${where}ORDER BY rowid ASC LIMIT ${MIGRATE_BATCH}`)
       .all(...params) as { rowid: bigint; target: string; row: string }[];
     for (const s of spooled) physicalInsert(engine, planOf(s.target), emitTargetOf(s.target), decode(s.row) as MigrationRow);
     if (spooled.length < MIGRATE_BATCH) break;
     lastRowid = spooled[spooled.length - 1]!.rowid;
   }
-  writer.exec("DROP TABLE _dbzz_emit_spool");
+  writer.exec("DROP TABLE _ackerdb_emit_spool");
   return tmpOf;
 }
 
 // -- tag interning for a step -------------------------------------------------
 
 /**
- * Compute this step's target tag maps directly against `_dbzz_tags` (insert-only,
+ * Compute this step's target tag maps directly against `_ackerdb_tags` (insert-only,
  * max+1 per type in declaration order), relabelling any renamed variant so it
  * keeps its original integer. Read-only; the actual UPDATE + INSERT run inside
  * the step's transaction (`persistTagMaps`), producing the same end state.
@@ -771,7 +771,7 @@ function internStepTags(writer: Database, target: SchemaSnapshot, variants: Rena
     (renameByType.get(type) ?? renameByType.set(type, new Map()).get(type)!).set(from, to);
   }
   const maps = new Map<string, TagMap>();
-  for (const row of writer.query("SELECT type, variant, tag FROM _dbzz_tags").all() as {
+  for (const row of writer.query("SELECT type, variant, tag FROM _ackerdb_tags").all() as {
     type: string;
     variant: string;
     tag: bigint;
@@ -807,7 +807,7 @@ function internStepTags(writer: Database, target: SchemaSnapshot, variants: Rena
 /** Persist a step's tag maps (insert-only). The caller owns the transaction. */
 function persistTagMaps(writer: Database, maps: Map<string, TagMap>): void {
   const insert = writer.query(
-    "INSERT INTO _dbzz_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
+    "INSERT INTO _ackerdb_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
   );
   for (const [type, map] of maps) {
     for (const [variant, tag] of map.toTag) insert.run(type, variant, tag);

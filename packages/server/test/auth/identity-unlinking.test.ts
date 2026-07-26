@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, decode, encode, type Outcome } from "@dbzz/core";
+import { PROTOCOL_VERSION, decode, encode, type Outcome } from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   verifyClientCredential,
@@ -16,7 +16,7 @@ import {
 import { acquireAuthLease, type AuthLease } from "../../src/auth/lease.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { procedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
@@ -188,7 +188,7 @@ class UnlinkVerifier implements CredentialVerifier {
       if (this.blocks.get(token) === block) this.blocks.delete(token);
     }
     const credential = this.credentials.get(token);
-    if (credential === undefined) throw new DbzzError("unauthenticated", "invalid credential");
+    if (credential === undefined) throw new AckerDBError("unauthenticated", "invalid credential");
     return credential;
   }
 
@@ -208,7 +208,7 @@ interface Harness {
 const directories = new Set<string>();
 const harnesses = new Set<Harness>();
 
-function open(directory = mkdtempSync(join(tmpdir(), "dbzz-identity-unlinking-"))): Harness {
+function open(directory = mkdtempSync(join(tmpdir(), "ackerdb-identity-unlinking-"))): Harness {
   directories.add(directory);
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -298,8 +298,8 @@ async function link(harness: Harness, principal: UserPrincipal, token: string): 
 
 function directoryCounts(engine: Engine): { identities: bigint; accounts: bigint; owned: bigint } {
   return engine.writer.query(`SELECT
-    (SELECT COUNT(*) FROM _dbzz_identities) AS identities,
-    (SELECT COUNT(*) FROM _dbzz_identity_accounts) AS accounts,
+    (SELECT COUNT(*) FROM _ackerdb_identities) AS identities,
+    (SELECT COUNT(*) FROM _ackerdb_identity_accounts) AS accounts,
     (SELECT COUNT(*) FROM owned) AS owned`).get() as {
       identities: bigint;
       accounts: bigint;
@@ -423,7 +423,7 @@ describe("transactional external-account unlinking", () => {
     });
 
     harness.engine.writer.exec(`CREATE TEMP TRIGGER fail_identity_unlink
-      AFTER DELETE ON _dbzz_identity_accounts
+      AFTER DELETE ON _ackerdb_identity_accounts
       WHEN OLD.issuer = '${ROLLBACK_ISSUER}'
       BEGIN
         SELECT RAISE(FAIL, 'forced identity unlink failure');

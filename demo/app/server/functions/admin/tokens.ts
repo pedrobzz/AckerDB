@@ -1,6 +1,6 @@
-import { Err, Status } from "@dbzz/core";
-import { v } from "@dbzz/server";
-import { mutation, query } from "@demo/dbzz-codegen/server";
+import { Err, Status } from "@ackerdb/core";
+import { v } from "@ackerdb/server";
+import { mutation, query } from "@demo/ackerdb-codegen/server";
 import { staffAccess } from "../../lib/access.ts";
 import { tokenNameInput } from "../../lib/inputs.ts";
 import { admin } from "./mcp.ts";

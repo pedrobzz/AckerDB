@@ -18,7 +18,7 @@ import { setGlobalLogLevel } from "spacetimedb";
 setGlobalLogLevel("error");
 
 const uri = process.env.SPACETIMEDB_URL ?? "ws://127.0.0.1:5321";
-const dbName = process.env.SPACETIMEDB_DB ?? "dbzz-bench";
+const dbName = process.env.SPACETIMEDB_DB ?? "ackerdb-bench";
 
 interface OpenConnection {
   connection: DbConnection;

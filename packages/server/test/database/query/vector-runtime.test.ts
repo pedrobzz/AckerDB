@@ -11,7 +11,7 @@ describe("native vector runtime", () => {
       "-e",
       `
         import { createRequire } from "node:module";
-        import { v } from "@dbzz/server";
+        import { v } from "@ackerdb/server";
         v.vector(3).check([1, 2, 3], "argument");
         const require = createRequire(import.meta.url);
         if (Object.keys(require.cache).some((path) => path.includes("numkong"))) process.exit(17);
@@ -24,7 +24,7 @@ describe("native vector runtime", () => {
       "-e",
       `
         import { createRequire } from "node:module";
-        import { Engine, defineEventTable, defineSchema, v } from "@dbzz/server";
+        import { Engine, defineEventTable, defineSchema, v } from "@ackerdb/server";
         const schema = defineSchema({
           vectors: defineEventTable(
             { id: v.primaryKey(), embedding: v.vector(2) },
@@ -45,7 +45,7 @@ describe("native vector runtime", () => {
       "-e",
       `
         import { createRequire } from "node:module";
-        import { Engine, defineSchema, defineTable, v } from "@dbzz/server";
+        import { Engine, defineSchema, defineTable, v } from "@ackerdb/server";
         const schema = defineSchema({
           documents: defineTable({ id: v.primaryKey(), embedding: v.vector(2) }),
         });
@@ -63,7 +63,7 @@ describe("native vector runtime", () => {
       "-e",
       `
         import { createRequire } from "node:module";
-        import { Engine, defineSchema, defineTable, v } from "@dbzz/server";
+        import { Engine, defineSchema, defineTable, v } from "@ackerdb/server";
         const root = defineSchema({ roots: defineTable({ id: v.primaryKey() }) });
         const plugin = defineSchema({
           documents: defineTable({ id: v.primaryKey(), embedding: v.vector(2) }),
@@ -93,7 +93,7 @@ describe("native vector runtime", () => {
           defineSchema,
           defineTable,
           v,
-        } = await import("@dbzz/server");
+        } = await import("@ackerdb/server");
         try {
           new Engine(defineSchema({
             documents: defineTable({ id: v.primaryKey(), embedding: v.vector(2) }),
