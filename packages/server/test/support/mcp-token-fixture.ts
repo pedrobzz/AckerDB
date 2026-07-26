@@ -7,7 +7,7 @@ import {
   type MutationMessage,
   type QueryMessage,
   type SubscribeMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import type { CredentialVerifier, UserPrincipal } from "../../src/auth/credentials.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import { v } from "../../src/validation/v.ts";
@@ -67,7 +67,7 @@ const writeOwnedRecord = typedMcpTool({
         { type: "text" as const, text: `${ctx.auth.kind}:${identity}` },
         {
           type: "resource_link" as const,
-          uri: `dbzz://records/${id}`,
+          uri: `ackerdb://records/${id}`,
           name: `record-${id}`,
           annotations: { audience: ["assistant" as const], priority: 0.8 },
           _meta: { owner: identity.toString() },

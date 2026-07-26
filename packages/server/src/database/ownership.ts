@@ -20,10 +20,10 @@ import {
   SQLITE_SIDECAR_SUFFIXES,
 } from "./artifacts.ts";
 
-/** ASCII `DBZZ`, persisted in SQLite's application_id header field. */
-const DBZZ_COORDINATION_APPLICATION_ID = 0x44425a5a;
-const COORDINATION_SUFFIX = ".dbzz-coordination";
-const COORDINATION_STAGE_MARKER = ".dbzz-bootstrap-";
+/** ASCII `AckerDB`, persisted in SQLite's application_id header field. */
+const ACKERDB_COORDINATION_APPLICATION_ID = 0x44425a5a;
+const COORDINATION_SUFFIX = ".ackerdb-coordination";
+const COORDINATION_STAGE_MARKER = ".ackerdb-bootstrap-";
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 function sqliteCode(error: unknown): string | undefined {
@@ -139,7 +139,7 @@ function stageCoordinationDatabase(coordinationPath: string): string {
     }
     database.exec("BEGIN IMMEDIATE");
     transactionOpen = true;
-    database.exec(`PRAGMA application_id = ${DBZZ_COORDINATION_APPLICATION_ID}`);
+    database.exec(`PRAGMA application_id = ${ACKERDB_COORDINATION_APPLICATION_ID}`);
     database.exec("COMMIT");
     transactionOpen = false;
   } catch (error) {
@@ -253,7 +253,7 @@ function publishMissingCoordinationDatabase(coordinationPath: string): void {
 }
 
 /**
- * Remove only DBZZ publication aliases of the canonical inode. This must run
+ * Remove only AckerDB publication aliases of the canonical inode. This must run
  * before any SQLite connection opens that inode: unlinking an alias later can
  * make macOS invalidate an otherwise-live SQLite file descriptor.
  */
@@ -283,7 +283,7 @@ function convergeCoordinationPublication(path: string, coordinationPath: string)
 }
 
 /**
- * Remove only same-inode DBZZ main-file publication stages. The coordination
+ * Remove only same-inode AckerDB main-file publication stages. The coordination
  * transaction is already retained, and no data SQLite connection is open.
  */
 function convergeDatabasePublication(path: string): void {
@@ -322,7 +322,7 @@ function convergeDatabasePublication(path: string): void {
 
 export class DatabaseAlreadyOpenError extends Error {
   readonly path: string;
-  readonly code = "DBZZ_DATABASE_ALREADY_OPEN";
+  readonly code = "ACKERDB_DATABASE_ALREADY_OPEN";
 
   constructor(path: string, options: { cause?: unknown } = {}) {
     super(`database is already open: ${path}`, options.cause === undefined ? undefined : { cause: options.cause });
@@ -409,7 +409,7 @@ export class DatabaseOwnership {
 
       const identity = database.query("PRAGMA application_id").get() as Record<string, unknown>;
       const applicationId = Number(Object.values(identity)[0]);
-      if (applicationId !== DBZZ_COORDINATION_APPLICATION_ID) {
+      if (applicationId !== ACKERDB_COORDINATION_APPLICATION_ID) {
         throw new Error(`database coordination file has invalid identity: ${coordinationPath}`);
       }
       const journal = database.query("PRAGMA journal_mode").get() as Record<string, unknown>;

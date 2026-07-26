@@ -4,8 +4,8 @@
 // tag; --baseline runs HEAD's pending version with no predecessor comparison —
 // the run itself becomes the final evidence (the first release under the
 // policy, or a deliberate baseline reset); --telemetry runs the optional
-// DBZZ-only diagnostic (telemetry-v<version>.json, freely rerun, never release
-// evidence). A profile argument limits the diagnostic to that one DBZZ profile.
+// AckerDB-only diagnostic (telemetry-v<version>.json, freely rerun, never release
+// evidence). A profile argument limits the diagnostic to that one AckerDB profile.
 //
 // This command is deliberately synchronous: release automation starts it in a
 // background worker/subagent, while this process owns the remote worktree and
@@ -60,8 +60,8 @@ if (mode !== "telemetry" && existsSync(`${RESULTS}/${finalBenchmarkFilename(vers
 const harnessCommit = git("rev-parse", "--verify", "HEAD");
 const productCommit = git("rev-parse", "--verify", bootstrap ? `v${version}` : "HEAD");
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-const localBundle = join(tmpdir(), `dbzz-v${version}-benchmark-${stamp}.bundle`);
-const remoteRoot = `/root/benchmarks/dbzz-v${version}-${stamp}`;
+const localBundle = join(tmpdir(), `ackerdb-v${version}-benchmark-${stamp}.bundle`);
+const remoteRoot = `/root/benchmarks/ackerdb-v${version}-${stamp}`;
 const remoteRepo = `${remoteRoot}/repo`;
 const resultName = mode === "telemetry" ? `telemetry-v${version}.json` : finalBenchmarkFilename(version);
 

@@ -4,7 +4,7 @@ import {
   type ArrayValidator,
   type BoundedValidator,
   type StringValidator,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const stringValidator: StringValidator = v.string().describe("A label.").min(1).max(8).regex(/x/);
 const intValidator: BoundedValidator<number, "int", number> = v.int().min(0.5).max(10);

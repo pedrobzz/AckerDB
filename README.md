@@ -1,11 +1,11 @@
-# dbzz
+# AckerDB — The All-in-One Back-End Framework
 
-DBZZ is a single-node, stateful TypeScript backend built on Bun and SQLite. It
+AckerDB is a single-node, stateful TypeScript backend built on Bun and SQLite. It
 provides typed queries, transactional mutations, procedures, scheduled work,
 live query subscriptions, and live event streams through Protocol 2.
 
 The supported production topology is one Bun server process owning one local
-SQLite database file. DBZZ is not a horizontally scaled or replicated service,
+SQLite database file. AckerDB is not a horizontally scaled or replicated service,
 and the server/CLI packages execute source TypeScript and `bun:sqlite`; deploy
 them with Bun rather than Node.js.
 
@@ -18,19 +18,19 @@ backups are verified by restoring them before they are accepted.
 
 | Package | Purpose |
 | --- | --- |
-| `@dbzz/core` | Protocol 2 envelopes, wire encoding, outcomes, cursors, and typed function references. |
-| `@dbzz/server` | Schema DSL, SQLite engine, function runtime, authentication, reactivity, transport, limits, and telemetry. |
-| `@dbzz/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
-| `@dbzz/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, reconnect, and credential refresh. |
-| `@dbzz/client-react` | React and Expo provider/hooks for live queries, mutations, procedures, events, SSE, authentication, and optional AI SDK chat transport. |
-| `@dbzz/cli` | `dbzz dev`, `start`, `codegen`, `reset`, `status`, `backup`, and `restore`. |
+| `@ackerdb/core` | Protocol 2 envelopes, wire encoding, outcomes, cursors, and typed function references. |
+| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, authentication, reactivity, transport, limits, and telemetry. |
+| `@ackerdb/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
+| `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, reconnect, and credential refresh. |
+| `@ackerdb/client-react` | React and Expo provider/hooks for live queries, mutations, procedures, events, SSE, authentication, and optional AI SDK chat transport. |
+| `@ackerdb/cli` | `acker dev`, `start`, `codegen`, `reset`, `status`, `backup`, and `restore`. |
 
 ## Application shape
 
 ```text
 your-app/
 ├── apps/
-│   ├── server/                 # app.ts, functions/, .dbzz.config.json
+│   ├── server/                 # app.ts, functions/, .ackerdb.config.json
 │   └── client/                 # any runtime with WebSocket, fetch, and Web Crypto
 └── packages/
     └── server-codegen/
@@ -59,10 +59,10 @@ your-app/
 The client requires an explicit credential, including for anonymous use:
 
 ```ts
-import { DbzzClient } from "@dbzz/client";
+import { AckerDBClient } from "@ackerdb/client";
 import { api } from "./_generated/api";
 
-const client = new DbzzClient({
+const client = new AckerDBClient({
   url: "http://127.0.0.1:3211",
   credential: { kind: "anonymous" },
 });
@@ -110,7 +110,7 @@ client.close();
   export, schema version 1 records, correlated auth/operation/receiver-delivery
   coverage, CLI backup/restore spans, and runtime/storage health metrics.
 - [React, Expo, and AI SDK client](docs/client-react.md) is the canonical guide
-  to `@dbzz/client-react`: supported versions, provider lifetime, every hook,
+  to `@ackerdb/client-react`: supported versions, provider lifetime, every hook,
   durable Identity, native recovery, and current platform limitations.
 - [MCP release gates](docs/mcp-conformance.md) documents the pinned official
   conformance scenarios, retained raw protocol/security cases, clean packed
@@ -129,15 +129,15 @@ The remaining single-node and product limitations are listed explicitly in
 
 ## Configuration and CLI
 
-All `.dbzz.config.json` fields are optional. The path defaults are
-`./app.ts`, `./functions`, `./_generated`, and `./.dbzz`; the default port is
+All `.ackerdb.config.json` fields are optional. The path defaults are
+`./app.ts`, `./functions`, `./_generated`, and `./.ackerdb`; the default port is
 `3211`. Authentication can select either built-in `oidc` providers or one
 application `credentialVerifier` module path (resolved from the app directory),
 never both. The protected status scope is configured there too. Durability and
 telemetry profiles are exact environment switches:
 
 ```sh
-DBZZ_DURABILITY=production DBZZ_TELEMETRY=enabled dbzz start ./apps/server
+ACKERDB_DURABILITY=production ACKERDB_TELEMETRY=enabled acker start ./apps/server
 ```
 
 `production` and `enabled` are the defaults. See the linked contract documents
@@ -149,15 +149,15 @@ termination as described in the
 [authentication trust boundary](docs/authentication.md#trust-boundary).
 
 ```sh
-dbzz dev [app-dir]
-dbzz start [app-dir]
-dbzz codegen [app-dir]
-dbzz plugin reset <mount> [app-dir]
-dbzz plugin drop <mount> [app-dir]
-dbzz reset [app-dir]
-dbzz status [app-dir]
-dbzz backup <artifact> [app-dir]
-dbzz restore <artifact> [app-dir]
+acker dev [app-dir]
+acker start [app-dir]
+acker codegen [app-dir]
+acker plugin reset <mount> [app-dir]
+acker plugin drop <mount> [app-dir]
+acker reset [app-dir]
+acker status [app-dir]
+acker backup <artifact> [app-dir]
+acker restore <artifact> [app-dir]
 ```
 
 ## Development and performance
@@ -175,8 +175,8 @@ bun run typecheck:bench
 
 The comparative benchmark is release evidence: every major, minor, or patch
 version is measured once on Hetzner against the preceding version's final
-record. It runs DBZZ, Convex, and SpacetimeDB with the same workload and
-separately measures DBZZ's exact default telemetry, minimum in-process exporter
+record. It runs AckerDB, Convex, and SpacetimeDB with the same workload and
+separately measures AckerDB's exact default telemetry, minimum in-process exporter
 handoff cost, and fully disabled telemetry. Its recovery process, naming, and
 interpretation limits are documented in [bench/README.md](bench/README.md).
 

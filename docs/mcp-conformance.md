@@ -1,8 +1,8 @@
 # MCP release gates
 
-DBZZ tests its Streamable HTTP MCP server with both raw protocol fixtures and
+AckerDB tests its Streamable HTTP MCP server with both raw protocol fixtures and
 the official MCP conformance runner. These are release gates for the
-capabilities DBZZ implements; they are not a claim that DBZZ implements every
+capabilities AckerDB implements; they are not a claim that AckerDB implements every
 optional MCP capability. Application authoring is documented in
 [MCP and AI integration](ai-integration.md).
 
@@ -15,10 +15,10 @@ targeted server scenarios with:
 bun run test:mcp:conformance
 ```
 
-The gate starts a real DBZZ runtime and HTTP listener, then invokes the
+The gate starts a real AckerDB runtime and HTTP listener, then invokes the
 official CLI against it. It runs these stable scenarios:
 
-| Scenario | DBZZ capability exercised |
+| Scenario | AckerDB capability exercised |
 | --- | --- |
 | `server-initialize` | Initialization, negotiated protocol version, server metadata, and capabilities |
 | `ping` | Stateless request/response health check |
@@ -32,11 +32,11 @@ official CLI against it. It runs these stable scenarios:
 | `dns-rebinding-protection` | Rejected foreign Host/Origin and accepted loopback Host/Origin |
 
 The runner's complete active suite is deliberately not used as a substitute
-for capability selection. DBZZ currently exposes tools, not MCP resources,
+for capability selection. AckerDB currently exposes tools, not MCP resources,
 prompts, completion, logging, sampling, elicitation, progress notifications,
 subscriptions, or stateful SSE streams. Those optional scenarios are therefore
 outside this gate. The runner's `json-schema-2020-12` fixture also requires a
-specific hard-coded tool with reusable `$defs`/`$ref`; DBZZ emits honest
+specific hard-coded tool with reusable `$defs`/`$ref`; AckerDB emits honest
 2020-12 object schemas from its validator surface, but does not add an
 arbitrary-schema escape hatch solely for that fixture.
 
@@ -56,23 +56,23 @@ They run as part of `bun run test`.
 bun run test:packages
 ```
 
-This gate packs all six lockstep `@dbzz/*` packages and installs the tarballs
+This gate packs all six lockstep `@ackerdb/*` packages and installs the tarballs
 in a temporary consumer. It verifies:
 
-- every installed DBZZ package has the same exact version and packed internal
+- every installed AckerDB package has the same exact version and packed internal
   dependencies contain literal versions rather than `workspace:` specifiers;
-- `@dbzz/server/mcp` resolves and executes under Bun;
-- `@dbzz/cache`, `@dbzz/cache/redis`, and `@dbzz/cache/upstash` resolve and
+- `@ackerdb/server/mcp` resolves and executes under Bun;
+- `@ackerdb/cache`, `@ackerdb/cache/redis`, and `@ackerdb/cache/upstash` resolve and
   construct without opening external connections;
-- packaged `dbzz codegen` emits schema-bound `createMcp` and `mcpTool` builders,
+- packaged `acker codegen` emits schema-bound `createMcp` and `mcpTool` builders,
   and endpoint tool names, inputs, outputs, and scope subsets compile exactly in
   the clean consumer;
-- `@dbzz/server` pins `@modelcontextprotocol/sdk` to `1.29.0`, the consumer
+- `@ackerdb/server` pins `@modelcontextprotocol/sdk` to `1.29.0`, the consumer
   resolves that version, and the server has no production dependency on `ai`
   or `@ai-sdk/*`.
 
 The temporary consumer uses package-manager overrides only to point
-transitive `@dbzz/*` versions at the six local tarballs because this project
+transitive `@ackerdb/*` versions at the six local tarballs because this project
 does not publish them to npm. The packed manifests themselves remain unchanged
 and are asserted after installation.
 
@@ -103,8 +103,8 @@ Runtime MCP changes are benchmarked only when they enter a release version:
 bun run bench:hetzner
 ```
 
-DBZZ, Convex, and SpacetimeDB run on the Hetzner host with the same workload.
-The single version-bound release record compares DBZZ with the preceding
+AckerDB, Convex, and SpacetimeDB run on the Hetzner host with the same workload.
+The single version-bound release record compares AckerDB with the preceding
 version. It is evidence for human or agent interpretation of the full
 performance vector, never an automated approval or release veto. See [the
 benchmark contract](../bench/README.md) for the complete procedure.

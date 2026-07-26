@@ -1,12 +1,12 @@
 /**
- * Loading a dbzz app: the application manifest, the function modules, and the
+ * Loading a ackerdb app: the application manifest, the function modules, and the
  * assembled server (engine + reconcile + runtime + transport).
  */
 import { existsSync, mkdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
-  DbzzServer,
+  AckerDBServer,
   Engine,
   PluginRuntime,
   PRODUCTION_LIMITS,
@@ -24,7 +24,7 @@ import {
   reconcile,
   UnsafeSchemaChange,
   validateHistoryPrefix,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type { AppConfig } from "./config.ts";
 import { importApp, importFunctionModules } from "./manifest.ts";
 import { loadMigrationChain } from "../migrations/load.ts";
@@ -32,7 +32,7 @@ import { readStoredState } from "../migrations/stored.ts";
 import { pluginStorageRecourse } from "../plugins/storage.ts";
 
 export interface RunningApp {
-  server: DbzzServer;
+  server: AckerDBServer;
   runtime: Runtime;
   engine: Engine;
   /** Idempotently drain; success marks storage clean, while failure releases it unclean. */
@@ -114,7 +114,7 @@ export async function startApp(
   options: StartAppOptions = {},
 ): Promise<RunningApp> {
   const loadCredentialVerifier = credentialVerifierLoader(config, options.credentialVerifier);
-  const server = new DbzzServer({
+  const server = new AckerDBServer({
     limits: PRODUCTION_LIMITS,
     port: config.port,
     statusScope: config.statusScope,
@@ -132,7 +132,7 @@ export async function startApp(
     interruptStartup = () => reject(new StartupInterruptedError());
   });
   // JavaScript cannot cancel an arbitrary import/preparation Promise. Racing it
-  // releases DBZZ ownership; the CLI treats the typed interruption as a process
+  // releases AckerDB ownership; the CLI treats the typed interruption as a process
   // boundary so abandoned user work cannot retain handles or write afterward.
   const awaitStartup = <T>(work: Promise<T>): Promise<T> =>
     Promise.race([work, startupInterrupted]);
@@ -175,7 +175,7 @@ export async function startApp(
     interruptStartup();
     if (!duringStartup) {
       void draining.catch((error) => {
-        console.error(`[dbzz] ${error instanceof Error ? error.message : String(error)}`);
+        console.error(`[ackerdb] ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;
       });
     }
@@ -196,10 +196,8 @@ export async function startApp(
     }
 
     server.advanceStartup("loading");
-    const [verifier, app, modules, steps] = await awaitStartup(Promise.all([
-      loadCredentialVerifier(),
+    const [app, steps] = await awaitStartup(Promise.all([
       importApp(config),
-      importFunctionModules(config),
       loadMigrationChain(config),
     ]));
     requireStartupOwnership();
@@ -237,10 +235,21 @@ export async function startApp(
     // the trailing safe reconcile in one call.
     server.advanceStartup(steps.length > 0 ? "migrating" : "reconciling");
     const { applied } = await reconcile(ownedEngine, steps);
-    for (const line of applied) console.log(`[dbzz] ${line}`);
+    for (const line of applied) console.log(`[ackerdb] ${line}`);
+
+    // Credential verifiers and function modules belong to the request runtime,
+    // not schema migration. Load them only after durable schema work commits so
+    // unrelated runtime configuration cannot block a pending migration.
+    server.advanceStartup("loading-runtime");
+    const [verifier, modules] = await awaitStartup(Promise.all([
+      loadCredentialVerifier(),
+      importFunctionModules(config),
+    ]));
+    requireStartupOwnership();
+
     const assembly = assemblePlugins(app.plugins);
     const pluginStorage = reconcilePluginStorage(ownedEngine, desiredPluginMounts(app));
-    for (const line of pluginStorage.applied) console.log(`[dbzz] Plugin ${line}`);
+    for (const line of pluginStorage.applied) console.log(`[ackerdb] Plugin ${line}`);
     pluginRuntime = new PluginRuntime({
       engine: ownedEngine,
       assembly,
@@ -259,12 +268,12 @@ export async function startApp(
     server.activate(runtime);
     activated = true;
 
-    console.log(`@@dbzz-startup ${JSON.stringify({
+    console.log(`@@ackerdb-startup ${JSON.stringify({
       telemetry: config.telemetry,
       durability: config.durability,
     })}`);
     console.log(
-      `[dbzz] ready on http://127.0.0.1:${server.port} — ${registry.functions.size} function(s), ${Object.keys(app.schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
+      `[ackerdb] ready on http://127.0.0.1:${server.port} — ${registry.functions.size} function(s), ${Object.keys(app.schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
     );
     return { server, runtime, engine: ownedEngine, drain };
   } catch (error) {
@@ -291,5 +300,5 @@ export async function startApp(
  * operator reads.
  */
 function withGenerationRecourse(message: string): string {
-  return `${message}\n\ngenerate a migration for the change above, then restart:\n\n    dbzz generate`;
+  return `${message}\n\ngenerate a migration for the change above, then restart:\n\n    acker generate`;
 }

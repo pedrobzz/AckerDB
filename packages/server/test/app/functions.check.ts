@@ -3,7 +3,7 @@
  * calls with the context lattice enforcing the calling rules. Never
  * executed — `bun run typecheck` failing is the test.
  */
-import { Err, Failure, Status } from "@dbzz/core";
+import { Err, Failure, Status } from "@ackerdb/core";
 import {
   v,
   defineSchema,
@@ -16,7 +16,7 @@ import {
   type ProcedureBuilder,
   type QueryBuilder,
   type SseBuilder,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const schema = defineSchema({
   counters: defineTable({

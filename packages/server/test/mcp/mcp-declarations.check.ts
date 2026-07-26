@@ -1,5 +1,5 @@
 /** Compile-time contract for endpoint-owned MCP tools and exact AI tool maps. */
-import type { ApiFromModules } from "@dbzz/core";
+import type { ApiFromModules } from "@ackerdb/core";
 import type { ToolSet } from "ai";
 import {
   createMcp,
@@ -12,7 +12,7 @@ import {
   type McpCallToolResult,
   type McpToolBuilder,
   type ProcedureBuilder,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const rawEcho = mcpTool({
   description: "Raw schema-agnostic builder fixture.",

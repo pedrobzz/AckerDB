@@ -15,7 +15,7 @@ import {
   snapshotOf,
   v,
   type MigrationStep,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 function databasePath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-vector-migration-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-vector-migration-"));
   directories.push(directory);
   return join(directory, "data.db");
 }

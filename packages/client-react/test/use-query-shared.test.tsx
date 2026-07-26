@@ -9,17 +9,17 @@ import {
   type ClientMessage,
   type ServerMessage,
   type SubscriptionCursor,
-} from "@dbzz/core";
-import { DbzzClient, type DbzzClientClock, type DbzzWebSocket, type QueryRef } from "@dbzz/client";
+} from "@ackerdb/core";
+import { AckerDBClient, type AckerDBClientClock, type AckerDBWebSocket, type QueryRef } from "@ackerdb/client";
 import { StrictMode, act, startTransition, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
-  DbzzProvider,
+  AckerDBProvider,
   skip,
   useQuery,
-  type DbzzProviderConfig,
-  type DbzzQueryState,
-} from "@dbzz/client-react";
+  type AckerDBProviderConfig,
+  type AckerDBQueryState,
+} from "@ackerdb/client-react";
 import { queryRegistryFor } from "../src/query-store.ts";
 
 interface ClockTask {
@@ -28,7 +28,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
   private time = 0;
@@ -58,7 +58,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -110,7 +110,7 @@ const SESSION = "use-query-shared-session";
 interface Harness {
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  readonly config: DbzzProviderConfig;
+  readonly config: AckerDBProviderConfig;
   live(): FakeSocket;
   subFrames<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[];
 }
@@ -156,9 +156,9 @@ function cursor(commitVersion: bigint): SubscriptionCursor {
   };
 }
 
-const observed = new Map<string, DbzzQueryState<string[]>>();
+const observed = new Map<string, AckerDBQueryState<string[]>>();
 
-function describeState(state: DbzzQueryState<string[]>): string {
+function describeState(state: AckerDBQueryState<string[]>): string {
   switch (state.status) {
     case "disabled":
       return "disabled";
@@ -198,11 +198,11 @@ interface ProbeSpec {
 
 function app(harness: Harness, probes: ProbeSpec[], strict = false): ReactNode {
   const tree = (
-    <DbzzProvider config={harness.config}>
+    <AckerDBProvider config={harness.config}>
       {probes.map((probe) => (
         <Probe key={probe.id} id={probe.id} args={probe.args} />
       ))}
-    </DbzzProvider>
+    </AckerDBProvider>
   );
   return strict ? <StrictMode>{tree}</StrictMode> : tree;
 }
@@ -220,7 +220,7 @@ async function ready(harness: Harness): Promise<void> {
 }
 
 /** The identical committed snapshot object every listed probe observed. */
-function sharedSnapshot(ids: string[]): DbzzQueryState<string[]> {
+function sharedSnapshot(ids: string[]): AckerDBQueryState<string[]> {
   const states = ids.map((id) => {
     const state = observed.get(id);
     if (!state) throw new Error(`probe ${id} never rendered`);
@@ -293,7 +293,7 @@ describe("shared query registry", () => {
 
     await render(
       root,
-      <DbzzProvider config={harness.config}>
+      <AckerDBProvider config={harness.config}>
         {/* Same values, opposite key insertion order: one shared key. */}
         <Pairs args={{ a: 1n, b: "x" }} />
         <Pairs args={{ b: "x", a: 1n }} />
@@ -302,7 +302,7 @@ describe("shared query registry", () => {
         <Similar args={{ list: 1 }} />
         <Similar args={{ list: "1" }} />
         <Similar args={{ list: [1] }} />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await ready(harness);
     const subs = harness.subFrames("sub");
@@ -327,9 +327,9 @@ describe("shared query registry", () => {
 
     await render(
       root,
-      <DbzzProvider config={harness.config}>
+      <AckerDBProvider config={harness.config}>
         <Pair />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await ready(harness);
     const subs = harness.subFrames("sub");
@@ -724,7 +724,7 @@ describe("shared query registry", () => {
   // must be inert, and clients must never share entries.
   test("reading a source snapshot registers nothing; only a committed listener subscribes", async () => {
     const harness = createHarness();
-    const client = new DbzzClient(harness.config);
+    const client = new AckerDBClient(harness.config);
     client.connect();
     harness.live().welcome(SESSION);
     const registry = queryRegistryFor(client);
@@ -769,7 +769,7 @@ describe("shared query registry", () => {
 
   test("a listener returning within the release window continues the live subscription", async () => {
     const harness = createHarness();
-    const client = new DbzzClient(harness.config);
+    const client = new AckerDBClient(harness.config);
     client.connect();
     harness.live().welcome(SESSION);
     const registry = queryRegistryFor(client);
@@ -805,8 +805,8 @@ describe("shared query registry", () => {
   test("identical keys on different clients stay in different registries", async () => {
     const first = createHarness();
     const second = createHarness();
-    const clientA = new DbzzClient(first.config);
-    const clientB = new DbzzClient(second.config);
+    const clientA = new AckerDBClient(first.config);
+    const clientB = new AckerDBClient(second.config);
     clientA.connect();
     clientB.connect();
     first.live().welcome(SESSION);

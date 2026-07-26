@@ -1,6 +1,6 @@
 # Database queries
 
-DBZZ reads are planner-independent. Application code describes the rows it
+AckerDB reads are planner-independent. Application code describes the rows it
 needs; SQLite chooses any declared index that helps. Adding, removing, or
 reordering a storage index cannot change a query's result or its public API.
 
@@ -22,7 +22,7 @@ const active = await ctx.db.documents
 ```
 
 The callback builds a typed SQL expression once. It does not receive an
-application row, and DBZZ does not run it once per result in JavaScript.
+application row, and AckerDB does not run it once per result in JavaScript.
 Repeated `where` calls combine with `AND`. The opaque expression may be
 reused by other builders for the same table and engine, but not across tables
 or engines.
@@ -49,7 +49,7 @@ row. Filtering, limiting, counting, and pagination stay in SQLite.
 ## Deterministic order and pagination
 
 Without an explicit order, rows use primary-key ascending order. With an
-explicit order, DBZZ appends primary-key ascending as the final tie-breaker
+explicit order, AckerDB appends primary-key ascending as the final tie-breaker
 unless the query explicitly orders the primary key itself:
 
 ```ts
@@ -68,7 +68,7 @@ may be mixed. SQLite null ordering is part of the contract: null precedes a
 non-null value ascending and follows it descending.
 
 Pagination cursors are opaque, versioned encodings of the complete ordering
-tuple. Pass `nextCursor` back unchanged. DBZZ validates its arity, nullability,
+tuple. Pass `nextCursor` back unchanged. AckerDB validates its arity, nullability,
 and value types against the query order and rejects malformed cursors.
 
 ## Transparent indexes
@@ -95,7 +95,7 @@ point.
 
 Reactive reads conservatively derive declared equality prefixes from the
 predicate expression. If a safe prefix cannot be proven within the dependency
-budget, DBZZ records a broader prefix or a table dependency. This can cause
+budget, AckerDB records a broader prefix or a table dependency. This can cause
 extra recomputation but never a stale subscription.
 
 ## Structural upsert

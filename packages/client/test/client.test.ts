@@ -14,18 +14,18 @@ import {
   type ServerMessage,
   type SseAckRequest,
   type SubscriptionCursor,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
-  DbzzClient,
-  DbzzClientError,
-  type DbzzAuthenticationState,
+  AckerDBClient,
+  AckerDBClientError,
+  type AckerDBAuthenticationState,
   type ClientResult,
-  type DbzzClientClock,
-  type DbzzClientOptions,
-  type DbzzLiveEvent,
-  type DbzzConnectionState,
-  type DbzzWebSocket,
-} from "@dbzz/client";
+  type AckerDBClientClock,
+  type AckerDBClientOptions,
+  type AckerDBLiveEvent,
+  type AckerDBConnectionState,
+  type AckerDBWebSocket,
+} from "@ackerdb/client";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -44,7 +44,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
 
@@ -105,7 +105,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -156,12 +156,12 @@ class FakeSocket implements DbzzWebSocket {
 }
 
 function harness(
-  overrides: Partial<DbzzClientOptions> = {},
-): { client: DbzzClient; clock: ManualClock; sockets: FakeSocket[] } {
+  overrides: Partial<AckerDBClientOptions> = {},
+): { client: AckerDBClient; clock: ManualClock; sockets: FakeSocket[] } {
   const clock = overrides.clock instanceof ManualClock ? overrides.clock : new ManualClock();
   const sockets: FakeSocket[] = [];
-  const client = new DbzzClient({
-    url: "http://dbzz.test",
+  const client = new AckerDBClient({
+    url: "http://ackerdb.test",
     credential: { kind: "anonymous" },
     clientSessionId: "test-session",
     clock,
@@ -192,7 +192,7 @@ function mustErr<E>(result: { readonly ok: true; readonly data: unknown } | {
   return result.error;
 }
 
-function welcome(client: DbzzClient, socket: FakeSocket, principal: "anonymous" | "user" = "anonymous"): void {
+function welcome(client: AckerDBClient, socket: FakeSocket, principal: "anonymous" | "user" = "anonymous"): void {
   socket.open();
   const descriptor: AuthenticationDescriptor =
     principal === "user" ? USER_AUTHENTICATION : { principal: "anonymous" };
@@ -223,7 +223,7 @@ function lastFrame<T extends ClientMessage["t"]>(
 }
 
 function dispatchProcedure<Args extends object, Value>(
-  client: DbzzClient,
+  client: AckerDBClient,
   sockets: FakeSocket[],
   ref: string,
   args: Args,
@@ -241,7 +241,7 @@ function dispatchProcedure<Args extends object, Value>(
 }
 
 async function completeProcedure<Value>(
-  client: DbzzClient,
+  client: AckerDBClient,
   sockets: FakeSocket[],
   ref: string,
   value: Value,
@@ -319,8 +319,8 @@ function sseResponse(
   const headers = new Headers({ "content-type": "text/event-stream" });
   const stream = options.stream === undefined ? "stream-1" : options.stream;
   const stallMs = options.stallMs === undefined ? "5000" : options.stallMs;
-  if (stream !== null) headers.set("x-dbzz-sse-stream", stream);
-  if (stallMs !== null) headers.set("x-dbzz-sse-max-stall-ms", stallMs);
+  if (stream !== null) headers.set("x-ackerdb-sse-stream", stream);
+  if (stallMs !== null) headers.set("x-ackerdb-sse-max-stall-ms", stallMs);
   const text = typeof content === "string" ? content : content.map(sseEvent).join("");
   return new Response(
     new ReadableStream<Uint8Array>({
@@ -354,7 +354,7 @@ function openResponse(
   );
 }
 
-describe("DbzzClient protocol 2 ownership", () => {
+describe("AckerDBClient protocol 2 ownership", () => {
   test("sends explicit hello, pauses for refresh, and keeps one session across reconnect", async () => {
     const { client, clock, sockets } = harness({
       credential: { kind: "bearer", token: "token-a" },
@@ -428,8 +428,8 @@ describe("DbzzClient protocol 2 ownership", () => {
     });
 
     client.close();
-    expect(await firstResult).toBeInstanceOf(DbzzClientError);
-    expect(await secondResult).toBeInstanceOf(DbzzClientError);
+    expect(await firstResult).toBeInstanceOf(AckerDBClientError);
+    expect(await secondResult).toBeInstanceOf(AckerDBClientError);
   });
 
   test("replays a credential refresh that starts before the welcome handshake", async () => {
@@ -632,14 +632,14 @@ describe("DbzzClient protocol 2 ownership", () => {
       },
     });
     const exact = mustErr(await rejected);
-    expect(exact).toBeInstanceOf(DbzzClientError);
+    expect(exact).toBeInstanceOf(AckerDBClientError);
     expect(exact).toMatchObject({
       code: "unauthorized",
       retryable: false,
       resource: "operation",
       message: "not allowed",
     });
-    if (!(exact instanceof DbzzClientError)) throw new Error("expected DbzzClientError");
+    if (!(exact instanceof AckerDBClientError)) throw new Error("expected AckerDBClientError");
     expect(Object.isFrozen(exact.outcome)).toBe(true);
 
     const malformed = client.query("todos.list", {});
@@ -751,7 +751,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     sentMutation.client.close();
 
     const byteBound = harness({ limits: { maxPendingBytes: 1 } }).client;
-    expect(() => byteBound.subscribe("todos.list", {}, () => {})).toThrow(DbzzClientError);
+    expect(() => byteBound.subscribe("todos.list", {}, () => {})).toThrow(AckerDBClientError);
     byteBound.close();
 
     const inbound = harness({ limits: { maxFrameBytes: 256 } });
@@ -801,12 +801,12 @@ describe("DbzzClient protocol 2 ownership", () => {
     expect(clock.nextDueIn()).toBe(100);
     client.close();
     expect(clock.taskCount).toBe(0);
-    expect(await result).toBeInstanceOf(DbzzClientError);
+    expect(await result).toBeInstanceOf(AckerDBClientError);
   });
 
   test("keeps event subscriptions live-only and reports sequence gaps", () => {
     const { client, clock, sockets } = harness();
-    const events: DbzzLiveEvent<{ x: number }>[] = [];
+    const events: AckerDBLiveEvent<{ x: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { x: number }>(
       "events.cursor",
       {},
@@ -859,7 +859,7 @@ describe("DbzzClient protocol 2 ownership", () => {
 
   test("releases an event subscription exactly once across repeated unsubscribe and close", () => {
     const { client, sockets } = harness();
-    const events: DbzzLiveEvent<{ x: number }>[] = [];
+    const events: AckerDBLiveEvent<{ x: number }>[] = [];
     const unsubscribe = client.subscribeEvent<Record<never, never>, { x: number }>(
       "events.cursor",
       {},
@@ -1032,7 +1032,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     const acknowledgmentAuthorizations: Array<string | null> = [];
     const acknowledgmentContentTypes: Array<string | null> = [];
     let streamAuthorization: string | null = null;
-    const fetcher: DbzzClientOptions["fetch"] = async (url, init) => {
+    const fetcher: AckerDBClientOptions["fetch"] = async (url, init) => {
       if (url.endsWith("/api/sse")) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
         return sseResponse([
@@ -1090,7 +1090,7 @@ describe("DbzzClient protocol 2 ownership", () => {
     let streamAuthorization: string | null = null;
     let firstSequenceAttempts = 0;
     const randomValues = [0.5, 0];
-    const fetcher: DbzzClientOptions["fetch"] = async (url, init) => {
+    const fetcher: AckerDBClientOptions["fetch"] = async (url, init) => {
       if (url.endsWith("/api/sse")) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
         return sseResponse([
@@ -1429,8 +1429,8 @@ describe("DbzzClient protocol 2 ownership", () => {
       {
         headers: {
           "content-type": "text/event-stream",
-          "x-dbzz-sse-stream": "stream-1",
-          "x-dbzz-sse-max-stall-ms": "5000",
+          "x-ackerdb-sse-stream": "stream-1",
+          "x-ackerdb-sse-max-stall-ms": "5000",
         },
       },
     );
@@ -1477,8 +1477,8 @@ describe("DbzzClient protocol 2 ownership", () => {
         {
           headers: {
             "content-type": "text/event-stream",
-            "x-dbzz-sse-stream": "stream-1",
-            "x-dbzz-sse-max-stall-ms": "5000",
+            "x-ackerdb-sse-stream": "stream-1",
+            "x-ackerdb-sse-max-stall-ms": "5000",
           },
         },
       );
@@ -2048,7 +2048,7 @@ describe("DbzzClient protocol 2 ownership", () => {
   });
 });
 
-describe("DbzzClient connection state", () => {
+describe("AckerDBClient connection state", () => {
   test("publishes connecting, ready, reconnecting, and closed with stable snapshots", () => {
     const { client, sockets } = harness();
     const phases: string[] = [];
@@ -2120,12 +2120,12 @@ describe("DbzzClient connection state", () => {
 
   test("reports authentication-blocked with the exact error and recovers through refreshCredential", async () => {
     const { client, sockets } = harness();
-    const states: DbzzConnectionState[] = [];
+    const states: AckerDBConnectionState[] = [];
     client.subscribeConnectionState((state) => states.push(state));
     client.connect();
     welcome(client, sockets[0]!);
 
-    const blocking = new DbzzClientError({
+    const blocking = new AckerDBClientError({
       code: "unauthenticated",
       retryable: false,
       message: "credential expired",
@@ -2138,7 +2138,7 @@ describe("DbzzClient connection state", () => {
     });
     const blocked = client.currentConnectionState;
     if (blocked.phase !== "authentication-blocked") throw new Error(`unexpected ${blocked.phase}`);
-    expect(blocked.error).toBeInstanceOf(DbzzClientError);
+    expect(blocked.error).toBeInstanceOf(AckerDBClientError);
     expect(blocked.error.code).toBe(blocking.code);
     expect(client.currentConnectionState).toBe(blocked);
 
@@ -2177,7 +2177,7 @@ describe("DbzzClient connection state", () => {
     sockets[0]!.receiveRaw("not json");
     const terminal = client.currentConnectionState;
     if (terminal.phase !== "terminal-error") throw new Error(`unexpected ${terminal.phase}`);
-    expect(terminal.error).toBeInstanceOf(DbzzClientError);
+    expect(terminal.error).toBeInstanceOf(AckerDBClientError);
     expect(terminal.error.code).toBe("malformed");
     expect(client.currentConnectionState).toBe(terminal);
     client.close();
@@ -2213,7 +2213,7 @@ describe("DbzzClient connection state", () => {
     expect(client.currentConnectionState).toEqual({ phase: "closed" });
     expect(clock.taskCount).toBe(0);
     expect(sockets.filter((socket) => socket.closes.length === 0)).toHaveLength(0);
-    expect(await refresh).toBeInstanceOf(DbzzClientError);
+    expect(await refresh).toBeInstanceOf(AckerDBClientError);
   });
 
   test("a nested close during notification never delivers stale state", () => {
@@ -2373,7 +2373,7 @@ describe("subscription argument encoding", () => {
       client.subscribe("todos.byScore", { score: Number.NaN }, () => {});
       throw new Error("subscribe must reject NaN arguments");
     } catch (error) {
-      expect(error).toBeInstanceOf(DbzzClientError);
+      expect(error).toBeInstanceOf(AckerDBClientError);
       expect(error).toMatchObject({
         code: "validation",
         retryable: false,
@@ -2385,7 +2385,7 @@ describe("subscription argument encoding", () => {
   });
 });
 
-describe("DbzzClient close-time mutation settlement", () => {
+describe("AckerDBClient close-time mutation settlement", () => {
   test("close settles sent mutations as indeterminate and unsent mutations as unavailable", async () => {
     const { client, sockets } = harness();
     const sent = client.mutation("todos.add", { text: "sent" }).then(mustErr);
@@ -2411,7 +2411,7 @@ describe("DbzzClient close-time mutation settlement", () => {
   });
 });
 
-describe("DbzzClient authentication state", () => {
+describe("AckerDBClient authentication state", () => {
   test("publishes authenticating, unauthenticated, and closed with stable snapshots", () => {
     const { client, sockets } = harness();
     const phases: string[] = [];
@@ -2509,7 +2509,7 @@ describe("DbzzClient authentication state", () => {
 
   test("tracks refresh and sign-out through the pending credential kind", async () => {
     const { client, sockets } = harness({ credential: { kind: "bearer", token: "token-a" } });
-    const states: DbzzAuthenticationState[] = [];
+    const states: AckerDBAuthenticationState[] = [];
     client.subscribeAuthenticationState((state) => states.push(state));
     client.connect();
     welcome(client, sockets[0]!, "user");
@@ -2662,7 +2662,7 @@ describe("DbzzClient authentication state", () => {
     } catch (error) {
       caught = error;
     }
-    expect(caught).toBeInstanceOf(DbzzClientError);
+    expect(caught).toBeInstanceOf(AckerDBClientError);
     expect(caught).toMatchObject({ code: "overloaded", resource: "connection" });
     // Nothing was installed: no attempt, no expiry timer, no state change,
     // and operations still flow on the untouched session.
@@ -2720,7 +2720,7 @@ describe("DbzzClient authentication state", () => {
     });
     const blocked = client.currentAuthenticationState;
     if (blocked.phase !== "refresh-required") throw new Error(`unexpected ${blocked.phase}`);
-    expect(blocked.error).toBeInstanceOf(DbzzClientError);
+    expect(blocked.error).toBeInstanceOf(AckerDBClientError);
     expect(blocked.error.code).toBe("unauthenticated");
     expect(client.currentAuthenticationState).toBe(blocked);
     const connection = client.currentConnectionState;
@@ -2767,7 +2767,7 @@ describe("DbzzClient authentication state", () => {
     expect(error).toMatchObject({ code: "auth_unavailable", message: "authentication timed out" });
     const blocked = client.currentAuthenticationState;
     if (blocked.phase !== "refresh-required") throw new Error(`unexpected ${blocked.phase}`);
-    expect(blocked.error).toBe(error as DbzzClientError);
+    expect(blocked.error).toBe(error as AckerDBClientError);
     client.close();
   });
 

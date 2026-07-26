@@ -1,14 +1,14 @@
 import {
-  DbzzClientError,
+  AckerDBClientError,
   type ClientResult,
-  type DbzzClient,
-} from "@dbzz/client";
+  type AckerDBClient,
+} from "@ackerdb/client";
 import {
   Failure,
   decode,
   encode,
   type ApplicationError,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import { useEffect, useInsertionEffect, useState } from "react";
 import { useProviderClient } from "./provider.tsx";
 
@@ -29,8 +29,8 @@ const useCommitEffect = typeof document === "undefined" ? useEffect : useInserti
 // through the client's own fetch abort path, so the hook never wraps or
 // reinterprets the typed outcome.
 interface Waiter {
-  dispatch(client: DbzzClient): void;
-  discard(error: DbzzClientError): void;
+  dispatch(client: AckerDBClient): void;
+  discard(error: AckerDBClientError): void;
 }
 
 // Per-hook-instance mutable state shared between renders and the stable
@@ -39,15 +39,15 @@ interface Waiter {
 // reconfiguration.
 export interface LifetimeCell<Ref> {
   ref: Ref;
-  client: DbzzClient | null;
+  client: AckerDBClient | null;
   ended: boolean;
   readonly waiters: Set<Waiter>;
 }
 
 // Typed outcomes for the settlements the hook itself owns: calls that end
 // before ever reaching a client. Shapes mirror the client's local errors.
-function hookError(message: string): DbzzClientError {
-  return new DbzzClientError({
+function hookError(message: string): AckerDBClientError {
+  return new AckerDBClientError({
     code: "unavailable",
     message,
     retryable: false,
@@ -98,7 +98,7 @@ export interface QueueAbort {
 export function callThroughCell<Ref, A, R>(
   cell: LifetimeCell<Ref>,
   args: A,
-  dispatch: (client: DbzzClient, args: A) => Promise<R>,
+  dispatch: (client: AckerDBClient, args: A) => Promise<R>,
   abort?: QueueAbort,
 ): Promise<R> {
   // Ownership ends with the hook: a callable retained past unmount (by a
@@ -152,10 +152,10 @@ export function callThroughCell<Ref, A, R>(
   });
 }
 
-function asHookClientError(error: unknown): DbzzClientError {
-  return error instanceof DbzzClientError
+function asHookClientError(error: unknown): AckerDBClientError {
+  return error instanceof AckerDBClientError
     ? error
-    : new DbzzClientError({
+    : new AckerDBClientError({
         code: "internal",
         message: error instanceof Error ? error.message : "hook call failed unexpectedly",
         retryable: false,
@@ -176,7 +176,7 @@ export function callResultThroughCell<
 >(
   cell: LifetimeCell<Ref>,
   args: A,
-  dispatch: (client: DbzzClient, args: A) => Promise<ClientResult<Data, Error>>,
+  dispatch: (client: AckerDBClient, args: A) => Promise<ClientResult<Data, Error>>,
   abort?: QueueAbort,
 ): Promise<ClientResult<Data, Error>> {
   try {

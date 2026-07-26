@@ -7,17 +7,17 @@ import {
   parseClientMessage,
   type ClientMessage,
   type ServerMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import type {
-  DbzzClientClock,
-  DbzzClientError,
-  DbzzLiveEvent,
-  DbzzWebSocket,
+  AckerDBClientClock,
+  AckerDBClientError,
+  AckerDBLiveEvent,
+  AckerDBWebSocket,
   EventRef,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import { Component, StrictMode, act, useLayoutEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { DbzzProvider, useEvent, type DbzzProviderConfig } from "@dbzz/client-react";
+import { AckerDBProvider, useEvent, type AckerDBProviderConfig } from "@ackerdb/client-react";
 
 interface ClockTask {
   at: number;
@@ -25,7 +25,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
   private time = 0;
@@ -76,7 +76,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -118,7 +118,7 @@ class FakeSocket implements DbzzWebSocket {
 interface Harness {
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  config(overrides?: Partial<DbzzProviderConfig>): DbzzProviderConfig;
+  config(overrides?: Partial<AckerDBProviderConfig>): AckerDBProviderConfig;
   live(): FakeSocket[];
 }
 
@@ -153,10 +153,10 @@ type PingRow = { readonly id: bigint; readonly n: number };
 const pings = { $ref: "events.pings" } as EventRef<{ min: bigint }, PingRow>;
 
 interface ProbeProps {
-  readonly config: DbzzProviderConfig;
+  readonly config: AckerDBProviderConfig;
   readonly min: bigint;
-  readonly onEvent: (event: DbzzLiveEvent<PingRow>) => void;
-  readonly onError?: (error: DbzzClientError) => void;
+  readonly onEvent: (event: AckerDBLiveEvent<PingRow>) => void;
+  readonly onError?: (error: AckerDBClientError) => void;
 }
 
 function Probe({ min, onEvent, onError }: Omit<ProbeProps, "config">): ReactNode {
@@ -167,9 +167,9 @@ function Probe({ min, onEvent, onError }: Omit<ProbeProps, "config">): ReactNode
 function app({ config, ...probe }: ProbeProps): ReactNode {
   return (
     <StrictMode>
-      <DbzzProvider config={config}>
+      <AckerDBProvider config={config}>
         <Probe {...probe} />
-      </DbzzProvider>
+      </AckerDBProvider>
     </StrictMode>
   );
 }
@@ -207,8 +207,8 @@ describe("useEvent lifecycle", () => {
     const harness = createHarness();
     const root = createRoot(mountPoint());
     const config = harness.config();
-    const first: DbzzLiveEvent<PingRow>[] = [];
-    const second: DbzzLiveEvent<PingRow>[] = [];
+    const first: AckerDBLiveEvent<PingRow>[] = [];
+    const second: AckerDBLiveEvent<PingRow>[] = [];
 
     await render(root, app({ config, min: 1n, onEvent: (event) => first.push(event) }));
     // Strict Mode: two provider clients, one live; its single event
@@ -308,7 +308,7 @@ describe("useEvent lifecycle", () => {
   test("reconnect re-establishes the subscription and delivers one fresh reset boundary", async () => {
     const harness = createHarness();
     const root = createRoot(mountPoint());
-    const events: DbzzLiveEvent<PingRow>[] = [];
+    const events: AckerDBLiveEvent<PingRow>[] = [];
 
     await render(root, app({ config: harness.config(), min: 1n, onEvent: (event) => events.push(event) }));
     const socket = harness.live()[0]!;
@@ -398,8 +398,8 @@ describe("useEvent lifecycle", () => {
   test("a client that cannot accept subscriptions reports the exact error as a value", async () => {
     const harness = createHarness();
     const root = createRoot(mountPoint());
-    const events: DbzzLiveEvent<PingRow>[] = [];
-    const errors: DbzzClientError[] = [];
+    const events: AckerDBLiveEvent<PingRow>[] = [];
+    const errors: AckerDBClientError[] = [];
 
     await render(
       root,
@@ -429,9 +429,9 @@ describe("useEvent lifecycle", () => {
     const root = createRoot(mountPoint());
     const view = (args: { a: bigint; b: string }): ReactNode => (
       <StrictMode>
-        <DbzzProvider config={harness.config()}>
+        <AckerDBProvider config={harness.config()}>
           <ScopedProbe args={args} />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>
     );
 
@@ -455,17 +455,17 @@ describe("useEvent lifecycle", () => {
   test("an argument change fences in-flight deliveries from the superseded subscription", async () => {
     const harness = createHarness();
     const root = createRoot(mountPoint());
-    const first: DbzzLiveEvent<PingRow>[] = [];
-    const second: DbzzLiveEvent<PingRow>[] = [];
+    const first: AckerDBLiveEvent<PingRow>[] = [];
+    const second: AckerDBLiveEvent<PingRow>[] = [];
     const tree = (
       min: bigint,
-      sink: DbzzLiveEvent<PingRow>[],
+      sink: AckerDBLiveEvent<PingRow>[],
       fire: (() => void) | null,
     ): ReactNode => (
       <>
-        <DbzzProvider config={harness.config()}>
+        <AckerDBProvider config={harness.config()}>
           <Probe min={min} onEvent={(event) => sink.push(event)} />
-        </DbzzProvider>
+        </AckerDBProvider>
         <Injector fire={fire} />
       </>
     );
@@ -530,13 +530,13 @@ describe("useEvent lifecycle", () => {
   test("deletion fences deliveries that beat the passive cleanup", async () => {
     const harness = createHarness();
     const root = createRoot(mountPoint());
-    const events: DbzzLiveEvent<PingRow>[] = [];
+    const events: AckerDBLiveEvent<PingRow>[] = [];
     const view = (mounted: boolean, fire: (() => void) | null): ReactNode => (
       <>
         {mounted ? (
-          <DbzzProvider config={harness.config()}>
+          <AckerDBProvider config={harness.config()}>
             <Probe min={1n} onEvent={(event) => events.push(event)} />
-          </DbzzProvider>
+          </AckerDBProvider>
         ) : null}
         <Injector fire={fire} />
       </>
@@ -609,7 +609,7 @@ describe("useEvent lifecycle", () => {
         <Probe min={1n} onEvent={() => {}} />
       </Boundary>,
     );
-    expect(String(caught)).toContain("useEvent requires a <DbzzProvider> ancestor");
+    expect(String(caught)).toContain("useEvent requires a <AckerDBProvider> ancestor");
     await act(async () => {
       root.unmount();
     });

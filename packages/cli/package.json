@@ -1,18 +1,18 @@
 {
-  "name": "@dbzz/cli",
+  "name": "@ackerdb/cli",
   "version": "0.10.0",
   "type": "module",
   "files": [
     "src"
   ],
   "bin": {
-    "dbzz": "./src/commands/main.ts"
+    "acker": "./src/commands/main.ts"
   },
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:0.10.0",
-    "@dbzz/server": "workspace:0.10.0"
+    "@ackerdb/core": "workspace:0.10.0",
+    "@ackerdb/server": "workspace:0.10.0"
   }
 }

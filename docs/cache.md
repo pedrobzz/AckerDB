@@ -1,6 +1,6 @@
 # Cache
 
-`@dbzz/cache` is a disposable, server-only Plugin. Cache entries may accelerate
+`@ackerdb/cache` is a disposable, server-only Plugin. Cache entries may accelerate
 work, but they are never application truth: clearing the entire Cache may make
 the next operation slower and must not change its correct result. The API is
 intentionally limited to `get`, `set`, and `delete`.
@@ -18,8 +18,8 @@ but they provide useful input inference and validate values at the Cache
 boundary:
 
 ```ts
-import { cachePlugin } from "@dbzz/cache";
-import { defineApp, defineSchema, v } from "@dbzz/server";
+import { cachePlugin } from "@ackerdb/cache";
+import { defineApp, defineSchema, v } from "@ackerdb/server";
 
 const cache = cachePlugin({
   namespaces: {
@@ -66,9 +66,9 @@ const profile = await ctx.cache.get<{ name: string }>("profile:1");
 ```
 
 There is deliberately no Cache capability in Query handlers. Queries already
-read SQLite efficiently and must retain DBZZ's reactive dependency tracking.
+read SQLite efficiently and must retain AckerDB's reactive dependency tracking.
 The built-in Cache exports mutation-kind operations: a Mutation shares its
-existing transaction, a direct call from a Procedure gets a DBZZ-owned writer
+existing transaction, a direct call from a Procedure gets an AckerDB-owned writer
 transaction, and calls inside one `ctx.tx(...)` share that explicit
 transaction. The built-in store uses the invocation's frozen `ctx.timestamp`
 for expiration.
@@ -117,16 +117,16 @@ the private `entries` and `state` tables.
 
 Changing an existing mount from the built-in store to an external store, or
 back again, changes that mount's private-storage definition. Startup therefore
-requires `dbzz plugin reset <mount>` before it can continue. The targeted reset
-clears only that DBZZ Plugin scope, which is safe because Cache data is
+requires `acker plugin reset <mount>` before it can continue. The targeted reset
+clears only that AckerDB Plugin scope, which is safe because Cache data is
 disposable; it does not delete keys from Redis, Upstash, or a custom provider.
 
 Redis uses Bun's native `RedisClient` and one atomic `SET` command for TTL and
 conditions:
 
 ```ts
-import { cachePlugin } from "@dbzz/cache";
-import { redisCacheStore } from "@dbzz/cache/redis";
+import { cachePlugin } from "@ackerdb/cache";
+import { redisCacheStore } from "@ackerdb/cache/redis";
 
 const cache = cachePlugin({
   store: redisCacheStore({
@@ -139,8 +139,8 @@ const cache = cachePlugin({
 Upstash sends one authenticated REST command per operation:
 
 ```ts
-import { cachePlugin } from "@dbzz/cache";
-import { upstashCacheStore } from "@dbzz/cache/upstash";
+import { cachePlugin } from "@ackerdb/cache";
+import { upstashCacheStore } from "@ackerdb/cache/upstash";
 
 const cache = cachePlugin({
   store: upstashCacheStore({
@@ -151,7 +151,7 @@ const cache = cachePlugin({
 });
 ```
 
-Factories are declarations and perform no network I/O. DBZZ opens and closes
+Factories are declarations and perform no network I/O. AckerDB opens and closes
 the store through Plugin lifecycle. Upstash forwards each request's
 `AbortSignal`. Bun's Redis client has no per-command signal: an already-aborted
 operation is rejected before dispatch, while an operation already dispatched
@@ -165,7 +165,7 @@ import {
   cachePlugin,
   defineCacheStore,
   type CacheStoreHandle,
-} from "@dbzz/cache";
+} from "@ackerdb/cache";
 
 declare function openMyStore(signal: AbortSignal): Promise<CacheStoreHandle>;
 
@@ -182,10 +182,10 @@ methods. Every operation receives the fully framed string key and a request
 `AbortSignal`; `set` also receives the opaque payload, optional `expiresInMs`,
 and optional `if` condition.
 
-`keyPrefix` is required to separate an application and environment. DBZZ adds
+`keyPrefix` is required to separate an application and environment. AckerDB adds
 the encoding version, Plugin mount, namespace, key type, and framed key. The
 store must treat payload strings as opaque, implement TTL and `"missing"` /
 `"present"` atomically, observe lifecycle and request cancellation where its
 transport permits, and return booleans for `set` and `delete`. Namespace
-validation and wire encoding remain owned by `@dbzz/cache`, so all backends
+validation and wire encoding remain owned by `@ackerdb/cache`, so all backends
 present the same application API.

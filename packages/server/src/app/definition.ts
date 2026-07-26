@@ -7,7 +7,7 @@ import {
 } from "../plugins/definition.ts";
 import { isSchema, type Schema } from "../schema/definition.ts";
 
-const APP_IDENTITY = Symbol.for("@dbzz/server/App/v1");
+const APP_IDENTITY = Symbol.for("@ackerdb/server/App/v1");
 
 type EmptyPluginMounts = Readonly<Record<never, never>>;
 
@@ -77,7 +77,7 @@ export function defineApp<
   return Object.freeze(app);
 }
 
-/** True for an application manifest created by any compatible @dbzz/server instance. */
+/** True for an application manifest created by any compatible @ackerdb/server instance. */
 export function isApp(value: unknown): value is App {
   return hasBrand(value, APP_IDENTITY);
 }

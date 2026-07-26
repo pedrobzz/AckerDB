@@ -2,7 +2,7 @@
 
 Status: runtime-first beta implemented; materializing compiler pending.
 
-DBzz queries, mutations, and procedures expose expected application failures as
+AckerDB queries, mutations, and procedures expose expected application failures as
 typed `Result<Data, Error>` values. The contract is Rust-inspired, but it keeps
 ordinary TypeScript authoring: a handler may return its success value directly,
 while `Err(...)` is always explicit. Thrown failures remain outside the
@@ -17,7 +17,7 @@ procedure's `ctx.tx` does use the same Result-aware transaction contract.
 ## Desired authoring model
 
 ```ts
-import { Err, Status } from "@dbzz/core";
+import { Err, Status } from "@ackerdb/core";
 import { query, v } from "./_generated/server";
 
 export const getOrder = query({
@@ -79,7 +79,7 @@ to contain `ok`, `data`, or `error` properties cannot be mistaken for a Result.
 
 ## Core types
 
-The public surface belongs in `@dbzz/core`. The exact internal representation
+The public surface belongs in `@ackerdb/core`. The exact internal representation
 may change, but its observable type is equivalent to:
 
 ```ts
@@ -112,7 +112,7 @@ type Result<T, E> =
 ```
 
 `Ok`, `Err`, `Result`, `ApplicationError`, and `Status` are exported from
-`@dbzz/core`. Result objects are immutable and also expose the typed `mapErr`
+`@ackerdb/core`. Result objects are immutable and also expose the typed `mapErr`
 operation specified below. `Err` requires a literal code, a wire-representable
 body, and a named error status.
 
@@ -322,7 +322,7 @@ a public savepoint API. `ctx.atomic` is unnecessary.
 
 An explicit `ctx.atomic` was initially attractive because Rust's `Result` is
 only a value: Rust cannot assume that an arbitrary function returning `Err`
-should undo side effects. DBzz has a stronger boundary. A registered mutation
+should undo side effects. AckerDB has a stronger boundary. A registered mutation
 already promises one application operation, runs without external I/O, and is
 visible to the runtime. Making that existing boundary own the child scope is
 therefore predictable. It also prevents callers from accidentally forgetting
@@ -349,7 +349,7 @@ top-level function also returns `Err` cannot make handled nested errors safe.
 
 If a caller propagates the nested `Err`, its own registered mutation scope also
 rolls back. A top-level returned `Err` therefore commits no application writes.
-DBzz may durably store the error outcome in its idempotency ledger so a retry
+AckerDB may durably store the error outcome in its idempotency ledger so a retry
 receives the same completed Result. That framework metadata is not an
 application-data commit and must not publish a data version.
 
@@ -387,15 +387,15 @@ Result is a semantic and client-API contract, not a mandatory success envelope.
 
 - A successful procedure uses HTTP 2xx and encodes `T` directly as its body.
 - A procedure application error uses the `Err` status and encodes its code and
-  body in the DBzz error representation.
+  body in the AckerDB error representation.
 - Query and mutation WebSocket frames carry an explicit success,
   application-error, or framework-outcome discriminator. Application-error
   frames include the named status as metadata.
 - The local client constructs `Result` objects after decoding. `Ok` wrappers
   are not serialized around successful payloads.
 
-DBzz therefore preserves meaningful procedure HTTP statuses without making
-ordinary `fetch` behavior decide the API semantics. The DBzz client parses a
+AckerDB therefore preserves meaningful procedure HTTP statuses without making
+ordinary `fetch` behavior decide the API semantics. The AckerDB client parses a
 valid application-error response into `Result.ok === false`; it does not reject
 merely because the HTTP status is 4xx or 5xx.
 
@@ -406,7 +406,7 @@ added.
 ## Client outcomes
 
 Server-side Results contain only application errors. At a transport boundary,
-every generated imperative call also admits the finite DBzz client-failure
+every generated imperative call also admits the finite AckerDB client-failure
 union:
 
 ```ts
@@ -419,7 +419,7 @@ type ClientResult<T, E extends ApplicationError> = Result<
 Those variants have distinct `kind` discriminants:
 
 - `application` is a returned, endpoint-specific `Err`;
-- `framework` is an authoritative DBzz rejection such as access or input
+- `framework` is an authoritative AckerDB rejection such as access or input
   validation;
 - `unhandled` is a sanitized unexpected server failure;
 - `transport` is a connection, protocol, timeout, cancellation, overload, or
@@ -432,7 +432,7 @@ Those variants have distinct `kind` discriminants:
 `unwrap` is not part of the first version. In particular, server-side `unwrap`
 would turn a typed application error into a throw, undermine transaction
 semantics, and force the compiler to approximate thrown control flow. A later
-client-only convenience may throw a `DbzzClientError` without changing server
+client-only convenience may throw a `AckerDBClientError` without changing server
 inference.
 
 ## React query state
@@ -526,7 +526,7 @@ compiler architecture: generated client types still import backend modules,
 there is no long-lived `ContractIR` cache, and TypeScript performs the recursive
 surface mapping.
 
-The DBzz compiler below is required before calling the scaling design complete.
+The AckerDB compiler below is required before calling the scaling design complete.
 It does not build a second JavaScript control-flow analyzer.
 
 TypeScript already computes the final handler return type:
@@ -545,7 +545,7 @@ compiler-owned `ContractIR`. It must not traverse every reachable function and
 guess which branches execute.
 
 This distinction is essential: TypeScript owns language semantics and
-dependency invalidation; DBzz owns the serializable endpoint contract.
+dependency invalidation; AckerDB owns the serializable endpoint contract.
 
 ### Incrementality
 
@@ -553,11 +553,11 @@ The development compiler keeps one long-lived incremental TypeScript program
 and a content-addressed `ContractIR` cache.
 
 1. File changes invalidate TypeScript's affected source and symbol graph.
-2. DBzz re-extracts only endpoint contracts whose public inferred type may have
+2. AckerDB re-extracts only endpoint contracts whose public inferred type may have
    changed.
 3. A changed inner function naturally invalidates every outer endpoint whose
    final type depends on it.
-4. DBzz fingerprints each lowered contract.
+4. AckerDB fingerprints each lowered contract.
 5. Generated output is rewritten only when that contract fingerprint changes.
 
 A body-only edit whose public contract is unchanged performs no generated-file
@@ -585,10 +585,10 @@ growth in large clients.
 
 ### TypeScript 7.1 boundary
 
-The version that ships this compiler raises the DBzz project minimum to
+The version that ships this compiler raises the AckerDB project minimum to
 TypeScript 7.1 and uses its public compiler-host API. There is no TypeScript 5,
 6, or 7.0 compatibility analyzer and no parallel legacy code path.
-[Issue #99](https://github.com/pedrobzz/dbzz/issues/99) tracks this migration.
+[Issue #99](https://github.com/pedrobzz/ackerdb/issues/99) tracks this migration.
 
 The compiler boundary is:
 
@@ -690,16 +690,16 @@ into ordinary database operations.
 
 The work should land by semantic boundary, not as parallel compatibility paths:
 
-1. `@dbzz/core`: Result values, application/client failure types, `Status`,
+1. `@ackerdb/core`: Result values, application/client failure types, `Status`,
    three-parameter function references, and protocol frames.
-2. `@dbzz/server`: handler normalization, callable registered procedures,
+2. `@ackerdb/server`: handler normalization, callable registered procedures,
    invocation poisoning, mutation scopes, `ctx.tx` Result handling, and
    application-error transport encoding.
-3. `@dbzz/cli` (follow-up, issue #99): TypeScript 7.1 adapter, `ContractIR`,
+3. `@ackerdb/cli` (follow-up, issue #99): TypeScript 7.1 adapter, `ContractIR`,
    incremental extraction, diagnostics, fingerprints, and materialized
    generated declarations.
-4. `@dbzz/client`: protocol decoding and imperative `ClientResult`.
-5. `@dbzz/client-react`: exhaustive query state and typed mutation/procedure
+4. `@ackerdb/client`: protocol decoding and imperative `ClientResult`.
+5. `@ackerdb/client-react`: exhaustive query state and typed mutation/procedure
    hooks.
 6. Plugin invocation (follow-up): change Plugin contracts and exposed
    capabilities to typed Results before applying automatic Plugin mutation

@@ -9,7 +9,7 @@ import {
   migrationIdentity,
   snapshotOf,
   type SchemaSnapshot,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { loadConfig } from "../../src/app/config.ts";
 import { loadMigrationChain } from "../../src/migrations/load.ts";
 import { makeFixture } from "../support/fixture.ts";
@@ -27,7 +27,7 @@ const PRE = snapshotOf(schemaV1);
 const TARGET = snapshotOf(schemaV2);
 const FINGERPRINT = migrationFingerprint(TARGET);
 
-const MIGRATION_TS = `import { defineMigration } from "@dbzz/server";
+const MIGRATION_TS = `import { defineMigration } from "@ackerdb/server";
 export default defineMigration({
   tables: { items: (row) => ({ ...row, count: String(row.count) }) },
 });
@@ -114,7 +114,7 @@ describe("loadMigrationChain", () => {
     // save landing between the loader's two reads. The pre-import bytes are the
     // identity input, so a change is refused rather than silently recorded.
     const config = chain({
-      "migrations/0001_self_tamper.ts": `import { defineMigration } from "@dbzz/server";
+      "migrations/0001_self_tamper.ts": `import { defineMigration } from "@ackerdb/server";
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 writeFileSync(fileURLToPath(import.meta.url), "// tampered mid-load\\n");

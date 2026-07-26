@@ -30,8 +30,8 @@ interface HttpTraceState {
   failureRecorded: boolean;
 }
 
-const HTTP_TRACE_STATE: unique symbol = Symbol("dbzz.httpTraceState");
-const CLAIMED_TRACE_STATE: unique symbol = Symbol("dbzz.claimedHttpTraceState");
+const HTTP_TRACE_STATE: unique symbol = Symbol("ackerdb.httpTraceState");
+const CLAIMED_TRACE_STATE: unique symbol = Symbol("ackerdb.claimedHttpTraceState");
 
 /** Package-internal opaque ownership token passed from Serve to Runtime. */
 export interface ExternalHttpTrace {

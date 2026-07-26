@@ -3,7 +3,7 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DbzzWebSocket } from "@dbzz/client";
+import type { AckerDBWebSocket } from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -15,10 +15,10 @@ import {
   query,
   reconcile,
   serve,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { DbzzProvider, useConnectionState } from "@dbzz/client-react";
+import { AckerDBProvider, useConnectionState } from "@ackerdb/client-react";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -37,7 +37,7 @@ interface App {
 }
 
 function createApp(): App {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-react-real-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-real-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const registry = new Registry({
@@ -85,26 +85,26 @@ beforeAll(() => {
 });
 afterAll(() => app.close());
 
-describe("DbzzProvider against a real dbzz server", () => {
+describe("AckerDBProvider against a real ackerdb server", () => {
   test("reaches ready through the provider and closes its socket on unmount", async () => {
     const sockets: WebSocket[] = [];
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
       <StrictMode>
-        <DbzzProvider
+        <AckerDBProvider
           config={{
             url: app.base,
             credential: { kind: "anonymous" },
             createWebSocket: (url) => {
               const socket = new NativeWebSocket(url);
               sockets.push(socket);
-              return socket as unknown as DbzzWebSocket;
+              return socket as unknown as AckerDBWebSocket;
             },
           }}
         >
           <ConnectionReport />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
 

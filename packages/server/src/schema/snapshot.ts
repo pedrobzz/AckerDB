@@ -1,5 +1,5 @@
 /**
- * Schema snapshots: the JSON descriptor of a schema as stored in `_dbzz_meta`.
+ * Schema snapshots: the JSON descriptor of a schema as stored in `_ackerdb_meta`.
  * Reconciliation diffs the stored snapshot against the live schema's
  * descriptor; equality of descriptors means "nothing changed".
  */

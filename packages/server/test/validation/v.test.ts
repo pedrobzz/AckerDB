@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { v, ValidationError, type Identity } from "@dbzz/server";
+import { v, ValidationError, type Identity } from "@ackerdb/server";
 
 const check = <T>(v: { check(value: unknown, path: string): T }, value: unknown) =>
   v.check(value, "t");
@@ -134,7 +134,7 @@ describe("Standard Schema contract", () => {
   });
 
   test("validates and normalizes through the dependency-free standard interface", () => {
-    expect(request["~standard"]).toMatchObject({ version: 1, vendor: "dbzz" });
+    expect(request["~standard"]).toMatchObject({ version: 1, vendor: "ackerdb" });
     expect(request["~standard"].validate({ query: "tea", limit: null, filters: {} })).toEqual({
       value: { query: "tea", limit: null, filters: {} },
     });

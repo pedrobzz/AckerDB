@@ -1,14 +1,14 @@
 import {
-  DbzzProvider,
+  AckerDBProvider,
   skip,
   useAuthentication,
   useEvent,
   useMutation,
   useQuery,
-  type DbzzLiveEvent,
-} from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
-import type { Identity, OrderEvent } from "@demo/dbzz-codegen/types";
+  type AckerDBLiveEvent,
+} from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
+import type { Identity, OrderEvent } from "@demo/ackerdb-codegen/types";
 import {
   useCallback,
   useEffect,
@@ -24,7 +24,7 @@ import { CartProvider } from "./cart";
 import { SessionProvider, useSession } from "./session";
 import { ToastProvider, useToast } from "./toast";
 
-const DBZZ_URL = process.env.EXPO_PUBLIC_DBZZ_URL ?? "http://127.0.0.1:3212";
+const ACKERDB_URL = process.env.EXPO_PUBLIC_ACKERDB_URL ?? "http://127.0.0.1:3212";
 
 export function AppProvider({ children }: { readonly children: ReactNode }) {
   return (
@@ -40,17 +40,17 @@ function SessionScope({ children }: { readonly children: ReactNode }) {
   return (
     <ToastProvider key={scope}>
       <CartProvider>
-        <DbzzSession>{children}</DbzzSession>
+        <AckerDBSession>{children}</AckerDBSession>
       </CartProvider>
     </ToastProvider>
   );
 }
 
-function DbzzSession({ children }: { readonly children: ReactNode }) {
+function AckerDBSession({ children }: { readonly children: ReactNode }) {
   const { restored, restoreError, retryRestore, session } = useSession();
   const config = useMemo(
     () => ({
-      url: DBZZ_URL,
+      url: ACKERDB_URL,
       credential:
         session === null
           ? ({ kind: "anonymous" } as const)
@@ -70,9 +70,9 @@ function DbzzSession({ children }: { readonly children: ReactNode }) {
     );
   }
   return (
-    <DbzzProvider config={config}>
+    <AckerDBProvider config={config}>
       <AuthenticatedBootstrap>{children}</AuthenticatedBootstrap>
-    </DbzzProvider>
+    </AckerDBProvider>
   );
 }
 
@@ -203,7 +203,7 @@ function OrderEventBridge({ identity }: { readonly identity: Identity }) {
   useEvent(
     api.events.orderEvents,
     { identity },
-    (event: DbzzLiveEvent<OrderEvent>) => {
+    (event: AckerDBLiveEvent<OrderEvent>) => {
       if (event.kind === "row") toast.show(event.row.message);
       if (event.kind === "gap")
         toast.show(

@@ -12,12 +12,12 @@
  *   - bigint / identity      INTEGER
  *   - boolean                INTEGER (0/1)
  *   - bytes                  BLOB
- *   - enum                   INTEGER (stable interned tag, see _dbzz_tags)
+ *   - enum                   INTEGER (stable interned tag, see _ackerdb_tags)
  *   - union                  INTEGER tag column + TEXT payload column "<col>__p"
  *   - array / object / jsonb TEXT (wire-encoded, so bigints/bytes round-trip)
  *
  * Enum/union tags are interned once per (type name, variant name) in
- * `_dbzz_tags` and never change and are never reused: reordering variants is
+ * `_ackerdb_tags` and never change and are never reused: reordering variants is
  * cosmetic, renames keep storage, deletions retire the tag forever.
  *
  * Direct indexes execute as SQLite b-tree indexes: same API and semantics;
@@ -48,7 +48,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
-import { decode, encode, type DurabilityPolicy } from "@dbzz/core";
+import { decode, encode, type DurabilityPolicy } from "@ackerdb/core";
 import {
   baseValidator,
   type Descriptor,
@@ -184,7 +184,7 @@ export interface NormalizedPluginSnapshot {
   readonly encoded: string;
 }
 
-const BORROWED_DATABASE_OWNERSHIP = Symbol("dbzz.borrowedDatabaseOwnership");
+const BORROWED_DATABASE_OWNERSHIP = Symbol("ackerdb.borrowedDatabaseOwnership");
 
 interface InternalEngineOptions extends EngineOptions {
   readonly [BORROWED_DATABASE_OWNERSHIP]?: DatabaseOwnership;
@@ -265,9 +265,9 @@ const WAL_HEADER_BYTES = 32;
 const WAL_FORMAT_VERSION = 3_007_000;
 const WAL_MAGIC_LITTLE_ENDIAN = 0x377f0682;
 const WAL_MAGIC_BIG_ENDIAN = 0x377f0683;
-const PLUGIN_TABLE_PREFIX = "_dbzz_plugin_";
+const PLUGIN_TABLE_PREFIX = "_ackerdb_plugin_";
 const PLUGIN_INDEX_PREFIX = `ix_${PLUGIN_TABLE_PREFIX}`;
-const FULL_TEXT_OBJECT_PREFIX = "_dbzz_fts_";
+const FULL_TEXT_OBJECT_PREFIX = "_ackerdb_fts_";
 const quote = (name: string) => `"${name}"`;
 
 /** Length-prefixing makes mount/table boundaries injective even when either contains `_`. */
@@ -307,27 +307,27 @@ interface StoredObject {
 const INTERNAL_OBJECTS: StoredObject[] = [
   {
     type: "table",
-    name: "_dbzz_meta",
-    table: "_dbzz_meta",
-    sql: "CREATE TABLE _dbzz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    name: "_ackerdb_meta",
+    table: "_ackerdb_meta",
+    sql: "CREATE TABLE _ackerdb_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
   },
   {
     type: "table",
-    name: "_dbzz_tags",
-    table: "_dbzz_tags",
-    sql: "CREATE TABLE _dbzz_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL, PRIMARY KEY (type, variant))",
+    name: "_ackerdb_tags",
+    table: "_ackerdb_tags",
+    sql: "CREATE TABLE _ackerdb_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL, PRIMARY KEY (type, variant))",
   },
   {
     type: "table",
-    name: "_dbzz_plugins",
-    table: "_dbzz_plugins",
-    sql: "CREATE TABLE _dbzz_plugins (mount TEXT PRIMARY KEY, definition_identity TEXT NOT NULL, schema TEXT NOT NULL)",
+    name: "_ackerdb_plugins",
+    table: "_ackerdb_plugins",
+    sql: "CREATE TABLE _ackerdb_plugins (mount TEXT PRIMARY KEY, definition_identity TEXT NOT NULL, schema TEXT NOT NULL)",
   },
   {
     type: "table",
-    name: "_dbzz_state",
-    table: "_dbzz_state",
-    sql: `CREATE TABLE _dbzz_state (
+    name: "_ackerdb_state",
+    table: "_ackerdb_state",
+    sql: `CREATE TABLE _ackerdb_state (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
       commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
       mutation_sequence INTEGER NOT NULL CHECK (mutation_sequence >= 0),
@@ -339,9 +339,9 @@ const INTERNAL_OBJECTS: StoredObject[] = [
   },
   {
     type: "table",
-    name: "_dbzz_mutations",
-    table: "_dbzz_mutations",
-    sql: `CREATE TABLE _dbzz_mutations (
+    name: "_ackerdb_mutations",
+    table: "_ackerdb_mutations",
+    sql: `CREATE TABLE _ackerdb_mutations (
       sequence INTEGER PRIMARY KEY CHECK (sequence > 0),
       commit_version INTEGER NOT NULL CHECK (commit_version >= 0),
       session_id TEXT NOT NULL,
@@ -363,32 +363,32 @@ const INTERNAL_OBJECTS: StoredObject[] = [
   },
   {
     type: "table",
-    name: "_dbzz_identities",
-    table: "_dbzz_identities",
-    sql: "CREATE TABLE _dbzz_identities (identity INTEGER PRIMARY KEY AUTOINCREMENT)",
+    name: "_ackerdb_identities",
+    table: "_ackerdb_identities",
+    sql: "CREATE TABLE _ackerdb_identities (identity INTEGER PRIMARY KEY AUTOINCREMENT)",
   },
   {
     type: "table",
-    name: "_dbzz_identity_accounts",
-    table: "_dbzz_identity_accounts",
-    sql: `CREATE TABLE _dbzz_identity_accounts (
+    name: "_ackerdb_identity_accounts",
+    table: "_ackerdb_identity_accounts",
+    sql: `CREATE TABLE _ackerdb_identity_accounts (
       issuer TEXT NOT NULL CHECK (length(issuer) > 0),
       subject TEXT NOT NULL CHECK (length(subject) > 0),
-      identity INTEGER NOT NULL REFERENCES _dbzz_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
+      identity INTEGER NOT NULL REFERENCES _ackerdb_identities(identity) ON UPDATE RESTRICT ON DELETE RESTRICT,
       PRIMARY KEY (issuer, subject)
     )`,
   },
   {
     type: "index",
-    name: "ix__dbzz_identity_accounts_identity",
-    table: "_dbzz_identity_accounts",
-    sql: "CREATE INDEX ix__dbzz_identity_accounts_identity ON _dbzz_identity_accounts (identity)",
+    name: "ix__ackerdb_identity_accounts_identity",
+    table: "_ackerdb_identity_accounts",
+    sql: "CREATE INDEX ix__ackerdb_identity_accounts_identity ON _ackerdb_identity_accounts (identity)",
   },
   {
     type: "table",
-    name: "_dbzz_migrations",
-    table: "_dbzz_migrations",
-    sql: "CREATE TABLE _dbzz_migrations (number INTEGER PRIMARY KEY, name TEXT NOT NULL, identity TEXT NOT NULL, applied_at REAL NOT NULL)",
+    name: "_ackerdb_migrations",
+    table: "_ackerdb_migrations",
+    sql: "CREATE TABLE _ackerdb_migrations (number INTEGER PRIMARY KEY, name TEXT NOT NULL, identity TEXT NOT NULL, applied_at REAL NOT NULL)",
   },
   ...MCP_TOKEN_INTERNAL_OBJECTS,
 ];
@@ -577,7 +577,7 @@ export function readStoredPluginInventory(
 ): ReadonlyMap<string, StoredPluginStorage> {
   const inventory = new Map<string, StoredPluginStorage>();
   const rows = connection
-    .query("SELECT mount, definition_identity, schema FROM _dbzz_plugins ORDER BY mount")
+    .query("SELECT mount, definition_identity, schema FROM _ackerdb_plugins ORDER BY mount")
     .all() as { mount: unknown; definition_identity: unknown; schema: unknown }[];
   for (const row of rows) {
     if (typeof row.mount !== "string" || !isPluginIdentifier(row.mount)) {
@@ -631,7 +631,7 @@ export function storageLayoutFingerprint(
 
 function persistedLayoutFingerprint(connection: Database): string {
   const storedRoot = connection
-    .query("SELECT value FROM _dbzz_meta WHERE key = 'schema'")
+    .query("SELECT value FROM _ackerdb_meta WHERE key = 'schema'")
     .get() as { value: string } | null;
   if (storedRoot === null) throw new CorruptDatabaseError("artifact is missing its schema snapshot");
   const root = parseStoredSnapshot(storedRoot.value);
@@ -858,10 +858,10 @@ function initializeInternalObjects(connection: Database): void {
   try {
     connection.exec(INTERNAL_OBJECTS.map((object) => object.sql).join(";"));
     connection
-      .query("INSERT INTO _dbzz_meta (key, value) VALUES ('engine_schema', ?)")
+      .query("INSERT INTO _ackerdb_meta (key, value) VALUES ('engine_schema', ?)")
       .run(String(ENGINE_SCHEMA_VERSION));
     connection
-      .query("INSERT INTO _dbzz_state (singleton, commit_version, mutation_sequence, clean_shutdown, mutation_records, mutation_result_bytes, last_checkpoint_at) VALUES (1, 0, 0, 1, 0, 0, NULL)")
+      .query("INSERT INTO _ackerdb_state (singleton, commit_version, mutation_sequence, clean_shutdown, mutation_records, mutation_result_bytes, last_checkpoint_at) VALUES (1, 0, 0, 1, 0, 0, NULL)")
       .run();
     connection.exec("COMMIT");
   } catch (error) {
@@ -897,7 +897,7 @@ function publishMissingDatabase(path: string): boolean {
   }
   if (existsSync(path)) return false;
   const directory = dirname(path);
-  const stagingPath = `${path}.dbzz-init-${randomUUID()}`;
+  const stagingPath = `${path}.ackerdb-init-${randomUUID()}`;
   let staged = false;
   let failed = false;
   let failure: unknown;
@@ -1054,10 +1054,10 @@ function inspectArtifact(path: string): Pick<BackupManifest, "format" | "schemaF
     if (foreignKeys.length > 0) checks.push(`${foreignKeys.length} foreign-key violation(s)`);
     if (checks.length > 0) throw new CorruptDatabaseError(checks.join("; "));
     const version = db
-      .query("SELECT value FROM _dbzz_meta WHERE key = 'engine_schema'")
+      .query("SELECT value FROM _ackerdb_meta WHERE key = 'engine_schema'")
       .get() as { value: string } | null;
     if (version?.value !== String(ENGINE_SCHEMA_VERSION)) {
-      throw new IncompatibleDatabaseError("artifact has an incompatible DBZZ engine schema");
+      throw new IncompatibleDatabaseError("artifact has an incompatible AckerDB engine schema");
     }
     const mutationReplay = scanMutationReplay(db);
     return {
@@ -1149,7 +1149,7 @@ export class Engine {
         : canonicalizeDatabasePath(path);
     this.path = databasePath;
     const sqlitePath = databasePath === ":memory:"
-      ? `file:dbzz-${randomUUID()}?mode=memory&cache=shared`
+      ? `file:ackerdb-${randomUUID()}?mode=memory&cache=shared`
       : databasePath;
     this.sqlitePath = sqlitePath;
     let writer: Database | null = null;
@@ -1160,7 +1160,7 @@ export class Engine {
         const restoreArtifacts = restoreArtifactPaths(databasePath);
         if (!existsSync(databasePath) && restoreArtifacts.length > 0) {
           throw new Error(
-            `database initialization refused because an interrupted restore exists for ${databasePath}; rerun dbzz restore to recover or clear its exact staging files`,
+            `database initialization refused because an interrupted restore exists for ${databasePath}; rerun acker restore to recover or clear its exact staging files`,
           );
         }
         if (existsSync(databasePath)) removeRestoreArtifacts(databasePath);
@@ -1203,10 +1203,10 @@ export class Engine {
       }
       this.reader = reader;
       const state = this.writer
-        .query("SELECT clean_shutdown FROM _dbzz_state WHERE singleton = 1")
+        .query("SELECT clean_shutdown FROM _ackerdb_state WHERE singleton = 1")
         .get() as { clean_shutdown: bigint };
       this.recoveredFromCrash = state.clean_shutdown === 0n;
-      this.writer.query("UPDATE _dbzz_state SET clean_shutdown = 0 WHERE singleton = 1").run();
+      this.writer.query("UPDATE _ackerdb_state SET clean_shutdown = 0 WHERE singleton = 1").run();
     } catch (error) {
       const failure = normalizeStorageError(error);
       const cleanup: unknown[] = [];
@@ -1280,7 +1280,7 @@ export class Engine {
       return existsSync(sidecar) && statSync(sidecar).size > 0;
     });
     const directory = needsRecoveryCopy
-      ? mkdtempSync(join(tmpdir(), "dbzz-storage-validation-"))
+      ? mkdtempSync(join(tmpdir(), "ackerdb-storage-validation-"))
       : null;
     const validationPath = directory === null ? path : join(directory, "data.db");
     const recoveryFreePageSize = directory === null ? existingDatabasePageSize(path) : null;
@@ -1359,10 +1359,10 @@ export class Engine {
     const objects = connection
       .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
       .all() as { type: string; name: string; tbl_name: string; sql: string | null }[];
-    const meta = objects.find((object) => object.type === "table" && object.name === "_dbzz_meta");
+    const meta = objects.find((object) => object.type === "table" && object.name === "_ackerdb_meta");
     if (meta === undefined) {
       if (!bootstrap || objects.length > 0) {
-        throw new CorruptDatabaseError("pre-existing database has no DBZZ metadata; refusing to initialize it");
+        throw new CorruptDatabaseError("pre-existing database has no AckerDB metadata; refusing to initialize it");
       }
       initializeInternalObjects(connection);
       return;
@@ -1370,11 +1370,11 @@ export class Engine {
 
     const expectedMeta = INTERNAL_OBJECTS[0]!;
     if (canonicalSql(meta.sql ?? "") !== canonicalSql(expectedMeta.sql)) {
-      throw new IncompatibleDatabaseError("database internal table _dbzz_meta has an incompatible shape");
+      throw new IncompatibleDatabaseError("database internal table _ackerdb_meta has an incompatible shape");
     }
 
     const version = connection
-      .query("SELECT value FROM _dbzz_meta WHERE key = 'engine_schema'")
+      .query("SELECT value FROM _ackerdb_meta WHERE key = 'engine_schema'")
       .get() as { value: string } | null;
     if (version === null || version.value !== String(ENGINE_SCHEMA_VERSION)) {
       throw new IncompatibleDatabaseError(
@@ -1397,7 +1397,7 @@ export class Engine {
     }
     const unknown = objects.find(
       (object) =>
-        (object.name.startsWith("_dbzz_") || object.name.startsWith("ix__dbzz_")) &&
+        (object.name.startsWith("_ackerdb_") || object.name.startsWith("ix__ackerdb_")) &&
         !object.name.startsWith(PLUGIN_TABLE_PREFIX) &&
         !object.name.startsWith(PLUGIN_INDEX_PREFIX) &&
         !object.name.startsWith(FULL_TEXT_OBJECT_PREFIX) &&
@@ -1419,51 +1419,51 @@ export class Engine {
 
   private verifyInternalState(connection: Database = this.writer): void {
     const unknownMeta = connection
-      .query("SELECT key FROM _dbzz_meta WHERE key NOT IN ('engine_schema', 'schema') LIMIT 1")
+      .query("SELECT key FROM _ackerdb_meta WHERE key NOT IN ('engine_schema', 'schema') LIMIT 1")
       .get() as { key: string } | null;
-    if (unknownMeta !== null) throw new CorruptDatabaseError(`unknown DBZZ metadata key ${unknownMeta.key}`);
+    if (unknownMeta !== null) throw new CorruptDatabaseError(`unknown AckerDB metadata key ${unknownMeta.key}`);
     const stateRows = connection
-      .query("SELECT COUNT(*) AS count FROM _dbzz_state")
+      .query("SELECT COUNT(*) AS count FROM _ackerdb_state")
       .get() as { count: bigint };
-    if (stateRows.count !== 1n) throw new CorruptDatabaseError("DBZZ state must contain exactly one singleton row");
+    if (stateRows.count !== 1n) throw new CorruptDatabaseError("AckerDB state must contain exactly one singleton row");
     const invalidTag = connection
       .query(
-        "SELECT 1 FROM _dbzz_tags WHERE typeof(type) <> 'text' OR length(type) = 0 OR typeof(variant) <> 'text' OR length(variant) = 0 OR typeof(tag) <> 'integer' OR tag < 0 LIMIT 1",
+        "SELECT 1 FROM _ackerdb_tags WHERE typeof(type) <> 'text' OR length(type) = 0 OR typeof(variant) <> 'text' OR length(variant) = 0 OR typeof(tag) <> 'integer' OR tag < 0 LIMIT 1",
       )
       .get();
     const invalidTagGroup = connection
       .query(
-        "SELECT 1 FROM _dbzz_tags GROUP BY type HAVING MIN(tag) <> 0 OR MAX(tag) + 1 <> COUNT(*) OR COUNT(DISTINCT tag) <> COUNT(*) LIMIT 1",
+        "SELECT 1 FROM _ackerdb_tags GROUP BY type HAVING MIN(tag) <> 0 OR MAX(tag) + 1 <> COUNT(*) OR COUNT(DISTINCT tag) <> COUNT(*) LIMIT 1",
       )
       .get();
     if (invalidTag !== null || invalidTagGroup !== null) {
-      throw new CorruptDatabaseError("DBZZ tag assignments are invalid");
+      throw new CorruptDatabaseError("AckerDB tag assignments are invalid");
     }
     const invalidIdentity = connection
       .query(
-        "SELECT 1 FROM _dbzz_identities WHERE typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
+        "SELECT 1 FROM _ackerdb_identities WHERE typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
       )
       .get();
     const invalidAccount = connection
       .query(
-        "SELECT 1 FROM _dbzz_identity_accounts WHERE typeof(issuer) <> 'text' OR length(issuer) = 0 OR typeof(subject) <> 'text' OR length(subject) = 0 OR typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
+        "SELECT 1 FROM _ackerdb_identity_accounts WHERE typeof(issuer) <> 'text' OR length(issuer) = 0 OR typeof(subject) <> 'text' OR length(subject) = 0 OR typeof(identity) <> 'integer' OR identity <= 0 LIMIT 1",
       )
       .get();
     if (invalidIdentity !== null || invalidAccount !== null) {
-      throw new CorruptDatabaseError("DBZZ identity directory is invalid");
+      throw new CorruptDatabaseError("AckerDB identity directory is invalid");
     }
     const invalidMigration = connection
       .query(
-        "SELECT 1 FROM _dbzz_migrations WHERE typeof(number) <> 'integer' OR number <= 0 OR typeof(name) <> 'text' OR length(name) = 0 OR typeof(identity) <> 'text' OR length(identity) <> 64 OR typeof(applied_at) NOT IN ('integer', 'real') LIMIT 1",
+        "SELECT 1 FROM _ackerdb_migrations WHERE typeof(number) <> 'integer' OR number <= 0 OR typeof(name) <> 'text' OR length(name) = 0 OR typeof(identity) <> 'text' OR length(identity) <> 64 OR typeof(applied_at) NOT IN ('integer', 'real') LIMIT 1",
       )
       .get();
-    if (invalidMigration !== null) throw new CorruptDatabaseError("DBZZ migration history is invalid");
+    if (invalidMigration !== null) throw new CorruptDatabaseError("AckerDB migration history is invalid");
     verifyMcpTokenVaultState(connection);
   }
 
   commitVersion(connection: Database = this.writer): bigint {
     const row = connection
-      .query("SELECT commit_version FROM _dbzz_state WHERE singleton = 1")
+      .query("SELECT commit_version FROM _ackerdb_state WHERE singleton = 1")
       .get() as { commit_version: bigint };
     return row.commit_version;
   }
@@ -1471,7 +1471,7 @@ export class Engine {
   /** Allocate the next non-replay version. The caller must own an open writer transaction. */
   allocateCommitVersion(): bigint {
     const row = this.writer
-      .query("UPDATE _dbzz_state SET commit_version = commit_version + 1 WHERE singleton = 1 RETURNING commit_version")
+      .query("UPDATE _ackerdb_state SET commit_version = commit_version + 1 WHERE singleton = 1 RETURNING commit_version")
       .get() as { commit_version: bigint };
     return row.commit_version;
   }
@@ -1479,7 +1479,7 @@ export class Engine {
   /** Look up one exact external account on any Engine-owned connection. */
   identityForAccount(connection: Database, issuer: string, subject: string): Identity | null {
     const account = connection
-      .query("SELECT identity FROM _dbzz_identity_accounts WHERE issuer = ? AND subject = ?")
+      .query("SELECT identity FROM _ackerdb_identity_accounts WHERE issuer = ? AND subject = ?")
       .get(issuer, subject) as { identity: bigint } | null;
     return account === null ? null : account.identity as Identity;
   }
@@ -1490,10 +1490,10 @@ export class Engine {
     if (existing !== null) return existing;
 
     const created = this.writer
-      .query("INSERT INTO _dbzz_identities DEFAULT VALUES RETURNING identity")
+      .query("INSERT INTO _ackerdb_identities DEFAULT VALUES RETURNING identity")
       .get() as { identity: bigint };
     this.writer
-      .query("INSERT INTO _dbzz_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
+      .query("INSERT INTO _ackerdb_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
       .run(issuer, subject, created.identity);
     return created.identity as Identity;
   }
@@ -1503,7 +1503,7 @@ export class Engine {
     const existing = this.identityForAccount(this.writer, issuer, subject);
     if (existing !== null) return existing === identity;
     this.writer
-      .query("INSERT INTO _dbzz_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
+      .query("INSERT INTO _ackerdb_identity_accounts (issuer, subject, identity) VALUES (?, ?, ?)")
       .run(issuer, subject, identity);
     return true;
   }
@@ -1516,9 +1516,9 @@ export class Engine {
   ): "removed" | "not_owned" | "last_account" {
     if (this.identityForAccount(this.writer, issuer, subject) !== identity) return "not_owned";
     const removed = this.writer
-      .query(`DELETE FROM _dbzz_identity_accounts
+      .query(`DELETE FROM _ackerdb_identity_accounts
         WHERE issuer = ? AND subject = ? AND identity = ?
-          AND 1 < (SELECT COUNT(*) FROM _dbzz_identity_accounts WHERE identity = ?)`)
+          AND 1 < (SELECT COUNT(*) FROM _ackerdb_identity_accounts WHERE identity = ?)`)
       .run(issuer, subject, identity, identity);
     return removed.changes === 1 ? "removed" : "last_account";
   }
@@ -1529,7 +1529,7 @@ export class Engine {
 
   /** Assign stable tags to every named enum/union variant in one storage scope. */
   private internTags(schema: Schema, tagIdentity: StorageScope["tagIdentity"]): void {
-    const select = this.writer.query("SELECT variant, tag FROM _dbzz_tags WHERE type = ?");
+    const select = this.writer.query("SELECT variant, tag FROM _ackerdb_tags WHERE type = ?");
     for (const [typeName, validator] of schema.namedTypes) {
       const identity = tagIdentity(typeName);
       const variants =
@@ -1556,8 +1556,8 @@ export class Engine {
   }
 
   /**
-   * Re-derive every in-memory tag map from `_dbzz_tags` + the live schema. Run
-   * after a migration relabels variants (`UPDATE _dbzz_tags`) so the renamed-to
+   * Re-derive every in-memory tag map from `_ackerdb_tags` + the live schema. Run
+   * after a migration relabels variants (`UPDATE _ackerdb_tags`) so the renamed-to
    * variant resolves to its original tag instead of the speculative one the
    * constructor assigned; column plans read `this.tags` lazily, so they pick the
    * rebuilt maps up on their next encode.
@@ -1572,7 +1572,7 @@ export class Engine {
   /** Persist the in-memory tag plan. The caller owns the schema transaction. */
   persistTags(scope: StorageScope = this.rootScope): void {
     const insert = this.writer.query(
-      "INSERT INTO _dbzz_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
+      "INSERT INTO _ackerdb_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
     );
     for (const typeName of scope.schema.namedTypes.keys()) {
       const identity = scope.tagIdentity(typeName);
@@ -1899,7 +1899,7 @@ export class Engine {
   // -- Meta ------------------------------------------------------------------
 
   loadSnapshot(connection: Database = this.writer): SchemaSnapshot | null {
-    const row = connection.query("SELECT value FROM _dbzz_meta WHERE key = 'schema'").get() as
+    const row = connection.query("SELECT value FROM _ackerdb_meta WHERE key = 'schema'").get() as
       | { value: string }
       | null;
     const snapshot = row === null ? null : parseStoredSnapshot(row.value);
@@ -1969,7 +1969,7 @@ export class Engine {
       }
     }
     const stored = new Map<string, Set<string>>();
-    for (const row of connection.query("SELECT type, variant FROM _dbzz_tags").all() as { type: string; variant: string }[]) {
+    for (const row of connection.query("SELECT type, variant FROM _ackerdb_tags").all() as { type: string; variant: string }[]) {
       const variants = stored.get(row.type) ?? new Set<string>();
       variants.add(row.variant);
       stored.set(row.type, variants);
@@ -1977,30 +1977,30 @@ export class Engine {
     for (const [type, definition] of rootDefinitions) {
       const missing = definition.variants.find((variant) => !stored.get(type)?.has(variant));
       if (missing !== undefined) {
-        throw new CorruptDatabaseError(`DBZZ tag assignment is missing ${type}.${missing}`);
+        throw new CorruptDatabaseError(`AckerDB tag assignment is missing ${type}.${missing}`);
       }
     }
     for (const [identity, definition] of pluginDefinitions) {
       const variants = stored.get(identity);
       const missing = definition.variants.find((variant) => !variants?.has(variant));
       if (missing !== undefined) {
-        throw new CorruptDatabaseError(`DBZZ tag assignment is missing ${identity}.${missing}`);
+        throw new CorruptDatabaseError(`AckerDB tag assignment is missing ${identity}.${missing}`);
       }
       if (variants!.size !== definition.variants.length) {
-        throw new CorruptDatabaseError(`DBZZ Plugin tag assignment ${identity} has unknown variants`);
+        throw new CorruptDatabaseError(`AckerDB Plugin tag assignment ${identity} has unknown variants`);
       }
     }
     const unknownPluginTag = [...stored.keys()].find(
       (identity) => !STORED_NAME.test(identity) && !pluginDefinitions.has(identity),
     );
     if (unknownPluginTag !== undefined) {
-      throw new CorruptDatabaseError(`DBZZ tag assignment has unknown Plugin identity ${unknownPluginTag}`);
+      throw new CorruptDatabaseError(`AckerDB tag assignment has unknown Plugin identity ${unknownPluginTag}`);
     }
   }
 
   saveSnapshot(snapshot: SchemaSnapshot): void {
     this.writer
-      .query("INSERT INTO _dbzz_meta (key, value) VALUES ('schema', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .query("INSERT INTO _ackerdb_meta (key, value) VALUES ('schema', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
       .run(JSON.stringify(snapshot));
   }
 
@@ -2036,7 +2036,7 @@ export class Engine {
 
   status(): EngineStatus {
     const state = this.writer
-      .query("SELECT commit_version, mutation_records, mutation_result_bytes, last_checkpoint_at FROM _dbzz_state WHERE singleton = 1")
+      .query("SELECT commit_version, mutation_records, mutation_result_bytes, last_checkpoint_at FROM _ackerdb_state WHERE singleton = 1")
       .get() as {
         commit_version: bigint;
         mutation_records: bigint;
@@ -2070,7 +2070,7 @@ export class Engine {
     const totalFrames = Number(row.log ?? values[1] ?? 0);
     const checkpointedFrames = Number(row.checkpointed ?? values[2] ?? 0);
     this.writer
-      .query("UPDATE _dbzz_state SET last_checkpoint_at = ? WHERE singleton = 1")
+      .query("UPDATE _ackerdb_state SET last_checkpoint_at = ? WHERE singleton = 1")
       .run(Date.now());
     const report: CheckpointReport = Object.freeze({
       mode,
@@ -2147,7 +2147,7 @@ export class Engine {
     };
     if (shutdown === "clean") {
       attempt(() => {
-        this.writer.query("UPDATE _dbzz_state SET clean_shutdown = 1 WHERE singleton = 1").run();
+        this.writer.query("UPDATE _ackerdb_state SET clean_shutdown = 1 WHERE singleton = 1").run();
       });
     }
     for (const reader of this.additionalReaders) attempt(() => reader.close());
@@ -2184,7 +2184,7 @@ export class DatabaseRestoreTarget {
   private constructor(path: string, ownership: DatabaseOwnership) {
     this.path = path;
     this.ownership = ownership;
-    this.stagingPath = `${path}.dbzz-restore-${randomUUID()}`;
+    this.stagingPath = `${path}.ackerdb-restore-${randomUUID()}`;
   }
 
   static acquire(path: string): DatabaseRestoreTarget {
@@ -2403,7 +2403,7 @@ function proveRestoredNextCommit(engine: Engine): void {
     engine.writer.exec("BEGIN IMMEDIATE");
     transactionOpen = true;
     engine.writer
-      .query("UPDATE _dbzz_state SET commit_version = commit_version WHERE singleton = 1")
+      .query("UPDATE _ackerdb_state SET commit_version = commit_version WHERE singleton = 1")
       .run();
     engine.writer.exec("COMMIT");
     transactionOpen = false;
@@ -2442,7 +2442,7 @@ export async function restoreVerifiedLayout(
   let status: EngineStatus | undefined;
   try {
     const schema = await loadSchema();
-    if (!isSchema(schema)) throw new TypeError("restore schema loader must return a DBZZ schema");
+    if (!isSchema(schema)) throw new TypeError("restore schema loader must return a AckerDB schema");
     restoreTarget.assertVacant();
     restoreTarget.restore(source, manifest);
     const engine = restoreTarget.open(schema, {

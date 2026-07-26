@@ -233,7 +233,7 @@ export const AgentsPanel = component({
             </div>
             <TokenRow
               name="Amelia — Claude Code"
-              preview="dbzz_owner_••••4f2a"
+              preview="ackerdb_owner_••••4f2a"
               scope="operate"
               created="Jul 12, 2026"
               lastUsed="2 hours ago"
@@ -241,7 +241,7 @@ export const AgentsPanel = component({
             />
             <TokenRow
               name="Kitchen automation"
-              preview="dbzz_owner_••••9c31"
+              preview="ackerdb_owner_••••9c31"
               scope="operate"
               created="Jul 9, 2026"
               lastUsed="18 min ago"
@@ -249,7 +249,7 @@ export const AgentsPanel = component({
             />
             <TokenRow
               name="Nightly revenue digest"
-              preview="dbzz_owner_••••be07"
+              preview="ackerdb_owner_••••be07"
               scope="read"
               created="Jun 30, 2026"
               lastUsed="Yesterday"
@@ -257,7 +257,7 @@ export const AgentsPanel = component({
             />
             <TokenRow
               name="Codex — floor ops"
-              preview="dbzz_owner_••••1d5a"
+              preview="ackerdb_owner_••••1d5a"
               scope="read"
               created="Jun 24, 2026"
               lastUsed="3 days ago"

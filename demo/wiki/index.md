@@ -10,7 +10,7 @@ Local package integration and project conventions.
 
 ## Expo
 
-Current mobile runtime, native UI, and navigation decisions for the dbzz restaurant demo.
+Current mobile runtime, native UI, and navigation decisions for the AckerDB restaurant demo.
 
 | Article | Summary | Updated |
 | --- | --- | --- |

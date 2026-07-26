@@ -19,7 +19,7 @@ const level = process.argv[2] as (typeof LEVELS)[number] | undefined;
 if (!level || !LEVELS.includes(level)) fail("usage: bun run bump <patch|minor|major>");
 
 const branch = tryGit("symbolic-ref", "--short", "HEAD");
-if (branch === "main" && process.env.DBZZ_ALLOW_MAIN !== "1") {
+if (branch === "main" && process.env.ACKERDB_ALLOW_MAIN !== "1") {
   fail("bump on your feature branch, not on main — the bump merges in with the feature.");
 }
 // git refuses pathspec commits mid-merge; bail before touching any files.
@@ -47,7 +47,7 @@ for (const pkg of PACKAGES) {
     const deps = json[field];
     if (!deps) continue;
     for (const name of Object.keys(deps)) {
-      if (name.startsWith("@dbzz/")) deps[name] = `workspace:${next}`;
+      if (name.startsWith("@ackerdb/")) deps[name] = `workspace:${next}`;
     }
   }
   const source = JSON.stringify(json, null, 2) + "\n";
@@ -65,7 +65,7 @@ const refresh = Bun.spawnSync(
     "bun",
     "update",
     "--filter",
-    "@dbzz/core",
+    "@ackerdb/core",
     "--no-save",
     "--lockfile-only",
     "--registry=https://registry.npmjs.org",
@@ -86,6 +86,6 @@ const install = Bun.spawnSync(["bun", "install", "--force", "--frozen-lockfile"]
 if (install.exitCode !== 0) fail(`bun install failed after bump:\n${install.stderr.toString().trim()}`);
 
 git("commit", "-m", `chore(release): v${next}`, "--", ...PACKAGES.map(pkgJsonPath), "bun.lock");
-console.log(`bumped ${current} → ${next} across ${PACKAGES.map((p) => `@dbzz/${p}`).join(", ")}`);
+console.log(`bumped ${current} → ${next} across ${PACKAGES.map((p) => `@ackerdb/${p}`).join(", ")}`);
 console.log(`committed as: chore(release): v${next}`);
 console.log(`dispatch bun run bench:hetzner in a background worker for v${next}; merge is blocked until its final Hetzner result is committed.`);

@@ -1,6 +1,6 @@
-import { ProtocolError, type Outcome } from "@dbzz/core";
+import { ProtocolError, type Outcome } from "@ackerdb/core";
 import { isValidationError } from "../validation/v.ts";
-import { isDbzzError } from "../shared/errors.ts";
+import { isAckerDBError } from "../shared/errors.ts";
 
 export const PUBLIC_ERROR_FALLBACK = "err";
 const MAX_PUBLIC_MESSAGE_UNITS = 512;
@@ -57,7 +57,7 @@ export function fitOutcome<T>(
 
 /** Convert every owning failure boundary to the one safe transport contract. */
 export function outcomeFromError(error: unknown): Outcome {
-  if (isDbzzError(error)) {
+  if (isAckerDBError(error)) {
     return {
       code: error.code,
       retryable: error.retryable,

@@ -1,11 +1,11 @@
-import { cachePlugin } from "@dbzz/cache";
+import { cachePlugin } from "@ackerdb/cache";
 import {
   v,
   defineApp,
   defineEventTable,
   defineSchema,
   defineTable,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { isStaff, ownsIdentity } from "./lib/access.ts";
 
 export const orderStatus = v.enum("OrderStatus", [

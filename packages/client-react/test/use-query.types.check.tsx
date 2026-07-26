@@ -4,12 +4,12 @@
 import {
   skip,
   useQuery,
-  type DbzzClientError,
-  type DbzzQueryState,
+  type AckerDBClientError,
+  type AckerDBQueryState,
   type QueryRef,
-} from "@dbzz/client-react";
-import type { ApplicationError } from "@dbzz/core";
-import type { EventRef, MutationRef } from "@dbzz/client";
+} from "@ackerdb/client-react";
+import type { ApplicationError } from "@ackerdb/core";
+import type { EventRef, MutationRef } from "@ackerdb/client";
 
 interface Todo {
   readonly id: bigint;
@@ -37,7 +37,7 @@ function Inferred(): string {
     return `${exact.code}:${exact.body.id}:${String(absent)}`;
   }
   if (state.status === "rejected") {
-    const exact: DbzzClientError = state.error;
+    const exact: AckerDBClientError = state.error;
     const absent: undefined = state.data;
     return `${exact.code}:${exact.outcome.retryable}:${String(absent)}`;
   }
@@ -55,7 +55,7 @@ function Inferred(): string {
   return state.status;
 }
 
-const skipped: DbzzQueryState<Todo[], TodoNotFound> = useQuery(todos, skip);
+const skipped: AckerDBQueryState<Todo[], TodoNotFound> = useQuery(todos, skip);
 
 // --- rejected references and arguments ---------------------------------------
 
@@ -79,14 +79,14 @@ useQuery(todos, Symbol("skip"));
 
 // --- state narrowing and exhaustiveness --------------------------------------
 
-declare const state: DbzzQueryState<Todo[], TodoNotFound>;
+declare const state: AckerDBQueryState<Todo[], TodoNotFound>;
 
 const maybeRows: Todo[] | undefined = state.data;
 // @ts-expect-error data is not always defined before state narrowing
 const alwaysRows: Todo[] = state.data;
 
 declare const pending: Extract<
-  DbzzQueryState<Todo[], TodoNotFound>,
+  AckerDBQueryState<Todo[], TodoNotFound>,
   { status: "pending" }
 >;
 // @ts-expect-error the pending state carries no rows
@@ -99,7 +99,7 @@ function assertNever(value: never): never {
   throw new Error(String(value));
 }
 
-function describeState(value: DbzzQueryState<Todo[], TodoNotFound>): string {
+function describeState(value: AckerDBQueryState<Todo[], TodoNotFound>): string {
   switch (value.status) {
     case "disabled":
       return "disabled";
@@ -118,7 +118,7 @@ function describeState(value: DbzzQueryState<Todo[], TodoNotFound>): string {
   }
 }
 
-function missesErrorState(value: DbzzQueryState<Todo[], TodoNotFound>): string {
+function missesErrorState(value: AckerDBQueryState<Todo[], TodoNotFound>): string {
   switch (value.status) {
     case "disabled":
     case "pending":

@@ -1,4 +1,4 @@
-// Cross-runtime packaging proof for @dbzz/client-react (ISSUE-10).
+// Cross-runtime packaging proof for @ackerdb/client-react (ISSUE-10).
 //
 // Runs against the real packed tarballs — not workspace links — in a throwaway
 // consumer copy of this fixture, and asserts:
@@ -12,7 +12,7 @@
 //      (checked via `--traceResolution`), with `tsc --noEmit` passing.
 //   3. A browser bundle (`bun build --target=browser`) of the packed package
 //      contains no AI SDK, Expo, or React Native module code.
-//   4. The optional `@dbzz/client-react/ai` subpath resolves from the packed
+//   4. The optional `@ackerdb/client-react/ai` subpath resolves from the packed
 //      artifact, typechecks against the supported AI SDK, bundles for the
 //      browser, and retains the same runtime import isolation.
 //   5. Removing a mandatory native peer (`expo-crypto`) fails the next Metro
@@ -27,7 +27,7 @@ import { join } from "node:path";
 
 const repoRoot = new URL("../..", import.meta.url).pathname;
 const fixtureDir = join(repoRoot, "fixtures/expo-app");
-const work = mkdtempSync(join(tmpdir(), "dbzz-expo-packaging-"));
+const work = mkdtempSync(join(tmpdir(), "ackerdb-expo-packaging-"));
 console.log(`work dir: ${work}`);
 
 const clientReactManifest = JSON.parse(
@@ -83,17 +83,17 @@ const manifest = JSON.parse(readFileSync(join(fixtureDir, "package.json"), "utf8
   dependencies: Record<string, string>;
   devDependencies: Record<string, string>;
 };
-manifest.dependencies["@dbzz/client-react"] = `file:${packed["client-react"]}`;
-// Root-level file: entries satisfy the tarball's pinned @dbzz/* version ranges.
-manifest.dependencies["@dbzz/client"] = `file:${packed["client"]}`;
-manifest.dependencies["@dbzz/core"] = `file:${packed["core"]}`;
+manifest.dependencies["@ackerdb/client-react"] = `file:${packed["client-react"]}`;
+// Root-level file: entries satisfy the tarball's pinned @ackerdb/* version ranges.
+manifest.dependencies["@ackerdb/client"] = `file:${packed["client"]}`;
+manifest.dependencies["@ackerdb/core"] = `file:${packed["core"]}`;
 manifest.dependencies["ai"] = supportedAiVersion;
 manifest.devDependencies["typescript"] = "~5.9.0";
 writeFileSync(join(consumer, "package.json"), JSON.stringify(manifest, null, 2));
 
-// npm, not bun: npm dedupes the tarball's pinned `@dbzz/*` dependency ranges
+// npm, not bun: npm dedupes the tarball's pinned `@ackerdb/*` dependency ranges
 // against the root `file:` entries; bun would try to resolve them from the
-// public registry, where dbzz is intentionally not published.
+// public registry, where AckerDB is intentionally not published.
 await run(["npm", "install", "--no-audit", "--no-fund"], consumer);
 console.log("consumer installed");
 const installedAiVersion = (
@@ -133,7 +133,7 @@ for (const map of maps) {
 
 // --- 3. TypeScript resolution proof -------------------------------------------
 
-function packageResolution(traceOutput: string, specifier = "@dbzz/client-react"): string {
+function packageResolution(traceOutput: string, specifier = "@ackerdb/client-react"): string {
   const escaped = specifier.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const resolved = traceOutput.matchAll(
     new RegExp(`Module name '${escaped}' was successfully resolved to '([^']+)'`, "g"),
@@ -145,22 +145,22 @@ const tsc = join(consumer, "node_modules/.bin/tsc");
 const nativeTrace = await run([tsc, "-p", "tsconfig.json", "--noEmit", "--traceResolution"], consumer);
 check("tsc --noEmit passes with customConditions react-native", nativeTrace.exitCode === 0);
 check(
-  "TS resolves @dbzz/client-react to the native entry under the condition",
+  "TS resolves @ackerdb/client-react to the native entry under the condition",
   packageResolution(nativeTrace.output).includes("index.native.ts"),
 );
 
 // Browser-side TS: same consumer, no react-native condition.
 writeFileSync(
   join(consumer, "browser-check.ts"),
-  `import * as dbzz from "@dbzz/client-react";\nconsole.log(Object.keys(dbzz).length);\n`,
+  `import * as ackerdb from "@ackerdb/client-react";\nconsole.log(Object.keys(ackerdb).length);\n`,
 );
 writeFileSync(
   join(consumer, "ai-check.ts"),
   [
-    `import type { SseRef } from "@dbzz/client";`,
-    `import { useChatTransport, type DbzzChatArgs } from "@dbzz/client-react/ai";`,
+    `import type { SseRef } from "@ackerdb/client";`,
+    `import { useChatTransport, type AckerDBChatArgs } from "@ackerdb/client-react/ai";`,
     `import type { ChatTransport, UIMessage, UIMessageChunk } from "ai";`,
-    `declare const chat: SseRef<DbzzChatArgs<UIMessage>, UIMessageChunk>;`,
+    `declare const chat: SseRef<AckerDBChatArgs<UIMessage>, UIMessageChunk>;`,
     `const transport: ChatTransport<UIMessage> = useChatTransport(chat);`,
     `console.log(useChatTransport.name, transport);`,
     "",
@@ -191,12 +191,12 @@ const browserTrace = await run([tsc, "-p", "tsconfig.browser.json", "--noEmit", 
 const browserResolution = packageResolution(browserTrace.output);
 check("tsc --noEmit passes for the browser consumer", browserTrace.exitCode === 0);
 check(
-  "TS resolves @dbzz/client-react to the browser entry without the condition",
+  "TS resolves @ackerdb/client-react to the browser entry without the condition",
   browserResolution.includes("src/index.ts") && !browserResolution.includes("index.native.ts"),
 );
 check(
-  "TS resolves @dbzz/client-react/ai from the packed artifact",
-  packageResolution(browserTrace.output, "@dbzz/client-react/ai").includes("src/ai/index.ts"),
+  "TS resolves @ackerdb/client-react/ai from the packed artifact",
+  packageResolution(browserTrace.output, "@ackerdb/client-react/ai").includes("src/ai/index.ts"),
 );
 
 // --- 4. Browser bundle purity proof --------------------------------------------
@@ -205,7 +205,7 @@ writeFileSync(
   join(consumer, "browser-entry.ts"),
   // Namespace-key usage retains every export, defeating tree-shaking, so the
   // scan covers the complete browser entry graph of the packed tarball.
-  `import * as dbzz from "@dbzz/client-react";\nconsole.log(Object.keys(dbzz).join(","));\n`,
+  `import * as ackerdb from "@ackerdb/client-react";\nconsole.log(Object.keys(ackerdb).join(","));\n`,
 );
 const bundle = await run(
   ["bun", "build", "browser-entry.ts", "--target=browser", "--outfile", "dist-browser/bundle.js"],
@@ -227,7 +227,7 @@ for (const marker of isolatedRuntimeMarkers) {
 }
 check(
   "browser bundle contains the shared provider",
-  bundleText.includes("requires a <DbzzProvider> ancestor"),
+  bundleText.includes("requires a <AckerDBProvider> ancestor"),
 );
 
 // --- 5. Packed AI subpath proof --------------------------------------------------
@@ -236,7 +236,7 @@ const aiBundle = await run(
   ["bun", "build", "ai-check.ts", "--target=browser", "--outfile", "dist-ai/bundle.js"],
   consumer,
 );
-check("packed @dbzz/client-react/ai browser bundle succeeds", aiBundle.exitCode === 0);
+check("packed @ackerdb/client-react/ai browser bundle succeeds", aiBundle.exitCode === 0);
 const aiBundleText = readFileSync(join(consumer, "dist-ai/bundle.js"), "utf8");
 check(
   "packed AI bundle contains useChatTransport",

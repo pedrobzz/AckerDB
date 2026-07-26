@@ -1,7 +1,7 @@
 # React, Expo, and AI SDK client
 
-`@dbzz/client-react` is the declarative React binding for the generated DBZZ
-API. One `DbzzProvider` owns the underlying client; components consume typed
+`@ackerdb/client-react` is the declarative React binding for the generated AckerDB
+API. One `AckerDBProvider` owns the underlying client; components consume typed
 queries, mutations, procedures, event streams, authentication, and connection
 state through hooks. The same imports work in a browser and in an Expo React
 Native application.
@@ -21,7 +21,7 @@ The package manifest supports these peers:
 | React Native | `^0.86.0` | Expo native bundles |
 | Expo | `^57.0.0` | Expo native bundles |
 | Expo Crypto | `^57.0.0` | Expo native bundles |
-| AI SDK (`ai`) | `^7.0.0` | Importing `@dbzz/client-react/ai` |
+| AI SDK (`ai`) | `^7.0.0` | Importing `@ackerdb/client-react/ai` |
 
 `react-native`, `expo`, `expo-crypto`, and `ai` are optional peers because a
 browser-only application does not need them. They are not optional in the
@@ -29,11 +29,11 @@ runtime that uses them. The repository's current compatibility gates use
 React 19.2.7, React Native 0.86.0, Expo 57.0.6, Expo Crypto 57.0.1, AI SDK
 7.0.29, and `@ai-sdk/react` 4.0.32.
 
-Install the React package at the same exact version as every other DBZZ
-package. For example, when the application pins DBZZ 0.9.0:
+Install the React package at the same exact version as every other AckerDB
+package. For example, when the application pins AckerDB 0.9.0:
 
 ```sh
-bun add --exact @dbzz/client-react@0.9.0
+bun add --exact @ackerdb/client-react@0.9.0
 ```
 
 An Expo 57 application also needs its native peers:
@@ -48,28 +48,28 @@ For the optional chat transport, install AI SDK v7 and its React binding:
 bun add ai@^7 @ai-sdk/react@^4
 ```
 
-Normal hooks and their public types come from `@dbzz/client-react`.
-`useChatTransport` and its types come only from `@dbzz/client-react/ai`, so a
+Normal hooks and their public types come from `@ackerdb/client-react`.
+`useChatTransport` and its types come only from `@ackerdb/client-react/ai`, so a
 consumer that never imports that subpath does not resolve AI SDK code.
 
 ## Provider and configuration lifetime
 
-Mount one provider above every component that uses DBZZ:
+Mount one provider above every component that uses AckerDB:
 
 ```tsx
-import { DbzzProvider, type DbzzProviderConfig } from "@dbzz/client-react";
+import { AckerDBProvider, type AckerDBProviderConfig } from "@ackerdb/client-react";
 import { App } from "./App";
 
-const config: DbzzProviderConfig = {
+const config: AckerDBProviderConfig = {
   url: "https://api.example.com",
   credential: { kind: "anonymous" },
 };
 
 export function Root() {
   return (
-    <DbzzProvider config={config}>
+    <AckerDBProvider config={config}>
       <App />
-    </DbzzProvider>
+    </AckerDBProvider>
   );
 }
 ```
@@ -106,7 +106,7 @@ the server without importing server runtime code.
 `useConnectionState()` returns an exhaustive discriminated union:
 
 ```tsx
-import { useConnectionState } from "@dbzz/client-react";
+import { useConnectionState } from "@ackerdb/client-react";
 
 function ConnectionBadge() {
   const connection = useConnectionState();
@@ -138,7 +138,7 @@ function ConnectionBadge() {
 of the same generated reference and canonically equal argument values.
 
 ```tsx
-import { skip, useQuery } from "@dbzz/client-react";
+import { skip, useQuery } from "@ackerdb/client-react";
 import { api } from "./_generated/api";
 
 function Order({ orderId }: { orderId: string | null }) {
@@ -169,8 +169,8 @@ function Order({ orderId }: { orderId: string | null }) {
 | `pending` | Enabled, but no authoritative value has arrived yet. |
 | `success` | Carries frozen container `data` and `stale: false`. Binary `Uint8Array` leaves remain usable mutable views. |
 | `application-error` | Carries the endpoint's exact typed `ApplicationError` union. `data` is always `undefined`. |
-| `rejected` | Carries an authoritative framework `DbzzClientError`. `data` is always `undefined`. |
-| `unavailable` | Carries an unhandled or transport `DbzzClientError`. When `stale: true`, `data` is defined as the last successful value; when `stale: false`, `data` is `undefined`. |
+| `rejected` | Carries an authoritative framework `AckerDBClientError`. `data` is always `undefined`. |
+| `unavailable` | Carries an unhandled or transport `AckerDBClientError`. When `stale: true`, `data` is defined as the last successful value; when `stale: false`, `data` is `undefined`. |
 
 Application and framework errors discard prior data. Transport or unhandled
 unavailability may retain the last success as explicitly stale data. Returning
@@ -185,7 +185,7 @@ disables or starts demand.
 `useMutation(ref)` returns a stable typed async function:
 
 ```tsx
-import { useMutation } from "@dbzz/client-react";
+import { useMutation } from "@ackerdb/client-react";
 import { api } from "./_generated/api";
 
 function AddOrderButton() {
@@ -208,13 +208,13 @@ function AddOrderButton() {
 }
 ```
 
-The promise uses DBZZ's mutation identity and convergence contract. A pending
+The promise uses AckerDB's mutation identity and convergence contract. A pending
 mutation retains its original request identity across reconnect and
 process-alive native suspension, and the server deduplicates that identity to
 at most one effect within the configured retained idempotency boundary.
 Mutations have no caller abort option. The promise resolves to
 `ClientResult<Data, ApplicationError>` rather than rejecting for an expected
-application error. Its `error.kind` separates application errors from DBZZ
+application error. Its `error.kind` separates application errors from AckerDB
 client failures; client failures include `committed` when convergence failed
 after the mutation may have committed.
 
@@ -224,7 +224,7 @@ after the mutation may have committed.
 not replayed after failure and accept an optional abort signal:
 
 ```tsx
-import { useProcedure } from "@dbzz/client-react";
+import { useProcedure } from "@ackerdb/client-react";
 import { api } from "./_generated/api";
 
 function ExportButton() {
@@ -254,7 +254,7 @@ function ExportButton() {
 `useSseProcedure(ref)` returns a typed `ReadableStream` factory:
 
 ```tsx
-import { useSseProcedure } from "@dbzz/client-react";
+import { useSseProcedure } from "@ackerdb/client-react";
 import { api } from "./_generated/api";
 
 function GenerateButton() {
@@ -276,7 +276,7 @@ function GenerateButton() {
 The HTTP request starts on the first stream read, each pull credits the
 previous chunk, and `stream.cancel()` or a supplied abort signal releases the
 request. SSE procedures do not reconnect or restart; validation, disconnect,
-and terminal outcomes error the stream with the exact `DbzzClientError`.
+and terminal outcomes error the stream with the exact `AckerDBClientError`.
 
 ## Live events
 
@@ -284,7 +284,7 @@ and terminal outcomes error the stream with the exact `DbzzClientError`.
 committed lifetime. Callback identity changes do not restart the subscription.
 
 ```tsx
-import { useEvent } from "@dbzz/client-react";
+import { useEvent } from "@ackerdb/client-react";
 import { api } from "./_generated/api";
 
 function OrderNotifications() {
@@ -312,10 +312,10 @@ when the UI also needs current durable state.
 
 `useAuthentication()` exposes state plus explicit refresh and sign-out
 operations. The application obtains a bearer token from its authentication
-provider, then presents it to DBZZ:
+provider, then presents it to AckerDB:
 
 ```tsx
-import { useAuthentication } from "@dbzz/client-react";
+import { useAuthentication } from "@ackerdb/client-react";
 
 function SessionButton({ token }: { token: string }) {
   const { state, refresh, signOut } = useAuthentication();
@@ -341,12 +341,12 @@ function SessionButton({ token }: { token: string }) {
 | `closed` | The provider closed the client. |
 
 The client descriptor never exposes the bearer token, selected claims, or
-token ID. A user descriptor contains a durable, branded DBZZ `Identity` plus
+token ID. A user descriptor contains a durable, branded AckerDB `Identity` plus
 the exact current credential `provenance` (`issuer` and `subject`). A workload
 descriptor has provenance but no application Identity. Anonymous users have
 neither.
 
-DBZZ, not Clerk, Better Auth, Auth0, or another provider, assigns the durable
+AckerDB, not Clerk, Better Auth, Auth0, or another provider, assigns the durable
 application Identity. After external verification, the server transactionally
 resolves the exact `(issuer, subject)` account to that Identity. First login
 creates the mapping; changing mutable claims such as email never links or
@@ -356,7 +356,7 @@ the provider subject.
 Cross-provider continuity is explicit application behavior. A server
 procedure or SSE procedure may call `ctx.linkAccount(rawBearerToken)` to
 verify and attach a second exact external account to the current user's Identity, or
-`ctx.unlinkAccount({ issuer, subject })` to detach an owned account. DBZZ does
+`ctx.unlinkAccount({ issuer, subject })` to detach an owned account. AckerDB does
 not expose a client-side account-link shortcut, auto-link by email, merge two
 existing Identities, rewrite application rows, or allow removal of the final
 account. Unlinking leaves the Identity and its application data intact. See
@@ -370,7 +370,7 @@ The optional subpath adapts a generated SSE procedure yielding AI SDK
 
 ```tsx
 import { useChat } from "@ai-sdk/react";
-import { useChatTransport } from "@dbzz/client-react/ai";
+import { useChatTransport } from "@ackerdb/client-react/ai";
 import { api } from "./_generated/api";
 
 function Chat() {
@@ -388,7 +388,7 @@ function Chat() {
 ```
 
 Without options, the SSE procedure must accept exactly the standard
-`DbzzChatArgs` fields: `trigger`, `chatId`, nullable `messageId`, and
+`AckerDBChatArgs` fields: `trigger`, `chatId`, nullable `messageId`, and
 `messages`. A custom argument shape requires a typed mapper:
 
 ```tsx
@@ -402,7 +402,7 @@ const transport = useChatTransport(api.ai.chatForOrder, {
 
 Per-request headers, body, and metadata are available to `prepareArgs` but are
 not sent by the default mapping. Stopping generation, unmounting the transport
-hook, or native suspension aborts the DBZZ stream. AI stream reconnection is
+hook, or native suspension aborts the AckerDB stream. AI stream reconnection is
 explicitly unsupported: `reconnectToStream` returns `null` and never starts a
 hidden replacement generation.
 
@@ -413,7 +413,7 @@ selects the native entry; browsers, Bun, and ordinary TypeScript select the
 default entry. The native provider supplies these capabilities unless the
 application explicitly injected replacements:
 
-- named `expo/fetch`, whose byte `ReadableStream` response bodies support DBZZ
+- named `expo/fetch`, whose byte `ReadableStream` response bodies support AckerDB
   procedures and acknowledged SSE;
 - Expo Crypto randomness for session and mutation UUIDs;
 - React Native's native global `WebSocket`; and
@@ -446,10 +446,10 @@ Recovery guarantees are operation-specific:
   Go are not supported targets; use custom Expo development or release builds.
 - The full physical iOS/Android duration, network-transition, Doze/App
   Standby, and release-build acceptance matrix remains deferred in
-  [Issue #17](https://github.com/pedrobzz/dbzz/issues/17). Current automated
+  [Issue #17](https://github.com/pedrobzz/ackerdb/issues/17). Current automated
   coverage proves package resolution and process-alive state-machine behavior,
   not that deferred device matrix.
-- OS process termination starts a fresh application. DBZZ does not persist a
+- OS process termination starts a fresh application. AckerDB does not persist a
   client-side mutation queue, keep a background socket/service alive, or
   recover in-memory query/event/stream state after process death.
 - Procedures, SSE, and AI generations are non-resumable. Live events have no
@@ -457,5 +457,5 @@ Recovery guarantees are operation-specific:
 - The package does not implement provider login UI, OAuth redirects, bearer
   issuance/renewal, or secure token storage. Those remain the authentication
   provider and application's responsibility.
-- DBZZ packages are currently released to the repository's configured local
+- AckerDB packages are currently released to the repository's configured local
   Verdaccio registry, not the public npm registry.

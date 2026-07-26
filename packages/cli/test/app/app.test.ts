@@ -15,7 +15,7 @@ describe("application manifest loading", () => {
   test("loads the default defineApp export as the executable application", async () => {
     const dir = makeFixture({
       "app.ts": `
-import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 const schema = defineSchema({ records: defineTable({ id: v.primaryKey() }) });
 export default defineApp({ schema });
 `,
@@ -29,7 +29,7 @@ export default defineApp({ schema });
   test("does not fall back to schema.ts and rejects a default export that is only a schema", async () => {
     const legacyOnly = makeFixture({
       "schema.ts": `
-import { defineSchema } from "@dbzz/server";
+import { defineSchema } from "@ackerdb/server";
 export default defineSchema({});
 `,
     });
@@ -40,7 +40,7 @@ export default defineSchema({});
 
     const schemaOnly = makeFixture({
       "app.ts": `
-import { defineSchema } from "@dbzz/server";
+import { defineSchema } from "@ackerdb/server";
 export default defineSchema({});
 `,
     });

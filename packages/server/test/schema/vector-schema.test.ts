@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { defineSchema, defineTable, snapshotOf, v } from "@dbzz/server";
+import { defineSchema, defineTable, snapshotOf, v } from "@ackerdb/server";
 
 describe("vector schema placement", () => {
   test("retains dimensions on direct required and nullable columns", () => {

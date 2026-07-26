@@ -9,8 +9,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { encode } from "@dbzz/core";
-import { Engine, reconcile, reconcilePluginStorage, type TelemetryRecord } from "@dbzz/server";
+import { encode } from "@ackerdb/core";
+import { Engine, reconcile, reconcilePluginStorage, type TelemetryRecord } from "@ackerdb/server";
 import { importApp } from "../../src/app/manifest.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { mutationReplayOwner } from "../../../server/src/database/mutation-replay.ts";
@@ -24,7 +24,7 @@ import {
   type StatusReport,
 } from "../../src/commands/operations.ts";
 import { FIXTURE_APP, makeFixture } from "../support/fixture.ts";
-import { desiredPluginMounts } from "@dbzz/server";
+import { desiredPluginMounts } from "@ackerdb/server";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const dirs: string[] = [];
@@ -52,7 +52,7 @@ function fixture(app = FIXTURE_APP): string {
 }
 
 async function seed(dir: string, durability: "production" | "balanced" = "production"): Promise<void> {
-  const config = loadConfig(dir, { DBZZ_DURABILITY: durability });
+  const config = loadConfig(dir, { ACKERDB_DURABILITY: durability });
   const app = await importApp(config);
   mkdirSync(config.dbDir, { recursive: true });
   const engine = new Engine(app.schema, join(config.dbDir, "data.db"), { durability });
@@ -145,19 +145,19 @@ function telemetryRecords(stdout: string): TelemetryRecord[] {
     .filter((record) => record.schemaVersion === 1);
 }
 
-describe("dbzz backup, restore, and status", () => {
+describe("acker backup, restore, and status", () => {
   test("status and backup never create a missing source database", async () => {
     const source = fixture();
-    const databaseDir = join(source, ".dbzz");
+    const databaseDir = join(source, ".ackerdb");
     const status = await runCli(["status", source]);
     expect(status.exitCode).toBe(1);
-    expect(status.stderr).toContain("DBZZ database not found");
+    expect(status.stderr).toContain("AckerDB database not found");
     expect(existsSync(databaseDir)).toBe(false);
 
     const artifact = join(source, "backup.db");
     const backup = await runCli(["backup", artifact, source]);
     expect(backup.exitCode).toBe(1);
-    expect(backup.stderr).toContain("DBZZ database not found");
+    expect(backup.stderr).toContain("AckerDB database not found");
     expect(existsSync(databaseDir)).toBe(false);
     expect(existsSync(artifact)).toBe(false);
     expect(existsSync(backupManifestPath(artifact))).toBe(false);
@@ -268,25 +268,25 @@ describe("dbzz backup, restore, and status", () => {
     expect((await runCli(["backup", artifact, source])).exitCode).toBe(0);
 
     const vacant = fixture();
-    mkdirSync(join(vacant, ".dbzz"));
+    mkdirSync(join(vacant, ".ackerdb"));
     expect((await runCli(["restore", artifact, vacant])).exitCode).toBe(0);
-    expect(existsSync(join(vacant, ".dbzz", "data.db"))).toBe(true);
+    expect(existsSync(join(vacant, ".ackerdb", "data.db"))).toBe(true);
 
     const occupied = fixture();
-    mkdirSync(join(occupied, ".dbzz"));
-    const sentinel = join(occupied, ".dbzz", "operator-note");
+    mkdirSync(join(occupied, ".ackerdb"));
+    const sentinel = join(occupied, ".ackerdb", "operator-note");
     writeFileSync(sentinel, "preserve me");
     const refused = await runCli(["restore", artifact, occupied]);
     expect(refused.exitCode).toBe(1);
     expect(refused.stderr).toContain("unrelated entry");
     expect(readFileSync(sentinel, "utf8")).toBe("preserve me");
-    expect(existsSync(join(occupied, ".dbzz", "data.db"))).toBe(false);
+    expect(existsSync(join(occupied, ".ackerdb", "data.db"))).toBe(false);
   }, 30_000);
 
   test("status and backup preserve the explicitly selected balanced durability", async () => {
     const source = fixture();
     await seed(source, "balanced");
-    const env = { DBZZ_DURABILITY: "balanced" };
+    const env = { ACKERDB_DURABILITY: "balanced" };
 
     const statusResult = await runCli(["status", source], env);
     expect(statusResult.exitCode).toBe(0);
@@ -330,7 +330,7 @@ describe("dbzz backup, restore, and status", () => {
     expect(failed.stdout).not.toContain(secret);
 
     const artifact = join(source, "disabled-backup.db");
-    const disabled = await runCli(["backup", artifact, source], { DBZZ_TELEMETRY: "disabled" });
+    const disabled = await runCli(["backup", artifact, source], { ACKERDB_TELEMETRY: "disabled" });
     expect(disabled.exitCode).toBe(0);
     expect(disabled.stderr).toBe("");
     expect(disabled.stdout.trim().split("\n")).toHaveLength(1);
@@ -354,7 +354,7 @@ describe("dbzz backup, restore, and status", () => {
     const corrupt = await runCli(["restore", corruptArtifact, corruptTarget]);
     expect(corrupt.exitCode).toBe(1);
     expect(corrupt.stderr).toContain("artifact does not match its manifest");
-    expect(existsSync(join(corruptTarget, ".dbzz"))).toBe(false);
+    expect(existsSync(join(corruptTarget, ".ackerdb"))).toBe(false);
 
     const malformedArtifact = join(source, "malformed.db");
     copyFileSync(artifact, malformedArtifact);
@@ -367,7 +367,7 @@ describe("dbzz backup, restore, and status", () => {
     const malformedResult = await runCli(["restore", malformedArtifact, malformedTarget]);
     expect(malformedResult.exitCode).toBe(1);
     expect(malformedResult.stderr).toContain("unsupported shape");
-    expect(existsSync(join(malformedTarget, ".dbzz"))).toBe(false);
+    expect(existsSync(join(malformedTarget, ".ackerdb"))).toBe(false);
 
     const mismatchedTarget = fixture(
       FIXTURE_APP.replace(
@@ -378,7 +378,7 @@ describe("dbzz backup, restore, and status", () => {
     const mismatchedResult = await runCli(["restore", artifact, mismatchedTarget]);
     expect(mismatchedResult.exitCode).toBe(1);
     expect(mismatchedResult.stderr).toContain("schema fingerprint");
-    expect(existsSync(join(mismatchedTarget, ".dbzz"))).toBe(false);
+    expect(existsSync(join(mismatchedTarget, ".ackerdb"))).toBe(false);
   }, 30_000);
 
   test("rejects a target App whose Plugin storage layout differs from the backup", async () => {
@@ -396,7 +396,7 @@ describe("dbzz backup, restore, and status", () => {
       const result = await runCli(["restore", artifact, target]);
       expect(result.exitCode).toBe(1);
       expect(result.stderr).toContain("storage layout");
-      expect(existsSync(join(target, ".dbzz"))).toBe(false);
+      expect(existsSync(join(target, ".ackerdb"))).toBe(false);
     }
   }, 30_000);
 

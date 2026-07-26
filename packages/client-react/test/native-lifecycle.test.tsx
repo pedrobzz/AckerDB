@@ -19,15 +19,15 @@ import {
   type Identity,
   type ServerMessage,
   type SubscriptionCursor,
-} from "@dbzz/core";
-import type { DbzzClientClock, DbzzWebSocket, QueryRef } from "@dbzz/client";
+} from "@ackerdb/core";
+import type { AckerDBClientClock, AckerDBWebSocket, QueryRef } from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type {
-  DbzzAuthenticationState,
-  DbzzProviderConfig,
-  DbzzQueryState,
-} from "@dbzz/client-react";
+  AckerDBAuthenticationState,
+  AckerDBProviderConfig,
+  AckerDBQueryState,
+} from "@ackerdb/client-react";
 
 // The native entry composes the Expo/React Native platform modules, which
 // only exist inside a React Native app; mocks stand in for all three. The
@@ -44,7 +44,7 @@ mock.module("expo-crypto", () => ({
   },
 }));
 
-const { DbzzProvider, useAuthentication, useConnectionState, useQuery } = await import(
+const { AckerDBProvider, useAuthentication, useConnectionState, useQuery } = await import(
   "../src/index.native.ts"
 );
 
@@ -65,7 +65,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
   private time = 0;
@@ -112,7 +112,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -174,7 +174,7 @@ interface Harness {
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
   readonly closeOrder: string[];
-  readonly config: DbzzProviderConfig;
+  readonly config: AckerDBProviderConfig;
   live(): FakeSocket;
 }
 
@@ -220,7 +220,7 @@ function cursor(commitVersion: bigint): SubscriptionCursor {
   };
 }
 
-function describeQuery(state: DbzzQueryState<string[]>): string {
+function describeQuery(state: AckerDBQueryState<string[]>): string {
   switch (state.status) {
     case "disabled":
       return "disabled";
@@ -247,7 +247,7 @@ function Report(): ReactNode {
   );
 }
 
-function describeAuthentication(state: DbzzAuthenticationState): string {
+function describeAuthentication(state: AckerDBAuthenticationState): string {
   if (state.phase === "authenticated" && state.authentication.principal === "user") {
     return `${state.authentication.identity}:${state.authentication.provenance.subject}`;
   }
@@ -283,9 +283,9 @@ describe("native AppState lifecycle through the provider", () => {
     await render(
       root,
       <StrictMode>
-        <DbzzProvider config={harness.config}>
+        <AckerDBProvider config={harness.config}>
           <AuthenticationReport />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
 
@@ -323,9 +323,9 @@ describe("native AppState lifecycle through the provider", () => {
     await render(
       root,
       <StrictMode>
-        <DbzzProvider config={harness.config}>
+        <AckerDBProvider config={harness.config}>
           <Report />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
 
@@ -410,9 +410,9 @@ describe("native AppState lifecycle through the provider", () => {
 
     await render(
       root,
-      <DbzzProvider config={harness.config}>
+      <AckerDBProvider config={harness.config}>
         <ConnectionOnly />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     // The provider establishes standing connect() demand, so this client
     // always redials on activation; the no-demand case is a base-client

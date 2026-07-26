@@ -1,11 +1,11 @@
 // bun run publish:beta [--demo]
 // Publishes the WORKING TREE — any branch, dirty is fine — to the local
-// Verdaccio as @dbzz/*@<base>-beta.N under the `beta` dist-tag. None of the
+// Verdaccio as @ackerdb/*@<base>-beta.N under the `beta` dist-tag. None of the
 // release gates apply: no main-only, no clean tree, no bench evidence, and no
 // git tag. The registry's own version list is the beta counter, so every run
 // takes a fresh N and re-running after a failure just works.
 //
-// --demo additionally repins the demo's @dbzz dependencies (those at the
+// --demo additionally repins the demo's @ackerdb dependencies (those at the
 // current base version) to the fresh beta and reinstalls, so the demo runs
 // the unmerged code. Restore the demo pins by hand (or with git) when done.
 import { existsSync, readdirSync } from "node:fs";
@@ -32,16 +32,16 @@ const base = syncedVersion((pkg) => sources.get(pkg)!);
 let highest = 0;
 const BETA = new RegExp(`^${base.replaceAll(".", "\\.")}-beta\\.(\\d+)$`);
 for (const pkg of PACKAGES) {
-  const res = await fetch(`${REGISTRY}/@dbzz/${pkg}`);
+  const res = await fetch(`${REGISTRY}/@ackerdb/${pkg}`);
   if (res.status === 404) continue;
-  if (!res.ok) fail(`registry query for @dbzz/${pkg} failed with ${res.status}`);
+  if (!res.ok) fail(`registry query for @ackerdb/${pkg} failed with ${res.status}`);
   for (const v of Object.keys(((await res.json()) as { versions?: Record<string, unknown> }).versions ?? {})) {
     const m = BETA.exec(v);
     if (m) highest = Math.max(highest, Number(m[1]));
   }
 }
 const version = `${base}-beta.${highest + 1}`;
-console.log(`publishing the working tree as @dbzz/*@${version} (dist-tag: beta) → ${REGISTRY}`);
+console.log(`publishing the working tree as @ackerdb/*@${version} (dist-tag: beta) → ${REGISTRY}`);
 
 // Manifests are rewritten in place for the pack and restored byte-for-byte on
 // every exit path — no git involved, so uncommitted package.json edits survive.
@@ -59,14 +59,14 @@ try {
       const deps = json[field] as Record<string, string> | undefined;
       if (!deps) continue;
       for (const name of Object.keys(deps)) {
-        if (name.startsWith("@dbzz/")) deps[name] = `workspace:${version}`;
+        if (name.startsWith("@ackerdb/")) deps[name] = `workspace:${version}`;
       }
     }
     await Bun.write(pkgJsonPath(pkg), JSON.stringify(json, null, 2) + "\n");
   }
 
   for (const pkg of PACKAGES) {
-    console.log(`\npublishing @dbzz/${pkg}@${version}`);
+    console.log(`\npublishing @ackerdb/${pkg}@${version}`);
     // no --registry flag: it would bypass .npmrc and lose the auth token.
     const res = Bun.spawnSync(["bun", "publish", "--tag", "beta"], {
       cwd: `packages/${pkg}`,
@@ -75,7 +75,7 @@ try {
     });
     if (res.exitCode !== 0) {
       throw new Error(
-        `publishing @dbzz/${pkg}@${version} failed — fix the cause and re-run; the next run takes a fresh beta number.`,
+        `publishing @ackerdb/${pkg}@${version} failed — fix the cause and re-run; the next run takes a fresh beta number.`,
       );
     }
   }
@@ -84,7 +84,7 @@ try {
   fail(error instanceof Error ? error.message : String(error));
 }
 await restore();
-console.log(`\n✔ published ${PACKAGES.map((p) => `@dbzz/${p}`).join(", ")} at ${version}`);
+console.log(`\n✔ published ${PACKAGES.map((p) => `@ackerdb/${p}`).join(", ")} at ${version}`);
 
 if (!demoMode) {
   console.log(`\ntest it in the demo: bun run publish:beta --demo (repins the demo and reinstalls)`);
@@ -113,7 +113,7 @@ for (const path of demoManifests) {
     const deps = json[field] as Record<string, string> | undefined;
     if (!deps) continue;
     for (const [name, spec] of Object.entries(deps)) {
-      if (!name.startsWith("@dbzz/")) continue;
+      if (!name.startsWith("@ackerdb/")) continue;
       // Pins at the current base — or at any of its earlier betas — follow the
       // fresh beta; anything else is a deliberate divergence to surface, not
       // overwrite.

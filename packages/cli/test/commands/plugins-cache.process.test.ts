@@ -3,7 +3,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
-import { DbzzClient } from "@dbzz/client";
+import { AckerDBClient } from "@ackerdb/client";
 import * as ts from "typescript";
 import { makeFixture } from "../support/fixture.ts";
 
@@ -15,7 +15,7 @@ const STATE_A_SHAPE = "marker: v.string().nullable(), // STATE_A_SHAPE";
 const UNSAFE_STATE_A_SHAPE = "marker: v.bigint().nullable(), // STATE_A_SHAPE";
 
 const APP = `
-import { cachePlugin } from "@dbzz/cache";
+import { cachePlugin } from "@ackerdb/cache";
 import {
   defineApp,
   definePlugin,
@@ -25,7 +25,7 @@ import {
   pluginMutation,
   pluginQuery,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const rootSchema = defineSchema({
   roots: defineTable({
@@ -139,7 +139,7 @@ export default defineApp({
 `;
 
 const FUNCTIONS = `
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import { mutation } from "../_generated/server.ts";
 
 export const seed = mutation({
@@ -193,7 +193,7 @@ type Snapshot = {
 };
 
 const dirs: string[] = [];
-const clients = new Set<DbzzClient>();
+const clients = new Set<AckerDBClient>();
 const children = new Set<ManagedProcess>();
 let commandNumber = 0;
 
@@ -278,8 +278,8 @@ function spawnServer(dir: string, port: number) {
     stderr: "inherit",
     env: {
       ...process.env,
-      DBZZ_DURABILITY: "production",
-      DBZZ_TELEMETRY: "disabled",
+      ACKERDB_DURABILITY: "production",
+      ACKERDB_TELEMETRY: "disabled",
     },
   });
   children.add(child);
@@ -313,12 +313,12 @@ async function runCli(args: string[]) {
     stderr: Bun.file(stderrPath),
     env: {
       ...process.env,
-      DBZZ_DURABILITY: "production",
-      DBZZ_TELEMETRY: "disabled",
+      ACKERDB_DURABILITY: "production",
+      ACKERDB_TELEMETRY: "disabled",
     },
   });
   children.add(child);
-  const code = await withTimeout(child.exited, `dbzz ${args.join(" ")}`);
+  const code = await withTimeout(child.exited, `ackerdb ${args.join(" ")}`);
   children.delete(child);
   const stdout = readFileSync(stdoutPath, "utf8");
   const stderr = readFileSync(stderrPath, "utf8");
@@ -345,9 +345,9 @@ function typecheckFixture(dir: string): string {
       allowImportingTsExtensions: true,
       baseUrl: REPO,
       paths: {
-        "@dbzz/core": ["packages/core/src/index.ts"],
-        "@dbzz/server": ["packages/server/src/index.ts"],
-        "@dbzz/cache": ["packages/cache/src/index.ts"],
+        "@ackerdb/core": ["packages/core/src/index.ts"],
+        "@ackerdb/server": ["packages/server/src/index.ts"],
+        "@ackerdb/cache": ["packages/cache/src/index.ts"],
       },
     },
     include: ["./**/*.ts"],
@@ -366,8 +366,8 @@ function typecheckFixture(dir: string): string {
   });
 }
 
-function clientFor(port: number, clientSessionId: string): DbzzClient {
-  const client = new DbzzClient({
+function clientFor(port: number, clientSessionId: string): AckerDBClient {
+  const client = new AckerDBClient({
     url: `http://127.0.0.1:${port}`,
     credential: { kind: "anonymous" },
     clientSessionId,
@@ -377,12 +377,12 @@ function clientFor(port: number, clientSessionId: string): DbzzClient {
   return client;
 }
 
-function closeClient(client: DbzzClient): void {
+function closeClient(client: AckerDBClient): void {
   client.close();
   clients.delete(client);
 }
 
-async function snapshot(client: DbzzClient): Promise<Snapshot> {
+async function snapshot(client: AckerDBClient): Promise<Snapshot> {
   return withTimeout(
     client.mutation<Record<string, never>, Snapshot>("state.snapshot", {}),
     "state snapshot",
@@ -395,7 +395,7 @@ describe("Plugins + built-in Cache real process lifecycle", () => {
     const dir = makeFixture({
       "app.ts": APP,
       "functions/state.ts": FUNCTIONS,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
 
@@ -468,7 +468,7 @@ describe("Plugins + built-in Cache real process lifecycle", () => {
 
     const refused = await runCli(["start", dir]);
     expect(refused.code).toBe(1);
-    expect(refused.output).toContain(`dbzz plugin reset stateA ${dir}`);
+    expect(refused.output).toContain(`acker plugin reset stateA ${dir}`);
 
     const reset = await runCli(["plugin", "reset", "stateA", dir]);
     expect(reset.code).toBe(0);

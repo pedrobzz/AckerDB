@@ -14,7 +14,7 @@ import {
   reconcile,
   serve,
   sseProcedure,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const KiB = 1024;
 const port = Number(process.argv[2]);
@@ -116,7 +116,7 @@ const verifier = {
       tokenId: `token-${subject}`,
     };
     return token === "resource-status"
-      ? { ...principal, kind: "workload", claims: { scope: "dbzz:status" } }
+      ? { ...principal, kind: "workload", claims: { scope: "ackerdb:status" } }
       : { ...principal, kind: "user", claims: {} };
   },
   subscribeInvalidation: () => () => {},

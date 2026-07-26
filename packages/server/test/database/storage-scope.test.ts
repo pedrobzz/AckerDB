@@ -12,7 +12,7 @@ import {
   scanKey,
   snapshotOf,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { diffSnapshots } from "../../src/schema/diff.ts";
 import { planDiff, verifyPlanProbes } from "../../src/schema/planner.ts";
 

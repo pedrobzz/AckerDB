@@ -28,7 +28,7 @@ import {
   type SubscriptionTransition,
   type TransitionMessage,
   type UnsubscribeMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   SYSTEM_PRINCIPAL,
@@ -75,7 +75,7 @@ import {
   type SseDeliverySnapshot,
 } from "../realtime/delivery.ts";
 import type { Engine } from "../database/engine.ts";
-import { DbzzError, isDbzzError, throwIfAborted } from "../shared/errors.ts";
+import { AckerDBError, isAckerDBError, throwIfAborted } from "../shared/errors.ts";
 import {
   claimHttpTrace,
   finishClaimedHttpTrace,
@@ -187,11 +187,11 @@ const SCHEDULER_RETRY_MS = 1_000;
 const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 /** Package-private transport hook; intentionally absent from the public index. */
-export const CAPTURE_DELIVERY_OBSERVER = Symbol("dbzz.captureDeliveryObserver");
+export const CAPTURE_DELIVERY_OBSERVER = Symbol("ackerdb.captureDeliveryObserver");
 
 function applicationError(value: unknown) {
   if (!isApplicationError(value)) {
-    throw new DbzzError("internal", "registered Err contains no application error");
+    throw new AckerDBError("internal", "registered Err contains no application error");
   }
   return value;
 }
@@ -200,10 +200,10 @@ function canceledHandlerOutcome(
   signal: AbortSignal,
   kind: "procedure" | "MCP tool",
   cause: unknown,
-): DbzzError {
+): AckerDBError {
   const reason = signal.reason;
   if (
-    isDbzzError(reason) &&
+    isAckerDBError(reason) &&
     (
       reason.code === "unauthenticated" ||
       reason.code === "unauthorized" ||
@@ -214,7 +214,7 @@ function canceledHandlerOutcome(
     // guesses. They must remain fail-closed even if the handler already ran.
     return reason;
   }
-  return new DbzzError(
+  return new AckerDBError(
     "indeterminate",
     `${kind} completion is unknown after cancellation`,
     { resource: "operation", cause },
@@ -252,13 +252,13 @@ async function invokeSideEffectingHandler<T>(
 function restoreMutationResult(value: unknown): Result<unknown, unknown> {
   if (isResult(value)) return value;
   if (typeof value !== "object" || value === null || !("ok" in value)) {
-    throw new DbzzError("internal", "stored mutation result has no Result shape");
+    throw new AckerDBError("internal", "stored mutation result has no Result shape");
   }
   if (value.ok === true && "data" in value) return Ok(value.data);
   if (value.ok === false && "error" in value && isApplicationError(value.error)) {
     return Failure(value.error);
   }
-  throw new DbzzError("internal", "stored mutation Result is invalid");
+  throw new AckerDBError("internal", "stored mutation Result is invalid");
 }
 
 export type RuntimeLifecycleState = "ready" | "draining" | "stopped" | "failed";
@@ -495,13 +495,13 @@ function digest(value: unknown): string {
   return createHash("sha256").update(stableEncode(value)).digest("base64url");
 }
 
-function convergenceError(message: string): DbzzError {
-  return new DbzzError("convergence_unavailable", message, { committed: true });
+function convergenceError(message: string): AckerDBError {
+  return new AckerDBError("convergence_unavailable", message, { committed: true });
 }
 
 function transportError(error: unknown): unknown {
   return isValidationError(error)
-    ? new DbzzError("validation", error.message, { cause: error })
+    ? new AckerDBError("validation", error.message, { cause: error })
     : error;
 }
 
@@ -534,7 +534,7 @@ function sseChunkIterator(source: SseSource<unknown>): SseChunkIterator {
         iterator.return === undefined ? Promise.resolve() : iterator.return(reason),
     };
   }
-  throw new DbzzError("internal", "sse handler must return a ReadableStream or async iterable");
+  throw new AckerDBError("internal", "sse handler must return a ReadableStream or async iterable");
 }
 
 /**
@@ -909,7 +909,7 @@ export class Runtime implements RuntimePort {
     signal?: AbortSignal,
   ): Promise<McpPrincipal> {
     const parsed = parseMcpToken(rawToken);
-    if (parsed === null) throw new DbzzError("unauthenticated", "invalid MCP credential");
+    if (parsed === null) throw new AckerDBError("unauthenticated", "invalid MCP credential");
     const operationSignal = this.operationSignal(signal);
     return this.verifyMcpToken(mcp, parsed, fairnessKey, operationSignal);
   }
@@ -925,7 +925,7 @@ export class Runtime implements RuntimePort {
     const controller = new AbortController();
     const unsubscribe = this.mcpTokenInvalidation.subscribe(mcp, parsed.id, () => {
       if (!controller.signal.aborted) {
-        controller.abort(new DbzzError("unauthenticated", "credential revoked"));
+        controller.abort(new AckerDBError("unauthenticated", "credential revoked"));
       }
     });
     const leaseSignal = signal === undefined
@@ -959,7 +959,7 @@ export class Runtime implements RuntimePort {
   ): Promise<McpPrincipal> {
     this.assertReady();
     const declaration = this.registry.mcps.get(mcp);
-    if (declaration === undefined) throw new DbzzError("not_found", `unknown MCP "${mcp}"`);
+    if (declaration === undefined) throw new AckerDBError("not_found", `unknown MCP "${mcp}"`);
     const scopeDescriptor = "scopes" in declaration ? declaration.scopes : undefined;
     const credential = await this.submitRead(
       (connection) => this.engine[mcpTokenVaultOwner].authenticate(
@@ -994,7 +994,7 @@ export class Runtime implements RuntimePort {
     requestBytes: number,
   ): Promise<void> {
     if (principal.kind !== "user") {
-      throw new DbzzError("unauthorized", "account linking requires a user identity");
+      throw new AckerDBError("unauthorized", "account linking requires a user identity");
     }
     throwIfAborted(signal);
     const account = await verifyUserBearerCredential(
@@ -1010,14 +1010,14 @@ export class Runtime implements RuntimePort {
       transactionSignal: signal,
       work: () => {
         if (account.expiresAt <= this.readNow()) {
-          throw new DbzzError("unauthenticated", "invalid credential");
+          throw new AckerDBError("unauthenticated", "invalid credential");
         }
         if (!this.engine.attachIdentityAccount(
           principal.identity,
           account.issuer,
           account.subject,
         )) {
-          throw new DbzzError("conflict", "external account is already linked");
+          throw new AckerDBError("conflict", "external account is already linked");
         }
       },
     });
@@ -1032,7 +1032,7 @@ export class Runtime implements RuntimePort {
     accountUnlinked: (account: ExternalAccount) => void,
   ): Promise<void> {
     if (principal.kind !== "user") {
-      throw new DbzzError("unauthorized", "account unlinking requires ownership");
+      throw new AckerDBError("unauthorized", "account unlinking requires ownership");
     }
     if (
       typeof candidate !== "object" ||
@@ -1042,7 +1042,7 @@ export class Runtime implements RuntimePort {
       typeof candidate.subject !== "string" ||
       candidate.subject.length === 0
     ) {
-      throw new DbzzError("validation", "external account must have an issuer and subject");
+      throw new AckerDBError("validation", "external account must have an issuer and subject");
     }
     const account = Object.freeze({ issuer: candidate.issuer, subject: candidate.subject });
     throwIfAborted(signal);
@@ -1061,28 +1061,28 @@ export class Runtime implements RuntimePort {
       },
     });
     if (result === "not_owned") {
-      throw new DbzzError("unauthorized", "account unlinking requires ownership");
+      throw new AckerDBError("unauthorized", "account unlinking requires ownership");
     }
     if (result === "last_account") {
-      throw new DbzzError("conflict", "cannot unlink the final external account");
+      throw new AckerDBError("conflict", "cannot unlink the final external account");
     }
   }
 
   async openSession(context: SessionRuntimeContext): Promise<void> {
     this.assertReady();
-    if (context.authEpoch !== 0) throw new DbzzError("validation", "new sessions must start at auth epoch 0");
+    if (context.authEpoch !== 0) throw new AckerDBError("validation", "new sessions must start at auth epoch 0");
     if (context.principal.kind === "system" || context.principal.kind === "mcp") {
-      throw new DbzzError("unauthorized", "principal cannot authenticate the DBZZ client API");
+      throw new AckerDBError("unauthorized", "principal cannot authenticate the AckerDB client API");
     }
     if (this.sessions.has(context.clientSessionId)) {
-      throw new DbzzError("conflict", "client session is already connected", {
+      throw new AckerDBError("conflict", "client session is already connected", {
         retryable: true,
         retryAfterMs: 0,
         resource: "connection",
       });
     }
     if (this.sessions.size >= this.limits.maxConnections) {
-      throw new DbzzError("overloaded", "connection capacity is full", {
+      throw new AckerDBError("overloaded", "connection capacity is full", {
         retryable: true,
         retryAfterMs: 0,
         resource: "connection",
@@ -1117,7 +1117,7 @@ export class Runtime implements RuntimePort {
         transition.to.clientSessionId !== transition.from.clientSessionId ||
         transition.to.authEpoch !== transition.from.authEpoch + 1
       ) {
-        throw new DbzzError("validation", "authentication transition is not monotonic");
+        throw new AckerDBError("validation", "authentication transition is not monotonic");
       }
       throwIfAborted(transition.to.signal);
       const captured: AuthTransitionCapture = {
@@ -1132,7 +1132,7 @@ export class Runtime implements RuntimePort {
       try {
         const rotation = await this.reactive.rotateAuth(state.subscriber, transition.to.authEpoch);
         if (rotation.deliveryFailures.length > 0) {
-          throw new DbzzError("unavailable", "subscription revocation could not be delivered", {
+          throw new AckerDBError("unavailable", "subscription revocation could not be delivered", {
             resource: "subscription",
             cause: rotation.deliveryFailures[0]?.error,
           });
@@ -1141,7 +1141,7 @@ export class Runtime implements RuntimePort {
           state.capture !== captured ||
           this.sessions.get(transition.from.clientSessionId) !== state
         ) {
-          throw new DbzzError("auth_stale", "authentication state changed");
+          throw new AckerDBError("auth_stale", "authentication state changed");
         }
         state.contexts.add(transition.to);
         state.context = transition.to;
@@ -1225,7 +1225,7 @@ export class Runtime implements RuntimePort {
         signal,
         requestBytes,
       );
-      if (!isResult(result)) throw new DbzzError("internal", "query boundary returned no Result");
+      if (!isResult(result)) throw new AckerDBError("internal", "query boundary returned no Result");
       publication = this.prepareFrame(
         result.ok
           ? {
@@ -1284,7 +1284,7 @@ export class Runtime implements RuntimePort {
             (onAuthorized) =>
               invokeFunction(fn, procedure.value, message.args, { onAuthorized }),
           );
-          if (!isResult(result)) throw new DbzzError("internal", "procedure boundary returned no Result");
+          if (!isResult(result)) throw new AckerDBError("internal", "procedure boundary returned no Result");
           publication = this.prepareFrame(
             result.ok
               ? {
@@ -1441,7 +1441,7 @@ export class Runtime implements RuntimePort {
 
   async runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
     if (request.principal.kind === "mcp") {
-      throw new DbzzError("unauthorized", "MCP credentials cannot call DBZZ procedures");
+      throw new AckerDBError("unauthorized", "MCP credentials cannot call AckerDB procedures");
     }
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
@@ -1560,12 +1560,12 @@ export class Runtime implements RuntimePort {
       )
     ) return tool;
     if (principal.kind === "anonymous") {
-      throw new DbzzError("unauthenticated", "authentication required");
+      throw new AckerDBError("unauthenticated", "authentication required");
     }
     if (!endpointMatches || tool !== undefined) {
-      throw new DbzzError("unauthorized", "access denied");
+      throw new AckerDBError("unauthorized", "access denied");
     }
-    throw new DbzzError("not_found", "MCP tool not found");
+    throw new AckerDBError("not_found", "MCP tool not found");
   }
 
   private async dispatchMcpTool(
@@ -1616,7 +1616,7 @@ export class Runtime implements RuntimePort {
     let status: number;
     if (outcome.ok) {
       if (!isResult(outcome.value)) {
-        throw new DbzzError("internal", "procedure boundary returned no Result");
+        throw new AckerDBError("internal", "procedure boundary returned no Result");
       }
       if (outcome.value.ok) {
         frame = {
@@ -1669,7 +1669,7 @@ export class Runtime implements RuntimePort {
       let encoded = { body, bytes };
       if (bytes > this.limits.maxFrameBytes) {
         if (frame.t !== "err") {
-          throw new DbzzError("overloaded", "procedure result exceeds maxFrameBytes", {
+          throw new AckerDBError("overloaded", "procedure result exceeds maxFrameBytes", {
             resource: "operation",
           });
         }
@@ -1687,9 +1687,9 @@ export class Runtime implements RuntimePort {
       }
       return encoded;
     } catch (cause) {
-      const error = isDbzzError(cause)
+      const error = isAckerDBError(cause)
         ? cause
-        : new DbzzError("validation", "procedure result is not wire-representable", { cause });
+        : new AckerDBError("validation", "procedure result is not wire-representable", { cause });
       if (this.telemetry.enabled) {
         this.traceSpan({
           stage: "encoding",
@@ -1714,7 +1714,7 @@ export class Runtime implements RuntimePort {
       return { value, bytes: utf8.encode(value).byteLength };
     });
     if (fitted === null) {
-      throw new DbzzError("overloaded", "procedure error response exceeds maxFrameBytes", {
+      throw new AckerDBError("overloaded", "procedure error response exceeds maxFrameBytes", {
         resource: "operation",
       });
     }
@@ -1742,7 +1742,7 @@ export class Runtime implements RuntimePort {
       }
       return delivered;
     } catch (cause) {
-      const error = new DbzzError("internal", "HTTP response handoff failed", { cause });
+      const error = new AckerDBError("internal", "HTTP response handoff failed", { cause });
       if (this.telemetry.enabled) {
         this.traceSpan({
           stage: "delivery",
@@ -1781,7 +1781,7 @@ export class Runtime implements RuntimePort {
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
     if (request.principal.kind === "mcp") {
-      throw new DbzzError("unauthorized", "MCP credentials cannot call DBZZ SSE procedures");
+      throw new AckerDBError("unauthorized", "MCP credentials cannot call AckerDB SSE procedures");
     }
     const provenance = claimHttpRequestProvenance(request);
     const requestBytes = this.admittedRequestBytes({
@@ -1872,7 +1872,7 @@ export class Runtime implements RuntimePort {
       try {
         const fn = this.expect(request.address, "sse") as AnyRegisteredSse;
         if (fn.yields === undefined) {
-          throw new DbzzError("internal", `sse "${request.address}" has no yields validator`);
+          throw new AckerDBError("internal", `sse "${request.address}" has no yields validator`);
         }
         const signal = this.operationSignal(request.signal);
         throwIfAborted(signal);
@@ -2077,7 +2077,7 @@ export class Runtime implements RuntimePort {
                       mutationAccess,
                     }));
               if (!result.ok) {
-                throw new DbzzError(
+                throw new AckerDBError(
                   "conflict",
                   `scheduled mutation returned application error ${result.error.code}`,
                 );
@@ -2203,7 +2203,7 @@ export class Runtime implements RuntimePort {
       operation: "lifecycle",
       lifecycleState: "draining",
     });
-    const draining = new DbzzError("draining", "runtime is draining", {
+    const draining = new AckerDBError("draining", "runtime is draining", {
       retryable: true,
       retryAfterMs: DRAIN_RETRY_AFTER_MS,
       resource: "operation",
@@ -2252,7 +2252,7 @@ export class Runtime implements RuntimePort {
       return this.ownsTelemetry ? this.telemetry.drain(deadlineAtMs) : this.telemetry.flush();
     });
 
-    const deadlineError = new DbzzError(
+    const deadlineError = new AckerDBError(
       "deadline_exceeded",
       "runtime graceful shutdown deadline exceeded",
       { resource: "operation" },
@@ -2297,9 +2297,9 @@ export class Runtime implements RuntimePort {
 
   private expect(address: string, kind: "query" | "mutation" | "procedure" | "sse"): AnyRegistered {
     const fn = this.registry.get(address);
-    if (fn === undefined) throw new DbzzError("not_found", `unknown function "${address}"`);
+    if (fn === undefined) throw new AckerDBError("not_found", `unknown function "${address}"`);
     if (fn.kind !== kind) {
-      throw new DbzzError("validation", `"${address}" is a ${fn.kind}, expected a ${kind}`);
+      throw new AckerDBError("validation", `"${address}" is a ${fn.kind}, expected a ${kind}`);
     }
     return fn;
   }
@@ -2321,8 +2321,8 @@ export class Runtime implements RuntimePort {
   private currentSession(context: SessionRuntimeContext, allowAborted = false): RuntimeSession {
     this.assertReady();
     const state = this.matchingSession(context);
-    if (state === null) throw new DbzzError("auth_stale", "authentication state changed");
-    if (state.phase !== "open") throw new DbzzError("auth_stale", "session is closing");
+    if (state === null) throw new AckerDBError("auth_stale", "authentication state changed");
+    if (state.phase !== "open") throw new AckerDBError("auth_stale", "session is closing");
     if (!allowAborted) throwIfAborted(context.signal);
     return state;
   }
@@ -2344,7 +2344,7 @@ export class Runtime implements RuntimePort {
     );
     const state = this.matchingSession(context);
     const execute = () => {
-      if (state === null) throw new DbzzError("auth_stale", "authentication state changed");
+      if (state === null) throw new AckerDBError("auth_stale", "authentication state changed");
       throwIfAborted(context.signal);
       return work(state, requestBytes);
     };
@@ -2464,7 +2464,7 @@ export class Runtime implements RuntimePort {
         : "operation",
     );
     if (!await state.context.publish(publication)) {
-      throw new DbzzError("auth_stale", "authentication state changed");
+      throw new AckerDBError("auth_stale", "authentication state changed");
     }
   }
 
@@ -2492,11 +2492,11 @@ export class Runtime implements RuntimePort {
     capture: AuthTransitionCapture,
     publication: RuntimePublication,
   ): void {
-    if (!capture.active) throw new DbzzError("auth_stale", "authentication state changed");
+    if (!capture.active) throw new AckerDBError("auth_stale", "authentication state changed");
     const maxItems = Math.min(Number.MAX_SAFE_INTEGER, this.limits.maxSubscriptionsPerConnection * 2);
     const maxBytes = this.limits.webSocket.maxBytesPerConnection - this.limits.maxFrameBytes;
     if (capture.frames.length >= maxItems || publication.bytes > maxBytes - capture.bytes) {
-      throw new DbzzError("overloaded", "authentication transition exceeds capture capacity", {
+      throw new AckerDBError("overloaded", "authentication transition exceeds capture capacity", {
         retryable: true,
         retryAfterMs: 0,
         resource: "subscription",
@@ -2504,7 +2504,7 @@ export class Runtime implements RuntimePort {
     }
     const reservation = this.authCaptureBudget.reserve(publication.bytes, "application");
     if (reservation === null) {
-      throw new DbzzError("overloaded", "authentication transition exceeds global capture capacity", {
+      throw new AckerDBError("overloaded", "authentication transition exceeds global capture capacity", {
         retryable: true,
         retryAfterMs: 0,
         resource: "subscription",
@@ -2516,7 +2516,7 @@ export class Runtime implements RuntimePort {
   }
 
   private finishCapture(capture: AuthTransitionCapture): RuntimePublicationBatch {
-    if (!capture.active) throw new DbzzError("auth_stale", "authentication state changed");
+    if (!capture.active) throw new AckerDBError("auth_stale", "authentication state changed");
     capture.active = false;
     const frames = capture.frames.splice(0);
     const reservations = capture.reservations.splice(0);
@@ -2556,7 +2556,7 @@ export class Runtime implements RuntimePort {
       const table = address.slice("events.".length);
       const tableDefinition = this.engine.schema.tables[table];
       if (tableDefinition?.kind !== "event") {
-        throw new DbzzError("not_found", `unknown event table "${table}"`);
+        throw new AckerDBError("not_found", `unknown event table "${table}"`);
       }
       const subscription = tableDefinition.eventSubscription!;
       const policyAt = this.telemetry.enabled ? performance.now() : 0;
@@ -2736,7 +2736,7 @@ export class Runtime implements RuntimePort {
                 durationMs: Math.max(0, performance.now() - rollbackAt),
               }, "query");
             }
-            throw new DbzzError("unavailable", "reader snapshot could not be closed", {
+            throw new AckerDBError("unavailable", "reader snapshot could not be closed", {
               resource: "reader",
               cause: rollbackError,
             });
@@ -2849,7 +2849,7 @@ export class Runtime implements RuntimePort {
     const startedAt = this.telemetry.enabled ? performance.now() : 0;
     try {
       if (!isResult(execution.value)) {
-        throw new DbzzError("internal", "subscription query boundary returned no Result");
+        throw new AckerDBError("internal", "subscription query boundary returned no Result");
       }
       const wireValue = execution.value.ok
         ? execution.value.data
@@ -3260,7 +3260,7 @@ export class Runtime implements RuntimePort {
     replay: "executed" | "replayed",
     obligations: readonly number[],
   ): MutationOkMessage | ApplicationErrorMessage {
-    if (!isResult(value)) throw new DbzzError("internal", "mutation boundary returned no Result");
+    if (!isResult(value)) throw new AckerDBError("internal", "mutation boundary returned no Result");
     const receipt = {
       mutationRequestId: message.mutationRequestId,
       commitVersion,
@@ -3298,7 +3298,7 @@ export class Runtime implements RuntimePort {
       (candidate) => candidate.subscriber === caller && required.has(candidate.subscriptionId),
     );
     if (failure !== undefined) {
-      throw new DbzzError("convergence_unavailable", "mutation committed but subscription convergence failed", {
+      throw new AckerDBError("convergence_unavailable", "mutation committed but subscription convergence failed", {
         committed: true,
         cause: failure.error,
       });
@@ -3315,7 +3315,7 @@ export class Runtime implements RuntimePort {
     try {
       publication = prepareRuntimePublication(frame);
     } catch (error) {
-      const failure = new DbzzError("validation", `${label} is not wire-representable`, {
+      const failure = new AckerDBError("validation", `${label} is not wire-representable`, {
         cause: error,
       });
       if (this.telemetry.enabled) {
@@ -3329,7 +3329,7 @@ export class Runtime implements RuntimePort {
       throw failure;
     }
     if (publication.bytes > this.limits.maxFrameBytes) {
-      const failure = new DbzzError("overloaded", `${label} exceeds maxFrameBytes`, { resource });
+      const failure = new AckerDBError("overloaded", `${label} exceeds maxFrameBytes`, { resource });
       if (this.telemetry.enabled) {
         this.traceSpan({
           stage: "encoding",
@@ -3890,24 +3890,24 @@ export class Runtime implements RuntimePort {
       ? 0
       : this.externalOperations.get(fairnessKey) ?? 0;
     if (fairnessKey !== undefined && callerOperations >= this.limits.maxOperationsPerCaller) {
-      throw new DbzzError("overloaded", "per-caller operation capacity is full", {
+      throw new AckerDBError("overloaded", "per-caller operation capacity is full", {
         retryable: true,
         retryAfterMs: 0,
         resource: "operation",
       });
     }
     if (session !== null && session.phase !== "open") {
-      throw new DbzzError("auth_stale", "session is closing");
+      throw new AckerDBError("auth_stale", "session is closing");
     }
     if (session !== null && session.activeOperations >= this.limits.maxOperationsPerConnection) {
-      throw new DbzzError("overloaded", "per-connection operation capacity is full", {
+      throw new AckerDBError("overloaded", "per-connection operation capacity is full", {
         retryable: true,
         retryAfterMs: 0,
         resource: "operation",
       });
     }
     if (this.activeOperations >= this.limits.maxOperations) {
-      throw new DbzzError("overloaded", "operation capacity is full", {
+      throw new AckerDBError("overloaded", "operation capacity is full", {
         retryable: true,
         retryAfterMs: 0,
         resource: "operation",
@@ -3986,13 +3986,13 @@ export class Runtime implements RuntimePort {
   private assertReady(): void {
     if (this.lifecycle === "ready") return;
     if (this.lifecycle === "draining") {
-      throw new DbzzError("draining", "runtime is not accepting operations", {
+      throw new AckerDBError("draining", "runtime is not accepting operations", {
         retryable: true,
         retryAfterMs: DRAIN_RETRY_AFTER_MS,
         resource: "operation",
       });
     }
-    throw new DbzzError("unavailable", "runtime is not available", { resource: "operation" });
+    throw new AckerDBError("unavailable", "runtime is not available", { resource: "operation" });
   }
 
   /** Trusts only package-owned transport provenance; direct callers are re-encoded canonically. */
@@ -4002,7 +4002,7 @@ export class Runtime implements RuntimePort {
       try {
         bytes = byteLength(request);
       } catch (cause) {
-        throw new DbzzError("validation", "request is not wire-representable", { cause });
+        throw new AckerDBError("validation", "request is not wire-representable", { cause });
       }
     }
     this.assertRequestBytes(bytes);
@@ -4014,7 +4014,7 @@ export class Runtime implements RuntimePort {
       throw new RangeError("request bytes must be a non-negative safe integer");
     }
     if (bytes > this.limits.maxRequestBytes) {
-      throw new DbzzError("overloaded", "request exceeds maxRequestBytes", {
+      throw new AckerDBError("overloaded", "request exceeds maxRequestBytes", {
         resource: "operation",
       });
     }

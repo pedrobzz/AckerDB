@@ -15,8 +15,8 @@ dist
 *.log
 .DS_Store
 
-# dbzz local databases
-.dbzz/
+# ackerdb local databases
+.ackerdb/
 
 # local registry (verdaccio): published tarballs + user file
 registry/storage/
@@ -29,7 +29,7 @@ sandbox/
 bench/convex-app/.convex/
 bench/convex-app/.env.local
 bench/convex-app/convex/_generated/
-bench/dbzz-app/_generated/
+bench/ackerdb-app/_generated/
 bench/spacetime-app/.stdb-data/
 bench/spacetime-app/module_bindings/
 

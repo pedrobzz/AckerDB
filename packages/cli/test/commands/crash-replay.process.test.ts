@@ -9,8 +9,8 @@ import {
   parseClientMessage,
   parseServerMessage,
   type MutationReceipt,
-} from "@dbzz/core";
-import { DbzzClient, type DbzzWebSocket } from "@dbzz/client";
+} from "@ackerdb/core";
+import { AckerDBClient, type AckerDBWebSocket } from "@ackerdb/client";
 import { runCodegen } from "../../src/app/codegen.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
@@ -22,7 +22,7 @@ const STEP_TIMEOUT_MS = 10_000;
 const CRASH_BEFORE_COMMIT_MESSAGES = `
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import { mutation } from "../_generated/server.ts";
 
 const crashSentinel = join(import.meta.dir, "..", ".precommit-crash-reached");
@@ -63,17 +63,17 @@ import {
   reconcile,
   serve,
   type RuntimeHooks,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import app from "./app.ts";
 import * as messages from "./functions/messages.ts";
 
 const port = Number(process.argv[2]);
-const fault = process.env.DBZZ_COMMIT_FAULT;
-const durability = process.env.DBZZ_DURABILITY;
+const fault = process.env.ACKERDB_COMMIT_FAULT;
+const durability = process.env.ACKERDB_DURABILITY;
 if (durability !== "production" && durability !== "balanced") {
-  throw new Error("DBZZ_DURABILITY must be production or balanced");
+  throw new Error("ACKERDB_DURABILITY must be production or balanced");
 }
-const databaseDirectory = join(import.meta.dir, ".dbzz");
+const databaseDirectory = join(import.meta.dir, ".ackerdb");
 mkdirSync(databaseDirectory, { recursive: true });
 const engine = new Engine(app.schema, join(databaseDirectory, "data.db"), {
   durability,
@@ -124,7 +124,7 @@ interface ObservedTransport {
 }
 
 const dirs: string[] = [];
-const clients: DbzzClient[] = [];
+const clients: AckerDBClient[] = [];
 const databases: Database[] = [];
 const children = new Set<CliProcess>();
 
@@ -227,8 +227,8 @@ function spawnProcess(
     stderr: "pipe",
     env: {
       ...process.env,
-      DBZZ_DURABILITY: "production",
-      DBZZ_TELEMETRY: "disabled",
+      ACKERDB_DURABILITY: "production",
+      ACKERDB_TELEMETRY: "disabled",
       ...env,
     },
   }) as CliProcess;
@@ -270,7 +270,7 @@ function spawnProcess(
   };
 }
 
-class ObservingWebSocket implements DbzzWebSocket {
+class ObservingWebSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -318,7 +318,7 @@ function storageState(database: Database): {
 } {
   const row = database
     .query(
-      "SELECT commit_version, mutation_records, mutation_result_bytes FROM _dbzz_state WHERE singleton = 1",
+      "SELECT commit_version, mutation_records, mutation_result_bytes FROM _ackerdb_state WHERE singleton = 1",
     )
     .get() as {
       commit_version: number | bigint;
@@ -339,7 +339,7 @@ function storedMutation(
 ): { result: string; commitVersion: number; durability: string } | null {
   const row = database.query(
     `SELECT result, commit_version AS commitVersion, durability
-     FROM _dbzz_mutations WHERE session_id = ? AND request_id = ?`,
+     FROM _ackerdb_mutations WHERE session_id = ? AND request_id = ?`,
   ).get(sessionId, requestId) as {
     result: string;
     commitVersion: number | bigint;
@@ -353,7 +353,7 @@ async function makeCommitFaultFixture(port: number): Promise<string> {
     "app.ts": FIXTURE_APP,
     "functions/messages.ts": FIXTURE_MESSAGES,
     "commit-fault-server.ts": COMMIT_FAULT_SERVER,
-    ".dbzz.config.json": JSON.stringify({ port }),
+    ".ackerdb.config.json": JSON.stringify({ port }),
   });
   dirs.push(dir);
   await runCodegen(loadConfig(dir));
@@ -368,7 +368,7 @@ describe("process crash replay", () => {
       "app.ts": FIXTURE_APP,
       "functions/messages.ts": FIXTURE_MESSAGES,
       "functions/crash.ts": CRASH_BEFORE_COMMIT_MESSAGES,
-      ".dbzz.config.json": JSON.stringify({ port }),
+      ".ackerdb.config.json": JSON.stringify({ port }),
     });
     dirs.push(dir);
     const sentinel = join(dir, ".precommit-crash-reached");
@@ -380,7 +380,7 @@ describe("process crash replay", () => {
       mutationRequestIds: [],
       receipts: [],
     };
-    const client = new DbzzClient({
+    const client = new AckerDBClient({
       url: `http://127.0.0.1:${port}`,
       credential: { kind: "anonymous" },
       clientSessionId: "precommit-crash-session",
@@ -416,7 +416,7 @@ describe("process crash replay", () => {
     expect(observed.receipts).toHaveLength(0);
     expect(mutationSettled).toBe(false);
 
-    const database = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
+    const database = new Database(join(dir, ".ackerdb", "data.db"), { readonly: true });
     databases.push(database);
     expect(count(
       database,
@@ -427,7 +427,7 @@ describe("process crash replay", () => {
     )).toBe(0);
     expect(count(
       database,
-      "SELECT COUNT(*) AS count FROM _dbzz_mutations WHERE session_id = ? AND request_id = ?",
+      "SELECT COUNT(*) AS count FROM _ackerdb_mutations WHERE session_id = ? AND request_id = ?",
       client.clientSessionId,
       requestId,
     )).toBe(0);
@@ -472,7 +472,7 @@ describe("process crash replay", () => {
     )).toBe(1);
     expect(count(
       database,
-      "SELECT COUNT(*) AS count FROM _dbzz_mutations WHERE session_id = ? AND request_id = ? AND commit_version = 1 AND durability = 'production'",
+      "SELECT COUNT(*) AS count FROM _ackerdb_mutations WHERE session_id = ? AND request_id = ? AND commit_version = 1 AND durability = 'production'",
       client.clientSessionId,
       requestId,
     )).toBe(1);
@@ -493,11 +493,11 @@ describe("process crash replay", () => {
     await assertNoServer(port);
     const dir = await makeCommitFaultFixture(port);
     const command = [process.execPath, join(dir, "commit-fault-server.ts"), String(port)];
-    const first = spawnProcess(command, { DBZZ_COMMIT_FAULT: "wait" });
+    const first = spawnProcess(command, { ACKERDB_COMMIT_FAULT: "wait" });
     await first.waitFor("@@ready");
 
     const observed: ObservedTransport = { mutationRequestIds: [], receipts: [] };
-    const client = new DbzzClient({
+    const client = new AckerDBClient({
       url: `http://127.0.0.1:${port}`,
       credential: { kind: "anonymous" },
       clientSessionId: "post-commit-crash-session",
@@ -560,7 +560,7 @@ describe("process crash replay", () => {
     expect(committedSnapshotObserved).toBe(false);
     expect(resolutionOrder).toEqual([]);
 
-    const database = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
+    const database = new Database(join(dir, ".ackerdb", "data.db"), { readonly: true });
     databases.push(database);
     expect(count(
       database,
@@ -581,7 +581,7 @@ describe("process crash replay", () => {
     children.delete(first.child);
     await assertNoServer(port);
 
-    const second = spawnProcess(command, { DBZZ_COMMIT_FAULT: "off" });
+    const second = spawnProcess(command, { ACKERDB_COMMIT_FAULT: "off" });
     await second.waitFor("@@ready");
     expect(await withTimeout(mutation, "post-commit pending mutation replay")).toBe(1n);
     expect(await withTimeout(committed, "committed subscription snapshot after restart")).toEqual([
@@ -609,7 +609,7 @@ describe("process crash replay", () => {
     )).toBe(1);
     expect(count(
       database,
-      "SELECT COUNT(*) AS count FROM _dbzz_mutations WHERE session_id = ? AND request_id = ?",
+      "SELECT COUNT(*) AS count FROM _ackerdb_mutations WHERE session_id = ? AND request_id = ?",
       client.clientSessionId,
       requestId,
     )).toBe(1);
@@ -631,13 +631,13 @@ describe("process crash replay", () => {
       const dir = await makeCommitFaultFixture(port);
       const command = [process.execPath, join(dir, "commit-fault-server.ts"), String(port)];
       const first = spawnProcess(command, {
-        DBZZ_COMMIT_FAULT: "throw",
-        DBZZ_DURABILITY: durability,
+        ACKERDB_COMMIT_FAULT: "throw",
+        ACKERDB_DURABILITY: durability,
       });
       await first.waitFor("@@ready");
 
       const observed: ObservedTransport = { mutationRequestIds: [], receipts: [] };
-      const client = new DbzzClient({
+      const client = new AckerDBClient({
         url: `http://127.0.0.1:${port}`,
         credential: { kind: "anonymous" },
         clientSessionId: `acknowledged-${durability}-crash-session`,
@@ -673,7 +673,7 @@ describe("process crash replay", () => {
       children.delete(first.child);
       await assertNoServer(port);
 
-      const database = new Database(join(dir, ".dbzz", "data.db"), { readonly: true });
+      const database = new Database(join(dir, ".ackerdb", "data.db"), { readonly: true });
       databases.push(database);
       expect(storedMutation(database, client.clientSessionId, acknowledgedRequestId)).toEqual({
         result: encode({ ok: true, data: 1n }),
@@ -683,8 +683,8 @@ describe("process crash replay", () => {
       expect(storageState(database)).toMatchObject({ commitVersion: 1, mutationRecords: 1 });
 
       const second = spawnProcess(command, {
-        DBZZ_COMMIT_FAULT: "off",
-        DBZZ_DURABILITY: durability,
+        ACKERDB_COMMIT_FAULT: "off",
+        ACKERDB_DURABILITY: durability,
       });
       await second.waitFor("@@ready");
       const rows = await withTimeout(client.query<
@@ -718,7 +718,7 @@ describe("process crash replay", () => {
       )).toBe(1);
       expect(count(
         database,
-        "SELECT COUNT(*) AS count FROM _dbzz_mutations WHERE session_id = ?",
+        "SELECT COUNT(*) AS count FROM _ackerdb_mutations WHERE session_id = ?",
         client.clientSessionId,
       )).toBe(2);
       expect(storageState(database)).toMatchObject({ commitVersion: 2, mutationRecords: 2 });

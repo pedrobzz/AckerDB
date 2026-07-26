@@ -2,7 +2,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import {
-  DbzzError,
+  AckerDBError,
   v,
   defineSchema,
   defineTable,
@@ -13,8 +13,8 @@ import {
   serve,
   type McpBuilder,
   type McpToolBuilder,
-} from "@dbzz/server";
-import { createMcp, mcpTool } from "@dbzz/server/mcp";
+} from "@ackerdb/server";
+import { createMcp, mcpTool } from "@ackerdb/server/mcp";
 
 const CONFORMANCE_VERSION = "0.1.16";
 const SCENARIOS = [
@@ -107,13 +107,13 @@ const errorHandling = typedMcpTool({
   description: "Return the framework's intentional safe tool error.",
   args: {},
   handler: () => {
-    throw new DbzzError("conflict", "intentional conformance error");
+    throw new AckerDBError("conflict", "intentional conformance error");
   },
 });
 
 const conformanceMcp = typedMcp({
   name: "conformance",
-  instructions: "MCP protocol conformance fixtures for DBZZ release verification.",
+  instructions: "MCP protocol conformance fixtures for AckerDB release verification.",
   tools: {
     test_audio_content: audioContent,
     test_embedded_resource: embeddedResource,
@@ -212,8 +212,8 @@ async function main(): Promise<void> {
     throw new Error(`official conformance runner is missing at ${binary}`);
   }
 
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-conformance-"));
-  const resultsRoot = mkdtempSync(join(tmpdir(), "dbzz-mcp-conformance-results-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-conformance-"));
+  const resultsRoot = mkdtempSync(join(tmpdir(), "ackerdb-mcp-conformance-results-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const runtime = new Runtime({

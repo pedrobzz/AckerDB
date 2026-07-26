@@ -6,7 +6,7 @@ import {
   isResult,
   type OkResult,
   type Outcome,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import { isPrincipal, type Principal } from "../auth/credentials.ts";
 import {
   compileShape,
@@ -15,7 +15,7 @@ import {
   type ObjectShape,
   type Validator,
 } from "../validation/v.ts";
-import { DbzzError } from "../shared/errors.ts";
+import { AckerDBError } from "../shared/errors.ts";
 import type {
   AccessPolicy,
   AnyInvocable,
@@ -154,10 +154,10 @@ export function currentInvocationTelemetryContext(): InvocationTelemetryContext 
     : undefined;
 }
 
-function denied(principal: Principal, cause?: unknown): DbzzError {
+function denied(principal: Principal, cause?: unknown): AckerDBError {
   return principal.kind === "anonymous"
-    ? new DbzzError("unauthenticated", "authentication required", { cause })
-    : new DbzzError("unauthorized", "access denied", { cause });
+    ? new AckerDBError("unauthenticated", "authentication required", { cause })
+    : new AckerDBError("unauthorized", "access denied", { cause });
 }
 
 function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
@@ -187,7 +187,7 @@ function compileAccess<Ctx extends InvocationContext, Args>(
     try {
       allowed = (await access(ctx, args)) === true;
     } catch (error) {
-      throw new DbzzError("unauthorized", "access denied", { cause: error });
+      throw new AckerDBError("unauthorized", "access denied", { cause: error });
     }
     if (!allowed) throw denied(ctx.auth);
   };
@@ -279,9 +279,9 @@ function validateContext<Ctx extends InvocationContext>(
     // this guard means runtime-owned work ran inside a foreign invocation's
     // async context (a framework or composition bug), not that a policy said
     // no — the message must point debugging at the right layer.
-    throw new DbzzError("unauthorized", "invocation context principal mismatch");
+    throw new AckerDBError("unauthorized", "invocation context principal mismatch");
   }
-  if (!isPrincipal(ctx.auth)) throw new DbzzError("internal", "invalid invocation context");
+  if (!isPrincipal(ctx.auth)) throw new AckerDBError("internal", "invalid invocation context");
   const principal = parent?.principal ?? ctx.auth;
   return immutableContext(ctx, principal);
 }
@@ -461,24 +461,24 @@ function finishInvocation<K extends string, A extends ObjectShape, Ctx extends I
       : Ok(fn.returns.check(normalized.data, "returns")) as T | OkResult<T>;
   }
   if (!isApplicationError(normalized.error)) {
-    throw new DbzzError("validation", "registered Err must contain an application error");
+    throw new AckerDBError("validation", "registered Err must contain an application error");
   }
   if (fn.errors === undefined) return normalized as T | OkResult<T>;
   if (!Object.hasOwn(fn.errors, normalized.error.code)) {
-    throw new DbzzError(
+    throw new AckerDBError(
       "validation",
       `errors does not declare returned code "${normalized.error.code}"`,
     );
   }
   const declaration = fn.errors[normalized.error.code];
   if (declaration === undefined) {
-    throw new DbzzError(
+    throw new AckerDBError(
       "validation",
       `errors does not declare returned code "${normalized.error.code}"`,
     );
   }
   if (declaration.status !== normalized.error.status) {
-    throw new DbzzError(
+    throw new AckerDBError(
       "validation",
       `errors.${normalized.error.code}.status does not match the returned status`,
     );

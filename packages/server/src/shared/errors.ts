@@ -1,15 +1,15 @@
-import type { OutcomeCode, ResourceClass } from "@dbzz/core";
+import type { OutcomeCode, ResourceClass } from "@ackerdb/core";
 import { brand, hasBrand } from "./identity.ts";
 
-const DBZZ_ERROR_IDENTITY = Symbol.for("@dbzz/server/DbzzError/v1");
+const ACKERDB_ERROR_IDENTITY = Symbol.for("@ackerdb/server/AckerDBError/v1");
 
 export class IncompatibleDatabaseError extends Error {}
 export class CorruptDatabaseError extends Error {}
 
-export type DbzzErrorCode = OutcomeCode;
-export type { ResourceClass } from "@dbzz/core";
+export type AckerDBErrorCode = OutcomeCode;
+export type { ResourceClass } from "@ackerdb/core";
 
-export interface DbzzErrorOptions {
+export interface AckerDBErrorOptions {
   retryable?: boolean;
   retryAfterMs?: number;
   resource?: ResourceClass;
@@ -18,14 +18,14 @@ export interface DbzzErrorOptions {
 }
 
 /** A safe, transport-independent framework failure. `message` is public. */
-export class DbzzError extends Error {
-  readonly code: DbzzErrorCode;
+export class AckerDBError extends Error {
+  readonly code: AckerDBErrorCode;
   readonly retryable: boolean;
   readonly retryAfterMs: number | undefined;
   readonly resource: ResourceClass | undefined;
   readonly committed: true | undefined;
 
-  constructor(code: DbzzErrorCode, message: string, options: DbzzErrorOptions = {}) {
+  constructor(code: AckerDBErrorCode, message: string, options: AckerDBErrorOptions = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
     if (
       options.retryAfterMs !== undefined &&
@@ -42,26 +42,26 @@ export class DbzzError extends Error {
     if (code === "convergence_unavailable" && (options.committed !== true || options.retryable === true)) {
       throw new TypeError("convergence_unavailable must be committed and non-retryable");
     }
-    this.name = "DbzzError";
+    this.name = "AckerDBError";
     this.code = code;
     this.retryable = options.retryable ?? false;
     this.retryAfterMs = options.retryAfterMs;
     this.resource = options.resource;
     this.committed = options.committed;
-    brand(this, DBZZ_ERROR_IDENTITY);
+    brand(this, ACKERDB_ERROR_IDENTITY);
   }
 }
 
-export function isDbzzError(value: unknown): value is DbzzError {
-  return hasBrand(value, DBZZ_ERROR_IDENTITY);
+export function isAckerDBError(value: unknown): value is AckerDBError {
+  return hasBrand(value, ACKERDB_ERROR_IDENTITY);
 }
 
 /** Preserve framework abort reasons and normalize every external cancellation. */
 export function throwIfAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) return;
-  throw isDbzzError(signal.reason)
+  throw isAckerDBError(signal.reason)
     ? signal.reason
-    : new DbzzError("unavailable", "operation was canceled", {
+    : new AckerDBError("unavailable", "operation was canceled", {
         resource: "operation",
         cause: signal.reason,
       });

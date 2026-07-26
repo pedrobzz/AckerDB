@@ -28,42 +28,42 @@ const PROVIDERS = [
   {
     name: "clerk",
     issuer: "https://clerk.identity.test/",
-    audience: "dbzz-clerk",
+    audience: "ackerdb-clerk",
     tokenType: "JWT",
     shapeClaims: { azp: "web", org_id: "org_1", authentication_method: "email" },
   },
   {
     name: "better-auth",
     issuer: "https://better-auth.identity.test/",
-    audience: "dbzz-better-auth",
+    audience: "ackerdb-better-auth",
     tokenType: "JWT",
     shapeClaims: { role: "member", session_id: "session_1" },
   },
   {
     name: "auth0",
     issuer: "https://tenant.auth0.identity.test/",
-    audience: "dbzz-auth0",
+    audience: "ackerdb-auth0",
     tokenType: "JWT",
     shapeClaims: { permissions: ["orders:read"] },
   },
   {
     name: "workos",
     issuer: "https://workos.identity.test/",
-    audience: "dbzz-workos",
+    audience: "ackerdb-workos",
     tokenType: "JWT",
     shapeClaims: { organization_id: "org_1", role: "member" },
   },
   {
     name: "keycloak",
-    issuer: "https://keycloak.identity.test/realms/dbzz",
-    audience: "dbzz-keycloak",
+    issuer: "https://keycloak.identity.test/realms/ackerdb",
+    audience: "ackerdb-keycloak",
     tokenType: "JWT",
     shapeClaims: { preferred_username: "shared", realm_access: { roles: ["member"] } },
   },
   {
     name: "custom-oidc",
     issuer: "https://custom.identity.test/",
-    audience: "dbzz-custom",
+    audience: "ackerdb-custom",
     tokenType: "at+jwt",
     shapeClaims: { tenant: "tenant_1", entitlements: ["orders"] },
   },
@@ -221,7 +221,7 @@ function accountKey(issuer: string, subject: string): string {
 
 describe("provider-neutral exact-account Identity", () => {
   test("rejects unverified issuer, audience, algorithm, type, expiry, and claims before allocation", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-provider-validation-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-provider-validation-"));
     directories.push(directory);
     const { engine, runtime } = open(join(directory, "data.db"));
     const harness = await oidcHarness();
@@ -240,14 +240,14 @@ describe("provider-neutral exact-account Identity", () => {
         code: "unauthenticated",
       });
     }
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_identities").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_identities").get())
       .toEqual({ count: 0n });
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_identity_accounts").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_identity_accounts").get())
       .toEqual({ count: 0n });
   });
 
   test("converges exact accounts while preserving collisions, claims, restart durability, and non-reuse", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-provider-matrix-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-provider-matrix-"));
     directories.push(directory);
     const path = join(directory, "data.db");
     const harness = await oidcHarness();
@@ -293,8 +293,8 @@ describe("provider-neutral exact-account Identity", () => {
 
     expect(identitiesByAccount.size).toBe(PROVIDERS.length + 1);
     expect(new Set(identitiesByAccount.values()).size).toBe(identitiesByAccount.size);
-    expect(engineCount(first.engine, "_dbzz_identities")).toBe(BigInt(identitiesByAccount.size));
-    expect(engineCount(first.engine, "_dbzz_identity_accounts")).toBe(BigInt(identitiesByAccount.size));
+    expect(engineCount(first.engine, "_ackerdb_identities")).toBe(BigInt(identitiesByAccount.size));
+    expect(engineCount(first.engine, "_ackerdb_identity_accounts")).toBe(BigInt(identitiesByAccount.size));
 
     await close(first.runtime, first.engine);
     const second = open(path);
@@ -333,10 +333,10 @@ describe("provider-neutral exact-account Identity", () => {
     );
     second.engine.writer.exec("BEGIN IMMEDIATE");
     second.engine.writer
-      .query("DELETE FROM _dbzz_identity_accounts WHERE issuer = ? AND subject = ?")
+      .query("DELETE FROM _ackerdb_identity_accounts WHERE issuer = ? AND subject = ?")
       .run(providerNamed("keycloak").issuer, "retired-subject");
     second.engine.writer
-      .query("DELETE FROM _dbzz_identities WHERE identity = ?")
+      .query("DELETE FROM _ackerdb_identities WHERE identity = ?")
       .run(retired.identity);
     second.engine.writer.exec("COMMIT");
     await close(second.runtime, second.engine);
@@ -359,7 +359,7 @@ describe("provider-neutral exact-account Identity", () => {
   });
 });
 
-function engineCount(engine: Engine, table: "_dbzz_identities" | "_dbzz_identity_accounts"): bigint {
+function engineCount(engine: Engine, table: "_ackerdb_identities" | "_ackerdb_identity_accounts"): bigint {
   return (engine.writer.query(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: bigint })
     .count;
 }

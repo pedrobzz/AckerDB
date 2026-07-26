@@ -11,7 +11,7 @@ import {
   type DbReader,
   type DbWriter,
   type EventArgsOf,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const schema = defineSchema({
   payments: defineTable({

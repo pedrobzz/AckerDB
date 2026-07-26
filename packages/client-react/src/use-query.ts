@@ -1,5 +1,5 @@
-import { WireError, getRef, stableEncode, type ApplicationError } from "@dbzz/core";
-import type { QueryRef } from "@dbzz/client";
+import { WireError, getRef, stableEncode, type ApplicationError } from "@ackerdb/core";
+import type { QueryRef } from "@ackerdb/client";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useProviderClient } from "./provider.tsx";
 import {
@@ -7,7 +7,7 @@ import {
   PENDING_STATE,
   QueryStoreEntry,
   queryRegistryFor,
-  type DbzzQueryState,
+  type AckerDBQueryState,
   type QuerySource,
 } from "./query-store.ts";
 
@@ -15,7 +15,7 @@ import {
  * Typed skip sentinel: `useQuery(ref, skip)` renders the disabled state and
  * starts no subscription. Replacing it with real arguments starts one.
  */
-export const skip: unique symbol = Symbol("dbzz.useQuery.skip");
+export const skip: unique symbol = Symbol("ackerdb.useQuery.skip");
 
 const noSubscription = (): (() => void) => () => {};
 
@@ -34,14 +34,14 @@ function argsKeyOf(args: unknown): string {
 
 /**
  * Live query state for a generated reference. Arguments, rows, and the exact
- * `DbzzClientError` are inferred from the reference; the result is an
+ * `AckerDBClientError` are inferred from the reference; the result is an
  * exhaustive disabled/pending/success/error union with reconnect-aware
  * stale/fresh success data.
  */
 export function useQuery<Args, Rows, Error extends ApplicationError = never>(
   ref: QueryRef<Args, Rows, Error>,
   args: Args | typeof skip,
-): DbzzQueryState<Rows, Error> {
+): AckerDBQueryState<Rows, Error> {
   const client = useProviderClient("useQuery");
   const address = getRef(ref);
   const argsKey = args === skip ? null : argsKeyOf(args);
@@ -70,12 +70,12 @@ export function useQuery<Args, Rows, Error extends ApplicationError = never>(
   // Without a source the snapshot is deterministic: disabled while skipped,
   // pending during the commit gap before the provider constructs its client.
   const getSnapshot = useCallback(
-    (): DbzzQueryState<Rows, Error> =>
+    (): AckerDBQueryState<Rows, Error> =>
       source !== null ? source.snapshot() : argsKey === null ? DISABLED_STATE : PENDING_STATE,
     [source, argsKey],
   );
   const getServerSnapshot = useCallback(
-    (): DbzzQueryState<Rows, Error> => (argsKey === null ? DISABLED_STATE : PENDING_STATE),
+    (): AckerDBQueryState<Rows, Error> => (argsKey === null ? DISABLED_STATE : PENDING_STATE),
     [argsKey],
   );
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);

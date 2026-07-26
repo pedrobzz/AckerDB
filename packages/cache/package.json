@@ -1,5 +1,5 @@
 {
-  "name": "@dbzz/cache",
+  "name": "@ackerdb/cache",
   "version": "0.10.0",
   "type": "module",
   "files": [
@@ -11,7 +11,7 @@
     "./upstash": "./src/adapters/upstash.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:0.10.0",
-    "@dbzz/server": "workspace:0.10.0"
+    "@ackerdb/core": "workspace:0.10.0",
+    "@ackerdb/server": "workspace:0.10.0"
   }
 }

@@ -37,7 +37,7 @@ function fsyncDirectory(path: string): void {
 }
 
 /**
- * Clear only the database family and DBZZ's exact staging artifacts. The
+ * Clear only the database family and AckerDB's exact staging artifacts. The
  * persistent coordination database and every unrelated entry remain intact.
  */
 export function resetDatabase(path: string): DatabaseResetResult {

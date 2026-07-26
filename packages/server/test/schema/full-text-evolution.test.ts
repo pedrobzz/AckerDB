@@ -7,7 +7,7 @@ import {
   diffSnapshots,
   snapshotOf,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 function documents(fullText: readonly ("title" | "body")[] = []) {
   const table = defineTable({

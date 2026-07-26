@@ -30,7 +30,7 @@ function versionAt(ref: string, requireCompleteSet: boolean): string {
   );
   if (requireCompleteSet && present.length !== PACKAGES.length) {
     const missing = PACKAGES.filter((pkg) => !present.includes(pkg));
-    fail(`${ref} is missing release package(s): ${missing.map((pkg) => `@dbzz/${pkg}`).join(", ")}`);
+    fail(`${ref} is missing release package(s): ${missing.map((pkg) => `@ackerdb/${pkg}`).join(", ")}`);
   }
   return syncedVersion(
     (pkg) => git("show", specAt(ref, `packages/${pkg}/package.json`)),

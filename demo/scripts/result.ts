@@ -1,8 +1,8 @@
-import type { Result } from "@dbzz/core";
+import type { Result } from "@ackerdb/core";
 
 export function expectOk<T, E>(result: Result<T, E>): T {
   if (result.ok) return result.data;
-  throw new Error("Expected a successful DBzz Result", { cause: result.error });
+  throw new Error("Expected a successful AckerDB Result", { cause: result.error });
 }
 
 export async function expectErrorCode<
@@ -13,10 +13,10 @@ export async function expectErrorCode<
   code: string,
 ): Promise<E> {
   const result = await work;
-  if (result.ok) throw new Error(`Expected DBzz error code ${code}`);
+  if (result.ok) throw new Error(`Expected AckerDB error code ${code}`);
   if (result.error.code !== code) {
     throw new Error(
-      `Expected DBzz error code ${code}, received ${result.error.code}`,
+      `Expected AckerDB error code ${code}, received ${result.error.code}`,
       { cause: result.error },
     );
   }
@@ -40,5 +40,5 @@ export async function expectRejectedCode(
     }
     throw error;
   }
-  throw new Error(`Expected rejected DBzz error code ${code}`);
+  throw new Error(`Expected rejected AckerDB error code ${code}`);
 }

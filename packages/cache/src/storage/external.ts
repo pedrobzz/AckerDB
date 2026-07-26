@@ -1,4 +1,4 @@
-import type { PluginProcedureCtx, StandardValidator } from "@dbzz/server";
+import type { PluginProcedureCtx, StandardValidator } from "@ackerdb/server";
 import {
   type CacheSetOptions,
   type NormalizedExternalConfig,

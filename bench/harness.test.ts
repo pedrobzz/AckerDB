@@ -236,7 +236,7 @@ describe("connection readiness sampling", () => {
     let connects = 0;
     const unsupported = () => Promise.reject(new Error("not used by the connection ladder"));
     const adapter: BenchAdapter = {
-      system: "dbzz",
+      system: "ackerdb",
       connect: async (): Promise<BenchConnection> => {
         const id = connects++;
         events.push(`connect:${id}`);

@@ -3,7 +3,7 @@
  * A schema is validated eagerly — every rule violation throws at definition
  * time with a message naming the table/column/index at fault.
  */
-import type { FunctionReference, RegisteredFunction } from "@dbzz/core";
+import type { FunctionReference, RegisteredFunction } from "@ackerdb/core";
 import {
   baseValidator,
   ValidationError,
@@ -24,8 +24,8 @@ import { brand, hasBrand } from "../shared/identity.ts";
 import type { InvocationContext } from "../app/invocation.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
-const SCHEMA_IDENTITY = Symbol.for("@dbzz/server/Schema/v1");
-const TABLE_DEF_IDENTITY = Symbol.for("@dbzz/server/TableDef/v1");
+const SCHEMA_IDENTITY = Symbol.for("@ackerdb/server/Schema/v1");
+const TABLE_DEF_IDENTITY = Symbol.for("@ackerdb/server/TableDef/v1");
 
 function checkName(name: string, what: string): void {
   if (!IDENTIFIER.test(name)) {
@@ -351,7 +351,7 @@ export class TableDef<
   }
 }
 
-/** True for a table definition created by any compatible @dbzz/server instance. */
+/** True for a table definition created by any compatible @ackerdb/server instance. */
 export function isTableDef(value: unknown): value is TableDef {
   return hasBrand(value, TABLE_DEF_IDENTITY);
 }
@@ -420,7 +420,7 @@ export class Schema<T extends Record<string, TableDef> = Record<string, TableDef
   }
 }
 
-/** True for a schema created by any compatible @dbzz/server instance. */
+/** True for a schema created by any compatible @ackerdb/server instance. */
 export function isSchema(value: unknown): value is Schema {
   return hasBrand(value, SCHEMA_IDENTITY);
 }

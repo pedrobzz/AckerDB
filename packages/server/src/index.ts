@@ -83,7 +83,7 @@ export {
   type PluginStorageRequirement,
 } from "./plugins/storage.ts";
 export { PluginRuntime } from "./plugins/runtime.ts";
-export type { DurabilityPolicy } from "@dbzz/core";
+export type { DurabilityPolicy } from "@ackerdb/core";
 export type { TransportSource } from "./runtime/caller.ts";
 export {
   makeDbReader,
@@ -206,10 +206,10 @@ export {
 } from "./auth/credentials.ts";
 export { assertCredentialVerifier } from "./auth/lease.ts";
 export {
-  DbzzError,
-  isDbzzError,
-  type DbzzErrorCode,
-  type DbzzErrorOptions,
+  AckerDBError,
+  isAckerDBError,
+  type AckerDBErrorCode,
+  type AckerDBErrorOptions,
   type ResourceClass,
 } from "./shared/errors.ts";
 export {
@@ -434,12 +434,12 @@ export {
   type RuntimeStatus,
 } from "./runtime/runtime.ts";
 export {
-  DbzzServer,
+  AckerDBServer,
   serve,
-  type DbzzServerOptions,
-  type DbzzServerState,
-  type DbzzServerStatus,
-  type DbzzStartupPhase,
+  type AckerDBServerOptions,
+  type AckerDBServerState,
+  type AckerDBServerStatus,
+  type AckerDBStartupPhase,
   type McpHttpOptions,
   type ServeOptions,
 } from "./transport/server.ts";

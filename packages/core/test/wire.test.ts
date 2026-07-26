@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { decode, encode, stableEncode, WireError } from "@dbzz/core";
+import { decode, encode, stableEncode, WireError } from "@ackerdb/core";
 
 const roundtrip = (value: unknown) => decode(encode(value));
 

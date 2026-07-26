@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { OrderedPublication } from "../../src/realtime/publication.ts";
 import { PublicationHandoff } from "../../src/realtime/publication.ts";
 
@@ -21,11 +21,11 @@ describe("ordered publication", () => {
       process: () => release.promise,
     });
 
-    expect(() => coordinator.reserve(9)).toThrow(DbzzError);
+    expect(() => coordinator.reserve(9)).toThrow(AckerDBError);
     const slot = coordinator.reserve(8);
     now = 17;
     expect(coordinator.snapshot()).toMatchObject({ items: 1, bytes: 8, oldestAgeMs: 7, highWater: 0n });
-    expect(() => coordinator.reserve(0)).toThrow(DbzzError);
+    expect(() => coordinator.reserve(0)).toThrow(AckerDBError);
 
     slot.commit("committed");
     expect(coordinator.snapshot().highWater).toBe(1n);
@@ -45,7 +45,7 @@ describe("ordered publication", () => {
     first.resize(5);
     first.commit("first");
     const second = coordinator.reserve(0);
-    expect(() => second.resize(4)).toThrow(DbzzError);
+    expect(() => second.resize(4)).toThrow(AckerDBError);
     expect(coordinator.snapshot()).toMatchObject({ items: 2, bytes: 5 });
     second.resize(3);
     second.commit("second");
@@ -204,7 +204,7 @@ describe("ordered publication", () => {
     });
     const slot = coordinator.reserve(1);
     const closing = coordinator.close();
-    expect(() => coordinator.reserve(0)).toThrow(DbzzError);
+    expect(() => coordinator.reserve(0)).toThrow(AckerDBError);
     slot.commit("admitted-before-close");
 
     let drained = false;

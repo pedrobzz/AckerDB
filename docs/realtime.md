@@ -52,7 +52,7 @@ the proven chain.
 
 ## Reconnect: resume when proven, reset otherwise
 
-`DbzzClient` retains the latest query cursor in its bounded subscription state
+`AckerDBClient` retains the latest query cursor in its bounded subscription state
 and sends it again after reconnect. The server does one of three things:
 
 - emits `resume` when it is already the exact current cursor;
@@ -76,7 +76,7 @@ the ordinary bounded reconnect path.
 
 ## Mutation effects, replay, and read-your-writes
 
-Each `DbzzClient.mutation(...)` request receives a UUIDv7
+Each `AckerDBClient.mutation(...)` request receives a UUIDv7
 `mutationRequestId`, an `issuedAt` timestamp, and the client's stable
 `clientSessionId`. The server stores the request identity, result, commit
 version, and durability in the same SQLite transaction as the mutation. A
@@ -105,7 +105,7 @@ interface MutationReceipt {
 ```
 
 `obligations` names the caller's active query-subscription IDs that must prove
-they reached at least the receipt's `commitVersion`. `DbzzClient` retains the
+they reached at least the receipt's `commitVersion`. `AckerDBClient` retains the
 mutation result but does not resolve its promise until all still-active
 obligations have advanced. An unchanged query advances with `checkpoint`; a
 changed query advances with `update` or `reset`. Unsubscribing explicitly
@@ -129,7 +129,7 @@ cross-client causal consistency, or a distributed consistency guarantee.
 
 ## Live event ordering and gaps
 
-`DbzzClient.subscribeEvent(...)` receives `row`, `gap`, and `reset` events with
+`AckerDBClient.subscribeEvent(...)` receives `row`, `gap`, and `reset` events with
 a `LiveEventCursor` containing `generation`, `commitVersion`, and `sequence`.
 The initial event is always `reset`; it establishes a live boundary and does not
 contain historical rows.
@@ -172,15 +172,15 @@ interface SseAckRequest {
 ```
 
 The initial response exposes a bounded stream capability in
-`x-dbzz-sse-stream` and the server's finite receiver-credit deadline in
-`x-dbzz-sse-max-stall-ms`. Sequence numbers start at one and must be exact;
+`x-ackerdb-sse-stream` and the server's finite receiver-credit deadline in
+`x-ackerdb-sse-max-stall-ms`. Sequence numbers start at one and must be exact;
 duplicate, missing, future, malformed, or out-of-order frames fail the client
 closed. A valid cumulative acknowledgement proves possession of the selected
 frame's per-frame proof and releases server byte ownership through that
 sequence. Forged, stale, future, and already-released acknowledgements are
 oracle-free no-ops.
 
-`DbzzClient.sse(...)` acknowledges an application chunk only when the async
+`AckerDBClient.sse(...)` acknowledges an application chunk only when the async
 generator resumes after yielding it. It acknowledges `sse_done` before
 returning and `sse_error` before throwing its typed outcome. Acknowledgements
 use the capability and proof rather than the bearer credential, have a simple
@@ -210,10 +210,10 @@ errors, or is canceled.
 
 ## Client-side bounds
 
-`DBZZ_CLIENT_LIMITS` defaults to 4,096 retained items, 16 MiB retained bytes,
+`ACKERDB_CLIENT_LIMITS` defaults to 4,096 retained items, 16 MiB retained bytes,
 30-second query age, 24-hour mutation age, 1 MiB frames, and a 1 MiB SSE input
 buffer, plus a 5-second maximum SSE acknowledgement age. Capacity or deadline
-failure is surfaced as a typed `DbzzClientError`; it is not an unbounded local
+failure is surfaced as a typed `AckerDBClientError`; it is not an unbounded local
 queue. Returning the iterator, aborting its signal, or closing the client
 cancels every owned response/read boundary and releases the local reservation
 without awaiting a hostile or stuck cancellation promise. Server-side limits

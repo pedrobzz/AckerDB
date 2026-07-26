@@ -1,5 +1,5 @@
 {
-  "name": "@dbzz/client",
+  "name": "@ackerdb/client",
   "version": "0.10.0",
   "type": "module",
   "files": [
@@ -9,6 +9,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:0.10.0"
+    "@ackerdb/core": "workspace:0.10.0"
   }
 }

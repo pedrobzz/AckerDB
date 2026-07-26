@@ -1,5 +1,5 @@
 {
-  "name": "@dbzz/server",
+  "name": "@ackerdb/server",
   "version": "0.10.0",
   "type": "module",
   "files": [
@@ -10,7 +10,7 @@
     "./mcp": "./src/mcp/index.ts"
   },
   "dependencies": {
-    "@dbzz/core": "workspace:0.10.0",
+    "@ackerdb/core": "workspace:0.10.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "jose": "6.2.3",
     "numkong": "7.7.1"

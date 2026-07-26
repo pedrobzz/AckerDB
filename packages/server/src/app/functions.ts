@@ -14,7 +14,7 @@ import {
   type ErrResult,
   type OkResult,
   type Result,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   type Expand,
   type InferInputShape,
@@ -193,7 +193,7 @@ type ErrorDeclarationConstraint<
       : unknown
     : {
         readonly handler: {
-          readonly "DBzz: registered handlers may only return application Err(...) results": Exclude<
+          readonly "AckerDB: registered handlers may only return application Err(...) results": Exclude<
             ErrorOfReturn<HandlerReturn>,
             ApplicationError
           >;
@@ -315,7 +315,7 @@ export interface Registered<
   R,
   H = R,
 > extends Invocable<K, A, Ctx, R, H> {
-  readonly isDbzz: true;
+  readonly isAckerDB: true;
 }
 
 export type RegisteredQuery<
@@ -446,7 +446,7 @@ function register<K extends string>(kind: K) {
             throw new Error(`${kind}s cannot be called in-process — they exist at the transport boundary`);
           };
     const registered = Object.assign(callable, {
-      isDbzz: true as const,
+      isAckerDB: true as const,
       kind,
       args: def.args,
       ...(def.returns === undefined ? {} : { returns: def.returns }),
@@ -526,7 +526,7 @@ export function sseProcedure<
     throw new Error("sses cannot be called in-process — they exist at the transport boundary");
   };
   const registered = Object.assign(callable, {
-    isDbzz: true as const,
+    isAckerDB: true as const,
     kind: "sse" as const,
     args: def.args,
     yields: def.yields,
@@ -636,7 +636,7 @@ export function isRegisteredFunction(value: unknown): value is AnyRegistered {
   return (
     (typeof value === "object" || typeof value === "function") &&
     value !== null &&
-    (value as { isDbzz?: unknown }).isDbzz === true &&
+    (value as { isAckerDB?: unknown }).isAckerDB === true &&
     typeof (value as { kind?: unknown }).kind === "string" &&
     isAccessPolicy((value as { access?: unknown }).access)
   );

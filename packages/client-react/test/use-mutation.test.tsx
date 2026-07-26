@@ -7,16 +7,16 @@ import {
   parseClientMessage,
   type ClientMessage,
   type ServerMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
-  DbzzClientError,
+  AckerDBClientError,
   anyApi,
   type ClientResult,
-  type DbzzClientClock,
-  type DbzzClientLimits,
-  type DbzzWebSocket,
+  type AckerDBClientClock,
+  type AckerDBClientLimits,
+  type AckerDBWebSocket,
   type MutationRef,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import {
   Component,
   StrictMode,
@@ -28,7 +28,7 @@ import {
   type ReactNode,
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { DbzzProvider, useConnectionState, useMutation, type DbzzProviderConfig } from "@dbzz/client-react";
+import { AckerDBProvider, useConnectionState, useMutation, type AckerDBProviderConfig } from "@ackerdb/client-react";
 
 interface ClockTask {
   at: number;
@@ -36,7 +36,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
   private time = 1_700_000_000_000;
@@ -83,7 +83,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -128,10 +128,10 @@ const SESSION = "react-mutation-session";
 interface Harness {
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  config(url?: string): DbzzProviderConfig;
+  config(url?: string): AckerDBProviderConfig;
 }
 
-function createHarness(limits?: Partial<DbzzClientLimits>): Harness {
+function createHarness(limits?: Partial<AckerDBClientLimits>): Harness {
   const clock = new ManualClock();
   const sockets: FakeSocket[] = [];
   return {
@@ -163,7 +163,7 @@ function mustOk<Data>(result: ClientResult<Data>): Data {
   return result.data;
 }
 
-function mustErr<Data>(result: ClientResult<Data>): DbzzClientError {
+function mustErr<Data>(result: ClientResult<Data>): AckerDBClientError {
   if (result.ok) throw new Error("expected a failed Result");
   return result.error;
 }
@@ -252,9 +252,9 @@ describe("useMutation", () => {
     const container = mountPoint();
     const root = createRoot(container);
     const app = (url: string, tick: number): ReactNode => (
-      <DbzzProvider config={harness.config(url)}>
+      <AckerDBProvider config={harness.config(url)}>
         <probe.Component tick={tick} />
-      </DbzzProvider>
+      </AckerDBProvider>
     );
 
     await render(root, app("http://one.test", 0));
@@ -291,9 +291,9 @@ describe("useMutation", () => {
     const container = mountPoint();
     const root = createRoot(container);
     const app = (refAddress: string): ReactNode => (
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <probe.Component refAddress={refAddress} />
-      </DbzzProvider>
+      </AckerDBProvider>
     );
 
     await render(root, app("addTodo"));
@@ -323,9 +323,9 @@ describe("useMutation", () => {
     const root = createRoot(container);
     await render(
       root,
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <probe.Component />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     const socket = harness.sockets.at(-1)!;
     await act(async () => {
@@ -347,16 +347,16 @@ describe("useMutation", () => {
     });
   });
 
-  test("passes determinate failures and connection errors through as exact DbzzClientError values", async () => {
+  test("passes determinate failures and connection errors through as exact AckerDBClientError values", async () => {
     const harness = createHarness();
     const probe = createProbe();
     const container = mountPoint();
     const root = createRoot(container);
     await render(
       root,
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <probe.Component />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     const socket = harness.sockets.at(-1)!;
     await act(async () => {
@@ -377,14 +377,14 @@ describe("useMutation", () => {
       },
     });
     const failure = mustErr(await failed);
-    expect(failure).toBeInstanceOf(DbzzClientError);
+    expect(failure).toBeInstanceOf(AckerDBClientError);
     expect(failure).toMatchObject({
       code: "validation",
       retryable: false,
       message: "text is not allowed",
       resource: "operation",
     });
-    if (!(failure instanceof DbzzClientError)) throw new Error("expected DbzzClientError");
+    if (!(failure instanceof AckerDBClientError)) throw new Error("expected AckerDBClientError");
     expect(Object.isFrozen(failure.outcome)).toBe(true);
 
     // Connection-level authentication failure settles the pending mutation
@@ -421,9 +421,9 @@ describe("useMutation", () => {
     const root = createRoot(container);
     await render(
       root,
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <probe.Component />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     const first = harness.sockets.at(-1)!;
     await act(async () => {
@@ -472,9 +472,9 @@ describe("useMutation", () => {
     const root = createRoot(container);
     await render(
       root,
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <probe.Component />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     const socket = harness.sockets.at(-1)!;
     await act(async () => {
@@ -501,9 +501,9 @@ describe("useMutation", () => {
     const root = createRoot(container);
     await render(
       root,
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <probe.Component />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     const socket = harness.sockets.at(-1)!;
     await act(async () => {
@@ -553,9 +553,9 @@ describe("useMutation", () => {
 
     await render(
       root,
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <SendOnMount />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     const socket = harness.sockets.at(-1)!;
     await act(async () => {
@@ -593,9 +593,9 @@ describe("useMutation", () => {
 
     await render(
       root,
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <SendOnMount />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     const socket = harness.sockets.at(-1)!;
     await act(async () => {
@@ -636,9 +636,9 @@ describe("useMutation", () => {
 
     await render(
       root,
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <SendOnMount />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     const socket = harness.sockets.at(-1)!;
     await act(async () => {
@@ -648,10 +648,10 @@ describe("useMutation", () => {
     // Both malformed dispatches rejected their own calls, both from the same
     // drained queue...
     expect(String(mustErr(await poisonedFirst! as ClientResult<unknown>))).toContain(
-      "not a dbzz function reference",
+      "not a ackerdb function reference",
     );
     expect(String(mustErr(await poisonedSecond! as ClientResult<unknown>))).toContain(
-      "not a dbzz function reference",
+      "not a ackerdb function reference",
     );
     // ...and the healthy queued call still dispatched and resolves.
     const frames = mutationFrames(socket);
@@ -690,12 +690,12 @@ describe("useMutation", () => {
 
     await render(
       root,
-      <DbzzProvider config={harness.config()}>
+      <AckerDBProvider config={harness.config()}>
         <Gate />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     const failure = mustErr(await settlement! as ClientResult<unknown>);
-    expect(failure).toBeInstanceOf(DbzzClientError);
+    expect(failure).toBeInstanceOf(AckerDBClientError);
     expect(failure).toMatchObject({
       code: "unavailable",
       retryable: false,
@@ -734,9 +734,9 @@ describe("useMutation", () => {
     await render(
       root,
       <StrictMode>
-        <DbzzProvider config={harness.config()}>
+        <AckerDBProvider config={harness.config()}>
           <SendOnMount />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
     // Strict Mode's simulated remount constructed and closed a first client.
@@ -793,7 +793,7 @@ describe("useMutation", () => {
       </Boundary>,
     );
     expect(container.textContent).toBe("failed");
-    expect(String(caught)).toContain("useMutation requires a <DbzzProvider> ancestor");
+    expect(String(caught)).toContain("useMutation requires a <AckerDBProvider> ancestor");
     await act(async () => {
       root.unmount();
     });

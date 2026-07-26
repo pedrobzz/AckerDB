@@ -1,10 +1,10 @@
 import {
-  DbzzClientError,
+  AckerDBClientError,
   stableEncode,
-  type DbzzClient,
-  type DbzzLiveEvent,
+  type AckerDBClient,
+  type AckerDBLiveEvent,
   type EventRef,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import { useEffect, useInsertionEffect, useRef } from "react";
 import { useProviderClient } from "./provider.tsx";
 
@@ -13,19 +13,19 @@ import { useProviderClient } from "./provider.tsx";
 // from a superseded subscription — or arriving after unmount but before the
 // passive cleanup — reach nobody.
 interface Committed<Row> {
-  readonly onEvent: (event: DbzzLiveEvent<Row>) => void;
-  readonly onError: ((error: DbzzClientError) => void) | undefined;
-  readonly client: DbzzClient | null;
+  readonly onEvent: (event: AckerDBLiveEvent<Row>) => void;
+  readonly onError: ((error: AckerDBClientError) => void) | undefined;
+  readonly client: AckerDBClient | null;
   readonly address: string;
   readonly key: string;
   live: boolean;
 }
 
 /**
- * Subscribes to a typed dbzz event table for the enclosing provider's client
+ * Subscribes to a typed ackerdb event table for the enclosing provider's client
  * lifetime.
  *
- * dbzz event tables are transient, append-only streams: mutations publish rows
+ * ackerdb event tables are transient, append-only streams: mutations publish rows
  * that are never persisted, so there is nothing to update or delete. The
  * exhaustive event union is therefore the protocol's own: `row`, `gap`,
  * `reset`. The wire gives each cursor exactly one event, so a gap consumes the
@@ -52,7 +52,7 @@ interface Committed<Row> {
  *
  * When the client cannot accept subscriptions (closed, terminal protocol
  * failure, authentication-blocked, or pending-state limits) the failure is
- * reported to `onError` as an exact `DbzzClientError` value instead of
+ * reported to `onError` as an exact `AckerDBClientError` value instead of
  * throwing through the component tree. Errors follow base-client semantics: a
  * server rejection ends that subscription, while an authentication block
  * keeps it registered and the recovered connection re-attaches it behind a
@@ -61,8 +61,8 @@ interface Committed<Row> {
 export function useEvent<A, Row>(
   event: EventRef<A, Row>,
   args: NoInfer<A>,
-  onEvent: (event: DbzzLiveEvent<Row>) => void,
-  onError?: (error: DbzzClientError) => void,
+  onEvent: (event: AckerDBLiveEvent<Row>) => void,
+  onError?: (error: AckerDBClientError) => void,
 ): void {
   const client = useProviderClient("useEvent");
   const address = event.$ref;
@@ -109,7 +109,7 @@ export function useEvent<A, Row>(
         },
       );
     } catch (error) {
-      if (!(error instanceof DbzzClientError)) throw error;
+      if (!(error instanceof AckerDBClientError)) throw error;
       latest.current?.onError?.(error);
       return;
     }

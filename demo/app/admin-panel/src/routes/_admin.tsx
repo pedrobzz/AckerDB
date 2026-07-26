@@ -1,5 +1,5 @@
-import { useConnectionState, useQuery } from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
+import { useConnectionState, useQuery } from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
 import { Link, Outlet, createFileRoute } from "@tanstack/react-router";
 import {
   ChefHat,

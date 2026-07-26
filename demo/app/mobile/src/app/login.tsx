@@ -1,5 +1,5 @@
-import { useProcedure } from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
+import { useProcedure } from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
 import { router } from "expo-router";
 import { useState } from "react";
 import {

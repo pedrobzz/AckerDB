@@ -1,6 +1,6 @@
 # Telemetry
 
-DBZZ telemetry is enabled by default, bounded, privacy-filtered before
+AckerDB telemetry is enabled by default, bounded, privacy-filtered before
 retention, asynchronous, and fail-open for application work. It produces a
 backend-neutral schema rather than depending on one observability vendor.
 
@@ -11,11 +11,11 @@ instrumented.
 
 ## Enable, disable, and configure
 
-The CLI accepts an exact `DBZZ_TELEMETRY` value:
+The CLI accepts an exact `ACKERDB_TELEMETRY` value:
 
 ```sh
-DBZZ_TELEMETRY=enabled dbzz start ./apps/server   # default
-DBZZ_TELEMETRY=disabled dbzz start ./apps/server
+ACKERDB_TELEMETRY=enabled acker start ./apps/server   # default
+ACKERDB_TELEMETRY=disabled acker start ./apps/server
 ```
 
 Programmatic `Runtime` construction accepts `telemetry: false`, an existing
@@ -33,7 +33,7 @@ interface TelemetryOptions {
 ```
 
 `Telemetry`, its schema constants, `TelemetryLimits`, and all record, option,
-aggregate, and health snapshot types are public exports of `@dbzz/server`.
+aggregate, and health snapshot types are public exports of `@ackerdb/server`.
 `enabled: false` allocates no queue or timer and returns frozen singleton zero
 snapshots. Passing an existing `Telemetry` instance makes the caller its owner:
 `Runtime.drain()` flushes it but does not stop or fully drain that shared
@@ -322,7 +322,7 @@ When telemetry is enabled, current automatic span coverage is:
 | Ordered realtime | `match`, `evaluation`, `changed`, `unchanged`, `queue`, `fanout`, and logical subscriber `delivery`, with dependency/result/byte counts when known. |
 | WebSocket and SSE transport | `encoding`, `queue`, and `delivery` spans with bytes, duration, outcome, and `outbound`/`sse` resource. WebSocket `delivery` observes release from Bun's buffered-byte ownership (including delayed `onDrain`). SSE retains the frame's captured observer until a valid cumulative receiver acknowledgement releases it, or reports cancellation/terminal timeout as the delivery outcome. Terminal failures also emit a `failure` event. Capabilities, proofs, and chunk values are never recorded. |
 | HTTP procedure response | `procedure` `encoding` followed by `delivery`, both with resource `operation`, the original trace/request/function correlation, and exact encoded response bytes. `delivery` ends when the responder returns the constructed Bun `Response`; it is an encoded-response handoff, not proof of socket, kernel, or network completion. |
-| CLI backup and restore | Standalone `dbzz backup` and `dbzz restore` commands emit one `backup`/`restore` `storage` span with duration, sanitized outcome, artifact byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `DBZZ_TELEMETRY=disabled` removes it exactly. |
+| CLI backup and restore | Standalone `acker backup` and `acker restore` commands emit one `backup`/`restore` `storage` span with duration, sanitized outcome, artifact byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `ACKERDB_TELEMETRY=disabled` removes it exactly. |
 | Telemetry export | `exporter_degraded` events at the `export` stage; exporter attempts and durations are also metrics/status fields. |
 
 ### Credential verification correlation
@@ -361,7 +361,7 @@ capability holder, not durable application processing. HTTP handoff still proves
 neither socket, kernel, network, nor peer receipt.
 
 When telemetry is disabled, HTTP trace creation returns before allocating IDs
-or trace state and `DbzzServer` does not attach the WebSocket auth observer. The
+or trace state and `AckerDBServer` does not attach the WebSocket auth observer. The
 authentication paths still run, but this instrumentation creates no auth
 records, trace decisions, queue entries, or timers.
 

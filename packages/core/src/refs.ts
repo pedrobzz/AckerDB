@@ -40,7 +40,7 @@ export function getRef(
   if (typeof ref === "string") return ref;
   const address = ref.$ref;
   if (typeof address !== "string" || address.length === 0) {
-    throw new Error("not a dbzz function reference");
+    throw new Error("not a ackerdb function reference");
   }
   return address;
 }
@@ -72,7 +72,7 @@ export const anyApi: any = makeRefProxy("");
  * of the user's function modules without touching server code.
  */
 export interface RegisteredFunction<K extends FunctionKind = FunctionKind, A = unknown, R = unknown> {
-  readonly isDbzz: true;
+  readonly isAckerDB: true;
   readonly kind: K;
   readonly _argsType?: A;
   readonly _retType?: R;
@@ -80,10 +80,10 @@ export interface RegisteredFunction<K extends FunctionKind = FunctionKind, A = u
 
 /**
  * Marker for declarations that belong to the server module graph but are not
- * remotely callable DBZZ functions. Generated client APIs erase these keys.
+ * remotely callable AckerDB functions. Generated client APIs erase these keys.
  */
 export interface RegisteredServerOnly {
-  readonly isDbzzServerOnly: true;
+  readonly isAckerDBServerOnly: true;
 }
 
 type ResultData<Value> = Value extends OkResult<infer Data, infer _Error> ? Data : never;
@@ -91,7 +91,7 @@ type ResultError<Value> = Value extends ErrResult<infer Error, infer _Data> ? Er
 
 /**
  * Maps a record of module namespaces (arbitrarily nested) to the typed `api`
- * shape. Function files should export only dbzz functions (same convention as
+ * shape. Function files should export only ackerdb functions (same convention as
  * Convex); other exports produce unusable branches, not errors.
  */
 export type ApiFromModules<T> = {

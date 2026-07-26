@@ -13,7 +13,7 @@ import {
   reconcilePluginStorage,
   v,
   type PluginStorageRequirement,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { loadConfig } from "../../src/app/config.ts";
 import { startApp } from "../../src/app/start.ts";
 import {
@@ -23,7 +23,7 @@ import {
   renderPluginStorageRequirement,
   runPluginStorageConsentForm,
 } from "../../src/plugins/storage.ts";
-import { desiredPluginMounts } from "@dbzz/server";
+import { desiredPluginMounts } from "@ackerdb/server";
 import { makeFixture } from "../support/fixture.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
@@ -40,7 +40,7 @@ const pluginV1 = defineSchema({
 });
 
 const APP = (pluginSchema: string | null, rootExtra = "", pluginExtra = "") => `
-import { defineApp, definePlugin, defineSchema, defineTable, v } from "@dbzz/server";
+import { defineApp, definePlugin, defineSchema, defineTable, v } from "@ackerdb/server";
 const schema = defineSchema({
   roots: defineTable({ id: v.primaryKey(), value: v.string() }),
   ${rootExtra}
@@ -64,7 +64,7 @@ function seed(
 ): { dir: string; config: ReturnType<typeof loadConfig> } {
   const dir = makeFixture({
     "app.ts": APP(pluginSchema, options.rootExtra),
-    ".dbzz.config.json": JSON.stringify(
+    ".ackerdb.config.json": JSON.stringify(
       options.port === undefined ? {} : { port: options.port },
     ),
     ...options.files,
@@ -76,7 +76,7 @@ function seed(
   reconcile(engine);
   reconcilePluginStorage(engine, { cache: { definitionId: "@test/cache", schema: pluginV1 } });
   engine.writer.query("INSERT INTO roots (id, value) VALUES (1, 'root')").run();
-  engine.writer.query('INSERT INTO "_dbzz_plugin_5:cacheentries" (id, value) VALUES (1, \'cached\')').run();
+  engine.writer.query('INSERT INTO "_ackerdb_plugin_5:cacheentries" (id, value) VALUES (1, \'cached\')').run();
   engine.close("clean");
   return { dir, config };
 }
@@ -85,7 +85,7 @@ function runCli(args: string[]): number {
   const child = Bun.spawnSync([process.execPath, CLI, ...args], {
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, DBZZ_TELEMETRY: "disabled" },
+    env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
   });
   return child.exitCode;
 }
@@ -109,8 +109,8 @@ function rowCounts(config: ReturnType<typeof loadConfig>): { root: number; plugi
     return {
       root: count("roots"),
       plugin: existsSync(join(config.dbDir, "data.db")) &&
-        (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get("_dbzz_plugin_5:cacheentries") !== null)
-        ? count('"_dbzz_plugin_5:cacheentries"')
+        (db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get("_ackerdb_plugin_5:cacheentries") !== null)
+        ? count('"_ackerdb_plugin_5:cacheentries"')
         : null,
     };
   } finally {
@@ -121,7 +121,7 @@ function rowCounts(config: ReturnType<typeof loadConfig>): { root: number; plugi
 function cleanShutdown(config: ReturnType<typeof loadConfig>): number {
   const db = new Database(join(config.dbDir, "data.db"), { readonly: true });
   try {
-    return Number((db.query("SELECT clean_shutdown FROM _dbzz_state WHERE singleton = 1").get() as {
+    return Number((db.query("SELECT clean_shutdown FROM _ackerdb_state WHERE singleton = 1").get() as {
       clean_shutdown: number;
     }).clean_shutdown);
   } finally {
@@ -200,7 +200,7 @@ describe("Plugin storage CLI boundary", () => {
 
     const safeDir = makeFixture({
       "app.ts": APP("v.string()", "", "note: v.string().nullable(),"),
-      ".dbzz.config.json": JSON.stringify({ db: unsafe.config.dbDir }),
+      ".ackerdb.config.json": JSON.stringify({ db: unsafe.config.dbDir }),
     });
     dirs.push(safeDir);
     const safe = loadConfig(safeDir);
@@ -214,7 +214,7 @@ describe("Plugin storage CLI boundary", () => {
     expect(rowCounts(unsafe.config)).toEqual({ root: 1, plugin: 1 });
     const db = new Database(join(unsafe.config.dbDir, "data.db"), { readonly: true });
     try {
-      const columns = db.query('PRAGMA table_info("_dbzz_plugin_5:cacheentries")').all() as Array<{ name: string }>;
+      const columns = db.query('PRAGMA table_info("_ackerdb_plugin_5:cacheentries")').all() as Array<{ name: string }>;
       expect(columns.map((column) => column.name)).toContain("note");
     } finally {
       db.close();
@@ -224,7 +224,7 @@ describe("Plugin storage CLI boundary", () => {
   test("explicit reset/drop commands re-prove the current requirement and preserve root storage", async () => {
     const reset = seed("v.bigint()");
     await expect(executePluginStorageCommand(reset.config, "drop", "cache")).rejects.toThrow(
-      'requires `dbzz plugin reset cache',
+      'requires `acker plugin reset cache',
     );
     expect(rowCounts(reset.config)).toEqual({ root: 1, plugin: 1 });
     expect(cleanShutdown(reset.config)).toBe(1);
@@ -250,7 +250,7 @@ describe("Plugin storage CLI boundary", () => {
     const db = new Database(join(config.dbDir, "data.db"), { readonly: true });
     try {
       expect(db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'newRoots'").get()).toBeNull();
-      expect((db.query("SELECT count(*) AS count FROM _dbzz_migrations").get() as { count: number }).count).toBe(0);
+      expect((db.query("SELECT count(*) AS count FROM _ackerdb_migrations").get() as { count: number }).count).toBe(0);
     } finally {
       db.close();
     }
@@ -262,7 +262,7 @@ describe("Plugin storage CLI boundary", () => {
     const { dir, config } = seed("v.bigint()", { port: await freePort() });
 
     await expect(startApp(config)).rejects.toThrow(
-      new RegExp(`Plugin storage requires explicit consent[\\s\\S]*dbzz plugin reset cache ${dir}`),
+      new RegExp(`Plugin storage requires explicit consent[\\s\\S]*acker plugin reset cache ${dir}`),
     );
     expect(rowCounts(config)).toEqual({ root: 1, plugin: 1 });
 

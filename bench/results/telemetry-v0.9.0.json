@@ -18,12 +18,12 @@
     "fileDescriptorLimit": 1048576
   },
   "executionOrder": [
-    "dbzz-telemetry-disabled"
+    "ackerdb-telemetry-disabled"
   ],
   "profiles": {
     "disabled": {
       "workload": {
-        "system": "dbzz",
+        "system": "ackerdb",
         "config": {
           "profile": "default",
           "seed": 56098,

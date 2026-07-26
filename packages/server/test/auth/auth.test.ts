@@ -12,13 +12,13 @@ import {
   type UserPrincipal,
 } from "../../src/auth/credentials.ts";
 import { v, ValidationError } from "../../src/validation/v.ts";
-import { DbzzError, type DbzzErrorCode } from "../../src/shared/errors.ts";
+import { AckerDBError, type AckerDBErrorCode } from "../../src/shared/errors.ts";
 import { query } from "../../src/app/functions.ts";
 import { invokeFunction } from "../../src/app/invocation.ts";
 
 const ISSUER = "https://issuer.example/";
 const JWKS_URI = "https://issuer.example/jwks";
-const AUDIENCE = "dbzz-test";
+const AUDIENCE = "ackerdb-test";
 
 function userPrincipal(subject = "user-1"): UserPrincipal {
   return Object.freeze({
@@ -32,13 +32,13 @@ function userPrincipal(subject = "user-1"): UserPrincipal {
   });
 }
 
-async function expectDbzzError(promise: Promise<unknown>, code: DbzzErrorCode): Promise<DbzzError> {
+async function expectAckerDBError(promise: Promise<unknown>, code: AckerDBErrorCode): Promise<AckerDBError> {
   try {
     await promise;
   } catch (error) {
-    expect(error).toBeInstanceOf(DbzzError);
-    expect((error as DbzzError).code).toBe(code);
-    return error as DbzzError;
+    expect(error).toBeInstanceOf(AckerDBError);
+    expect((error as AckerDBError).code).toBe(code);
+    return error as AckerDBError;
   }
   throw new Error(`expected ${code}`);
 }
@@ -50,8 +50,8 @@ describe("principals and invocation access", () => {
       kind: "bearer",
       token: "token-value",
     });
-    expect(() => credentialFromAuthorization("Basic secret")).toThrow(DbzzError);
-    expect(() => credentialFromAuthorization("Bearer one, Bearer two")).toThrow(DbzzError);
+    expect(() => credentialFromAuthorization("Basic secret")).toThrow(AckerDBError);
+    expect(() => credentialFromAuthorization("Bearer one, Bearer two")).toThrow(AckerDBError);
 
     const mutableClaims = { roles: ["reader"] };
     const verifier: CredentialVerifier = {
@@ -77,7 +77,7 @@ describe("principals and invocation access", () => {
     expect(principal.identity as bigint).toBe(7n);
     expect(Object.isFrozen(principal)).toBe(true);
     expect(Object.isFrozen(mutableClaims.roles)).toBe(true);
-    await expectDbzzError(
+    await expectAckerDBError(
       verifyClientCredential(
         { kind: "bearer", token: "token-value" },
         verifier,
@@ -146,7 +146,7 @@ describe("principals and invocation access", () => {
         tokenId: null,
       }),
     };
-    await expectDbzzError(
+    await expectAckerDBError(
       verifyClientCredential(
         { kind: "bearer", token: "expires-during-resolution" },
         verifier,
@@ -162,13 +162,13 @@ describe("principals and invocation access", () => {
 
   test("framework errors cannot encode an invalid structured outcome", () => {
     expect(
-      () => new DbzzError("overloaded", "busy", { retryAfterMs: 1 }),
+      () => new AckerDBError("overloaded", "busy", { retryAfterMs: 1 }),
     ).toThrow("retryAfterMs requires retryable");
     expect(
-      () => new DbzzError("convergence_unavailable", "committed"),
+      () => new AckerDBError("convergence_unavailable", "committed"),
     ).toThrow("must be committed");
     expect(
-      new DbzzError("convergence_unavailable", "committed", { committed: true }).committed,
+      new AckerDBError("convergence_unavailable", "committed", { committed: true }).committed,
     ).toBe(true);
   });
 
@@ -294,11 +294,11 @@ describe("principals and invocation access", () => {
       handler: (ctx) => ctx.auth.kind,
     });
 
-    await expectDbzzError(authenticated({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthenticated");
+    await expectAckerDBError(authenticated({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthenticated");
     expect((await authenticated({ auth: userPrincipal() }, {})).data).toBe("user");
     expect((await authenticated({ auth: SYSTEM_PRINCIPAL }, {})).data).toBe("system");
-    await expectDbzzError(system({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthenticated");
-    await expectDbzzError(system({ auth: userPrincipal() }, {}), "unauthorized");
+    await expectAckerDBError(system({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthenticated");
+    await expectAckerDBError(system({ auth: userPrincipal() }, {}), "unauthorized");
     expect((await system({ auth: SYSTEM_PRINCIPAL }, {})).data).toBe("system");
   });
 
@@ -311,23 +311,23 @@ describe("principals and invocation access", () => {
     const throws = query({
       args: {},
       access: () => {
-        throw new DbzzError("internal", "private policy detail");
+        throw new AckerDBError("internal", "private policy detail");
       },
       handler: () => "unreachable",
     });
     const asyncThrows = query({
       args: {},
       access: async () => {
-        throw new DbzzError("internal", "private async policy detail");
+        throw new AckerDBError("internal", "private async policy detail");
       },
       handler: () => "unreachable",
     });
 
-    await expectDbzzError(denied({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthenticated");
-    await expectDbzzError(denied({ auth: userPrincipal() }, {}), "unauthorized");
-    const error = await expectDbzzError(throws({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthorized");
+    await expectAckerDBError(denied({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthenticated");
+    await expectAckerDBError(denied({ auth: userPrincipal() }, {}), "unauthorized");
+    const error = await expectAckerDBError(throws({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthorized");
     expect(error.message).toBe("access denied");
-    const asyncError = await expectDbzzError(
+    const asyncError = await expectAckerDBError(
       asyncThrows({ auth: ANONYMOUS_PRINCIPAL }, {}),
       "unauthorized",
     );
@@ -357,7 +357,7 @@ describe("principals and invocation access", () => {
 
     expect((await samePrincipal({ auth: ANONYMOUS_PRINCIPAL }, {})).data).toBe("anonymous");
     expect(calleePolicyCalls).toBe(1);
-    await expectDbzzError(replacedPrincipal({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthorized");
+    await expectAckerDBError(replacedPrincipal({ auth: ANONYMOUS_PRINCIPAL }, {}), "unauthorized");
     expect(calleePolicyCalls).toBe(1);
   });
 });
@@ -467,7 +467,7 @@ describe("createOidcVerifier", () => {
     const verifier = createOidcVerifier(fixture.options);
     const unknownIssuerToken = await fixture.token({ issuer: "https://attacker.example/" });
 
-    await expectDbzzError(verifier.verify(unknownIssuerToken), "unauthenticated");
+    await expectAckerDBError(verifier.verify(unknownIssuerToken), "unauthenticated");
     expect(fixture.networkCalls()).toBe(0);
   });
 
@@ -480,17 +480,17 @@ describe("createOidcVerifier", () => {
     const futureNbf = await fixture.token({ notBefore: Math.floor(Date.now() / 1_000) + 3_600 });
     const missingExp = await fixture.token({ expiresAt: null });
 
-    await expectDbzzError(verifier.verify(wrongAudience), "unauthenticated");
-    await expectDbzzError(verifier.verify(wrongType), "unauthenticated");
-    await expectDbzzError(verifier.verify(futureNbf), "unauthenticated");
-    await expectDbzzError(verifier.verify(missingExp), "unauthenticated");
+    await expectAckerDBError(verifier.verify(wrongAudience), "unauthenticated");
+    await expectAckerDBError(verifier.verify(wrongType), "unauthenticated");
+    await expectAckerDBError(verifier.verify(futureNbf), "unauthenticated");
+    await expectAckerDBError(verifier.verify(missingExp), "unauthenticated");
   });
 
   test("rejects oversized credentials before decoding or fetching", async () => {
     const fixture = await issuerFixture();
     const verifier = createOidcVerifier(fixture.options);
 
-    await expectDbzzError(verifier.verify("x".repeat(16 * 1024 + 1)), "unauthenticated");
+    await expectAckerDBError(verifier.verify("x".repeat(16 * 1024 + 1)), "unauthenticated");
     expect(fixture.networkCalls()).toBe(0);
   });
 
@@ -504,7 +504,7 @@ describe("createOidcVerifier", () => {
         }),
     });
     const verifier = createOidcVerifier(fixture.options);
-    const error = await expectDbzzError(verifier.verify(await fixture.token()), "auth_unavailable");
+    const error = await expectAckerDBError(verifier.verify(await fixture.token()), "auth_unavailable");
 
     expect(error.retryable).toBe(true);
   });

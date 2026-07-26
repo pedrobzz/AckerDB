@@ -1,29 +1,29 @@
 # First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools — issue breakdown
 
 - Parent PRD: `PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools`
-- Source PRD: approved local draft published as [GitHub issue #19](https://github.com/pedrobzz/dbzz/issues/19)
+- Source PRD: approved local draft published as [GitHub issue #19](https://github.com/pedrobzz/ackerdb/issues/19)
 - Date generated: 2026-07-16
 
 | ID | GitHub | Title | Type | Blocked by | User stories |
 | --- | --- | --- | --- | --- | --- |
-| ISSUE-01 | [#26](https://github.com/pedrobzz/dbzz/issues/26) | Public transactional MCP over stateless HTTP | AFK | None | 16–18, 25–27, 36–37, 43–44, 46–47, 61–62 |
-| ISSUE-02 | [#27](https://github.com/pedrobzz/dbzz/issues/27) | Multiple named MCP endpoints and deterministic routing | AFK | ISSUE-01 | 19–21 |
-| ISSUE-03 | [#28](https://github.com/pedrobzz/dbzz/issues/28) | Typed structured tools from validator to protocol result | AFK | ISSUE-01 | 28–29, 38–39, 63 |
-| ISSUE-04 | [#29](https://github.com/pedrobzz/dbzz/issues/29) | Lossless DBZZ values at the MCP boundary | AFK | ISSUE-03 | 64–66 |
-| ISSUE-05 | [#30](https://github.com/pedrobzz/dbzz/issues/30) | Host annotations and explicit rich-content results | AFK | ISSUE-01 | 30, 40 |
-| ISSUE-06 | [#31](https://github.com/pedrobzz/dbzz/issues/31) | Identity-bound owner tokens from creation to authenticated call | AFK | ISSUE-01; Identity ISSUE-16 from parent #3 | 1–7, 13, 15 |
-| ISSUE-07 | [#32](https://github.com/pedrobzz/dbzz/issues/32) | Reactive owner token lifecycle | AFK | ISSUE-06 | 8–9, 11–12 |
-| ISSUE-08 | [#33](https://github.com/pedrobzz/dbzz/issues/33) | Exact typed scopes and explicit any/all authorization | AFK | ISSUE-03, ISSUE-06 | 10, 22–24, 31–32 |
-| ISSUE-09 | [#34](https://github.com/pedrobzz/dbzz/issues/34) | Least-privilege discovery and call-time reauthorization | AFK | ISSUE-08 | 33–35, 48 |
-| ISSUE-10 | [#35](https://github.com/pedrobzz/dbzz/issues/35) | Bounded live revocation and scope reduction | AFK | ISSUE-07, ISSUE-09 | 67 |
-| ISSUE-11 | [#36](https://github.com/pedrobzz/dbzz/issues/36) | Explicit system-managed integration tokens | AFK | ISSUE-06 | 14 |
-| ISSUE-12 | [#37](https://github.com/pedrobzz/dbzz/issues/37) | Hardened MCP HTTP security boundary | AFK | ISSUE-09 | 45, 49–50 |
-| ISSUE-13 | [#38](https://github.com/pedrobzz/dbzz/issues/38) | MCP calls under DBZZ runtime ownership | AFK | ISSUE-12 | 68 |
-| ISSUE-14 | [#39](https://github.com/pedrobzz/dbzz/issues/39) | Public zero-hop AI SDK v7 tools | AFK | ISSUE-03, ISSUE-05 | 51–52, 56, 59–60 |
-| ISSUE-15 | [#40](https://github.com/pedrobzz/dbzz/issues/40) | Identity-preserving local delegation | AFK | ISSUE-08, ISSUE-14; Identity ISSUE-16 from parent #3 | 53–55, 57 |
-| ISSUE-16 | [#41](https://github.com/pedrobzz/dbzz/issues/41) | Cancellation through local tools and queued transactions | AFK | ISSUE-13, ISSUE-15 | 58 |
-| ISSUE-17 | [#42](https://github.com/pedrobzz/dbzz/issues/42) | Automated MCP conformance and performance evidence | AFK | ISSUE-01 through ISSUE-16 | 69–70 except real-host acceptance |
-| ISSUE-18 | [#43](https://github.com/pedrobzz/dbzz/issues/43) | Real Codex and Claude Code acceptance | HITL | ISSUE-12, ISSUE-17 | 41–42, 69 |
+| ISSUE-01 | [#26](https://github.com/pedrobzz/ackerdb/issues/26) | Public transactional MCP over stateless HTTP | AFK | None | 16–18, 25–27, 36–37, 43–44, 46–47, 61–62 |
+| ISSUE-02 | [#27](https://github.com/pedrobzz/ackerdb/issues/27) | Multiple named MCP endpoints and deterministic routing | AFK | ISSUE-01 | 19–21 |
+| ISSUE-03 | [#28](https://github.com/pedrobzz/ackerdb/issues/28) | Typed structured tools from validator to protocol result | AFK | ISSUE-01 | 28–29, 38–39, 63 |
+| ISSUE-04 | [#29](https://github.com/pedrobzz/ackerdb/issues/29) | Lossless AckerDB values at the MCP boundary | AFK | ISSUE-03 | 64–66 |
+| ISSUE-05 | [#30](https://github.com/pedrobzz/ackerdb/issues/30) | Host annotations and explicit rich-content results | AFK | ISSUE-01 | 30, 40 |
+| ISSUE-06 | [#31](https://github.com/pedrobzz/ackerdb/issues/31) | Identity-bound owner tokens from creation to authenticated call | AFK | ISSUE-01; Identity ISSUE-16 from parent #3 | 1–7, 13, 15 |
+| ISSUE-07 | [#32](https://github.com/pedrobzz/ackerdb/issues/32) | Reactive owner token lifecycle | AFK | ISSUE-06 | 8–9, 11–12 |
+| ISSUE-08 | [#33](https://github.com/pedrobzz/ackerdb/issues/33) | Exact typed scopes and explicit any/all authorization | AFK | ISSUE-03, ISSUE-06 | 10, 22–24, 31–32 |
+| ISSUE-09 | [#34](https://github.com/pedrobzz/ackerdb/issues/34) | Least-privilege discovery and call-time reauthorization | AFK | ISSUE-08 | 33–35, 48 |
+| ISSUE-10 | [#35](https://github.com/pedrobzz/ackerdb/issues/35) | Bounded live revocation and scope reduction | AFK | ISSUE-07, ISSUE-09 | 67 |
+| ISSUE-11 | [#36](https://github.com/pedrobzz/ackerdb/issues/36) | Explicit system-managed integration tokens | AFK | ISSUE-06 | 14 |
+| ISSUE-12 | [#37](https://github.com/pedrobzz/ackerdb/issues/37) | Hardened MCP HTTP security boundary | AFK | ISSUE-09 | 45, 49–50 |
+| ISSUE-13 | [#38](https://github.com/pedrobzz/ackerdb/issues/38) | MCP calls under AckerDB runtime ownership | AFK | ISSUE-12 | 68 |
+| ISSUE-14 | [#39](https://github.com/pedrobzz/ackerdb/issues/39) | Public zero-hop AI SDK v7 tools | AFK | ISSUE-03, ISSUE-05 | 51–52, 56, 59–60 |
+| ISSUE-15 | [#40](https://github.com/pedrobzz/ackerdb/issues/40) | Identity-preserving local delegation | AFK | ISSUE-08, ISSUE-14; Identity ISSUE-16 from parent #3 | 53–55, 57 |
+| ISSUE-16 | [#41](https://github.com/pedrobzz/ackerdb/issues/41) | Cancellation through local tools and queued transactions | AFK | ISSUE-13, ISSUE-15 | 58 |
+| ISSUE-17 | [#42](https://github.com/pedrobzz/ackerdb/issues/42) | Automated MCP conformance and performance evidence | AFK | ISSUE-01 through ISSUE-16 | 69–70 except real-host acceptance |
+| ISSUE-18 | [#43](https://github.com/pedrobzz/ackerdb/issues/43) | Real Codex and Claude Code acceptance | HITL | ISSUE-12, ISSUE-17 | 41–42, 69 |
 
 ## ISSUE-01: Public transactional MCP over stateless HTTP
 
@@ -33,11 +33,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
-Deliver the first complete MCP path: an exported, explicitly named schema-bound MCP with one public transactional tool mounted at the default `/mcp` route. A standard client must initialize, list the tool, call it with validated JSON arguments, execute normal DBZZ query/mutation composition, and receive a JSON-RPC result. MCP exports remain server-only and GET/DELETE explicitly reject session semantics.
+Deliver the first complete MCP path: an exported, explicitly named schema-bound MCP with one public transactional tool mounted at the default `/mcp` route. A standard client must initialize, list the tool, call it with validated JSON arguments, execute normal AckerDB query/mutation composition, and receive a JSON-RPC result. MCP exports remain server-only and GET/DELETE explicitly reject session semantics.
 
 ### Why this slice exists
 
@@ -47,7 +47,7 @@ Every later token, scope, output, and AI adapter needs one real protocol path. T
 
 - [ ] An explicit MCP declaration and lower-snake-case public tool are discovered from server modules and schema-bind the handler context.
 - [ ] The default `/mcp` route supports initialize, initialized notification, ping, `tools/list`, and `tools/call` through bounded standard JSON POST bodies and JSON responses.
-- [ ] The public handler receives normal DBZZ principal, abort, and transaction/composition capabilities and can commit a visible database change.
+- [ ] The public handler receives normal AckerDB principal, abort, and transaction/composition capabilities and can commit a visible database change.
 - [ ] Tool input is validated before handler execution and validation/handler failures become safe MCP errors.
 - [ ] MCP declarations and tools are omitted from generated client function references.
 - [ ] GET and DELETE return explicit method responses and no session ID, SSE stream, or second server is created.
@@ -56,7 +56,7 @@ Every later token, scope, output, and AI adapter needs one real protocol path. T
 ### Implementation notes
 
 - Extend the existing registry with a distinct server-only export kind instead of disguising tools as procedures.
-- Mount into the existing Bun listener and reuse bounded body parsing; do not use DBZZ's private tagged wire codec.
+- Mount into the existing Bun listener and reuse bounded body parsing; do not use AckerDB's private tagged wire codec.
 - Build the shared dispatcher as the only handler execution path from the first slice.
 - If this work changes the release version, run one Hetzner release benchmark against the preceding version; do not create a pre-change baseline.
 
@@ -87,11 +87,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
-Expose two independently named MCP declarations on distinct custom paths with separate instructions and tools. Route and declaration identity must remain stable across export renames, while duplicate names, paths, tool names, and collisions with DBZZ built-ins fail deterministically before serving.
+Expose two independently named MCP declarations on distinct custom paths with separate instructions and tools. Route and declaration identity must remain stable across export renames, while duplicate names, paths, tool names, and collisions with AckerDB built-ins fail deterministically before serving.
 
 ### Why this slice exists
 
@@ -108,7 +108,7 @@ A second endpoint proves that naming and routing are real framework primitives r
 ### Implementation notes
 
 - Validate the complete registry after application loading rather than depending on module import order.
-- Keep instructions and bounded endpoint metadata inside the DBZZ declaration abstraction.
+- Keep instructions and bounded endpoint metadata inside the AckerDB declaration abstraction.
 - Do not infer names from source variables or add MCP-specific code generation.
 
 ## Blocked by
@@ -137,11 +137,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
-Deliver one described tool whose DBZZ input and object output validators drive handler inference, runtime validation, JSON Schema 2020-12 discovery, Standard Schema behavior, structured MCP content, and the required canonical JSON text result from one descriptor.
+Deliver one described tool whose AckerDB input and object output validators drive handler inference, runtime validation, JSON Schema 2020-12 discovery, Standard Schema behavior, structured MCP content, and the required canonical JSON text result from one descriptor.
 
 ### Why this slice exists
 
@@ -149,7 +149,7 @@ Models and callers can only trust a tool when its advertised schema, runtime beh
 
 ## Acceptance criteria
 
-- [ ] DBZZ validators support human descriptions on tool fields and produce honest JSON Schema 2020-12 object schemas.
+- [ ] AckerDB validators support human descriptions on tool fields and produce honest JSON Schema 2020-12 object schemas.
 - [ ] The same validator descriptor provides Standard Schema-compatible validation without depending on AI SDK.
 - [ ] Tool handler input/output types are inferred end to end from the declaration.
 - [ ] Advertised input and output schemas have object roots and match `tools/list` exactly.
@@ -180,7 +180,7 @@ Models and callers can only trust a tool when its advertised schema, runtime beh
 
 - Non-JSON-native values, rich MCP content, annotations, and model-provider-specific strict-schema limitations.
 
-## ISSUE-04: Lossless DBZZ values at the MCP boundary
+## ISSUE-04: Lossless AckerDB values at the MCP boundary
 
 ### Type
 
@@ -188,11 +188,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
-Extend structured tools with canonical protocol conversion for DBZZ values that standard JSON cannot represent directly. Bigint and Identity cross as lossless decimal strings, bytes cross as base64, and validator shapes without one consistent HTTP/local representation are rejected at startup.
+Extend structured tools with canonical protocol conversion for AckerDB values that standard JSON cannot represent directly. Bigint and Identity cross as lossless decimal strings, bytes cross as base64, and validator shapes without one consistent HTTP/local representation are rejected at startup.
 
 ### Why this slice exists
 
@@ -209,7 +209,7 @@ Silent precision loss or divergent conversion would make database tools unsafe. 
 ### Implementation notes
 
 - Keep conversion in the validator/protocol boundary, not scattered through tool handlers.
-- Do not use tagged DBZZ wire values in MCP JSON.
+- Do not use tagged AckerDB wire values in MCP JSON.
 - Identity's protocol string does not change its branded runtime representation inside handlers.
 
 ## Blocked by
@@ -238,7 +238,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
@@ -254,11 +254,11 @@ Rich agent results and host approval hints are valuable, but they should not wea
 - [ ] A tool without structured output returns only the explicit MCP content-result union.
 - [ ] Text, image, audio, embedded-resource, resource-link, metadata, mixed-content, and intentional-error cases serialize correctly.
 - [ ] Arbitrary handler return values fail type checking and runtime validation.
-- [ ] Annotations remain hints and never replace DBZZ authorization.
+- [ ] Annotations remain hints and never replace AckerDB authorization.
 
 ### Implementation notes
 
-- Use the stable protocol content types behind DBZZ-owned public types.
+- Use the stable protocol content types behind AckerDB-owned public types.
 - Keep structured and rich-content result modes explicit and mutually understandable.
 - Do not expose official SDK result types as the public API.
 
@@ -288,11 +288,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
-Deliver the first delegated-user path: an externally authenticated owner uses an application mutation to create and list multiple endpoint-bound MCP tokens, copies the one-time secret into an HTTP client, and calls an authenticated tool whose principal contains the same durable DBZZ Identity. Revocation and metadata editing remain later slices.
+Deliver the first delegated-user path: an externally authenticated owner uses an application mutation to create and list multiple endpoint-bound MCP tokens, copies the one-time secret into an HTTP client, and calls an authenticated tool whose principal contains the same durable AckerDB Identity. Revocation and metadata editing remain later slices.
 
 ### Why this slice exists
 
@@ -344,7 +344,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
@@ -365,7 +365,7 @@ Applications need safe management screens and policy hooks, but secret rotation 
 
 ### Implementation notes
 
-- Integrate internal token descriptor keys with DBZZ read/write dependency tracking.
+- Integrate internal token descriptor keys with AckerDB read/write dependency tracking.
 - Keep revocation's active-work invalidation for ISSUE-10; this slice guarantees new-request rejection.
 - Metadata stays bounded opaque application data and never affects authorization.
 
@@ -395,7 +395,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
@@ -417,7 +417,7 @@ Delegation needs least privilege, but inferred CRUD/wildcard behavior and ambigu
 
 ### Implementation notes
 
-- Treat scopes as coarse delegated capability; handlers and nested DBZZ functions still enforce row/tenant/business access.
+- Treat scopes as coarse delegated capability; handlers and nested AckerDB functions still enforce row/tenant/business access.
 - Do not create default CRUD scopes or a bare scope-array policy.
 - Commit scope updates atomically; live invalidation follows in ISSUE-10.
 
@@ -448,7 +448,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
@@ -499,7 +499,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
@@ -551,7 +551,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
@@ -601,7 +601,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
@@ -617,7 +617,7 @@ A correct tool protocol is not a safe public endpoint until browser/DNS-rebindin
 - [ ] Configured Host validation rejects unexpected hosts and invalid Origin receives HTTP 403.
 - [ ] Requests without Origin from native MCP hosts remain usable under Host policy.
 - [ ] Bearer secrets, provider credentials, tool arguments, sensitive results, and unbounded values never enter logs or metric labels.
-- [ ] Production deployment requires HTTPS at DBZZ or a trusted terminating proxy.
+- [ ] Production deployment requires HTTPS at AckerDB or a trusted terminating proxy.
 - [ ] Body, header, tool-count, and telemetry-cardinality limits fail safely.
 
 ### Implementation notes
@@ -644,7 +644,7 @@ A correct tool protocol is not a safe public endpoint until browser/DNS-rebindin
 
 - OAuth protected-resource metadata, browser credential UI, reverse-proxy implementation, and stateful sessions.
 
-## ISSUE-13: MCP calls under DBZZ runtime ownership
+## ISSUE-13: MCP calls under AckerDB runtime ownership
 
 ### Type
 
@@ -652,11 +652,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
-Prove and harden concurrent MCP calls under the existing DBZZ Runtime: per-principal fairness, admission, nested invocation, transaction ownership, cancellation, telemetry, drain, and shutdown must work without a second listener, conflicting top-level lease, or leaked resource.
+Prove and harden concurrent MCP calls under the existing AckerDB Runtime: per-principal fairness, admission, nested invocation, transaction ownership, cancellation, telemetry, drain, and shutdown must work without a second listener, conflicting top-level lease, or leaked resource.
 
 ### Why this slice exists
 
@@ -705,7 +705,7 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
@@ -722,7 +722,7 @@ This proves the performance-critical same-process adapter while reusing the exac
 - [ ] Execution enters the shared dispatcher and performs no HTTP, MCP initialize/list exchange, or token lookup.
 - [ ] Public structured and rich-content tools preserve the same semantic results as HTTP.
 - [ ] Unauthorized/unavailable tools are omitted by default.
-- [ ] `@dbzz/server` has no AI SDK production dependency; the exact supported v7 release is pinned only for integration testing or existing optional AI surfaces.
+- [ ] `@ackerdb/server` has no AI SDK production dependency; the exact supported v7 release is pinned only for integration testing or existing optional AI surfaces.
 
 ### Implementation notes
 
@@ -757,11 +757,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
-Allow server code to grant an explicit subset of declared scopes to zero-hop tools while retaining the parent DBZZ principal and Identity. Anonymous invocations cannot manufacture Identity, existing MCP principals cannot exceed their token grant, and an explicit include-unavailable mode may show denied tool context without enabling execution.
+Allow server code to grant an explicit subset of declared scopes to zero-hop tools while retaining the parent AckerDB principal and Identity. Anonymous invocations cannot manufacture Identity, existing MCP principals cannot exceed their token grant, and an explicit include-unavailable mode may show denied tool context without enabling execution.
 
 ### Why this slice exists
 
@@ -810,11 +810,11 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
-Combine the AI SDK tool execution signal with the outer DBZZ invocation signal and propagate the child signal through the dispatcher, handler, nested calls, new transactions, and queued writer work. Cancelling generation must promptly stop all owned work without affecting sibling calls.
+Combine the AI SDK tool execution signal with the outer AckerDB invocation signal and propagate the child signal through the dispatcher, handler, nested calls, new transactions, and queued writer work. Cancelling generation must promptly stop all owned work without affecting sibling calls.
 
 ### Why this slice exists
 
@@ -861,14 +861,14 @@ AFK
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 
 Turn the complete implementation into reproducible conformance checks and
 performance evidence: run official MCP server conformance plus retained raw
 JSON cases, pack/install the real lockstep artifacts in clean Bun fixtures,
-validate server exports/dependencies, and compare full DBZZ, Convex, and
+validate server exports/dependencies, and compare full AckerDB, Convex, and
 SpacetimeDB on Hetzner against the preceding release version.
 
 ### Why this slice exists
@@ -880,7 +880,7 @@ Protocol and performance claims must survive outside unit mocks and source-works
 - [ ] The targeted stable MCP conformance suite passes for supported capabilities and explicitly documents unsupported optional capabilities.
 - [ ] Raw fixtures cover initialize, notification, ping, list, call, malformed JSON-RPC, unsupported methods, auth failures, JSON POST responses, and stateless GET/DELETE.
 - [ ] Clean packed consumers resolve the server MCP subpath, generated server types, stable SDK dependency, and Bun runtime.
-- [ ] Packed `@dbzz/server` contains no AI SDK production dependency.
+- [ ] Packed `@ackerdb/server` contains no AI SDK production dependency.
 - [ ] The completed benchmark produced its single version-, host-, source-, and
       predecessor-bound Hetzner record, and its full performance vector and
       anomaly observations are interpreted with explicit reasoning; benchmark
@@ -889,7 +889,7 @@ Protocol and performance claims must survive outside unit mocks and source-works
 
 ### Implementation notes
 
-- Target the stable official MCP SDK/protocol available at implementation and keep it behind DBZZ public abstractions.
+- Target the stable official MCP SDK/protocol available at implementation and keep it behind AckerDB public abstractions.
 - Rerun only when it helps resolve measurement ambiguity. Deliberately remove
   the write-once version record first, then retain only its replacement; never
   retain parallel or iteration artifacts.
@@ -936,7 +936,7 @@ HITL
 
 ### Parent PRD
 
-`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/dbzz/issues/19))
+`PRD: First-class MCP servers, Identity-bound access tokens, and zero-hop AI tools` ([#19](https://github.com/pedrobzz/ackerdb/issues/19))
 
 ## What to build
 

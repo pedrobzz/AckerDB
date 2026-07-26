@@ -2,7 +2,7 @@ import {
   defineTable,
   v,
   type TableFullTextColumns,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const documents = defineTable({
   id: v.primaryKey(),

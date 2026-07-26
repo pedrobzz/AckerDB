@@ -3,13 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DbzzClient } from "@dbzz/client";
-import { loadConfig, startApp, type AppConfig, type RunningApp } from "@dbzz/cli";
-import { api } from "@demo/dbzz-codegen/api";
+import { AckerDBClient } from "@ackerdb/client";
+import { loadConfig, startApp, type AppConfig, type RunningApp } from "@ackerdb/cli";
+import { api } from "@demo/ackerdb-codegen/api";
 import { expectErrorCode, expectOk } from "./result.ts";
 
 const SERVER_DIR = fileURLToPath(new URL("../app/server", import.meta.url));
-export const STAFF_TOKEN = process.env.DBZZ_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
+export const STAFF_TOKEN = process.env.ACKERDB_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
 export const MCP_PATH = "/mcp";
 export const MCP_PROTOCOL_VERSION = "2025-11-25";
 
@@ -24,15 +24,15 @@ export interface JsonRpcResponse {
 
 /** Boots the real demo backend on an ephemeral port with a throwaway db. */
 export class McpHarness {
-  readonly directory = mkdtempSync(join(tmpdir(), "dbzz-demo-mcp-"));
+  readonly directory = mkdtempSync(join(tmpdir(), "ackerdb-demo-mcp-"));
   readonly config: AppConfig;
   private app: RunningApp | undefined;
-  private readonly clients = new Set<DbzzClient>();
+  private readonly clients = new Set<AckerDBClient>();
   private readonly envRestore: Array<readonly [string, string | undefined]> = [];
 
   private constructor(env: Record<string, string>) {
     // The backend boots in-process, so env-driven module code (such as the chat
-    // model factory reading DBZZ_DEMO_CHAT_MODEL) observes this process's
+    // model factory reading ACKERDB_DEMO_CHAT_MODEL) observes this process's
     // environment directly. Apply the caller's overrides for the app's lifetime
     // and restore them on dispose so tests never leak configuration into one
     // another.
@@ -43,11 +43,11 @@ export class McpHarness {
     this.config = {
       ...loadConfig(SERVER_DIR, {
         ...process.env,
-        DBZZ_DURABILITY: "balanced",
-        DBZZ_TELEMETRY: "disabled",
+        ACKERDB_DURABILITY: "balanced",
+        ACKERDB_TELEMETRY: "disabled",
         ...env,
       }),
-      dbDir: join(this.directory, ".dbzz"),
+      dbDir: join(this.directory, ".ackerdb"),
       port: 0,
     };
   }
@@ -63,8 +63,8 @@ export class McpHarness {
     return `http://127.0.0.1:${this.app.server.port}`;
   }
 
-  client(token?: string): DbzzClient {
-    const client = new DbzzClient({
+  client(token?: string): AckerDBClient {
+    const client = new AckerDBClient({
       url: this.url,
       credential:
         token === undefined ? { kind: "anonymous" } : { kind: "bearer", token },
@@ -73,13 +73,13 @@ export class McpHarness {
     return client;
   }
 
-  async staff(): Promise<DbzzClient> {
+  async staff(): Promise<AckerDBClient> {
     const staff = this.client(STAFF_TOKEN);
     expectOk(await staff.mutation(api.setup.initialize, {}));
     return staff;
   }
 
-  async guest(email: string, name = "MCP Guest"): Promise<DbzzClient> {
+  async guest(email: string, name = "MCP Guest"): Promise<AckerDBClient> {
     const login = expectOk(
       await this.client().procedure(api.auth.login, { name, email }),
     );
@@ -143,14 +143,14 @@ export async function withBackend(
 
 export const expectCode = expectErrorCode;
 
-export function identityOf(client: DbzzClient): bigint {
+export function identityOf(client: AckerDBClient): bigint {
   const auth = client.currentAuthentication;
   if (auth?.principal !== "user") throw new Error("expected a durable user identity");
   return auth.identity;
 }
 
 export async function issueToken(
-  staff: DbzzClient,
+  staff: AckerDBClient,
   name: string,
   scopes: Scope[],
 ) {

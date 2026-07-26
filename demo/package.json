@@ -1,5 +1,5 @@
 {
-  "name": "dbzz-demo",
+  "name": "ackerdb-demo",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -13,18 +13,18 @@
     "mobile:typecheck": "bun run --cwd app/mobile typecheck",
     "server:dev": "bun run --cwd app/server dev",
     "server:start": "bun run --cwd app/server start",
-    "codegen": "dbzz codegen app/server",
+    "codegen": "acker codegen app/server",
     "design:dev": "bun run --cwd app/design dev",
     "seed": "bun scripts/seed.ts",
     "smoke": "bun scripts/smoke.ts",
-    "typecheck": "bun run codegen && tsc -p scripts/tsconfig.json && bun run --cwd app/server typecheck && bun run --cwd packages/dbzz-codegen typecheck && bun run --cwd app/admin-panel typecheck && bun run --cwd app/mobile typecheck && bun run --cwd app/design typecheck"
+    "typecheck": "bun run codegen && tsc -p scripts/tsconfig.json && bun run --cwd app/server typecheck && bun run --cwd packages/ackerdb-codegen typecheck && bun run --cwd app/admin-panel typecheck && bun run --cwd app/mobile typecheck && bun run --cwd app/design typecheck"
   },
   "dependencies": {
-    "@dbzz/cli": "0.10.0",
-    "@dbzz/client": "0.10.0",
-    "@dbzz/client-react": "0.10.0",
-    "@dbzz/core": "0.10.0",
-    "@dbzz/server": "0.10.0"
+    "@ackerdb/cli": "0.10.0",
+    "@ackerdb/client": "0.10.0",
+    "@ackerdb/client-react": "0.10.0",
+    "@ackerdb/core": "0.10.0",
+    "@ackerdb/server": "0.10.0"
   },
   "devDependencies": {
     "@types/bun": "^1.2.0",

@@ -1,7 +1,7 @@
 # expo-app fixture
 
-Minimal custom Expo consumer for `@dbzz/client-react`: `App.tsx` mounts
-`DbzzProvider`, `useConnectionState`, and one `useQuery` against a dbzz
+Minimal custom Expo consumer for `@ackerdb/client-react`: `App.tsx` mounts
+`AckerDBProvider`, `useConnectionState`, and one `useQuery` against an AckerDB
 server. Metro selects the package's `react-native` conditional entry, which
 composes the shared hooks with the named `expo/fetch` implementation and Expo
 Crypto randomness.
@@ -12,7 +12,7 @@ Crypto randomness.
 bun fixtures/expo-app/verify-packaging.ts
 ```
 
-Packs the real `@dbzz/core`/`@dbzz/client`/`@dbzz/client-react` tarballs,
+Packs the real `@ackerdb/core`/`@ackerdb/client`/`@ackerdb/client-react` tarballs,
 installs them into a throwaway copy of this app, and asserts: headless
 `expo export` bundles the native entry and Expo capability modules for iOS
 and Android; TypeScript resolves the native entry under

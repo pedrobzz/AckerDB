@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { api } from "@demo/dbzz-codegen/api";
+import { api } from "@demo/ackerdb-codegen/api";
 import {
   issueToken,
   listedToolNames,
@@ -158,7 +158,7 @@ test("oversized output is bounded and flags truncation", async () => {
   });
 });
 
-// Regression: `dbzz dev`/`dbzz start` run with telemetry enabled, where dbzz
+// Regression: `acker dev`/`acker start` run with telemetry enabled, where ackerdb
 // times reads with performance.now(). just-bash's sandbox blocks that global
 // during exec(), so files must be materialized BEFORE the shell runs — lazy
 // providers die here with a SecurityViolationError surfaced as ENOENT.
@@ -176,6 +176,6 @@ test("workspace materializes under the dev config (telemetry enabled)", async ()
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('"number":1');
     },
-    { DBZZ_TELEMETRY: "enabled", DBZZ_DURABILITY: "production" },
+    { ACKERDB_TELEMETRY: "enabled", ACKERDB_DURABILITY: "production" },
   );
 });

@@ -1,4 +1,4 @@
-import { query } from "@demo/dbzz-codegen/server";
+import { query } from "@demo/ackerdb-codegen/server";
 import { staffAccess } from "../lib/access.ts";
 import { isFinal, REMINDER_DELAY_MS } from "../lib/domain/order-status.ts";
 import { orderView } from "../lib/domain/orders.ts";

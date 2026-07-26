@@ -7,7 +7,7 @@ before failing, and its caller may legitimately handle that failure and commit
 other work. A plain error union solves the type problem but cannot provide the
 required rollback boundary.
 
-DBzz therefore treats the returned Result as both an application contract and,
+AckerDB therefore treats the returned Result as both an application contract and,
 for registered mutations, an atomic scope boundary.
 
 ## Consequences
@@ -23,7 +23,7 @@ catches it.
 Every registered application mutation owns a child mutation scope. Success
 merges its writes, returned `Err` discards its writes while leaving the parent
 healthy, and throw poisons the parent. Top-level mutation application writes
-are also scoped so a returned `Err` commits no application state. DBzz may
+are also scoped so a returned `Err` commits no application state. AckerDB may
 persist the completed error in framework idempotency metadata without
 publishing an application-data commit.
 

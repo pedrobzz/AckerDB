@@ -1,4 +1,4 @@
-import { defineApp, defineSchema, defineTable, v } from "@dbzz/server";
+import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const schema = defineSchema({
   documents: defineTable({

@@ -1,6 +1,6 @@
 # Migrations: shape-classified safety, transform-only migration files
 
-dbzz used to reconcile schema changes automatically and decide safety from
+AckerDB used to reconcile schema changes automatically and decide safety from
 actual row counts — an empty dev table let any change through, so the same
 schema could refuse at prod deploy (where rows exist) with no prepared
 recourse. Designing first-class migrations, the industry offered two models:
@@ -83,4 +83,4 @@ type-soundness are the same property.
   accepted deliberately: the refusal is clean, the recourse mechanical
   (generate, dedupe transform, redeploy).
 - Applied history is append-only; the dev escape hatch for rewriting it stays
-  `dbzz reset`.
+  `acker reset`.

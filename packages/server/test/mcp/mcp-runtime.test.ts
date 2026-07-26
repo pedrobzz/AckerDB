@@ -141,7 +141,7 @@ const countOwnershipRecords = typedQuery({
 });
 
 const nestedOwnershipWrite = typedMcpTool({
-  description: "Compose nested DBZZ functions inside one transaction.",
+  description: "Compose nested AckerDB functions inside one transaction.",
   access: "authenticated",
   args: {
     value: v.string(),
@@ -202,7 +202,7 @@ function startHarness(
     gracefulShutdownMs: 250,
   });
   const value = fixture(
-    databasePath("dbzz-mcp-runtime-"),
+    databasePath("ackerdb-mcp-runtime-"),
     undefined,
     ownershipModules,
     { limits, telemetry },

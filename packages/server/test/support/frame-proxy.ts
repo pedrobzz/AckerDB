@@ -4,7 +4,7 @@ import {
   parseServerMessage,
   type ClientMessage,
   type ServerMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   createConnection,
   createServer,

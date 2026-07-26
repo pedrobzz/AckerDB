@@ -1,6 +1,6 @@
-import { skip, useMutation, useQuery } from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
-import type { ItemStatus } from "@demo/dbzz-codegen/types";
+import { skip, useMutation, useQuery } from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
+import type { ItemStatus } from "@demo/ackerdb-codegen/types";
 import { Redirect, router } from "expo-router";
 import { Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import { useState } from "react";

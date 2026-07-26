@@ -6,7 +6,7 @@ import {
   type PluginInstance,
   type PluginOperationSpec,
   type StandardValidator,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import {
   normalizeConfig,
   type BuiltInNamespacedCacheOptions,
@@ -27,8 +27,8 @@ import {
   type CacheStoreHandle,
 } from "../storage/store.ts";
 
-const BUILTIN_CACHE_ID = "@dbzz/cache" as const;
-const EXTERNAL_CACHE_ID = "@dbzz/cache-external" as const;
+const BUILTIN_CACHE_ID = "@ackerdb/cache" as const;
+const EXTERNAL_CACHE_ID = "@ackerdb/cache-external" as const;
 
 type UncheckedGet = <T>(key: CacheKey) => Promise<T | undefined>;
 type UncheckedSet = (

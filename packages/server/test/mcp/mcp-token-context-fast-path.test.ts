@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode } from "@dbzz/core";
+import { decode } from "@ackerdb/core";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 import { Engine } from "../../src/database/engine.ts";
 import {
@@ -52,7 +52,7 @@ function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionR
   const registry = new Registry({ ordinary: { create, list, transact } });
   expect(registry.mcps.size).toBe(0);
 
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-no-mcp-context-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-no-mcp-context-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const runtime = new Runtime({ engine, registry, telemetry: false });
@@ -82,14 +82,14 @@ describe("zero-MCP Runtime context", () => {
       request(queryMessage(1, "ordinary.list")),
     )).rejects.toMatchObject({
       code: "unauthorized",
-      message: "MCP token operations require a DBZZ invocation context",
+      message: "MCP token operations require a AckerDB invocation context",
     });
     await expect(runtime.mutation(
       session,
       request(mutationMessage(2, "2", {}, "ordinary.create")),
     )).rejects.toMatchObject({
       code: "unauthorized",
-      message: "MCP token operations require a DBZZ invocation context",
+      message: "MCP token operations require a AckerDB invocation context",
     });
 
     const response = await runtime.runProcedure({
@@ -103,7 +103,7 @@ describe("zero-MCP Runtime context", () => {
       t: "err",
       outcome: {
         code: "unauthorized",
-        message: "MCP token operations require a DBZZ invocation context",
+        message: "MCP token operations require a AckerDB invocation context",
       },
     });
   });

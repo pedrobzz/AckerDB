@@ -6,9 +6,9 @@ import type {
   ProcedureRef,
   QueryRef,
   SseRef,
-} from "@dbzz/client";
-import { useProcedure, type DbzzCallOptions, type DbzzProcedure } from "@dbzz/client-react";
-import type { DbzzClientError } from "@dbzz/client";
+} from "@ackerdb/client";
+import { useProcedure, type AckerDBCallOptions, type AckerDBProcedure } from "@ackerdb/client-react";
+import type { AckerDBClientError } from "@ackerdb/client";
 import type { ReactNode } from "react";
 
 // Generated references as codegen would emit them for one procedure address.
@@ -39,7 +39,7 @@ function WrongKinds(): ReactNode {
 
 function Inference(): ReactNode {
   const run = useProcedure(stats);
-  const stable: DbzzProcedure<{ prefix: string }, { count: number }> = run;
+  const stable: AckerDBProcedure<{ prefix: string }, { count: number }> = run;
 
   void run({ prefix: "a" });
   void run({ prefix: "a" }, { signal });
@@ -59,7 +59,7 @@ function Inference(): ReactNode {
   void (async () => {
     const result = await run({ prefix: "a" });
     if (!result.ok) {
-      const error: DbzzClientError = result.error;
+      const error: AckerDBClientError = result.error;
       void error;
       return;
     }
@@ -75,9 +75,9 @@ function Inference(): ReactNode {
   return stable === run ? null : null;
 }
 
-// --- the supported call contract is DbzzCallOptions ---------------------------
+// --- the supported call contract is AckerDBCallOptions ---------------------------
 
-declare const options: DbzzCallOptions;
+declare const options: AckerDBCallOptions;
 const optionsSignal: AbortSignal | undefined = options.signal;
 
 export { Inference, WrongKinds, optionsSignal };

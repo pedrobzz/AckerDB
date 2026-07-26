@@ -3,7 +3,7 @@
  * never executed — `bun run typecheck` failing (including an unused
  * @ts-expect-error) is the test.
  */
-import { DbzzClient } from "@dbzz/client";
+import { AckerDBClient } from "@ackerdb/client";
 import {
   Err,
   Status,
@@ -11,7 +11,7 @@ import {
   type ApiFromModules,
   type MutationReceipt,
   type SseRef,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   v,
   defineSchema,
@@ -23,7 +23,7 @@ import {
   type ProcedureBuilder,
   type QueryBuilder,
   type SseBuilder,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const schema = defineSchema({});
 type Schema = typeof schema;
@@ -94,7 +94,7 @@ const _tickerRef: SseRef<{ label: string }, { label: string; tick: number }> = a
 // @ts-expect-error the SSE reference chunk is the validated yield, not the handler completion
 const _completionRef: SseRef<{ label: string }, void> = api.generated.ticker;
 
-declare const client: DbzzClient;
+declare const client: AckerDBClient;
 
 export async function _generatedClientInference(): Promise<void> {
   const queryResult = await client.query(api.generated.authorizationSummary, { label: "query" });

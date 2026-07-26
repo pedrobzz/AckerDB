@@ -1,5 +1,5 @@
-import { decode, encode } from "@dbzz/core";
-import type { StandardValidator } from "@dbzz/server";
+import { decode, encode } from "@ackerdb/core";
+import type { StandardValidator } from "@ackerdb/server";
 
 export function encodeCacheValue(value: unknown): string {
   if (value === undefined) {

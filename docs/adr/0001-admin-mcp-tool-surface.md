@@ -24,7 +24,7 @@ dedicated action tools (`advance_kitchen_item`, `cancel_order`) behind the
 ## Consequences
 
 Simple questions resolve through typed tools (safe for small models, and they
-exercise dbzz's typed structured MCP output); arbitrary analytics resolve
+exercise AckerDB's typed structured MCP output); arbitrary analytics resolve
 through pipelines a capable model writes in the workspace. The tool list is a
 public contract external agents depend on — additions are cheap, but renaming
 or removing tools breaks installed hosts.

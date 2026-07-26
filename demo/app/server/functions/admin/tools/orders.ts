@@ -1,5 +1,5 @@
-import { v } from "@dbzz/server";
-import { mcpTool } from "@demo/dbzz-codegen/server";
+import { v } from "@ackerdb/server";
+import { mcpTool } from "@demo/ackerdb-codegen/server";
 import { orderStatus } from "../../../app.ts";
 import { clampLimit, DEFAULT_LIMIT, MAX_LIMIT } from "../../../lib/limits.ts";
 

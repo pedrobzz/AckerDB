@@ -182,7 +182,7 @@ async function main(): Promise<void> {
   const baseCommit = requestedBase === undefined
     ? command(["git", "merge-base", "main", "HEAD"], root)
     : command(["git", "rev-parse", `${requestedBase}^{commit}`], root);
-  const temp = mkdtempSync(join(tmpdir(), "dbzz-validator-diagnostic-"));
+  const temp = mkdtempSync(join(tmpdir(), "ackerdb-validator-diagnostic-"));
   const archive = join(temp, "base.tar");
   const baseRoot = join(temp, "base");
   mkdirSync(baseRoot);
@@ -193,14 +193,14 @@ async function main(): Promise<void> {
       baseCommit, "packages/core", "packages/server",
     ], root);
     command(["tar", "-xf", archive, "-C", baseRoot], root);
-    const scope = join(baseRoot, "node_modules", "@dbzz");
+    const scope = join(baseRoot, "node_modules", "@ackerdb");
     mkdirSync(scope, { recursive: true });
     symlinkSync(join(baseRoot, "packages", "core"), join(scope, "core"), "dir");
 
     const baseDsl = await loadDsl(join(baseRoot, "packages", "server", "src", "v.ts"));
     const branchDsl = await loadDsl(join(root, "packages", "server", "src", "v.ts"));
 
-    console.log("DBzz validator diagnostic (informational only; ±2% is the review/noise band)");
+    console.log("AckerDB validator diagnostic (informational only; ±2% is the review/noise band)");
     console.log(`host: Bun ${Bun.version}, ${process.platform}/${process.arch}, ${cpus()[0]?.model ?? "unknown CPU"}`);
     console.log(`base: ${requestedBase ?? "merge-base(main, HEAD)"} → ${baseCommit} (v)`);
     console.log(`branch: ${command(["git", "rev-parse", "HEAD"], root)} (working tree v)`);

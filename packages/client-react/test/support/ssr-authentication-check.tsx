@@ -4,7 +4,7 @@
 // pre-client snapshot for the configured credential kind.
 import { StrictMode, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
-import { DbzzProvider, useAuthentication } from "@dbzz/client-react";
+import { AckerDBProvider, useAuthentication } from "@ackerdb/client-react";
 
 function fail(message: string): never {
   console.error(message);
@@ -39,9 +39,9 @@ function Badge(): ReactNode {
 function page(credential: { kind: "anonymous" } | { kind: "bearer"; token: string }): ReactNode {
   return (
     <StrictMode>
-      <DbzzProvider config={{ url: "http://127.0.0.1:9", credential }}>
+      <AckerDBProvider config={{ url: "http://127.0.0.1:9", credential }}>
         <Badge />
-      </DbzzProvider>
+      </AckerDBProvider>
     </StrictMode>
   );
 }

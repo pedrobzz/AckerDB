@@ -1,5 +1,5 @@
-/** Canonical paths owned by DBZZ's listener rather than application endpoints. */
-export const DBZZ_HTTP_ROUTES = Object.freeze({
+/** Canonical paths owned by AckerDB's listener rather than application endpoints. */
+export const ACKERDB_HTTP_ROUTES = Object.freeze({
   live: "/live",
   ready: "/ready",
   status: "/status",
@@ -9,8 +9,8 @@ export const DBZZ_HTTP_ROUTES = Object.freeze({
   sseAck: "/api/sse/ack",
 } as const);
 
-const builtinPaths = new Set<string>(Object.values(DBZZ_HTTP_ROUTES));
+const builtinPaths = new Set<string>(Object.values(ACKERDB_HTTP_ROUTES));
 
-export function isDbzzHttpRoute(path: string): boolean {
+export function isAckerDBHttpRoute(path: string): boolean {
   return builtinPaths.has(path);
 }

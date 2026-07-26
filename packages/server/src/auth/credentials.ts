@@ -6,9 +6,9 @@ import {
   type JWTVerifyOptions,
   type JWTPayload,
 } from "jose";
-import { parseCredential, type Credential } from "@dbzz/core";
+import { parseCredential, type Credential } from "@ackerdb/core";
 import type { Identity } from "../validation/v.ts";
-import { DbzzError, isDbzzError } from "../shared/errors.ts";
+import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { hasMcpTokenPrefix } from "../mcp/credential.ts";
 import { isMcpScopeGrant } from "../mcp/scopes.ts";
@@ -34,7 +34,7 @@ export interface ExternalAccount {
   readonly subject: string;
 }
 
-/** Cryptographically verified user evidence before DBZZ assigns application identity. */
+/** Cryptographically verified user evidence before AckerDB assigns application identity. */
 export interface VerifiedUserCredential extends ExternalPrincipal {
   readonly kind: "user";
 }
@@ -223,15 +223,15 @@ function boundedStrings<T extends string>(
   return Object.freeze([...values]);
 }
 
-function authUnavailable(cause: unknown): DbzzError {
-  return new DbzzError("auth_unavailable", "credential verification is temporarily unavailable", {
+function authUnavailable(cause: unknown): AckerDBError {
+  return new AckerDBError("auth_unavailable", "credential verification is temporarily unavailable", {
     retryable: true,
     cause,
   });
 }
 
-function unauthenticated(cause?: unknown): DbzzError {
-  return new DbzzError("unauthenticated", "invalid credential", { cause });
+function unauthenticated(cause?: unknown): AckerDBError {
+  return new AckerDBError("unauthenticated", "invalid credential", { cause });
 }
 
 async function boundedJwksResponse(
@@ -331,7 +331,7 @@ export async function verifyBearerCredential(
   try {
     candidate = await verifier.verify(credential.token);
   } catch (error) {
-    if (isDbzzError(error)) throw error;
+    if (isAckerDBError(error)) throw error;
     throw authUnavailable(error);
   }
   if (!isVerifiedCredential(candidate)) {
@@ -389,7 +389,7 @@ export async function verifyClientCredential(
       subject: verified.subject,
     }));
   } catch (error) {
-    if (isDbzzError(error)) throw error;
+    if (isAckerDBError(error)) throw error;
     throw authUnavailable(error);
   }
   if (typeof identity !== "bigint" || identity <= 0n) {
@@ -576,7 +576,7 @@ export function createOidcVerifier(options: OidcVerifierOptions): CredentialVeri
           tokenId: typeof payload.jti === "string" ? payload.jti : null,
         });
       } catch (error) {
-        if (isDbzzError(error)) throw error;
+        if (isAckerDBError(error)) throw error;
         if (invalidJoseCredential(error)) throw unauthenticated(error);
         throw authUnavailable(error);
       }

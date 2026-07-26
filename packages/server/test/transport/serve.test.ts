@@ -13,7 +13,7 @@ import {
   type CallResponse,
   type ServerMessage,
   type SseMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import type {
   CredentialVerifier,
   PrincipalInvalidation,
@@ -21,14 +21,14 @@ import type {
 } from "../../src/auth/credentials.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
 import { defineServiceLimits, PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
-import { DbzzServer, serve } from "../../src/transport/server.ts";
+import { AckerDBServer, serve } from "../../src/transport/server.ts";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -172,7 +172,7 @@ const functions = {
       access: "public",
       args: {},
       handler: () => {
-        throw new DbzzError("conflict", "already exists");
+        throw new AckerDBError("conflict", "already exists");
       },
     }),
     explode: procedure({
@@ -197,7 +197,7 @@ const functions = {
       yields: v.jsonb(),
       handler: async function* () {
         yield { phase: "started" };
-        throw new DbzzError("unavailable", "stream failed", { resource: "sse" });
+        throw new AckerDBError("unavailable", "stream failed", { resource: "sse" });
       },
     }),
     stayOpen: sseProcedure({
@@ -260,15 +260,15 @@ class TestVerifier implements CredentialVerifier {
       case "user-two-token":
         return { ...common, kind: "user", claims: { role: "member" } };
       case "workload-token":
-        return { ...common, kind: "workload", claims: { scope: "metrics dbzz:status" } };
+        return { ...common, kind: "workload", claims: { scope: "metrics ackerdb:status" } };
       case "workload-alias-token":
-        return { ...common, kind: "workload", claims: { scope: "dbzz:status-extra" } };
+        return { ...common, kind: "workload", claims: { scope: "ackerdb:status-extra" } };
       case "blocked-token":
         blockedCredentialStarted?.resolve(undefined);
         await blockedCredentialRelease?.promise;
         return { ...common, kind: "user", claims: { role: "member" } };
       default:
-        throw new DbzzError("unauthenticated", "invalid credential");
+        throw new AckerDBError("unauthenticated", "invalid credential");
     }
   }
 
@@ -370,7 +370,7 @@ beforeEach(() => {
   blockedMutationRelease = null;
   blockedCredentialStarted = null;
   blockedCredentialRelease = null;
-  dir = mkdtempSync(join(tmpdir(), "dbzz-serve-"));
+  dir = mkdtempSync(join(tmpdir(), "ackerdb-serve-"));
   engine = new Engine(schema, join(dir, "data.db"));
   reconcile(engine);
   verifier = new TestVerifier();
@@ -413,7 +413,7 @@ interface SseResponseReader {
 }
 
 function readSse(response: Response): SseResponseReader {
-  const streamId = response.headers.get("x-dbzz-sse-stream");
+  const streamId = response.headers.get("x-ackerdb-sse-stream");
   if (streamId === null) throw new Error("SSE response is missing its stream capability");
   if (response.body === null) throw new Error("SSE response is missing its body");
   const reader = response.body.getReader();
@@ -470,9 +470,9 @@ function acknowledgeSse(
 
 describe("health and protected status", () => {
   test("owns its port through explicit startup phases and atomically activates one Runtime", async () => {
-    const early = new DbzzServer({ limits, port: 0 });
+    const early = new AckerDBServer({ limits, port: 0 });
     const earlyBase = `http://127.0.0.1:${early.port}`;
-    const earlyDir = mkdtempSync(join(tmpdir(), "dbzz-serve-startup-"));
+    const earlyDir = mkdtempSync(join(tmpdir(), "ackerdb-serve-startup-"));
     let earlyEngine: Engine | undefined;
     let earlyRuntime: Runtime | undefined;
     try {
@@ -530,6 +530,15 @@ describe("health and protected status", () => {
         ready: false,
         state: "starting",
         phase: "reconciling",
+      });
+      early.advanceStartup("loading-runtime");
+      const loadingRuntime = await fetch(`${earlyBase}/ready`);
+      expect(loadingRuntime.status).toBe(503);
+      expect(await loadingRuntime.json()).toEqual({
+        version: 1,
+        ready: false,
+        state: "starting",
+        phase: "loading-runtime",
       });
 
       earlyEngine = new Engine(schema, join(earlyDir, "data.db"));
@@ -624,7 +633,7 @@ describe("health and protected status", () => {
     expect(() => serve({ runtime: unsafeRuntime, port: 0 })).toThrow(
       "maxRequestBytes + 1 must be a safe integer",
     );
-    expect(() => new DbzzServer({
+    expect(() => new AckerDBServer({
       limits: { ...limits, maxConnections: 0 },
       port: 0,
     })).toThrow("maxConnections must be a positive safe integer");
@@ -695,9 +704,9 @@ describe("Protocol-2 HTTP procedures", () => {
       subject: "user-token",
       identity: 1n,
     });
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_identities").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_identities").get())
       .toEqual({ count: 1n });
-    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _dbzz_identity_accounts").get())
+    expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_identity_accounts").get())
       .toEqual({ count: 1n });
 
     client.socket.close();
@@ -848,7 +857,7 @@ describe("Protocol-2 HTTP procedures", () => {
   });
 
   test("reserves HTTP capacity across source, principal, handoff, and SSE body ownership", async () => {
-    const fairDirectory = mkdtempSync(join(tmpdir(), "dbzz-http-fairness-"));
+    const fairDirectory = mkdtempSync(join(tmpdir(), "ackerdb-http-fairness-"));
     const fairEngine = new Engine(schema, join(fairDirectory, "data.db"));
     reconcile(fairEngine);
     const fairVerifier = new TestVerifier();
@@ -1050,10 +1059,10 @@ describe("SSE", () => {
     expect(success.status).toBe(200);
     expect(success.headers.get("content-type")).toStartWith("text/event-stream");
     expect(success.headers.get("x-vercel-ai-ui-message-stream")).toBeNull();
-    expect(success.headers.get("x-dbzz-sse-stream")).toMatch(/^[A-Za-z0-9_-]{22}$/);
-    expect(success.headers.get("x-dbzz-sse-max-stall-ms")).toBe(String(limits.sse.maxStallMs));
+    expect(success.headers.get("x-ackerdb-sse-stream")).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(success.headers.get("x-ackerdb-sse-max-stall-ms")).toBe(String(limits.sse.maxStallMs));
     expect(success.headers.get("access-control-expose-headers")).toBe(
-      "x-dbzz-sse-stream, x-dbzz-sse-max-stall-ms",
+      "x-ackerdb-sse-stream, x-ackerdb-sse-max-stall-ms",
     );
     expect(server.status()).toMatchObject({ httpIngress: 0, httpFairnessKeys: 0 });
     expect(runtime.status().activeSse).toBe(1);
@@ -1122,7 +1131,7 @@ describe("SSE", () => {
 
     const preflight = await fetch(`${base}/api/sse/ack`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
-    expect(preflight.headers.get("access-control-expose-headers")).toContain("x-dbzz-sse-stream");
+    expect(preflight.headers.get("access-control-expose-headers")).toContain("x-ackerdb-sse-stream");
     const wrongMethod = await fetch(`${base}/api/sse/ack`);
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("POST");
@@ -1368,7 +1377,7 @@ describe("WebSocket Session transport", () => {
   });
 
   test("shares caller capacity across WebSocket connections, HTTP, and anonymous source", async () => {
-    const fairDirectory = mkdtempSync(join(tmpdir(), "dbzz-ws-fairness-"));
+    const fairDirectory = mkdtempSync(join(tmpdir(), "ackerdb-ws-fairness-"));
     const fairEngine = new Engine(schema, join(fairDirectory, "data.db"));
     reconcile(fairEngine);
     const fairLimits = defineServiceLimits({
@@ -1494,7 +1503,7 @@ describe("WebSocket Session transport", () => {
   });
 
   test("makes overlapping ownership retryable until the old session closes", async () => {
-    const overlapDir = mkdtempSync(join(tmpdir(), "dbzz-overlap-"));
+    const overlapDir = mkdtempSync(join(tmpdir(), "ackerdb-overlap-"));
     const overlapEngine = new Engine(schema, join(overlapDir, "data.db"));
     reconcile(overlapEngine);
     const overlapRuntime = new Runtime({
@@ -1602,7 +1611,7 @@ describe("lifecycle drain", () => {
   });
 
   test("closes admission after Runtime drain and bounds an already-admitted slow ACK", async () => {
-    const slowDirectory = mkdtempSync(join(tmpdir(), "dbzz-slow-ack-drain-"));
+    const slowDirectory = mkdtempSync(join(tmpdir(), "ackerdb-slow-ack-drain-"));
     const slowEngine = new Engine(schema, join(slowDirectory, "data.db"));
     reconcile(slowEngine);
     const slowLimits = defineServiceLimits({
@@ -1708,7 +1717,7 @@ describe("lifecycle drain", () => {
     }
     const elapsed = performance.now() - startedAt;
 
-    expect(failure).toBeInstanceOf(DbzzError);
+    expect(failure).toBeInstanceOf(AckerDBError);
     expect(failure).toMatchObject({
       code: "deadline_exceeded",
       message: "runtime graceful shutdown deadline exceeded",
@@ -1731,7 +1740,7 @@ describe("lifecycle drain", () => {
     const persisted = new Database(join(dir, "data.db"), { readonly: true, safeIntegers: true });
     try {
       expect(
-        persisted.query("SELECT clean_shutdown FROM _dbzz_state WHERE singleton = 1").get(),
+        persisted.query("SELECT clean_shutdown FROM _ackerdb_state WHERE singleton = 1").get(),
       ).toEqual({ clean_shutdown: 0n });
     } finally {
       persisted.close();
@@ -1760,7 +1769,7 @@ describe("lifecycle drain", () => {
       }
       const elapsed = performance.now() - startedAt;
 
-      expect(failure).toBeInstanceOf(DbzzError);
+      expect(failure).toBeInstanceOf(AckerDBError);
       expect(failure).toMatchObject({
         code: "deadline_exceeded",
         message: "graceful shutdown deadline exceeded",

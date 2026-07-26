@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { defineSchema, defineTable, snapshotOf, v } from "@dbzz/server";
+import { defineSchema, defineTable, snapshotOf, v } from "@ackerdb/server";
 import { generateMigration } from "../../src/migrations/scaffold.ts";
 
 test("generated migration types retain readonly vector dimensions structurally", () => {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { api } from "@demo/dbzz-codegen/api";
+import { api } from "@demo/ackerdb-codegen/api";
 import type { InferUIMessageChunk, UIMessage } from "ai";
 import { withBackend } from "./mcp-harness.ts";
 import { expectRejectedCode } from "./result.ts";
@@ -10,7 +10,7 @@ import { expectRejectedCode } from "./result.ts";
 // real typed input, then a short final answer). These tests assert only the
 // mechanical stream — the ordered sequence of chunks the sseProcedure yields —
 // never answer quality, which is human-tested.
-const MOCK_MODEL = { DBZZ_DEMO_CHAT_MODEL: "mock" };
+const MOCK_MODEL = { ACKERDB_DEMO_CHAT_MODEL: "mock" };
 
 // The scripted mock's final answer, streamed as text deltas.
 const FINAL_ANSWER = "The floor is loaded — ask me anything about it.";
@@ -45,7 +45,7 @@ test("staff chat streams a get_tables call, its result, then the final text in o
     );
 
     // The get_tables call is streamed with real typed input — booleans and
-    // numbers, not stringified scalars — and passes dbzz's strict validation.
+    // numbers, not stringified scalars — and passes ackerdb's strict validation.
     const inputAvailable = chunks.find(
       (chunk) => chunk.type === "tool-input-available" && chunk.toolName === "get_tables",
     ) as (ChatChunk & { toolCallId: string; input: unknown }) | undefined;

@@ -3,8 +3,8 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DbzzAuthentication, DbzzWebSocket, QueryRef } from "@dbzz/client";
-import { anyApi } from "@dbzz/client";
+import type { AckerDBAuthentication, AckerDBWebSocket, QueryRef } from "@ackerdb/client";
+import { anyApi } from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -16,7 +16,7 @@ import {
   query,
   reconcile,
   serve,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type {
   CredentialVerifier,
   PrincipalInvalidation,
@@ -25,14 +25,14 @@ import type {
 import { StrictMode, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
-  DbzzProvider,
+  AckerDBProvider,
   useAuthentication,
   useConnectionState,
   useQuery,
   type Credential,
-  type DbzzAuthenticationState,
+  type AckerDBAuthenticationState,
   type UseAuthenticationResult,
-} from "@dbzz/client-react";
+} from "@ackerdb/client-react";
 
 const WAIT_DEADLINE_MS = 5_000;
 
@@ -85,7 +85,7 @@ interface App {
 }
 
 function createApp(): App {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-react-auth-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-auth-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const registry = new Registry({
@@ -128,7 +128,7 @@ async function until(predicate: () => boolean, description: string): Promise<voi
   );
 }
 
-function describeAuthentication(state: DbzzAuthenticationState): string {
+function describeAuthentication(state: AckerDBAuthenticationState): string {
   switch (state.phase) {
     case "authenticating":
       return `authenticating:${state.credential}`;
@@ -171,17 +171,17 @@ function mount(app: App, credential: Credential): Root {
   const root = createRoot(container);
   root.render(
     <StrictMode>
-      <DbzzProvider
+      <AckerDBProvider
         config={{
           url: app.base,
           credential,
           reconnect: { baseDelayMs: 1, maxDelayMs: 10, stableOpenMs: 60_000 },
-          createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+          createWebSocket: (url) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
         }}
       >
         <AuthReport />
         <QueryReport />
-      </DbzzProvider>
+      </AckerDBProvider>
     </StrictMode>,
   );
   return root;
@@ -198,7 +198,7 @@ beforeAll(() => {
 });
 afterAll(() => app.close());
 
-describe("useAuthentication against a real dbzz server", () => {
+describe("useAuthentication against a real ackerdb server", () => {
   test("authenticates a bearer connection, signs out, and refreshes identities", async () => {
     const root = mount(app, { kind: "bearer", token: "user-a" });
     await until(
@@ -215,7 +215,7 @@ describe("useAuthentication against a real dbzz server", () => {
     });
 
     // Sign-out is a server-observed auth transition to the anonymous principal.
-    const signedOut: DbzzAuthentication = await operations().signOut();
+    const signedOut: AckerDBAuthentication = await operations().signOut();
     expect(signedOut).toEqual({ authEpoch: 1, principal: "anonymous" });
     await until(
       () => captured.text === "unauthenticated@1|ready",

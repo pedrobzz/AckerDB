@@ -4,7 +4,7 @@ import {
   v,
   type DbReader,
   type DbWriter,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const schema = defineSchema({
   documents: defineTable({
@@ -59,7 +59,7 @@ export async function _fullTextTypecheck(): Promise<void> {
   query.nearest("embedding", [1, 0], { metric: "cosine" });
   // @ts-expect-error ranked retrievals cannot be combined into one query
   nearest.fullText("body", "restaurant");
-  // @ts-expect-error DBzz does not own hybrid rank fusion
+  // @ts-expect-error AckerDB does not own hybrid rank fusion
   void reader.documents.hybridSearch;
 
   void _title;

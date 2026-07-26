@@ -1,6 +1,6 @@
-import { Err, Status } from "@dbzz/core";
-import { DbzzError, v } from "@dbzz/server";
-import { mutation, query } from "@demo/dbzz-codegen/server";
+import { Err, Status } from "@ackerdb/core";
+import { AckerDBError, v } from "@ackerdb/server";
+import { mutation, query } from "@demo/ackerdb-codegen/server";
 import { requireUser, staffAccess } from "../lib/access.ts";
 import {
   openOrderForUser,
@@ -20,7 +20,7 @@ export const ensureCurrent = mutation({
     const emailClaim = principal.claims.email;
     const nameClaim = principal.claims.name;
     if (typeof emailClaim !== "string" || typeof nameClaim !== "string") {
-      throw new DbzzError(
+      throw new AckerDBError(
         "unauthenticated",
         "Guest credential is missing profile claims",
       );

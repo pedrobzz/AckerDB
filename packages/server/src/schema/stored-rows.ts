@@ -4,7 +4,7 @@
  * enum/union tags can never acquire two interpretations of stored data.
  */
 import type { Database } from "bun:sqlite";
-import { decode } from "@dbzz/core";
+import { decode } from "@ackerdb/core";
 import type { Descriptor } from "../validation/v.ts";
 import type { TableSnapshot } from "./snapshot.ts";
 import { scalarDecoder } from "./descriptor-kinds.ts";
@@ -49,7 +49,7 @@ export function physicalColumnsOf(table: TableSnapshot): Set<string> {
  */
 export function loadStoredTags(writer: Database): StoredTags {
   const tags = new Map<string, Map<number, string>>();
-  for (const row of writer.query("SELECT type, variant, tag FROM _dbzz_tags").all() as {
+  for (const row of writer.query("SELECT type, variant, tag FROM _ackerdb_tags").all() as {
     type: string;
     variant: string;
     tag: bigint;

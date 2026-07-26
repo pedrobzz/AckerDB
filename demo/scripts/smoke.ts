@@ -1,13 +1,13 @@
-import { DbzzClient, type DbzzLiveEvent } from "@dbzz/client";
-import { api } from "@demo/dbzz-codegen/api";
-import type { OrderEvent } from "@demo/dbzz-codegen/types";
+import { AckerDBClient, type AckerDBLiveEvent } from "@ackerdb/client";
+import { api } from "@demo/ackerdb-codegen/api";
+import type { OrderEvent } from "@demo/ackerdb-codegen/types";
 import { expectErrorCode, expectOk } from "./result.ts";
 
-const url = process.env.DBZZ_URL ?? "http://127.0.0.1:3212";
-const staffToken = process.env.DBZZ_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
+const url = process.env.ACKERDB_URL ?? "http://127.0.0.1:3212";
+const staffToken = process.env.ACKERDB_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
 
-function client(token?: string): DbzzClient {
-  return new DbzzClient({
+function client(token?: string): AckerDBClient {
+  return new AckerDBClient({
     url,
     credential:
       token === undefined ? { kind: "anonymous" } : { kind: "bearer", token },
@@ -30,8 +30,8 @@ function deferred<T>() {
 
 const anonymous = client();
 const staff = client(staffToken);
-let guest: DbzzClient | undefined;
-let secondGuest: DbzzClient | undefined;
+let guest: AckerDBClient | undefined;
+let secondGuest: AckerDBClient | undefined;
 let unsubscribe: (() => void) | undefined;
 
 try {
@@ -102,7 +102,7 @@ try {
   unsubscribe = guest.subscribeEvent(
     api.events.orderEvents,
     { identity: authentication.identity },
-    (event: DbzzLiveEvent<OrderEvent>) => {
+    (event: AckerDBLiveEvent<OrderEvent>) => {
       if (event.kind === "reset") reset.resolve();
       if (event.kind === "row" && event.row.orderItemId === orderItemId) {
         statusEvent.resolve(event.row);
@@ -196,7 +196,7 @@ try {
   );
 
   console.log(
-    "dbzz restaurant auth, authorization, realtime, kitchen, payment, and cancellation smoke passed",
+    "ackerdb restaurant auth, authorization, realtime, kitchen, payment, and cancellation smoke passed",
   );
 } finally {
   unsubscribe?.();

@@ -1,5 +1,5 @@
 {
   "credentialVerifier": "./credential-verifier.ts",
-  "generated": "../../packages/dbzz-codegen/src",
+  "generated": "../../packages/ackerdb-codegen/src",
   "port": 3212
 }

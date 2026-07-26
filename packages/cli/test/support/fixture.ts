@@ -1,4 +1,4 @@
-/** Builds a throwaway dbzz app directory for CLI tests. */
+/** Builds a throwaway ackerdb app directory for CLI tests. */
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,11 +7,11 @@ import { dirname, join } from "node:path";
 const REPO = new URL("../../../..", import.meta.url).pathname;
 
 export function makeFixture(files: Record<string, string>): string {
-  const dir = mkdtempSync(join(tmpdir(), "dbzz-cli-"));
-  // bare "@dbzz/*" specifiers must resolve from the fixture
-  mkdirSync(join(dir, "node_modules", "@dbzz"), { recursive: true });
+  const dir = mkdtempSync(join(tmpdir(), "ackerdb-cli-"));
+  // bare "@ackerdb/*" specifiers must resolve from the fixture
+  mkdirSync(join(dir, "node_modules", "@ackerdb"), { recursive: true });
   for (const pkg of ["core", "server", "client", "cache"]) {
-    symlinkSync(join(REPO, "packages", pkg), join(dir, "node_modules", "@dbzz", pkg));
+    symlinkSync(join(REPO, "packages", pkg), join(dir, "node_modules", "@ackerdb", pkg));
   }
   for (const [path, content] of Object.entries(files)) {
     const target = join(dir, path);
@@ -22,7 +22,7 @@ export function makeFixture(files: Record<string, string>): string {
 }
 
 export const FIXTURE_APP = `
-import { defineApp, defineEventTable, defineSchema, defineTable, v } from "@dbzz/server";
+import { defineApp, defineEventTable, defineSchema, defineTable, v } from "@ackerdb/server";
 
 const role = v.enum("Role", ["admin", "member"]);
 const payload = v.union("Payload", {
@@ -57,7 +57,7 @@ export default defineApp({ schema });
 `;
 
 export const FIXTURE_MESSAGES = `
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import { mutation, query, sseProcedure } from "../_generated/server.ts";
 
 export const tail = sseProcedure({
@@ -105,7 +105,7 @@ export const runJob = mutation({
 `;
 
 export const FIXTURE_ADMIN_USERS = `
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import { query } from "../../_generated/server.ts";
 
 export const count = query({

@@ -1,5 +1,5 @@
-import type { DbzzQueryState } from "@dbzz/client-react";
-import type { ApplicationError } from "@dbzz/core";
+import type { AckerDBQueryState } from "@ackerdb/client-react";
+import type { ApplicationError } from "@ackerdb/core";
 import {
   AlertTriangle,
   CheckCircle2,
@@ -81,7 +81,7 @@ export function QueryContent<
   children,
   loadingLabel = "Loading live data…",
 }: Readonly<{
-  state: DbzzQueryState<Data, Error>;
+  state: AckerDBQueryState<Data, Error>;
   children: (data: Data) => ReactNode;
   loadingLabel?: string;
 }>) {

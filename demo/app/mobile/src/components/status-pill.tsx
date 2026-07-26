@@ -1,4 +1,4 @@
-import type { ItemStatus, OrderStatus } from "@demo/dbzz-codegen/types";
+import type { ItemStatus, OrderStatus } from "@demo/ackerdb-codegen/types";
 import { StyleSheet, Text, View } from "react-native";
 import { colors } from "../theme";
 

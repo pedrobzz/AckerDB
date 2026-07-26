@@ -27,7 +27,7 @@ import {
   pluginMutation,
   pluginQuery,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const storeContract = definePluginContract({
   get: pluginQuery({
@@ -170,23 +170,23 @@ as declared, validated arguments.
 Application manifests are imported by code generation and startup, so factory
 construction and `create` must perform no I/O. A Plugin that owns a connection
 or another runtime resource returns a `lifecycle` callback alongside
-`exports`. DBZZ starts lifecycles after schemas and dependencies are ready,
+`exports`. AckerDB starts lifecycles after schemas and dependencies are ready,
 passes a startup/shutdown `AbortSignal`, tears down already-started resources
 after startup failure, and runs returned cleanup callbacks in reverse
 dependency order.
 
 ## Private-schema changes in the alpha
 
-DBZZ automatically reconciles safe private-schema changes. The v0.6.0 alpha
+AckerDB automatically reconciles safe private-schema changes. The v0.6.0 alpha
 has no Plugin migrations or rename inference: an unsafe change or a different
 definition at the same mount requires an explicit reset of exactly that mount;
 removing or renaming a mount leaves a stale scope that requires an explicit
 drop. Both actions clear only the named Plugin scope and are guarded by the
-exact current and target fingerprints DBZZ just inspected.
+exact current and target fingerprints AckerDB just inspected.
 
 ```sh
-dbzz plugin reset <mount> [app-dir]
-dbzz plugin drop <old-mount> [app-dir]
+acker plugin reset <mount> [app-dir]
+acker plugin drop <old-mount> [app-dir]
 ```
 
 The commands execute only when the matching requirement is currently pending;

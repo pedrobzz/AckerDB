@@ -35,7 +35,7 @@ function visit(value: unknown, path: string, state: JsonState, depth: number): v
   state.active.delete(value);
 }
 
-/** Assert bounded, finite standard JSON without interpreting DBZZ wire tags. */
+/** Assert bounded, finite standard JSON without interpreting AckerDB wire tags. */
 export function assertStandardJson(value: unknown, path: string): void {
   visit(value, path, { nodes: 0, active: new WeakSet() }, 0);
 }

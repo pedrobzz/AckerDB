@@ -1,5 +1,5 @@
-import { useMutation, useQuery } from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
+import { useMutation, useQuery } from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   BadgeCheck,
@@ -33,8 +33,8 @@ export const Route = createFileRoute("/_admin/agents")({
   component: AgentsPage,
 });
 
-/** The public MCP endpoint, from the same source the dbzz client uses. */
-const MCP_ENDPOINT = `${import.meta.env.VITE_DBZZ_URL ?? "http://127.0.0.1:3212"}/mcp`;
+/** The public MCP endpoint, from the same source the AckerDB client uses. */
+const MCP_ENDPOINT = `${import.meta.env.VITE_ACKERDB_URL ?? "http://127.0.0.1:3212"}/mcp`;
 
 /** The env var every install snippet reads the bearer token from. */
 const TOKEN_ENV_VAR = "SAVORIA_MCP_TOKEN";
@@ -333,7 +333,7 @@ function TokenRow({
             {token.name}
           </strong>
           <code className="block truncate font-mono text-[9px] text-ink-500">
-            dbzz_mcp.{token.id}
+            ackerdb_mcp.{token.id}
           </code>
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { ValidationError, type Validator } from "@dbzz/server";
+import { ValidationError, type Validator } from "@ackerdb/server";
 import type { UIMessageChunk } from "ai";
 
 /**
@@ -8,10 +8,10 @@ import type { UIMessageChunk } from "ai";
  * - `v.object` validates exact keys, but every chunk variant carries
  *   optional fields (`providerMetadata`, `title`, ...), so a per-variant
  *   shape model rejects real AI SDK chunks.
- * - `v.union` expects dbzz's `{ tag, value }` wire form, not the AI SDK's
+ * - `v.union` expects ackerdb's `{ tag, value }` wire form, not the AI SDK's
  *   `type`-discriminated objects.
  * - The AI SDK's own `uiMessageChunkSchema` validates asynchronously, while
- *   dbzz's boundary check is synchronous by design (it sits in the stream's
+ *   ackerdb's boundary check is synchronous by design (it sits in the stream's
  *   pull path).
  *
  * The `Validator` interface is deliberately open, so the fixture checks the

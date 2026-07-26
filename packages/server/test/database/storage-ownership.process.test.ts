@@ -24,7 +24,7 @@ import {
 } from "../../src/database/ownership.ts";
 
 const ownershipModule = new URL("../../src/database/ownership.ts", import.meta.url).href;
-const RACE_CONTENDERS = Number(process.env.DBZZ_OWNERSHIP_RACE_CONTENDERS ?? 30);
+const RACE_CONTENDERS = Number(process.env.ACKERDB_OWNERSHIP_RACE_CONTENDERS ?? 30);
 const roots: string[] = [];
 const children = new Set<Subprocess>();
 const servers = new Set<Server>();
@@ -39,13 +39,13 @@ afterEach(async () => {
 });
 
 function freshDatabase(): string {
-  const root = mkdtempSync(join(tmpdir(), "dbzz-ownership-"));
+  const root = mkdtempSync(join(tmpdir(), "ackerdb-ownership-"));
   roots.push(root);
   return join(root, "data.db");
 }
 
 function coordinationStage(path: string, suffix: string): string {
-  return `${coordinationDatabasePath(path)}.dbzz-bootstrap-${suffix}`;
+  return `${coordinationDatabasePath(path)}.ackerdb-bootstrap-${suffix}`;
 }
 
 type Outcome =
@@ -249,10 +249,10 @@ describe("persistent SQLite database ownership", () => {
     expect(statSync(path, { bigint: true }).nlink).toBe(2n);
   });
 
-  test("removes only exact DBZZ data-publication aliases while holding ownership", () => {
+  test("removes only exact AckerDB data-publication aliases while holding ownership", () => {
     for (const kind of ["init", "restore"] as const) {
       const path = freshDatabase();
-      const stage = `${path}.dbzz-${kind}-00000000-0000-4000-8000-000000000004`;
+      const stage = `${path}.ackerdb-${kind}-00000000-0000-4000-8000-000000000004`;
       writeFileSync(path, "existing database identity");
       linkSync(path, stage);
 
@@ -407,7 +407,7 @@ describe("persistent SQLite database ownership", () => {
     children.delete(owner);
 
     const replacement = DatabaseOwnership.acquire(path);
-    expect(coordinationDatabasePath(path)).toEndWith(".dbzz-coordination");
+    expect(coordinationDatabasePath(path)).toEndWith(".ackerdb-coordination");
     replacement.release();
     replacement.release();
     await gate.close();
@@ -415,7 +415,7 @@ describe("persistent SQLite database ownership", () => {
 
   test("does not clean a data-publication alias until the live owner has exited", async () => {
     const path = freshDatabase();
-    const stage = `${path}.dbzz-init-00000000-0000-4000-8000-000000000005`;
+    const stage = `${path}.ackerdb-init-00000000-0000-4000-8000-000000000005`;
     writeFileSync(path, "existing database identity");
     const gate = await createGate(1, join(dirname(path), "publication-alias-gate.sock"));
     const owner = participant(path, 0, gate.socketPath);

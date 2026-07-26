@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { Database } from "bun:sqlite";
-import { Err, Ok, Status } from "@dbzz/core";
+import { Err, Ok, Status } from "@ackerdb/core";
 import { newWriteCollector } from "../../src/database/access.ts";
 import { createMutationInvocationScope } from "../../src/runtime/mutation-scope.ts";
 
@@ -28,8 +28,8 @@ test("the root transaction adds no savepoint while a nested mutation owns one", 
 
   expect(result.data).toBe("root");
   expect(statements).toEqual([
-    "SAVEPOINT dbzz_result_1",
-    "RELEASE dbzz_result_1",
+    "SAVEPOINT ackerdb_result_1",
+    "RELEASE ackerdb_result_1",
   ]);
 });
 
@@ -45,8 +45,8 @@ test("a nested Err rolls back only its savepoint", async () => {
     error: { code: "stock.unavailable", status: Status.Conflict },
   });
   expect(statements).toEqual([
-    "SAVEPOINT dbzz_result_1",
-    "ROLLBACK TO dbzz_result_1",
-    "RELEASE dbzz_result_1",
+    "SAVEPOINT ackerdb_result_1",
+    "ROLLBACK TO ackerdb_result_1",
+    "RELEASE ackerdb_result_1",
   ]);
 });

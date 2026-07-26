@@ -17,7 +17,7 @@ function evidence(overrides: Record<string, unknown> = {}): string {
     timestamp: "2026-07-20T00:00:00.000Z",
     git: { commit, dirty: false, sourceHash },
     machine: {},
-    systems: { dbzz: {}, convex: {}, spacetimedb: {} },
+    systems: { ackerdb: {}, convex: {}, spacetimedb: {} },
     validation: { status: "failed", failures: [], integrityAnomalies: [] },
     performanceAcceptance: { status: "failed" },
     ...overrides,

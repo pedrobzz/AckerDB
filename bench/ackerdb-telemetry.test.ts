@@ -4,27 +4,27 @@ import {
   Telemetry,
   type TelemetryOperation,
   type TelemetryStage,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type { DriverResult } from "./benchmark.ts";
-import { expectedDbzzStartupMode, type DbzzBenchmarkProfile } from "./dbzz-profile.ts";
+import { expectedAckerDBStartupMode, type AckerDBBenchmarkProfile } from "./ackerdb-profile.ts";
 import {
-  assertDbzzTelemetryWorkload,
-  createDbzzTelemetryReport,
-  DbzzOutputCollector,
-  parseDbzzTelemetryReport,
-  type DbzzTelemetryReport,
-  type DbzzTelemetryTerminalReport,
+  assertAckerDBTelemetryWorkload,
+  createAckerDBTelemetryReport,
+  AckerDBOutputCollector,
+  parseAckerDBTelemetryReport,
+  type AckerDBTelemetryReport,
+  type AckerDBTelemetryTerminalReport,
   type LocalTelemetryOutputSnapshot,
-} from "./dbzz-telemetry.ts";
+} from "./ackerdb-telemetry.ts";
 
 interface EnabledFixture {
-  readonly terminal: DbzzTelemetryTerminalReport;
+  readonly terminal: AckerDBTelemetryTerminalReport;
   readonly output: LocalTelemetryOutputSnapshot;
-  readonly report: DbzzTelemetryReport;
+  readonly report: AckerDBTelemetryReport;
 }
 
-async function enabledFixture(profile: Extract<DbzzBenchmarkProfile, "enabled" | "exporter"> = "enabled"): Promise<EnabledFixture> {
-  const collector = new DbzzOutputCollector();
+async function enabledFixture(profile: Extract<AckerDBBenchmarkProfile, "enabled" | "exporter"> = "enabled"): Promise<EnabledFixture> {
+  const collector = new AckerDBOutputCollector();
   const encoder = new TextEncoder();
   const telemetry = new Telemetry({
     ...(profile === "exporter" ? { exporter: { export() {} } } : {}),
@@ -58,11 +58,11 @@ async function enabledFixture(profile: Extract<DbzzBenchmarkProfile, "enabled" |
     throw new Error("fixture failed to retain its runtime metric");
   }
 
-  const startup = expectedDbzzStartupMode(profile, "balanced");
+  const startup = expectedAckerDBStartupMode(profile, "balanced");
   const beforeDrain = telemetry.snapshot();
   await telemetry.drain(Date.now() + 1_000);
   collector.finish();
-  const terminal = createDbzzTelemetryReport(
+  const terminal = createAckerDBTelemetryReport(
     startup,
     beforeDrain,
     telemetry.snapshot(),
@@ -72,20 +72,20 @@ async function enabledFixture(profile: Extract<DbzzBenchmarkProfile, "enabled" |
   return {
     terminal,
     output,
-    report: parseDbzzTelemetryReport(JSON.stringify(terminal), startup, output),
+    report: parseAckerDBTelemetryReport(JSON.stringify(terminal), startup, output),
   };
 }
 
 function disabledFixture(): {
-  readonly terminal: DbzzTelemetryTerminalReport;
+  readonly terminal: AckerDBTelemetryTerminalReport;
   readonly output: LocalTelemetryOutputSnapshot;
 } {
   const telemetry = new Telemetry({ enabled: false });
-  const collector = new DbzzOutputCollector();
+  const collector = new AckerDBOutputCollector();
   collector.finish();
-  const startup = expectedDbzzStartupMode("disabled", "balanced");
+  const startup = expectedAckerDBStartupMode("disabled", "balanced");
   return {
-    terminal: createDbzzTelemetryReport(
+    terminal: createAckerDBTelemetryReport(
       startup,
       telemetry.snapshot(),
       telemetry.snapshot(),
@@ -112,7 +112,7 @@ function setPath(root: unknown, path: readonly string[], value: unknown): void {
   cursor[path.at(-1)!] = value;
 }
 
-describe("dbzz benchmark telemetry report", () => {
+describe("ackerdb benchmark telemetry report", () => {
   test("proves the real default local sink, absent exporter, aggregate matrix, and terminal drain", async () => {
     const { report } = await enabledFixture();
 
@@ -155,7 +155,7 @@ describe("dbzz benchmark telemetry report", () => {
   test("proves the explicit exporter profile drains healthy batches and publishes exact accounting", async () => {
     const { report } = await enabledFixture("exporter");
 
-    expect(report.startupMode).toEqual(expectedDbzzStartupMode("exporter", "balanced"));
+    expect(report.startupMode).toEqual(expectedAckerDBStartupMode("exporter", "balanced"));
     expect(report.runtime.afterDrain.exporter).toMatchObject({
       configured: true,
       inFlight: false,
@@ -181,7 +181,7 @@ describe("dbzz benchmark telemetry report", () => {
 
   test("rejects an inactive, failed, or dropping benchmark exporter", async () => {
     const fixture = await enabledFixture("exporter");
-    const startup = expectedDbzzStartupMode("exporter", "balanced");
+    const startup = expectedAckerDBStartupMode("exporter", "balanced");
     const invalid = [
       [["runtime", "afterDrain", "exporter", "configured"], false],
       [["runtime", "afterDrain", "exporter", "failures"], 1],
@@ -193,14 +193,14 @@ describe("dbzz benchmark telemetry report", () => {
     for (const [path, value] of invalid) {
       const terminal = structuredClone(fixture.terminal);
       setPath(terminal, path, value);
-      expect(() => parseDbzzTelemetryReport(JSON.stringify(terminal), startup, fixture.output)).toThrow();
+      expect(() => parseAckerDBTelemetryReport(JSON.stringify(terminal), startup, fixture.output)).toThrow();
     }
   });
 
   test("keeps child output streaming and bounded while preserving control lines and fixed counters", () => {
-    const collector = new DbzzOutputCollector();
+    const collector = new AckerDBOutputCollector();
     const encoder = new TextEncoder();
-    const startup = `@@dbzz-startup ${JSON.stringify(expectedDbzzStartupMode("enabled", "balanced"))}\n`;
+    const startup = `@@ackerdb-startup ${JSON.stringify(expectedAckerDBStartupMode("enabled", "balanced"))}\n`;
     const event = JSON.stringify({
       schemaVersion: 1,
       kind: "event",
@@ -210,7 +210,7 @@ describe("dbzz benchmark telemetry report", () => {
       operation: "lifecycle",
     });
     collector.writeStdout(encoder.encode(startup.slice(0, 23)));
-    collector.writeStdout(encoder.encode(`${startup.slice(23)}[dbzz] ready on http://127.0.0.1:3311\n`));
+    collector.writeStdout(encoder.encode(`${startup.slice(23)}[ackerdb] ready on http://127.0.0.1:3311\n`));
     collector.writeStdout(encoder.encode(event.slice(0, 19)));
     collector.writeStdout(encoder.encode(`${event.slice(19)}\n`));
     collector.writeStdout(encoder.encode("x".repeat(PRODUCTION_LIMITS.telemetry.maxBytes + 1)));
@@ -220,7 +220,7 @@ describe("dbzz benchmark telemetry report", () => {
 
     const output = collector.output();
     const snapshot = collector.snapshot();
-    expect(output).toContain("@@dbzz-startup ");
+    expect(output).toContain("@@ackerdb-startup ");
     expect(output).toContain("ready on http://127.0.0.1:3311");
     expect(output).toContain("last stderr line");
     expect(snapshot.records).toBe(1);
@@ -237,9 +237,9 @@ describe("dbzz benchmark telemetry report", () => {
     (crossWired.aggregates.operations.procedure.stages.queue as { count: number }).count = 1;
 
     expect(() =>
-      parseDbzzTelemetryReport(
+      parseAckerDBTelemetryReport(
         JSON.stringify(crossWired),
-        expectedDbzzStartupMode("enabled", "balanced"),
+        expectedAckerDBStartupMode("enabled", "balanced"),
         fixture.output,
       )
     ).toThrow("query.queue");
@@ -247,16 +247,16 @@ describe("dbzz benchmark telemetry report", () => {
 
   test("checks operation totals and applicable stages against the executed workload", async () => {
     const { report } = await enabledFixture();
-    expect(() => assertDbzzTelemetryWorkload(report, fakeWorkload())).not.toThrow();
-    expect(() => assertDbzzTelemetryWorkload(report, fakeWorkload(2))).toThrow(
+    expect(() => assertAckerDBTelemetryWorkload(report, fakeWorkload())).not.toThrow();
+    expect(() => assertAckerDBTelemetryWorkload(report, fakeWorkload(2))).toThrow(
       "query.queue count 1 is below benchmark workload lower bound 2",
     );
   });
 
   test("requires every disabled telemetry snapshot and aggregate field to remain inert", () => {
     const fixture = disabledFixture();
-    const startup = expectedDbzzStartupMode("disabled", "balanced");
-    const report = parseDbzzTelemetryReport(JSON.stringify(fixture.terminal), startup, fixture.output);
+    const startup = expectedAckerDBStartupMode("disabled", "balanced");
+    const report = parseAckerDBTelemetryReport(JSON.stringify(fixture.terminal), startup, fixture.output);
     expect(report).toMatchObject({
       runtime: {
         beforeDrain: { enabled: false, queuedRecords: 0, metricSeries: 0 },
@@ -264,7 +264,7 @@ describe("dbzz benchmark telemetry report", () => {
       },
       aggregates: { maxSeries: 0, spans: 0 },
     });
-    expect(() => assertDbzzTelemetryWorkload(report, fakeWorkload(1_000_000))).not.toThrow();
+    expect(() => assertAckerDBTelemetryWorkload(report, fakeWorkload(1_000_000))).not.toThrow();
 
     const activityPaths = [
       ["runtime", "beforeDrain", "queuedRecords"],
@@ -286,7 +286,7 @@ describe("dbzz benchmark telemetry report", () => {
     for (const path of activityPaths) {
       const active = structuredClone(fixture.terminal);
       setPath(active, path, path.at(-1) === "configured" || path.at(-1) === "inFlight" ? true : 1);
-      expect(() => parseDbzzTelemetryReport(JSON.stringify(active), startup, fixture.output)).toThrow(
+      expect(() => parseAckerDBTelemetryReport(JSON.stringify(active), startup, fixture.output)).toThrow(
         "must remain",
       );
     }

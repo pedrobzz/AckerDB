@@ -3,7 +3,7 @@
 // produces anything but the deterministic non-ready snapshot.
 import { StrictMode, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
-import { DbzzProvider, useConnectionState } from "@dbzz/client-react";
+import { AckerDBProvider, useConnectionState } from "@ackerdb/client-react";
 
 function fail(message: string): never {
   console.error(message);
@@ -28,9 +28,9 @@ function Badge(): ReactNode {
 
 const element = (
   <StrictMode>
-    <DbzzProvider config={{ url: "http://127.0.0.1:9", credential: { kind: "anonymous" } }}>
+    <AckerDBProvider config={{ url: "http://127.0.0.1:9", credential: { kind: "anonymous" } }}>
       <Badge />
-    </DbzzProvider>
+    </AckerDBProvider>
   </StrictMode>
 );
 

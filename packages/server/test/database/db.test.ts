@@ -18,7 +18,7 @@ import {
   UniqueConstraintError,
   ValidationError,
   type WriteCollector,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type {
   DbStatementObservation,
   DbStatementObserver,
@@ -69,7 +69,7 @@ let db: any;
 let eventSeq: bigint;
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "dbzz-db-"));
+  dir = mkdtempSync(join(tmpdir(), "ackerdb-db-"));
   engine = new Engine(schema(), join(dir, "data.db"));
   engine.createAll();
   writes = newWriteCollector();
@@ -264,7 +264,7 @@ describe("writes", () => {
         matches: () => true,
       }),
     });
-    const constrainedDir = mkdtempSync(join(tmpdir(), "dbzz-constrained-writes-"));
+    const constrainedDir = mkdtempSync(join(tmpdir(), "ackerdb-constrained-writes-"));
     const constrainedEngine = new Engine(constrainedSchema, join(constrainedDir, "data.db"));
     constrainedEngine.createAll();
     const constrainedDb: any = makeDbWriter(
@@ -761,7 +761,7 @@ describe("pagination", () => {
         tag: v.string().nullable(),
       }).index(["tag"]),
     });
-    const d2 = mkdtempSync(join(tmpdir(), "dbzz-null-"));
+    const d2 = mkdtempSync(join(tmpdir(), "ackerdb-null-"));
     const e2 = new Engine(s, join(d2, "d.db"));
     e2.createAll();
     const w2 = newWriteCollector();

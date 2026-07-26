@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROTOCOL_VERSION, encode, type MutationMessage } from "@dbzz/core";
+import { PROTOCOL_VERSION, encode, type MutationMessage } from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   Engine,
@@ -19,7 +19,7 @@ import {
   type RuntimeRequest,
   type SessionApplicationMessage,
   type SessionRuntimeContext,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const schema = defineSchema({
   documents: defineTable({
@@ -239,7 +239,7 @@ describe("query prefix reactivity", () => {
   let session: SessionHarness;
 
   beforeEach(async () => {
-    directory = mkdtempSync(join(tmpdir(), "dbzz-query-reactivity-"));
+    directory = mkdtempSync(join(tmpdir(), "ackerdb-query-reactivity-"));
     engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     runtime = new Runtime({

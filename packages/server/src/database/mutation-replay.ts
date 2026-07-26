@@ -1,9 +1,9 @@
 import { type Database, type Statement } from "bun:sqlite";
-import type { DurabilityPolicy } from "@dbzz/core";
+import type { DurabilityPolicy } from "@ackerdb/core";
 import { CorruptDatabaseError } from "../shared/errors.ts";
 
 /** Package-internal capability for the Engine-owned replay ledger. */
-export const mutationReplayOwner = Symbol("dbzz.mutationReplay");
+export const mutationReplayOwner = Symbol("ackerdb.mutationReplay");
 
 export interface StoredMutation {
   sequence: bigint;
@@ -76,7 +76,7 @@ function toStoredMutation(row: StoredRow): StoredMutation {
 
 export function scanMutationReplay(connection: Database): MutationReplaySnapshot {
   const state = connection
-    .query("SELECT commit_version, mutation_sequence, mutation_records, mutation_result_bytes FROM _dbzz_state WHERE singleton = 1")
+    .query("SELECT commit_version, mutation_sequence, mutation_records, mutation_result_bytes FROM _ackerdb_state WHERE singleton = 1")
     .get() as
     | {
         commit_version: bigint;
@@ -85,11 +85,11 @@ export function scanMutationReplay(connection: Database): MutationReplaySnapshot
         mutation_result_bytes: bigint;
       }
     | null;
-  if (state === null) throw new CorruptDatabaseError("missing DBZZ state singleton");
+  if (state === null) throw new CorruptDatabaseError("missing AckerDB state singleton");
 
   const index = new Map<string, Map<string, bigint>>();
   const rows = connection.query(
-    "SELECT sequence, session_id, request_id, result_bytes, commit_version, completed_at FROM _dbzz_mutations ORDER BY sequence",
+    "SELECT sequence, session_id, request_id, result_bytes, commit_version, completed_at FROM _ackerdb_mutations ORDER BY sequence",
   );
   let records = 0;
   let resultBytes = 0n;
@@ -178,18 +178,18 @@ export class MutationReplayLedger {
     snapshot: MutationReplaySnapshot = scanMutationReplay(connection),
   ) {
     this.index = snapshot.index;
-    this.allocateCommit = connection.query(`UPDATE _dbzz_state SET
+    this.allocateCommit = connection.query(`UPDATE _ackerdb_state SET
       commit_version = commit_version + 1,
       mutation_sequence = mutation_sequence + 1,
       mutation_records = mutation_records + 1,
       mutation_result_bytes = mutation_result_bytes + ?
       WHERE singleton = 1 RETURNING commit_version, mutation_sequence`);
-    this.allocateReplay = connection.query(`UPDATE _dbzz_state SET
+    this.allocateReplay = connection.query(`UPDATE _ackerdb_state SET
       mutation_sequence = mutation_sequence + 1,
       mutation_records = mutation_records + 1,
       mutation_result_bytes = mutation_result_bytes + ?
       WHERE singleton = 1 RETURNING commit_version, mutation_sequence`);
-    this.append = connection.query("INSERT INTO _dbzz_mutations (sequence, commit_version, session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, durability, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    this.append = connection.query("INSERT INTO _ackerdb_mutations (sequence, commit_version, session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, durability, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     this.recordCount = snapshot.records;
     this.byteCount = snapshot.resultBytes;
     this.lastCompletedAt = snapshot.lastCompletedAt;
@@ -207,7 +207,7 @@ export class MutationReplayLedger {
     const sequence = this.index.get(sessionId)?.get(requestId);
     if (sequence === undefined) return null;
     const row = this.connection
-      .query("SELECT sequence, session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, commit_version, durability, completed_at FROM _dbzz_mutations WHERE sequence = ?")
+      .query("SELECT sequence, session_id, request_id, issued_at, principal_fingerprint, function_ref, args_fingerprint, result_disposition, result, result_bytes, commit_version, durability, completed_at FROM _ackerdb_mutations WHERE sequence = ?")
       .get(sequence) as StoredRow | null;
     if (row === null || row.session_id !== sessionId || row.request_id !== requestId) {
       throw new CorruptDatabaseError("mutation replay index does not match its durable ledger");
@@ -282,7 +282,7 @@ export class MutationReplayLedger {
     }
     const prefix: IndexRow[] = [];
     for (const row of this.connection
-      .query("SELECT sequence, session_id, request_id, result_bytes, commit_version, completed_at FROM _dbzz_mutations ORDER BY sequence LIMIT ?")
+      .query("SELECT sequence, session_id, request_id, result_bytes, commit_version, completed_at FROM _ackerdb_mutations ORDER BY sequence LIMIT ?")
       .all(limit) as IndexRow[]) {
       if (row.completed_at >= completedBefore) break;
       prefix.push(row);
@@ -292,13 +292,13 @@ export class MutationReplayLedger {
     this.connection.exec("BEGIN IMMEDIATE");
     try {
       const removed = this.connection
-        .query("DELETE FROM _dbzz_mutations WHERE sequence <= ?")
+        .query("DELETE FROM _ackerdb_mutations WHERE sequence <= ?")
         .run(prefix.at(-1)!.sequence);
       if (removed.changes !== prefix.length) {
         throw new CorruptDatabaseError("mutation replay prefix changed during pruning");
       }
       this.connection
-        .query("UPDATE _dbzz_state SET mutation_records = mutation_records - ?, mutation_result_bytes = mutation_result_bytes - ? WHERE singleton = 1")
+        .query("UPDATE _ackerdb_state SET mutation_records = mutation_records - ?, mutation_result_bytes = mutation_result_bytes - ? WHERE singleton = 1")
         .run(prefix.length, bytes);
       this.connection.exec("COMMIT");
     } catch (error) {

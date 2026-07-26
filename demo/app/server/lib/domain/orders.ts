@@ -1,7 +1,7 @@
-import { Err, Ok, Status } from "@dbzz/core";
-import { DbzzError, type Identity } from "@dbzz/server";
-import type { DatabaseReader } from "@demo/dbzz-codegen/server";
-import type { Order } from "@demo/dbzz-codegen/types";
+import { Err, Ok, Status } from "@ackerdb/core";
+import { AckerDBError, type Identity } from "@ackerdb/server";
+import type { DatabaseReader } from "@demo/ackerdb-codegen/server";
+import type { Order } from "@demo/ackerdb-codegen/types";
 import { userForIdentity } from "./guests.ts";
 import { isFinal } from "./order-status.ts";
 
@@ -65,7 +65,7 @@ export async function orderView(db: DatabaseReader, order: Order) {
       .collect(),
   ]);
   if (user === null || table === null) {
-    throw new DbzzError("internal", "Order relation is missing");
+    throw new AckerDBError("internal", "Order relation is missing");
   }
   return {
     ...order,

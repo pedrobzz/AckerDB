@@ -1,4 +1,4 @@
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 
 export const guestNameInput = v
   .string()

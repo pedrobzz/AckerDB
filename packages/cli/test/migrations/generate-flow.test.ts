@@ -8,7 +8,7 @@ import {
   diffSnapshots,
   snapshotOf,
   type Schema,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { runRenameForm, type Ask } from "../../src/migrations/form.ts";
 import { deriveSlug, renameCandidates, type RenameCandidates } from "../../src/migrations/plan.ts";
 

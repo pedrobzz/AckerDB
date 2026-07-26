@@ -1,9 +1,9 @@
 import {
-  DbzzClientError,
-  type DbzzClient,
-  type DbzzConnectionState,
-} from "@dbzz/client";
-import type { ApplicationError } from "@dbzz/core";
+  AckerDBClientError,
+  type AckerDBClient,
+  type AckerDBConnectionState,
+} from "@ackerdb/client";
+import type { ApplicationError } from "@ackerdb/core";
 
 type ApplicationErrorState<Error extends ApplicationError> =
   [Error] extends [never]
@@ -17,13 +17,13 @@ type ApplicationErrorState<Error extends ApplicationError> =
 
 /**
  * Exhaustive live-query state. Success data is `stale` from the moment the
- * connection leaves ready and returns to fresh only when dbzz's own protocol
+ * connection leaves ready and returns to fresh only when ackerdb's own protocol
  * authoritatively re-confirms or redelivers the subscription state (resume,
  * checkpoint, or reset/update delivery). Only transport/unhandled
  * unavailability may retain the last authoritative data. Application and
  * framework errors clear it.
  */
-export type DbzzQueryState<Rows, Error extends ApplicationError = never> =
+export type AckerDBQueryState<Rows, Error extends ApplicationError = never> =
   | {
       readonly status: "disabled";
       readonly data: undefined;
@@ -47,20 +47,20 @@ export type DbzzQueryState<Rows, Error extends ApplicationError = never> =
   | {
       readonly status: "rejected";
       readonly data: undefined;
-      readonly error: DbzzClientError;
+      readonly error: AckerDBClientError;
       readonly loading: false;
     }
   | {
       readonly status: "unavailable";
       readonly data: Rows;
-      readonly error: DbzzClientError;
+      readonly error: AckerDBClientError;
       readonly loading: false;
       readonly stale: true;
     }
   | {
       readonly status: "unavailable";
       readonly data: undefined;
-      readonly error: DbzzClientError;
+      readonly error: AckerDBClientError;
       readonly loading: false;
       readonly stale: false;
     };
@@ -106,7 +106,7 @@ function deepFreeze<T>(value: T): T {
 
 /** What useQuery observes: an immutable snapshot plus a counted listener slot. */
 export interface QuerySource<Rows, Error extends ApplicationError = never> {
-  snapshot(): DbzzQueryState<Rows, Error>;
+  snapshot(): AckerDBQueryState<Rows, Error>;
   listen(listener: () => void): () => void;
 }
 
@@ -128,7 +128,7 @@ export class QueryStoreEntry<
   Error extends ApplicationError = never,
 > implements QuerySource<Rows, Error> {
   private readonly listeners = new Set<() => void>();
-  private state: DbzzQueryState<Rows, Error> = PENDING_STATE;
+  private state: AckerDBQueryState<Rows, Error> = PENDING_STATE;
   private started = false;
   private releaseScheduled = false;
   private stopQuery: (() => void) | null = null;
@@ -139,14 +139,14 @@ export class QueryStoreEntry<
   private lastApplicationError: Error | null = null;
 
   constructor(
-    private readonly client: DbzzClient,
+    private readonly client: AckerDBClient,
     private readonly address: string,
     private readonly args: unknown,
     private readonly onRelease?: () => void,
   ) {}
 
   /** Immutable snapshot; the same object is returned until the next transition. */
-  snapshot(): DbzzQueryState<Rows, Error> {
+  snapshot(): AckerDBQueryState<Rows, Error> {
     return this.state;
   }
 
@@ -197,11 +197,11 @@ export class QueryStoreEntry<
         },
       );
     } catch (error) {
-      // subscribe() rejects synchronously with the exact DbzzClientError when
+      // subscribe() rejects synchronously with the exact AckerDBClientError when
       // the client cannot accept the subscription (closed, blocked, over its
       // pending limits, unencodable arguments); that rejection is this
       // query's error state.
-      if (!(error instanceof DbzzClientError)) throw error;
+      if (!(error instanceof AckerDBClientError)) throw error;
       this.onError(error);
     }
   }
@@ -267,7 +267,7 @@ export class QueryStoreEntry<
     }
   }
 
-  private onError(error: DbzzClientError): void {
+  private onError(error: AckerDBClientError): void {
     if (error.kind === "framework") {
       this.lastApplicationError = null;
       this.replace({
@@ -346,7 +346,7 @@ export class QueryStoreEntry<
     }
   }
 
-  private onConnectionState(connection: DbzzConnectionState): void {
+  private onConnectionState(connection: AckerDBConnectionState): void {
     // A deferred retry fires once the client leaves its blocked state, e.g.
     // when refreshCredential() installs new credentials.
     if (
@@ -362,7 +362,7 @@ export class QueryStoreEntry<
     // itself proves nothing for this query — freshness returns only through
     // the subscription's own resume/reset confirmation.
     if (connection.phase === "ready") return;
-    const error = new DbzzClientError({
+    const error = new AckerDBClientError({
       code: "unavailable",
       retryable: true,
       message: "query freshness is unavailable while reconnecting",
@@ -387,7 +387,7 @@ export class QueryStoreEntry<
     }
   }
 
-  private replace(state: DbzzQueryState<Rows, Error>): void {
+  private replace(state: AckerDBQueryState<Rows, Error>): void {
     Object.freeze(state);
     this.state = state;
     for (const listener of [...this.listeners]) listener();
@@ -407,7 +407,7 @@ export class QueryStoreEntry<
 export class QueryRegistry {
   private readonly entries = new Map<string, QueryStoreEntry<unknown, ApplicationError>>();
 
-  constructor(private readonly client: DbzzClient) {}
+  constructor(private readonly client: AckerDBClient) {}
 
   /**
    * The observation surface for one (address, canonical arguments) pair.
@@ -425,7 +425,7 @@ export class QueryRegistry {
     const key = `${address}\u0000${argsKey}`;
     return {
       snapshot: () =>
-        (this.entries.get(key)?.snapshot() ?? PENDING_STATE) as DbzzQueryState<Rows, Error>,
+        (this.entries.get(key)?.snapshot() ?? PENDING_STATE) as AckerDBQueryState<Rows, Error>,
       listen: (listener) => {
         const entry = this.entries.get(key) ?? this.register(key, address, args);
         return entry.listen(listener);
@@ -452,9 +452,9 @@ export class QueryRegistry {
 // One registry per client, resolved by client identity: the provider replaces
 // the client on reconfiguration, so a new lifetime can never observe the
 // previous lifetime's entries, and each registry is released with its client.
-const registries = new WeakMap<DbzzClient, QueryRegistry>();
+const registries = new WeakMap<AckerDBClient, QueryRegistry>();
 
-export function queryRegistryFor(client: DbzzClient): QueryRegistry {
+export function queryRegistryFor(client: AckerDBClient): QueryRegistry {
   let registry = registries.get(client);
   if (registry === undefined) {
     registry = new QueryRegistry(client);

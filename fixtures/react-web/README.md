@@ -1,7 +1,7 @@
 # react-web fixture
 
-Minimal browser consumer for `@dbzz/client-react`: a real dbzz server plus a
-React page that connects through `DbzzProvider` and renders
+Minimal browser consumer for `@ackerdb/client-react`: a real AckerDB server plus a
+React page that connects through `AckerDBProvider` and renders
 `useConnectionState` until it shows `ready`.
 
 ```sh

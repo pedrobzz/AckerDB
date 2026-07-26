@@ -12,15 +12,15 @@ import {
   type Identity,
   type ServerMessage,
   type SubscriptionCursor,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
-  DbzzClient,
-  DbzzClientError,
-  type DbzzClientClock,
-  type DbzzClientOptions,
-  type DbzzLifecyclePort,
-  type DbzzWebSocket,
-} from "@dbzz/client";
+  AckerDBClient,
+  AckerDBClientError,
+  type AckerDBClientClock,
+  type AckerDBClientOptions,
+  type AckerDBLifecyclePort,
+  type AckerDBWebSocket,
+} from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -32,7 +32,7 @@ import {
   query,
   reconcile,
   serve,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -46,7 +46,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
 
@@ -107,7 +107,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -153,23 +153,23 @@ class FakeSocket implements DbzzWebSocket {
 }
 
 interface Harness {
-  readonly client: DbzzClient;
+  readonly client: AckerDBClient;
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  readonly port: DbzzLifecyclePort;
+  readonly port: AckerDBLifecyclePort;
   readonly phases: string[];
   stops(): number;
   failNextDial(): void;
 }
 
-function harness(overrides: Partial<DbzzClientOptions> = {}): Harness {
+function harness(overrides: Partial<AckerDBClientOptions> = {}): Harness {
   const clock = overrides.clock instanceof ManualClock ? overrides.clock : new ManualClock();
   const sockets: FakeSocket[] = [];
-  let port: DbzzLifecyclePort | undefined;
+  let port: AckerDBLifecyclePort | undefined;
   let stops = 0;
   let failDials = 0;
-  const client = new DbzzClient({
-    url: "http://dbzz.test",
+  const client = new AckerDBClient({
+    url: "http://ackerdb.test",
     credential: { kind: "anonymous" },
     clientSessionId: "suspension-session",
     clock,
@@ -197,7 +197,7 @@ function harness(overrides: Partial<DbzzClientOptions> = {}): Harness {
     client,
     clock,
     sockets,
-    get port(): DbzzLifecyclePort {
+    get port(): AckerDBLifecyclePort {
       if (!port) throw new Error("the harness lifecycle source was overridden");
       return port;
     },
@@ -217,7 +217,7 @@ function mustErr<E>(result: { readonly ok: true; readonly data: unknown } | {
   return result.error;
 }
 
-function welcome(client: DbzzClient, socket: FakeSocket, authEpoch = 0): void {
+function welcome(client: AckerDBClient, socket: FakeSocket, authEpoch = 0): void {
   socket.open();
   socket.receive({
     v: PROTOCOL_VERSION,
@@ -263,7 +263,7 @@ function transition(
   };
 }
 
-describe("DbzzClient lifecycle port", () => {
+describe("AckerDBClient lifecycle port", () => {
   test("registers one observer per client lifetime and removes it before teardown", () => {
     const sequence: string[] = [];
     let registrations = 0;
@@ -304,7 +304,7 @@ describe("DbzzClient lifecycle port", () => {
   });
 });
 
-describe("DbzzClient suspension", () => {
+describe("AckerDBClient suspension", () => {
   test("background during ready atomically publishes suspended, retires socket and timers, and keeps logical state", () => {
     const { client, clock, sockets, port, phases } = harness();
     const updates: unknown[] = [];
@@ -443,8 +443,8 @@ describe("DbzzClient suspension", () => {
     clock.advance(30_001);
     port.resume();
 
-    const rejection = (await refresh) as DbzzClientError;
-    expect(rejection).toBeInstanceOf(DbzzClientError);
+    const rejection = (await refresh) as AckerDBClientError;
+    expect(rejection).toBeInstanceOf(AckerDBClientError);
     expect(rejection.code).toBe("auth_unavailable");
     expect(sockets).toHaveLength(1);
     expect(client.currentConnectionState.phase).toBe("authentication-blocked");
@@ -463,8 +463,8 @@ describe("DbzzClient suspension", () => {
     const result = client.query("todos.list", { list: 1n }).then(mustErr);
     port.suspend();
     clock.advance(30_000);
-    const rejection = (await result) as DbzzClientError;
-    expect(rejection).toBeInstanceOf(DbzzClientError);
+    const rejection = (await result) as AckerDBClientError;
+    expect(rejection).toBeInstanceOf(AckerDBClientError);
     expect(rejection.code).toBe("deadline_exceeded");
     client.close();
   });
@@ -476,8 +476,8 @@ describe("DbzzClient suspension", () => {
     welcome(client, sockets[0]!);
     const request = lastFrame(sockets[0]!, "p");
     port.suspend();
-    const rejection = (await call) as DbzzClientError;
-    expect(rejection).toBeInstanceOf(DbzzClientError);
+    const rejection = (await call) as AckerDBClientError;
+    expect(rejection).toBeInstanceOf(AckerDBClientError);
     expect(rejection.code).toBe("indeterminate");
     expect(lastFrame(sockets[0]!, "cancel").id).toBe(request.id);
     port.resume();
@@ -498,8 +498,8 @@ describe("DbzzClient suspension", () => {
     const first = stream.next().catch((error) => error);
     await Promise.resolve();
     port.suspend();
-    const rejection = (await first) as DbzzClientError;
-    expect(rejection).toBeInstanceOf(DbzzClientError);
+    const rejection = (await first) as AckerDBClientError;
+    expect(rejection).toBeInstanceOf(AckerDBClientError);
     expect(rejection.code).toBe("unavailable");
     port.resume();
     expect(fetches).toBe(1);
@@ -507,7 +507,7 @@ describe("DbzzClient suspension", () => {
   });
 });
 
-describe("DbzzClient activation", () => {
+describe("AckerDBClient activation", () => {
   test("activation with demand dials in the same event turn regardless of prior backoff depth", () => {
     const { client, clock, sockets, port, phases } = harness();
     client.subscribe("todos.list", { list: 1n }, () => {});
@@ -773,7 +773,7 @@ describe("DbzzClient activation", () => {
     socket.deferClose = true;
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
     clock.advance(30_000);
-    const rejection = (await refresh) as DbzzClientError;
+    const rejection = (await refresh) as AckerDBClientError;
     expect(rejection.code).toBe("auth_unavailable");
     expect(socket.closes).toEqual([{ code: 4008, reason: "authentication timed out" }]);
     expect(client.currentConnectionState.phase).toBe("authentication-blocked");
@@ -973,7 +973,7 @@ function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
   });
 }
 
-function waitForPhase(client: DbzzClient, phase: string): Promise<void> {
+function waitForPhase(client: AckerDBClient, phase: string): Promise<void> {
   if (client.currentConnectionState.phase === phase) return Promise.resolve();
   const waiting = Promise.withResolvers<void>();
   const stop = client.subscribeConnectionState((state) => {
@@ -1005,9 +1005,9 @@ const realSchema = defineSchema({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ctx = any;
 
-describe("suspension against a real dbzz server", () => {
+describe("suspension against a real ackerdb server", () => {
   test("the first foreground attempt begins in the activation turn and ready needs no client timer", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-suspension-real-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-suspension-real-"));
     const engine = new Engine(realSchema, join(directory, "data.db"));
     reconcile(engine);
     const registry = new Registry({
@@ -1029,17 +1029,17 @@ describe("suspension against a real dbzz server", () => {
     // inert unless advanced, so recovery reaching ready proves the whole
     // resume progression runs on socket events alone — no timer, no backoff.
     const clock = new ManualClock(Date.now());
-    let port: DbzzLifecyclePort | undefined;
+    let port: AckerDBLifecyclePort | undefined;
     let dials = 0;
     const updates: unknown[] = [];
     let confirmations = 0;
-    const client = new DbzzClient({
+    const client = new AckerDBClient({
       url: `http://127.0.0.1:${server.port}`,
       credential: { kind: "anonymous" },
       clock,
       createWebSocket: (url) => {
         dials++;
-        return new WebSocket(url) as unknown as DbzzWebSocket;
+        return new WebSocket(url) as unknown as AckerDBWebSocket;
       },
       lifecycle: (livePort) => {
         port = livePort;

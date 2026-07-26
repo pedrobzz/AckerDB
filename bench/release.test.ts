@@ -14,7 +14,7 @@ describe("version-bound benchmark evidence", () => {
   });
 
   test("selects the latest prior final and ignores non-final files", () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-release-bench-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-release-bench-"));
     try {
       writeFileSync(join(directory, "v0.3.1.json"), "{}");
       writeFileSync(join(directory, "telemetry-v0.3.2.json"), "{}");
@@ -26,13 +26,13 @@ describe("version-bound benchmark evidence", () => {
   });
 
   test("retains observations under the final name regardless of their content", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-release-bench-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-release-bench-"));
     const context = { version: "0.3.3", host: "hetzner" as const };
     try {
       const record = {
         schemaVersion: 10,
         validation: {
-          failures: [{ target: "dbzz", case: "query", errors: ["wrong value"] }],
+          failures: [{ target: "ackerdb", case: "query", errors: ["wrong value"] }],
           integrityAnomalies: [],
         },
       };
@@ -45,7 +45,7 @@ describe("version-bound benchmark evidence", () => {
   });
 
   test("never overwrites retained evidence", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-release-bench-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-release-bench-"));
     const context = { version: "0.3.3", host: "hetzner" as const };
     try {
       await retainReleaseBenchmark(directory, context, { observations: [] });

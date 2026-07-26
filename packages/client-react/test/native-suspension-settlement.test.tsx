@@ -1,5 +1,5 @@
 /**
- * ISSUE-13 at the React layer, driven through the native entry: real dbzz
+ * ISSUE-13 at the React layer, driven through the native entry: real ackerdb
  * server, real AI SDK `useChat`, and platform suspension delivered through
  * the mocked React Native AppState. Backgrounding must terminate AI
  * generations as cancellation (never a false error), settle generic SSE
@@ -15,15 +15,15 @@ import { FakeAppState, setAppState } from "./support/app-state.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode } from "@dbzz/core";
+import { decode } from "@ackerdb/core";
 import {
-  DbzzClient,
-  DbzzClientError,
-  type DbzzFetch,
-  type DbzzWebSocket,
+  AckerDBClient,
+  AckerDBClientError,
+  type AckerDBFetch,
+  type AckerDBWebSocket,
   type QueryRef,
   type SseRef,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -38,12 +38,12 @@ import {
   serve,
   sseProcedure,
   type SseCtx,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type { UIMessage, UIMessageChunk } from "ai";
 import { useChat } from "@ai-sdk/react";
 import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { DbzzQueryState, SseProcedureCall } from "@dbzz/client-react";
+import type { AckerDBQueryState, SseProcedureCall } from "@ackerdb/client-react";
 import { uiMessageChunk } from "./ai/ui-message-chunk.ts";
 
 // The native entry composes the Expo/React Native platform modules, which
@@ -62,7 +62,7 @@ mock.module("expo-crypto", () => ({
   },
 }));
 
-const { DbzzProvider, useConnectionState, useQuery, useSseProcedure } = await import(
+const { AckerDBProvider, useConnectionState, useQuery, useSseProcedure } = await import(
   "../src/index.native.ts"
 );
 const { useChatTransport } = await import("../src/ai/index.ts");
@@ -191,7 +191,7 @@ interface App {
 }
 
 function createApp(): App {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-native-settlement-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-native-settlement-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const runtime = new Runtime({
@@ -225,7 +225,7 @@ async function until(predicate: () => boolean, description: string): Promise<voi
 // hidden replacement stream starts and no acknowledgement leaks after
 // settlement. Resolves `fetch` at call time: after support/dom.ts registers
 // happy-dom it restores Bun's native fetch.
-function recordingFetch(log: string[]): DbzzFetch {
+function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {
     const { pathname } = new URL(url);
     if (pathname === "/api/sse") log.push("sse");
@@ -244,7 +244,7 @@ type StandardRef = SseRef<
   UIMessageChunk
 >;
 
-function describeQuery(state: DbzzQueryState<Message[]>): string {
+function describeQuery(state: AckerDBQueryState<Message[]>): string {
   switch (state.status) {
     case "disabled":
     case "pending":
@@ -273,7 +273,7 @@ const roots: Root[] = [];
 beforeAll(async () => {
   app = createApp();
   // Real data behind the mounted query, seeded through an ordinary client.
-  const writer = new DbzzClient({ url: app.base, credential: { kind: "anonymous" } });
+  const writer = new AckerDBClient({ url: app.base, credential: { kind: "anonymous" } });
   await writer.mutation("messages.add", { body: "one" });
   writer.close();
 });
@@ -290,11 +290,11 @@ afterEach(() => {
   while (roots.length > 0) roots.pop()!.unmount();
 });
 
-function providerConfig(log: string[]): Parameters<typeof DbzzProvider>[0]["config"] {
+function providerConfig(log: string[]): Parameters<typeof AckerDBProvider>[0]["config"] {
   return {
     url: app.base,
     credential: { kind: "anonymous" },
-    createWebSocket: (url: string) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+    createWebSocket: (url: string) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
     fetch: recordingFetch(log),
   };
 }
@@ -325,9 +325,9 @@ describe("suspension settlement through the native entry against a real server",
     const root = createRoot(mountPoint());
     roots.push(root);
     root.render(
-      <DbzzProvider config={providerConfig(log)}>
+      <AckerDBProvider config={providerConfig(log)}>
         <Probe />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => phase === "ready" && queryText === "fresh:one", "ready with fresh data");
 
@@ -403,9 +403,9 @@ describe("suspension settlement through the native entry against a real server",
     const root = createRoot(mountPoint());
     roots.push(root);
     root.render(
-      <DbzzProvider config={providerConfig(log)}>
+      <AckerDBProvider config={providerConfig(log)}>
         <Probe />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => phase === "ready", "the provider to reach ready");
 
@@ -448,9 +448,9 @@ describe("suspension settlement through the native entry against a real server",
     const root = createRoot(mountPoint());
     roots.push(root);
     root.render(
-      <DbzzProvider config={providerConfig(log)}>
+      <AckerDBProvider config={providerConfig(log)}>
         <Probe />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => phase === "ready", "the provider to reach ready");
 
@@ -519,9 +519,9 @@ describe("suspension settlement through the native entry against a real server",
     const root = createRoot(mountPoint());
     roots.push(root);
     root.render(
-      <DbzzProvider config={providerConfig(log)}>
+      <AckerDBProvider config={providerConfig(log)}>
         <Probe />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => phase === "ready", "the provider to reach ready");
 
@@ -550,7 +550,7 @@ describe("suspension settlement through the native entry against a real server",
     // arriving when the app backgrounds: the AI SDK must settle the
     // generation as cancellation, never as an error it reports to the user.
     let rejectedBodyDispatched = false;
-    const scriptedFetch: DbzzFetch = (url, init) => {
+    const scriptedFetch: AckerDBFetch = (url, init) => {
       if (new URL(url).pathname === "/api/sse") {
         rejectedBodyDispatched = true;
         return Promise.resolve(
@@ -580,16 +580,16 @@ describe("suspension settlement through the native entry against a real server",
     const root = createRoot(mountPoint());
     roots.push(root);
     root.render(
-      <DbzzProvider
+      <AckerDBProvider
         config={{
           url: app.base,
           credential: { kind: "anonymous" },
-          createWebSocket: (url: string) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+          createWebSocket: (url: string) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
           fetch: scriptedFetch,
         }}
       >
         <Probe />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => phase === "ready", "the provider to reach ready");
 
@@ -622,9 +622,9 @@ describe("suspension settlement through the native entry against a real server",
     const root = createRoot(mountPoint());
     roots.push(root);
     root.render(
-      <DbzzProvider config={providerConfig(log)}>
+      <AckerDBProvider config={providerConfig(log)}>
         <Probe />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => phase === "ready", "the provider to reach ready");
 
@@ -638,9 +638,9 @@ describe("suspension settlement through the native entry against a real server",
       () => {
         throw new Error("suspension must fail the pending read");
       },
-      (error: DbzzClientError) => error,
+      (error: AckerDBClientError) => error,
     );
-    expect(failure.name).toBe("DbzzClientError");
+    expect(failure.name).toBe("AckerDBClientError");
     expect(failure.code).toBe("unavailable");
     expect(failure.message).toBe("SSE stream was interrupted by suspension");
     expect(failure.interruption).toBe("suspension");
@@ -670,9 +670,9 @@ describe("suspension settlement through the native entry against a real server",
     const root = createRoot(mountPoint());
     roots.push(root);
     root.render(
-      <DbzzProvider config={providerConfig(log)}>
+      <AckerDBProvider config={providerConfig(log)}>
         <Probe />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => phase === "ready", "the provider to reach ready");
 
@@ -695,7 +695,7 @@ describe("suspension settlement through the native entry against a real server",
       () => {
         throw new Error("suspension must fail the next read");
       },
-      (error: DbzzClientError) => error,
+      (error: AckerDBClientError) => error,
     );
     expect(failure.code).toBe("unavailable");
     expect(failure.interruption).toBe("suspension");

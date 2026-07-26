@@ -1,11 +1,11 @@
 import {
-  DbzzProvider,
+  AckerDBProvider,
   useAuthentication,
   useConnectionState,
   useEvent,
   useMutation,
-} from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
+} from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
 import {
   HeadContent,
   Outlet,
@@ -39,20 +39,20 @@ export const Route = createRootRoute({
 function RootComponent() {
   return (
     <RootDocument>
-      <DbzzProvider
+      <AckerDBProvider
         config={{
-          url: import.meta.env.VITE_DBZZ_URL ?? "http://127.0.0.1:3212",
+          url: import.meta.env.VITE_ACKERDB_URL ?? "http://127.0.0.1:3212",
           credential: {
             kind: "bearer",
             token:
-              import.meta.env.VITE_DBZZ_STAFF_TOKEN ?? "savoria-demo-staff",
+              import.meta.env.VITE_ACKERDB_STAFF_TOKEN ?? "savoria-demo-staff",
           },
         }}
       >
         <ToastProvider>
           <AdminBootstrap />
         </ToastProvider>
-      </DbzzProvider>
+      </AckerDBProvider>
     </RootDocument>
   );
 }

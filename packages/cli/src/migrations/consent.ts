@@ -12,7 +12,7 @@
  *                         migration and re-derive, or keep it — keep is the
  *                         default, so a bare Enter never deletes anything.
  */
-import { refusalSite, type SchemaRefusal } from "@dbzz/server";
+import { refusalSite, type SchemaRefusal } from "@ackerdb/server";
 import { NO, YES, type Ask } from "./form.ts";
 import { MIGRATION_NAME } from "./load.ts";
 import type { CandidateGroup, RenameCandidates } from "./plan.ts";
@@ -49,7 +49,7 @@ export function renderLedger(view: LedgerView): string {
   const section = (title: string, lines: string[]): string[] =>
     lines.length === 0 ? [] : [`  ${title}:`, ...lines.map((line) => `    - ${line}`)];
   return [
-    "[dbzz] the change ledger:",
+    "[ackerdb] the change ledger:",
     ...section(
       "needs a migration",
       view.refusals.map((refusal) => `${refusalSite(refusal)}: ${refusal.question}`),
@@ -106,7 +106,7 @@ export async function runApplyForm(labels: string[], ask: Ask): Promise<"apply" 
  */
 export async function runDivergenceForm(files: string[], ask: Ask): Promise<"delete" | "keep"> {
   const prompt = [
-    "[dbzz] the schema changed after this migration was scaffolded — the chain no longer ends at your schema.",
+    "[ackerdb] the schema changed after this migration was scaffolded — the chain no longer ends at your schema.",
     "  delete + re-derive one migration covering everything (discards any transform code you wrote in):",
     ...files.map((file) => `    ${file}`),
     "  keep it to fill + apply as-is; further changes become the next migration (keep a chain pulled from git).",

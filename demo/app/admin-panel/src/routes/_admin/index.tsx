@@ -1,5 +1,5 @@
-import { useQuery } from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
+import { useQuery } from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
 import { Link, createFileRoute } from "@tanstack/react-router";
 import {
   ArrowRight,

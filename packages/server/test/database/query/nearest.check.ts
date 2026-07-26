@@ -3,7 +3,7 @@ import {
   defineTable,
   v,
   type DbReader,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const schema = defineSchema({
   documents: defineTable({

@@ -11,14 +11,14 @@ import {
   type Outcome,
   type SubscriptionTransition,
   type TransitionMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
-  DbzzClient,
-  type DbzzClientClock,
-  type DbzzClientError,
-  type DbzzLiveEvent,
-  type DbzzWebSocket,
-} from "@dbzz/client";
+  AckerDBClient,
+  type AckerDBClientClock,
+  type AckerDBClientError,
+  type AckerDBLiveEvent,
+  type AckerDBWebSocket,
+} from "@ackerdb/client";
 import {
   type CredentialVerifier,
   type PrincipalInvalidation,
@@ -78,7 +78,7 @@ function handle(session: Session, frame: unknown): Promise<void> {
   return session.handle(encode(frame));
 }
 
-class FixedClock implements SessionClock, DbzzClientClock {
+class FixedClock implements SessionClock, AckerDBClientClock {
   now = (): number => NOW;
   setTimeout = (_callback: () => void, _delayMs: number): number => 1;
   clearTimeout = (_handle: unknown): void => {};
@@ -92,7 +92,7 @@ interface ReconnectTask {
   readonly intervalMs?: number;
 }
 
-class ReconnectClock implements DbzzClientClock {
+class ReconnectClock implements AckerDBClientClock {
   private time = NOW;
   private nextId = 0;
   private readonly tasks = new Map<number, ReconnectTask>();
@@ -264,7 +264,7 @@ interface TransitionCut {
   readonly phase: TransitionCutPhase;
 }
 
-class SessionSocket implements DbzzWebSocket {
+class SessionSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -474,7 +474,7 @@ async function reconnectTransitionEvidence(
   transition: SubscriptionTransition["kind"],
   phase: TransitionCutPhase,
 ): Promise<ReconnectTransitionEvidence> {
-  const directory = mkdtempSync(join(tmpdir(), `dbzz-reconnect-${transition}-${phase}-`));
+  const directory = mkdtempSync(join(tmpdir(), `ackerdb-reconnect-${transition}-${phase}-`));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const limits = transition === "reset"
@@ -531,7 +531,7 @@ async function reconnectTransitionEvidence(
   });
   const clock = new ReconnectClock();
   const sockets: SessionSocket[] = [];
-  const client = new DbzzClient({
+  const client = new AckerDBClient({
     url: "http://loopback.test",
     credential: { kind: "bearer", token: "alice" },
     clientSessionId: `reconnect-${transition}-${phase}`,
@@ -580,7 +580,7 @@ async function reconnectTransitionEvidence(
     await socket.settle();
     return socket;
   };
-  const onError = (error: DbzzClientError): void => {
+  const onError = (error: AckerDBClientError): void => {
     errors.push(error.code);
   };
 
@@ -689,7 +689,7 @@ async function reconnectTransitionEvidence(
 
 describe("Session + Runtime integration", () => {
   test("preserves exact noncanonical Session bytes in concrete Runtime telemetry", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-session-bytes-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-session-bytes-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     const exported: TelemetryRecord[] = [];
@@ -767,7 +767,7 @@ describe("Session + Runtime integration", () => {
   });
 
   test("orders convergence, replay, and auth-epoch transitions end to end", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-session-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-session-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     let mutationExecutions = 0;
@@ -946,7 +946,7 @@ describe("Session + Runtime integration", () => {
   });
 
   test("keeps real client event state consistent through partitions, refresh, and sign-out", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-client-session-events-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-client-session-events-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     const registry = new Registry({
@@ -971,7 +971,7 @@ describe("Session + Runtime integration", () => {
     });
     const clock = new FixedClock();
     let socket!: SessionSocket;
-    const client = new DbzzClient({
+    const client = new AckerDBClient({
       url: "http://loopback.test",
       credential: { kind: "bearer", token: "alice" },
       clientSessionId: "real-client-events",
@@ -989,11 +989,11 @@ describe("Session + Runtime integration", () => {
         return socket;
       },
     });
-    const publicOne: DbzzLiveEvent<{ id: bigint; channelId: bigint }>[] = [];
-    const publicTwo: DbzzLiveEvent<{ id: bigint; channelId: bigint }>[] = [];
-    const privateOne: DbzzLiveEvent<{ id: bigint; channelId: bigint }>[] = [];
-    const privateErrors: DbzzClientError[] = [];
-    const malformedErrors: DbzzClientError[] = [];
+    const publicOne: AckerDBLiveEvent<{ id: bigint; channelId: bigint }>[] = [];
+    const publicTwo: AckerDBLiveEvent<{ id: bigint; channelId: bigint }>[] = [];
+    const privateOne: AckerDBLiveEvent<{ id: bigint; channelId: bigint }>[] = [];
+    const privateErrors: AckerDBClientError[] = [];
+    const malformedErrors: AckerDBClientError[] = [];
 
     try {
       client.subscribeEvent<{ channelId: bigint }, { id: bigint; channelId: bigint }>(
@@ -1061,7 +1061,7 @@ describe("Session + Runtime integration", () => {
   });
 
   test("never relabels slow old-principal query or event delivery with the new epoch", async () => {
-    const directory = mkdtempSync(join(tmpdir(), "dbzz-runtime-session-race-"));
+    const directory = mkdtempSync(join(tmpdir(), "ackerdb-runtime-session-race-"));
     const engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     const registry = new Registry({

@@ -1,10 +1,10 @@
 import type { Database } from "bun:sqlite";
-import { stableEncode } from "@dbzz/core";
+import { stableEncode } from "@ackerdb/core";
 import type { Principal } from "../auth/credentials.ts";
 import type { Identity } from "../validation/v.ts";
 import type { ReadRecorder, WriteCollector } from "../database/access.ts";
 import type { Engine } from "../database/engine.ts";
-import { DbzzError } from "../shared/errors.ts";
+import { AckerDBError } from "../shared/errors.ts";
 import type { MutationCtx, QueryCtx, TxCtx } from "../app/functions.ts";
 import {
   mcpTokenVaultOwner,
@@ -105,7 +105,7 @@ export async function withMcpTokenContext<T extends object, R>(
 function invocationCapability(ctx: object): McpTokenContextCapability {
   const found = capabilities.get(ctx);
   if (found === undefined) {
-    throw new DbzzError("unauthorized", "MCP token operations require a DBZZ invocation context");
+    throw new AckerDBError("unauthorized", "MCP token operations require a AckerDB invocation context");
   }
   return found;
 }
@@ -115,10 +115,10 @@ function ownerCapability(ctx: object, write: boolean): McpTokenContextCapability
 } {
   const found = invocationCapability(ctx);
   if (found.principal.kind !== "user") {
-    throw new DbzzError("unauthorized", "MCP token administration requires an external user identity");
+    throw new AckerDBError("unauthorized", "MCP token administration requires an external user identity");
   }
   if (write && found.writes === null) {
-    throw new DbzzError("validation", "MCP token writes require a mutation or transaction");
+    throw new AckerDBError("validation", "MCP token writes require a mutation or transaction");
   }
   return found as McpTokenContextCapability & {
     readonly principal: Principal & { readonly kind: "user"; readonly identity: Identity };
@@ -130,10 +130,10 @@ function systemCapability(ctx: object, write: boolean): McpTokenContextCapabilit
 } {
   const found = invocationCapability(ctx);
   if (found.principal.kind !== "system") {
-    throw new DbzzError("unauthorized", "system MCP token administration requires system authority");
+    throw new AckerDBError("unauthorized", "system MCP token administration requires system authority");
   }
   if (write && found.writes === null) {
-    throw new DbzzError("validation", "MCP token writes require a mutation or transaction");
+    throw new AckerDBError("validation", "MCP token writes require a mutation or transaction");
   }
   return found as McpTokenContextCapability & {
     readonly principal: Principal & { readonly kind: "system" };

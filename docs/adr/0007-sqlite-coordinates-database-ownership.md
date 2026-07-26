@@ -1,7 +1,7 @@
 # SQLite and no-clobber publication coordinate database ownership
 
-Every file-backed DBZZ database has one persistent same-directory SQLite
-coordination database. DBZZ brands it with a fixed `application_id`, requires
+Every file-backed AckerDB database has one persistent same-directory SQLite
+coordination database. AckerDB brands it with a fixed `application_id`, requires
 an empty schema and DELETE journal mode, and holds `BEGIN IMMEDIATE` for the
 lifetime of startup, restore, reset, or any other canonical owner. A staged
 restore Engine borrows that same ownership connection. The canonical
@@ -20,36 +20,36 @@ link, because that entry violates restore's vacant-target invariant.
 ## Decision
 
 A missing coordination database is initialized in a unique same-directory
-`0600` UUIDv4 staging file. DBZZ commits its identity, closes and fsyncs it,
+`0600` UUIDv4 staging file. AckerDB commits its identity, closes and fsyncs it,
 then hard-links it to the canonical path without clobbering a winner. Every
 contender removes its own stage after the link attempt.
 
-Before any contender opens canonical SQLite, it scans only strict DBZZ
+Before any contender opens canonical SQLite, it scans only strict AckerDB
 coordination staging names and removes only aliases whose bigint `(dev, ino)`
 match the canonical file. Concurrent removal tolerates `ENOENT`. The canonical
 file must then have exactly one hard link, and the parent directory is fsynced.
-Only after that convergence does DBZZ open canonical SQLite, set
+Only after that convergence does AckerDB open canonical SQLite, set
 `busy_timeout=0`, retain `BEGIN IMMEDIATE`, and validate the immutable identity,
 empty schema, and journal mode. Only the exact `SQLITE_BUSY`/errno 5 pair means
 already open; there is no retry, timeout, polling, or owner record.
 
 While that transaction is retained, and before any data SQLite connection is
-opened, DBZZ checks the canonical data inode. It removes only exact UUIDv4
-`dbzz-init` or `dbzz-restore` main-file stages whose bigint `(dev, ino)` match
+opened, AckerDB checks the canonical data inode. It removes only exact UUIDv4
+`ackerdb-init` or `ackerdb-restore` main-file stages whose bigint `(dev, ino)` match
 the canonical file, then syncs the parent directory. These are the hard-link
-publication aliases DBZZ can prove it owns. The canonical data file must then
+publication aliases AckerDB can prove it owns. The canonical data file must then
 have exactly one hard link. Any remaining hard link is unproven and fails
 closed without deleting either pathname.
 
 For coordination publication, a process killed before publication leaves a
-different-inode, single-link stage. DBZZ preserves it because pathname shape
+different-inode, single-link stage. AckerDB preserves it because pathname shape
 cannot prove ownership. A process killed after coordination publication may
 leave a same-inode, two-link alias; the next acquisition removes that proven
 alias before opening the coordination inode. For data publication, same-inode
 aliases are removed under the retained coordination transaction, while
 different-inode init and restore stages continue through their existing exact
 recovery rules after ownership. Once the corresponding SQLite file is open,
-DBZZ performs no publication-alias cleanup.
+AckerDB performs no publication-alias cleanup.
 
 ## Why
 

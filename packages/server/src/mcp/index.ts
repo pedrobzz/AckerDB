@@ -1,4 +1,4 @@
-import type { RegisteredServerOnly } from "@dbzz/core";
+import type { RegisteredServerOnly } from "@ackerdb/core";
 import {
   v,
   type Expand,
@@ -81,8 +81,8 @@ export type {
   McpAiToolSet,
 } from "./ai.ts";
 
-const MCP_IDENTITY = Symbol.for("@dbzz/server/Mcp/v1");
-const MCP_TOOL_IDENTITY = Symbol.for("@dbzz/server/McpTool/v1");
+const MCP_IDENTITY = Symbol.for("@ackerdb/server/Mcp/v1");
+const MCP_TOOL_IDENTITY = Symbol.for("@ackerdb/server/McpTool/v1");
 const mcpToolBlueprintDefinitions = new WeakMap<object, unknown>();
 const MCP_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const MCP_PATH = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
@@ -453,7 +453,7 @@ export function mcpTool(
   >,
 ): AnyMcpToolBlueprint {
   const blueprint = Object.freeze({
-    isDbzzServerOnly: true as const,
+    isAckerDBServerOnly: true as const,
     serverKind: "mcp-tool-blueprint" as const,
   });
   let captured: unknown = definition;
@@ -582,7 +582,7 @@ function assembleMcpTool(
     ? undefined
     : compileMcpObjectCodec(outputValidator);
   const tool = {
-    isDbzzServerOnly: true as const,
+    isAckerDBServerOnly: true as const,
     serverKind: "mcp-tool" as const,
     kind: "mcp-tool" as const,
     name,
@@ -688,7 +688,7 @@ export function createMcp(
 
   let declaration!: AnyMcpDeclaration;
   const value = {
-    isDbzzServerOnly: true as const,
+    isAckerDBServerOnly: true as const,
     serverKind: "mcp" as const,
     name: config.name,
     path,

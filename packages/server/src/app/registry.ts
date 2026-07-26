@@ -3,7 +3,7 @@
  * registered functions. Addresses derive from module paths + export names,
  * exactly mirroring what codegen puts on the generated `api` object.
  */
-import { getRef } from "@dbzz/core";
+import { getRef } from "@ackerdb/core";
 import type { Principal } from "../auth/credentials.ts";
 import {
   isRegisteredFunction,
@@ -19,7 +19,7 @@ import {
   type McpEndpointDeclaration,
 } from "../mcp/index.ts";
 import { isMcpToolAuthorized } from "../mcp/scopes.ts";
-import { isDbzzHttpRoute } from "../transport/http-routes.ts";
+import { isAckerDBHttpRoute } from "../transport/http-routes.ts";
 import type { Schema, ScheduledHandler } from "../schema/definition.ts";
 
 type ServerOnlyExport = AnyMcpDeclaration | AnyMcpToolBlueprint;
@@ -67,8 +67,8 @@ export class Registry {
       if (existing !== undefined) {
         throw new Error(`duplicate MCP name "${value.name}"`);
       }
-      if (isDbzzHttpRoute(value.path)) {
-        throw new Error(`MCP "${value.name}" path "${value.path}" collides with a DBZZ route`);
+      if (isAckerDBHttpRoute(value.path)) {
+        throw new Error(`MCP "${value.name}" path "${value.path}" collides with a AckerDB route`);
       }
       const pathOwner = this.mcpByPath.get(value.path);
       if (pathOwner !== undefined) {
@@ -100,7 +100,7 @@ export class Registry {
       if (
         (typeof value === "object" || typeof value === "function") &&
         value !== null &&
-        (value as { readonly isDbzzServerOnly?: unknown }).isDbzzServerOnly === true &&
+        (value as { readonly isAckerDBServerOnly?: unknown }).isAckerDBServerOnly === true &&
         !this.serverOnly.has(address)
       ) {
         throw new Error(`unknown server-only export at "${address}"`);

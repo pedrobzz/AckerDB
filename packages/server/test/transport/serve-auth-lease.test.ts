@@ -9,7 +9,7 @@ import {
   parseCallResponse,
   parseSseMessage,
   type SseMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import type {
   CredentialVerifier,
   PrincipalInvalidation,
@@ -22,7 +22,7 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
-import { serve, type DbzzServer } from "../../src/transport/server.ts";
+import { serve, type AckerDBServer } from "../../src/transport/server.ts";
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -189,14 +189,14 @@ describe("HTTP and SSE credential leases", () => {
   let engine: Engine;
   let runtime: Runtime;
   let verifier: LeaseVerifier;
-  let server: DbzzServer;
+  let server: AckerDBServer;
   let base: string;
   let requestId: number;
 
   beforeEach(() => {
     blockedProcedureStarted = deferred<void>();
     blockedSseStarted = deferred<void>();
-    directory = mkdtempSync(join(tmpdir(), "dbzz-serve-auth-lease-"));
+    directory = mkdtempSync(join(tmpdir(), "ackerdb-serve-auth-lease-"));
     engine = new Engine(schema, join(directory, "data.db"));
     reconcile(engine);
     verifier = new LeaseVerifier();
@@ -303,7 +303,7 @@ describe("HTTP and SSE credential leases", () => {
 
   test("owns an SSE lease through normal body completion", async () => {
     const complete = await request("sse", "auth.once", "user-complete");
-    const streamId = complete.headers.get("x-dbzz-sse-stream");
+    const streamId = complete.headers.get("x-ackerdb-sse-stream");
     if (streamId === null || complete.body === null) throw new Error("missing SSE response ownership");
     const reader = complete.body.getReader();
     const chunk = await readSseMessage(reader);

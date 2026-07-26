@@ -3,8 +3,8 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode } from "@dbzz/core";
-import type { DbzzFetch, DbzzWebSocket } from "@dbzz/client";
+import { decode } from "@ackerdb/core";
+import type { AckerDBFetch, AckerDBWebSocket } from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -16,16 +16,16 @@ import {
   serve,
   sseProcedure,
   type SseCtx,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
-  DbzzProvider,
+  AckerDBProvider,
   useConnectionState,
   useSseProcedure,
-  type DbzzClientError,
+  type AckerDBClientError,
   type SseProcedureCall,
-} from "@dbzz/client-react";
+} from "@ackerdb/client-react";
 
 const schema = defineSchema({});
 
@@ -131,7 +131,7 @@ interface App {
 }
 
 function createApp(): App {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-react-sse-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-sse-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const runtime = new Runtime({
@@ -165,7 +165,7 @@ async function until(predicate: () => boolean, description: string): Promise<voi
 // Records the exact order of SSE request and acknowledgement traffic; the
 // stream body itself is untouched. Resolves `fetch` at call time: after
 // support/dom.ts registers happy-dom it restores Bun's native fetch.
-function recordingFetch(log: string[]): DbzzFetch {
+function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {
     const { pathname } = new URL(url);
     if (pathname === "/api/sse") log.push("sse");
@@ -206,16 +206,16 @@ async function mountSse(base: string, address: string, log: string[] = []): Prom
   const container = mountPoint();
   const root: Root = createRoot(container);
   root.render(
-    <DbzzProvider
+    <AckerDBProvider
       config={{
         url: base,
         credential: { kind: "anonymous" },
-        createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+        createWebSocket: (url) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
         fetch: recordingFetch(log),
       }}
     >
       <Probe />
-    </DbzzProvider>,
+    </AckerDBProvider>,
   );
   await until(() => phase === "ready", "the provider to reach ready");
   return {
@@ -252,7 +252,7 @@ async function mount(address: string, log: string[] = []): Promise<Mounted> {
   return mounted;
 }
 
-describe("useSseProcedure against a real dbzz server", () => {
+describe("useSseProcedure against a real ackerdb server", () => {
   test("pull-driven chunks with exact acknowledgement order and no read-ahead", async () => {
     const log: string[] = [];
     const mounted = await mount("stream.ticks", log);
@@ -337,9 +337,9 @@ describe("useSseProcedure against a real dbzz server", () => {
       () => {
         throw new Error("the invalid chunk must not be delivered");
       },
-      (error: DbzzClientError) => error,
+      (error: AckerDBClientError) => error,
     );
-    expect(failure.name).toBe("DbzzClientError");
+    expect(failure.name).toBe("AckerDBClientError");
     expect(failure.code).toBe("validation");
     expect(failure.message).toBe("chunk.value: expected string, got number");
     // One terminal outcome: the stream stays failed with the same error.
@@ -361,9 +361,9 @@ describe("useSseProcedure against a real dbzz server", () => {
         () => {
           throw new Error("disconnect must fail the read");
         },
-        (error: DbzzClientError) => error,
+        (error: AckerDBClientError) => error,
       );
-      expect(failure.name).toBe("DbzzClientError");
+      expect(failure.name).toBe("AckerDBClientError");
       expect(failure.code).toBe("draining");
       await holdReleased.promise;
 
@@ -391,9 +391,9 @@ describe("useSseProcedure against a real dbzz server", () => {
       () => {
         throw new Error("shutdown must fail the read");
       },
-      (error: DbzzClientError) => error,
+      (error: AckerDBClientError) => error,
     );
-    expect(failure.name).toBe("DbzzClientError");
+    expect(failure.name).toBe("AckerDBClientError");
     expect(failure.code).toBe("unavailable");
     await unmountHoldReleased.promise;
     expect(log.filter((entry) => entry === "sse")).toEqual(["sse"]);
@@ -420,9 +420,9 @@ describe("useSseProcedure against a real dbzz server", () => {
         () => {
           throw new Error("the pre-client callable must fail");
         },
-        (error: DbzzClientError) => error,
+        (error: AckerDBClientError) => error,
       );
-    expect(failure.name).toBe("DbzzClientError");
+    expect(failure.name).toBe("AckerDBClientError");
     expect(failure.code).toBe("unavailable");
     expect(failure.message).toBe("the provider has not created its client yet");
   });

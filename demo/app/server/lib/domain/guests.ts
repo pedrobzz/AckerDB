@@ -1,6 +1,6 @@
-import { Err, Ok, Status } from "@dbzz/core";
-import type { Identity } from "@dbzz/server";
-import type { DatabaseReader } from "@demo/dbzz-codegen/server";
+import { Err, Ok, Status } from "@ackerdb/core";
+import type { Identity } from "@ackerdb/server";
+import type { DatabaseReader } from "@demo/ackerdb-codegen/server";
 
 export async function userForIdentity(
   db: DatabaseReader,

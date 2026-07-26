@@ -1,13 +1,13 @@
 import { SignJWT, jwtVerify } from "jose";
-import { DbzzError, type VerifiedUserCredential } from "@dbzz/server";
+import { AckerDBError, type VerifiedUserCredential } from "@ackerdb/server";
 import { emailInput, guestNameInput } from "./inputs.ts";
 
-const ISSUER = "https://demo.dbzz.local/";
-const AUDIENCE = "dbzz-demo";
+const ISSUER = "https://demo.ackerdb.local/";
+const AUDIENCE = "ackerdb-demo";
 const GUEST_TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60;
 const secret = new TextEncoder().encode(
-  process.env.DBZZ_DEMO_SIGNING_SECRET ??
-    "dbzz-demo-local-signing-secret-change-me",
+  process.env.ACKERDB_DEMO_SIGNING_SECRET ??
+    "ackerdb-demo-local-signing-secret-change-me",
 );
 
 export interface GuestTokenResult {
@@ -40,7 +40,7 @@ export async function issueGuestToken(input: {
 export async function verifyDemoCredential(
   credential: string,
 ): Promise<VerifiedUserCredential> {
-  const staffToken = process.env.DBZZ_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
+  const staffToken = process.env.ACKERDB_DEMO_STAFF_TOKEN ?? "savoria-demo-staff";
   if (credential === staffToken) {
     // Staff authenticate as a user-kind principal so the whole team shares one
     // durable Identity (subject "staff:amelia"). Owner-token administration is
@@ -86,6 +86,6 @@ export async function verifyDemoCredential(
       tokenId: typeof payload.jti === "string" ? payload.jti : null,
     };
   } catch {
-    throw new DbzzError("unauthenticated", "Invalid demo credential");
+    throw new AckerDBError("unauthenticated", "Invalid demo credential");
   }
 }

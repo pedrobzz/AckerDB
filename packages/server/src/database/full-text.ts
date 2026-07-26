@@ -2,9 +2,9 @@ import type { Database } from "bun:sqlite";
 import { IncompatibleDatabaseError } from "../shared/errors.ts";
 import { ValidationError } from "../validation/v.ts";
 
-const FULL_TEXT_PREFIX = "_dbzz_fts_";
-const TOKENIZER_TABLE = "__dbzz_fts_literal_tokens";
-const CAPABILITY_TABLE = "__dbzz_fts5_capability";
+const FULL_TEXT_PREFIX = "_ackerdb_fts_";
+const TOKENIZER_TABLE = "__ackerdb_fts_literal_tokens";
+const CAPABILITY_TABLE = "__ackerdb_fts5_capability";
 const MAX_LITERAL_BYTES = 4_096;
 const MAX_LITERAL_TOKENS = 256;
 

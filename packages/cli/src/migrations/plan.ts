@@ -39,7 +39,7 @@ import {
   type SchemaRefusal,
   type SchemaSnapshot,
   type TableChange,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { importApp } from "../app/manifest.ts";
 import type { AppConfig } from "../app/config.ts";
 import { loadMigrationChain, migrationArtifactPaths } from "./load.ts";
@@ -396,7 +396,7 @@ const EMPTY_CANDIDATES: RenameCandidates = { tables: { dropped: [], added: [] },
 export function planToWire(outcome: PlanOutcome, config: AppConfig): PlanWire {
   switch (outcome.status) {
     case "no-database":
-      return { error: `no database at ${join(config.dbDir, "data.db")}; \`dbzz dev\` initializes a fresh one` };
+      return { error: `no database at ${join(config.dbDir, "data.db")}; \`acker dev\` initializes a fresh one` };
     case "diverged":
       return { error: outcome.message };
     case "clean":

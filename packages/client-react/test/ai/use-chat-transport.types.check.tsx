@@ -1,6 +1,6 @@
 // Compile-time contract for the /ai chat transport. This file is typechecked
 // (see the package tsconfig) and never executed.
-import type { QueryRef, SseRef } from "@dbzz/client";
+import type { QueryRef, SseRef } from "@ackerdb/client";
 import type {
   ChatTransport,
   InferUIMessageChunk,
@@ -10,9 +10,9 @@ import type {
 import type { ReactNode } from "react";
 import {
   useChatTransport,
-  type DbzzChatArgs,
-  type DbzzChatRequest,
-} from "@dbzz/client-react/ai";
+  type AckerDBChatArgs,
+  type AckerDBChatRequest,
+} from "@ackerdb/client-react/ai";
 
 // Generated references as codegen would emit them for AI chat procedures.
 type StandardArgs = {
@@ -61,7 +61,7 @@ function CustomShape(): ReactNode {
   });
   useChatTransport(custom, {
     // @ts-expect-error the mapper's return type must be the procedure's args
-    prepareArgs: (request: DbzzChatRequest) => ({ sessionId: request.chatId }),
+    prepareArgs: (request: AckerDBChatRequest) => ({ sessionId: request.chatId }),
   });
   void mapped;
   return null;
@@ -70,7 +70,7 @@ function CustomShape(): ReactNode {
 // --- near-standard shapes still require an explicit mapping ----------------
 
 function NearStandardShapes(): ReactNode {
-  // @ts-expect-error dbzz rejects undeclared fields, so fewer declared args
+  // @ts-expect-error ackerdb rejects undeclared fields, so fewer declared args
   // than the standard shape cannot accept the standard args object
   useChatTransport(subsetArgs);
   // @ts-expect-error extra declared args are never sent by the standard shape
@@ -102,7 +102,7 @@ function WrongReferences(): ReactNode {
 
 function RawAddress(): ReactNode {
   const bare: ChatTransport<UIMessage> = useChatTransport("ai.chat");
-  const standardArgs: DbzzChatArgs = {
+  const standardArgs: AckerDBChatArgs = {
     trigger: "submit-message",
     chatId: "c",
     messageId: null,
@@ -116,7 +116,7 @@ function RawAddress(): ReactNode {
 // --- custom UI message types keep end-to-end inference ---------------------
 
 type WeatherMessage = UIMessage<{ locale: string }, { weather: { temperature: number } }>;
-declare const weather: SseRef<DbzzChatArgs<WeatherMessage>, InferUIMessageChunk<WeatherMessage>>;
+declare const weather: SseRef<AckerDBChatArgs<WeatherMessage>, InferUIMessageChunk<WeatherMessage>>;
 declare const weatherCustom: SseRef<{ prompt: string }, InferUIMessageChunk<WeatherMessage>>;
 
 function CustomMessage(): ReactNode {

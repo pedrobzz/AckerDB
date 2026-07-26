@@ -13,7 +13,7 @@ import {
   makeDbWriter,
   newWriteCollector,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const schema = defineSchema({
   documents: defineTable({
@@ -30,7 +30,7 @@ describe("exact nearest search", () => {
   let db: any;
 
   beforeEach(() => {
-    directory = mkdtempSync(join(tmpdir(), "dbzz-nearest-"));
+    directory = mkdtempSync(join(tmpdir(), "ackerdb-nearest-"));
     engine = new Engine(schema, join(directory, "data.db"));
     engine.createAll();
     db = makeDbWriter(engine, newWriteCollector(), () => 1n);
@@ -222,7 +222,7 @@ describe("exact nearest search", () => {
     let candidateSql: string | undefined;
     const prepare = engine.reader.prepare.bind(engine.reader);
     engine.reader.prepare = ((sql: string) => {
-      if (sql.includes('AS "__dbzz_vector"')) candidateSql = sql;
+      if (sql.includes('AS "__ackerdb_vector"')) candidateSql = sql;
       return prepare(sql);
     }) as typeof engine.reader.prepare;
     const reader: any = makeDbReader(engine, engine.reader, null);
@@ -233,7 +233,7 @@ describe("exact nearest search", () => {
       .first();
 
     expect(candidateSql).toStartWith(
-      'SELECT "id" AS "__dbzz_pk", "embedding" AS "__dbzz_vector" FROM "documents"',
+      'SELECT "id" AS "__ackerdb_pk", "embedding" AS "__ackerdb_vector" FROM "documents"',
     );
     const index = engine.plan("documents").indexes[0]!;
     const plan = engine.reader

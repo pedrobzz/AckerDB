@@ -7,14 +7,14 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 import { v, type Identity } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import {
   mutation,
   query,
   type MutationBuilder,
   type QueryBuilder,
 } from "../../src/app/functions.ts";
-import { DBZZ_HTTP_ROUTES } from "../../src/transport/http-routes.ts";
+import { ACKERDB_HTTP_ROUTES } from "../../src/transport/http-routes.ts";
 import {
   createMcp,
   finalizeMcpToolResult,
@@ -78,7 +78,7 @@ const writeNote = typedMcpTool({
     lastHandlerContext = { auth: ctx.auth.kind, aborted: ctx.abortSignal.aborted };
     return ctx.tx(async (tx) => {
       await insertNote(tx, { body: args.body });
-      if (args.body === "reject") throw new DbzzError("conflict", "note rejected");
+      if (args.body === "reject") throw new AckerDBError("conflict", "note rejected");
       if (args.body === "secret-crash") throw new Error("sensitive implementation detail");
       const rows = await listNotes(tx, {});
       return { content: [{ type: "text", text: `${ctx.auth.kind}:${rows.data.length}` }] };
@@ -113,7 +113,7 @@ const readStatus = typedMcpTool({
 });
 
 const echoValues = typedMcpTool({
-  description: "Round-trip DBZZ-native values without losing precision or bytes.",
+  description: "Round-trip AckerDB-native values without losing precision or bytes.",
   args: {
     minimum: v.bigint(),
     maximum: v.bigint(),
@@ -202,7 +202,7 @@ function richContentResult(kind: string, auth: string): McpToolResult {
         content: [{
           type: "resource",
           resource: {
-            uri: "dbzz://notes/1",
+            uri: "ackerdb://notes/1",
             mimeType: "text/plain",
             text: "embedded note",
             _meta: { encoding: "utf-8" },
@@ -216,7 +216,7 @@ function richContentResult(kind: string, auth: string): McpToolResult {
         content: [{
           type: "resource",
           resource: {
-            uri: "dbzz://notes/2",
+            uri: "ackerdb://notes/2",
             mimeType: "application/octet-stream",
             blob: "AQID",
             _meta: { checksum: "010203" },
@@ -227,14 +227,14 @@ function richContentResult(kind: string, auth: string): McpToolResult {
       return {
         content: [{
           type: "resource_link",
-          uri: "https://dbzz.dev/notes/1",
+          uri: "https://ackerdb.dev/notes/1",
           name: "note-one",
           title: "Note one",
           description: "The first durable note.",
           mimeType: "text/plain",
           size: 13,
           icons: [{
-            src: "https://dbzz.dev/note.png",
+            src: "https://ackerdb.dev/note.png",
             mimeType: "image/png",
             sizes: ["48x48", "any"],
             theme: "light",
@@ -251,7 +251,7 @@ function richContentResult(kind: string, auth: string): McpToolResult {
           mimeType: "image/png",
         }, {
           type: "resource_link",
-          uri: "dbzz://notes/1",
+          uri: "ackerdb://notes/1",
           name: "note-one",
         }],
         _meta: { auth, nested: { values: [true, 1, null] } },
@@ -301,7 +301,7 @@ function invalidContentValue(kind: string): unknown {
       return {
         content: [{
           type: "resource",
-          resource: { uri: "dbzz://notes/1", text: "text", blob: "AQID" },
+          resource: { uri: "ackerdb://notes/1", text: "text", blob: "AQID" },
         }],
       };
     case "unknown_field":
@@ -336,7 +336,7 @@ const agentMcp = typedMcp({
   metadata: {
     title: "Notes Agent",
     description: "A focused notes endpoint.",
-    websiteUrl: "https://dbzz.dev/agents/notes",
+    websiteUrl: "https://ackerdb.dev/agents/notes",
   },
   tools: {
     summarize_note: writeNoteSummary,
@@ -385,7 +385,7 @@ interface Harness {
 let harness: Harness;
 
 function startHarness(limits?: ServiceLimits): Harness {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-mcp-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const registry = new Registry(modules);
@@ -510,7 +510,7 @@ describe("public stateless MCP endpoint", () => {
           title: "Notes Agent",
           version: "1",
           description: "A focused notes endpoint.",
-          websiteUrl: "https://dbzz.dev/agents/notes",
+          websiteUrl: "https://ackerdb.dev/agents/notes",
         },
         instructions: "Use the note tools for durable user notes.",
       },
@@ -1037,7 +1037,7 @@ describe("public stateless MCP endpoint", () => {
         params: { name: "write_note", arguments: { body: "x".repeat(1_024) } },
       }),
     });
-    // Bun rejects a declared over-limit body before DBZZ allocates or parses it.
+    // Bun rejects a declared over-limit body before AckerDB allocates or parses it.
     expect(oversized.status).toBe(413);
     expect(handlerCalls).toBe(0);
   });
@@ -1052,7 +1052,7 @@ describe("public stateless MCP endpoint", () => {
     });
   });
 
-  test("rejects malformed JSON without using DBZZ's tagged wire codec", async () => {
+  test("rejects malformed JSON without using AckerDB's tagged wire codec", async () => {
     const malformed = await fetch(`${harness.base}/mcp`, {
       method: "POST",
       headers: mcpHeaders(),
@@ -1243,11 +1243,11 @@ describe("MCP startup invariants", () => {
     );
   });
 
-  test("rejects every path owned by the DBZZ listener", () => {
-    for (const path of Object.values(DBZZ_HTTP_ROUTES)) {
+  test("rejects every path owned by the AckerDB listener", () => {
+    for (const path of Object.values(ACKERDB_HTTP_ROUTES)) {
       const collision = createMcp({ name: "collision", path, tools: {} });
       expect(() => new Registry({ endpoint: { collision } })).toThrow(
-        `MCP "collision" path "${path}" collides with a DBZZ route`,
+        `MCP "collision" path "${path}" collides with a AckerDB route`,
       );
     }
   });

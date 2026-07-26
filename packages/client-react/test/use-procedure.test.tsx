@@ -3,15 +3,15 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode, parseClientMessage } from "@dbzz/core";
+import { decode, parseClientMessage } from "@ackerdb/core";
 import {
-  DbzzClientError,
+  AckerDBClientError,
   type ClientResult,
-  type DbzzWebSocket,
+  type AckerDBWebSocket,
   type ProcedureRef,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import {
-  DbzzError,
+  AckerDBError,
   Engine,
   PRODUCTION_LIMITS,
   Registry,
@@ -22,7 +22,7 @@ import {
   procedure,
   reconcile,
   serve,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import {
   Component,
   StrictMode,
@@ -34,11 +34,11 @@ import {
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
-  DbzzProvider,
+  AckerDBProvider,
   useProcedure,
-  type DbzzProcedure,
-  type DbzzProviderConfig,
-} from "@dbzz/client-react";
+  type AckerDBProcedure,
+  type AckerDBProviderConfig,
+} from "@ackerdb/client-react";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -65,7 +65,7 @@ function mustOk<Data>(result: ClientResult<Data>): Data {
   return result.data;
 }
 
-function mustErr<Data>(result: ClientResult<Data>): DbzzClientError {
+function mustErr<Data>(result: ClientResult<Data>): AckerDBClientError {
   if (result.ok) throw new Error("expected a failed Result");
   return result.error;
 }
@@ -95,12 +95,12 @@ interface App {
   readonly base: string;
   /** Every procedure handler the server actually admitted, in order. */
   readonly calls: RecordedCall[];
-  config(overrides?: Partial<DbzzProviderConfig>): DbzzProviderConfig;
+  config(overrides?: Partial<AckerDBProviderConfig>): AckerDBProviderConfig;
   close(): Promise<void>;
 }
 
 function createApp(): App {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-react-procedure-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-procedure-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const calls: RecordedCall[] = [];
@@ -119,7 +119,7 @@ function createApp(): App {
         args: {},
         handler: (ctx: Ctx) => {
           calls.push({ signal: ctx.abortSignal });
-          throw new DbzzError("conflict", "flux capacitor offline");
+          throw new AckerDBError("conflict", "flux capacitor offline");
         },
       }),
       block: procedure({
@@ -144,7 +144,7 @@ function createApp(): App {
       return {
         url: base,
         credential: { kind: "anonymous" },
-        createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+        createWebSocket: (url) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
         ...overrides,
       };
     },
@@ -156,9 +156,9 @@ function createApp(): App {
   };
 }
 
-function observingSocket(url: string, onProcedure: () => void): DbzzWebSocket {
+function observingSocket(url: string, onProcedure: () => void): AckerDBWebSocket {
   const native = new NativeWebSocket(url);
-  const socket: DbzzWebSocket = {
+  const socket: AckerDBWebSocket = {
     onopen: null,
     onmessage: null,
     onclose: null,
@@ -213,7 +213,7 @@ beforeAll(() => {
 });
 afterAll(() => app.close());
 
-describe("useProcedure against a real dbzz server", () => {
+describe("useProcedure against a real ackerdb server", () => {
   test("a Strict Mode mount-effect call waits for the client and only the live lifetime dispatches", async () => {
     const settlements: Array<{ kind: "ok"; value: string } | { kind: "error"; error: unknown }> =
       [];
@@ -242,9 +242,9 @@ describe("useProcedure against a real dbzz server", () => {
     const root = createRoot(container);
     root.render(
       <StrictMode>
-        <DbzzProvider config={app.config()}>
+        <AckerDBProvider config={app.config()}>
           <EchoOnMount />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>,
     );
 
@@ -262,8 +262,8 @@ describe("useProcedure against a real dbzz server", () => {
   });
 
   test("resolves server values and reports the exact typed server error outcome", async () => {
-    let echo: DbzzProcedure<{ value: string }, string> | null = null;
-    let fail: DbzzProcedure<Record<never, never>, never> | null = null;
+    let echo: AckerDBProcedure<{ value: string }, string> | null = null;
+    let fail: AckerDBProcedure<Record<never, never>, never> | null = null;
     function Capture(): ReactNode {
       echo = useProcedure(api.tools.echo);
       fail = useProcedure(api.tools.fail);
@@ -273,9 +273,9 @@ describe("useProcedure against a real dbzz server", () => {
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
-      <DbzzProvider config={app.config()}>
+      <AckerDBProvider config={app.config()}>
         <Capture />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => echo !== null && fail !== null, "the captured callables");
 
@@ -283,7 +283,7 @@ describe("useProcedure against a real dbzz server", () => {
 
     const failure = mustErr(await fail!({}));
     expect(failure).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "conflict",
       message: "flux capacitor offline",
       retryable: false,
@@ -298,7 +298,7 @@ describe("useProcedure against a real dbzz server", () => {
   test("abort reaches the in-flight request and settles the caller promptly without replay", async () => {
     blockStarted = deferred();
     blockRelease = deferred();
-    let block: DbzzProcedure<Record<never, never>, string> | null = null;
+    let block: AckerDBProcedure<Record<never, never>, string> | null = null;
     function Capture(): ReactNode {
       block = useProcedure(api.tools.block);
       return null;
@@ -307,9 +307,9 @@ describe("useProcedure against a real dbzz server", () => {
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
-      <DbzzProvider config={app.config()}>
+      <AckerDBProvider config={app.config()}>
         <Capture />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => block !== null, "the captured callable");
 
@@ -323,7 +323,7 @@ describe("useProcedure against a real dbzz server", () => {
     // traveled through the session rather than waiting on the server.
     await settlesWithin(completion, 500, "the aborted procedure");
     expect(mustErr(await completion)).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "indeterminate",
       resource: "operation",
     });
@@ -333,7 +333,7 @@ describe("useProcedure against a real dbzz server", () => {
     // A signal aborted before the call never dispatches a request at all.
     const preAborted = mustErr(await block!({}, { signal: controller.signal }));
     expect(preAborted).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "unavailable",
       message: "procedure request was canceled",
       resource: "operation",
@@ -345,13 +345,13 @@ describe("useProcedure against a real dbzz server", () => {
   });
 
   test("a procedure that never reaches a session expires determinately without execution", async () => {
-    // A real dbzz server that has come and gone: its port now refuses every
+    // A real ackerdb server that has come and gone: its port now refuses every
     // connection, so the failure happens at the network rather than through a
     // fake transport. (Draining the shared server instead would leave Bun's
     // keep-alive pool racing the shutdown and make the outcome nondeterministic.)
     const island = createApp();
     await island.close();
-    let echo: DbzzProcedure<{ value: string }, string> | null = null;
+    let echo: AckerDBProcedure<{ value: string }, string> | null = null;
     function Capture(): ReactNode {
       echo = useProcedure(api.tools.echo);
       return null;
@@ -360,18 +360,18 @@ describe("useProcedure against a real dbzz server", () => {
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
-      <DbzzProvider config={island.config({
+      <AckerDBProvider config={island.config({
         limits: { maxQueryAgeMs: 100 },
         reconnect: { baseDelayMs: 2_500, maxDelayMs: 10_000 },
       })}>
         <Capture />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => echo !== null, "the captured callable");
 
     const failure = mustErr(await echo!({ value: "down" }));
     expect(failure).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "deadline_exceeded",
       message: "client request deadline exceeded",
       resource: "operation",
@@ -383,8 +383,8 @@ describe("useProcedure against a real dbzz server", () => {
   test("provider shutdown settles an in-flight call and stale callables report the closed client", async () => {
     blockStarted = deferred();
     blockRelease = deferred();
-    let block: DbzzProcedure<Record<never, never>, string> | null = null;
-    let echo: DbzzProcedure<{ value: string }, string> | null = null;
+    let block: AckerDBProcedure<Record<never, never>, string> | null = null;
+    let echo: AckerDBProcedure<{ value: string }, string> | null = null;
     function Capture(): ReactNode {
       block = useProcedure(api.tools.block);
       echo = useProcedure(api.tools.echo);
@@ -394,9 +394,9 @@ describe("useProcedure against a real dbzz server", () => {
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
-      <DbzzProvider config={app.config()}>
+      <AckerDBProvider config={app.config()}>
         <Capture />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => block !== null && echo !== null, "the captured callables");
 
@@ -407,7 +407,7 @@ describe("useProcedure against a real dbzz server", () => {
     // close() aborts the session epoch; the handler is still blocked.
     await settlesWithin(completion, 500, "the provider-closed procedure");
     expect(mustErr(await completion)).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "indeterminate",
       resource: "operation",
     });
@@ -417,7 +417,7 @@ describe("useProcedure against a real dbzz server", () => {
     const callsBefore = app.calls.length;
     const stale = mustErr(await echo!({ value: "late" }));
     expect(stale).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "unavailable",
       message: "client closed",
       resource: "operation",
@@ -428,13 +428,13 @@ describe("useProcedure against a real dbzz server", () => {
   });
 
   test("a callable retained past its consumer's unmount settles locally while the provider lives on", async () => {
-    let echo: DbzzProcedure<{ value: string }, string> | null = null;
+    let echo: AckerDBProcedure<{ value: string }, string> | null = null;
     function Capture(): ReactNode {
       echo = useProcedure(api.tools.echo);
       return null;
     }
     function Host({ mounted }: { mounted: boolean }): ReactNode {
-      return <DbzzProvider config={app.config()}>{mounted ? <Capture /> : null}</DbzzProvider>;
+      return <AckerDBProvider config={app.config()}>{mounted ? <Capture /> : null}</AckerDBProvider>;
     }
 
     const container = mountPoint();
@@ -448,7 +448,7 @@ describe("useProcedure against a real dbzz server", () => {
     const callsBefore = app.calls.length;
     const stale = mustErr(await echo!({ value: "late" }));
     expect(stale).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "unavailable",
       message: "client closed",
       resource: "operation",
@@ -473,9 +473,9 @@ describe("useProcedure against a real dbzz server", () => {
     const container = mountPoint();
     const root = createRoot(container);
     const app_ = (sessionId: string): ReactNode => (
-      <DbzzProvider config={app.config({ clientSessionId: sessionId })}>
+      <AckerDBProvider config={app.config({ clientSessionId: sessionId })}>
         <Probe />
-      </DbzzProvider>
+      </AckerDBProvider>
     );
 
     root.render(app_("procedure-stability-1"));
@@ -497,7 +497,7 @@ describe("useProcedure against a real dbzz server", () => {
     // Tag each lifetime's session frames so the dispatching client is
     // observable per request.
     const dispatches: string[] = [];
-    const tagged = (tag: string, sessionId: string): DbzzProviderConfig =>
+    const tagged = (tag: string, sessionId: string): AckerDBProviderConfig =>
       app.config({
         clientSessionId: sessionId,
         createWebSocket: (url) => observingSocket(url, () => dispatches.push(tag)),
@@ -507,13 +507,13 @@ describe("useProcedure against a real dbzz server", () => {
     // runs before every ancestor effect in the reconfiguration commit, which
     // is the earliest a caller can legally observe the new configuration.
     let settled: unknown = null;
-    let echo: DbzzProcedure<{ value: string }, string> | null = null;
+    let echo: AckerDBProcedure<{ value: string }, string> | null = null;
     function LayoutCaller({
       fire,
       run,
     }: {
       fire: boolean;
-      run: DbzzProcedure<{ value: string }, string>;
+      run: AckerDBProcedure<{ value: string }, string>;
     }): ReactNode {
       useLayoutEffect(() => {
         if (!fire) return;
@@ -531,9 +531,9 @@ describe("useProcedure against a real dbzz server", () => {
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
-      <DbzzProvider config={tagged("retired", "procedure-layout-1")}>
+      <AckerDBProvider config={tagged("retired", "procedure-layout-1")}>
         <Owner fire={false} />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     // Prove the first lifetime committed and dispatches before retiring it.
     await until(() => echo !== null, "the captured callable");
@@ -541,9 +541,9 @@ describe("useProcedure against a real dbzz server", () => {
     expect(dispatches).toEqual(["retired"]);
 
     root.render(
-      <DbzzProvider config={tagged("replacement", "procedure-layout-2")}>
+      <AckerDBProvider config={tagged("replacement", "procedure-layout-2")}>
         <Owner fire={true} />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => settled !== null, "the layout-effect call to settle");
 
@@ -594,9 +594,9 @@ describe("useProcedure against a real dbzz server", () => {
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
-      <DbzzProvider config={config}>
+      <AckerDBProvider config={config}>
         <RaceOnMount />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => settlements.length === 2, "both racing settlements");
 
@@ -604,7 +604,7 @@ describe("useProcedure against a real dbzz server", () => {
     expect(settlements).toContainEqual({ kind: "ok", value: "FIRST" });
     const canceled = settlements.find((entry) => entry.kind === "error");
     expect(canceled && "error" in canceled ? canceled.error : null).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "unavailable",
       message: "procedure request was canceled",
       resource: "operation",
@@ -645,13 +645,13 @@ describe("useProcedure against a real dbzz server", () => {
     const container = mountPoint();
     const root = createRoot(container);
     root.render(
-      <DbzzProvider config={app.config()}>
+      <AckerDBProvider config={app.config()}>
         <Gate />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     await until(() => settled !== null, "the canceled call to settle");
     expect(settled).toMatchObject({
-      name: "DbzzClientError",
+      name: "AckerDBClientError",
       code: "unavailable",
       message: "procedure request was canceled",
       resource: "operation",
@@ -687,7 +687,7 @@ describe("useProcedure against a real dbzz server", () => {
       </Boundary>,
     );
     await until(() => container.textContent === "failed", "the error boundary");
-    expect(String(caught)).toContain("useProcedure requires a <DbzzProvider> ancestor");
+    expect(String(caught)).toContain("useProcedure requires a <AckerDBProvider> ancestor");
     await unmount(root);
   });
 });

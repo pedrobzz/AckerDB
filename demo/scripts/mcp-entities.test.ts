@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { api } from "@demo/dbzz-codegen/api";
+import { api } from "@demo/ackerdb-codegen/api";
 import {
   issueToken,
   listedToolNames,

@@ -4,8 +4,8 @@ import type {
   PrincipalInvalidation,
 } from "./credentials.ts";
 
-const AUTH_INVALIDATION_SCOPE: unique symbol = Symbol("dbzz.authInvalidationScope");
-export const SUBSCRIBE_AUTH_INVALIDATION: unique symbol = Symbol("dbzz.subscribeAuthInvalidation");
+const AUTH_INVALIDATION_SCOPE: unique symbol = Symbol("ackerdb.authInvalidationScope");
+export const SUBSCRIBE_AUTH_INVALIDATION: unique symbol = Symbol("ackerdb.subscribeAuthInvalidation");
 
 /** Package-owned identity for one invalidation subscriber. */
 export interface AuthInvalidationScope {

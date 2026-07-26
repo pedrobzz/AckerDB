@@ -52,9 +52,9 @@ export interface DevFlowEffects {
 }
 
 const DECLINED_BANNER =
-  "[dbzz] migration declined — server stays down; edit the schema (a clean ledger starts it, a changed one asks again), run `dbzz generate`, or wipe local data with `dbzz reset`";
+  "[ackerdb] migration declined — server stays down; edit the schema (a clean ledger starts it, a changed one asks again), run `acker generate`, or wipe local data with `acker reset`";
 const APPLY_WAITING_BANNER =
-  "[dbzz] not applying — server stays down; fill the TODOs and answer yes (any edit to the migration asks again), delete its files to withdraw it, or wipe local data with `dbzz reset`";
+  "[ackerdb] not applying — server stays down; fill the TODOs and answer yes (any edit to the migration asks again), delete its files to withdraw it, or wipe local data with `acker reset`";
 
 /** What the developer stands declined on: a ledger they said "not yet" to, and/or a pending chain they are not ready to apply. */
 interface DeclineMemory {
@@ -75,7 +75,7 @@ function pluginRequirementIdentity(wire: Extract<PluginPlanWire, { clean: false 
 
 function pluginDeclinedBanner(wire: Extract<PluginPlanWire, { clean: false }>): string {
   const requirement = wire.requirement;
-  return `[dbzz] Plugin storage ${requirement.kind} declined — server stays down; edit the Plugin manifest, run \`${pluginStorageCommand(requirement)}\`, or wipe all local data with \`dbzz reset\``;
+  return `[ackerdb] Plugin storage ${requirement.kind} declined — server stays down; edit the Plugin manifest, run \`${pluginStorageCommand(requirement)}\`, or wipe all local data with \`acker reset\``;
 }
 
 /**
@@ -112,7 +112,7 @@ async function runFlow(fx: DevFlowEffects, declined: DeclineMemory): Promise<voi
           targetFingerprint: pluginWire.requirement.targetFingerprint,
         });
         if ("stale" in result) {
-          fx.error("[dbzz] the Plugin manifest or storage changed while the question was open — re-planning");
+          fx.error("[ackerdb] the Plugin manifest or storage changed while the question was open — re-planning");
           continue;
         }
         declined.plugin = null;
@@ -179,7 +179,7 @@ async function runFlow(fx: DevFlowEffects, declined: DeclineMemory): Promise<voi
       consent: wire.fingerprint,
     });
     if ("stale" in result) {
-      fx.error("[dbzz] more changes happened while the question was open — the fresh ledger:");
+      fx.error("[ackerdb] more changes happened while the question was open — the fresh ledger:");
       continue;
     }
     declined.ledger = null; // generated: nothing stands declined anymore
@@ -218,7 +218,7 @@ export function makeDevFlowHandler(
         try {
           await runFlow(fx, declined);
         } catch (error) {
-          fx.error(`[dbzz] ${error instanceof Error ? error.message : String(error)}`);
+          fx.error(`[ackerdb] ${error instanceof Error ? error.message : String(error)}`);
         }
       } while (crashPending);
     } finally {

@@ -7,9 +7,9 @@ import {
   type TelemetryRecord,
   type TelemetrySnapshot,
   type TelemetryStage,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type { DriverResult } from "./benchmark.ts";
-import type { DbzzStartupMode } from "./dbzz-profile.ts";
+import type { AckerDBStartupMode } from "./ackerdb-profile.ts";
 
 const RECORD_PREFIX = '{"schemaVersion":1,"kind":';
 const DIAGNOSTIC_TAIL_CHARS = 64 * 1024;
@@ -53,9 +53,9 @@ export interface BenchmarkAggregateSummary {
   readonly operations: Readonly<Record<BenchmarkOperation, OperationAggregateSummary>>;
 }
 
-export interface DbzzTelemetryTerminalReport {
+export interface AckerDBTelemetryTerminalReport {
   readonly schemaVersion: 1;
-  readonly startupMode: DbzzStartupMode;
+  readonly startupMode: AckerDBStartupMode;
   readonly runtime: Readonly<{
     beforeDrain: TelemetrySnapshot;
     afterDrain: TelemetrySnapshot;
@@ -63,7 +63,7 @@ export interface DbzzTelemetryTerminalReport {
   readonly aggregates: BenchmarkAggregateSummary;
 }
 
-export interface DbzzTelemetryDrainAccounting {
+export interface AckerDBTelemetryDrainAccounting {
   readonly retainedBeforeDrain: number;
   readonly exportedDuringDrain: number;
   readonly drainDropDelta: number;
@@ -72,9 +72,9 @@ export interface DbzzTelemetryDrainAccounting {
   readonly drainTimeAdditionsOrRemovals: number;
 }
 
-export interface DbzzTelemetryReport extends DbzzTelemetryTerminalReport {
+export interface AckerDBTelemetryReport extends AckerDBTelemetryTerminalReport {
   readonly localOutput: LocalTelemetryOutputSnapshot;
-  readonly drainAccounting: DbzzTelemetryDrainAccounting;
+  readonly drainAccounting: AckerDBTelemetryDrainAccounting;
 }
 
 interface StreamState {
@@ -112,7 +112,7 @@ function stageOf(record: TelemetryRecord): TelemetryStage | undefined {
 }
 
 /** Streams child output while retaining only fixed counters and a bounded diagnostic tail. */
-export class DbzzOutputCollector {
+export class AckerDBOutputCollector {
   private readonly stdout: StreamState = { decoder: new TextDecoder(), pending: "", discarding: false };
   private readonly stderr: StreamState = { decoder: new TextDecoder(), pending: "", discarding: false };
   private readonly encoder = new TextEncoder();
@@ -213,7 +213,7 @@ export class DbzzOutputCollector {
     if (telemetry && prefix === RECORD_PREFIX) this.invalidRecords++;
     state.pending = "";
     state.discarding = discarding;
-    this.appendTail("[dbzz output line exceeded the bounded collector]\n");
+    this.appendTail("[ackerdb output line exceeded the bounded collector]\n");
   }
 
   private finishStream(state: StreamState, telemetry: boolean): void {
@@ -224,10 +224,10 @@ export class DbzzOutputCollector {
 
   private acceptLine(line: string, telemetry: boolean): void {
     const sequence = this.sequence++;
-    if (line.startsWith("@@dbzz-startup ") || line.includes("ready on")) {
+    if (line.startsWith("@@ackerdb-startup ") || line.includes("ready on")) {
       if (line.length > MAX_CONTROL_LINE_CHARS || this.controls.length >= MAX_CONTROL_LINES) {
         this.controlOverflow++;
-        this.appendTail("[dbzz control line exceeded the bounded collector]\n");
+        this.appendTail("[ackerdb control line exceeded the bounded collector]\n");
       } else {
         this.controls.push({ sequence, line });
       }
@@ -354,12 +354,12 @@ export function summarizeTelemetryAggregates(snapshot: TelemetryAggregateSnapsho
   });
 }
 
-export function createDbzzTelemetryReport(
-  startupMode: DbzzStartupMode,
+export function createAckerDBTelemetryReport(
+  startupMode: AckerDBStartupMode,
   beforeDrain: TelemetrySnapshot,
   afterDrain: TelemetrySnapshot,
   aggregates: TelemetryAggregateSnapshot,
-): DbzzTelemetryTerminalReport {
+): AckerDBTelemetryTerminalReport {
   return Object.freeze({
     schemaVersion: 1,
     startupMode,
@@ -471,17 +471,17 @@ function assertAllDisabled(value: unknown, label: string): void {
 }
 
 function assertAggregateShape(value: unknown): BenchmarkAggregateSummary {
-  const aggregate = record(value, "dbzz telemetry report.aggregates");
+  const aggregate = record(value, "ackerdb telemetry report.aggregates");
   for (const key of ["maxSeries", "overflowedRecords", "spans"] as const) {
-    safeCount(aggregate[key], `dbzz telemetry report.aggregates.${key}`);
+    safeCount(aggregate[key], `ackerdb telemetry report.aggregates.${key}`);
   }
-  finiteNonNegative(aggregate.durationMs, "dbzz telemetry report.aggregates.durationMs");
-  const operations = record(aggregate.operations, "dbzz telemetry report.aggregates.operations");
+  finiteNonNegative(aggregate.durationMs, "ackerdb telemetry report.aggregates.durationMs");
+  const operations = record(aggregate.operations, "ackerdb telemetry report.aggregates.operations");
   if (Object.keys(operations).sort().join(",") !== [...BENCHMARK_OPERATIONS].sort().join(",")) {
-    throw new Error("dbzz telemetry aggregate operations must contain the exact benchmark matrix");
+    throw new Error("ackerdb telemetry aggregate operations must contain the exact benchmark matrix");
   }
   for (const operation of BENCHMARK_OPERATIONS) {
-    const summary = record(operations[operation], `dbzz telemetry report.aggregates.operations.${operation}`);
+    const summary = record(operations[operation], `ackerdb telemetry report.aggregates.operations.${operation}`);
     safeCount(summary.count, `aggregate ${operation} count`);
     finiteNonNegative(summary.durationMs, `aggregate ${operation} duration`);
     const stages = record(summary.stages, `aggregate ${operation} stages`);
@@ -507,47 +507,47 @@ function validateLocalOutput(value: LocalTelemetryOutputSnapshot): void {
     "peakPendingChars",
     "diagnosticTailChars",
   ] as const) {
-    safeCount(value[key], `dbzz local output.${key}`);
+    safeCount(value[key], `ackerdb local output.${key}`);
   }
-  assertFixedCounts(value.byKind, ["span", "event", "metric"] as const, "dbzz local output.byKind");
-  assertFixedCounts(value.byOperation, TELEMETRY_OPERATIONS, "dbzz local output.byOperation");
-  assertFixedCounts(value.byStage, TELEMETRY_STAGES, "dbzz local output.byStage");
+  assertFixedCounts(value.byKind, ["span", "event", "metric"] as const, "ackerdb local output.byKind");
+  assertFixedCounts(value.byOperation, TELEMETRY_OPERATIONS, "ackerdb local output.byOperation");
+  assertFixedCounts(value.byStage, TELEMETRY_STAGES, "ackerdb local output.byStage");
   if (value.byKind.span + value.byKind.event + value.byKind.metric !== value.records) {
-    throw new Error("dbzz local telemetry output accounting does not balance");
+    throw new Error("ackerdb local telemetry output accounting does not balance");
   }
   if (value.peakPendingChars > MAX_LINE_CHARS || value.diagnosticTailChars > DIAGNOSTIC_TAIL_CHARS) {
-    throw new Error("dbzz output collector exceeded its fixed memory bounds");
+    throw new Error("ackerdb output collector exceeded its fixed memory bounds");
   }
 }
 
-export function parseDbzzTelemetryReport(
+export function parseAckerDBTelemetryReport(
   output: string,
-  expected: DbzzStartupMode,
+  expected: AckerDBStartupMode,
   localOutput: LocalTelemetryOutputSnapshot,
-): DbzzTelemetryReport {
+): AckerDBTelemetryReport {
   let value: unknown;
   try {
     value = JSON.parse(output);
   } catch (error) {
-    throw new Error("dbzz telemetry report is not valid JSON", { cause: error });
+    throw new Error("ackerdb telemetry report is not valid JSON", { cause: error });
   }
-  const terminal = record(value, "dbzz telemetry report");
+  const terminal = record(value, "ackerdb telemetry report");
   if (Object.keys(terminal).sort().join(",") !== "aggregates,runtime,schemaVersion,startupMode") {
-    throw new Error("dbzz telemetry report has an unexpected shape");
+    throw new Error("ackerdb telemetry report has an unexpected shape");
   }
-  if (terminal.schemaVersion !== 1) throw new Error("dbzz telemetry report has an unsupported schema version");
+  if (terminal.schemaVersion !== 1) throw new Error("ackerdb telemetry report has an unsupported schema version");
   if (JSON.stringify(terminal.startupMode) !== JSON.stringify(expected)) {
-    throw new Error("dbzz telemetry report does not match the server-confirmed startup mode");
+    throw new Error("ackerdb telemetry report does not match the server-confirmed startup mode");
   }
-  const runtime = record(terminal.runtime, "dbzz telemetry report.runtime");
+  const runtime = record(terminal.runtime, "ackerdb telemetry report.runtime");
   const beforeDrain = runtime.beforeDrain as TelemetrySnapshot;
   const afterDrain = runtime.afterDrain as TelemetrySnapshot;
-  record(beforeDrain, "dbzz telemetry report.runtime.beforeDrain");
-  record(afterDrain, "dbzz telemetry report.runtime.afterDrain");
+  record(beforeDrain, "ackerdb telemetry report.runtime.beforeDrain");
+  record(afterDrain, "ackerdb telemetry report.runtime.afterDrain");
   const aggregates = assertAggregateShape(terminal.aggregates);
   validateLocalOutput(localOutput);
 
-  let drainAccounting: DbzzTelemetryDrainAccounting;
+  let drainAccounting: AckerDBTelemetryDrainAccounting;
   if (expected.telemetry === "disabled") {
     assertAllDisabled(beforeDrain, "disabled telemetry beforeDrain");
     assertAllDisabled(afterDrain, "disabled telemetry afterDrain");
@@ -701,7 +701,7 @@ export function parseDbzzTelemetryReport(
   }
 
   return Object.freeze({
-    ...(value as DbzzTelemetryTerminalReport),
+    ...(value as AckerDBTelemetryTerminalReport),
     localOutput,
     drainAccounting,
   });
@@ -724,8 +724,8 @@ export function workloadTelemetryLowerBounds(workload: DriverResult): Readonly<R
   });
 }
 
-export function assertDbzzTelemetryWorkload(
-  report: DbzzTelemetryReport,
+export function assertAckerDBTelemetryWorkload(
+  report: AckerDBTelemetryReport,
   workload: DriverResult,
 ): void {
   if (report.startupMode.telemetry === "disabled") return;
@@ -741,7 +741,7 @@ export function assertDbzzTelemetryWorkload(
     const lowerBound = lowerBounds[operation];
     if (observed.count < lowerBound || observed.stages[stages[operation]].count < lowerBound) {
       throw new Error(
-        `dbzz telemetry ${operation}.${stages[operation]} count ${observed.stages[stages[operation]].count} is below benchmark workload lower bound ${lowerBound}`,
+        `ackerdb telemetry ${operation}.${stages[operation]} count ${observed.stages[stages[operation]].count} is below benchmark workload lower bound ${lowerBound}`,
       );
     }
   }

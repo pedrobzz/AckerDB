@@ -2,19 +2,19 @@
 
 > Status: V1 implementation contract. Typo tolerance is not part of V1.
 
-DBzz will provide bounded lexical retrieval over explicitly selected string
+AckerDB will provide bounded lexical retrieval over explicitly selected string
 columns while the application table remains the sole source of truth. Vector
 and full-text retrieval stay independent; applications may execute both and
 perform their own rank fusion.
 
 ## Default policy
 
-V1 uses SQLite FTS5's defaults unless this document names a deliberate DBzz
-deviation. DBzz does not replace FTS5's ranking, tokenization details, index
+V1 uses SQLite FTS5's defaults unless this document names a deliberate AckerDB
+deviation. AckerDB does not replace FTS5's ranking, tokenization details, index
 detail, merge policy, or corpus statistics with parallel machinery. The
 deliberate differences are the typed literal-query API, explicit per-column
 external-content indexes, bounded materialization, deterministic primary-key
-ties, bounded literal preparation, and DBzz-owned lifecycle and
+ties, bounded literal preparation, and AckerDB-owned lifecycle and
 synchronization.
 
 ## V1 contract
@@ -42,17 +42,17 @@ const matches = await ctx.db.documents
   column and treats `query` as literal text, not backend query syntax.
 - FTS5 reserves `rank` and `rowid` case-insensitively; V1 rejects those names
   as full-text targets instead of adding a projection view and another catalog
-  object for an ultra-specific case. They remain valid ordinary DBzz column
+  object for an ultra-specific case. They remain valid ordinary AckerDB column
   names.
-- DBzz asks SQLite's `fts3tokenize(unicode61)` table to tokenize the literal
+- AckerDB asks SQLite's `fts3tokenize(unicode61)` table to tokenize the literal
   input. SQLite specifies that this tokenizer is byte-for-byte compatible with
-  FTS5's `unicode61`, so DBzz does not maintain or approximate token boundaries
+  FTS5's `unicode61`, so AckerDB does not maintain or approximate token boundaries
   in JavaScript. Each resulting token becomes one quoted FTS5 phrase and the
   phrases compose through FTS5's implicit `AND`. Literal text therefore never
   becomes an operator, multi-token input is not changed into an exact phrase,
   and input that produces zero tokens returns no matches.
 - Literal preparation accepts at most 4,096 UTF-8 bytes and 256 searchable
-  tokens. These finite denial-of-service bounds are DBzz API limits, not
+  tokens. These finite denial-of-service bounds are AckerDB API limits, not
   tokenizer or ranking changes.
 - V1 uses FTS5's default `unicode61` tokenizer for every full-text index and
   exposes no tokenizer, stemming, prefix-index, or language-analysis
@@ -72,7 +72,7 @@ const matches = await ctx.db.documents
 FTS5 remains the text-access path. Arbitrary database predicates compose for
 eligibility and authorization, but V1 does not promise that they reduce the
 work required to find text matches; SQLite's query planner decides the join
-order. DBzz does not duplicate filter columns into FTS or build filter-local
+order. AckerDB does not duplicate filter columns into FTS or build filter-local
 indexes or BM25 statistics.
 
 Full-text subscriptions record the ordinary bounded predicate dependencies
@@ -85,23 +85,23 @@ target sidecar invalidates that target's corpus dependency, but not the corpus
 dependency of another full-text column. V1 adds no tokenizer-coupled
 term-dependency system.
 
-DBzz owns the private FTS5 external-content sidecars, each keyed by the
+AckerDB owns the private FTS5 external-content sidecars, each keyed by the
 application row's primary key. The application table remains canonical;
 generated private SQLite triggers keep every sidecar synchronized in the same
 transaction as the application write. Insert and delete triggers maintain each
 declared target; an update trigger runs only when that target's stored value
 actually changes. Applications never query, migrate, or repair the private
-objects themselves, and DBzz mutation paths do not duplicate trigger-owned
+objects themselves, and AckerDB mutation paths do not duplicate trigger-owned
 synchronization.
 
 Adding or changing a full-text declaration on a populated table is a blocking
-schema reconciliation. DBzz backfills and integrity-checks the complete private
+schema reconciliation. AckerDB backfills and integrity-checks the complete private
 index before the server becomes ready; it never serves partial search results.
 Failure preserves the canonical application table and reports the unfinished
 migration explicitly. Removing the declaration drops only its private FTS
 objects.
 
-DBzz checks for both FTS5 and the `fts3tokenize(unicode61)` SQL interface only
+AckerDB checks for both FTS5 and the `fts3tokenize(unicode61)` SQL interface only
 when a root or Plugin schema declares a full-text target. A runtime missing
 either capability fails explicitly; schemas without FTS do not initialize
 tokenizer machinery. An FTS-enabled Engine owns one private in-memory SQLite
@@ -133,13 +133,13 @@ The future design must preserve these boundaries:
   application rows or create a second source of truth.
 - **Upstream correction engine:** use SQLite's official `spellfix1` extension
   and its indexed vocabulary, edit-distance, frequency-aware ranking, and
-  bounded candidate search. DBzz must not replace this with a home-grown
+  bounded candidate search. AckerDB must not replace this with a home-grown
   spelling algorithm unless evidence later proves a product requirement that
   `spellfix1` cannot meet.
-- **DBzz-owned installation:** ship pinned, prebuilt `spellfix1` artifacts for
+- **AckerDB-owned installation:** ship pinned, prebuilt `spellfix1` artifacts for
   every supported OS and CPU and load the matching artifact internally. Do not
   require an application to install Homebrew, a compiler, SQLite headers, or an
-  extension path. On macOS this also requires DBzz to select a compatible
+  extension path. On macOS this also requires AckerDB to select a compatible
   loadable SQLite library before opening any database, because Bun's default
   Apple SQLite build disables extension loading.
 - **Derived correction index:** maintain a private `spellfix1` vocabulary for

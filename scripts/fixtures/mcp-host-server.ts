@@ -3,7 +3,7 @@ import {
   PROTOCOL_VERSION,
   encode,
   type MutationMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   v,
   defineSchema,
@@ -18,10 +18,10 @@ import {
   type MutationBuilder,
   type SessionRuntimeContext,
   type UserPrincipal,
-} from "@dbzz/server";
-import { createMcp, mcpTool } from "@dbzz/server/mcp";
+} from "@ackerdb/server";
+import { createMcp, mcpTool } from "@ackerdb/server/mcp";
 
-const INSTRUCTION_MARKER = "dbzz-host-instructions-v1";
+const INSTRUCTION_MARKER = "ackerdb-host-instructions-v1";
 const READ_SCOPE = "acceptance.read";
 const ADMIN_SCOPE = "acceptance.admin";
 const schema = defineSchema({});
@@ -48,7 +48,7 @@ const publicText = typedMcpTool({
 });
 
 const authenticatedStatus = typedMcpTool({
-  description: "Return the delegated DBZZ Identity for an authenticated MCP token.",
+  description: "Return the delegated AckerDB Identity for an authenticated MCP token.",
   access: "authenticated",
   args: {},
   handler: (ctx) => {
@@ -86,16 +86,16 @@ const richContent = typedMcpTool({
         {
           type: "resource",
           resource: {
-            uri: "dbzz://acceptance/embedded",
+            uri: "ackerdb://acceptance/embedded",
             mimeType: "text/plain",
             text: "embedded:ok",
           },
         },
         {
           type: "resource_link",
-          uri: "https://dbzz.dev/acceptance",
-          name: "dbzz-host-acceptance",
-          title: "DBZZ host acceptance",
+          uri: "https://ackerdb.dev/acceptance",
+          name: "ackerdb-host-acceptance",
+          title: "AckerDB host acceptance",
           mimeType: "text/plain",
         },
       ],
@@ -170,7 +170,7 @@ const recordDiscovery = typedMcpTool({
 const acceptanceMcp = typedMcp({
   name: "acceptance",
   instructions:
-    `DBZZ host acceptance endpoint. When record_discovery is requested, pass marker ` +
+    `AckerDB host acceptance endpoint. When record_discovery is requested, pass marker ` +
     `${INSTRUCTION_MARKER} and the exact lower-snake-case names of the currently available ` +
     `tools. Follow the caller's requested tool order and continue after expected authorization errors.`,
   scopes: [READ_SCOPE, ADMIN_SCOPE] as const,
@@ -241,19 +241,19 @@ interface ControlMessage {
 }
 
 async function main(): Promise<void> {
-  const path = process.env.DBZZ_ACCEPTANCE_DB;
-  if (path === undefined || path === "") throw new Error("DBZZ_ACCEPTANCE_DB is required");
+  const path = process.env.ACKERDB_ACCEPTANCE_DB;
+  if (path === undefined || path === "") throw new Error("ACKERDB_ACCEPTANCE_DB is required");
   const engine = new Engine(schema, path);
   reconcile(engine);
   const runtime = new Runtime({ engine, registry: new Registry(modules), telemetry: false });
   const identity = await runtime.resolveIdentity({
-    issuer: "https://acceptance.dbzz.test/",
+    issuer: "https://acceptance.ackerdb.test/",
     subject: "host-owner",
   });
   const principal: UserPrincipal = Object.freeze({
     kind: "user",
     identity,
-    issuer: "https://acceptance.dbzz.test/",
+    issuer: "https://acceptance.ackerdb.test/",
     subject: "host-owner",
     claims: Object.freeze({}),
     expiresAt: Date.now() + 60 * 60 * 1_000,

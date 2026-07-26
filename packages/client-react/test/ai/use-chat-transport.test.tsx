@@ -3,7 +3,7 @@ import { NativeWebSocket, mountPoint } from "../support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { DbzzFetch, DbzzWebSocket, SseRef } from "@dbzz/client";
+import type { AckerDBFetch, AckerDBWebSocket, SseRef } from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -15,7 +15,7 @@ import {
   serve,
   sseProcedure,
   type SseCtx,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import {
   createUIMessageStream,
   streamText,
@@ -28,12 +28,12 @@ import { MockLanguageModelV3 } from "ai/test";
 import { useChat } from "@ai-sdk/react";
 import { useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { DbzzProvider, useConnectionState, type DbzzClientError } from "@dbzz/client-react";
+import { AckerDBProvider, useConnectionState, type AckerDBClientError } from "@ackerdb/client-react";
 import {
   useChatTransport,
-  type DbzzChatArgs,
-  type DbzzChatRequest,
-} from "@dbzz/client-react/ai";
+  type AckerDBChatArgs,
+  type AckerDBChatRequest,
+} from "@ackerdb/client-react/ai";
 import { uiMessageChunk } from "./ui-message-chunk.ts";
 
 const schema = defineSchema({});
@@ -86,7 +86,7 @@ function registry(): Registry {
           receivedArgs.push(args);
           return createUIMessageStream({
             execute: ({ writer }) => {
-              writer.write({ type: "start", messageMetadata: { model: "dbzz-fixture" } });
+              writer.write({ type: "start", messageMetadata: { model: "ackerdb-fixture" } });
               writer.write({ type: "start-step" });
               writer.write({ type: "text-start", id: "t1" });
               writer.write({ type: "text-delta", id: "t1", delta: "Hello " });
@@ -99,27 +99,27 @@ function registry(): Registry {
               writer.write({
                 type: "tool-input-delta",
                 toolCallId: "call1",
-                inputTextDelta: '{"q":"dbzz"}',
+                inputTextDelta: '{"q":"ackerdb"}',
               });
               writer.write({
                 type: "tool-input-available",
                 toolCallId: "call1",
                 toolName: "search",
-                input: { q: "dbzz" },
+                input: { q: "ackerdb" },
               });
               writer.write({
                 type: "tool-output-available",
                 toolCallId: "call1",
                 output: { hits: 1 },
               });
-              writer.write({ type: "source-url", sourceId: "s1", url: "https://dbzz.dev" });
+              writer.write({ type: "source-url", sourceId: "s1", url: "https://ackerdb.dev" });
               writer.write({
                 type: "source-document",
                 sourceId: "s2",
                 mediaType: "text/markdown",
                 title: "README",
               });
-              writer.write({ type: "file", url: "https://dbzz.dev/logo.png", mediaType: "image/png" });
+              writer.write({ type: "file", url: "https://ackerdb.dev/logo.png", mediaType: "image/png" });
               writer.write({ type: "data-weather", id: "d1", data: { temperature: 21 } });
               writer.write({ type: "message-metadata", messageMetadata: { tokens: 7 } });
               writer.write({ type: "finish-step" });
@@ -251,7 +251,7 @@ interface App {
 }
 
 function createApp(): App {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-react-ai-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-ai-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const runtime = new Runtime({
@@ -284,7 +284,7 @@ async function until(predicate: () => boolean, description: string): Promise<voi
 // Counts SSE request traffic so reconnect/cancellation tests can prove no
 // hidden second stream ever starts. Resolves `fetch` at call time: after
 // support/dom.ts registers happy-dom it restores Bun's native fetch.
-function recordingFetch(log: string[]): DbzzFetch {
+function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {
     if (new URL(url).pathname === "/api/sse") log.push("sse");
     return fetch(url, init);
@@ -360,16 +360,16 @@ async function mountChat(base: string, options: MountOptions): Promise<Mounted> 
   const container = mountPoint();
   const root: Root = createRoot(container);
   root.render(
-    <DbzzProvider
+    <AckerDBProvider
       config={{
         url: base,
         credential: { kind: "anonymous" },
-        createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+        createWebSocket: (url) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
         fetch: recordingFetch(options.log ?? []),
       }}
     >
       <Probe />
-    </DbzzProvider>,
+    </AckerDBProvider>,
   );
   await until(() => phase === "ready", "the provider to reach ready");
   return {
@@ -416,13 +416,13 @@ function assistantOf(mounted: Mounted): UIMessage {
   return message;
 }
 
-describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", () => {
+describe("useChatTransport with AI SDK v7 useChat against a real ackerdb server", () => {
   test("streams every chunk family through useChat and forwards the standard request", async () => {
     const mounted = await mount({
       id: "chat-main",
       probe: () => useChatTransport(standardRef("ai.chat")),
     });
-    await mounted.chat.sendMessage({ text: "hi dbzz" });
+    await mounted.chat.sendMessage({ text: "hi ackerdb" });
     await until(
       () => mounted.chat.status === "ready" && mounted.chat.messages.length === 2,
       "the chat exchange to finish",
@@ -430,20 +430,20 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
 
     // The standard request reached the procedure as its argument object.
     expect(receivedArgs).toHaveLength(1);
-    const args = receivedArgs[0] as DbzzChatArgs;
+    const args = receivedArgs[0] as AckerDBChatArgs;
     expect(args.trigger).toBe("submit-message");
     expect(args.chatId).toBe("chat-main");
     expect(args.messageId).toBeNull();
     expect(args.messages).toHaveLength(1);
     expect(args.messages[0]).toMatchObject({
       role: "user",
-      parts: [{ type: "text", text: "hi dbzz" }],
+      parts: [{ type: "text", text: "hi ackerdb" }],
     });
 
     // Every chunk family arrived as the exact validated object the handler
     // wrote — no second encoding layer between the AI SDK stream and React.
     const assistant = assistantOf(mounted);
-    expect(assistant.metadata).toEqual({ model: "dbzz-fixture", tokens: 7 });
+    expect(assistant.metadata).toEqual({ model: "ackerdb-fixture", tokens: 7 });
     expect(assistant.parts).toEqual([
       { type: "step-start" },
       { type: "text", text: "Hello world", state: "done" },
@@ -452,17 +452,17 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
         type: "tool-search",
         toolCallId: "call1",
         state: "output-available",
-        input: { q: "dbzz" },
+        input: { q: "ackerdb" },
         output: { hits: 1 },
       },
-      { type: "source-url", sourceId: "s1", url: "https://dbzz.dev" },
+      { type: "source-url", sourceId: "s1", url: "https://ackerdb.dev" },
       {
         type: "source-document",
         sourceId: "s2",
         mediaType: "text/markdown",
         title: "README",
       },
-      { type: "file", url: "https://dbzz.dev/logo.png", mediaType: "image/png" },
+      { type: "file", url: "https://ackerdb.dev/logo.png", mediaType: "image/png" },
       { type: "data-weather", id: "d1", data: { temperature: 21 } },
     ]);
     expect(mounted.dataParts).toEqual([
@@ -504,7 +504,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
       () => mounted.chat.status === "ready" && receivedArgs.length === 2,
       "the regeneration to finish",
     );
-    const args = receivedArgs[1] as DbzzChatArgs;
+    const args = receivedArgs[1] as AckerDBChatArgs;
     expect(args.trigger).toBe("regenerate-message");
     expect(args.messageId).toBe(assistantId);
     // The regenerated assistant message is not resent to the server.
@@ -517,7 +517,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
       id: "chat-custom",
       probe: () =>
         useChatTransport(customRef, {
-          prepareArgs: (request: DbzzChatRequest) => {
+          prepareArgs: (request: AckerDBChatRequest) => {
             const lastMessage = request.messages.at(-1);
             const textPart = lastMessage?.parts.find((part) => part.type === "text");
             return {
@@ -548,7 +548,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     });
   });
 
-  test("stop before the first chunk aborts the dbzz request and releases the server iterator", async () => {
+  test("stop before the first chunk aborts the ackerdb request and releases the server iterator", async () => {
     const mounted = await mount({
       id: "chat-hold",
       probe: () => useChatTransport(standardRef("ai.holdBeforeFirst")),
@@ -567,7 +567,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     expect(mounted.finishes).toEqual([{ isAbort: true, isError: false, isDisconnect: false }]);
   });
 
-  test("stop mid-stream cancels the dbzz stream and keeps the streamed tokens", async () => {
+  test("stop mid-stream cancels the ackerdb stream and keeps the streamed tokens", async () => {
     const mounted = await mount({
       id: "chat-hold-mid",
       probe: () => useChatTransport(standardRef("ai.holdMidStream")),
@@ -596,7 +596,7 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     expect(mounted.errors).toEqual([]);
   });
 
-  test("a malformed chunk surfaces the exact dbzz validation error", async () => {
+  test("a malformed chunk surfaces the exact ackerdb validation error", async () => {
     const mounted = await mount({
       id: "chat-malformed",
       probe: () => useChatTransport(standardRef("ai.malformed")),
@@ -604,14 +604,14 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     void mounted.chat.sendMessage({ text: "malform" });
     await until(() => mounted.chat.status === "error", "the chat to fail");
 
-    const failure = mounted.chat.error as DbzzClientError;
-    expect(failure.name).toBe("DbzzClientError");
+    const failure = mounted.chat.error as AckerDBClientError;
+    expect(failure.name).toBe("AckerDBClientError");
     expect(failure.code).toBe("validation");
     expect(failure.message).toBe("chunk.delta: expected string, got number");
     expect(mounted.errors).toEqual([failure]);
   });
 
-  test("a handler that fails before streaming surfaces a typed dbzz error", async () => {
+  test("a handler that fails before streaming surfaces a typed ackerdb error", async () => {
     const mounted = await mount({
       id: "chat-failing",
       probe: () => useChatTransport(standardRef("ai.failing")),
@@ -619,12 +619,12 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     void mounted.chat.sendMessage({ text: "explode" });
     await until(() => mounted.chat.status === "error", "the chat to fail");
 
-    const failure = mounted.chat.error as DbzzClientError;
-    expect(failure.name).toBe("DbzzClientError");
+    const failure = mounted.chat.error as AckerDBClientError;
+    expect(failure.name).toBe("AckerDBClientError");
     expect(failure.code).toBe("internal");
   });
 
-  test("a handler that fails mid-stream surfaces a typed dbzz error", async () => {
+  test("a handler that fails mid-stream surfaces a typed ackerdb error", async () => {
     const mounted = await mount({
       id: "chat-failing-mid",
       probe: () => useChatTransport(standardRef("ai.failingMidStream")),
@@ -632,8 +632,8 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     void mounted.chat.sendMessage({ text: "explode later" });
     await until(() => mounted.chat.status === "error", "the chat to fail");
 
-    const failure = mounted.chat.error as DbzzClientError;
-    expect(failure.name).toBe("DbzzClientError");
+    const failure = mounted.chat.error as AckerDBClientError;
+    expect(failure.name).toBe("AckerDBClientError");
     expect(failure.code).toBe("internal");
     await until(() => app.runtime.status().activeSse === 0, "the server stream to settle");
   });
@@ -662,14 +662,14 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     expect(mounted.errors).toEqual([]);
   });
 
-  test("unmounting only the chat component cancels its active dbzz stream", async () => {
+  test("unmounting only the chat component cancels its active ackerdb stream", async () => {
     // useChat never aborts an active response on unmount, so the hook owns
     // this boundary. The provider stays mounted: only the hook's own
     // lifetime can release the stream here.
     const config = {
       url: app.base,
       credential: { kind: "anonymous" } as const,
-      createWebSocket: (url: string) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+      createWebSocket: (url: string) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
     };
     let phase = "";
     let chat: Chat | undefined;
@@ -693,10 +693,10 @@ describe("useChatTransport with AI SDK v7 useChat against a real dbzz server", (
     }
     function Harness({ showChat }: { showChat: boolean }): ReactNode {
       return (
-        <DbzzProvider config={config}>
+        <AckerDBProvider config={config}>
           <Phase />
           {showChat ? <ChatProbe /> : null}
-        </DbzzProvider>
+        </AckerDBProvider>
       );
     }
 

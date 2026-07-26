@@ -1,7 +1,7 @@
 import type { ExternalHttpTrace } from "../telemetry/external-trace.ts";
 import type { AuthInvalidationScope } from "../auth/invalidation.ts";
 
-const HTTP_REQUEST_PROVENANCE: unique symbol = Symbol("dbzz.httpRequestProvenance");
+const HTTP_REQUEST_PROVENANCE: unique symbol = Symbol("ackerdb.httpRequestProvenance");
 const trustedProvenance = new WeakSet<object>();
 
 interface HttpRequestProvenanceCarrier {

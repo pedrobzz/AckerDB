@@ -1,8 +1,8 @@
 # Cache is disposable acceleration behind one bounded contract
 
-DBzz Cache is disposable key/value acceleration, never a source of truth:
+AckerDB Cache is disposable key/value acceleration, never a source of truth:
 clearing it may make work slower but cannot change a correct application result.
-`@dbzz/cache` exposes one small TypeScript-native contract backed either by
+`@ackerdb/cache` exposes one small TypeScript-native contract backed either by
 Plugin-owned SQLite storage or by an external store such as Redis or Upstash.
 It is Redis-inspired rather than Redis-compatible so backend-specific machinery
 does not leak into application code.
@@ -12,7 +12,7 @@ does not leak into application code.
 The v0.6.0 API contains only `get`, `set`, and `delete`. A miss is `undefined`,
 `null` is cacheable, and store failures throw `CacheStoreError` with their
 original cause rather than masquerading as misses or unmet conditions. Keys are
-unambiguously encoded strings, finite numbers, or bigints; values use one DBzz
+unambiguously encoded strings, finite numbers, or bigints; values use one AckerDB
 wire-text encoding that every store treats as opaque. Optional definition-owned
 namespaces add validation and a key prefix only: they do not create separate
 storage, capacity, eviction, or lifecycle boundaries. Invalid values are misses
@@ -22,7 +22,7 @@ Cache is absent from queries because queries already read the source database
 and Cache would bypass reactive read tracking. The built-in store is available
 transactionally to mutations and procedures and uses the caller's frozen
 `ctx.timestamp`. External stores are procedure-only and use their provider's
-native clock, capacity, TTL, and eviction semantics; DBzz does not add machinery
+native clock, capacity, TTL, and eviction semantics; AckerDB does not add machinery
 to conceal that execution-boundary difference.
 
 Every built-in Cache instance has finite configurable byte, entry-size, and
@@ -43,6 +43,6 @@ capacity, transport, and storage failures.
 in the alpha. The explicit non-empty prefix identifies the application and
 environment; Cache appends its encoding version, mount, namespace, key type,
 and key. The opened handle implements only opaque `get`, atomic `set`, `delete`,
-and optional `close`, while DBzz owns its lifecycle. The package's `/redis` and
+and optional `close`, while AckerDB owns its lifecycle. The package's `/redis` and
 `/upstash` exports are first-party adapters to this same contract, not separate
 Cache APIs or packages.

@@ -1,4 +1,4 @@
-export type SystemName = "dbzz" | "convex" | "spacetimedb";
+export type SystemName = "ackerdb" | "convex" | "spacetimedb";
 export type OperationName = "query" | "mutation-uncontended" | "mutation-contended" | "procedure";
 export type SubscriptionPattern = "shared" | "partitioned";
 

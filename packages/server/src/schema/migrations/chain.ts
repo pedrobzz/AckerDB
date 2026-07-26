@@ -2,7 +2,7 @@
  * The migration chain: the append-only history, the one immutability rule that
  * governs it, and the startup orchestration that walks a pending suffix.
  *
- * The history in `_dbzz_migrations` must always be a positional (number, identity)
+ * The history in `_ackerdb_migrations` must always be a positional (number, identity)
  * PREFIX of the application's on-disk chain; `validateHistoryPrefix` is the single
  * rule enforcing it, pure over plain rows so the server (rows via SQL) and the CLI
  * (rows via its read-only reader) share it exactly. Any edit to an applied
@@ -38,7 +38,7 @@ export function validateChain(steps: MigrationStep[]): void {
   }
 }
 
-/** One recorded `_dbzz_migrations` row: the applied prefix's positional identity. */
+/** One recorded `_ackerdb_migrations` row: the applied prefix's positional identity. */
 export interface AppliedMigrationRow {
   number: number;
   name: string;
@@ -47,7 +47,7 @@ export interface AppliedMigrationRow {
 
 function loadHistory(writer: Database): AppliedMigrationRow[] {
   const rows = writer
-    .query("SELECT number, name, identity FROM _dbzz_migrations ORDER BY number ASC")
+    .query("SELECT number, name, identity FROM _ackerdb_migrations ORDER BY number ASC")
     .all() as { number: bigint; name: string; identity: string }[];
   return rows.map((r) => ({ number: Number(r.number), name: r.name, identity: r.identity }));
 }
@@ -73,7 +73,7 @@ export function validateHistoryPrefix(
     if (step === undefined || step.number !== row.number || migrationIdentity(step) !== row.identity) {
       throw new MigrationError(
         `applied migration ${stepLabel(row)} no longer matches the on-disk chain; applied migrations are immutable ` +
-          "(editing its pre, target, or transform code changes its identity). Restore it, or wipe local data with `dbzz reset`.",
+          "(editing its pre, target, or transform code changes its identity). Restore it, or wipe local data with `acker reset`.",
       );
     }
   }
@@ -90,7 +90,7 @@ export function recordChain(engine: Engine, steps: MigrationStep[]): void {
   validateChain(steps);
   const writer = engine.writer;
   const insert = writer.query(
-    "INSERT INTO _dbzz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
+    "INSERT INTO _ackerdb_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
   );
   const now = Date.now();
   writer.exec("BEGIN IMMEDIATE");

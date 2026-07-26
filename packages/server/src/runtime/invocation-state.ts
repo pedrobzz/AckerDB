@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Principal } from "../auth/credentials.ts";
-import { DbzzError } from "../shared/errors.ts";
+import { AckerDBError } from "../shared/errors.ts";
 import { poisonTransaction } from "./transaction-context.ts";
 
 export interface MutationAccessFrame {
@@ -56,7 +56,7 @@ export function withMutationAccess<T>(
 ): T {
   const state = invocation.getStore();
   if (state === undefined) {
-    throw new DbzzError(
+    throw new AckerDBError(
       "internal",
       "mutation access requires an owning registered invocation",
     );
@@ -84,7 +84,7 @@ export function assertMutationAccess(): void {
     access !== undefined &&
     access.state.current !== access.frame
   ) {
-    return poisonTransaction(new DbzzError(
+    return poisonTransaction(new AckerDBError(
       "validation",
       "concurrent database access crossed a nested mutation boundary; await the nested mutation before continuing",
     ));

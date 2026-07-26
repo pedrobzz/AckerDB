@@ -1,17 +1,17 @@
 #!/usr/bin/env bun
 /**
- * The `dbzz` CLI.
+ * The `acker` CLI.
  *
- *   dbzz dev [dir]      watch + debounced codegen + auto-restarting server
- *   dbzz start [dir]    codegen once, then serve (production)
- *   dbzz codegen [dir]  one-shot codegen
- *   dbzz reset [dir]    delete the local database (dev escape hatch)
- *   dbzz plugin reset|drop <mount> [dir]  clear one consent-gated Plugin scope
- *   dbzz status [dir]   inspect a database as JSON
- *   dbzz backup <file> [dir]   create and verify a backup
- *   dbzz restore <file> [dir]  verify and restore into a fresh target
+ *   acker dev [dir]      watch + debounced codegen + auto-restarting server
+ *   acker start [dir]    codegen once, then serve (production)
+ *   acker codegen [dir]  one-shot codegen
+ *   acker reset [dir]    delete the local database (dev escape hatch)
+ *   acker plugin reset|drop <mount> [dir]  clear one consent-gated Plugin scope
+ *   acker status [dir]   inspect a database as JSON
+ *   acker backup <file> [dir]   create and verify a backup
+ *   acker restore <file> [dir]  verify and restore into a fresh target
  *
- * `dbzz dev` is a supervisor that never imports user code itself: codegen and
+ * `acker dev` is a supervisor that never imports user code itself: codegen and
  * the server run as child processes, so every reload sees fresh modules with
  * zero import-cache staleness. Clients reconnect and resubscribe on restart.
  */
@@ -19,7 +19,7 @@ import { existsSync, rmSync, watch } from "node:fs";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
-import { resetDatabase, type Renames } from "@dbzz/server";
+import { resetDatabase, type Renames } from "@ackerdb/server";
 import { loadConfig, type AppConfig } from "../app/config.ts";
 import { runCodegen } from "../app/codegen.ts";
 import { startApp, StartupInterruptedError } from "../app/start.ts";
@@ -50,16 +50,16 @@ const CLI_PATH = fileURLToPath(import.meta.url);
 
 function usage(): never {
   console.log(`usage:
-  dbzz dev [app-dir]
-  dbzz start [app-dir]
-  dbzz codegen [app-dir]
-  dbzz generate [name] [app-dir]
-  dbzz plugin reset <mount> [app-dir]
-  dbzz plugin drop <mount> [app-dir]
-  dbzz reset [app-dir]
-  dbzz status [app-dir]
-  dbzz backup <artifact> [app-dir]
-  dbzz restore <artifact> [app-dir]`);
+  acker dev [app-dir]
+  acker start [app-dir]
+  acker codegen [app-dir]
+  acker generate [name] [app-dir]
+  acker plugin reset <mount> [app-dir]
+  acker plugin drop <mount> [app-dir]
+  acker reset [app-dir]
+  acker status [app-dir]
+  acker backup <artifact> [app-dir]
+  acker restore <artifact> [app-dir]`);
   process.exit(2);
 }
 
@@ -255,23 +255,23 @@ function countRenames(renames: Renames): number {
 /** Report what was scaffolded and point the developer at the holes to fill. */
 function reportGenerated(written: string[], renames: Renames, dropsAcknowledged: string[]): void {
   const rel = (path: string) => relative(process.cwd(), path);
-  console.log(`[dbzz] generated ${written.map(rel).join(", ")}`);
+  console.log(`[ackerdb] generated ${written.map(rel).join(", ")}`);
   const renameCount = countRenames(renames);
-  if (renameCount > 0) console.log(`[dbzz] recorded ${renameCount} rename(s)`);
-  if (dropsAcknowledged.length > 0) console.log(`[dbzz] delete + add: ${dropsAcknowledged.join(", ")}`);
+  if (renameCount > 0) console.log(`[ackerdb] recorded ${renameCount} rename(s)`);
+  if (dropsAcknowledged.length > 0) console.log(`[ackerdb] delete + add: ${dropsAcknowledged.join(", ")}`);
   console.log(
-    `[dbzz] fill the TODOs in ${rel(written[0]!)}, then restart — the server applies the migration once it compiles`,
+    `[ackerdb] fill the TODOs in ${rel(written[0]!)}, then restart — the server applies the migration once it compiles`,
   );
 }
 
 /** Delete a stale pending scaffold's artifacts so one migration can be re-derived. */
 function deletePendingFiles(files: string[]): void {
   for (const file of files) rmSync(file, { force: true });
-  console.log(`[dbzz] deleted ${files.length} migration file(s); re-deriving`);
+  console.log(`[ackerdb] deleted ${files.length} migration file(s); re-deriving`);
 }
 
 /**
- * `dbzz generate`: plan in-process, print the ledger, run the rename form when
+ * `acker generate`: plan in-process, print the ledger, run the rename form when
  * interactive, then write the scaffold. Invoking the command IS the consent —
  * no fingerprint rides along, and the plan is re-derived at write time anyway.
  * A stale pending chain gets the same delete-or-keep offer the dev supervisor
@@ -283,11 +283,11 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
     const outcome = await computePlan(config);
     switch (outcome.status) {
       case "no-database":
-        throw new Error(`no database at ${resolve(config.dbDir, "data.db")}; run \`dbzz dev\` to initialize it first`);
+        throw new Error(`no database at ${resolve(config.dbDir, "data.db")}; run \`acker dev\` to initialize it first`);
       case "diverged":
         throw new Error(outcome.message);
       case "pending": {
-        const apply = `apply the ${outcome.pendingCount} pending migration(s) first — start \`dbzz dev\``;
+        const apply = `apply the ${outcome.pendingCount} pending migration(s) first — start \`acker dev\``;
         if (!outcome.stale) throw new Error(apply);
         if (!isInteractive()) {
           throw new Error(
@@ -304,7 +304,7 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
         continue;
       }
       case "clean":
-        console.log("[dbzz] no changes need a migration; nothing to generate (shape-safe changes apply on their own)");
+        console.log("[ackerdb] no changes need a migration; nothing to generate (shape-safe changes apply on their own)");
         return;
       case "changes": {
         console.log(renderLedger(outcome));
@@ -314,7 +314,7 @@ async function generate(nameArg: string | undefined, appDir: string): Promise<vo
           if (form === null) throw new Error("interrupted; nothing was written");
         } else {
           console.error(
-            "[dbzz] rename detection needs a terminal; generating with no renames (drops are acknowledged, adds treated as new)",
+            "[ackerdb] rename detection needs a terminal; generating with no renames (drops are acknowledged, adds treated as new)",
           );
         }
         const name = nameArg !== undefined && nameArg.length > 0 ? nameArg : deriveSlug(outcome.refusals);
@@ -392,7 +392,7 @@ async function dev(appDir: string): Promise<void> {
   // flow itself lives in dev-flow.ts (state machine, decline memory, retract
   // semantics) — this is only its terminal-and-process wiring. Only with a
   // real terminal on both ends: a non-TTY dev keeps today's behavior (the
-  // child's own stderr already names `dbzz generate`). At most one readline is
+  // child's own stderr already names `acker generate`). At most one readline is
   // open at a time; `promptCancel` is how the supervisor retracts it.
   let promptCancel: AbortController | null = null;
   const devFlow = makeDevFlowHandler(
@@ -423,9 +423,9 @@ async function dev(appDir: string): Promise<void> {
     () => promptCancel?.abort(),
   );
 
-  console.log(`[dbzz] dev watching ${config.appDir}`);
+  console.log(`[ackerdb] dev watching ${config.appDir}`);
   if (!(await codegenChild(appDir))) {
-    console.error("[dbzz] initial codegen failed — fix the errors above; watching for changes");
+    console.error("[ackerdb] initial codegen failed — fix the errors above; watching for changes");
   }
   await startChild();
 
@@ -444,9 +444,9 @@ async function dev(appDir: string): Promise<void> {
       const ok = await codegenChild(appDir);
       if (ok) {
         await startChild();
-        console.log(`[dbzz] reloaded in ${Math.round(performance.now() - t0)}ms`);
+        console.log(`[ackerdb] reloaded in ${Math.round(performance.now() - t0)}ms`);
       } else {
-        console.error("[dbzz] codegen failed — server not restarted; fix and save again");
+        console.error("[ackerdb] codegen failed — server not restarted; fix and save again");
       }
     } while (dirty);
     running = false;
@@ -515,7 +515,7 @@ try {
       const t0 = performance.now();
       const { written } = await runCodegen(loadConfig(resolve(args[0] ?? ".")));
       console.log(
-        `[dbzz] codegen ${written.length > 0 ? `wrote ${written.join(", ")}` : "up to date"} (${Math.round(performance.now() - t0)}ms)`,
+        `[ackerdb] codegen ${written.length > 0 ? `wrote ${written.join(", ")}` : "up to date"} (${Math.round(performance.now() - t0)}ms)`,
       );
       break;
     }
@@ -530,7 +530,7 @@ try {
       if (action !== "reset" && action !== "drop") usage();
       const config = loadConfig(resolve(args[2] ?? "."));
       const requirement = await executePluginStorageCommand(config, action, args[1]!);
-      console.log(`[dbzz] ${action === "reset" ? "reset" : "dropped"} Plugin storage mount "${requirement.mount}"`);
+      console.log(`[ackerdb] ${action === "reset" ? "reset" : "dropped"} Plugin storage mount "${requirement.mount}"`);
       break;
     }
     case "__plan": {
@@ -573,9 +573,9 @@ try {
       const result = resetDatabase(database);
       if (result.removed.length > 0) {
         const noun = result.removed.length === 1 ? "artifact" : "artifacts";
-        console.log(`[dbzz] removed ${result.removed.length} database ${noun} for ${database}; coordination retained`);
+        console.log(`[ackerdb] removed ${result.removed.length} database ${noun} for ${database}; coordination retained`);
       } else {
-        console.log(`[dbzz] nothing to remove for ${database}; coordination retained`);
+        console.log(`[ackerdb] nothing to remove for ${database}; coordination retained`);
       }
       break;
     }
@@ -609,6 +609,6 @@ try {
   }
 } catch (error) {
   if (error instanceof StartupInterruptedError) process.exit(0);
-  console.error(`[dbzz] ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`[ackerdb] ${error instanceof Error ? error.message : String(error)}`);
   process.exitCode = 1;
 }

@@ -1,6 +1,6 @@
 # Vectors and exact similarity search
 
-DBZZ stores and searches vectors; it does not generate embeddings. Generate an
+AckerDB stores and searches vectors; it does not generate embeddings. Generate an
 embedding with the AI SDK or another model library, then write it through the
 same insert, patch, replace, and read APIs as any other column.
 
@@ -18,7 +18,7 @@ const documents = defineTable({
 }).index(["accountId", "status"]);
 ```
 
-The public value is a `readonly number[]`. DBZZ requires exactly the declared
+The public value is a `readonly number[]`. AckerDB requires exactly the declared
 number of finite coordinates, rejects Float32 overflow, rounds every accepted
 coordinate once with Float32 semantics, and canonicalizes negative zero. The
 stored representation is a headerless little-endian Float32 BLOB of exactly
@@ -69,7 +69,7 @@ Every metric is oriented lower-is-nearer:
 `.first()` returns the first match or `null` and is equivalent to `.take(1)`.
 Nearest queries intentionally have no unbounded collect, iteration, count,
 pagination, uniqueness, or ordering API. `take(k)` requires a positive safe
-integer. DBZZ has no vector-specific hard maximum, so callers own the CPU,
+integer. AckerDB has no vector-specific hard maximum, so callers own the CPU,
 temporary heap, decoded-row, and response cost of a large `k`.
 
 Null stored vectors are excluded for every metric. A zero stored vector is
@@ -78,7 +78,7 @@ query is invalid. Equal distances are deterministic: the primary key ascending
 breaks ties.
 
 SQLite applies every `where` predicate and can use ordinary or composite
-indexes before any distance work. DBZZ then streams only primary keys and
+indexes before any distance work. AckerDB then streams only primary keys and
 vector blobs through NumKong's native scalar kernels, retains a worst-first
 heap bounded by `k`, and materializes only the winners from the same SQLite
 snapshot. For `n` predicate-eligible vectors of dimension `d`, distance work is
@@ -89,7 +89,7 @@ Nearest subscriptions depend on the predicate-eligible candidate population,
 not only the current winners. An insert or update to an unreturned row can
 therefore replace a winner without leaving the subscription stale.
 
-DBZZ does not expose approximate search, vector indexes, quantization, stored
+AckerDB does not expose approximate search, vector indexes, quantization, stored
 norms, or background index-build workers. Exact search is the deliberately
 simple and safe first-class contract; ordinary metadata indexes are the way to
 reduce its candidate population.

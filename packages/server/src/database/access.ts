@@ -20,7 +20,7 @@ import { poisonTransaction } from "../runtime/transaction-context.ts";
 
 const quote = (name: string): string => `"${name}"`;
 
-const UNIQUE_CONSTRAINT_ERROR_IDENTITY = Symbol.for("@dbzz/server/UniqueConstraintError/v1");
+const UNIQUE_CONSTRAINT_ERROR_IDENTITY = Symbol.for("@ackerdb/server/UniqueConstraintError/v1");
 
 export class UniqueConstraintError extends Error {
   constructor(message?: string) {
@@ -535,7 +535,7 @@ function eventWriteMethods(
         }
         const input = row as Record<string, unknown>;
         if (Object.hasOwn(input, pk) && input[pk] !== undefined) {
-          throw new ValidationError(`${logicalName}.insert: the primary key "${pk}" is assigned by dbzz`);
+          throw new ValidationError(`${logicalName}.insert: the primary key "${pk}" is assigned by ackerdb`);
         }
         const out: Record<string, unknown> = {};
         for (const [name, validator] of Object.entries(table.columns)) {

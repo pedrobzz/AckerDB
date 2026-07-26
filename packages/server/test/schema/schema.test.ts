@@ -6,7 +6,7 @@ import {
   defineTable,
   rowTypeName,
   ValidationError,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 
 const pkCols = () => ({ id: v.primaryKey(), name: v.string() });
 

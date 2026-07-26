@@ -20,7 +20,7 @@ import {
   type DesiredPluginMounts,
   type EngineCloseDisposition,
   type PluginStorageRequirement,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import type { AppConfig } from "../app/config.ts";
 import { importApp } from "../app/manifest.ts";
 import { NO, YES, type Ask } from "../migrations/form.ts";
@@ -170,7 +170,7 @@ export function renderPluginStorageRequirement(requirement: PluginStorageRequire
   const section = (title: string, lines: readonly string[]): string[] =>
     lines.length === 0 ? [] : [`  ${title}:`, ...lines.map((line) => `    - ${line}`)];
   return [
-    `[dbzz] Plugin storage mount "${requirement.mount}" must be ${action}:`,
+    `[ackerdb] Plugin storage mount "${requirement.mount}" must be ${action}:`,
     `  reason: ${reasonLine(requirement)}`,
     ...section(
       "requires clearing",
@@ -206,7 +206,7 @@ export function pluginStorageCommand(
   appDir?: string,
 ): string {
   const suffix = appDir === undefined ? "" : ` ${shellWord(appDir)}`;
-  return `dbzz plugin ${requirement.kind} ${shellWord(requirement.mount)}${suffix}`;
+  return `acker plugin ${requirement.kind} ${shellWord(requirement.mount)}${suffix}`;
 }
 
 /** Non-interactive startup recourse: explicit commands, never an automatic clear. */

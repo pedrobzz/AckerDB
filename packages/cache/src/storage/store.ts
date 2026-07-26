@@ -1,6 +1,6 @@
 import { CacheStoreError } from "./errors.ts";
 
-const CACHE_STORE_IDENTITY = Symbol.for("@dbzz/cache/CacheStoreDefinition/v1");
+const CACHE_STORE_IDENTITY = Symbol.for("@ackerdb/cache/CacheStoreDefinition/v1");
 
 export interface CacheStoreRequest {
   readonly abortSignal: AbortSignal;

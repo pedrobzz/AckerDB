@@ -4,7 +4,7 @@ import {
   decode,
   type MutationMessage,
   type QueryMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 import { Engine, type StorageScope } from "../../src/database/engine.ts";
 import { mutation, procedure, query } from "../../src/app/functions.ts";

@@ -23,13 +23,13 @@ const WORKSPACE_FIELDS = [
 ] as const;
 
 // The repo-root .npmrc is the single source of truth for the registry:
-// `bun publish` resolves the @dbzz scope from it (a --registry flag would
+// `bun publish` resolves the @ackerdb scope from it (a --registry flag would
 // bypass .npmrc auth entirely), so the scripts read the same line.
 export async function registryUrl(): Promise<string> {
   const npmrc = Bun.file(".npmrc");
-  if (!(await npmrc.exists())) fail('missing repo-root .npmrc with "@dbzz:registry=<url>"');
-  const m = /^@dbzz:registry=(.+)$/m.exec(await npmrc.text());
-  if (!m) fail('no "@dbzz:registry=<url>" line in the repo-root .npmrc');
+  if (!(await npmrc.exists())) fail('missing repo-root .npmrc with "@ackerdb:registry=<url>"');
+  const m = /^@ackerdb:registry=(.+)$/m.exec(await npmrc.text());
+  if (!m) fail('no "@ackerdb:registry=<url>" line in the repo-root .npmrc');
   return m[1]!.trim().replace(/\/+$/, "");
 }
 
@@ -76,7 +76,7 @@ export function assertWorkspaceLock(lock: BunLock, read: (pkg: string) => string
 
     if (!Bun.deepEquals(lock.workspaces[`packages/${pkg}`], expected)) {
       fail(
-        `bun.lock workspace snapshot for @dbzz/${pkg} does not match ${pkgJsonPath(pkg)}\n` +
+        `bun.lock workspace snapshot for @ackerdb/${pkg} does not match ${pkgJsonPath(pkg)}\n` +
           `  Run bun run bump so the release manifests and lock graph move together.`,
       );
     }
@@ -127,7 +127,7 @@ export function syncedVersion(
   for (const { pkg, json } of parsed) {
     for (const field of ["dependencies", "devDependencies", "peerDependencies"]) {
       for (const [name, spec] of Object.entries(json[field] ?? {})) {
-        if (name.startsWith("@dbzz/") && spec !== `workspace:${version}`) {
+        if (name.startsWith("@ackerdb/") && spec !== `workspace:${version}`) {
           fail(
             `${pkgJsonPath(pkg)}: ${name} is "${spec}", expected "workspace:${version}"\n` +
               `  Inter-deps stay pinned to the lockstep version (bun run bump rewrites them).`,

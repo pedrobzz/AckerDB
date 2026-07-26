@@ -6,7 +6,7 @@ import {
   defineTable,
   snapshotOf,
   v,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { compileStandardJsonCodec } from "../../src/validation/standard-schema.ts";
 import { checkDescriptor } from "../../src/schema/descriptor-kinds.ts";
 import { checkShape, validatorBaseChecksForTest } from "../../src/validation/v.ts";

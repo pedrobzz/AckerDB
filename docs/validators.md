@@ -1,6 +1,6 @@
 # Validators
 
-DBZZ has one validator DSL: `v` from `@dbzz/server`. The same validator value
+AckerDB has one validator DSL: `v` from `@ackerdb/server`. The same validator value
 drives TypeScript inference, runtime checks, stored schema snapshots, and the
 Standard JSON Schema exposed by MCP tools.
 
@@ -28,7 +28,7 @@ search](vector-search.md).
 Constraints compose before one terminal presence modifier:
 
 ```ts
-import { defineTable, v } from "@dbzz/server";
+import { defineTable, v } from "@ackerdb/server";
 
 export const products = defineTable({
   id: v.primaryKey(),
@@ -78,7 +78,7 @@ updates a nullable column to `NULL`.
 Function argument objects preserve the distinction:
 
 ```ts
-import { v } from "@dbzz/server";
+import { v } from "@ackerdb/server";
 import { mutation } from "./_generated/server";
 
 export const updateProfile = mutation({
@@ -104,7 +104,7 @@ Presence modifiers are terminal; use `nullish()` directly instead of combining
 
 Table constraints run on every insert, replace, and changed patch value. A
 constraint loosening applies as a shape-safe schema change. A tightening is
-optimistic: DBZZ scans the affected stored columns in bounded pages inside the
+optimistic: AckerDB scans the affected stored columns in bounded pages inside the
 writer transaction. Clean data adopts the new constraint without a migration;
 violations refuse with an exact row count and write nothing.
 

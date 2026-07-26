@@ -2,8 +2,8 @@ import { copyFileSync } from "node:fs";
 import { join } from "node:path";
 import { createPackedConsumer } from "./packed-consumer.ts";
 
-const SERVER_NAME = "dbzz_acceptance";
-const INSTRUCTION_MARKER = "dbzz-host-instructions-v1";
+const SERVER_NAME = "ackerdb_acceptance";
+const INSTRUCTION_MARKER = "ackerdb-host-instructions-v1";
 const READ_SCOPE = "acceptance.read";
 const ADMIN_SCOPE = "acceptance.admin";
 const PUBLIC_TOOLS = ["public_text"] as const;
@@ -100,9 +100,9 @@ class FixtureController {
       cwd: consumerDir,
       env: {
         ...process.env,
-        DBZZ_ACCEPTANCE_DB: join(consumerDir, "acceptance.db"),
-        DBZZ_DURABILITY: "balanced",
-        DBZZ_TELEMETRY: "disabled",
+        ACKERDB_ACCEPTANCE_DB: join(consumerDir, "acceptance.db"),
+        ACKERDB_DURABILITY: "balanced",
+        ACKERDB_TELEMETRY: "disabled",
       },
       stdin: "pipe",
       stdout: "pipe",
@@ -333,7 +333,7 @@ function hostArgs(
         ? []
         : [
             "--config",
-            `mcp_servers.${SERVER_NAME}.bearer_token_env_var=\"DBZZ_MCP_TOKEN\"`,
+            `mcp_servers.${SERVER_NAME}.bearer_token_env_var=\"ACKERDB_MCP_TOKEN\"`,
           ]),
       prompt,
     ];
@@ -345,7 +345,7 @@ function hostArgs(
         url,
         ...(token === undefined
           ? {}
-          : { headers: { Authorization: "Bearer ${DBZZ_MCP_TOKEN}" } }),
+          : { headers: { Authorization: "Bearer ${ACKERDB_MCP_TOKEN}" } }),
       },
     },
   });
@@ -379,8 +379,8 @@ async function runHost(
   prompt: string,
 ): Promise<HostResult> {
   const env = { ...process.env };
-  if (token === undefined) delete env.DBZZ_MCP_TOKEN;
-  else env.DBZZ_MCP_TOKEN = token;
+  if (token === undefined) delete env.ACKERDB_MCP_TOKEN;
+  else env.ACKERDB_MCP_TOKEN = token;
   const child = Bun.spawn(hostArgs(host, binary, cwd, url, token, tools, prompt), {
     cwd,
     env,
@@ -695,7 +695,7 @@ async function main(): Promise<void> {
   assert(codex !== null, "codex is not installed on PATH");
   assert(claude !== null, "claude is not installed on PATH");
   const [codexVersion, claudeVersion] = await Promise.all([version(codex), version(claude)]);
-  const packed = await createPackedConsumer("dbzz-mcp-host-acceptance");
+  const packed = await createPackedConsumer("ackerdb-mcp-host-acceptance");
   try {
     copyFileSync(
       join(packed.root, "scripts/fixtures/mcp-host-server.ts"),
@@ -723,7 +723,7 @@ async function main(): Promise<void> {
         packed.consumerDir,
       );
       console.log(
-        `Real MCP hosts passed against packed @dbzz/* ${packed.version}; ` +
+        `Real MCP hosts passed against packed @ackerdb/* ${packed.version}; ` +
           `credentials remained environment-backed and ephemeral.`,
       );
     } finally {

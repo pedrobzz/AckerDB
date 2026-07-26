@@ -1,22 +1,22 @@
-import { PRODUCTION_LIMITS, type TelemetryLimits } from "@dbzz/server";
+import { PRODUCTION_LIMITS, type TelemetryLimits } from "@ackerdb/server";
 import type { SystemName } from "./benchmark.ts";
 
-export type DbzzTelemetryMode = "enabled" | "disabled";
-export type DbzzDurabilityMode = "production" | "balanced";
-export type DbzzBenchmarkProfile = "enabled" | "exporter" | "disabled";
-export type DbzzBenchmarkExporterMode = "disabled" | "in-process";
-export type DbzzTelemetryProfile = "runtime-default" | "benchmark-exporter" | "disabled";
+export type AckerDBTelemetryMode = "enabled" | "disabled";
+export type AckerDBDurabilityMode = "production" | "balanced";
+export type AckerDBBenchmarkProfile = "enabled" | "exporter" | "disabled";
+export type AckerDBBenchmarkExporterMode = "disabled" | "in-process";
+export type AckerDBTelemetryProfile = "runtime-default" | "benchmark-exporter" | "disabled";
 export type BenchmarkExecutionLeg =
-  | "dbzz-telemetry-enabled"
-  | "dbzz-telemetry-exporter"
-  | "dbzz-telemetry-disabled"
+  | "ackerdb-telemetry-enabled"
+  | "ackerdb-telemetry-exporter"
+  | "ackerdb-telemetry-disabled"
   | "convex"
   | "spacetimedb";
 
-export interface DbzzStartupMode {
-  readonly telemetry: DbzzTelemetryMode;
-  readonly durability: DbzzDurabilityMode;
-  readonly telemetryProfile: DbzzTelemetryProfile;
+export interface AckerDBStartupMode {
+  readonly telemetry: AckerDBTelemetryMode;
+  readonly durability: AckerDBDurabilityMode;
+  readonly telemetryProfile: AckerDBTelemetryProfile;
   readonly runtimeTelemetry: "omitted" | "options" | "false";
   readonly exporter: "unconfigured" | "benchmark-in-process";
   readonly localSink: "default-console" | "disabled";
@@ -24,12 +24,12 @@ export interface DbzzStartupMode {
   readonly gracefulShutdownMs: number;
 }
 
-export const DBZZ_STARTUP_PREFIX = "@@dbzz-startup ";
+export const ACKERDB_STARTUP_PREFIX = "@@ackerdb-startup ";
 
 export function benchmarkProfileFromConfig(
-  telemetry: DbzzTelemetryMode,
-  exporter: DbzzBenchmarkExporterMode,
-): DbzzBenchmarkProfile {
+  telemetry: AckerDBTelemetryMode,
+  exporter: AckerDBBenchmarkExporterMode,
+): AckerDBBenchmarkProfile {
   if (telemetry === "disabled") {
     if (exporter !== "disabled") {
       throw new Error("the benchmark exporter requires telemetry to be enabled");
@@ -39,10 +39,10 @@ export function benchmarkProfileFromConfig(
   return exporter === "in-process" ? "exporter" : "enabled";
 }
 
-export function expectedDbzzStartupMode(
-  profile: DbzzBenchmarkProfile,
-  durability: DbzzDurabilityMode,
-): DbzzStartupMode {
+export function expectedAckerDBStartupMode(
+  profile: AckerDBBenchmarkProfile,
+  durability: AckerDBDurabilityMode,
+): AckerDBStartupMode {
   const telemetry = profile === "disabled" ? "disabled" : "enabled";
   return Object.freeze({
     telemetry,
@@ -62,46 +62,46 @@ export function expectedDbzzStartupMode(
 
 export function benchmarkExecutionOrder(
   systemOrder: readonly SystemName[],
-  dbzzProfiles: readonly DbzzBenchmarkProfile[],
+  ackerDBProfiles: readonly AckerDBBenchmarkProfile[],
   savedRuns: number,
 ): BenchmarkExecutionLeg[] {
   if (!Number.isSafeInteger(savedRuns) || savedRuns < 0) {
     throw new RangeError("savedRuns must be a non-negative safe integer");
   }
-  if (dbzzProfiles.length === 0) throw new RangeError("at least one DBZZ profile must run");
+  if (ackerDBProfiles.length === 0) throw new RangeError("at least one AckerDB profile must run");
   // Rotate the profile order across reruns so no profile always pays the
   // cold-cache first slot.
-  const rotation = savedRuns % dbzzProfiles.length;
-  const rotated = [...dbzzProfiles.slice(rotation), ...dbzzProfiles.slice(0, rotation)];
+  const rotation = savedRuns % ackerDBProfiles.length;
+  const rotated = [...ackerDBProfiles.slice(rotation), ...ackerDBProfiles.slice(0, rotation)];
   return systemOrder.flatMap((system) =>
-    system === "dbzz"
-      ? rotated.map((profile) => `dbzz-telemetry-${profile}` as const)
+    system === "ackerdb"
+      ? rotated.map((profile) => `ackerdb-telemetry-${profile}` as const)
       : [system],
   );
 }
 
 /** Parse the one server-confirmed mode marker that must precede readiness. */
-export function parseDbzzStartup(output: string): DbzzStartupMode {
+export function parseAckerDBStartup(output: string): AckerDBStartupMode {
   const lines = output.split(/\r?\n/);
   const readyIndex = lines.findIndex((line) => line.includes("ready on"));
-  if (readyIndex === -1) throw new Error("dbzz startup output has no readiness line");
+  if (readyIndex === -1) throw new Error("ackerdb startup output has no readiness line");
   const markers = lines
     .map((line, index) => ({ line, index }))
-    .filter(({ line }) => line.startsWith(DBZZ_STARTUP_PREFIX));
+    .filter(({ line }) => line.startsWith(ACKERDB_STARTUP_PREFIX));
   if (markers.length !== 1) {
-    throw new Error(`dbzz startup output must contain exactly one mode marker; found ${markers.length}`);
+    throw new Error(`ackerdb startup output must contain exactly one mode marker; found ${markers.length}`);
   }
   const marker = markers[0]!;
-  if (marker.index >= readyIndex) throw new Error("dbzz mode marker must precede readiness");
+  if (marker.index >= readyIndex) throw new Error("ackerdb mode marker must precede readiness");
 
   let value: unknown;
   try {
-    value = JSON.parse(marker.line.slice(DBZZ_STARTUP_PREFIX.length));
+    value = JSON.parse(marker.line.slice(ACKERDB_STARTUP_PREFIX.length));
   } catch (error) {
-    throw new Error("dbzz mode marker is not valid JSON", { cause: error });
+    throw new Error("ackerdb mode marker is not valid JSON", { cause: error });
   }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("dbzz mode marker must be an object");
+    throw new Error("ackerdb mode marker must be an object");
   }
   const record = value as Record<string, unknown>;
   if (
@@ -109,28 +109,28 @@ export function parseDbzzStartup(output: string): DbzzStartupMode {
       "durability,exporter,gracefulShutdownMs,localSink,runtimeTelemetry,telemetry,telemetryLimits,telemetryProfile"
   ) {
     throw new Error(
-      "dbzz mode marker must contain exactly the benchmark runtime, telemetry, durability, and shutdown profile",
+      "ackerdb mode marker must contain exactly the benchmark runtime, telemetry, durability, and shutdown profile",
     );
   }
   if (record.telemetry !== "enabled" && record.telemetry !== "disabled") {
-    throw new Error("dbzz mode marker has an invalid telemetry mode");
+    throw new Error("ackerdb mode marker has an invalid telemetry mode");
   }
   if (record.durability !== "production" && record.durability !== "balanced") {
-    throw new Error("dbzz mode marker has an invalid durability mode");
+    throw new Error("ackerdb mode marker has an invalid durability mode");
   }
   if (
     record.telemetryProfile !== "runtime-default" &&
     record.telemetryProfile !== "benchmark-exporter" &&
     record.telemetryProfile !== "disabled"
   ) {
-    throw new Error("dbzz mode marker has an invalid telemetry profile");
+    throw new Error("ackerdb mode marker has an invalid telemetry profile");
   }
-  const profile: DbzzBenchmarkProfile = record.telemetryProfile === "runtime-default"
+  const profile: AckerDBBenchmarkProfile = record.telemetryProfile === "runtime-default"
     ? "enabled"
     : record.telemetryProfile === "benchmark-exporter"
       ? "exporter"
       : "disabled";
-  const expected = expectedDbzzStartupMode(profile, record.durability);
+  const expected = expectedAckerDBStartupMode(profile, record.durability);
   if (
     record.telemetry !== expected.telemetry ||
     record.telemetryProfile !== expected.telemetryProfile ||
@@ -140,16 +140,16 @@ export function parseDbzzStartup(output: string): DbzzStartupMode {
     JSON.stringify(record.telemetryLimits) !== JSON.stringify(expected.telemetryLimits) ||
     record.gracefulShutdownMs !== expected.gracefulShutdownMs
   ) {
-    throw new Error("dbzz mode marker does not describe the benchmark telemetry profile exactly");
+    throw new Error("ackerdb mode marker does not describe the benchmark telemetry profile exactly");
   }
   return expected;
 }
 
-export function assertDbzzStartup(output: string, expected: DbzzStartupMode): DbzzStartupMode {
-  const actual = parseDbzzStartup(output);
+export function assertAckerDBStartup(output: string, expected: AckerDBStartupMode): AckerDBStartupMode {
+  const actual = parseAckerDBStartup(output);
   if (JSON.stringify(actual) !== JSON.stringify(expected)) {
     throw new Error(
-      `dbzz started with telemetry=${actual.telemetry}, durability=${actual.durability}, profile=${actual.telemetryProfile}; expected telemetry=${expected.telemetry}, durability=${expected.durability}, profile=${expected.telemetryProfile}`,
+      `ackerdb started with telemetry=${actual.telemetry}, durability=${actual.durability}, profile=${actual.telemetryProfile}; expected telemetry=${expected.telemetry}, durability=${expected.durability}, profile=${expected.telemetryProfile}`,
     );
   }
   return actual;

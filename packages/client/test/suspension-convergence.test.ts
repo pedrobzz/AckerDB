@@ -22,16 +22,16 @@ import {
   type LiveEventCursor,
   type ServerMessage,
   type SubscriptionCursor,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
-  DbzzClient,
-  DbzzClientError,
-  type DbzzClientClock,
-  type DbzzClientOptions,
-  type DbzzLifecyclePort,
-  type DbzzLiveEvent,
-  type DbzzWebSocket,
-} from "@dbzz/client";
+  AckerDBClient,
+  AckerDBClientError,
+  type AckerDBClientClock,
+  type AckerDBClientOptions,
+  type AckerDBLifecyclePort,
+  type AckerDBLiveEvent,
+  type AckerDBWebSocket,
+} from "@ackerdb/client";
 
 import {
   Engine,
@@ -46,7 +46,7 @@ import {
   query,
   reconcile,
   serve,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import {
   FrameProxy,
   assertTcpPortReleased,
@@ -64,7 +64,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
 
@@ -121,7 +121,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -169,19 +169,19 @@ class FakeSocket implements DbzzWebSocket {
 }
 
 interface Harness {
-  readonly client: DbzzClient;
+  readonly client: AckerDBClient;
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  readonly port: DbzzLifecyclePort;
+  readonly port: AckerDBLifecyclePort;
   readonly phases: string[];
 }
 
-function harness(overrides: Partial<DbzzClientOptions> = {}): Harness {
+function harness(overrides: Partial<AckerDBClientOptions> = {}): Harness {
   const clock = overrides.clock instanceof ManualClock ? overrides.clock : new ManualClock();
   const sockets: FakeSocket[] = [];
-  let port: DbzzLifecyclePort | undefined;
-  const client = new DbzzClient({
-    url: "http://dbzz.test",
+  let port: AckerDBLifecyclePort | undefined;
+  const client = new AckerDBClient({
+    url: "http://ackerdb.test",
     credential: { kind: "anonymous" },
     clientSessionId: "convergence-session",
     clock,
@@ -203,7 +203,7 @@ function harness(overrides: Partial<DbzzClientOptions> = {}): Harness {
     client,
     clock,
     sockets,
-    get port(): DbzzLifecyclePort {
+    get port(): AckerDBLifecyclePort {
       if (!port) throw new Error("the harness lifecycle source was overridden");
       return port;
     },
@@ -211,7 +211,7 @@ function harness(overrides: Partial<DbzzClientOptions> = {}): Harness {
   };
 }
 
-function welcome(client: DbzzClient, socket: FakeSocket, authEpoch = 0): void {
+function welcome(client: AckerDBClient, socket: FakeSocket, authEpoch = 0): void {
   socket.open();
   socket.receive({
     v: PROTOCOL_VERSION,
@@ -502,7 +502,7 @@ describe("mutation convergence across suspension", () => {
     const { client, sockets, port } = harness({
       credential: { kind: "bearer", token: "token-a" },
     });
-    const events: DbzzLiveEvent<{ n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
@@ -585,8 +585,8 @@ describe("mutation convergence across suspension", () => {
     port.suspend();
     clock.advance(30_001);
     port.resume();
-    const rejection = (await refresh) as DbzzClientError;
-    expect(rejection).toBeInstanceOf(DbzzClientError);
+    const rejection = (await refresh) as AckerDBClientError;
+    expect(rejection).toBeInstanceOf(AckerDBClientError);
     expect(rejection.code).toBe("auth_unavailable");
     expect(client.currentConnectionState.phase).toBe("authentication-blocked");
     // The credential expired, not the mutation: its identity is retained for
@@ -622,7 +622,7 @@ describe("mutation convergence across suspension", () => {
     expect(rejectionResult.ok).toBe(false);
     if (rejectionResult.ok) throw new Error("expected an indeterminate mutation");
     const rejection = rejectionResult.error;
-    expect(rejection).toBeInstanceOf(DbzzClientError);
+    expect(rejection).toBeInstanceOf(AckerDBClientError);
     expect(rejection.code).toBe("indeterminate");
     expect(rejection.resource).toBe("idempotency");
 
@@ -651,7 +651,7 @@ describe("mutation convergence across suspension", () => {
 
   test("a server Retry-After deadline holds recovery for both families, then one replay and one fresh reset land", async () => {
     const { client, clock, sockets, port } = harness();
-    const events: DbzzLiveEvent<{ n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
@@ -707,7 +707,7 @@ describe("mutation convergence across suspension", () => {
 describe("event convergence across suspension", () => {
   test("backgrounding during subscription application delivers exactly one reset on recovery", () => {
     const { client, sockets, port } = harness();
-    const events: DbzzLiveEvent<{ n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
@@ -736,7 +736,7 @@ describe("event convergence across suspension", () => {
 
   test("a byte-identical reset cursor after recovery is still one fresh boundary, and a duplicate within a connection is not", () => {
     const { client, sockets, port } = harness();
-    const events: DbzzLiveEvent<{ n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
@@ -765,7 +765,7 @@ describe("event convergence across suspension", () => {
 
   test("backgrounding during live delivery: missed events are never replayed and one reset precedes new rows", () => {
     const { client, sockets, port } = harness();
-    const events: DbzzLiveEvent<{ n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
@@ -808,7 +808,7 @@ describe("event convergence across suspension", () => {
 
   test("a consumer that backgrounds synchronously inside delivery converges deterministically", () => {
     const h = harness();
-    const events: DbzzLiveEvent<{ n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ n: number }>[] = [];
     h.client.subscribeEvent<Record<never, never>, { n: number }>(
       "events.pings",
       {},
@@ -855,7 +855,7 @@ describe("event convergence across suspension", () => {
 
   test("demand released while suspended stays released: recovery re-attaches nothing", () => {
     const { client, sockets, port } = harness();
-    const events: DbzzLiveEvent<{ n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.connect();
     const unsubscribe = client.subscribeEvent<Record<never, never>, { n: number }>(
       "events.pings",
@@ -879,7 +879,7 @@ describe("event convergence across suspension", () => {
 
   test("repeated lifecycle cycles with stale-generation injection cannot duplicate identities, resets, or delivery", async () => {
     const { client, sockets, port } = harness();
-    const events: DbzzLiveEvent<{ n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
@@ -990,7 +990,7 @@ function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
   });
 }
 
-function waitForPhase(client: DbzzClient, phase: string): Promise<void> {
+function waitForPhase(client: AckerDBClient, phase: string): Promise<void> {
   if (client.currentConnectionState.phase === phase) return Promise.resolve();
   const waiting = Promise.withResolvers<void>();
   const stop = client.subscribeConnectionState((state) => {
@@ -1115,12 +1115,12 @@ interface MessageRow {
 
 interface RealApp {
   readonly proxy: FrameProxy;
-  readonly observer: DbzzClient;
+  readonly observer: AckerDBClient;
   close(): Promise<void>;
 }
 
 async function createRealApp(): Promise<RealApp> {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-suspension-convergence-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-suspension-convergence-"));
   const engine = new Engine(realSchema, join(directory, "data.db"));
   reconcile(engine);
   const runtime = new Runtime({
@@ -1131,7 +1131,7 @@ async function createRealApp(): Promise<RealApp> {
   });
   const server = serve({ runtime, port: 0 });
   const proxy = await FrameProxy.listen({ upstreamPort: server.port });
-  const observer = new DbzzClient({
+  const observer = new AckerDBClient({
     url: `http://127.0.0.1:${server.port}`,
     credential: { kind: "anonymous" },
   });
@@ -1154,8 +1154,8 @@ async function createRealApp(): Promise<RealApp> {
 }
 
 interface SuspendableClient {
-  readonly client: DbzzClient;
-  readonly port: DbzzLifecyclePort;
+  readonly client: AckerDBClient;
+  readonly port: AckerDBLifecyclePort;
   readonly clientFrames: ClientMessage[];
 }
 
@@ -1168,16 +1168,16 @@ interface SuspendableClient {
  */
 function suspendableClient(
   url: string,
-  overrides: Partial<DbzzClientOptions> = {},
+  overrides: Partial<AckerDBClientOptions> = {},
 ): SuspendableClient {
-  let port: DbzzLifecyclePort | undefined;
+  let port: AckerDBLifecyclePort | undefined;
   const clientFrames: ClientMessage[] = [];
-  const client = new DbzzClient({
+  const client = new AckerDBClient({
     url,
     credential: { kind: "anonymous" },
     clock: new ManualClock(Date.now()),
     createWebSocket: (target) => {
-      const socket = new WebSocket(target) as unknown as DbzzWebSocket;
+      const socket = new WebSocket(target) as unknown as AckerDBWebSocket;
       const send = socket.send.bind(socket);
       socket.send = (data: string) => {
         clientFrames.push(parseClientMessage(decode(data)));
@@ -1193,7 +1193,7 @@ function suspendableClient(
   });
   return {
     client,
-    get port(): DbzzLifecyclePort {
+    get port(): AckerDBLifecyclePort {
       if (!port) throw new Error("lifecycle port not captured");
       return port;
     },
@@ -1220,7 +1220,7 @@ afterAll(async () => {
   await app.close();
 });
 
-describe("mutation boundaries against a real dbzz server", () => {
+describe("mutation boundaries against a real ackerdb server", () => {
   test("background before send: activation delivers one execution and one settlement", async () => {
     const { client, port } = suspendableClient(app.proxy.url);
     client.connect();
@@ -1532,10 +1532,10 @@ describe("mutation boundaries against a real dbzz server", () => {
   });
 });
 
-describe("event boundaries against a real dbzz server", () => {
+describe("event boundaries against a real ackerdb server", () => {
   test("suspension across live delivery: missed events stay missed and exactly one reset precedes new rows", async () => {
     const { client, port } = suspendableClient(app.proxy.url);
-    const events: DbzzLiveEvent<{ id: bigint; n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
     const kinds = (): string[] => events.map((event) => event.kind);
     client.subscribeEvent<{ min: number }, { id: bigint; n: number }>(
       "events.pings",
@@ -1576,7 +1576,7 @@ describe("event boundaries against a real dbzz server", () => {
     const held = app.proxy.holdNextServerFrame(
       (message) => message.t === "event" && message.event.kind === "reset",
     );
-    const events: DbzzLiveEvent<{ id: bigint; n: number }>[] = [];
+    const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
     client.subscribeEvent<{ min: number }, { id: bigint; n: number }>(
       "events.pings",
       { min: 200 },
@@ -1600,11 +1600,11 @@ describe("event boundaries against a real dbzz server", () => {
   });
 });
 
-describe("server unavailable at activation against a real dbzz server", () => {
+describe("server unavailable at activation against a real ackerdb server", () => {
   test(
     "activation with the server stopped enters ordinary reconnect; both families recover when it restarts",
     async () => {
-      const directory = mkdtempSync(join(tmpdir(), "dbzz-convergence-restart-"));
+      const directory = mkdtempSync(join(tmpdir(), "ackerdb-convergence-restart-"));
       const database = join(directory, "data.db");
       const engine = new Engine(realSchema, database);
       reconcile(engine);
@@ -1617,17 +1617,17 @@ describe("server unavailable at activation against a real dbzz server", () => {
       const server = serve({ runtime, port: 0 });
       const serverPort = server.port;
 
-      let lifecyclePort: DbzzLifecyclePort | undefined;
+      let lifecyclePort: AckerDBLifecyclePort | undefined;
       const clientFrames: ClientMessage[] = [];
       const phases: string[] = [];
-      const client = new DbzzClient({
+      const client = new AckerDBClient({
         url: `http://127.0.0.1:${serverPort}`,
         credential: { kind: "anonymous" },
         // Real timers: activation against a stopped server must hand off to
         // the ordinary bounded reconnect policy and recover through it.
         reconnect: { baseDelayMs: 25, maxDelayMs: 100, stableOpenMs: 10_000 },
         createWebSocket: (target) => {
-          const socket = new WebSocket(target) as unknown as DbzzWebSocket;
+          const socket = new WebSocket(target) as unknown as AckerDBWebSocket;
           const send = socket.send.bind(socket);
           socket.send = (data: string) => {
             clientFrames.push(parseClientMessage(decode(data)));
@@ -1643,7 +1643,7 @@ describe("server unavailable at activation against a real dbzz server", () => {
       client.subscribeConnectionState((state) => phases.push(state.phase));
       let restarted: { server: ReturnType<typeof serve>; engine: Engine } | undefined;
       try {
-        const events: DbzzLiveEvent<{ id: bigint; n: number }>[] = [];
+        const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
         const kinds = (): string[] => events.map((event) => event.kind);
         client.subscribeEvent<{ min: number }, { id: bigint; n: number }>(
           "events.pings",
@@ -1698,7 +1698,7 @@ describe("server unavailable at activation against a real dbzz server", () => {
         expect(new Set(sends.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(1);
 
         // Exactly one server effect exists.
-        const observer = new DbzzClient({
+        const observer = new AckerDBClient({
           url: `http://127.0.0.1:${serverPort}`,
           credential: { kind: "anonymous" },
         });
@@ -1735,7 +1735,7 @@ describe("server unavailable at activation against a real dbzz server", () => {
   test(
     "a mutation committed before the restart replays from the durable record with its recorded result",
     async () => {
-      const directory = mkdtempSync(join(tmpdir(), "dbzz-convergence-durable-"));
+      const directory = mkdtempSync(join(tmpdir(), "ackerdb-convergence-durable-"));
       const database = join(directory, "data.db");
       const engine = new Engine(realSchema, database);
       reconcile(engine);
@@ -1751,7 +1751,7 @@ describe("server unavailable at activation against a real dbzz server", () => {
       const { client, port } = suspendableClient(proxy.url);
       let restarted: { server: ReturnType<typeof serve>; engine: Engine } | undefined;
       try {
-        const events: DbzzLiveEvent<{ id: bigint; n: number }>[] = [];
+        const events: AckerDBLiveEvent<{ id: bigint; n: number }>[] = [];
         const kinds = (): string[] => events.map((event) => event.kind);
         client.subscribeEvent<{ min: number }, { id: bigint; n: number }>(
           "events.pings",
@@ -1781,7 +1781,7 @@ describe("server unavailable at activation against a real dbzz server", () => {
         expect(settlements).toBe(0);
 
         // The commit is durable on the original server.
-        const observerBefore = new DbzzClient({
+        const observerBefore = new AckerDBClient({
           url: `http://127.0.0.1:${upstreamPort}`,
           credential: { kind: "anonymous" },
         });
@@ -1840,7 +1840,7 @@ describe("server unavailable at activation against a real dbzz server", () => {
 
         // Exactly one effect survived the restart, and the event family
         // recovered behind exactly one fresh boundary.
-        const observerAfter = new DbzzClient({
+        const observerAfter = new AckerDBClient({
           url: `http://127.0.0.1:${upstreamPort}`,
           credential: { kind: "anonymous" },
         });

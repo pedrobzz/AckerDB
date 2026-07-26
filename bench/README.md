@@ -1,6 +1,6 @@
-# DBZZ release benchmark
+# AckerDB release benchmark
 
-This benchmark measures DBZZ, Convex, and SpacetimeDB with one fixed logical
+This benchmark measures AckerDB, Convex, and SpacetimeDB with one fixed logical
 workload. It is release evidence, not a development-loop tool and not a vendor
 benchmark claim.
 
@@ -8,7 +8,7 @@ benchmark claim.
 
 Run the full comparison only for a major, minor, or patch version change. Do
 not run a pre-change benchmark: the final benchmark of the preceding version
-is the baseline. The comparison always runs the complete DBZZ, Convex, and
+is the baseline. The comparison always runs the complete AckerDB, Convex, and
 SpacetimeDB workload on the dedicated Hetzner host (`htz`) and nowhere else.
 
 After `bun run bump <patch|minor|major>`, dispatch this in a background
@@ -37,7 +37,7 @@ or decide whether the release is acceptable.
 
 ### Interpretation
 
-The runner records DBZZ's full metric set beside the preceding release.
+The runner records AckerDB's full metric set beside the preceding release.
 Convex and SpacetimeDB run in the same host/workload as comparability context.
 The runner intentionally has no regression thresholds, approval status, or
 performance veto. It reports observations; a human or agent interprets them.
@@ -61,14 +61,14 @@ release veto.
 ## What the runner measures
 
 Each release uses fresh equivalent state, a deterministic seed, warmup before
-measurement, and server resource windows. DBZZ is run three times from fresh
+measurement, and server resource windows. AckerDB is run three times from fresh
 equivalent state: its literal runtime telemetry default, the same default with
 an explicit in-process exporter, and telemetry disabled. The record verifies
 result correctness, request accounting, delivery completeness, process cleanup,
 and telemetry mode/accounting alongside the performance measurements.
 
 Prerequisites on Hetzner are Bun, Node 24 for Convex, and SpacetimeDB CLI
-2.6.1 with its matching client/module SDK pins. The runner regenerates DBZZ
+2.6.1 with its matching client/module SDK pins. The runner regenerates AckerDB
 bindings in the clean checkout.
 
 ## Fixed operation contract
@@ -77,7 +77,7 @@ The dataset contains 8,192 documents in 64 partitions, 2,048 accounts, and one
 128-byte row for every subscription argument. Timed setup and timed operations
 never use benchmark-side request batching.
 
-| Case | Identical logical work | dbzz API | Convex API | SpacetimeDB 2.6 API |
+| Case | Identical logical work | AckerDB API | Convex API | SpacetimeDB 2.6 API |
 |---|---|---|---|---|
 | query | Composite-index prefix scan; first 20 rows in ascending rank; return rank, score, 128-byte payload, nonce, and checksum | query | query | read-only procedure with explicit transaction |
 | mutation | Transactionally read two indexed accounts, transfer one unit, and update both balances and versions | mutation | mutation | reducer |
@@ -150,7 +150,7 @@ The default subscription cases both use 500 independent client connections and
 The patterns use disjoint seeded channels. Subscription readiness is explicit,
 updates use a fixed-rate offered window, and a channel is not reused until its
 previous delivery completes. SpacetimeDB groups a user's 50 predicates into one
-native subscription handle, while dbzz and Convex register 50 native query
+native subscription handle, while AckerDB and Convex register 50 native query
 subscriptions; that current-SDK difference is intentionally preserved and
 setup time includes it.
 
@@ -180,7 +180,7 @@ subscribed cohort. Working phases report the same CPU/RSS fields. Because the
 server stays alive through a leg, allocators may retain or release memory
 between phases; per-scenario baseline and delta are both printed, and a negative
 delta is possible when a runtime releases memory during the later plateau.
-The default, exporter, and disabled DBZZ legs use identical sampling and
+The default, exporter, and disabled AckerDB legs use identical sampling and
 workload. A final release record stores all three raw profiles,
 default-versus-disabled throughput/p50/p95/p99/CPU/RSS deltas, and
 exporter-versus-default deltas over the same metric set. Those tables include
@@ -189,7 +189,7 @@ connection and subscription resource plateaus. The telemetry report separately
 stores bounded local-output record/byte counters, before/after queue and
 trace-retention snapshots, export/drop accounting, exporter health and
 delivered-record counts, and the strict operation/stage aggregate matrix. The
-exporter delta is explicitly the minimum DBZZ handoff cost; transport,
+exporter delta is explicitly the minimum AckerDB handoff cost; transport,
 collector, and vendor-backend costs remain outside the product and benchmark
 contract.
 
@@ -202,8 +202,8 @@ checks actual results instead of timing no-op calls.
 
 It is not a hosted-service, WAN-latency, multi-region, bearer-authentication,
 multi-node, large-on-disk-dataset, or complex-business-workload benchmark.
-Local Convex avoids hosted network latency; dbzz and SpacetimeDB are local too.
-DBZZ deliberately uses its observable `balanced` durability profile: SQLite
+Local Convex avoids hosted network latency; AckerDB and SpacetimeDB are local too.
+AckerDB deliberately uses its observable `balanced` durability profile: SQLite
 WAL with `synchronous=NORMAL`, acknowledging after commit. This preserves the
 historical local comparison and is process-crash consistent, but it is not a
 power-loss durability claim. Convex uses its current local backend default, and

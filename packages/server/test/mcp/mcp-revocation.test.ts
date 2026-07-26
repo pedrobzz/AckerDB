@@ -329,7 +329,7 @@ describe("bounded live MCP credential invalidation", () => {
     test(`cancels active HTTP work and queued transactions after ${authorityChange}`, async () => {
       const { runtime } = fixture(
         databasePath(
-          `dbzz-mcp-${authorityChange === "revoke" ? "revoke" : "scope"}-`,
+          `ackerdb-mcp-${authorityChange === "revoke" ? "revoke" : "scope"}-`,
         ),
         undefined,
         extraModules,
@@ -444,7 +444,7 @@ describe("bounded live MCP credential invalidation", () => {
 
   test("rollbacks and descriptor edits preserve active and fresh authority", async () => {
     const { runtime } = fixture(
-      databasePath("dbzz-mcp-rollback-"),
+      databasePath("ackerdb-mcp-rollback-"),
       undefined,
       extraModules,
     );
@@ -541,7 +541,7 @@ describe("bounded live MCP credential invalidation", () => {
 
   test("targets the exact token and endpoint while unrelated work continues", async () => {
     const { runtime } = fixture(
-      databasePath("dbzz-mcp-isolation-"),
+      databasePath("ackerdb-mcp-isolation-"),
       undefined,
       extraModules,
     );

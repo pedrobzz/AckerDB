@@ -1,6 +1,6 @@
 import { useChat } from "@ai-sdk/react";
-import { useChatTransport } from "@dbzz/client-react/ai";
-import { api } from "@demo/dbzz-codegen/api";
+import { useChatTransport } from "@ackerdb/client-react/ai";
+import { api } from "@demo/ackerdb-codegen/api";
 import { useMemo, useState, type ReactNode } from "react";
 import { activeToolStatus, isStreamingStatus } from "./chat-format.tsx";
 import { ChatLauncher } from "./chat-fab.tsx";
@@ -10,7 +10,7 @@ import { ChatWindow } from "./chat-window.tsx";
 type ChatMode = "closed" | "open" | "minimized";
 
 /**
- * Owns the single admin-session chat: one `useChat` bound to the dbzz chat
+ * Owns the single admin-session chat: one `useChat` bound to the AckerDB chat
  * transport, plus the floating window's mode and geometry. Mounted inside the
  * `_admin` layout, it stays alive across page navigation, so the conversation
  * and window placement persist until a reload (nothing is stored). It renders

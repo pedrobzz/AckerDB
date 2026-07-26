@@ -30,14 +30,14 @@ import {
   reconcile,
   resetDatabase,
   restoreVerifiedDatabase,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { DatabaseRestoreTarget } from "../../src/database/engine.ts";
 import { DatabaseOwnership, coordinationDatabasePath } from "../../src/database/ownership.ts";
 import { mutationReplayOwner } from "../../src/database/mutation-replay.ts";
 
 const roots: string[] = [];
 const fresh = () => {
-  const root = mkdtempSync(join(tmpdir(), "dbzz-storage-"));
+  const root = mkdtempSync(join(tmpdir(), "ackerdb-storage-"));
   roots.push(root);
   return { root, database: join(root, "data.db") };
 };
@@ -69,10 +69,10 @@ function ownedState(database: string): Record<string, unknown> {
       catalog: db
         .query("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name")
         .all(),
-      meta: db.query("SELECT key, value FROM _dbzz_meta ORDER BY key").all(),
-      state: db.query("SELECT * FROM _dbzz_state ORDER BY singleton").all(),
-      tags: db.query("SELECT type, variant, tag FROM _dbzz_tags ORDER BY type, variant").all(),
-      migrations: db.query("SELECT * FROM _dbzz_migrations ORDER BY number").all(),
+      meta: db.query("SELECT key, value FROM _ackerdb_meta ORDER BY key").all(),
+      state: db.query("SELECT * FROM _ackerdb_state ORDER BY singleton").all(),
+      tags: db.query("SELECT type, variant, tag FROM _ackerdb_tags ORDER BY type, variant").all(),
+      migrations: db.query("SELECT * FROM _ackerdb_migrations ORDER BY number").all(),
     };
   } finally {
     db.close();
@@ -82,7 +82,7 @@ function ownedState(database: string): Record<string, unknown> {
 function cleanShutdown(database: string): bigint {
   const db = new Database(database, { readonly: true, safeIntegers: true });
   try {
-    return (db.query("SELECT clean_shutdown FROM _dbzz_state WHERE singleton = 1").get() as {
+    return (db.query("SELECT clean_shutdown FROM _ackerdb_state WHERE singleton = 1").get() as {
       clean_shutdown: bigint;
     }).clean_shutdown;
   } finally {
@@ -125,7 +125,7 @@ describe("durability and internal state", () => {
 
     const legacy = fresh().database;
     const db = new Database(legacy, { create: true });
-    db.exec("CREATE TABLE _dbzz_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    db.exec("CREATE TABLE _ackerdb_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     db.close();
     expect(() => new Engine(schema, legacy)).toThrow(IncompatibleDatabaseError);
   });
@@ -177,7 +177,7 @@ describe("durability and internal state", () => {
   test("restore vacancy accepts an exact pre-link coordination crash residue", () => {
     const { database } = fresh();
     const coordination = coordinationDatabasePath(database);
-    const residue = `${coordination}.dbzz-bootstrap-00000000-0000-4000-8000-000000000001`;
+    const residue = `${coordination}.ackerdb-bootstrap-00000000-0000-4000-8000-000000000001`;
     const seed = DatabaseOwnership.acquire(database);
     seed.release();
     renameSync(coordination, residue);
@@ -212,19 +212,19 @@ describe("durability and internal state", () => {
 
     const restore = DatabaseRestoreTarget.acquire(target);
     expect(restore.path).toBe(canonical);
-    expect(restore.stagingPath.startsWith(`${canonical}.dbzz-restore-`)).toBe(true);
+    expect(restore.stagingPath.startsWith(`${canonical}.ackerdb-restore-`)).toBe(true);
     restore.assertVacant();
     restore.close();
   });
 
-  test("reset removes only the canonical family and exact DBZZ staging artifacts", () => {
+  test("reset removes only the canonical family and exact AckerDB staging artifacts", () => {
     const { root, database } = fresh();
     const engine = new Engine(schema, database);
     engine.close("clean");
     const canonical = realpathSync(database);
-    const init = `${canonical}.dbzz-init-00000000-0000-4000-8000-000000000001`;
-    const restore = `${canonical}.dbzz-restore-00000000-0000-4000-8000-000000000002`;
-    const lookalike = `${canonical}.dbzz-restore-not-a-uuid`;
+    const init = `${canonical}.ackerdb-init-00000000-0000-4000-8000-000000000001`;
+    const restore = `${canonical}.ackerdb-restore-00000000-0000-4000-8000-000000000002`;
+    const lookalike = `${canonical}.ackerdb-restore-not-a-uuid`;
     const unrelated = join(root, "keep-me");
     for (const artifact of [init, `${init}-journal`, restore, `${restore}-shm`, lookalike, unrelated]) {
       writeFileSync(artifact, artifact);
@@ -273,7 +273,7 @@ describe("durability and internal state", () => {
   test("refuses to adopt user or partial internal objects when metadata is absent", () => {
     for (const ddl of [
       "CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
-      "CREATE TABLE _dbzz_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL)",
+      "CREATE TABLE _ackerdb_tags (type TEXT NOT NULL, variant TEXT NOT NULL, tag INTEGER NOT NULL)",
     ]) {
       const { database } = fresh();
       const db = new Database(database, { create: true });
@@ -291,7 +291,7 @@ describe("durability and internal state", () => {
     reconcile(engine);
     engine.close("clean");
     const db = new Database(database);
-    db.exec("ALTER TABLE _dbzz_mutations ADD COLUMN unexpected TEXT");
+    db.exec("ALTER TABLE _ackerdb_mutations ADD COLUMN unexpected TEXT");
     db.close();
     const before = ownedState(database);
     expect(() => new Engine(schema, database)).toThrow(IncompatibleDatabaseError);
@@ -348,9 +348,9 @@ describe("durability and internal state", () => {
     const live = new Engine(indexed, database);
     reconcile(live);
     live.writer.exec(`DROP INDEX "${physicalIndex}"`);
-    const before = live.writer.query("SELECT key, value FROM _dbzz_meta ORDER BY key").all();
+    const before = live.writer.query("SELECT key, value FROM _ackerdb_meta ORDER BY key").all();
     expect(() => reconcile(live)).toThrow(CorruptDatabaseError);
-    expect(live.writer.query("SELECT key, value FROM _dbzz_meta ORDER BY key").all()).toEqual(before);
+    expect(live.writer.query("SELECT key, value FROM _ackerdb_meta ORDER BY key").all()).toEqual(before);
     live.close("clean");
   });
 
@@ -441,17 +441,17 @@ describe("durability and internal state", () => {
       engine.close("clean");
 
       const db = new Database(database, { safeIntegers: true });
-      const row = db.query("SELECT value FROM _dbzz_meta WHERE key = 'schema'").get() as {
+      const row = db.query("SELECT value FROM _ackerdb_meta WHERE key = 'schema'").get() as {
         value: string;
       };
       db.query(
-        "INSERT INTO _dbzz_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO _ackerdb_migrations (number, name, identity, applied_at) VALUES (?, ?, ?, ?)",
       ).run(1, "existing evidence", "0".repeat(64), 1);
       const snapshot = JSON.parse(row.value) as {
         tables: { records: { columns: Record<string, Record<string, unknown>> } };
       };
       corruption.mutate(snapshot.tables.records.columns);
-      db.query("UPDATE _dbzz_meta SET value = ? WHERE key = 'schema'")
+      db.query("UPDATE _ackerdb_meta SET value = ? WHERE key = 'schema'")
         .run(JSON.stringify(snapshot));
       db.close();
 
@@ -477,8 +477,8 @@ describe("durability and internal state", () => {
       }),
     });
     for (const corruption of [
-      "UPDATE _dbzz_tags SET tag = 0 WHERE type = 'RecordState' AND variant = 'ready'",
-      "DELETE FROM _dbzz_tags WHERE type = 'RecordState' AND variant = 'done'",
+      "UPDATE _ackerdb_tags SET tag = 0 WHERE type = 'RecordState' AND variant = 'ready'",
+      "DELETE FROM _ackerdb_tags WHERE type = 'RecordState' AND variant = 'done'",
     ]) {
       const { database } = fresh();
       const engine = new Engine(tagged, database);
@@ -500,7 +500,7 @@ describe("durability and internal state", () => {
     engine.close("clean");
 
     const db = new Database(database, { safeIntegers: true });
-    db.query("UPDATE _dbzz_state SET mutation_records = 1 WHERE singleton = 1").run();
+    db.query("UPDATE _ackerdb_state SET mutation_records = 1 WHERE singleton = 1").run();
     db.close();
     expect(() => new Engine(schema, database)).toThrow(CorruptDatabaseError);
   });
@@ -509,7 +509,7 @@ describe("durability and internal state", () => {
     const { database } = fresh();
     const engine = new Engine(schema, database);
     reconcile(engine);
-    expect(engine.writer.query("PRAGMA index_list('_dbzz_mutations')").all()).toEqual([]);
+    expect(engine.writer.query("PRAGMA index_list('_ackerdb_mutations')").all()).toEqual([]);
     engine.writer.exec("BEGIN IMMEDIATE");
     const staged = engine[mutationReplayOwner].stage({
       sessionId: "session-a",
@@ -665,15 +665,15 @@ describe("durability and internal state", () => {
     };
 
     corrupt(
-      (database) => database.query("UPDATE _dbzz_mutations SET request_id = 'request-1' WHERE commit_version = 2").run(),
+      (database) => database.query("UPDATE _ackerdb_mutations SET request_id = 'request-1' WHERE commit_version = 2").run(),
       "duplicate scoped request",
     );
     corrupt(
-      (database) => database.query("UPDATE _dbzz_state SET commit_version = 1 WHERE singleton = 1").run(),
+      (database) => database.query("UPDATE _ackerdb_state SET commit_version = 1 WHERE singleton = 1").run(),
       "invalid commit order",
     );
     corrupt(
-      (database) => database.query("UPDATE _dbzz_mutations SET completed_at = 0 WHERE commit_version = 2").run(),
+      (database) => database.query("UPDATE _ackerdb_mutations SET completed_at = 0 WHERE commit_version = 2").run(),
       "completion time is not monotonic",
     );
   });
@@ -681,7 +681,7 @@ describe("durability and internal state", () => {
   test("detects an unclean prior process without deleting WAL state", async () => {
     const { database } = fresh();
     const script = `
-      import { v, defineSchema, defineTable, Engine, reconcile } from "@dbzz/server";
+      import { v, defineSchema, defineTable, Engine, reconcile } from "@ackerdb/server";
       const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(database)});
       reconcile(engine);
@@ -744,7 +744,7 @@ describe("durability and internal state", () => {
       closeAdditionalReader();
       throw new Error("secondary reader close failure");
     };
-    engine.writer.exec("DROP TABLE _dbzz_state");
+    engine.writer.exec("DROP TABLE _ackerdb_state");
 
     let closeFailure: unknown;
     try {
@@ -754,7 +754,7 @@ describe("durability and internal state", () => {
     }
     expect(closeFailure).toBeInstanceOf(AggregateError);
     expect((closeFailure as AggregateError).errors.map(String)).toEqual(expect.arrayContaining([
-      expect.stringContaining("no such table: _dbzz_state"),
+      expect.stringContaining("no such table: _ackerdb_state"),
       expect.stringContaining("secondary reader close failure"),
     ]));
     for (const connection of [engine.writer, engine.reader, additionalReader]) {
@@ -767,7 +767,7 @@ describe("durability and internal state", () => {
 
   test("scavenges pre-publish and post-publish bootstrap crash remnants", () => {
     const { database } = fresh();
-    const prefix = `${database}.dbzz-init-`;
+    const prefix = `${database}.ackerdb-init-`;
     const prePublish = `${prefix}00000000-0000-4000-8000-000000000001`;
     const unrelatedFile = `${prefix}deployment-notes`;
     const unrelatedDirectory = `${prefix}00000000-0000-4000-8000-000000000003`;
@@ -818,7 +818,7 @@ describe("durability and internal state", () => {
 
     const unavailableTmp = join(root, "missing-tmp");
     const script = `
-      import { v, defineSchema, defineTable, Engine } from "@dbzz/server";
+      import { v, defineSchema, defineTable, Engine } from "@ackerdb/server";
       const schema = defineSchema({ records: defineTable({ id: v.primaryKey(), value: v.string() }) });
       const engine = new Engine(schema, ${JSON.stringify(database)});
       engine.close("clean");
@@ -915,7 +915,7 @@ describe("checkpoint, backup, and restore", () => {
     owner.close("clean");
 
     const target = fresh().database;
-    const interrupted = `${target}.dbzz-restore-00000000-0000-4000-8000-000000000001`;
+    const interrupted = `${target}.ackerdb-restore-00000000-0000-4000-8000-000000000001`;
     writeFileSync(interrupted, "partial restore");
     expect(() => new Engine(schema, target)).toThrow("interrupted restore");
     expect(existsSync(target)).toBe(false);
@@ -952,7 +952,7 @@ describe("checkpoint, backup, and restore", () => {
     expect(existsSync(interrupted)).toBe(false);
     expect(existsSync(target)).toBe(true);
 
-    const postLinkEvidence = `${target}.dbzz-restore-00000000-0000-4000-8000-000000000002`;
+    const postLinkEvidence = `${target}.ackerdb-restore-00000000-0000-4000-8000-000000000002`;
     linkSync(target, postLinkEvidence);
     const reopened = new Engine(schema, target);
     expect(reopened.writer.query("SELECT value FROM records").get()).toEqual({ value: "restored" });

@@ -5,7 +5,7 @@ import {
   uuidV7Timestamp,
   type DurabilityPolicy,
   type OutcomeCode,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   makeDbWriter,
   newWriteCollector,
@@ -14,7 +14,7 @@ import {
 import type { DbStatementObserver } from "../database/statement-observation.ts";
 import type { DbWriter } from "../database/query/types.ts";
 import type { Engine } from "../database/engine.ts";
-import { DbzzError, throwIfAborted } from "../shared/errors.ts";
+import { AckerDBError, throwIfAborted } from "../shared/errors.ts";
 import { BoundedExecutor, type ExecutorSnapshot } from "./executor.ts";
 import type { ServiceLimits } from "./limits.ts";
 import {
@@ -75,7 +75,7 @@ function installFetchGuard(): void {
     const observer = fetchInstrumentation.getStore();
     const startedAt = observer === undefined ? 0 : performance.now();
     if (inTransaction()) {
-      const error = new DbzzError(
+      const error = new AckerDBError(
         "validation",
         "fetch is not allowed inside a transaction; use a procedure outside ctx.tx",
       );
@@ -222,8 +222,8 @@ interface CommitHandoff<T, Publication> {
   readonly completion?: Promise<PublicationCompletion>;
 }
 
-function conflict(message: string): DbzzError {
-  return new DbzzError("conflict", message, { resource: "idempotency" });
+function conflict(message: string): AckerDBError {
+  return new AckerDBError("conflict", message, { resource: "idempotency" });
 }
 
 function sameIdentity(stored: StoredMutation, incoming: IdempotencyIdentity): boolean {
@@ -287,7 +287,7 @@ export class CommitCoordinator<Publication> {
 
   async execute<T>(request: CommitRequest<T, Publication>): Promise<CommitResult<T, Publication>> {
     if (inTransaction()) {
-      throw new DbzzError(
+      throw new AckerDBError(
         "validation",
         "cannot open a transaction inside a transaction; compose calls in the current ctx.tx",
       );
@@ -341,7 +341,7 @@ export class CommitCoordinator<Publication> {
           commitVersion: handoff.result.commitVersion,
           postCommit: true,
         });
-        throw new DbzzError(
+        throw new AckerDBError(
           "convergence_unavailable",
           "the transaction committed but ordered publication failed",
           { committed: true, cause: completion.cause },
@@ -361,7 +361,7 @@ export class CommitCoordinator<Publication> {
   /** Serialize framework-owned storage through the same bounded writer without publishing app state. */
   async transactFramework<T>(request: FrameworkTransactionRequest<T>): Promise<T> {
     if (inTransaction()) {
-      throw new DbzzError("validation", "cannot open a framework transaction inside a transaction");
+      throw new AckerDBError("validation", "cannot open a framework transaction inside a transaction");
     }
     return this.writer.submit(async () => {
       let open = false;
@@ -380,7 +380,7 @@ export class CommitCoordinator<Publication> {
         try {
           request.afterCommit?.(value);
         } catch (cause) {
-          throw new DbzzError(
+          throw new AckerDBError(
             "convergence_unavailable",
             "framework transaction committed but its post-commit handoff failed",
             { committed: true, cause },
@@ -392,7 +392,7 @@ export class CommitCoordinator<Publication> {
           try {
             this.engine.writer.exec("ROLLBACK");
           } catch (rollbackError) {
-            throw new DbzzError("indeterminate", "framework transaction outcome could not be determined", {
+            throw new AckerDBError("indeterminate", "framework transaction outcome could not be determined", {
               cause: new AggregateError([error, rollbackError]),
             });
           }
@@ -430,7 +430,7 @@ export class CommitCoordinator<Publication> {
       let replayObserved = false;
       try {
         if (!Number.isSafeInteger(idempotency.issuedAt) || idempotency.issuedAt < 0) {
-          throw new DbzzError("validation", "mutation issuedAt must be a non-negative safe integer", {
+          throw new AckerDBError("validation", "mutation issuedAt must be a non-negative safe integer", {
             resource: "idempotency",
           });
         }
@@ -467,7 +467,7 @@ export class CommitCoordinator<Publication> {
         const now = this.readNow();
         const requestCreatedAt = uuidV7Timestamp(idempotency.requestId);
         if (requestCreatedAt > now + MAX_MUTATION_CLOCK_SKEW_MS) {
-          throw new DbzzError("validation", "mutation request ID timestamp is in the future", {
+          throw new AckerDBError("validation", "mutation request ID timestamp is in the future", {
             resource: "idempotency",
           });
         }
@@ -475,7 +475,7 @@ export class CommitCoordinator<Publication> {
           throw conflict("mutation request is outside the retained replay window");
         }
         if (this.engine[mutationReplayOwner].records >= this.limits.mutationReplay.maxRecords) {
-          throw new DbzzError("overloaded", "mutation replay capacity is full", {
+          throw new AckerDBError("overloaded", "mutation replay capacity is full", {
             retryable: true,
             retryAfterMs: 1_000,
             resource: "idempotency",
@@ -573,7 +573,7 @@ export class CommitCoordinator<Publication> {
               sizeBytes: resultBytes,
             });
             if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
-              throw new DbzzError("overloaded", "mutation result exceeds replay capacity", {
+              throw new AckerDBError("overloaded", "mutation result exceeds replay capacity", {
                 retryable: false,
                 resource: "idempotency",
               });
@@ -581,7 +581,7 @@ export class CommitCoordinator<Publication> {
             const available = this.limits.mutationReplay.maxBytes -
               this.engine[mutationReplayOwner].resultBytes;
             if (resultBytes > available) {
-              throw new DbzzError("overloaded", "mutation replay capacity is full", {
+              throw new AckerDBError("overloaded", "mutation replay capacity is full", {
                 retryable: true,
                 retryAfterMs: 1_000,
                 resource: "idempotency",
@@ -696,7 +696,7 @@ export class CommitCoordinator<Publication> {
         });
       }
       if (resultBytes > this.limits.mutationReplay.maxResultBytes) {
-        throw new DbzzError("overloaded", "mutation result exceeds replay capacity", {
+        throw new AckerDBError("overloaded", "mutation result exceeds replay capacity", {
           retryable: false,
           resource: "idempotency",
         });
@@ -705,7 +705,7 @@ export class CommitCoordinator<Publication> {
         const available = this.limits.mutationReplay.maxBytes -
           this.engine[mutationReplayOwner].resultBytes;
         if (resultBytes > available) {
-          throw new DbzzError("overloaded", "mutation replay capacity is full", {
+          throw new AckerDBError("overloaded", "mutation replay capacity is full", {
             retryable: true,
             retryAfterMs: 1_000,
             resource: "idempotency",
@@ -727,7 +727,7 @@ export class CommitCoordinator<Publication> {
         commitVersion = this.engine.allocateCommitVersion();
       }
       if (commitVersion !== reservation.version) {
-        throw new DbzzError("internal", "storage and publication versions diverged");
+        throw new AckerDBError("internal", "storage and publication versions diverged");
       }
       const descriptorAt = performance.now();
       try {
@@ -850,7 +850,7 @@ export class CommitCoordinator<Publication> {
         }
         reservation.cancel();
         if (rollbackFailed) {
-          throw new DbzzError("indeterminate", "transaction outcome could not be determined", {
+          throw new AckerDBError("indeterminate", "transaction outcome could not be determined", {
             cause: error,
           });
         }

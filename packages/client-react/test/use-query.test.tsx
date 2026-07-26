@@ -9,17 +9,17 @@ import {
   type ClientMessage,
   type ServerMessage,
   type SubscriptionCursor,
-} from "@dbzz/core";
-import { DbzzClient, type DbzzClientClock, type DbzzWebSocket, type QueryRef } from "@dbzz/client";
+} from "@ackerdb/core";
+import { AckerDBClient, type AckerDBClientClock, type AckerDBWebSocket, type QueryRef } from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import {
-  DbzzProvider,
+  AckerDBProvider,
   skip,
   useQuery,
-  type DbzzProviderConfig,
-  type DbzzQueryState,
-} from "@dbzz/client-react";
+  type AckerDBProviderConfig,
+  type AckerDBQueryState,
+} from "@ackerdb/client-react";
 import { QueryStoreEntry } from "../src/query-store.ts";
 
 interface ClockTask {
@@ -28,7 +28,7 @@ interface ClockTask {
   intervalMs?: number;
 }
 
-class ManualClock implements DbzzClientClock {
+class ManualClock implements AckerDBClientClock {
   private nextId = 0;
   private readonly tasks = new Map<number, ClockTask>();
   private time = 0;
@@ -75,7 +75,7 @@ class ManualClock implements DbzzClientClock {
   }
 }
 
-class FakeSocket implements DbzzWebSocket {
+class FakeSocket implements AckerDBWebSocket {
   onopen: (() => void) | null = null;
   onmessage: ((event: { readonly data: unknown }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -127,7 +127,7 @@ const SESSION = "use-query-session";
 interface Harness {
   readonly clock: ManualClock;
   readonly sockets: FakeSocket[];
-  readonly config: DbzzProviderConfig;
+  readonly config: AckerDBProviderConfig;
   live(): FakeSocket;
   subFrames<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[];
 }
@@ -178,9 +178,9 @@ function cursor(commitVersion: bigint): SubscriptionCursor {
   };
 }
 
-let observed: DbzzQueryState<string[], TodoNotFound> | undefined;
+let observed: AckerDBQueryState<string[], TodoNotFound> | undefined;
 
-function describeState(state: DbzzQueryState<string[], TodoNotFound>): string {
+function describeState(state: AckerDBQueryState<string[], TodoNotFound>): string {
   switch (state.status) {
     case "disabled":
       return "disabled";
@@ -213,9 +213,9 @@ async function render(root: Root, element: ReactNode): Promise<void> {
 
 function app(harness: Harness, args: TodoArgs | typeof skip, strict = false): ReactNode {
   const tree = (
-    <DbzzProvider config={harness.config}>
+    <AckerDBProvider config={harness.config}>
       <TodoReport args={args} />
-    </DbzzProvider>
+    </AckerDBProvider>
   );
   return strict ? <StrictMode>{tree}</StrictMode> : tree;
 }
@@ -656,7 +656,7 @@ describe("useQuery state transitions", () => {
 
     // The provider (and its client) stay mounted; only the query consumer
     // leaves, so the release must reach the server as an unsubscribe.
-    await render(root, <DbzzProvider config={harness.config} />);
+    await render(root, <AckerDBProvider config={harness.config} />);
     expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([id]);
     await render(root, <></>);
   });
@@ -686,7 +686,7 @@ describe("useQuery state transitions", () => {
     await render(
       root,
       <StrictMode>
-        <DbzzProvider config={harness.config} />
+        <AckerDBProvider config={harness.config} />
       </StrictMode>,
     );
     expect(live.framesOf("unsub").map((frame) => frame.id)).toEqual([subs[0]!.id]);
@@ -697,7 +697,7 @@ describe("useQuery state transitions", () => {
   // hook until ISSUE-08, and refreshCredential() lives on the private client.
   test("a deferred retry survives authentication blocking and resubscribes after recovery", async () => {
     const harness = createHarness();
-    const client = new DbzzClient(harness.config);
+    const client = new AckerDBClient(harness.config);
     client.connect();
     const entry = new QueryStoreEntry<string[]>(client, "todos.list", { list: 1n });
     const stopListening = entry.listen(() => {});
@@ -762,7 +762,7 @@ describe("useQuery state transitions", () => {
 
   test("binary row payloads stay genuine platform typed arrays inside frozen rows", async () => {
     const harness = createHarness();
-    const client = new DbzzClient(harness.config);
+    const client = new AckerDBClient(harness.config);
     client.connect();
     type BlobRow = { readonly name: string; readonly blob: Uint8Array };
     const entry = new QueryStoreEntry<BlobRow[]>(client, "todos.blobs", {});
@@ -818,7 +818,7 @@ describe("useQuery state transitions", () => {
     const container = mountPoint();
     const root = createRoot(container);
     const numbers = { $ref: "todos.byScore" } as QueryRef<{ score: number }, string[]>;
-    let captured: DbzzQueryState<string[]> | undefined;
+    let captured: AckerDBQueryState<string[]> | undefined;
 
     function BadArgs(): ReactNode {
       const state = useQuery(numbers, { score: Number.NaN });
@@ -828,9 +828,9 @@ describe("useQuery state transitions", () => {
 
     await render(
       root,
-      <DbzzProvider config={harness.config}>
+      <AckerDBProvider config={harness.config}>
         <BadArgs />
-      </DbzzProvider>,
+      </AckerDBProvider>,
     );
     expect(container.textContent).toBe("error:validation");
     if (captured?.status !== "rejected") throw new Error("expected a rejected state");

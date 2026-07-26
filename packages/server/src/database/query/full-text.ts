@@ -98,9 +98,9 @@ class FullTextQueryRuntime {
         } parameters but SQLite supports at most ${this.engine.sqliteParameterLimit}`,
       );
     }
-    const matches = "__dbzz_fts_matches";
-    const matchPk = "__dbzz_fts_pk";
-    const matchRank = "__dbzz_fts_rank";
+    const matches = "__ackerdb_fts_matches";
+    const matchPk = "__ackerdb_fts_pk";
+    const matchRank = "__ackerdb_fts_rank";
     const where = predicate.sql === "" ? "" : ` WHERE (${predicate.sql})`;
     const sql = [
       `WITH ${quote(matches)} AS (`,

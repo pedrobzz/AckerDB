@@ -1,10 +1,10 @@
 /**
  * The `v` validator DSL. Validators describe the runtime validation, the
  * TypeScript type and the storage form of every column, argument and return
- * value in a dbzz app. They compose like Zod: validators nest inside arrays,
+ * value in a ackerdb app. They compose like Zod: validators nest inside arrays,
  * objects and unions, then finish with a nullable/optional/nullish modifier.
  */
-import { encode, WireError, type Identity } from "@dbzz/core";
+import { encode, WireError, type Identity } from "@ackerdb/core";
 import {
   createStandardSchemaProperties,
   type StandardSchemaProperties,
@@ -19,7 +19,7 @@ import {
 } from "./constraints.ts";
 import { normalizeVector, vectorDimensions } from "./vector.ts";
 
-export type { Identity } from "@dbzz/core";
+export type { Identity } from "@ackerdb/core";
 export { isValidationError, ValidationError } from "./error.ts";
 
 /** JSON-serializable description of a validator, used for schema snapshots. */

@@ -24,7 +24,7 @@ import {
 } from "../../src/auth/credentials.ts";
 import { callerFairnessKey } from "../../src/runtime/caller.ts";
 import type { Identity } from "../../src/validation/v.ts";
-import { DbzzError } from "../../src/shared/errors.ts";
+import { AckerDBError } from "../../src/shared/errors.ts";
 import { outcomeFromError } from "../../src/runtime/outcome.ts";
 import {
   prepareRuntimePublication,
@@ -544,7 +544,7 @@ describe("Session Protocol-2 ownership", () => {
     await running;
 
     expect(runtime.procedureRequests[0]!.signal?.aborted).toBe(true);
-    expect(abortReason).toBeInstanceOf(DbzzError);
+    expect(abortReason).toBeInstanceOf(AckerDBError);
     expect(outcomeFromError(abortReason)).toMatchObject({
       code: "unavailable",
       message: "procedure request was canceled",
@@ -859,7 +859,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, auth(3, { kind: "bearer", token: "closing" }));
     await settle();
     expect(signals.get("closing")?.aborted).toBe(false);
-    await session.close(new DbzzError("draining", "server draining"));
+    await session.close(new AckerDBError("draining", "server draining"));
     expect(signals.get("closing")?.aborted).toBe(true);
   });
 
@@ -887,7 +887,7 @@ describe("Session Protocol-2 ownership", () => {
     const opening = handle(session, hello({ kind: "bearer", token: "hello" }));
     await settle();
     expect(resolutionSignal?.aborted).toBe(false);
-    const closing = session.close(new DbzzError("draining", "server draining"));
+    const closing = session.close(new AckerDBError("draining", "server draining"));
     expect(resolutionSignal?.aborted).toBe(true);
     await Promise.all([opening, closing]);
     expect(runtime.opens).toHaveLength(0);
@@ -994,7 +994,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(runtime.transitionCaptureBytes).toBeGreaterThan(0);
     expect(runtime.transitionReleaseCount).toBe(0);
 
-    const closing = session.close(new DbzzError("draining", "server draining"));
+    const closing = session.close(new AckerDBError("draining", "server draining"));
     expect(runtime.transitionCaptureBytes).toBe(0);
     expect(runtime.transitionReleaseCount).toBe(1);
     delivery.resolve(undefined);
@@ -1073,7 +1073,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, hello({ kind: "bearer", token: "valid" }));
 
     await handle(session, auth(1, { kind: "bearer", token: "invalid" }));
-    failure.reject(new DbzzError("unauthenticated", "invalid credential"));
+    failure.reject(new AckerDBError("unauthenticated", "invalid credential"));
     await settle();
 
     expect(session.snapshot().phase).toBe("closed");
@@ -1188,10 +1188,10 @@ describe("Session Protocol-2 ownership", () => {
     expect(verifier.unsubscribeCalls).toBe(1);
   });
 
-  test("operation DbzzError is forwarded without closing the session", async () => {
+  test("operation AckerDBError is forwarded without closing the session", async () => {
     const runtime = new FakeRuntime();
     runtime.queryHook = async () => {
-      throw new DbzzError("unauthorized", "access denied");
+      throw new AckerDBError("unauthorized", "access denied");
     };
     const sink = new FakeSink();
     const session = new Session({ runtime, sink, source: TEST_SOURCE });

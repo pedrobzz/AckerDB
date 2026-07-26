@@ -8,7 +8,7 @@ import {
   encode,
   type MutationMessage,
   type SubscribeMessage,
-} from "@dbzz/core";
+} from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
   type Principal,
@@ -189,7 +189,7 @@ afterEach(async () => {
 });
 
 function fixture(): { engine: Engine; runtime: Runtime } {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-system-mcp-token-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-system-mcp-token-"));
   directories.push(directory);
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
@@ -323,7 +323,7 @@ describe("system-managed MCP integration tokens", () => {
       metadata: { integration: "codex", generation: 1n },
     });
     expect(created).not.toHaveProperty("expiresAt");
-    expect(created.token).toMatch(/^dbzz_mcp\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
+    expect(created.token).toMatch(/^ackerdb_mcp\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}$/);
     expect(await runtime.runScheduled(createAt)).toBe(0);
     await runtime.subscribe(bobSession, request(subscribeMessage(90)));
     expect(publications.at(-1)).toMatchObject({
@@ -332,7 +332,7 @@ describe("system-managed MCP integration tokens", () => {
 
     const secret = created.token.split(".")[2]!;
     const stored = engine.reader.query(
-      "SELECT identity, mcp, secret_digest FROM _dbzz_mcp_tokens WHERE token_id = ?",
+      "SELECT identity, mcp, secret_digest FROM _ackerdb_mcp_tokens WHERE token_id = ?",
     ).get(created.id) as { identity: bigint; mcp: string; secret_digest: Uint8Array };
     expect(stored.identity).toBe(bob.identity);
     expect(stored.mcp).toBe("agent");
@@ -401,7 +401,7 @@ describe("system-managed MCP integration tokens", () => {
       args: {},
       principal: delegated,
     })).rejects.toMatchObject({ code: "unauthorized" });
-    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens").get())
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
       .toEqual({ count: 1n });
   });
 
@@ -458,7 +458,7 @@ describe("system-managed MCP integration tokens", () => {
       scopes: ["orders.create"],
     });
     await expect(runtime.runScheduled(at)).rejects.toMatchObject({ code: "validation" });
-    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _dbzz_mcp_tokens").get())
+    expect(engine.reader.query("SELECT COUNT(*) AS count FROM _ackerdb_mcp_tokens").get())
       .toEqual({ count: 0n });
   });
 });

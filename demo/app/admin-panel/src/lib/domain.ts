@@ -1,5 +1,5 @@
-import type { QueryRef } from "@dbzz/client-react";
-import { api } from "@demo/dbzz-codegen/api";
+import type { QueryRef } from "@ackerdb/client-react";
+import { api } from "@demo/ackerdb-codegen/api";
 
 type QueryResult<Ref> =
   Ref extends QueryRef<unknown, infer Data, unknown> ? Data : never;

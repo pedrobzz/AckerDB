@@ -3,13 +3,13 @@ import { NativeWebSocket, mountPoint } from "./support/dom.ts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode, parseClientMessage, type ClientMessage } from "@dbzz/core";
+import { decode, parseClientMessage, type ClientMessage } from "@ackerdb/core";
 import {
-  DbzzClient,
-  type DbzzLiveEvent,
-  type DbzzWebSocket,
+  AckerDBClient,
+  type AckerDBLiveEvent,
+  type AckerDBWebSocket,
   type EventRef,
-} from "@dbzz/client";
+} from "@ackerdb/client";
 import {
   Engine,
   PRODUCTION_LIMITS,
@@ -21,10 +21,10 @@ import {
   mutation,
   reconcile,
   serve,
-} from "@dbzz/server";
+} from "@ackerdb/server";
 import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { DbzzProvider, useConnectionState, useEvent } from "@dbzz/client-react";
+import { AckerDBProvider, useConnectionState, useEvent } from "@ackerdb/client-react";
 
 const schema = defineSchema({
   pings: defineEventTable({
@@ -52,7 +52,7 @@ interface App {
 }
 
 function createApp(): App {
-  const directory = mkdtempSync(join(tmpdir(), "dbzz-react-events-"));
+  const directory = mkdtempSync(join(tmpdir(), "ackerdb-react-events-"));
   const engine = new Engine(schema, join(directory, "data.db"));
   reconcile(engine);
   const registry = new Registry({
@@ -96,7 +96,7 @@ interface SocketRecord {
   readonly frames: ClientMessage[];
 }
 
-function recordingFactory(records: SocketRecord[]): (url: string) => DbzzWebSocket {
+function recordingFactory(records: SocketRecord[]): (url: string) => AckerDBWebSocket {
   return (url) => {
     const socket = new NativeWebSocket(url);
     const record: SocketRecord = { socket, frames: [] };
@@ -106,7 +106,7 @@ function recordingFactory(records: SocketRecord[]): (url: string) => DbzzWebSock
       record.frames.push(parseClientMessage(decode(data)));
       send(data);
     }) as typeof socket.send;
-    return socket as unknown as DbzzWebSocket;
+    return socket as unknown as AckerDBWebSocket;
   };
 }
 
@@ -116,7 +116,7 @@ function subscriptionFrames(record: SocketRecord): ClientMessage[] {
 
 interface ProbeProps {
   readonly marker: string;
-  readonly onEvent: (event: DbzzLiveEvent<PingRow>) => void;
+  readonly onEvent: (event: AckerDBLiveEvent<PingRow>) => void;
 }
 
 function Probe({ marker, onEvent }: ProbeProps): ReactNode {
@@ -135,17 +135,17 @@ beforeAll(() => {
 });
 afterAll(() => app.close());
 
-describe("useEvent against a real dbzz server", () => {
+describe("useEvent against a real ackerdb server", () => {
   test("delivers reset/row/gap, survives reconnect with one fresh reset, and never replays", async () => {
     const records: SocketRecord[] = [];
-    const events: DbzzLiveEvent<PingRow>[] = [];
+    const events: AckerDBLiveEvent<PingRow>[] = [];
     const kinds = (): string[] => events.map((event) => event.kind);
     const container = mountPoint();
     const root = createRoot(container);
-    const emitter = new DbzzClient({
+    const emitter = new AckerDBClient({
       url: app.base,
       credential: { kind: "anonymous" },
-      createWebSocket: (url) => new NativeWebSocket(url) as unknown as DbzzWebSocket,
+      createWebSocket: (url) => new NativeWebSocket(url) as unknown as AckerDBWebSocket,
     });
     const emit = async (n: number): Promise<number> => {
       const result = await emitter.mutation<{ n: number }, number, never>(
@@ -158,7 +158,7 @@ describe("useEvent against a real dbzz server", () => {
 
     const view = (marker: string): ReactNode => (
       <StrictMode>
-        <DbzzProvider
+        <AckerDBProvider
           config={{
             url: app.base,
             credential: { kind: "anonymous" },
@@ -169,7 +169,7 @@ describe("useEvent against a real dbzz server", () => {
           }}
         >
           <Probe marker={marker} onEvent={(event) => events.push(event)} />
-        </DbzzProvider>
+        </AckerDBProvider>
       </StrictMode>
     );
 

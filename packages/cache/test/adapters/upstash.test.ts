@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { PluginExportTree } from "@dbzz/server";
+import type { PluginExportTree } from "@ackerdb/server";
 import { CacheStoreError, cachePlugin } from "../../src/index.ts";
 import { upstashCacheStore, type UpstashFetch } from "../../src/adapters/upstash.ts";
 

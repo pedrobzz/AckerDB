@@ -18,10 +18,10 @@ import {
   type StandardValidator,
 } from "../validation/v.ts";
 
-const PLUGIN_OPERATION_IDENTITY = Symbol.for("@dbzz/server/PluginOperation/v1");
-const PLUGIN_CONTRACT_IDENTITY = Symbol.for("@dbzz/server/PluginContract/v1");
-const PLUGIN_IMPLEMENTATION_IDENTITY = Symbol.for("@dbzz/server/PluginImplementation/v1");
-const PLUGIN_INSTANCE_IDENTITY = Symbol.for("@dbzz/server/PluginInstance/v1");
+const PLUGIN_OPERATION_IDENTITY = Symbol.for("@ackerdb/server/PluginOperation/v1");
+const PLUGIN_CONTRACT_IDENTITY = Symbol.for("@ackerdb/server/PluginContract/v1");
+const PLUGIN_IMPLEMENTATION_IDENTITY = Symbol.for("@ackerdb/server/PluginImplementation/v1");
+const PLUGIN_INSTANCE_IDENTITY = Symbol.for("@ackerdb/server/PluginInstance/v1");
 const BUILTIN_CONTEXT_FIELDS = new Set([
   "abortSignal",
   "auth",
@@ -589,7 +589,7 @@ export interface PluginLifecycleContext {
 /** Cleanup return values are deliberately ignored after synchronous/async settlement. */
 export type PluginCleanup = () => unknown | Promise<unknown>;
 
-/** A side-effect-free declaration whose start callback is owned by DBzz startup. */
+/** A side-effect-free declaration whose start callback is owned by AckerDB startup. */
 export type PluginLifecycle = (
   context: Readonly<PluginLifecycleContext>,
 ) => void | PluginCleanup | Promise<void | PluginCleanup>;
