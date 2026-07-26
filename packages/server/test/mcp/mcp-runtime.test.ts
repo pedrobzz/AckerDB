@@ -503,6 +503,24 @@ describe("MCP Runtime ownership", () => {
 
   test("settles disconnect and graceful server shutdown through Runtime signals", async () => {
     const value = startHarness(4, 2);
+    const directController = new AbortController();
+    const directGate = gate("direct-disconnect");
+    const direct = value.runtime.runMcpTool({
+      id: "direct-disconnect",
+      mcp: ownershipMcp.name,
+      tool: "hold_ownership",
+      args: { gate: "direct-disconnect" },
+      principal: await user(value.runtime, "direct-disconnect"),
+      signal: directController.signal,
+    });
+    await directGate.started;
+    directController.abort("direct client disconnected");
+    await expect(direct).rejects.toMatchObject({
+      code: "indeterminate",
+      message: "MCP tool completion is unknown after cancellation",
+      resource: "operation",
+    });
+
     const controller = new AbortController();
     const disconnectedGate = gate("disconnect");
     const disconnected = rpc(

@@ -196,6 +196,41 @@ function applicationError(value: unknown) {
   return value;
 }
 
+/**
+ * Cancellation is determinate until policy admits the handler. Once the
+ * handler starts, its external effects cannot be inferred from how its promise
+ * settles, so every cancellation path must preserve that ambiguity.
+ */
+async function invokeSideEffectingHandler<T>(
+  signal: AbortSignal,
+  kind: "procedure" | "MCP tool",
+  invoke: (onAuthorized: () => void) => Promise<T>,
+): Promise<T> {
+  let handlerStarted = false;
+  let value: T;
+  try {
+    value = await invoke(() => {
+      throwIfAborted(signal);
+      handlerStarted = true;
+    });
+  } catch (cause) {
+    if (!handlerStarted || !signal.aborted) throw cause;
+    throw new DbzzError(
+      "indeterminate",
+      `${kind} completion is unknown after cancellation`,
+      { resource: "operation", cause },
+    );
+  }
+  if (signal.aborted) {
+    throw new DbzzError(
+      "indeterminate",
+      `${kind} completion is unknown after cancellation`,
+      { resource: "operation", cause: signal.reason },
+    );
+  }
+  return value;
+}
+
 function restoreMutationResult(value: unknown): Result<unknown, unknown> {
   if (isResult(value)) return value;
   if (typeof value !== "object" || value === null || !("ok" in value)) {
@@ -1225,27 +1260,12 @@ export class Runtime implements RuntimePort {
           invalidations.publish,
         );
         try {
-          let handlerStarted = false;
-          const result = await invokeFunction(fn, procedure.value, message.args, {
-            onAuthorized: () => {
-              throwIfAborted(signal);
-              handlerStarted = true;
-            },
-          }).catch((cause) => {
-            if (!handlerStarted || !signal.aborted) throw cause;
-            throw new DbzzError(
-              "indeterminate",
-              "procedure completion is unknown after cancellation",
-              { resource: "operation", cause },
-            );
-          });
-          if (signal.aborted) {
-            throw new DbzzError(
-              "indeterminate",
-              "procedure completion is unknown after cancellation",
-              { resource: "operation", cause: signal.reason },
-            );
-          }
+          const result = await invokeSideEffectingHandler(
+            signal,
+            "procedure",
+            (onAuthorized) =>
+              invokeFunction(fn, procedure.value, message.args, { onAuthorized }),
+          );
           if (!isResult(result)) throw new DbzzError("internal", "procedure boundary returned no Result");
           publication = this.prepareFrame(
             result.ok
@@ -1440,9 +1460,12 @@ export class Runtime implements RuntimePort {
         invalidations.publish,
       );
       try {
-        const value = await invokeFunction(fn, context.value, request.args);
-        throwIfAborted(signal);
-        return value;
+        return await invokeSideEffectingHandler(
+          signal,
+          "procedure",
+          (onAuthorized) =>
+            invokeFunction(fn, context.value, request.args, { onAuthorized }),
+        );
       } finally {
         context.release();
       }
@@ -1548,8 +1571,11 @@ export class Runtime implements RuntimePort {
     try {
       const tool = this.authorizeMcpTool(mcp, name, toolContext.auth);
       throwIfAborted(toolContext.abortSignal);
-      const value = await invokeFunction(tool, toolContext, args);
-      throwIfAborted(toolContext.abortSignal);
+      const value = await invokeSideEffectingHandler(
+        toolContext.abortSignal,
+        "MCP tool",
+        (onAuthorized) => invokeFunction(tool, toolContext, args, { onAuthorized }),
+      );
       const result = finalizeMcpToolResult(tool, value);
       throwIfAborted(toolContext.abortSignal);
       return result;
