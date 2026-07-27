@@ -20,12 +20,18 @@ import {
   type ServerMessage,
   type SubscriptionCursor,
 } from "@ackerdb/core";
-import type { AckerDBClientClock, AckerDBWebSocket, QueryRef } from "@ackerdb/client";
+import type {
+  AckerDBClientClock,
+  AckerDBWebSocket,
+  ProcedureRef,
+  QueryRef,
+} from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type {
   AckerDBAuthenticationState,
   AckerDBProviderConfig,
+  AckerDBQueryProcedureState,
   AckerDBQueryState,
 } from "@ackerdb/client-react";
 
@@ -44,9 +50,13 @@ mock.module("expo-crypto", () => ({
   },
 }));
 
-const { AckerDBProvider, useAuthentication, useConnectionState, useQuery } = await import(
-  "../src/index.native.ts"
-);
+const {
+  AckerDBProvider,
+  useAuthentication,
+  useConnectionState,
+  useQuery,
+  useQueryProcedure,
+} = await import("../src/index.native.ts");
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -210,6 +220,10 @@ function createHarness(credential: Credential = { kind: "anonymous" }): Harness 
 
 type TodoArgs = { readonly list: bigint };
 const todos = { $ref: "todos.list" } as QueryRef<TodoArgs, string[]>;
+const uppercase = { $ref: "tools.uppercase" } as ProcedureRef<
+  { readonly value: string },
+  { readonly value: string }
+>;
 
 function cursor(commitVersion: bigint): SubscriptionCursor {
   return {
@@ -245,6 +259,35 @@ function Report(): ReactNode {
       {connection.phase}/{describeQuery(query)}
     </span>
   );
+}
+
+let queryProcedureState:
+  | AckerDBQueryProcedureState<{ readonly value: string }>
+  | undefined;
+
+function describeQueryProcedure(
+  state: AckerDBQueryProcedureState<{ readonly value: string }>,
+): string {
+  switch (state.status) {
+    case "disabled":
+    case "pending":
+      return state.status;
+    case "success":
+      return `fresh:${state.data.value}`;
+    case "rejected":
+      return `error:${state.error.code}`;
+    case "unavailable":
+      return state.data === undefined
+        ? `error:${state.error.code}`
+        : `stale:${state.data.value}:${state.error.code}`;
+  }
+}
+
+function QueryProcedureReport(): ReactNode {
+  const state = useQueryProcedure(uppercase, { value: "one" });
+  const connection = useConnectionState();
+  queryProcedureState = state;
+  return <span>{connection.phase}/{describeQueryProcedure(state)}</span>;
 }
 
 function describeAuthentication(state: AckerDBAuthenticationState): string {
@@ -393,6 +436,77 @@ describe("native AppState lifecycle through the provider", () => {
     });
     expect(appStateListenerCount()).toBe(0);
     expect(appStateLog).toEqual(["listener-removed", "socket-closed"]);
+    actEnvironment(false);
+  });
+
+  test("a query procedure settles on suspension and executes freshly after activation", async () => {
+    actEnvironment(true);
+    appStateLog.length = 0;
+    setAppState("active");
+    queryProcedureState = undefined;
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    await render(
+      root,
+      <StrictMode>
+        <AckerDBProvider config={harness.config}>
+          <QueryProcedureReport />
+        </AckerDBProvider>
+      </StrictMode>,
+    );
+
+    await act(async () => {
+      harness.live().welcome(SESSION);
+    });
+    const first = harness.live();
+    const initial = first.framesOf("p")[0]!;
+    await act(async () => {
+      first.receive({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: initial.id,
+        kind: "procedure",
+        value: { value: "ONE" },
+      });
+    });
+    expect(container.textContent).toBe("ready/fresh:ONE");
+
+    queryProcedureState!.refresh();
+    const interrupted = first.framesOf("p")[1]!;
+    expect(interrupted).toBeDefined();
+    await platform("background");
+    expect(first.framesOf("cancel")).toEqual([
+      { v: PROTOCOL_VERSION, t: "cancel", id: interrupted.id },
+    ]);
+    expect(container.textContent).toBe("suspended/stale:ONE:indeterminate");
+
+    const socketsBefore = harness.sockets.length;
+    await platform("active");
+    expect(container.textContent).toBe("resuming/stale:ONE:indeterminate");
+    expect(harness.sockets).toHaveLength(socketsBefore + 1);
+    const replacement = harness.live();
+    await act(async () => {
+      replacement.welcome(SESSION);
+    });
+    const recovered = replacement.framesOf("p")[0]!;
+    expect(recovered).toMatchObject({
+      ref: "tools.uppercase",
+      args: { value: "one" },
+    });
+    await act(async () => {
+      replacement.receive({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: recovered.id,
+        kind: "procedure",
+        value: { value: "TWO" },
+      });
+    });
+    expect(container.textContent).toBe("ready/fresh:TWO");
+
+    await act(async () => root.unmount());
+    expect(appStateListenerCount()).toBe(0);
     actEnvironment(false);
   });
 

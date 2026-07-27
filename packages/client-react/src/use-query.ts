@@ -1,36 +1,27 @@
-import { WireError, getRef, stableEncode, type ApplicationError } from "@ackerdb/core";
+import { getRef, type ApplicationError } from "@ackerdb/core";
 import type { QueryRef } from "@ackerdb/client";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useProviderClient } from "./provider.tsx";
 import {
-  DISABLED_STATE,
-  PENDING_STATE,
   QueryStoreEntry,
   queryRegistryFor,
-  type AckerDBQueryState,
   type QuerySource,
 } from "./query-store.ts";
+import {
+  DISABLED_STATE,
+  PENDING_STATE,
+  UNENCODABLE_ARGS,
+  noObservation,
+  queryArgsKey,
+  skip,
+  type AckerDBQueryState,
+} from "./query-observation.ts";
 
 /**
  * Typed skip sentinel: `useQuery(ref, skip)` renders the disabled state and
  * starts no subscription. Replacing it with real arguments starts one.
  */
-export const skip: unique symbol = Symbol("ackerdb.useQuery.skip");
-
-const noSubscription = (): (() => void) => () => {};
-
-// Not a stableEncode output (canonical encodings are JSON), so it can never
-// collide with a real argument key.
-const UNENCODABLE = "!unencodable";
-
-function argsKeyOf(args: unknown): string {
-  try {
-    return stableEncode(args);
-  } catch (error) {
-    if (!(error instanceof WireError)) throw error;
-    return UNENCODABLE;
-  }
-}
+export { skip } from "./query-observation.ts";
 
 /**
  * Live query state for a generated reference. Arguments, rows, and the exact
@@ -44,7 +35,7 @@ export function useQuery<Args, Rows, Error extends ApplicationError = never>(
 ): AckerDBQueryState<Rows, Error> {
   const client = useProviderClient("useQuery");
   const address = getRef(ref);
-  const argsKey = args === skip ? null : argsKeyOf(args);
+  const argsKey = args === skip ? null : queryArgsKey(args);
   // One shared registry source per (client lifetime, address, canonical
   // arguments): every consumer with the same key observes the same underlying
   // entry — one client subscription, one snapshot object — and equal-valued
@@ -57,14 +48,14 @@ export function useQuery<Args, Rows, Error extends ApplicationError = never>(
     () =>
       client === null || argsKey === null
         ? null
-        : argsKey === UNENCODABLE
+        : argsKey === UNENCODABLE_ARGS
           ? new QueryStoreEntry<Rows, Error>(client, address, args)
           : queryRegistryFor(client).source<Rows, Error>(address, argsKey, args),
     [client, address, argsKey],
   );
   const subscribe = useCallback(
     (onStoreChange: () => void) =>
-      source !== null ? source.listen(onStoreChange) : noSubscription(),
+      source !== null ? source.listen(onStoreChange) : noObservation(),
     [source],
   );
   // Without a source the snapshot is deterministic: disabled while skipped,

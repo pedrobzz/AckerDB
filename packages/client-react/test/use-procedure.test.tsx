@@ -36,8 +36,10 @@ import { createRoot, type Root } from "react-dom/client";
 import {
   AckerDBProvider,
   useProcedure,
+  useQueryProcedure,
   type AckerDBProcedure,
   type AckerDBProviderConfig,
+  type AckerDBQueryProcedureState,
 } from "@ackerdb/client-react";
 
 const schema = defineSchema({
@@ -55,6 +57,10 @@ type Ctx = any;
 const api = {
   tools: {
     echo: { $ref: "tools.echo" } as ProcedureRef<{ value: string }, string>,
+    observe: { $ref: "tools.observe" } as ProcedureRef<
+      { value: string },
+      { readonly run: number; readonly value: string }
+    >,
     fail: { $ref: "tools.fail" } as ProcedureRef<Record<never, never>, never>,
     block: { $ref: "tools.block" } as ProcedureRef<Record<never, never>, string>,
   },
@@ -86,6 +92,7 @@ function deferred<T>(): Deferred<T> {
 // Per-call gates for tools.block so tests can hold a real request in flight.
 let blockStarted: Deferred<void> | null = null;
 let blockRelease: Deferred<void> | null = null;
+let queryProcedureRuns = 0;
 
 interface RecordedCall {
   readonly signal: AbortSignal | undefined;
@@ -112,6 +119,15 @@ function createApp(): App {
         handler: (ctx: Ctx, args: Ctx) => {
           calls.push({ signal: ctx.abortSignal });
           return args.value.toUpperCase();
+        },
+      }),
+      observe: procedure({
+        access: "public",
+        args: { value: v.string() },
+        handler: (ctx: Ctx, args: Ctx) => {
+          calls.push({ signal: ctx.abortSignal });
+          queryProcedureRuns++;
+          return { run: queryProcedureRuns, value: args.value.toUpperCase() };
         },
       }),
       fail: procedure({
@@ -214,6 +230,59 @@ beforeAll(() => {
 afterAll(() => app.close());
 
 describe("useProcedure against a real ackerdb server", () => {
+  test("query procedures share real executions and support manual and interval refresh", async () => {
+    queryProcedureRuns = 0;
+    const snapshots = new Map<
+      string,
+      AckerDBQueryProcedureState<{ readonly run: number; readonly value: string }>
+    >();
+    function Observed({ id }: { id: string }): ReactNode {
+      const state = useQueryProcedure(
+        api.tools.observe,
+        { value: "hello" },
+        { refreshIntervalMs: 500 },
+      );
+      snapshots.set(id, state);
+      return (
+        <output>
+          {state.status === "success"
+            ? `${id}:${state.data.value}:${state.data.run};`
+            : `${id}:${state.status};`}
+        </output>
+      );
+    }
+
+    const container = mountPoint();
+    const root = createRoot(container);
+    root.render(
+      <AckerDBProvider config={app.config()}>
+        <Observed id="a" />
+        <Observed id="b" />
+      </AckerDBProvider>,
+    );
+
+    await until(
+      () => container.textContent === "a:HELLO:1;b:HELLO:1;",
+      "the shared initial procedure result",
+    );
+    expect(queryProcedureRuns).toBe(1);
+    expect(snapshots.get("a")).toBe(snapshots.get("b"));
+
+    snapshots.get("a")!.refresh();
+    await until(
+      () => container.textContent === "a:HELLO:2;b:HELLO:2;",
+      "the shared manual refresh",
+    );
+    expect(queryProcedureRuns).toBe(2);
+
+    await until(
+      () => container.textContent === "a:HELLO:3;b:HELLO:3;",
+      "the shared interval refresh",
+    );
+    expect(queryProcedureRuns).toBe(3);
+    await unmount(root);
+  });
+
   test("a Strict Mode mount-effect call waits for the client and only the live lifetime dispatches", async () => {
     const settlements: Array<{ kind: "ok"; value: string } | { kind: "error"; error: unknown }> =
       [];

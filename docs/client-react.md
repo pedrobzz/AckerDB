@@ -249,6 +249,62 @@ function ExportButton() {
 }
 ```
 
+## Query procedures
+
+`useQueryProcedure(ref, args, options?)` observes an ordinary procedure through
+the same exhaustive state model as `useQuery`, with a shared `refresh()`
+operation:
+
+```tsx
+import { skip, useQueryProcedure } from "@ackerdb/client-react";
+import { api } from "./_generated/api";
+
+function ExchangeRate({ pair }: { pair: string | null }) {
+  const rate = useQueryProcedure(
+    api.rates.current,
+    pair === null ? skip : { pair },
+    { refreshIntervalMs: 30_000 },
+  );
+
+  if (rate.status === "disabled") return <p>Select a currency pair.</p>;
+  if (rate.status === "pending") return <p>Loading…</p>;
+  if (rate.status === "application-error") return <p>{rate.error.code}</p>;
+  if (rate.status === "rejected") return <p>Rejected: {rate.error.code}</p>;
+  if (rate.status === "unavailable" && rate.data === undefined) {
+    return <button onClick={rate.refresh}>Try again</button>;
+  }
+  return (
+    <button onClick={rate.refresh}>
+      {rate.data.value}{rate.status === "unavailable" ? " (stale)" : ""}
+    </button>
+  );
+}
+```
+
+Equal committed consumers within one provider-owned client lifetime share one
+observation when the generated procedure address, canonical argument values,
+and `refreshIntervalMs` are equal. They receive the exact same snapshot and
+`refresh` function, and share one execution and one timer. Different arguments
+or configurations are independent. Changing the key, recovering the
+connection, calling `refresh()`, or reaching the configured interval demands a
+fresh execution.
+
+The interval is optional; omitting it disables polling. When supplied,
+`refreshIntervalMs` must be a positive safe integer or rendering throws
+`RangeError`. Polling is measured from the previous execution's completion, so
+executions never overlap. Repeated refresh demand during an active execution
+coalesces into one trailing execution. A server `retryAfterMs` hint floors the
+next automatic interval, but an explicit `refresh()` remains immediate.
+Failures do not create their own retry loop.
+
+Query procedures are intended for procedures the application knows are safe to
+repeat. AckerDB does not enforce idempotence or introduce a separate server
+function kind; observing a mutating or externally effectful procedure this way
+is application error. Final unmount stops timers and cancels in-flight work.
+Procedures remain non-resumable, so cancellation or native suspension can leave
+completion indeterminate; surviving demand starts a new execution after
+recovery rather than pretending to resume the old one.
+
 ## SSE procedures
 
 `useSseProcedure(ref)` returns a typed `ReadableStream` factory:
