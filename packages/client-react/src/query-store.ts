@@ -4,111 +4,27 @@ import {
   type AckerDBConnectionState,
 } from "@ackerdb/client";
 import type { ApplicationError } from "@ackerdb/core";
+import {
+  PENDING_STATE,
+  SharedObservation,
+  queryApplicationError,
+  queryClientError,
+  queryConnectionUnavailable,
+  querySuccess,
+  type AckerDBQueryState,
+  type ObservationSource,
+} from "./query-observation.ts";
 
-type ApplicationErrorState<Error extends ApplicationError> =
-  [Error] extends [never]
-    ? never
-    : {
-      readonly status: "application-error";
-      readonly data: undefined;
-      readonly error: Error;
-      readonly loading: false;
-    };
-
-/**
- * Exhaustive live-query state. Success data is `stale` from the moment the
- * connection leaves ready and returns to fresh only when ackerdb's own protocol
- * authoritatively re-confirms or redelivers the subscription state (resume,
- * checkpoint, or reset/update delivery). Only transport/unhandled
- * unavailability may retain the last authoritative data. Application and
- * framework errors clear it.
- */
-export type AckerDBQueryState<Rows, Error extends ApplicationError = never> =
-  | {
-      readonly status: "disabled";
-      readonly data: undefined;
-      readonly error: undefined;
-      readonly loading: false;
-    }
-  | {
-      readonly status: "pending";
-      readonly data: undefined;
-      readonly error: undefined;
-      readonly loading: true;
-    }
-  | {
-      readonly status: "success";
-      readonly data: Rows;
-      readonly error: undefined;
-      readonly loading: false;
-      readonly stale: false;
-    }
-  | ApplicationErrorState<Error>
-  | {
-      readonly status: "rejected";
-      readonly data: undefined;
-      readonly error: AckerDBClientError;
-      readonly loading: false;
-    }
-  | {
-      readonly status: "unavailable";
-      readonly data: Rows;
-      readonly error: AckerDBClientError;
-      readonly loading: false;
-      readonly stale: true;
-    }
-  | {
-      readonly status: "unavailable";
-      readonly data: undefined;
-      readonly error: AckerDBClientError;
-      readonly loading: false;
-      readonly stale: false;
-    };
-
-// Shared frozen snapshots for the two data-free states, so equal-state renders
-// always observe the same reference.
-export const DISABLED_STATE = Object.freeze({
-  status: "disabled",
-  data: undefined,
-  error: undefined,
-  loading: false,
-});
-export const PENDING_STATE = Object.freeze({
-  status: "pending",
-  data: undefined,
-  error: undefined,
-  loading: true,
-});
+export type { AckerDBQueryState } from "./query-observation.ts";
 
 // Re-establishing a rejected-but-retryable subscription mirrors the client's
 // own reconnect shape, floored by the server's explicit retry hint.
 const RETRY_BASE_MS = 100;
 const RETRY_MAX_MS = 3_000;
 
-// Snapshots promise immutability, so delivered container structure is frozen:
-// a consumer sort() or push() would silently corrupt the retained data every
-// later state is built from. Binary leaves stay genuine mutable Uint8Arrays.
-// The platform has no immutable typed array, and every read-only wrapper
-// stops being a real ArrayBuffer view — TextDecoder and Web Crypto reject it
-// and Blob/Response mis-serialize it — which breaks correct consumers to
-// guard against incorrect ones. Each delivery decodes a fresh byte array, so
-// the only possible writer is the consumer itself.
-function deepFreeze<T>(value: T): T {
-  const visit = (current: unknown): void => {
-    if (typeof current !== "object" || current === null) return;
-    if (ArrayBuffer.isView(current) || Object.isFrozen(current)) return;
-    Object.freeze(current);
-    for (const child of Object.values(current)) visit(child);
-  };
-  visit(value);
-  return value;
-}
-
 /** What useQuery observes: an immutable snapshot plus a counted listener slot. */
-export interface QuerySource<Rows, Error extends ApplicationError = never> {
-  snapshot(): AckerDBQueryState<Rows, Error>;
-  listen(listener: () => void): () => void;
-}
+export type QuerySource<Rows, Error extends ApplicationError = never> =
+  ObservationSource<AckerDBQueryState<Rows, Error>>;
 
 /**
  * One live-query external-store entry: a client subscription plus a
@@ -126,11 +42,7 @@ export interface QuerySource<Rows, Error extends ApplicationError = never> {
 export class QueryStoreEntry<
   Rows,
   Error extends ApplicationError = never,
-> implements QuerySource<Rows, Error> {
-  private readonly listeners = new Set<() => void>();
-  private state: AckerDBQueryState<Rows, Error> = PENDING_STATE;
-  private started = false;
-  private releaseScheduled = false;
+> extends SharedObservation<AckerDBQueryState<Rows, Error>> {
   private stopQuery: (() => void) | null = null;
   private stopConnectionState: (() => void) | null = null;
   private retryHandle: ReturnType<typeof setTimeout> | null = null;
@@ -142,42 +54,12 @@ export class QueryStoreEntry<
     private readonly client: AckerDBClient,
     private readonly address: string,
     private readonly args: unknown,
-    private readonly onRelease?: () => void,
-  ) {}
-
-  /** Immutable snapshot; the same object is returned until the next transition. */
-  snapshot(): AckerDBQueryState<Rows, Error> {
-    return this.state;
+    onRelease?: () => void,
+  ) {
+    super(PENDING_STATE, onRelease);
   }
 
-  listen(listener: () => void): () => void {
-    this.listeners.add(listener);
-    if (!this.started) {
-      this.started = true;
-      this.start();
-    }
-    let active = true;
-    return () => {
-      if (!active) return;
-      active = false;
-      this.listeners.delete(listener);
-      if (this.listeners.size === 0) this.scheduleRelease();
-    };
-  }
-
-  private scheduleRelease(): void {
-    if (this.releaseScheduled) return;
-    this.releaseScheduled = true;
-    queueMicrotask(() => {
-      this.releaseScheduled = false;
-      if (this.listeners.size > 0 || !this.started) return;
-      this.started = false;
-      this.stop();
-      this.onRelease?.();
-    });
-  }
-
-  private start(): void {
+  protected startObservation(): void {
     this.stopConnectionState = this.client.subscribeConnectionState((connection) =>
       this.onConnectionState(connection),
     );
@@ -206,7 +88,7 @@ export class QueryStoreEntry<
     }
   }
 
-  private stop(): void {
+  protected stopObservation(): void {
     this.clearRetry();
     this.retryDeferred = false;
     this.stopQuery?.();
@@ -222,12 +104,7 @@ export class QueryStoreEntry<
     // This callback is only present when the reference carries an Error.
     // TypeScript cannot reduce a conditional type over a still-generic Error,
     // even though receiving the value proves Error is inhabited.
-    this.replace({
-      status: "application-error",
-      data: undefined,
-      error,
-      loading: false,
-    } as ApplicationErrorState<Error>);
+    this.replace(queryApplicationError<Rows, Error>(error));
   }
 
   private onSuccess(data: Rows): void {
@@ -235,22 +112,17 @@ export class QueryStoreEntry<
     // connection: delivered data is always fresh.
     this.settleRetries();
     this.lastApplicationError = null;
-    this.replace({
-      status: "success",
-      data: deepFreeze(data),
-      error: undefined,
-      loading: false,
-      stale: false,
-    });
+    this.replace(querySuccess<Rows, Error>(data));
   }
 
   private onCursorConfirmed(): void {
     this.settleRetries();
-    if (this.state.status !== "unavailable") return;
-    if (this.state.data !== undefined) {
+    const state = this.snapshot();
+    if (state.status !== "unavailable") return;
+    if (state.data !== undefined) {
       this.replace({
         status: "success",
-        data: this.state.data,
+        data: state.data,
         error: undefined,
         loading: false,
         stale: false,
@@ -258,50 +130,17 @@ export class QueryStoreEntry<
       return;
     }
     if (this.lastApplicationError !== null) {
-      this.replace({
-        status: "application-error",
-        data: undefined,
-        error: this.lastApplicationError,
-        loading: false,
-      } as ApplicationErrorState<Error>);
+      this.replace(queryApplicationError<Rows, Error>(this.lastApplicationError));
     }
   }
 
   private onError(error: AckerDBClientError): void {
-    if (error.kind === "framework") {
-      this.lastApplicationError = null;
-      this.replace({
-        status: "rejected",
-        data: undefined,
-        error,
-        loading: false,
-      });
-    } else {
-      const data = this.state.status === "success"
-        ? this.state.data
-        : this.state.status === "unavailable"
-          ? this.state.data
-          : undefined;
-      this.replace(data === undefined
-        ? {
-            status: "unavailable",
-            data: undefined,
-            error,
-            loading: false,
-            stale: false,
-          }
-        : {
-            status: "unavailable",
-            data,
-            error,
-            loading: false,
-            stale: true,
-          });
-    }
+    if (error.kind === "framework") this.lastApplicationError = null;
+    this.replace(queryClientError(this.snapshot(), error));
     // A retryable rejection removed the subscription, but the consumer's
     // demand still stands: re-establish it after the server's hint or the
     // client's own backoff shape, whichever is later.
-    if (error.retryable && this.listeners.size > 0 && this.retryHandle === null) {
+    if (error.retryable && this.hasDemand && this.retryHandle === null) {
       const backoff = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** this.retryAttempt);
       this.retryAttempt++;
       this.retryHandle = setTimeout(
@@ -315,7 +154,7 @@ export class QueryStoreEntry<
   }
 
   private resubscribe(): void {
-    if (this.listeners.size === 0) return;
+    if (!this.hasDemand) return;
     const phase = this.client.currentConnectionState.phase;
     // Failed and closed clients never accept work again for this lifetime.
     if (phase === "terminal-error" || phase === "closed") return;
@@ -368,29 +207,7 @@ export class QueryStoreEntry<
       message: "query freshness is unavailable while reconnecting",
       resource: "subscription",
     });
-    if (this.state.status === "success") {
-      this.replace({
-        status: "unavailable",
-        data: this.state.data,
-        error,
-        loading: false,
-        stale: true,
-      });
-    } else if (this.state.status === "application-error") {
-      this.replace({
-        status: "unavailable",
-        data: undefined,
-        error,
-        loading: false,
-        stale: false,
-      });
-    }
-  }
-
-  private replace(state: AckerDBQueryState<Rows, Error>): void {
-    Object.freeze(state);
-    this.state = state;
-    for (const listener of [...this.listeners]) listener();
+    this.replace(queryConnectionUnavailable(this.snapshot(), error));
   }
 }
 

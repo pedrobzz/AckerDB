@@ -57,6 +57,11 @@ procedure call. Success is `Ok<T>` and an expected application failure is
 `Err<E>`; handler authors may return a raw success value as `Ok` sugar.
 _Avoid_: Transport response, thrown exception
 
+**Query procedure** — A procedure observed as repeatable, query-shaped client
+demand. Equal demand shares executions, while idempotence remains an
+application-owned promise rather than a distinct enforced function kind.
+_Avoid_: Reactive query, idempotent procedure
+
 **Application error** — An expected typed failure that application code
 deliberately returns as `Err`. It is part of the function's result contract and
 may be handled or mapped by its caller.

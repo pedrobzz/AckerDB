@@ -217,6 +217,7 @@ type UnexpectedExports = AssertNever<
     | "useMutation"
     | "useProcedure"
     | "useQuery"
+    | "useQueryProcedure"
     | "skip"
     | "useSseProcedure"
   >

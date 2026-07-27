@@ -3,7 +3,13 @@
 // produces anything but the deterministic non-ready snapshot.
 import { StrictMode, type ReactNode } from "react";
 import { renderToString } from "react-dom/server";
-import { AckerDBProvider, useConnectionState } from "@ackerdb/client-react";
+import type { ProcedureRef } from "@ackerdb/client";
+import {
+  AckerDBProvider,
+  skip,
+  useConnectionState,
+  useQueryProcedure,
+} from "@ackerdb/client-react";
 
 function fail(message: string): never {
   console.error(message);
@@ -21,9 +27,16 @@ let socketAttempts = 0;
   }
 };
 
+const echo = { $ref: "tools.echo" } as ProcedureRef<
+  { readonly value: string },
+  string
+>;
+
 function Badge(): ReactNode {
-  const state = useConnectionState();
-  return <output>{state.phase}</output>;
+  const connection = useConnectionState();
+  const pending = useQueryProcedure(echo, { value: "one" });
+  const disabled = useQueryProcedure(echo, skip);
+  return <output>{connection.phase}/{pending.status}/{disabled.status}</output>;
 }
 
 const element = (
@@ -37,6 +50,9 @@ const element = (
 const first = renderToString(element);
 const second = renderToString(element);
 if (first !== second) fail("server render is not deterministic");
-if (!first.includes("connecting")) fail(`unexpected server markup: ${first}`);
+const normalized = first.replaceAll("<!-- -->", "");
+if (!normalized.includes("connecting/pending/disabled")) {
+  fail(`unexpected server markup: ${first}`);
+}
 if (socketAttempts !== 0) fail("server render constructed a socket");
-console.log(`SSR_OK ${first}`);
+process.stdout.write(`SSR_OK ${normalized}\n`);
