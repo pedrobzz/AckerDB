@@ -448,6 +448,36 @@ describe("useQueryProcedure", () => {
     }
   });
 
+  test("the largest valid interval does not overflow into a hot polling loop", async () => {
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+
+    await render(
+      root,
+      <AckerDBProvider config={harness.config}>
+        <Report value="one" refreshIntervalMs={Number.MAX_SAFE_INTEGER} />
+      </AckerDBProvider>,
+    );
+    await act(async () => {
+      harness.live().welcome(SESSION);
+    });
+    const first = harness.live().procedures()[0]!;
+    await act(async () => {
+      harness.live().receive({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: first.id,
+        kind: "procedure",
+        value: { value: "ONE" },
+      });
+    });
+
+    await Bun.sleep(20);
+    expect(harness.live().procedures()).toHaveLength(1);
+    await act(async () => root.unmount());
+  });
+
   test("a client failure retains stale data without retrying and manual refresh stays immediate", async () => {
     observed.clear();
     const harness = createHarness();

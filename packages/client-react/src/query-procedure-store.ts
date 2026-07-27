@@ -19,6 +19,11 @@ import {
   type ObservationSource,
 } from "./query-observation.ts";
 
+// Browsers, Bun, Node, and React Native timers accept only signed 32-bit
+// delays. Larger values are valid API inputs, so schedule them in bounded
+// steps instead of letting the runtime clamp them into a hot loop.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
 export interface AckerDBQueryProcedureOptions {
   readonly refreshIntervalMs?: number;
 }
@@ -63,6 +68,7 @@ export class QueryProcedureEntry<
   private stopConnectionState: (() => void) | null = null;
   private activeController: AbortController | null = null;
   private refreshHandle: ReturnType<typeof setTimeout> | null = null;
+  private refreshRemainingMs = 0;
   private refreshAfterExecution = false;
   private connectionPhase: AckerDBConnectionState["phase"];
 
@@ -151,16 +157,31 @@ export class QueryProcedureEntry<
       return;
     }
     const delayMs = Math.max(this.refreshIntervalMs, retryAfterMs);
+    this.refreshRemainingMs = delayMs;
+    this.scheduleRefreshStep();
+  }
+
+  private scheduleRefreshStep(): void {
+    const stepMs = Math.min(this.refreshRemainingMs, MAX_TIMER_DELAY_MS);
+    const startedAtMs = Date.now();
     this.refreshHandle = setTimeout(() => {
       this.refreshHandle = null;
+      const elapsedMs = Math.max(stepMs, Math.max(0, Date.now() - startedAtMs));
+      this.refreshRemainingMs = Math.max(0, this.refreshRemainingMs - elapsedMs);
+      if (this.refreshRemainingMs > 0) {
+        this.scheduleRefreshStep();
+        return;
+      }
       this.execute();
-    }, delayMs);
+    }, stepMs);
   }
 
   private clearRefresh(): void {
-    if (this.refreshHandle === null) return;
-    clearTimeout(this.refreshHandle);
-    this.refreshHandle = null;
+    if (this.refreshHandle !== null) {
+      clearTimeout(this.refreshHandle);
+      this.refreshHandle = null;
+    }
+    this.refreshRemainingMs = 0;
   }
 
   private onConnectionState(connection: AckerDBConnectionState): void {
