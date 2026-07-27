@@ -881,8 +881,19 @@ describe("Runtime telemetry acceptance", () => {
       mutationId,
       deliveryMutationId,
     ];
-    const aggregateJson = JSON.stringify(aggregate);
-    for (const id of highCardinalityIds) expect(aggregateJson).not.toContain(id);
+    // Cardinality leaks can exist only in string-valued metric dimensions.
+    // Searching the full JSON also searches numeric measurements, where a
+    // duration such as 0.710000001 creates a false match for request 710000001.
+    const aggregateDimensions = JSON.stringify(aggregate.series.map((series) => ({
+      operation: series.operation,
+      stage: series.stage,
+      outcome: series.outcome,
+      function: series.function,
+      resource: series.resource,
+    })));
+    for (const id of highCardinalityIds) {
+      expect(aggregateDimensions).not.toContain(id);
+    }
 
     await app.runtime.telemetry.flush();
     const retainedSpans = spans(exported);
