@@ -111,6 +111,10 @@ const uppercase = { $ref: "tools.uppercase" } as ProcedureRef<
   UppercaseError
 >;
 const reverse = { $ref: "tools.reverse" } as typeof uppercase;
+const unencodable = { $ref: "tools.unencodable" } as ProcedureRef<
+  { readonly value: unknown },
+  { readonly value: string }
+>;
 
 const observed = new Map<
   string,
@@ -139,6 +143,17 @@ function Report({
       {state.status === "success" ? `success:${state.data.value}` : state.status}
     </output>
   );
+}
+
+const unencodableObserved = new Map<
+  string,
+  AckerDBQueryProcedureState<{ readonly value: string }>
+>();
+
+function UnencodableReport({ id }: { readonly id: string }): ReactNode {
+  const state = useQueryProcedure(unencodable, { value: () => id });
+  unencodableObserved.set(id, state);
+  return <output>{state.status}</output>;
 }
 
 async function render(root: Root, element: ReactNode): Promise<void> {
@@ -244,6 +259,104 @@ describe("useQueryProcedure", () => {
       "tools.uppercase",
       "tools.uppercase",
     ]);
+    await act(async () => root.unmount());
+  });
+
+  test("changed address and configuration replace state and refresh identities", async () => {
+    observed.clear();
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const page = (
+      procedure: typeof uppercase,
+      refreshIntervalMs?: number,
+    ) => (
+      <AckerDBProvider config={harness.config}>
+        <Report
+          id="identity"
+          procedure={procedure}
+          value="one"
+          refreshIntervalMs={refreshIntervalMs}
+        />
+      </AckerDBProvider>
+    );
+
+    await render(root, page(uppercase));
+    await act(async () => {
+      harness.live().welcome(SESSION);
+    });
+    const firstRequest = harness.live().procedures()[0]!;
+    await act(async () => {
+      harness.live().receive({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: firstRequest.id,
+        kind: "procedure",
+        value: { value: "ONE" },
+      });
+    });
+    const first = observed.get("identity")!;
+
+    await render(root, page(reverse));
+    const secondRequest = harness.live().procedures()[1]!;
+    expect(secondRequest.ref).toBe("tools.reverse");
+    expect(observed.get("identity")).not.toBe(first);
+    expect(observed.get("identity")!.refresh).not.toBe(first.refresh);
+    first.refresh();
+    expect(harness.live().procedures()).toHaveLength(2);
+    await act(async () => {
+      harness.live().receive({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: secondRequest.id,
+        kind: "procedure",
+        value: { value: "eno" },
+      });
+    });
+    const second = observed.get("identity")!;
+
+    await render(root, page(reverse, 10_000));
+    expect(harness.live().procedures()).toHaveLength(3);
+    expect(observed.get("identity")).not.toBe(second);
+    expect(observed.get("identity")!.refresh).not.toBe(second.refresh);
+    second.refresh();
+    expect(harness.live().procedures()).toHaveLength(3);
+    await act(async () => root.unmount());
+  });
+
+  test("unencodable consumers keep separate validation-error lifetimes", async () => {
+    unencodableObserved.clear();
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+
+    await render(
+      root,
+      <AckerDBProvider config={harness.config}>
+        <UnencodableReport id="a" />
+        <UnencodableReport id="b" />
+      </AckerDBProvider>,
+    );
+    const firstA = unencodableObserved.get("a")!;
+    const firstB = unencodableObserved.get("b")!;
+    expect(firstA).toMatchObject({
+      status: "rejected",
+      error: { code: "validation" },
+    });
+    expect(firstB).toMatchObject({
+      status: "rejected",
+      error: { code: "validation" },
+    });
+    expect(firstA).not.toBe(firstB);
+    expect(firstA.refresh).not.toBe(firstB.refresh);
+    expect(harness.live().procedures()).toHaveLength(0);
+
+    await act(async () => {
+      firstA.refresh();
+    });
+    expect(unencodableObserved.get("a")).not.toBe(firstA);
+    expect(unencodableObserved.get("b")).toBe(firstB);
+    expect(harness.live().procedures()).toHaveLength(0);
     await act(async () => root.unmount());
   });
 
@@ -695,6 +808,65 @@ describe("useQueryProcedure", () => {
     expect(observed.get("a")).toBe(observed.get("b"));
     expect(container.textContent).toBe("success:TWOsuccess:TWO");
 
+    await act(async () => root.unmount());
+  });
+
+  test("one shared consumer can leave in flight; final release cancels and remount starts clean", async () => {
+    observed.clear();
+    const harness = createHarness();
+    const container = mountPoint();
+    const root = createRoot(container);
+    const page = (ids: string[]) => (
+      <AckerDBProvider config={harness.config}>
+        {ids.map((id) => <Report key={id} id={id} value="one" />)}
+      </AckerDBProvider>
+    );
+
+    await render(root, page(["a", "b"]));
+    await act(async () => {
+      harness.live().welcome(SESSION);
+    });
+    const socket = harness.live();
+    const initial = socket.procedures()[0]!;
+    expect(socket.procedures()).toHaveLength(1);
+
+    await render(root, page(["a"]));
+    expect(socket.frames().filter(({ t }) => t === "cancel")).toHaveLength(0);
+    await act(async () => {
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: initial.id,
+        kind: "procedure",
+        value: { value: "ONE" },
+      });
+    });
+    expect(container.textContent).toBe("success:ONE");
+    const liveSnapshot = observed.get("a")!;
+
+    liveSnapshot.refresh();
+    const abandoned = socket.procedures()[1]!;
+    await render(root, page([]));
+    expect(socket.frames().filter(({ t }) => t === "cancel")).toEqual([
+      { v: PROTOCOL_VERSION, t: "cancel", id: abandoned.id },
+    ]);
+
+    // A late server result for canceled work cannot repopulate the evicted
+    // observation. Equal demand starts one clean pending lifetime.
+    await act(async () => {
+      socket.receive({
+        v: PROTOCOL_VERSION,
+        t: "ok",
+        id: abandoned.id,
+        kind: "procedure",
+        value: { value: "LATE" },
+      });
+    });
+    await render(root, page(["c"]));
+    expect(container.textContent).toBe("pending");
+    expect(socket.procedures()).toHaveLength(3);
+    expect(observed.get("c")).not.toBe(liveSnapshot);
+    expect(observed.get("c")!.refresh).not.toBe(liveSnapshot.refresh);
     await act(async () => root.unmount());
   });
 
