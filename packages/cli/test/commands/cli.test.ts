@@ -379,6 +379,31 @@ describe("ackerdb CLI", () => {
     }
   }, 20_000);
 
+  test("startApp binds the configured listener hostname", async () => {
+    const port = freePort();
+    const dir = makeFixture({
+      "app.ts": `
+        import { v, defineApp, defineSchema, defineTable } from "@ackerdb/server";
+        const schema = defineSchema({ records: defineTable({ id: v.primaryKey() }) });
+        export default defineApp({ schema });
+      `,
+      ".ackerdb.config.json": JSON.stringify({ hostname: "0.0.0.0", port }),
+    });
+    dirs.push(dir);
+
+    const running = await startApp(loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }));
+    try {
+      expect(running.server.hostname).toBe("0.0.0.0");
+      expect(await (await fetch(`http://127.0.0.1:${port}/ready`)).json()).toEqual({
+        version: 1,
+        ready: true,
+        state: "ready",
+      });
+    } finally {
+      await running.drain();
+    }
+  });
+
   test("start owns one live port continuously from codegen through readiness", async () => {
     const port = freePort();
     const dir = fixture(port);

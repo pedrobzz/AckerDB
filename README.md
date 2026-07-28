@@ -131,7 +131,9 @@ The remaining single-node and product limitations are listed explicitly in
 
 All `.ackerdb.config.json` fields are optional. The path defaults are
 `./app.ts`, `./functions`, `./_generated`, and `./.ackerdb`; the default port is
-`3211`. Authentication can select either built-in `oidc` providers or one
+`3211`, and the default listener hostname is `127.0.0.1`. Set `hostname` to
+`0.0.0.0` only when clients must connect through a trusted private development
+network. Authentication can select either built-in `oidc` providers or one
 application `credentialVerifier` module path (resolved from the app directory),
 never both. The protected status scope is configured there too. Durability and
 telemetry profiles are exact environment switches:
@@ -143,9 +145,9 @@ ACKERDB_DURABILITY=production ACKERDB_TELEMETRY=enabled acker start ./apps/serve
 `production` and `enabled` are the defaults. See the linked contract documents
 before selecting `balanced` durability or disabling telemetry.
 
-The CLI listener is plaintext HTTP/WebSocket on `127.0.0.1`; it does not
-terminate TLS. Keep it on loopback or a private encrypted hop behind TLS
-termination as described in the
+The CLI listener is plaintext HTTP/WebSocket and does not terminate TLS. Keep
+the default loopback listener or place a non-loopback listener behind a private
+encrypted hop and TLS termination as described in the
 [authentication trust boundary](docs/authentication.md#trust-boundary).
 
 ```sh

@@ -116,6 +116,7 @@ export async function startApp(
   const loadCredentialVerifier = credentialVerifierLoader(config, options.credentialVerifier);
   const server = new AckerDBServer({
     limits: PRODUCTION_LIMITS,
+    hostname: config.hostname,
     port: config.port,
     statusScope: config.statusScope,
   });
@@ -272,8 +273,11 @@ export async function startApp(
       telemetry: config.telemetry,
       durability: config.durability,
     })}`);
+    const displayHostname = server.hostname.includes(":")
+      ? `[${server.hostname}]`
+      : server.hostname;
     console.log(
-      `[ackerdb] ready on http://127.0.0.1:${server.port} — ${registry.functions.size} function(s), ${Object.keys(app.schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
+      `[ackerdb] ready on http://${displayHostname}:${server.port} — ${registry.functions.size} function(s), ${Object.keys(app.schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
     );
     return { server, runtime, engine: ownedEngine, drain };
   } catch (error) {
