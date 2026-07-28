@@ -9,6 +9,7 @@ describe("production profile configuration", () => {
     expect(loadConfig(".", {})).toMatchObject({
       appPath: resolve("app.ts"),
       dbDir: resolve(".ackerdb"),
+      hostname: "127.0.0.1",
       durability: "production",
       telemetry: "enabled",
       statusScope: "ackerdb:status",
@@ -152,6 +153,25 @@ describe("production profile configuration", () => {
       for (const port of [-1, 0, 1.5, 65_536, "3211"]) {
         writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ port }));
         expect(() => loadConfig(dir, {})).toThrow("port must be an integer from 1 through 65535");
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("loads an explicit listener hostname and rejects malformed values", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-config-"));
+    try {
+      writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({
+        hostname: "0.0.0.0",
+      }));
+      expect(loadConfig(dir, {})).toMatchObject({ hostname: "0.0.0.0" });
+
+      for (const hostname of ["", " 127.0.0.1", "127.0.0.1\n", 42, null]) {
+        writeFileSync(join(dir, ".ackerdb.config.json"), JSON.stringify({ hostname }));
+        expect(() => loadConfig(dir, {})).toThrow(
+          "hostname must be a non-empty host name or IP address",
+        );
       }
     } finally {
       rmSync(dir, { recursive: true, force: true });

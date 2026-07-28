@@ -31,6 +31,7 @@ export interface AppConfig {
   generatedDir: string;
   /** Where the local database lives. */
   dbDir: string;
+  hostname: string;
   port: number;
   durability: DurabilityPolicy;
   telemetry: TelemetryMode;
@@ -46,6 +47,7 @@ interface RawConfig {
   migrations?: string;
   generated?: string;
   db?: string;
+  hostname?: string;
   port?: number;
   oidc?: Omit<OidcVerifierOptions, "fetch">;
   credentialVerifier?: string;
@@ -58,6 +60,7 @@ const RAW_CONFIG_FIELDS: ReadonlySet<string> = new Set<keyof RawConfig>([
   "migrations",
   "generated",
   "db",
+  "hostname",
   "port",
   "oidc",
   "credentialVerifier",
@@ -90,6 +93,20 @@ function listenerPort(value: unknown): number {
     throw new Error("port must be an integer from 1 through 65535");
   }
   return port;
+}
+
+function listenerHostname(value: unknown): string {
+  const hostname = value === undefined ? "127.0.0.1" : value;
+  if (
+    typeof hostname !== "string" ||
+    hostname.length === 0 ||
+    hostname.length > 253 ||
+    hostname.trim() !== hostname ||
+    /[\u0000-\u0020\u007f]/.test(hostname)
+  ) {
+    throw new Error("hostname must be a non-empty host name or IP address");
+  }
+  return hostname;
 }
 
 function optionalModulePath(value: unknown): string | undefined {
@@ -140,6 +157,7 @@ export function loadConfig(
     migrationsDir: abs(raw.migrations ?? "./migrations"),
     generatedDir: abs(raw.generated ?? "./_generated"),
     dbDir: abs(raw.db ?? "./.ackerdb"),
+    hostname: listenerHostname(raw.hostname),
     port: listenerPort(raw.port),
     durability: exactProfile(env, "ACKERDB_DURABILITY", ["production", "balanced"], "production"),
     telemetry: exactProfile(env, "ACKERDB_TELEMETRY", ["enabled", "disabled"], "enabled"),

@@ -10,9 +10,12 @@ database. Running multiple AckerDB servers against one file, putting that file o
 shared storage as a scaling mechanism, or starting the server under Node.js is
 outside the production contract.
 
-The CLI listener is plaintext HTTP/WebSocket on `127.0.0.1` and has no inbound
-TLS configuration. Keep it on loopback or a private encrypted hop behind a TLS
-terminator; do not expose bearer traffic over an unencrypted network.
+The CLI listener is plaintext HTTP/WebSocket and has no inbound TLS
+configuration. It defaults to `127.0.0.1`; `hostname` in
+`.ackerdb.config.json` may select another bind address for a trusted private
+development network. Keep production traffic on loopback or a private encrypted
+hop behind a TLS terminator; do not expose bearer traffic over an unencrypted
+network.
 
 ## Production limit defaults
 
