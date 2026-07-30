@@ -1,4 +1,10 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { PACKAGES } from "./lib.ts";
 import {
@@ -16,6 +22,95 @@ function assertNoProductionAiDependency(manifest: PackageManifest): void {
       }
     }
   }
+}
+
+function assertPackagedWebRtc(
+  serverDirectory: string,
+  required: boolean,
+): boolean {
+  const prebuilds = join(serverDirectory, "native/webrtc/prebuilds");
+  const target = `${process.platform}-${process.arch}`;
+  const currentBinary = join(prebuilds, target, "ackerdb_webrtc.node");
+  const currentManifest = join(prebuilds, target, "manifest.json");
+  const aggregatePath = join(prebuilds, "manifest.json");
+  if (!existsSync(currentBinary) || !existsSync(currentManifest)) {
+    if (required) {
+      throw new Error(
+        `packed @ackerdb/server is missing the assembled WebRTC package for ${target}`,
+      );
+    }
+    return false;
+  }
+  const local = JSON.parse(readFileSync(currentManifest, "utf8")) as {
+    target?: string;
+    file?: string;
+    sha256?: string;
+  };
+  const currentDigest = createHash("sha256")
+    .update(readFileSync(currentBinary))
+    .digest("hex");
+  if (
+    local.target !== target ||
+    local.file !== "ackerdb_webrtc.node" ||
+    local.sha256 !== currentDigest
+  ) {
+    throw new Error(`packed @ackerdb/server has an invalid WebRTC target ${target}`);
+  }
+  if (!existsSync(aggregatePath)) {
+    if (required) {
+      throw new Error("packed @ackerdb/server is missing the aggregate WebRTC manifest");
+    }
+    return true;
+  }
+
+  const aggregate = JSON.parse(readFileSync(aggregatePath, "utf8")) as {
+    schemaVersion?: number;
+    nativeAbi?: number;
+    targets?: Array<{
+      target?: string;
+      file?: string;
+      sha256?: string;
+    }>;
+  };
+  const expectedTargets = [
+    "darwin-arm64",
+    "darwin-x64",
+    "linux-arm64",
+    "linux-x64",
+    "win32-x64",
+  ];
+  if (
+    aggregate.schemaVersion !== 1 ||
+    aggregate.nativeAbi !== 6 ||
+    aggregate.targets?.map((entry) => entry.target).join(",") !==
+      expectedTargets.join(",")
+  ) {
+    throw new Error("packed @ackerdb/server has an invalid WebRTC aggregate manifest");
+  }
+  for (const entry of aggregate.targets) {
+    if (
+      entry.target === undefined ||
+      entry.file !== "ackerdb_webrtc.node" ||
+      typeof entry.sha256 !== "string"
+    ) {
+      throw new Error("packed @ackerdb/server has an invalid WebRTC target entry");
+    }
+    const binary = join(prebuilds, entry.target, entry.file);
+    const targetManifest = join(prebuilds, entry.target, "manifest.json");
+    if (!existsSync(binary) || !existsSync(targetManifest)) {
+      throw new Error(`packed @ackerdb/server is missing WebRTC target ${entry.target}`);
+    }
+    const actual = createHash("sha256").update(readFileSync(binary)).digest("hex");
+    if (actual !== entry.sha256) {
+      throw new Error(`packed @ackerdb/server WebRTC digest differs for ${entry.target}`);
+    }
+  }
+  for (const file of ["sbom.spdx.json", "THIRD_PARTY_NOTICES.txt"]) {
+    if (!existsSync(join(prebuilds, file))) {
+      throw new Error(`packed @ackerdb/server is missing native ${file}`);
+    }
+  }
+  return true;
 }
 
 async function main(): Promise<void> {
@@ -46,6 +141,10 @@ async function main(): Promise<void> {
 
     const serverManifest = readManifest(
       join(consumerDir, "node_modules/@ackerdb/server/package.json"),
+    );
+    const verifyNativeRuntime = assertPackagedWebRtc(
+      join(consumerDir, "node_modules/@ackerdb/server"),
+      process.argv.includes("--require-webrtc"),
     );
     if (serverManifest.exports?.["./mcp"] !== "./src/mcp/index.ts") {
       throw new Error("packed @ackerdb/server does not expose ./mcp from ./src/mcp/index.ts");
@@ -121,6 +220,18 @@ void scope;
 const invalidScope: AgentScope = "orders.delete";
 void invalidScope;
 `);
+    if (verifyNativeRuntime) {
+      writeFileSync(
+        join(consumerDir, "public-session-fixture.ts"),
+        readFileSync(
+          join(
+            root,
+            "packages/server/native/webrtc/test/public-session-fixture.ts",
+          ),
+          "utf8",
+        ),
+      );
+    }
     writeFileSync(join(consumerDir, "verify-runtime.ts"), `
 import {
   createMcp as createMcpFromRoot,
@@ -226,6 +337,15 @@ try {
 } finally {
   engine.close("clean");
 }
+${verifyNativeRuntime ? `
+const { createBundledRealtimeEngine } = await import(
+  "./node_modules/@ackerdb/server/src/realtime/native/engine.ts"
+);
+const { verifyPublicRealtimeSession } = await import(
+  "./public-session-fixture.ts"
+);
+await verifyPublicRealtimeSession(createBundledRealtimeEngine);
+` : ""}
 `);
     writeFileSync(join(consumerDir, "tsconfig.json"), JSON.stringify({
       compilerOptions: {
@@ -240,7 +360,13 @@ try {
         allowImportingTsExtensions: true,
         types: ["bun"],
       },
-      include: ["app.ts", "functions/**/*.ts", "_generated/**/*.ts", "verify-runtime.ts"],
+      include: [
+        "app.ts",
+        "functions/**/*.ts",
+        "_generated/**/*.ts",
+        "verify-runtime.ts",
+        ...(verifyNativeRuntime ? ["public-session-fixture.ts"] : []),
+      ],
     }, null, 2));
 
     await runCommand([
@@ -262,7 +388,7 @@ try {
     ], consumerDir);
 
     console.log(
-      `Packed package gate passed: ${PACKAGES.length} @ackerdb packages at ${version}, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.29.0, native NumKong exact search, and no server AI production dependency.`,
+      `Packed package gate passed: ${PACKAGES.length} @ackerdb packages at ${version}, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.29.0, native NumKong exact search${verifyNativeRuntime ? ", and an assembled public WebRTC session with typed events, audio, procedure, transaction, and cleanup" : ""}, with no server AI production dependency.`,
     );
   } finally {
     packed.cleanup();

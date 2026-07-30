@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { AckerDBError } from "../../src/shared/errors.ts";
-import { OrderedPublication } from "../../src/realtime/publication.ts";
-import { PublicationHandoff } from "../../src/realtime/publication.ts";
+import { OrderedPublication } from "../../src/subscriptions/publication.ts";
+import { PublicationHandoff } from "../../src/subscriptions/publication.ts";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;

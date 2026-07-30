@@ -3,7 +3,7 @@ import { outcomeFromError } from "../runtime/outcome.ts";
 import type {
   SessionAuthAttemptInput,
   SessionAuthAttemptObservation,
-} from "../realtime/session.ts";
+} from "../subscriptions/session.ts";
 import {
   deriveTelemetryTraceContext,
   identifyTelemetryTraceRequest,

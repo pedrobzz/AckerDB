@@ -212,12 +212,14 @@ type UnexpectedExports = AssertNever<
     PublicExports,
     | "AckerDBProvider"
     | "useAuthentication"
+    | "useChannel"
     | "useConnectionState"
     | "useEvent"
     | "useMutation"
     | "useProcedure"
     | "useQuery"
     | "useQueryProcedure"
+    | "useRealtime"
     | "skip"
     | "useSseProcedure"
   >

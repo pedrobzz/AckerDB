@@ -1,0 +1,550 @@
+--- a/src/media_stream_track.rs
++++ b/src/media_stream_track.rs
+@@ -42,6 +42,11 @@
+         pub fn set_enabled(self: &Self, enabled: bool) -> bool;
+         pub fn state(self: &Self) -> RtcTrackState;
+     );
++
++    #[cfg(not(target_arch = "wasm32"))]
++    pub fn native_identity(&self) -> u64 {
++        self.sys_handle().native_identity()
++    }
+ }
+ 
+ macro_rules! media_stream_track {
+--- a/src/native/peer_connection.rs
++++ b/src/native/peer_connection.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to expose the unabridged libwebrtc stats report.
+ 
+ use std::sync::Arc;
+ 
+@@ -166,6 +167,40 @@
+             ice_servers: value.ice_servers.into_iter().map(Into::into).collect(),
+             continual_gathering_policy: value.continual_gathering_policy.into(),
+             ice_transport_type: value.ice_transport_type.into(),
++            min_port: i32::from(value.min_port),
++            max_port: i32::from(value.max_port),
++            ice_connection_receiving_timeout_ms: value
++                .ice_connection_receiving_timeout_ms
++                .map(|value| value as i32)
++                .unwrap_or(-1),
++            ice_backup_candidate_pair_ping_interval_ms: value
++                .ice_backup_candidate_pair_ping_interval_ms
++                .map(|value| value as i32)
++                .unwrap_or(-1),
++            ice_check_interval_strong_connectivity_ms: value
++                .ice_check_interval_strong_connectivity_ms
++                .map(|value| value as i32)
++                .unwrap_or(-1),
++            ice_check_interval_weak_connectivity_ms: value
++                .ice_check_interval_weak_connectivity_ms
++                .map(|value| value as i32)
++                .unwrap_or(-1),
++            ice_check_min_interval_ms: value
++                .ice_check_min_interval_ms
++                .map(|value| value as i32)
++                .unwrap_or(-1),
++            ice_unwritable_timeout_ms: value
++                .ice_unwritable_timeout_ms
++                .map(|value| value as i32)
++                .unwrap_or(-1),
++            ice_inactive_timeout_ms: value
++                .ice_inactive_timeout_ms
++                .map(|value| value as i32)
++                .unwrap_or(-1),
++            stun_candidate_keepalive_interval_ms: value
++                .stun_candidate_keepalive_interval_ms
++                .map(|value| value as i32)
++                .unwrap_or(-1),
+         }
+     }
+ }
+@@ -408,26 +443,30 @@
+     }
+ 
+     pub async fn get_stats(&self) -> Result<Vec<RtcStats>, RtcError> {
+-        let (tx, rx) = oneshot::channel::<Result<Vec<RtcStats>, RtcError>>();
+-        let ctx = Box::new(sys_pc::PeerContext(Box::new(tx)));
++        let stats = self.get_stats_json().await?;
++        if stats.is_empty() {
++            return Ok(vec![]);
++        }
+ 
+-        self.sys_handle.get_stats(ctx, |ctx, stats| {
+-            let tx = ctx.0.downcast::<oneshot::Sender<Result<Vec<RtcStats>, RtcError>>>().unwrap();
++        serde_json::from_str(&stats).map_err(|error| RtcError {
++            error_type: RtcErrorType::Internal,
++            message: format!("invalid libwebrtc stats: {error}"),
++        })
++    }
+ 
+-            if stats.is_empty() {
+-                let _ = tx.send(Ok(vec![]));
+-                return;
+-            }
++    pub async fn get_stats_json(&self) -> Result<String, RtcError> {
++        let (tx, rx) = oneshot::channel::<String>();
++        let ctx = Box::new(sys_pc::PeerContext(Box::new(tx)));
+ 
+-            // Unwrap because it should not happens
+-            let vec = serde_json::from_str(&stats).unwrap();
+-            let _ = tx.send(Ok(vec));
++        self.sys_handle.get_stats(ctx, |ctx, stats| {
++            let tx = ctx.0.downcast::<oneshot::Sender<String>>().unwrap();
++            let _ = tx.send(stats);
+         });
+ 
+         rx.await.map_err(|_| RtcError {
+             error_type: RtcErrorType::Internal,
+             message: "get_stats cancelled".to_owned(),
+-        })?
++        })
+     }
+ 
+     pub fn senders(&self) -> Vec<RtpSender> {
+--- a/src/native/peer_connection_factory.rs
++++ b/src/native/peer_connection_factory.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to support W3C-style media track cloning.
+ 
+ use std::sync::Arc;
+ 
+@@ -19,10 +20,12 @@
+ use parking_lot::Mutex;
+ use webrtc_sys::{peer_connection_factory as sys_pcf, rtc_error as sys_err, webrtc as sys_rtc};
+ 
++use super::media_stream_track::new_media_stream_track;
+ use crate::{
+     audio_source::native::NativeAudioSource,
+     audio_track::RtcAudioTrack,
+     imp::{audio_track as imp_at, peer_connection as imp_pc, video_track as imp_vt},
++    media_stream_track::MediaStreamTrack,
+     peer_connection::PeerConnection,
+     peer_connection_factory::RtcConfiguration,
+     rtp_parameters::RtpCapabilities,
+@@ -66,6 +69,20 @@
+         Self { sys_handle }
+     }
+ 
++    pub fn with_network_configuration(
++        ignored_interfaces: Vec<String>,
++        network_ignore_mask: i32,
++    ) -> Self {
++        ensure_log_sink();
++        let sys_handle = sys_pcf::ffi::create_peer_connection_factory_with_network(
++            sys_pcf::ffi::FactoryNetworkConfig {
++                ignored_interfaces,
++                network_ignore_mask,
++            },
++        );
++        Self { sys_handle }
++    }
++
+     #[cfg(test)]
+     pub(crate) fn zero_playout_delay_enabled(&self) -> bool {
+         self.sys_handle.zero_playout_delay_enabled()
+@@ -105,6 +122,17 @@
+                     .create_audio_track(label.to_string(), source.handle.sys_handle()),
+             },
+         }
++    }
++
++    pub fn clone_media_stream_track(
++        &self,
++        label: &str,
++        track: &MediaStreamTrack,
++    ) -> MediaStreamTrack {
++        new_media_stream_track(
++            self.sys_handle
++                .clone_media_stream_track(label.to_owned(), track.sys_handle()),
++        )
+     }
+ 
+     /// Create an audio track that uses the Platform ADM for capture.
+--- a/src/native/rtp_receiver.rs
++++ b/src/native/rtp_receiver.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to expose the unabridged libwebrtc stats report.
+ 
+ use cxx::SharedPtr;
+ use tokio::sync::oneshot;
+@@ -31,6 +32,10 @@
+ }
+ 
+ impl RtpReceiver {
++    pub fn native_identity(&self) -> u64 {
++        self.sys_handle.native_identity()
++    }
++
+     pub fn track(&self) -> Option<MediaStreamTrack> {
+         let track_handle = self.sys_handle.track();
+         if track_handle.is_null() {
+@@ -53,26 +58,30 @@
+     }
+ 
+     pub async fn get_stats(&self) -> Result<Vec<RtcStats>, RtcError> {
+-        let (tx, rx) = oneshot::channel::<Result<Vec<RtcStats>, RtcError>>();
+-        let ctx = Box::new(sys_rr::ReceiverContext(Box::new(tx)));
++        let stats = self.get_stats_json().await?;
++        if stats.is_empty() {
++            return Ok(vec![]);
++        }
+ 
+-        self.sys_handle.get_stats(ctx, |ctx, stats| {
+-            let tx = ctx.0.downcast::<oneshot::Sender<Result<Vec<RtcStats>, RtcError>>>().unwrap();
++        serde_json::from_str(&stats).map_err(|error| RtcError {
++            error_type: RtcErrorType::Internal,
++            message: format!("invalid libwebrtc receiver stats: {error}"),
++        })
++    }
+ 
+-            if stats.is_empty() {
+-                let _ = tx.send(Ok(vec![]));
+-                return;
+-            }
++    pub async fn get_stats_json(&self) -> Result<String, RtcError> {
++        let (tx, rx) = oneshot::channel::<String>();
++        let ctx = Box::new(sys_rr::ReceiverContext(Box::new(tx)));
+ 
+-            // Unwrap because it should not happens
+-            let vec = serde_json::from_str(&stats).unwrap();
+-            let _ = tx.send(Ok(vec));
++        self.sys_handle.get_stats(ctx, |ctx, stats| {
++            let tx = ctx.0.downcast::<oneshot::Sender<String>>().unwrap();
++            let _ = tx.send(stats);
+         });
+ 
+         rx.await.map_err(|_| RtcError {
+             error_type: RtcErrorType::Internal,
+             message: "get_stats cancelled".to_owned(),
+-        })?
++        })
+     }
+ 
+     pub fn parameters(&self) -> RtpParameters {
+--- a/src/native/rtp_sender.rs
++++ b/src/native/rtp_sender.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to expose the unabridged libwebrtc stats report.
+ 
+ use cxx::SharedPtr;
+ use tokio::sync::oneshot;
+@@ -28,6 +29,10 @@
+ }
+ 
+ impl RtpSender {
++    pub fn native_identity(&self) -> u64 {
++        self.sys_handle.native_identity()
++    }
++
+     pub fn track(&self) -> Option<MediaStreamTrack> {
+         let track_handle = self.sys_handle.track();
+         if track_handle.is_null() {
+@@ -38,26 +43,30 @@
+     }
+ 
+     pub async fn get_stats(&self) -> Result<Vec<RtcStats>, RtcError> {
+-        let (tx, rx) = oneshot::channel::<Result<Vec<RtcStats>, RtcError>>();
+-        let ctx = Box::new(sys_rs::SenderContext(Box::new(tx)));
++        let stats = self.get_stats_json().await?;
++        if stats.is_empty() {
++            return Ok(vec![]);
++        }
+ 
+-        self.sys_handle.get_stats(ctx, |ctx, stats| {
+-            let tx = ctx.0.downcast::<oneshot::Sender<Result<Vec<RtcStats>, RtcError>>>().unwrap();
++        serde_json::from_str(&stats).map_err(|error| RtcError {
++            error_type: RtcErrorType::Internal,
++            message: format!("invalid libwebrtc sender stats: {error}"),
++        })
++    }
+ 
+-            if stats.is_empty() {
+-                let _ = tx.send(Ok(vec![]));
+-                return;
+-            }
++    pub async fn get_stats_json(&self) -> Result<String, RtcError> {
++        let (tx, rx) = oneshot::channel::<String>();
++        let ctx = Box::new(sys_rs::SenderContext(Box::new(tx)));
+ 
+-            // Unwrap because it should not happens
+-            let vec = serde_json::from_str(&stats).unwrap();
+-            let _ = tx.send(Ok(vec));
++        self.sys_handle.get_stats(ctx, |ctx, stats| {
++            let tx = ctx.0.downcast::<oneshot::Sender<String>>().unwrap();
++            let _ = tx.send(stats);
+         });
+ 
+         rx.await.map_err(|_| RtcError {
+             error_type: RtcErrorType::Internal,
+             message: "get_stats cancelled".to_owned(),
+-        })?
++        })
+     }
+ 
+     pub fn set_track(&self, track: Option<MediaStreamTrack>) -> Result<(), RtcError> {
+--- a/src/native/rtp_transceiver.rs
++++ b/src/native/rtp_transceiver.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to expose transceiver direction mutation.
+ 
+ use cxx::SharedPtr;
+ use webrtc_sys::{rtc_error as sys_err, rtp_transceiver as sys_rt, webrtc as sys_webrtc};
+@@ -64,6 +65,10 @@
+ }
+ 
+ impl RtpTransceiver {
++    pub fn native_identity(&self) -> u64 {
++        self.sys_handle.native_identity()
++    }
++
+     pub fn mid(&self) -> Option<String> {
+         // The C++ shim returns "" when libwebrtc has no mid yet (instead of
+         // calling std::optional::value() which would abort under -fno-exceptions).
+@@ -76,6 +81,12 @@
+ 
+     pub fn direction(&self) -> RtpTransceiverDirection {
+         self.sys_handle.direction().into()
++    }
++
++    pub fn set_direction(&self, direction: RtpTransceiverDirection) -> Result<(), RtcError> {
++        self.sys_handle
++            .set_direction(direction.into())
++            .map_err(|e| unsafe { sys_err::ffi::RtcError::from(e.what()).into() })
+     }
+ 
+     pub fn sender(&self) -> rtp_sender::RtpSender {
+--- a/src/peer_connection.rs
++++ b/src/peer_connection.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to expose the unabridged libwebrtc stats report.
+ 
+ use std::fmt::Debug;
+ 
+@@ -163,6 +164,12 @@
+ 
+     pub async fn get_stats(&self) -> Result<Vec<RtcStats>, RtcError> {
+         self.handle.get_stats().await
++    }
++
++    /// Returns libwebrtc's standards-shaped report without narrowing it to
++    /// this crate's typed stats subset.
++    pub async fn get_stats_json(&self) -> Result<String, RtcError> {
++        self.handle.get_stats_json().await
+     }
+ 
+     pub fn add_transceiver(
+--- a/src/peer_connection_factory.rs
++++ b/src/peer_connection_factory.rs
+@@ -11,12 +11,13 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to support W3C-style media track cloning.
+ 
+ use std::fmt::Debug;
+ 
+ use crate::{
+-    imp::peer_connection_factory as imp_pcf, peer_connection::PeerConnection,
+-    rtp_parameters::RtpCapabilities, MediaType, RtcError,
++    imp::peer_connection_factory as imp_pcf, media_stream_track::MediaStreamTrack,
++    peer_connection::PeerConnection, rtp_parameters::RtpCapabilities, MediaType, RtcError,
+ };
+ 
+ #[derive(Debug, Clone)]
+@@ -44,6 +45,16 @@
+     pub ice_servers: Vec<IceServer>,
+     pub continual_gathering_policy: ContinualGatheringPolicy,
+     pub ice_transport_type: IceTransportsType,
++    pub min_port: u16,
++    pub max_port: u16,
++    pub ice_connection_receiving_timeout_ms: Option<u32>,
++    pub ice_backup_candidate_pair_ping_interval_ms: Option<u32>,
++    pub ice_check_interval_strong_connectivity_ms: Option<u32>,
++    pub ice_check_interval_weak_connectivity_ms: Option<u32>,
++    pub ice_check_min_interval_ms: Option<u32>,
++    pub ice_unwritable_timeout_ms: Option<u32>,
++    pub ice_inactive_timeout_ms: Option<u32>,
++    pub stun_candidate_keepalive_interval_ms: Option<u32>,
+ }
+ 
+ impl Default for RtcConfiguration {
+@@ -52,6 +63,16 @@
+             ice_servers: vec![],
+             continual_gathering_policy: ContinualGatheringPolicy::GatherContinually,
+             ice_transport_type: IceTransportsType::All,
++            min_port: 0,
++            max_port: 0,
++            ice_connection_receiving_timeout_ms: None,
++            ice_backup_candidate_pair_ping_interval_ms: None,
++            ice_check_interval_strong_connectivity_ms: None,
++            ice_check_interval_weak_connectivity_ms: None,
++            ice_check_min_interval_ms: None,
++            ice_unwritable_timeout_ms: None,
++            ice_inactive_timeout_ms: None,
++            stun_candidate_keepalive_interval_ms: None,
+         }
+     }
+ }
+@@ -74,6 +95,19 @@
+         Self { handle: imp_pcf::PeerConnectionFactory::with_zero_playout_delay() }
+     }
+ 
++    #[cfg(not(target_arch = "wasm32"))]
++    pub fn with_network_configuration(
++        ignored_interfaces: Vec<String>,
++        network_ignore_mask: i32,
++    ) -> Self {
++        Self {
++            handle: imp_pcf::PeerConnectionFactory::with_network_configuration(
++                ignored_interfaces,
++                network_ignore_mask,
++            ),
++        }
++    }
++
+     pub fn create_peer_connection(
+         &self,
+         config: RtcConfiguration,
+@@ -87,6 +121,14 @@
+ 
+     pub fn get_rtp_receiver_capabilities(&self, media_type: MediaType) -> RtpCapabilities {
+         self.handle.get_rtp_receiver_capabilities(media_type)
++    }
++
++    pub fn clone_media_stream_track(
++        &self,
++        label: &str,
++        track: &MediaStreamTrack,
++    ) -> MediaStreamTrack {
++        self.handle.clone_media_stream_track(label, track)
+     }
+ }
+ 
+--- a/src/rtp_parameters.rs
++++ b/src/rtp_parameters.rs
+@@ -66,6 +66,10 @@
+ }
+ 
+ impl RtpParameters {
++    pub fn transaction_id(&self) -> &str {
++        &self.transaction_id
++    }
++
+     /// Sets the degradation preference for this RTP sender.
+     ///
+     /// This controls how the encoder trades off between resolution and framerate
+--- a/src/rtp_receiver.rs
++++ b/src/rtp_receiver.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to expose the unabridged libwebrtc stats report.
+ 
+ use std::fmt::Debug;
+ 
+@@ -25,6 +26,10 @@
+ }
+ 
+ impl RtpReceiver {
++    pub fn native_identity(&self) -> u64 {
++        self.handle.native_identity()
++    }
++
+     pub fn track(&self) -> Option<MediaStreamTrack> {
+         self.handle.track()
+     }
+@@ -39,6 +44,10 @@
+ 
+     pub async fn get_stats(&self) -> Result<Vec<RtcStats>, RtcError> {
+         self.handle.get_stats().await
++    }
++
++    pub async fn get_stats_json(&self) -> Result<String, RtcError> {
++        self.handle.get_stats_json().await
+     }
+ 
+     pub fn parameters(&self) -> RtpParameters {
+--- a/src/rtp_sender.rs
++++ b/src/rtp_sender.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to expose the unabridged libwebrtc stats report.
+ 
+ use std::fmt::Debug;
+ 
+@@ -64,12 +65,20 @@
+ }
+ 
+ impl RtpSender {
++    pub fn native_identity(&self) -> u64 {
++        self.handle.native_identity()
++    }
++
+     pub fn track(&self) -> Option<MediaStreamTrack> {
+         self.handle.track()
+     }
+ 
+     pub async fn get_stats(&self) -> Result<Vec<RtcStats>, RtcError> {
+         self.handle.get_stats().await
++    }
++
++    pub async fn get_stats_json(&self) -> Result<String, RtcError> {
++        self.handle.get_stats_json().await
+     }
+ 
+     pub fn set_track(&self, track: Option<MediaStreamTrack>) -> Result<(), RtcError> {
+--- a/src/rtp_transceiver.rs
++++ b/src/rtp_transceiver.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to expose transceiver direction mutation.
+ 
+ use std::fmt::Debug;
+ 
+@@ -44,6 +45,10 @@
+ }
+ 
+ impl RtpTransceiver {
++    pub fn native_identity(&self) -> u64 {
++        self.handle.native_identity()
++    }
++
+     pub fn mid(&self) -> Option<String> {
+         self.handle.mid()
+     }
+@@ -54,6 +59,10 @@
+ 
+     pub fn direction(&self) -> RtpTransceiverDirection {
+         self.handle.direction()
++    }
++
++    pub fn set_direction(&self, direction: RtpTransceiverDirection) -> Result<(), RtcError> {
++        self.handle.set_direction(direction)
+     }
+ 
+     pub fn sender(&self) -> RtpSender {

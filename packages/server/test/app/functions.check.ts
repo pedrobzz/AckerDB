@@ -11,10 +11,12 @@ import {
   mutation,
   procedure,
   query,
+  realtime,
   sseProcedure,
   type MutationBuilder,
   type ProcedureBuilder,
   type QueryBuilder,
+  type RealtimeBuilder,
   type SseBuilder,
 } from "@ackerdb/server";
 
@@ -175,6 +177,11 @@ const pluginProcedure = procedure as ProcedureBuilder<
   ProcedurePluginCapabilities,
   MutationPluginCapabilities
 >;
+const pluginRealtime = realtime as unknown as RealtimeBuilder<
+  S,
+  ProcedurePluginCapabilities,
+  MutationPluginCapabilities
+>;
 
 pluginQuery({
   args: {},
@@ -212,6 +219,35 @@ pluginProcedure({
       // @ts-expect-error explicit tx contexts exclude procedure-only Plugin mounts
       tx.external;
       return inheritedTimestamp;
+    });
+  },
+});
+
+const realtimeCallableProcedure = pluginProcedure({
+  args: { key: v.string() },
+  access: "public",
+  handler: async (ctx, args) => {
+    const external = await ctx.external.fetch(args.key);
+    return ctx.tx((tx) => tx.cache.set(args.key, external));
+  },
+});
+
+pluginRealtime({
+  args: {},
+  clientEvents: {
+    invoke: v.object({ key: v.string() }),
+  },
+  serverEvents: {},
+  access: "public",
+  handler: (ctx) => {
+    void ctx.external.fetch("ready");
+    ctx.run(async () => {
+      await realtimeCallableProcedure(ctx, { key: "provider-callback" });
+      await ctx.tx((tx) => tx.cache.set("provider-callback", "direct"));
+    });
+    ctx.on("invoke", async ({ key }) => {
+      await realtimeCallableProcedure(ctx, { key });
+      await ctx.tx((tx) => tx.cache.set(key, "direct"));
     });
   },
 });

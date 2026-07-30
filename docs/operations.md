@@ -36,12 +36,18 @@ shape and its cross-field invariants; it does not accept a partial object.
 | WebSocket outbound, per connection / global / stall | 4 MiB / 64 MiB / 5 s |
 | Authentication-transition capture, per transition / separate global pool | 2,048 frames and 3 MiB / 64 MiB with 1 MiB reserved control capacity |
 | SSE outbound, per stream / global / stall | 1 MiB / 32 MiB / 5 s |
-| Request / Protocol 2 frame | 1 MiB / 1 MiB |
+| Request / Protocol 5 frame | 1 MiB / 1 MiB |
 | Resume history, per stream | 64 transitions, 2 MiB, 30 s |
 | Resume history, global | 128 MiB |
 | Publication handoff | 4,096 items, 32 MiB |
 | Scheduled handlers per batch | 100 |
 | Mutation replay | 24 h, 1 MiB/result, 1,000,000 records, 4 GiB |
+| Realtime peers, global / per principal | 4,096 / 16 |
+| Realtime handshakes, per principal and 10 s window | 32 |
+| Realtime typed streams, buffered input / event-handler concurrency, per generation | 16 / 256 KiB / 128 |
+| Realtime auxiliary peers / decoded streams / media sources, per generation | 4 / 8 / 8 |
+| Realtime data channels / senders / transceivers, per peer | 16 / 32 / 32 |
+| Realtime auxiliary peers / decoded streams / media sources / tracks, process-wide | 16,384 / 32,768 / 32,768 / 131,072 |
 | Remote credential invalidation guarantee | Verifier `deadlineMs` must be positive, finite, and no greater than configured `revocationDeadlineMs` (5 s default and maximum); Runtime construction validates its single verifier before activation, matching callbacks initiate immediate fail-closed session/lease abort, and the verifier owns feed propagation within its advertised bound |
 | Graceful shutdown deadline | 10 s |
 | Telemetry retention/export | See [Telemetry](telemetry.md#default-bounds) |
@@ -87,9 +93,62 @@ The stock client has a separate exported `ACKERDB_CLIENT_LIMITS` object, and
 arbitrary service-limit overrides in `.ackerdb.config.json`; programmatic
 `Runtime` construction does.
 
+## Realtime media deployment
+
+Realtime media is one AckerDB-relayed WebRTC generation, not a media
+WebSocket. `RuntimeOptions.realtime` owns deployment policy: ICE configuration
+or built-in coturn REST credentials, interface and candidate policy, admission
+limits, per-generation limits, process-wide native-resource limits, and
+independent authorization, configuration, handler, signaling, ICE, DTLS, and
+data-channel deadlines. Common application code does not configure those
+details.
+
+Production reachability needs UDP plus TURN/TLS on 443 for networks that block
+direct ICE. AckerDB validates configuration at startup and provides
+`preflightRealtimeTurn` for a real relay-only allocation and data-path check;
+the [coturn deployment guide](deployment/coturn/README.md) defines the
+supported topology and hardening. TURN credentials are short-lived and
+principal-bound. SDP, candidates, mapped addresses, and credentials never
+appear in aggregate status.
+
+Admission happens before native peer allocation. Session and principal
+ceilings, handshake windows, peer object limits, typed-stream budgets, handler
+concurrency, and the shared auxiliary-peer/decoder/source/track budget all fail
+with a bounded typed outcome instead of retaining more native state. Every
+generation owns its tracks, sources, decoded streams, auxiliary peers, data
+channels, and partial typed streams; close releases them. Recovery never
+replays application events, provider state, media, or partial streams.
+
+`Runtime.status().realtime` exposes fixed-cardinality admission, setup-stage,
+recovery, close-reason, resource, pressure, and aggregate media-path health.
+`Runtime.realtimeDiagnostic(sessionId, principal)` is the authorized,
+on-demand, redacted per-peer diagnostic. The periodic health sampler rotates
+over at most eight active generations on the existing telemetry tick; it does
+not create another timer or scan every peer.
+
+The server native engine runs in the Bun process. A peer/session failure is
+generation-contained, but a native process crash requires an ordinary process
+supervisor to restart AckerDB; clients with demand create fresh generations.
+Run the server under launchd, systemd, Kubernetes, or an equivalent supervisor
+with bounded restart policy. In-process worker isolation is not part of the
+current contract.
+
+Published `@ackerdb/server` packages must contain verified native builds for
+Darwin arm64/x64, Linux arm64/x64, and Windows x64, plus the aggregate
+manifest, SHA-256 digests, third-party notices, and SPDX SBOM. Stable and
+prerelease publishing fail before publishing any package when this assembly is
+missing or invalid. CI builds every claimed target and executes the native and
+exact-packed-package suites on Darwin arm64; physical-device, provider,
+network-change, TURN-only, churn, and soak exercises are release/operator
+validation rather than hidden package claims.
+
+The complete API and recovery semantics are in
+[Realtime media](realtime-media.md); build provenance is in
+[`packages/server/native/webrtc/PROVENANCE.md`](../packages/server/native/webrtc/PROVENANCE.md).
+
 ## Typed outcomes
 
-Every Protocol 2 failure is an `Outcome`, and unknown internal exceptions are
+Every Protocol 5 failure is an `Outcome`, and unknown internal exceptions are
 sanitized to `{ code: "internal", retryable: false, message: "internal server error" }`.
 Messages are bounded to 512 JavaScript UTF-16 code units without splitting a
 Unicode code point. Optional `resource`, `retryAfterMs`, and `committed: true`
@@ -119,7 +178,7 @@ unauthorized to 403; not found to 404; conflict to 409; ordinary overload and
 slow consumers to 429; connection/publication overload, auth service failure,
 draining, and unavailability to 503; deadlines to 504; and convergence,
 indeterminate, or internal failures to 500. HTTP responses still carry the
-Protocol 2 error body, which is authoritative.
+Protocol 5 error body, which is authoritative.
 
 WebSocket connection failures are sent as an error frame when reserved control
 capacity permits. Malformed/unsupported protocol closes with 1002;

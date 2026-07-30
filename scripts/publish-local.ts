@@ -5,6 +5,7 @@ import { readdirSync } from "node:fs";
 import {
   PACKAGES,
   assertRegistryReachable,
+  assertWebRtcPrebuilds,
   assertWorkspaceLock,
   fail,
   git,
@@ -31,6 +32,7 @@ const sources = new Map<string, string>();
 for (const pkg of PACKAGES) sources.set(pkg, await Bun.file(pkgJsonPath(pkg)).text());
 const version = syncedVersion((pkg) => sources.get(pkg)!);
 assertWorkspaceLock(await readBunLock(), (pkg) => sources.get(pkg)!);
+assertWebRtcPrebuilds();
 
 const evidencePath = `bench/results/v${version}.json`;
 const evidenceFile = Bun.file(evidencePath);

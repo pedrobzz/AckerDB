@@ -4,6 +4,7 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
+  isRealtimeSessionId,
   parseCallRequest,
   parseSseAckRequest,
   stableEncode,
@@ -25,7 +26,7 @@ import {
   transportSource,
   type TransportSource,
 } from "../runtime/caller.ts";
-import { OutboundBudget, WebSocketSessionSink } from "../realtime/delivery.ts";
+import { OutboundBudget, WebSocketSessionSink } from "../subscriptions/delivery.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import {
   beginHttpTrace,
@@ -58,7 +59,8 @@ import {
   type Runtime,
   type RuntimeStatus,
 } from "../runtime/runtime.ts";
-import { Session, withSessionAuthObserver } from "../realtime/session.ts";
+import { Session, withSessionAuthObserver } from "../subscriptions/session.ts";
+import { RealtimeHttpTransport } from "../realtime/http-transport.ts";
 
 export type AckerDBServerState = "starting" | "ready" | "draining" | "stopped" | "failed";
 export type AckerDBStartupPhase =
@@ -119,7 +121,7 @@ const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
 
 const CORS = Object.freeze({
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, OPTIONS",
+  "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "access-control-allow-headers": "content-type, authorization, mcp-protocol-version",
   "access-control-expose-headers": "x-ackerdb-sse-stream, x-ackerdb-sse-max-stall-ms",
 });
@@ -464,6 +466,13 @@ function requireStatusScope(principal: ClientPrincipal, required: string): void 
   }
 }
 
+function realtimeSessionId(path: string): string | null {
+  const prefix = `${ACKERDB_HTTP_ROUTES.realtime}/`;
+  if (!path.startsWith(prefix)) return null;
+  const id = path.slice(prefix.length);
+  return isRealtimeSessionId(id) ? id : null;
+}
+
 /** Owns listener admission, every WebSocket Session, and graceful Runtime drain. */
 export class AckerDBServer {
   readonly limits: ServiceLimits;
@@ -474,6 +483,7 @@ export class AckerDBServer {
   private readonly outbound: OutboundBudget;
   private readonly httpAdmission: HttpAdmission;
   private readonly mcpHttp: McpHttpBoundary;
+  private readonly realtimeHttp: RealtimeHttpTransport;
   private listener: Server<WsData> | null = null;
   private activeRuntime: Runtime | null = null;
   private lifecycle: AckerDBServerState = "starting";
@@ -497,6 +507,15 @@ export class AckerDBServer {
       this.limits.maxOperations,
       this.limits.maxOperationsPerCaller,
     );
+    this.realtimeHttp = new RealtimeHttpTransport({
+      runtime: () => this.requireRuntime(),
+      admit: (fairnessKey) => this.httpAdmission.admit(fairnessKey),
+      authenticate: (request, signal) => this.authenticate(request, signal),
+      parseBody: parseHttpBody,
+      json,
+      error: (error) => protocolError(error),
+      cors: CORS,
+    });
 
     try {
       this.listener = Bun.serve<WsData, never>({
@@ -696,28 +715,72 @@ export class AckerDBServer {
       return this.call(request, true, this.requestSource(request, listener));
     }
     if (
+      url.pathname === ACKERDB_HTTP_ROUTES.realtimeConfig &&
+      request.method === "GET"
+    ) {
+      return this.realtimeHttp.configuration(
+        request,
+        this.requestSource(request, listener),
+      );
+    }
+    if (
+      url.pathname === ACKERDB_HTTP_ROUTES.realtime &&
+      request.method === "POST"
+    ) {
+      return this.realtimeHttp.offer(
+        request,
+        this.requestSource(request, listener),
+      );
+    }
+    const realtimeId = realtimeSessionId(url.pathname);
+    if (
+      realtimeId !== null &&
+      (request.method === "PATCH" || request.method === "DELETE")
+    ) {
+      return this.realtimeHttp.session(
+        request,
+        realtimeId,
+        this.requestSource(request, listener),
+      );
+    }
+    if (
       url.pathname === ACKERDB_HTTP_ROUTES.live ||
       url.pathname === ACKERDB_HTTP_ROUTES.ready ||
       url.pathname === ACKERDB_HTTP_ROUTES.status ||
       url.pathname === ACKERDB_HTTP_ROUTES.call ||
-      url.pathname === ACKERDB_HTTP_ROUTES.sse
+      url.pathname === ACKERDB_HTTP_ROUTES.sse ||
+      url.pathname === ACKERDB_HTTP_ROUTES.realtime ||
+      url.pathname === ACKERDB_HTTP_ROUTES.realtimeConfig ||
+      url.pathname.startsWith(`${ACKERDB_HTTP_ROUTES.realtime}/`)
     ) {
+      const allow = url.pathname === ACKERDB_HTTP_ROUTES.realtimeConfig
+        ? "GET"
+        : realtimeId === null
+        ? "POST"
+        : "PATCH, DELETE";
       return new Response("method not allowed", {
-        status: 405,
-        headers: { ...CORS, allow: url.pathname.startsWith("/api/") ? "POST" : "GET" },
+        status: realtimeId === null &&
+            url.pathname.startsWith(`${ACKERDB_HTTP_ROUTES.realtime}/`) &&
+            url.pathname !== ACKERDB_HTTP_ROUTES.realtimeConfig
+          ? 404
+          : 405,
+        headers: { ...CORS, allow },
       });
     }
     return new Response("not found", { status: 404, headers: CORS });
   }
 
-  private async authenticate(request: Request): Promise<AuthLease> {
+  private async authenticate(
+    request: Request,
+    signal: AbortSignal | undefined = request.signal,
+  ): Promise<AuthLease> {
     const credential = credentialFromAuthorization(request.headers.get("authorization"));
     const runtime = this.requireRuntime();
     return acquireAuthLease({
       credential,
       verifier: runtime.credentialVerifier,
       resolveIdentity: (account, signal) => runtime.resolveIdentity(account, signal),
-      signal: request.signal,
+      ...(signal === undefined ? {} : { signal }),
       revocationDeadlineMs: runtime.limits.auth.revocationDeadlineMs,
     });
   }

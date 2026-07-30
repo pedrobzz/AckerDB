@@ -24,7 +24,7 @@ import {
 } from "../database/mutation-replay.ts";
 import { outcomeFromError } from "./outcome.ts";
 import { isOneTimeResult } from "./one-time-result.ts";
-import type { PublicationReservation } from "../realtime/publication.ts";
+import type { PublicationReservation } from "../subscriptions/publication.ts";
 import type { Schema } from "../schema/definition.ts";
 import {
   assertTransactionHealthy,

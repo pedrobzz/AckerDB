@@ -41,7 +41,7 @@ import type {
   RuntimeRequest,
   SessionApplicationMessage,
   SessionRuntimeContext,
-} from "../../src/realtime/session.ts";
+} from "../../src/subscriptions/session.ts";
 
 const action = v.enum("SystemMcpTokenAction", [
   "create_agent",

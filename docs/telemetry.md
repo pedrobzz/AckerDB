@@ -282,18 +282,19 @@ interface TelemetryMetricRecord {
 ```
 
 `TelemetryOperation` is one of `query`, `mutation`, `procedure`, `sse`,
-`transaction`, `scheduled`, `subscription`, `backup`, `restore`, or
-`lifecycle`. `TELEMETRY_STAGES` is exactly:
+`transaction`, `scheduled`, `subscription`, `realtime`, `backup`, `restore`,
+or `lifecycle`. `TELEMETRY_STAGES` is exactly:
 
 ```text
-admission     auth          policy        handler       execution
+admission     auth          policy        configuration signaling
+ice           dtls          data-channel  handler       execution
 fetch         statement     storage       commit        rollback
 publication   match         evaluation    changed       unchanged
 encoding      fanout        queue         delivery      export
 ```
 
-`TelemetryOutcome` is `ok` plus the finite Protocol 2 failure codes, and
-resources match the Protocol 2 vocabulary documented in
+`TelemetryOutcome` is `ok` plus the finite Protocol 5 failure codes, and
+resources match the Protocol 5 vocabulary documented in
 [Operations](operations.md#typed-outcomes). `statement` is a sanitized logical
 summary such as `messages.collect`, never literal SQL.
 
@@ -320,6 +321,8 @@ When telemetry is enabled, current automatic span coverage is:
 | Database API | `statement` for `ctx.db` reads/writes and scheduler reads, using logical `table.operation` summaries and optional row counts. |
 | SQLite transaction path | Reader `queue`, `storage`, `encoding`, `commit`, and `rollback`; every executed writer mutation, scheduled handler, or `ctx.tx` emits exactly one `execution` span around its application work and transactional finalizer, plus `queue`, full pre-commit `storage`, result `encoding`, `commit`/`rollback`, and pre/post-commit `publication`. Replayed mutations emit idempotency `storage` but no `execution`. |
 | Ordered realtime | `match`, `evaluation`, `changed`, `unchanged`, `queue`, `fanout`, and logical subscriber `delivery`, with dependency/result/byte counts when known. |
+| Realtime media setup | Fixed-cardinality `realtime` stage metrics cover authorization, ICE configuration, handler setup, signaling, ICE, DTLS, and the internal data channel independently. Aggregate status and metrics also expose admission, bounded recovery, close reasons, native-resource pressure, selected direct/relay and UDP/TCP paths, media flow, RTT, jitter, loss, bitrate, buffering, and native event-queue drops. No SDP, candidate, address, credential, media payload, or provider data is recorded. |
+| Channel disconnect cleanup | `runtime.channel_disconnect_timeouts` counts optional `onDisconnect` handlers that ignored their cancellation deadline. Membership and connection admission are released before this cleanup finishes. |
 | WebSocket and SSE transport | `encoding`, `queue`, and `delivery` spans with bytes, duration, outcome, and `outbound`/`sse` resource. WebSocket `delivery` observes release from Bun's buffered-byte ownership (including delayed `onDrain`). SSE retains the frame's captured observer until a valid cumulative receiver acknowledgement releases it, or reports cancellation/terminal timeout as the delivery outcome. Terminal failures also emit a `failure` event. Capabilities, proofs, and chunk values are never recorded. |
 | HTTP procedure response | `procedure` `encoding` followed by `delivery`, both with resource `operation`, the original trace/request/function correlation, and exact encoded response bytes. `delivery` ends when the responder returns the constructed Bun `Response`; it is an encoded-response handoff, not proof of socket, kernel, or network completion. |
 | CLI backup and restore | Standalone `acker backup` and `acker restore` commands emit one `backup`/`restore` `storage` span with duration, sanitized outcome, artifact byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `ACKERDB_TELEMETRY=disabled` removes it exactly. |
@@ -328,7 +331,7 @@ When telemetry is enabled, current automatic span coverage is:
 ### Credential verification correlation
 
 For `POST /api/call` and `POST /api/sse`, Serve opens one tail-decision trace
-before request parsing. Once Protocol 2 parsing succeeds, the function address
+before request parsing. Once Protocol 5 parsing succeeds, the function address
 and request ID identify it. The credential `auth` span then covers
 Authorization parsing, verifier work (including any verifier-owned JWKS work),
 and credential-lease acquisition. On success, Runtime claims that same trace,
@@ -420,6 +423,46 @@ exact metric names:
   `runtime.subscription_entries`, `runtime.subscription_result_bytes`,
   `runtime.subscription_history_items`, and
   `runtime.subscription_history_bytes`;
+- realtime admission and lifecycle: `runtime.realtime_sessions`,
+  `runtime.realtime_reserved_sessions`, `runtime.realtime_active_principals`,
+  `runtime.realtime_handshake_windows`, `runtime.realtime_offers`,
+  `runtime.realtime_accepted`, `runtime.realtime_rejected`,
+  `runtime.realtime_overloaded`, `runtime.realtime_failed`,
+  `runtime.realtime_closed`, `runtime.realtime_recovery_attempts`,
+  `runtime.realtime_recovery_accepted`, `runtime.realtime_recovery_rejected`,
+  `runtime.realtime_recovery_failed`, `runtime.realtime_recovery_duration`,
+  `runtime.realtime_recovery_duration_max`, the
+  `runtime.realtime_closed_{client,authentication,transport,handler,draining,setup}`
+  close-reason counters, `runtime.realtime_setup_duration`, and
+  `runtime.realtime_setup_duration_max`;
+- realtime setup stages: `runtime.realtime_setup_stage_outcomes`,
+  `runtime.realtime_setup_stage_duration`, and
+  `runtime.realtime_setup_stage_duration_max`, labeled with the finite
+  authorization, configuration, handler, signaling, ICE, DTLS, and
+  data-channel stages;
+- realtime path and media health:
+  `runtime.realtime_health_sampled_peers`,
+  `runtime.realtime_health_sample_failures`,
+  `runtime.realtime_{direct,relay,udp,tcp}_paths`,
+  `runtime.realtime_round_trip_time`,
+  `runtime.realtime_round_trip_time_max`, `runtime.realtime_jitter_max`,
+  `runtime.realtime_packets`, `runtime.realtime_packets_lost`,
+  `runtime.realtime_frames`, `runtime.realtime_frames_dropped`,
+  `runtime.realtime_available_incoming_bitrate`,
+  `runtime.realtime_available_outgoing_bitrate`,
+  `runtime.realtime_data_channel_buffered_amount`,
+  `runtime.realtime_native_queue_drops`,
+  `runtime.realtime_data_channel_pressure`,
+  `runtime.realtime_stream_capacity_pressure`,
+  `runtime.realtime_stream_buffer_pressure`,
+  `runtime.realtime_handler_saturation`,
+  `runtime.realtime_resource_saturation`, and the
+  `runtime.realtime_first_{inbound,outbound}_{audio,video}` counters;
+- realtime native resources: `runtime.realtime_auxiliary_peers`,
+  `runtime.realtime_decoded_streams`, `runtime.realtime_media_sources`,
+  `runtime.realtime_tracks`, and the matching
+  `runtime.realtime_{auxiliary_peer,decoded_stream,media_source,track}_saturation`
+  counters;
 - queues and bounded buffers: `runtime.read_queue_items`,
   `runtime.read_queue_bytes`, `runtime.read_queue_age`,
   `runtime.write_queue_items`, `runtime.write_queue_bytes`,

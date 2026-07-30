@@ -15,7 +15,7 @@ import {
   type ReactiveCommitResult,
   type ReactiveObservation,
   type Subscriber,
-} from "../../src/realtime/reactive.ts";
+} from "../../src/subscriptions/reactive.ts";
 
 class RecordingSubscriber implements Subscriber {
   readonly transitions: Array<{ id: number; transition: SubscriptionTransition }> = [];

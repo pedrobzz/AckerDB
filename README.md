@@ -2,7 +2,8 @@
 
 AckerDB is a single-node, stateful TypeScript backend built on Bun and SQLite. It
 provides typed queries, transactional mutations, procedures, scheduled work,
-live query subscriptions, and live event streams through Protocol 2.
+live query subscriptions, application channels, and WebRTC media sessions
+through Protocol 5.
 
 The supported production topology is one Bun server process owning one local
 SQLite database file. AckerDB is not a horizontally scaled or replicated service,
@@ -18,11 +19,11 @@ backups are verified by restoring them before they are accepted.
 
 | Package | Purpose |
 | --- | --- |
-| `@ackerdb/core` | Protocol 2 envelopes, wire encoding, outcomes, cursors, and typed function references. |
-| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, authentication, reactivity, transport, limits, and telemetry. |
+| `@ackerdb/core` | Protocol 5 envelopes, wire encoding, outcomes, cursors, and typed function/channel/realtime references. |
+| `@ackerdb/server` | Schema DSL, SQLite engine, function runtime, typed channels, WebRTC session integration, authentication, reactivity, transport, limits, and telemetry. |
 | `@ackerdb/cache` | Disposable server-side Cache Plugin with built-in SQLite, Redis, Upstash, and custom-store backends. |
-| `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, reconnect, and credential refresh. |
-| `@ackerdb/client-react` | React and Expo provider/hooks for live queries, mutations, procedures, events, SSE, authentication, and optional AI SDK chat transport. |
+| `@ackerdb/client` | Web-platform client for queries, mutations, procedures, SSE, subscriptions, channels, WebRTC sessions, reconnect, and credential refresh. |
+| `@ackerdb/client-react` | React and Expo provider/hooks for data, typed channels, WebRTC sessions, authentication, and optional AI SDK integrations. |
 | `@ackerdb/cli` | `acker dev`, `start`, `codegen`, `reset`, `status`, `backup`, and `restore`. |
 
 ## Application shape
@@ -41,8 +42,9 @@ your-app/
   assembly point for the root `defineSchema(...)` and explicitly mounted
   server-side Plugins. Persistent tables use `defineTable`; `defineEventTable`
   declares non-persistent live events.
-- Functions use the generated `query`, `mutation`, `procedure`, and
-  `sseProcedure` constructors. Every function must declare `access` as
+- Functions use the generated `query`, `mutation`, `procedure`,
+  `sseProcedure`, `channel`, and `realtime` constructors. Every declaration
+  must declare `access` as
   `"public"`, `"authenticated"`, `"system"`, or a fail-closed policy callback.
 - Queries run against a SQLite snapshot and record precise dependency keys.
   Mutations run through one serialized writer transaction. Procedures may do
@@ -99,8 +101,15 @@ client.close();
   sessions, HTTP procedures, and SSE.
 - [Ordered realtime and mutation semantics](docs/realtime.md) documents
   transition cursors, resume-or-reset behavior, read-your-writes mutation
-  receipts, receiver-confirmed Protocol 2 SSE delivery, reconnect behavior, and
+  receipts, receiver-confirmed Protocol 5 SSE delivery, reconnect behavior, and
   the deliberately weaker live-event contract.
+- [Application channels](docs/channels.md) documents typed bidirectional
+  events, opt-in rooms, shared memberships, handler deduplication, and
+  reconnect behavior over the existing application WebSocket.
+- [Realtime media sessions](docs/realtime-media.md) documents AckerDB-relayed
+  WebRTC, native tracks, typed events and byte streams, signaling,
+  deduplication, React/Expo setup, and the current native-server-engine
+  boundary.
 - [Operations, limits, and recovery](docs/operations.md) documents finite
   production defaults, typed outcomes, durability profiles, health endpoints,
   startup/readiness phases, evidence-preserving crash recovery, signal-driven

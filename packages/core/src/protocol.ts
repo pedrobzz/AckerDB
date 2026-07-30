@@ -11,7 +11,7 @@ import {
  * TypeScript types; every framework-owned field is validated after wire decode.
  */
 
-export const PROTOCOL_VERSION = 4 as const;
+export const PROTOCOL_VERSION = 5 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;
@@ -219,6 +219,23 @@ export interface MutationMessage extends Frame<"m"> {
   issuedAt: number;
 }
 
+export interface ChannelJoinMessage extends Frame<"channel_join"> {
+  id: number;
+  ref: string;
+  args: unknown;
+  room?: unknown;
+}
+
+export interface ChannelLeaveMessage extends Frame<"channel_leave"> {
+  id: number;
+}
+
+export interface ChannelSendMessage extends Frame<"channel_send"> {
+  id: number;
+  event: string;
+  payload: unknown;
+}
+
 export type PingMessage = Frame<"ping">;
 
 export type ClientMessage =
@@ -231,6 +248,9 @@ export type ClientMessage =
   | ProcedureMessage
   | ProcedureCancelMessage
   | MutationMessage
+  | ChannelJoinMessage
+  | ChannelLeaveMessage
+  | ChannelSendMessage
   | PingMessage;
 
 export type WelcomeMessage = Frame<"welcome"> & AuthenticationDescriptor & {
@@ -280,6 +300,23 @@ export interface ApplicationErrorMessage extends Frame<"app_err"> {
   receipt?: MutationReceipt;
 }
 
+export interface ChannelReadyMessage extends Frame<"channel_ready"> {
+  id: number;
+  authEpoch: number;
+}
+
+export interface ChannelEventMessage extends Frame<"channel_event"> {
+  id: number;
+  event: string;
+  payload: unknown;
+}
+
+export interface ChannelRejectedMessage extends Frame<"channel_rejected"> {
+  id: number;
+  authEpoch: number;
+  error: ApplicationError;
+}
+
 export interface ErrorMessage extends Frame<"err"> {
   /** Null identifies a connection-level failure rather than one operation. */
   id: number | null;
@@ -297,6 +334,9 @@ export type ServerMessage =
   | ProcedureOkMessage
   | MutationOkMessage
   | ApplicationErrorMessage
+  | ChannelReadyMessage
+  | ChannelEventMessage
+  | ChannelRejectedMessage
   | ErrorMessage
   | PongMessage;
 
@@ -715,6 +755,23 @@ export function parseClientMessage(value: unknown): ClientMessage {
       nonNegativeInteger(result.issuedAt, "issuedAt");
       break;
     }
+    case "channel_join":
+      exact(result, ["v", "t", "id", "ref", "args"], ["room"]);
+      protocolId(result.id, "channel id");
+      string(result.ref, "ref", MAX_REFERENCE_LENGTH);
+      payload(result.args, "args");
+      if (Object.hasOwn(result, "room")) payload(result.room, "room");
+      break;
+    case "channel_leave":
+      exact(result, ["v", "t", "id"]);
+      protocolId(result.id, "channel id");
+      break;
+    case "channel_send":
+      exact(result, ["v", "t", "id", "event", "payload"]);
+      protocolId(result.id, "channel id");
+      string(result.event, "channel event", MAX_REFERENCE_LENGTH);
+      payload(result.payload, "channel payload");
+      break;
     case "ping":
       exact(result, ["v", "t"]);
       break;
@@ -769,6 +826,23 @@ export function parseServerMessage(value: unknown): ServerMessage {
         return malformed("unknown application-error frame kind");
       }
       protocolId(result.id, "request id");
+      parseApplicationError(result.error);
+      break;
+    case "channel_ready":
+      exact(result, ["v", "t", "id", "authEpoch"]);
+      protocolId(result.id, "channel id");
+      nonNegativeInteger(result.authEpoch, "authEpoch");
+      break;
+    case "channel_event":
+      exact(result, ["v", "t", "id", "event", "payload"]);
+      protocolId(result.id, "channel id");
+      string(result.event, "channel event", MAX_REFERENCE_LENGTH);
+      payload(result.payload, "channel payload");
+      break;
+    case "channel_rejected":
+      exact(result, ["v", "t", "id", "authEpoch", "error"]);
+      protocolId(result.id, "channel id");
+      nonNegativeInteger(result.authEpoch, "authEpoch");
       parseApplicationError(result.error);
       break;
     case "err":

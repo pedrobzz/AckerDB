@@ -42,9 +42,9 @@ function expectProtocolError(run: () => unknown, code: ProtocolError["code"]): v
   }
 }
 
-describe("protocol 4 envelopes", () => {
+describe("protocol 5 envelopes", () => {
   test("requires an explicit versioned hello and bounded credential", () => {
-    expect(PROTOCOL_VERSION).toBe(4);
+    expect(PROTOCOL_VERSION).toBe(5);
     expect(
       parseClientMessage({
         v: PROTOCOL_VERSION,
@@ -66,6 +66,67 @@ describe("protocol 4 envelopes", () => {
       () => parseCredential({ kind: "bearer", token: "x".repeat(16 * 1024 + 1) }),
       "malformed",
     );
+  });
+
+  test("parses exact channel join, leave, send, ready, event, and rejection frames", () => {
+    expect(parseClientMessage({
+      v: PROTOCOL_VERSION,
+      t: "channel_join",
+      id: 7,
+      ref: "chat.room",
+      args: { thread: 1n },
+      room: "support",
+    }).t).toBe("channel_join");
+    expect(parseClientMessage({
+      v: PROTOCOL_VERSION,
+      t: "channel_leave",
+      id: 7,
+    }).t).toBe("channel_leave");
+    expect(parseClientMessage({
+      v: PROTOCOL_VERSION,
+      t: "channel_send",
+      id: 7,
+      event: "message",
+      payload: { body: "hello" },
+    }).t).toBe("channel_send");
+    expect(parseServerMessage({
+      v: PROTOCOL_VERSION,
+      t: "channel_ready",
+      id: 7,
+      authEpoch: 2,
+    }).t).toBe("channel_ready");
+    expect(parseServerMessage({
+      v: PROTOCOL_VERSION,
+      t: "channel_event",
+      id: 7,
+      event: "message",
+      payload: { body: "hello" },
+    }).t).toBe("channel_event");
+    expect(parseServerMessage({
+      v: PROTOCOL_VERSION,
+      t: "channel_rejected",
+      id: 7,
+      authEpoch: 2,
+      error: {
+        kind: "application",
+        code: "room.closed",
+        body: { room: "support" },
+        status: Status.Forbidden,
+      },
+    }).t).toBe("channel_rejected");
+
+    for (const value of [
+      { v: PROTOCOL_VERSION, t: "channel_join", id: 7, ref: "chat.room", args: {}, room: undefined },
+      { v: PROTOCOL_VERSION, t: "channel_send", id: 7, event: "", payload: null },
+      { v: PROTOCOL_VERSION, t: "channel_event", id: 7, event: "message" },
+    ]) {
+      expectProtocolError(
+        () => value.t.startsWith("channel_") && value.t === "channel_event"
+          ? parseServerMessage(value)
+          : parseClientMessage(value),
+        "malformed",
+      );
+    }
   });
 
   test("rejects old versions, unknown frame types, unknown fields, and unbounded IDs", () => {

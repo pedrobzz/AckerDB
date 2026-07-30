@@ -39,7 +39,7 @@ import {
   type SessionClock,
   type SessionControlMessage,
   type SessionSink,
-} from "../../src/realtime/session.ts";
+} from "../../src/subscriptions/session.ts";
 import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
 const ALICE_AUTHENTICATION = {

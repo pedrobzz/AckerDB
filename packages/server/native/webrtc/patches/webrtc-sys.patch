@@ -1,0 +1,380 @@
+--- a/include/livekit/media_stream_track.h
++++ b/include/livekit/media_stream_track.h
+@@ -38,6 +38,7 @@
+  public:
+   rust::String kind() const;
+   rust::String id() const;
++  uint64_t native_identity() const;
+ 
+   bool enabled() const;
+   bool set_enabled(bool enable) const;
+--- a/include/livekit/peer_connection_factory.h
++++ b/include/livekit/peer_connection_factory.h
+@@ -13,6 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
++// Modified by AckerDB to support W3C-style media track cloning.
+ 
+ #pragma once
+ 
+@@ -47,6 +48,9 @@
+   explicit PeerConnectionFactory(std::shared_ptr<RtcRuntime> rtc_runtime);
+   PeerConnectionFactory(std::shared_ptr<RtcRuntime> rtc_runtime,
+                         bool zero_playout_delay);
++  PeerConnectionFactory(std::shared_ptr<RtcRuntime> rtc_runtime,
++                        bool zero_playout_delay,
++                        FactoryNetworkConfig network);
+   ~PeerConnectionFactory();
+ 
+   std::shared_ptr<PeerConnection> create_peer_connection(
+@@ -61,6 +65,10 @@
+       rust::String label,
+       std::shared_ptr<AudioTrackSource> source) const;
+ 
++  std::shared_ptr<MediaStreamTrack> clone_media_stream_track(
++      rust::String label,
++      std::shared_ptr<MediaStreamTrack> track) const;
++
+   // Create an audio track that uses the ADM for capture (microphone)
+   // This creates a track that captures from the selected recording device
+   std::shared_ptr<AudioTrack> create_device_audio_track(
+@@ -85,4 +93,6 @@
+ std::shared_ptr<PeerConnectionFactory> create_peer_connection_factory();
+ std::shared_ptr<PeerConnectionFactory>
+ create_peer_connection_factory_with_zero_playout_delay();
++std::shared_ptr<PeerConnectionFactory>
++create_peer_connection_factory_with_network(FactoryNetworkConfig config);
+ }  // namespace livekit_ffi
+--- a/include/livekit/rtp_receiver.h
++++ b/include/livekit/rtp_receiver.h
+@@ -54,6 +54,7 @@
+ 
+   MediaType media_type() const;
+   rust::String id() const;
++  uint64_t native_identity() const;
+ 
+   RtpParameters get_parameters() const;
+ 
+--- a/include/livekit/rtp_sender.h
++++ b/include/livekit/rtp_sender.h
+@@ -54,6 +54,7 @@
+   MediaType media_type() const;
+ 
+   rust::String id() const;
++  uint64_t native_identity() const;
+ 
+   rust::Vec<rust::String> stream_ids() const;
+ 
+--- a/include/livekit/rtp_transceiver.h
++++ b/include/livekit/rtp_transceiver.h
+@@ -47,6 +47,7 @@
+       webrtc::scoped_refptr<webrtc::PeerConnectionInterface> peer_connection);
+ 
+   MediaType media_type() const;
++  uint64_t native_identity() const;
+ 
+   rust::String mid() const;
+ 
+--- a/src/media_stream_track.cpp
++++ b/src/media_stream_track.cpp
+@@ -43,6 +43,10 @@
+   return track_->id();
+ }
+ 
++uint64_t MediaStreamTrack::native_identity() const {
++  return reinterpret_cast<uintptr_t>(track_.get());
++}
++
+ bool MediaStreamTrack::enabled() const {
+   return track_->enabled();
+ }
+--- a/src/media_stream_track.rs
++++ b/src/media_stream_track.rs
+@@ -29,6 +29,7 @@
+ 
+         fn kind(self: &MediaStreamTrack) -> String;
+         fn id(self: &MediaStreamTrack) -> String;
++        fn native_identity(self: &MediaStreamTrack) -> u64;
+         fn enabled(self: &MediaStreamTrack) -> bool;
+         fn set_enabled(self: &MediaStreamTrack, enable: bool) -> bool;
+         fn state(self: &MediaStreamTrack) -> TrackState;
+--- a/src/peer_connection.cpp
++++ b/src/peer_connection.cpp
+@@ -55,6 +55,34 @@
+       static_cast<webrtc::PeerConnectionInterface::IceTransportsType>(
+           config.ice_transport_type);
+ 
++  rtc_config.set_min_port(config.min_port);
++  rtc_config.set_max_port(config.max_port);
++  rtc_config.ice_connection_receiving_timeout =
++      config.ice_connection_receiving_timeout_ms;
++  rtc_config.ice_backup_candidate_pair_ping_interval =
++      config.ice_backup_candidate_pair_ping_interval_ms;
++  if (config.ice_check_interval_strong_connectivity_ms >= 0) {
++    rtc_config.ice_check_interval_strong_connectivity =
++        config.ice_check_interval_strong_connectivity_ms;
++  }
++  if (config.ice_check_interval_weak_connectivity_ms >= 0) {
++    rtc_config.ice_check_interval_weak_connectivity =
++        config.ice_check_interval_weak_connectivity_ms;
++  }
++  if (config.ice_check_min_interval_ms >= 0) {
++    rtc_config.ice_check_min_interval = config.ice_check_min_interval_ms;
++  }
++  if (config.ice_unwritable_timeout_ms >= 0) {
++    rtc_config.ice_unwritable_timeout = config.ice_unwritable_timeout_ms;
++  }
++  if (config.ice_inactive_timeout_ms >= 0) {
++    rtc_config.ice_inactive_timeout = config.ice_inactive_timeout_ms;
++  }
++  if (config.stun_candidate_keepalive_interval_ms >= 0) {
++    rtc_config.stun_candidate_keepalive_interval =
++        config.stun_candidate_keepalive_interval_ms;
++  }
++
+   return rtc_config;
+ }
+ 
+--- a/src/peer_connection.rs
++++ b/src/peer_connection.rs
+@@ -92,6 +92,16 @@
+         pub ice_servers: Vec<IceServer>,
+         pub continual_gathering_policy: ContinualGatheringPolicy,
+         pub ice_transport_type: IceTransportsType,
++        pub min_port: i32,
++        pub max_port: i32,
++        pub ice_connection_receiving_timeout_ms: i32,
++        pub ice_backup_candidate_pair_ping_interval_ms: i32,
++        pub ice_check_interval_strong_connectivity_ms: i32,
++        pub ice_check_interval_weak_connectivity_ms: i32,
++        pub ice_check_min_interval_ms: i32,
++        pub ice_unwritable_timeout_ms: i32,
++        pub ice_inactive_timeout_ms: i32,
++        pub stun_candidate_keepalive_interval_ms: i32,
+     }
+ 
+     extern "C++" {
+--- a/src/peer_connection_factory.cpp
++++ b/src/peer_connection_factory.cpp
+@@ -13,6 +13,7 @@
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
++// Modified by AckerDB to support W3C-style media track cloning.
+ 
+ #include "livekit/peer_connection_factory.h"
+ 
+@@ -43,6 +44,7 @@
+ #include "livekit/video_encoder_factory.h"
+ #include "livekit/webrtc.h"
+ #include "rtc_base/thread.h"
++#include "rtc_base/network.h"
+ #include "webrtc-sys/src/peer_connection.rs.h"
+ #include "webrtc-sys/src/peer_connection_factory.rs.h"
+ 
+@@ -83,6 +85,15 @@
+ PeerConnectionFactory::PeerConnectionFactory(
+     std::shared_ptr<RtcRuntime> rtc_runtime,
+     bool zero_playout_delay)
++    : PeerConnectionFactory(
++          std::move(rtc_runtime),
++          zero_playout_delay,
++          FactoryNetworkConfig{}) {}
++
++PeerConnectionFactory::PeerConnectionFactory(
++    std::shared_ptr<RtcRuntime> rtc_runtime,
++    bool zero_playout_delay,
++    FactoryNetworkConfig network)
+     : rtc_runtime_(rtc_runtime),
+       env_(CreateEnvironment(zero_playout_delay)) {
+   webrtc::PeerConnectionFactoryDependencies dependencies;
+@@ -90,6 +101,17 @@
+   dependencies.worker_thread = rtc_runtime_->worker_thread();
+   dependencies.signaling_thread = rtc_runtime_->signaling_thread();
+   dependencies.socket_factory = rtc_runtime_->network_thread()->socketserver();
++  if (!network.ignored_interfaces.empty()) {
++    auto network_manager = std::make_unique<webrtc::BasicNetworkManager>(
++        env_, rtc_runtime_->network_thread()->socketserver());
++    std::vector<std::string> ignored;
++    ignored.reserve(network.ignored_interfaces.size());
++    for (auto& interface_name : network.ignored_interfaces) {
++      ignored.emplace_back(interface_name.c_str());
++    }
++    network_manager->set_network_ignore_list(ignored);
++    dependencies.network_manager = std::move(network_manager);
++  }
+   dependencies.event_log_factory = std::make_unique<webrtc::RtcEventLogFactory>();
+   dependencies.env = env_;
+ 
+@@ -123,6 +145,9 @@
+     RTC_LOG_ERR(LS_ERROR) << "Failed to create PeerConnectionFactory";
+     return;
+   }
++  webrtc::PeerConnectionFactoryInterface::Options options;
++  options.network_ignore_mask = network.network_ignore_mask;
++  peer_factory_->SetOptions(options);
+ }
+ 
+ PeerConnectionFactory::~PeerConnectionFactory() {
+@@ -164,6 +189,33 @@
+           peer_factory_->CreateAudioTrack(label.c_str(), source->get().get())));
+ }
+ 
++std::shared_ptr<MediaStreamTrack>
++PeerConnectionFactory::clone_media_stream_track(
++    rust::String label,
++    std::shared_ptr<MediaStreamTrack> track) const {
++  auto rtc_track = track->rtc_track();
++
++  if (rtc_track->kind() == webrtc::MediaStreamTrackInterface::kAudioKind) {
++    auto* audio_track =
++        static_cast<webrtc::AudioTrackInterface*>(rtc_track.get());
++    return rtc_runtime_->get_or_create_media_stream_track(
++        peer_factory_->CreateAudioTrack(label.c_str(),
++                                        audio_track->GetSource()));
++  }
++
++  if (rtc_track->kind() == webrtc::MediaStreamTrackInterface::kVideoKind) {
++    auto* video_track =
++        static_cast<webrtc::VideoTrackInterface*>(rtc_track.get());
++    return rtc_runtime_->get_or_create_media_stream_track(
++        peer_factory_->CreateVideoTrack(
++            webrtc::scoped_refptr<webrtc::VideoTrackSourceInterface>(
++                video_track->GetSource()),
++            label.c_str()));
++  }
++
++  throw std::runtime_error("cannot clone an unknown media track kind");
++}
++
+ std::shared_ptr<AudioTrack> PeerConnectionFactory::create_device_audio_track(
+     rust::String label) const {
+   // Create an audio source that uses the ADM for capture
+@@ -213,6 +265,12 @@
+ std::shared_ptr<PeerConnectionFactory>
+ create_peer_connection_factory_with_zero_playout_delay() {
+   return std::make_shared<PeerConnectionFactory>(RtcRuntime::create(), true);
++}
++
++std::shared_ptr<PeerConnectionFactory>
++create_peer_connection_factory_with_network(FactoryNetworkConfig config) {
++  return std::make_shared<PeerConnectionFactory>(
++      RtcRuntime::create(), true, std::move(config));
+ }
+ 
+ }  // namespace livekit_ffi
+--- a/src/peer_connection_factory.rs
++++ b/src/peer_connection_factory.rs
+@@ -11,6 +11,7 @@
+ // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ // See the License for the specific language governing permissions and
+ // limitations under the License.
++// Modified by AckerDB to support W3C-style media track cloning.
+ 
+ pub use cxx::SharedPtr;
+ 
+@@ -24,6 +25,11 @@
+ 
+ #[cxx::bridge(namespace = "livekit_ffi")]
+ pub mod ffi {
++    pub struct FactoryNetworkConfig {
++        ignored_interfaces: Vec<String>,
++        network_ignore_mask: i32,
++    }
++
+     pub struct CandidatePair {
+         local: SharedPtr<Candidate>,
+         remote: SharedPtr<Candidate>,
+@@ -90,6 +96,9 @@
+         fn create_peer_connection_factory() -> SharedPtr<PeerConnectionFactory>;
+         fn create_peer_connection_factory_with_zero_playout_delay(
+         ) -> SharedPtr<PeerConnectionFactory>;
++        fn create_peer_connection_factory_with_network(
++            config: FactoryNetworkConfig,
++        ) -> SharedPtr<PeerConnectionFactory>;
+ 
+         fn zero_playout_delay_enabled(self: &PeerConnectionFactory) -> bool;
+ 
+@@ -110,6 +119,12 @@
+             label: String,
+             source: SharedPtr<AudioTrackSource>,
+         ) -> SharedPtr<AudioTrack>;
++
++        fn clone_media_stream_track(
++            self: &PeerConnectionFactory,
++            label: String,
++            track: SharedPtr<MediaStreamTrack>,
++        ) -> SharedPtr<MediaStreamTrack>;
+ 
+         // Create an audio track that uses the ADM for capture (Platform ADM mode)
+         fn create_device_audio_track(
+--- a/src/rtp_receiver.cpp
++++ b/src/rtp_receiver.cpp
+@@ -68,6 +68,10 @@
+   return receiver_->id();
+ }
+ 
++uint64_t RtpReceiver::native_identity() const {
++  return reinterpret_cast<uintptr_t>(receiver_.get());
++}
++
+ RtpParameters RtpReceiver::get_parameters() const {
+   return to_rust_rtp_parameters(receiver_->GetParameters());
+ }
+--- a/src/rtp_receiver.rs
++++ b/src/rtp_receiver.rs
+@@ -47,6 +47,7 @@
+         fn streams(self: &RtpReceiver) -> Vec<MediaStreamPtr>;
+         fn media_type(self: &RtpReceiver) -> MediaType;
+         fn id(self: &RtpReceiver) -> String;
++        fn native_identity(self: &RtpReceiver) -> u64;
+         fn get_parameters(self: &RtpReceiver) -> RtpParameters;
+         fn set_jitter_buffer_minimum_delay(self: &RtpReceiver, is_some: bool, delay_seconds: f64);
+ 
+--- a/src/rtp_sender.cpp
++++ b/src/rtp_sender.cpp
+@@ -176,6 +176,10 @@
+   return sender_->id();
+ }
+ 
++uint64_t RtpSender::native_identity() const {
++  return reinterpret_cast<uintptr_t>(sender_.get());
++}
++
+ rust::Vec<rust::String> RtpSender::stream_ids() const {
+   rust::Vec<rust::String> vec;
+   for (auto str : sender_->stream_ids())
+--- a/src/rtp_sender.rs
++++ b/src/rtp_sender.rs
+@@ -45,6 +45,7 @@
+         fn ssrc(self: &RtpSender) -> u32;
+         fn media_type(self: &RtpSender) -> MediaType;
+         fn id(self: &RtpSender) -> String;
++        fn native_identity(self: &RtpSender) -> u64;
+         fn stream_ids(self: &RtpSender) -> Vec<String>;
+         fn set_streams(self: &RtpSender, stream_ids: &Vec<String>);
+         fn init_send_encodings(self: &RtpSender) -> Vec<RtpEncodingParameters>;
+--- a/src/rtp_transceiver.cpp
++++ b/src/rtp_transceiver.cpp
+@@ -48,6 +48,10 @@
+   return static_cast<MediaType>(transceiver_->media_type());
+ }
+ 
++uint64_t RtpTransceiver::native_identity() const {
++  return reinterpret_cast<uintptr_t>(transceiver_.get());
++}
++
+ rust::String RtpTransceiver::mid() const {
+   // libwebrtc is typically built with -fno-exceptions, so calling
+   // std::optional::value() on an empty optional aborts the process instead of
+--- a/src/rtp_transceiver.rs
++++ b/src/rtp_transceiver.rs
+@@ -47,6 +47,7 @@
+         type RtpTransceiver;
+ 
+         fn media_type(self: &RtpTransceiver) -> MediaType;
++        fn native_identity(self: &RtpTransceiver) -> u64;
+         fn mid(self: &RtpTransceiver) -> Result<String>;
+         fn sender(self: &RtpTransceiver) -> SharedPtr<RtpSender>;
+         fn receiver(self: &RtpTransceiver) -> SharedPtr<RtpReceiver>;

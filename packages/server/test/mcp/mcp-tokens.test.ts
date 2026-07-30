@@ -10,7 +10,7 @@ import {
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { createMcp, mcpTool } from "../../src/mcp/index.ts";
 import { serve } from "../../src/transport/server.ts";
-import type { SessionApplicationMessage } from "../../src/realtime/session.ts";
+import type { SessionApplicationMessage } from "../../src/subscriptions/session.ts";
 import {
   agentMcp,
   cleanupMcpTokenFixtures,

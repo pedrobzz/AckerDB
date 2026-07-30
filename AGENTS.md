@@ -269,10 +269,12 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    ```
    Publishes all 6 packages at the pinned version to Verdaccio (in dependency order: core, server, cache, client, client-react, cli) and tags the commit `vX.Y.Z`. `bun publish` rewrites the `workspace:X.Y.Z` inter-deps to the literal `X.Y.Z` at pack time, so tarballs depend on exact versions.
 
-## Beta publishing: test a branch without merging
+## Prerelease publishing: test a branch without merging
 
 `bun run publish:beta` publishes the **working tree** — any branch, dirty is
-fine — as `@ackerdb/*@<base>-beta.N` under the `beta` dist-tag. None of the
+fine — as `@ackerdb/*@<base>-beta.N` under the `beta` dist-tag. `bun run
+publish:alpha` publishes it as the next minor's
+`@ackerdb/*@<next-minor>.0-alpha.N` under the `alpha` dist-tag. None of the
 release gates apply (no main-only, no clean tree, no bench evidence, no git
 tag); `latest` never moves, so real consumers are untouched. The registry's
 version list is the beta counter: every run takes a fresh `N`, and a failed
@@ -282,6 +284,7 @@ restored byte-for-byte.
 ```bash
 bun run publish:beta          # publish only; prints the version
 bun run publish:beta --demo   # also repin the demo to it and reinstall
+bun run publish:alpha         # publish the next minor alpha
 ```
 
 `--demo` rewrites every demo workspace's `@ackerdb/*` pins **that sit at the

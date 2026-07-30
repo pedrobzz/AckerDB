@@ -292,6 +292,354 @@ listener). Always runs under the reactive system's execution root, under the
 subscriber's own principal — never under the identity or context of whoever
 triggered it.
 
+## Realtime communication
+
+**Application channel** — A typed bidirectional application communication
+contract. A channel may opt into room partitioning; an unroomed channel has no
+room membership concept.
+_Avoid_: WebSocket, provider session
+
+**Channel event** — A named typed message sent in one direction through an
+application channel. React observers may handle channel events through a named
+handler map or one discriminated-union handler without changing the event
+contract.
+_Avoid_: Raw WebSocket message, database event
+
+**Channel send outcome** — The local result of offering one client event to the
+current application-channel transport. Success does not claim that the server
+received or processed the event; failure leaves no event queued for reconnect.
+_Avoid_: Server acknowledgement, handler result
+
+**Channel delivery audience** — The recipients selected by one server-side
+channel operation. A handler may send to its current member, publish to every
+member of its current channel or room including itself, or use an explicit
+server-only operation to publish to another typed channel subscription.
+Client events cannot name a delivery audience independently of the subscription
+that carried them.
+_Avoid_: Client-selected room, implicit sender exclusion
+
+**Room** — An opt-in membership boundary within one application channel. Every
+membership in a roomed channel names exactly one room; room identity and
+membership never cross into another channel, and clients cannot join all rooms
+through a wildcard.
+_Avoid_: Channel, provider session
+
+**Channel membership authorization** — The optional application decision made
+before one client joins an application channel or room. It runs under the
+current authenticated principal and may reject with a typed error or establish
+typed ephemeral membership state for subsequent channel handlers. Authorization
+is evaluated again after reconnect or authentication change; prior membership
+state is never trusted across either boundary.
+_Avoid_: Connection authentication, durable session
+
+**Channel subscription** — One shared client-lifetime membership identified by
+an application channel, canonical arguments, and its optional canonical room.
+One or more local observers may retain it without creating additional server
+subscriptions.
+_Avoid_: Hook instance, WebSocket connection
+
+**Channel observer** — One local consumer of a channel subscription, with its
+own message and lifecycle handlers. Every matching delivery reaches each
+observer once, independently of the other observers' behavior.
+_Avoid_: Channel subscription, server subscriber
+
+**Handler key** — An optional identity that coalesces one complete local `on`
+handler namespace without comparing function identity. It never changes
+network identity or ownership. Channel subscriptions may retain independent
+keyed handler bundles. A realtime hook call without a key is exclusive; a keyed
+realtime session may be retained only by calls carrying the same non-null key.
+A missing or conflicting key is programmer misuse rather than another peer.
+_Avoid_: Hook ID, idempotency key, subscription key
+
+**Realtime session** — One AckerDB-relayed WebRTC peer session between an
+application client and its server handler. Typed application events use WebRTC
+data channels while audio and video use native WebRTC media tracks.
+_Avoid_: Application channel, provider-direct connection, media WebSocket
+
+**Shared realtime session** — One client-lifetime realtime session identified
+by a realtime reference and canonical arguments. Multiple local observers retain
+the same peer connection, typed event delivery, and attached media tracks
+instead of creating duplicate sessions or transmissions.
+_Avoid_: Realtime hook instance, channel subscription
+
+**Realtime session demand** — The committed local ownership that keeps a shared
+realtime session alive: retained framework handles and committed React
+observers. Tracks, data channels, and typed byte streams belong to that session
+generation; they do not independently keep it alive after its final owner
+releases. The session closes following only the standard deferred-microtask
+grace used to absorb React Strict Mode cleanup and remount.
+_Avoid_: Warm-session timeout, render-attempt ownership
+
+**React realtime activation** — Declarative realtime demand created by
+committed hooks with real arguments. Passing the shared `skip` sentinel creates
+no observer and no session; changing from `skip` to arguments activates demand,
+while changing back releases it.
+_Avoid_: Render-time connection, hook-owned transport
+
+**Realtime session handle** — A framework-neutral retained owner of a shared
+realtime session. `release` removes only that owner's demand, while an explicit
+`disconnect` terminates the shared session for every owner and suppresses
+automatic recovery until `reconnect` starts a new generation; React hooks
+acquire and release the same ownership declaratively.
+_Avoid_: Hook instance, exclusive connection
+
+**Realtime recovery classification** — The distinction between failures that
+may recover while session demand remains and failures that require a meaningful
+application change. Network, ICE/DTLS, temporary signaling, server restart, and
+overload failures recover with bounded backoff; authorization, validation,
+protocol, capability, and handler failures remain terminal until explicit
+reconnect, a relevant authentication change, or different session arguments.
+No recovery replays prior events or media.
+_Avoid_: Blind reconnect loop, permanent network failure, replay
+
+**Realtime recovery generation** — One replacement attempt after a peer can no
+longer recover in place. A transient disconnected state first receives finite
+native grace, then one managed ICE restart with refreshed deployment
+configuration and a deadline. Continued failure replaces the complete
+generation: authorization and handler setup run again, while prior typed
+events, media, provider state, and partial byte streams do not cross the
+boundary.
+_Avoid_: Resumed peer, replay generation, immortal ICE restart
+
+**Realtime session phase** — The exhaustive shared-session lifecycle observed
+by React: `disabled`, `connecting`, `connected`, `reconnecting`,
+`disconnected`, `rejected`, or `failed`. A rejected phase carries the declared
+authorization application error; reconnecting and failed phases carry their
+typed client error. The current native peer is exposed when one exists, and is
+guaranteed in the connected phase.
+_Avoid_: Boolean connected flag, raw peer connection state
+
+**Realtime observer** — One local consumer of a shared realtime session, with
+ordinary component-local React state. Multiple components may retain the same
+session only through the same non-null handler key, sharing one complete keyed
+handler bundle without installing or executing it again. AckerDB does not merge
+or replay transcript history, message aggregation, or other application state;
+applications use their own store or context when that state must be shared.
+_Avoid_: Provider session, realtime connection
+
+**Realtime keyed handler claim** — The one optional keyed `on` handler bundle
+owned by a shared realtime session. Equal `handlerKey` values retain the same
+claim without rerunning setup or replaying prior events. A missing or different
+key for the same active client, realtime reference, and canonical arguments
+raises `RealtimeHandlerKeyConflictError` rather than creating another peer.
+Supplying meaningfully different options under one key is application misuse.
+An initial call without a key is exclusive and rejects every additional hook
+call while its session remains active.
+_Avoid_: Connection key, multiple keyed bundles, function-identity deduplication
+
+**Realtime observer callback namespace** — The single React `on` object for one
+realtime observer. `on.peerConnection` runs for each native peer generation
+before its initial negotiation, may await native media setup, and may return
+generation cleanup;
+`on.connected` reports that generation's actual connected state;
+`on.track` observes the native `RTCTrackEvent` for each remote track without
+creating another media subscription; `on.stateChange` receives each future
+transition of the exhaustive AckerDB session-phase union without replaying
+earlier transitions; `on.event` is either the typed event-handler map or the
+discriminated-union event handler; and `on.stream` applies those same two forms
+to incoming typed byte streams. Because the complete namespace already belongs
+to one keyed handler claim, each stream reaches one handler once without a
+second deduplication mechanism. Explicit `ReadableStream.tee()` is the
+application's opt-in to multiple consumers. The hook snapshot, rather than a
+lifecycle callback, is the source of current state.
+`RealtimeOn<typeof realtimeRef>` derives the entire namespace from the
+generated reference's existing type metadata without additional handler
+code generation.
+_Avoid_: Track declaration, conflated setup and connected event
+
+**Realtime signaling** — AckerDB-owned signaling for each WebRTC generation.
+Initial offer, answer, and ICE trickle use an established HTTP POST/PATCH shape.
+After the reliable internal data channel opens, later descriptions and
+candidates travel as internal control frames on that channel. No WebSocket,
+second socket, or permanent HTTP polling loop participates. AckerDB services
+the native `negotiationneeded` event through serialized perfect negotiation so
+ordinary peer mutations do not require application signaling.
+_Avoid_: Application signaling, media-signaling WebSocket
+
+**Realtime peer configuration** — The standard `RTCConfiguration` installed by
+AckerDB from deployment-level reachability configuration before
+`on.peerConnection` runs. Internal signaling supplies standard `RTCIceServer`
+entries and short-lived credentials; the React hook has no ICE or TURN option.
+An advanced observer may inspect or replace the configuration through the
+native peer's `getConfiguration` and `setConfiguration` before initial
+negotiation.
+_Avoid_: AckerDB-specific ICE options, signaling callback
+
+**Realtime server network policy** — Deployment-owned native candidate policy:
+allowed host interfaces, ignored adapter classes, UDP port range, one-to-one
+advertised-address mappings, and optional libwebrtc ICE timing overrides. It is
+resolved and validated once at Runtime startup and never belongs to an
+application realtime definition or client hook.
+_Avoid_: Route network option, hook network option, per-session host policy
+
+**Realtime TURN service** — Deployment infrastructure that makes AckerDB
+realtime sessions reachable when a direct ICE path is blocked. Production must
+support standard external UDP and TURN/TLS services without changing
+application code. AckerDB mints principal-bound coturn REST credentials from a
+deployment secret; the coturn relay process remains infrastructure rather than
+an application API. Credential issuance, rotation, native configuration
+updates, and required managed ICE restarts belong to AckerDB rather than
+individual realtime definitions or hooks.
+_Avoid_: Hook TURN option, application credential callback, parallel media backend
+
+**Realtime native resource budget** — The finite process-wide ownership of
+auxiliary peers, decoded frame streams, generated media sources, and native
+track wrappers/clones, combined with per-generation peer, stream, handler, and
+media limits. Admission claims capacity before retaining the native resource;
+explicit close, stop, or generation cleanup releases it exactly once.
+_Avoid_: Best-effort native cleanup, unbounded track registry, preallocated capacity
+
+**Realtime health sample** — A bounded rotating observation of a small number
+of active peer generations, collected by the existing Runtime telemetry tick.
+It reports aggregate selected-path, loss, jitter, RTT, bitrate, buffering,
+pressure, media-flow, and native queue information without retaining SDP,
+candidates, addresses, credentials, or a per-peer background polling loop.
+_Avoid_: Realtime packet log, peer inventory, independent stats timer
+
+**Realtime native package** — The one `@ackerdb/server` package containing
+verified Darwin arm64/x64, Linux arm64/x64, and Windows x64 native prebuilds
+from one pinned LiveKit libwebrtc source set. Per-target and aggregate
+manifests, SHA-256 digests, notices, and SBOM define the published boundary.
+Every target is built before publication; runtime execution is a separate
+platform-support claim.
+_Avoid_: Runtime download, host-only publish, LiveKit server dependency
+
+**Realtime peer ownership** — The boundary on the platform
+`RTCPeerConnection` exposed to a client and the W3C-shaped peer backed by
+bundled native libwebrtc on the server. Applications own supported tracks,
+transceivers, senders, raw data channels, event listeners, and pre-negotiation
+configuration; AckerDB owns session descriptions, remote ICE candidates,
+candidate transport, and negotiation sequencing. A server capability not yet
+exported by the native binding fails explicitly instead of being silently
+stubbed. Calling either peer's `close` deliberately disconnects the shared
+session for every owner just like the session's `disconnect`.
+_Avoid_: AckerDB media vocabulary, silent peer stub, application signaling
+
+**Realtime session authorization** — The optional application admission
+decision made under the AckerDB client's current authenticated principal before
+allocating a server peer. It may reject with a typed connection error or
+establish typed ephemeral state for the realtime handler. Every recovered peer
+generation authorizes again, and an authentication-epoch change replaces the
+old generation rather than changing its identity in place.
+_Avoid_: Provider token, client-supplied signaling credential
+
+**Realtime event send outcome** — The local result of offering one typed event
+to the realtime session's current data channel. Success does not claim that the
+server received or processed the event; failure leaves no event queued for
+recovery.
+_Avoid_: Server acknowledgement, handler result
+
+**Realtime typed event channel** — The single AckerDB-owned reliable, ordered
+WebRTC data channel carrying the realtime protocol's validated client and
+server events. Its delivery mode is not configurable.
+_Avoid_: Raw data channel, configurable hidden channel
+
+**Realtime binary value** — A first-class `Uint8Array` field in one atomic
+typed realtime event, encoded as binary data-channel data without requiring
+application-level base64. The complete encoded event frame is limited to 16
+KiB and fails explicitly above that limit rather than being fragmented
+silently. Browsers use native binary messages. React Native exposes the same
+value even when its selected WebRTC adapter must perform an internal bridge
+conversion, and AckerDB never adds a duplicate conversion. Large finite binary
+values use a realtime typed byte stream; continuous audio and video remain
+media tracks.
+_Avoid_: Base64 application payload, implicit large transfer, media-frame event
+
+**Realtime typed byte stream** — A named, schema-declared transfer for a large
+finite binary value. `clientStreams` and `serverStreams` type its metadata;
+standard `WritableStream<Uint8Array>` and `ReadableStream<Uint8Array>` surfaces
+provide bounded chunking, backpressure, cancellation, and incremental
+processing across web, React Native, and server code. Opening an outgoing
+stream returns only `{ id, writable }`: the protocol ID supports explicit
+application correlation, while all byte-flow behavior stays on the standard
+writable. A sender may declare an optional exact size, while the definition may
+narrow the deployment's safe default with `maxBytes`; actual-byte counting
+always enforces the effective limit. Concurrent-stream, buffered-byte, and idle
+budgets bound unknown-length or stalled transfers without preallocating from a
+claimed size. Standard writable closure means only that every chunk and the
+ending marker were accepted by the current local transport; application
+receipt, processing, or durability requires an explicit typed response event.
+Cancellation propagates best-effort in either direction, a generation end
+interrupts both sides explicitly, and partial streams are never resumed or
+replayed. The stream is not buffered whole, silently created from an oversized
+event, or used for continuous media.
+_Avoid_: Oversized event, hidden fragmentation, implicit RPC, resumable transfer,
+base64 file, audio/video track
+
+**User-owned data channel** — An additional native `RTCDataChannel` created and
+managed through the exposed peer connection. Its label, protocol, ordering,
+reliability, binary handling, buffering, lifecycle, validation, and typing
+belong entirely to the application.
+_Avoid_: Realtime typed event channel, AckerDB event
+
+**Realtime protocol** — The application-defined typed client and server events
+and typed byte streams carried by the realtime typed event channel together
+with the audio and video tracks a realtime session may exchange.
+_Avoid_: Universal AI protocol, provider wire protocol
+
+**Realtime media source** — An application-owned, platform-native WebRTC audio
+or video track attached to a realtime session. The application owns permission,
+capture, device selection, push-to-talk, screen sharing, camera snapshots, and
+preprocessing.
+_Avoid_: AckerDB-owned capture, encoded media WebSocket
+
+**Realtime media consumer** — Application-owned playback, rendering, recording,
+or processing of a remote WebRTC track. AckerDB exposes the native remote track
+and never chooses autoplay, routing, volume, interruption behavior, or layout.
+_Avoid_: Automatic playback, AckerDB media player
+
+**Server media track** — A native, W3C-shaped `MediaStreamTrack` delivered to a
+realtime handler through the familiar track-event shape. The handler may relay
+it with ordinary sender operations or explicitly request decoded frames;
+merely receiving the track performs no application-level media conversion.
+_Avoid_: AckerDB media object, eagerly decoded stream
+
+**Server media frame stream** — An explicitly acquired, bounded stream of
+decoded audio samples or video frames from one server media track. It is a
+standard `ReadableStream`, exists only while consumed, and owns any decoding,
+native resampling, conversion, finite buffering, and copying that the requested
+representation requires. Audio frames are interleaved signed PCM16; the default
+video representation is I420. A slow consumer drops its oldest queued frame,
+keeping memory and latency bounded while preserving the newest live media.
+_Avoid_: Default track delivery, implicit transcoding
+
+**Server media source** — An explicitly created `AudioSource` or `VideoSource`
+that accepts application-generated PCM16 samples or I420 frames and produces
+one ordinary outbound server `MediaStreamTrack`. A finite native audio queue
+may pace bursty generated media, while its zero-queue path favors direct 10 ms
+delivery; `clearQueue` supports interruption. Sources close explicitly or with
+their owning realtime generation. Provider-supplied native tracks bypass this
+source and attach directly to the peer.
+_Avoid_: Provider adapter, client media capture, encoded WebSocket track
+
+**Auxiliary server peer** — A generic, generation-owned server
+`RTCPeerConnection` created through `ctx.createPeerConnection` from the same
+native engine as the client-facing peer. Its signaling belongs to application
+or provider code; AckerDB supplies no provider adapter and closes it with the
+owning generation.
+_Avoid_: Provider-specific peer, second WebRTC engine, unowned peer
+
+**Realtime handler** — User-owned server code for one AckerDB-relayed WebRTC
+peer generation. It runs before answer negotiation with the native-backed
+server peer, authenticated principal, validated arguments, authorized
+ephemeral state, and a generation `AbortSignal`. It registers named typed
+client-event handlers with `ctx.on`, sends named typed server events with
+`ctx.send`, and may bridge tracks to any WebSocket, WebRTC, model provider, or
+application pipeline the user chooses. It owns the same procedure capabilities
+as `procedure` and `sseProcedure`: ordinary registered procedures are directly
+callable with the same context, external I/O runs outside transactions, and
+`ctx.tx` opens short atomic database work. Returning from the handler does not
+end the generation.
+_Avoid_: Provider adapter, direct integration, AckerDB AI protocol
+
+**Realtime event dispatch** — Wire-order invocation of a generation's named
+typed server handlers. Listeners for one event start in registration order, but
+their promises never block later events and completion order is not guaranteed.
+Synchronous throws and rejected promises fail only that generation. A
+runtime-wide in-flight budget fails overload explicitly instead of retaining an
+unbounded hidden queue.
+_Avoid_: Serialized handler queue, process-level rejection, unbounded tasks
+
 ## Validation
 
 **Constraint** — A declarative rule that narrows the values admitted by a

@@ -3,6 +3,7 @@ import {
   cpSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -41,15 +42,17 @@ function run(command: string[], cwd: string): string {
 }
 
 function installPackedPackage(app: string, tarballs: string, name: "core" | "server"): void {
-  const output = run(
+  run(
     [process.execPath, "pm", "pack", "--destination", tarballs],
     join(REPO, "packages", name),
   );
-  const tarball = output
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.endsWith(".tgz"));
-  if (tarball === undefined) throw new Error(`bun pm pack did not report a ${name} tarball`);
+  const archive = readdirSync(tarballs).find(
+    (file) => file.startsWith(`ackerdb-${name}-`) && file.endsWith(".tgz"),
+  );
+  if (archive === undefined) {
+    throw new Error(`bun pm pack did not create a ${name} tarball`);
+  }
+  const tarball = join(tarballs, archive);
 
   const target = join(app, "node_modules", "@ackerdb", name);
   mkdirSync(target, { recursive: true });
@@ -66,6 +69,11 @@ test("packed @ackerdb/server values keep identity across physical package copies
     cpSync(
       realpathSync(join(REPO, "packages", "server", "node_modules", "jose")),
       join(app, "node_modules", "jose"),
+      { recursive: true },
+    );
+    cpSync(
+      realpathSync(join(REPO, "packages", "core", "node_modules", "msgpackr")),
+      join(app, "node_modules", "msgpackr"),
       { recursive: true },
     );
 

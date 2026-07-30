@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import {
   PROTOCOL_VERSION,
   type ClientAuthMessage,
+  type ChannelJoinMessage,
+  type ChannelLeaveMessage,
+  type ChannelSendMessage,
   type Credential,
   type ErrorMessage,
   type MutationMessage,
@@ -41,7 +44,7 @@ import {
   type SessionLimits,
   type SessionRuntimeContext,
   type SessionSink,
-} from "../../src/realtime/session.ts";
+} from "../../src/subscriptions/session.ts";
 
 const TEST_SOURCE = Object.freeze({ family: "test", address: "session-auth" });
 
@@ -207,6 +210,9 @@ class FakeRuntime implements RuntimePort {
   readonly procedures: ProcedureMessage[] = [];
   readonly procedureRequests: RuntimeRequest<ProcedureMessage>[] = [];
   readonly mutations: MutationMessage[] = [];
+  readonly channelJoins: ChannelJoinMessage[] = [];
+  readonly channelLeaves: ChannelLeaveMessage[] = [];
+  readonly channelSends: ChannelSendMessage[] = [];
   readonly operationContexts: SessionRuntimeContext[] = [];
   readonly closes: Outcome[] = [];
   readonly transitionPublications: RuntimePublication[] = [];
@@ -289,6 +295,30 @@ class FakeRuntime implements RuntimePort {
     this.operationContexts.push(context);
     this.resets.push(message.id);
     await context.publish(prepareRuntimePublication(resetTransition(context.authEpoch, message.id)));
+  }
+
+  async joinChannel(
+    context: SessionRuntimeContext,
+    request: RuntimeRequest<ChannelJoinMessage>,
+  ): Promise<void> {
+    this.operationContexts.push(context);
+    this.channelJoins.push(request.message);
+  }
+
+  async leaveChannel(
+    context: SessionRuntimeContext,
+    request: RuntimeRequest<ChannelLeaveMessage>,
+  ): Promise<void> {
+    this.operationContexts.push(context);
+    this.channelLeaves.push(request.message);
+  }
+
+  async sendChannel(
+    context: SessionRuntimeContext,
+    request: RuntimeRequest<ChannelSendMessage>,
+  ): Promise<void> {
+    this.operationContexts.push(context);
+    this.channelSends.push(request.message);
   }
 
   async query(context: SessionRuntimeContext, request: RuntimeRequest<QueryMessage>): Promise<unknown> {
@@ -447,7 +477,7 @@ describe("Session Protocol-2 ownership", () => {
     expect(runtime.queries).toHaveLength(0);
     expect(sink.controls).toEqual([
       {
-        v: 4,
+        v: 5,
         t: "err",
         id: null,
         outcome: { code: "malformed", retryable: false, message: "hello must be the first frame" },
@@ -463,12 +493,12 @@ describe("Session Protocol-2 ownership", () => {
     expect(session.currentClientSessionId).toBeNull();
 
     await handle(session, hello());
-    await handle(session, { v: 4, t: "sub", id: 1, ref: "messages.list", args: {} });
-    await handle(session, { v: 4, t: "reset", id: 1, cursor: cursor(0) });
+    await handle(session, { v: 5, t: "sub", id: 1, ref: "messages.list", args: {} });
+    await handle(session, { v: 5, t: "reset", id: 1, cursor: cursor(0) });
     await handle(session, query(2));
     await handle(session, mutation(3));
-    await handle(session, { v: 4, t: "unsub", id: 1 });
-    await handle(session, { v: 4, t: "ping" });
+    await handle(session, { v: 5, t: "unsub", id: 1 });
+    await handle(session, { v: 5, t: "ping" });
     await settle();
 
     expect(session.snapshot()).toMatchObject({
@@ -561,7 +591,7 @@ describe("Session Protocol-2 ownership", () => {
     await handle(session, hello());
 
     const subscriptions = [1, 2].map((id) => handle(session, {
-      v: 4,
+      v: 5,
       t: "sub",
       id,
       ref: "messages.list",
@@ -1204,7 +1234,7 @@ describe("Session Protocol-2 ownership", () => {
       "err",
     )[0];
     expect(error).toEqual({
-      v: 4,
+      v: 5,
       t: "err",
       id: 7,
       outcome: { code: "unauthorized", retryable: false, message: "access denied" },

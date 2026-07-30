@@ -288,6 +288,84 @@ export {
   type TxCtx,
 } from "./app/functions.ts";
 export {
+  channel,
+  isRegisteredChannel,
+  type AnyRegisteredChannel,
+  type ChannelAuthorizationCtx,
+  type ChannelBuilder,
+  type ChannelCtx,
+  type ChannelDisconnectReason,
+  type ChannelEventDeclarations,
+  type ChannelHandlers,
+  type ChannelPublish,
+  type ChannelPublisher,
+  type ChannelSend,
+  type RegisteredChannel,
+} from "./channels/definition.ts";
+export {
+  realtime,
+  type AnyRegisteredRealtime,
+  type RegisteredRealtime,
+  type RealtimeAuthorizationCtx,
+  type RealtimeBuilder,
+  type RealtimeCtx,
+  type RealtimeDefinition,
+  type RealtimeEventDeclarations,
+  type RealtimeIncomingStream,
+  type RealtimeOpenStreamOptions,
+  type RealtimeOutgoingStream,
+  type RealtimePeerConnection,
+  type RealtimeRTCConfiguration,
+  type RealtimeRun,
+  type RealtimeStreamDeclaration,
+  type RealtimeStreamDeclarations,
+} from "./realtime/definition.ts";
+export type { RealtimeConfigurationSource } from "./realtime/engine.ts";
+export type {
+  RealtimeCandidatePathDiagnostic,
+  RealtimeMediaFlowDiagnostic,
+  RealtimePeerDiagnostic,
+} from "./realtime/diagnostics.ts";
+export type { RealtimeHubSnapshot } from "./realtime/hub.ts";
+export type {
+  RealtimeAddressMapping,
+  RealtimeIceTimingOptions,
+  RealtimeNetworkAdapterType,
+  RealtimeNetworkDiagnostic,
+  RealtimeServerNetworkOptions,
+} from "./realtime/network.ts";
+export {
+  createTurnConfiguration,
+  type RealtimeTurnOptions,
+} from "./realtime/turn.ts";
+export {
+  preflightRealtimeTurn,
+  type RealtimeTurnPreflightOptions,
+  type RealtimeTurnPreflightResult,
+} from "./realtime/turn-preflight.ts";
+export type {
+  RealtimeAudioFrame,
+  RealtimeAudioSource,
+  RealtimeAudioSourceOptions,
+  RealtimeAudioStream,
+  RealtimeAudioStreamOptions,
+  RealtimeMediaStreamTrack,
+  RealtimeMedia,
+  RealtimeResource,
+  RealtimeVideoBufferType,
+  RealtimeVideoFrame,
+  RealtimeVideoFrameEvent,
+  RealtimeVideoRotation,
+  RealtimeVideoSource,
+  RealtimeVideoSourceOptions,
+  RealtimeVideoStream,
+  RealtimeVideoStreamOptions,
+} from "./realtime/media.ts";
+export type {
+  RealtimeGlobalResourceLimits,
+  RealtimeGlobalResourceSnapshot,
+} from "./realtime/resources.ts";
+export {
   createMcp,
   isMcpDeclaration,
   isMcpToolBlueprint,
@@ -378,7 +456,7 @@ export {
   type WebSocketDeliverySnapshot,
   type WebSocketDeliverySocket,
   type WebSocketSessionSinkOptions,
-} from "./realtime/delivery.ts";
+} from "./subscriptions/delivery.ts";
 export {
   OrderedReactive,
   ReactiveCommit,
@@ -398,7 +476,7 @@ export {
   type ReactiveObserver,
   type ReactiveSnapshot,
   type Subscriber,
-} from "./realtime/reactive.ts";
+} from "./subscriptions/reactive.ts";
 export {
   prepareRuntimePublication,
   Session,
@@ -417,7 +495,7 @@ export {
   type SessionSnapshot,
   type SessionWireFrame,
   type SubscriptionServerMessage,
-} from "./realtime/session.ts";
+} from "./subscriptions/session.ts";
 export {
   Runtime,
   type RuntimeHookContext,
@@ -426,6 +504,7 @@ export {
   type RuntimeLifecycleState,
   type RuntimeMcpToolRequest,
   type RuntimeOptions,
+  type RuntimeRealtimeOptions,
   type RuntimeProcedureRequest,
   type RuntimeProcedureResponder,
   type RuntimeProcedureResponse,

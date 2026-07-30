@@ -1,0 +1,231 @@
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import {
+  PROTOCOL_VERSION,
+  encode,
+  encodeRealtimeEvent,
+  type RealtimeRef,
+} from "@ackerdb/core";
+import type {
+  AckerDBWebSocket,
+} from "@ackerdb/client";
+import {
+  AckerDBProvider,
+  useRealtime,
+  type AckerDBProviderConfig,
+  type UseRealtimeResult,
+} from "@ackerdb/client-react";
+import { act, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { actEnvironment, mountPoint } from "./support/dom.ts";
+
+class FakeSocket implements AckerDBWebSocket {
+  onopen: (() => void) | null = null;
+  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  send(): void {}
+  close(): void {}
+}
+
+class FakeDataChannel extends EventTarget {
+  binaryType: BinaryType = "blob";
+  bufferedAmount = 0;
+  bufferedAmountLowThreshold = 0;
+  readyState: RTCDataChannelState = "connecting";
+  send(): void {}
+
+  open(): void {
+    this.readyState = "open";
+    this.dispatchEvent(new Event("open"));
+  }
+
+  receive(data: Uint8Array): void {
+    this.dispatchEvent(new MessageEvent("message", {
+      data: data.buffer.slice(
+        data.byteOffset,
+        data.byteOffset + data.byteLength,
+      ),
+    }));
+  }
+}
+
+class FakePeerConnection extends EventTarget {
+  readonly channel = new FakeDataChannel();
+  connectionState: RTCPeerConnectionState = "new";
+  localDescription: RTCSessionDescription | null = null;
+
+  createDataChannel(): RTCDataChannel {
+    return this.channel as unknown as RTCDataChannel;
+  }
+
+  async createOffer(): Promise<RTCSessionDescriptionInit> {
+    return { type: "offer", sdp: "v=0\r\nclient" };
+  }
+
+  async setLocalDescription(value: RTCLocalSessionDescriptionInit): Promise<void> {
+    this.localDescription = value as RTCSessionDescription;
+    queueMicrotask(() => {
+      const event = new Event("icecandidate");
+      Object.defineProperty(event, "candidate", { value: null });
+      this.dispatchEvent(event);
+    });
+  }
+
+  async setRemoteDescription(): Promise<void> {
+    queueMicrotask(() => {
+      this.connectionState = "connected";
+      this.dispatchEvent(new Event("connectionstatechange"));
+      this.channel.open();
+    });
+  }
+
+  async addIceCandidate(): Promise<void> {}
+
+  close(): void {
+    this.connectionState = "closed";
+  }
+}
+
+type Assistant = RealtimeRef<
+  { readonly assistantId: bigint },
+  {},
+  { readonly transcript: { readonly text: string } },
+  {},
+  {},
+  never
+>;
+
+const assistant = { $ref: "assistant.live" } as Assistant;
+const results = new Map<string, UseRealtimeResult<Assistant>>();
+
+interface ProbeProps {
+  readonly id: string;
+  readonly onTranscript: (text: string) => void;
+}
+
+function Probe({ id, onTranscript }: ProbeProps): ReactNode {
+  const result = useRealtime(assistant, { assistantId: 1n }, {
+    handlerKey: "useAssistant",
+    on: {
+      event: {
+        transcript: ({ text }) => onTranscript(text),
+      },
+    },
+  });
+  results.set(id, result);
+  return <span>{id}:{result.state.phase};</span>;
+}
+
+function app(
+  config: AckerDBProviderConfig,
+  probes: readonly ProbeProps[],
+): ReactNode {
+  return (
+    <AckerDBProvider config={config}>
+      {probes.map((probe) => <Probe key={probe.id} {...probe} />)}
+    </AckerDBProvider>
+  );
+}
+
+async function render(root: Root, value: ReactNode): Promise<void> {
+  await act(async () => {
+    root.render(value);
+  });
+}
+
+async function eventually(check: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!check()) {
+    if (Date.now() >= deadline) throw new Error("condition did not become true");
+    await act(async () => {
+      await Bun.sleep(1);
+    });
+  }
+}
+
+beforeAll(() => actEnvironment(true));
+afterAll(() => actEnvironment(false));
+
+describe("useRealtime", () => {
+  test("retains one peer and one keyed handler bundle across hook owners", async () => {
+    const peers: FakePeerConnection[] = [];
+    let offers = 0;
+    const config: AckerDBProviderConfig = {
+      url: "https://react-realtime.test",
+      credential: { kind: "anonymous" },
+      clientSessionId: "react-realtime-session",
+      random: () => 0,
+      createWebSocket: () => new FakeSocket(),
+      createPeerConnection: () => {
+        const peer = new FakePeerConnection();
+        peers.push(peer);
+        return peer as unknown as RTCPeerConnection;
+      },
+      fetch: async (url, init) => {
+        const path = new URL(url).pathname;
+        if (path === "/api/realtime/config") {
+          return new Response(encode({
+            v: PROTOCOL_VERSION,
+            t: "realtime_config",
+            configuration: {},
+          }));
+        }
+        if (path === "/api/realtime" && init?.method === "POST") {
+          offers++;
+          return new Response(encode({
+            v: PROTOCOL_VERSION,
+            t: "realtime_answer",
+            sessionId: "abcdefghijklmnopqrstuvwxyzABCDEF",
+            answer: { type: "answer", sdp: "v=0\r\nserver" },
+            streamLimits: { client: {}, server: {} },
+            candidates: [],
+            complete: true,
+          }));
+        }
+        if (init?.method === "DELETE") {
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`unexpected request ${init?.method ?? "GET"} ${path}`);
+      },
+    };
+    const root = createRoot(mountPoint());
+    const calls: string[] = [];
+    const messages = (text: string) => calls.push(`messages:${text}`);
+    const composer = (text: string) => calls.push(`composer:${text}`);
+
+    await render(root, app(config, [
+      { id: "messages", onTranscript: messages },
+      { id: "composer", onTranscript: composer },
+    ]));
+    await eventually(() => results.get("messages")?.state.phase === "connected");
+    expect(peers).toHaveLength(1);
+    expect(offers).toBe(1);
+    expect(results.get("messages")?.peerConnection).toBe(
+      results.get("composer")?.peerConnection,
+    );
+
+    await act(async () => {
+      peers[0]!.channel.receive(encodeRealtimeEvent("transcript", {
+        text: "one",
+      }));
+    });
+    await eventually(() => calls.length === 1);
+    expect(calls).toEqual(["messages:one"]);
+
+    await render(root, app(config, [
+      { id: "composer", onTranscript: composer },
+    ]));
+    await act(async () => {});
+    expect(peers).toHaveLength(1);
+
+    await act(async () => {
+      peers[0]!.channel.receive(encodeRealtimeEvent("transcript", {
+        text: "two",
+      }));
+    });
+    await eventually(() => calls.length === 2);
+    expect(calls).toEqual(["messages:one", "composer:two"]);
+
+    await act(async () => root.unmount());
+  });
+});

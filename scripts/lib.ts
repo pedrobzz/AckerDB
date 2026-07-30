@@ -43,6 +43,24 @@ export async function assertRegistryReachable(registry: string): Promise<void> {
   }
 }
 
+/**
+ * Stable and prerelease packages share one native artifact boundary. Assembly
+ * independently verifies every advertised target before any package is sent.
+ */
+export function assertWebRtcPrebuilds(): void {
+  const result = Bun.spawnSync(
+    ["bun", "packages/server/native/webrtc/package.ts"],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  if (result.exitCode !== 0) {
+    fail(
+      "the WebRTC package is not assembled from all verified target builds:\n" +
+        result.stdout.toString() +
+        result.stderr.toString(),
+    );
+  }
+}
+
 export function pkgJsonPath(pkg: string): string {
   return `packages/${pkg}/package.json`;
 }

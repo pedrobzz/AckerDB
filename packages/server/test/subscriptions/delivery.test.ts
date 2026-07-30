@@ -15,14 +15,14 @@ import {
   type DeliveryClock,
   type DeliveryObservation,
   type WebSocketDeliverySocket,
-} from "../../src/realtime/delivery.ts";
+} from "../../src/subscriptions/delivery.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {
   prepareRuntimePublication,
   type RuntimePublication,
   type SessionControlMessage,
-} from "../../src/realtime/session.ts";
+} from "../../src/subscriptions/session.ts";
 import {
   CLAIM_DELIVERY_LEASE,
   prepareTelemetryTraceContext,

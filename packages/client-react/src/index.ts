@@ -1,10 +1,23 @@
 export { AckerDBProvider, type AckerDBProviderConfig, type AckerDBProviderProps } from "./provider.tsx";
 export { useAuthentication, type UseAuthenticationResult } from "./use-authentication.ts";
+export {
+  useChannel,
+  type ChannelOn,
+  type UseChannelOptions,
+  type UseChannelResult,
+} from "./use-channel.ts";
 export { useConnectionState } from "./use-connection-state.ts";
 export { useEvent } from "./use-event.ts";
 export { useMutation } from "./use-mutation.ts";
 export { useProcedure, type AckerDBProcedure } from "./use-procedure.ts";
 export { skip, useQuery } from "./use-query.ts";
+export {
+  useRealtime,
+  type RealtimeOn,
+  type UseRealtimeOptions,
+  type UseRealtimeResult,
+  type UseRealtimeState,
+} from "./use-realtime.ts";
 export {
   useQueryProcedure,
   type AckerDBQueryProcedureOptions,
@@ -18,11 +31,13 @@ export type {
   AckerDBCallOptions,
   AckerDBClientError,
   AckerDBClientLimits,
+  AckerDBChannelState,
   AckerDBConnectionState,
   AckerDBLifecyclePort,
   AckerDBLifecycleSource,
   AckerDBLiveEvent,
   AckerDBReconnectOptions,
+  AckerDBRealtimeState,
   EventRef,
   ProcedureRef,
   QueryRef,

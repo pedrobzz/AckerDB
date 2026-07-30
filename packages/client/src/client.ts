@@ -18,7 +18,20 @@ import {
   type AuthenticatedMessage,
   type ApplicationError,
   type ApplicationErrorMessage,
+  type AnyChannelRef,
+  type AnyRealtimeRef,
   type AuthenticationDescriptor,
+  type ChannelArgs,
+  type ChannelRoom,
+  type ChannelServerEvents,
+  type ChannelClientEvents,
+  type ChannelError,
+  type RealtimeArgs,
+  type RealtimeClientEvents,
+  type RealtimeClientStreams,
+  type RealtimeError,
+  type RealtimeServerEvents,
+  type RealtimeServerStreams,
   type ClientMessage,
   type Credential,
   type EventRef,
@@ -42,6 +55,17 @@ import {
   type SubscriptionTransition,
   type WelcomeMessage,
 } from "@ackerdb/core";
+import {
+  ChannelManager,
+  type AckerDBChannel,
+  type AckerDBChannelOptions,
+} from "./channels/channel.ts";
+import {
+  RealtimeManager,
+  type AckerDBPeerConnectionFactory,
+  type AckerDBRealtime,
+  type AckerDBRealtimeOptions,
+} from "./realtime/session.ts";
 
 export interface AckerDBClientLimits {
   readonly maxPendingItems: number;
@@ -57,6 +81,9 @@ export interface AckerDBReconnectOptions {
   readonly baseDelayMs: number;
   readonly maxDelayMs: number;
   readonly stableOpenMs: number;
+  readonly disconnectedGraceMs: number;
+  readonly iceRestartTimeoutMs: number;
+  readonly realtimeSetupTimeoutMs: number;
 }
 
 export interface AckerDBClientClock {
@@ -114,6 +141,11 @@ export interface AckerDBClientOptions {
   readonly clock?: AckerDBClientClock;
   readonly random?: () => number;
   readonly createWebSocket?: AckerDBWebSocketFactory;
+  /**
+   * Standard WebRTC peer constructor. Bare React Native applications may
+   * inject their native implementation or register its globals once.
+   */
+  readonly createPeerConnection?: AckerDBPeerConnectionFactory;
   readonly fetch?: AckerDBFetch;
   readonly lifecycle?: AckerDBLifecycleSource;
 }
@@ -208,6 +240,9 @@ export const ACKERDB_RECONNECT_DEFAULTS: AckerDBReconnectOptions = Object.freeze
   baseDelayMs: 100,
   maxDelayMs: 3_000,
   stableOpenMs: 10_000,
+  disconnectedGraceMs: 5_000,
+  iceRestartTimeoutMs: 10_000,
+  realtimeSetupTimeoutMs: 20_000,
 });
 
 const CLIENT_CLOSE_CODE = Object.freeze({
@@ -577,6 +612,23 @@ function authenticationFromFrame(
 
 const SYSTEM_SOCKET_FACTORY: AckerDBWebSocketFactory = (url) =>
   new WebSocket(url) as unknown as AckerDBWebSocket;
+const SYSTEM_PEER_CONNECTION_FACTORY: AckerDBPeerConnectionFactory = (
+  configuration,
+) => {
+  const PeerConnection = (
+    globalThis as {
+      readonly RTCPeerConnection?: new(
+        configuration?: Parameters<AckerDBPeerConnectionFactory>[0],
+      ) => ReturnType<AckerDBPeerConnectionFactory>;
+    }
+  ).RTCPeerConnection;
+  if (PeerConnection === undefined) {
+    throw new TypeError(
+      "RTCPeerConnection is unavailable; install/register a native WebRTC implementation or pass createPeerConnection",
+    );
+  }
+  return new PeerConnection(configuration);
+};
 const SYSTEM_FETCH: AckerDBFetch = (url, init) => fetch(url, init);
 const SYSTEM_RANDOM = (): number => {
   const value = new Uint32Array(1);
@@ -599,6 +651,8 @@ export class AckerDBClient {
   private readonly subscriptions = new Map<number, Subscription>();
   private readonly pending = new Map<number, PendingRequest>();
   private readonly activeFetches = new Set<AbortController>();
+  private readonly channels: ChannelManager;
+  private readonly realtimeSessions: RealtimeManager;
 
   private credential: Credential;
   /** The credential the current connection's hello presented. */
@@ -669,6 +723,40 @@ export class AckerDBClient {
     }
     this.uuid = new UuidV7Factory(this.random);
     this.clientSessionId = options.clientSessionId ?? this.uuid.create(this.now());
+    this.channels = new ChannelManager({
+      allocateId: () => this.allocateId(),
+      encode: (frame) => this.encodeChannelOrReject(frame),
+      retain: (frame) => this.reservePersistent(frame, "subscription"),
+      release: (bytes) => this.releasePersistent(bytes),
+      ensureConnected: () => this.ensureConnected(),
+      canSend: () => this.canSendOperations(),
+      send: (frame) => {
+        this.frameBytes(frame, "subscription");
+        return this.sendText(frame);
+      },
+      generation: () => this.connectionGeneration,
+      authEpoch: () => this.authentication?.authEpoch,
+    });
+    this.realtimeSessions = new RealtimeManager({
+      fetch: this.fetcher,
+      createPeerConnection:
+        options.createPeerConnection ?? SYSTEM_PEER_CONNECTION_FACTORY,
+      clock: this.clock,
+      reconnect: this.reconnect,
+      random: this.random,
+      url: (path) => `${this.httpUrl}${path}`,
+      headers: () => this.httpHeaders(),
+      readResponse: (response, signal) =>
+        this.readBoundedResponse(
+          response,
+          this.limits.maxFrameBytes,
+          signal,
+          "connection",
+        ),
+      clientError: (outcome) => new AckerDBClientError(outcome),
+      isClientError: (error): error is AckerDBClientError =>
+        error instanceof AckerDBClientError,
+    });
     parseClientMessage({
       v: PROTOCOL_VERSION,
       t: "hello",
@@ -755,6 +843,7 @@ export class AckerDBClient {
       this.authAttempt.reject(localError("auth_stale", "authentication attempt was superseded", "connection"));
     }
     this.credential = nextCredential;
+    this.realtimeSessions.authenticationChanged();
     this.authBlocked = false;
     this.blockingError = undefined;
     let resolve!: (authentication: AckerDBAuthentication) => void;
@@ -845,6 +934,51 @@ export class AckerDBClient {
     this.ensureConnected();
     if (this.canSendOperations()) this.sendSubscription(subscription);
     return () => this.removeSubscription(id, true);
+  }
+
+  channel<Ref extends AnyChannelRef>(
+    ref: Ref,
+    args: NoInfer<ChannelArgs<Ref>>,
+    ...options: [ChannelRoom<Ref>] extends [never]
+      ? [
+          options?: AckerDBChannelOptions<
+            ChannelRoom<Ref>,
+            ChannelServerEvents<Ref>
+          >,
+        ]
+      : [
+          options: AckerDBChannelOptions<
+            ChannelRoom<Ref>,
+            ChannelServerEvents<Ref>
+          >,
+        ]
+  ): AckerDBChannel<ChannelClientEvents<Ref>, ChannelError<Ref>> {
+    this.assertUsable();
+    return this.channels.observe(
+      ref,
+      args,
+      (options[0] ?? {}) as AckerDBChannelOptions<
+        ChannelRoom<Ref>,
+        ChannelServerEvents<Ref>
+      >,
+    );
+  }
+
+  realtime<Ref extends AnyRealtimeRef>(
+    ref: Ref,
+    args: NoInfer<RealtimeArgs<Ref>>,
+    options: AckerDBRealtimeOptions<
+      RealtimeServerEvents<Ref>,
+      RealtimeServerStreams<Ref>,
+      RealtimeError<Ref>
+    > = {},
+  ): AckerDBRealtime<
+    RealtimeClientEvents<Ref>,
+    RealtimeClientStreams<Ref>,
+    RealtimeError<Ref>
+  > {
+    this.assertUsable();
+    return this.realtimeSessions.observe(ref, args, options);
   }
 
   query<A, Data = unknown, Error extends ApplicationError = never>(
@@ -1225,6 +1359,8 @@ export class AckerDBClient {
       this.releasePersistent(subscription.bytes);
     }
     this.subscriptions.clear();
+    this.channels.close();
+    this.realtimeSessions.close();
     for (const controller of this.activeFetches) controller.abort();
     this.activeFetches.clear();
     const socket = this.socket;
@@ -1262,6 +1398,7 @@ export class AckerDBClient {
       }
     }
     this.suspended = true;
+    this.realtimeSessions.suspend();
     this.resuming = false;
     this.clearReconnectTimer();
     if (this.authAttempt !== undefined) {
@@ -1312,6 +1449,7 @@ export class AckerDBClient {
     for (const subscription of this.subscriptions.values()) {
       if (subscription.kind === "event") subscription.cursor = undefined;
     }
+    this.channels.connectionLost();
     socket?.close(code, reason);
   }
 
@@ -1335,6 +1473,7 @@ export class AckerDBClient {
   private resumeTransport(): void {
     if (this.closed || !this.suspended) return;
     this.suspended = false;
+    this.realtimeSessions.resume();
     const attempt = this.authAttempt;
     if (attempt !== undefined) {
       const remainingMs = attempt.expiresAtMs - this.now();
@@ -1593,6 +1732,7 @@ export class AckerDBClient {
     for (const subscription of this.subscriptions.values()) {
       if (subscription.kind === "event") subscription.cursor = undefined;
     }
+    this.channels.connectionLost();
     for (const request of [...this.pending.values()]) {
       if (
         request.kind === "procedure" &&
@@ -1679,6 +1819,23 @@ export class AckerDBClient {
         return;
       case "event":
         this.applyLiveEvent(frame.id, frame.event);
+        return;
+      case "channel_ready":
+        this.channels.ready(frame.id, frame.authEpoch);
+        return;
+      case "channel_event":
+        if (!this.channels.event(frame.id, frame.event, frame.payload)) {
+          this.failPermanently(
+            localError(
+              "malformed",
+              "server event names no active channel",
+              "subscription",
+            ),
+          );
+        }
+        return;
+      case "channel_rejected":
+        this.channels.rejected(frame.id, frame.authEpoch, frame.error);
         return;
       case "ok":
         this.applyResult(frame);
@@ -1864,7 +2021,9 @@ export class AckerDBClient {
     if (subscription) {
       subscription.onError?.(error);
       this.removeSubscription(id, false);
+      return;
     }
+    this.channels.failed(id, error);
   }
 
   private requestReset(subscription: QuerySubscription): void {
@@ -2014,6 +2173,7 @@ export class AckerDBClient {
 
   private flushState(): void {
     if (!this.canSendOperations()) return;
+    this.channels.flush();
     const now = this.now();
     for (const subscription of this.subscriptions.values()) {
       if (subscription.sentGeneration !== this.connectionGeneration) this.sendSubscription(subscription);
@@ -2075,6 +2235,8 @@ export class AckerDBClient {
     );
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
+    this.channels.failAll(error);
+    this.realtimeSessions.authenticationBlocked(error);
     this.publishConnectionState();
   }
 
@@ -2091,6 +2253,8 @@ export class AckerDBClient {
     }
     for (const request of [...this.pending.values()]) this.finishRequest(request, undefined, error);
     for (const subscription of this.subscriptions.values()) subscription.onError?.(error);
+    this.channels.failAll(error);
+    this.realtimeSessions.failAll(error);
     for (const subscription of this.subscriptions.values()) {
       this.releasePersistent(subscription.bytes);
     }
@@ -2164,6 +2328,7 @@ export class AckerDBClient {
     return (
       this.connectRequested ||
       this.subscriptions.size > 0 ||
+      this.channels.hasDemand ||
       this.pending.size > 0 ||
       this.authAttempt !== undefined
     );
@@ -2179,14 +2344,16 @@ export class AckerDBClient {
     this.sendText(text);
   }
 
-  private sendText(text: string): void {
+  private sendText(text: string): boolean {
     const socket = this.socket;
-    if (!socket || !this.socketOpen) return;
+    if (!socket || !this.socketOpen) return false;
     try {
       socket.send(text);
+      return true;
     } catch {
       socket.close();
       this.handleClose(socket);
+      return false;
     }
   }
 
@@ -2196,6 +2363,17 @@ export class AckerDBClient {
     } catch (error) {
       if (error instanceof ProtocolError) {
         throw localError(error.code, error.message, "operation");
+      }
+      throw error;
+    }
+  }
+
+  private encodeChannelOrReject(frame: ClientMessage): string {
+    try {
+      return this.encodeClient(frame);
+    } catch (error) {
+      if (error instanceof WireError) {
+        throw localError("validation", error.message, "subscription");
       }
       throw error;
     }
