@@ -40,6 +40,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4
         with:
           toolchain: 1.94.0
+      - name: Install upstream Linux header dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libglib2.0-dev
       - run: bun install --frozen-lockfile
       - run: bun run build:webrtc
       - name: Execute native suite on the supported runtime-test target
