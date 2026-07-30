@@ -73,7 +73,10 @@ async function extractArchive(
   label: string,
 ): Promise<void> {
   await mkdir(destination);
-  const unpack = Bun.spawn(["tar", "-xf", archive, "-C", destination], {
+  const command = archive.endsWith(".zip") && process.platform !== "win32"
+    ? ["unzip", "-q", archive, "-d", destination]
+    : ["tar", "-xf", archive, "-C", destination];
+  const unpack = Bun.spawn(command, {
     stdout: "inherit",
     stderr: "inherit",
   });
