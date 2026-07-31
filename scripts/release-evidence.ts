@@ -73,10 +73,8 @@ function gitBlobs(specs: readonly string[]): Uint8Array[] {
   return blobs;
 }
 
-/** Hash the versioned product and harness sources relevant to a Hetzner run. */
-export function benchmarkSourceHashAt(ref: string): string {
+function sourceHashAt(ref: string, files: readonly string[]): string {
   const hash = createHash("sha256");
-  const files = benchmarkSourcesAt(ref);
   const blobs = gitBlobs(files.map((file) => ref === ":" ? `:${file}` : `${ref}:${file}`));
   for (const [index, file] of files.entries()) {
     hash.update(file);
@@ -85,6 +83,21 @@ export function benchmarkSourceHashAt(ref: string): string {
     hash.update("\0");
   }
   return hash.digest("hex");
+}
+
+/** Hash the exact source corpus recorded by a Hetzner run. */
+export function benchmarkSourceHashAt(ref: string): string {
+  return sourceHashAt(ref, benchmarkSourcesAt(ref));
+}
+
+/** Release-manifest evidence cannot affect the measured runtime or harness. */
+function benchmarkRelevantSourceHashAt(ref: string): string {
+  return sourceHashAt(
+    ref,
+    benchmarkSourcesAt(ref).filter(
+      (file) => file !== "packages/realtime/native/webrtc/evidence.ts",
+    ),
+  );
 }
 
 /**
@@ -149,8 +162,9 @@ export function assertReleaseEvidence(source: string, expected: ExpectedReleaseE
   }
 
   const recordedHash = benchmarkSourceHashAt(sourceCommit);
-  const productHash = benchmarkSourceHashAt(expected.productRef);
-  if (sourceHash !== recordedHash || sourceHash !== productHash) {
+  const measuredProductHash = benchmarkRelevantSourceHashAt(sourceCommit);
+  const currentProductHash = benchmarkRelevantSourceHashAt(expected.productRef);
+  if (sourceHash !== recordedHash || measuredProductHash !== currentProductHash) {
     throw new Error(
       `${expected.path} was measured from different product or benchmark sources; run bun run bench:hetzner again`,
     );

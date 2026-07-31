@@ -125,7 +125,7 @@ export async function nativeBindingSourceDigest(): Promise<string> {
   ).flat().sort((left, right) => left.localeCompare(right));
   const hash = createHash("sha256");
   for (const source of sources) {
-    hash.update(relative(nativeRoot, source));
+    hash.update(relative(nativeRoot, source).replaceAll("\\", "/"));
     hash.update("\0");
     hash.update(await readFile(source));
     hash.update("\0");
