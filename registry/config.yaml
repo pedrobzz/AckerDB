@@ -4,7 +4,8 @@
 # 4874 on purpose: 4873 belongs to this machine's own Homebrew Verdaccio
 # launchd agent (a general npm cache), which always wins that port at login.
 listen: 127.0.0.1:4874
-max_body_size: 40mb
+# npm publish base64-encodes the ~44 MB five-platform server tarball.
+max_body_size: 100mb
 
 storage: ./storage
 
