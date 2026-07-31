@@ -1,14 +1,15 @@
 # Ordered realtime and mutation semantics
 
-Protocol 2 separates durable state subscriptions from live event delivery.
+Protocol 5 separates durable state subscriptions from live event delivery and
+also carries multiplexed application-channel memberships.
 Query subscriptions are authoritative state streams with resume-or-reset
 convergence. Event subscriptions are ordered, bounded, live-only signals and
 do not have durable replay.
 
-Protocol envelopes require `v: 2` and exact framework-owned fields. A different
+Protocol envelopes require `v: 5` and exact framework-owned fields. A different
 version is `unsupported_protocol`; missing, extra, out-of-range, or malformed
-framework fields are `malformed`. There is no Protocol 1 compatibility or
-best-effort negotiation layer.
+framework fields are `malformed`. There is no earlier-protocol compatibility
+or best-effort negotiation layer.
 
 ## Query transition model
 
@@ -154,16 +155,16 @@ subscription for reconstructible application state.
 or event subscription protocol. Its chunks have no subscription cursor or
 automatic replay; reconnect means starting a new procedure call.
 
-Each SSE event contains one strict Protocol 2 envelope:
+Each SSE event contains one strict Protocol 5 envelope:
 
 ```ts
 type SseMessage =
-  | { v: 2; t: "sse_chunk"; seq: number; proof: string; value: unknown }
-  | { v: 2; t: "sse_done"; seq: number; proof: string }
-  | { v: 2; t: "sse_error"; seq: number; proof: string; outcome: Outcome };
+  | { v: 5; t: "sse_chunk"; seq: number; proof: string; value: unknown }
+  | { v: 5; t: "sse_done"; seq: number; proof: string }
+  | { v: 5; t: "sse_error"; seq: number; proof: string; outcome: Outcome };
 
 interface SseAckRequest {
-  v: 2;
+  v: 5;
   t: "sse_ack";
   stream: string;
   seq: number;
@@ -203,7 +204,7 @@ contract does not depend on Bun's hidden HTTP socket buffering.
 EOF before an acknowledged `sse_done` remains `indeterminate`, and EOF
 mid-event is `malformed`. Procedures and SSE procedures are never retried
 automatically. The acknowledgement proves that a peer holding the capability
-received and parsed the frame according to Protocol 2; it is not proof that
+received and parsed the frame according to Protocol 5; it is not proof that
 application side effects derived from the chunk were durably committed. A
 bearer credential lease remains held until the bounded response body completes,
 errors, or is canceled.

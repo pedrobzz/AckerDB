@@ -88,6 +88,9 @@ describe("codegen", () => {
     expect(server).toContain(
       "ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins>",
     );
+    expect(server).toContain(
+      "unknown as RealtimeBuilder<Schema, ProcedurePlugins, MutationPlugins>",
+    );
     expect(server).toContain("SseBuilder<Schema, ProcedurePlugins, MutationPlugins>");
     expect(server).toContain("GenericQueryCtx<Schema, QueryPlugins>");
     expect(server).toContain("GenericMutationCtx<Schema, MutationPlugins>");

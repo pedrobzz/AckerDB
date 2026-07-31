@@ -271,7 +271,7 @@ describe("explicit provider-neutral account linking", () => {
     );
     expect(conflict.status).toBe(409);
     expect(conflict.frame).toEqual({
-      v: 4,
+      v: 5,
       t: "err",
       id: 14,
       outcome: {

@@ -28,7 +28,7 @@ import {
   type RuntimePublication,
   type SessionControlMessage,
   type SessionSink,
-} from "../../src/realtime/session.ts";
+} from "../../src/subscriptions/session.ts";
 
 const NOW = 2_000_000;
 const ISSUER_A = "https://issuer-a.identity.test/";

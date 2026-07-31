@@ -660,3 +660,72 @@ export function invokeFunction<
     }
   });
 }
+
+/**
+ * Run one callback owned by an already-authorized persistent registration.
+ *
+ * Channels authorize once when membership starts. Their later lifecycle and
+ * event callbacks still need a registered invocation frame so `ctx.tx`,
+ * transaction poisoning, principal isolation, and telemetry keep the same
+ * guarantees as procedures without re-running membership policy per message.
+ */
+export function invokeRegisteredHandler<
+  K extends string,
+  A extends ObjectShape,
+  Ctx extends InvocationContext,
+  R,
+  H,
+  T,
+>(
+  fn: Invocable<K, A, Ctx, R, H>,
+  ctx: Ctx,
+  work: (ctx: Ctx) => T | Promise<T>,
+): Promise<T | OkResult<T>> {
+  const instrumentation = invocationInstrumentation.getStore();
+  if (instrumentation === undefined) {
+    try {
+      const parent = currentInvocationState();
+      const safeCtx = validateContext(ctx, parent);
+      const state = invocationStateFor(safeCtx, parent, undefined);
+      return runInvocation(
+        fn,
+        (activeState) =>
+          withInvocationState(activeState, () => work(safeCtx)),
+        state,
+        parent === undefined,
+      );
+    } catch (error) {
+      return Promise.reject(markPoisoned(currentInvocationState(), error, true));
+    }
+  }
+
+  const state: InvocationInstrumentationState = {
+    scope: instrumentation.scope,
+    invocationId: ++instrumentation.scope.nextInvocationId,
+    ...(instrumentation.invocationId === null
+      ? {}
+      : { parentInvocationId: instrumentation.invocationId }),
+    depth: instrumentation.depth + 1,
+    ...(instrumentation.invocationId === null ? {} : { parent: instrumentation }),
+    fn: fn as unknown as AnyInvocable,
+  };
+  const observedFn = fn as unknown as AnyInvocable;
+  return invocationInstrumentation.run(state, () => {
+    try {
+      const parent = currentInvocationState();
+      const safeCtx = validateContext(ctx, parent);
+      const invocation = invocationStateFor(safeCtx, parent, undefined);
+      return runInvocation(
+        fn,
+        (activeState) =>
+          observePhase(state, observedFn, "handler", () =>
+            withInvocationState(activeState, () => work(safeCtx))
+          ),
+        invocation,
+        parent === undefined,
+      );
+    } catch (error) {
+      return Promise.reject(markPoisoned(currentInvocationState(), error, true));
+    }
+  });
+}

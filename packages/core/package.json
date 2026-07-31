@@ -1,11 +1,14 @@
 {
   "name": "@ackerdb/core",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "type": "module",
   "files": [
     "src"
   ],
   "exports": {
     ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "msgpackr": "2.0.5"
   }
 }

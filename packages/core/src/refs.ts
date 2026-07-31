@@ -33,9 +33,85 @@ export type ProcedureRef<A = unknown, Data = unknown, Error = never> =
 export type SseRef<A = unknown, Chunk = unknown> = FunctionReference<"sse", A, Chunk>;
 export type EventRef<A = unknown, Row = unknown> = FunctionReference<"event", A, Row>;
 
+export type EventMap = Readonly<Record<string, unknown>>;
+
+/** One named event in a typed channel or realtime event map. */
+export type EventUnion<Events extends EventMap> = {
+  readonly [Name in Extract<keyof Events, string>]: {
+    readonly type: Name;
+    readonly payload: Events[Name];
+  };
+}[Extract<keyof Events, string>];
+
+/**
+ * A typed application-channel address. `Room = never` means the server
+ * declaration is roomless and callers must not supply a room.
+ */
+export interface ChannelRef<
+  A = unknown,
+  Room = never,
+  ClientEvents extends EventMap = EventMap,
+  ServerEvents extends EventMap = EventMap,
+  Error = never,
+> {
+  readonly $ref: string;
+  readonly _kind?: "channel";
+  readonly _args?: A;
+  readonly _room?: Room;
+  readonly _clientEvents?: ClientEvents;
+  readonly _serverEvents?: ServerEvents;
+  readonly _error?: Error;
+}
+
+export type AnyChannelRef = ChannelRef<
+  unknown,
+  unknown,
+  EventMap,
+  EventMap,
+  unknown
+>;
+
+export type RealtimeStreamMap = Readonly<Record<string, unknown>>;
+
+/**
+ * A typed WebRTC media-session address. Media uses native tracks; these maps
+ * describe only the reliable ordered data channel's events and finite byte
+ * streams.
+ */
+export interface RealtimeRef<
+  A = unknown,
+  ClientEvents extends EventMap = EventMap,
+  ServerEvents extends EventMap = EventMap,
+  ClientStreams extends RealtimeStreamMap = RealtimeStreamMap,
+  ServerStreams extends RealtimeStreamMap = RealtimeStreamMap,
+  Error = never,
+> {
+  readonly $ref: string;
+  readonly _kind?: "realtime";
+  readonly _args?: A;
+  readonly _clientEvents?: ClientEvents;
+  readonly _serverEvents?: ServerEvents;
+  readonly _clientStreams?: ClientStreams;
+  readonly _serverStreams?: ServerStreams;
+  readonly _error?: Error;
+}
+
+export type AnyRealtimeRef = RealtimeRef<
+  unknown,
+  EventMap,
+  EventMap,
+  RealtimeStreamMap,
+  RealtimeStreamMap,
+  unknown
+>;
+
 /** Accepts a reference object or a raw address string; returns the address. */
 export function getRef(
-  ref: FunctionReference<FunctionKind, unknown, unknown, unknown> | string,
+  ref:
+    | FunctionReference<FunctionKind, unknown, unknown, unknown>
+    | AnyChannelRef
+    | AnyRealtimeRef
+    | string,
 ): string {
   if (typeof ref === "string") return ref;
   const address = ref.$ref;
@@ -44,6 +120,71 @@ export function getRef(
   }
   return address;
 }
+
+export type ChannelArgs<Ref extends AnyChannelRef> =
+  Ref extends ChannelRef<infer Args, unknown, EventMap, EventMap, unknown> ? Args : never;
+export type ChannelRoom<Ref extends AnyChannelRef> =
+  Ref extends ChannelRef<unknown, infer Room, EventMap, EventMap, unknown> ? Room : never;
+export type ChannelClientEvents<Ref extends AnyChannelRef> =
+  Ref extends ChannelRef<unknown, unknown, infer Events, EventMap, unknown> ? Events : never;
+export type ChannelServerEvents<Ref extends AnyChannelRef> =
+  Ref extends ChannelRef<unknown, unknown, EventMap, infer Events, unknown> ? Events : never;
+export type ChannelError<Ref extends AnyChannelRef> =
+  Ref extends ChannelRef<unknown, unknown, EventMap, EventMap, infer Error> ? Error : never;
+export type RealtimeArgs<Ref extends AnyRealtimeRef> =
+  Ref extends RealtimeRef<
+    infer Args,
+    EventMap,
+    EventMap,
+    RealtimeStreamMap,
+    RealtimeStreamMap,
+    unknown
+  > ? Args : never;
+export type RealtimeClientEvents<Ref extends AnyRealtimeRef> =
+  Ref extends RealtimeRef<
+    unknown,
+    infer Events,
+    EventMap,
+    RealtimeStreamMap,
+    RealtimeStreamMap,
+    unknown
+  > ? Events : never;
+export type RealtimeServerEvents<Ref extends AnyRealtimeRef> =
+  Ref extends RealtimeRef<
+    unknown,
+    EventMap,
+    infer Events,
+    RealtimeStreamMap,
+    RealtimeStreamMap,
+    unknown
+  > ? Events : never;
+export type RealtimeClientStreams<Ref extends AnyRealtimeRef> =
+  Ref extends RealtimeRef<
+    unknown,
+    EventMap,
+    EventMap,
+    infer Streams,
+    RealtimeStreamMap,
+    unknown
+  > ? Streams : never;
+export type RealtimeServerStreams<Ref extends AnyRealtimeRef> =
+  Ref extends RealtimeRef<
+    unknown,
+    EventMap,
+    EventMap,
+    RealtimeStreamMap,
+    infer Streams,
+    unknown
+  > ? Streams : never;
+export type RealtimeError<Ref extends AnyRealtimeRef> =
+  Ref extends RealtimeRef<
+    unknown,
+    EventMap,
+    EventMap,
+    RealtimeStreamMap,
+    RealtimeStreamMap,
+    infer Error
+  > ? Error : never;
 
 function makeRefProxy(path: string): unknown {
   return new Proxy(
@@ -79,6 +220,46 @@ export interface RegisteredFunction<K extends FunctionKind = FunctionKind, A = u
 }
 
 /**
+ * Type-only marker implemented by the server package's `channel()` return.
+ * It lives in core so generated client APIs infer the complete event contract
+ * without importing server runtime code.
+ */
+export interface RegisteredChannelContract<
+  A = unknown,
+  Room = never,
+  ClientEvents extends EventMap = EventMap,
+  ServerEvents extends EventMap = EventMap,
+  Error = never,
+> {
+  readonly isAckerDBChannel: true;
+  readonly kind: "channel";
+  readonly _argsType?: A;
+  readonly _roomType?: Room;
+  readonly _clientEventsType?: ClientEvents;
+  readonly _serverEventsType?: ServerEvents;
+  readonly _errorType?: Error;
+}
+
+/** Type-only marker implemented by the server package's `realtime()` return. */
+export interface RegisteredRealtimeContract<
+  A = unknown,
+  ClientEvents extends EventMap = EventMap,
+  ServerEvents extends EventMap = EventMap,
+  ClientStreams extends RealtimeStreamMap = RealtimeStreamMap,
+  ServerStreams extends RealtimeStreamMap = RealtimeStreamMap,
+  Error = never,
+> {
+  readonly isAckerDBRealtime: true;
+  readonly kind: "realtime";
+  readonly _argsType?: A;
+  readonly _clientEventsType?: ClientEvents;
+  readonly _serverEventsType?: ServerEvents;
+  readonly _clientStreamsType?: ClientStreams;
+  readonly _serverStreamsType?: ServerStreams;
+  readonly _errorType?: Error;
+}
+
+/**
  * Marker for declarations that belong to the server module graph but are not
  * remotely callable AckerDB functions. Generated client APIs erase these keys.
  */
@@ -96,7 +277,31 @@ type ResultError<Value> = Value extends ErrResult<infer Error, infer _Data> ? Er
  */
 export type ApiFromModules<T> = {
   [K in keyof T as T[K] extends RegisteredServerOnly ? never : K]:
-  T[K] extends RegisteredFunction<infer Kd, infer A, infer R>
+  T[K] extends RegisteredChannelContract<
+    infer A,
+    infer Room,
+    infer ClientEvents,
+    infer ServerEvents,
+    infer Error
+  >
+    ? ChannelRef<A, Room, ClientEvents, ServerEvents, Error>
+    : T[K] extends RegisteredRealtimeContract<
+      infer A,
+      infer ClientEvents,
+      infer ServerEvents,
+      infer ClientStreams,
+      infer ServerStreams,
+      infer Error
+    >
+    ? RealtimeRef<
+      A,
+      ClientEvents,
+      ServerEvents,
+      ClientStreams,
+      ServerStreams,
+      Error
+    >
+    : T[K] extends RegisteredFunction<infer Kd, infer A, infer R>
     ? Kd extends "query" | "mutation" | "procedure"
       ? FunctionReference<Kd, A, ResultData<R>, ResultError<R>>
       : FunctionReference<Kd, A, R>

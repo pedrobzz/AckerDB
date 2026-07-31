@@ -1,0 +1,23 @@
+{
+  "name": "@ackerdb/realtime-linux-arm64-gnu",
+  "version": "0.13.0",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "ackerdb_webrtc.linux-arm64-gnu.node",
+  "files": [
+    "ackerdb_webrtc.linux-arm64-gnu.node",
+    "manifest.json",
+    "sbom.cdx.json",
+    "THIRD_PARTY_NOTICES.txt",
+    "PROVENANCE.md",
+    "licenses"
+  ],
+  "license": "Apache-2.0",
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

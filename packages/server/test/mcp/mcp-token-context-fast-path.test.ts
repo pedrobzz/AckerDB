@@ -18,7 +18,7 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime, type RuntimeProcedureResponse } from "../../src/runtime/runtime.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
-import type { SessionRuntimeContext } from "../../src/realtime/session.ts";
+import type { SessionRuntimeContext } from "../../src/subscriptions/session.ts";
 import { mutationMessage, queryMessage, request } from "../support/mcp-token-fixture.ts";
 
 const cleanups: Array<() => Promise<void>> = [];

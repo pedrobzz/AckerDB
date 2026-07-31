@@ -13,6 +13,10 @@ import {
   syncedVersion,
   tryGit,
 } from "./lib";
+import {
+  WEBRTC_LOADER_REPOSITORY_PATH,
+  writeWebRtcLoader,
+} from "../packages/realtime/native/webrtc/generate-loader.ts";
 
 const LEVELS = ["patch", "minor", "major"] as const;
 const level = process.argv[2] as (typeof LEVELS)[number] | undefined;
@@ -43,7 +47,12 @@ for (const pkg of PACKAGES) {
   json.version = next;
   // inter-deps are pinned workspace:<version> — bun publish rewrites that to
   // the literal version at pack time (see syncedVersion in lib.ts for why)
-  for (const field of ["dependencies", "devDependencies", "peerDependencies"]) {
+  for (const field of [
+    "dependencies",
+    "devDependencies",
+    "optionalDependencies",
+    "peerDependencies",
+  ]) {
     const deps = json[field];
     if (!deps) continue;
     for (const name of Object.keys(deps)) {
@@ -54,6 +63,7 @@ for (const pkg of PACKAGES) {
   updatedSources.set(pkg, source);
   await Bun.write(pkgJsonPath(pkg), source);
 }
+await writeWebRtcLoader(next);
 
 // Bun 1.3 does not invalidate workspace snapshots for version-only manifest
 // edits. Updating the dependency-free core workspace rebuilds those snapshots
@@ -85,7 +95,15 @@ const install = Bun.spawnSync(["bun", "install", "--force", "--frozen-lockfile"]
 });
 if (install.exitCode !== 0) fail(`bun install failed after bump:\n${install.stderr.toString().trim()}`);
 
-git("commit", "-m", `chore(release): v${next}`, "--", ...PACKAGES.map(pkgJsonPath), "bun.lock");
+git(
+  "commit",
+  "-m",
+  `chore(release): v${next}`,
+  "--",
+  ...PACKAGES.map(pkgJsonPath),
+  WEBRTC_LOADER_REPOSITORY_PATH,
+  "bun.lock",
+);
 console.log(`bumped ${current} → ${next} across ${PACKAGES.map((p) => `@ackerdb/${p}`).join(", ")}`);
 console.log(`committed as: chore(release): v${next}`);
 console.log(`dispatch bun run bench:hetzner in a background worker for v${next}; merge is blocked until its final Hetzner result is committed.`);

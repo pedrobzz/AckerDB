@@ -2,9 +2,9 @@
 
 `@ackerdb/client-react` is the declarative React binding for the generated AckerDB
 API. One `AckerDBProvider` owns the underlying client; components consume typed
-queries, mutations, procedures, event streams, authentication, and connection
-state through hooks. The same imports work in a browser and in an Expo React
-Native application.
+queries, mutations, procedures, event streams, application channels, WebRTC
+sessions, authentication, and connection state through hooks. The same root
+imports work in browsers and Expo React Native applications.
 
 This page documents the currently implemented client, including typed
 application errors and exhaustive query failure states. Their server and
@@ -24,8 +24,8 @@ The package manifest supports these peers:
 | AI SDK (`ai`) | `^7.0.0` | Importing `@ackerdb/client-react/ai` |
 
 `react-native`, `expo`, `expo-crypto`, and `ai` are optional peers because a
-browser-only application does not need them. They are not optional in the
-runtime that uses them. The repository's current compatibility gates use
+browser-only application does not need them. They are required in the runtime
+that uses them. The repository's current compatibility gates use
 React 19.2.7, React Native 0.86.0, Expo 57.0.6, Expo Crypto 57.0.1, AI SDK
 7.0.29, and `@ai-sdk/react` 4.0.32.
 
@@ -77,7 +77,10 @@ export function Root() {
 `url` and an explicit `credential` are required. A bearer configuration is
 `{ kind: "bearer", token }`. Optional configuration includes
 `clientSessionId`, partial `limits`, partial `reconnect` settings, and injected
-`clock`, `random`, `createWebSocket`, `fetch`, or `lifecycle` capabilities.
+`clock`, `random`, `createWebSocket`, `createPeerConnection`, `fetch`, or
+`lifecycle` capabilities. An Expo realtime application supplies only the peer
+constructor from its native WebRTC package; the Expo entry provides the other
+native capabilities automatically.
 
 The provider constructs and connects one client after React commits, then
 closes it on teardown. Equal configuration values keep the same lifetime even
@@ -364,6 +367,70 @@ initial attach, reconnect, authentication rotation, or native recovery.
 Missed events are never replayed or fabricated. Pair events with `useQuery`
 when the UI also needs current durable state.
 
+## Application channels
+
+`useChannel(ref, args, options)` opens one typed bidirectional channel
+membership over the provider client's existing WebSocket. Canonically equal
+references, arguments, and optional rooms share one server membership.
+Component handlers remain independent unless an equal non-empty `handlerKey`
+deliberately coalesces the complete `on` bundle.
+
+```tsx
+const chat = useChannel(api.chat.room, { threadId }, {
+  room: roomId,
+  handlerKey: "useChatRoom",
+  on: {
+    message(message) {
+      store.add(message);
+    },
+  },
+});
+
+chat.send("compose", { text });
+```
+
+`on` may instead be one function receiving the inferred discriminated union.
+`send()` reports only local transport acceptance and never queues work for a
+future reconnect. See [Application channels](channels.md) for server
+declarations, room rules, publishing, state, and deduplication.
+
+## Realtime media sessions
+
+`useRealtime(ref, args, options)` retains one AckerDB-relayed WebRTC session.
+Audio and video remain native tracks on the exposed `RTCPeerConnection`; one
+reliable internal data channel carries typed events and finite typed byte
+streams. Equal calls share a peer only when all calls provide the same
+non-empty `handlerKey`; a missing or different key throws instead of opening a
+surprise second peer.
+
+```tsx
+const assistant = useRealtime(api.assistant.live, { assistantId }, {
+  handlerKey: "useAssistant",
+  on: {
+    async peerConnection(peer) {
+      const media = await navigator.mediaDevices.getUserMedia({ audio: true });
+      for (const track of media.getTracks()) peer.addTrack(track, media);
+      return () => media.getTracks().forEach((track) => track.stop());
+    },
+    event: {
+      transcript(value) {
+        store.append(value);
+      },
+    },
+    track(event) {
+      play(event.track);
+    },
+  },
+});
+```
+
+`RealtimeOn<typeof api.assistant.live>` derives the complete `on` type for a
+custom hook. Expo uses the same hook with its native
+`RTCPeerConnection` and capture APIs; it does not use browser
+`navigator.mediaDevices`. See [Realtime media sessions](realtime-media.md) for
+server declarations, native setup, streams, signaling, recovery, and the
+current native-server-engine boundary.
+
 ## Authentication and durable Identity
 
 `useAuthentication()` exposes state plus explicit refresh and sign-out
@@ -475,10 +542,9 @@ application explicitly injected replacements:
 - React Native's native global `WebSocket`; and
 - one `AppState` observer per provider client lifetime.
 
-The Expo and Expo Crypto peers are therefore mandatory for native bundling;
-missing modules fail at bundle resolution rather than during a request.
-Shared hooks never import native modules, and the browser entry contains no
-Expo or React Native code.
+Expo and Expo Crypto are mandatory for native bundling; missing modules fail
+at bundle resolution rather than during a request. Shared hooks never import
+native modules, and the browser entry contains no Expo or React Native code.
 
 While the OS keeps the JavaScript process alive, entering `background`
 publishes `suspended`, retires the physical socket and connection timers, and
@@ -499,7 +565,9 @@ Recovery guarantees are operation-specific:
 ## Explicit limitations
 
 - Native support is the Expo 57 conditional entry. Bare React Native and Expo
-  Go are not supported targets; use custom Expo development or release builds.
+  Go are not supported targets; use a custom Expo development or release
+  build. Realtime applications inject the peer constructor from their selected
+  Expo-compatible WebRTC native package.
 - The full physical iOS/Android duration, network-transition, Doze/App
   Standby, and release-build acceptance matrix remains deferred in
   [Issue #17](https://github.com/pedrobzz/ackerdb/issues/17). Current automated

@@ -24,7 +24,7 @@ import type {
   RuntimeRequest,
   SessionApplicationMessage,
   SessionRuntimeContext,
-} from "../../src/realtime/session.ts";
+} from "../../src/subscriptions/session.ts";
 
 // A live subscription must survive a commit made by a DIFFERENT principal
 // through any dispatch path that commits INSIDE its handler (an MCP tool or a

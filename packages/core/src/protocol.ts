@@ -1,9 +1,19 @@
 import type { Identity } from "./identity.ts";
 import {
+  boundedString as string,
+  exactFields as exact,
+  malformed,
+  protocolObject as object,
+  ProtocolError,
+  type ProtocolObject as ObjectValue,
+} from "./protocol-validation.ts";
+import {
   Status,
   type ApplicationError,
   type ErrorHttpStatus,
 } from "./result.ts";
+
+export { ProtocolError } from "./protocol-validation.ts";
 
 /**
  * Protocol 3 is the executable client/server envelope contract. Application
@@ -11,7 +21,7 @@ import {
  * TypeScript types; every framework-owned field is validated after wire decode.
  */
 
-export const PROTOCOL_VERSION = 4 as const;
+export const PROTOCOL_VERSION = 5 as const;
 export const MAX_PROTOCOL_ID = 0x7fff_ffff;
 export const MAX_RETRY_AFTER_MS = 30_000;
 export const MAX_CREDENTIAL_BYTES = 16 * 1024;
@@ -219,6 +229,23 @@ export interface MutationMessage extends Frame<"m"> {
   issuedAt: number;
 }
 
+export interface ChannelJoinMessage extends Frame<"channel_join"> {
+  id: number;
+  ref: string;
+  args: unknown;
+  room?: unknown;
+}
+
+export interface ChannelLeaveMessage extends Frame<"channel_leave"> {
+  id: number;
+}
+
+export interface ChannelSendMessage extends Frame<"channel_send"> {
+  id: number;
+  event: string;
+  payload: unknown;
+}
+
 export type PingMessage = Frame<"ping">;
 
 export type ClientMessage =
@@ -231,6 +258,9 @@ export type ClientMessage =
   | ProcedureMessage
   | ProcedureCancelMessage
   | MutationMessage
+  | ChannelJoinMessage
+  | ChannelLeaveMessage
+  | ChannelSendMessage
   | PingMessage;
 
 export type WelcomeMessage = Frame<"welcome"> & AuthenticationDescriptor & {
@@ -280,6 +310,23 @@ export interface ApplicationErrorMessage extends Frame<"app_err"> {
   receipt?: MutationReceipt;
 }
 
+export interface ChannelReadyMessage extends Frame<"channel_ready"> {
+  id: number;
+  authEpoch: number;
+}
+
+export interface ChannelEventMessage extends Frame<"channel_event"> {
+  id: number;
+  event: string;
+  payload: unknown;
+}
+
+export interface ChannelRejectedMessage extends Frame<"channel_rejected"> {
+  id: number;
+  authEpoch: number;
+  error: ApplicationError;
+}
+
 export interface ErrorMessage extends Frame<"err"> {
   /** Null identifies a connection-level failure rather than one operation. */
   id: number | null;
@@ -297,6 +344,9 @@ export type ServerMessage =
   | ProcedureOkMessage
   | MutationOkMessage
   | ApplicationErrorMessage
+  | ChannelReadyMessage
+  | ChannelEventMessage
+  | ChannelRejectedMessage
   | ErrorMessage
   | PongMessage;
 
@@ -330,18 +380,6 @@ export interface SseAckRequest extends SseFrame<"sse_ack"> {
   stream: string;
 }
 
-export class ProtocolError extends Error {
-  constructor(
-    readonly code: "malformed" | "unsupported_protocol",
-    message: string,
-  ) {
-    super(message);
-    this.name = "ProtocolError";
-  }
-}
-
-type ObjectValue = Record<string, unknown>;
-
 const outcomeCodes = new Set<string>(OUTCOME_CODES);
 const resourceClasses = new Set<string>(RESOURCE_CLASSES);
 const durabilityPolicies = new Set<string>(DURABILITY_POLICIES);
@@ -354,33 +392,6 @@ export function uuidV7Timestamp(value: string): number {
   return Number.parseInt(value.slice(0, 8) + value.slice(9, 13), 16);
 }
 const utf8 = new TextEncoder();
-
-function malformed(message: string): never {
-  throw new ProtocolError("malformed", message);
-}
-
-function object(value: unknown, name: string): ObjectValue {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    malformed(`${name} must be an object`);
-  }
-  return value as ObjectValue;
-}
-
-function exact(value: ObjectValue, required: readonly string[], optional: readonly string[] = []): void {
-  for (const key of required) {
-    if (!Object.hasOwn(value, key)) malformed(`missing field ${key}`);
-  }
-  for (const key of Object.keys(value)) {
-    if (!required.includes(key) && !optional.includes(key)) malformed(`unknown field ${key}`);
-  }
-}
-
-function string(value: unknown, name: string, maxLength: number): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
-    malformed(`${name} must be a non-empty bounded string`);
-  }
-  return value;
-}
 
 function payload(value: unknown, name: string): unknown {
   if (value === undefined) malformed(`${name} must be wire-representable`);
@@ -715,6 +726,23 @@ export function parseClientMessage(value: unknown): ClientMessage {
       nonNegativeInteger(result.issuedAt, "issuedAt");
       break;
     }
+    case "channel_join":
+      exact(result, ["v", "t", "id", "ref", "args"], ["room"]);
+      protocolId(result.id, "channel id");
+      string(result.ref, "ref", MAX_REFERENCE_LENGTH);
+      payload(result.args, "args");
+      if (Object.hasOwn(result, "room")) payload(result.room, "room");
+      break;
+    case "channel_leave":
+      exact(result, ["v", "t", "id"]);
+      protocolId(result.id, "channel id");
+      break;
+    case "channel_send":
+      exact(result, ["v", "t", "id", "event", "payload"]);
+      protocolId(result.id, "channel id");
+      string(result.event, "channel event", MAX_REFERENCE_LENGTH);
+      payload(result.payload, "channel payload");
+      break;
     case "ping":
       exact(result, ["v", "t"]);
       break;
@@ -769,6 +797,23 @@ export function parseServerMessage(value: unknown): ServerMessage {
         return malformed("unknown application-error frame kind");
       }
       protocolId(result.id, "request id");
+      parseApplicationError(result.error);
+      break;
+    case "channel_ready":
+      exact(result, ["v", "t", "id", "authEpoch"]);
+      protocolId(result.id, "channel id");
+      nonNegativeInteger(result.authEpoch, "authEpoch");
+      break;
+    case "channel_event":
+      exact(result, ["v", "t", "id", "event", "payload"]);
+      protocolId(result.id, "channel id");
+      string(result.event, "channel event", MAX_REFERENCE_LENGTH);
+      payload(result.payload, "channel payload");
+      break;
+    case "channel_rejected":
+      exact(result, ["v", "t", "id", "authEpoch", "error"]);
+      protocolId(result.id, "channel id");
+      nonNegativeInteger(result.authEpoch, "authEpoch");
       parseApplicationError(result.error);
       break;
     case "err":

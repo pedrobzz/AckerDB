@@ -24,6 +24,7 @@ import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { mutation, procedure, query, sseProcedure } from "../../src/app/functions.ts";
+import { channel } from "../../src/channels/definition.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
@@ -41,7 +42,7 @@ import type {
   RuntimeRequest,
   SessionApplicationMessage,
   SessionRuntimeContext,
-} from "../../src/realtime/session.ts";
+} from "../../src/subscriptions/session.ts";
 import {
   Telemetry,
   type TelemetryRecord,
@@ -365,6 +366,28 @@ const functions = {
       access: "public",
       args: {},
       handler: () => mutationResultValue,
+    }),
+  },
+  chat: {
+    room: channel({
+      args: { threadId: v.bigint() },
+      room: v.string(),
+      clientEvents: { message: v.string() },
+      serverEvents: {
+        message: v.object({ body: v.string(), principal: v.string() }),
+      },
+      access: "public",
+      on: {
+        message: async (ctx: Ctx, body: string) => {
+          await ctx.tx((tx: Ctx) =>
+            tx.db.messages.insert({ channelId: ctx.args.threadId, body })
+          );
+          await ctx.publish("message", {
+            body,
+            principal: ctx.auth.kind,
+          });
+        },
+      },
     }),
   },
   reminders: {
@@ -738,6 +761,87 @@ afterEach(async () => {
   await runtime.drain().catch(() => {});
   engine.close("clean");
   rmSync(directory, { recursive: true, force: true });
+});
+
+describe("application channels", () => {
+  test("joins room audiences, runs typed handlers with transactions, and releases membership", async () => {
+    const second = new SessionHarness(runtime, "session-b");
+    const otherRoom = new SessionHarness(runtime, "session-c");
+    await Promise.all([session.open(), second.open(), otherRoom.open()]);
+
+    for (const [target, id, room] of [
+      [session, 1, "support"],
+      [second, 2, "support"],
+      [otherRoom, 3, "sales"],
+    ] as const) {
+      await runtime.joinChannel(target.context, request({
+        v: PROTOCOL_VERSION,
+        t: "channel_join",
+        id,
+        ref: "chat.room",
+        args: { threadId: 7n },
+        room,
+      }));
+      expect(target.publications.at(-1)).toMatchObject({
+        t: "channel_ready",
+        id,
+        authEpoch: 0,
+      });
+    }
+
+    await runtime.sendChannel(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "channel_send",
+      id: 1,
+      event: "message",
+      payload: "hello",
+    }));
+
+    expect(session.publications.at(-1)).toMatchObject({
+      t: "channel_event",
+      id: 1,
+      event: "message",
+      payload: { body: "hello", principal: "anonymous" },
+    });
+    expect(second.publications.at(-1)).toMatchObject({
+      t: "channel_event",
+      id: 2,
+      event: "message",
+      payload: { body: "hello", principal: "anonymous" },
+    });
+    expect(otherRoom.publications.filter((message) =>
+      message.t === "channel_event"
+    )).toEqual([]);
+
+    const stored = await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 4,
+      ref: "messages.list",
+      args: { channelId: 7n },
+    }));
+    expect(stored).toEqual([
+      { id: 1n, channelId: 7n, body: "hello" },
+    ]);
+
+    await runtime.leaveChannel(second.context, request({
+      v: PROTOCOL_VERSION,
+      t: "channel_leave",
+      id: 2,
+    }));
+    await runtime.sendChannel(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "channel_send",
+      id: 1,
+      event: "message",
+      payload: "after-leave",
+    }));
+    expect(second.publications.filter((message) =>
+      message.t === "channel_event"
+    )).toHaveLength(1);
+
+    await Promise.all([second.close(), otherRoom.close()]);
+  });
 });
 
 describe("runtime commit and replay ownership", () => {

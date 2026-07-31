@@ -4,27 +4,43 @@
   "private": true,
   "workspaces": [
     "packages/*",
+    "packages/realtime-native/*",
     "fixtures/*"
   ],
   "scripts": {
-    "test": "bun test ./packages/core/test ./packages/server/test ./packages/cache/test ./packages/client/test ./packages/cli/test && bun test ./packages/client-react/test && bun scripts/mcp-conformance.ts && bun scripts/verify-packages.ts",
+    "test": "bun test ./packages/core/test ./packages/server/test ./packages/realtime/test ./packages/cache/test ./packages/client/test ./packages/cli/test && bun test ./packages/client-react/test && bun scripts/mcp-conformance.ts && bun scripts/verify-packages.ts",
     "test:mcp:conformance": "bun scripts/mcp-conformance.ts",
     "test:mcp:hosts": "bun scripts/mcp-host-acceptance.ts",
     "test:packages": "bun scripts/verify-packages.ts",
-    "typecheck": "bunx tsc -p tsconfig.json --noEmit && bunx tsc -p packages/client-react/tsconfig.json --noEmit",
+    "test:packages:webrtc": "bun scripts/verify-packages.ts --require-webrtc",
+    "typecheck": "bunx tsc -p tsconfig.json --noEmit && bunx tsc -p packages/client-react/tsconfig.json --noEmit && bunx tsc -p fixtures/expo-app/tsconfig.json --noEmit",
     "typecheck:bench": "bunx tsc -p bench/tsconfig.json --noEmit",
     "diagnostic:validator": "bun scripts/validator-diagnostic.ts",
+    "build:webrtc": "bun packages/realtime/native/webrtc/build.ts",
+    "assemble:webrtc": "bun packages/realtime/native/webrtc/package.ts",
+    "pack:webrtc-candidate": "bun packages/realtime/native/webrtc/candidate.ts pack",
+    "verify:webrtc-candidate": "bun packages/realtime/native/webrtc/candidate.ts verify",
+    "audit:prod": "bun audit --prod",
+    "test:webrtc": "bun run build:webrtc && bun test packages/realtime/native/webrtc/test",
     "bench:hetzner": "bun scripts/bench-hetzner.ts",
     "registry": "bunx verdaccio --config registry/config.yaml",
     "bump": "bun scripts/bump.ts",
     "publish:local": "bun scripts/publish-local.ts",
-    "publish:beta": "bun scripts/publish-beta.ts",
+    "publish:beta": "bun scripts/publish-prerelease.ts beta next-minor",
+    "publish:alpha": "bun scripts/publish-prerelease.ts alpha next-minor",
     "prepare": "git config core.hooksPath .githooks && git config branch.main.mergeoptions --no-ff"
   },
   "devDependencies": {
     "@modelcontextprotocol/conformance": "0.1.16",
+    "@napi-rs/cli": "3.8.2",
     "@types/bun": "^1.2.0",
     "@types/node": "22.15.3",
     "typescript": "^5.9.0"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.12",
+    "brace-expansion": "5.0.9",
+    "fast-uri": "3.1.5",
+    "uuid": "11.1.1"
   }
 }

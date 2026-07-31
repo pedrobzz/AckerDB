@@ -5,6 +5,7 @@ import {
 } from "./admission.ts";
 import type { QueueLimits } from "./limits.ts";
 import type { TelemetryOperation, TelemetryResource } from "../telemetry/telemetry.ts";
+import { positiveSafeInteger } from "../shared/numbers.ts";
 
 export interface ExecutorTaskOptions {
   readonly operation: TelemetryOperation;
@@ -38,13 +39,6 @@ interface Task<T> {
   readonly reject: (error: unknown) => void;
 }
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${name} must be a positive safe integer`);
-  }
-  return value;
-}
-
 /** Finite admission plus bounded concurrent execution and deterministic drain. */
 export class BoundedExecutor {
   readonly concurrency: number;
@@ -59,7 +53,7 @@ export class BoundedExecutor {
   private readonly drainWaiters = new Set<() => void>();
 
   constructor(options: BoundedExecutorOptions) {
-    this.concurrency = positiveInteger(options.concurrency, "concurrency");
+    this.concurrency = positiveSafeInteger(options.concurrency, "concurrency");
     this.queue = new AdmissionQueue({
       discipline: options.discipline,
       limits: options.limits,

@@ -6,6 +6,7 @@
 import { AckerDBClient } from "@ackerdb/client";
 import {
   Err,
+  Ok,
   Status,
   anyApi,
   type ApiFromModules,
@@ -14,12 +15,14 @@ import {
 } from "@ackerdb/core";
 import {
   v,
+  channel,
   defineSchema,
   mutation,
   procedure,
   query,
   sseProcedure,
   type MutationBuilder,
+  type ChannelBuilder,
   type ProcedureBuilder,
   type QueryBuilder,
   type SseBuilder,
@@ -31,6 +34,7 @@ type Schema = typeof schema;
 const generatedQuery = query as QueryBuilder<Schema>;
 const generatedMutation = mutation as MutationBuilder<Schema>;
 const generatedProcedure = procedure as ProcedureBuilder<Schema>;
+const generatedChannel = channel as ChannelBuilder<Schema>;
 
 const authorizationSummary = generatedQuery({
   args: { label: v.string() },
@@ -70,6 +74,29 @@ const findItem = generatedQuery({
 
 const generatedSse = sseProcedure as SseBuilder<Schema>;
 
+const chatRoom = generatedChannel({
+  args: { threadId: v.bigint() },
+  room: v.string(),
+  clientEvents: {
+    message: v.object({ body: v.string() }),
+    typing: v.boolean(),
+  },
+  serverEvents: {
+    message: v.object({ id: v.bigint(), body: v.string() }),
+    typing: v.object({ active: v.boolean() }),
+  },
+  access: "authenticated",
+  authorize: (_ctx, args) =>
+    args.threadId > 0n
+      ? Ok({ threadId: args.threadId })
+      : Err("thread-not-found", { threadId: args.threadId }, Status.NotFound),
+  on: {
+    message: (ctx, payload) =>
+      ctx.publish("message", { id: ctx.state.threadId, body: payload.body }),
+    typing: (ctx, active) => ctx.publish("typing", { active }),
+  },
+});
+
 const ticker = generatedSse({
   args: { label: v.string() },
   yields: v.object({ label: v.string(), tick: v.int() }),
@@ -86,6 +113,7 @@ const api = anyApi as unknown as ApiFromModules<{
     pipeline: typeof pipeline;
     findItem: typeof findItem;
     ticker: typeof ticker;
+    chatRoom: typeof chatRoom;
   };
 }>;
 
@@ -132,4 +160,32 @@ export async function _generatedClientInference(): Promise<void> {
   }
   // @ts-expect-error SSE arguments are inferred from the reference
   client.sse(api.generated.ticker, { label: 1 });
+
+  const chat = client.channel(
+    api.generated.chatRoom,
+    { threadId: 1n },
+    {
+      room: "support",
+      handlerKey: "useChatRoom",
+      on: (event) => {
+        if (event.type === "message") {
+          const _id: bigint = event.payload.id;
+          const _body: string = event.payload.body;
+        } else {
+          const _active: boolean = event.payload.active;
+        }
+      },
+    },
+  );
+  chat.send("message", { body: "hello" });
+  chat.send("typing", true);
+  // @ts-expect-error roomed channels require a room
+  client.channel(api.generated.chatRoom, { threadId: 1n });
+  // @ts-expect-error client event payloads are inferred from the declaration
+  chat.send("message", { body: 1 });
+
+  if (chat.currentState.phase === "rejected") {
+    const _code: "thread-not-found" = chat.currentState.error.code;
+    const _threadId: bigint = chat.currentState.error.body.threadId;
+  }
 }

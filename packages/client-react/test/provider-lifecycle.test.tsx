@@ -223,6 +223,43 @@ describe("AckerDBProvider lifecycle", () => {
     expect(harness.clock.taskCount).toBe(0);
   });
 
+  test("every reconnect option is part of the provider lifetime identity", async () => {
+    const harness = createHarness();
+    const root = createRoot(mountPoint());
+    const base = {
+      baseDelayMs: 10,
+      maxDelayMs: 20,
+      stableOpenMs: 30,
+      disconnectedGraceMs: 40,
+      iceRestartTimeoutMs: 50,
+      realtimeSetupTimeoutMs: 60,
+    };
+    const app = (reconnect: typeof base): ReactNode => (
+      <AckerDBProvider config={{ ...harness.config("http://one.test"), reconnect }}>
+        <ConnectionPhase />
+      </AckerDBProvider>
+    );
+    const changes = [
+      { baseDelayMs: 11 },
+      { maxDelayMs: 21 },
+      { stableOpenMs: 31 },
+      { disconnectedGraceMs: 41 },
+      { iceRestartTimeoutMs: 51 },
+      { realtimeSetupTimeoutMs: 61 },
+    ] as const;
+
+    await render(root, app(base));
+    for (const change of changes) {
+      const previous = harness.live()[0]!;
+      await render(root, app({ ...base, ...change }));
+      expect(previous.closed).toBe(true);
+      expect(harness.live()).toHaveLength(1);
+      await render(root, app(base));
+    }
+
+    await act(async () => root.unmount());
+  });
+
   test("a committed reconfiguration never exposes the previous lifetime", async () => {
     const harness = createHarness();
     const container = mountPoint();

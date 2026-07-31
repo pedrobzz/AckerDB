@@ -9,7 +9,15 @@
 //                                 ff merges (--ff/--ff-only override the no-ff
 //                                 config), cherry-pick, rebase, --no-verify
 //                                 merges (commit hooks are skipped, this isn't)
-import { PACKAGES, fail, git, semverGt, syncedVersion, tryGit } from "./lib";
+import {
+  PACKAGES,
+  fail,
+  git,
+  pkgJsonPath,
+  semverGt,
+  syncedVersion,
+  tryGit,
+} from "./lib";
 import { assertReleaseEvidence } from "./release-evidence";
 
 // Commit types that force a version bump; everything else (chore, docs, test,
@@ -26,14 +34,14 @@ function specAt(ref: string, path: string): string {
 
 function versionAt(ref: string, requireCompleteSet: boolean): string {
   const present = PACKAGES.filter(
-    (pkg) => tryGit("show", specAt(ref, `packages/${pkg}/package.json`)) !== null,
+    (pkg) => tryGit("show", specAt(ref, pkgJsonPath(pkg))) !== null,
   );
   if (requireCompleteSet && present.length !== PACKAGES.length) {
     const missing = PACKAGES.filter((pkg) => !present.includes(pkg));
     fail(`${ref} is missing release package(s): ${missing.map((pkg) => `@ackerdb/${pkg}`).join(", ")}`);
   }
   return syncedVersion(
-    (pkg) => git("show", specAt(ref, `packages/${pkg}/package.json`)),
+    (pkg) => git("show", specAt(ref, pkgJsonPath(pkg))),
     present,
   );
 }
@@ -133,5 +141,7 @@ const subjects = heads
   .filter(Boolean);
 
 // HEAD = main before the merge; ":" = the index, i.e. the merged result.
-const mergedVersion = syncedVersion((pkg) => git("show", `:packages/${pkg}/package.json`));
+const mergedVersion = syncedVersion((pkg) =>
+  git("show", `:${pkgJsonPath(pkg)}`)
+);
 check(subjects, versionAt("HEAD", false), mergedVersion, ":");

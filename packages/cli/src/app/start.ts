@@ -3,6 +3,7 @@
  * assembled server (engine + reconcile + runtime + transport).
  */
 import { existsSync, mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -18,6 +19,7 @@ import {
   desiredPluginMounts,
   type CredentialVerifier,
   type EngineCloseDisposition,
+  type RealtimeRuntimeModule,
   MigrationError,
   PluginStorageRequirementsError,
   reconcilePluginStorage,
@@ -52,9 +54,33 @@ export interface StartAppOptions {
    * Production starts and non-TTY dev never set this: they apply at startup.
    */
   holdPendingMigrations?: boolean;
+  /** Overrides the app-local @ackerdb/realtime runtime, primarily for embedding and tests. */
+  realtime?: RealtimeRuntimeModule;
 }
 
 type CredentialVerifierLoader = () => Promise<CredentialVerifier | undefined>;
+
+async function importRealtimeRuntime(appDir: string): Promise<RealtimeRuntimeModule> {
+  const require = createRequire(join(appDir, "package.json"));
+  let entry: string;
+  try {
+    entry = require.resolve("@ackerdb/realtime");
+  } catch (error) {
+    throw new Error(
+      "this app declares realtime routes but @ackerdb/realtime is not installed",
+      { cause: error },
+    );
+  }
+  const module = await import(pathToFileURL(entry).href) as {
+    createRealtimeRuntime?: unknown;
+  };
+  if (typeof module.createRealtimeRuntime !== "function") {
+    throw new TypeError(
+      `@ackerdb/realtime at ${entry} does not export createRealtimeRuntime`,
+    );
+  }
+  return (module.createRealtimeRuntime as () => RealtimeRuntimeModule)();
+}
 
 async function importCredentialVerifier(path: string): Promise<CredentialVerifier> {
   if (!existsSync(path)) throw new Error(`credential verifier not found at ${path}`);
@@ -259,11 +285,15 @@ export async function startApp(
     await awaitStartup(pluginRuntime.start());
     requireStartupOwnership();
     const registry = new Registry(modules);
+    const realtime = registry.realtime.size === 0
+      ? undefined
+      : options.realtime ?? await awaitStartup(importRealtimeRuntime(config.appDir));
     runtime = new Runtime({
       engine: ownedEngine,
       registry,
       pluginRuntime,
       ...(verifier === undefined ? {} : { verifier }),
+      ...(realtime === undefined ? {} : { realtime }),
       telemetry: config.telemetry === "disabled" ? false : undefined,
     });
     server.activate(runtime);

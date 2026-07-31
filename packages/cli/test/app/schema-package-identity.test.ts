@@ -1,14 +1,16 @@
 import { expect, test } from "bun:test";
 import {
-  cpSync,
+  readFileSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   AckerDBError,
@@ -41,19 +43,37 @@ function run(command: string[], cwd: string): string {
 }
 
 function installPackedPackage(app: string, tarballs: string, name: "core" | "server"): void {
-  const output = run(
+  run(
     [process.execPath, "pm", "pack", "--destination", tarballs],
     join(REPO, "packages", name),
   );
-  const tarball = output
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.endsWith(".tgz"));
-  if (tarball === undefined) throw new Error(`bun pm pack did not report a ${name} tarball`);
+  const archive = readdirSync(tarballs).find(
+    (file) => file.startsWith(`ackerdb-${name}-`) && file.endsWith(".tgz"),
+  );
+  if (archive === undefined) {
+    throw new Error(`bun pm pack did not create a ${name} tarball`);
+  }
+  const tarball = join(tarballs, archive);
 
   const target = join(app, "node_modules", "@ackerdb", name);
   mkdirSync(target, { recursive: true });
   run(["tar", "-xzf", tarball, "-C", target, "--strip-components=1"], app);
+}
+
+function linkExternalDependencies(app: string, name: "core" | "server"): void {
+  const manifest = JSON.parse(
+    readFileSync(join(REPO, "packages", name, "package.json"), "utf8"),
+  ) as { readonly dependencies?: Readonly<Record<string, string>> };
+  for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+    if (dependency.startsWith("@ackerdb/")) continue;
+    const target = join(app, "node_modules", dependency);
+    mkdirSync(dirname(target), { recursive: true });
+    symlinkSync(
+      realpathSync(join(REPO, "packages", name, "node_modules", dependency)),
+      target,
+      "dir",
+    );
+  }
 }
 
 test("packed @ackerdb/server values keep identity across physical package copies", async () => {
@@ -63,11 +83,8 @@ test("packed @ackerdb/server values keep identity across physical package copies
     mkdirSync(tarballs);
     installPackedPackage(app, tarballs, "core");
     installPackedPackage(app, tarballs, "server");
-    cpSync(
-      realpathSync(join(REPO, "packages", "server", "node_modules", "jose")),
-      join(app, "node_modules", "jose"),
-      { recursive: true },
-    );
+    linkExternalDependencies(app, "core");
+    linkExternalDependencies(app, "server");
 
     const appPath = join(app, "app.ts");
     writeFileSync(

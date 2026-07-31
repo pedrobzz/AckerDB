@@ -10,6 +10,14 @@ import {
   type AnyRegistered,
 } from "./functions.ts";
 import {
+  isRegisteredChannel,
+  type AnyRegisteredChannel,
+} from "../channels/definition.ts";
+import {
+  isRegisteredRealtime,
+  type AnyRegisteredRealtime,
+} from "../realtime/definition.ts";
+import {
   isMcpDeclaration,
   isMcpToolBlueprint,
   isRegisteredMcpTool,
@@ -31,6 +39,8 @@ interface ModuleExport {
 
 export class Registry {
   readonly functions = new Map<string, AnyRegistered>();
+  readonly channels = new Map<string, AnyRegisteredChannel>();
+  readonly realtime = new Map<string, AnyRegisteredRealtime>();
   readonly serverOnly = new Map<string, ServerOnlyExport>();
   readonly mcps = new Map<string, AnyMcpDeclaration>();
   readonly mcpTools = new Map<string, AnyRegisteredMcpTool>();
@@ -58,6 +68,18 @@ export class Registry {
       if (!isRegisteredFunction(value)) continue;
       this.registerAddress(address, value);
       this.functions.set(address, value);
+    }
+
+    for (const { address, value } of moduleExports) {
+      if (!isRegisteredChannel(value)) continue;
+      this.registerAddress(address, value);
+      this.channels.set(address, value);
+    }
+
+    for (const { address, value } of moduleExports) {
+      if (!isRegisteredRealtime(value)) continue;
+      this.registerAddress(address, value);
+      this.realtime.set(address, value);
     }
 
     for (const { address, value } of moduleExports) {
@@ -109,12 +131,23 @@ export class Registry {
   }
 
   private registerAddress(address: string, value: object): void {
-    if (this.functions.has(address) || this.serverOnly.has(address)) {
+    if (
+      this.functions.has(address) ||
+      this.channels.has(address) ||
+      this.realtime.has(address) ||
+      this.serverOnly.has(address)
+    ) {
       throw new Error(`duplicate server export address "${address}"`);
     }
     const existingAddress = this.addressByObject.get(value);
     if (existingAddress !== undefined) {
-      const kind = isRegisteredFunction(value) ? "registered function" : "server-only value";
+      const kind = isRegisteredFunction(value)
+        ? "registered function"
+        : isRegisteredChannel(value)
+          ? "registered channel"
+          : isRegisteredRealtime(value)
+            ? "registered realtime"
+          : "server-only value";
       throw new Error(`${kind} is exported at both "${existingAddress}" and "${address}"`);
     }
     this.addressByObject.set(value, address);
@@ -149,8 +182,18 @@ export class Registry {
     return this.functions.get(address);
   }
 
+  getChannel(address: string): AnyRegisteredChannel | undefined {
+    return this.channels.get(address);
+  }
+
+  getRealtime(address: string): AnyRegisteredRealtime | undefined {
+    return this.realtime.get(address);
+  }
+
   kindOf(address: string): string | undefined {
-    return this.functions.get(address)?.kind;
+    return this.functions.get(address)?.kind ??
+      this.channels.get(address)?.kind ??
+      this.realtime.get(address)?.kind;
   }
 
   addressOf(value: object): string | undefined {

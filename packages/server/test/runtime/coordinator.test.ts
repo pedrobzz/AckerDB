@@ -14,7 +14,7 @@ import { Engine } from "../../src/database/engine.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { PRODUCTION_LIMITS, defineServiceLimits } from "../../src/runtime/limits.ts";
 import { mutationReplayOwner } from "../../src/database/mutation-replay.ts";
-import { OrderedPublication } from "../../src/realtime/publication.ts";
+import { OrderedPublication } from "../../src/subscriptions/publication.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 
