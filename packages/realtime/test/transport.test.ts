@@ -346,7 +346,7 @@ describe("realtime HTTP signaling", () => {
         v: PROTOCOL_VERSION,
         t: "realtime_candidates",
         candidates: [{
-          candidate: "candidate:1 1 UDP 1 127.0.0.1 9 typ host",
+          candidate: "candidate:1 1 UDP 1 127.0.0.1 9 typ srflx",
           sdpMid: "0",
           sdpMLineIndex: 0,
         }],
