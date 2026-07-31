@@ -3,7 +3,12 @@ import type {
   PortableRTCConfiguration,
   PortableRTCPeerConnection,
 } from "@ackerdb/core";
-import type { RealtimePeerEngine, RealtimePeerLimits } from "../engine.ts";
+import type {
+  RealtimePeerEngine,
+  RealtimePeerGeneration,
+  RealtimeNativeQueueMetrics,
+  RealtimePeerLimits,
+} from "../engine.ts";
 import type {
   RealtimeAudioSource,
   RealtimeAudioSourceOptions,
@@ -21,8 +26,13 @@ import {
 import {
   REALTIME_GLOBAL_RESOURCE_DEFAULTS,
   RealtimeGlobalResourceBudget,
+  nativeQueueBytes,
 } from "../resources.ts";
-import { loadNativeBinding } from "./binding.ts";
+import {
+  loadNativeBinding,
+  type NativeGenerationBudgetBinding,
+  type NativeRtcEngineBinding,
+} from "./binding.ts";
 import { NativeMediaFactory } from "./media.ts";
 import {
   createServerPeerConnection,
@@ -32,9 +42,13 @@ import {
 } from "./peer-connection.ts";
 
 class BundledRealtimeEngine implements RealtimePeerEngine {
-  private readonly native;
+  private readonly native: NativeRtcEngineBinding;
   private readonly owner;
-  private readonly media;
+  private closed = false;
+  private lastNativeQueueMetrics: RealtimeNativeQueueMetrics = nativeQueueMetrics(
+    0n,
+    0n,
+  );
 
   constructor(
     private readonly network: ResolvedRealtimeServerNetwork,
@@ -43,13 +57,63 @@ class BundledRealtimeEngine implements RealtimePeerEngine {
     this.native = new (loadNativeBinding().NativeRtcEngine)({
       ignoredInterfaces: [...network.ignoredInterfaces],
       ignoredAdapterTypes: [...network.ignoredAdapterTypes],
+      maxQueuedBytes: resources.limits.maxQueuedBytes,
     });
     this.owner = new NativeTrackOwner(this.native, resources);
-    this.media = new NativeMediaFactory(this.native, this.owner);
   }
 
   close(): void {
+    if (this.closed) return;
+    this.lastNativeQueueMetrics = this.readNativeQueueMetrics();
+    this.closed = true;
     this.native.close();
+  }
+
+  nativeQueueMetrics(): RealtimeNativeQueueMetrics {
+    if (!this.closed) this.lastNativeQueueMetrics = this.readNativeQueueMetrics();
+    return this.lastNativeQueueMetrics;
+  }
+
+  createGeneration(maxQueuedBytes: number): RealtimePeerGeneration {
+    return new BundledRealtimeGeneration(
+      this.native,
+      this.native.createGenerationBudget(
+        nativeQueueBytes(maxQueuedBytes, "maxQueuedBytes"),
+      ),
+      this.owner,
+      this.network,
+    );
+  }
+
+  private readNativeQueueMetrics(): RealtimeNativeQueueMetrics {
+    return nativeQueueMetrics(
+      this.native.reservedBytes,
+      this.native.queueSaturations,
+    );
+  }
+}
+
+class BundledRealtimeGeneration implements RealtimePeerGeneration {
+  private readonly media: NativeMediaFactory;
+
+  constructor(
+    private readonly native: NativeRtcEngineBinding,
+    private readonly budget: NativeGenerationBudgetBinding,
+    private readonly owner: NativeTrackOwner,
+    private readonly network: ResolvedRealtimeServerNetwork,
+  ) {
+    this.media = new NativeMediaFactory(native, budget, owner);
+  }
+
+  close(): void {
+    this.budget.close();
+  }
+
+  nativeQueueMetrics(): RealtimeNativeQueueMetrics {
+    return nativeQueueMetrics(
+      this.budget.reservedBytes,
+      this.budget.saturations,
+    );
   }
 
   createPeerConnection(
@@ -64,7 +128,7 @@ class BundledRealtimeEngine implements RealtimePeerEngine {
       this.native.createPeerConnection(normalizeConfiguration(
         configuration,
         this.network.nativeConfiguration,
-      )),
+      ), this.budget),
       this.owner,
       limits,
       this.network.addressMappings,
@@ -116,4 +180,17 @@ export function createBundledRealtimeEngine(
   ),
 ): RealtimePeerEngine {
   return new BundledRealtimeEngine(network, resources);
+}
+
+function nativeQueueMetrics(reservedBytes: bigint, saturations: bigint) {
+  return Object.freeze({
+    reservedBytes: boundedBigInt(reservedBytes),
+    saturations: boundedBigInt(saturations),
+  });
+}
+
+function boundedBigInt(value: bigint): number {
+  return Number(value > BigInt(Number.MAX_SAFE_INTEGER)
+    ? BigInt(Number.MAX_SAFE_INTEGER)
+    : value);
 }

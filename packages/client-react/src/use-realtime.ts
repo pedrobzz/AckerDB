@@ -16,19 +16,13 @@ import {
   type RealtimeServerStreams,
   type NativeRTCPeerConnection,
 } from "@ackerdb/client";
+import { useCallback, useMemo } from "react";
 import {
-  useCallback,
-  useInsertionEffect,
-  useMemo,
-  useRef,
-  useSyncExternalStore,
-} from "react";
-import { useProviderClient } from "./provider.tsx";
-import {
-  noObservation,
   SharedObservation,
-  skip,
-} from "./query-observation.ts";
+  useCommittedObservation,
+} from "./observation.ts";
+import { useProviderClient } from "./provider.tsx";
+import { skip } from "./query-observation.ts";
 
 export type RealtimeOn<Ref extends AnyRealtimeRef> = AckerDBRealtimeOn<
   RealtimeServerEvents<Ref>,
@@ -66,12 +60,6 @@ export interface UseRealtimeResult<Ref extends AnyRealtimeRef> {
   };
   disconnect(): void;
   reconnect(): void;
-}
-
-interface CommittedObserver<Ref extends AnyRealtimeRef> {
-  readonly source: RealtimeObservation<Ref> | null;
-  readonly on: RealtimeOn<Ref> | undefined;
-  live: boolean;
 }
 
 const CONNECTING: AckerDBRealtimeState<never> = Object.freeze({
@@ -177,90 +165,49 @@ export function useRealtime<Ref extends AnyRealtimeRef>(
   const identity = args === skip
     ? null
     : stableEncode([args, options.handlerKey ?? null]);
-  const latest = useRef<CommittedObserver<Ref> | null>(null);
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const source = useMemo<RealtimeObservation<Ref> | null>(() => {
-    if (client === null || args === skip) return null;
-    let observation!: RealtimeObservation<Ref>;
-    const committed = (): RealtimeOn<Ref> | undefined => {
-      const value = latest.current;
-      return value !== null &&
-          value.live &&
-          value.source === observation
-        ? value.on
-        : undefined;
-    };
-    const on: RealtimeOn<Ref> = {
-      peerConnection(peer) {
-        return committed()?.peerConnection?.(peer);
-      },
-      connected(peer) {
-        return committed()?.connected?.(peer);
-      },
-      track(event) {
-        return committed()?.track?.(event);
-      },
-      stateChange(state, previous) {
-        return committed()?.stateChange?.(state, previous);
-      },
-      event(event) {
-        const handler = committed()?.event;
-        if (handler === undefined) return;
-        return typeof handler === "function"
-          ? handler(event)
-          : handler[event.type]?.(event.payload);
-      },
-      stream(input) {
-        const handler = committed()?.stream;
-        if (handler === undefined) return;
-        return typeof handler === "function"
-          ? handler(input)
-          : handler[input.type]?.(input);
-      },
-    };
-    observation = new RealtimeObservation(
-      client,
-      ref,
-      args,
-      options,
-      on,
-    );
-    return observation;
-  }, [client, address, identity]);
-
-  useInsertionEffect(() => {
-    const committed: CommittedObserver<Ref> = {
-      source,
-      on: options.on,
-      live: true,
-    };
-    latest.current = committed;
-    return () => {
-      committed.live = false;
-    };
-  });
-
-  const subscribe = useCallback(
-    (listener: () => void) =>
-      source === null ? noObservation() : source.listen(listener),
-    [source],
-  );
-  const getSnapshot = useCallback(
-    (): UseRealtimeState<Ref> =>
-      source?.snapshot() ?? (
-        args === skip
-          ? DISABLED as UseRealtimeState<Ref>
-          : CONNECTING
-      ),
-    [source, args],
-  );
-  const state = useSyncExternalStore(
-    subscribe,
-    getSnapshot,
-    () => args === skip
-      ? DISABLED as UseRealtimeState<Ref>
-      : CONNECTING,
+  const fallback = args === skip
+    ? DISABLED as UseRealtimeState<Ref>
+    : CONNECTING;
+  const [source, state] = useCommittedObservation<
+    UseRealtimeState<Ref>,
+    RealtimeOn<Ref> | undefined,
+    RealtimeObservation<Ref>
+  >(
+    (committed) => {
+      if (client === null || args === skip) return null;
+      const on: RealtimeOn<Ref> = {
+        peerConnection(peer) {
+          return committed()?.peerConnection?.(peer);
+        },
+        connected(peer) {
+          return committed()?.connected?.(peer);
+        },
+        track(event) {
+          return committed()?.track?.(event);
+        },
+        stateChange(state, previous) {
+          return committed()?.stateChange?.(state, previous);
+        },
+        event(event) {
+          const handler = committed()?.event;
+          if (handler === undefined) return;
+          return typeof handler === "function"
+            ? handler(event)
+            : handler[event.type]?.(event.payload);
+        },
+        stream(input) {
+          const handler = committed()?.stream;
+          if (handler === undefined) return;
+          return typeof handler === "function"
+            ? handler(input)
+            : handler[input.type]?.(input);
+        },
+      };
+      return new RealtimeObservation(client, ref, args, options, on);
+    },
+    [client, address, identity],
+    options.on,
+    fallback,
   );
   const send = useCallback(
     (<Name extends Extract<keyof RealtimeClientEvents<Ref>, string>>(

@@ -14,7 +14,7 @@ import {
   type AckerDBProviderConfig,
   type UseRealtimeResult,
 } from "@ackerdb/client-react";
-import { act, type ReactNode } from "react";
+import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
 
@@ -52,6 +52,8 @@ class FakeDataChannel extends EventTarget {
 class FakePeerConnection extends EventTarget {
   readonly channel = new FakeDataChannel();
   connectionState: RTCPeerConnectionState = "new";
+  iceConnectionState: RTCIceConnectionState = "new";
+  signalingState: RTCSignalingState = "stable";
   localDescription: RTCSessionDescription | null = null;
 
   createDataChannel(): RTCDataChannel {
@@ -60,6 +62,10 @@ class FakePeerConnection extends EventTarget {
 
   async createOffer(): Promise<RTCSessionDescriptionInit> {
     return { type: "offer", sdp: "v=0\r\nclient" };
+  }
+
+  async createAnswer(): Promise<RTCSessionDescriptionInit> {
+    return { type: "answer", sdp: "v=0\r\nclient" };
   }
 
   async setLocalDescription(value: RTCLocalSessionDescriptionInit): Promise<void> {
@@ -80,6 +86,8 @@ class FakePeerConnection extends EventTarget {
   }
 
   async addIceCandidate(): Promise<void> {}
+
+  restartIce(): void {}
 
   close(): void {
     this.connectionState = "closed";
@@ -122,7 +130,9 @@ function app(
 ): ReactNode {
   return (
     <AckerDBProvider config={config}>
-      {probes.map((probe) => <Probe key={probe.id} {...probe} />)}
+      <StrictMode>
+        {probes.map((probe) => <Probe key={probe.id} {...probe} />)}
+      </StrictMode>
     </AckerDBProvider>
   );
 }
@@ -150,6 +160,8 @@ describe("useRealtime", () => {
   test("retains one peer and one keyed handler bundle across hook owners", async () => {
     const peers: FakePeerConnection[] = [];
     let offers = 0;
+    let releases = 0;
+    let patches = 0;
     const config: AckerDBProviderConfig = {
       url: "https://react-realtime.test",
       credential: { kind: "anonymous" },
@@ -163,10 +175,11 @@ describe("useRealtime", () => {
       },
       fetch: async (url, init) => {
         const path = new URL(url).pathname;
-        if (path === "/api/realtime/config") {
+        if (path === "/api/realtime/prepare" && init?.method === "POST") {
           return new Response(encode({
             v: PROTOCOL_VERSION,
-            t: "realtime_config",
+            t: "realtime_prepared",
+            ticket: "A".repeat(43),
             configuration: {},
           }));
         }
@@ -182,7 +195,17 @@ describe("useRealtime", () => {
             complete: true,
           }));
         }
+        if (init?.method === "PATCH") {
+          patches++;
+          return new Response(encode({
+            v: PROTOCOL_VERSION,
+            t: "realtime_candidates",
+            candidates: [],
+            complete: true,
+          }));
+        }
         if (init?.method === "DELETE") {
+          releases++;
           return new Response(null, { status: 204 });
         }
         throw new Error(`unexpected request ${init?.method ?? "GET"} ${path}`);
@@ -192,6 +215,7 @@ describe("useRealtime", () => {
     const calls: string[] = [];
     const messages = (text: string) => calls.push(`messages:${text}`);
     const composer = (text: string) => calls.push(`composer:${text}`);
+    const updatedComposer = (text: string) => calls.push(`updated:${text}`);
 
     await render(root, app(config, [
       { id: "messages", onTranscript: messages },
@@ -200,6 +224,9 @@ describe("useRealtime", () => {
     await eventually(() => results.get("messages")?.state.phase === "connected");
     expect(peers).toHaveLength(1);
     expect(offers).toBe(1);
+    // This fake opens its data channel during setRemoteDescription(). The
+    // initial HTTP answer still owns signaling until that await completes.
+    expect(patches).toBe(0);
     expect(results.get("messages")?.peerConnection).toBe(
       results.get("composer")?.peerConnection,
     );
@@ -213,7 +240,7 @@ describe("useRealtime", () => {
     expect(calls).toEqual(["messages:one"]);
 
     await render(root, app(config, [
-      { id: "composer", onTranscript: composer },
+      { id: "composer", onTranscript: updatedComposer },
     ]));
     await act(async () => {});
     expect(peers).toHaveLength(1);
@@ -224,8 +251,10 @@ describe("useRealtime", () => {
       }));
     });
     await eventually(() => calls.length === 2);
-    expect(calls).toEqual(["messages:one", "composer:two"]);
+    expect(calls).toEqual(["messages:one", "updated:two"]);
 
     await act(async () => root.unmount());
+    expect(peers[0]!.connectionState).toBe("closed");
+    expect(releases).toBe(1);
   });
 });

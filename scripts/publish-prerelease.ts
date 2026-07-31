@@ -5,16 +5,29 @@
 // apply. The registry's version list is the counter, so a partial publish is
 // recovered by rerunning and taking a fresh number.
 import { existsSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import {
   PACKAGES,
   assertRegistryReachable,
-  assertWebRtcPrebuilds,
+  assertWebRtcDistribution,
   fail,
+  packageDirectory,
   parseSemver,
   pkgJsonPath,
   registryUrl,
   syncedVersion,
 } from "./lib";
+import {
+  WEBRTC_LOADER_DECLARATION_PATH,
+  WEBRTC_LOADER_PATH,
+  writeWebRtcLoader,
+} from "../packages/realtime/native/webrtc/generate-loader.ts";
+import {
+  sha256File,
+  targetBinaryName,
+  type TargetBuildManifest,
+} from "../packages/realtime/native/webrtc/evidence.ts";
+import { WEBRTC_TARGETS } from "../packages/realtime/native/webrtc/provenance.ts";
 
 const channel = process.argv[2];
 if (channel !== "alpha" && channel !== "beta") {
@@ -35,7 +48,27 @@ for (const pkg of PACKAGES) {
   sources.set(pkg, await Bun.file(pkgJsonPath(pkg)).text());
 }
 const sourceVersion = syncedVersion((pkg) => sources.get(pkg)!);
-assertWebRtcPrebuilds();
+const loaderSource = await Bun.file(WEBRTC_LOADER_PATH).text();
+const loaderDeclarationSource = await Bun.file(
+  WEBRTC_LOADER_DECLARATION_PATH,
+).text();
+const bindingDirectory = dirname(WEBRTC_LOADER_PATH);
+const targetManifestSources = new Map(
+  await Promise.all(WEBRTC_TARGETS.map(async (target) => {
+    const path = join(
+      bindingDirectory,
+      targetBinaryName(target).replace(/\.node$/, ".manifest.json"),
+    );
+    const artifact = Bun.file(path);
+    if (!(await artifact.exists())) {
+      fail(
+        "prerelease publication requires the matching verified CI artifacts " +
+          `for all five WebRTC targets in ${bindingDirectory}; missing ${path}`,
+      );
+    }
+    return [path, await artifact.text()] as const;
+  })),
+);
 const [major, minor] = parseSemver(sourceVersion);
 const baseVersion =
   target === "current" ? sourceVersion : `${major}.${minor + 1}.0`;
@@ -64,9 +97,19 @@ console.log(
   `publishing the working tree as @ackerdb/*@${version} (dist-tag: ${channel}) → ${registry}`,
 );
 
+let distributionRetargeted = false;
 const restore = async () => {
   for (const pkg of PACKAGES) {
     await Bun.write(pkgJsonPath(pkg), sources.get(pkg)!);
+  }
+  await Bun.write(WEBRTC_LOADER_PATH, loaderSource);
+  await Bun.write(WEBRTC_LOADER_DECLARATION_PATH, loaderDeclarationSource);
+  for (const [path, source] of targetManifestSources) {
+    await Bun.write(path, source);
+  }
+  if (distributionRetargeted) {
+    assertWebRtcDistribution();
+    distributionRetargeted = false;
   }
 };
 
@@ -77,6 +120,7 @@ try {
     for (const field of [
       "dependencies",
       "devDependencies",
+      "optionalDependencies",
       "peerDependencies",
     ]) {
       const dependencies = json[field] as Record<string, string> | undefined;
@@ -89,11 +133,26 @@ try {
     }
     await Bun.write(pkgJsonPath(pkg), `${JSON.stringify(json, null, 2)}\n`);
   }
+  await writeWebRtcLoader(version);
+  const loader = {
+    cjsSha256: await sha256File(WEBRTC_LOADER_PATH),
+    dtsSha256: await sha256File(WEBRTC_LOADER_DECLARATION_PATH),
+  };
+  for (const [path, source] of targetManifestSources) {
+    const manifest = JSON.parse(source) as TargetBuildManifest;
+    await Bun.write(path, `${JSON.stringify({
+      ...manifest,
+      version,
+      loader,
+    }, null, 2)}\n`);
+  }
+  distributionRetargeted = true;
+  assertWebRtcDistribution();
 
   for (const pkg of PACKAGES) {
     console.log(`\npublishing @ackerdb/${pkg}@${version}`);
     const result = Bun.spawnSync(["bun", "publish", "--tag", channel], {
-      cwd: `packages/${pkg}`,
+      cwd: packageDirectory(pkg),
       stdout: "inherit",
       stderr: "inherit",
     });
@@ -136,6 +195,7 @@ for (const path of demoManifests) {
   for (const field of [
     "dependencies",
     "devDependencies",
+    "optionalDependencies",
     "peerDependencies",
   ]) {
     const dependencies = json[field] as Record<string, string> | undefined;

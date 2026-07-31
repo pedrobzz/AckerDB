@@ -5,7 +5,7 @@ import { createTurnConfiguration } from "../src/turn.ts";
 
 describe("realtime TURN configuration", () => {
   test("issues bounded coturn REST credentials without exposing the secret", async () => {
-    const secret = "deployment-only-secret";
+    const secret = "deployment-only-secret-must-be-32b";
     const configuration = createTurnConfiguration({
       urls: [
         "turn:relay.example.test:3478?transport=udp",
@@ -19,6 +19,7 @@ describe("realtime TURN configuration", () => {
     const value = await configuration(
       ANONYMOUS_PRINCIPAL,
       new AbortController().signal,
+      "A".repeat(43),
     );
     const turn = value.iceServers?.[1];
     expect(value).toMatchObject({
@@ -33,7 +34,7 @@ describe("realtime TURN configuration", () => {
       ],
       iceTransportPolicy: "all",
     });
-    expect(turn?.username).toMatch(/^1700000600:[A-Za-z0-9_-]{22}$/);
+    expect(turn?.username).toMatch(/^1700000600:[A-Za-z0-9_-]{43}$/);
     expect(turn?.credential).toBe(
       createHmac("sha1", secret)
         .update(turn?.username ?? "")
@@ -55,5 +56,17 @@ describe("realtime TURN configuration", () => {
         secret: "",
       })
     ).toThrow("secret cannot be empty");
+    expect(() =>
+      createTurnConfiguration({
+        urls: "turn:relay.example.test",
+        secret: "x".repeat(31),
+      })
+    ).toThrow("at least 32 bytes");
+    expect(() =>
+      createTurnConfiguration({
+        urls: "turn:relay.example.test",
+        secret: new Uint8Array(31),
+      })
+    ).toThrow("at least 32 bytes");
   });
 });

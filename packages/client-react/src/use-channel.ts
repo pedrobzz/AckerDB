@@ -15,18 +15,12 @@ import {
   type ChannelServerEvents,
   type EventUnion,
 } from "@ackerdb/client";
+import { useCallback, useMemo } from "react";
 import {
-  useCallback,
-  useInsertionEffect,
-  useMemo,
-  useRef,
-  useSyncExternalStore,
-} from "react";
-import { useProviderClient } from "./provider.tsx";
-import {
-  noObservation,
   SharedObservation,
-} from "./query-observation.ts";
+  useCommittedObservation,
+} from "./observation.ts";
+import { useProviderClient } from "./provider.tsx";
 
 export type ChannelOn<Ref extends AnyChannelRef> = AckerDBChannelOn<
   ChannelServerEvents<Ref>
@@ -52,12 +46,6 @@ export interface UseChannelResult<Ref extends AnyChannelRef> {
     event: Name,
     payload: NoInfer<ChannelClientEvents<Ref>[Name]>,
   ): boolean;
-}
-
-interface CommittedObserver<Ref extends AnyChannelRef> {
-  readonly source: ChannelObservation<Ref> | null;
-  readonly on: ChannelOn<Ref> | undefined;
-  live: boolean;
 }
 
 const CONNECTING: AckerDBChannelState<never> = Object.freeze({
@@ -157,62 +145,37 @@ export function useChannel<Ref extends AnyChannelRef>(
       : { hasRoom: false },
     value.handlerKey ?? null,
   ]);
-  const latest = useRef<CommittedObserver<Ref> | null>(null);
 
   // The source owns no transport work until useSyncExternalStore subscribes
   // during commit. Its delivery closure reads the latest committed callback,
   // so ordinary rerenders do not replace the observer or its membership.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const source = useMemo<ChannelObservation<Ref> | null>(() => {
-    if (client === null) return null;
-    let observation!: ChannelObservation<Ref>;
-    observation = new ChannelObservation(
-      client,
-      ref,
-      args,
-      value,
-      (event) => {
-        const committed = latest.current;
-        if (
-          committed === null ||
-          !committed.live ||
-          committed.source !== observation ||
-          committed.on === undefined
-        ) {
-          return;
-        }
-        if (typeof committed.on === "function") {
-          committed.on(event);
-        } else {
-          committed.on[event.type]?.(event.payload);
-        }
-      },
-    );
-    return observation;
-  }, [client, address, identity]);
-
-  useInsertionEffect(() => {
-    const committed: CommittedObserver<Ref> = {
-      source,
-      on: value.on,
-      live: true,
-    };
-    latest.current = committed;
-    return () => {
-      committed.live = false;
-    };
-  });
-
-  const subscribe = useCallback(
-    (listener: () => void) =>
-      source === null ? noObservation() : source.listen(listener),
-    [source],
+  const [source, state] = useCommittedObservation<
+    AckerDBChannelState<ChannelError<Ref>>,
+    ChannelOn<Ref> | undefined,
+    ChannelObservation<Ref>
+  >(
+    (committedOn) =>
+      client === null
+        ? null
+        : new ChannelObservation(
+          client,
+          ref,
+          args,
+          value,
+          (event) => {
+            const on = committedOn();
+            if (on === undefined) return;
+            if (typeof on === "function") {
+              on(event);
+            } else {
+              on[event.type]?.(event.payload);
+            }
+          },
+        ),
+    [client, address, identity],
+    value.on,
+    CONNECTING,
   );
-  const getSnapshot = useCallback(
-    () => source?.snapshot() ?? CONNECTING,
-    [source],
-  );
-  const state = useSyncExternalStore(subscribe, getSnapshot, () => CONNECTING);
   const send = useCallback(
     (<Name extends Extract<keyof ChannelClientEvents<Ref>, string>>(
       event: Name,

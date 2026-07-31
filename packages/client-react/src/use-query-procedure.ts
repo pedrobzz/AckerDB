@@ -1,6 +1,7 @@
 import type { ProcedureRef } from "@ackerdb/client";
 import { getRef, type ApplicationError } from "@ackerdb/core";
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useMemo } from "react";
+import { useObservation } from "./observation.ts";
 import { useProviderClient } from "./provider.tsx";
 import {
   DISABLED_QUERY_PROCEDURE_STATE,
@@ -13,7 +14,6 @@ import {
 } from "./query-procedure-store.ts";
 import {
   UNENCODABLE_ARGS,
-  noObservation,
   queryArgsKey,
   skip,
 } from "./query-observation.ts";
@@ -69,28 +69,12 @@ export function useQueryProcedure<
             ),
     [client, address, argsKey, refreshIntervalMs],
   );
-  const subscribe = useCallback(
-    (onStoreChange: () => void) =>
-      source !== null ? source.listen(onStoreChange) : noObservation(),
-    [source],
+  return useObservation<AckerDBQueryProcedureState<Data, Error>>(
+    source,
+    argsKey === null
+      ? DISABLED_QUERY_PROCEDURE_STATE
+      : PENDING_QUERY_PROCEDURE_STATE,
   );
-  const getSnapshot = useCallback(
-    (): AckerDBQueryProcedureState<Data, Error> =>
-      source !== null
-        ? source.snapshot()
-        : argsKey === null
-          ? DISABLED_QUERY_PROCEDURE_STATE
-          : PENDING_QUERY_PROCEDURE_STATE,
-    [source, argsKey],
-  );
-  const getServerSnapshot = useCallback(
-    (): AckerDBQueryProcedureState<Data, Error> =>
-      argsKey === null
-        ? DISABLED_QUERY_PROCEDURE_STATE
-        : PENDING_QUERY_PROCEDURE_STATE,
-    [argsKey],
-  );
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
 
 export type {

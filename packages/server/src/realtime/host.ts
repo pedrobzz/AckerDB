@@ -33,18 +33,45 @@ export interface RealtimeServerSessionAdapter {
   failed(error: unknown): void;
 }
 
-export interface RealtimeOfferInput {
+/**
+ * The authenticated, authorized half of a one-use realtime session.
+ * Its lease and reservation move to a ticket before any native peer exists.
+ */
+export interface RealtimePrepareInput {
   readonly address: string;
   readonly args: unknown;
-  readonly offer: NativeRTCSessionDescriptionInit;
   readonly principal: Principal;
+  /** Fixed-width ingress owner shared by every realtime boundary. */
+  readonly owner: string;
   /** Credential-revocation lifetime, not the initiating HTTP request signal. */
   readonly signal: AbortSignal;
+  /** Cancels only the preparation work when its HTTP request is abandoned. */
+  readonly setupSignal?: AbortSignal;
   /** Transfers the initiating authentication lease to this peer generation. */
   readonly releaseAuthentication: () => void;
   readonly requestBytes: number;
   readonly recovery?: boolean;
 }
+
+/** The unauthenticated payload proves only possession of a prepared ticket. */
+export interface RealtimeOfferInput {
+  readonly ticket: string;
+  readonly offer: NativeRTCSessionDescriptionInit;
+  readonly owner: string;
+  /** Cancels only the offer setup work when its HTTP request is abandoned. */
+  readonly setupSignal?: AbortSignal;
+}
+
+export type RealtimePrepareResult =
+  | {
+      readonly ok: true;
+      readonly ticket: string;
+      readonly configuration: PortableRTCConfiguration;
+    }
+  | {
+      readonly ok: false;
+      readonly error: ApplicationError;
+    };
 
 export type RealtimeOfferResult =
   | {
@@ -79,7 +106,7 @@ export interface RejectedRealtimeApplication {
 export interface RealtimeRuntimeApplication {
   authorize(
     definition: AnyRegisteredRealtime,
-    input: RealtimeOfferInput,
+    input: RealtimePrepareInput,
   ): Promise<AuthorizedRealtimeApplication | RejectedRealtimeApplication>;
 }
 
@@ -130,6 +157,8 @@ export interface RealtimeGlobalResourceLimits {
   readonly maxDecodedStreams: number;
   readonly maxMediaSources: number;
   readonly maxTracks: number;
+  /** Process-wide bytes retained by native realtime queues and media buffers. */
+  readonly maxQueuedBytes: number;
 }
 
 export interface RealtimeGlobalResourceSnapshot {
@@ -186,6 +215,19 @@ export interface RealtimeHealthSnapshot {
   readonly availableOutgoingBitrate: number;
   readonly dataChannelBufferedAmountMax: number;
   readonly nativeQueueDrops: number;
+  /**
+   * Process-wide native queue-capacity reservations, read once and never
+   * summed per session. Includes retained payloads plus conservative media
+   * queue capacity, so it is not an active decoded-frame depth.
+   */
+  readonly nativeProcessReservedBytes: number;
+  /** Process-wide native queue admission failures; read once, never summed per session. */
+  readonly nativeProcessQueueSaturations: number;
+  /** Cumulative generation-local native queue admission failures. */
+  readonly nativeGenerationQueueSaturations: number;
+  readonly nativeQueueLimitTerminations: number;
+  readonly nativeProcessBudgetTerminations: number;
+  readonly nativeGenerationBudgetTerminations: number;
   readonly dataChannelPressure: number;
   readonly streamCapacityPressure: number;
   readonly streamBufferPressure: number;
@@ -215,21 +257,21 @@ export interface RealtimeRuntimeSnapshot {
 }
 
 export interface RealtimeRuntime {
-  configuration(
-    principal: Principal,
-    signal: AbortSignal,
-  ): Promise<PortableRTCConfiguration>;
+  prepare(input: RealtimePrepareInput): Promise<RealtimePrepareResult>;
   offer(input: RealtimeOfferInput): Promise<RealtimeOfferResult>;
+  /** Discards a ticket that could not be returned to its owner. */
+  cancelPrepared(ticket: string, owner: string): void;
   patch(
     sessionId: string,
-    principal: Principal,
+    owner: string,
     batch: RealtimeCandidateBatch,
+    signal?: AbortSignal,
   ): Promise<RealtimePatchResult>;
-  close(sessionId: string, principal: Principal): void;
+  close(sessionId: string, owner: string): void;
   snapshot(): RealtimeRuntimeSnapshot;
   diagnostic(
     sessionId: string,
-    principal: Principal,
+    owner: string,
   ): Promise<RealtimePeerDiagnostic>;
   sampleHealth(maxPeers?: number): Promise<void>;
   drain(): Promise<void>;

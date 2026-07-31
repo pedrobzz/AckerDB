@@ -2330,14 +2330,14 @@ export class Runtime implements RuntimePort {
 
   realtimeDiagnostic(
     sessionId: string,
-    principal: Principal,
+    owner: string,
   ): Promise<RealtimePeerDiagnostic> {
     if (this.realtime === undefined) {
       return Promise.reject(
         new AckerDBError("not_found", "realtime service is not configured"),
       );
     }
-    return this.realtime.diagnostic(sessionId, principal);
+    return this.realtime.diagnostic(sessionId, owner);
   }
 
   drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
@@ -4488,6 +4488,12 @@ export class Runtime implements RuntimePort {
       ["runtime.realtime_available_outgoing_bitrate", realtime?.health.availableOutgoingBitrate ?? 0, "gauge"],
       ["runtime.realtime_data_channel_buffered_amount", realtime?.health.dataChannelBufferedAmountMax ?? 0, "bytes"],
       ["runtime.realtime_native_queue_drops", realtime?.health.nativeQueueDrops ?? 0, "count"],
+      ["runtime.realtime_native_process_reserved_bytes", realtime?.health.nativeProcessReservedBytes ?? 0, "bytes"],
+      ["runtime.realtime_native_process_queue_saturations", realtime?.health.nativeProcessQueueSaturations ?? 0, "count"],
+      ["runtime.realtime_native_generation_queue_saturations", realtime?.health.nativeGenerationQueueSaturations ?? 0, "count"],
+      ["runtime.realtime_native_queue_limit_terminations", realtime?.health.nativeQueueLimitTerminations ?? 0, "count"],
+      ["runtime.realtime_native_process_budget_terminations", realtime?.health.nativeProcessBudgetTerminations ?? 0, "count"],
+      ["runtime.realtime_native_generation_budget_terminations", realtime?.health.nativeGenerationBudgetTerminations ?? 0, "count"],
       ["runtime.realtime_data_channel_pressure", realtime?.health.dataChannelPressure ?? 0, "count"],
       ["runtime.realtime_stream_capacity_pressure", realtime?.health.streamCapacityPressure ?? 0, "count"],
       ["runtime.realtime_stream_buffer_pressure", realtime?.health.streamBufferPressure ?? 0, "count"],

@@ -333,6 +333,8 @@ export type {
   RealtimeOfferResult,
   RealtimePatchResult,
   RealtimePeerDiagnostic,
+  RealtimePrepareInput,
+  RealtimePrepareResult,
   RealtimeRuntime,
   RealtimeRuntimeHost,
   RealtimeRuntimeModule,

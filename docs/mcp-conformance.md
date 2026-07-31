@@ -56,8 +56,9 @@ They run as part of `bun run test`.
 bun run test:packages
 ```
 
-This gate packs all seven lockstep `@ackerdb/*` packages and installs the tarballs
-in a temporary consumer. It verifies:
+This gate packs the seven public and five native lockstep `@ackerdb/*` tarballs,
+then installs the public packages plus the host-selected native package in a
+temporary consumer. It verifies:
 
 - every installed AckerDB package has the same exact version and packed internal
   dependencies contain literal versions rather than `workspace:` specifiers;
@@ -67,9 +68,11 @@ in a temporary consumer. It verifies:
 - packaged `acker codegen` emits schema-bound `createMcp` and `mcpTool` builders,
   and endpoint tool names, inputs, outputs, and scope subsets compile exactly in
   the clean consumer;
-- `@ackerdb/server` pins `@modelcontextprotocol/sdk` to `1.29.0`, the consumer
-  resolves that version, and the server has no production dependency on `ai`
-  or `@ai-sdk/*`.
+- `@ackerdb/server` pins `@modelcontextprotocol/sdk` to `1.30.0`. The clean
+  consumer resolves its patched `@hono/node-server` and `fast-uri` transitives,
+  rejects any second vulnerable resolution in the installed lock graph, and
+  verifies that the server has no production dependency on `ai` or
+  `@ai-sdk/*`.
 
 The temporary consumer uses package-manager overrides only to point
 transitive `@ackerdb/*` versions at the seven local tarballs because this project

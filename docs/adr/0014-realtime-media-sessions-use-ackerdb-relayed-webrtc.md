@@ -100,12 +100,19 @@ POST/PATCH requests. Once the internal data channel opens, descriptions and
 candidates use reserved control frames on that channel. There is no second
 WebSocket or permanent HTTP polling loop.
 
+Each locally gathered candidate wakes one serialized PATCH only when that
+candidate cannot use the internal data channel. The final end-of-candidates
+PATCH may wait for a server candidate, server completion, data-channel
+readiness, request cancellation, or generation close; connection deadlines
+remain the owner of a failed pre-connect generation.
+
 `disconnected` first receives a finite native grace period. Continued failure
-causes one managed ICE restart with refreshed deployment configuration and a
+causes one managed ICE restart with the current generation configuration and a
 deadline. If that fails, AckerDB closes the generation and uses bounded
-backoff to create a fresh generation. A replacement authorizes again, reruns
-client setup and the server handler, and never replays events, media, partial
-streams, or provider state.
+backoff to create a fresh generation whose `/prepare` call obtains current
+deployment configuration. A replacement authorizes again, reruns client setup
+and the server handler, and never replays events, media, partial streams, or
+provider state.
 
 Network, ICE/DTLS, temporary signaling, draining, and overload failures may
 recover. Authorization, validation, protocol, unsupported-capability, and
@@ -118,6 +125,16 @@ Runtime configuration, never a route or hook, owns host interfaces, adapter
 filters, UDP range, advertised-address mappings, ICE timing, and TURN.
 Configuration is validated before accepting traffic. Direct UDP remains
 preferred; standard coturn REST credentials provide fallback relay access.
+
+Remote candidate admission parses and charges every candidate before native
+WebRTC sees it. Consistent with the [W3C `addIceCandidate` behavior for an
+administratively prohibited candidate](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addicecandidate), AckerDB omits unusable `typ host`
+addresses (including browser mDNS/nonliteral and default-denied host
+addresses) without DNS resolution or a terminal session failure. A malformed
+candidate, or a non-host candidate that targets a nonliteral or permanently
+forbidden address, remains terminal. The isolated-LAN private-address opt-in
+admits classified RFC1918/ULA candidates while loopback, link-local,
+multicast, unspecified, and metadata destinations remain prohibited.
 
 Admission occurs before native allocation and bounds global sessions,
 per-principal sessions, and handshake rate. Per-peer limits bound data
@@ -149,11 +166,15 @@ polling loop.
 
 ## Native distribution
 
-One `@ackerdb/server` package contains Darwin arm64/x64, Linux arm64/x64, and
-Windows x64 prebuilds from the same pinned source and binary revisions.
-Downloaded artifacts are digest-verified, AckerDB changes are focused patches,
-and manifests, notices, licenses, provenance, and an SBOM ship with the
-package.
+`@ackerdb/realtime` contains the generated NAPI-RS loader and declarations but
+no native binary. Five optional packages each own one Darwin arm64/x64, Linux
+GNU arm64/x64, or Windows x64 binary from the same pinned binding source and
+native binary revisions; npm host metadata selects the consumer’s package.
+The binding source is an immutable commit from AckerDB’s focused
+`ackerdb-libwebrtc` fork, based on a recorded LiveKit upstream revision.
+Target-specific Google libwebrtc archives remain digest-verified LiveKit build
+inputs. Manifests, notices, licenses, provenance, and an SBOM ship with the
+root distribution record and each platform package.
 
 Every advertised target must build and enter the assembled package. Native and
 packed runtime execution is currently proven only on Darwin arm64; other

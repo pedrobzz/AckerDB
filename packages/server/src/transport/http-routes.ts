@@ -8,7 +8,7 @@ export const ACKERDB_HTTP_ROUTES = Object.freeze({
   sse: "/api/sse",
   sseAck: "/api/sse/ack",
   realtime: "/api/realtime",
-  realtimeConfig: "/api/realtime/config",
+  realtimePrepare: "/api/realtime/prepare",
 } as const);
 
 const builtinPaths = new Set<string>(Object.values(ACKERDB_HTTP_ROUTES));

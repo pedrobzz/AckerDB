@@ -6,13 +6,19 @@ import {
   decodeRealtimeFrame,
   encode,
   encodeRealtimeEvent,
+  encodeRealtimeFrame,
+  parseRealtimeCandidatesMessage,
   parseRealtimeOfferRequest,
+  parseRealtimePrepareRequest,
+  REALTIME_PROTOCOL_VERSION,
   RealtimeStreamInterruptedError,
+  type RealtimeCandidatesMessage,
   type RealtimeRef,
 } from "@ackerdb/core";
 import {
   AckerDBClient,
   RealtimeHandlerKeyConflictError,
+  type AckerDBClientClock,
 } from "../src/index.ts";
 
 class FakeDataChannel extends EventTarget {
@@ -37,6 +43,12 @@ class FakeDataChannel extends EventTarget {
     this.dispatchEvent(new Event("open"));
   }
 
+  close(): void {
+    if (this.readyState === "closed") return;
+    this.readyState = "closed";
+    this.dispatchEvent(new Event("close"));
+  }
+
   receive(data: Uint8Array): void {
     this.dispatchEvent(new MessageEvent("message", {
       data: data.buffer.slice(
@@ -50,14 +62,20 @@ class FakeDataChannel extends EventTarget {
 class FakePeerConnection extends EventTarget {
   readonly channel = new FakeDataChannel();
   connectionState: RTCPeerConnectionState = "new";
+  iceConnectionState: RTCIceConnectionState = "new";
   signalingState: RTCSignalingState = "stable";
   localDescription: RTCSessionDescription | null = null;
   remoteDescription: RTCSessionDescription | null = null;
   closed = false;
   offers = 0;
   iceRestarts = 0;
+  readonly negotiationOperations: string[] = [];
 
-  constructor(private readonly autoIceComplete = true) {
+  constructor(
+    private readonly autoIceComplete = true,
+    private readonly autoChannelOpen = true,
+    private readonly autoPeerConnect = true,
+  ) {
     super();
   }
 
@@ -75,23 +93,39 @@ class FakePeerConnection extends EventTarget {
     return { type: "offer", sdp: `v=0\r\nclient-${this.offers}` };
   }
 
+  async createAnswer(): Promise<RTCSessionDescriptionInit> {
+    return { type: "answer", sdp: "v=0\r\nclient-answer" };
+  }
+
   async setLocalDescription(value: RTCLocalSessionDescriptionInit): Promise<void> {
+    this.negotiationOperations.push(`local:${value.type}`);
+    if (value.type === "rollback") {
+      this.localDescription = null;
+      this.signalingState = "stable";
+      return;
+    }
     this.localDescription = value as RTCSessionDescription;
     this.signalingState = value.type === "offer"
       ? "have-local-offer"
-      : this.signalingState;
+      : "stable";
     if (this.autoIceComplete) {
       queueMicrotask(() => this.completeIce());
     }
   }
 
   async setRemoteDescription(value: RTCSessionDescriptionInit): Promise<void> {
+    this.negotiationOperations.push(`remote:${value.type}`);
     this.remoteDescription = value as RTCSessionDescription;
-    this.signalingState = "stable";
+    this.signalingState = value.type === "offer"
+      ? "have-remote-offer"
+      : "stable";
+    if (value.type === "offer") return;
     queueMicrotask(() => {
-      this.connectionState = "connected";
-      this.dispatchEvent(new Event("connectionstatechange"));
-      this.channel.open();
+      if (this.autoPeerConnect) {
+        this.connectionState = "connected";
+        this.dispatchEvent(new Event("connectionstatechange"));
+      }
+      if (this.autoChannelOpen) this.channel.open();
     });
   }
 
@@ -110,9 +144,77 @@ class FakePeerConnection extends EventTarget {
     this.dispatchEvent(event);
   }
 
+  emitIceCandidate(value: RTCIceCandidateInit): void {
+    const event = new Event("icecandidate");
+    Object.defineProperty(event, "candidate", {
+      value: { toJSON: () => value },
+    });
+    this.dispatchEvent(event);
+  }
+
   close(): void {
+    if (this.closed) return;
     this.closed = true;
     this.connectionState = "closed";
+    this.dispatchEvent(new Event("connectionstatechange"));
+  }
+}
+
+interface ClockTask {
+  readonly at: number;
+  readonly callback: () => void;
+  readonly intervalMs?: number;
+}
+
+class ManualClock implements AckerDBClientClock {
+  private readonly tasks = new Map<number, ClockTask>();
+  private nextId = 0;
+  private time = 0;
+
+  now(): number {
+    return this.time;
+  }
+
+  setTimeout(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback });
+    return id;
+  }
+
+  clearTimeout(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  setInterval(callback: () => void, delayMs: number): number {
+    const id = ++this.nextId;
+    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
+    return id;
+  }
+
+  clearInterval(handle: unknown): void {
+    this.tasks.delete(handle as number);
+  }
+
+  advance(milliseconds: number): void {
+    const deadline = this.time + milliseconds;
+    for (;;) {
+      const due = [...this.tasks.entries()]
+        .filter(([, task]) => task.at <= deadline)
+        .sort(([, left], [, right]) => left.at - right.at)[0];
+      if (due === undefined) break;
+      const [id, task] = due;
+      this.tasks.delete(id);
+      this.time = task.at;
+      if (task.intervalMs !== undefined) {
+        this.tasks.set(id, {
+          at: task.at + task.intervalMs,
+          callback: task.callback,
+          intervalMs: task.intervalMs,
+        });
+      }
+      task.callback();
+    }
+    this.time = deadline;
   }
 }
 
@@ -121,6 +223,12 @@ async function eventually(check: () => boolean): Promise<void> {
   while (!check()) {
     if (Date.now() >= deadline) throw new Error("condition did not become true");
     await Bun.sleep(1);
+  }
+}
+
+async function turns(count = 4): Promise<void> {
+  for (let index = 0; index < count; index++) {
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
   }
 }
 
@@ -143,47 +251,93 @@ function fixture(reconnect?: {
   readonly iceRestartTimeoutMs?: number;
   readonly realtimeSetupTimeoutMs?: number;
   readonly autoIceComplete?: boolean;
+  readonly autoChannelOpen?: boolean;
+  readonly autoPeerConnect?: boolean;
+  readonly clock?: AckerDBClientClock;
+  readonly random?: () => number;
+  readonly stallCleanup?: boolean;
+  readonly rejectPrepare?: boolean;
+  readonly onPatch?: (
+    request: RealtimeCandidatesMessage,
+  ) => Response | Promise<Response>;
 }) {
   const {
     autoIceComplete = true,
+    autoChannelOpen = true,
+    autoPeerConnect = true,
+    clock,
+    random = () => 0,
+    stallCleanup = false,
+    rejectPrepare = false,
+    onPatch,
     ...reconnectOptions
   } = reconnect ?? {};
   const peers: FakePeerConnection[] = [];
+  let preparations = 0;
   let offers = 0;
   let closes = 0;
   let patches = 0;
-  const recoveryOffers: boolean[] = [];
+  const recoveryPreparations: boolean[] = [];
+  const tickets: string[] = [];
+  const cleanupSignals: AbortSignal[] = [];
   const client = new AckerDBClient({
     url: "https://ackerdb.example.test",
     credential: { kind: "anonymous" },
     clientSessionId: "01890a5d-ac96-774b-b4c0-123456789abc",
-    random: () => 0,
+    random,
+    ...(clock === undefined ? {} : { clock }),
     reconnect: reconnectOptions,
     createPeerConnection: () => {
-      const peer = new FakePeerConnection(autoIceComplete);
+      const peer = new FakePeerConnection(
+        autoIceComplete,
+        autoChannelOpen,
+        autoPeerConnect,
+      );
       peers.push(peer);
-      return peer as unknown as RTCPeerConnection;
+      return peer;
     },
     createWebSocket: () => {
       throw new Error("realtime must not open the application WebSocket");
     },
     fetch: async (url, init) => {
       const path = new URL(url).pathname;
-      if (path === "/api/realtime/config") {
-        return new Response(encode({
-          v: PROTOCOL_VERSION,
-          t: "realtime_config",
-          configuration: { iceServers: [] },
-        }));
-      }
-      if (path === "/api/realtime" && init?.method === "POST") {
-        offers++;
-        const request = parseRealtimeOfferRequest(
+      if (path === "/api/realtime/prepare" && init?.method === "POST") {
+        preparations++;
+        const request = parseRealtimePrepareRequest(
           decode(String(init.body)),
         );
         expect(request.ref).toBe("assistant.live");
         expect(request.args).toEqual({ assistantId: 1n });
-        recoveryOffers.push(request.recovery === true);
+        recoveryPreparations.push(request.recovery === true);
+        if (rejectPrepare) {
+          return new Response(encode({
+            v: PROTOCOL_VERSION,
+            t: "realtime_rejected",
+            error: {
+              kind: "application",
+              code: "forbidden",
+              body: null,
+              status: 403,
+            },
+          }), { status: 403 });
+        }
+        const ticket = String(preparations).padStart(43, "A");
+        tickets.push(ticket);
+        return new Response(encode({
+          v: PROTOCOL_VERSION,
+          t: "realtime_prepared",
+          ticket,
+          configuration: { iceServers: [] },
+        }));
+      }
+      if (path === "/api/realtime" && init?.method === "POST") {
+        const request = parseRealtimeOfferRequest(
+          decode(String(init.body)),
+        );
+        const ticket = tickets[offers];
+        if (ticket === undefined) throw new Error("offer has no prepared ticket");
+        expect(request.ticket).toBe(ticket);
+        offers++;
         return new Response(encode({
           v: PROTOCOL_VERSION,
           t: "realtime_answer",
@@ -202,6 +356,10 @@ function fixture(reconnect?: {
         init?.method === "PATCH"
       ) {
         patches++;
+        const request = parseRealtimeCandidatesMessage(
+          decode(String(init.body)),
+        );
+        if (onPatch !== undefined) return onPatch(request);
         return new Response(encode({
           v: PROTOCOL_VERSION,
           t: "realtime_candidates",
@@ -214,6 +372,16 @@ function fixture(reconnect?: {
         init?.method === "DELETE"
       ) {
         closes++;
+        if (stallCleanup) {
+          const signal = init?.signal;
+          if (signal === undefined || signal === null) {
+            throw new Error("cleanup requires an abort signal");
+          }
+          cleanupSignals.push(signal);
+          return new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        }
         return new Response(null, { status: 204 });
       }
       throw new Error(`unexpected request ${init?.method ?? "GET"} ${path}`);
@@ -222,10 +390,12 @@ function fixture(reconnect?: {
   return {
     client,
     peers,
+    preparations: () => preparations,
     offers: () => offers,
     closes: () => closes,
     patches: () => patches,
-    recoveryOffers,
+    recoveryPreparations,
+    cleanupSignals,
   };
 }
 
@@ -271,7 +441,7 @@ describe("AckerDB realtime client sessions", () => {
   });
 
   test("equal keys retain one peer and one handler bundle across owners", async () => {
-    const { client, peers, offers, closes } = fixture();
+    const { client, peers, preparations, offers, closes } = fixture();
     const transcripts: string[] = [];
     let setups = 0;
     const options = {
@@ -301,6 +471,7 @@ describe("AckerDB realtime client sessions", () => {
     await eventually(() => chat.currentState.phase === "connected");
     expect(composer.currentState.phase).toBe("connected");
     expect(peers).toHaveLength(1);
+    expect(preparations()).toBe(1);
     expect(offers()).toBe(1);
     expect(setups).toBe(1);
     expect(chat.peerConnection).toBe(composer.peerConnection);
@@ -358,7 +529,9 @@ describe("AckerDB realtime client sessions", () => {
     await eventually(() => session.currentState.phase === "connected");
 
     expect(session.send("prompt", { text: "hello" })).toBe(true);
-    expect(peers[0]!.channel.sent).toHaveLength(1);
+    expect(peers[0]!.channel.sent
+      .map(decodeRealtimeFrame)
+      .filter((frame) => frame.t === "event")).toHaveLength(1);
     expect(() => session.openStream(
       "photo",
       { contentType: "image/jpeg" },
@@ -390,11 +563,57 @@ describe("AckerDB realtime client sessions", () => {
     client.close();
   });
 
-  test("stops HTTP trickle after ICE completes over the open data channel", async () => {
-    const { client, peers, patches } = fixture({ autoIceComplete: false });
+  test("keeps the client polite when a remote offer collides", async () => {
+    const { client, peers } = fixture();
     const session = client.realtime(assistant, { assistantId: 1n });
     await eventually(() => session.currentState.phase === "connected");
-    await eventually(() => patches() > 0);
+    const peer = peers[0]!;
+    peer.negotiationOperations.length = 0;
+    peer.channel.sent.length = 0;
+    peer.signalingState = "have-local-offer";
+    peer.localDescription = {
+      type: "offer",
+      sdp: "v=0\r\ncolliding-client-offer",
+    } as RTCSessionDescription;
+
+    peer.channel.receive(encodeRealtimeFrame({
+      v: REALTIME_PROTOCOL_VERSION,
+      t: "signal_description",
+      description: { type: "offer", sdp: "v=0\r\nserver-offer" },
+    }));
+    await eventually(() =>
+      peer.channel.sent
+        .map(decodeRealtimeFrame)
+        .some((frame) => frame.t === "signal_description")
+    );
+
+    expect(peer.negotiationOperations).toEqual([
+      "local:rollback",
+      "remote:offer",
+      "local:answer",
+    ]);
+    expect(peer.channel.sent.map(decodeRealtimeFrame).find((frame) =>
+      frame.t === "signal_description"
+    )).toMatchObject({
+      t: "signal_description",
+      description: { type: "answer", sdp: "v=0\r\nclient-answer" },
+    });
+
+    session.release();
+    client.close();
+  });
+
+  test("does not poll HTTP trickle before local ICE emits", async () => {
+    const clock = new ManualClock();
+    const { client, peers, patches } = fixture({
+      autoIceComplete: false,
+      clock,
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+    await eventually(() => session.currentState.phase === "connected");
+    clock.advance(1_000);
+    await Promise.resolve();
+    expect(patches()).toBe(0);
 
     peers[0]!.completeIce();
     await eventually(() =>
@@ -404,10 +623,127 @@ describe("AckerDB realtime client sessions", () => {
           frame.t === "signal_candidate" && frame.candidate === null
         )
     );
-    await Bun.sleep(150);
-    const settled = patches();
-    await Bun.sleep(250);
-    expect(patches()).toBe(settled);
+    clock.advance(1_000);
+    await Promise.resolve();
+    expect(patches()).toBe(0);
+
+    session.release();
+    client.close();
+  });
+
+  test("serially flushes candidates that arrive while an HTTP patch is in flight", async () => {
+    const requests: RealtimeCandidatesMessage[] = [];
+    let resolveFirst!: (response: Response) => void;
+    const response = (complete: boolean) => new Response(encode({
+      v: PROTOCOL_VERSION,
+      t: "realtime_candidates",
+      candidates: [],
+      complete,
+    }));
+    const { client, peers } = fixture({
+      autoIceComplete: false,
+      autoChannelOpen: false,
+      autoPeerConnect: false,
+      onPatch: (request) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          return new Promise((resolve) => resolveFirst = resolve);
+        }
+        return response(true);
+      },
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+    await eventually(() => peers.length === 1);
+    const peer = peers[0]!;
+    const first = {
+      candidate: "candidate:1 1 UDP 1 8.8.8.8 9 typ host",
+      sdpMid: "0",
+      sdpMLineIndex: 0,
+    };
+    const second = {
+      candidate: "candidate:2 1 UDP 1 1.1.1.1 9 typ host",
+      sdpMid: "0",
+      sdpMLineIndex: 0,
+    };
+
+    peer.emitIceCandidate(first);
+    await eventually(() => requests.length === 1);
+    peer.emitIceCandidate(second);
+    await Promise.resolve();
+    expect(requests).toEqual([{
+      v: PROTOCOL_VERSION,
+      t: "realtime_candidates",
+      candidates: [first],
+      complete: false,
+    }]);
+
+    resolveFirst(response(false));
+    await eventually(() => requests.length === 2);
+    expect(requests[1]).toEqual({
+      v: PROTOCOL_VERSION,
+      t: "realtime_candidates",
+      candidates: [second],
+      complete: false,
+    });
+
+    session.release();
+    client.close();
+  });
+
+  test("continues a completed HTTP trickle without repeating end-of-candidates", async () => {
+    const requests: RealtimeCandidatesMessage[] = [];
+    let resolveContinuation!: (response: Response) => void;
+    const serverCandidate = {
+      candidate: "candidate:1 1 UDP 1 8.8.4.4 9 typ relay",
+      sdpMid: "0",
+      sdpMLineIndex: 0,
+    };
+    const { client, peers } = fixture({
+      autoIceComplete: false,
+      autoChannelOpen: false,
+      autoPeerConnect: false,
+      onPatch: (request) => {
+        requests.push(request);
+        if (requests.length === 1) {
+          return new Response(encode({
+            v: PROTOCOL_VERSION,
+            t: "realtime_candidates",
+            candidates: [serverCandidate],
+            complete: false,
+          }));
+        }
+        return new Promise((resolve) => resolveContinuation = resolve);
+      },
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+    await eventually(() => peers.length === 1);
+
+    peers[0]!.completeIce();
+    await eventually(() => requests.length === 2);
+    expect(requests).toEqual([
+      {
+        v: PROTOCOL_VERSION,
+        t: "realtime_candidates",
+        candidates: [],
+        complete: true,
+      },
+      {
+        v: PROTOCOL_VERSION,
+        t: "realtime_candidates",
+        candidates: [],
+        complete: false,
+      },
+    ]);
+
+    peers[0]!.channel.open();
+    resolveContinuation(new Response(encode({
+      v: PROTOCOL_VERSION,
+      t: "realtime_candidates",
+      candidates: [],
+      complete: false,
+    })));
+    await turns(8);
+    expect(requests).toHaveLength(2);
 
     session.release();
     client.close();
@@ -472,8 +808,30 @@ describe("AckerDB realtime client sessions", () => {
     client.close();
   });
 
+  test("uses ICE-state recovery when the peer connection state remains connected", async () => {
+    const { client, peers } = fixture({
+      disconnectedGraceMs: 1,
+      iceRestartTimeoutMs: 100,
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+    await eventually(() => session.currentState.phase === "connected");
+
+    peers[0]!.iceConnectionState = "disconnected";
+    peers[0]!.dispatchEvent(new Event("iceconnectionstatechange"));
+    await eventually(() => peers[0]!.iceRestarts === 1);
+    expect(session.currentState.phase).toBe("reconnecting");
+
+    peers[0]!.iceConnectionState = "connected";
+    peers[0]!.dispatchEvent(new Event("iceconnectionstatechange"));
+    await eventually(() => session.currentState.phase === "connected");
+    expect(peers).toHaveLength(1);
+
+    session.release();
+    client.close();
+  });
+
   test("replaces a peer that remains disconnected after its ICE restart deadline", async () => {
-    const { client, peers, recoveryOffers, closes } = fixture({
+    const { client, peers, recoveryPreparations, closes } = fixture({
       baseDelayMs: 1,
       maxDelayMs: 1,
       disconnectedGraceMs: 1,
@@ -520,7 +878,7 @@ describe("AckerDB realtime client sessions", () => {
     expect(peers[0]!.iceRestarts).toBe(1);
     expect(peers[0]!.closed).toBe(true);
     expect(peers[1]!.closed).toBe(false);
-    expect(recoveryOffers).toEqual([false, true]);
+    expect(recoveryPreparations).toEqual([false, true]);
     expect(transcripts).toEqual(["before recovery"]);
     expect(tracks).toBe(1);
     await expect(writer.write(new Uint8Array([2]))).rejects.toBeInstanceOf(
@@ -548,11 +906,13 @@ describe("AckerDB realtime client sessions", () => {
           "NotSupportedError",
         );
       },
-      fetch: async (url) => {
-        expect(new URL(url).pathname).toBe("/api/realtime/config");
+      fetch: async (url, init) => {
+        expect(new URL(url).pathname).toBe("/api/realtime/prepare");
+        expect(init?.method).toBe("POST");
         return new Response(encode({
           v: PROTOCOL_VERSION,
-          t: "realtime_config",
+          t: "realtime_prepared",
+          ticket: "A".repeat(43),
           configuration: { iceServers: [] },
         }));
       },
@@ -569,6 +929,45 @@ describe("AckerDB realtime client sessions", () => {
     });
     await Bun.sleep(20);
     expect(attempts).toBe(1);
+
+    session.release();
+    client.close();
+  });
+
+  test("validates reserved peer capabilities before the offer", async () => {
+    let requests = 0;
+    const client = new AckerDBClient({
+      url: "https://ackerdb.example.test",
+      credential: { kind: "anonymous" },
+      clientSessionId: "01890a5d-ac96-774b-b4c0-123456789abc",
+      createWebSocket: () => {
+        throw new Error("realtime must not open the application WebSocket");
+      },
+      createPeerConnection: () => ({}),
+      fetch: async (url, init) => {
+        requests++;
+        expect(new URL(url).pathname).toBe("/api/realtime/prepare");
+        expect(init?.method).toBe("POST");
+        return new Response(encode({
+          v: PROTOCOL_VERSION,
+          t: "realtime_prepared",
+          ticket: "A".repeat(43),
+          configuration: { iceServers: [] },
+        }));
+      },
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+
+    await eventually(() => session.currentState.phase === "failed");
+    expect(session.currentState).toMatchObject({
+      phase: "failed",
+      error: {
+        code: "validation",
+        message: "RTCPeerConnection must support createDataChannel()",
+        retryable: false,
+      },
+    });
+    expect(requests).toBe(1);
 
     session.release();
     client.close();
@@ -602,6 +1001,257 @@ describe("AckerDB realtime client sessions", () => {
     expect(peers[0]!.offers).toBe(1);
 
     session.release();
+    client.close();
+  });
+
+  test("keeps a stalled application setup terminal instead of retrying it", async () => {
+    const { client, peers, offers, preparations } = fixture({
+      realtimeSetupTimeoutMs: 5,
+      baseDelayMs: 1,
+      maxDelayMs: 1,
+    });
+    const session = client.realtime(
+      assistant,
+      { assistantId: 1n },
+      {
+        on: {
+          peerConnection: () => new Promise(() => {}),
+        },
+      },
+    );
+
+    await eventually(() => session.currentState.phase === "failed");
+    expect(session.currentState).toMatchObject({
+      phase: "failed",
+      error: {
+        code: "internal",
+        message: "realtime on.peerConnection handler timed out",
+        retryable: false,
+      },
+    });
+    await Bun.sleep(10);
+    expect(preparations()).toBe(1);
+    expect(peers).toHaveLength(1);
+    expect(peers[0]!.closed).toBe(true);
+    expect(offers()).toBe(0);
+
+    session.release();
+    client.close();
+  });
+
+  test("keeps setup bounded until both the peer and AckerDB data channel open", async () => {
+    const { client, peers } = fixture({
+      autoChannelOpen: false,
+      realtimeSetupTimeoutMs: 5,
+      baseDelayMs: 100,
+      maxDelayMs: 100,
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+
+    await eventually(() => peers[0]?.connectionState === "connected");
+    expect(session.currentState.phase).toBe("connecting");
+    await eventually(() => session.currentState.phase === "reconnecting");
+    expect(peers[0]!.closed).toBe(true);
+
+    session.release();
+    client.close();
+  });
+
+  test("keeps setup bounded when the data channel opens before the peer", async () => {
+    const { client, peers } = fixture({
+      autoPeerConnect: false,
+      realtimeSetupTimeoutMs: 5,
+      baseDelayMs: 100,
+      maxDelayMs: 100,
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+
+    await eventually(() => peers[0]?.channel.readyState === "open");
+    expect(session.currentState.phase).toBe("connecting");
+    await eventually(() => session.currentState.phase === "reconnecting");
+    expect(peers[0]!.closed).toBe(true);
+
+    session.release();
+    client.close();
+  });
+
+  test("recovers one fresh generation when the AckerDB data channel closes", async () => {
+    const { client, closes, peers, recoveryPreparations } = fixture({
+      baseDelayMs: 1,
+      maxDelayMs: 1,
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+    await eventually(() => session.currentState.phase === "connected");
+
+    peers[0]!.channel.close();
+    await eventually(() => peers.length === 2);
+    await eventually(() => session.currentState.phase === "connected");
+    expect(recoveryPreparations).toEqual([false, true]);
+    expect(closes()).toBe(1);
+
+    peers[0]!.channel.close();
+    await Bun.sleep(10);
+    expect(peers).toHaveLength(2);
+    expect(closes()).toBe(1);
+
+    session.release();
+    client.close();
+  });
+
+  test("does not recover after explicit disconnect", async () => {
+    const { client, peers } = fixture({ baseDelayMs: 1, maxDelayMs: 1 });
+    const session = client.realtime(assistant, { assistantId: 1n });
+    await eventually(() => session.currentState.phase === "connected");
+
+    session.disconnect();
+    peers[0]!.channel.close();
+    await Bun.sleep(10);
+    expect(session.currentState.phase).toBe("disconnected");
+    expect(peers).toHaveLength(1);
+
+    session.release();
+    client.close();
+  });
+
+  test("treats exposed peer closure as disconnected until reconnect", async () => {
+    const { client, peers, recoveryPreparations } = fixture({
+      baseDelayMs: 1,
+      maxDelayMs: 1,
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+    await eventually(() => session.currentState.phase === "connected");
+
+    const peer = session.peerConnection;
+    expect(peer).not.toBeNull();
+    peer!.close();
+    await eventually(() => session.currentState.phase === "disconnected");
+    await Bun.sleep(10);
+    expect(peers).toHaveLength(1);
+    expect(recoveryPreparations).toEqual([false]);
+
+    session.reconnect();
+    await eventually(() => session.currentState.phase === "connected");
+    expect(peers).toHaveLength(2);
+    expect(recoveryPreparations).toEqual([false, false]);
+
+    session.release();
+    client.close();
+  });
+
+  test("keeps handler failures terminal instead of replacing the generation", async () => {
+    const { client, peers } = fixture({ baseDelayMs: 1, maxDelayMs: 1 });
+    const session = client.realtime(
+      assistant,
+      { assistantId: 1n },
+      {
+        handlerKey: "terminal-handler",
+        on: {
+          event: {
+            transcript: () => {
+              throw new Error("application handler failed");
+            },
+          },
+        },
+      },
+    );
+    await eventually(() => session.currentState.phase === "connected");
+
+    peers[0]!.channel.receive(encodeRealtimeEvent("transcript", { text: "one" }));
+    await eventually(() => session.currentState.phase === "failed");
+    expect(session.currentState).toMatchObject({
+      phase: "failed",
+      error: {
+        code: "internal",
+        message: "realtime event or stream handler failed",
+        retryable: false,
+      },
+    });
+    const observer = client.realtime(
+      assistant,
+      { assistantId: 1n },
+      { handlerKey: "terminal-handler" },
+    );
+    await Bun.sleep(10);
+    expect(peers).toHaveLength(1);
+
+    observer.release();
+    session.release();
+    client.close();
+  });
+
+  test("keeps rejected setup terminal until explicit reconnect", async () => {
+    const { client, peers, preparations } = fixture({ rejectPrepare: true });
+    const session = client.realtime(
+      assistant,
+      { assistantId: 1n },
+      { handlerKey: "rejected" },
+    );
+    await eventually(() => session.currentState.phase === "rejected");
+
+    const observer = client.realtime(
+      assistant,
+      { assistantId: 1n },
+      { handlerKey: "rejected" },
+    );
+    await Bun.sleep(10);
+    expect(preparations()).toBe(1);
+    expect(peers).toHaveLength(0);
+
+    session.reconnect();
+    await eventually(() => preparations() === 2);
+    await eventually(() => session.currentState.phase === "rejected");
+    observer.release();
+    session.release();
+    client.close();
+  });
+
+  test("does not reset replacement backoff before a generation stays open", async () => {
+    const clock = new ManualClock();
+    const { client, peers } = fixture({
+      clock,
+      random: () => 0.999,
+      baseDelayMs: 10,
+      maxDelayMs: 100,
+      stableOpenMs: 1_000,
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+    await eventually(() => session.currentState.phase === "connected");
+
+    peers[0]!.connectionState = "failed";
+    peers[0]!.dispatchEvent(new Event("connectionstatechange"));
+    clock.advance(20);
+    await eventually(() => peers.length === 2 && session.currentState.phase === "connected");
+
+    peers[1]!.connectionState = "failed";
+    peers[1]!.dispatchEvent(new Event("connectionstatechange"));
+    clock.advance(20);
+    await Bun.sleep(0);
+    expect(peers).toHaveLength(2);
+    clock.advance(20);
+    await eventually(() => peers.length === 3);
+
+    session.release();
+    client.close();
+  });
+
+  test("bounds the single cleanup request even when its transport stalls", async () => {
+    const clock = new ManualClock();
+    const { cleanupSignals, client, closes } = fixture({
+      clock,
+      realtimeSetupTimeoutMs: 5,
+      stallCleanup: true,
+    });
+    const session = client.realtime(assistant, { assistantId: 1n });
+    await eventually(() => session.currentState.phase === "connected");
+
+    session.release();
+    await Promise.resolve();
+    expect(closes()).toBe(1);
+    expect(cleanupSignals).toHaveLength(1);
+    expect(cleanupSignals[0]!.aborted).toBe(false);
+    clock.advance(5);
+    expect(cleanupSignals[0]!.aborted).toBe(true);
+
     client.close();
   });
 });

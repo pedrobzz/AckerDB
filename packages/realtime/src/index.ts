@@ -58,6 +58,8 @@ export {
 } from "./turn.ts";
 export {
   preflightRealtimeTurn,
+  type RealtimeTurnPreflightFailureCode,
   type RealtimeTurnPreflightOptions,
   type RealtimeTurnPreflightResult,
+  type RealtimeTurnTransportPreflightResult,
 } from "./turn-preflight.ts";

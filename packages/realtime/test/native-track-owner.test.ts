@@ -43,10 +43,11 @@ test("native track ownership uses physical identity instead of public track ID",
     resources,
   );
   const firstNative = nativeTrack(1n);
+  const repeatedNative = nativeTrack(1n);
   const secondNative = nativeTrack(2n);
   const first = owner.wrapTrack(firstNative, owner.createScope());
   const repeated = owner.wrapTrack(
-    { ...firstNative },
+    repeatedNative,
     owner.createScope(),
   );
   const second = owner.wrapTrack(secondNative, owner.createScope());

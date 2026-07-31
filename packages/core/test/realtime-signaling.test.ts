@@ -3,33 +3,40 @@ import {
   PROTOCOL_VERSION,
   ProtocolError,
   parseRealtimeCandidatesMessage,
-  parseRealtimeConfigurationMessage,
   parseRealtimeOfferRequest,
   parseRealtimeOfferResponse,
   parseRealtimePatchResponse,
+  parseRealtimePrepareRequest,
+  parseRealtimePrepareResponse,
 } from "@ackerdb/core";
 
 describe("realtime signaling protocol", () => {
-  test("parses configuration, offer, answer, and trickled candidates", () => {
-    expect(parseRealtimeConfigurationMessage({
+  test("parses preparation, ticketed offer, answer, and trickled candidates", () => {
+    expect(parseRealtimePrepareRequest({
       v: PROTOCOL_VERSION,
-      t: "realtime_config",
-      configuration: {
-        iceServers: [{ urls: "turn:relay.example.test", username: "u", credential: "p" }],
-      },
-    })).toMatchObject({ t: "realtime_config" });
-    expect(parseRealtimeOfferRequest({
-      v: PROTOCOL_VERSION,
-      t: "realtime_offer",
+      t: "realtime_prepare",
       ref: "assistant.voice",
       args: { id: 1n },
-      offer: { type: "offer", sdp: "v=0\r\n" },
       recovery: true,
     })).toMatchObject({
-      t: "realtime_offer",
+      t: "realtime_prepare",
       ref: "assistant.voice",
       recovery: true,
     });
+    expect(parseRealtimePrepareResponse({
+      v: PROTOCOL_VERSION,
+      t: "realtime_prepared",
+      ticket: "A".repeat(43),
+      configuration: {
+        iceServers: [{ urls: "turn:relay.example.test", username: "u", credential: "p" }],
+      },
+    })).toMatchObject({ t: "realtime_prepared" });
+    expect(parseRealtimeOfferRequest({
+      v: PROTOCOL_VERSION,
+      t: "realtime_offer",
+      ticket: "A".repeat(43),
+      offer: { type: "offer", sdp: "v=0\r\n" },
+    })).toMatchObject({ t: "realtime_offer" });
     expect(parseRealtimeOfferResponse({
       v: PROTOCOL_VERSION,
       t: "realtime_answer",
@@ -77,22 +84,31 @@ describe("realtime signaling protocol", () => {
     })).toMatchObject({ t: "realtime_ended" });
   });
 
-  test("rejects wrong SDP roles, unknown fields, and invalid session IDs", () => {
+  test("rejects legacy configuration fields, malformed tickets, and invalid session IDs", () => {
+    expect(() => parseRealtimePrepareRequest({
+      v: PROTOCOL_VERSION,
+      t: "realtime_config",
+      configuration: {},
+    })).toThrow(ProtocolError);
+    expect(() => parseRealtimePrepareResponse({
+      v: PROTOCOL_VERSION,
+      t: "realtime_prepared",
+      ticket: "too-short",
+      configuration: {},
+    })).toThrow("ticket");
     expect(() => parseRealtimeOfferRequest({
       v: PROTOCOL_VERSION,
       t: "realtime_offer",
-      ref: "assistant.voice",
-      args: {},
+      ticket: "A".repeat(43),
       offer: { type: "answer", sdp: "v=0\r\n" },
     })).toThrow(ProtocolError);
     expect(() => parseRealtimeOfferRequest({
       v: PROTOCOL_VERSION,
       t: "realtime_offer",
-      ref: "assistant.voice",
-      args: {},
+      ticket: "A".repeat(43),
       offer: { type: "offer", sdp: "v=0\r\n" },
-      recovery: false,
-    })).toThrow("recovery must be true");
+      ref: "assistant.voice",
+    })).toThrow("unknown field ref");
     expect(() => parseRealtimeCandidatesMessage({
       v: PROTOCOL_VERSION,
       t: "realtime_candidates",

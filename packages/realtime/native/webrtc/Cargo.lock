@@ -780,6 +780,7 @@ dependencies = [
 [[package]]
 name = "libwebrtc"
 version = "0.3.43"
+source = "git+https://github.com/pedrobzz/ackerdb-libwebrtc?rev=e36dad0cbc6fcbf833b98286600823f1e1538244#e36dad0cbc6fcbf833b98286600823f1e1538244"
 dependencies = [
  "cxx",
  "jni",
@@ -817,8 +818,7 @@ checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 [[package]]
 name = "livekit-runtime"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "532e84c6cdc5fe774f2b5d9912597b5f3bea561927a48296d03e24549d21c3f6"
+source = "git+https://github.com/pedrobzz/ackerdb-libwebrtc?rev=e36dad0cbc6fcbf833b98286600823f1e1538244#e36dad0cbc6fcbf833b98286600823f1e1538244"
 dependencies = [
  "tokio",
  "tokio-stream",
@@ -1811,6 +1811,7 @@ dependencies = [
 [[package]]
 name = "webrtc-sys"
 version = "0.3.40"
+source = "git+https://github.com/pedrobzz/ackerdb-libwebrtc?rev=e36dad0cbc6fcbf833b98286600823f1e1538244#e36dad0cbc6fcbf833b98286600823f1e1538244"
 dependencies = [
  "cc",
  "cxx",
@@ -1824,8 +1825,7 @@ dependencies = [
 [[package]]
 name = "webrtc-sys-build"
 version = "0.3.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d46da6b5a5cbd091fae0400f77189f4ca4807c0d9442b85838a584f28720570"
+source = "git+https://github.com/pedrobzz/ackerdb-libwebrtc?rev=e36dad0cbc6fcbf833b98286600823f1e1538244#e36dad0cbc6fcbf833b98286600823f1e1538244"
 dependencies = [
  "anyhow",
  "fs2",

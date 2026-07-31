@@ -1,209 +1,227 @@
-import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { readdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 import {
-  LIBWEBRTC_CRATE_SHA256,
-  LIBWEBRTC_CRATE_VERSION,
-  LIBWEBRTC_TAG,
-  LIVEKIT_REPOSITORY,
-  LIVEKIT_RUST_SDKS_REVISION,
-  NATIVE_ABI,
-  WEBRTC_SYS_CRATE_SHA256,
-  WEBRTC_SYS_CRATE_VERSION,
-  WEBRTC_TARGETS,
-} from "./provenance.ts";
+  copyFile,
+  cp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { candidateSourceFromCleanCheckout } from "./candidate.ts";
+import {
+  DISTRIBUTION_MANIFEST_SCHEMA_VERSION,
+  TARGET_EVIDENCE_FILES,
+  assertProvenanceRevision,
+  assertTargetCycloneDx,
+  assertTargetBuildManifest,
+  nativeBindingSourceDigest,
+  sha256File,
+  targetBinaryName,
+  type TargetBuildManifest,
+  type WebRtcTarget,
+} from "./evidence.ts";
+import { NATIVE_ABI, WEBRTC_TARGETS } from "./provenance.ts";
 
-interface TargetManifest {
-  readonly schemaVersion: 1;
-  readonly target: string;
-  readonly file: "ackerdb_webrtc.node";
-  readonly sha256: string;
-  readonly upstream: {
-    readonly repository: string;
-    readonly libwebrtcTag: string;
-    readonly archive: string;
-    readonly archiveSha256: string;
+const nativeRoot = dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = resolve(nativeRoot, "../../../..");
+const bindingDirectory = join(nativeRoot, "binding");
+const distributionDirectory = join(nativeRoot, "distribution");
+const nativePackagesDirectory = join(repositoryRoot, "packages/realtime-native");
+const sourceProvenance = join(nativeRoot, "PROVENANCE.md");
+const realtimeManifest = JSON.parse(
+  readFileSync(join(repositoryRoot, "packages/realtime/package.json"), "utf8"),
+) as { readonly version?: string };
+if (typeof realtimeManifest.version !== "string") {
+  throw new Error("@ackerdb/realtime has no package version");
+}
+
+function evidencePrefix(target: WebRtcTarget): string {
+  return targetBinaryName(target).replace(/\.node$/, "");
+}
+
+function targetPackageDirectory(target: WebRtcTarget): string {
+  return join(nativePackagesDirectory, target.platformArchABI);
+}
+
+async function mustExist(path: string, label: string): Promise<void> {
+  await readFile(path).catch(() => {
+    throw new Error(`missing generated ${label}: ${path}`);
+  });
+}
+
+async function readTarget(
+  target: WebRtcTarget,
+  nativeBindingSourceSha256: string,
+): Promise<TargetBuildManifest> {
+  const prefix = evidencePrefix(target);
+  const manifest = JSON.parse(await readFile(
+    join(bindingDirectory, `${prefix}.manifest.json`),
+    "utf8",
+  )) as TargetBuildManifest;
+  assertTargetBuildManifest(
+    manifest,
+    target,
+    realtimeManifest.version!,
+    nativeBindingSourceSha256,
+  );
+  const binary = join(bindingDirectory, targetBinaryName(target));
+  if (await sha256File(binary) !== manifest.sha256) {
+    throw new Error(`WebRTC build digest mismatch for ${target.platformArchABI}`);
+  }
+  const [sbom, notices] = await Promise.all([
+    readFile(join(bindingDirectory, `${prefix}.sbom.cdx.json`), "utf8"),
+    readFile(join(bindingDirectory, `${prefix}.THIRD_PARTY_NOTICES.txt`), "utf8"),
+    mustExist(
+      join(bindingDirectory, `${prefix}.licenses`, "Google-WebRTC-LICENSE.md"),
+      "archive license",
+    ),
+  ]);
+  assertTargetCycloneDx(JSON.parse(sbom), target);
+  if (notices.trim() === "") throw new Error(`empty cargo-about notices for ${target.packageName}`);
+  assertProvenanceRevision(await readFile(sourceProvenance, "utf8"));
+  return manifest;
+}
+
+async function assertStagedTarget(
+  target: WebRtcTarget,
+  manifest: TargetBuildManifest,
+): Promise<void> {
+  const directory = targetPackageDirectory(target);
+  const files = await readdir(directory);
+  const expected = ["package.json", targetBinaryName(target), ...TARGET_EVIDENCE_FILES]
+    .sort();
+  if (JSON.stringify(files.sort()) !== JSON.stringify(expected)) {
+    throw new Error(
+      `${target.packageName} contains unexpected payload: ${files.sort().join(", ")}`,
+    );
+  }
+  const binary = join(directory, targetBinaryName(target));
+  if (await sha256File(binary) !== manifest.sha256) {
+    throw new Error(`staged WebRTC binary digest mismatch for ${target.packageName}`);
+  }
+  const archiveLicense = join(directory, manifest.upstream.license.file);
+  const licenses = await readdir(join(directory, "licenses"));
+  if (JSON.stringify(licenses.sort()) !== JSON.stringify(["Google-WebRTC-LICENSE.md"])) {
+    throw new Error(`${target.packageName} has incomplete or unexpected license evidence`);
+  }
+  if (await sha256File(archiveLicense) !== manifest.upstream.license.sha256) {
+    throw new Error(`staged archive license digest mismatch for ${target.packageName}`);
+  }
+}
+
+async function stageTarget(manifest: TargetBuildManifest): Promise<void> {
+  const target = WEBRTC_TARGETS.find((candidate) =>
+    candidate.platformArchABI === manifest.platformArchABI
+  );
+  if (target === undefined) {
+    throw new Error(`unknown WebRTC target ${manifest.platformArchABI}`);
+  }
+  const directory = targetPackageDirectory(target);
+  const packageManifest = JSON.parse(await readFile(
+    join(directory, "package.json"),
+    "utf8",
+  )) as {
+    readonly name?: string;
+    readonly version?: string;
+    readonly main?: string;
+    readonly files?: readonly string[];
   };
-}
-
-const root = dirname(fileURLToPath(import.meta.url));
-const prebuilds = join(root, "prebuilds");
-
-async function sha256(path: string): Promise<string> {
-  const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
-  return hash.digest("hex");
-}
-
-const targets: TargetManifest[] = [];
-for (const expected of WEBRTC_TARGETS) {
-  const target = expected.target;
-  const directory = join(prebuilds, target);
-  const entries = await readdir(directory).catch(() => []);
   if (
-    !entries.includes("ackerdb_webrtc.node") ||
-    !entries.includes("manifest.json")
+    packageManifest.name !== target.packageName ||
+    packageManifest.version !== realtimeManifest.version ||
+    packageManifest.main !== targetBinaryName(target) ||
+    JSON.stringify(packageManifest.files) !==
+      JSON.stringify([targetBinaryName(target), ...TARGET_EVIDENCE_FILES])
   ) {
-    throw new Error(
-      `missing assembled WebRTC prebuild or target manifest for ${target}`,
-    );
+    throw new Error(`${target.packageName} does not declare the exact native payload`);
   }
-  const manifest = JSON.parse(
-    await readFile(join(directory, "manifest.json"), "utf8"),
-  ) as TargetManifest;
-  if (
-    manifest.schemaVersion !== 1 ||
-    manifest.target !== target ||
-    manifest.file !== "ackerdb_webrtc.node" ||
-    manifest.upstream.repository !== LIVEKIT_REPOSITORY ||
-    manifest.upstream.libwebrtcTag !== LIBWEBRTC_TAG ||
-    manifest.upstream.archive !== expected.archive ||
-    manifest.upstream.archiveSha256 !== expected.archiveSha256
-  ) {
-    throw new Error(`invalid WebRTC target manifest for ${target}`);
-  }
-  const actual = await sha256(join(directory, manifest.file));
-  if (actual !== manifest.sha256) {
-    throw new Error(
-      `WebRTC prebuild digest mismatch for ${target}: expected ${manifest.sha256}, received ${actual}`,
-    );
-  }
-  targets.push(manifest);
+
+  const prefix = evidencePrefix(target);
+  await Promise.all([
+    rm(join(directory, targetBinaryName(target)), { force: true }),
+    rm(join(directory, "manifest.json"), { force: true }),
+    rm(join(directory, "sbom.cdx.json"), { force: true }),
+    rm(join(directory, "sbom.spdx.json"), { force: true }),
+    rm(join(directory, "THIRD_PARTY_NOTICES.txt"), { force: true }),
+    rm(join(directory, "PROVENANCE.md"), { force: true }),
+    rm(join(directory, "licenses"), { force: true, recursive: true }),
+  ]);
+  await mkdir(directory, { recursive: true });
+  await Promise.all([
+    copyFile(
+      join(bindingDirectory, targetBinaryName(target)),
+      join(directory, targetBinaryName(target)),
+    ),
+    copyFile(
+      join(bindingDirectory, `${prefix}.manifest.json`),
+      join(directory, "manifest.json"),
+    ),
+    copyFile(
+      join(bindingDirectory, `${prefix}.sbom.cdx.json`),
+      join(directory, "sbom.cdx.json"),
+    ),
+    copyFile(
+      join(bindingDirectory, `${prefix}.THIRD_PARTY_NOTICES.txt`),
+      join(directory, "THIRD_PARTY_NOTICES.txt"),
+    ),
+    copyFile(sourceProvenance, join(directory, "PROVENANCE.md")),
+    cp(join(bindingDirectory, `${prefix}.licenses`), join(directory, "licenses"), {
+      force: true,
+      recursive: true,
+    }),
+  ]);
+  await assertStagedTarget(target, manifest);
 }
 
-const manifest = {
-  schemaVersion: 1,
-  nativeAbi: NATIVE_ABI,
-  targets,
-  build: {
-    rustToolchain: "1.94.0",
-    bun: "1.3.14",
-    upstreamRepository: LIVEKIT_REPOSITORY,
-    upstreamRevision: LIVEKIT_RUST_SDKS_REVISION,
-    libwebrtcCrate: {
-      version: LIBWEBRTC_CRATE_VERSION,
-      sha256: LIBWEBRTC_CRATE_SHA256,
-    },
-    webrtcSysCrate: {
-      version: WEBRTC_SYS_CRATE_VERSION,
-      sha256: WEBRTC_SYS_CRATE_SHA256,
-    },
-    sourceProvenance:
-      "packages/realtime/native/webrtc/PROVENANCE.md",
-  },
+const hostOnly = process.argv.includes("--host");
+const candidate = process.argv.includes("--candidate");
+if (hostOnly && candidate) {
+  throw new Error("a release candidate must assemble every advertised target");
+}
+const nativeBindingSourceSha256 = await nativeBindingSourceDigest();
+const targets = hostOnly
+  ? [WEBRTC_TARGETS.find((target) =>
+    target.host === `${process.platform}-${process.arch}`
+  ) ?? (() => {
+    throw new Error(
+      `AckerDB has no native package for ${process.platform}-${process.arch}`,
+    );
+  })()]
+  : WEBRTC_TARGETS;
+const manifests = await Promise.all(
+  targets.map((target) => readTarget(target, nativeBindingSourceSha256)),
+);
+const loader = {
+  cjsSha256: await sha256File(join(bindingDirectory, "index.cjs")),
+  dtsSha256: await sha256File(join(bindingDirectory, "index.d.cts")),
 };
+if (manifests.some((manifest) => !Bun.deepEquals(manifest.loader, loader))) {
+  throw new Error("WebRTC targets were built with divergent generated N-API loaders");
+}
+await Promise.all(manifests.map(stageTarget));
+
+if (hostOnly) {
+  console.log(`staged verified WebRTC package ${manifests[0]!.packageName}`);
+  process.exit(0);
+}
+
+await rm(distributionDirectory, { force: true, recursive: true });
+await mkdir(distributionDirectory, { recursive: true });
 await writeFile(
-  join(prebuilds, "manifest.json"),
-  `${JSON.stringify(manifest, null, 2)}\n`,
+  join(distributionDirectory, "manifest.json"),
+  `${JSON.stringify({
+    schemaVersion: DISTRIBUTION_MANIFEST_SCHEMA_VERSION,
+    version: realtimeManifest.version,
+    nativeAbi: NATIVE_ABI,
+    nativeBindingSourceSha256,
+    loader,
+    ...(candidate ? { source: candidateSourceFromCleanCheckout(repositoryRoot) } : {}),
+    fork: manifests[0]!.fork,
+    targets: manifests,
+  }, null, 2)}\n`,
   "utf8",
 );
-
-const notices = `AckerDB WebRTC native package — third-party notices
-
-LiveKit Rust WebRTC bindings and webrtc-sys
-Copyright 2023–2025 LiveKit, Inc.
-Licensed under the Apache License, Version 2.0.
-Source: https://github.com/livekit/rust-sdks
-
-Google WebRTC
-Copyright The WebRTC project authors.
-Licensed under a BSD-style license. The complete upstream license corpus is
-included in each verified LiveKit libwebrtc archive named in manifest.json.
-
-The source license and notices used to build this package are kept under
-packages/realtime/native/webrtc/licenses.
-`;
-await writeFile(
-  join(prebuilds, "THIRD_PARTY_NOTICES.txt"),
-  notices,
-  "utf8",
-);
-
-const sbom = {
-  spdxVersion: "SPDX-2.3",
-  dataLicense: "CC0-1.0",
-  SPDXID: "SPDXRef-DOCUMENT",
-  name: "ackerdb-webrtc-native",
-  documentNamespace:
-    `https://ackerdb.dev/sbom/webrtc/${targets[0]!.upstream.libwebrtcTag}`,
-  creationInfo: {
-    created: "2026-07-30T00:00:00Z",
-    creators: ["Tool: packages/realtime/native/webrtc/package.ts"],
-  },
-  packages: [
-    {
-      SPDXID: "SPDXRef-AckerDB-WebRTC",
-      name: "ackerdb-webrtc",
-      versionInfo: `native-abi-${NATIVE_ABI}`,
-      downloadLocation: "NOASSERTION",
-      filesAnalyzed: false,
-      licenseConcluded: "Apache-2.0",
-      licenseDeclared: "Apache-2.0",
-      supplier: "Organization: AckerDB",
-    },
-    {
-      SPDXID: "SPDXRef-LiveKit-LibWebRTC",
-      name: "livekit-libwebrtc",
-      versionInfo: targets[0]!.upstream.libwebrtcTag,
-      downloadLocation:
-        `https://github.com/livekit/rust-sdks/releases/tag/${targets[0]!.upstream.libwebrtcTag}`,
-      filesAnalyzed: false,
-      licenseConcluded: "BSD-3-Clause",
-      licenseDeclared: "BSD-3-Clause",
-      supplier: "Organization: LiveKit",
-    },
-    {
-      SPDXID: "SPDXRef-LiveKit-Rust-Bindings",
-      name: "livekit-rust-webrtc",
-      versionInfo:
-        `libwebrtc-${LIBWEBRTC_CRATE_VERSION}_webrtc-sys-${WEBRTC_SYS_CRATE_VERSION}`,
-      downloadLocation:
-        `${LIVEKIT_REPOSITORY}/tree/${LIVEKIT_RUST_SDKS_REVISION}`,
-      filesAnalyzed: false,
-      licenseConcluded: "Apache-2.0",
-      licenseDeclared: "Apache-2.0",
-      supplier: "Organization: LiveKit",
-      externalRefs: [
-        {
-          referenceCategory: "PACKAGE-MANAGER",
-          referenceType: "purl",
-          referenceLocator:
-            `pkg:cargo/libwebrtc@${LIBWEBRTC_CRATE_VERSION}`,
-        },
-        {
-          referenceCategory: "PACKAGE-MANAGER",
-          referenceType: "purl",
-          referenceLocator:
-            `pkg:cargo/webrtc-sys@${WEBRTC_SYS_CRATE_VERSION}`,
-        },
-        {
-          referenceCategory: "OTHER",
-          referenceType: "vcs",
-          referenceLocator:
-            `git+${LIVEKIT_REPOSITORY}.git@${LIVEKIT_RUST_SDKS_REVISION}`,
-        },
-      ],
-    },
-  ],
-  relationships: [
-    {
-      spdxElementId: "SPDXRef-AckerDB-WebRTC",
-      relationshipType: "DEPENDS_ON",
-      relatedSpdxElement: "SPDXRef-LiveKit-Rust-Bindings",
-    },
-    {
-      spdxElementId: "SPDXRef-LiveKit-Rust-Bindings",
-      relationshipType: "DEPENDS_ON",
-      relatedSpdxElement: "SPDXRef-LiveKit-LibWebRTC",
-    },
-  ],
-};
-await writeFile(
-  join(prebuilds, "sbom.spdx.json"),
-  `${JSON.stringify(sbom, null, 2)}\n`,
-  "utf8",
-);
-
-console.log(`assembled ${targets.length} verified WebRTC prebuilds`);
+console.log(`assembled ${manifests.length} verified WebRTC platform packages`);

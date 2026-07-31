@@ -5,14 +5,16 @@ import {
 } from "@ackerdb/client";
 import type { ApplicationError } from "@ackerdb/core";
 import {
-  PENDING_STATE,
   SharedObservation,
+  type ObservationSource,
+} from "./observation.ts";
+import {
+  PENDING_STATE,
   queryApplicationError,
   queryClientError,
   queryConnectionUnavailable,
   querySuccess,
   type AckerDBQueryState,
-  type ObservationSource,
 } from "./query-observation.ts";
 
 export type { AckerDBQueryState } from "./query-observation.ts";

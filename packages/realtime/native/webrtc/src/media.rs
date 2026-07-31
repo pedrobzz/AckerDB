@@ -1,12 +1,9 @@
 use std::{
     borrow::Cow,
-    future::Future,
     sync::{
         Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    task::{Context, Poll},
-    time::{Duration, Instant},
 };
 
 use futures_util::StreamExt;
@@ -24,11 +21,37 @@ use napi::bindgen_prelude::{
     BigInt, ClassInstance, Int16Array, Uint8Array, within_runtime_if_available,
 };
 use napi_derive::napi;
-use tokio::sync::{Mutex as AsyncMutex, Notify};
+use tokio::sync::Notify;
 
-use crate::{peer::NativeMediaStreamTrack, types::rtc_error};
+use crate::{
+    peer::NativeMediaStreamTrack,
+    queue::{GenerationQueueBudget, QueueReservation},
+    types::rtc_error,
+};
 
 static TRACK_SEQUENCE: AtomicU64 = AtomicU64::new(1);
+const MAX_AUDIO_SAMPLE_RATE: u32 = 192_000;
+const MAX_AUDIO_CHANNELS: u32 = 8;
+const MAX_AUDIO_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_VIDEO_DIMENSION: u32 = 4_096;
+const MAX_VIDEO_PIXELS: u32 = 8_388_608;
+const MAX_VIDEO_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+struct NativeQueueReservation(Mutex<Option<QueueReservation>>);
+
+impl NativeQueueReservation {
+    fn new(reservation: QueueReservation) -> Self {
+        Self(Mutex::new(Some(reservation)))
+    }
+
+    fn optional(reservation: Option<QueueReservation>) -> Self {
+        Self(Mutex::new(reservation))
+    }
+
+    fn release(&self) {
+        lock(&self.0).take();
+    }
+}
 
 #[napi(object)]
 #[derive(Clone, Debug)]
@@ -88,75 +111,36 @@ pub struct NativeAudioSourceHandle {
     track: Mutex<Option<MediaStreamTrack>>,
     sample_rate: u32,
     channels: u32,
-    capture_chunk_samples: usize,
-    capture: AsyncMutex<()>,
-    capture_gate: Mutex<()>,
-    playout: Mutex<AudioPlayoutState>,
-    playout_changed: Notify,
+    budget: Mutex<Option<GenerationQueueBudget>>,
+    reservation: NativeQueueReservation,
     closed: AtomicBool,
-}
-
-struct AudioPlayoutState {
-    queued: Duration,
-    updated_at: Instant,
-    revision: u64,
-    epoch: u64,
-}
-
-impl AudioPlayoutState {
-    fn remaining(&self, now: Instant) -> Duration {
-        self.queued
-            .saturating_sub(now.duration_since(self.updated_at))
-    }
-
-    fn enqueue(&mut self, duration: Duration, now: Instant) -> u64 {
-        self.queued = self.remaining(now).saturating_add(duration);
-        self.updated_at = now;
-        self.revision = self.revision.wrapping_add(1);
-        self.revision
-    }
-
-    fn rollback(&mut self, duration: Duration, revision: u64, now: Instant) {
-        if self.revision != revision {
-            return;
-        }
-        self.queued = self.remaining(now).saturating_sub(duration);
-        self.updated_at = now;
-    }
-
-    fn clear(&mut self, now: Instant) {
-        self.queued = Duration::ZERO;
-        self.updated_at = now;
-        self.revision = self.revision.wrapping_add(1);
-        self.epoch = self.epoch.wrapping_add(1);
-    }
 }
 
 impl NativeAudioSourceHandle {
     pub fn new(
         factory: PeerConnectionFactory,
         options: NativeAudioSourceOptions,
+        budget: GenerationQueueBudget,
     ) -> napi::Result<Self> {
-        let sample_rate = positive(options.sample_rate.unwrap_or(48_000), "sampleRate")?;
-        let channels = positive(options.channels.unwrap_or(1), "channels")?;
-        let queue_size_ms = audio_queue_size(options.queue_size_ms.unwrap_or(1_000))?;
-        let capture_chunk_samples = if queue_size_ms == 0 {
-            usize::MAX
-        } else {
-            usize::try_from(
-                u64::from(queue_size_ms)
-                    .checked_mul(u64::from(sample_rate))
-                    .and_then(|value| value.checked_mul(u64::from(channels)))
-                    .ok_or_else(|| napi::Error::from_reason("audio queue is too large"))?
-                    / 1_000,
-            )
-            .map_err(|_| napi::Error::from_reason("audio queue is too large"))?
-        };
-        if capture_chunk_samples == 0 {
-            return Err(napi::Error::from_reason(
-                "queueSizeMs is too small for the audio format",
-            ));
-        }
+        let sample_rate = native_audio_value(
+            options.sample_rate.unwrap_or(48_000),
+            "sampleRate",
+            MAX_AUDIO_SAMPLE_RATE,
+        )?;
+        let channels = native_audio_value(
+            options.channels.unwrap_or(1),
+            "channels",
+            MAX_AUDIO_CHANNELS,
+        )?;
+        let queue_size_ms = audio_queue_size(
+            options.queue_size_ms.unwrap_or(1_000),
+            sample_rate,
+            channels,
+        )?;
+        let reservation = reserve_capacity(
+            &budget,
+            audio_source_queue_bytes(queue_size_ms, sample_rate, channels)?,
+        )?;
         let source = NativeAudioSource::new(
             AudioSourceOptions {
                 echo_cancellation: options.echo_cancellation.unwrap_or(false),
@@ -174,16 +158,8 @@ impl NativeAudioSourceHandle {
             track: Mutex::new(Some(track)),
             sample_rate,
             channels,
-            capture_chunk_samples,
-            capture: AsyncMutex::new(()),
-            capture_gate: Mutex::new(()),
-            playout: Mutex::new(AudioPlayoutState {
-                queued: Duration::ZERO,
-                updated_at: Instant::now(),
-                revision: 0,
-                epoch: 0,
-            }),
-            playout_changed: Notify::new(),
+            budget: Mutex::new(Some(budget)),
+            reservation: NativeQueueReservation::optional(reservation),
             closed: AtomicBool::new(false),
         })
     }
@@ -211,7 +187,7 @@ impl NativeAudioSourceHandle {
 
     #[napi(getter)]
     pub fn queued_duration(&self) -> f64 {
-        lock(&self.playout).remaining(Instant::now()).as_secs_f64()
+        self.source.queued_duration().as_secs_f64()
     }
 
     #[napi]
@@ -222,18 +198,6 @@ impl NativeAudioSourceHandle {
         channels: u32,
         samples_per_channel: u32,
     ) -> napi::Result<()> {
-        let requested_epoch = lock(&self.playout).epoch;
-        let _capture = self.capture.try_lock().map_err(|_| {
-            napi::Error::from_reason(
-                "audio source already has a captureFrame() call in flight",
-            )
-        })?;
-        if self.closed.load(Ordering::Acquire) {
-            return Err(napi::Error::from_reason("audio source is closed"));
-        }
-        if lock(&self.playout).epoch != requested_epoch {
-            return Ok(());
-        }
         let expected = channels
             .checked_mul(samples_per_channel)
             .ok_or_else(|| napi::Error::from_reason("audio frame is too large"))?
@@ -250,74 +214,30 @@ impl NativeAudioSourceHandle {
                 self.sample_rate, self.channels
             )));
         }
-        let samples = data.as_ref().to_vec();
-        for chunk in samples.chunks(self.capture_chunk_samples) {
-            let chunk_samples_per_channel = chunk.len() / channels as usize;
-            let frame = AudioFrame {
-                data: Cow::Borrowed(chunk),
+        let bytes = audio_frame_bytes(data.len())?;
+        let budget = lock(&self.budget)
+            .clone()
+            .ok_or_else(|| napi::Error::from_reason("audio source is closed"))?;
+        let _reservation = reserve(&budget, bytes)?;
+        self.source
+            .capture_frame(&AudioFrame {
+                data: Cow::Owned(data.as_ref().to_vec()),
                 sample_rate,
                 num_channels: channels,
-                samples_per_channel: chunk_samples_per_channel as u32,
-            };
-            let duration =
-                Duration::from_secs_f64(chunk_samples_per_channel as f64 / f64::from(sample_rate));
-            let mut capture = Box::pin(self.source.capture_frame(&frame));
-            // LiveKit inserts one source-queue-sized chunk before its first
-            // pending await. Checking the epoch and polling that insertion
-            // under the same gate means clearQueue either precedes it (and
-            // rejects it) or follows it (and clears it).
-            let (first, revision) = {
-                let _capture_gate = lock(&self.capture_gate);
-                if self.closed.load(Ordering::Acquire) {
-                    return Err(napi::Error::from_reason("audio source is closed"));
-                }
-                if lock(&self.playout).epoch != requested_epoch {
-                    return Ok(());
-                }
-                let revision = lock(&self.playout).enqueue(duration, Instant::now());
-                self.playout_changed.notify_waiters();
-                let mut context = Context::from_waker(futures_util::task::noop_waker_ref());
-                (capture.as_mut().poll(&mut context), revision)
-            };
-            let result = match first {
-                Poll::Ready(result) => result,
-                Poll::Pending => capture.await,
-            };
-            if let Err(error) = result {
-                lock(&self.playout).rollback(duration, revision, Instant::now());
-                self.playout_changed.notify_waiters();
-                return Err(rtc_error(error));
-            }
-        }
-        Ok(())
+                samples_per_channel,
+            })
+            .await
+            .map_err(rtc_error)
     }
 
     #[napi]
     pub async fn wait_for_playout(&self) {
-        loop {
-            let changed = self.playout_changed.notified();
-            tokio::pin!(changed);
-            changed.as_mut().enable();
-            if self.closed.load(Ordering::Acquire) {
-                return;
-            }
-            let remaining = lock(&self.playout).remaining(Instant::now());
-            if remaining.is_zero() {
-                return;
-            }
-            tokio::select! {
-                _ = tokio::time::sleep(remaining) => {}
-                _ = changed.as_mut() => {}
-            }
-        }
+        self.source.wait_for_playout().await;
     }
 
     #[napi]
     pub fn clear_queue(&self) {
-        let _capture_gate = lock(&self.capture_gate);
         self.source.clear_buffer();
-        lock(&self.playout).clear(Instant::now());
-        self.playout_changed.notify_waiters();
     }
 
     #[napi]
@@ -325,13 +245,12 @@ impl NativeAudioSourceHandle {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
-        let _capture_gate = lock(&self.capture_gate);
-        self.source.clear_buffer();
-        lock(&self.playout).clear(Instant::now());
-        self.playout_changed.notify_waiters();
+        self.source.close();
         if let Some(track) = lock(&self.track).take() {
             track.set_enabled(false);
         }
+        self.reservation.release();
+        lock(&self.budget).take();
     }
 }
 
@@ -346,12 +265,15 @@ pub struct NativeAudioStreamHandle {
     stream: Mutex<Option<NativeAudioStream>>,
     closed: AtomicBool,
     changed: Notify,
+    reservation: NativeQueueReservation,
+    last_dropped_frames: AtomicU64,
 }
 
 impl NativeAudioStreamHandle {
     pub fn new(
         track: &ClassInstance<'_, NativeMediaStreamTrack>,
         options: NativeAudioStreamOptions,
+        budget: GenerationQueueBudget,
     ) -> napi::Result<Self> {
         let media_track = track.media_track()?;
         let MediaStreamTrack::Audio(track) = media_track else {
@@ -359,10 +281,22 @@ impl NativeAudioStreamHandle {
                 "audioStream requires an audio track",
             ));
         };
-        let sample_rate = positive_i32(options.sample_rate.unwrap_or(48_000), "sampleRate")?;
-        let channels = positive_i32(options.channels.unwrap_or(1), "channels")?;
+        let sample_rate = native_audio_stream_value(
+            options.sample_rate.unwrap_or(48_000),
+            "sampleRate",
+            MAX_AUDIO_SAMPLE_RATE,
+        )?;
+        let channels = native_audio_stream_value(
+            options.channels.unwrap_or(1),
+            "channels",
+            MAX_AUDIO_CHANNELS,
+        )?;
         let queue_size_frames =
             positive(options.queue_size_frames.unwrap_or(10), "queueSizeFrames")?;
+        let reservation = reserve(
+            &budget,
+            audio_stream_queue_bytes(sample_rate as u32, channels as u32, queue_size_frames)?,
+        )?;
         Ok(Self {
             stream: Mutex::new(Some(NativeAudioStream::with_options(
                 track,
@@ -374,12 +308,25 @@ impl NativeAudioStreamHandle {
             ))),
             closed: AtomicBool::new(false),
             changed: Notify::new(),
+            reservation: NativeQueueReservation::new(reservation),
+            last_dropped_frames: AtomicU64::new(0),
         })
     }
 }
 
 #[napi]
 impl NativeAudioStreamHandle {
+    #[napi(getter)]
+    pub fn dropped_frames(&self) -> BigInt {
+        let dropped_frames = lock(&self.stream)
+            .as_ref()
+            .map(NativeAudioStream::dropped_frames)
+            .unwrap_or_else(|| self.last_dropped_frames.load(Ordering::Relaxed));
+        self.last_dropped_frames
+            .store(dropped_frames, Ordering::Relaxed);
+        dropped_frames.into()
+    }
+
     #[napi]
     pub async fn next_frame(&self) -> napi::Result<Option<NativeAudioFrame>> {
         let changed = self.changed.notified();
@@ -392,19 +339,28 @@ impl NativeAudioStreamHandle {
             ));
         };
         let result = tokio::select! {
-            frame = stream.next() => Ok(frame.map(|frame| NativeAudioFrame {
-                data: frame.data.into_owned().into(),
-                sample_rate: frame.sample_rate,
-                channels: frame.num_channels,
-                samples_per_channel: frame.samples_per_channel,
-            })),
+            frame = stream.next() => frame.map(|frame| {
+                audio_frame_bytes(frame.data.len())?;
+                Ok(NativeAudioFrame {
+                    data: frame.data.into_owned().into(),
+                    sample_rate: frame.sample_rate,
+                    channels: frame.num_channels,
+                    samples_per_channel: frame.samples_per_channel,
+                })
+            }).transpose(),
             _ = changed => {
+                self.last_dropped_frames
+                    .store(stream.dropped_frames(), Ordering::Relaxed);
                 stream.close();
+                self.reservation.release();
                 return Ok(None);
             },
         };
+        self.last_dropped_frames
+            .store(stream.dropped_frames(), Ordering::Relaxed);
         if self.closed.load(Ordering::Acquire) {
             stream.close();
+            self.reservation.release();
         } else {
             *lock(&self.stream) = Some(stream);
         }
@@ -418,7 +374,10 @@ impl NativeAudioStreamHandle {
         }
         self.changed.notify_one();
         if let Some(mut stream) = lock(&self.stream).take() {
+            self.last_dropped_frames
+                .store(stream.dropped_frames(), Ordering::Relaxed);
             stream.close();
+            self.reservation.release();
         }
     }
 }
@@ -468,15 +427,19 @@ pub struct NativeVideoSourceHandle {
     width: u32,
     height: u32,
     closed: AtomicBool,
+    reservation: NativeQueueReservation,
 }
 
 impl NativeVideoSourceHandle {
     pub fn new(
         factory: PeerConnectionFactory,
         options: NativeVideoSourceOptions,
+        budget: GenerationQueueBudget,
     ) -> napi::Result<Self> {
         let width = positive(options.width, "width")?;
         let height = positive(options.height, "height")?;
+        let frame_bytes = i420_size(width, height)?;
+        let reservation = reserve(&budget, source_frame_bytes(frame_bytes)?)?;
         let source = within_runtime_if_available(|| {
             NativeVideoSource::new(
                 VideoResolution { width, height },
@@ -495,6 +458,7 @@ impl NativeVideoSourceHandle {
             width,
             height,
             closed: AtomicBool::new(false),
+            reservation: NativeQueueReservation::new(reservation),
         })
     }
 }
@@ -592,6 +556,7 @@ impl NativeVideoSourceHandle {
         if let Some(track) = lock(&self.track).take() {
             track.set_enabled(false);
         }
+        self.reservation.release();
     }
 }
 
@@ -606,12 +571,15 @@ pub struct NativeVideoStreamHandle {
     stream: Mutex<Option<NativeVideoStream>>,
     closed: AtomicBool,
     changed: Notify,
+    reservation: NativeQueueReservation,
+    last_dropped_frames: AtomicU64,
 }
 
 impl NativeVideoStreamHandle {
     pub fn new(
         track: &ClassInstance<'_, NativeMediaStreamTrack>,
         options: NativeVideoStreamOptions,
+        budget: GenerationQueueBudget,
     ) -> napi::Result<Self> {
         let media_track = track.media_track()?;
         let MediaStreamTrack::Video(track) = media_track else {
@@ -621,6 +589,7 @@ impl NativeVideoStreamHandle {
         };
         let queue_size_frames =
             positive(options.queue_size_frames.unwrap_or(1), "queueSizeFrames")?;
+        let reservation = reserve(&budget, video_stream_queue_bytes(queue_size_frames)?)?;
         Ok(Self {
             stream: Mutex::new(Some(NativeVideoStream::with_options(
                 track,
@@ -630,12 +599,25 @@ impl NativeVideoStreamHandle {
             ))),
             closed: AtomicBool::new(false),
             changed: Notify::new(),
+            reservation: NativeQueueReservation::new(reservation),
+            last_dropped_frames: AtomicU64::new(0),
         })
     }
 }
 
 #[napi]
 impl NativeVideoStreamHandle {
+    #[napi(getter)]
+    pub fn dropped_frames(&self) -> BigInt {
+        let dropped_frames = lock(&self.stream)
+            .as_ref()
+            .map(NativeVideoStream::dropped_frames)
+            .unwrap_or_else(|| self.last_dropped_frames.load(Ordering::Relaxed));
+        self.last_dropped_frames
+            .store(dropped_frames, Ordering::Relaxed);
+        dropped_frames.into()
+    }
+
     #[napi]
     pub async fn next_frame(&self) -> napi::Result<Option<NativeVideoFrameEvent>> {
         let changed = self.changed.notified();
@@ -650,12 +632,18 @@ impl NativeVideoStreamHandle {
         let result = tokio::select! {
             frame = stream.next() => frame.map(video_frame).transpose(),
             _ = changed => {
+                self.last_dropped_frames
+                    .store(stream.dropped_frames(), Ordering::Relaxed);
                 stream.close();
+                self.reservation.release();
                 return Ok(None);
             },
         };
+        self.last_dropped_frames
+            .store(stream.dropped_frames(), Ordering::Relaxed);
         if self.closed.load(Ordering::Acquire) {
             stream.close();
+            self.reservation.release();
         } else {
             *lock(&self.stream) = Some(stream);
         }
@@ -669,7 +657,10 @@ impl NativeVideoStreamHandle {
         }
         self.changed.notify_one();
         if let Some(mut stream) = lock(&self.stream).take() {
+            self.last_dropped_frames
+                .store(stream.dropped_frames(), Ordering::Relaxed);
             stream.close();
+            self.reservation.release();
         }
     }
 }
@@ -750,19 +741,40 @@ fn copy_to_plane(
 }
 
 fn i420_size(width: u32, height: u32) -> napi::Result<usize> {
+    if width == 0 || height == 0 {
+        return Err(napi::Error::from_reason(
+            "video dimensions must be positive",
+        ));
+    }
+    if width > MAX_VIDEO_DIMENSION || height > MAX_VIDEO_DIMENSION {
+        return Err(napi::Error::from_reason(
+            "video dimensions exceed the native frame limit",
+        ));
+    }
     let luma = width
         .checked_mul(height)
         .ok_or_else(|| napi::Error::from_reason("video frame is too large"))?;
+    if luma > MAX_VIDEO_PIXELS {
+        return Err(napi::Error::from_reason(
+            "video frame exceeds the native pixel limit",
+        ));
+    }
     let chroma = width
         .div_ceil(2)
         .checked_mul(height.div_ceil(2))
         .and_then(|value| value.checked_mul(2))
         .ok_or_else(|| napi::Error::from_reason("video frame is too large"))?;
-    usize::try_from(
+    let bytes = usize::try_from(
         luma.checked_add(chroma)
             .ok_or_else(|| napi::Error::from_reason("video frame is too large"))?,
     )
-    .map_err(|_| napi::Error::from_reason("video frame is too large"))
+    .map_err(|_| napi::Error::from_reason("video frame is too large"))?;
+    if bytes > MAX_VIDEO_FRAME_BYTES {
+        return Err(napi::Error::from_reason(
+            "video frame exceeds the native byte limit",
+        ));
+    }
+    Ok(bytes)
 }
 
 fn video_rotation(rotation: u32) -> napi::Result<VideoRotation> {
@@ -791,13 +803,116 @@ fn positive_i32(value: i32, name: &str) -> napi::Result<i32> {
     Ok(value)
 }
 
-fn audio_queue_size(value: u32) -> napi::Result<u32> {
-    if !value.is_multiple_of(10) {
+fn audio_queue_size(value: u32, sample_rate: u32, channels: u32) -> napi::Result<u32> {
+    if value == 0 || !value.is_multiple_of(10) {
         return Err(napi::Error::from_reason(
-            "queueSizeMs must be zero or a multiple of 10",
+            "queueSizeMs must be a positive multiple of 10",
         ));
     }
+    audio_source_queue_bytes(value, sample_rate, channels)?;
     Ok(value)
+}
+
+fn native_audio_value(value: u32, name: &str, max: u32) -> napi::Result<u32> {
+    let value = positive(value, name)?;
+    if value > max {
+        return Err(napi::Error::from_reason(format!(
+            "{name} exceeds the native audio limit"
+        )));
+    }
+    Ok(value)
+}
+
+fn native_audio_stream_value(value: i32, name: &str, max: u32) -> napi::Result<i32> {
+    let value = positive_i32(value, name)?;
+    if value as u32 > max {
+        return Err(napi::Error::from_reason(format!(
+            "{name} exceeds the native audio limit"
+        )));
+    }
+    Ok(value)
+}
+
+fn reserve_capacity(
+    budget: &GenerationQueueBudget,
+    bytes: usize,
+) -> napi::Result<Option<QueueReservation>> {
+    if bytes == 0 {
+        return Ok(None);
+    }
+    reserve(budget, bytes).map(Some)
+}
+
+fn reserve(budget: &GenerationQueueBudget, bytes: usize) -> napi::Result<QueueReservation> {
+    budget
+        .reserve(bytes)
+        .map_err(|_| napi::Error::from_reason("native WebRTC queue byte budget is saturated"))
+}
+
+fn audio_frame_bytes(samples: usize) -> napi::Result<usize> {
+    let bytes = samples
+        .checked_mul(std::mem::size_of::<i16>())
+        .ok_or_else(|| napi::Error::from_reason("audio frame is too large"))?;
+    if bytes > MAX_AUDIO_FRAME_BYTES {
+        return Err(napi::Error::from_reason(
+            "audio frame exceeds the native byte limit",
+        ));
+    }
+    Ok(bytes)
+}
+
+fn audio_source_queue_bytes(
+    queue_size_ms: u32,
+    sample_rate: u32,
+    channels: u32,
+) -> napi::Result<usize> {
+    let bytes = u64::from(queue_size_ms / 10)
+        .checked_mul(u64::from(sample_rate).div_ceil(100))
+        .and_then(|value| value.checked_mul(u64::from(channels)))
+        .and_then(|value| value.checked_mul(2))
+        // libwebrtc reserves both the queue and its notification threshold.
+        .and_then(|value| value.checked_mul(2))
+        .ok_or_else(|| napi::Error::from_reason("audio queue is too large"))?;
+    queue_bytes(bytes, "audio queue is too large")
+}
+
+fn audio_stream_queue_bytes(
+    sample_rate: u32,
+    channels: u32,
+    queue_size_frames: u32,
+) -> napi::Result<usize> {
+    let bytes = u64::from(sample_rate)
+        .div_ceil(100)
+        .checked_mul(u64::from(channels))
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| value.checked_mul(u64::from(queue_size_frames)))
+        .ok_or_else(|| napi::Error::from_reason("audio stream queue is too large"))?;
+    queue_bytes(bytes, "audio stream queue is too large")
+}
+
+fn source_frame_bytes(frame_bytes: usize) -> napi::Result<usize> {
+    queue_bytes(
+        u64::try_from(frame_bytes)
+            .ok()
+            .and_then(|value| value.checked_mul(2))
+            .ok_or_else(|| napi::Error::from_reason("video source queue is too large"))?,
+        "video source queue is too large",
+    )
+}
+
+fn video_stream_queue_bytes(queue_size_frames: u32) -> napi::Result<usize> {
+    let bytes = u64::from(queue_size_frames)
+        .checked_mul(MAX_VIDEO_FRAME_BYTES as u64)
+        .ok_or_else(|| napi::Error::from_reason("video stream queue is too large"))?;
+    queue_bytes(bytes, "video stream queue is too large")
+}
+
+fn queue_bytes(bytes: u64, error: &'static str) -> napi::Result<usize> {
+    let bytes = usize::try_from(bytes).map_err(|_| napi::Error::from_reason(error))?;
+    if bytes > u32::MAX as usize {
+        return Err(napi::Error::from_reason(error));
+    }
+    Ok(bytes)
 }
 
 fn label(kind: &str) -> String {

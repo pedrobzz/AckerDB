@@ -9,7 +9,7 @@ import {
   type RealtimeSignalFrame,
 } from "./protocol.ts";
 import type { Outcome } from "../protocol.ts";
-import type { NativeRTCDataChannel } from "./webrtc.ts";
+import type { PortableRTCDataChannel } from "./webrtc.ts";
 
 export class RealtimeStreamInterruptedError extends Error {
   readonly transferId: string;
@@ -74,7 +74,7 @@ export interface RealtimeIncomingStreamDecision {
 }
 
 export interface RealtimeDataPlaneOptions {
-  readonly channel: NativeRTCDataChannel;
+  readonly channel: PortableRTCDataChannel;
   readonly localPrefix: "c" | "s";
   readonly maxBufferedAmount: number;
   readonly maxConcurrentStreams: number;
@@ -136,16 +136,6 @@ function positiveInteger(value: number, name: string): number {
   return value;
 }
 
-function reasonMessage(reason: unknown): string {
-  if (reason instanceof Error && reason.message.length > 0) {
-    return reason.message.slice(0, 256);
-  }
-  if (typeof reason === "string" && reason.length > 0) {
-    return reason.slice(0, 256);
-  }
-  return "realtime stream was cancelled";
-}
-
 function packetData(value: unknown): Promise<ArrayBuffer | Uint8Array> {
   if (value instanceof ArrayBuffer || value instanceof Uint8Array) {
     return Promise.resolve(value);
@@ -164,7 +154,7 @@ function packetData(value: unknown): Promise<ArrayBuffer | Uint8Array> {
  * remain entirely outside this object.
  */
 export class RealtimeDataPlane {
-  private readonly channel: NativeRTCDataChannel;
+  private readonly channel: PortableRTCDataChannel;
   private readonly localPrefix: "c" | "s";
   private readonly remotePrefix: "c" | "s";
   private readonly maxBufferedAmount: number;
@@ -297,9 +287,9 @@ export class RealtimeDataPlane {
         }, transfer);
         this.finishOutgoing(transfer);
       },
-      abort: async (reason) => {
+      abort: async () => {
         if (transfer.ended) return;
-        this.bestEffortCancel(id, reason);
+        this.bestEffortCancel(id);
         this.finishOutgoing(transfer);
       },
     });
@@ -319,7 +309,6 @@ export class RealtimeDataPlane {
       this.failIncoming(
         transfer,
         streamInterruption(transfer.id, reason),
-        false,
       );
     }
     for (const transfer of [...this.outgoing.values()]) {
@@ -403,8 +392,8 @@ export class RealtimeDataPlane {
     let decision: RealtimeIncomingStreamDecision | undefined;
     try {
       decision = this.onIncomingStream(frame.stream, frame.metadata, frame.size);
-    } catch (error) {
-      this.bestEffortCancel(frame.id, error);
+    } catch {
+      this.bestEffortCancel(frame.id);
       this.ignoreTransfer(frame.id);
       return;
     }
@@ -437,7 +426,7 @@ export class RealtimeDataPlane {
         this.touchIncoming(transfer);
       },
       cancel: (reason) => {
-        this.bestEffortCancel(frame.id, reason);
+        this.bestEffortCancel(frame.id);
         this.finishIncoming(transfer, reason);
       },
     }, new ByteLengthQueuingStrategy({
@@ -464,13 +453,13 @@ export class RealtimeDataPlane {
         typeof (result as PromiseLike<unknown>).then === "function"
       ) {
         void Promise.resolve(result).catch((error) => {
-          this.bestEffortCancel(frame.id, error);
-          this.failIncoming(transfer, error, false);
+          this.bestEffortCancel(frame.id);
+          this.failIncoming(transfer, error);
         });
       }
     } catch (error) {
-      this.bestEffortCancel(frame.id, error);
-      this.failIncoming(transfer, error, false);
+      this.bestEffortCancel(frame.id);
+      this.failIncoming(transfer, error);
     }
   }
 
@@ -483,8 +472,8 @@ export class RealtimeDataPlane {
     const bytes = transfer.bytes + chunk.byteLength;
     if (bytes > transfer.maxBytes) {
       const error = new RealtimeStreamLimitError(id, transfer.maxBytes);
-      this.bestEffortCancel(id, error);
-      this.failIncoming(transfer, error, false);
+      this.bestEffortCancel(id, "realtime stream exceeded its byte limit");
+      this.failIncoming(transfer, error);
       return;
     }
     const desired = transfer.streamController?.desiredSize ?? 0;
@@ -494,8 +483,8 @@ export class RealtimeDataPlane {
         id,
         this.maxIncomingBufferedBytes,
       );
-      this.bestEffortCancel(id, error);
-      this.failIncoming(transfer, error, false);
+      this.bestEffortCancel(id, "realtime stream receive buffer is full");
+      this.failIncoming(transfer, error);
       return;
     }
     transfer.bytes = bytes;
@@ -519,7 +508,6 @@ export class RealtimeDataPlane {
       this.failIncoming(
         incoming,
         new RealtimeStreamInterruptedError(id, reason),
-        false,
       );
       return;
     }
@@ -548,7 +536,10 @@ export class RealtimeDataPlane {
     const total = transfer.bytes + rawChunk.byteLength;
     if (total > transfer.maxBytes) {
       const error = new RealtimeStreamLimitError(transfer.id, transfer.maxBytes);
-      this.bestEffortCancel(transfer.id, error);
+      this.bestEffortCancel(
+        transfer.id,
+        "realtime stream exceeded its byte limit",
+      );
       this.finishOutgoing(transfer);
       throw error;
     }
@@ -660,14 +651,17 @@ export class RealtimeDataPlane {
     }
   };
 
-  private bestEffortCancel(id: string, reason: unknown): void {
+  private bestEffortCancel(
+    id: string,
+    reason = "realtime stream was cancelled",
+  ): void {
     if (this.closed || this.channel.readyState !== "open") return;
     try {
       this.sendControl({
         v: REALTIME_PROTOCOL_VERSION,
         t: "stream_cancel",
         id,
-        reason: reasonMessage(reason),
+        reason,
       });
     } catch {
       // The owning transfer already has a precise local failure.
@@ -681,8 +675,11 @@ export class RealtimeDataPlane {
         transfer.id,
         "realtime stream stopped making progress",
       );
-      this.bestEffortCancel(transfer.id, error);
-      this.failIncoming(transfer, error, false);
+      this.bestEffortCancel(
+        transfer.id,
+        "realtime stream stopped making progress",
+      );
+      this.failIncoming(transfer, error);
     }, this.streamIdleMs);
   }
 
@@ -693,7 +690,10 @@ export class RealtimeDataPlane {
         transfer.id,
         "realtime stream stopped making progress",
       );
-      this.bestEffortCancel(transfer.id, error);
+      this.bestEffortCancel(
+        transfer.id,
+        "realtime stream stopped making progress",
+      );
       this.failOutgoing(transfer, error);
     }, this.streamIdleMs);
   }
@@ -715,10 +715,8 @@ export class RealtimeDataPlane {
   private failIncoming(
     transfer: IncomingTransfer,
     error: unknown,
-    sendCancel: boolean,
   ): void {
     if (transfer.ended) return;
-    if (sendCancel) this.bestEffortCancel(transfer.id, error);
     try {
       transfer.streamController?.error(error);
     } finally {

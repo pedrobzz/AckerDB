@@ -42,12 +42,13 @@ shape and its cross-field invariants; it does not accept a partial object.
 | Publication handoff | 4,096 items, 32 MiB |
 | Scheduled handlers per batch | 100 |
 | Mutation replay | 24 h, 1 MiB/result, 1,000,000 records, 4 GiB |
-| Realtime peers, global / per principal | 4,096 / 16 |
+| Realtime peers, global / per principal | 1,024 / 16 |
 | Realtime handshakes, per principal and 10 s window | 32 |
 | Realtime typed streams, buffered input / event-handler concurrency, per generation | 16 / 256 KiB / 128 |
 | Realtime auxiliary peers / decoded streams / media sources, per generation | 4 / 8 / 8 |
 | Realtime data channels / senders / transceivers, per peer | 16 / 32 / 32 |
-| Realtime auxiliary peers / decoded streams / media sources / tracks, process-wide | 16,384 / 32,768 / 32,768 / 131,072 |
+| Realtime auxiliary peers / decoded streams / media sources / tracks, process-wide | 2,048 / 32,768 / 32,768 / 131,072 |
+| Realtime native queue reservations, per generation / process-wide | 32 MiB / 512 MiB |
 | Remote credential invalidation guarantee | Verifier `deadlineMs` must be positive, finite, and no greater than configured `revocationDeadlineMs` (5 s default and maximum); Runtime construction validates its single verifier before activation, matching callbacks initiate immediate fail-closed session/lease abort, and the verifier owns feed propagation within its advertised bound |
 | Graceful shutdown deadline | 10 s |
 | Telemetry retention/export | See [Telemetry](telemetry.md#default-bounds) |
@@ -105,10 +106,11 @@ details.
 
 Production reachability needs UDP plus TURN/TLS on 443 for networks that block
 direct ICE. AckerDB validates configuration at startup and provides
-`preflightRealtimeTurn` for a real relay-only allocation and data-path check;
-the [coturn deployment guide](deployment/coturn/README.md) defines the
-supported topology and hardening. TURN credentials are short-lived and
-principal-bound. SDP, candidates, mapped addresses, and credentials never
+`preflightRealtimeTurn` for independent TURN/UDP and TURN/TLS relay-only
+allocation and data-path checks. Each path has an absolute deadline and a
+stable, secret-safe result. The [coturn deployment guide](deployment/coturn/README.md)
+defines the supported topology and hardening. TURN credentials are short-lived
+and principal-bound. SDP, candidates, mapped addresses, and credentials never
 appear in aggregate status.
 
 Admission happens before native peer allocation. Session and principal
@@ -122,9 +124,12 @@ replays application events, provider state, media, or partial streams.
 `Runtime.status().realtime` exposes fixed-cardinality admission, setup-stage,
 recovery, close-reason, resource, pressure, and aggregate media-path health.
 `Runtime.realtimeDiagnostic(sessionId, principal)` is the authorized,
-on-demand, redacted per-peer diagnostic. The periodic health sampler rotates
-over at most eight active generations on the existing telemetry tick; it does
-not create another timer or scan every peer.
+on-demand, redacted per-peer diagnostic. On-demand diagnostics and each
+periodic batch have the deployment's absolute `diagnosticTimeoutMs` deadline
+(5 seconds by default), so a stalled or late native statistics request cannot
+hold shutdown or mutate a later health snapshot. The periodic health sampler
+rotates over at most eight active generations on the existing telemetry tick;
+it does not create another timer or scan every peer.
 
 The server native engine runs in the Bun process. A peer/session failure is
 generation-contained, but a native process crash requires an ordinary process
@@ -133,14 +138,25 @@ Run the server under launchd, systemd, Kubernetes, or an equivalent supervisor
 with bounded restart policy. In-process worker isolation is not part of the
 current contract.
 
-Published `@ackerdb/server` packages must contain verified native builds for
-Darwin arm64/x64, Linux arm64/x64, and Windows x64, plus the aggregate
-manifest, SHA-256 digests, third-party notices, and SPDX SBOM. Stable and
-prerelease publishing fail before publishing any package when this assembly is
-missing or invalid. CI builds every claimed target and executes the native and
-exact-packed-package suites on Darwin arm64; physical-device, provider,
-network-change, TURN-only, churn, and soak exercises are release/operator
-validation rather than hidden package claims.
+Published `@ackerdb/realtime` releases must have verified optional native
+packages for Darwin arm64/x64, Linux GNU arm64/x64, and Windows x64, plus the
+aggregate manifest, SHA-256 digests, third-party notices, and Cargo CycloneDX
+SBOM. The
+root package contains no native binary; a consumer installs only its matching
+optional target package. CI packs one release candidate containing all twelve
+lockstep AckerDB tarballs. Its manifest binds clean HEAD, source and packed
+package manifests, the native ABI, every target’s evidence, and every tarball
+digest. Stable publication accepts only that downloaded artifact via
+`ACKERDB_RELEASE_CANDIDATE`, verifies it before its first Verdaccio request,
+and uploads those exact tarballs without rebuilding or repacking. Prereleases
+remain a separate working-tree path under their `alpha`/`beta` dist-tags. They
+still require the matching verified five-target CI artifacts staged under
+`packages/realtime/native/webrtc/binding/`; the script does not build or
+download them. CI
+builds every claimed target and executes the native and exact-packed-package
+suites on Darwin arm64; physical-device, provider, network-change, TURN-only,
+churn, and soak exercises are release/operator validation rather than hidden
+package claims.
 
 The complete API and recovery semantics are in
 [Realtime media](realtime-media.md); build provenance is in

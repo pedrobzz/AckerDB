@@ -16,6 +16,7 @@ import type {
 import type {
   NativeAudioSourceBinding,
   NativeAudioStreamBinding,
+  NativeGenerationBudgetBinding,
   NativeRtcEngineBinding,
   NativeVideoSourceBinding,
   NativeVideoStreamBinding,
@@ -26,6 +27,14 @@ import {
   type ServerMediaStreamTrack,
 } from "./peer-connection.ts";
 
+const decodedStreamDropReaders = new WeakMap<object, () => bigint>();
+
+/** Package-internal native media pressure observation for session telemetry. */
+export function nativeDecodedStreamDrops(resource: object): number | undefined {
+  const read = decodedStreamDropReaders.get(resource);
+  return read === undefined ? undefined : Number(read());
+}
+
 class NativeReadableStream<Value> extends ReadableStream<Value> {
   private readonly closeNative: () => void;
   private closed = false;
@@ -33,6 +42,7 @@ class NativeReadableStream<Value> extends ReadableStream<Value> {
   constructor(
     next: () => Promise<Value | null | undefined>,
     close: () => void,
+    droppedFrames?: () => bigint,
   ) {
     let finish = close;
     super(
@@ -52,6 +62,9 @@ class NativeReadableStream<Value> extends ReadableStream<Value> {
     );
     this.closeNative = close;
     finish = () => this.close();
+    if (droppedFrames !== undefined) {
+      decodedStreamDropReaders.set(this, droppedFrames);
+    }
   }
 
   close(): void {
@@ -63,7 +76,6 @@ class NativeReadableStream<Value> extends ReadableStream<Value> {
 
 class ServerAudioSource implements RealtimeAudioSource {
   readonly track: PortableMediaStreamTrack;
-  private closed = false;
 
   constructor(
     private readonly native: NativeAudioSourceBinding,
@@ -103,8 +115,6 @@ class ServerAudioSource implements RealtimeAudioSource {
   }
 
   close(): void {
-    if (this.closed) return;
-    this.closed = true;
     this.native.close();
     this.scope.close();
   }
@@ -160,6 +170,7 @@ class ServerVideoSource implements RealtimeVideoSource {
 export class NativeMediaFactory {
   constructor(
     private readonly native: NativeRtcEngineBinding,
+    private readonly generation: NativeGenerationBudgetBinding,
     private readonly owner: NativeTrackOwner,
   ) {}
 
@@ -172,7 +183,7 @@ export class NativeMediaFactory {
       echoCancellation: options.echoCancellation,
       noiseSuppression: options.noiseSuppression,
       autoGainControl: options.autoGainControl,
-    });
+    }, this.generation);
     const scope = this.owner.createScope();
     try {
       return new ServerAudioSource(native, this.owner, scope);
@@ -194,10 +205,12 @@ export class NativeMediaFactory {
         channels: options.channels,
         queueSizeFrames: options.queueSizeFrames,
       },
+      this.generation,
     );
     return new NativeReadableStream(
       () => native.nextFrame(),
       () => native.close(),
+      () => native.droppedFrames,
     ) as RealtimeAudioStream;
   }
 
@@ -207,7 +220,7 @@ export class NativeMediaFactory {
       width: options.width,
       height: options.height,
       screencast: options.screencast,
-    });
+    }, this.generation);
     const scope = this.owner.createScope();
     try {
       return new ServerVideoSource(native, this.owner, scope);
@@ -225,6 +238,7 @@ export class NativeMediaFactory {
     const native: NativeVideoStreamBinding = this.native.createVideoStream(
       track.native,
       { queueSizeFrames: options.queueSizeFrames },
+      this.generation,
     );
     return new NativeReadableStream(
       async () => {
@@ -243,6 +257,7 @@ export class NativeMediaFactory {
           };
       },
       () => native.close(),
+      () => native.droppedFrames,
     ) as RealtimeVideoStream;
   }
 }

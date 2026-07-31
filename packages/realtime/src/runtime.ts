@@ -30,7 +30,15 @@ export interface RealtimeOptions {
   readonly handshakeWindowMs?: number;
   readonly maxTrackedPrincipals?: number;
   readonly maxPendingCandidates?: number;
+  /** Cumulative untrusted remote ICE candidates permitted per generation. */
+  readonly maxRemoteCandidates?: number;
+  /** Cumulative canonical remote ICE candidate bytes permitted per generation. */
+  readonly maxRemoteCandidateBytes?: number;
   readonly terminalRetentionMs?: number;
+  /** Lifetime for an authenticated, authorized offer ticket. */
+  readonly preparedSessionTtlMs?: number;
+  /** Maximum accounted bytes retained by all prepared tickets. */
+  readonly maxPreparedBytes?: number;
   readonly sessionLimits?: Partial<RealtimeServerSessionLimits>;
   readonly resourceLimits?: Partial<RealtimeGlobalResourceLimits>;
   /** Deployment-owned bind, candidate, UDP, and ICE timing policy. */
@@ -42,6 +50,7 @@ export interface RealtimeOptions {
   readonly iceTimeoutMs?: number;
   readonly dtlsTimeoutMs?: number;
   readonly dataChannelTimeoutMs?: number;
+  readonly diagnosticTimeoutMs?: number;
 }
 
 /**
@@ -84,8 +93,17 @@ export function createRealtimeRuntime(
           REALTIME_HUB_DEFAULTS.maxTrackedPrincipals,
         maxPendingCandidates: options.maxPendingCandidates ??
           REALTIME_HUB_DEFAULTS.maxPendingCandidates,
+        maxRemoteCandidates: options.maxRemoteCandidates ??
+          REALTIME_HUB_DEFAULTS.maxRemoteCandidates,
+        maxRemoteCandidateBytes: options.maxRemoteCandidateBytes ??
+          REALTIME_HUB_DEFAULTS.maxRemoteCandidateBytes,
+        allowPrivateCandidateAddresses: network.allowPrivateCandidateAddresses,
         terminalRetentionMs: options.terminalRetentionMs ??
           REALTIME_HUB_DEFAULTS.terminalRetentionMs,
+        preparedSessionTtlMs: options.preparedSessionTtlMs ??
+          REALTIME_HUB_DEFAULTS.preparedSessionTtlMs,
+        maxPreparedBytes: options.maxPreparedBytes ??
+          REALTIME_HUB_DEFAULTS.maxPreparedBytes,
         sessionLimits: Object.freeze({
           ...REALTIME_HUB_DEFAULTS.sessionLimits,
           ...options.sessionLimits,
@@ -100,6 +118,7 @@ export function createRealtimeRuntime(
         iceTimeoutMs: options.iceTimeoutMs,
         dtlsTimeoutMs: options.dtlsTimeoutMs,
         dataChannelTimeoutMs: options.dataChannelTimeoutMs,
+        diagnosticTimeoutMs: options.diagnosticTimeoutMs,
       });
     },
   });

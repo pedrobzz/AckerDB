@@ -12,10 +12,6 @@ import type {
   ProcedureCtx,
 } from "../app/functions.ts";
 import { AckerDBError } from "../shared/errors.ts";
-import {
-  callerFairnessKey,
-  transportSource,
-} from "../runtime/caller.ts";
 import { settleOnAbort } from "../runtime/abort.ts";
 import { invokeSideEffectingHandler } from "../runtime/side-effecting-handler.ts";
 import {
@@ -25,7 +21,7 @@ import {
 } from "./definition.ts";
 import type {
   AuthorizedRealtimeApplication,
-  RealtimeOfferInput,
+  RealtimePrepareInput,
   RejectedRealtimeApplication,
   RealtimeRuntimeApplication,
   RealtimeServerSessionAdapter,
@@ -53,18 +49,13 @@ export interface RealtimeRuntimeApplicationPort {
   ): Promise<Value>;
 }
 
-const RUNTIME_SOURCE = transportSource({
-  family: "runtime",
-  address: "local",
-});
-
 export function createRealtimeRuntimeApplication(
   port: RealtimeRuntimeApplicationPort,
 ): RealtimeRuntimeApplication {
   return Object.freeze({
     authorize: (
       definition: AnyRegisteredRealtime,
-      input: RealtimeOfferInput,
+      input: RealtimePrepareInput,
     ) => authorize(port, definition, input),
   });
 }
@@ -72,7 +63,7 @@ export function createRealtimeRuntimeApplication(
 async function authorize(
   port: RealtimeRuntimeApplicationPort,
   definition: AnyRegisteredRealtime,
-  input: RealtimeOfferInput,
+  input: RealtimePrepareInput,
 ): Promise<AuthorizedRealtimeApplication | RejectedRealtimeApplication> {
   const address = port.addressOf(definition);
   if (address === undefined) {
@@ -81,16 +72,16 @@ async function authorize(
       "realtime definition is not registered",
     );
   }
-  const fairnessKey = callerFairnessKey(input.principal, RUNTIME_SOURCE);
+  const peerOwner = input.owner;
   return port.run(
     address,
-    fairnessKey,
+    peerOwner,
     input.signal,
     input.requestBytes,
     async () => {
       const authorizationContext = port.createAuthorizationContext(
         input.principal,
-        fairnessKey,
+        peerOwner,
         input.signal,
         input.requestBytes,
       );
@@ -132,7 +123,7 @@ async function authorize(
           createContext: (signal: AbortSignal) =>
             port.createSessionContext(
               input.principal,
-              fairnessKey,
+              peerOwner,
               signal,
             ),
           invoke: <Value>(
@@ -142,7 +133,7 @@ async function authorize(
           ): Promise<Value> =>
             port.run(
               address,
-              fairnessKey,
+              peerOwner,
               context.abortSignal,
               1,
               () =>

@@ -25,9 +25,9 @@ import {
   RealtimeDataPlane,
   decode,
   encode,
-  parseRealtimeConfigurationMessage,
   parseRealtimeOfferResponse,
   parseRealtimePatchResponse,
+  parseRealtimePrepareResponse,
 } from "@ackerdb/core";
 import {
   TestDataChannel as FakeDataChannel,
@@ -146,17 +146,56 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true });
 });
 
+async function prepare(recovery = false) {
+  const response = await fetch(`${base}/api/realtime/prepare`, {
+    method: "POST",
+    body: encode({
+      v: PROTOCOL_VERSION,
+      t: "realtime_prepare",
+      ref: "assistant.live",
+      args: {},
+      ...(recovery ? { recovery: true as const } : {}),
+    }),
+  });
+  const prepared = parseRealtimePrepareResponse(decode(await response.text()));
+  if (!response.ok || prepared.t !== "realtime_prepared") {
+    throw new Error("expected a prepared realtime session");
+  }
+  return prepared;
+}
+
+async function offer(ticket: string) {
+  const response = await fetch(`${base}/api/realtime`, {
+    method: "POST",
+    body: encode({
+      v: PROTOCOL_VERSION,
+      t: "realtime_offer",
+      ticket,
+      offer: { type: "offer", sdp: "v=0\r\noffer" },
+    }),
+  });
+  const answer = parseRealtimeOfferResponse(decode(await response.text()));
+  if (!response.ok || answer.t !== "realtime_answer") {
+    throw new Error("expected a realtime answer");
+  }
+  return answer;
+}
+
+async function establish(recovery = false) {
+  const prepared = await prepare(recovery);
+  return offer(prepared.ticket);
+}
+
 describe("realtime HTTP signaling", () => {
   test("cancels timed-out authorization and releases runtime admission", async () => {
     authorizationGate = new Promise(() => {});
-    const response = await fetch(`${base}/api/realtime`, {
+    const response = await fetch(`${base}/api/realtime/prepare`, {
       method: "POST",
       body: encode({
         v: PROTOCOL_VERSION,
-        t: "realtime_offer",
+        t: "realtime_prepare",
         ref: "assistant.live",
         args: {},
-        offer: { type: "offer", sdp: "v=0\r\noffer" },
       }),
     });
 
@@ -178,19 +217,7 @@ describe("realtime HTTP signaling", () => {
   });
 
   test("exports bounded setup, recovery, path, media, and cleanup telemetry", async () => {
-    const offered = await fetch(`${base}/api/realtime`, {
-      method: "POST",
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "realtime_offer",
-        ref: "assistant.live",
-        args: {},
-        offer: { type: "offer", sdp: "v=0\r\noffer" },
-        recovery: true,
-      }),
-    });
-    const answer = parseRealtimeOfferResponse(decode(await offered.text()));
-    if (answer.t !== "realtime_answer") throw new Error("expected answer");
+    const answer = await establish(true);
 
     peer.iceConnectionState = "connected";
     peer.connectionState = "connected";
@@ -249,33 +276,41 @@ describe("realtime HTTP signaling", () => {
     );
   });
 
-  test("configures, creates, trickles, and closes one authenticated generation", async () => {
-    const configured = await fetch(`${base}/api/realtime/config`);
-    expect(configured.status).toBe(200);
-    expect(parseRealtimeConfigurationMessage(
-      decode(await configured.text()),
-    )).toEqual({
+  test("prepares, creates, trickles, and closes one authenticated generation", async () => {
+    const legacy = await fetch(`${base}/api/realtime/config`);
+    expect(legacy.status).toBe(404);
+
+    const preparedResponse = await fetch(`${base}/api/realtime/prepare`, {
+      method: "POST",
+      body: encode({
+        v: PROTOCOL_VERSION,
+        t: "realtime_prepare",
+        ref: "assistant.live",
+        args: {},
+      }),
+    });
+    expect(preparedResponse.status).toBe(200);
+    expect(preparedResponse.headers.get("cache-control")).toBe("no-store");
+    const prepared = parseRealtimePrepareResponse(
+      decode(await preparedResponse.text()),
+    );
+    expect(prepared).toMatchObject({
       v: PROTOCOL_VERSION,
-      t: "realtime_config",
+      t: "realtime_prepared",
       configuration: {
         iceServers: [{ urls: "turn:relay.example.test" }],
       },
     });
-
-    const offered = await fetch(`${base}/api/realtime`, {
-      method: "POST",
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "realtime_offer",
-        ref: "assistant.live",
-        args: {},
-        offer: { type: "offer", sdp: "v=0\r\noffer" },
-      }),
+    if (prepared.t !== "realtime_prepared") {
+      throw new Error("expected a prepared realtime session");
+    }
+    expect(handlerRuns).toBe(0);
+    expect(runtime.status().realtime).toMatchObject({
+      activeSessions: 0,
+      reservedSessions: 1,
     });
-    expect(offered.status).toBe(200);
-    const answer = parseRealtimeOfferResponse(decode(await offered.text()));
-    expect(answer.t).toBe("realtime_answer");
-    if (answer.t !== "realtime_answer") throw new Error("expected answer");
+
+    const answer = await offer(prepared.ticket);
     expect(answer.streamLimits).toEqual({ client: {}, server: {} });
     expect(handlerRuns).toBe(1);
     expect(runtime.status().realtime?.activeSessions).toBe(1);
@@ -302,6 +337,33 @@ describe("realtime HTTP signaling", () => {
     expect(runtime.status().realtime?.activeSessions).toBe(0);
   });
 
+  test("returns a typed terminal outcome before a forbidden HTTP trickle reaches native", async () => {
+    const answer = await establish();
+
+    const patched = await fetch(`${base}/api/realtime/${answer.sessionId}`, {
+      method: "PATCH",
+      body: encode({
+        v: PROTOCOL_VERSION,
+        t: "realtime_candidates",
+        candidates: [{
+          candidate: "candidate:1 1 UDP 1 127.0.0.1 9 typ host",
+          sdpMid: "0",
+          sdpMLineIndex: 0,
+        }],
+        complete: false,
+      }),
+    });
+
+    expect(patched.status).toBe(400);
+    expect(parseRealtimePatchResponse(decode(await patched.text()))).toMatchObject({
+      t: "realtime_ended",
+      outcome: { code: "malformed", retryable: false },
+    });
+    expect(peer.candidates).toEqual([]);
+    expect(peer.closed).toBe(true);
+    expect(runtime.status().realtime?.activeSessions).toBe(0);
+  });
+
   test("reserves malformed session paths without exposing an application route", async () => {
     const response = await fetch(`${base}/api/realtime/not-a-session`, {
       method: "PATCH",
@@ -316,18 +378,7 @@ describe("realtime HTTP signaling", () => {
   });
 
   test("calls HTTP, a registered procedure, and a committed transaction from a realtime event", async () => {
-    const offered = await fetch(`${base}/api/realtime`, {
-      method: "POST",
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "realtime_offer",
-        ref: "assistant.live",
-        args: {},
-        offer: { type: "offer", sdp: "v=0\r\noffer" },
-      }),
-    });
-    const answer = parseRealtimeOfferResponse(decode(await offered.text()));
-    if (answer.t !== "realtime_answer") throw new Error("expected answer");
+    const answer = await establish();
 
     let resolveCompleted!: (value: unknown) => void;
     let rejectCompleted!: (reason: unknown) => void;

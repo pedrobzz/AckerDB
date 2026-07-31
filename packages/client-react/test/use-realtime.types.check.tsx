@@ -4,6 +4,7 @@ import type {
   ApplicationError,
   RealtimeRef,
 } from "@ackerdb/core";
+import type { AckerDBPeerConnectionFactory } from "@ackerdb/client";
 import {
   skip,
   useRealtime,
@@ -16,6 +17,9 @@ type AssistantRejected = ApplicationError<
   { readonly assistantId: bigint },
   404
 >;
+
+const browserPeerConnection: AckerDBPeerConnectionFactory = (configuration) =>
+  new RTCPeerConnection(configuration);
 
 declare const assistant: RealtimeRef<
   { readonly assistantId: bigint },
@@ -38,16 +42,17 @@ declare const assistant: RealtimeRef<
 
 const mapped: RealtimeOn<typeof assistant> = {
   peerConnection(peer) {
-    const native: RTCPeerConnection = peer;
-    native.addTransceiver("audio");
+    peer.addTransceiver("audio");
+    peer.createDataChannel("application", { ordered: true }).send("hello");
+    void peer.getStats();
   },
   connected(peer) {
-    const native: RTCPeerConnection = peer;
-    void native;
+    peer.restartIce();
   },
   track(event) {
-    const track: MediaStreamTrack = event.track;
-    void track;
+    if (event.track !== null) event.track.enabled = true;
+    event.receiver?.getParameters();
+    event.transceiver.direction = "sendrecv";
   },
   event: {
     transcript(value) {
@@ -117,10 +122,10 @@ function Consumer() {
   session.openStream("photo", { contentType: "image/jpeg" }, {
     size: 1024,
   });
-  const peer: RTCPeerConnection | null = session.peerConnection;
+  const peer = session.peerConnection;
+  peer?.addTransceiver("audio");
   if (session.state.phase === "connected") {
-    const connected: RTCPeerConnection = session.state.peerConnection;
-    void connected;
+    session.state.peerConnection.addTransceiver("audio");
   }
   useRealtime(assistant, { assistantId: 2n }, { on: union });
   useRealtime(assistant, skip);
@@ -133,6 +138,7 @@ const options: UseRealtimeOptions<typeof assistant> = {
   on: mapped,
 };
 void options;
+void browserPeerConnection;
 
 // @ts-expect-error arguments come from the realtime declaration
 useRealtime(assistant, { assistantId: "one" });

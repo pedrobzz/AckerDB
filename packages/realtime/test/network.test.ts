@@ -31,6 +31,7 @@ describe("realtime server network", () => {
         privateAddress: "10.0.0.4",
         publicAddress: "203.0.113.4",
       }],
+      allowPrivateCandidateAddresses: true,
       ignoreAdapterTypes: ["loopback", "vpn"],
       ice: {
         connectionReceivingTimeoutMs: 5_000,
@@ -51,6 +52,7 @@ describe("realtime server network", () => {
         privateAddress: "10.0.0.4",
         publicAddress: "203.0.113.4",
       }],
+      allowPrivateCandidateAddresses: true,
       diagnostic: {
         includedInterfaces: ["en0"],
         excludedInterfaces: ["utun4"],
@@ -60,6 +62,8 @@ describe("realtime server network", () => {
     });
     expect(JSON.stringify(resolved.diagnostic)).not.toContain("10.0.0.4");
     expect(JSON.stringify(resolved.diagnostic)).not.toContain("203.0.113.4");
+    expect(resolveRealtimeServerNetwork({}, interfaces).allowPrivateCandidateAddresses)
+      .toBe(false);
   });
 
   test("rejects contradictory or unusable deployment policy at startup", () => {
@@ -91,5 +95,10 @@ describe("realtime server network", () => {
         ice: { inactiveTimeoutMs: 1 },
       }, interfaces)
     ).toThrow("must be an integer from 10");
+    expect(() =>
+      resolveRealtimeServerNetwork({
+        allowPrivateCandidateAddresses: "yes" as never,
+      }, interfaces)
+    ).toThrow("allowPrivateCandidateAddresses must be a boolean");
   });
 });

@@ -202,11 +202,11 @@ decoded frames to JavaScript. `ctx.media.audioStream()` and
 `audioSource()` and `videoSource()` create native outbound tracks for PCM or
 I420 produced by the application.
 
-An audio source exposes the established LiveKit playout controls:
+An audio source exposes native playout controls:
 
 ```ts
 await output.captureFrame(frame);
-console.log(output.queuedDuration); // estimated seconds remaining
+console.log(output.queuedDuration); // native buffered seconds remaining
 await output.waitForPlayout();
 
 // Barge-in:
@@ -215,7 +215,9 @@ output.clearQueue(); // also releases waitForPlayout()
 
 `captureFrame()` is serialized in the native binding. Its libwebrtc queue is
 finite, while `queuedDuration` and `waitForPlayout()` use monotonic native
-accounting rather than a second JavaScript scheduler.
+accounting rather than a second JavaScript scheduler. Each capture contains
+whole 10 ms PCM blocks (480 samples per channel at 48 kHz); a zero-length queue
+accepts exactly one block per call.
 
 ## Configure server ICE and TURN
 
@@ -246,11 +248,12 @@ const runtime = new Runtime({
     configuration: async (principal) => ({
       iceServers: await turnCredentials.for(principal),
     }),
-    maxSessions: 4_096,
+    maxSessions: 1_024,
     maxSessionsPerPrincipal: 16,
     maxHandshakesPerWindow: 32,
     handshakeWindowMs: 10_000,
     sessionLimits: {
+      maxQueuedBytes: 32 * 1024 * 1024,
       maxAuxiliaryPeers: 4,
       maxDecodedStreams: 8,
       maxMediaSources: 8,
@@ -259,7 +262,7 @@ const runtime = new Runtime({
       maxTransceiversPerPeer: 32,
     },
     resourceLimits: {
-      maxAuxiliaryPeers: 16_384,
+      maxAuxiliaryPeers: 2_048,
       maxDecodedStreams: 32_768,
       maxMediaSources: 32_768,
       maxTracks: 131_072,
@@ -271,6 +274,7 @@ const runtime = new Runtime({
     iceTimeoutMs: 10_000,
     dtlsTimeoutMs: 10_000,
     dataChannelTimeoutMs: 20_000,
+    diagnosticTimeoutMs: 5_000,
   }),
 });
 ```
@@ -280,6 +284,38 @@ at startup. The effective status exposes only the interface policy, UDP range,
 and mapping count—not mapped addresses, SDP, or credentials. Omit fields to
 retain native libwebrtc defaults. Size and open the UDP range for the declared
 session envelope.
+
+Remote ICE addresses are a server boundary, not a route option. AckerDB parses
+and charges every candidate before native WebRTC sees it, but safely omits an
+unusable `typ host` candidate: browser mDNS/nonliteral values are never DNS
+resolved, and private/ULA host values are omitted by default. This follows the
+[W3C `addIceCandidate` behavior for administratively prohibited
+candidates](https://www.w3.org/TR/webrtc/#dom-rtcpeerconnection-addicecandidate): no connection attempt, behaving as though the address did not respond.
+Malformed candidates, and non-host candidates that target nonliteral or
+permanently forbidden destinations, end the generation. Public deployments
+deny RFC1918 IPv4 and IPv6 ULA candidates by default. An isolated LAN may make
+the one deployment-level choice `network.allowPrivateCandidateAddresses: true`
+to admit classified private/ULA candidates; it still cannot admit loopback,
+link-local, multicast, unspecified, or metadata-service addresses. Use public
+srflx/relay candidates for ordinary Internet deployments.
+
+Each generation has one cumulative remote-candidate budget across its initial
+offer SDP, HTTP trickle patches, and ordered data-channel signaling: 256
+candidates and 256 KiB of canonical encoded candidate data by default. Ignored
+host candidates consume that budget too. Set `maxRemoteCandidates` or
+`maxRemoteCandidateBytes` only at runtime deployment scope. A malformed or
+prohibited non-host candidate ends the generation with the typed `malformed`
+outcome;
+either budget exhaustion ends it with the retryable `overloaded` connection
+outcome. No partial batch reaches native WebRTC.
+
+The policy also reduces the standardized IPv4-in-IPv6 transition encodings
+(compatible/mapped, the `64:ff9b::/96` NAT64 well-known prefix, 6to4, and
+Teredo) to their IPv4 endpoint before applying that same policy. A
+deployment-specific NAT64 prefix is not self-describing in an IPv6 literal, so
+AckerDB does not guess one or resolve it. If a server network routes a custom
+NAT64 prefix, enforce the egress policy at that gateway or use public
+srflx/relay candidates instead.
 
 For coturn's standard REST credential mechanism, AckerDB can mint short-lived
 credentials directly:
@@ -303,10 +339,11 @@ const runtime = new Runtime({
 });
 ```
 
-Configure coturn with `use-auth-secret` and the same `static-auth-secret`.
-The secret stays on the server; clients receive only a principal-bound,
-expiring username and HMAC credential. Use `configuration` instead when ICE
-credentials come from another service. The two options are mutually exclusive.
+Configure coturn with `use-auth-secret` and the same `static-auth-secret` of at
+least 32 random bytes. The secret stays on the server; clients receive only a
+principal-bound, expiring username and HMAC credential. Use `configuration`
+instead when ICE credentials come from another service. The two options are
+mutually exclusive.
 
 Omit the options when host candidates are enough:
 `createRealtimeRuntime()`. The CLI does this automatically when it finds
@@ -319,33 +356,48 @@ can move between them without a second engine or provider adapter.
 The hardened coturn configuration, firewall contract, quotas, secret rotation,
 and relay-only connectivity check are in
 [the coturn deployment guide](deployment/coturn/README.md).
-`preflightRealtimeTurn()` proves two real allocations, relay candidate
-selection, ICE/DTLS establishment, and bidirectional data. A listening port
-alone is not a successful TURN check.
+`preflightRealtimeTurn()` checks TURN/UDP and TURN/TLS independently. Each
+configured transport gets its own absolute deadline, two real allocations,
+relay candidate selection, ICE/DTLS establishment, diagnostics, and
+bidirectional data. One healthy transport cannot hide failure of the other;
+the returned `udp` and `tls` results contain only stable, secret-safe outcomes.
+A listening port alone is not a successful TURN check.
+
+On-demand diagnostics and each periodic health-sampling batch share the
+deployment-level `diagnosticTimeoutMs` absolute deadline (5 seconds by
+default). A stalled native statistics request becomes a bounded failure; a
+late completion cannot mutate the published health snapshot.
 
 ## Native WebRTC distribution
 
-The native module is Rust over LiveKit's low-level `libwebrtc` crate and is
-loaded by Bun through Node-API. Run `bun run build:webrtc` in a source checkout;
-`bun run test:webrtc` builds it and proves a real peer pair exchanges a data
-message, PCM audio, and I420 video.
+The native module is Rust over AckerDB's maintained `libwebrtc` binding,
+derived from LiveKit's proven low-level work, and is loaded by Bun through
+Node-API. `@ackerdb/realtime` ships the generated NAPI-RS
+loader and declarations, but no `.node` file. Its five optional platform
+packages carry one binary each and use npm `os`, `cpu`, and Linux `libc`
+metadata so an install retains only the matching host payload. Run
+`bun run build:webrtc` in a source checkout; `bun run test:webrtc` builds the
+host package and proves a real peer pair exchanges a data message, PCM audio,
+and I420 video. Production installs must not omit optional dependencies.
 
 The server exposes W3C-shaped `getStats()` reports (including track selectors),
 mutable `RTCRtpTransceiver.direction`, `sendEncodings` for simulcast/SVC, and
-independent, budgeted server-track cloning. The release workflow builds
-prebuilds for Darwin arm64/x64, Linux arm64/x64, and Windows x64. It executes
+independent, budgeted server-track cloning. The release workflow builds native
+packages for Darwin arm64/x64, Linux GNU arm64/x64, and Windows x64. It executes
 native and exact-packed-package tests only on Darwin arm64. The remaining
 targets must compile and appear in the verified aggregate manifest, but are
 not claimed as runtime-tested.
 
-AckerDB downloads LiveKit's focused Rust/C++ binding crates by exact version
-and Acker-owned SHA-256, then applies two narrow committed patches because
-track cloning and raw stats exposure require small binding additions. It does
-not vendor the complete crates, LiveKit server, or Google libwebrtc source.
-The pinned LiveKit libwebrtc archive for each target is also verified before
-extraction. Stable and prerelease publication fail before publishing any
-package unless every target binary, per-target manifest, aggregate manifest,
-SBOM, and notice file agree.
+AckerDB consumes its focused
+[`ackerdb-libwebrtc`](https://github.com/pedrobzz/ackerdb-libwebrtc) fork by an
+immutable Git commit. Track cloning, complete stats, native identity, and
+network controls live there as ordinary source commits based on a recorded
+LiveKit revision; AckerDB keeps no local crate patches or vendored SDK copy.
+Separately, each target’s compiled Google libwebrtc engine remains a
+digest-verified LiveKit release archive. Stable and prerelease publication fail
+before publishing any package unless every target binary, per-target manifest,
+aggregate manifest, SBOM, and notice file agree.
+
 See the committed [native provenance record](../packages/realtime/native/webrtc/PROVENANCE.md).
 
 Unsupported peer options continue to fail explicitly instead of being silently
@@ -477,7 +529,7 @@ import { AckerDBClient } from "@ackerdb/client";
 const client = new AckerDBClient({
   url: "https://api.example.com",
   credential,
-  createPeerConnection(configuration: RTCConfiguration) {
+  createPeerConnection(configuration) {
     return new RTCPeerConnection(configuration);
   },
 });
@@ -496,12 +548,14 @@ const on: RealtimeOn<typeof api.assistant.live> = {
 };
 ```
 
-The structural factory also accepts another implementation with the same
-standard peer shape, but AckerDB does not require LiveKit’s React Native fork
-and is not a LiveKit client wrapper. Capture, permissions, camera selection,
-track enablement for push-to-talk, replacement, playback, and `RTCView` remain
-the native package’s ordinary APIs. A custom Expo development or release build
-must contain the WebRTC native module; Expo Go is not supported.
+`react-native-webrtc` is the default documented integration. AckerDB also
+accepts compatible alternatives such as `@livekit/react-native-webrtc`; neither
+package is bundled, required, or wrapped by AckerDB. AckerDB validates only the
+peer capabilities it needs for its reserved control channel. Capture,
+permissions, camera selection, track enablement for push-to-talk, replacement,
+playback, and `RTCView` remain the chosen native package’s ordinary APIs. A
+custom Expo development or release build must contain that WebRTC native module;
+Expo Go is not supported.
 
 ## Sharing and handlers
 
@@ -540,14 +594,15 @@ candidates travel as reserved in-band control frames—there is no signaling
 WebSocket, second socket, or permanent HTTP poll.
 
 A transient `disconnected` state gets a five-second native recovery grace.
-If connectivity does not return, AckerDB refreshes ICE/TURN configuration and
-attempts one managed ICE restart with a ten-second deadline. Failure closes
-that generation and enters the existing bounded fresh-generation backoff.
-Every replacement offer is marked as recovery, authorizes again, reruns
-`on.peerConnection` and the server handler, and owns fresh tracks and provider
-state. Setup itself has a twenty-second client deadline, while server
-authorization, configuration, handler, signaling, ICE, DTLS, and data-channel
-stages have independent runtime deadlines.
+If connectivity does not return, AckerDB attempts one managed ICE restart with
+the generation's current configuration and a ten-second deadline. Failure
+closes that generation and enters the existing bounded fresh-generation
+backoff. The replacement calls `/prepare` again, so it receives fresh ICE/TURN
+configuration. Every replacement offer is marked as recovery, authorizes
+again, reruns `on.peerConnection` and the server handler, and owns fresh tracks
+and provider state. Setup itself has a twenty-second client deadline, while
+server authorization, configuration, handler, signaling, ICE, DTLS, and
+data-channel stages have independent runtime deadlines.
 
 Authorization, validation, capability, protocol, and handler failures are
 terminal until explicit `reconnect()`, relevant authentication change, or new

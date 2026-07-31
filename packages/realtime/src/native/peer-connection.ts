@@ -43,6 +43,24 @@ import type {
 } from "./binding.ts";
 
 const encoder = new TextEncoder();
+const NATIVE_QUEUE_TERMINAL_REASONS = [
+  "queue-limit",
+  "process-byte-budget",
+  "generation-byte-budget",
+] as const;
+
+export type RealtimeNativeQueueTerminalReason =
+  typeof NATIVE_QUEUE_TERMINAL_REASONS[number];
+export type RealtimeNativeQueueTerminalCounts = Readonly<
+  Record<RealtimeNativeQueueTerminalReason, number>
+>;
+
+const EMPTY_NATIVE_QUEUE_TERMINAL_COUNTS: RealtimeNativeQueueTerminalCounts =
+  Object.freeze({
+    "queue-limit": 0,
+    "process-byte-budget": 0,
+    "generation-byte-budget": 0,
+  });
 
 type NativeRTCIceGatheringState = "new" | "gathering" | "complete";
 type NativeRTCIceTransportPolicy = NonNullable<
@@ -58,6 +76,7 @@ interface NativeRTCOfferOptions {
 export interface RealtimeNativePeerPressure {
   readonly peerEventDrops: number;
   readonly dataChannelEventDrops: number;
+  readonly terminalReasons: RealtimeNativeQueueTerminalCounts;
 }
 
 export class NativeTrackOwner {
@@ -485,6 +504,9 @@ class ServerDataChannel extends EventTarget {
   constructor(
     private readonly native: NativeDataChannelBinding,
     private readonly options: NativeRTCDataChannelInit = {},
+    private readonly onNativeQueueTerminal: (
+      reason: RealtimeNativeQueueTerminalReason,
+    ) => void = () => {},
   ) {
     super();
     void this.pump();
@@ -527,14 +549,21 @@ class ServerDataChannel extends EventTarget {
   }
 
   send(data: string | ArrayBuffer | ArrayBufferView): void {
-    if (typeof data === "string") {
-      this.native.send(encoder.encode(data), false);
-      return;
+    try {
+      if (typeof data === "string") {
+        this.native.send(encoder.encode(data), false);
+        return;
+      }
+      const bytes = data instanceof ArrayBuffer
+        ? new Uint8Array(data)
+        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+      this.native.send(bytes, true);
+    } catch (error) {
+      if (this.reportNativeQueueTerminal() !== null) {
+        throw new DOMException("data channel is unavailable", "OperationError");
+      }
+      throw error;
     }
-    const bytes = data instanceof ArrayBuffer
-      ? new Uint8Array(data)
-      : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-    this.native.send(bytes, true);
   }
 
   close(): void {
@@ -566,7 +595,9 @@ class ServerDataChannel extends EventTarget {
           if (event.state === "closed") this.dispatchClose();
         }
       }
+      this.dispatchClose();
     } catch {
+      this.reportNativeQueueTerminal();
       this.native.close();
       this.dispatchEvent(new Event("error"));
       this.dispatchClose();
@@ -578,6 +609,12 @@ class ServerDataChannel extends EventTarget {
     this.closeDispatched = true;
     this.dispatchEvent(new Event("close"));
   }
+
+  private reportNativeQueueTerminal(): RealtimeNativeQueueTerminalReason | null {
+    const reason = nativeQueueTerminalReason(this.native.queueTerminalReason);
+    if (reason !== null) this.onNativeQueueTerminal(reason);
+    return reason;
+  }
 }
 
 export class ServerPeerConnection extends EventTarget {
@@ -585,6 +622,10 @@ export class ServerPeerConnection extends EventTarget {
   private dataChannels = 0;
   private readonly nativeDataChannels: NativeDataChannelBinding[] = [];
   private readonly rtpOwner: NativeRtpOwner;
+  private readonly nativeTerminalListeners = new Set<
+    (reason: RealtimeNativeQueueTerminalReason) => void
+  >();
+  private nativeTerminalReason: RealtimeNativeQueueTerminalReason | null = null;
   private closed = false;
 
   constructor(
@@ -712,6 +753,7 @@ export class ServerPeerConnection extends EventTarget {
     return new ServerDataChannel(
       native,
       options,
+      (reason) => this.reportNativeQueueTerminal(reason),
     ) as unknown as PortableRTCDataChannel;
   }
 
@@ -839,7 +881,22 @@ export class ServerPeerConnection extends EventTarget {
         (total, channel) => total + boundedBigInt(channel.droppedEvents),
         0,
       ),
+      terminalReasons: nativeQueueTerminalCounts(
+        this.native.queueTerminalReason,
+        ...this.nativeDataChannels.map((channel) => channel.queueTerminalReason),
+      ),
     });
+  }
+
+  observeNativeQueueTerminal(
+    listener: (reason: RealtimeNativeQueueTerminalReason) => void,
+  ): () => void {
+    if (this.nativeTerminalReason !== null) {
+      listener(this.nativeTerminalReason);
+      return () => {};
+    }
+    this.nativeTerminalListeners.add(listener);
+    return () => this.nativeTerminalListeners.delete(listener);
   }
 
   close(): void {
@@ -850,6 +907,7 @@ export class ServerPeerConnection extends EventTarget {
     this.native.close();
     this.rtpOwner.clear();
     this.trackScope.close();
+    this.nativeTerminalListeners.clear();
     this.dispatchEvent(new Event("connectionstatechange"));
   }
 
@@ -918,6 +976,8 @@ export class ServerPeerConnection extends EventTarget {
             this.nativeDataChannels.push(native);
             const channel = new ServerDataChannel(
               native,
+              {},
+              (reason) => this.reportNativeQueueTerminal(reason),
             );
             this.dispatchEvent(Object.assign(new Event("datachannel"), {
               channel,
@@ -927,8 +987,26 @@ export class ServerPeerConnection extends EventTarget {
         }
       }
     } catch {
+      const reason = nativeQueueTerminalReason(this.native.queueTerminalReason);
+      if (reason !== null) this.reportNativeQueueTerminal(reason);
       if (this.closed) return;
       this.close();
+    }
+  }
+
+  private reportNativeQueueTerminal(
+    reason: RealtimeNativeQueueTerminalReason,
+  ): void {
+    if (this.nativeTerminalReason !== null) return;
+    this.nativeTerminalReason = reason;
+    const listeners = [...this.nativeTerminalListeners];
+    this.nativeTerminalListeners.clear();
+    for (const listener of listeners) {
+      try {
+        listener(reason);
+      } catch {
+        // Native pump failures must still close the peer.
+      }
     }
   }
 }
@@ -938,7 +1016,45 @@ export function nativePeerPressure(
 ): RealtimeNativePeerPressure {
   return peer instanceof ServerPeerConnection
     ? peer.operationalPressure()
-    : Object.freeze({ peerEventDrops: 0, dataChannelEventDrops: 0 });
+    : Object.freeze({
+      peerEventDrops: 0,
+      dataChannelEventDrops: 0,
+      terminalReasons: EMPTY_NATIVE_QUEUE_TERMINAL_COUNTS,
+    });
+}
+
+export function observeNativePeerTerminal(
+  peer: PortableRTCPeerConnection,
+  listener: (reason: RealtimeNativeQueueTerminalReason) => void,
+): () => void {
+  return peer instanceof ServerPeerConnection
+    ? peer.observeNativeQueueTerminal(listener)
+    : () => {};
+}
+
+function nativeQueueTerminalReason(
+  value: string | null,
+): RealtimeNativeQueueTerminalReason | null {
+  return NATIVE_QUEUE_TERMINAL_REASONS.includes(
+    value as RealtimeNativeQueueTerminalReason,
+  )
+    ? value as RealtimeNativeQueueTerminalReason
+    : null;
+}
+
+function nativeQueueTerminalCounts(
+  ...values: readonly (string | null)[]
+): RealtimeNativeQueueTerminalCounts {
+  const counts = {
+    "queue-limit": 0,
+    "process-byte-budget": 0,
+    "generation-byte-budget": 0,
+  } satisfies Record<RealtimeNativeQueueTerminalReason, number>;
+  for (const value of values) {
+    const reason = nativeQueueTerminalReason(value);
+    if (reason !== null) counts[reason]++;
+  }
+  return Object.freeze(counts);
 }
 
 function boundedBigInt(value: bigint): number {

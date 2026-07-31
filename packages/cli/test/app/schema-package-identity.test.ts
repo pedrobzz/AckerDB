@@ -1,15 +1,16 @@
 import { expect, test } from "bun:test";
 import {
-  cpSync,
+  readFileSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   AckerDBError,
@@ -59,6 +60,22 @@ function installPackedPackage(app: string, tarballs: string, name: "core" | "ser
   run(["tar", "-xzf", tarball, "-C", target, "--strip-components=1"], app);
 }
 
+function linkExternalDependencies(app: string, name: "core" | "server"): void {
+  const manifest = JSON.parse(
+    readFileSync(join(REPO, "packages", name, "package.json"), "utf8"),
+  ) as { readonly dependencies?: Readonly<Record<string, string>> };
+  for (const dependency of Object.keys(manifest.dependencies ?? {})) {
+    if (dependency.startsWith("@ackerdb/")) continue;
+    const target = join(app, "node_modules", dependency);
+    mkdirSync(dirname(target), { recursive: true });
+    symlinkSync(
+      realpathSync(join(REPO, "packages", name, "node_modules", dependency)),
+      target,
+      "dir",
+    );
+  }
+}
+
 test("packed @ackerdb/server values keep identity across physical package copies", async () => {
   const app = mkdtempSync(join(tmpdir(), "ackerdb-schema-identity-"));
   try {
@@ -66,16 +83,8 @@ test("packed @ackerdb/server values keep identity across physical package copies
     mkdirSync(tarballs);
     installPackedPackage(app, tarballs, "core");
     installPackedPackage(app, tarballs, "server");
-    cpSync(
-      realpathSync(join(REPO, "packages", "server", "node_modules", "jose")),
-      join(app, "node_modules", "jose"),
-      { recursive: true },
-    );
-    cpSync(
-      realpathSync(join(REPO, "packages", "core", "node_modules", "msgpackr")),
-      join(app, "node_modules", "msgpackr"),
-      { recursive: true },
-    );
+    linkExternalDependencies(app, "core");
+    linkExternalDependencies(app, "server");
 
     const appPath = join(app, "app.ts");
     writeFileSync(

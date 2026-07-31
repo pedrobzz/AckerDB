@@ -1,12 +1,12 @@
 import type {
   NativeRTCConfiguration,
-  NativeRTCPeerConnection,
   PortableRTCPeerConnection,
 } from "@ackerdb/core";
 import type { RealtimeRuntimeModule } from "@ackerdb/server";
 import type {
   RealtimeConfigurationSource,
   RealtimePeerEngine,
+  RealtimePeerGeneration,
 } from "../src/engine.ts";
 import { REALTIME_HUB_DEFAULTS, RealtimeHub } from "../src/hub.ts";
 
@@ -180,18 +180,23 @@ function unused(): never {
 export function testRealtimeEngine(
   createPeerConnection: (
     configuration?: NativeRTCConfiguration,
-  ) => NativeRTCPeerConnection,
+  ) => object,
 ): RealtimePeerEngine {
   return {
     close: () => {},
-    createPeerConnection: (configuration) =>
-      createPeerConnection(
-        configuration as NativeRTCConfiguration,
-      ) as unknown as PortableRTCPeerConnection,
-    createAudioStream: unused,
-    createAudioSource: unused,
-    createVideoStream: unused,
-    createVideoSource: unused,
+    nativeQueueMetrics: () => ({ reservedBytes: 0, saturations: 0 }),
+    createGeneration: (): RealtimePeerGeneration => ({
+      close: () => {},
+      nativeQueueMetrics: () => ({ reservedBytes: 0, saturations: 0 }),
+      createPeerConnection: (configuration) =>
+        createPeerConnection(
+          configuration as NativeRTCConfiguration,
+        ) as unknown as PortableRTCPeerConnection,
+      createAudioStream: unused,
+      createAudioSource: unused,
+      createVideoStream: unused,
+      createVideoSource: unused,
+    }),
   };
 }
 

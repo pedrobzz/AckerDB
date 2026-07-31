@@ -42,6 +42,8 @@ export interface RealtimeServerNetworkOptions {
   readonly advertisedAddressMappings?: readonly RealtimeAddressMapping[];
   /** Adapter classes libwebrtc must not gather from. Loopback is ignored by default. */
   readonly ignoreAdapterTypes?: readonly RealtimeNetworkAdapterType[];
+  /** Permit classified RFC1918 and IPv6 ULA remote ICE candidates. */
+  readonly allowPrivateCandidateAddresses?: boolean;
   readonly ice?: RealtimeIceTimingOptions;
 }
 
@@ -50,6 +52,7 @@ export interface ResolvedRealtimeServerNetwork {
   readonly ignoredAdapterTypes: readonly RealtimeNetworkAdapterType[];
   readonly nativeConfiguration: Readonly<NativeRtcConfigurationBinding>;
   readonly addressMappings: readonly RealtimeAddressMapping[];
+  readonly allowPrivateCandidateAddresses: boolean;
   readonly diagnostic: RealtimeNetworkDiagnostic;
 }
 
@@ -71,6 +74,13 @@ export function resolveRealtimeServerNetwork(
   options: RealtimeServerNetworkOptions = {},
   interfaces = networkInterfaces(),
 ): ResolvedRealtimeServerNetwork {
+  const allowPrivateCandidateAddresses =
+    options.allowPrivateCandidateAddresses ?? false;
+  if (typeof allowPrivateCandidateAddresses !== "boolean") {
+    throw new TypeError(
+      "realtime allowPrivateCandidateAddresses must be a boolean",
+    );
+  }
   const available = Object.keys(interfaces).sort();
   const include = names(options.interfaces?.include, "interfaces.include");
   const exclude = names(options.interfaces?.exclude, "interfaces.exclude");
@@ -184,6 +194,7 @@ export function resolveRealtimeServerNetwork(
     ignoredAdapterTypes,
     nativeConfiguration,
     addressMappings: Object.freeze(addressMappings),
+    allowPrivateCandidateAddresses,
     diagnostic,
   });
 }

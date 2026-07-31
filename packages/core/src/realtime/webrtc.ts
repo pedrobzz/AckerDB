@@ -1,27 +1,15 @@
-type GlobalValue<Name extends PropertyKey> =
-  typeof globalThis extends Record<Name, infer Value> ? Value : never;
-
-type GlobalPrototype<Name extends PropertyKey, Fallback> =
-  [GlobalValue<Name>] extends [never]
-    ? Fallback
-    : GlobalValue<Name> extends { readonly prototype: infer Prototype }
-      ? Prototype
-      : Fallback;
-
-type PeerConnectionConfiguration<Fallback> =
-  [GlobalValue<"RTCPeerConnection">] extends [never]
-    ? Fallback
-    : GlobalValue<"RTCPeerConnection"> extends {
-          new(configuration?: infer Configuration): unknown;
-        }
-      ? Configuration
-      : Fallback;
+/**
+ * `Portable*` is the server engine's W3C-shaped contract. `Native*` is the
+ * client contract shared by browser and React Native declarations; it avoids
+ * reading DOM globals, which are not available in a React Native program.
+ */
 
 export type NativeRTCDataChannelState =
   | "connecting"
   | "open"
   | "closing"
-  | "closed";
+  | "closed"
+  | (string & {});
 
 export type NativeRTCPeerConnectionState =
   | "new"
@@ -74,11 +62,6 @@ export interface PortableRTCIceCandidate {
   toJSON(): NativeRTCIceCandidateInit;
 }
 
-export type NativeRTCIceCandidate = GlobalPrototype<
-  "RTCIceCandidate",
-  PortableRTCIceCandidate
->;
-
 export interface PortableMediaStreamTrack {
   readonly id: string;
   readonly kind: string;
@@ -90,11 +73,6 @@ export interface PortableMediaStreamTrack {
   stop(): void;
 }
 
-export type NativeMediaStreamTrack = GlobalPrototype<
-  "MediaStreamTrack",
-  PortableMediaStreamTrack
->;
-
 export interface PortableMediaStream {
   readonly id: string;
   readonly active: boolean;
@@ -104,11 +82,6 @@ export interface PortableMediaStream {
   getVideoTracks(): PortableMediaStreamTrack[];
   removeTrack(track: PortableMediaStreamTrack): void;
 }
-
-export type NativeMediaStream = GlobalPrototype<
-  "MediaStream",
-  PortableMediaStream
->;
 
 export interface PortableRTCRtpSender {
   readonly track: PortableMediaStreamTrack | null;
@@ -142,21 +115,6 @@ export interface PortableRTCRtpTransceiver {
   setCodecPreferences(codecs: readonly PortableRTCRtpCodecCapability[]): void;
   stop(): void;
 }
-
-export type NativeRTCRtpSender = GlobalPrototype<
-  "RTCRtpSender",
-  PortableRTCRtpSender
->;
-
-export type NativeRTCRtpReceiver = GlobalPrototype<
-  "RTCRtpReceiver",
-  PortableRTCRtpReceiver
->;
-
-export type NativeRTCRtpTransceiver = GlobalPrototype<
-  "RTCRtpTransceiver",
-  PortableRTCRtpTransceiver
->;
 
 export type PortableRTCPriorityType =
   | "very-low"
@@ -250,15 +208,6 @@ export interface PortableRTCTrackEvent {
   readonly transceiver: PortableRTCRtpTransceiver;
 }
 
-export type NativeRTCTrackEvent = GlobalPrototype<
-  "RTCTrackEvent",
-  PortableRTCTrackEvent
->;
-
-export interface NativeRTCPeerConnectionIceEvent {
-  readonly candidate: NativeRTCIceCandidate | null;
-}
-
 export interface PortableRTCPeerConnectionIceEvent {
   readonly candidate: PortableRTCIceCandidate | null;
 }
@@ -314,11 +263,6 @@ export interface PortableRTCDataChannel {
   ): void;
 }
 
-export type NativeRTCDataChannel = GlobalPrototype<
-  "RTCDataChannel",
-  PortableRTCDataChannel
->;
-
 export interface PortableRTCIceServer {
   readonly credential?: string;
   readonly credentialType?: "password";
@@ -334,10 +278,6 @@ export interface PortableRTCConfiguration {
   readonly iceTransportPolicy?: "all" | "relay";
   readonly rtcpMuxPolicy?: "require";
 }
-
-export type NativeRTCConfiguration = PeerConnectionConfiguration<
-  PortableRTCConfiguration
->;
 
 export interface PortableRTCPeerConnection {
   readonly connectionState: NativeRTCPeerConnectionState;
@@ -407,12 +347,271 @@ export interface PortableRTCPeerConnection {
   ): void;
 }
 
+export interface NativeMediaStreamTrack {
+  readonly id: string;
+  readonly kind: string;
+  readonly label: string;
+  readonly muted: boolean;
+  readonly readyState: string;
+  enabled: boolean;
+  clone(): NativeMediaStreamTrack;
+  stop(): void;
+}
+
+export interface NativeMediaStream {
+  readonly id: string;
+  readonly active: boolean;
+  addTrack(track: NativeMediaStreamTrack): void;
+  getAudioTracks(): NativeMediaStreamTrack[];
+  getTracks(): NativeMediaStreamTrack[];
+  getVideoTracks(): NativeMediaStreamTrack[];
+  removeTrack(track: NativeMediaStreamTrack): void;
+}
+
+export interface NativeRTCIceCandidate {
+  readonly candidate?: string;
+  readonly sdpMid?: string | null;
+  readonly sdpMLineIndex?: number | null;
+  readonly usernameFragment?: string | null;
+  toJSON(): NativeRTCIceCandidateInit;
+}
+
+export interface NativeRTCStats {
+  readonly id?: string;
+  readonly timestamp?: number;
+  readonly type: string;
+  readonly [property: string]: unknown;
+}
+
+/** Browser and supported React Native engines both return a Map-shaped report. */
+export type NativeRTCStatsReport = ReadonlyMap<string, NativeRTCStats>;
+
+export interface NativeRTCRtpParameters {
+  readonly codecs?: readonly object[];
+  readonly headerExtensions?: readonly object[];
+  readonly rtcp?: object;
+}
+
+export interface NativeRTCRtpSendParameters extends NativeRTCRtpParameters {
+  readonly encodings?: NativeRTCRtpEncodingParameters[];
+  readonly transactionId?: string;
+  degradationPreference?: string | null;
+}
+
+export type NativeRTCRtpReceiveParameters = NativeRTCRtpParameters;
+
+export interface NativeRTCRtpEncodingParameters {
+  active?: boolean;
+  maxBitrate?: number | null;
+  maxFramerate?: number | null;
+  minBitrate?: number | null;
+  priority?: string;
+  readonly rid?: string | null;
+  scaleResolutionDownBy?: number | null;
+  scalabilityMode?: string;
+  readonly ssrc?: number;
+}
+
+export interface NativeRTCRtpCodecCapability {
+  readonly channels?: number;
+  readonly clockRate?: number;
+  readonly mimeType: string;
+  readonly sdpFmtpLine?: string;
+}
+
+export type NativeRTCRtpTransceiverDirection =
+  | "sendrecv"
+  | "sendonly"
+  | "recvonly"
+  | "inactive"
+  | "stopped"
+  | (string & {});
+
+export interface NativeRTCRtpSender {
+  readonly track: NativeMediaStreamTrack | null;
+  getParameters(): NativeRTCRtpSendParameters;
+  getStats(): Promise<NativeRTCStatsReport>;
+  replaceTrack(track: NativeMediaStreamTrack | null): Promise<void>;
+  setParameters(parameters: NativeRTCRtpSendParameters): Promise<void>;
+}
+
+export interface NativeRTCRtpReceiver {
+  readonly track: NativeMediaStreamTrack | null;
+  getParameters(): NativeRTCRtpReceiveParameters;
+  getStats(): Promise<NativeRTCStatsReport>;
+}
+
+export interface NativeRTCRtpTransceiver {
+  readonly receiver: NativeRTCRtpReceiver;
+  readonly sender: NativeRTCRtpSender;
+  direction: NativeRTCRtpTransceiverDirection;
+  readonly currentDirection?: NativeRTCRtpTransceiverDirection | null;
+  readonly mid?: string | null;
+  setCodecPreferences(codecs: readonly NativeRTCRtpCodecCapability[]): void;
+  stop(): void;
+}
+
+export interface NativeRTCRtpTransceiverInit {
+  readonly direction?: NativeRTCRtpTransceiverDirection;
+  readonly streams?: NativeMediaStream[];
+  readonly sendEncodings?: NativeRTCRtpEncodingParameters[];
+}
+
+export interface NativeRTCTrackEvent {
+  readonly receiver: NativeRTCRtpReceiver | null;
+  readonly streams: NativeMediaStream[];
+  readonly track: NativeMediaStreamTrack | null;
+  readonly transceiver: NativeRTCRtpTransceiver;
+  readonly type: string;
+}
+
+export interface NativeRTCPeerConnectionIceEvent {
+  readonly candidate: NativeRTCIceCandidate | null;
+  readonly type: string;
+}
+
+/** The browser/RN event shape shared by AckerDB's client-facing peer API. */
+export interface NativeRTCEvent {
+  readonly type: string;
+}
+
 /**
- * The platform's actual W3C peer object when WebRTC globals are available.
- * The fallback is structural typing for server and bare-native programs; it
- * never creates, wraps, or substitutes a runtime peer.
+ * Deliberately structural: supported native WebRTC packages implement these
+ * methods but do not all publish equivalent EventTarget declarations.
  */
-export type NativeRTCPeerConnection = GlobalPrototype<
-  "RTCPeerConnection",
-  PortableRTCPeerConnection
->;
+export interface NativeRTCEventTarget {
+  addEventListener(
+    type: string,
+    listener: (event: NativeRTCEvent) => unknown,
+    options?: unknown,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: (event: NativeRTCEvent) => unknown,
+    options?: unknown,
+  ): void;
+}
+
+export interface NativeRTCDataChannelMessageEvent extends NativeRTCEvent {
+  readonly data: unknown;
+}
+
+/** Configuration AckerDB can safely pass to any supported client peer. */
+export interface NativeRTCIceServer {
+  credential?: string;
+  urls: string | string[];
+  username?: string;
+}
+
+export interface NativeRTCConfiguration {
+  bundlePolicy?: "balanced" | "max-bundle" | "max-compat";
+  iceCandidatePoolSize?: number;
+  iceServers?: NativeRTCIceServer[];
+  iceTransportPolicy?: "all" | "relay";
+  rtcpMuxPolicy?: "require";
+}
+
+/** The client data-channel surface shared by browser and React Native. */
+export interface NativeRTCDataChannel {
+  binaryType: string;
+  readonly bufferedAmount: number;
+  bufferedAmountLowThreshold: number;
+  readonly id: number | null;
+  readonly label: string;
+  readonly negotiated: boolean;
+  readonly ordered: boolean;
+  readonly protocol: string;
+  readonly readyState: NativeRTCDataChannelState;
+  close(): void;
+  send(data: string | ArrayBuffer | ArrayBufferView): void;
+  addEventListener(
+    type: "message",
+    listener: (event: NativeRTCDataChannelMessageEvent) => unknown,
+    options?: unknown,
+  ): void;
+  removeEventListener(
+    type: "message",
+    listener: (event: NativeRTCDataChannelMessageEvent) => unknown,
+    options?: unknown,
+  ): void;
+  addEventListener(
+    type: string,
+    listener: (event: NativeRTCEvent) => unknown,
+    options?: unknown,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: (event: NativeRTCEvent) => unknown,
+    options?: unknown,
+  ): void;
+}
+
+export interface NativeRTCPeerConnection {
+  readonly connectionState: NativeRTCPeerConnectionState;
+  readonly iceGatheringState: "new" | "gathering" | "complete";
+  readonly iceConnectionState: NativeRTCIceConnectionState;
+  readonly localDescription: NativeRTCSessionDescriptionInit | null;
+  readonly remoteDescription: NativeRTCSessionDescriptionInit | null;
+  readonly signalingState: NativeRTCSignalingState;
+  addIceCandidate(candidate: NativeRTCIceCandidateInit | null): Promise<void>;
+  addTrack(
+    track: NativeMediaStreamTrack,
+    ...streams: NativeMediaStream[]
+  ): NativeRTCRtpSender;
+  addTransceiver(
+    trackOrKind: NativeMediaStreamTrack | "audio" | "video",
+    init?: NativeRTCRtpTransceiverInit,
+  ): NativeRTCRtpTransceiver;
+  close(): void;
+  createAnswer(options?: unknown): Promise<NativeRTCSessionDescriptionInit>;
+  createDataChannel(
+    label: string,
+    options?: NativeRTCDataChannelInit,
+  ): NativeRTCDataChannel;
+  createOffer(options?: unknown): Promise<NativeRTCSessionDescriptionInit>;
+  getReceivers(): NativeRTCRtpReceiver[];
+  getSenders(): NativeRTCRtpSender[];
+  getStats(
+    selector?: NativeMediaStreamTrack | null,
+  ): Promise<NativeRTCStatsReport>;
+  getTransceivers(): NativeRTCRtpTransceiver[];
+  removeTrack(sender: NativeRTCRtpSender): void;
+  restartIce(): void;
+  setConfiguration(configuration?: NativeRTCConfiguration): void;
+  setLocalDescription(
+    description?: NativeRTCSessionDescriptionInit,
+  ): Promise<void>;
+  setRemoteDescription(
+    description: NativeRTCSessionDescriptionInit,
+  ): Promise<void>;
+  addEventListener(
+    type: "icecandidate",
+    listener: (event: NativeRTCPeerConnectionIceEvent) => unknown,
+    options?: unknown,
+  ): void;
+  addEventListener(
+    type: "track",
+    listener: (event: NativeRTCTrackEvent) => unknown,
+    options?: unknown,
+  ): void;
+  removeEventListener(
+    type: "icecandidate",
+    listener: (event: NativeRTCPeerConnectionIceEvent) => unknown,
+    options?: unknown,
+  ): void;
+  removeEventListener(
+    type: "track",
+    listener: (event: NativeRTCTrackEvent) => unknown,
+    options?: unknown,
+  ): void;
+  addEventListener(
+    type: string,
+    listener: (event: NativeRTCEvent) => unknown,
+    options?: unknown,
+  ): void;
+  removeEventListener(
+    type: string,
+    listener: (event: NativeRTCEvent) => unknown,
+    options?: unknown,
+  ): void;
+}

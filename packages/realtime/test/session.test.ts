@@ -26,7 +26,11 @@ import {
   type RealtimeServerSessionLimits,
   type RealtimeServerSessionOptions,
 } from "../src/session.ts";
-import type { RealtimePeerEngine } from "../src/engine.ts";
+import type { RealtimePeerGeneration } from "../src/engine.ts";
+import {
+  REMOTE_CANDIDATE_POLICY_DEFAULTS,
+  RemoteCandidatePolicy,
+} from "../src/remote-candidate-policy.ts";
 import {
   TestPeerConnection as FakePeerConnection,
   testDataChannels as dataChannels,
@@ -49,6 +53,7 @@ function procedure(signal: AbortSignal): ProcedureCtx {
 }
 
 const SESSION_LIMITS = Object.freeze({
+  maxQueuedBytes: 32 * 1024 * 1024,
   maxBufferedAmount: 64 * 1024,
   maxConcurrentStreams: 4,
   maxIncomingBufferedBytes: 64 * 1024,
@@ -77,17 +82,26 @@ function sessionAdapter(
 }
 
 function createSession(
-  options: Omit<RealtimeServerSessionOptions, "adapter" | "limits"> & {
+  options: Omit<
+    RealtimeServerSessionOptions,
+    "adapter" | "limits" | "remoteCandidates"
+  > & {
     readonly adapter?: RealtimeServerSessionAdapter;
     readonly limits?: Partial<RealtimeServerSessionLimits>;
+    readonly remoteCandidates?: RemoteCandidatePolicy;
   },
 ): Promise<RealtimeServerSession> {
   return RealtimeServerSession.create({
     ...options,
+    remoteCandidates: options.remoteCandidates ?? new RemoteCandidatePolicy(
+      REMOTE_CANDIDATE_POLICY_DEFAULTS,
+    ),
     adapter: options.adapter ?? sessionAdapter(),
     limits: {
       ...SESSION_LIMITS,
       ...options.limits,
+      maxQueuedBytes: options.limits?.maxQueuedBytes ??
+        SESSION_LIMITS.maxQueuedBytes,
     },
   });
 }
@@ -129,8 +143,9 @@ describe("RealtimeServerSession", () => {
       close: () => closed.push("video-source"),
     } satisfies RealtimeVideoSource;
     let configuration: PortableRTCConfiguration | undefined;
-    const engine: RealtimePeerEngine = {
+    const generation: RealtimePeerGeneration = {
       close: () => {},
+      nativeQueueMetrics: () => ({ reservedBytes: 0, saturations: 0 }),
       createPeerConnection: (value) => {
         configuration = value;
         return upstreamPeer as unknown as PortableRTCPeerConnection;
@@ -163,7 +178,7 @@ describe("RealtimeServerSession", () => {
       state: undefined,
       peerConnection: clientPeer as unknown as PortableRTCPeerConnection,
       dataChannel: serverChannel as unknown as PortableRTCDataChannel,
-      engine,
+      generation,
     });
 
     expect(configuration).toEqual({
@@ -194,8 +209,9 @@ describe("RealtimeServerSession", () => {
     const resource = () => Object.assign(new ReadableStream(), {
       close: () => {},
     });
-    const engine: RealtimePeerEngine = {
+    const generation: RealtimePeerGeneration = {
       close: () => {},
+      nativeQueueMetrics: () => ({ reservedBytes: 0, saturations: 0 }),
       createPeerConnection: () => {
         created.peers++;
         return new FakePeerConnection() as unknown as PortableRTCPeerConnection;
@@ -264,7 +280,7 @@ describe("RealtimeServerSession", () => {
       state: undefined,
       peerConnection: clientPeer as unknown as PortableRTCPeerConnection,
       dataChannel: serverChannel as unknown as PortableRTCDataChannel,
-      engine,
+      generation,
       observePressure: (value) => pressure.push(value),
       limits: {
         maxAuxiliaryPeers: 1,
@@ -309,8 +325,9 @@ describe("RealtimeServerSession", () => {
       maxDecodedStreams: 1,
       maxMediaSources: 1,
     });
-    const engine: RealtimePeerEngine = {
+    const generation: RealtimePeerGeneration = {
       close: () => {},
+      nativeQueueMetrics: () => ({ reservedBytes: 0, saturations: 0 }),
       createPeerConnection: () => {
         const peer = new FakePeerConnection();
         peer.addEventListener("closed", () => closed.peers++);
@@ -367,7 +384,7 @@ describe("RealtimeServerSession", () => {
       state: undefined,
       peerConnection: clientPeer as unknown as PortableRTCPeerConnection,
       dataChannel: serverChannel as unknown as PortableRTCDataChannel,
-      engine,
+      generation,
       resourceBudget: resources,
       limits: {
         maxAuxiliaryPeers: 1,
@@ -468,9 +485,9 @@ describe("RealtimeServerSession", () => {
       state: { voice: "alloy" },
       peerConnection: peer as unknown as PortableRTCPeerConnection,
       dataChannel: serverChannel as unknown as PortableRTCDataChannel,
-      engine: testRealtimeEngine(
+      generation: testRealtimeEngine(
         () => new FakePeerConnection() as unknown as RTCPeerConnection,
-      ),
+      ).createGeneration(SESSION_LIMITS.maxQueuedBytes),
       adapter,
       limits: {
         defaultStreamMaxBytes: 1024 * 1024,
@@ -525,9 +542,9 @@ describe("RealtimeServerSession", () => {
       state: undefined,
       peerConnection: peer as unknown as PortableRTCPeerConnection,
       dataChannel: serverChannel as unknown as PortableRTCDataChannel,
-      engine: testRealtimeEngine(
+      generation: testRealtimeEngine(
         () => new FakePeerConnection() as unknown as RTCPeerConnection,
-      ),
+      ).createGeneration(SESSION_LIMITS.maxQueuedBytes),
       adapter: {
         ...sessionAdapter((error) => failures.push(error)),
         invoke: async (owner, context, work) => {
@@ -575,9 +592,9 @@ describe("RealtimeServerSession", () => {
       state: undefined,
       peerConnection: peer as unknown as PortableRTCPeerConnection,
       dataChannel: serverChannel as unknown as PortableRTCDataChannel,
-      engine: testRealtimeEngine(
+      generation: testRealtimeEngine(
         () => new FakePeerConnection() as unknown as RTCPeerConnection,
-      ),
+      ).createGeneration(SESSION_LIMITS.maxQueuedBytes),
       adapter: sessionAdapter((error) => {
           reported = error;
           reportFailure();
@@ -638,9 +655,9 @@ describe("RealtimeServerSession", () => {
       peerConnection:
         new FakePeerConnection() as unknown as PortableRTCPeerConnection,
       dataChannel: serverChannel as unknown as PortableRTCDataChannel,
-      engine: testRealtimeEngine(
+      generation: testRealtimeEngine(
         () => new FakePeerConnection() as unknown as RTCPeerConnection,
-      ),
+      ).createGeneration(SESSION_LIMITS.maxQueuedBytes),
       adapter,
     });
     const client = new RealtimeDataPlane({
@@ -695,9 +712,9 @@ describe("RealtimeServerSession", () => {
       state: undefined,
       peerConnection: peer as unknown as PortableRTCPeerConnection,
       dataChannel: serverChannel as unknown as PortableRTCDataChannel,
-      engine: testRealtimeEngine(
+      generation: testRealtimeEngine(
         () => new FakePeerConnection() as unknown as RTCPeerConnection,
-      ),
+      ).createGeneration(SESSION_LIMITS.maxQueuedBytes),
       adapter: sessionAdapter((error) => failures.push(error)),
     });
     client = new RealtimeDataPlane({
@@ -737,6 +754,188 @@ describe("RealtimeServerSession", () => {
     client.close();
   });
 
+  test("keeps the server impolite through a colliding offer and its candidates", async () => {
+    const [clientChannel, serverChannel] = dataChannels();
+    const peer = new FakePeerConnection();
+    const failures: unknown[] = [];
+    const definition = realtime({
+      args: {},
+      clientEvents: {},
+      serverEvents: {},
+      access: "public",
+      handler: () => {},
+    });
+    const session = await createSession({
+      definition,
+      args: {},
+      state: undefined,
+      peerConnection: peer as unknown as PortableRTCPeerConnection,
+      dataChannel: serverChannel as unknown as PortableRTCDataChannel,
+      generation: testRealtimeEngine(
+        () => new FakePeerConnection() as unknown as RTCPeerConnection,
+      ).createGeneration(SESSION_LIMITS.maxQueuedBytes),
+      adapter: sessionAdapter((error) => failures.push(error)),
+    });
+    const client = new RealtimeDataPlane({
+      channel: clientChannel as unknown as RTCDataChannel,
+      localPrefix: "c",
+      maxBufferedAmount: 64 * 1024,
+      maxConcurrentStreams: 4,
+      maxIncomingBufferedBytes: 64 * 1024,
+      streamIdleMs: 30_000,
+      onEvent: () => {},
+      onIncomingStream: () => undefined,
+      onSessionError: () => {},
+      onSignal: () => {},
+      onFatalError: (error) => failures.push(error),
+    });
+    const candidate = {
+      candidate: "candidate:1 1 UDP 1 8.8.8.8 9 typ host",
+    };
+
+    session.initialNegotiationComplete();
+    peer.dispatchEvent(new Event("negotiationneeded"));
+    await turns(8);
+    expect(peer.signalingState).toBe("have-local-offer");
+
+    await client.sendSignal({
+      v: REALTIME_PROTOCOL_VERSION,
+      t: "signal_description",
+      description: { type: "offer", sdp: "v=0\r\nignored-client-offer" },
+    });
+    await client.sendSignal({
+      v: REALTIME_PROTOCOL_VERSION,
+      t: "signal_candidate",
+      candidate,
+    });
+    await turns(8);
+    expect(peer.remoteDescriptions).toEqual([]);
+    expect(peer.candidates).toEqual([]);
+
+    peer.signalingState = "stable";
+    await client.sendSignal({
+      v: REALTIME_PROTOCOL_VERSION,
+      t: "signal_description",
+      description: { type: "offer", sdp: "v=0\r\naccepted-client-offer" },
+    });
+    await client.sendSignal({
+      v: REALTIME_PROTOCOL_VERSION,
+      t: "signal_candidate",
+      candidate,
+    });
+    await turns(8);
+    expect(peer.remoteDescriptions).toEqual([{
+      type: "offer",
+      sdp: "v=0\r\naccepted-client-offer",
+    }]);
+    expect(peer.candidates).toEqual([candidate]);
+    expect(failures).toEqual([]);
+
+    session.close();
+    client.close();
+  });
+
+  test("filters in-band host candidates and fails closed on a prohibited non-host destination", async () => {
+    const [clientChannel, serverChannel] = dataChannels();
+    const peer = new FakePeerConnection();
+    const failures: unknown[] = [];
+    const definition = realtime({
+      args: {},
+      clientEvents: {},
+      serverEvents: {},
+      access: "public",
+      handler: () => {},
+    });
+    const session = await createSession({
+      definition,
+      args: {},
+      state: undefined,
+      peerConnection: peer as unknown as PortableRTCPeerConnection,
+      dataChannel: serverChannel as unknown as PortableRTCDataChannel,
+      generation: testRealtimeEngine(
+        () => new FakePeerConnection() as unknown as RTCPeerConnection,
+      ).createGeneration(SESSION_LIMITS.maxQueuedBytes),
+      remoteCandidates: new RemoteCandidatePolicy({
+        maxCandidates: 8,
+        maxBytes: 8 * 1024,
+        allowPrivateAddresses: false,
+      }),
+      adapter: sessionAdapter((error) => failures.push(error)),
+    });
+    const client = new RealtimeDataPlane({
+      channel: clientChannel as unknown as RTCDataChannel,
+      localPrefix: "c",
+      maxBufferedAmount: 64 * 1024,
+      maxConcurrentStreams: 4,
+      maxIncomingBufferedBytes: 64 * 1024,
+      streamIdleMs: 30_000,
+      onEvent: () => {},
+      onIncomingStream: () => undefined,
+      onSessionError: () => {},
+      onSignal: () => {},
+      onFatalError: (error) => failures.push(error),
+    });
+
+    session.initialNegotiationComplete();
+    const accepted = {
+      candidate: "candidate:1 1 UDP 1 8.8.8.8 9 typ host",
+    };
+    await client.sendSignal({
+      v: REALTIME_PROTOCOL_VERSION,
+      t: "signal_candidate",
+      candidate: accepted,
+    });
+    await turns(8);
+    expect(peer.candidates).toEqual([accepted]);
+
+    await client.sendSignal({
+      v: REALTIME_PROTOCOL_VERSION,
+      t: "signal_candidate",
+      candidate: {
+        candidate: "candidate:1 1 UDP 1 browser-opaque-id.local 9 typ host",
+      },
+    });
+    await turns(8);
+    expect(peer.candidates).toEqual([accepted]);
+    expect(peer.closed).toBe(false);
+
+    await client.sendSignal({
+      v: REALTIME_PROTOCOL_VERSION,
+      t: "signal_description",
+      description: {
+        type: "offer",
+        sdp: [
+          "v=0",
+          "a=candidate:1 1 UDP 1 192.168.1.2 9 typ host",
+          "a=candidate:1 1 UDP 1 8.8.8.8 9 typ relay",
+          "",
+        ].join("\r\n"),
+      },
+    });
+    await turns(8);
+
+    expect(peer.candidates).toEqual([accepted]);
+    expect(peer.remoteDescriptions).toEqual([{
+      type: "offer",
+      sdp: "v=0\r\na=candidate:1 1 UDP 1 8.8.8.8 9 typ relay\r\n",
+    }]);
+    expect(peer.closed).toBe(false);
+
+    await client.sendSignal({
+      v: REALTIME_PROTOCOL_VERSION,
+      t: "signal_candidate",
+      candidate: {
+        candidate: "candidate:1 1 UDP 1 127.0.0.1 9 typ srflx",
+      },
+    });
+    await turns(8);
+
+    expect(peer.closed).toBe(true);
+    expect(failures).toMatchObject([{ code: "malformed" }]);
+
+    client.close();
+  });
+
   test("does not renegotiate handler mutations already included in the initial answer", async () => {
     const [, serverChannel] = dataChannels();
     const peer = new FakePeerConnection();
@@ -754,9 +953,9 @@ describe("RealtimeServerSession", () => {
       state: undefined,
       peerConnection: peer as unknown as PortableRTCPeerConnection,
       dataChannel: serverChannel as unknown as PortableRTCDataChannel,
-      engine: testRealtimeEngine(
+      generation: testRealtimeEngine(
         () => new FakePeerConnection() as unknown as RTCPeerConnection,
-      ),
+      ).createGeneration(SESSION_LIMITS.maxQueuedBytes),
       adapter: sessionAdapter((error) => failures.push(error)),
     });
 

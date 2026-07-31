@@ -496,13 +496,16 @@ pressure, media-flow, and native queue information without retaining SDP,
 candidates, addresses, credentials, or a per-peer background polling loop.
 _Avoid_: Realtime packet log, peer inventory, independent stats timer
 
-**Realtime native package** — The one `@ackerdb/server` package containing
-verified Darwin arm64/x64, Linux arm64/x64, and Windows x64 native prebuilds
-from one pinned LiveKit libwebrtc source set. Per-target and aggregate
-manifests, SHA-256 digests, notices, and SBOM define the published boundary.
-Every target is built before publication; runtime execution is a separate
-platform-support claim.
-_Avoid_: Runtime download, host-only publish, LiveKit server dependency
+**Realtime native packages** — `@ackerdb/realtime` owns the generated NAPI-RS
+loader and declarations but no native binary. Five optional, host-filtered
+packages each own one verified Darwin arm64/x64, Linux GNU arm64/x64, or
+Windows x64 binary. Their binding source is one immutable AckerDB libwebrtc
+fork commit based on a recorded LiveKit upstream revision; target-specific
+Google libwebrtc archives are separate digest-verified LiveKit build inputs.
+Per-target and aggregate manifests, SHA-256 digests, notices, and SBOM define
+the published boundary. Every target is built before publication; runtime
+execution is a separate platform-support claim.
+_Avoid_: Runtime download, host-only publish, local crate patch, LiveKit server dependency
 
 **Realtime peer ownership** — The boundary on the platform
 `RTCPeerConnection` exposed to a client and the W3C-shaped peer backed by

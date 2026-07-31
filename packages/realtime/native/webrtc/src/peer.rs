@@ -1,8 +1,8 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
-        Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Mutex, MutexGuard, Weak,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
 };
 
@@ -28,13 +28,19 @@ use napi::bindgen_prelude::{BigInt, ClassInstance, Uint8Array};
 use napi_derive::napi;
 
 use crate::{
-    queue::BoundedQueue,
+    queue::{BoundedQueue, GenerationQueueBudget, QueueReservation},
     types::{NativeIceCandidate, NativeRtcConfiguration, NativeSessionDescription, rtc_error},
 };
 
 const PEER_EVENT_LIMIT: usize = 256;
+const PEER_EVENT_BYTES: usize = 64;
+const PENDING_TRACK_BYTES: usize = 64 * 1024;
+const PENDING_DATA_CHANNEL_BYTES: usize = 64 * 1024;
 const DATA_CHANNEL_EVENT_LIMIT: usize = 512;
+const DATA_CHANNEL_EVENT_BYTES: usize = 64;
 const DATA_CHANNEL_BUFFER_LIMIT: usize = 4 * 1024 * 1024;
+const DATA_CHANNEL_OUTBOUND_LIMIT: usize = 512;
+const DATA_CHANNEL_SEND_OVERHEAD_BYTES: usize = 64;
 
 #[napi(object)]
 #[derive(Clone, Debug, Default)]
@@ -164,6 +170,26 @@ enum PeerEvent {
     DataChannel(u32),
 }
 
+impl PeerEvent {
+    fn retained_bytes(&self) -> usize {
+        match self {
+            Self::IceCandidate(candidate) => PEER_EVENT_BYTES
+                .saturating_add(candidate.candidate.len())
+                .saturating_add(candidate.sdp_mid.len()),
+            Self::IceCandidateError(error) => PEER_EVENT_BYTES
+                .saturating_add(error.address.len())
+                .saturating_add(error.url.len())
+                .saturating_add(error.error_text.len()),
+            _ => PEER_EVENT_BYTES,
+        }
+    }
+
+    fn enqueue(self, events: &BoundedQueue<Self>) -> bool {
+        let retained_bytes = self.retained_bytes();
+        events.push_weighted_with(1, retained_bytes, || self)
+    }
+}
+
 #[napi(object)]
 pub struct NativePeerEvent {
     pub kind: String,
@@ -177,10 +203,15 @@ pub struct NativePeerEvent {
     pub error_text: Option<String>,
 }
 
+struct Pending<T> {
+    value: T,
+    _reservation: QueueReservation,
+}
+
 struct PeerPending {
     next: AtomicU32,
-    tracks: Mutex<HashMap<u32, TrackEvent>>,
-    data_channels: Mutex<HashMap<u32, DataChannel>>,
+    tracks: Mutex<HashMap<u32, Pending<TrackEvent>>>,
+    data_channels: Mutex<HashMap<u32, Pending<DataChannel>>>,
 }
 
 impl PeerPending {
@@ -209,7 +240,9 @@ pub struct NativePeerConnection {
     local_description: Mutex<Option<NativeSessionDescription>>,
     remote_description: Mutex<Option<NativeSessionDescription>>,
     events: Arc<BoundedQueue<PeerEvent>>,
+    budget: Mutex<Option<GenerationQueueBudget>>,
     pending: Arc<PeerPending>,
+    data_channel_queues: Arc<Mutex<Vec<Weak<BoundedQueue<DataChannelEvent>>>>>,
     closed: Arc<AtomicBool>,
 }
 
@@ -217,63 +250,79 @@ impl NativePeerConnection {
     pub fn new(
         factory: PeerConnectionFactory,
         configuration: NativeRtcConfiguration,
+        budget: GenerationQueueBudget,
     ) -> napi::Result<Self> {
         let peer = factory
             .create_peer_connection(configuration.to_rtc()?)
             .map_err(rtc_error)?;
-        let events = Arc::new(BoundedQueue::new(PEER_EVENT_LIMIT));
+        let events = Arc::new(BoundedQueue::new(PEER_EVENT_LIMIT, budget.clone()));
         let pending = Arc::new(PeerPending::new());
+        let data_channel_queues = Arc::new(Mutex::new(Vec::new()));
         let closed = Arc::new(AtomicBool::new(false));
 
         {
             let events = events.clone();
             peer.on_connection_state_change(Some(Box::new(move |state| {
-                events.push(PeerEvent::ConnectionState(connection_state(state)));
+                PeerEvent::ConnectionState(connection_state(state)).enqueue(&events);
             })));
         }
         {
             let events = events.clone();
             peer.on_ice_candidate(Some(Box::new(move |candidate| {
-                events.push(PeerEvent::IceCandidate(candidate.into()));
+                PeerEvent::IceCandidate(candidate.into()).enqueue(&events);
             })));
         }
         {
             let events = events.clone();
             peer.on_ice_candidate_error(Some(Box::new(move |error| {
-                events.push(PeerEvent::IceCandidateError(error));
+                PeerEvent::IceCandidateError(error).enqueue(&events);
             })));
         }
         {
             let events = events.clone();
             peer.on_ice_connection_state_change(Some(Box::new(move |state| {
-                events.push(PeerEvent::IceConnectionState(ice_connection_state(state)));
+                PeerEvent::IceConnectionState(ice_connection_state(state)).enqueue(&events);
             })));
         }
         {
             let events = events.clone();
             peer.on_ice_gathering_state_change(Some(Box::new(move |state| {
-                events.push(PeerEvent::IceGatheringState(ice_gathering_state(state)));
+                PeerEvent::IceGatheringState(ice_gathering_state(state)).enqueue(&events);
             })));
         }
         {
             let events = events.clone();
             peer.on_negotiation_needed(Some(Box::new(move |_| {
-                events.push(PeerEvent::NegotiationNeeded);
+                PeerEvent::NegotiationNeeded.enqueue(&events);
             })));
         }
         {
             let events = events.clone();
             peer.on_signaling_state_change(Some(Box::new(move |state| {
-                events.push(PeerEvent::SignalingState(signaling_state(state)));
+                PeerEvent::SignalingState(signaling_state(state)).enqueue(&events);
             })));
         }
         {
             let events = events.clone();
             let pending = pending.clone();
+            let budget = budget.clone();
             peer.on_track(Some(Box::new(move |event| {
+                let reservation = match budget.reserve(PENDING_TRACK_BYTES) {
+                    Ok(reservation) => reservation,
+                    Err(saturation) => {
+                        events.saturate(saturation);
+                        return;
+                    }
+                };
                 let id = pending.id();
-                lock(&pending.tracks).insert(id, event);
-                if !events.push(PeerEvent::Track(id)) {
+                lock(&pending.tracks).insert(
+                    id,
+                    Pending {
+                        value: event,
+                        _reservation: reservation,
+                    },
+                );
+                if !PeerEvent::Track(id).enqueue(&events) {
                     lock(&pending.tracks).remove(&id);
                 }
             })));
@@ -281,10 +330,24 @@ impl NativePeerConnection {
         {
             let events = events.clone();
             let pending = pending.clone();
+            let budget = budget.clone();
             peer.on_data_channel(Some(Box::new(move |channel| {
+                let reservation = match budget.reserve(PENDING_DATA_CHANNEL_BYTES) {
+                    Ok(reservation) => reservation,
+                    Err(saturation) => {
+                        events.saturate(saturation);
+                        return;
+                    }
+                };
                 let id = pending.id();
-                lock(&pending.data_channels).insert(id, channel);
-                if !events.push(PeerEvent::DataChannel(id)) {
+                lock(&pending.data_channels).insert(
+                    id,
+                    Pending {
+                        value: channel,
+                        _reservation: reservation,
+                    },
+                );
+                if !PeerEvent::DataChannel(id).enqueue(&events) {
                     lock(&pending.data_channels).remove(&id);
                 }
             })));
@@ -296,13 +359,21 @@ impl NativePeerConnection {
             local_description: Mutex::new(None),
             remote_description: Mutex::new(None),
             events,
+            budget: Mutex::new(Some(budget)),
             pending,
+            data_channel_queues,
             closed,
         })
     }
 
     fn peer(&self) -> napi::Result<PeerConnection> {
         lock(&self.peer)
+            .clone()
+            .ok_or_else(|| napi::Error::from_reason("peer connection is closed"))
+    }
+
+    fn budget(&self) -> napi::Result<GenerationQueueBudget> {
+        lock(&self.budget)
             .clone()
             .ok_or_else(|| napi::Error::from_reason("peer connection is closed"))
     }
@@ -313,6 +384,11 @@ impl NativePeerConnection {
     #[napi(getter)]
     pub fn dropped_events(&self) -> BigInt {
         self.events.dropped().into()
+    }
+
+    #[napi(getter)]
+    pub fn queue_terminal_reason(&self) -> Option<String> {
+        self.events.terminal_reason().map(str::to_owned)
     }
 
     #[napi(getter)]
@@ -454,10 +530,16 @@ impl NativePeerConnection {
         options: Option<NativeDataChannelOptions>,
     ) -> napi::Result<NativeDataChannel> {
         let options = options.unwrap_or_default();
-        let channel = self.peer()?
+        let channel = self
+            .peer()?
             .create_data_channel(&label, options.to_rtc())
             .map_err(rtc_error)?;
-        Ok(NativeDataChannel::new(channel, options))
+        Ok(NativeDataChannel::new(
+            channel,
+            options,
+            self.budget()?,
+            self.data_channel_queues.clone(),
+        ))
     }
 
     #[napi]
@@ -567,7 +649,7 @@ impl NativePeerConnection {
         self.events
             .next()
             .await
-            .map(|event| event.map(native_peer_event))
+            .map(|event| event.map(|event| event.map(native_peer_event)))
             .map_err(napi::Error::from_reason)
     }
 
@@ -575,15 +657,25 @@ impl NativePeerConnection {
     pub fn take_track_event(&self, handle: u32) -> napi::Result<NativeTrackEvent> {
         lock(&self.pending.tracks)
             .remove(&handle)
-            .map(|event| NativeTrackEvent { event })
+            .map(|pending| NativeTrackEvent {
+                event: pending.value,
+            })
             .ok_or_else(|| napi::Error::from_reason("unknown native track event"))
     }
 
     #[napi]
     pub fn take_data_channel(&self, handle: u32) -> napi::Result<NativeDataChannel> {
+        let budget = self.budget()?;
         lock(&self.pending.data_channels)
             .remove(&handle)
-            .map(|channel| NativeDataChannel::new(channel, NativeDataChannelOptions::default()))
+            .map(|pending| {
+                NativeDataChannel::new(
+                    pending.value,
+                    NativeDataChannelOptions::default(),
+                    budget,
+                    self.data_channel_queues.clone(),
+                )
+            })
             .ok_or_else(|| napi::Error::from_reason("unknown native data channel"))
     }
 
@@ -597,6 +689,12 @@ impl NativePeerConnection {
         }
         self.events.close();
         self.pending.clear();
+        for queue in lock(&self.data_channel_queues).drain(..) {
+            if let Some(queue) = queue.upgrade() {
+                queue.close();
+            }
+        }
+        lock(&self.budget).take();
     }
 }
 
@@ -610,6 +708,30 @@ enum DataChannelEvent {
     State(String),
     Message(Vec<u8>, bool),
     BufferedAmount,
+}
+
+impl DataChannelEvent {
+    fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Message(data, _) => DATA_CHANNEL_EVENT_BYTES.saturating_add(data.len()),
+            Self::State(_) | Self::BufferedAmount => DATA_CHANNEL_EVENT_BYTES,
+        }
+    }
+
+    fn enqueue(self, events: &BoundedQueue<Self>) -> bool {
+        let weight = match &self {
+            Self::Message(data, _) => data.len().max(1),
+            Self::State(_) | Self::BufferedAmount => 1,
+        };
+        let retained_bytes = self.retained_bytes();
+        events.push_weighted_with(weight, retained_bytes, || self)
+    }
+}
+
+struct OutboundMessage {
+    id: u64,
+    remaining: u64,
+    _reservation: QueueReservation,
 }
 
 #[napi(object)]
@@ -627,36 +749,55 @@ pub struct NativeDataChannel {
     label: String,
     options: NativeDataChannelOptions,
     events: Arc<BoundedQueue<DataChannelEvent>>,
+    budget: Arc<Mutex<Option<GenerationQueueBudget>>>,
+    outbound: Arc<Mutex<VecDeque<OutboundMessage>>>,
+    next_send: AtomicU64,
     closed: Arc<AtomicBool>,
 }
 
 impl NativeDataChannel {
-    fn new(channel: DataChannel, options: NativeDataChannelOptions) -> Self {
+    fn new(
+        channel: DataChannel,
+        options: NativeDataChannelOptions,
+        budget: GenerationQueueBudget,
+        data_channel_queues: Arc<Mutex<Vec<Weak<BoundedQueue<DataChannelEvent>>>>>,
+    ) -> Self {
         let id = channel.id();
         let label = channel.label();
         let events = Arc::new(BoundedQueue::with_weight_limit(
             DATA_CHANNEL_EVENT_LIMIT,
             DATA_CHANNEL_BUFFER_LIMIT,
+            budget.clone(),
         ));
+        let budget = Arc::new(Mutex::new(Some(budget)));
+        let outbound = Arc::new(Mutex::new(VecDeque::new()));
+        let closed = Arc::new(AtomicBool::new(false));
+        lock(&data_channel_queues).push(Arc::downgrade(&events));
         {
             let events = events.clone();
+            let outbound = outbound.clone();
+            let budget = budget.clone();
             channel.on_state_change(Some(Box::new(move |state| {
-                events.push(DataChannelEvent::State(data_channel_state(state)));
+                let state = data_channel_state(state);
+                if state == "closed" {
+                    lock(&outbound).clear();
+                    lock(&budget).take();
+                }
+                DataChannelEvent::State(state).enqueue(&events);
             })));
         }
         {
             let events = events.clone();
             channel.on_message(Some(Box::new(move |message| {
-                events.push_weighted(
-                    DataChannelEvent::Message(message.data.to_vec(), message.binary),
-                    message.data.len().max(1),
-                );
+                DataChannelEvent::Message(message.data.to_vec(), message.binary).enqueue(&events);
             })));
         }
         {
             let events = events.clone();
-            channel.on_buffered_amount_change(Some(Box::new(move |_| {
-                events.push(DataChannelEvent::BufferedAmount);
+            let outbound = outbound.clone();
+            channel.on_buffered_amount_change(Some(Box::new(move |sent_bytes| {
+                release_outbound_bytes(&outbound, sent_bytes);
+                DataChannelEvent::BufferedAmount.enqueue(&events);
             })));
         }
         Self {
@@ -665,12 +806,21 @@ impl NativeDataChannel {
             label,
             options,
             events,
-            closed: Arc::new(AtomicBool::new(false)),
+            budget,
+            outbound,
+            next_send: AtomicU64::new(1),
+            closed,
         }
     }
 
     fn channel(&self) -> napi::Result<DataChannel> {
         lock(&self.channel)
+            .clone()
+            .ok_or_else(|| napi::Error::from_reason("data channel is closed"))
+    }
+
+    fn budget(&self) -> napi::Result<GenerationQueueBudget> {
+        lock(&self.budget)
             .clone()
             .ok_or_else(|| napi::Error::from_reason("data channel is closed"))
     }
@@ -681,6 +831,11 @@ impl NativeDataChannel {
     #[napi(getter)]
     pub fn dropped_events(&self) -> BigInt {
         self.events.dropped().into()
+    }
+
+    #[napi(getter)]
+    pub fn queue_terminal_reason(&self) -> Option<String> {
+        self.events.terminal_reason().map(str::to_owned)
     }
 
     #[napi(getter)]
@@ -726,7 +881,39 @@ impl NativeDataChannel {
 
     #[napi]
     pub fn send(&self, data: Uint8Array, binary: bool) -> napi::Result<()> {
-        self.channel()?.send(data.as_ref(), binary).map_err(rtc_error)
+        let channel = self.channel()?;
+        if outbound_item_limit_reached(lock(&self.outbound).len()) {
+            self.events.saturate_item_limit();
+            self.close();
+            return Err(napi::Error::from_reason(
+                "native WebRTC data channel outbound queue exceeded its item limit",
+            ));
+        }
+        let bytes = data.len();
+        let retained_bytes = bytes.saturating_add(DATA_CHANNEL_SEND_OVERHEAD_BYTES);
+        let reservation = match self.budget()?.reserve(retained_bytes) {
+            Ok(reservation) => reservation,
+            Err(saturation) => {
+                self.events.saturate(saturation);
+                self.close();
+                return Err(napi::Error::from_reason(
+                    "native WebRTC queue byte budget is saturated",
+                ));
+            }
+        };
+        let id = self.next_send.fetch_add(1, Ordering::Relaxed);
+        lock(&self.outbound).push_back(OutboundMessage {
+            id,
+            remaining: bytes as u64,
+            _reservation: reservation,
+        });
+        match channel.send(data.as_ref(), binary) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                remove_outbound_message(&self.outbound, id);
+                Err(rtc_error(error))
+            }
+        }
     }
 
     #[napi]
@@ -735,25 +922,27 @@ impl NativeDataChannel {
             .next()
             .await
             .map(|event| {
-                event.map(|event| match event {
-                    DataChannelEvent::State(state) => NativeDataChannelEvent {
-                        kind: "statechange".into(),
-                        state: Some(state),
-                        data: None,
-                        binary: None,
-                    },
-                    DataChannelEvent::Message(data, binary) => NativeDataChannelEvent {
-                        kind: "message".into(),
-                        state: None,
-                        data: Some(data.into()),
-                        binary: Some(binary),
-                    },
-                    DataChannelEvent::BufferedAmount => NativeDataChannelEvent {
-                        kind: "bufferedamountchange".into(),
-                        state: None,
-                        data: None,
-                        binary: None,
-                    },
+                event.map(|event| {
+                    event.map(|event| match event {
+                        DataChannelEvent::State(state) => NativeDataChannelEvent {
+                            kind: "statechange".into(),
+                            state: Some(state),
+                            data: None,
+                            binary: None,
+                        },
+                        DataChannelEvent::Message(data, binary) => NativeDataChannelEvent {
+                            kind: "message".into(),
+                            state: None,
+                            data: Some(data.into()),
+                            binary: Some(binary),
+                        },
+                        DataChannelEvent::BufferedAmount => NativeDataChannelEvent {
+                            kind: "bufferedamountchange".into(),
+                            state: None,
+                            data: None,
+                            binary: None,
+                        },
+                    })
                 })
             })
             .map_err(napi::Error::from_reason)
@@ -767,13 +956,139 @@ impl NativeDataChannel {
         if let Some(channel) = lock(&self.channel).take() {
             channel.close();
         }
+        lock(&self.outbound).clear();
         self.events.close();
+        lock(&self.budget).take();
+    }
+}
+
+fn release_outbound_bytes(outbound: &Mutex<VecDeque<OutboundMessage>>, mut sent_bytes: u64) {
+    let mut outbound = lock(outbound);
+    loop {
+        let Some(message) = outbound.front_mut() else {
+            return;
+        };
+        if message.remaining == 0 {
+            // The native callback reports byte deltas, so it cannot identify
+            // adjacent empty sends. One callback may acknowledge at most one
+            // of them; retaining more reservations is safer than admitting an
+            // unbounded zero-byte run.
+            outbound.pop_front();
+            return;
+        }
+        if sent_bytes == 0 {
+            return;
+        }
+        if sent_bytes < message.remaining {
+            message.remaining -= sent_bytes;
+            return;
+        }
+        sent_bytes -= message.remaining;
+        outbound.pop_front();
+    }
+}
+
+fn outbound_item_limit_reached(pending_messages: usize) -> bool {
+    pending_messages >= DATA_CHANNEL_OUTBOUND_LIMIT
+}
+
+fn remove_outbound_message(outbound: &Mutex<VecDeque<OutboundMessage>>, id: u64) {
+    let mut outbound = lock(outbound);
+    if let Some(index) = outbound.iter().position(|message| message.id == id) {
+        outbound.remove(index);
     }
 }
 
 impl Drop for NativeDataChannel {
     fn drop(&mut self) {
         self.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::VecDeque, sync::Mutex};
+
+    use crate::queue::QueueBudget;
+
+    use super::{
+        DATA_CHANNEL_EVENT_BYTES, DATA_CHANNEL_OUTBOUND_LIMIT, DATA_CHANNEL_SEND_OVERHEAD_BYTES,
+        DataChannelEvent, OutboundMessage, outbound_item_limit_reached, release_outbound_bytes,
+    };
+
+    #[test]
+    fn outbound_item_limit_counts_zero_byte_messages() {
+        // NativeDataChannel::send checks this before it considers payload bytes,
+        // so zero-byte sends take the same bounded FIFO path as every other send.
+        assert!(!outbound_item_limit_reached(
+            DATA_CHANNEL_OUTBOUND_LIMIT.saturating_sub(1)
+        ));
+        assert!(outbound_item_limit_reached(DATA_CHANNEL_OUTBOUND_LIMIT));
+    }
+
+    #[test]
+    fn a_zero_byte_callback_releases_one_zero_byte_send() {
+        let root = QueueBudget::new(1024).expect("test process budget");
+        let budget = root.generation(1024).expect("test generation budget");
+        let outbound = Mutex::new(VecDeque::from([
+            OutboundMessage {
+                id: 1,
+                remaining: 0,
+                _reservation: budget
+                    .reserve(DATA_CHANNEL_SEND_OVERHEAD_BYTES)
+                    .expect("first reservation"),
+            },
+            OutboundMessage {
+                id: 2,
+                remaining: 0,
+                _reservation: budget
+                    .reserve(DATA_CHANNEL_SEND_OVERHEAD_BYTES)
+                    .expect("second reservation"),
+            },
+        ]));
+
+        release_outbound_bytes(&outbound, 0);
+
+        let outbound = outbound.lock().expect("outbound queue lock");
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound.front().expect("remaining message").id, 2);
+    }
+
+    #[test]
+    fn a_nonzero_callback_also_releases_at_most_one_zero_byte_send() {
+        let root = QueueBudget::new(1024).expect("test process budget");
+        let budget = root.generation(1024).expect("test generation budget");
+        let outbound = Mutex::new(VecDeque::from([
+            OutboundMessage {
+                id: 1,
+                remaining: 0,
+                _reservation: budget
+                    .reserve(DATA_CHANNEL_SEND_OVERHEAD_BYTES)
+                    .expect("first reservation"),
+            },
+            OutboundMessage {
+                id: 2,
+                remaining: 0,
+                _reservation: budget
+                    .reserve(DATA_CHANNEL_SEND_OVERHEAD_BYTES)
+                    .expect("second reservation"),
+            },
+        ]));
+
+        release_outbound_bytes(&outbound, 1);
+
+        let outbound = outbound.lock().expect("outbound queue lock");
+        assert_eq!(outbound.len(), 1);
+        assert_eq!(outbound.front().expect("remaining message").id, 2);
+    }
+
+    #[test]
+    fn inbound_message_reserves_its_payload() {
+        let event = DataChannelEvent::Message(vec![0; 1024], true);
+        assert_eq!(
+            event.retained_bytes(),
+            DATA_CHANNEL_EVENT_BYTES.saturating_add(1024),
+        );
     }
 }
 
@@ -912,9 +1227,7 @@ impl NativeRtpSender {
 
     #[napi(getter)]
     pub fn track(&self) -> Option<NativeMediaStreamTrack> {
-        self.sender
-            .track()
-            .map(NativeMediaStreamTrack::new)
+        self.sender.track().map(NativeMediaStreamTrack::new)
     }
 
     #[napi]
@@ -923,11 +1236,7 @@ impl NativeRtpSender {
         track: Option<ClassInstance<'_, NativeMediaStreamTrack>>,
     ) -> napi::Result<()> {
         self.sender
-            .set_track(
-                track
-                    .map(|track| track.media_track())
-                    .transpose()?,
-            )
+            .set_track(track.map(|track| track.media_track()).transpose()?)
             .map_err(rtc_error)
     }
 
@@ -973,9 +1282,7 @@ impl NativeRtpReceiver {
 
     #[napi(getter)]
     pub fn track(&self) -> Option<NativeMediaStreamTrack> {
-        self.receiver
-            .track()
-            .map(NativeMediaStreamTrack::new)
+        self.receiver.track().map(NativeMediaStreamTrack::new)
     }
 
     #[napi]

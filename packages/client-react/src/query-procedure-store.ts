@@ -8,15 +8,17 @@ import {
   type ApplicationError,
 } from "@ackerdb/core";
 import {
+  SharedObservation,
+  type ObservationSource,
+} from "./observation.ts";
+import {
   DISABLED_STATE,
   PENDING_STATE,
-  SharedObservation,
   queryApplicationError,
   queryClientError,
   queryConnectionUnavailable,
   querySuccess,
   type AckerDBQueryState,
-  type ObservationSource,
 } from "./query-observation.ts";
 
 // Browsers, Bun, Node, and React Native timers accept only signed 32-bit

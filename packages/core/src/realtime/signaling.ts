@@ -37,20 +37,28 @@ export interface RealtimeStreamLimits {
   readonly server: Readonly<Record<string, number>>;
 }
 
-export interface RealtimeConfigurationMessage {
+export interface RealtimePrepareRequest {
   readonly v: typeof PROTOCOL_VERSION;
-  readonly t: "realtime_config";
+  readonly t: "realtime_prepare";
+  readonly ref: string;
+  readonly args: unknown;
+  /** Low-cardinality generation-replacement observation; never application state. */
+  readonly recovery?: true;
+}
+
+export interface RealtimePreparedMessage {
+  readonly v: typeof PROTOCOL_VERSION;
+  readonly t: "realtime_prepared";
+  /** One 256-bit opaque capability, encoded as unpadded base64url. */
+  readonly ticket: string;
   readonly configuration: NativeRTCConfiguration;
 }
 
 export interface RealtimeOfferRequest {
   readonly v: typeof PROTOCOL_VERSION;
   readonly t: "realtime_offer";
-  readonly ref: string;
-  readonly args: unknown;
+  readonly ticket: string;
   readonly offer: RealtimeSessionDescription;
-  /** Low-cardinality generation-replacement observation; never application state. */
-  readonly recovery?: true;
 }
 
 export interface RealtimeAnswerMessage extends RealtimeCandidateBatch {
@@ -71,6 +79,10 @@ export type RealtimeOfferResponse =
   | RealtimeAnswerMessage
   | RealtimeRejectedMessage;
 
+export type RealtimePrepareResponse =
+  | RealtimePreparedMessage
+  | RealtimeRejectedMessage;
+
 export interface RealtimeCandidatesMessage extends RealtimeCandidateBatch {
   readonly v: typeof PROTOCOL_VERSION;
   readonly t: "realtime_candidates";
@@ -87,6 +99,7 @@ export type RealtimePatchResponse =
   | RealtimeEndedMessage;
 
 const SESSION_ID = /^[A-Za-z0-9_-]{32}$/;
+const TICKET = /^[A-Za-z0-9_-]{43}$/;
 const MAX_REFERENCE_LENGTH = 512;
 const MAX_SDP_BYTES = 256 * 1024;
 const MAX_CANDIDATES_PER_FRAME = 4_096;
@@ -206,25 +219,50 @@ function streamLimits(value: unknown): RealtimeStreamLimits {
   return result as unknown as RealtimeStreamLimits;
 }
 
-export function parseRealtimeConfigurationMessage(
-  value: unknown,
-): RealtimeConfigurationMessage {
-  const result = frame(value, "realtime_config");
-  exact(result, ["v", "t", "configuration"]);
-  object(result.configuration, "realtime configuration");
-  return result as unknown as RealtimeConfigurationMessage;
-}
-
-export function parseRealtimeOfferRequest(value: unknown): RealtimeOfferRequest {
-  const result = frame(value, "realtime_offer");
-  exact(result, ["v", "t", "ref", "args", "offer"], ["recovery"]);
+export function parseRealtimePrepareRequest(value: unknown): RealtimePrepareRequest {
+  const result = frame(value, "realtime_prepare");
+  exact(result, ["v", "t", "ref", "args"], ["recovery"]);
   boundedString(result.ref, "realtime ref", MAX_REFERENCE_LENGTH);
   if (result.args === undefined) malformed("realtime args must be wire-representable");
   if (result.recovery !== undefined && result.recovery !== true) {
     malformed("realtime recovery must be true when present");
   }
+  return result as unknown as RealtimePrepareRequest;
+}
+
+function ticket(value: unknown): string {
+  if (typeof value !== "string" || !TICKET.test(value)) {
+    malformed("realtime ticket is invalid");
+  }
+  return value;
+}
+
+export function parseRealtimeOfferRequest(value: unknown): RealtimeOfferRequest {
+  const result = frame(value, "realtime_offer");
+  exact(result, ["v", "t", "ticket", "offer"]);
+  ticket(result.ticket);
   parseRealtimeSessionDescription(result.offer, "offer");
   return result as unknown as RealtimeOfferRequest;
+}
+
+function rejected(result: ObjectValue): RealtimeRejectedMessage {
+  frame(result, "realtime_rejected");
+  exact(result, ["v", "t", "error"]);
+  parseApplicationError(result.error);
+  return result as unknown as RealtimeRejectedMessage;
+}
+
+export function parseRealtimePrepareResponse(value: unknown): RealtimePrepareResponse {
+  const result = object(value, "realtime prepare response");
+  if (result.t === "realtime_prepared") {
+    frame(result, "realtime_prepared");
+    exact(result, ["v", "t", "ticket", "configuration"]);
+    ticket(result.ticket);
+    object(result.configuration, "realtime configuration");
+    return result as unknown as RealtimePreparedMessage;
+  }
+  if (result.t === "realtime_rejected") return rejected(result);
+  return malformed("unknown realtime prepare response");
 }
 
 export function parseRealtimeOfferResponse(value: unknown): RealtimeOfferResponse {
@@ -253,10 +291,7 @@ export function parseRealtimeOfferResponse(value: unknown): RealtimeOfferRespons
       return result as unknown as RealtimeAnswerMessage;
     }
     case "realtime_rejected":
-      frame(result, "realtime_rejected");
-      exact(result, ["v", "t", "error"]);
-      parseApplicationError(result.error);
-      return result as unknown as RealtimeRejectedMessage;
+      return rejected(result);
     default:
       return malformed("unknown realtime offer response");
   }

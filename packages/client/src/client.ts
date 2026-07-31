@@ -615,19 +615,13 @@ const SYSTEM_SOCKET_FACTORY: AckerDBWebSocketFactory = (url) =>
 const SYSTEM_PEER_CONNECTION_FACTORY: AckerDBPeerConnectionFactory = (
   configuration,
 ) => {
-  const PeerConnection = (
-    globalThis as {
-      readonly RTCPeerConnection?: new(
-        configuration?: Parameters<AckerDBPeerConnectionFactory>[0],
-      ) => ReturnType<AckerDBPeerConnectionFactory>;
-    }
-  ).RTCPeerConnection;
-  if (PeerConnection === undefined) {
+  const PeerConnection = Reflect.get(globalThis, "RTCPeerConnection");
+  if (typeof PeerConnection !== "function") {
     throw new TypeError(
       "RTCPeerConnection is unavailable; install/register a native WebRTC implementation or pass createPeerConnection",
     );
   }
-  return new PeerConnection(configuration);
+  return Reflect.construct(PeerConnection, [configuration]);
 };
 const SYSTEM_FETCH: AckerDBFetch = (url, init) => fetch(url, init);
 const SYSTEM_RANDOM = (): number => {

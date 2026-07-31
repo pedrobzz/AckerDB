@@ -26,6 +26,7 @@ import {
 } from "@ackerdb/server";
 
 export const PUBLIC_SESSION_TIMEOUT_MS = 15_000;
+const PUBLIC_SESSION_MAX_QUEUED_BYTES = 32 * 1024 * 1024;
 
 interface PublicSessionAudioSource {
   readonly track: PortableMediaStreamTrack;
@@ -39,6 +40,11 @@ interface PublicSessionAudioSource {
 }
 
 export interface PublicSessionEngine {
+  createGeneration(maxQueuedBytes: number): PublicSessionGeneration;
+  close(): void;
+}
+
+export interface PublicSessionGeneration {
   createPeerConnection(
     configuration?: PortableRTCConfiguration,
   ): PortableRTCPeerConnection;
@@ -147,14 +153,20 @@ export async function verifyPublicRealtimeSession(
       procedures: { echo },
     }),
     telemetry: false,
-    realtime: createRealtimeRuntime(),
+    // Same-host peers can advertise RFC1918 host candidates. This is an
+    // explicit isolated-LAN test topology; production keeps the default deny
+    // policy and continues to reject loopback and sensitive addresses.
+    realtime: createRealtimeRuntime({
+      network: { allowPrivateCandidateAddresses: true },
+    }),
   });
   const server = serve({ runtime, port: 0 });
   const engine = createEngine();
-  const audio = engine.createAudioSource({
+  const generation = engine.createGeneration(PUBLIC_SESSION_MAX_QUEUED_BYTES);
+  const audio = generation.createAudioSource({
     sampleRate: 48_000,
     channels: 1,
-    queueSizeMs: 0,
+    queueSizeMs: 100,
   });
   const completed = Promise.withResolvers<{
     readonly id: bigint;
@@ -167,7 +179,7 @@ export async function verifyPublicRealtimeSession(
       throw new Error("realtime must not open the application WebSocket");
     },
     createPeerConnection: (configuration: NativeRTCConfiguration) =>
-      engine.createPeerConnection(
+      generation.createPeerConnection(
         configuration as PortableRTCConfiguration,
       ) as unknown as NativeRTCPeerConnection,
   });
@@ -185,6 +197,7 @@ export async function verifyPublicRealtimeSession(
       },
     },
   );
+  let released = false;
 
   try {
     await eventually(
@@ -220,16 +233,21 @@ export async function verifyPublicRealtimeSession(
       runtime.status().realtime?.activeSessions === 1,
       "runtime did not retain exactly one public realtime session",
     );
-  } finally {
     session.release();
+    released = true;
+    await eventually(() => {
+      const realtime = runtime.status().realtime;
+      return realtime?.activeSessions === 0 &&
+        realtime.reservedSessions === 0 &&
+        Object.values(realtime.resources.active).every((count) => count === 0);
+    }, "public realtime cleanup");
+  } finally {
+    if (!released) session.release();
     client.close();
     audio.close();
-    await eventually(
-      () => runtime.status().realtime?.activeSessions === 0,
-      "public realtime cleanup",
-    ).catch(() => {});
     await server.drain().catch(() => {});
     await runtime.drain().catch(() => {});
+    generation.close();
     engine.close();
     database.close("clean");
   }

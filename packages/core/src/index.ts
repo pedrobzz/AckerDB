@@ -51,5 +51,6 @@ export {
 export * from "./protocol.ts";
 export * from "./realtime/protocol.ts";
 export * from "./realtime/data-plane.ts";
+export * from "./realtime/negotiation.ts";
 export * from "./realtime/signaling.ts";
 export * from "./realtime/webrtc.ts";

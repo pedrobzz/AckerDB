@@ -223,6 +223,53 @@ describe("RealtimeDataPlane", () => {
     server.close();
   });
 
+  test("does not expose an incoming handler failure to its peer", async () => {
+    const [clientChannel, serverChannel] = pair();
+    const secret = "provider rejected Authorization: Bearer secret-token";
+    const client = new RealtimeDataPlane({
+      channel: rtc(clientChannel),
+      localPrefix: "c",
+      maxBufferedAmount: 64 * 1024,
+      maxConcurrentStreams: 1,
+      maxIncomingBufferedBytes: 1024,
+      streamIdleMs: 30_000,
+      onEvent: () => {},
+      onIncomingStream: () => undefined,
+      onSessionError: () => {},
+      onSignal: () => {},
+      onFatalError: () => {},
+    });
+    const server = new RealtimeDataPlane({
+      channel: rtc(serverChannel),
+      localPrefix: "s",
+      maxBufferedAmount: 64 * 1024,
+      maxConcurrentStreams: 1,
+      maxIncomingBufferedBytes: 1024,
+      streamIdleMs: 30_000,
+      onEvent: () => {},
+      onIncomingStream: (_stream, metadata) => ({
+        maxBytes: 1024,
+        accept() {
+          if (metadata === "async") return Promise.reject(new Error(secret));
+          throw new Error(secret);
+        },
+      }),
+      onSessionError: () => {},
+      onSignal: () => {},
+      onFatalError: () => {},
+    });
+    for (const failure of ["sync", "async"]) {
+      const writer = client.openStream("audio", failure, 1024).writable.getWriter();
+      await turn();
+      await expect(writer.closed).rejects.toMatchObject({
+        message: "realtime stream was cancelled",
+      });
+      await expect(writer.closed).rejects.not.toThrow(secret);
+    }
+    client.close();
+    server.close();
+  });
+
   test("event sends fail immediately while the data channel is backpressured", () => {
     const [clientChannel] = pair();
     clientChannel.bufferedAmount = 1024;

@@ -17,7 +17,7 @@ import {
   type AckerDBProviderConfig,
   type UseChannelResult,
 } from "@ackerdb/client-react";
-import { act, type ReactNode } from "react";
+import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
 
@@ -137,7 +137,9 @@ function app(
 ): ReactNode {
   return (
     <AckerDBProvider config={config}>
-      {probes.map((probe) => <Probe key={probe.id} {...probe} />)}
+      <StrictMode>
+        {probes.map((probe) => <Probe key={probe.id} {...probe} />)}
+      </StrictMode>
     </AckerDBProvider>
   );
 }

@@ -2,11 +2,12 @@ import {
   PROTOCOL_VERSION,
   parseRealtimeCandidatesMessage,
   parseRealtimeOfferRequest,
+  parseRealtimePrepareRequest,
   type RealtimeOfferRequest,
+  type RealtimePrepareRequest,
 } from "@ackerdb/core";
 import {
   ANONYMOUS_PRINCIPAL,
-  type Principal,
 } from "../auth/credentials.ts";
 import type { AuthLease } from "../auth/lease.ts";
 import {
@@ -50,33 +51,70 @@ export interface RealtimeHttpTransportOptions {
 export class RealtimeHttpTransport {
   constructor(private readonly options: RealtimeHttpTransportOptions) {}
 
-  async configuration(
+  async prepare(
     request: Request,
     source: TransportSource,
   ): Promise<Response> {
     const runtime = this.options.runtime();
     let admission: RealtimeHttpAdmissionLease | undefined;
     let lease: AuthLease | undefined;
+    let preparedTicket: string | undefined;
+    let preparedOwner: string | undefined;
+    const hub = runtime.realtime;
     try {
-      admission = this.admitAnonymous(source);
-      lease = await this.options.authenticate(request);
-      admission.transfer(callerFairnessKey(lease.principal, source));
-      const configuration = await runtime.realtime?.configuration(
-        lease.principal,
-        lease.signal,
-      );
-      if (configuration === undefined) {
+      if (hub === undefined) {
         throw new AckerDBError(
           "not_found",
           "realtime service is not configured",
         );
       }
-      return this.options.json({
-        v: PROTOCOL_VERSION,
-        t: "realtime_config",
-        configuration,
+      admission = this.admitAnonymous(source);
+      const { value: preparation, bytes } =
+        await this.options.parseBody<RealtimePrepareRequest>(
+          request,
+          runtime.limits.maxRequestBytes,
+          runtime.limits.readQueue.maxAgeMs,
+          parseRealtimePrepareRequest,
+        );
+      // A prepared ticket retains revocation, not the short HTTP request.
+      lease = await this.options.authenticate(request, undefined);
+      const owner = callerFairnessKey(lease.principal, source);
+      admission.transfer(owner);
+      const ownedLease = lease;
+      lease = undefined;
+      const result = await hub.prepare({
+        address: preparation.ref,
+        args: preparation.args,
+        principal: ownedLease.principal,
+        owner,
+        signal: ownedLease.signal,
+        setupSignal: request.signal,
+        releaseAuthentication: () => ownedLease.release(),
+        requestBytes: bytes,
+        recovery: preparation.recovery === true,
       });
+      if (!result.ok) {
+        return this.options.json({
+          v: PROTOCOL_VERSION,
+          t: "realtime_rejected",
+          error: result.error,
+        }, result.error.status);
+      }
+      preparedTicket = result.ticket;
+      preparedOwner = owner;
+      const response = this.options.json({
+        v: PROTOCOL_VERSION,
+        t: "realtime_prepared",
+        ticket: result.ticket,
+        configuration: result.configuration,
+      });
+      response.headers.set("cache-control", "no-store");
+      preparedTicket = undefined;
+      return response;
     } catch (error) {
+      if (preparedTicket !== undefined && preparedOwner !== undefined) {
+        hub?.cancelPrepared(preparedTicket, preparedOwner);
+      }
       return this.options.error(error);
     } finally {
       lease?.release();
@@ -100,28 +138,23 @@ export class RealtimeHttpTransport {
         );
       }
       admission = this.admitAnonymous(source);
-      const { value: offer, bytes } =
+      const { value: offer } =
         await this.options.parseBody<RealtimeOfferRequest>(
           request,
           runtime.limits.maxRequestBytes,
           runtime.limits.readQueue.maxAgeMs,
           parseRealtimeOfferRequest,
         );
-      // The hub owns this authentication lease for the complete generation,
-      // not merely for the initiating HTTP request.
-      lease = await this.options.authenticate(request, undefined);
-      admission.transfer(callerFairnessKey(lease.principal, source));
-      const ownedLease = lease;
-      lease = undefined;
+      // This short lease proves ticket ownership; the prepared ticket owns the
+      // generation's revocation lease and reservation.
+      lease = await this.options.authenticate(request);
+      const owner = callerFairnessKey(lease.principal, source);
+      admission.transfer(owner);
       const result = await hub.offer({
-        address: offer.ref,
-        args: offer.args,
+        ticket: offer.ticket,
         offer: offer.offer,
-        principal: ownedLease.principal,
-        signal: ownedLease.signal,
-        releaseAuthentication: () => ownedLease.release(),
-        requestBytes: bytes,
-        recovery: offer.recovery === true,
+        owner,
+        setupSignal: request.signal,
       });
       if (!result.ok) {
         return this.options.json({
@@ -174,9 +207,10 @@ export class RealtimeHttpTransport {
         ));
       }
       lease = await this.options.authenticate(request);
-      admission.transfer(callerFairnessKey(lease.principal, source));
+      const owner = callerFairnessKey(lease.principal, source);
+      admission.transfer(owner);
       if (request.method === "DELETE") {
-        hub.close(sessionId, lease.principal);
+        hub.close(sessionId, owner);
         return new Response(null, {
           status: 204,
           headers: this.options.cors,
@@ -184,8 +218,9 @@ export class RealtimeHttpTransport {
       }
       const result = await hub.patch(
         sessionId,
-        lease.principal,
+        owner,
         batch!,
+        request.signal,
       );
       if (!result.ok) {
         return this.options.json({

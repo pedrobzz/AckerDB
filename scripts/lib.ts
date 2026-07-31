@@ -1,7 +1,26 @@
 // Shared helpers for the local release scripts (bump, merge-guard, publish-local).
+export const PUBLIC_PACKAGES = [
+  "core",
+  "server",
+  "realtime",
+  "cache",
+  "client",
+  "client-react",
+  "cli",
+] as const;
+
+export const NATIVE_PACKAGES = [
+  "realtime-darwin-arm64",
+  "realtime-darwin-x64",
+  "realtime-linux-arm64-gnu",
+  "realtime-linux-x64-gnu",
+  "realtime-win32-x64-msvc",
+] as const;
+
 export const PACKAGES = [
   "core",
   "server",
+  ...NATIVE_PACKAGES,
   "realtime",
   "cache",
   "client",
@@ -20,6 +39,7 @@ const WORKSPACE_FIELDS = [
   "bin",
   "dependencies",
   "devDependencies",
+  "optionalDependencies",
   "peerDependencies",
 ] as const;
 
@@ -44,17 +64,14 @@ export async function assertRegistryReachable(registry: string): Promise<void> {
   }
 }
 
-/**
- * Stable and prerelease packages share one native artifact boundary. Assembly
- * independently verifies every advertised target before any package is sent.
- */
-export function assertWebRtcPrebuilds(): void {
+/** Working-tree prereleases assemble and verify every advertised native target. */
+export function assertWebRtcDistribution(): void {
   const result = Bun.spawnSync(
     ["bun", "packages/realtime/native/webrtc/package.ts"],
     { stdout: "pipe", stderr: "pipe" },
   );
   if (result.exitCode !== 0) {
-    fail(
+    throw new Error(
       "the WebRTC package is not assembled from all verified target builds:\n" +
         result.stdout.toString() +
         result.stderr.toString(),
@@ -62,8 +79,17 @@ export function assertWebRtcPrebuilds(): void {
   }
 }
 
+export function packageDirectory(pkg: string): string {
+  const platform = pkg.startsWith("realtime-")
+    ? pkg.slice("realtime-".length)
+    : undefined;
+  return platform === undefined
+    ? `packages/${pkg}`
+    : `packages/realtime-native/${platform}`;
+}
+
 export function pkgJsonPath(pkg: string): string {
-  return `packages/${pkg}/package.json`;
+  return `${packageDirectory(pkg)}/package.json`;
 }
 
 export async function readBunLock(): Promise<BunLock> {
@@ -93,7 +119,7 @@ export function assertWorkspaceLock(lock: BunLock, read: (pkg: string) => string
       .sort();
     if (optionalPeers.length > 0) expected.optionalPeers = optionalPeers;
 
-    if (!Bun.deepEquals(lock.workspaces[`packages/${pkg}`], expected)) {
+    if (!Bun.deepEquals(lock.workspaces[packageDirectory(pkg)], expected)) {
       fail(
         `bun.lock workspace snapshot for @ackerdb/${pkg} does not match ${pkgJsonPath(pkg)}\n` +
           `  Run bun run bump so the release manifests and lock graph move together.`,
@@ -144,7 +170,12 @@ export function syncedVersion(
   // resolved from bun.lock's snapshot, which bun does not refresh on
   // version-only edits — tarballs would depend on the previous release.)
   for (const { pkg, json } of parsed) {
-    for (const field of ["dependencies", "devDependencies", "peerDependencies"]) {
+    for (const field of [
+      "dependencies",
+      "devDependencies",
+      "optionalDependencies",
+      "peerDependencies",
+    ]) {
       for (const [name, spec] of Object.entries(json[field] ?? {})) {
         if (name.startsWith("@ackerdb/") && spec !== `workspace:${version}`) {
           fail(

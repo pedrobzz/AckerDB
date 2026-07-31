@@ -52,6 +52,7 @@ export interface RealtimeAudioSource extends RealtimeResource {
    * the established LiveKit AudioSource contract.
    */
   readonly queuedDuration: number;
+  /** Captures whole 10 ms PCM blocks; zero-queue sources require exactly one block. */
   captureFrame(frame: RealtimeAudioFrame): Promise<void>;
   /** Resolves when queued audio has played or clearQueue()/close() interrupts it. */
   waitForPlayout(): Promise<void>;

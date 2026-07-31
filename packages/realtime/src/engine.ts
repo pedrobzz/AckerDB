@@ -16,12 +16,24 @@ import type {
 } from "@ackerdb/server";
 
 /**
- * Internal boundary implemented by AckerDB's bundled LiveKit-libwebrtc
- * engine. Keeping it structural makes the session and signaling state
+ * Internal boundary implemented by AckerDB's bundled libwebrtc engine.
+ * Keeping it structural makes the session and signaling state
  * machines independently testable without making engine selection public.
  */
 export interface RealtimePeerEngine {
   close(): void;
+  createGeneration(maxQueuedBytes: number): RealtimePeerGeneration;
+  nativeQueueMetrics(): RealtimeNativeQueueMetrics;
+}
+
+/**
+ * One bounded native WebRTC lifetime. A realtime session owns one generation,
+ * so every peer and media object it creates shares the same byte admission
+ * ceiling and is released together.
+ */
+export interface RealtimePeerGeneration {
+  close(): void;
+  nativeQueueMetrics(): RealtimeNativeQueueMetrics;
   createPeerConnection(
     configuration?: PortableRTCConfiguration,
     limits?: RealtimePeerLimits,
@@ -38,6 +50,17 @@ export interface RealtimePeerEngine {
   createVideoSource(options: RealtimeVideoSourceOptions): RealtimeVideoSource;
 }
 
+/** Fixed-cardinality observations from native queue-capacity admission. */
+export interface RealtimeNativeQueueMetrics {
+  /**
+   * Bytes currently admitted against the native queue budget. This includes
+   * retained event/send payloads and conservative media queue capacity; it is
+   * not a count of currently queued decoded frames.
+   */
+  readonly reservedBytes: number;
+  readonly saturations: number;
+}
+
 export interface RealtimePeerLimits {
   readonly maxDataChannels: number;
   readonly maxSenders: number;
@@ -48,4 +71,5 @@ export interface RealtimePeerLimits {
 export type RealtimeConfigurationSource = (
   principal: Principal,
   signal: AbortSignal,
+  owner: string,
 ) => PortableRTCConfiguration | Promise<PortableRTCConfiguration>;

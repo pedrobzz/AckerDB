@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { finalBenchmarkFilename } from "../bench/release.ts";
-import { PACKAGES, fail, git, syncedVersion } from "./lib.ts";
+import { PACKAGES, fail, git, pkgJsonPath, syncedVersion } from "./lib.ts";
 
 const HETZNER = "htz";
 const RESULTS = "bench/results";
@@ -48,7 +48,7 @@ if (
 const sources = new Map<string, string>();
 if (!bootstrap) {
   for (const pkg of PACKAGES) {
-    sources.set(pkg, await Bun.file(`packages/${pkg}/package.json`).text());
+    sources.set(pkg, await Bun.file(pkgJsonPath(pkg)).text());
   }
 }
 const version = bootstrap ? args[1]! : syncedVersion((pkg) => sources.get(pkg)!);

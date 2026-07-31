@@ -8,6 +8,7 @@ import {
   type PortableRTCDataChannel,
   type PortableRTCPeerConnection,
   type PortableRTCPeerConnectionIceEvent,
+  type PortableRTCStatsReport,
   type RealtimeCandidateBatch,
   type RealtimeIceCandidate,
 } from "@ackerdb/core";
@@ -25,6 +26,8 @@ import {
   type RealtimeOfferInput,
   type RealtimeOfferResult,
   type RealtimePatchResult,
+  type RealtimePrepareInput,
+  type RealtimePrepareResult,
   type RealtimeRuntimeApplication,
   type RealtimeRuntimeSnapshot,
   type RealtimeServerSessionAdapter,
@@ -38,19 +41,31 @@ import {
 import type {
   RealtimeConfigurationSource,
   RealtimePeerEngine,
+  RealtimePeerGeneration,
 } from "./engine.ts";
 import {
   realtimePeerDiagnostic,
   type RealtimePeerDiagnostic,
 } from "./diagnostics.ts";
 import type { RealtimeNetworkDiagnostic } from "./network.ts";
-import { nativePeerPressure } from "./native/peer-connection.ts";
+import {
+  nativePeerPressure,
+  observeNativePeerTerminal,
+  type RealtimeNativeQueueTerminalCounts,
+  type RealtimeNativeQueueTerminalReason,
+} from "./native/peer-connection.ts";
 import {
   REALTIME_GLOBAL_RESOURCE_DEFAULTS,
   RealtimeGlobalResourceBudget,
   type RealtimeGlobalResourceLimits,
   type RealtimeGlobalResourceSnapshot,
 } from "./resources.ts";
+import { PreparedSessions } from "./prepared-sessions.ts";
+import {
+  REMOTE_CANDIDATE_POLICY_DEFAULTS,
+  RemoteCandidatePolicy,
+  type RemoteCandidatePolicyOptions,
+} from "./remote-candidate-policy.ts";
 
 export interface RealtimeHubOptions {
   readonly definition: (address: string) => AnyRegisteredRealtime | undefined;
@@ -67,7 +82,12 @@ export interface RealtimeHubOptions {
   readonly handshakeWindowMs: number;
   readonly maxTrackedPrincipals: number;
   readonly maxPendingCandidates: number;
+  readonly maxRemoteCandidates: number;
+  readonly maxRemoteCandidateBytes: number;
+  readonly allowPrivateCandidateAddresses: boolean;
   readonly terminalRetentionMs: number;
+  readonly preparedSessionTtlMs?: number;
+  readonly maxPreparedBytes?: number;
   readonly now: () => number;
   readonly networkDiagnostic?: RealtimeNetworkDiagnostic;
   readonly authorizationTimeoutMs?: number;
@@ -77,16 +97,23 @@ export interface RealtimeHubOptions {
   readonly iceTimeoutMs?: number;
   readonly dtlsTimeoutMs?: number;
   readonly dataChannelTimeoutMs?: number;
+  readonly diagnosticTimeoutMs?: number;
 }
 
 export const REALTIME_HUB_DEFAULTS = Object.freeze({
-  maxSessions: 4_096,
+  maxSessions: 1_024,
   maxSessionsPerPrincipal: 16,
   maxHandshakesPerWindow: 32,
   handshakeWindowMs: 10_000,
   maxTrackedPrincipals: 8_192,
   maxPendingCandidates: 256,
+  maxRemoteCandidates: REMOTE_CANDIDATE_POLICY_DEFAULTS.maxCandidates,
+  maxRemoteCandidateBytes: REMOTE_CANDIDATE_POLICY_DEFAULTS.maxBytes,
+  allowPrivateCandidateAddresses:
+    REMOTE_CANDIDATE_POLICY_DEFAULTS.allowPrivateAddresses,
   terminalRetentionMs: 30_000,
+  preparedSessionTtlMs: 30_000,
+  maxPreparedBytes: 16 * 1024 * 1024,
   authorizationTimeoutMs: 10_000,
   configurationTimeoutMs: 10_000,
   handlerTimeoutMs: 10_000,
@@ -94,7 +121,9 @@ export const REALTIME_HUB_DEFAULTS = Object.freeze({
   iceTimeoutMs: 10_000,
   dtlsTimeoutMs: 10_000,
   dataChannelTimeoutMs: 20_000,
+  diagnosticTimeoutMs: 5_000,
   sessionLimits: Object.freeze({
+    maxQueuedBytes: 32 * 1024 * 1024,
     maxBufferedAmount: 1024 * 1024,
     maxConcurrentStreams: 16,
     maxIncomingBufferedBytes: 256 * 1024,
@@ -129,6 +158,12 @@ const EMPTY_HEALTH: RealtimeHealthSnapshot = Object.freeze({
   availableOutgoingBitrate: 0,
   dataChannelBufferedAmountMax: 0,
   nativeQueueDrops: 0,
+  nativeProcessReservedBytes: 0,
+  nativeProcessQueueSaturations: 0,
+  nativeGenerationQueueSaturations: 0,
+  nativeQueueLimitTerminations: 0,
+  nativeProcessBudgetTerminations: 0,
+  nativeGenerationBudgetTerminations: 0,
   dataChannelPressure: 0,
   streamCapacityPressure: 0,
   streamBufferPressure: 0,
@@ -139,9 +174,16 @@ const EMPTY_HEALTH: RealtimeHealthSnapshot = Object.freeze({
 interface Generation {
   readonly id: string;
   readonly owner: string;
+  readonly native: RealtimePeerGeneration;
   readonly peer: PortableRTCPeerConnection;
   readonly dataChannel: PortableRTCDataChannel;
   readonly candidates: RealtimeIceCandidate[];
+  /** One final HTTP trickle request may wait for a server ICE update. */
+  candidateWaiter?: CandidateWaiter;
+  /** Native end-of-remote-candidates was already delivered exactly once. */
+  remoteComplete: boolean;
+  /** The sole generation-wide owner of remote candidate policy/accounting. */
+  readonly remoteCandidates: RemoteCandidatePolicy;
   readonly removeSignalListener: () => void;
   readonly releaseAuthentication: () => void;
   session: RealtimeServerSession | null;
@@ -154,8 +196,91 @@ interface Generation {
   >;
   observedPeerEventDrops: number;
   observedDataChannelEventDrops: number;
+  observedNativeMediaDrops: number;
+  observedNativeQueueSaturations: number;
+  observedNativeQueueTerminals: RealtimeNativeQueueTerminalCounts;
+  nativeTerminalReason?: RealtimeNativeQueueTerminalReason;
+  statsRequest?: StatsRequest;
   removeReadinessListeners?: () => void;
 }
+
+interface CandidateWaiter {
+  readonly promise: Promise<void>;
+  resolve(): void;
+}
+
+function candidateWaiter(): CandidateWaiter {
+  let resolve!: () => void;
+  return Object.freeze({
+    promise: new Promise<void>((settle) => resolve = settle),
+    resolve: () => resolve(),
+  });
+}
+
+interface DisposableSignal {
+  readonly signal: AbortSignal;
+  dispose(): void;
+}
+
+function setupSignal(
+  authentication: AbortSignal,
+  request: AbortSignal | undefined,
+): DisposableSignal {
+  if (request === undefined || request === authentication) {
+    return { signal: authentication, dispose: () => {} };
+  }
+  const controller = new AbortController();
+  const abort = (source: AbortSignal) => {
+    if (!controller.signal.aborted) controller.abort(source.reason);
+  };
+  const abortAuthentication = () => abort(authentication);
+  const abortRequest = () => abort(request);
+  authentication.addEventListener("abort", abortAuthentication, { once: true });
+  request.addEventListener("abort", abortRequest, { once: true });
+  if (authentication.aborted) abort(authentication);
+  else if (request.aborted) abort(request);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      authentication.removeEventListener("abort", abortAuthentication);
+      request.removeEventListener("abort", abortRequest);
+    },
+  };
+}
+
+interface StatsRequest {
+  readonly promise: Promise<PortableRTCStatsReport>;
+  settled: boolean;
+  claimed: boolean;
+}
+
+function createStatsRequest(
+  peer: PortableRTCPeerConnection,
+): StatsRequest {
+  let operation: Promise<PortableRTCStatsReport>;
+  try {
+    operation = peer.getStats();
+  } catch (error) {
+    operation = Promise.reject(error);
+  }
+  const request: StatsRequest = {
+    promise: operation,
+    settled: false,
+    claimed: false,
+  };
+  void operation.then(
+    () => request.settled = true,
+    () => request.settled = true,
+  );
+  return request;
+}
+
+const EMPTY_NATIVE_QUEUE_TERMINALS: RealtimeNativeQueueTerminalCounts =
+  Object.freeze({
+    "queue-limit": 0,
+    "process-byte-budget": 0,
+    "generation-byte-budget": 0,
+  });
 
 interface HandshakeWindow {
   count: number;
@@ -197,6 +322,39 @@ function configuration(
   return structuredClone(value);
 }
 
+function nativeQueueTerminalFailure(
+  reason: RealtimeNativeQueueTerminalReason,
+): AckerDBError {
+  switch (reason) {
+    case "queue-limit":
+    case "process-byte-budget":
+    case "generation-byte-budget":
+      return new AckerDBError(
+        "overloaded",
+        "realtime native queue capacity is full",
+        { resource: "connection", retryable: true, retryAfterMs: 0 },
+      );
+  }
+}
+
+function nativeQueueTerminalCounts(
+  primary: RealtimeNativeQueueTerminalCounts,
+  auxiliary: RealtimeNativeQueueTerminalCounts | undefined,
+  observed: RealtimeNativeQueueTerminalReason | undefined,
+): RealtimeNativeQueueTerminalCounts {
+  const counts = {
+    "queue-limit": primary["queue-limit"] + (auxiliary?.["queue-limit"] ?? 0),
+    "process-byte-budget":
+      primary["process-byte-budget"] +
+      (auxiliary?.["process-byte-budget"] ?? 0),
+    "generation-byte-budget":
+      primary["generation-byte-budget"] +
+      (auxiliary?.["generation-byte-budget"] ?? 0),
+  } satisfies Record<RealtimeNativeQueueTerminalReason, number>;
+  if (observed !== undefined) counts[observed] = Math.max(1, counts[observed]);
+  return Object.freeze(counts);
+}
+
 export class RealtimeHub {
   private readonly definition: RealtimeHubOptions["definition"];
   private readonly engine: RealtimePeerEngine;
@@ -209,7 +367,9 @@ export class RealtimeHub {
   private readonly handshakeWindowMs: number;
   private readonly maxTrackedPrincipals: number;
   private readonly maxPendingCandidates: number;
+  private readonly remoteCandidatePolicy: RemoteCandidatePolicyOptions;
   private readonly terminalRetentionMs: number;
+  private readonly prepared: PreparedSessions;
   private readonly now: () => number;
   private readonly networkDiagnostic: RealtimeNetworkDiagnostic | null;
   private readonly authorizationTimeoutMs: number;
@@ -219,6 +379,8 @@ export class RealtimeHub {
   private readonly iceTimeoutMs: number;
   private readonly dtlsTimeoutMs: number;
   private readonly dataChannelTimeoutMs: number;
+  private readonly diagnosticTimeoutMs: number;
+  private readonly diagnosticController = new AbortController();
   private readonly resourceBudget: RealtimeGlobalResourceBudget;
   private readonly generations = new Map<string, Generation>();
   private readonly reservationsByOwner = new Map<string, number>();
@@ -243,6 +405,10 @@ export class RealtimeHub {
   private sampleCursor = 0;
   private sampling = false;
   private nativeQueueDrops = 0;
+  private nativeGenerationQueueSaturations = 0;
+  private nativeQueueLimitTerminations = 0;
+  private nativeProcessBudgetTerminations = 0;
+  private nativeGenerationBudgetTerminations = 0;
   private dataChannelPressure = 0;
   private streamCapacityPressure = 0;
   private streamBufferPressure = 0;
@@ -259,6 +425,11 @@ export class RealtimeHub {
     this.sessionLimits = options.sessionLimits;
     for (const [name, value] of Object.entries(this.sessionLimits)) {
       positiveSafeInteger(value, `sessionLimits.${name}`);
+    }
+    if (this.sessionLimits.maxQueuedBytes > 0xffff_ffff) {
+      throw new RangeError(
+        "sessionLimits.maxQueuedBytes must not exceed 4294967295",
+      );
     }
     this.resourceBudget = options.resourceBudget ??
       new RealtimeGlobalResourceBudget({
@@ -286,10 +457,38 @@ export class RealtimeHub {
       options.maxPendingCandidates,
       "maxPendingCandidates",
     );
+    const allowPrivateAddresses = options.allowPrivateCandidateAddresses;
+    if (typeof allowPrivateAddresses !== "boolean") {
+      throw new TypeError(
+        "allowPrivateCandidateAddresses must be a boolean",
+      );
+    }
+    this.remoteCandidatePolicy = Object.freeze({
+      maxCandidates: positiveSafeInteger(
+        options.maxRemoteCandidates,
+        "maxRemoteCandidates",
+      ),
+      maxBytes: positiveSafeInteger(
+        options.maxRemoteCandidateBytes,
+        "maxRemoteCandidateBytes",
+      ),
+      allowPrivateAddresses,
+    });
     this.terminalRetentionMs = positiveSafeInteger(
       options.terminalRetentionMs,
       "terminalRetentionMs",
     );
+    this.prepared = new PreparedSessions({
+      maxEntries: this.maxSessions,
+      maxBytes: positiveSafeInteger(
+        options.maxPreparedBytes ?? REALTIME_HUB_DEFAULTS.maxPreparedBytes,
+        "maxPreparedBytes",
+      ),
+      ttlMs: positiveSafeInteger(
+        options.preparedSessionTtlMs ?? REALTIME_HUB_DEFAULTS.preparedSessionTtlMs,
+        "preparedSessionTtlMs",
+      ),
+    });
     this.now = options.now;
     this.networkDiagnostic = options.networkDiagnostic ?? null;
     this.authorizationTimeoutMs = positiveSafeInteger(
@@ -320,6 +519,10 @@ export class RealtimeHub {
       options.dataChannelTimeoutMs ?? REALTIME_HUB_DEFAULTS.dataChannelTimeoutMs,
       "dataChannelTimeoutMs",
     );
+    this.diagnosticTimeoutMs = positiveSafeInteger(
+      options.diagnosticTimeoutMs ?? REALTIME_HUB_DEFAULTS.diagnosticTimeoutMs,
+      "diagnosticTimeoutMs",
+    );
   }
 
   get size(): number {
@@ -348,6 +551,7 @@ export class RealtimeHub {
       health: Object.freeze({
         ...this.health,
         nativeQueueDrops: this.nativeQueueDrops,
+        ...this.nativeQueueTelemetry(),
         dataChannelPressure: this.dataChannelPressure,
         streamCapacityPressure: this.streamCapacityPressure,
         streamBufferPressure: this.streamBufferPressure,
@@ -359,19 +563,48 @@ export class RealtimeHub {
 
   async diagnostic(
     sessionId: string,
-    principal: Principal,
+    owner: string,
   ): Promise<RealtimePeerDiagnostic> {
-    const generation = this.owned(sessionId, principal);
+    const generation = this.owned(sessionId, owner);
     if (!generation.active) {
       throw new AckerDBError("not_found", "realtime session is not active");
     }
-    return realtimePeerDiagnostic({
-      observedAtMs: this.now(),
-      connectionState: generation.peer.connectionState,
-      signalingState: generation.peer.signalingState,
-      iceGatheringState: generation.peer.iceGatheringState,
-      report: await generation.peer.getStats(),
-    });
+    try {
+      return await this.withTimeout(
+        async () => realtimePeerDiagnostic({
+          observedAtMs: this.now(),
+          connectionState: generation.peer.connectionState,
+          signalingState: generation.peer.signalingState,
+          iceGatheringState: generation.peer.iceGatheringState,
+          report: await this.stats(generation),
+        }),
+        this.diagnosticTimeoutMs,
+        "realtime diagnostic",
+        this.diagnosticController.signal,
+        "deadline_exceeded",
+      );
+    } catch (error) {
+      if (
+        error instanceof AckerDBError &&
+        (
+          (
+            error.code === "deadline_exceeded" &&
+            error.message === "realtime diagnostic timed out"
+          ) ||
+          (
+            error.code === "draining" &&
+            error === this.diagnosticController.signal.reason
+          )
+        )
+      ) {
+        throw error;
+      }
+      throw new AckerDBError(
+        "unavailable",
+        "realtime diagnostic failed",
+        { resource: "connection" },
+      );
+    }
   }
 
   async sampleHealth(maxPeers = 8): Promise<void> {
@@ -389,23 +622,43 @@ export class RealtimeHub {
         if (this.sampleCursor >= this.sampleIds.length) this.sampleCursor = 0;
         ids.push(this.sampleIds[this.sampleCursor++]!);
       }
-      const samples = await Promise.all(ids.map(async (id) => {
-        const generation = this.generations.get(id);
-        if (generation === undefined || !generation.active) return null;
-        this.captureNativeDrops(generation);
-        try {
-          const diagnostic = realtimePeerDiagnostic({
-            observedAtMs: this.now(),
-            connectionState: generation.peer.connectionState,
-            signalingState: generation.peer.signalingState,
-            iceGatheringState: generation.peer.iceGatheringState,
-            report: await generation.peer.getStats(),
-          });
-          return { generation, diagnostic };
-        } catch {
-          return { generation, diagnostic: null };
-        }
-      }));
+      let samples: ({
+        readonly generation: Generation;
+        readonly diagnostic: RealtimePeerDiagnostic | null;
+      } | null)[];
+      try {
+        samples = await this.withTimeout(
+          () => Promise.all(ids.map(async (id) => {
+            const generation = this.generations.get(id);
+            if (generation === undefined || !generation.active) return null;
+            this.captureNativeDrops(generation);
+            try {
+              const diagnostic = realtimePeerDiagnostic({
+                observedAtMs: this.now(),
+                connectionState: generation.peer.connectionState,
+                signalingState: generation.peer.signalingState,
+                iceGatheringState: generation.peer.iceGatheringState,
+                report: await this.stats(generation),
+              });
+              return { generation, diagnostic };
+            } catch {
+              return { generation, diagnostic: null };
+            }
+          })),
+          this.diagnosticTimeoutMs,
+          "realtime health sample",
+          this.diagnosticController.signal,
+          "deadline_exceeded",
+        );
+      } catch {
+        if (this.diagnosticController.signal.aborted) return;
+        samples = ids.map((id) => {
+          const generation = this.generations.get(id);
+          return generation === undefined || !generation.active
+            ? null
+            : { generation, diagnostic: null };
+        });
+      }
 
       let failures = 0;
       let direct = 0;
@@ -484,6 +737,7 @@ export class RealtimeHub {
         availableOutgoingBitrate: sampled === 0 ? 0 : outgoingBitrate / sampled,
         dataChannelBufferedAmountMax: bufferedAmount,
         nativeQueueDrops: this.nativeQueueDrops,
+        ...this.nativeQueueTelemetry(),
         dataChannelPressure: this.dataChannelPressure,
         streamCapacityPressure: this.streamCapacityPressure,
         streamBufferPressure: this.streamBufferPressure,
@@ -495,26 +749,35 @@ export class RealtimeHub {
     }
   }
 
-  async configuration(
+  private async configuration(
     principal: Principal,
-    parentSignal?: AbortSignal,
+    parentSignal: AbortSignal | undefined,
+    owner: string,
   ): Promise<PortableRTCConfiguration> {
     return configuration(await this.withTimeout(
-      (signal) => Promise.resolve(this.configurationSource(principal, signal)),
+      (signal) => Promise.resolve(this.configurationSource(principal, signal, owner)),
       this.configurationTimeoutMs,
       "realtime ICE configuration",
       parentSignal,
     ));
   }
 
-  async offer(input: RealtimeOfferInput): Promise<RealtimeOfferResult> {
-    this.offers++;
+  async prepare(input: RealtimePrepareInput): Promise<RealtimePrepareResult> {
     if (input.recovery) this.recoveryAttempts++;
-    let authenticationOwned = true;
-    const owner = stableEncode(input.principal);
+    const { owner } = input;
+    const setup = setupSignal(input.signal, input.setupSignal);
     let reservationOwned = false;
-    let peer: PortableRTCPeerConnection | undefined;
-    let generation: Generation | undefined;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      if (reservationOwned) {
+        reservationOwned = false;
+        this.releaseReservation(owner);
+      }
+      input.releaseAuthentication();
+    };
+    let prepared = false;
     try {
       if (!this.accepting) {
         throw new AckerDBError("draining", "realtime service is draining", {
@@ -543,7 +806,7 @@ export class RealtimeHub {
       }
       this.reserve(owner);
       reservationOwned = true;
-      if (input.signal.aborted) throw input.signal.reason;
+      if (setup.signal.aborted) throw setup.signal.reason;
       const definition = this.definition(input.address);
       if (definition === undefined) {
         throw new AckerDBError("not_found", `unknown realtime "${input.address}"`);
@@ -556,18 +819,115 @@ export class RealtimeHub {
           ),
         this.authorizationTimeoutMs,
         "realtime authorization",
-        input.signal,
+        setup.signal,
       );
       if (!authorized.ok) {
         this.rejected++;
         if (input.recovery) this.recoveryRejected++;
         return Object.freeze({ ok: false, error: authorized.error });
       }
-      if (input.signal.aborted) throw input.signal.reason;
+      if (setup.signal.aborted) throw setup.signal.reason;
 
+      const preparedConfiguration = await this.configuration(
+        input.principal,
+        setup.signal,
+        owner,
+      );
+      if (setup.signal.aborted) throw setup.signal.reason;
+      let payload: string;
+      try {
+        payload = stableEncode({
+          address: input.address,
+          args: authorized.args,
+          state: authorized.state,
+          principal: input.principal,
+          configuration: preparedConfiguration,
+        });
+      } catch (cause) {
+        throw new AckerDBError(
+          "internal",
+          "realtime authorization state is not wire-representable",
+          { cause },
+        );
+      }
+      const ticket = randomBytes(32).toString("base64url");
+      if (setup.signal.aborted) throw setup.signal.reason;
+      this.prepared.add({
+        ticket,
+        owner,
+        definition,
+        adapter: authorized.adapter,
+        payload,
+        recovery: input.recovery === true,
+        signal: input.signal,
+        release,
+      });
+      prepared = true;
+      return Object.freeze({
+        ok: true,
+        ticket,
+        configuration: preparedConfiguration,
+      });
+    } catch (error) {
+      if (input.recovery) this.recoveryFailed++;
+      const outcome = outcomeFromError(error);
+      if (outcome.code === "overloaded") this.overloaded++;
+      else this.failed++;
+      throw error;
+    } finally {
+      setup.dispose();
+      if (!prepared) release();
+    }
+  }
+
+  async offer(input: RealtimeOfferInput): Promise<RealtimeOfferResult> {
+    this.offers++;
+    let prepared: ReturnType<PreparedSessions["consume"]> | undefined;
+    let recovery = false;
+    let native: RealtimePeerGeneration | undefined;
+    let peer: PortableRTCPeerConnection | undefined;
+    let generation: Generation | undefined;
+    let setup: DisposableSignal | undefined;
+    try {
+      if (!this.accepting) {
+        throw new AckerDBError("draining", "realtime service is draining", {
+          resource: "connection",
+          retryable: true,
+          retryAfterMs: 1_000,
+        });
+      }
+      if (input.setupSignal?.aborted) throw input.setupSignal.reason;
+      prepared = this.prepared.consume(input.ticket, input.owner);
+      recovery = prepared.recovery;
+      const {
+        adapter,
+        args,
+        configuration: preparedConfiguration,
+        definition,
+        release: releaseAuthentication,
+        signal,
+        state,
+      } = prepared;
+      setup = setupSignal(signal, input.setupSignal);
+      if (setup.signal.aborted) throw setup.signal.reason;
+      // The complete SDP is classified/accounted before this offer can cause
+      // any native allocation or peer mutation.
+      const sdp = input.offer.sdp;
+      if (sdp === undefined) {
+        throw new AckerDBError("malformed", "realtime offer SDP is required");
+      }
+      const remoteCandidates = new RemoteCandidatePolicy(
+        this.remoteCandidatePolicy,
+      );
+      const sanitizedOffer = Object.freeze({
+        ...input.offer,
+        sdp: remoteCandidates.acceptSdp(sdp),
+      });
       const id = randomBytes(24).toString("base64url");
-      peer = this.engine.createPeerConnection(
-        await this.configuration(input.principal, input.signal),
+      native = this.engine.createGeneration(this.sessionLimits.maxQueuedBytes);
+      const nativeGeneration = native;
+      peer = nativeGeneration.createPeerConnection(
+        preparedConfiguration,
         realtimePeerLimits(this.sessionLimits),
       );
       const dataChannel = peer.createDataChannel("ackerdb.typed.v1", {
@@ -576,30 +936,47 @@ export class RealtimeHub {
         ordered: true,
       });
       const abort = () =>
-        this.closeGeneration(id, input.signal.reason, "authentication");
-      input.signal.addEventListener("abort", abort, { once: true });
+        this.closeGeneration(id, signal.reason, "authentication");
+      signal.addEventListener("abort", abort, { once: true });
       generation = {
         id,
-        owner,
+        owner: input.owner,
+        native: nativeGeneration,
         peer,
         dataChannel,
         candidates: [],
+        remoteCandidates,
         removeSignalListener: () =>
-          input.signal.removeEventListener("abort", abort),
-        releaseAuthentication: input.releaseAuthentication,
+          signal.removeEventListener("abort", abort),
+        releaseAuthentication,
         session: null,
         complete: false,
+        remoteComplete: false,
         active: true,
         deadlines: {},
         observedPeerEventDrops: 0,
         observedDataChannelEventDrops: 0,
+        observedNativeMediaDrops: 0,
+        observedNativeQueueSaturations: 0,
+        observedNativeQueueTerminals: EMPTY_NATIVE_QUEUE_TERMINALS,
       };
       this.generations.set(id, generation);
       this.addSampleId(id);
       this.active++;
-      reservationOwned = false;
-      authenticationOwned = false;
-      if (input.signal.aborted) throw input.signal.reason;
+      prepared = undefined;
+      let nativeTerminalFailure: AckerDBError | undefined;
+      observeNativePeerTerminal(peer, (reason) => {
+        nativeTerminalFailure = this.failNativeQueueTerminal(
+          generation!,
+          reason,
+        );
+      });
+      if (!generation.active) {
+        throw nativeTerminalFailure ?? nativeQueueTerminalFailure(
+          generation.nativeTerminalReason ?? "queue-limit",
+        );
+      }
+      if (setup.signal.aborted) throw setup.signal.reason;
 
       peer.addEventListener("icecandidate", (event) => {
         if (!generation!.active) return;
@@ -613,10 +990,12 @@ export class RealtimeHub {
           );
         if (generation!.session?.sendIceCandidate(serialized)) {
           if (ice === null) generation!.complete = true;
+          this.wakeCandidateWaiter(generation!);
           return;
         }
         if (ice === null) {
           generation!.complete = true;
+          this.wakeCandidateWaiter(generation!);
           return;
         }
         if (generation!.candidates.length >= this.maxPendingCandidates) {
@@ -631,6 +1010,7 @@ export class RealtimeHub {
           return;
         }
         generation!.candidates.push(serialized!);
+        this.wakeCandidateWaiter(generation!);
       });
       const connectionChanged = () => {
         if (peer!.connectionState === "connected") {
@@ -663,6 +1043,7 @@ export class RealtimeHub {
       const dataChannelOpened = () => {
         if (dataChannel.readyState === "open") {
           this.clearDeadline(generation!, "data-channel");
+          this.wakeCandidateWaiter(generation!);
         }
       };
       peer.addEventListener("connectionstatechange", connectionChanged);
@@ -680,10 +1061,10 @@ export class RealtimeHub {
         dataChannel.removeEventListener("open", dataChannelOpened);
       };
 
-      const adapter: RealtimeServerSessionAdapter = {
-        ...authorized.adapter,
+      const sessionAdapter: RealtimeServerSessionAdapter = {
+        ...adapter,
         failed: (error) => {
-          authorized.adapter.failed(error);
+          adapter.failed(error);
           this.failGeneration(generation!, error, "handler");
         },
       };
@@ -691,40 +1072,49 @@ export class RealtimeHub {
         (signal) =>
           RealtimeServerSession.create({
             definition,
-            args: authorized.args,
-            state: authorized.state,
+            args,
+            state,
             peerConnection: peer!,
             dataChannel,
-            engine: this.engine,
-            adapter,
+            generation: nativeGeneration,
+            remoteCandidates,
+            adapter: sessionAdapter,
             limits: this.sessionLimits,
             observePressure: (pressure) => this.observePressure(pressure),
+            onNativeQueueTerminal: (reason) => {
+              this.failNativeQueueTerminal(generation!, reason);
+            },
             resourceBudget: this.resourceBudget,
             setupSignal: signal,
           }),
         this.handlerTimeoutMs,
         "realtime handler setup",
-        input.signal,
+        setup.signal,
+        "internal",
       );
+      this.assertActive(generation, setup.signal, serverSession);
       generation.session = serverSession;
       await this.withTimeout(
-        () => peer!.setRemoteDescription(input.offer),
+        () => peer!.setRemoteDescription(sanitizedOffer),
         this.signalingTimeoutMs,
         "realtime remote description",
-        input.signal,
+        setup.signal,
       );
+      this.assertActive(generation, setup.signal);
       const answer = await this.withTimeout(
         () => peer!.createAnswer(),
         this.signalingTimeoutMs,
         "realtime answer creation",
-        input.signal,
+        setup.signal,
       );
+      this.assertActive(generation, setup.signal);
       await this.withTimeout(
         () => peer!.setLocalDescription(answer),
         this.signalingTimeoutMs,
         "realtime local description",
-        input.signal,
+        setup.signal,
       );
+      this.assertActive(generation, setup.signal);
       serverSession.initialNegotiationComplete();
       const local = peer.localDescription;
       if (local === null) {
@@ -744,7 +1134,7 @@ export class RealtimeHub {
         ),
       });
       this.accepted++;
-      if (input.recovery) this.recoveryAccepted++;
+      if (recovery) this.recoveryAccepted++;
       this.armConnectionDeadlines(generation);
       return Object.freeze({
         ok: true,
@@ -758,7 +1148,7 @@ export class RealtimeHub {
         ...batch,
       });
     } catch (error) {
-      if (input.recovery) this.recoveryFailed++;
+      if (recovery) this.recoveryFailed++;
       if (generation === undefined) {
         const outcome = outcomeFromError(error);
         if (outcome.code === "overloaded") this.overloaded++;
@@ -769,37 +1159,71 @@ export class RealtimeHub {
       } else if (peer !== undefined && peer.connectionState !== "closed") {
         peer.close();
       }
+      if (generation === undefined) native?.close();
+      prepared?.release();
       throw error;
     } finally {
-      if (reservationOwned) this.releaseReservation(owner);
-      if (authenticationOwned) input.releaseAuthentication();
+      setup?.dispose();
     }
+  }
+
+  cancelPrepared(ticket: string, owner: string): void {
+    this.prepared.cancel(ticket, owner);
   }
 
   async patch(
     sessionId: string,
-    principal: Principal,
+    owner: string,
     batch: RealtimeCandidateBatch,
+    signal?: AbortSignal,
   ): Promise<RealtimePatchResult> {
-    const generation = this.owned(sessionId, principal);
+    const generation = this.owned(sessionId, owner);
     if (generation.terminal !== undefined) {
       return Object.freeze({ ok: false, outcome: generation.terminal });
     }
     if (!generation.active) {
       throw new AckerDBError("not_found", "realtime session is not active");
     }
-    if (batch.candidates.length > this.maxPendingCandidates) {
-      throw new AckerDBError("validation", "realtime ICE candidate batch is too large");
+    let candidates: readonly RealtimeIceCandidate[];
+    try {
+      // Validate and charge the entire batch before even its first candidate
+      // can reach native WebRTC. A policy failure ends this generation once.
+      candidates = generation.remoteCandidates.acceptBatch(
+        batch.candidates,
+      );
+    } catch (error) {
+      const outcome = outcomeFromError(error);
+      this.failGeneration(generation, error);
+      return Object.freeze({ ok: false, outcome });
     }
-    for (const raw of batch.candidates) {
+    for (const raw of candidates) {
       await generation.peer.addIceCandidate(raw);
     }
-    if (batch.complete) await generation.peer.addIceCandidate(null);
+    if (batch.complete && !generation.remoteComplete) {
+      await generation.peer.addIceCandidate(null);
+      generation.remoteComplete = true;
+    }
+    if (
+      (batch.complete || (
+        generation.remoteComplete && batch.candidates.length === 0
+      )) &&
+      generation.candidates.length === 0 &&
+      !generation.complete &&
+      generation.dataChannel.readyState !== "open"
+    ) {
+      await this.waitForServerCandidates(generation, signal);
+    }
+    if (generation.terminal !== undefined) {
+      return Object.freeze({ ok: false, outcome: generation.terminal });
+    }
+    if (!generation.active) {
+      throw new AckerDBError("not_found", "realtime session is not active");
+    }
     return Object.freeze({ ok: true, ...this.drainCandidates(generation) });
   }
 
-  close(sessionId: string, principal: Principal): void {
-    this.owned(sessionId, principal);
+  close(sessionId: string, owner: string): void {
+    this.owned(sessionId, owner);
     this.closeGeneration(
       sessionId,
       new Error("realtime session closed by client"),
@@ -809,6 +1233,12 @@ export class RealtimeHub {
 
   async drain(): Promise<void> {
     this.accepting = false;
+    this.diagnosticController.abort(new AckerDBError(
+      "draining",
+      "realtime service is draining",
+      { resource: "connection", retryable: true, retryAfterMs: 1_000 },
+    ));
+    this.prepared.drain();
     for (const generation of [...this.generations.values()]) {
       this.closeGeneration(
         generation.id,
@@ -823,11 +1253,11 @@ export class RealtimeHub {
     this.engine.close();
   }
 
-  private owned(sessionId: string, principal: Principal): Generation {
+  private owned(sessionId: string, owner: string): Generation {
     const generation = this.generations.get(sessionId);
     if (
       generation === undefined ||
-      generation.owner !== stableEncode(principal)
+      generation.owner !== owner
     ) {
       throw new AckerDBError("not_found", "realtime session does not exist");
     }
@@ -842,6 +1272,44 @@ export class RealtimeHub {
     });
   }
 
+  private async waitForServerCandidates(
+    generation: Generation,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (
+      generation.candidates.length > 0 ||
+      generation.complete ||
+      generation.dataChannel.readyState === "open"
+    ) {
+      return;
+    }
+    if (generation.candidateWaiter !== undefined) {
+      throw new AckerDBError(
+        "overloaded",
+        "realtime ICE candidate wait is already pending",
+        { resource: "connection", retryable: true, retryAfterMs: 0 },
+      );
+    }
+    const waiter = generation.candidateWaiter = candidateWaiter();
+    try {
+      await (signal === undefined
+        ? waiter.promise
+        : settleOnAbort(waiter.promise, signal));
+    } finally {
+      if (generation.candidateWaiter === waiter) {
+        generation.candidateWaiter = undefined;
+        waiter.resolve();
+      }
+    }
+  }
+
+  private wakeCandidateWaiter(generation: Generation): void {
+    const waiter = generation.candidateWaiter;
+    if (waiter === undefined) return;
+    generation.candidateWaiter = undefined;
+    waiter.resolve();
+  }
+
   private streamLimits(
     streams: Readonly<Record<string, { readonly maxBytes?: number }>>,
   ): Readonly<Record<string, number>> {
@@ -853,11 +1321,28 @@ export class RealtimeHub {
     ));
   }
 
+  private assertActive(
+    generation: Generation,
+    signal: AbortSignal,
+    session?: RealtimeServerSession,
+  ): void {
+    if (generation.active && !signal.aborted) return;
+    const reason = signal.reason ?? new AckerDBError(
+      "unavailable",
+      "realtime session setup was cancelled",
+      { resource: "connection" },
+    );
+    session?.close(reason);
+    throw reason;
+  }
+
   private withTimeout<Value>(
     work: (signal: AbortSignal) => Value | Promise<Value>,
     timeoutMs: number,
     label: string,
     parentSignal?: AbortSignal,
+    timeoutCode: "internal" | "unavailable" | "deadline_exceeded" =
+      "unavailable",
   ): Promise<Value> {
     const controller = new AbortController();
     const parentAborted = () => controller.abort(
@@ -869,12 +1354,12 @@ export class RealtimeHub {
     parentSignal?.addEventListener("abort", parentAborted, { once: true });
     if (parentSignal?.aborted) parentAborted();
     const timer = setTimeout(() => controller.abort(new AckerDBError(
-      "unavailable",
+      timeoutCode,
       `${label} timed out`,
       {
         resource: "connection",
-        retryable: true,
-        retryAfterMs: 0,
+        retryable: timeoutCode !== "internal",
+        ...(timeoutCode === "internal" ? {} : { retryAfterMs: 0 }),
       },
     )), timeoutMs);
     timer.unref?.();
@@ -958,6 +1443,7 @@ export class RealtimeHub {
 
   private captureNativeDrops(generation: Generation): void {
     const pressure = nativePeerPressure(generation.peer);
+    const metrics = generation.native.nativeQueueMetrics();
     const peerDelta = Math.max(
       0,
       pressure.peerEventDrops - generation.observedPeerEventDrops,
@@ -967,10 +1453,46 @@ export class RealtimeHub {
       pressure.dataChannelEventDrops -
         generation.observedDataChannelEventDrops,
     );
+    const mediaDrops = generation.session?.nativeMediaDrops() ?? 0;
+    const mediaDelta = Math.max(
+      0,
+      mediaDrops - generation.observedNativeMediaDrops,
+    );
+    const saturationDelta = Math.max(
+      0,
+      metrics.saturations - generation.observedNativeQueueSaturations,
+    );
+    const terminals = nativeQueueTerminalCounts(
+      pressure.terminalReasons,
+      generation.session?.nativeQueueTerminalCounts(),
+      generation.nativeTerminalReason,
+    );
+    const queueLimitDelta = Math.max(
+      0,
+      terminals["queue-limit"] -
+        generation.observedNativeQueueTerminals["queue-limit"],
+    );
+    const processBudgetDelta = Math.max(
+      0,
+      terminals["process-byte-budget"] -
+        generation.observedNativeQueueTerminals["process-byte-budget"],
+    );
+    const generationBudgetDelta = Math.max(
+      0,
+      terminals["generation-byte-budget"] -
+        generation.observedNativeQueueTerminals["generation-byte-budget"],
+    );
     generation.observedPeerEventDrops = pressure.peerEventDrops;
     generation.observedDataChannelEventDrops =
       pressure.dataChannelEventDrops;
-    this.nativeQueueDrops += peerDelta + dataChannelDelta;
+    generation.observedNativeMediaDrops = mediaDrops;
+    generation.observedNativeQueueSaturations = metrics.saturations;
+    generation.observedNativeQueueTerminals = terminals;
+    this.nativeQueueDrops += peerDelta + dataChannelDelta + mediaDelta;
+    this.nativeGenerationQueueSaturations += saturationDelta;
+    this.nativeQueueLimitTerminations += queueLimitDelta;
+    this.nativeProcessBudgetTerminations += processBudgetDelta;
+    this.nativeGenerationBudgetTerminations += generationBudgetDelta;
   }
 
   private addSampleId(id: string): void {
@@ -997,12 +1519,58 @@ export class RealtimeHub {
     this.health = Object.freeze({
       ...EMPTY_HEALTH,
       nativeQueueDrops: this.nativeQueueDrops,
+      ...this.nativeQueueTelemetry(),
       dataChannelPressure: this.dataChannelPressure,
       streamCapacityPressure: this.streamCapacityPressure,
       streamBufferPressure: this.streamBufferPressure,
       handlerSaturation: this.handlerSaturation,
       resourceSaturation: this.resourceSaturation,
     });
+  }
+
+  private nativeQueueTelemetry() {
+    const process = this.engine.nativeQueueMetrics();
+    return Object.freeze({
+      nativeProcessReservedBytes: process.reservedBytes,
+      nativeProcessQueueSaturations: process.saturations,
+      nativeGenerationQueueSaturations: this.nativeGenerationQueueSaturations,
+      nativeQueueLimitTerminations: this.nativeQueueLimitTerminations,
+      nativeProcessBudgetTerminations: this.nativeProcessBudgetTerminations,
+      nativeGenerationBudgetTerminations:
+        this.nativeGenerationBudgetTerminations,
+    });
+  }
+
+  private stats(generation: Generation): Promise<PortableRTCStatsReport> {
+    if (
+      generation.statsRequest === undefined ||
+      generation.statsRequest.settled
+    ) {
+      generation.statsRequest = createStatsRequest(generation.peer);
+    }
+    const request = generation.statsRequest;
+    if (request.claimed) {
+      return Promise.reject(new AckerDBError(
+        "unavailable",
+        "realtime diagnostic is already pending",
+        { resource: "connection" },
+      ));
+    }
+    // A native getStats() call cannot be cancelled. Attach at most one caller
+    // to a stalled promise so repeated health ticks cannot accumulate an
+    // unbounded chain of pending Promise reactions for the same peer.
+    request.claimed = true;
+    return request.promise;
+  }
+
+  private failNativeQueueTerminal(
+    generation: Generation,
+    reason: RealtimeNativeQueueTerminalReason,
+  ): AckerDBError {
+    generation.nativeTerminalReason ??= reason;
+    const error = nativeQueueTerminalFailure(generation.nativeTerminalReason);
+    this.failGeneration(generation, error, "transport");
+    return error;
   }
 
   private failGeneration(
@@ -1033,6 +1601,7 @@ export class RealtimeHub {
     retainTerminal: boolean,
     closeReason: RealtimeCloseReason,
   ): void {
+    this.wakeCandidateWaiter(generation);
     if (generation.active) {
       this.captureNativeDrops(generation);
       for (const timer of Object.values(generation.deadlines)) {
@@ -1050,10 +1619,13 @@ export class RealtimeHub {
       generation.removeReadinessListeners = undefined;
       generation.releaseAuthentication();
       generation.session?.close(reason);
+      this.captureNativeDrops(generation);
+      if (this.sampleIds.length === 0) this.clearLiveHealth();
       generation.session = null;
       if (generation.peer.connectionState !== "closed") {
         generation.peer.close();
       }
+      generation.native.close();
     }
     if (retainTerminal && generation.terminal !== undefined) {
       generation.terminalTimer ??= setTimeout(() => {
@@ -1115,10 +1687,11 @@ export class RealtimeHub {
     }
 
     if (this.handshakeWindows.size >= this.maxTrackedPrincipals) {
-      const oldest = this.handshakeWindows.keys().next().value as
-        | string
-        | undefined;
-      if (oldest !== undefined) this.handshakeWindows.delete(oldest);
+      throw new AckerDBError(
+        "overloaded",
+        "realtime handshake owner capacity is full",
+        { resource: "connection", retryable: true, retryAfterMs: 0 },
+      );
     }
     this.handshakeWindows.set(owner, {
       count: 1,

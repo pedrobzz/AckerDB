@@ -1,14 +1,13 @@
 import {
-  REALTIME_PROTOCOL_VERSION,
+  PerfectNegotiation,
   RealtimeDataPlane,
   type RealtimeDataPlanePressure,
-  type NativeRTCDataChannel,
+  type PerfectNegotiationFailure,
   type PortableMediaStreamTrack,
   type PortableRTCDataChannel,
   type PortableRTCPeerConnection,
   type RealtimeDataPlaneIncomingStream,
   type RealtimeIceCandidate,
-  type RealtimeSignalFrame,
 } from "@ackerdb/core";
 import type {
   AnyRegisteredRealtime,
@@ -29,13 +28,21 @@ import {
   type RealtimeProcedureContextOwner,
   type RealtimeServerSessionAdapter,
 } from "@ackerdb/server/realtime-host";
-import type { RealtimePeerEngine, RealtimePeerLimits } from "./engine.ts";
+import type { RealtimePeerGeneration, RealtimePeerLimits } from "./engine.ts";
+import { nativeDecodedStreamDrops } from "./native/media.ts";
+import { RemoteCandidatePolicy } from "./remote-candidate-policy.ts";
+import {
+  observeNativePeerTerminal,
+  type RealtimeNativeQueueTerminalCounts,
+  type RealtimeNativeQueueTerminalReason,
+} from "./native/peer-connection.ts";
 import {
   type RealtimeGlobalResourceBudget,
   type RealtimeGlobalResourceKind,
 } from "./resources.ts";
 
 export interface RealtimeServerSessionLimits {
+  readonly maxQueuedBytes: number;
   readonly maxBufferedAmount: number;
   readonly maxConcurrentStreams: number;
   readonly maxIncomingBufferedBytes: number;
@@ -62,6 +69,8 @@ interface OwnedRealtimeResource {
   readonly kind: OwnedResourceKind;
   readonly closeNative: () => void;
   readonly releaseGlobal: () => void;
+  readonly removeNativeTerminal?: () => void;
+  observedNativeMediaDrops: number;
   released: boolean;
 }
 
@@ -71,10 +80,16 @@ export interface RealtimeServerSessionOptions {
   readonly state: unknown;
   readonly peerConnection: PortableRTCPeerConnection;
   readonly dataChannel: PortableRTCDataChannel;
-  readonly engine: RealtimePeerEngine;
+  readonly generation: RealtimePeerGeneration;
+  /** Hub-owned, generation-wide remote candidate policy and accounting. */
+  readonly remoteCandidates: RemoteCandidatePolicy;
   readonly adapter: RealtimeServerSessionAdapter;
   readonly limits: RealtimeServerSessionLimits;
   readonly observePressure?: (pressure: RealtimeSessionPressure) => void;
+  /** Internal fixed-cardinality terminal signal from an auxiliary native peer. */
+  readonly onNativeQueueTerminal?: (
+    reason: RealtimeNativeQueueTerminalReason,
+  ) => void;
   readonly resourceBudget?: RealtimeGlobalResourceBudget;
   /** Setup-phase cancellation; the credential signal continues after setup. */
   readonly setupSignal?: AbortSignal;
@@ -94,6 +109,13 @@ const GLOBAL_RESOURCE_KIND = Object.freeze({
   RealtimeGlobalResourceKind
 >);
 
+const EMPTY_NATIVE_QUEUE_TERMINALS: RealtimeNativeQueueTerminalCounts =
+  Object.freeze({
+    "queue-limit": 0,
+    "process-byte-budget": 0,
+    "generation-byte-budget": 0,
+  });
+
 /**
  * One authorized server peer generation. The public context exposes the actual
  * peer connection while this object owns only AckerDB's negotiated typed data
@@ -107,15 +129,17 @@ export class RealtimeServerSession {
   private readonly args: unknown;
   private readonly state: unknown;
   private readonly adapter: RealtimeServerSessionAdapter;
-  private readonly engine: RealtimePeerEngine;
+  private readonly generation: RealtimePeerGeneration;
   private readonly limits: RealtimeServerSessionLimits;
   private readonly observePressure?: RealtimeServerSessionOptions["observePressure"];
+  private readonly onNativeQueueTerminal?: RealtimeServerSessionOptions["onNativeQueueTerminal"];
   private readonly resourceBudget?: RealtimeGlobalResourceBudget;
   private readonly controller = new AbortController();
   private readonly contextOwner: RealtimeProcedureContextOwner;
   private readonly eventHandlers = new Map<string, EventHandler[]>();
   private readonly streamHandlers = new Map<string, StreamHandler>();
   private readonly dataPlane: RealtimeDataPlane;
+  private readonly negotiation: PerfectNegotiation;
   private readonly dataChannel: PortableRTCDataChannel;
   private readonly context: RealtimeCtx<any, any, any, any, any, any>;
   private readonly ownedResources = new Set<OwnedRealtimeResource>();
@@ -125,12 +149,12 @@ export class RealtimeServerSession {
     mediaSource: 0,
   };
   private activeHandlers = 0;
-  private signalingTail = Promise.resolve();
-  private initialNegotiationDone = false;
-  private signalingReady = false;
-  private makingOffer = false;
-  private ignoreOffer = false;
-  private needsNegotiation = false;
+  private nativeMediaDropCount = 0;
+  private readonly nativeQueueTerminals = {
+    "queue-limit": 0,
+    "process-byte-budget": 0,
+    "generation-byte-budget": 0,
+  } satisfies Record<RealtimeNativeQueueTerminalReason, number>;
   private closed = false;
 
   private constructor(options: RealtimeServerSessionOptions) {
@@ -138,17 +162,18 @@ export class RealtimeServerSession {
     this.args = options.args;
     this.state = options.state;
     this.peerConnection = options.peerConnection;
-    this.engine = options.engine;
+    this.generation = options.generation;
     this.adapter = options.adapter;
     this.limits = options.limits;
     this.observePressure = options.observePressure;
+    this.onNativeQueueTerminal = options.onNativeQueueTerminal;
     this.resourceBudget = options.resourceBudget;
     this.abortSignal = this.controller.signal;
     this.contextOwner = this.adapter.createContext(this.controller.signal);
     this.context = this.createContext(this.contextOwner.value);
     this.dataChannel = options.dataChannel;
     this.dataPlane = new RealtimeDataPlane({
-      channel: options.dataChannel as unknown as NativeRTCDataChannel,
+      channel: options.dataChannel,
       localPrefix: "s",
       maxBufferedAmount: options.limits.maxBufferedAmount,
       maxConcurrentStreams: options.limits.maxConcurrentStreams,
@@ -163,16 +188,40 @@ export class RealtimeServerSession {
           "client sent a server-owned realtime session error",
         );
       },
-      onSignal: (frame) => this.receiveSignal(frame),
+      onSignal: (frame) => {
+        if (frame.t === "signal_candidate") {
+          const candidate = options.remoteCandidates.acceptCandidate(
+            frame.candidate,
+          );
+          if (candidate === undefined) return;
+          return this.negotiation.receiveSignal({ ...frame, candidate });
+        }
+        const description = Object.freeze({
+          ...frame.description,
+          sdp: options.remoteCandidates.acceptSdp(frame.description.sdp),
+        });
+        return this.negotiation.receiveSignal({ ...frame, description });
+      },
       onFatalError: (error) => this.fail(error),
       onPressure: (pressure) => this.pressure(pressure),
+    });
+    this.negotiation = new PerfectNegotiation({
+      peerConnection: this.peerConnection,
+      polite: false,
+      signalingTransportReady: this.dataChannel.readyState === "open",
+      sendSignal: (frame) => this.dataPlane.sendSignal(frame),
+      createError: (failure) => this.negotiationError(failure),
+      failed: (error) => this.fail(error),
     });
     this.peerConnection.addEventListener("connectionstatechange", this.peerStateChanged);
     this.peerConnection.addEventListener(
       "negotiationneeded",
-      this.negotiationNeeded,
+      this.negotiation.negotiationNeeded,
     );
-    this.dataChannel.addEventListener("open", this.dataChannelOpened);
+    this.dataChannel.addEventListener(
+      "open",
+      this.negotiation.signalingTransportReady,
+    );
   }
 
   static async create(
@@ -213,9 +262,12 @@ export class RealtimeServerSession {
     );
     this.peerConnection.removeEventListener(
       "negotiationneeded",
-      this.negotiationNeeded,
+      this.negotiation.negotiationNeeded,
     );
-    this.dataChannel.removeEventListener("open", this.dataChannelOpened);
+    this.dataChannel.removeEventListener(
+      "open",
+      this.negotiation.signalingTransportReady,
+    );
     this.dataPlane.close(reason);
     this.eventHandlers.clear();
     this.streamHandlers.clear();
@@ -236,6 +288,19 @@ export class RealtimeServerSession {
     return this.dataPlane.sendSessionError(outcome);
   }
 
+  /** Cumulative upstream audio/video frames discarded before JavaScript. */
+  nativeMediaDrops(): number {
+    for (const owned of this.ownedResources) {
+      this.captureNativeMediaDrops(owned);
+    }
+    return this.nativeMediaDropCount;
+  }
+
+  /** Fixed-cardinality native terminal observations from auxiliary peers. */
+  nativeQueueTerminalCounts(): RealtimeNativeQueueTerminalCounts {
+    return Object.freeze({ ...this.nativeQueueTerminals });
+  }
+
   /** Called by the hub after the initial HTTP answer owns localDescription. */
   initialNegotiationComplete(): void {
     if (this.closed) return;
@@ -243,9 +308,9 @@ export class RealtimeServerSession {
     // awaited realtime handler. Any negotiationneeded event queued while that
     // answer was being assembled is therefore satisfied by the HTTP exchange,
     // not a request for an immediate second offer.
-    this.needsNegotiation = false;
-    this.initialNegotiationDone = true;
-    this.enableSignalingWhenReady();
+    this.negotiation.initialNegotiationComplete({
+      discardPendingNegotiation: true,
+    });
   }
 
   /**
@@ -253,15 +318,7 @@ export class RealtimeServerSession {
    * means the initial HTTP trickle still owns this candidate.
    */
   sendIceCandidate(candidate: RealtimeIceCandidate | null): boolean {
-    if (!this.signalingReady || this.closed) return false;
-    void this.sequenceSignaling(() =>
-      this.dataPlane.sendSignal({
-        v: REALTIME_PROTOCOL_VERSION,
-        t: "signal_candidate",
-        candidate,
-      })
-    ).catch((error) => this.fail(error));
-    return true;
+    return !this.closed && this.negotiation.sendIceCandidate(candidate);
   }
 
   private createContext(procedure: ProcedureCtx): RealtimeCtx<any, any, any, any, any, any> {
@@ -273,13 +330,13 @@ export class RealtimeServerSession {
         this.createOwned(
           "decodedStream",
           this.limits.maxDecodedStreams,
-          () => this.engine.createAudioStream(track, options),
+          () => this.generation.createAudioStream(track, options),
         ),
       audioSource: (options?: RealtimeAudioSourceOptions) =>
         this.createOwned(
           "mediaSource",
           this.limits.maxMediaSources,
-          () => this.engine.createAudioSource(options),
+          () => this.generation.createAudioSource(options),
         ),
       videoStream: (
         track: PortableMediaStreamTrack,
@@ -288,13 +345,13 @@ export class RealtimeServerSession {
         this.createOwned(
           "decodedStream",
           this.limits.maxDecodedStreams,
-          () => this.engine.createVideoStream(track, options),
+          () => this.generation.createVideoStream(track, options),
         ),
       videoSource: (options: RealtimeVideoSourceOptions) =>
         this.createOwned(
           "mediaSource",
           this.limits.maxMediaSources,
-          () => this.engine.createVideoSource(options),
+          () => this.generation.createVideoSource(options),
         ),
     });
     return Object.freeze({
@@ -305,7 +362,7 @@ export class RealtimeServerSession {
         this.createOwned(
           "auxiliaryPeer",
           this.limits.maxAuxiliaryPeers,
-          () => this.engine.createPeerConnection(
+          () => this.generation.createPeerConnection(
             configuration,
             realtimePeerLimits(this.limits),
           ),
@@ -411,9 +468,19 @@ export class RealtimeServerSession {
       releaseGlobal();
       throw error;
     }
+    const removeNativeTerminal = kind === "auxiliaryPeer"
+      ? observeNativePeerTerminal(
+        resource as unknown as PortableRTCPeerConnection,
+        (reason) => this.recordNativeQueueTerminal(reason),
+      )
+      : undefined;
     if (this.closed) {
-      resource.close();
-      releaseGlobal();
+      try {
+        removeNativeTerminal?.();
+        resource.close();
+      } finally {
+        releaseGlobal();
+      }
       throw new AckerDBError("unavailable", "realtime session is closed", {
         resource: "connection",
       });
@@ -423,6 +490,8 @@ export class RealtimeServerSession {
       kind,
       closeNative: resource.close.bind(resource),
       releaseGlobal,
+      removeNativeTerminal,
+      observedNativeMediaDrops: nativeDecodedStreamDrops(resource) ?? 0,
       released: false,
     };
     try {
@@ -431,6 +500,7 @@ export class RealtimeServerSession {
       });
     } catch (error) {
       try {
+        owned.removeNativeTerminal?.();
         owned.closeNative();
       } finally {
         releaseGlobal();
@@ -446,14 +516,33 @@ export class RealtimeServerSession {
 
   private closeOwned(owned: OwnedRealtimeResource): void {
     if (owned.released) return;
+    this.captureNativeMediaDrops(owned);
     owned.released = true;
     this.ownedResources.delete(owned);
     this.ownedResourceCounts[owned.kind]--;
     try {
+      owned.removeNativeTerminal?.();
       owned.closeNative();
     } finally {
       owned.releaseGlobal();
     }
+  }
+
+  private captureNativeMediaDrops(owned: OwnedRealtimeResource): void {
+    const current = nativeDecodedStreamDrops(owned.resource);
+    if (current === undefined) return;
+    this.nativeMediaDropCount += Math.max(
+      0,
+      current - owned.observedNativeMediaDrops,
+    );
+    owned.observedNativeMediaDrops = current;
+  }
+
+  private recordNativeQueueTerminal(
+    reason: RealtimeNativeQueueTerminalReason,
+  ): void {
+    this.nativeQueueTerminals[reason]++;
+    this.onNativeQueueTerminal?.(reason);
   }
 
   private receiveEvent(event: string, payload: unknown): void {
@@ -542,103 +631,20 @@ export class RealtimeServerSession {
     }
   }
 
-  private receiveSignal(frame: RealtimeSignalFrame): Promise<void> {
-    return this.sequenceSignaling(async () => {
-      if (!this.signalingReady) {
-        throw new AckerDBError(
-          "malformed",
-          "realtime renegotiation arrived before initial negotiation completed",
-        );
-      }
-      if (frame.t === "signal_candidate") {
-        if (!this.ignoreOffer) {
-          await this.peerConnection.addIceCandidate(frame.candidate);
-        }
-        return;
-      }
-
-      const { description } = frame;
-      const offerCollision =
-        description.type === "offer" &&
-        (
-          this.makingOffer ||
-          this.peerConnection.signalingState !== "stable"
-        );
-      this.ignoreOffer = offerCollision;
-      if (this.ignoreOffer) return;
-      await this.peerConnection.setRemoteDescription(description);
-      if (description.type === "answer") return;
-      const answer = await this.peerConnection.createAnswer();
-      await this.peerConnection.setLocalDescription(answer);
-      const local = this.peerConnection.localDescription;
-      if (local === null || local.type !== "answer" || local.sdp === undefined) {
-        throw new AckerDBError(
-          "internal",
-          "realtime peer produced no renegotiation answer",
-        );
-      }
-      await this.dataPlane.sendSignal({
-        v: REALTIME_PROTOCOL_VERSION,
-        t: "signal_description",
-        description: { type: "answer", sdp: local.sdp },
-      });
-    });
-  }
-
-  private sequenceSignaling<T>(work: () => T | Promise<T>): Promise<T> {
-    const result = this.signalingTail.then(work);
-    this.signalingTail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-
-  private enableSignalingWhenReady(): void {
-    if (
-      this.signalingReady ||
-      !this.initialNegotiationDone ||
-      this.dataChannel.readyState !== "open"
-    ) {
-      return;
+  private negotiationError(failure: PerfectNegotiationFailure): AckerDBError {
+    if (failure === "signal-before-ready") {
+      return new AckerDBError(
+        "malformed",
+        "realtime renegotiation arrived before initial negotiation completed",
+      );
     }
-    this.signalingReady = true;
-    if (this.needsNegotiation) this.negotiationNeeded();
+    const message = {
+      "missing-initial-offer": "realtime peer produced no initial offer",
+      "missing-offer": "realtime peer produced no renegotiation offer",
+      "missing-answer": "realtime peer produced no renegotiation answer",
+    }[failure];
+    return new AckerDBError("internal", message);
   }
-
-  private readonly dataChannelOpened = (): void => {
-    this.enableSignalingWhenReady();
-  };
-
-  private readonly negotiationNeeded = (): void => {
-    if (this.closed) return;
-    if (!this.signalingReady) {
-      this.needsNegotiation = true;
-      return;
-    }
-    this.needsNegotiation = false;
-    void this.sequenceSignaling(async () => {
-      try {
-        this.makingOffer = true;
-        const offer = await this.peerConnection.createOffer();
-        await this.peerConnection.setLocalDescription(offer);
-        const local = this.peerConnection.localDescription;
-        if (local === null || local.type !== "offer" || local.sdp === undefined) {
-          throw new AckerDBError(
-            "internal",
-            "realtime peer produced no renegotiation offer",
-          );
-        }
-        await this.dataPlane.sendSignal({
-          v: REALTIME_PROTOCOL_VERSION,
-          t: "signal_description",
-          description: { type: "offer", sdp: local.sdp },
-        });
-      } finally {
-        this.makingOffer = false;
-      }
-    }).catch((error) => this.fail(error));
-  };
 
   private readonly peerStateChanged = (): void => {
     if (

@@ -7,11 +7,24 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { PACKAGES, pkgJsonPath, syncedVersion } from "./lib.ts";
+import {
+  NATIVE_PACKAGES,
+  PACKAGES,
+  PUBLIC_PACKAGES,
+  packageDirectory,
+  pkgJsonPath,
+  syncedVersion,
+} from "./lib.ts";
+import { verifyCandidate } from "../packages/realtime/native/webrtc/candidate.ts";
 
 export interface PackageManifest {
   readonly name?: string;
   readonly version?: string;
+  readonly main?: string;
+  readonly files?: readonly string[];
+  readonly cpu?: readonly string[];
+  readonly os?: readonly string[];
+  readonly libc?: readonly string[];
   readonly exports?: Record<string, unknown>;
   readonly dependencies?: Record<string, string>;
   readonly devDependencies?: Record<string, string>;
@@ -52,7 +65,11 @@ export function readManifest(path: string): PackageManifest {
 
 export async function createPackedConsumer(name: string): Promise<PackedConsumer> {
   const root = resolve(import.meta.dir, "..");
-  const version = syncedVersion((pkg) =>
+  const candidatePath = process.env.ACKERDB_RELEASE_CANDIDATE;
+  const candidate = candidatePath === undefined
+    ? undefined
+    : await verifyCandidate(resolve(candidatePath), { checkClean: false });
+  const version = candidate?.manifest.version ?? syncedVersion((pkg) =>
     readFileSync(join(root, pkgJsonPath(pkg)), "utf8")
   );
   const bunTypesVersion = readManifest(
@@ -66,8 +83,17 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
   mkdirSync(consumerDir);
 
   try {
-    const dependencies: Record<string, string> = {};
+    const tarballs: Record<string, string> = {};
     for (const pkg of PACKAGES) {
+      const packageName = `@ackerdb/${pkg}`;
+      if (candidate !== undefined) {
+        const tarball = candidate.tarballs.get(packageName);
+        if (tarball === undefined) {
+          throw new Error(`verified release candidate has no tarball for ${packageName}`);
+        }
+        tarballs[packageName] = `file:${tarball}`;
+        continue;
+      }
       const output = await runCommand([
         process.execPath,
         "pm",
@@ -76,22 +102,39 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
         packDir,
         "--ignore-scripts",
         "--quiet",
-      ], join(root, "packages", pkg));
-      const tarball = output.split("\n").at(-1)?.trim();
-      if (tarball === undefined || tarball === "") {
-        throw new Error(`bun pm pack did not report a tarball for @ackerdb/${pkg}`);
+      ], join(root, packageDirectory(pkg)));
+      const packedTarball = output.split("\n").at(-1)?.trim();
+      if (packedTarball === undefined || packedTarball === "") {
+        throw new Error(`bun pm pack did not report a tarball for ${packageName}`);
       }
-      dependencies[`@ackerdb/${pkg}`] = `file:${tarball}`;
+      tarballs[packageName] = `file:${packedTarball}`;
     }
+
+    const dependencies = Object.fromEntries(
+      PUBLIC_PACKAGES.map((pkg) => [
+        `@ackerdb/${pkg}`,
+        tarballs[`@ackerdb/${pkg}`]!,
+      ]),
+    );
+    const optionalDependencies = Object.fromEntries(
+      NATIVE_PACKAGES.map((pkg) => [
+        `@ackerdb/${pkg}`,
+        tarballs[`@ackerdb/${pkg}`]!,
+      ]),
+    );
 
     writeFileSync(join(consumerDir, "package.json"), JSON.stringify({
       name,
       private: true,
       type: "module",
       dependencies,
+      optionalDependencies,
       devDependencies: { "@types/bun": bunTypesVersion },
       // The release is intentionally unpublished: force transitive @ackerdb exact
-      // versions to the same seven tarballs while preserving packed manifests.
+      // versions to the same public tarballs while preserving packed manifests.
+      // The native tarballs stay optional. Bun materializes every local-file
+      // optional package, so the gate verifies their host metadata separately
+      // and proves that the generated loader resolves the current host.
       overrides: dependencies,
     }, null, 2));
     await runCommand([

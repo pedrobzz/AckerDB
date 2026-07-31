@@ -1,16 +1,16 @@
-import { createHash, createHmac } from "node:crypto";
+import { createHmac } from "node:crypto";
 import type { PortableRTCConfiguration } from "@ackerdb/core";
-import type { Principal } from "@ackerdb/server";
 import type { RealtimeConfigurationSource } from "./engine.ts";
 
 const DEFAULT_TTL_SECONDS = 3_600;
 const MIN_TTL_SECONDS = 60;
 const MAX_TTL_SECONDS = 86_400;
+const MIN_SECRET_BYTES = 32;
 
 export interface RealtimeTurnOptions {
   /** coturn `turn:` or `turns:` listener URLs. */
   readonly urls: string | readonly string[];
-  /** The same value configured as coturn's `static-auth-secret`. */
+  /** At least 32 random bytes, matching coturn's `static-auth-secret`. */
   readonly secret: string | Uint8Array;
   /** Credential lifetime. Defaults to one hour. */
   readonly ttlSeconds?: number;
@@ -41,13 +41,13 @@ export function createTurnConfiguration(
   );
   const iceTransportPolicy = options.iceTransportPolicy ?? "all";
 
-  return (principal): PortableRTCConfiguration => {
+  return (_principal, _signal, owner): PortableRTCConfiguration => {
     const timestamp = now();
     if (!Number.isFinite(timestamp) || timestamp < 0) {
       throw new TypeError("realtime TURN clock must return Unix milliseconds");
     }
     const expiresAt = Math.floor(timestamp / 1_000) + ttlSeconds;
-    const username = `${expiresAt}:${principalKey(principal)}`;
+    const username = `${expiresAt}:${owner}`;
     const credential = createHmac("sha1", secret)
       .update(username)
       .digest("base64");
@@ -60,27 +60,6 @@ export function createTurnConfiguration(
       iceTransportPolicy,
     };
   };
-}
-
-function principalKey(principal: Principal): string {
-  let identity: string;
-  switch (principal.kind) {
-    case "anonymous":
-    case "system":
-      identity = principal.kind;
-      break;
-    case "mcp":
-      identity = `${principal.kind}\0${principal.identity}\0${principal.mcp}`;
-      break;
-    case "user":
-      identity =
-        `${principal.kind}\0${principal.identity}\0${principal.issuer}\0${principal.subject}`;
-      break;
-    case "workload":
-      identity = `${principal.kind}\0${principal.issuer}\0${principal.subject}`;
-      break;
-  }
-  return createHash("sha256").update(identity).digest("base64url").slice(0, 22);
 }
 
 function urlsOf(
@@ -108,6 +87,11 @@ function secretOf(value: string | Uint8Array): Uint8Array {
     : value.slice();
   if (bytes.byteLength === 0) {
     throw new TypeError("realtime.turn.secret cannot be empty");
+  }
+  if (bytes.byteLength < MIN_SECRET_BYTES) {
+    throw new TypeError(
+      `realtime.turn.secret must contain at least ${MIN_SECRET_BYTES} bytes`,
+    );
   }
   return bytes;
 }

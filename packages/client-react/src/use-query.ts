@@ -1,6 +1,7 @@
 import { getRef, type ApplicationError } from "@ackerdb/core";
 import type { QueryRef } from "@ackerdb/client";
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useMemo } from "react";
+import { useObservation } from "./observation.ts";
 import { useProviderClient } from "./provider.tsx";
 import {
   QueryStoreEntry,
@@ -11,7 +12,6 @@ import {
   DISABLED_STATE,
   PENDING_STATE,
   UNENCODABLE_ARGS,
-  noObservation,
   queryArgsKey,
   skip,
   type AckerDBQueryState,
@@ -53,21 +53,10 @@ export function useQuery<Args, Rows, Error extends ApplicationError = never>(
           : queryRegistryFor(client).source<Rows, Error>(address, argsKey, args),
     [client, address, argsKey],
   );
-  const subscribe = useCallback(
-    (onStoreChange: () => void) =>
-      source !== null ? source.listen(onStoreChange) : noObservation(),
-    [source],
-  );
   // Without a source the snapshot is deterministic: disabled while skipped,
   // pending during the commit gap before the provider constructs its client.
-  const getSnapshot = useCallback(
-    (): AckerDBQueryState<Rows, Error> =>
-      source !== null ? source.snapshot() : argsKey === null ? DISABLED_STATE : PENDING_STATE,
-    [source, argsKey],
+  return useObservation<AckerDBQueryState<Rows, Error>>(
+    source,
+    argsKey === null ? DISABLED_STATE : PENDING_STATE,
   );
-  const getServerSnapshot = useCallback(
-    (): AckerDBQueryState<Rows, Error> => (argsKey === null ? DISABLED_STATE : PENDING_STATE),
-    [argsKey],
-  );
-  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }
