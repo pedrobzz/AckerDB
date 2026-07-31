@@ -78,6 +78,11 @@ export type ProcedureCtx<
   ): Promise<FunctionResult<R>>;
 };
 
+export interface OwnedProcedureContext {
+  readonly value: ProcedureCtx;
+  release(): void;
+}
+
 /**
  * What an SSE handler returns: the chunks the client receives, either as a
  * ReadableStream (e.g. an AI SDK UI message stream) or any async iterable

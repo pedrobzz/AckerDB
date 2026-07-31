@@ -1,3 +1,5 @@
+import { positiveSafeInteger } from "../shared/numbers.ts";
+
 const KiB = 1024;
 const MiB = 1024 * KiB;
 const GiB = 1024 * MiB;
@@ -80,12 +82,6 @@ export interface ServiceLimits {
   readonly gracefulShutdownMs: number;
 }
 
-function positiveInteger(value: number, path: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${path} must be a positive safe integer`);
-  }
-}
-
 function nonNegativeInteger(value: number, path: string): void {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new RangeError(`${path} must be a non-negative safe integer`);
@@ -93,21 +89,21 @@ function nonNegativeInteger(value: number, path: string): void {
 }
 
 export function validateCapacityLimits(limits: CapacityLimits, path = "capacity"): CapacityLimits {
-  positiveInteger(limits.maxItems, `${path}.maxItems`);
-  positiveInteger(limits.maxBytes, `${path}.maxBytes`);
+  positiveSafeInteger(limits.maxItems, `${path}.maxItems`);
+  positiveSafeInteger(limits.maxBytes, `${path}.maxBytes`);
   return Object.freeze({ maxItems: limits.maxItems, maxBytes: limits.maxBytes });
 }
 
 export function validateQueueLimits(limits: QueueLimits, path = "queue"): QueueLimits {
   const capacity = validateCapacityLimits(limits, path);
-  positiveInteger(limits.maxAgeMs, `${path}.maxAgeMs`);
+  positiveSafeInteger(limits.maxAgeMs, `${path}.maxAgeMs`);
   return Object.freeze({ ...capacity, maxAgeMs: limits.maxAgeMs });
 }
 
 export function validateTelemetryLimits(limits: TelemetryLimits): TelemetryLimits {
   for (const [path, value] of Object.entries(limits)) {
     if (path === "slowOperationMs") nonNegativeInteger(value, `telemetry.${path}`);
-    else positiveInteger(value, `telemetry.${path}`);
+    else positiveSafeInteger(value, `telemetry.${path}`);
   }
   if (limits.maxBatchRecords > limits.maxRecords) {
     throw new RangeError("telemetry.maxBatchRecords cannot exceed telemetry.maxRecords");
@@ -157,7 +153,7 @@ export function defineServiceLimits(limits: ServiceLimits): ServiceLimits {
     ["mcp.maxToolsPerEndpoint", limits.mcp.maxToolsPerEndpoint],
     ["gracefulShutdownMs", limits.gracefulShutdownMs],
   ];
-  for (const [path, value] of scalarLimits) positiveInteger(value, path);
+  for (const [path, value] of scalarLimits) positiveSafeInteger(value, path);
 
   if (limits.maxOperationsPerCaller > limits.maxOperations) {
     throw new RangeError("maxOperationsPerCaller cannot exceed maxOperations");

@@ -10,7 +10,10 @@ import {
   type RealtimeIceCandidate,
   type RealtimeSignalFrame,
 } from "@ackerdb/core";
-import type { ProcedureCtx } from "../app/functions.ts";
+import type {
+  OwnedProcedureContext,
+  ProcedureCtx,
+} from "../app/functions.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import type {
@@ -48,13 +51,8 @@ export interface RealtimeServerSessionLimits {
   readonly maxTransceiversPerPeer?: number;
 }
 
-export interface OwnedRealtimeProcedureContext {
-  readonly value: ProcedureCtx;
-  release(): void;
-}
-
 export interface RealtimeServerSessionAdapter {
-  createContext(signal: AbortSignal): OwnedRealtimeProcedureContext;
+  createContext(signal: AbortSignal): OwnedProcedureContext;
   invoke<T>(
     definition: AnyRegisteredRealtime,
     context: ProcedureCtx,
@@ -125,7 +123,7 @@ export class RealtimeServerSession {
   private readonly observePressure?: RealtimeServerSessionOptions["observePressure"];
   private readonly resourceBudget?: RealtimeGlobalResourceBudget;
   private readonly controller = new AbortController();
-  private readonly contextOwner: OwnedRealtimeProcedureContext;
+  private readonly contextOwner: OwnedProcedureContext;
   private readonly eventHandlers = new Map<string, EventHandler[]>();
   private readonly streamHandlers = new Map<string, StreamHandler>();
   private readonly dataPlane: RealtimeDataPlane;

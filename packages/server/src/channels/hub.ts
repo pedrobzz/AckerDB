@@ -10,10 +10,15 @@ import {
   invokeFunction,
   invokeRegisteredHandler,
 } from "../app/invocation.ts";
-import type { ProcedureCtx } from "../app/functions.ts";
+import type {
+  OwnedProcedureContext,
+  ProcedureCtx,
+} from "../app/functions.ts";
 import type { Registry } from "../app/registry.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 import { AckerDBError } from "../shared/errors.ts";
+import { positiveSafeInteger } from "../shared/numbers.ts";
+import { settleOnAbort } from "../runtime/abort.ts";
 import {
   compileShape,
   type ObjectShape,
@@ -25,14 +30,9 @@ import {
   type ChannelDisconnectReason,
 } from "./definition.ts";
 
-export interface OwnedChannelProcedureContext {
-  readonly value: ProcedureCtx;
-  release(): void;
-}
-
 export interface ChannelSessionAdapter {
   readonly principal: Principal;
-  createContext(signal: AbortSignal, requestBytes: number): OwnedChannelProcedureContext;
+  createContext(signal: AbortSignal, requestBytes: number): OwnedProcedureContext;
   send(id: number, event: string, payload: unknown): Promise<boolean>;
 }
 
@@ -105,13 +105,6 @@ type RuntimeChannelCtx = ProcedureCtx & {
   };
 };
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${name} must be a positive safe integer`);
-  }
-  return value;
-}
-
 function freezeValidated(value: unknown): unknown {
   return deepFreeze(value);
 }
@@ -130,12 +123,12 @@ export class ChannelHub {
 
   constructor(options: ChannelHubOptions) {
     this.registry = options.registry;
-    this.maxMembers = positiveInteger(options.maxMembers, "maxMembers");
-    this.maxMembersPerSession = positiveInteger(
+    this.maxMembers = positiveSafeInteger(options.maxMembers, "maxMembers");
+    this.maxMembersPerSession = positiveSafeInteger(
       options.maxMembersPerSession,
       "maxMembersPerSession",
     );
-    this.disconnectTimeoutMs = positiveInteger(
+    this.disconnectTimeoutMs = positiveSafeInteger(
       options.disconnectTimeoutMs ?? DEFAULT_DISCONNECT_TIMEOUT_MS,
       "disconnectTimeoutMs",
     );
@@ -551,25 +544,4 @@ export class ChannelHub {
         : { hasRoom: true, value: room },
     ]);
   }
-}
-
-function settleOnAbort<T>(
-  work: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise((resolve, reject) => {
-    const aborted = () => reject(signal.reason);
-    signal.addEventListener("abort", aborted, { once: true });
-    work.then(
-      (value) => {
-        signal.removeEventListener("abort", aborted);
-        resolve(value);
-      },
-      (error) => {
-        signal.removeEventListener("abort", aborted);
-        reject(error);
-      },
-    );
-  });
 }

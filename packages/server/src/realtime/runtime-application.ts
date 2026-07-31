@@ -7,7 +7,10 @@ import {
   invokeFunction,
   invokeRegisteredHandler,
 } from "../app/invocation.ts";
-import type { ProcedureCtx } from "../app/functions.ts";
+import type {
+  OwnedProcedureContext,
+  ProcedureCtx,
+} from "../app/functions.ts";
 import { AckerDBError } from "../shared/errors.ts";
 import {
   callerFairnessKey,
@@ -27,14 +30,8 @@ import type {
   RejectedRealtimeApplication,
 } from "./hub.ts";
 import type {
-  OwnedRealtimeProcedureContext,
   RealtimeServerSessionAdapter,
 } from "./session.ts";
-
-interface OwnedProcedureContext {
-  readonly value: ProcedureCtx;
-  readonly release: () => void;
-}
 
 export interface RealtimeRuntimeApplicationPort {
   addressOf(definition: AnyRegisteredRealtime): string | undefined;
@@ -48,7 +45,7 @@ export interface RealtimeRuntimeApplicationPort {
     principal: Principal,
     fairnessKey: string,
     signal: AbortSignal,
-  ): OwnedRealtimeProcedureContext;
+  ): OwnedProcedureContext;
   run<Value>(
     address: string,
     fairnessKey: string,

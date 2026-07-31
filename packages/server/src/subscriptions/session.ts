@@ -34,6 +34,7 @@ import {
   type UnsubscribeMessage,
   type WelcomeMessage,
 } from "@ackerdb/core";
+import { positiveSafeInteger } from "../shared/numbers.ts";
 import {
   verifyClientCredential,
   type ClientPrincipal,
@@ -317,13 +318,6 @@ function aborted(controller: AbortController, reason: AckerDBError): void {
   if (!controller.signal.aborted) controller.abort(reason);
 }
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${name} must be a positive safe integer`);
-  }
-  return value;
-}
-
 export class Session {
   readonly revocationDeadlineMs: number;
   readonly maxRequestBytes: number;
@@ -363,8 +357,8 @@ export class Session {
     this.clock = options.clock ?? SYSTEM_CLOCK;
     this.source = transportSource(options.source);
     const limits = options.limits ?? PRODUCTION_LIMITS;
-    this.maxRequestBytes = positiveInteger(limits.maxRequestBytes, "maxRequestBytes");
-    this.maxFrameBytes = positiveInteger(limits.maxFrameBytes, "maxFrameBytes");
+    this.maxRequestBytes = positiveSafeInteger(limits.maxRequestBytes, "maxRequestBytes");
+    this.maxFrameBytes = positiveSafeInteger(limits.maxFrameBytes, "maxFrameBytes");
     this.revocationDeadlineMs = revocationDeadlineMs;
     if (this.runtime.credentialVerifier !== undefined) {
       const subscription = subscribeAuthInvalidation(this.runtime.credentialVerifier, (invalidation) => {

@@ -10,11 +10,14 @@ import {
   type PortableRTCDataChannel,
   type PortableRTCPeerConnection,
   type PortableRTCPeerConnectionIceEvent,
+  type RealtimeCandidateBatch,
+  type RealtimeIceCandidate,
   type RealtimeStreamLimits,
 } from "@ackerdb/core";
 import type { Principal } from "../auth/credentials.ts";
 import type { Registry } from "../app/registry.ts";
 import { AckerDBError } from "../shared/errors.ts";
+import { positiveSafeInteger } from "../shared/numbers.ts";
 import { outcomeFromError } from "../runtime/outcome.ts";
 import {
   RealtimeServerSession,
@@ -125,18 +128,6 @@ export interface RealtimeHealthSnapshot {
   readonly firstInboundVideo: number;
   readonly firstOutboundAudio: number;
   readonly firstOutboundVideo: number;
-}
-
-export interface RealtimeIceCandidate {
-  readonly candidate: string;
-  readonly sdpMid?: string | null;
-  readonly sdpMLineIndex?: number | null;
-  readonly usernameFragment?: string | null;
-}
-
-export interface RealtimeCandidateBatch {
-  readonly candidates: readonly RealtimeIceCandidate[];
-  readonly complete: boolean;
 }
 
 export interface RealtimeOfferInput {
@@ -373,13 +364,6 @@ function emptyReadinessStages(): Record<
   };
 }
 
-function positiveInteger(value: number, name: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${name} must be a positive safe integer`);
-  }
-  return value;
-}
-
 function principalKey(principal: Principal): string {
   return stableEncode(principal);
 }
@@ -518,65 +502,65 @@ export class RealtimeHub {
     this.application = options.application;
     this.sessionLimits = options.sessionLimits;
     for (const [name, value] of Object.entries(this.sessionLimits)) {
-      positiveInteger(value, `sessionLimits.${name}`);
+      positiveSafeInteger(value, `sessionLimits.${name}`);
     }
     this.resourceBudget = options.resourceBudget ??
       new RealtimeGlobalResourceBudget({
         ...REALTIME_HUB_DEFAULTS.resourceLimits,
         ...options.resourceLimits,
       });
-    this.maxSessions = positiveInteger(options.maxSessions, "maxSessions");
-    this.maxSessionsPerPrincipal = positiveInteger(
+    this.maxSessions = positiveSafeInteger(options.maxSessions, "maxSessions");
+    this.maxSessionsPerPrincipal = positiveSafeInteger(
       options.maxSessionsPerPrincipal,
       "maxSessionsPerPrincipal",
     );
-    this.maxHandshakesPerWindow = positiveInteger(
+    this.maxHandshakesPerWindow = positiveSafeInteger(
       options.maxHandshakesPerWindow,
       "maxHandshakesPerWindow",
     );
-    this.handshakeWindowMs = positiveInteger(
+    this.handshakeWindowMs = positiveSafeInteger(
       options.handshakeWindowMs,
       "handshakeWindowMs",
     );
-    this.maxTrackedPrincipals = positiveInteger(
+    this.maxTrackedPrincipals = positiveSafeInteger(
       options.maxTrackedPrincipals,
       "maxTrackedPrincipals",
     );
-    this.maxPendingCandidates = positiveInteger(
+    this.maxPendingCandidates = positiveSafeInteger(
       options.maxPendingCandidates,
       "maxPendingCandidates",
     );
-    this.terminalRetentionMs = positiveInteger(
+    this.terminalRetentionMs = positiveSafeInteger(
       options.terminalRetentionMs,
       "terminalRetentionMs",
     );
     this.now = options.now;
     this.networkDiagnostic = options.networkDiagnostic ?? null;
-    this.authorizationTimeoutMs = positiveInteger(
+    this.authorizationTimeoutMs = positiveSafeInteger(
       options.authorizationTimeoutMs ?? REALTIME_HUB_DEFAULTS.authorizationTimeoutMs,
       "authorizationTimeoutMs",
     );
-    this.configurationTimeoutMs = positiveInteger(
+    this.configurationTimeoutMs = positiveSafeInteger(
       options.configurationTimeoutMs ?? REALTIME_HUB_DEFAULTS.configurationTimeoutMs,
       "configurationTimeoutMs",
     );
-    this.handlerTimeoutMs = positiveInteger(
+    this.handlerTimeoutMs = positiveSafeInteger(
       options.handlerTimeoutMs ?? REALTIME_HUB_DEFAULTS.handlerTimeoutMs,
       "handlerTimeoutMs",
     );
-    this.signalingTimeoutMs = positiveInteger(
+    this.signalingTimeoutMs = positiveSafeInteger(
       options.signalingTimeoutMs ?? REALTIME_HUB_DEFAULTS.signalingTimeoutMs,
       "signalingTimeoutMs",
     );
-    this.iceTimeoutMs = positiveInteger(
+    this.iceTimeoutMs = positiveSafeInteger(
       options.iceTimeoutMs ?? REALTIME_HUB_DEFAULTS.iceTimeoutMs,
       "iceTimeoutMs",
     );
-    this.dtlsTimeoutMs = positiveInteger(
+    this.dtlsTimeoutMs = positiveSafeInteger(
       options.dtlsTimeoutMs ?? REALTIME_HUB_DEFAULTS.dtlsTimeoutMs,
       "dtlsTimeoutMs",
     );
-    this.dataChannelTimeoutMs = positiveInteger(
+    this.dataChannelTimeoutMs = positiveSafeInteger(
       options.dataChannelTimeoutMs ?? REALTIME_HUB_DEFAULTS.dataChannelTimeoutMs,
       "dataChannelTimeoutMs",
     );
@@ -648,7 +632,7 @@ export class RealtimeHub {
   }
 
   async sampleHealth(maxPeers = 8): Promise<void> {
-    positiveInteger(maxPeers, "maxPeers");
+    positiveSafeInteger(maxPeers, "maxPeers");
     if (this.sampling) return;
     if (this.sampleIds.length === 0) {
       this.clearLiveHealth();

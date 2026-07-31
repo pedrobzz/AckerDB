@@ -96,6 +96,7 @@ import type {
   AnyRegistered,
   AnyRegisteredSse,
   MutationCtx,
+  OwnedProcedureContext,
   ProcedureCtx,
   QueryCtx,
   SseCtx,
@@ -156,7 +157,6 @@ import type { Registry } from "../app/registry.ts";
 import {
   ChannelHub,
   type ChannelSessionAdapter,
-  type OwnedChannelProcedureContext,
 } from "../channels/hub.ts";
 import {
   REALTIME_HUB_DEFAULTS,
@@ -375,11 +375,6 @@ export interface RuntimeSseRequest extends RuntimeExternalRequest {}
 export interface RuntimeSseResponse {
   readonly stream: ReadableStream<Uint8Array>;
   readonly streamId: string;
-}
-
-interface OwnedProcedureContext {
-  readonly value: ProcedureCtx;
-  readonly release: () => void;
 }
 
 interface ProcedureInvalidations {
@@ -2819,7 +2814,7 @@ export class Runtime implements RuntimePort {
       createContext: (
         signal: AbortSignal,
         requestBytes: number,
-      ): OwnedChannelProcedureContext =>
+      ): OwnedProcedureContext =>
         this.channelProcedureContext(state(), signal, requestBytes),
       send: async (id: number, event: string, payload: unknown): Promise<boolean> => {
         const current = state();
@@ -2843,7 +2838,7 @@ export class Runtime implements RuntimePort {
     state: RuntimeSession,
     signal: AbortSignal,
     requestBytes: number,
-  ): OwnedChannelProcedureContext {
+  ): OwnedProcedureContext {
     const invalidations = this.procedureInvalidations(
       state.context.principal,
       state.context.invalidationScope,
