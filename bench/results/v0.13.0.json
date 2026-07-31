@@ -5,11 +5,11 @@
     "host": "hetzner",
     "previousVersion": "0.12.0"
   },
-  "timestamp": "2026-07-31T22:23:22.950Z",
+  "timestamp": "2026-07-31T23:13:28.068Z",
   "git": {
-    "commit": "e27829ac7d720c7bd97a013c879792092196bf24",
+    "commit": "b4652d76e7bddf3940e0142fbb62af610c2dbb30",
     "dirty": false,
-    "sourceHash": "84b5dc5f3a0071dd17ad9b9b5ed9abfee3e7f2eb23d57c5fa7d49d7a8c21e19f"
+    "sourceHash": "f87ecdd2f4c0d0e5905811e5b9035458a348e8244303cad845b8a55afa361270"
   },
   "machine": {
     "platform": "linux",
@@ -121,21 +121,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536358076.4314,
-                "windowEndedAtMs": 1785536360076.4314,
+                "windowStartedAtMs": 1785539366060.1768,
+                "windowEndedAtMs": 1785539368060.1768,
                 "wallMs": 2000,
-                "attempted": 7574,
-                "completedInWindow": 7573,
+                "attempted": 7852,
+                "completedInWindow": 7851,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 3786.5,
+                "throughputPerSec": 3925.5,
                 "latency": {
-                  "count": 7574,
-                  "minMs": 0.17904700000008233,
-                  "p50Ms": 0.23917200000005323,
-                  "p95Ms": 0.35453800000004776,
-                  "p99Ms": 0.8318199999998797,
-                  "maxMs": 3.9247040000000197
+                  "count": 7852,
+                  "minMs": 0.17773499999975684,
+                  "p50Ms": 0.2317480000001524,
+                  "p95Ms": 0.3392300000000432,
+                  "p99Ms": 0.7820159999996577,
+                  "maxMs": 2.6700670000000173
                 },
                 "errors": [],
                 "interruption": null,
@@ -146,10 +146,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 3786.5,
-            "medianLatencyP50Ms": 0.23917200000005323,
-            "medianLatencyP95Ms": 0.35453800000004776,
-            "medianLatencyP99Ms": 0.8318199999998797
+            "medianThroughputPerSec": 3925.5,
+            "medianLatencyP50Ms": 0.2317480000001524,
+            "medianLatencyP95Ms": 0.3392300000000432,
+            "medianLatencyP99Ms": 0.7820159999996577
           },
           {
             "operation": "query",
@@ -160,21 +160,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536360607.7769,
-                "windowEndedAtMs": 1785536362607.7769,
+                "windowStartedAtMs": 1785539368590.8813,
+                "windowEndedAtMs": 1785539370590.8813,
                 "wallMs": 2000,
-                "attempted": 22048,
-                "completedInWindow": 21920,
+                "attempted": 22769,
+                "completedInWindow": 22641,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 10960,
+                "throughputPerSec": 11320.5,
                 "latency": {
-                  "count": 22048,
-                  "minMs": 3.594301000000087,
-                  "p50Ms": 11.132351000000199,
-                  "p95Ms": 15.68651300000056,
-                  "p99Ms": 22.186725999999908,
-                  "maxMs": 33.9223149999998
+                  "count": 22769,
+                  "minMs": 1.646577999999863,
+                  "p50Ms": 10.852517000000262,
+                  "p95Ms": 15.37593200000083,
+                  "p99Ms": 22.252857999999833,
+                  "maxMs": 33.97319299999981
                 },
                 "errors": [],
                 "interruption": null,
@@ -185,10 +185,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 10960,
-            "medianLatencyP50Ms": 11.132351000000199,
-            "medianLatencyP95Ms": 15.68651300000056,
-            "medianLatencyP99Ms": 22.186725999999908
+            "medianThroughputPerSec": 11320.5,
+            "medianLatencyP50Ms": 10.852517000000262,
+            "medianLatencyP95Ms": 15.37593200000083,
+            "medianLatencyP99Ms": 22.252857999999833
           },
           {
             "operation": "mutation-uncontended",
@@ -199,21 +199,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536363135.238,
-                "windowEndedAtMs": 1785536365135.238,
+                "windowStartedAtMs": 1785539371125.9688,
+                "windowEndedAtMs": 1785539373125.9688,
                 "wallMs": 2000,
-                "attempted": 4241,
-                "completedInWindow": 4240,
+                "attempted": 3804,
+                "completedInWindow": 3803,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 2120,
+                "throughputPerSec": 1901.5,
                 "latency": {
-                  "count": 4241,
-                  "minMs": 0.31414199999926495,
-                  "p50Ms": 0.40272900000036316,
-                  "p95Ms": 0.6953319999993255,
-                  "p99Ms": 1.515639999999621,
-                  "maxMs": 8.731412000000091
+                  "count": 3804,
+                  "minMs": 0.3094939999991766,
+                  "p50Ms": 0.4357819999995627,
+                  "p95Ms": 0.9531779999997525,
+                  "p99Ms": 1.8268269999998665,
+                  "maxMs": 7.709136000001308
                 },
                 "errors": [],
                 "interruption": null,
@@ -224,10 +224,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 2120,
-            "medianLatencyP50Ms": 0.40272900000036316,
-            "medianLatencyP95Ms": 0.6953319999993255,
-            "medianLatencyP99Ms": 1.515639999999621
+            "medianThroughputPerSec": 1901.5,
+            "medianLatencyP50Ms": 0.4357819999995627,
+            "medianLatencyP95Ms": 0.9531779999997525,
+            "medianLatencyP99Ms": 1.8268269999998665
           },
           {
             "operation": "mutation-uncontended",
@@ -238,21 +238,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536365694.3972,
-                "windowEndedAtMs": 1785536367694.3972,
+                "windowStartedAtMs": 1785539373691.1313,
+                "windowEndedAtMs": 1785539375691.1313,
                 "wallMs": 2000,
-                "attempted": 6570,
-                "completedInWindow": 6442,
+                "attempted": 6550,
+                "completedInWindow": 6422,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 3221,
+                "throughputPerSec": 3211,
                 "latency": {
-                  "count": 6570,
-                  "minMs": 4.952581999999893,
-                  "p50Ms": 38.76810699999987,
-                  "p95Ms": 49.55062800000087,
-                  "p99Ms": 75.3854080000001,
-                  "maxMs": 91.03222499999902
+                  "count": 6550,
+                  "minMs": 8.189181000001554,
+                  "p50Ms": 38.39384500000051,
+                  "p95Ms": 49.04878800000006,
+                  "p99Ms": 76.16491399999904,
+                  "maxMs": 98.10230599999886
                 },
                 "errors": [],
                 "interruption": null,
@@ -263,10 +263,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 3221,
-            "medianLatencyP50Ms": 38.76810699999987,
-            "medianLatencyP95Ms": 49.55062800000087,
-            "medianLatencyP99Ms": 75.3854080000001
+            "medianThroughputPerSec": 3211,
+            "medianLatencyP50Ms": 38.39384500000051,
+            "medianLatencyP95Ms": 49.04878800000006,
+            "medianLatencyP99Ms": 76.16491399999904
           },
           {
             "operation": "mutation-contended",
@@ -277,21 +277,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536368237.0708,
-                "windowEndedAtMs": 1785536370237.0708,
+                "windowStartedAtMs": 1785539376240.0508,
+                "windowEndedAtMs": 1785539378240.0508,
                 "wallMs": 2000,
-                "attempted": 4390,
-                "completedInWindow": 4389,
+                "attempted": 3453,
+                "completedInWindow": 3452,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 2194.5,
+                "throughputPerSec": 1726,
                 "latency": {
-                  "count": 4390,
-                  "minMs": 0.3048159999998461,
-                  "p50Ms": 0.3906169999991107,
-                  "p95Ms": 0.6671879999994417,
-                  "p99Ms": 1.5178550000000541,
-                  "maxMs": 6.742761000001337
+                  "count": 3453,
+                  "minMs": 0.3196619999998802,
+                  "p50Ms": 0.4709789999997156,
+                  "p95Ms": 1.113922000000457,
+                  "p99Ms": 2.146549999999479,
+                  "maxMs": 9.3731659999994
                 },
                 "errors": [],
                 "interruption": null,
@@ -302,10 +302,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 2194.5,
-            "medianLatencyP50Ms": 0.3906169999991107,
-            "medianLatencyP95Ms": 0.6671879999994417,
-            "medianLatencyP99Ms": 1.5178550000000541
+            "medianThroughputPerSec": 1726,
+            "medianLatencyP50Ms": 0.4709789999997156,
+            "medianLatencyP95Ms": 1.113922000000457,
+            "medianLatencyP99Ms": 2.146549999999479
           },
           {
             "operation": "mutation-contended",
@@ -316,21 +316,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536370801.0688,
-                "windowEndedAtMs": 1785536372801.0688,
+                "windowStartedAtMs": 1785539378801.664,
+                "windowEndedAtMs": 1785539380801.664,
                 "wallMs": 2000,
-                "attempted": 6516,
-                "completedInWindow": 6388,
+                "attempted": 6244,
+                "completedInWindow": 6116,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 3194,
+                "throughputPerSec": 3058,
                 "latency": {
-                  "count": 6516,
-                  "minMs": 2.4124810000012076,
-                  "p50Ms": 38.6772660000006,
-                  "p95Ms": 49.13972400000057,
-                  "p99Ms": 76.22927999999956,
-                  "maxMs": 111.88987400000042
+                  "count": 6244,
+                  "minMs": 4.7882339999996475,
+                  "p50Ms": 41.312771000000794,
+                  "p95Ms": 51.668611999999484,
+                  "p99Ms": 77.67135599999892,
+                  "maxMs": 96.19071999999869
                 },
                 "errors": [],
                 "interruption": null,
@@ -341,10 +341,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 3194,
-            "medianLatencyP50Ms": 38.6772660000006,
-            "medianLatencyP95Ms": 49.13972400000057,
-            "medianLatencyP99Ms": 76.22927999999956
+            "medianThroughputPerSec": 3058,
+            "medianLatencyP50Ms": 41.312771000000794,
+            "medianLatencyP95Ms": 51.668611999999484,
+            "medianLatencyP99Ms": 77.67135599999892
           },
           {
             "operation": "procedure",
@@ -355,21 +355,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536373360.3445,
-                "windowEndedAtMs": 1785536375360.3445,
+                "windowStartedAtMs": 1785539381345.3716,
+                "windowEndedAtMs": 1785539383345.3716,
                 "wallMs": 2000,
-                "attempted": 11574,
-                "completedInWindow": 11573,
+                "attempted": 11327,
+                "completedInWindow": 11326,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 5786.5,
+                "throughputPerSec": 5663,
                 "latency": {
-                  "count": 11574,
-                  "minMs": 0.11073899999973946,
-                  "p50Ms": 0.1561650000003283,
-                  "p95Ms": 0.22447400000237394,
-                  "p99Ms": 0.68449099999998,
-                  "maxMs": 2.61171800000011
+                  "count": 11327,
+                  "minMs": 0.10898699999961536,
+                  "p50Ms": 0.15967100000125356,
+                  "p95Ms": 0.2317670000011276,
+                  "p99Ms": 0.7275829999998678,
+                  "maxMs": 2.7866790000007313
                 },
                 "errors": [],
                 "interruption": null,
@@ -380,10 +380,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 5786.5,
-            "medianLatencyP50Ms": 0.1561650000003283,
-            "medianLatencyP95Ms": 0.22447400000237394,
-            "medianLatencyP99Ms": 0.68449099999998
+            "medianThroughputPerSec": 5663,
+            "medianLatencyP50Ms": 0.15967100000125356,
+            "medianLatencyP95Ms": 0.2317670000011276,
+            "medianLatencyP99Ms": 0.7275829999998678
           },
           {
             "operation": "procedure",
@@ -394,21 +394,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536375883.3508,
-                "windowEndedAtMs": 1785536377883.3508,
+                "windowStartedAtMs": 1785539383868.0664,
+                "windowEndedAtMs": 1785539385868.0664,
                 "wallMs": 2000,
-                "attempted": 46954,
-                "completedInWindow": 46826,
+                "attempted": 49359,
+                "completedInWindow": 49231,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 23413,
+                "throughputPerSec": 24615.5,
                 "latency": {
-                  "count": 46954,
-                  "minMs": 0.6503579999989597,
-                  "p50Ms": 5.131150000001071,
-                  "p95Ms": 9.252415000002657,
-                  "p99Ms": 11.887536000002001,
-                  "maxMs": 21.554824000002554
+                  "count": 49359,
+                  "minMs": 0.26025099999969825,
+                  "p50Ms": 4.824391999998625,
+                  "p95Ms": 8.626836999999796,
+                  "p99Ms": 10.67082400000072,
+                  "maxMs": 13.788817000000563
                 },
                 "errors": [],
                 "interruption": null,
@@ -419,10 +419,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 23413,
-            "medianLatencyP50Ms": 5.131150000001071,
-            "medianLatencyP95Ms": 9.252415000002657,
-            "medianLatencyP99Ms": 11.887536000002001
+            "medianThroughputPerSec": 24615.5,
+            "medianLatencyP50Ms": 4.824391999998625,
+            "medianLatencyP95Ms": 8.626836999999796,
+            "medianLatencyP99Ms": 10.67082400000072
           }
         ],
         "connections": [
@@ -430,34 +430,34 @@
             "targetConnections": 1,
             "connected": 1,
             "addedConnections": 1,
-            "setupMs": 40.41316500000903,
-            "readyConnectionsPerSec": 494.88823753337635,
+            "setupMs": 41.35334399999192,
+            "readyConnectionsPerSec": 483.63682511392324,
             "readyLatency": {
               "count": 20,
-              "minMs": 1.451710000001185,
-              "p50Ms": 1.7643000000025495,
-              "p95Ms": 3.3089920000020356,
-              "p99Ms": 3.6504170000043814,
-              "maxMs": 3.6504170000043814
+              "minMs": 1.5760749999972177,
+              "p50Ms": 1.8663509999969392,
+              "p95Ms": 3.0197669999979553,
+              "p99Ms": 3.1482509999987087,
+              "maxMs": 3.1482509999987087
             },
             "connectedSnapshotId": "connections:1:connected",
             "connectedIdlePhaseId": "connections:1:idle",
             "work": {
-              "windowStartedAtMs": 1785536398950.091,
-              "windowEndedAtMs": 1785536399950.091,
+              "windowStartedAtMs": 1785539406934.9468,
+              "windowEndedAtMs": 1785539407934.9468,
               "wallMs": 1000,
-              "attempted": 3681,
-              "completedInWindow": 3680,
+              "attempted": 3572,
+              "completedInWindow": 3571,
               "completedAfterWindow": 1,
               "failed": 0,
-              "throughputPerSec": 3680,
+              "throughputPerSec": 3571,
               "latency": {
-                "count": 3681,
-                "minMs": 0.17739499999879627,
-                "p50Ms": 0.23881100000289734,
-                "p95Ms": 0.4988200000007055,
-                "p99Ms": 0.8091359999962151,
-                "maxMs": 2.2381210000021383
+                "count": 3572,
+                "minMs": 0.1814010000016424,
+                "p50Ms": 0.2486380000045756,
+                "p95Ms": 0.43461999999999534,
+                "p99Ms": 0.9096569999965141,
+                "maxMs": 2.5988330000036513
               },
               "errors": [],
               "interruption": null,
@@ -469,34 +469,34 @@
             "targetConnections": 1000,
             "connected": 1000,
             "addedConnections": 999,
-            "setupMs": 368.3465059999944,
-            "readyConnectionsPerSec": 2712.1202012976746,
+            "setupMs": 339.38256199999887,
+            "readyConnectionsPerSec": 2943.580819570816,
             "readyLatency": {
               "count": 999,
-              "minMs": 15.274014999995416,
-              "p50Ms": 20.052870999999868,
-              "p95Ms": 42.13455899999826,
-              "p99Ms": 42.89031500000419,
-              "maxMs": 43.04632899999706
+              "minMs": 14.451668000001519,
+              "p50Ms": 18.534983999998076,
+              "p95Ms": 39.05505199999607,
+              "p99Ms": 40.02866999999969,
+              "maxMs": 41.03625000000466
             },
             "connectedSnapshotId": "connections:1000:connected",
             "connectedIdlePhaseId": "connections:1000:idle",
             "work": {
-              "windowStartedAtMs": 1785536401321.8093,
-              "windowEndedAtMs": 1785536402321.8093,
+              "windowStartedAtMs": 1785539409277.2778,
+              "windowEndedAtMs": 1785539410277.2778,
               "wallMs": 1000,
-              "attempted": 8982,
-              "completedInWindow": 7982,
+              "attempted": 8754,
+              "completedInWindow": 7754,
               "completedAfterWindow": 1000,
               "failed": 0,
-              "throughputPerSec": 7982,
+              "throughputPerSec": 7754,
               "latency": {
-                "count": 8982,
-                "minMs": 22.064617000003636,
-                "p50Ms": 119.22990300000674,
-                "p95Ms": 143.74304899999697,
-                "p99Ms": 163.28622000000178,
-                "maxMs": 175.5718260000067
+                "count": 8754,
+                "minMs": 25.692377999999735,
+                "p50Ms": 120.36115699999937,
+                "p95Ms": 165.70284099999844,
+                "p99Ms": 201.68746999999712,
+                "maxMs": 229.68653999999515
               },
               "errors": [],
               "interruption": null,
@@ -513,8 +513,8 @@
             "logicalSubscriptions": 5000,
             "distinctQueryArguments": 10,
             "baselineIdlePhaseId": "subscriptions:shared:baseline-idle",
-            "setupMs": 365.5906169999944,
-            "setupConnectionsPerSec": 1367.6499799227824,
+            "setupMs": 363.6640600000028,
+            "setupConnectionsPerSec": 1374.8952811009044,
             "subscribedSnapshotId": "subscriptions:shared:subscribed",
             "subscribedIdlePhaseId": "subscriptions:shared:idle",
             "phaseId": "subscriptions:shared:updates",
@@ -526,70 +526,70 @@
             "unexpectedDeliveries": 0,
             "corruptDeliveries": 0,
             "missingDeliveries": 0,
-            "deliveryThroughputPerSec": 9997.434858164119,
+            "deliveryThroughputPerSec": 9997.798159916749,
             "updateAckLatency": {
               "count": 40,
-              "minMs": 12.228109000003315,
-              "p50Ms": 16.839296999998624,
-              "p95Ms": 23.140765999996802,
-              "p99Ms": 27.682162999997672,
-              "maxMs": 27.682162999997672
+              "minMs": 13.283053999999538,
+              "p50Ms": 20.146633999996993,
+              "p95Ms": 29.762619000000996,
+              "p99Ms": 32.13354199999594,
+              "maxMs": 32.13354199999594
             },
             "deliveryLatency": {
               "count": 20000,
-              "minMs": 1.3110129999986384,
-              "p50Ms": 9.524447999996482,
-              "p95Ms": 18.229319999998552,
-              "p99Ms": 22.638769000004686,
-              "maxMs": 27.39418999999907
+              "minMs": 1.5011630000008154,
+              "p50Ms": 11.383699999998498,
+              "p95Ms": 24.40102200000547,
+              "p99Ms": 28.08875000000262,
+              "maxMs": 32.08631299999979
             },
             "timeToAll": {
               "count": 40,
-              "minMs": 11.687808999995468,
-              "p50Ms": 16.78940500000317,
-              "p95Ms": 23.102173000006587,
-              "p99Ms": 27.39418999999907,
-              "maxMs": 27.39418999999907
+              "minMs": 12.47814500000095,
+              "p50Ms": 20.086460999998963,
+              "p95Ms": 29.67380000000412,
+              "p99Ms": 32.08631299999979,
+              "maxMs": 32.08631299999979
             },
             "capacity": [
               {
-                "windowStartedAtMs": 1785536406845.2417,
-                "windowEndedAtMs": 1785536408845.2417,
+                "windowStartedAtMs": 1785539414806.1235,
+                "windowEndedAtMs": 1785539416806.1235,
                 "wallMs": 2000,
-                "attempted": 131,
-                "completedInWindow": 130,
+                "attempted": 132,
+                "completedInWindow": 131,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 65,
+                "throughputPerSec": 65.5,
                 "latency": {
-                  "count": 131,
-                  "minMs": 10.477625999999873,
-                  "p50Ms": 14.907102999997733,
-                  "p95Ms": 20.59080499999982,
-                  "p99Ms": 23.903445000003558,
-                  "maxMs": 26.692717999998422
+                  "count": 132,
+                  "minMs": 9.885352999997849,
+                  "p50Ms": 15.088240000004589,
+                  "p95Ms": 19.01628999999957,
+                  "p99Ms": 21.442278999995324,
+                  "maxMs": 25.99626100000023
                 },
                 "errors": [],
                 "interruption": null,
                 "slots": 1,
                 "phaseId": "subscriptions:shared:capacity-1",
                 "deliveriesPerUpdate": 500,
-                "deliveryThroughputPerSec": 32500,
+                "deliveryThroughputPerSec": 32750,
                 "updateAckLatency": {
-                  "count": 131,
-                  "minMs": 10.43580700000166,
-                  "p50Ms": 14.859361999995599,
-                  "p95Ms": 20.538357000004908,
-                  "p99Ms": 23.830206999999064,
-                  "maxMs": 26.634727999997267
+                  "count": 132,
+                  "minMs": 9.838353999999526,
+                  "p50Ms": 14.992569000001822,
+                  "p95Ms": 18.98362900000211,
+                  "p99Ms": 21.339615000004414,
+                  "maxMs": 24.43699000000197
                 },
                 "deliveryLatency": {
-                  "count": 65500,
-                  "minMs": 0.6431830000001355,
-                  "p50Ms": 8.348840999999084,
-                  "p95Ms": 15.581444999996165,
-                  "p99Ms": 19.35518400000001,
-                  "maxMs": 26.590524999999616
+                  "count": 66000,
+                  "minMs": 0.6628510000009555,
+                  "p50Ms": 8.407544000001508,
+                  "p95Ms": 15.333682999997109,
+                  "p99Ms": 18.41233099999954,
+                  "maxMs": 24.330088000002434
                 },
                 "correctness": {
                   "ok": true,
@@ -597,43 +597,43 @@
                 }
               },
               {
-                "windowStartedAtMs": 1785536408870.0867,
-                "windowEndedAtMs": 1785536410870.0867,
+                "windowStartedAtMs": 1785539416826.0635,
+                "windowEndedAtMs": 1785539418826.0635,
                 "wallMs": 2000,
-                "attempted": 212,
-                "completedInWindow": 202,
+                "attempted": 181,
+                "completedInWindow": 171,
                 "completedAfterWindow": 10,
                 "failed": 0,
-                "throughputPerSec": 101,
+                "throughputPerSec": 85.5,
                 "latency": {
-                  "count": 212,
-                  "minMs": 14.977085999998963,
-                  "p50Ms": 96.6412399999972,
-                  "p95Ms": 157.90060800000356,
-                  "p99Ms": 197.640790999998,
-                  "maxMs": 213.69129100000282
+                  "count": 181,
+                  "minMs": 16.93207899999834,
+                  "p50Ms": 106.38542600000073,
+                  "p95Ms": 192.30861300000106,
+                  "p99Ms": 220.63763499999914,
+                  "maxMs": 224.68903000000137
                 },
                 "errors": [],
                 "interruption": null,
                 "slots": 10,
                 "phaseId": "subscriptions:shared:capacity-10",
                 "deliveriesPerUpdate": 500,
-                "deliveryThroughputPerSec": 50500,
+                "deliveryThroughputPerSec": 42750,
                 "updateAckLatency": {
-                  "count": 212,
-                  "minMs": 14.837091000001237,
-                  "p50Ms": 96.61724400000094,
-                  "p95Ms": 157.3848350000044,
-                  "p99Ms": 197.61258799999632,
-                  "maxMs": 213.65008300000045
+                  "count": 181,
+                  "minMs": 16.840695999999298,
+                  "p50Ms": 106.35133200000564,
+                  "p95Ms": 192.2847180000026,
+                  "p99Ms": 220.5956370000058,
+                  "maxMs": 224.66696799999772
                 },
                 "deliveryLatency": {
-                  "count": 106000,
-                  "minMs": 0.9673440000042319,
-                  "p50Ms": 83.2327129999976,
-                  "p95Ms": 150.45698500000435,
-                  "p99Ms": 190.8862780000054,
-                  "maxMs": 213.51541899999575
+                  "count": 90500,
+                  "minMs": 1.6966820000016014,
+                  "p50Ms": 93.0798799999975,
+                  "p95Ms": 185.2993260000003,
+                  "p99Ms": 210.89512300000206,
+                  "maxMs": 224.63361499999883
                 },
                 "correctness": {
                   "ok": true,
@@ -653,8 +653,8 @@
             "logicalSubscriptions": 5000,
             "distinctQueryArguments": 5000,
             "baselineIdlePhaseId": "subscriptions:partitioned:baseline-idle",
-            "setupMs": 801.2234559999997,
-            "setupConnectionsPerSec": 624.0456345302006,
+            "setupMs": 813.110099000005,
+            "setupConnectionsPerSec": 614.9228752845646,
             "subscribedSnapshotId": "subscriptions:partitioned:subscribed",
             "subscribedIdlePhaseId": "subscriptions:partitioned:idle",
             "phaseId": "subscriptions:partitioned:updates",
@@ -666,70 +666,70 @@
             "unexpectedDeliveries": 0,
             "corruptDeliveries": 0,
             "missingDeliveries": 0,
-            "deliveryThroughputPerSec": 99.97526896775238,
+            "deliveryThroughputPerSec": 100.00873261251881,
             "updateAckLatency": {
               "count": 200,
-              "minMs": 0.8975219999992987,
-              "p50Ms": 2.0372350000034203,
-              "p95Ms": 3.2323279999982333,
-              "p99Ms": 4.4350869999980205,
-              "maxMs": 7.743539000002784
+              "minMs": 0.9888859999991837,
+              "p50Ms": 1.978623000002699,
+              "p95Ms": 2.9820269999981974,
+              "p99Ms": 3.386820000006992,
+              "maxMs": 11.514015000000654
             },
             "deliveryLatency": {
               "count": 200,
-              "minMs": 0.6151099999988219,
-              "p50Ms": 1.3208319999976084,
-              "p95Ms": 2.4415460000018356,
-              "p99Ms": 3.220956000004662,
-              "maxMs": 7.076340999999957
+              "minMs": 0.6239669999995385,
+              "p50Ms": 1.3077869999979157,
+              "p95Ms": 2.0945930000016233,
+              "p99Ms": 2.669537000001583,
+              "maxMs": 10.164067999998224
             },
             "timeToAll": {
               "count": 200,
-              "minMs": 0.6151099999988219,
-              "p50Ms": 1.3208319999976084,
-              "p95Ms": 2.4415460000018356,
-              "p99Ms": 3.220956000004662,
-              "maxMs": 7.076340999999957
+              "minMs": 0.6239669999995385,
+              "p50Ms": 1.3077869999979157,
+              "p95Ms": 2.0945930000016233,
+              "p99Ms": 2.669537000001583,
+              "maxMs": 10.164067999998224
             },
             "capacity": [
               {
-                "windowStartedAtMs": 1785536415855.0073,
-                "windowEndedAtMs": 1785536417855.0073,
+                "windowStartedAtMs": 1785539423805.4072,
+                "windowEndedAtMs": 1785539425805.4072,
                 "wallMs": 2000,
-                "attempted": 2083,
-                "completedInWindow": 2082,
+                "attempted": 2408,
+                "completedInWindow": 2407,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 1041,
+                "throughputPerSec": 1203.5,
                 "latency": {
-                  "count": 2083,
-                  "minMs": 0.5927480000027572,
-                  "p50Ms": 0.7886380000054487,
-                  "p95Ms": 1.9068570000017644,
-                  "p99Ms": 2.923284999997122,
-                  "maxMs": 8.922903999999107
+                  "count": 2408,
+                  "minMs": 0.596174999998766,
+                  "p50Ms": 0.7219630000035977,
+                  "p95Ms": 1.5392340000034892,
+                  "p99Ms": 2.202937000001839,
+                  "maxMs": 9.518270000000484
                 },
                 "errors": [],
                 "interruption": null,
                 "slots": 1,
                 "phaseId": "subscriptions:partitioned:capacity-1",
                 "deliveriesPerUpdate": 1,
-                "deliveryThroughputPerSec": 1041,
+                "deliveryThroughputPerSec": 1203.5,
                 "updateAckLatency": {
-                  "count": 2083,
-                  "minMs": 0.5869970000057947,
-                  "p50Ms": 0.7772460000051069,
-                  "p95Ms": 1.885537000001932,
-                  "p99Ms": 2.892988999999943,
-                  "maxMs": 8.87413099999685
+                  "count": 2408,
+                  "minMs": 0.5914860000048066,
+                  "p50Ms": 0.712243000001763,
+                  "p95Ms": 1.5233340000049793,
+                  "p99Ms": 2.173491000001377,
+                  "maxMs": 9.480960000000778
                 },
                 "deliveryLatency": {
-                  "count": 2083,
-                  "minMs": 0.4134100000010221,
-                  "p50Ms": 0.5479229999982635,
-                  "p95Ms": 1.477577999998175,
-                  "p99Ms": 2.3864229999962845,
-                  "maxMs": 8.491069999996398
+                  "count": 2408,
+                  "minMs": 0.40573700000095414,
+                  "p50Ms": 0.5059550000005402,
+                  "p95Ms": 1.2307130000044708,
+                  "p99Ms": 1.8015190000005532,
+                  "maxMs": 9.153080000003683
                 },
                 "correctness": {
                   "ok": true,
@@ -737,43 +737,43 @@
                 }
               },
               {
-                "windowStartedAtMs": 1785536417869.0085,
-                "windowEndedAtMs": 1785536419869.0085,
+                "windowStartedAtMs": 1785539425816.108,
+                "windowEndedAtMs": 1785539427816.108,
                 "wallMs": 2000,
-                "attempted": 2835,
-                "completedInWindow": 2803,
+                "attempted": 2930,
+                "completedInWindow": 2898,
                 "completedAfterWindow": 32,
                 "failed": 0,
-                "throughputPerSec": 1401.5,
+                "throughputPerSec": 1449,
                 "latency": {
-                  "count": 2835,
-                  "minMs": 2.3311090000061085,
-                  "p50Ms": 21.42763399999967,
-                  "p95Ms": 30.987309000003734,
-                  "p99Ms": 42.186298000000534,
-                  "maxMs": 56.58691499999986
+                  "count": 2930,
+                  "minMs": 1.1759490000040387,
+                  "p50Ms": 20.78794399999606,
+                  "p95Ms": 28.543948999998975,
+                  "p99Ms": 41.38159199999791,
+                  "maxMs": 57.580026999996335
                 },
                 "errors": [],
                 "interruption": null,
                 "slots": 32,
                 "phaseId": "subscriptions:partitioned:capacity-32",
                 "deliveriesPerUpdate": 1,
-                "deliveryThroughputPerSec": 1401.5,
+                "deliveryThroughputPerSec": 1449,
                 "updateAckLatency": {
-                  "count": 2835,
-                  "minMs": 2.2523589999982505,
-                  "p50Ms": 21.415641999999934,
-                  "p95Ms": 30.974665999994613,
-                  "p99Ms": 42.173001999995904,
-                  "maxMs": 56.57944999999745
+                  "count": 2930,
+                  "minMs": 1.157124000004842,
+                  "p50Ms": 20.77768500000093,
+                  "p95Ms": 28.519060999999056,
+                  "p99Ms": 41.375190000006114,
+                  "maxMs": 57.56533900000068
                 },
                 "deliveryLatency": {
-                  "count": 2835,
-                  "minMs": 0.9878049999970244,
-                  "p50Ms": 21.19172100000287,
-                  "p95Ms": 30.685027999999875,
-                  "p99Ms": 41.90316300000268,
-                  "maxMs": 56.27467500000057
+                  "count": 2930,
+                  "minMs": 1.125103999998828,
+                  "p50Ms": 20.56498399999691,
+                  "p95Ms": 28.300259999996342,
+                  "p99Ms": 41.08119599999918,
+                  "maxMs": 57.20288499999879
                 },
                 "correctness": {
                   "ok": true,
@@ -781,43 +781,43 @@
                 }
               },
               {
-                "windowStartedAtMs": 1785536420005.5076,
-                "windowEndedAtMs": 1785536422005.5076,
+                "windowStartedAtMs": 1785539427961.5571,
+                "windowEndedAtMs": 1785539429961.5571,
                 "wallMs": 2000,
-                "attempted": 3416,
-                "completedInWindow": 2916,
+                "attempted": 3319,
+                "completedInWindow": 2819,
                 "completedAfterWindow": 500,
                 "failed": 0,
-                "throughputPerSec": 1458,
+                "throughputPerSec": 1409.5,
                 "latency": {
-                  "count": 3416,
-                  "minMs": 13.272680000001856,
-                  "p50Ms": 337.2883460000012,
-                  "p95Ms": 378.5410320000083,
-                  "p99Ms": 388.46689699999115,
-                  "maxMs": 630.1085190000013
+                  "count": 3319,
+                  "minMs": 11.925411000003805,
+                  "p50Ms": 351.1624290000036,
+                  "p95Ms": 375.4165839999987,
+                  "p99Ms": 439.3574129999979,
+                  "maxMs": 460.25835099999676
                 },
                 "errors": [],
                 "interruption": null,
                 "slots": 500,
                 "phaseId": "subscriptions:partitioned:capacity-500",
                 "deliveriesPerUpdate": 1,
-                "deliveryThroughputPerSec": 1458,
+                "deliveryThroughputPerSec": 1409.5,
                 "updateAckLatency": {
-                  "count": 3416,
-                  "minMs": 13.239067000002251,
-                  "p50Ms": 337.27174399999785,
-                  "p95Ms": 378.53299700000207,
-                  "p99Ms": 388.4577009999921,
-                  "maxMs": 630.097860000009
+                  "count": 3319,
+                  "minMs": 11.890996000001905,
+                  "p50Ms": 351.14561700000195,
+                  "p95Ms": 375.3817179999969,
+                  "p99Ms": 439.35265300000174,
+                  "maxMs": 460.2481509999998
                 },
                 "deliveryLatency": {
-                  "count": 3416,
-                  "minMs": 13.200693999999203,
-                  "p50Ms": 337.01933799999824,
-                  "p95Ms": 378.22837199999776,
-                  "p99Ms": 388.1207540000032,
-                  "maxMs": 630.0061169999972
+                  "count": 3319,
+                  "minMs": 11.852004000000306,
+                  "p50Ms": 350.9762090000004,
+                  "p95Ms": 375.1808299999975,
+                  "p99Ms": 439.0605730000025,
+                  "maxMs": 459.91089400000055
                 },
                 "correctness": {
                   "ok": true,
@@ -837,67 +837,67 @@
         "server": {
           "snapshots": {
             "server:seeded-idle": {
-              "timestampMs": 1785536357574.7234,
-              "rootPid": 2711904,
+              "timestampMs": 1785539365556.627,
+              "rootPid": 2716019,
               "rssKind": "sumProcessRss",
-              "rssMb": 95.21484375,
-              "cumulativeCpuSeconds": 0,
+              "rssMb": 92.38671875,
+              "cumulativeCpuSeconds": 1,
               "processCount": 1
             },
             "connections:1:connected": {
-              "timestampMs": 1785536398958.6067,
-              "rootPid": 2711904,
+              "timestampMs": 1785539406940.1404,
+              "rootPid": 2716019,
               "rssKind": "sumProcessRss",
-              "rssMb": 120.05859375,
+              "rssMb": 116.6484375,
               "cumulativeCpuSeconds": 19,
               "processCount": 1
             },
             "connections:1000:connected": {
-              "timestampMs": 1785536401327.0977,
-              "rootPid": 2711904,
+              "timestampMs": 1785539409282.8875,
+              "rootPid": 2716019,
               "rssKind": "sumProcessRss",
-              "rssMb": 125.48828125,
+              "rssMb": 122.0859375,
               "cumulativeCpuSeconds": 20,
               "processCount": 1
             },
             "subscriptions:shared:subscribed": {
-              "timestampMs": 1785536404848.0176,
-              "rootPid": 2711904,
+              "timestampMs": 1785539412808.8745,
+              "rootPid": 2716019,
               "rssKind": "sumProcessRss",
-              "rssMb": 139.96875,
+              "rssMb": 137.15625,
               "cumulativeCpuSeconds": 22,
               "processCount": 1
             },
             "subscriptions:partitioned:subscribed": {
-              "timestampMs": 1785536413864.1228,
-              "rootPid": 2711904,
+              "timestampMs": 1785539421814.4207,
+              "rootPid": 2716019,
               "rssKind": "sumProcessRss",
-              "rssMb": 151.65625,
+              "rssMb": 148.453125,
               "cumulativeCpuSeconds": 28,
               "processCount": 1
             }
           },
           "phases": {
             "server:seeded-idle-window": {
-              "wallMs": 1000.9951171875,
-              "cpuSeconds": 0,
-              "cpuCores": 0,
+              "wallMs": 1001.346923828125,
+              "cpuSeconds": 1,
+              "cpuCores": 0.9986548879353664,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 97.76171875,
-                "peak": 106.35546875
+                "p50": 95.2265625,
+                "peak": 103.04296875
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "operation:query:latency:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 1,
-              "cpuCores": 0.5,
+              "cpuSeconds": 1.9311686326558002,
+              "cpuCores": 0.9655843163279001,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 101.53515625,
-                "peak": 104.53515625
+                "p50": 99.16015625,
+                "peak": 105.75390625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -908,20 +908,20 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 122.109375,
-                "peak": 123.02734375
+                "p50": 120.99609375,
+                "peak": 121.8828125
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:mutation-uncontended:latency:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 1,
-              "cpuCores": 0.5,
+              "cpuSeconds": 1.9636642311750947,
+              "cpuCores": 0.9818321155875473,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 126.44921875,
-                "peak": 129.73046875
+                "p50": 124.578125,
+                "peak": 126.40234375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -932,20 +932,20 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 137.0078125,
-                "peak": 154.640625
+                "p50": 136.80859375,
+                "peak": 152.3515625
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:mutation-contended:latency:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 1,
-              "cpuCores": 0.5,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 136.90234375,
-                "peak": 140.59375
+                "p50": 135.94140625,
+                "peak": 141.1875
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -956,20 +956,20 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 142.09765625,
-                "peak": 145.02734375
+                "p50": 139.453125,
+                "peak": 142.8046875
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:procedure:latency:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 1,
-              "cpuCores": 0.5,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 147.51171875,
-                "peak": 149.59765625
+                "p50": 143.26953125,
+                "peak": 145.7734375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -980,44 +980,44 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 165.578125,
-                "peak": 167.4140625
+                "p50": 159.84375,
+                "peak": 160.17578125
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "connections:baseline-idle": {
-              "wallMs": 1000.464111328125,
+              "wallMs": 1000.44287109375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 164.41796875,
-                "peak": 165.83984375
+                "p50": 159.16015625,
+                "peak": 160.86328125
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "connections:1:ramp": {
-              "wallMs": 19046.060302734375,
+              "wallMs": 19049.712646484375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 134.2890625,
-                "peak": 134.67578125
+                "p50": 128.70703125,
+                "peak": 128.953125
               },
               "sampleCount": 78,
               "processCountPeak": 1
             },
             "connections:1:idle": {
-              "wallMs": 1000.366943359375,
+              "wallMs": 1000.228271484375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 125.95703125,
-                "peak": 125.96875
+                "p50": 122.91015625,
+                "peak": 122.921875
               },
               "sampleCount": 6,
               "processCountPeak": 1
@@ -1028,32 +1028,32 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 122.515625,
-                "peak": 126.84375
+                "p50": 119.1875,
+                "peak": 123.4609375
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "connections:1000:ramp": {
-              "wallMs": 368.301513671875,
+              "wallMs": 339.322509765625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 126.453125,
-                "peak": 126.453125
+                "p50": 122.4453125,
+                "peak": 122.73828125
               },
               "sampleCount": 3,
               "processCountPeak": 1
             },
             "connections:1000:idle": {
-              "wallMs": 1001.13330078125,
+              "wallMs": 1000.53662109375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 126.6015625,
-                "peak": 128.42578125
+                "p50": 123.453125,
+                "peak": 125.1484375
               },
               "sampleCount": 6,
               "processCountPeak": 1
@@ -1064,128 +1064,128 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 131.02734375,
-                "peak": 147.265625
+                "p50": 127.85546875,
+                "peak": 145.41796875
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "subscriptions:shared:baseline-idle": {
-              "wallMs": 1001.2138671875,
-              "cpuSeconds": 1,
-              "cpuCores": 0.9987876044996162,
+              "wallMs": 1000.57470703125,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 138.14453125,
-                "peak": 152.84765625
+                "p50": 134.109375,
+                "peak": 148.875
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:shared:setup": {
-              "wallMs": 365.590576171875,
+              "wallMs": 363.6640625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 134.03125,
-                "peak": 138.57421875
+                "p50": 130.1875,
+                "peak": 135.34765625
               },
               "sampleCount": 3,
               "processCountPeak": 1
             },
             "subscriptions:shared:idle": {
-              "wallMs": 1003.177978515625,
+              "wallMs": 1000.590576171875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 143.328125,
-                "peak": 145.91015625
+                "p50": 141.91796875,
+                "peak": 143.92578125
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:shared:updates": {
-              "wallMs": 2000.51318359375,
+              "wallMs": 2000.4404296875,
               "cpuSeconds": 1,
-              "cpuCores": 0.4998717370127928,
+              "cpuCores": 0.4998899168200753,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 141.94921875,
-                "peak": 143.29296875
+                "p50": 139.0546875,
+                "peak": 140.1328125
               },
               "sampleCount": 11,
               "processCountPeak": 1
             },
             "subscriptions:shared:capacity-1": {
               "wallMs": 2000,
-              "cpuSeconds": 1,
-              "cpuCores": 0.5,
+              "cpuSeconds": 1.9455989019597446,
+              "cpuCores": 0.9727994509798723,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 146.88671875,
-                "peak": 148.83984375
+                "p50": 142.6640625,
+                "peak": 144.31640625
               },
               "sampleCount": 10,
               "processCountPeak": 1
             },
             "subscriptions:shared:capacity-10": {
               "wallMs": 2000,
-              "cpuSeconds": 2.872506415173042,
-              "cpuCores": 1.436253207586521,
+              "cpuSeconds": 2,
+              "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 166.53125,
-                "peak": 167.57421875
+                "p50": 166.5,
+                "peak": 167.68359375
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:baseline-idle": {
-              "wallMs": 1000.826171875,
+              "wallMs": 1001.302978515625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 156.1015625,
-                "peak": 168.828125
+                "p50": 158.0234375,
+                "peak": 169.890625
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:setup": {
-              "wallMs": 801.223388671875,
-              "cpuSeconds": 0.9739469304488786,
-              "cpuCores": 1.2155747625681694,
+              "wallMs": 813.110107421875,
+              "cpuSeconds": 1,
+              "cpuCores": 1.2298457378308776,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 152.5078125,
-                "peak": 166.8984375
+                "p50": 155.01953125,
+                "peak": 167.0703125
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:idle": {
-              "wallMs": 1001.110595703125,
-              "cpuSeconds": 0.02590374068802248,
-              "cpuCores": 0.025875004019739817,
+              "wallMs": 1001.03662109375,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 168.01171875,
-                "peak": 170.20703125
+                "p50": 166.140625,
+                "peak": 169.9453125
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:updates": {
-              "wallMs": 2000.494873046875,
+              "wallMs": 1999.8251953125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 151.8984375,
-                "peak": 153.26953125
+                "p50": 148.5390625,
+                "peak": 149.83203125
               },
               "sampleCount": 11,
               "processCountPeak": 1
@@ -1196,8 +1196,8 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 157.66796875,
-                "peak": 160.328125
+                "p50": 154.40234375,
+                "peak": 157.51171875
               },
               "sampleCount": 10,
               "processCountPeak": 1
@@ -1208,20 +1208,20 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 175.640625,
-                "peak": 179.1796875
+                "p50": 176.09375,
+                "peak": 179.67578125
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:capacity-500": {
               "wallMs": 2000,
-              "cpuSeconds": 2.252442351892242,
-              "cpuCores": 1.126221175946121,
+              "cpuSeconds": 1.3993094167608717,
+              "cpuCores": 0.6996547083804359,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 190.66796875,
-                "peak": 194.234375
+                "p50": 188.59375,
+                "peak": 192.44140625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -1231,55 +1231,55 @@
         "loadGenerator": {
           "snapshots": {
             "server:seeded-idle": {
-              "timestampMs": 1785536357574.7234,
-              "rootPid": 2711918,
+              "timestampMs": 1785539365556.627,
+              "rootPid": 2716033,
               "rssKind": "sumProcessRss",
-              "rssMb": 56.6796875,
+              "rssMb": 56.55078125,
               "cumulativeCpuSeconds": 0,
               "processCount": 1
             },
             "connections:1:connected": {
-              "timestampMs": 1785536398958.6067,
-              "rootPid": 2711918,
+              "timestampMs": 1785539406940.1404,
+              "rootPid": 2716033,
               "rssKind": "sumProcessRss",
-              "rssMb": 67.27734375,
+              "rssMb": 67.50390625,
               "cumulativeCpuSeconds": 9,
               "processCount": 1
             },
             "connections:1000:connected": {
-              "timestampMs": 1785536401327.0977,
-              "rootPid": 2711918,
+              "timestampMs": 1785539409282.8875,
+              "rootPid": 2716033,
               "rssKind": "sumProcessRss",
-              "rssMb": 79.4609375,
+              "rssMb": 77.75,
               "cumulativeCpuSeconds": 10,
               "processCount": 1
             },
             "subscriptions:shared:subscribed": {
-              "timestampMs": 1785536404848.0176,
-              "rootPid": 2711918,
+              "timestampMs": 1785539412808.8745,
+              "rootPid": 2716033,
               "rssKind": "sumProcessRss",
-              "rssMb": 111.29296875,
+              "rssMb": 83.49609375,
               "cumulativeCpuSeconds": 11,
               "processCount": 1
             },
             "subscriptions:partitioned:subscribed": {
-              "timestampMs": 1785536413864.1228,
-              "rootPid": 2711918,
+              "timestampMs": 1785539421814.4207,
+              "rootPid": 2716033,
               "rssKind": "sumProcessRss",
-              "rssMb": 120.91796875,
+              "rssMb": 88.44140625,
               "cumulativeCpuSeconds": 17,
               "processCount": 1
             }
           },
           "phases": {
             "server:seeded-idle-window": {
-              "wallMs": 1000.9951171875,
+              "wallMs": 1001.346923828125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 57.01171875,
-                "peak": 57.125
+                "p50": 56.8046875,
+                "peak": 57.05078125
               },
               "sampleCount": 5,
               "processCountPeak": 1
@@ -1290,20 +1290,20 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 65.26953125,
-                "peak": 70.328125
+                "p50": 65.65234375,
+                "peak": 71.25
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:query:saturation:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 1.8369570180645658,
-              "cpuCores": 0.9184785090322829,
+              "cpuSeconds": 1.8501706833582308,
+              "cpuCores": 0.9250853416791154,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 108.73046875,
-                "peak": 116.20703125
+                "p50": 112.74609375,
+                "peak": 122.34375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -1314,8 +1314,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 106.828125,
-                "peak": 108.48046875
+                "p50": 112.90625,
+                "peak": 114.68359375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -1326,8 +1326,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 109.09765625,
-                "peak": 110.4453125
+                "p50": 114.74609375,
+                "peak": 115.47265625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -1338,8 +1338,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 107.81640625,
-                "peak": 109.68359375
+                "p50": 113.8515625,
+                "peak": 116.04296875
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -1350,8 +1350,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 109.96484375,
-                "peak": 116.56640625
+                "p50": 114.859375,
+                "peak": 122.671875
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -1362,8 +1362,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 110.31640625,
-                "peak": 112.69921875
+                "p50": 117.94921875,
+                "peak": 118.484375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -1374,44 +1374,44 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 131.01953125,
-                "peak": 137.85546875
+                "p50": 136.59765625,
+                "peak": 143.515625
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "connections:baseline-idle": {
-              "wallMs": 1000.464111328125,
+              "wallMs": 1000.44287109375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 122.56640625,
-                "peak": 129.39453125
+                "p50": 132.7890625,
+                "peak": 137.00390625
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "connections:1:ramp": {
-              "wallMs": 19046.060302734375,
+              "wallMs": 19049.712646484375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 67.0546875,
-                "peak": 80.63671875
+                "p50": 67.21875,
+                "peak": 67.32421875
               },
               "sampleCount": 78,
               "processCountPeak": 1
             },
             "connections:1:idle": {
-              "wallMs": 1000.366943359375,
+              "wallMs": 1000.228271484375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 67.0859375,
-                "peak": 67.10546875
+                "p50": 67.28515625,
+                "peak": 67.3203125
               },
               "sampleCount": 6,
               "processCountPeak": 1
@@ -1422,32 +1422,32 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 67.6015625,
-                "peak": 68.15234375
+                "p50": 67.58984375,
+                "peak": 68.07421875
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "connections:1000:ramp": {
-              "wallMs": 368.301513671875,
+              "wallMs": 339.322509765625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 69.5390625,
-                "peak": 72.62109375
+                "p50": 68.859375,
+                "peak": 71.96484375
               },
               "sampleCount": 3,
               "processCountPeak": 1
             },
             "connections:1000:idle": {
-              "wallMs": 1001.13330078125,
+              "wallMs": 1000.53662109375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 79.7890625,
-                "peak": 80.6953125
+                "p50": 79.80859375,
+                "peak": 80.66015625
               },
               "sampleCount": 6,
               "processCountPeak": 1
@@ -1458,56 +1458,56 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 83.265625,
-                "peak": 117.390625
+                "p50": 80.984375,
+                "peak": 116.38671875
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "subscriptions:shared:baseline-idle": {
-              "wallMs": 1001.2138671875,
+              "wallMs": 1000.57470703125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 117.04296875,
-                "peak": 118.1796875
+                "p50": 112.16015625,
+                "peak": 116.48046875
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:shared:setup": {
-              "wallMs": 365.590576171875,
+              "wallMs": 363.6640625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 98.4765625,
-                "peak": 104.671875
+                "p50": 102.84375,
+                "peak": 109.14453125
               },
               "sampleCount": 3,
               "processCountPeak": 1
             },
             "subscriptions:shared:idle": {
-              "wallMs": 1003.177978515625,
+              "wallMs": 1000.590576171875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 112.9375,
-                "peak": 113.8046875
+                "p50": 113.859375,
+                "peak": 114.54296875
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:shared:updates": {
-              "wallMs": 2000.51318359375,
+              "wallMs": 2000.4404296875,
               "cpuSeconds": 1,
-              "cpuCores": 0.4998717370127928,
+              "cpuCores": 0.4998899168200753,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 115.86328125,
-                "peak": 123.34765625
+                "p50": 89.49609375,
+                "peak": 107.91015625
               },
               "sampleCount": 11,
               "processCountPeak": 1
@@ -1518,8 +1518,8 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 135.05859375,
-                "peak": 144.9296875
+                "p50": 109.66015625,
+                "peak": 132.57421875
               },
               "sampleCount": 10,
               "processCountPeak": 1
@@ -1530,56 +1530,56 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 151.94921875,
-                "peak": 154.78515625
+                "p50": 144.4921875,
+                "peak": 146.93359375
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:baseline-idle": {
-              "wallMs": 1000.826171875,
-              "cpuSeconds": 0,
-              "cpuCores": 0,
+              "wallMs": 1001.302978515625,
+              "cpuSeconds": 1,
+              "cpuCores": 0.99869871702813,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 157.15625,
-                "peak": 159.953125
+                "p50": 148.62109375,
+                "peak": 153.015625
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:setup": {
-              "wallMs": 801.223388671875,
-              "cpuSeconds": 1,
-              "cpuCores": 1.2480913739395718,
+              "wallMs": 813.110107421875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 112.55078125,
-                "peak": 118.90234375
+                "p50": 120.77734375,
+                "peak": 127.26953125
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:idle": {
-              "wallMs": 1001.110595703125,
+              "wallMs": 1001.03662109375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 121.02734375,
-                "peak": 121.21484375
+                "p50": 113.0234375,
+                "peak": 129.1640625
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:updates": {
-              "wallMs": 2000.494873046875,
+              "wallMs": 1999.8251953125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 121.0859375,
-                "peak": 121.26953125
+                "p50": 88.625,
+                "peak": 88.91796875
               },
               "sampleCount": 11,
               "processCountPeak": 1
@@ -1590,8 +1590,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 122.015625,
-                "peak": 123.52734375
+                "p50": 90.7890625,
+                "peak": 93.453125
               },
               "sampleCount": 10,
               "processCountPeak": 1
@@ -1602,8 +1602,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 127.1015625,
-                "peak": 130.62890625
+                "p50": 99.49609375,
+                "peak": 100.44921875
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -1614,8 +1614,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 134.72265625,
-                "peak": 136.22265625
+                "p50": 113.98046875,
+                "peak": 120.28515625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -1625,21 +1625,21 @@
       },
       "startupIdle": {
         "snapshot": {
-          "timestampMs": 1785536355952.3906,
-          "rootPid": 2711904,
+          "timestampMs": 1785539363904.3694,
+          "rootPid": 2716019,
           "rssKind": "sumProcessRss",
-          "rssMb": 71.8984375,
+          "rssMb": 72.44140625,
           "cumulativeCpuSeconds": 0,
           "processCount": 1
         },
         "window": {
-          "wallMs": 1000.7080078125,
+          "wallMs": 1000.658203125,
           "cpuSeconds": 0,
           "cpuCores": 0,
           "rssKind": "sumProcessRss",
           "rssMb": {
-            "p50": 72.0703125,
-            "peak": 72.078125
+            "p50": 72.54296875,
+            "peak": 72.6875
           },
           "sampleCount": 3,
           "processCountPeak": 1
@@ -2368,21 +2368,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536432373.36,
-                "windowEndedAtMs": 1785536434373.36,
+                "windowStartedAtMs": 1785539439808.8816,
+                "windowEndedAtMs": 1785539441808.8816,
                 "wallMs": 2000,
-                "attempted": 296,
-                "completedInWindow": 295,
+                "attempted": 365,
+                "completedInWindow": 364,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 147.5,
+                "throughputPerSec": 182,
                 "latency": {
-                  "count": 296,
-                  "minMs": 4.407024999999521,
-                  "p50Ms": 6.694908999999825,
-                  "p95Ms": 8.530853999999636,
-                  "p99Ms": 9.380136000000675,
-                  "maxMs": 10.21929
+                  "count": 365,
+                  "minMs": 3.9571249999999054,
+                  "p50Ms": 5.253091999999924,
+                  "p95Ms": 7.513957000000119,
+                  "p99Ms": 8.494398000000729,
+                  "maxMs": 9.83219199999985
                 },
                 "errors": [],
                 "interruption": null,
@@ -2393,10 +2393,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 147.5,
-            "medianLatencyP50Ms": 6.694908999999825,
-            "medianLatencyP95Ms": 8.530853999999636,
-            "medianLatencyP99Ms": 9.380136000000675
+            "medianThroughputPerSec": 182,
+            "medianLatencyP50Ms": 5.253091999999924,
+            "medianLatencyP95Ms": 7.513957000000119,
+            "medianLatencyP99Ms": 8.494398000000729
           },
           {
             "operation": "query",
@@ -2407,21 +2407,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536435277.6511,
-                "windowEndedAtMs": 1785536437277.6511,
+                "windowStartedAtMs": 1785539442672.7644,
+                "windowEndedAtMs": 1785539444672.7644,
                 "wallMs": 2000,
-                "attempted": 952,
-                "completedInWindow": 824,
+                "attempted": 931,
+                "completedInWindow": 803,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 412,
+                "throughputPerSec": 401.5,
                 "latency": {
-                  "count": 952,
-                  "minMs": 15.940714000000298,
-                  "p50Ms": 304.0143939999998,
-                  "p95Ms": 365.203610999999,
-                  "p99Ms": 406.75269800000024,
-                  "maxMs": 431.75742100000025
+                  "count": 931,
+                  "minMs": 25.62851799999953,
+                  "p50Ms": 302.9566309999991,
+                  "p95Ms": 360.4862630000007,
+                  "p99Ms": 384.61790499999915,
+                  "maxMs": 438.72654200000034
                 },
                 "errors": [],
                 "interruption": null,
@@ -2432,10 +2432,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 412,
-            "medianLatencyP50Ms": 304.0143939999998,
-            "medianLatencyP95Ms": 365.203610999999,
-            "medianLatencyP99Ms": 406.75269800000024
+            "medianThroughputPerSec": 401.5,
+            "medianLatencyP50Ms": 302.9566309999991,
+            "medianLatencyP95Ms": 360.4862630000007,
+            "medianLatencyP99Ms": 384.61790499999915
           },
           {
             "operation": "mutation-uncontended",
@@ -2446,21 +2446,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536438299.4,
-                "windowEndedAtMs": 1785536440299.4,
+                "windowStartedAtMs": 1785539445613.7966,
+                "windowEndedAtMs": 1785539447613.7966,
                 "wallMs": 2000,
-                "attempted": 221,
-                "completedInWindow": 220,
+                "attempted": 198,
+                "completedInWindow": 197,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 110,
+                "throughputPerSec": 98.5,
                 "latency": {
-                  "count": 221,
-                  "minMs": 6.772175999998581,
-                  "p50Ms": 8.471230999999534,
-                  "p95Ms": 12.327627000000575,
-                  "p99Ms": 15.704689000000144,
-                  "maxMs": 18.35012899999856
+                  "count": 198,
+                  "minMs": 6.674493999998958,
+                  "p50Ms": 8.972318000000087,
+                  "p95Ms": 15.842191000001549,
+                  "p99Ms": 17.96136999999908,
+                  "maxMs": 18.937872999998945
                 },
                 "errors": [],
                 "interruption": null,
@@ -2471,10 +2471,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 110,
-            "medianLatencyP50Ms": 8.471230999999534,
-            "medianLatencyP95Ms": 12.327627000000575,
-            "medianLatencyP99Ms": 15.704689000000144
+            "medianThroughputPerSec": 98.5,
+            "medianLatencyP50Ms": 8.972318000000087,
+            "medianLatencyP95Ms": 15.842191000001549,
+            "medianLatencyP99Ms": 17.96136999999908
           },
           {
             "operation": "mutation-uncontended",
@@ -2485,21 +2485,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536441864.9426,
-                "windowEndedAtMs": 1785536443864.9426,
+                "windowStartedAtMs": 1785539449139.61,
+                "windowEndedAtMs": 1785539451139.61,
                 "wallMs": 2000,
-                "attempted": 490,
-                "completedInWindow": 362,
+                "attempted": 469,
+                "completedInWindow": 341,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 181,
+                "throughputPerSec": 170.5,
                 "latency": {
-                  "count": 490,
-                  "minMs": 77.14719399999922,
-                  "p50Ms": 642.0416990000012,
-                  "p95Ms": 768.9662309999985,
-                  "p99Ms": 835.3357820000001,
-                  "maxMs": 904.4417749999993
+                  "count": 469,
+                  "minMs": 42.63037799999984,
+                  "p50Ms": 683.0933320000004,
+                  "p95Ms": 828.7719280000001,
+                  "p99Ms": 904.7675839999993,
+                  "maxMs": 965.5118700000003
                 },
                 "errors": [],
                 "interruption": null,
@@ -2510,10 +2510,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 181,
-            "medianLatencyP50Ms": 642.0416990000012,
-            "medianLatencyP95Ms": 768.9662309999985,
-            "medianLatencyP99Ms": 835.3357820000001
+            "medianThroughputPerSec": 170.5,
+            "medianLatencyP50Ms": 683.0933320000004,
+            "medianLatencyP95Ms": 828.7719280000001,
+            "medianLatencyP99Ms": 904.7675839999993
           },
           {
             "operation": "mutation-contended",
@@ -2524,21 +2524,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536445367.7766,
-                "windowEndedAtMs": 1785536447367.7766,
+                "windowStartedAtMs": 1785539452671.4182,
+                "windowEndedAtMs": 1785539454671.4182,
                 "wallMs": 2000,
-                "attempted": 183,
-                "completedInWindow": 182,
+                "attempted": 180,
+                "completedInWindow": 179,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 91,
+                "throughputPerSec": 89.5,
                 "latency": {
-                  "count": 183,
-                  "minMs": 7.025002000002132,
-                  "p50Ms": 9.942485999999917,
-                  "p95Ms": 14.91440700000021,
-                  "p99Ms": 32.25199600000269,
-                  "maxMs": 76.93364000000292
+                  "count": 180,
+                  "minMs": 7.261061000001064,
+                  "p50Ms": 10.12591600000087,
+                  "p95Ms": 15.580387999998493,
+                  "p99Ms": 33.525827999998,
+                  "maxMs": 71.80951500000083
                 },
                 "errors": [],
                 "interruption": null,
@@ -2549,10 +2549,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 91,
-            "medianLatencyP50Ms": 9.942485999999917,
-            "medianLatencyP95Ms": 14.91440700000021,
-            "medianLatencyP99Ms": 32.25199600000269
+            "medianThroughputPerSec": 89.5,
+            "medianLatencyP50Ms": 10.12591600000087,
+            "medianLatencyP95Ms": 15.580387999998493,
+            "medianLatencyP99Ms": 33.525827999998
           },
           {
             "operation": "mutation-contended",
@@ -2563,21 +2563,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536450814.8823,
-                "windowEndedAtMs": 1785536452814.8823,
+                "windowStartedAtMs": 1785539458209.128,
+                "windowEndedAtMs": 1785539460209.128,
                 "wallMs": 2000,
-                "attempted": 312,
-                "completedInWindow": 184,
+                "attempted": 310,
+                "completedInWindow": 182,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 92,
+                "throughputPerSec": 91,
                 "latency": {
-                  "count": 312,
-                  "minMs": 29.14824999999837,
-                  "p50Ms": 501.470572000002,
-                  "p95Ms": 5058.981738999999,
-                  "p99Ms": 5677.878045000001,
-                  "maxMs": 5703.664412999999
+                  "count": 310,
+                  "minMs": 30.838357999997243,
+                  "p50Ms": 477.79357600000003,
+                  "p95Ms": 4204.704761000001,
+                  "p99Ms": 4649.241095000001,
+                  "maxMs": 5019.867039000001
                 },
                 "errors": [],
                 "interruption": null,
@@ -2588,10 +2588,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 92,
-            "medianLatencyP50Ms": 501.470572000002,
-            "medianLatencyP95Ms": 5058.981738999999,
-            "medianLatencyP99Ms": 5677.878045000001
+            "medianThroughputPerSec": 91,
+            "medianLatencyP50Ms": 477.79357600000003,
+            "medianLatencyP95Ms": 4204.704761000001,
+            "medianLatencyP99Ms": 4649.241095000001
           },
           {
             "operation": "procedure",
@@ -2602,21 +2602,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536457223.2478,
-                "windowEndedAtMs": 1785536459223.2478,
+                "windowStartedAtMs": 1785539463953.3264,
+                "windowEndedAtMs": 1785539465953.3264,
                 "wallMs": 2000,
-                "attempted": 634,
-                "completedInWindow": 633,
+                "attempted": 621,
+                "completedInWindow": 620,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 316.5,
+                "throughputPerSec": 310,
                 "latency": {
-                  "count": 634,
-                  "minMs": 1.940983000000415,
-                  "p50Ms": 2.948832999998558,
-                  "p95Ms": 4.860640999999305,
-                  "p99Ms": 6.079319000000396,
-                  "maxMs": 8.296401999999944
+                  "count": 621,
+                  "minMs": 2.0011259999992035,
+                  "p50Ms": 2.9161430000021937,
+                  "p95Ms": 5.523832000002585,
+                  "p99Ms": 6.643824999999197,
+                  "maxMs": 8.355897000001278
                 },
                 "errors": [],
                 "interruption": null,
@@ -2627,10 +2627,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 316.5,
-            "medianLatencyP50Ms": 2.948832999998558,
-            "medianLatencyP95Ms": 4.860640999999305,
-            "medianLatencyP99Ms": 6.079319000000396
+            "medianThroughputPerSec": 310,
+            "medianLatencyP50Ms": 2.9161430000021937,
+            "medianLatencyP95Ms": 5.523832000002585,
+            "medianLatencyP99Ms": 6.643824999999197
           },
           {
             "operation": "procedure",
@@ -2641,21 +2641,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536460008.3381,
-                "windowEndedAtMs": 1785536462008.3381,
+                "windowStartedAtMs": 1785539466695.3782,
+                "windowEndedAtMs": 1785539468695.3782,
                 "wallMs": 2000,
-                "attempted": 1102,
-                "completedInWindow": 974,
+                "attempted": 987,
+                "completedInWindow": 859,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 487,
+                "throughputPerSec": 429.5,
                 "latency": {
-                  "count": 1102,
-                  "minMs": 39.688484999998764,
-                  "p50Ms": 231.29447499999878,
-                  "p95Ms": 382.4374480000042,
-                  "p99Ms": 458.8712579999992,
-                  "maxMs": 552.2103900000002
+                  "count": 987,
+                  "minMs": 58.80497699999978,
+                  "p50Ms": 257.82257000000027,
+                  "p95Ms": 500.36440500000026,
+                  "p99Ms": 965.1886000000013,
+                  "maxMs": 1399.1888730000028
                 },
                 "errors": [],
                 "interruption": null,
@@ -2666,10 +2666,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 487,
-            "medianLatencyP50Ms": 231.29447499999878,
-            "medianLatencyP95Ms": 382.4374480000042,
-            "medianLatencyP99Ms": 458.8712579999992
+            "medianThroughputPerSec": 429.5,
+            "medianLatencyP50Ms": 257.82257000000027,
+            "medianLatencyP95Ms": 500.36440500000026,
+            "medianLatencyP99Ms": 965.1886000000013
           }
         ],
         "connections": [
@@ -2677,34 +2677,34 @@
             "targetConnections": 1,
             "connected": 1,
             "addedConnections": 1,
-            "setupMs": 120.35702999999194,
-            "readyConnectionsPerSec": 166.17226264225147,
+            "setupMs": 128.56926800000656,
+            "readyConnectionsPerSec": 155.55816962416694,
             "readyLatency": {
               "count": 20,
-              "minMs": 4.572366000000329,
-              "p50Ms": 5.612117999997281,
-              "p95Ms": 7.8540480000010575,
-              "p99Ms": 8.515996000001905,
-              "maxMs": 8.515996000001905
+              "minMs": 4.807570000004489,
+              "p50Ms": 5.563969000002544,
+              "p95Ms": 8.874325000004319,
+              "p99Ms": 11.445997000002535,
+              "maxMs": 11.445997000002535
             },
             "connectedSnapshotId": "connections:1:connected",
             "connectedIdlePhaseId": "connections:1:idle",
             "work": {
-              "windowStartedAtMs": 1785536483319.0864,
-              "windowEndedAtMs": 1785536484319.0864,
+              "windowStartedAtMs": 1785539490167.9155,
+              "windowEndedAtMs": 1785539491167.9155,
               "wallMs": 1000,
-              "attempted": 171,
-              "completedInWindow": 170,
+              "attempted": 186,
+              "completedInWindow": 185,
               "completedAfterWindow": 1,
               "failed": 0,
-              "throughputPerSec": 170,
+              "throughputPerSec": 185,
               "latency": {
-                "count": 171,
-                "minMs": 4.1226279999973485,
-                "p50Ms": 5.667702999999165,
-                "p95Ms": 8.025340000000142,
-                "p99Ms": 11.233573999998043,
-                "maxMs": 15.457472000001871
+                "count": 186,
+                "minMs": 3.8410280000025523,
+                "p50Ms": 5.138395999994827,
+                "p95Ms": 7.482087000003958,
+                "p99Ms": 9.25506299999688,
+                "maxMs": 9.341958000004524
               },
               "errors": [],
               "interruption": null,
@@ -2716,34 +2716,34 @@
             "targetConnections": 1000,
             "connected": 1000,
             "addedConnections": 999,
-            "setupMs": 2059.9190030000027,
-            "readyConnectionsPerSec": 484.97052483378576,
+            "setupMs": 1925.163278,
+            "readyConnectionsPerSec": 518.9170245537999,
             "readyLatency": {
               "count": 999,
-              "minMs": 52.66272200000094,
-              "p50Ms": 136.8996230000048,
-              "p95Ms": 198.9648060000036,
-              "p99Ms": 208.2656610000049,
-              "maxMs": 210.94941399999516
+              "minMs": 36.882743999995,
+              "p50Ms": 125.82332299999689,
+              "p95Ms": 182.18216499999835,
+              "p99Ms": 191.65580000000045,
+              "maxMs": 204.75095000000147
             },
             "connectedSnapshotId": "connections:1000:connected",
             "connectedIdlePhaseId": "connections:1000:idle",
             "work": {
-              "windowStartedAtMs": 1785536487384.2832,
-              "windowEndedAtMs": 1785536488384.2832,
+              "windowStartedAtMs": 1785539494095.2446,
+              "windowEndedAtMs": 1785539495095.2446,
               "wallMs": 1000,
-              "attempted": 1276,
-              "completedInWindow": 276,
+              "attempted": 1299,
+              "completedInWindow": 299,
               "completedAfterWindow": 1000,
               "failed": 0,
-              "throughputPerSec": 276,
+              "throughputPerSec": 299,
               "latency": {
-                "count": 1276,
-                "minMs": 122.43961300000228,
-                "p50Ms": 2014.9260920000015,
-                "p95Ms": 3017.507491999997,
-                "p99Ms": 3087.305733999994,
-                "maxMs": 3166.611431999998
+                "count": 1299,
+                "minMs": 82.98648700000194,
+                "p50Ms": 1864.656471000002,
+                "p95Ms": 2666.5572669999965,
+                "p99Ms": 2734.9204800000007,
+                "maxMs": 2818.8967120000016
               },
               "errors": [],
               "interruption": null,
@@ -2760,48 +2760,48 @@
             "logicalSubscriptions": 5000,
             "distinctQueryArguments": 10,
             "baselineIdlePhaseId": "subscriptions:shared:baseline-idle",
-            "setupMs": 1341.368846999998,
-            "setupConnectionsPerSec": 372.75355031411493,
+            "setupMs": 1361.077161000001,
+            "setupConnectionsPerSec": 367.3561017162639,
             "subscribedSnapshotId": "subscriptions:shared:subscribed",
             "subscribedIdlePhaseId": "subscriptions:shared:idle",
             "phaseId": "subscriptions:shared:updates",
             "updates": 40,
-            "updateThroughputPerSec": 7.004143085815222,
+            "updateThroughputPerSec": 6.409043257453726,
             "expectedDeliveries": 20000,
             "observedDeliveries": 20000,
             "duplicateDeliveries": 0,
             "unexpectedDeliveries": 0,
             "corruptDeliveries": 0,
             "missingDeliveries": 0,
-            "deliveryThroughputPerSec": 2474.023998327438,
+            "deliveryThroughputPerSec": 2309.0286855748086,
             "updateAckLatency": {
               "count": 40,
-              "minMs": 7.946360999994795,
-              "p50Ms": 12.0246049999987,
-              "p95Ms": 17.56407599999511,
-              "p99Ms": 20.914476999998442,
-              "maxMs": 20.914476999998442
+              "minMs": 9.160915999993449,
+              "p50Ms": 12.349612000005436,
+              "p95Ms": 17.229501000008895,
+              "p99Ms": 24.56035100000736,
+              "maxMs": 24.56035100000736
             },
             "deliveryLatency": {
               "count": 20000,
-              "minMs": 11.717625999997836,
-              "p50Ms": 347.29476600000635,
-              "p95Ms": 1113.6101199999976,
-              "p99Ms": 1523.379792000007,
-              "maxMs": 2396.3097479999997
+              "minMs": 15.499504999999772,
+              "p50Ms": 340.199391999995,
+              "p95Ms": 1108.6399119999987,
+              "p99Ms": 1496.8635020000074,
+              "maxMs": 2446.411896999998
             },
             "timeToAll": {
               "count": 40,
-              "minMs": 1229.108447999999,
-              "p50Ms": 1583.9160560000018,
-              "p95Ms": 2035.7074730000022,
-              "p99Ms": 2396.3097479999997,
-              "maxMs": 2396.3097479999997
+              "minMs": 1359.5579619999917,
+              "p50Ms": 1829.8050289999956,
+              "p95Ms": 2314.8094999999885,
+              "p99Ms": 2446.411896999998,
+              "maxMs": 2446.411896999998
             },
             "capacity": [
               {
-                "windowStartedAtMs": 1785536502772.4192,
-                "windowEndedAtMs": 1785536504772.4192,
+                "windowStartedAtMs": 1785539509750.3699,
+                "windowEndedAtMs": 1785539511750.3699,
                 "wallMs": 2000,
                 "attempted": 1,
                 "completedInWindow": 0,
@@ -2810,11 +2810,11 @@
                 "throughputPerSec": 0,
                 "latency": {
                   "count": 1,
-                  "minMs": 2508.804643999989,
-                  "p50Ms": 2508.804643999989,
-                  "p95Ms": 2508.804643999989,
-                  "p99Ms": 2508.804643999989,
-                  "maxMs": 2508.804643999989
+                  "minMs": 2496.4167099999904,
+                  "p50Ms": 2496.4167099999904,
+                  "p95Ms": 2496.4167099999904,
+                  "p99Ms": 2496.4167099999904,
+                  "maxMs": 2496.4167099999904
                 },
                 "errors": [],
                 "interruption": null,
@@ -2824,19 +2824,19 @@
                 "deliveryThroughputPerSec": 0,
                 "updateAckLatency": {
                   "count": 1,
-                  "minMs": 8.724868999997852,
-                  "p50Ms": 8.724868999997852,
-                  "p95Ms": 8.724868999997852,
-                  "p99Ms": 8.724868999997852,
-                  "maxMs": 8.724868999997852
+                  "minMs": 9.482050999999046,
+                  "p50Ms": 9.482050999999046,
+                  "p95Ms": 9.482050999999046,
+                  "p99Ms": 9.482050999999046,
+                  "maxMs": 9.482050999999046
                 },
                 "deliveryLatency": {
                   "count": 500,
-                  "minMs": 18.23458199999004,
-                  "p50Ms": 1243.5840429999953,
-                  "p95Ms": 2378.4919459999946,
-                  "p99Ms": 2473.7036129999906,
-                  "maxMs": 2508.1761879999976
+                  "minMs": 31.44231800000125,
+                  "p50Ms": 1246.3836379999993,
+                  "p95Ms": 2355.7642970000015,
+                  "p99Ms": 2466.395153999998,
+                  "maxMs": 2495.5396060000057
                 },
                 "correctness": {
                   "ok": true,
@@ -2844,8 +2844,8 @@
                 }
               },
               {
-                "windowStartedAtMs": 1785536505311.7014,
-                "windowEndedAtMs": 1785536507311.7014,
+                "windowStartedAtMs": 1785539512273.269,
+                "windowEndedAtMs": 1785539514273.269,
                 "wallMs": 2000,
                 "attempted": 10,
                 "completedInWindow": 0,
@@ -2854,11 +2854,11 @@
                 "throughputPerSec": 0,
                 "latency": {
                   "count": 10,
-                  "minMs": 2206.6730839999946,
-                  "p50Ms": 2206.709833000001,
-                  "p95Ms": 7585.930336999998,
-                  "p99Ms": 7585.930336999998,
-                  "maxMs": 7585.930336999998
+                  "minMs": 2114.3606299999956,
+                  "p50Ms": 2114.422946000006,
+                  "p95Ms": 5885.853845000005,
+                  "p99Ms": 5885.853845000005,
+                  "maxMs": 5885.853845000005
                 },
                 "errors": [],
                 "interruption": null,
@@ -2868,19 +2868,19 @@
                 "deliveryThroughputPerSec": 0,
                 "updateAckLatency": {
                   "count": 10,
-                  "minMs": 27.605261000004248,
-                  "p50Ms": 51.40702400000009,
-                  "p95Ms": 73.4772920000105,
-                  "p99Ms": 73.4772920000105,
-                  "maxMs": 73.4772920000105
+                  "minMs": 23.025977000012062,
+                  "p50Ms": 79.91687299999467,
+                  "p95Ms": 98.0210539999971,
+                  "p99Ms": 98.0210539999971,
+                  "maxMs": 98.0210539999971
                 },
                 "deliveryLatency": {
                   "count": 5000,
-                  "minMs": 84.76771299999382,
-                  "p50Ms": 375.8785019999923,
-                  "p95Ms": 1405.6240970000072,
-                  "p99Ms": 1814.6291750000091,
-                  "maxMs": 7585.837262000001
+                  "minMs": 84.97700099999201,
+                  "p50Ms": 389.906124000001,
+                  "p95Ms": 1292.2441490000056,
+                  "p99Ms": 1945.5403859999933,
+                  "maxMs": 5885.720121000006
                 },
                 "correctness": {
                   "ok": true,
@@ -2900,83 +2900,83 @@
             "logicalSubscriptions": 5000,
             "distinctQueryArguments": 5000,
             "baselineIdlePhaseId": "subscriptions:partitioned:baseline-idle",
-            "setupMs": 8239.254925999994,
-            "setupConnectionsPerSec": 60.6850988943415,
+            "setupMs": 8763.865982999996,
+            "setupConnectionsPerSec": 57.05244705588742,
             "subscribedSnapshotId": "subscriptions:partitioned:subscribed",
             "subscribedIdlePhaseId": "subscriptions:partitioned:idle",
             "phaseId": "subscriptions:partitioned:updates",
             "updates": 200,
-            "updateThroughputPerSec": 100,
+            "updateThroughputPerSec": 99.9797676942906,
             "expectedDeliveries": 200,
             "observedDeliveries": 200,
             "duplicateDeliveries": 0,
             "unexpectedDeliveries": 0,
             "corruptDeliveries": 0,
             "missingDeliveries": 0,
-            "deliveryThroughputPerSec": 99.9776168611705,
+            "deliveryThroughputPerSec": 99.80515782586107,
             "updateAckLatency": {
               "count": 200,
-              "minMs": 6.347294999999576,
-              "p50Ms": 7.556234999996377,
-              "p95Ms": 10.165597999992315,
-              "p99Ms": 11.007016000003205,
-              "maxMs": 11.86129699999583
+              "minMs": 6.165361999999732,
+              "p50Ms": 8.207546999998158,
+              "p95Ms": 11.047875999996904,
+              "p99Ms": 13.34626200000639,
+              "maxMs": 17.282619999998133
             },
             "deliveryLatency": {
               "count": 200,
-              "minMs": 8.571360999994795,
-              "p50Ms": 10.374521999998251,
-              "p95Ms": 14.755789000002551,
-              "p99Ms": 17.76040600000124,
-              "maxMs": 21.17588199999591
+              "minMs": 8.008219999988796,
+              "p50Ms": 11.688113000011072,
+              "p95Ms": 16.330002999995486,
+              "p99Ms": 22.895892000000458,
+              "maxMs": 25.996882999999798
             },
             "timeToAll": {
               "count": 200,
-              "minMs": 8.571360999994795,
-              "p50Ms": 10.374521999998251,
-              "p95Ms": 14.755789000002551,
-              "p99Ms": 17.76040600000124,
-              "maxMs": 21.17588199999591
+              "minMs": 8.008219999988796,
+              "p50Ms": 11.688113000011072,
+              "p95Ms": 16.330002999995486,
+              "p99Ms": 22.895892000000458,
+              "maxMs": 25.996882999999798
             },
             "capacity": [
               {
-                "windowStartedAtMs": 1785536525270.7043,
-                "windowEndedAtMs": 1785536527270.7043,
+                "windowStartedAtMs": 1785539531038.2908,
+                "windowEndedAtMs": 1785539533038.2908,
                 "wallMs": 2000,
-                "attempted": 193,
-                "completedInWindow": 192,
+                "attempted": 166,
+                "completedInWindow": 165,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 96,
+                "throughputPerSec": 82.5,
                 "latency": {
-                  "count": 193,
-                  "minMs": 7.953204999997979,
-                  "p50Ms": 10.080939000006765,
-                  "p95Ms": 12.932457999995677,
-                  "p99Ms": 14.77360200000112,
-                  "maxMs": 14.929225999992923
+                  "count": 166,
+                  "minMs": 8.508153000002494,
+                  "p50Ms": 11.820804999995744,
+                  "p95Ms": 15.405538000006345,
+                  "p99Ms": 16.50499299999501,
+                  "maxMs": 17.53377300000284
                 },
                 "errors": [],
                 "interruption": null,
                 "slots": 1,
                 "phaseId": "subscriptions:partitioned:capacity-1",
                 "deliveriesPerUpdate": 1,
-                "deliveryThroughputPerSec": 96,
+                "deliveryThroughputPerSec": 82.5,
                 "updateAckLatency": {
-                  "count": 193,
-                  "minMs": 5.889821999997366,
-                  "p50Ms": 7.475904000006267,
-                  "p95Ms": 9.536330999995698,
-                  "p99Ms": 10.353572999985772,
-                  "maxMs": 10.604345999992802
+                  "count": 166,
+                  "minMs": 5.951509000005899,
+                  "p50Ms": 8.764366999996128,
+                  "p95Ms": 11.29723599999852,
+                  "p99Ms": 12.764716000005137,
+                  "maxMs": 12.915568999989773
                 },
                 "deliveryLatency": {
-                  "count": 193,
-                  "minMs": 7.922457000007853,
-                  "p50Ms": 10.053538000007393,
-                  "p95Ms": 12.863989000004949,
-                  "p99Ms": 14.684454000002006,
-                  "maxMs": 14.726934000005713
+                  "count": 166,
+                  "minMs": 8.469010000000708,
+                  "p50Ms": 11.77883500000462,
+                  "p95Ms": 15.334294000000227,
+                  "p99Ms": 16.42282800000976,
+                  "maxMs": 17.486064000011538
                 },
                 "correctness": {
                   "ok": true,
@@ -2984,43 +2984,43 @@
                 }
               },
               {
-                "windowStartedAtMs": 1785536527343.7986,
-                "windowEndedAtMs": 1785536529343.7986,
+                "windowStartedAtMs": 1785539533131.314,
+                "windowEndedAtMs": 1785539535131.314,
                 "wallMs": 2000,
-                "attempted": 331,
-                "completedInWindow": 299,
+                "attempted": 324,
+                "completedInWindow": 292,
                 "completedAfterWindow": 32,
                 "failed": 0,
-                "throughputPerSec": 149.5,
+                "throughputPerSec": 146,
                 "latency": {
-                  "count": 331,
-                  "minMs": 114.68502599999192,
-                  "p50Ms": 203.62302700000873,
-                  "p95Ms": 275.91416200000094,
-                  "p99Ms": 300.237208999999,
-                  "maxMs": 338.47402700000384
+                  "count": 324,
+                  "minMs": 84.3206419999915,
+                  "p50Ms": 205.88321499999438,
+                  "p95Ms": 275.00820500000555,
+                  "p99Ms": 328.2834989999974,
+                  "maxMs": 351.848542000007
                 },
                 "errors": [],
                 "interruption": null,
                 "slots": 32,
                 "phaseId": "subscriptions:partitioned:capacity-32",
                 "deliveriesPerUpdate": 1,
-                "deliveryThroughputPerSec": 149.5,
+                "deliveryThroughputPerSec": 146,
                 "updateAckLatency": {
-                  "count": 331,
-                  "minMs": 29.93971400000737,
-                  "p50Ms": 137.01986300000863,
-                  "p95Ms": 195.06858800000919,
-                  "p99Ms": 214.9787110000034,
-                  "maxMs": 216.58182400000806
+                  "count": 324,
+                  "minMs": 37.092640000002575,
+                  "p50Ms": 144.2535680000001,
+                  "p95Ms": 199.08866500000295,
+                  "p99Ms": 231.61774299999524,
+                  "maxMs": 257.88539599999785
                 },
                 "deliveryLatency": {
-                  "count": 331,
-                  "minMs": 114.6408620000002,
-                  "p50Ms": 203.60718800000905,
-                  "p95Ms": 275.8716710000008,
-                  "p99Ms": 300.2189849999995,
-                  "maxMs": 338.43162700001267
+                  "count": 324,
+                  "minMs": 84.29566600000544,
+                  "p50Ms": 205.8406449999893,
+                  "p95Ms": 274.9928860000073,
+                  "p99Ms": 328.270062999989,
+                  "maxMs": 351.828766000006
                 },
                 "correctness": {
                   "ok": true,
@@ -3028,43 +3028,43 @@
                 }
               },
               {
-                "windowStartedAtMs": 1785536530419.0798,
-                "windowEndedAtMs": 1785536532419.0798,
+                "windowStartedAtMs": 1785539536214.0996,
+                "windowEndedAtMs": 1785539538214.0996,
                 "wallMs": 2000,
-                "attempted": 738,
-                "completedInWindow": 238,
+                "attempted": 726,
+                "completedInWindow": 226,
                 "completedAfterWindow": 500,
                 "failed": 0,
-                "throughputPerSec": 119,
+                "throughputPerSec": 113,
                 "latency": {
-                  "count": 738,
-                  "minMs": 354.56448400000227,
-                  "p50Ms": 2857.117048,
-                  "p95Ms": 3559.1083700000017,
-                  "p99Ms": 3753.837176000001,
-                  "maxMs": 3878.9874950000085
+                  "count": 726,
+                  "minMs": 223.3682470000058,
+                  "p50Ms": 2766.429978,
+                  "p95Ms": 3548.3113169999997,
+                  "p99Ms": 3800.9443140000076,
+                  "maxMs": 3935.195366999993
                 },
                 "errors": [],
                 "interruption": null,
                 "slots": 500,
                 "phaseId": "subscriptions:partitioned:capacity-500",
                 "deliveriesPerUpdate": 1,
-                "deliveryThroughputPerSec": 119,
+                "deliveryThroughputPerSec": 113,
                 "updateAckLatency": {
-                  "count": 738,
-                  "minMs": 269.4720579999994,
-                  "p50Ms": 2571.237755000009,
-                  "p95Ms": 3210.673330000005,
-                  "p99Ms": 3373.1580729999987,
-                  "maxMs": 3442.1210310000024
+                  "count": 726,
+                  "minMs": 176.6806649999926,
+                  "p50Ms": 2641.182050999996,
+                  "p95Ms": 3285.6630529999966,
+                  "p99Ms": 3488.589882,
+                  "maxMs": 3536.1963479999977
                 },
                 "deliveryLatency": {
-                  "count": 738,
-                  "minMs": 354.521882999994,
-                  "p50Ms": 2857.075859000004,
-                  "p95Ms": 3559.073694999999,
-                  "p99Ms": 3753.825313999987,
-                  "maxMs": 3878.9541029999964
+                  "count": 726,
+                  "minMs": 223.22729100000288,
+                  "p50Ms": 2766.418525999994,
+                  "p95Ms": 3548.2895449999924,
+                  "p99Ms": 3800.928191999992,
+                  "maxMs": 3935.182433000009
                 },
                 "correctness": {
                   "ok": true,
@@ -3084,79 +3084,79 @@
         "server": {
           "snapshots": {
             "server:seeded-idle": {
-              "timestampMs": 1785536431869.0312,
-              "rootPid": 2712302,
+              "timestampMs": 1785539439312.3645,
+              "rootPid": 2716422,
               "rssKind": "sumProcessRss",
-              "rssMb": 150.22265625,
+              "rssMb": 146.17578125,
               "cumulativeCpuSeconds": 3,
               "processCount": 1
             },
             "connections:1:connected": {
-              "timestampMs": 1785536483325.5232,
-              "rootPid": 2712302,
+              "timestampMs": 1785539490174.3845,
+              "rootPid": 2716422,
               "rssKind": "sumProcessRss",
-              "rssMb": 1424.43359375,
+              "rssMb": 1372.01953125,
               "cumulativeCpuSeconds": 47,
               "processCount": 1
             },
             "connections:1000:connected": {
-              "timestampMs": 1785536487394.9885,
-              "rootPid": 2712302,
+              "timestampMs": 1785539494103.3105,
+              "rootPid": 2716422,
               "rssKind": "sumProcessRss",
-              "rssMb": 1955.7421875,
+              "rssMb": 1911.4140625,
               "cumulativeCpuSeconds": 53,
               "processCount": 1
             },
             "subscriptions:shared:subscribed": {
-              "timestampMs": 1785536494694.4187,
-              "rootPid": 2712302,
+              "timestampMs": 1785539501092.405,
+              "rootPid": 2716422,
               "rssKind": "sumProcessRss",
-              "rssMb": 2174.66796875,
-              "cumulativeCpuSeconds": 67,
+              "rssMb": 2041.46484375,
+              "cumulativeCpuSeconds": 66,
               "processCount": 1
             },
             "subscriptions:partitioned:subscribed": {
-              "timestampMs": 1785536523275.907,
-              "rootPid": 2712302,
+              "timestampMs": 1785539529040.749,
+              "rootPid": 2716422,
               "rssKind": "sumProcessRss",
-              "rssMb": 2277.3203125,
+              "rssMb": 2142.4921875,
               "cumulativeCpuSeconds": 97,
               "processCount": 1
             }
           },
           "phases": {
             "server:seeded-idle-window": {
-              "wallMs": 1001.260009765625,
+              "wallMs": 1001.3720703125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 149.7734375,
-                "peak": 149.7734375
+                "p50": 145.78515625,
+                "peak": 145.78515625
               },
-              "sampleCount": 5,
+              "sampleCount": 4,
               "processCountPeak": 1
             },
             "operation:query:latency:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 2.9990844953773594,
-              "cpuCores": 1.4995422476886797,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 155.73828125,
-                "peak": 158.38671875
+                "p50": 163.6953125,
+                "peak": 166.625
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:query:saturation:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 5.21207452816491,
-              "cpuCores": 2.606037264082455,
+              "cpuSeconds": 6,
+              "cpuCores": 3,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 457.8125,
-                "peak": 513.23828125
+                "p50": 468.3828125,
+                "peak": 496.04296875
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3167,104 +3167,104 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 529.48828125,
-                "peak": 534.75
+                "p50": 503.51953125,
+                "peak": 506.21875
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:mutation-uncontended:saturation:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 2.433830303514796,
-              "cpuCores": 1.216915151757398,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 574.7421875,
-                "peak": 587.2578125
+                "p50": 567.8515625,
+                "peak": 578.06640625
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:mutation-contended:latency:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 2,
-              "cpuCores": 1,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 623.46875,
-                "peak": 627.265625
+                "p50": 607.8671875,
+                "peak": 610.671875
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:mutation-contended:saturation:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 3.1067869451783565,
-              "cpuCores": 1.5533934725891783,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 675.30078125,
-                "peak": 679.828125
+                "p50": 625.40234375,
+                "peak": 628.87109375
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:procedure:latency:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 3.946364009416641,
-              "cpuCores": 1.9731820047083204,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 689.33984375,
-                "peak": 689.65625
+                "p50": 642.1328125,
+                "peak": 642.6796875
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:procedure:saturation:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 5.558575151802302,
-              "cpuCores": 2.779287575901151,
+              "cpuSeconds": 5.75058058775506,
+              "cpuCores": 2.87529029387753,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 1240.703125,
-                "peak": 1375.41796875
+                "p50": 1150.26171875,
+                "peak": 1356.6875
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "connections:baseline-idle": {
-              "wallMs": 1000.409912109375,
+              "wallMs": 1000.869140625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 1422.05859375,
-                "peak": 1422.05859375
+                "p50": 1379.78125,
+                "peak": 1379.78125
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "connections:1:ramp": {
-              "wallMs": 19127.950439453125,
+              "wallMs": 19136.173828125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 1424.6796875,
-                "peak": 1425.59375
+                "p50": 1383.08203125,
+                "peak": 1383.375
               },
               "sampleCount": 78,
               "processCountPeak": 1
             },
             "connections:1:idle": {
-              "wallMs": 1000.302734375,
+              "wallMs": 1000.281982421875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 1424.390625,
-                "peak": 1424.390625
+                "p50": 1371.97265625,
+                "peak": 1371.97265625
               },
               "sampleCount": 6,
               "processCountPeak": 1
@@ -3275,104 +3275,104 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 1426.1484375,
-                "peak": 1434
+                "p50": 1372.44140625,
+                "peak": 1377.109375
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "connections:1000:ramp": {
-              "wallMs": 2059.880859375,
+              "wallMs": 1925.132080078125,
               "cpuSeconds": 5,
-              "cpuCores": 2.4273248509707877,
+              "cpuCores": 2.597224393973577,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 1580.1875,
-                "peak": 1944.2734375
+                "p50": 1559.05859375,
+                "peak": 1911.10546875
               },
               "sampleCount": 10,
               "processCountPeak": 1
             },
             "connections:1000:idle": {
-              "wallMs": 1000.934814453125,
+              "wallMs": 1000.96484375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 1954.5625,
-                "peak": 1954.5625
+                "p50": 1911.11328125,
+                "peak": 1911.11328125
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "connections:1000:work": {
               "wallMs": 1000,
-              "cpuSeconds": 2.594981425001663,
-              "cpuCores": 2.594981425001663,
+              "cpuSeconds": 3,
+              "cpuCores": 3,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 1962.82421875,
-                "peak": 2024.80078125
+                "p50": 1963.59765625,
+                "peak": 1973.90625
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "subscriptions:shared:baseline-idle": {
-              "wallMs": 1002.135009765625,
+              "wallMs": 1001.833984375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2087.09375,
-                "peak": 2087.09375
+                "p50": 1985.98046875,
+                "peak": 1985.98046875
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:shared:setup": {
-              "wallMs": 1341.368896484375,
-              "cpuSeconds": 3,
-              "cpuCores": 2.2365212193772868,
+              "wallMs": 1361.0771484375,
+              "cpuSeconds": 2.980076410104644,
+              "cpuCores": 2.1894985258739634,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2114.75390625,
-                "peak": 2169.94140625
+                "p50": 2000.98828125,
+                "peak": 2033.41796875
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "subscriptions:shared:idle": {
-              "wallMs": 1001.236328125,
-              "cpuSeconds": 0,
-              "cpuCores": 0,
+              "wallMs": 1000.61181640625,
+              "cpuSeconds": 0.019764494890040396,
+              "cpuCores": 0.01975241004151402,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2174.51953125,
-                "peak": 2174.51953125
+                "p50": 2041.3828125,
+                "peak": 2041.3828125
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:shared:updates": {
-              "wallMs": 8083.995849609375,
+              "wallMs": 8661.650634765625,
               "cpuSeconds": 5,
-              "cpuCores": 0.6185060077983098,
+              "cpuCores": 0.5772571777406137,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2177.52734375,
-                "peak": 2178.93359375
+                "p50": 2042.62890625,
+                "peak": 2043.87109375
               },
-              "sampleCount": 35,
+              "sampleCount": 38,
               "processCountPeak": 1
             },
             "subscriptions:shared:capacity-1": {
               "wallMs": 2000,
-              "cpuSeconds": 1,
-              "cpuCores": 0.5,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2178.80859375,
-                "peak": 2178.80859375
+                "p50": 2040.484375,
+                "peak": 2040.484375
               },
               "sampleCount": 10,
               "processCountPeak": 1
@@ -3383,92 +3383,92 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2159.1171875,
-                "peak": 2181.87109375
+                "p50": 2045.0078125,
+                "peak": 2045.0078125
               },
-              "sampleCount": 8,
+              "sampleCount": 9,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:baseline-idle": {
-              "wallMs": 1016.739013671875,
+              "wallMs": 1001.789794921875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2161.3671875,
-                "peak": 2161.375
+                "p50": 2040.8359375,
+                "peak": 2040.8359375
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:setup": {
-              "wallMs": 8239.255126953125,
-              "cpuSeconds": 23,
-              "cpuCores": 2.7915144810554486,
+              "wallMs": 8763.865966796875,
+              "cpuSeconds": 24,
+              "cpuCores": 2.738517463745719,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2230.765625,
-                "peak": 2278.23828125
+                "p50": 2103.98828125,
+                "peak": 2142.89453125
               },
-              "sampleCount": 35,
+              "sampleCount": 36,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:idle": {
-              "wallMs": 1000.890380859375,
+              "wallMs": 1000.85107421875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2277.30078125,
-                "peak": 2277.30078125
+                "p50": 2142.4765625,
+                "peak": 2142.4765625
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:updates": {
-              "wallMs": 2000.44775390625,
+              "wallMs": 2003.904541015625,
               "cpuSeconds": 2,
-              "cpuCores": 0.9997761731565467,
+              "cpuCores": 0.9980515334260153,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2278.9453125,
-                "peak": 2280.6171875
+                "p50": 2142.9296875,
+                "peak": 2143.9375
               },
               "sampleCount": 11,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:capacity-1": {
               "wallMs": 2000,
-              "cpuSeconds": 2,
-              "cpuCores": 1,
+              "cpuSeconds": 2.960804767965058,
+              "cpuCores": 1.480402383982529,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2280.8203125,
-                "peak": 2281.6875
+                "p50": 2144.43359375,
+                "peak": 2145.3046875
               },
               "sampleCount": 10,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:capacity-32": {
               "wallMs": 2000,
-              "cpuSeconds": 3.452093253442925,
-              "cpuCores": 1.7260466267214625,
+              "cpuSeconds": 3,
+              "cpuCores": 1.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2294.453125,
-                "peak": 2300.484375
+                "p50": 2152.41015625,
+                "peak": 2154.75
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:capacity-500": {
               "wallMs": 2000,
-              "cpuSeconds": 3,
-              "cpuCores": 1.5,
+              "cpuSeconds": 3.19889657416887,
+              "cpuCores": 1.599448287084435,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 2434.875,
-                "peak": 2440.43359375
+                "p50": 2324.5390625,
+                "peak": 2335.6328125
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3478,57 +3478,57 @@
         "loadGenerator": {
           "snapshots": {
             "server:seeded-idle": {
-              "timestampMs": 1785536431869.0312,
-              "rootPid": 2712345,
+              "timestampMs": 1785539439312.3645,
+              "rootPid": 2716465,
               "rssKind": "sumProcessRss",
-              "rssMb": 58.55859375,
+              "rssMb": 58.25,
               "cumulativeCpuSeconds": 0,
               "processCount": 1
             },
             "connections:1:connected": {
-              "timestampMs": 1785536483325.5232,
-              "rootPid": 2712345,
+              "timestampMs": 1785539490174.3845,
+              "rootPid": 2716465,
               "rssKind": "sumProcessRss",
-              "rssMb": 67.66796875,
+              "rssMb": 76.57421875,
               "cumulativeCpuSeconds": 3,
               "processCount": 1
             },
             "connections:1000:connected": {
-              "timestampMs": 1785536487394.9885,
-              "rootPid": 2712345,
+              "timestampMs": 1785539494103.3105,
+              "rootPid": 2716465,
               "rssKind": "sumProcessRss",
-              "rssMb": 286.81640625,
+              "rssMb": 297.546875,
               "cumulativeCpuSeconds": 4,
               "processCount": 1
             },
             "subscriptions:shared:subscribed": {
-              "timestampMs": 1785536494694.4187,
-              "rootPid": 2712345,
+              "timestampMs": 1785539501092.405,
+              "rootPid": 2716465,
               "rssKind": "sumProcessRss",
-              "rssMb": 194.171875,
+              "rssMb": 206.3203125,
               "cumulativeCpuSeconds": 5,
               "processCount": 1
             },
             "subscriptions:partitioned:subscribed": {
-              "timestampMs": 1785536523275.907,
-              "rootPid": 2712345,
+              "timestampMs": 1785539529040.749,
+              "rootPid": 2716465,
               "rssKind": "sumProcessRss",
-              "rssMb": 195.08203125,
+              "rssMb": 200.28515625,
               "cumulativeCpuSeconds": 8,
               "processCount": 1
             }
           },
           "phases": {
             "server:seeded-idle-window": {
-              "wallMs": 1001.260009765625,
+              "wallMs": 1001.3720703125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 58.53125,
-                "peak": 58.71875
+                "p50": 58.01171875,
+                "peak": 58.375
               },
-              "sampleCount": 5,
+              "sampleCount": 4,
               "processCountPeak": 1
             },
             "operation:query:latency:trial-0": {
@@ -3537,8 +3537,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 66.2109375,
-                "peak": 67.765625
+                "p50": 66.33984375,
+                "peak": 67.1796875
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3549,8 +3549,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 79.50390625,
-                "peak": 86.69140625
+                "p50": 80.359375,
+                "peak": 86.80078125
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3561,8 +3561,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 85.70703125,
-                "peak": 86
+                "p50": 86.39453125,
+                "peak": 86.65625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3573,8 +3573,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 87.578125,
-                "peak": 88.32421875
+                "p50": 87.8984375,
+                "peak": 89.41796875
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3585,8 +3585,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 88.17578125,
-                "peak": 88.3515625
+                "p50": 86.60546875,
+                "peak": 86.77734375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3597,8 +3597,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 74.3671875,
-                "peak": 74.88671875
+                "p50": 92.59765625,
+                "peak": 92.7890625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3609,8 +3609,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 75.61328125,
-                "peak": 76.26171875
+                "p50": 74.65625,
+                "peak": 75.265625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3621,44 +3621,44 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 76.0625,
-                "peak": 78.7734375
+                "p50": 77.72265625,
+                "peak": 79.203125
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "connections:baseline-idle": {
-              "wallMs": 1000.409912109375,
+              "wallMs": 1000.869140625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 75.69921875,
-                "peak": 76.4453125
+                "p50": 76.7890625,
+                "peak": 77.40625
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "connections:1:ramp": {
-              "wallMs": 19127.950439453125,
+              "wallMs": 19136.173828125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 67.640625,
-                "peak": 75.51171875
+                "p50": 76.55859375,
+                "peak": 76.6875
               },
               "sampleCount": 78,
               "processCountPeak": 1
             },
             "connections:1:idle": {
-              "wallMs": 1000.302734375,
+              "wallMs": 1000.281982421875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 67.64453125,
-                "peak": 67.66015625
+                "p50": 76.56640625,
+                "peak": 76.5703125
               },
               "sampleCount": 6,
               "processCountPeak": 1
@@ -3669,32 +3669,32 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 68.3125,
-                "peak": 68.640625
+                "p50": 76.70703125,
+                "peak": 77.38671875
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "connections:1000:ramp": {
-              "wallMs": 2059.880859375,
+              "wallMs": 1925.132080078125,
               "cpuSeconds": 1,
-              "cpuCores": 0.4854649701941575,
+              "cpuCores": 0.5194448787947153,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 141.0078125,
-                "peak": 290.7265625
+                "p50": 145.41015625,
+                "peak": 297.8359375
               },
               "sampleCount": 10,
               "processCountPeak": 1
             },
             "connections:1000:idle": {
-              "wallMs": 1000.934814453125,
+              "wallMs": 1000.96484375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 289.765625,
-                "peak": 290.79296875
+                "p50": 297.4921875,
+                "peak": 297.84765625
               },
               "sampleCount": 6,
               "processCountPeak": 1
@@ -3705,58 +3705,58 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 290.87109375,
-                "peak": 296.0234375
+                "p50": 304.7421875,
+                "peak": 308.4453125
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "subscriptions:shared:baseline-idle": {
-              "wallMs": 1002.135009765625,
-              "cpuSeconds": 0,
-              "cpuCores": 0,
+              "wallMs": 1001.833984375,
+              "cpuSeconds": 0.2635668532965241,
+              "cpuCores": 0.2630843606897123,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 309.08984375,
-                "peak": 310.125
+                "p50": 312.125,
+                "peak": 318.76953125
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:shared:setup": {
-              "wallMs": 1341.368896484375,
+              "wallMs": 1361.0771484375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 176.24609375,
-                "peak": 309.4296875
+                "p50": 165.84765625,
+                "peak": 306.5234375
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "subscriptions:shared:idle": {
-              "wallMs": 1001.236328125,
+              "wallMs": 1000.61181640625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 198.5703125,
-                "peak": 205.96484375
+                "p50": 206.59375,
+                "peak": 207.59375
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:shared:updates": {
-              "wallMs": 8083.995849609375,
+              "wallMs": 8661.650634765625,
               "cpuSeconds": 1,
-              "cpuCores": 0.12370120155966197,
+              "cpuCores": 0.11545143554812275,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 209.05859375,
-                "peak": 216.1015625
+                "p50": 220.90234375,
+                "peak": 231.53125
               },
-              "sampleCount": 35,
+              "sampleCount": 38,
               "processCountPeak": 1
             },
             "subscriptions:shared:capacity-1": {
@@ -3765,8 +3765,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 215.45703125,
-                "peak": 218.1796875
+                "p50": 232.015625,
+                "peak": 232.38671875
               },
               "sampleCount": 10,
               "processCountPeak": 1
@@ -3777,68 +3777,68 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 218.625,
-                "peak": 218.93359375
+                "p50": 234.97265625,
+                "peak": 235.07421875
               },
-              "sampleCount": 8,
+              "sampleCount": 9,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:baseline-idle": {
-              "wallMs": 1016.739013671875,
+              "wallMs": 1001.789794921875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 217.14453125,
-                "peak": 218.29296875
+                "p50": 218.609375,
+                "peak": 219.828125
               },
               "sampleCount": 5,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:setup": {
-              "wallMs": 8239.255126953125,
+              "wallMs": 8763.865966796875,
               "cpuSeconds": 1,
-              "cpuCores": 0.12137019482849777,
+              "cpuCores": 0.11410489432273829,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 130.51171875,
-                "peak": 194.98046875
+                "p50": 159.11328125,
+                "peak": 215.27734375
               },
-              "sampleCount": 35,
+              "sampleCount": 36,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:idle": {
-              "wallMs": 1000.890380859375,
+              "wallMs": 1000.85107421875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 195.10546875,
-                "peak": 195.2265625
+                "p50": 200.30078125,
+                "peak": 200.3828125
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:updates": {
-              "wallMs": 2000.44775390625,
-              "cpuSeconds": 0,
-              "cpuCores": 0,
+              "wallMs": 2003.904541015625,
+              "cpuSeconds": 0.9773973376882505,
+              "cpuCores": 0.4877464558231317,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 187.09375,
-                "peak": 198.51953125
+                "p50": 200.49609375,
+                "peak": 201.94140625
               },
               "sampleCount": 11,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:capacity-1": {
               "wallMs": 2000,
-              "cpuSeconds": 1,
-              "cpuCores": 0.5,
+              "cpuSeconds": 0.018984713966410993,
+              "cpuCores": 0.009492356983205497,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 187.13671875,
-                "peak": 187.6796875
+                "p50": 201.94921875,
+                "peak": 202.06640625
               },
               "sampleCount": 10,
               "processCountPeak": 1
@@ -3849,20 +3849,20 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 193.34375,
-                "peak": 195.44921875
+                "p50": 210.21484375,
+                "peak": 211.11328125
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "subscriptions:partitioned:capacity-500": {
               "wallMs": 2000,
-              "cpuSeconds": 0,
-              "cpuCores": 0,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 298.1640625,
-                "peak": 299.765625
+                "p50": 314.6953125,
+                "peak": 317.640625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -3872,21 +3872,21 @@
       },
       "startupIdle": {
         "snapshot": {
-          "timestampMs": 1785536427644.0242,
-          "rootPid": 2712302,
+          "timestampMs": 1785539435246.605,
+          "rootPid": 2716422,
           "rssKind": "sumProcessRss",
-          "rssMb": 95.40625,
+          "rssMb": 92.796875,
           "cumulativeCpuSeconds": 0,
           "processCount": 1
         },
         "window": {
-          "wallMs": 1000.71826171875,
+          "wallMs": 1000.8828125,
           "cpuSeconds": 0,
           "cpuCores": 0,
           "rssKind": "sumProcessRss",
           "rssMb": {
-            "p50": 95.40625,
-            "peak": 95.40625
+            "p50": 92.796875,
+            "peak": 92.796875
           },
           "sampleCount": 3,
           "processCountPeak": 1
@@ -3966,21 +3966,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536544500.093,
-                "windowEndedAtMs": 1785536546500.093,
+                "windowStartedAtMs": 1785539549784.7898,
+                "windowEndedAtMs": 1785539551784.7898,
                 "wallMs": 2000,
-                "attempted": 1105,
-                "completedInWindow": 1104,
+                "attempted": 1072,
+                "completedInWindow": 1071,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 552,
+                "throughputPerSec": 535.5,
                 "latency": {
-                  "count": 1105,
-                  "minMs": 0.5906439999998838,
-                  "p50Ms": 1.8133520000001226,
-                  "p95Ms": 2.4582070000001295,
-                  "p99Ms": 3.313822000000073,
-                  "maxMs": 6.396216999999979
+                  "count": 1072,
+                  "minMs": 0.5621609999998327,
+                  "p50Ms": 1.8087940000000344,
+                  "p95Ms": 2.7288680000001477,
+                  "p99Ms": 3.5947519999999713,
+                  "maxMs": 6.896052000000054
                 },
                 "errors": [],
                 "interruption": null,
@@ -3991,10 +3991,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 552,
-            "medianLatencyP50Ms": 1.8133520000001226,
-            "medianLatencyP95Ms": 2.4582070000001295,
-            "medianLatencyP99Ms": 3.313822000000073
+            "medianThroughputPerSec": 535.5,
+            "medianLatencyP50Ms": 1.8087940000000344,
+            "medianLatencyP95Ms": 2.7288680000001477,
+            "medianLatencyP99Ms": 3.5947519999999713
           },
           {
             "operation": "query",
@@ -4005,21 +4005,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536547083.6218,
-                "windowEndedAtMs": 1785536549083.6218,
+                "windowStartedAtMs": 1785539552364.4065,
+                "windowEndedAtMs": 1785539554364.4065,
                 "wallMs": 2000,
-                "attempted": 9996,
-                "completedInWindow": 9868,
+                "attempted": 10516,
+                "completedInWindow": 10388,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 4934,
+                "throughputPerSec": 5194,
                 "latency": {
-                  "count": 9996,
-                  "minMs": 5.618029000000206,
-                  "p50Ms": 24.335101000000577,
-                  "p95Ms": 40.977538000000095,
-                  "p99Ms": 49.96382399999948,
-                  "maxMs": 65.60670300000038
+                  "count": 10516,
+                  "minMs": 2.2335739999998623,
+                  "p50Ms": 23.086060000000543,
+                  "p95Ms": 36.359684999999445,
+                  "p99Ms": 48.413439999999355,
+                  "maxMs": 77.3531039999998
                 },
                 "errors": [],
                 "interruption": null,
@@ -4030,10 +4030,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 4934,
-            "medianLatencyP50Ms": 24.335101000000577,
-            "medianLatencyP95Ms": 40.977538000000095,
-            "medianLatencyP99Ms": 49.96382399999948
+            "medianThroughputPerSec": 5194,
+            "medianLatencyP50Ms": 23.086060000000543,
+            "medianLatencyP95Ms": 36.359684999999445,
+            "medianLatencyP99Ms": 48.413439999999355
           },
           {
             "operation": "mutation-uncontended",
@@ -4044,21 +4044,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536549619.694,
-                "windowEndedAtMs": 1785536551619.694,
+                "windowStartedAtMs": 1785539554895.8308,
+                "windowEndedAtMs": 1785539556895.8308,
                 "wallMs": 2000,
-                "attempted": 1343,
-                "completedInWindow": 1342,
+                "attempted": 1556,
+                "completedInWindow": 1555,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 671,
+                "throughputPerSec": 777.5,
                 "latency": {
-                  "count": 1343,
-                  "minMs": 0.9426889999995183,
-                  "p50Ms": 1.302177000001393,
-                  "p95Ms": 2.3401860000012675,
-                  "p99Ms": 3.005901000000449,
-                  "maxMs": 5.271765999999843
+                  "count": 1556,
+                  "minMs": 0.9337319999995088,
+                  "p50Ms": 1.234388000000763,
+                  "p95Ms": 1.6097270000000208,
+                  "p99Ms": 2.106144000000313,
+                  "maxMs": 5.153212999999596
                 },
                 "errors": [],
                 "interruption": null,
@@ -4069,10 +4069,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 671,
-            "medianLatencyP50Ms": 1.302177000001393,
-            "medianLatencyP95Ms": 2.3401860000012675,
-            "medianLatencyP99Ms": 3.005901000000449
+            "medianThroughputPerSec": 777.5,
+            "medianLatencyP50Ms": 1.234388000000763,
+            "medianLatencyP95Ms": 1.6097270000000208,
+            "medianLatencyP99Ms": 2.106144000000313
           },
           {
             "operation": "mutation-uncontended",
@@ -4083,21 +4083,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536552180.2778,
-                "windowEndedAtMs": 1785536554180.2778,
+                "windowStartedAtMs": 1785539557434.093,
+                "windowEndedAtMs": 1785539559434.093,
                 "wallMs": 2000,
-                "attempted": 70402,
-                "completedInWindow": 70274,
+                "attempted": 66363,
+                "completedInWindow": 66235,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 35137,
+                "throughputPerSec": 33117.5,
                 "latency": {
-                  "count": 70402,
-                  "minMs": 1.219451000000845,
-                  "p50Ms": 3.4959650000000693,
-                  "p95Ms": 5.331207000001086,
-                  "p99Ms": 6.703567000000476,
-                  "maxMs": 10.335538999999699
+                  "count": 66363,
+                  "minMs": 1.2576129999997647,
+                  "p50Ms": 3.7515889999995125,
+                  "p95Ms": 5.655420999999478,
+                  "p99Ms": 6.9232539999993605,
+                  "maxMs": 8.980334999998377
                 },
                 "errors": [],
                 "interruption": null,
@@ -4108,10 +4108,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 35137,
-            "medianLatencyP50Ms": 3.4959650000000693,
-            "medianLatencyP95Ms": 5.331207000001086,
-            "medianLatencyP99Ms": 6.703567000000476
+            "medianThroughputPerSec": 33117.5,
+            "medianLatencyP50Ms": 3.7515889999995125,
+            "medianLatencyP95Ms": 5.655420999999478,
+            "medianLatencyP99Ms": 6.9232539999993605
           },
           {
             "operation": "mutation-contended",
@@ -4122,21 +4122,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536554717.209,
-                "windowEndedAtMs": 1785536556717.209,
+                "windowStartedAtMs": 1785539559964.422,
+                "windowEndedAtMs": 1785539561964.422,
                 "wallMs": 2000,
-                "attempted": 1640,
-                "completedInWindow": 1639,
+                "attempted": 1307,
+                "completedInWindow": 1306,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 819.5,
+                "throughputPerSec": 653,
                 "latency": {
-                  "count": 1640,
-                  "minMs": 0.9467569999997067,
-                  "p50Ms": 1.185687000001053,
-                  "p95Ms": 1.457951000000321,
-                  "p99Ms": 1.791678999999931,
-                  "maxMs": 5.038925999999265
+                  "count": 1307,
+                  "minMs": 0.9770319999988715,
+                  "p50Ms": 1.337774999999965,
+                  "p95Ms": 2.3667159999986325,
+                  "p99Ms": 2.8200919999999314,
+                  "maxMs": 7.691633000000365
                 },
                 "errors": [],
                 "interruption": null,
@@ -4147,10 +4147,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 819.5,
-            "medianLatencyP50Ms": 1.185687000001053,
-            "medianLatencyP95Ms": 1.457951000000321,
-            "medianLatencyP99Ms": 1.791678999999931
+            "medianThroughputPerSec": 653,
+            "medianLatencyP50Ms": 1.337774999999965,
+            "medianLatencyP95Ms": 2.3667159999986325,
+            "medianLatencyP99Ms": 2.8200919999999314
           },
           {
             "operation": "mutation-contended",
@@ -4161,21 +4161,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536557248.0688,
-                "windowEndedAtMs": 1785536559248.0688,
+                "windowStartedAtMs": 1785539562505.361,
+                "windowEndedAtMs": 1785539564505.361,
                 "wallMs": 2000,
-                "attempted": 71449,
-                "completedInWindow": 71321,
+                "attempted": 69862,
+                "completedInWindow": 69734,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 35660.5,
+                "throughputPerSec": 34867,
                 "latency": {
-                  "count": 71449,
-                  "minMs": 1.2408000000014,
-                  "p50Ms": 3.4482459999999264,
-                  "p95Ms": 5.301531999999497,
-                  "p99Ms": 6.9505019999996875,
-                  "maxMs": 10.280895999998393
+                  "count": 69862,
+                  "minMs": 1.3724099999999453,
+                  "p50Ms": 3.523368999998638,
+                  "p95Ms": 5.433412000000317,
+                  "p99Ms": 6.763573000000179,
+                  "maxMs": 10.360058000000208
                 },
                 "errors": [],
                 "interruption": null,
@@ -4186,10 +4186,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 35660.5,
-            "medianLatencyP50Ms": 3.4482459999999264,
-            "medianLatencyP95Ms": 5.301531999999497,
-            "medianLatencyP99Ms": 6.9505019999996875
+            "medianThroughputPerSec": 34867,
+            "medianLatencyP50Ms": 3.523368999998638,
+            "medianLatencyP95Ms": 5.433412000000317,
+            "medianLatencyP99Ms": 6.763573000000179
           },
           {
             "operation": "procedure",
@@ -4200,21 +4200,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536559785.6426,
-                "windowEndedAtMs": 1785536561785.6426,
+                "windowStartedAtMs": 1785539565035.55,
+                "windowEndedAtMs": 1785539567035.55,
                 "wallMs": 2000,
-                "attempted": 1594,
-                "completedInWindow": 1593,
+                "attempted": 1688,
+                "completedInWindow": 1687,
                 "completedAfterWindow": 1,
                 "failed": 0,
-                "throughputPerSec": 796.5,
+                "throughputPerSec": 843.5,
                 "latency": {
-                  "count": 1594,
-                  "minMs": 0.3168279999990773,
-                  "p50Ms": 1.4602349999986473,
-                  "p95Ms": 1.6869919999990088,
-                  "p99Ms": 2.044017000000167,
-                  "maxMs": 3.706363000001147
+                  "count": 1688,
+                  "minMs": 0.31856100000004517,
+                  "p50Ms": 1.4079960000017309,
+                  "p95Ms": 1.837496000000101,
+                  "p99Ms": 2.3793010000008508,
+                  "maxMs": 6.432738000003155
                 },
                 "errors": [],
                 "interruption": null,
@@ -4225,10 +4225,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 796.5,
-            "medianLatencyP50Ms": 1.4602349999986473,
-            "medianLatencyP95Ms": 1.6869919999990088,
-            "medianLatencyP99Ms": 2.044017000000167
+            "medianThroughputPerSec": 843.5,
+            "medianLatencyP50Ms": 1.4079960000017309,
+            "medianLatencyP95Ms": 1.837496000000101,
+            "medianLatencyP99Ms": 2.3793010000008508
           },
           {
             "operation": "procedure",
@@ -4239,21 +4239,21 @@
             },
             "trials": [
               {
-                "windowStartedAtMs": 1785536562315.8223,
-                "windowEndedAtMs": 1785536564315.8223,
+                "windowStartedAtMs": 1785539567572.8215,
+                "windowEndedAtMs": 1785539569572.8215,
                 "wallMs": 2000,
-                "attempted": 25329,
-                "completedInWindow": 25201,
+                "attempted": 23701,
+                "completedInWindow": 23573,
                 "completedAfterWindow": 128,
                 "failed": 0,
-                "throughputPerSec": 12600.5,
+                "throughputPerSec": 11786.5,
                 "latency": {
-                  "count": 25329,
-                  "minMs": 2.3633890000019164,
-                  "p50Ms": 10.019774000000325,
-                  "p95Ms": 14.823677000000316,
-                  "p99Ms": 17.852139999999054,
-                  "maxMs": 25.76320499999929
+                  "count": 23701,
+                  "minMs": 2.434462999997777,
+                  "p50Ms": 10.294944000001124,
+                  "p95Ms": 17.186657999998715,
+                  "p99Ms": 21.943514999999024,
+                  "maxMs": 34.2202879999968
                 },
                 "errors": [],
                 "interruption": null,
@@ -4264,10 +4264,10 @@
                 }
               }
             ],
-            "medianThroughputPerSec": 12600.5,
-            "medianLatencyP50Ms": 10.019774000000325,
-            "medianLatencyP95Ms": 14.823677000000316,
-            "medianLatencyP99Ms": 17.852139999999054
+            "medianThroughputPerSec": 11786.5,
+            "medianLatencyP50Ms": 10.294944000001124,
+            "medianLatencyP95Ms": 17.186657999998715,
+            "medianLatencyP99Ms": 21.943514999999024
           }
         ],
         "connections": [
@@ -4275,34 +4275,34 @@
             "targetConnections": 1,
             "connected": 1,
             "addedConnections": 1,
-            "setupMs": 83.65058099999442,
-            "readyConnectionsPerSec": 239.08979185693084,
+            "setupMs": 74.75421700000152,
+            "readyConnectionsPerSec": 267.54343504125785,
             "readyLatency": {
               "count": 20,
-              "minMs": 2.747644000002765,
-              "p50Ms": 3.937058999996225,
-              "p95Ms": 4.930071999995562,
-              "p99Ms": 9.511664000005112,
-              "maxMs": 9.511664000005112
+              "minMs": 2.604153000000224,
+              "p50Ms": 3.535601999996288,
+              "p95Ms": 5.097278000001097,
+              "p99Ms": 5.195021999999881,
+              "maxMs": 5.195021999999881
             },
             "connectedSnapshotId": "connections:1:connected",
             "connectedIdlePhaseId": "connections:1:idle",
             "work": {
-              "windowStartedAtMs": 1785536585427.5962,
-              "windowEndedAtMs": 1785536586427.5962,
+              "windowStartedAtMs": 1785539590679.6768,
+              "windowEndedAtMs": 1785539591679.6768,
               "wallMs": 1000,
-              "attempted": 564,
-              "completedInWindow": 563,
+              "attempted": 521,
+              "completedInWindow": 520,
               "completedAfterWindow": 1,
               "failed": 0,
-              "throughputPerSec": 563,
+              "throughputPerSec": 520,
               "latency": {
-                "count": 564,
-                "minMs": 0.5995100000000093,
-                "p50Ms": 1.7664140000051702,
-                "p95Ms": 2.409205000003567,
-                "p99Ms": 2.9253890000036336,
-                "maxMs": 3.6483230000012554
+                "count": 521,
+                "minMs": 0.5811260000045877,
+                "p50Ms": 1.7934539999987464,
+                "p95Ms": 3.0399149999939254,
+                "p99Ms": 3.946888000005856,
+                "maxMs": 5.946661000001768
               },
               "errors": [],
               "interruption": null,
@@ -4314,34 +4314,34 @@
             "targetConnections": 1000,
             "connected": 1000,
             "addedConnections": 999,
-            "setupMs": 566.9810199999993,
-            "readyConnectionsPerSec": 1761.9637426311049,
+            "setupMs": 537.7548630000019,
+            "readyConnectionsPerSec": 1857.723785939982,
             "readyLatency": {
               "count": 999,
-              "minMs": 30.89820299999701,
-              "p50Ms": 46.939385999998194,
-              "p95Ms": 68.03928399999859,
-              "p99Ms": 76.8543439999994,
-              "maxMs": 81.55157699999836
+              "minMs": 31.80135500000324,
+              "p50Ms": 46.43924500000139,
+              "p95Ms": 59.8475729999991,
+              "p99Ms": 66.12844600000244,
+              "maxMs": 69.36533300000156
             },
             "connectedSnapshotId": "connections:1000:connected",
             "connectedIdlePhaseId": "connections:1000:idle",
             "work": {
-              "windowStartedAtMs": 1785536587998.9912,
-              "windowEndedAtMs": 1785536588998.9912,
+              "windowStartedAtMs": 1785539593223.756,
+              "windowEndedAtMs": 1785539594223.756,
               "wallMs": 1000,
-              "attempted": 5363,
-              "completedInWindow": 4363,
+              "attempted": 5333,
+              "completedInWindow": 4333,
               "completedAfterWindow": 1000,
               "failed": 0,
-              "throughputPerSec": 4363,
+              "throughputPerSec": 4333,
               "latency": {
-                "count": 5363,
-                "minMs": 42.09432600000582,
-                "p50Ms": 168.5084929999939,
-                "p95Ms": 314.5748749999984,
-                "p99Ms": 361.85390399999596,
-                "maxMs": 385.03410600000643
+                "count": 5333,
+                "minMs": 71.88550799999939,
+                "p50Ms": 188.93558699999994,
+                "p95Ms": 321.727006000001,
+                "p99Ms": 353.4167920000036,
+                "maxMs": 365.60620200000267
               },
               "errors": [],
               "interruption": null,
@@ -4372,47 +4372,47 @@
         "server": {
           "snapshots": {
             "server:seeded-idle": {
-              "timestampMs": 1785536543996.9434,
-              "rootPid": 2713059,
+              "timestampMs": 1785539549281.4482,
+              "rootPid": 2717111,
               "rssKind": "sumProcessRss",
-              "rssMb": 111.03515625,
+              "rssMb": 110.625,
               "cumulativeCpuSeconds": 0,
               "processCount": 1
             },
             "connections:1:connected": {
-              "timestampMs": 1785536585433.7075,
-              "rootPid": 2713059,
+              "timestampMs": 1785539590690.0906,
+              "rootPid": 2717111,
               "rssKind": "sumProcessRss",
-              "rssMb": 147.23828125,
+              "rssMb": 144.34375,
               "cumulativeCpuSeconds": 16,
               "processCount": 1
             },
             "connections:1000:connected": {
-              "timestampMs": 1785536588026.793,
-              "rootPid": 2713059,
+              "timestampMs": 1785539593234.7778,
+              "rootPid": 2717111,
               "rssKind": "sumProcessRss",
-              "rssMb": 322.80859375,
+              "rssMb": 321.03515625,
               "cumulativeCpuSeconds": 17,
               "processCount": 1
             },
             "subscriptions:shared:subscribed": {
-              "timestampMs": 1785536591669.0825,
-              "rootPid": 2713059,
+              "timestampMs": 1785539596836.155,
+              "rootPid": 2717111,
               "rssKind": "sumProcessRss",
-              "rssMb": 328.2265625,
+              "rssMb": 329.6640625,
               "cumulativeCpuSeconds": 19,
               "processCount": 1
             }
           },
           "phases": {
             "server:seeded-idle-window": {
-              "wallMs": 1000.881591796875,
+              "wallMs": 1000.9453125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 110.69140625,
-                "peak": 110.69140625
+                "p50": 110.390625,
+                "peak": 110.390625
               },
               "sampleCount": 5,
               "processCountPeak": 1
@@ -4423,8 +4423,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 116.5,
-                "peak": 116.88671875
+                "p50": 114.88671875,
+                "peak": 115.53515625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4435,8 +4435,8 @@
               "cpuCores": 1.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 145.875,
-                "peak": 146.0234375
+                "p50": 143.39453125,
+                "peak": 144
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4447,8 +4447,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 143.984375,
-                "peak": 145.80078125
+                "p50": 143.9453125,
+                "peak": 144.74609375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4459,44 +4459,44 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 146.67578125,
-                "peak": 146.69921875
+                "p50": 145.7109375,
+                "peak": 145.7734375
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:mutation-contended:latency:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 0,
-              "cpuCores": 0,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 146.57421875,
-                "peak": 146.6796875
+                "p50": 144.84375,
+                "peak": 145.296875
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:mutation-contended:saturation:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 2,
-              "cpuCores": 1,
+              "cpuSeconds": 1.9256953351957211,
+              "cpuCores": 0.9628476675978606,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 146.96484375,
-                "peak": 146.9765625
+                "p50": 145.16015625,
+                "peak": 145.2421875
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:procedure:latency:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 0.9376236732237722,
-              "cpuCores": 0.4688118366118861,
+              "cpuSeconds": 0.9710736645447717,
+              "cpuCores": 0.48553683227238587,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 146.03515625,
-                "peak": 146.78515625
+                "p50": 143.4140625,
+                "peak": 144.578125
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4507,44 +4507,44 @@
               "cpuCores": 2,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 148.88671875,
-                "peak": 149.2578125
+                "p50": 146.390625,
+                "peak": 146.80859375
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "connections:baseline-idle": {
-              "wallMs": 1000.237548828125,
+              "wallMs": 1000.461669921875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 148.09375,
-                "peak": 148.09375
+                "p50": 144.8359375,
+                "peak": 144.8359375
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "connections:1:ramp": {
-              "wallMs": 19091.476806640625,
+              "wallMs": 19080.8916015625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 147.1875,
-                "peak": 148.1015625
+                "p50": 144.3203125,
+                "peak": 144.859375
               },
               "sampleCount": 78,
               "processCountPeak": 1
             },
             "connections:1:idle": {
-              "wallMs": 1000.261962890625,
+              "wallMs": 1000.54296875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 147.20703125,
-                "peak": 147.20703125
+                "p50": 144.3359375,
+                "peak": 144.3359375
               },
               "sampleCount": 6,
               "processCountPeak": 1
@@ -4555,34 +4555,34 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 144.21875,
-                "peak": 147.5625
+                "p50": 139.85546875,
+                "peak": 144.65234375
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "connections:1000:ramp": {
-              "wallMs": 566.927978515625,
+              "wallMs": 537.688720703125,
               "cpuSeconds": 1,
-              "cpuCores": 1.7638924835184142,
+              "cpuCores": 1.8598121208351173,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 155.81640625,
-                "peak": 322.10546875
+                "p50": 139.91015625,
+                "peak": 284.9453125
               },
-              "sampleCount": 5,
+              "sampleCount": 4,
               "processCountPeak": 1
             },
             "connections:1000:idle": {
-              "wallMs": 1002.317626953125,
+              "wallMs": 1002.488037109375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 322.10546875,
-                "peak": 322.10546875
+                "p50": 321.03515625,
+                "peak": 321.03515625
               },
-              "sampleCount": 5,
+              "sampleCount": 6,
               "processCountPeak": 1
             },
             "connections:1000:work": {
@@ -4591,56 +4591,56 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 324.00390625,
-                "peak": 328.02734375
+                "p50": 325.33203125,
+                "peak": 327.40234375
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "subscriptions:shared:baseline-idle": {
-              "wallMs": 1002.098876953125,
-              "cpuSeconds": 1,
-              "cpuCores": 0.9979055191045553,
-              "rssKind": "sumProcessRss",
-              "rssMb": {
-                "p50": 328.26953125,
-                "peak": 328.26953125
-              },
-              "sampleCount": 5,
-              "processCountPeak": 1
-            },
-            "subscriptions:shared:setup": {
-              "wallMs": 492.572265625,
+              "wallMs": 1002.180908203125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 327.2734375,
-                "peak": 327.77734375
+                "p50": 327.4296875,
+                "peak": 327.4296875
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:setup": {
+              "wallMs": 444.391357421875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 327.4921875,
+                "peak": 328.234375
               },
               "sampleCount": 4,
               "processCountPeak": 1
             },
             "subscriptions:shared:idle": {
-              "wallMs": 1004.14990234375,
+              "wallMs": 1000.65185546875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 328.02734375,
-                "peak": 328.046875
+                "p50": 329.4921875,
+                "peak": 329.4921875
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:shared:updates": {
-              "wallMs": 2000.98583984375,
+              "wallMs": 2001.39306640625,
               "cpuSeconds": 1,
-              "cpuCores": 0.4997536614642343,
+              "cpuCores": 0.49965197580884213,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 328.28515625,
-                "peak": 328.4609375
+                "p50": 329.796875,
+                "peak": 329.94140625
               },
               "sampleCount": 11,
               "processCountPeak": 1
@@ -4651,20 +4651,20 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 325.625,
-                "peak": 328.47265625
+                "p50": 329.90234375,
+                "peak": 329.95703125
               },
               "sampleCount": 10,
               "processCountPeak": 1
             },
             "subscriptions:shared:capacity-10": {
               "wallMs": 2000,
-              "cpuSeconds": 0,
-              "cpuCores": 0,
+              "cpuSeconds": 1,
+              "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 284.8515625,
-                "peak": 297.8359375
+                "p50": 283.4765625,
+                "peak": 301.2109375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4674,47 +4674,47 @@
         "loadGenerator": {
           "snapshots": {
             "server:seeded-idle": {
-              "timestampMs": 1785536543996.9434,
-              "rootPid": 2713130,
+              "timestampMs": 1785539549281.4482,
+              "rootPid": 2717186,
               "rssKind": "sumProcessRss",
-              "rssMb": 49.328125,
+              "rssMb": 51.71484375,
               "cumulativeCpuSeconds": 0,
               "processCount": 1
             },
             "connections:1:connected": {
-              "timestampMs": 1785536585433.7075,
-              "rootPid": 2713130,
+              "timestampMs": 1785539590690.0906,
+              "rootPid": 2717186,
               "rssKind": "sumProcessRss",
-              "rssMb": 81.36328125,
+              "rssMb": 82.5625,
               "cumulativeCpuSeconds": 9,
               "processCount": 1
             },
             "connections:1000:connected": {
-              "timestampMs": 1785536588026.793,
-              "rootPid": 2713130,
+              "timestampMs": 1785539593234.7778,
+              "rootPid": 2717186,
               "rssKind": "sumProcessRss",
-              "rssMb": 115.69921875,
+              "rssMb": 118.05078125,
               "cumulativeCpuSeconds": 10,
               "processCount": 1
             },
             "subscriptions:shared:subscribed": {
-              "timestampMs": 1785536591669.0825,
-              "rootPid": 2713130,
+              "timestampMs": 1785539596836.155,
+              "rootPid": 2717186,
               "rssKind": "sumProcessRss",
-              "rssMb": 121.76953125,
+              "rssMb": 146.06640625,
               "cumulativeCpuSeconds": 12,
               "processCount": 1
             }
           },
           "phases": {
             "server:seeded-idle-window": {
-              "wallMs": 1000.881591796875,
+              "wallMs": 1000.9453125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 49.22265625,
-                "peak": 50.13671875
+                "p50": 51.75,
+                "peak": 52.55859375
               },
               "sampleCount": 5,
               "processCountPeak": 1
@@ -4725,20 +4725,20 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 65.8828125,
-                "peak": 67.69921875
+                "p50": 67.63671875,
+                "peak": 70.41015625
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "operation:query:saturation:trial-0": {
               "wallMs": 2000,
-              "cpuSeconds": 2.881127698355009,
-              "cpuCores": 1.4405638491775046,
+              "cpuSeconds": 2.851720037133583,
+              "cpuCores": 1.4258600185667916,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 112.55078125,
-                "peak": 133.140625
+                "p50": 110.85546875,
+                "peak": 128.75
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4749,8 +4749,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 104.33984375,
-                "peak": 105.45703125
+                "p50": 102.19140625,
+                "peak": 103.25390625
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4761,8 +4761,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 124.15625,
-                "peak": 126.07421875
+                "p50": 112.3515625,
+                "peak": 135.8046875
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4773,8 +4773,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 124.98828125,
-                "peak": 125.37109375
+                "p50": 134.44140625,
+                "peak": 135.0234375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4785,8 +4785,8 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 127.88671875,
-                "peak": 136.81640625
+                "p50": 134.75390625,
+                "peak": 135.546875
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4797,8 +4797,8 @@
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 129.21484375,
-                "peak": 130.02734375
+                "p50": 134.52734375,
+                "peak": 134.98828125
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4809,44 +4809,44 @@
               "cpuCores": 0.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 133.8359375,
-                "peak": 140.08984375
+                "p50": 139.453125,
+                "peak": 145.390625
               },
               "sampleCount": 9,
               "processCountPeak": 1
             },
             "connections:baseline-idle": {
-              "wallMs": 1000.237548828125,
+              "wallMs": 1000.461669921875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 132.00390625,
-                "peak": 141.44140625
+                "p50": 108.62890625,
+                "peak": 140.8125
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "connections:1:ramp": {
-              "wallMs": 19091.476806640625,
+              "wallMs": 19080.8916015625,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 81.22265625,
-                "peak": 121.66015625
+                "p50": 82.4296875,
+                "peak": 108.421875
               },
               "sampleCount": 78,
               "processCountPeak": 1
             },
             "connections:1:idle": {
-              "wallMs": 1000.261962890625,
+              "wallMs": 1000.54296875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 81.23828125,
-                "peak": 81.2421875
+                "p50": 82.4453125,
+                "peak": 82.4609375
               },
               "sampleCount": 6,
               "processCountPeak": 1
@@ -4857,34 +4857,34 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 81.890625,
-                "peak": 82.43359375
+                "p50": 83.0625,
+                "peak": 83.609375
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "connections:1000:ramp": {
-              "wallMs": 566.927978515625,
+              "wallMs": 537.688720703125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 88.38671875,
-                "peak": 118.03515625
+                "p50": 85.7734375,
+                "peak": 111.90625
               },
-              "sampleCount": 5,
+              "sampleCount": 4,
               "processCountPeak": 1
             },
             "connections:1000:idle": {
-              "wallMs": 1002.317626953125,
+              "wallMs": 1002.488037109375,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 114.69921875,
-                "peak": 118.046875
+                "p50": 116.421875,
+                "peak": 117.203125
               },
-              "sampleCount": 5,
+              "sampleCount": 6,
               "processCountPeak": 1
             },
             "connections:1000:work": {
@@ -4893,56 +4893,56 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 117.3984375,
-                "peak": 195.79296875
+                "p50": 136.140625,
+                "peak": 198.18359375
               },
               "sampleCount": 7,
               "processCountPeak": 1
             },
             "subscriptions:shared:baseline-idle": {
-              "wallMs": 1002.098876953125,
-              "cpuSeconds": 1,
-              "cpuCores": 0.9979055191045553,
-              "rssKind": "sumProcessRss",
-              "rssMb": {
-                "p50": 203.91796875,
-                "peak": 208.0546875
-              },
-              "sampleCount": 5,
-              "processCountPeak": 1
-            },
-            "subscriptions:shared:setup": {
-              "wallMs": 492.572265625,
+              "wallMs": 1002.180908203125,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 113.21875,
-                "peak": 122.546875
+                "p50": 189.94140625,
+                "peak": 193.56640625
+              },
+              "sampleCount": 4,
+              "processCountPeak": 1
+            },
+            "subscriptions:shared:setup": {
+              "wallMs": 444.391357421875,
+              "cpuSeconds": 0,
+              "cpuCores": 0,
+              "rssKind": "sumProcessRss",
+              "rssMb": {
+                "p50": 127.2578125,
+                "peak": 138.6640625
               },
               "sampleCount": 4,
               "processCountPeak": 1
             },
             "subscriptions:shared:idle": {
-              "wallMs": 1004.14990234375,
+              "wallMs": 1000.65185546875,
               "cpuSeconds": 0,
               "cpuCores": 0,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 123.90625,
-                "peak": 127.3671875
+                "p50": 147.79296875,
+                "peak": 148.7421875
               },
               "sampleCount": 6,
               "processCountPeak": 1
             },
             "subscriptions:shared:updates": {
-              "wallMs": 2000.98583984375,
+              "wallMs": 2001.39306640625,
               "cpuSeconds": 1,
-              "cpuCores": 0.4997536614642343,
+              "cpuCores": 0.49965197580884213,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 137.40625,
-                "peak": 152.53515625
+                "p50": 155.625,
+                "peak": 167.2734375
               },
               "sampleCount": 11,
               "processCountPeak": 1
@@ -4953,8 +4953,8 @@
               "cpuCores": 1,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 154,
-                "peak": 169.51171875
+                "p50": 167.73046875,
+                "peak": 184.9453125
               },
               "sampleCount": 10,
               "processCountPeak": 1
@@ -4965,8 +4965,8 @@
               "cpuCores": 1.5,
               "rssKind": "sumProcessRss",
               "rssMb": {
-                "p50": 205.59765625,
-                "peak": 216.84765625
+                "p50": 207.453125,
+                "peak": 230.40234375
               },
               "sampleCount": 9,
               "processCountPeak": 1
@@ -4976,21 +4976,21 @@
       },
       "startupIdle": {
         "snapshot": {
-          "timestampMs": 1785536542567.72,
-          "rootPid": 2713059,
+          "timestampMs": 1785539547973.7615,
+          "rootPid": 2717111,
           "rssKind": "sumProcessRss",
-          "rssMb": 92.10546875,
+          "rssMb": 91.6171875,
           "cumulativeCpuSeconds": 0,
           "processCount": 1
         },
         "window": {
-          "wallMs": 1000.656005859375,
+          "wallMs": 1000.748779296875,
           "cpuSeconds": 0,
           "cpuCores": 0,
           "rssKind": "sumProcessRss",
           "rssMb": {
-            "p50": 92.10546875,
-            "peak": 92.10546875
+            "p50": 91.6171875,
+            "peak": 91.6171875
           },
           "sampleCount": 3,
           "processCountPeak": 1
