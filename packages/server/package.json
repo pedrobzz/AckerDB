@@ -3,15 +3,12 @@
   "version": "0.12.0",
   "type": "module",
   "files": [
-    "src",
-    "native/webrtc/prebuilds",
-    "native/webrtc/PROVENANCE.md",
-    "native/webrtc/patches",
-    "native/webrtc/licenses"
+    "src"
   ],
   "exports": {
     ".": "./src/index.ts",
-    "./mcp": "./src/mcp/index.ts"
+    "./mcp": "./src/mcp/index.ts",
+    "./realtime-host": "./src/realtime/host.ts"
   },
   "dependencies": {
     "@ackerdb/core": "workspace:0.12.0",

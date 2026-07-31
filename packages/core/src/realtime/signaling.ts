@@ -1,10 +1,17 @@
 import {
   PROTOCOL_VERSION,
-  ProtocolError,
   parseApplicationError,
   parseOutcome,
   type Outcome,
 } from "../protocol.ts";
+import {
+  boundedString,
+  exactFields as exact,
+  malformed,
+  protocolObject as object,
+  ProtocolError,
+  type ProtocolObject as ObjectValue,
+} from "../protocol-validation.ts";
 import type { ApplicationError } from "../result.ts";
 import type { NativeRTCConfiguration } from "./webrtc.ts";
 
@@ -79,39 +86,11 @@ export type RealtimePatchResponse =
   | RealtimeCandidatesMessage
   | RealtimeEndedMessage;
 
-type ObjectValue = Record<string, unknown>;
-
 const SESSION_ID = /^[A-Za-z0-9_-]{32}$/;
 const MAX_REFERENCE_LENGTH = 512;
 const MAX_SDP_BYTES = 256 * 1024;
 const MAX_CANDIDATES_PER_FRAME = 4_096;
 const utf8 = new TextEncoder();
-
-function malformed(message: string): never {
-  throw new ProtocolError("malformed", message);
-}
-
-function object(value: unknown, name: string): ObjectValue {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    malformed(`${name} must be an object`);
-  }
-  return value as ObjectValue;
-}
-
-function exact(
-  value: ObjectValue,
-  required: readonly string[],
-  optional: readonly string[] = [],
-): void {
-  for (const key of required) {
-    if (!Object.hasOwn(value, key)) malformed(`missing field ${key}`);
-  }
-  for (const key of Object.keys(value)) {
-    if (!required.includes(key) && !optional.includes(key)) {
-      malformed(`unknown field ${key}`);
-    }
-  }
-}
 
 function frame(value: unknown, type: string): ObjectValue {
   const result = object(value, "realtime signaling frame");
@@ -129,17 +108,6 @@ function frame(value: unknown, type: string): ObjectValue {
     malformed(`realtime signaling frame must be ${type}`);
   }
   return result;
-}
-
-function boundedString(value: unknown, name: string, maxLength: number): string {
-  if (
-    typeof value !== "string" ||
-    value.length === 0 ||
-    value.length > maxLength
-  ) {
-    malformed(`${name} must be a non-empty bounded string`);
-  }
-  return value;
 }
 
 export function parseRealtimeSessionDescription(

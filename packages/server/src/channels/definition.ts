@@ -1,13 +1,10 @@
 import {
-  isResult,
-  type ApplicationError,
   type AnyChannelRef,
   type ChannelRef,
   type ChannelRoom,
   type ChannelServerEvents,
   type EventMap,
   type RegisteredChannelContract,
-  type Result,
 } from "@ackerdb/core";
 import type { Schema } from "../schema/definition.ts";
 import {
@@ -30,22 +27,19 @@ import {
   type ObjectShape,
   type Validator,
 } from "../validation/v.ts";
+import {
+  type AuthorizationError,
+  type AuthorizationState,
+  type DeclarationInputs as EventInputs,
+  type DeclarationOutputs as EventOutputs,
+  authorizationResult as channelAuthorizationResult,
+  validateDeclaration,
+  validateEventDeclarations,
+} from "../validation/declarations.ts";
 
 export type ChannelEventDeclarations = Readonly<
   Record<string, Validator<unknown, string>>
 >;
-
-type EventInputs<Declarations extends ChannelEventDeclarations> = {
-  readonly [Name in keyof Declarations]: Expand<
-    InferValidatorInput<Declarations[Name]>
-  >;
-};
-
-type EventOutputs<Declarations extends ChannelEventDeclarations> = {
-  readonly [Name in keyof Declarations]: Expand<
-    InferValidator<Declarations[Name]>
-  >;
-};
 
 type RoomInput<Room extends Validator<unknown, string> | undefined> =
   Room extends Validator<unknown, string>
@@ -55,16 +49,6 @@ type RoomInput<Room extends Validator<unknown, string> | undefined> =
 type RoomOutput<Room extends Validator<unknown, string> | undefined> =
   Room extends Validator<unknown, string>
     ? Expand<InferValidator<Room>>
-    : never;
-
-type AuthorizationState<Value> =
-  Awaited<Value> extends Result<infer State, infer _Error>
-    ? State
-    : Awaited<Value>;
-
-type AuthorizationError<Value> =
-  Awaited<Value> extends Result<infer _State, infer Error>
-    ? Error
     : never;
 
 type ChannelRoomProperty<Room> = [Room] extends [never]
@@ -273,27 +257,6 @@ export interface RegisteredChannel<
   >["onDisconnect"];
 }
 
-function validator(value: unknown, path: string): asserts value is Validator<unknown, string> {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    typeof (value as Validator).kind !== "string" ||
-    typeof (value as Validator).check !== "function"
-  ) {
-    throw new TypeError(`${path} must be a v validator`);
-  }
-}
-
-function eventDeclarations(value: unknown, path: string): void {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an event validator map`);
-  }
-  for (const [name, declaration] of Object.entries(value)) {
-    if (name.length === 0) throw new TypeError(`${path} event names must be non-empty`);
-    validator(declaration, `${path}.${name}`);
-  }
-}
-
 export type ChannelBuilder<S extends Schema> = <
   A extends ObjectShape,
   Room extends Validator<unknown, string> | undefined = undefined,
@@ -347,9 +310,11 @@ export const channel: ChannelBuilder<Schema> = <
     );
   }
   validateArgsShape(definition.args);
-  eventDeclarations(definition.clientEvents, "clientEvents");
-  eventDeclarations(definition.serverEvents, "serverEvents");
-  if (definition.room !== undefined) validator(definition.room, "room");
+  validateEventDeclarations(definition.clientEvents, "clientEvents");
+  validateEventDeclarations(definition.serverEvents, "serverEvents");
+  if (definition.room !== undefined) {
+    validateDeclaration(definition.room, "room");
+  }
   if (typeof definition.on !== "object" || definition.on === null) {
     throw new TypeError("on must be a channel event handler map");
   }
@@ -411,15 +376,4 @@ export function isRegisteredChannel(value: unknown): value is AnyRegisteredChann
   );
 }
 
-/** Runtime helper: an authorization callback may return raw state or Result. */
-export function channelAuthorizationResult(
-  value: unknown,
-): { readonly ok: true; readonly state: unknown } | {
-  readonly ok: false;
-  readonly error: ApplicationError;
-} {
-  if (!isResult(value)) return Object.freeze({ ok: true, state: value });
-  return value.ok
-    ? Object.freeze({ ok: true, state: value.data })
-    : Object.freeze({ ok: false, error: value.error as ApplicationError });
-}
+export { channelAuthorizationResult };

@@ -25,13 +25,11 @@ import {
 } from "./definition.ts";
 import type {
   AuthorizedRealtimeApplication,
-  RealtimeHubApplication,
   RealtimeOfferInput,
   RejectedRealtimeApplication,
-} from "./hub.ts";
-import type {
+  RealtimeRuntimeApplication,
   RealtimeServerSessionAdapter,
-} from "./session.ts";
+} from "./host.ts";
 
 export interface RealtimeRuntimeApplicationPort {
   addressOf(definition: AnyRegisteredRealtime): string | undefined;
@@ -62,7 +60,7 @@ const RUNTIME_SOURCE = transportSource({
 
 export function createRealtimeRuntimeApplication(
   port: RealtimeRuntimeApplicationPort,
-): RealtimeHubApplication {
+): RealtimeRuntimeApplication {
   return Object.freeze({
     authorize: (
       definition: AnyRegisteredRealtime,

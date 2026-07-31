@@ -1,13 +1,10 @@
 import {
-  isResult,
-  type ApplicationError,
   type EventMap,
   type PortableRTCConfiguration,
   type PortableRTCPeerConnection,
   type RegisteredRealtimeContract,
   type RealtimeRef,
   type RealtimeStreamMap,
-  type Result,
 } from "@ackerdb/core";
 import type { Schema } from "../schema/definition.ts";
 import {
@@ -30,6 +27,15 @@ import {
   type ObjectShape,
   type Validator,
 } from "../validation/v.ts";
+import {
+  type AuthorizationError,
+  type AuthorizationState,
+  type DeclarationInputs as EventInputs,
+  type DeclarationOutputs as EventOutputs,
+  authorizationResult as realtimeAuthorizationResult,
+  validateDeclaration,
+  validateEventDeclarations,
+} from "../validation/declarations.ts";
 import type { RealtimeMedia } from "./media.ts";
 
 type EmptyRealtimeCapabilities = Readonly<Record<never, never>>;
@@ -52,18 +58,6 @@ export type RealtimeStreamDeclarations = Readonly<
   Record<string, RealtimeStreamDeclaration>
 >;
 
-type EventInputs<Declarations extends RealtimeEventDeclarations> = {
-  readonly [Name in keyof Declarations]: Expand<
-    InferValidatorInput<Declarations[Name]>
-  >;
-};
-
-type EventOutputs<Declarations extends RealtimeEventDeclarations> = {
-  readonly [Name in keyof Declarations]: Expand<
-    InferValidator<Declarations[Name]>
-  >;
-};
-
 type StreamInputs<Declarations extends RealtimeStreamDeclarations> = {
   readonly [Name in keyof Declarations]: Expand<
     InferValidatorInput<Declarations[Name]["metadata"]>
@@ -75,16 +69,6 @@ type StreamOutputs<Declarations extends RealtimeStreamDeclarations> = {
     InferValidator<Declarations[Name]["metadata"]>
   >;
 };
-
-type AuthorizationState<Value> =
-  Awaited<Value> extends Result<infer State, infer _Error>
-    ? State
-    : Awaited<Value>;
-
-type AuthorizationError<Value> =
-  Awaited<Value> extends Result<infer _State, infer Error>
-    ? Error
-    : never;
 
 export interface RealtimeIncomingStream<Metadata> {
   readonly id: string;
@@ -299,27 +283,6 @@ const authorizationInvocations = new WeakMap<
   RealtimeAuthorizationInvocation<ObjectShape, unknown, Schema, any, any>
 >();
 
-function validator(value: unknown, path: string): asserts value is Validator<unknown, string> {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    typeof (value as Validator).kind !== "string" ||
-    typeof (value as Validator).check !== "function"
-  ) {
-    throw new TypeError(`${path} must be a v validator`);
-  }
-}
-
-function eventDeclarations(value: unknown, path: string): void {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new TypeError(`${path} must be an event validator map`);
-  }
-  for (const [name, declaration] of Object.entries(value)) {
-    if (name.length === 0) throw new TypeError(`${path} event names must be non-empty`);
-    validator(declaration, `${path}.${name}`);
-  }
-}
-
 function streamDeclarations(value: unknown, path: string): void {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError(`${path} must be a stream declaration map`);
@@ -329,7 +292,7 @@ function streamDeclarations(value: unknown, path: string): void {
     if (typeof declaration !== "object" || declaration === null) {
       throw new TypeError(`${path}.${name} must be a stream declaration`);
     }
-    validator(
+    validateDeclaration(
       (declaration as RealtimeStreamDeclaration).metadata,
       `${path}.${name}.metadata`,
     );
@@ -390,8 +353,8 @@ export const realtime: RealtimeBuilder<Schema> = (definition) => {
     );
   }
   validateArgsShape(definition.args);
-  eventDeclarations(definition.clientEvents, "clientEvents");
-  eventDeclarations(definition.serverEvents, "serverEvents");
+  validateEventDeclarations(definition.clientEvents, "clientEvents");
+  validateEventDeclarations(definition.serverEvents, "serverEvents");
   streamDeclarations(definition.clientStreams ?? EMPTY_STREAMS, "clientStreams");
   streamDeclarations(definition.serverStreams ?? EMPTY_STREAMS, "serverStreams");
   if (definition.authorize !== undefined && typeof definition.authorize !== "function") {
@@ -452,17 +415,7 @@ export function realtimeAuthorization(
   return invocation;
 }
 
-export function realtimeAuthorizationResult(
-  value: unknown,
-): { readonly ok: true; readonly state: unknown } | {
-  readonly ok: false;
-  readonly error: ApplicationError;
-} {
-  if (!isResult(value)) return Object.freeze({ ok: true, state: value });
-  return value.ok
-    ? Object.freeze({ ok: true, state: value.data })
-    : Object.freeze({ ok: false, error: value.error as ApplicationError });
-}
+export { realtimeAuthorizationResult };
 
 /** Server-only helper for targeting a generated realtime reference in tests/tools. */
 export type RealtimeReferenceOf<Definition extends AnyRegisteredRealtime> =

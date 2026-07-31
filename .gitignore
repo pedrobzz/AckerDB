@@ -14,9 +14,9 @@ node_modules
 dist
 *.log
 .DS_Store
-packages/server/native/webrtc/target/
-packages/server/native/webrtc/prebuilds/
-packages/server/native/webrtc/.cache/
+packages/realtime/native/webrtc/target/
+packages/realtime/native/webrtc/prebuilds/
+packages/realtime/native/webrtc/.cache/
 
 # ackerdb local databases
 .ackerdb/

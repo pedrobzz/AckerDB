@@ -25,10 +25,10 @@ function assertNoProductionAiDependency(manifest: PackageManifest): void {
 }
 
 function assertPackagedWebRtc(
-  serverDirectory: string,
+  realtimeDirectory: string,
   required: boolean,
 ): boolean {
-  const prebuilds = join(serverDirectory, "native/webrtc/prebuilds");
+  const prebuilds = join(realtimeDirectory, "native/webrtc/prebuilds");
   const target = `${process.platform}-${process.arch}`;
   const currentBinary = join(prebuilds, target, "ackerdb_webrtc.node");
   const currentManifest = join(prebuilds, target, "manifest.json");
@@ -36,7 +36,7 @@ function assertPackagedWebRtc(
   if (!existsSync(currentBinary) || !existsSync(currentManifest)) {
     if (required) {
       throw new Error(
-        `packed @ackerdb/server is missing the assembled WebRTC package for ${target}`,
+        `packed @ackerdb/realtime is missing the assembled WebRTC package for ${target}`,
       );
     }
     return false;
@@ -54,11 +54,11 @@ function assertPackagedWebRtc(
     local.file !== "ackerdb_webrtc.node" ||
     local.sha256 !== currentDigest
   ) {
-    throw new Error(`packed @ackerdb/server has an invalid WebRTC target ${target}`);
+    throw new Error(`packed @ackerdb/realtime has an invalid WebRTC target ${target}`);
   }
   if (!existsSync(aggregatePath)) {
     if (required) {
-      throw new Error("packed @ackerdb/server is missing the aggregate WebRTC manifest");
+      throw new Error("packed @ackerdb/realtime is missing the aggregate WebRTC manifest");
     }
     return true;
   }
@@ -85,7 +85,7 @@ function assertPackagedWebRtc(
     aggregate.targets?.map((entry) => entry.target).join(",") !==
       expectedTargets.join(",")
   ) {
-    throw new Error("packed @ackerdb/server has an invalid WebRTC aggregate manifest");
+    throw new Error("packed @ackerdb/realtime has an invalid WebRTC aggregate manifest");
   }
   for (const entry of aggregate.targets) {
     if (
@@ -93,24 +93,46 @@ function assertPackagedWebRtc(
       entry.file !== "ackerdb_webrtc.node" ||
       typeof entry.sha256 !== "string"
     ) {
-      throw new Error("packed @ackerdb/server has an invalid WebRTC target entry");
+      throw new Error("packed @ackerdb/realtime has an invalid WebRTC target entry");
     }
     const binary = join(prebuilds, entry.target, entry.file);
     const targetManifest = join(prebuilds, entry.target, "manifest.json");
     if (!existsSync(binary) || !existsSync(targetManifest)) {
-      throw new Error(`packed @ackerdb/server is missing WebRTC target ${entry.target}`);
+      throw new Error(`packed @ackerdb/realtime is missing WebRTC target ${entry.target}`);
     }
     const actual = createHash("sha256").update(readFileSync(binary)).digest("hex");
     if (actual !== entry.sha256) {
-      throw new Error(`packed @ackerdb/server WebRTC digest differs for ${entry.target}`);
+      throw new Error(`packed @ackerdb/realtime WebRTC digest differs for ${entry.target}`);
     }
   }
   for (const file of ["sbom.spdx.json", "THIRD_PARTY_NOTICES.txt"]) {
     if (!existsSync(join(prebuilds, file))) {
-      throw new Error(`packed @ackerdb/server is missing native ${file}`);
+      throw new Error(`packed @ackerdb/realtime is missing native ${file}`);
     }
   }
   return true;
+}
+
+function assertServerExcludesRealtimeRuntime(serverDirectory: string): void {
+  const forbidden = [
+    "native",
+    "src/realtime/diagnostics.ts",
+    "src/realtime/engine.ts",
+    "src/realtime/hub.ts",
+    "src/realtime/native",
+    "src/realtime/network.ts",
+    "src/realtime/resources.ts",
+    "src/realtime/session.ts",
+    "src/realtime/turn-preflight.ts",
+    "src/realtime/turn.ts",
+  ];
+  for (const path of forbidden) {
+    if (existsSync(join(serverDirectory, path))) {
+      throw new Error(
+        `packed @ackerdb/server includes optional realtime runtime payload: ${path}`,
+      );
+    }
+  }
 }
 
 async function main(): Promise<void> {
@@ -128,6 +150,19 @@ async function main(): Promise<void> {
           `packed @ackerdb/${pkg} resolved as ${String(manifest.name)}@${String(manifest.version)}, expected ${version}`,
         );
       }
+      if (pkg !== "realtime") {
+        for (const field of [
+          "dependencies",
+          "optionalDependencies",
+          "peerDependencies",
+        ] as const) {
+          if (manifest[field]?.["@ackerdb/realtime"] !== undefined) {
+            throw new Error(
+              `packed @ackerdb/${pkg} must not install optional @ackerdb/realtime through ${field}`,
+            );
+          }
+        }
+      }
       for (const field of ["dependencies", "peerDependencies"] as const) {
         for (const [name, specifier] of Object.entries(manifest[field] ?? {})) {
           if (name.startsWith("@ackerdb/") && specifier !== version) {
@@ -142,8 +177,11 @@ async function main(): Promise<void> {
     const serverManifest = readManifest(
       join(consumerDir, "node_modules/@ackerdb/server/package.json"),
     );
+    const serverDirectory = join(consumerDir, "node_modules/@ackerdb/server");
+    const realtimeDirectory = join(consumerDir, "node_modules/@ackerdb/realtime");
+    assertServerExcludesRealtimeRuntime(serverDirectory);
     const verifyNativeRuntime = assertPackagedWebRtc(
-      join(consumerDir, "node_modules/@ackerdb/server"),
+      realtimeDirectory,
       process.argv.includes("--require-webrtc"),
     );
     if (serverManifest.exports?.["./mcp"] !== "./src/mcp/index.ts") {
@@ -226,7 +264,7 @@ void invalidScope;
         readFileSync(
           join(
             root,
-            "packages/server/native/webrtc/test/public-session-fixture.ts",
+            "packages/realtime/native/webrtc/test/public-session-fixture.ts",
           ),
           "utf8",
         ),
@@ -339,7 +377,7 @@ try {
 }
 ${verifyNativeRuntime ? `
 const { createBundledRealtimeEngine } = await import(
-  "./node_modules/@ackerdb/server/src/realtime/native/engine.ts"
+  "./node_modules/@ackerdb/realtime/src/native/engine.ts"
 );
 const { verifyPublicRealtimeSession } = await import(
   "./public-session-fixture.ts"
@@ -388,7 +426,7 @@ await verifyPublicRealtimeSession(createBundledRealtimeEngine);
     ], consumerDir);
 
     console.log(
-      `Packed package gate passed: ${PACKAGES.length} @ackerdb packages at ${version}, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.29.0, native NumKong exact search${verifyNativeRuntime ? ", and an assembled public WebRTC session with typed events, audio, procedure, transaction, and cleanup" : ""}, with no server AI production dependency.`,
+      `Packed package gate passed: ${PACKAGES.length} @ackerdb packages at ${version}, optional realtime payload excluded from server, Cache root/adapter exports, generated MCP types, Bun runtime, SDK 1.29.0, native NumKong exact search${verifyNativeRuntime ? ", and an assembled public WebRTC session with typed events, audio, procedure, transaction, and cleanup" : ""}, with no server AI production dependency.`,
     );
   } finally {
     packed.cleanup();

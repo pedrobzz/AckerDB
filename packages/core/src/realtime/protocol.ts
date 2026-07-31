@@ -1,6 +1,10 @@
 import { Packr } from "msgpackr";
 import { parseOutcome, type Outcome } from "../protocol.ts";
 import {
+  exactFields as exact,
+  protocolObject as record,
+} from "../protocol-validation.ts";
+import {
   parseRealtimeIceCandidate,
   parseRealtimeSessionDescription,
   type RealtimeIceCandidate,
@@ -97,30 +101,6 @@ const codec = new Packr({
 
 const TRANSFER_ID = /^[cs]:[1-9][0-9]{0,15}$/;
 const NAME = /^[\x21-\x7e]{1,128}$/;
-
-function record(value: unknown, path: string): Record<string, unknown> {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value)
-  ) {
-    throw new RealtimeProtocolError(`${path} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
-
-function exact(
-  value: Record<string, unknown>,
-  keys: readonly string[],
-  path: string,
-): void {
-  if (
-    Object.keys(value).length !== keys.length ||
-    keys.some((key) => !Object.hasOwn(value, key))
-  ) {
-    throw new RealtimeProtocolError(`${path} has unknown or missing fields`);
-  }
-}
 
 function name(value: unknown, path: string): string {
   if (typeof value !== "string" || !NAME.test(value)) {
@@ -225,6 +205,15 @@ export function decodeRealtimeFrame(
   if (frame.v !== REALTIME_PROTOCOL_VERSION) {
     throw new RealtimeProtocolError("unsupported realtime protocol version");
   }
+  if (
+    packet.byteLength > REALTIME_PACKET_MAX_BYTES &&
+    frame.t !== "event" &&
+    frame.t !== "signal_description"
+  ) {
+    throw new RealtimeProtocolError(
+      `realtime ${String(frame.t)} packet is too large`,
+    );
+  }
   switch (frame.t) {
     case "event": {
       if (packet.byteLength > REALTIME_EVENT_MAX_BYTES) {
@@ -233,7 +222,7 @@ export function decodeRealtimeFrame(
           REALTIME_EVENT_MAX_BYTES,
         );
       }
-      exact(frame, ["v", "t", "event", "payload"], "realtime event");
+      exact(frame, ["v", "t", "event", "payload"]);
       return Object.freeze({
         v: REALTIME_PROTOCOL_VERSION,
         t: "event",
@@ -242,16 +231,12 @@ export function decodeRealtimeFrame(
       });
     }
     case "stream_open": {
-      if (packet.byteLength > REALTIME_PACKET_MAX_BYTES) {
-        throw new RealtimeProtocolError("realtime stream_open packet is too large");
-      }
       const hasSize = Object.hasOwn(frame, "size");
       exact(
         frame,
         hasSize
           ? ["v", "t", "id", "stream", "metadata", "size"]
           : ["v", "t", "id", "stream", "metadata"],
-        "realtime stream_open",
       );
       return Object.freeze({
         v: REALTIME_PROTOCOL_VERSION,
@@ -263,10 +248,7 @@ export function decodeRealtimeFrame(
       });
     }
     case "stream_chunk": {
-      if (packet.byteLength > REALTIME_PACKET_MAX_BYTES) {
-        throw new RealtimeProtocolError("realtime stream_chunk packet is too large");
-      }
-      exact(frame, ["v", "t", "id", "chunk"], "realtime stream_chunk");
+      exact(frame, ["v", "t", "id", "chunk"]);
       if (!(frame.chunk instanceof Uint8Array)) {
         throw new RealtimeProtocolError("realtime stream chunk must be bytes");
       }
@@ -283,10 +265,7 @@ export function decodeRealtimeFrame(
       });
     }
     case "stream_end": {
-      if (packet.byteLength > REALTIME_PACKET_MAX_BYTES) {
-        throw new RealtimeProtocolError("realtime stream_end packet is too large");
-      }
-      exact(frame, ["v", "t", "id"], "realtime stream_end");
+      exact(frame, ["v", "t", "id"]);
       return Object.freeze({
         v: REALTIME_PROTOCOL_VERSION,
         t: "stream_end",
@@ -294,10 +273,7 @@ export function decodeRealtimeFrame(
       });
     }
     case "stream_cancel": {
-      if (packet.byteLength > REALTIME_PACKET_MAX_BYTES) {
-        throw new RealtimeProtocolError("realtime stream_cancel packet is too large");
-      }
-      exact(frame, ["v", "t", "id", "reason"], "realtime stream_cancel");
+      exact(frame, ["v", "t", "id", "reason"]);
       const reason = frame.reason;
       if (typeof reason !== "string" || reason.length > 256) {
         throw new RealtimeProtocolError(
@@ -312,10 +288,7 @@ export function decodeRealtimeFrame(
       });
     }
     case "session_error": {
-      if (packet.byteLength > REALTIME_PACKET_MAX_BYTES) {
-        throw new RealtimeProtocolError("realtime session_error packet is too large");
-      }
-      exact(frame, ["v", "t", "outcome"], "realtime session_error");
+      exact(frame, ["v", "t", "outcome"]);
       return Object.freeze({
         v: REALTIME_PROTOCOL_VERSION,
         t: "session_error",
@@ -326,7 +299,6 @@ export function decodeRealtimeFrame(
       exact(
         frame,
         ["v", "t", "description"],
-        "realtime signal_description",
       );
       return Object.freeze({
         v: REALTIME_PROTOCOL_VERSION,
@@ -335,10 +307,7 @@ export function decodeRealtimeFrame(
       });
     }
     case "signal_candidate": {
-      if (packet.byteLength > REALTIME_PACKET_MAX_BYTES) {
-        throw new RealtimeProtocolError("realtime signal_candidate packet is too large");
-      }
-      exact(frame, ["v", "t", "candidate"], "realtime signal_candidate");
+      exact(frame, ["v", "t", "candidate"]);
       return Object.freeze({
         v: REALTIME_PROTOCOL_VERSION,
         t: "signal_candidate",

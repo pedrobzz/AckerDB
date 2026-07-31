@@ -105,10 +105,6 @@ type RuntimeChannelCtx = ProcedureCtx & {
   };
 };
 
-function freezeValidated(value: unknown): unknown {
-  return deepFreeze(value);
-}
-
 export class ChannelHub {
   readonly maxMembers: number;
   readonly maxMembersPerSession: number;
@@ -220,7 +216,7 @@ export class ChannelHub {
       id: input.id,
       address: input.address,
       definition,
-      args: freezeValidated(args),
+      args: deepFreeze(args),
       hasRoom: input.hasRoom,
       ...(input.hasRoom ? { room } : {}),
       audienceKey,
@@ -257,7 +253,7 @@ export class ChannelHub {
     if (declaration === undefined || handler === undefined) {
       throw new AckerDBError("validation", `unknown client channel event "${event}"`);
     }
-    const validated = freezeValidated(declaration.check(payload, `event.${event}`));
+    const validated = deepFreeze(declaration.check(payload, `event.${event}`));
     return this.enqueue(member, () =>
       this.invoke(member, requestBytes, (ctx) => handler(ctx as never, validated))
     );
@@ -449,7 +445,7 @@ export class ChannelHub {
     if (!hasRoom) {
       throw new AckerDBError("validation", "roomed channel requires a room");
     }
-    return freezeValidated(definition.room.check(rawRoom, "room"));
+    return deepFreeze(definition.room.check(rawRoom, "room"));
   }
 
   private sendMember(
@@ -499,7 +495,7 @@ export class ChannelHub {
       ) as ArgsDecoder;
       this.argsDecoders.set(definition, decode);
     }
-    return freezeValidated(decode(rawArgs === undefined ? {} : rawArgs, "args"));
+    return deepFreeze(decode(rawArgs === undefined ? {} : rawArgs, "args"));
   }
 
   private validateServerEvent(
@@ -513,7 +509,7 @@ export class ChannelHub {
     if (declaration === undefined) {
       throw new AckerDBError("validation", `unknown server channel event "${event}"`);
     }
-    return freezeValidated(declaration.check(payload, `event.${event}`));
+    return deepFreeze(declaration.check(payload, `event.${event}`));
   }
 
   private async publishAudience(

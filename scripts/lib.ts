@@ -2,6 +2,7 @@
 export const PACKAGES = [
   "core",
   "server",
+  "realtime",
   "cache",
   "client",
   "client-react",
@@ -49,7 +50,7 @@ export async function assertRegistryReachable(registry: string): Promise<void> {
  */
 export function assertWebRtcPrebuilds(): void {
   const result = Bun.spawnSync(
-    ["bun", "packages/server/native/webrtc/package.ts"],
+    ["bun", "packages/realtime/native/webrtc/package.ts"],
     { stdout: "pipe", stderr: "pipe" },
   );
   if (result.exitCode !== 0) {

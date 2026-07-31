@@ -21,10 +21,12 @@ ephemeral and would create unbounded metric cardinality.
 Set the same secret in AckerDB:
 
 ```ts
+import { createRealtimeRuntime } from "@ackerdb/realtime";
+
 const runtime = new Runtime({
   engine,
   registry,
-  realtime: {
+  realtime: createRealtimeRuntime({
     turn: {
       urls: [
         "turn:relay.example.com:3478?transport=udp",
@@ -33,14 +35,14 @@ const runtime = new Runtime({
       secret: process.env.TURN_SECRET!,
       ttlSeconds: 600,
     },
-  },
+  }),
 });
 ```
 
 Before taking traffic, prove the data path—not merely the coturn process:
 
 ```ts
-import { preflightRealtimeTurn } from "@ackerdb/server";
+import { preflightRealtimeTurn } from "@ackerdb/realtime";
 
 const result = await preflightRealtimeTurn({
   urls: [

@@ -10,6 +10,7 @@ import {
   encode,
   getRef,
   parseRealtimeConfigurationMessage,
+  parseRealtimeIceCandidate,
   parseRealtimeOfferRequest,
   parseRealtimeOfferResponse,
   parseRealtimePatchResponse,
@@ -247,17 +248,7 @@ const MAX_INCOMING_BUFFERED_BYTES = 256 * 1024;
 const STREAM_IDLE_MS = 30_000;
 
 function candidate(value: NativeRTCIceCandidate): RealtimeIceCandidate {
-  const serialized = value.toJSON();
-  return Object.freeze({
-    candidate: serialized.candidate ?? "",
-    ...(serialized.sdpMid === undefined ? {} : { sdpMid: serialized.sdpMid }),
-    ...(serialized.sdpMLineIndex === undefined
-      ? {}
-      : { sdpMLineIndex: serialized.sdpMLineIndex }),
-    ...(serialized.usernameFragment === undefined
-      ? {}
-      : { usernameFragment: serialized.usernameFragment }),
-  });
+  return Object.freeze(parseRealtimeIceCandidate(value.toJSON()));
 }
 
 function unexpected(message: string): Outcome {

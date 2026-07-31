@@ -56,7 +56,7 @@ They run as part of `bun run test`.
 bun run test:packages
 ```
 
-This gate packs all six lockstep `@ackerdb/*` packages and installs the tarballs
+This gate packs all seven lockstep `@ackerdb/*` packages and installs the tarballs
 in a temporary consumer. It verifies:
 
 - every installed AckerDB package has the same exact version and packed internal
@@ -72,7 +72,7 @@ in a temporary consumer. It verifies:
   or `@ai-sdk/*`.
 
 The temporary consumer uses package-manager overrides only to point
-transitive `@ackerdb/*` versions at the six local tarballs because this project
+transitive `@ackerdb/*` versions at the seven local tarballs because this project
 does not publish them to npm. The packed manifests themselves remain unchanged
 and are asserted after installation.
 

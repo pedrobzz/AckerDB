@@ -159,29 +159,12 @@ import {
   type ChannelSessionAdapter,
 } from "../channels/hub.ts";
 import {
-  REALTIME_HUB_DEFAULTS,
-  RealtimeHub,
-  type RealtimeHubSnapshot,
-  type RealtimeSetupStage,
-} from "../realtime/hub.ts";
-import type { RealtimeConfigurationSource, RealtimePeerEngine } from "../realtime/engine.ts";
-import type { RealtimePeerDiagnostic } from "../realtime/diagnostics.ts";
-import { createBundledRealtimeEngine } from "../realtime/native/engine.ts";
-import {
-  resolveRealtimeServerNetwork,
-  type RealtimeServerNetworkOptions,
-} from "../realtime/network.ts";
-import {
-  createTurnConfiguration,
-  type RealtimeTurnOptions,
-} from "../realtime/turn.ts";
-import type { RealtimeServerSessionLimits } from "../realtime/session.ts";
+  type RealtimePeerDiagnostic,
+  type RealtimeRuntime,
+  type RealtimeRuntimeModule,
+  type RealtimeRuntimeSnapshot,
+} from "../realtime/host.ts";
 import { createRealtimeRuntimeApplication } from "../realtime/runtime-application.ts";
-import {
-  REALTIME_GLOBAL_RESOURCE_DEFAULTS,
-  RealtimeGlobalResourceBudget,
-  type RealtimeGlobalResourceLimits,
-} from "../realtime/resources.ts";
 import {
   CLAIM_OPERATION_DELIVERY_LEASE,
   FINISH_OPERATION_TRACE,
@@ -228,24 +211,6 @@ const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 /** Package-private transport hook; intentionally absent from the public index. */
 export const CAPTURE_DELIVERY_OBSERVER = Symbol("ackerdb.captureDeliveryObserver");
-const REALTIME_TELEMETRY_STAGES = Object.freeze({
-  authorization: "auth",
-  configuration: "configuration",
-  handler: "handler",
-  signaling: "signaling",
-  ice: "ice",
-  dtls: "dtls",
-  "data-channel": "data-channel",
-} satisfies Record<RealtimeSetupStage, TelemetryStage>);
-const REALTIME_TELEMETRY_OUTCOMES = Object.freeze({
-  completed: "ok",
-  failed: "unavailable",
-  timedOut: "deadline_exceeded",
-} satisfies Record<
-  "completed" | "failed" | "timedOut",
-  TelemetryOutcome
->);
-
 function applicationError(value: unknown) {
   if (!isApplicationError(value)) {
     throw new AckerDBError("internal", "registered Err contains no application error");
@@ -301,35 +266,7 @@ export interface RuntimeOptions {
   readonly telemetry?: Telemetry | TelemetryOptions | false;
   readonly hooks?: RuntimeHooks;
   readonly now?: () => number;
-  readonly realtime?: RuntimeRealtimeOptions;
-}
-
-export interface RuntimeRealtimeOptions {
-  readonly configuration?: RealtimeConfigurationSource;
-  /** Built-in short-lived coturn REST credentials. */
-  readonly turn?: RealtimeTurnOptions;
-  readonly maxSessions?: number;
-  readonly maxSessionsPerPrincipal?: number;
-  readonly maxHandshakesPerWindow?: number;
-  readonly handshakeWindowMs?: number;
-  readonly maxTrackedPrincipals?: number;
-  readonly maxPendingCandidates?: number;
-  readonly terminalRetentionMs?: number;
-  readonly sessionLimits?: Partial<RealtimeServerSessionLimits>;
-  readonly resourceLimits?: Partial<RealtimeGlobalResourceLimits>;
-  /** Deployment-owned bind, candidate, UDP, and ICE timing policy. */
-  readonly network?: RealtimeServerNetworkOptions;
-  readonly authorizationTimeoutMs?: number;
-  readonly configurationTimeoutMs?: number;
-  readonly handlerTimeoutMs?: number;
-  readonly signalingTimeoutMs?: number;
-  readonly iceTimeoutMs?: number;
-  readonly dtlsTimeoutMs?: number;
-  readonly dataChannelTimeoutMs?: number;
-}
-
-interface RuntimeDependencies {
-  readonly realtimeEngine?: RealtimePeerEngine;
+  readonly realtime?: RealtimeRuntimeModule;
 }
 
 interface RuntimeExternalRequest {
@@ -388,7 +325,7 @@ export interface RuntimeStatus {
   readonly activeOperations: number;
   readonly activeOperationCallers: number;
   readonly activeSse: number;
-  readonly realtime: RealtimeHubSnapshot | null;
+  readonly realtime: RealtimeRuntimeSnapshot | null;
   readonly scheduledHandlers: number;
   readonly schedulerArmed: boolean;
   readonly reader: ExecutorSnapshot;
@@ -635,7 +572,7 @@ export class Runtime implements RuntimePort {
   readonly telemetry: Telemetry;
   readonly reactive: OrderedReactive<ReactiveContext>;
   readonly channels: ChannelHub;
-  readonly realtime: RealtimeHub | undefined = undefined;
+  readonly realtime: RealtimeRuntime | undefined = undefined;
   readonly deliveryObserver: DeliveryObserver = (observation): void => {
     const ambient = this.trace.getStore();
     if (ambient !== undefined) {
@@ -785,7 +722,7 @@ export class Runtime implements RuntimePort {
   private lastCpuAt = performance.now();
   private expectedSampleAt = performance.now();
 
-  constructor(options: RuntimeOptions, dependencies: RuntimeDependencies = {}) {
+  constructor(options: RuntimeOptions) {
     this.engine = options.engine;
     this.registry = options.registry;
     this.now = options.now ?? Date.now;
@@ -808,57 +745,15 @@ export class Runtime implements RuntimePort {
         }),
     });
     if (this.registry.realtime.size > 0) {
-      const realtimeOptions = options.realtime ?? {};
-      const network = resolveRealtimeServerNetwork(realtimeOptions.network);
-      const realtimeResourceBudget = new RealtimeGlobalResourceBudget({
-        ...REALTIME_GLOBAL_RESOURCE_DEFAULTS,
-        ...realtimeOptions.resourceLimits,
-      });
-      if (
-        realtimeOptions.configuration !== undefined &&
-        realtimeOptions.turn !== undefined
-      ) {
+      if (options.realtime === undefined) {
         throw new TypeError(
-          "Runtime realtime accepts either configuration or turn, not both",
+          "Runtime has realtime definitions but @ackerdb/realtime is not configured",
         );
       }
-      this.realtime = new RealtimeHub({
-        registry: this.registry,
-        engine: dependencies.realtimeEngine ??
-          createBundledRealtimeEngine(network, realtimeResourceBudget),
-        configuration: realtimeOptions.configuration ??
-          (realtimeOptions.turn === undefined
-            ? () => ({})
-            : createTurnConfiguration(realtimeOptions.turn, options.now)),
+      this.realtime = options.realtime.create({
         application: this.realtimeApplication(),
-        maxSessions: realtimeOptions.maxSessions ??
-          REALTIME_HUB_DEFAULTS.maxSessions,
-        maxSessionsPerPrincipal: realtimeOptions.maxSessionsPerPrincipal ??
-          REALTIME_HUB_DEFAULTS.maxSessionsPerPrincipal,
-        maxHandshakesPerWindow: realtimeOptions.maxHandshakesPerWindow ??
-          REALTIME_HUB_DEFAULTS.maxHandshakesPerWindow,
-        handshakeWindowMs: realtimeOptions.handshakeWindowMs ??
-          REALTIME_HUB_DEFAULTS.handshakeWindowMs,
-        maxTrackedPrincipals: realtimeOptions.maxTrackedPrincipals ??
-          REALTIME_HUB_DEFAULTS.maxTrackedPrincipals,
-        maxPendingCandidates: realtimeOptions.maxPendingCandidates ??
-          REALTIME_HUB_DEFAULTS.maxPendingCandidates,
-        terminalRetentionMs: realtimeOptions.terminalRetentionMs ??
-          REALTIME_HUB_DEFAULTS.terminalRetentionMs,
-        sessionLimits: Object.freeze({
-          ...REALTIME_HUB_DEFAULTS.sessionLimits,
-          ...realtimeOptions.sessionLimits,
-        }),
-        resourceBudget: realtimeResourceBudget,
         now: this.now,
-        networkDiagnostic: network.diagnostic,
-        authorizationTimeoutMs: realtimeOptions.authorizationTimeoutMs,
-        configurationTimeoutMs: realtimeOptions.configurationTimeoutMs,
-        handlerTimeoutMs: realtimeOptions.handlerTimeoutMs,
-        signalingTimeoutMs: realtimeOptions.signalingTimeoutMs,
-        iceTimeoutMs: realtimeOptions.iceTimeoutMs,
-        dtlsTimeoutMs: realtimeOptions.dtlsTimeoutMs,
-        dataChannelTimeoutMs: realtimeOptions.dataChannelTimeoutMs,
+        definition: (address) => this.registry.getRealtime(address),
       });
     }
     const mcpToolCounts = new Map<string, number>();
@@ -4570,21 +4465,12 @@ export class Runtime implements RuntimePort {
       ["runtime.realtime_recovery_accepted", realtime?.recoveryAccepted ?? 0, "count"],
       ["runtime.realtime_recovery_rejected", realtime?.recoveryRejected ?? 0, "count"],
       ["runtime.realtime_recovery_failed", realtime?.recoveryFailed ?? 0, "count"],
-      ["runtime.realtime_recovery_duration", realtime === undefined ||
-          realtime.recoveryAttempts === 0
-        ? 0
-        : realtime.recoveryDurationMs / realtime.recoveryAttempts, "milliseconds"],
-      ["runtime.realtime_recovery_duration_max", realtime?.recoveryMaxDurationMs ?? 0, "milliseconds"],
       ["runtime.realtime_closed_client", realtime?.closeReasons.client ?? 0, "count"],
       ["runtime.realtime_closed_authentication", realtime?.closeReasons.authentication ?? 0, "count"],
       ["runtime.realtime_closed_transport", realtime?.closeReasons.transport ?? 0, "count"],
       ["runtime.realtime_closed_handler", realtime?.closeReasons.handler ?? 0, "count"],
       ["runtime.realtime_closed_draining", realtime?.closeReasons.draining ?? 0, "count"],
       ["runtime.realtime_closed_setup", realtime?.closeReasons.setup ?? 0, "count"],
-      ["runtime.realtime_setup_duration", realtime === undefined || realtime.setupCount === 0
-        ? 0
-        : realtime.setupDurationMs / realtime.setupCount, "milliseconds"],
-      ["runtime.realtime_setup_duration_max", realtime?.setupMaxDurationMs ?? 0, "milliseconds"],
       ["runtime.realtime_health_sampled_peers", realtime?.health.sampledPeers ?? 0, "gauge"],
       ["runtime.realtime_health_sample_failures", realtime?.health.sampleFailures ?? 0, "gauge"],
       ["runtime.realtime_direct_paths", realtime?.health.directPaths ?? 0, "gauge"],
@@ -4615,10 +4501,6 @@ export class Runtime implements RuntimePort {
       ["runtime.realtime_decoded_stream_saturation", realtime?.resources.saturated.decodedStreams ?? 0, "count"],
       ["runtime.realtime_media_source_saturation", realtime?.resources.saturated.mediaSources ?? 0, "count"],
       ["runtime.realtime_track_saturation", realtime?.resources.saturated.tracks ?? 0, "count"],
-      ["runtime.realtime_first_inbound_audio", realtime?.health.firstInboundAudio ?? 0, "count"],
-      ["runtime.realtime_first_inbound_video", realtime?.health.firstInboundVideo ?? 0, "count"],
-      ["runtime.realtime_first_outbound_audio", realtime?.health.firstOutboundAudio ?? 0, "count"],
-      ["runtime.realtime_first_outbound_video", realtime?.health.firstOutboundVideo ?? 0, "count"],
       ["runtime.subscriptions", reactive.queryListeners + reactive.eventListeners, "gauge"],
       ["runtime.subscription_entries", reactive.sharedEntries, "gauge"],
       ["runtime.subscription_result_bytes", reactive.resultBytes, "bytes"],
@@ -4668,47 +4550,6 @@ export class Runtime implements RuntimePort {
       ["runtime.event_loop_drift", eventLoopDrift, "milliseconds"],
     ];
     for (const [name, value, unit] of metrics) this.telemetry.recordMetric({ name, value, unit });
-    if (realtime !== undefined) {
-      for (const stage of Object.keys(
-        realtime.setupStages,
-      ) as RealtimeSetupStage[]) {
-        const setup = realtime.setupStages[stage];
-        for (const outcome of ["completed", "failed", "timedOut"] as const) {
-          this.telemetry.recordMetric({
-            name: "runtime.realtime_setup_stage_outcomes",
-            value: setup[outcome],
-            unit: "count",
-            labels: {
-              operation: "realtime",
-              stage: REALTIME_TELEMETRY_STAGES[stage],
-              outcome: REALTIME_TELEMETRY_OUTCOMES[outcome],
-              resource: "connection",
-            },
-          });
-        }
-        const attempts = setup.completed + setup.failed + setup.timedOut;
-        this.telemetry.recordMetric({
-          name: "runtime.realtime_setup_stage_duration",
-          value: attempts === 0 ? 0 : setup.durationMs / attempts,
-          unit: "milliseconds",
-          labels: {
-            operation: "realtime",
-            stage: REALTIME_TELEMETRY_STAGES[stage],
-            resource: "connection",
-          },
-        });
-        this.telemetry.recordMetric({
-          name: "runtime.realtime_setup_stage_duration_max",
-          value: setup.maxDurationMs,
-          unit: "milliseconds",
-          labels: {
-            operation: "realtime",
-            stage: REALTIME_TELEMETRY_STAGES[stage],
-            resource: "connection",
-          },
-        });
-      }
-    }
     void this.realtime?.sampleHealth(8);
     this.flushDeliveryFailureSummaries();
   }

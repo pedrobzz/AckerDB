@@ -225,64 +225,19 @@ export class RealtimeDataPlane {
   }
 
   send(event: string, payload: unknown): boolean {
-    if (this.closed || this.channel.readyState !== "open") return false;
-    const packet = encodeRealtimeEvent(event, payload);
-    if (this.channel.bufferedAmount + packet.byteLength > this.maxBufferedAmount) {
-      this.onPressure("data-channel-buffer");
-      return false;
-    }
-    try {
-      this.channel.send(packet as Uint8Array<ArrayBuffer>);
-      return true;
-    } catch {
-      return false;
-    }
+    return this.trySend(encodeRealtimeEvent(event, payload));
   }
 
   sendSessionError(outcome: Outcome): boolean {
-    if (this.closed || this.channel.readyState !== "open") return false;
-    const packet = encodeRealtimeFrame({
+    return this.trySend(encodeRealtimeFrame({
       v: REALTIME_PROTOCOL_VERSION,
       t: "session_error",
       outcome,
-    });
-    if (this.channel.bufferedAmount + packet.byteLength > this.maxBufferedAmount) {
-      this.onPressure("data-channel-buffer");
-      return false;
-    }
-    try {
-      this.channel.send(packet as Uint8Array<ArrayBuffer>);
-      return true;
-    } catch {
-      return false;
-    }
+    }));
   }
 
   async sendSignal(frame: RealtimeSignalFrame): Promise<void> {
-    const packet = encodeRealtimeFrame(frame);
-    if (
-      !this.closed &&
-      this.channel.readyState === "open" &&
-      this.channel.bufferedAmount + packet.byteLength > this.maxBufferedAmount
-    ) {
-      this.onPressure("data-channel-buffer");
-    }
-    while (
-      !this.closed &&
-      this.channel.readyState === "open" &&
-      this.channel.bufferedAmount + packet.byteLength > this.maxBufferedAmount
-    ) {
-      await new Promise<void>((resolve) => {
-        this.capacityWaiters.add(resolve);
-      });
-    }
-    if (this.closed || this.channel.readyState !== "open") {
-      throw new RealtimeStreamInterruptedError(
-        "signaling",
-        "realtime signaling channel is not open",
-      );
-    }
-    this.channel.send(packet as Uint8Array<ArrayBuffer>);
+    await this.waitAndSendPacket(encodeRealtimeFrame(frame), "signaling");
   }
 
   openStream(
@@ -636,29 +591,52 @@ export class RealtimeDataPlane {
     frame: RealtimeDataFrame,
     transfer: OutgoingTransfer,
   ): Promise<void> {
-    const packet = encodeRealtimeFrame(frame);
-    if (
-      !transfer.ended &&
+    await this.waitAndSendPacket(
+      encodeRealtimeFrame(frame),
+      transfer.id,
+      transfer,
+    );
+  }
+
+  private trySend(packet: Uint8Array): boolean {
+    if (this.closed || this.channel.readyState !== "open") return false;
+    if (this.channel.bufferedAmount + packet.byteLength > this.maxBufferedAmount) {
+      this.onPressure("data-channel-buffer");
+      return false;
+    }
+    try {
+      this.channel.send(packet as Uint8Array<ArrayBuffer>);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async waitAndSendPacket(
+    packet: Uint8Array,
+    transferId: string,
+    transfer?: OutgoingTransfer,
+  ): Promise<void> {
+    const active = () =>
+      !transfer?.ended &&
       !this.closed &&
-      this.channel.readyState === "open" &&
+      this.channel.readyState === "open";
+    if (
+      active() &&
       this.channel.bufferedAmount + packet.byteLength > this.maxBufferedAmount
     ) {
       this.onPressure("data-channel-buffer");
     }
     while (
-      !transfer.ended &&
-      !this.closed &&
-      this.channel.readyState === "open" &&
+      active() &&
       this.channel.bufferedAmount + packet.byteLength > this.maxBufferedAmount
     ) {
       await new Promise<void>((resolve) => {
         this.capacityWaiters.add(resolve);
       });
     }
-    if (transfer.ended || this.closed || this.channel.readyState !== "open") {
-      throw new RealtimeStreamInterruptedError(
-        "id" in frame ? frame.id : "session",
-      );
+    if (!active()) {
+      throw new RealtimeStreamInterruptedError(transferId);
     }
     this.channel.send(packet as Uint8Array<ArrayBuffer>);
   }

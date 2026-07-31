@@ -1,0 +1,19 @@
+{
+  "name": "@ackerdb/realtime",
+  "version": "0.12.0",
+  "type": "module",
+  "files": [
+    "src",
+    "native/webrtc/prebuilds",
+    "native/webrtc/PROVENANCE.md",
+    "native/webrtc/patches",
+    "native/webrtc/licenses"
+  ],
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@ackerdb/core": "workspace:0.12.0",
+    "@ackerdb/server": "workspace:0.12.0"
+  }
+}

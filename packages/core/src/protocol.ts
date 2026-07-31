@@ -1,9 +1,19 @@
 import type { Identity } from "./identity.ts";
 import {
+  boundedString as string,
+  exactFields as exact,
+  malformed,
+  protocolObject as object,
+  ProtocolError,
+  type ProtocolObject as ObjectValue,
+} from "./protocol-validation.ts";
+import {
   Status,
   type ApplicationError,
   type ErrorHttpStatus,
 } from "./result.ts";
+
+export { ProtocolError } from "./protocol-validation.ts";
 
 /**
  * Protocol 3 is the executable client/server envelope contract. Application
@@ -370,18 +380,6 @@ export interface SseAckRequest extends SseFrame<"sse_ack"> {
   stream: string;
 }
 
-export class ProtocolError extends Error {
-  constructor(
-    readonly code: "malformed" | "unsupported_protocol",
-    message: string,
-  ) {
-    super(message);
-    this.name = "ProtocolError";
-  }
-}
-
-type ObjectValue = Record<string, unknown>;
-
 const outcomeCodes = new Set<string>(OUTCOME_CODES);
 const resourceClasses = new Set<string>(RESOURCE_CLASSES);
 const durabilityPolicies = new Set<string>(DURABILITY_POLICIES);
@@ -394,33 +392,6 @@ export function uuidV7Timestamp(value: string): number {
   return Number.parseInt(value.slice(0, 8) + value.slice(9, 13), 16);
 }
 const utf8 = new TextEncoder();
-
-function malformed(message: string): never {
-  throw new ProtocolError("malformed", message);
-}
-
-function object(value: unknown, name: string): ObjectValue {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    malformed(`${name} must be an object`);
-  }
-  return value as ObjectValue;
-}
-
-function exact(value: ObjectValue, required: readonly string[], optional: readonly string[] = []): void {
-  for (const key of required) {
-    if (!Object.hasOwn(value, key)) malformed(`missing field ${key}`);
-  }
-  for (const key of Object.keys(value)) {
-    if (!required.includes(key) && !optional.includes(key)) malformed(`unknown field ${key}`);
-  }
-}
-
-function string(value: unknown, name: string, maxLength: number): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > maxLength) {
-    malformed(`${name} must be a non-empty bounded string`);
-  }
-  return value;
-}
 
 function payload(value: unknown, name: string): unknown {
   if (value === undefined) malformed(`${name} must be wire-representable`);

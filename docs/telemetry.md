@@ -430,16 +430,9 @@ exact metric names:
   `runtime.realtime_overloaded`, `runtime.realtime_failed`,
   `runtime.realtime_closed`, `runtime.realtime_recovery_attempts`,
   `runtime.realtime_recovery_accepted`, `runtime.realtime_recovery_rejected`,
-  `runtime.realtime_recovery_failed`, `runtime.realtime_recovery_duration`,
-  `runtime.realtime_recovery_duration_max`, the
+  `runtime.realtime_recovery_failed`, and the
   `runtime.realtime_closed_{client,authentication,transport,handler,draining,setup}`
-  close-reason counters, `runtime.realtime_setup_duration`, and
-  `runtime.realtime_setup_duration_max`;
-- realtime setup stages: `runtime.realtime_setup_stage_outcomes`,
-  `runtime.realtime_setup_stage_duration`, and
-  `runtime.realtime_setup_stage_duration_max`, labeled with the finite
-  authorization, configuration, handler, signaling, ICE, DTLS, and
-  data-channel stages;
+  close-reason counters;
 - realtime path and media health:
   `runtime.realtime_health_sampled_peers`,
   `runtime.realtime_health_sample_failures`,
@@ -456,8 +449,7 @@ exact metric names:
   `runtime.realtime_stream_capacity_pressure`,
   `runtime.realtime_stream_buffer_pressure`,
   `runtime.realtime_handler_saturation`,
-  `runtime.realtime_resource_saturation`, and the
-  `runtime.realtime_first_{inbound,outbound}_{audio,video}` counters;
+  `runtime.realtime_resource_saturation`;
 - realtime native resources: `runtime.realtime_auxiliary_peers`,
   `runtime.realtime_decoded_streams`, `runtime.realtime_media_sources`,
   `runtime.realtime_tracks`, and the matching

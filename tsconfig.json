@@ -16,6 +16,8 @@
       "@ackerdb/core": ["./packages/core/src/index.ts"],
       "@ackerdb/server": ["./packages/server/src/index.ts"],
       "@ackerdb/server/mcp": ["./packages/server/src/mcp/index.ts"],
+      "@ackerdb/server/realtime-host": ["./packages/server/src/realtime/host.ts"],
+      "@ackerdb/realtime": ["./packages/realtime/src/index.ts"],
       "@ackerdb/cache": ["./packages/cache/src/index.ts"],
       "@ackerdb/cache/redis": ["./packages/cache/src/adapters/redis.ts"],
       "@ackerdb/cache/upstash": ["./packages/cache/src/adapters/upstash.ts"],

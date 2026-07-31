@@ -103,6 +103,14 @@
         "msgpackr": "2.0.5",
       },
     },
+    "packages/realtime": {
+      "name": "@ackerdb/realtime",
+      "version": "0.12.0",
+      "dependencies": {
+        "@ackerdb/core": "workspace:0.12.0",
+        "@ackerdb/server": "workspace:0.12.0",
+      },
+    },
     "packages/server": {
       "name": "@ackerdb/server",
       "version": "0.12.0",
@@ -127,6 +135,8 @@
     "@ackerdb/client-react": ["@ackerdb/client-react@workspace:packages/client-react"],
 
     "@ackerdb/core": ["@ackerdb/core@workspace:packages/core"],
+
+    "@ackerdb/realtime": ["@ackerdb/realtime@workspace:packages/realtime"],
 
     "@ackerdb/server": ["@ackerdb/server@workspace:packages/server"],
 

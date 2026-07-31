@@ -216,7 +216,7 @@ comparison is evidence about AckerDB itself.
 
 We do not publish to npm. Releases go to a local Verdaccio registry at `http://127.0.0.1:4874`, so real projects on this machine can install `@ackerdb/*` like normal npm packages — pinned, with every old version still installable. (4874, not Verdaccio's default 4873: this machine's own Homebrew Verdaccio launchd agent owns 4873.)
 
-The six packages (`@ackerdb/core`, `@ackerdb/server`, `@ackerdb/cache`, `@ackerdb/client`, `@ackerdb/client-react`, `@ackerdb/cli`) share **one version, always in lockstep**. Bumping one bumps all six (`bun run bump` writes all of them; the merge guard rejects drift). Each published version is also a git tag (`v0.2.0`), so old published code is always recoverable with `git checkout v0.2.0`.
+The seven packages (`@ackerdb/core`, `@ackerdb/server`, `@ackerdb/realtime`, `@ackerdb/cache`, `@ackerdb/client`, `@ackerdb/client-react`, `@ackerdb/cli`) share **one version, always in lockstep**. Bumping one bumps all seven (`bun run bump` writes all of them; the merge guard rejects drift). Each published version is also a git tag (`v0.2.0`), so old published code is always recoverable with `git checkout v0.2.0`.
 
 ## One-time setup (per clone / machine)
 
@@ -238,7 +238,7 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    ```bash
    bun run bump patch   # or: minor | major
    ```
-   This rewrites the version in all 6 packages **and** their inter-deps (pinned as `workspace:X.Y.Z` — never hand-edit these back to `workspace:*`; bun packs `workspace:*` from a bun.lock snapshot that goes stale on version-only edits), then commits everything as `chore(release): vX.Y.Z`.
+   This rewrites the version in all 7 packages **and** their inter-deps (pinned as `workspace:X.Y.Z` — never hand-edit these back to `workspace:*`; bun packs `workspace:*` from a bun.lock snapshot that goes stale on version-only edits), then commits everything as `chore(release): vX.Y.Z`.
 4. **Benchmark the release version**: dispatch this in a background worker or
    subagent; it runs only on Hetzner and compares the pending version with the
    preceding version's final record:
@@ -267,7 +267,7 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
    ```bash
    bun run publish:local
    ```
-   Publishes all 6 packages at the pinned version to Verdaccio (in dependency order: core, server, cache, client, client-react, cli) and tags the commit `vX.Y.Z`. `bun publish` rewrites the `workspace:X.Y.Z` inter-deps to the literal `X.Y.Z` at pack time, so tarballs depend on exact versions.
+   Publishes all 7 packages at the pinned version to Verdaccio (in dependency order: core, server, realtime, cache, client, client-react, cli) and tags the commit `vX.Y.Z`. `bun publish` rewrites the `workspace:X.Y.Z` inter-deps to the literal `X.Y.Z` at pack time, so tarballs depend on exact versions.
 
 ## Prerelease publishing: test a branch without merging
 
@@ -306,6 +306,12 @@ Then install exact (pinned) versions:
 
 ```bash
 bun add --exact @ackerdb/server@0.2.0 @ackerdb/cache@0.2.0 @ackerdb/client@0.2.0 @ackerdb/client-react@0.2.0 @ackerdb/cli@0.2.0
+```
+
+Apps that declare realtime routes additionally install the optional backend:
+
+```bash
+bun add --exact @ackerdb/realtime@0.2.0
 ```
 
 **Going back to an old version works**: Verdaccio keeps every published version in `registry/storage/` (gitignored, survives restarts), so `bun add --exact @ackerdb/server@0.1.0` keeps working after 0.2.0+ exist. To see the matching source, `git checkout v0.1.0`.

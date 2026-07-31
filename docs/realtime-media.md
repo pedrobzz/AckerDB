@@ -17,6 +17,11 @@ application keeps the standard WebRTC mental model:
 There is no direct/provider mode, provider adapter, media WebSocket, automatic
 capture, or AckerDB media-player API.
 
+The client and React hooks remain in `@ackerdb/client` and
+`@ackerdb/client-react`. Only applications that declare realtime routes install
+`@ackerdb/realtime`; the ordinary server package contains no native WebRTC
+binary or media runtime.
+
 ## Define a realtime route
 
 ```ts
@@ -214,14 +219,17 @@ accounting rather than a second JavaScript scheduler.
 
 ## Configure server ICE and TURN
 
-AckerDB bundles its server WebRTC engine. Reachability and capacity options
-belong to the runtime deployment, never to a realtime route or React hook:
+`@ackerdb/realtime` bundles the optional server WebRTC engine. Reachability and
+capacity options belong to the runtime deployment, never to a realtime route
+or React hook:
 
 ```ts
+import { createRealtimeRuntime } from "@ackerdb/realtime";
+
 const runtime = new Runtime({
   engine: database,
   registry,
-  realtime: {
+  realtime: createRealtimeRuntime({
     network: {
       interfaces: { include: ["en0"] },
       udpPortRange: { min: 50_000, max: 51_000 },
@@ -263,7 +271,7 @@ const runtime = new Runtime({
     iceTimeoutMs: 10_000,
     dtlsTimeoutMs: 10_000,
     dataChannelTimeoutMs: 20_000,
-  },
+  }),
 });
 ```
 
@@ -277,10 +285,12 @@ For coturn's standard REST credential mechanism, AckerDB can mint short-lived
 credentials directly:
 
 ```ts
+import { createRealtimeRuntime } from "@ackerdb/realtime";
+
 const runtime = new Runtime({
   engine: database,
   registry,
-  realtime: {
+  realtime: createRealtimeRuntime({
     turn: {
       urls: [
         "turn:relay.example.com:3478?transport=udp",
@@ -289,7 +299,7 @@ const runtime = new Runtime({
       secret: process.env.TURN_SECRET!,
       ttlSeconds: 3_600,
     },
-  },
+  }),
 });
 ```
 
@@ -298,7 +308,10 @@ The secret stays on the server; clients receive only a principal-bound,
 expiring username and HMAC credential. Use `configuration` instead when ICE
 credentials come from another service. The two options are mutually exclusive.
 
-Omit `realtime` entirely when host candidates are enough. ICE and TURN
+Omit the options when host candidates are enough:
+`createRealtimeRuntime()`. The CLI does this automatically when it finds
+realtime routes and resolves the package from the application. Apps without
+realtime routes never resolve or load the optional package. ICE and TURN
 configuration belongs at deployment scope, not on every route or React hook.
 The same bundled factory creates client-facing and auxiliary peers, so tracks
 can move between them without a second engine or provider adapter.
@@ -333,7 +346,7 @@ The pinned LiveKit libwebrtc archive for each target is also verified before
 extraction. Stable and prerelease publication fail before publishing any
 package unless every target binary, per-target manifest, aggregate manifest,
 SBOM, and notice file agree.
-See the committed [native provenance record](../packages/server/native/webrtc/PROVENANCE.md).
+See the committed [native provenance record](../packages/realtime/native/webrtc/PROVENANCE.md).
 
 Unsupported peer options continue to fail explicitly instead of being silently
 ignored. No provider-specific function is part of this boundary.

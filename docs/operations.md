@@ -144,7 +144,7 @@ validation rather than hidden package claims.
 
 The complete API and recovery semantics are in
 [Realtime media](realtime-media.md); build provenance is in
-[`packages/server/native/webrtc/PROVENANCE.md`](../packages/server/native/webrtc/PROVENANCE.md).
+[`packages/realtime/native/webrtc/PROVENANCE.md`](../packages/realtime/native/webrtc/PROVENANCE.md).
 
 ## Typed outcomes
 
