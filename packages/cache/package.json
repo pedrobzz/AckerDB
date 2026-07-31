@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/cache",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "type": "module",
   "files": [
     "src"
@@ -11,7 +11,7 @@
     "./upstash": "./src/adapters/upstash.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.12.0",
-    "@ackerdb/server": "workspace:0.12.0"
+    "@ackerdb/core": "workspace:0.13.0",
+    "@ackerdb/server": "workspace:0.13.0"
   }
 }

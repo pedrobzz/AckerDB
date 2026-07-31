@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/client-react",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "type": "module",
   "files": [
     "src"
@@ -13,8 +13,8 @@
     "./ai": "./src/ai/index.ts"
   },
   "dependencies": {
-    "@ackerdb/client": "workspace:0.12.0",
-    "@ackerdb/core": "workspace:0.12.0"
+    "@ackerdb/client": "workspace:0.13.0",
+    "@ackerdb/core": "workspace:0.13.0"
   },
   "peerDependencies": {
     "ai": "^7.0.0",
