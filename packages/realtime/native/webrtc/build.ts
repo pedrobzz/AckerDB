@@ -145,11 +145,11 @@ const previousCustomWebRtc = process.env.LK_CUSTOM_WEBRTC;
 process.env.LK_CUSTOM_WEBRTC = verifiedWebRtc;
 try {
   const { task } = await new NapiCli().build({
-    cwd: repositoryRoot,
-    packageJsonPath: "packages/realtime/package.json",
-    manifestPath: "packages/realtime/native/webrtc/Cargo.toml",
+    cwd: root,
+    packageJsonPath: "../../package.json",
+    manifestPath: "Cargo.toml",
     targetDir: join(root, "target"),
-    outputDir: "packages/realtime/native/webrtc/binding",
+    outputDir: "binding",
     target: targetDefinition.rustTarget,
     release: true,
     platform: true,

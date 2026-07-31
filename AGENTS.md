@@ -266,7 +266,9 @@ Main is protected by git hooks (`.githooks/`): direct commits to main are reject
 6. **Download the exact-HEAD CI candidate, then publish it** (manual, from
    main, clean tree):
    ```bash
-   # Choose the successful `ackerdb-release-candidate` artifact for this HEAD.
+   # Native CI is deliberately not triggered by ordinary main pushes.
+   gh workflow run webrtc-prebuilds.yml --ref main
+   # Wait for the successful run whose head SHA is the current main HEAD.
    gh run download <run-id> --name ackerdb-release-candidate --dir /tmp/ackerdb-release-candidate
    ACKERDB_RELEASE_CANDIDATE=/tmp/ackerdb-release-candidate/webrtc-candidate-manifest.json \
      bun run publish:local
