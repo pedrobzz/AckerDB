@@ -1,19 +1,21 @@
-import type { RegisteredServerOnly } from "@ackerdb/core";
-import {
-  v,
-  type Expand,
-  type InferShape,
-  type InferValidator,
-  type ObjectShape,
-  type ObjectValidator,
-} from "../validation/v.ts";
-import type { Invocable } from "../app/functions.ts";
-import { validateArgsShape } from "../app/functions.ts";
+/**
+ * MCP endpoints and the tools they publish.
+ *
+ * A tool is a registered `query`, `mutation`, or `procedure` named in an
+ * endpoint's `tools` record. The function stays MCP-unaware: everything the
+ * protocol needs — the wire name, the scopes, the annotations, whether a model
+ * outside the app may see it — lives on the entry, because the endpoint is the
+ * curation surface and a tool list is a prompt.
+ *
+ * Scopes and tokens live on an `mcpAuth` provider rather than here. See
+ * `auth.ts` for why that extraction is structural.
+ */
+import type { RegisteredServerOnly, Result } from "@ackerdb/core";
+import type { ObjectShape } from "../validation/v.ts";
+import type { AnyRegistered, Registered } from "../app/functions.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
-import { compileInvocation } from "../app/invocation.ts";
 import {
   createMcpAiTools,
-  mcpLocalGrant,
   type McpAiContext,
   type McpAiToolsCompleteOptions,
   type McpAiToolsFilteredOptions,
@@ -21,43 +23,33 @@ import {
   type McpAiToolSet,
 } from "./ai.ts";
 import {
-  createMcpTokenOperations,
-  createSystemMcpTokenOperations,
-  type CreatedMcpToken,
-  type McpTokenCreateInput,
-  type McpTokenDescriptor,
-  type McpTokenOperations,
-  type McpTokenUpdateInput,
-  type SystemMcpTokenOperations,
-} from "./token-context.ts";
-import {
-  createMcpScopeDescriptor,
-  isMcpToolAuthorized,
   normalizeMcpToolAccess,
   type McpScopeDescriptor,
-  type McpScopeValues,
   type McpToolAccessPolicy,
   type NormalizedMcpToolAccessPolicy,
 } from "./scopes.ts";
+import {
+  isMcpAuthProvider,
+  type AnyMcpAuthProvider,
+  type McpAuthScope,
+} from "./auth.ts";
+import {
+  byteLength,
+  mcpName,
+  nonEmptyString,
+  MAX_MCP_INSTRUCTIONS_BYTES,
+  MAX_MCP_METADATA_BYTES,
+  MAX_MCP_PATH_BYTES,
+  MAX_MCP_TOOL_DESCRIPTION_BYTES,
+  MAX_MCP_TOOL_NAME_BYTES,
+  MAX_MCP_TOOL_TITLE_BYTES,
+  MCP_PATH,
+  TOOL_NAME,
+} from "./naming.ts";
+import { compileMcpToolCodec, type McpToolCodec } from "./tool-codec.ts";
+import type { JsonObjectSchema } from "../validation/json-schema.ts";
+import type { McpCallToolResult } from "./content.ts";
 import type { Schema } from "../schema/definition.ts";
-import type { ProcedureCtx, TxCtx } from "../app/functions.ts";
-import {
-  compileStandardJsonCodec,
-  type StandardJsonCodec,
-  type StandardJsonInput,
-  type StandardJsonOutput,
-} from "../validation/standard-schema.ts";
-import {
-  argsJsonSchema,
-  validatorJsonSchema,
-  type JsonObjectSchema,
-} from "../validation/json-schema.ts";
-import { deepFreeze } from "../shared/immutable.ts";
-import {
-  type McpCallToolResult,
-  type McpToolResult,
-  validateMcpContentResult,
-} from "./content.ts";
 
 export type {
   McpAudioContent,
@@ -85,72 +77,26 @@ export type {
   McpAiTool,
   McpAiToolSet,
 } from "./ai.ts";
+export {
+  mcpAuth,
+  isMcpAuthProvider,
+  type AnyMcpAuthProvider,
+  type McpAuthBuilder,
+  type McpAuthConfig,
+  type McpAuthProvider,
+  type McpAuthScope,
+  type ScopedMcpAuthConfig,
+} from "./auth.ts";
+export { MCP_OUTPUT_WRAP_KEY, type McpToolCodec } from "./tool-codec.ts";
 
 const MCP_IDENTITY = Symbol.for("@ackerdb/server/Mcp/v1");
 const MCP_TOOL_IDENTITY = Symbol.for("@ackerdb/server/McpTool/v1");
-const mcpToolBlueprintDefinitions = new WeakMap<object, unknown>();
-const MCP_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
-const MCP_PATH = /^\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/;
-const TOOL_NAME = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 const DEFAULT_MCP_PATH = "/mcp";
-const MAX_MCP_PATH_BYTES = 256;
-const MAX_MCP_INSTRUCTIONS_BYTES = 16 * 1_024;
-const MAX_MCP_METADATA_BYTES = 4 * 1_024;
-const MAX_MCP_TOOL_NAME_BYTES = 63;
-const MAX_MCP_TOOL_TITLE_BYTES = 256;
-const MAX_MCP_TOOL_DESCRIPTION_BYTES = 4 * 1_024;
-const utf8 = new TextEncoder();
 
 export interface McpEndpointMetadata {
   readonly title?: string;
   readonly description?: string;
   readonly websiteUrl?: string;
-}
-
-interface McpConfigBase<
-  Name extends string,
-  Tools extends AnyMcpToolBlueprintRecord,
-> {
-  readonly name: Name;
-  readonly tools: Tools;
-  readonly instructions?: string;
-  readonly metadata?: McpEndpointMetadata;
-}
-
-export interface DefaultMcpConfig<
-  Name extends string,
-  Tools extends AnyMcpToolBlueprintRecord = AnyMcpToolBlueprintRecord,
-> extends McpConfigBase<Name, Tools> {
-  readonly path?: undefined;
-  readonly scopes?: undefined;
-}
-
-export interface CustomMcpConfig<
-  Name extends string,
-  Path extends string,
-  Tools extends AnyMcpToolBlueprintRecord = AnyMcpToolBlueprintRecord,
-> extends McpConfigBase<Name, Tools> {
-  readonly path: Path;
-  readonly scopes?: undefined;
-}
-
-export interface ScopedDefaultMcpConfig<
-  Name extends string,
-  Scopes extends McpScopeValues,
-  Tools extends AnyMcpToolBlueprintRecord = AnyMcpToolBlueprintRecord,
-> extends McpConfigBase<Name, Tools> {
-  readonly path?: undefined;
-  readonly scopes: Scopes;
-}
-
-export interface ScopedCustomMcpConfig<
-  Name extends string,
-  Path extends string,
-  Scopes extends McpScopeValues,
-  Tools extends AnyMcpToolBlueprintRecord = AnyMcpToolBlueprintRecord,
-> extends McpConfigBase<Name, Tools> {
-  readonly path: Path;
-  readonly scopes: Scopes;
 }
 
 export interface McpToolAnnotations {
@@ -160,159 +106,141 @@ export interface McpToolAnnotations {
   readonly openWorldHint?: boolean;
 }
 
-export type McpToolCtx<S extends Schema = Schema> = Pick<
-  ProcedureCtx<S>,
-  "auth" | "abortSignal"
-> & {
-  /** MCP tools retain their raw transaction callback contract. */
-  tx<R>(work: (tx: TxCtx<S>) => R): Promise<Awaited<R>>;
-};
-
 export type McpInputSchema = JsonObjectSchema;
 export type McpOutputSchema = JsonObjectSchema;
 
-type McpToolBlueprintAccess =
-  | "public"
-  | "authenticated"
-  | { readonly anyOf: readonly [string, ...string[]] }
-  | { readonly allOf: readonly [string, ...string[]] };
+/**
+ * The kinds a tool may be. `sse` is absent deliberately: MCP has no streaming
+ * tool result, so an `sseProcedure` in a tools record fails to type-check
+ * rather than failing at call time.
+ */
+export type McpToolKind = "query" | "mutation" | "procedure";
 
-type McpToolAccessScopes<Access> = Access extends {
-  readonly anyOf: readonly (infer Scope extends string)[];
-} ? Scope
-  : Access extends { readonly allOf: readonly (infer Scope extends string)[] } ? Scope
-  : never;
-
-interface McpToolDefinitionBase<
-  A extends ObjectShape,
-  Access extends McpToolBlueprintAccess | undefined,
-> {
-  readonly title?: string;
-  readonly description: string;
-  readonly annotations?: McpToolAnnotations;
-  readonly access?: Access;
-  readonly args: A;
-}
-
-export interface McpToolDefinition<
-  A extends ObjectShape,
-  O extends ObjectValidator | undefined,
-  S extends Schema,
-  Access extends McpToolBlueprintAccess | undefined = undefined,
-> extends McpToolDefinitionBase<A, Access> {
-  readonly output?: O;
-  readonly handler: (
-    ctx: McpToolCtx<S>,
-    args: Expand<InferShape<A>>,
-  ) => McpHandlerResult<O> | Promise<McpHandlerResult<O>>;
-}
-
-type McpHandlerResult<O extends ObjectValidator | undefined> =
-  O extends ObjectValidator ? Expand<InferValidator<O>> : McpToolResult;
-
-/** An inert, reusable tool contract. Endpoint assembly gives it a wire name and identity. */
-export interface McpToolBlueprint<
-  A extends ObjectShape = ObjectShape,
-  O extends ObjectValidator | undefined = ObjectValidator | undefined,
-  S extends Schema = Schema,
-  RequiredScope extends string = never,
-> extends RegisteredServerOnly {
-  readonly serverKind: "mcp-tool-blueprint";
-  readonly _args?: A;
-  readonly _output?: O;
-  /** Compile-only invariant marker: handlers both consume and produce capabilities from S. */
-  readonly _schema?: (schema: S) => S;
-  readonly _requiredScope?: RequiredScope;
-}
-
-export type McpToolBlueprintRecord<
-  S extends Schema = Schema,
-  Scope extends string = string,
-> = Readonly<Record<string, McpToolBlueprint<ObjectShape, ObjectValidator | undefined, S, Scope>>>;
-
-export type AnyMcpToolBlueprint = McpToolBlueprint<
+export type McpToolFunction<S extends Schema = Schema> = Registered<
+  McpToolKind,
   ObjectShape,
-  ObjectValidator | undefined,
   any,
-  string
->;
-export type AnyMcpToolBlueprintRecord = Readonly<Record<string, AnyMcpToolBlueprint>>;
+  any,
+  any
+> & { readonly _schema?: (schema: S) => S };
 
-export interface McpToolBuilder<S extends Schema> {
-  <
-    const A extends ObjectShape,
-    const O extends ObjectValidator | undefined = undefined,
-    const Access extends McpToolBlueprintAccess | undefined = undefined,
-  >(
-    definition: McpToolDefinition<A, O, S, Access>,
-  ): McpToolBlueprint<A, O, S, McpToolAccessScopes<Access>>;
+/**
+ * One tool: the function, plus everything about publishing it that belongs to
+ * this endpoint rather than to the function.
+ *
+ * `access` is typed against the endpoint's provider, so a scope the provider
+ * never declared is a compile error. It defaults to `"authenticated"` — any
+ * valid token on the provider, never an anonymous caller. `"public"` exists and
+ * must be written, so opening a tool to unauthenticated callers reads as a
+ * decision rather than as an omission.
+ */
+export interface McpToolEntry<
+  S extends Schema = Schema,
+  Scope extends string = never,
+> {
+  readonly fn: McpToolFunction<S>;
+  readonly access?: McpToolAccessPolicy<Scope>;
+  readonly annotations?: McpToolAnnotations;
+  /** In-app callers only: absent from `tools/list` and refused from outside. */
+  readonly private?: boolean;
 }
 
-type RegisteredMcpToolFromBlueprint<
-  Blueprint,
-  Name extends string,
-> = Blueprint extends McpToolBlueprint<infer A, infer O, infer S, infer _Scope>
-  ? RegisteredMcpTool<A, O, S, Name>
-  : never;
-
-export type RegisteredMcpTools<Tools extends AnyMcpToolBlueprintRecord> = Readonly<{
-  [Name in keyof Tools]: RegisteredMcpToolFromBlueprint<Tools[Name], Name & string>;
-}>;
-
-export interface RegisteredMcpTool<
-  A extends ObjectShape = ObjectShape,
-  O extends ObjectValidator | undefined = ObjectValidator | undefined,
+export type McpToolEntryRecord<
   S extends Schema = Schema,
-  Name extends string = string,
-> extends RegisteredServerOnly,
-    Invocable<"mcp-tool", A, McpToolCtx<S>, McpCallToolResult, McpHandlerResult<O>> {
+  Scope extends string = never,
+> = Readonly<Record<string, McpToolEntry<S, Scope>>>;
+
+export type AnyMcpToolEntry = McpToolEntry<any, string>;
+export type AnyMcpToolEntryRecord = Readonly<Record<string, AnyMcpToolEntry>>;
+
+export interface RegisteredMcpTool<Name extends string = string>
+  extends RegisteredServerOnly {
   readonly serverKind: "mcp-tool";
   readonly name: Name;
   readonly title?: string;
   readonly description: string;
   readonly annotations?: McpToolAnnotations;
-  readonly mcp: McpEndpointDeclaration<string, string>;
+  readonly private: boolean;
+  readonly mcp: McpEndpointDeclaration;
   readonly accessPolicy: NormalizedMcpToolAccessPolicy;
-  readonly inputValidator: ObjectValidator<A>;
-  readonly inputCodec: StandardJsonCodec<
-    Expand<InferShape<A>>,
-    StandardJsonInput<ObjectValidator<A>>,
-    StandardJsonOutput<ObjectValidator<A>>
-  >;
+  /** The registered function this tool calls; it owns args, policy, and handler. */
+  readonly fn: AnyRegistered;
+  readonly codec: McpToolCodec;
   readonly inputSchema: McpInputSchema;
-  readonly outputValidator: O;
-  readonly outputCodec: O extends ObjectValidator
-    ? StandardJsonCodec<
-      Expand<InferValidator<O>>,
-      StandardJsonInput<O>,
-      StandardJsonOutput<O>
-    >
-    : undefined;
-  readonly outputSchema: O extends ObjectValidator ? McpOutputSchema : undefined;
+  readonly outputSchema: McpOutputSchema;
+}
+
+export type AnyRegisteredMcpTool = RegisteredMcpTool<string>;
+
+export type RegisteredMcpTools<Tools extends AnyMcpToolEntryRecord> = Readonly<{
+  [Name in keyof Tools]: RegisteredMcpTool<Name & string>;
+}>;
+
+interface McpConfigBase<
+  Name extends string,
+  Auth extends AnyMcpAuthProvider,
+  Tools extends AnyMcpToolEntryRecord,
+> {
+  readonly name: Name;
+  /** The provider owning this endpoint's scope vocabulary and its tokens. */
+  readonly auth: Auth;
+  readonly tools: Tools;
+  readonly instructions?: string;
+  readonly metadata?: McpEndpointMetadata;
+}
+
+export interface DefaultMcpConfig<
+  Name extends string,
+  Auth extends AnyMcpAuthProvider = AnyMcpAuthProvider,
+  Tools extends AnyMcpToolEntryRecord = AnyMcpToolEntryRecord,
+> extends McpConfigBase<Name, Auth, Tools> {
+  readonly path?: undefined;
+  readonly private?: false;
+}
+
+export interface CustomMcpConfig<
+  Name extends string,
+  Path extends string,
+  Auth extends AnyMcpAuthProvider = AnyMcpAuthProvider,
+  Tools extends AnyMcpToolEntryRecord = AnyMcpToolEntryRecord,
+> extends McpConfigBase<Name, Auth, Tools> {
+  readonly path: Path;
+  readonly private?: false;
+}
+
+/**
+ * A private endpoint claims no path and is never served: it is reachable only
+ * through `aiTools`. `path` is `never` here rather than merely ignored, so
+ * "private but somehow addressable" cannot be written down.
+ */
+export interface PrivateMcpConfig<
+  Name extends string,
+  Auth extends AnyMcpAuthProvider = AnyMcpAuthProvider,
+  Tools extends AnyMcpToolEntryRecord = AnyMcpToolEntryRecord,
+> extends McpConfigBase<Name, Auth, Tools> {
+  readonly private: true;
+  readonly path?: never;
 }
 
 export interface McpEndpointDeclaration<
   Name extends string = string,
-  Path extends string = string,
-  Tools extends AnyMcpToolBlueprintRecord | undefined = undefined,
+  Path extends string | null = string | null,
+  Tools extends AnyMcpToolEntryRecord | undefined = undefined,
 > extends RegisteredServerOnly {
   readonly serverKind: "mcp";
   readonly name: Name;
+  /** `null` when the endpoint is private and therefore claims no route. */
   readonly path: Path;
+  readonly private: boolean;
+  readonly auth: AnyMcpAuthProvider;
   readonly instructions?: string;
   readonly metadata: McpEndpointMetadata;
-  readonly tools: [Tools] extends [AnyMcpToolBlueprintRecord]
+  readonly tools: [Tools] extends [AnyMcpToolEntryRecord]
     ? RegisteredMcpTools<Tools>
-    : Readonly<Record<string, RegisteredMcpTool<any, any, any>>>;
+    : Readonly<Record<string, AnyRegisteredMcpTool>>;
 }
 
-type McpDeclarationOperations<
-  S extends Schema,
-  Scope extends string,
-  Tools extends AnyMcpToolBlueprintRecord,
-> = {
-  readonly tokens: McpTokenOperations<S, Scope>;
-  readonly systemTokens: SystemMcpTokenOperations<S, Scope>;
+type McpDeclarationOperations<S extends Schema, Scope extends string, Tools extends AnyMcpToolEntryRecord> = {
   aiTools(
     ctx: McpAiContext<S>,
     options: McpAiToolsCompleteOptions<Scope>,
@@ -326,54 +254,37 @@ type McpDeclarationOperations<
 export type McpDeclaration<
   Name extends string = string,
   S extends Schema = Schema,
-  Path extends string = string,
+  Path extends string | null = string | null,
   Scope extends string = never,
-  Tools extends AnyMcpToolBlueprintRecord = AnyMcpToolBlueprintRecord,
-> = McpEndpointDeclaration<Name, Path, Tools> & McpDeclarationOperations<S, Scope, Tools> &
-  ([Scope] extends [never] ? object : { readonly scopes: McpScopeDescriptor<Scope> });
+  Tools extends AnyMcpToolEntryRecord = AnyMcpToolEntryRecord,
+> = McpEndpointDeclaration<Name, Path, Tools> & McpDeclarationOperations<S, Scope, Tools>;
 
-/** Runtime-facing endpoint shape with schema, scopes, and exact tool keys deliberately erased. */
-export type AnyMcpDeclaration = McpEndpointDeclaration<string, string> & {
-  readonly scopes?: McpScopeDescriptor<string>;
-};
+/** Runtime-facing endpoint shape with schema and exact tool keys deliberately erased. */
+export type AnyMcpDeclaration = McpEndpointDeclaration<string, string | null>;
 
 export interface McpBuilder<S extends Schema> {
-  <const Name extends string, const Tools extends McpToolBlueprintRecord<S, never>>(
-    config: DefaultMcpConfig<Name, Tools>,
-  ): McpDeclaration<Name, S, "/mcp", never, Tools>;
+  <
+    const Name extends string,
+    const Auth extends AnyMcpAuthProvider,
+    const Tools extends McpToolEntryRecord<S, McpAuthScope<Auth>>,
+  >(
+    config: DefaultMcpConfig<Name, Auth, Tools>,
+  ): McpDeclaration<Name, S, "/mcp", McpAuthScope<Auth>, Tools>;
   <
     const Name extends string,
     const Path extends string,
-    const Tools extends McpToolBlueprintRecord<S, never>,
+    const Auth extends AnyMcpAuthProvider,
+    const Tools extends McpToolEntryRecord<S, McpAuthScope<Auth>>,
   >(
-    config: CustomMcpConfig<Name, Path, Tools>,
-  ): McpDeclaration<Name, S, Path, never, Tools>;
+    config: CustomMcpConfig<Name, Path, Auth, Tools>,
+  ): McpDeclaration<Name, S, Path, McpAuthScope<Auth>, Tools>;
   <
     const Name extends string,
-    const Scopes extends McpScopeValues,
-    const Tools extends McpToolBlueprintRecord<S, Scopes[number]>,
+    const Auth extends AnyMcpAuthProvider,
+    const Tools extends McpToolEntryRecord<S, McpAuthScope<Auth>>,
   >(
-    config: ScopedDefaultMcpConfig<Name, Scopes, Tools>,
-  ): McpDeclaration<Name, S, "/mcp", Scopes[number], Tools>;
-  <
-    const Name extends string,
-    const Path extends string,
-    const Scopes extends McpScopeValues,
-    const Tools extends McpToolBlueprintRecord<S, Scopes[number]>,
-  >(
-    config: ScopedCustomMcpConfig<Name, Path, Scopes, Tools>,
-  ): McpDeclaration<Name, S, Path, Scopes[number], Tools>;
-}
-
-function byteLength(value: string): number {
-  return utf8.encode(value).byteLength;
-}
-
-function nonEmptyString(value: unknown, where: string): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new TypeError(`${where} must be a non-empty string`);
-  }
-  return value;
+    config: PrivateMcpConfig<Name, Auth, Tools>,
+  ): McpDeclaration<Name, S, null, McpAuthScope<Auth>, Tools>;
 }
 
 function endpointMetadata(value: unknown): McpEndpointMetadata {
@@ -409,14 +320,14 @@ function endpointMetadata(value: unknown): McpEndpointMetadata {
   return Object.freeze(metadata);
 }
 
-function toolAnnotations(value: unknown): McpToolAnnotations | undefined {
+function toolAnnotations(value: unknown, where: string): McpToolAnnotations | undefined {
   if (value === undefined) return undefined;
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("MCP tool annotations must be an object");
+    throw new TypeError(`${where} annotations must be an object`);
   }
   const prototype = Object.getPrototypeOf(value);
   if (prototype !== Object.prototype && prototype !== null) {
-    throw new TypeError("MCP tool annotations must be a plain object");
+    throw new TypeError(`${where} annotations must be a plain object`);
   }
   const input = value as Record<string, unknown>;
   const fields = [
@@ -427,262 +338,170 @@ function toolAnnotations(value: unknown): McpToolAnnotations | undefined {
   ] as const;
   for (const key of Object.keys(input)) {
     if (!fields.includes(key as typeof fields[number])) {
-      throw new TypeError(`unknown MCP tool annotation "${key}"`);
+      throw new TypeError(`unknown ${where} annotation "${key}"`);
     }
   }
   const result: Partial<Record<typeof fields[number], boolean>> = {};
   for (const field of fields) {
     if (input[field] === undefined) continue;
     if (typeof input[field] !== "boolean") {
-      throw new TypeError(`MCP tool annotation ${field} must be a boolean`);
+      throw new TypeError(`${where} annotation ${field} must be a boolean`);
     }
     result[field] = input[field];
   }
   return Object.freeze(result);
 }
 
-export function mcpTool<
-  const A extends ObjectShape,
-  const O extends ObjectValidator | undefined = undefined,
-  const Access extends McpToolBlueprintAccess | undefined = undefined,
-  S extends Schema = Schema,
->(
-  definition: McpToolDefinition<A, O, S, Access>,
-): McpToolBlueprint<A, O, S, McpToolAccessScopes<Access>>;
-export function mcpTool(
-  definition: McpToolDefinition<
-    ObjectShape,
-    ObjectValidator | undefined,
-    Schema,
-    McpToolBlueprintAccess | undefined
-  >,
-): AnyMcpToolBlueprint {
-  const blueprint = Object.freeze({
-    isAckerDBServerOnly: true as const,
-    serverKind: "mcp-tool-blueprint" as const,
-  });
-  let captured: unknown = definition;
-  if (definition !== null && typeof definition === "object") {
-    const source = definition as unknown as Record<string, unknown>;
-    const args = source.args !== null && typeof source.args === "object" &&
-        !Array.isArray(source.args)
-      ? Object.freeze({ ...(source.args as Record<string, unknown>) })
-      : source.args;
-    const annotations = source.annotations !== null &&
-        typeof source.annotations === "object" &&
-        !Array.isArray(source.annotations)
-      ? Object.freeze({ ...(source.annotations as Record<string, unknown>) })
-      : source.annotations;
-    let access = source.access;
-    if (access !== null && typeof access === "object" && !Array.isArray(access)) {
-      const accessRecord = access as Record<string, unknown>;
-      access = Object.freeze({
-        ...accessRecord,
-        ...(Array.isArray(accessRecord.anyOf)
-          ? { anyOf: Object.freeze([...accessRecord.anyOf]) }
-          : {}),
-        ...(Array.isArray(accessRecord.allOf)
-          ? { allOf: Object.freeze([...accessRecord.allOf]) }
-          : {}),
-      });
-    }
-    captured = Object.freeze({
-      ...source,
-      args,
-      ...(source.annotations === undefined ? {} : { annotations }),
-      ...(source.access === undefined ? {} : { access }),
-    });
-  }
-  mcpToolBlueprintDefinitions.set(blueprint, captured);
-  return blueprint;
-}
-
-export function isMcpToolBlueprint(value: unknown): value is AnyMcpToolBlueprint {
-  return (typeof value === "object" || typeof value === "function") &&
-    value !== null &&
-    mcpToolBlueprintDefinitions.has(value);
-}
-
-/** Validate and normalize the handler result once before either adapter consumes it. */
-export function finalizeMcpToolResult(
-  tool: { readonly outputCodec: StandardJsonCodec<unknown> | undefined },
-  value: unknown,
-): McpCallToolResult {
-  if (tool.outputCodec === undefined) return validateMcpContentResult(value);
-  const structuredContent = tool.outputCodec.encode(value, "output") as Readonly<
-    Record<string, unknown>
-  >;
-  return {
-    content: [{ type: "text", text: JSON.stringify(structuredContent) }],
-    structuredContent,
-  };
-}
+const TOOL_KINDS: ReadonlySet<string> = new Set<McpToolKind>([
+  "query",
+  "mutation",
+  "procedure",
+]);
 
 function assembleMcpTool(
   name: string,
-  blueprint: AnyMcpToolBlueprint,
+  entry: AnyMcpToolEntry,
   mcp: AnyMcpDeclaration,
   scopeDescriptor: McpScopeDescriptor | undefined,
 ): AnyRegisteredMcpTool {
+  const where = `MCP tool "${name}"`;
   if (!TOOL_NAME.test(name) || byteLength(name) > MAX_MCP_TOOL_NAME_BYTES) {
     throw new TypeError(
       `MCP tool names must be lower_snake_case of at most ${MAX_MCP_TOOL_NAME_BYTES} UTF-8 bytes`,
     );
   }
-  const captured = mcpToolBlueprintDefinitions.get(blueprint);
-  if (captured === undefined || captured === null || typeof captured !== "object") {
-    throw new TypeError(`MCP tool "${name}" has an invalid blueprint definition`);
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+    throw new TypeError(`${where} must be an object naming a registered function`);
   }
-  const definition = captured as Record<string, unknown>;
-  for (const key of Object.keys(definition)) {
-    if (
-      key !== "title" &&
-      key !== "description" &&
-      key !== "annotations" &&
-      key !== "access" &&
-      key !== "args" &&
-      key !== "output" &&
-      key !== "handler"
-    ) {
-      throw new TypeError(`unknown MCP tool "${name}" definition field "${key}"`);
+  for (const key of Object.keys(entry)) {
+    if (key !== "fn" && key !== "access" && key !== "annotations" && key !== "private") {
+      throw new TypeError(`unknown ${where} entry field "${key}"`);
     }
   }
-  if (typeof definition.description !== "string" || definition.description.trim() === "") {
-    throw new TypeError(`MCP tool "${name}" requires a description`);
+  const fn = entry.fn as AnyRegistered | undefined;
+  if (fn === null || typeof fn !== "object" ||
+    (fn as { readonly isAckerDB?: unknown }).isAckerDB !== true) {
+    throw new TypeError(`${where} fn must be a registered query, mutation, or procedure`);
   }
-  if (byteLength(definition.description) > MAX_MCP_TOOL_DESCRIPTION_BYTES) {
+  if (!TOOL_KINDS.has(fn.kind)) {
     throw new TypeError(
-      `MCP tool "${name}" description exceeds ${MAX_MCP_TOOL_DESCRIPTION_BYTES} UTF-8 bytes`,
+      `${where} is a ${fn.kind}, which the MCP surface does not serve`,
     );
   }
-  const title = definition.title === undefined
-    ? undefined
-    : nonEmptyString(definition.title, `MCP tool "${name}" title`);
+  // A system function would execute as the MCP principal and fail its own policy
+  // on every call. `private` is how an internal-only tool is expressed, and it
+  // needs no one's authority raised.
+  if (fn.access === "system") {
+    throw new TypeError(
+      `${where} declares access "system" and cannot be an MCP tool; use \`private\` for an in-app tool`,
+    );
+  }
+  const description = fn.description;
+  if (typeof description !== "string" || description.trim() === "") {
+    throw new TypeError(`${where} requires a description on the function it names`);
+  }
+  if (byteLength(description) > MAX_MCP_TOOL_DESCRIPTION_BYTES) {
+    throw new TypeError(
+      `${where} description exceeds ${MAX_MCP_TOOL_DESCRIPTION_BYTES} UTF-8 bytes`,
+    );
+  }
+  const title = fn.title === undefined ? undefined : nonEmptyString(fn.title, `${where} title`);
   if (title !== undefined && byteLength(title) > MAX_MCP_TOOL_TITLE_BYTES) {
-    throw new TypeError(
-      `MCP tool "${name}" title exceeds ${MAX_MCP_TOOL_TITLE_BYTES} UTF-8 bytes`,
-    );
+    throw new TypeError(`${where} title exceeds ${MAX_MCP_TOOL_TITLE_BYTES} UTF-8 bytes`);
   }
-  const annotations = toolAnnotations(definition.annotations);
-  if (typeof definition.handler !== "function") {
-    throw new TypeError(`MCP tool "${name}" requires a handler`);
+  const annotations = toolAnnotations(entry.annotations, where);
+  if (entry.private !== undefined && typeof entry.private !== "boolean") {
+    throw new TypeError(`${where} private must be a boolean`);
   }
+  // Absent access is "authenticated": any valid token on the provider, never an
+  // anonymous caller. Opening a tool to those is spelled `"public"`.
   const accessPolicy = normalizeMcpToolAccess(
-    definition.access,
+    entry.access ?? "authenticated",
     scopeDescriptor,
     name,
   );
-  const args = definition.args as ObjectShape;
-  validateArgsShape(args, `MCP tool ${name} args`);
-  if (definition.output !== undefined &&
-    (definition.output === null ||
-      typeof definition.output !== "object" ||
-      (definition.output as { readonly kind?: unknown }).kind !== "object")) {
-    throw new TypeError(`MCP tool "${name}" output must be v.object(...)`);
-  }
-  const outputValidator = definition.output as ObjectValidator | undefined;
-  const inputValidator = v.object(args);
-  const inputCodec = compileStandardJsonCodec(inputValidator);
-  const outputCodec = outputValidator === undefined
-    ? undefined
-    : compileStandardJsonCodec(outputValidator);
-  // Wire schemas are published to every client, so they are deep-frozen rather
-  // than handed to the SDK as mutable graphs.
-  const inputSchema = deepFreeze(argsJsonSchema(args));
-  const outputSchema = outputValidator === undefined
-    ? undefined
-    : deepFreeze(validatorJsonSchema(outputValidator, { mode: "output" }));
+  const codec = compileMcpToolCodec(where, fn);
   const tool = {
     isAckerDBServerOnly: true as const,
     serverKind: "mcp-tool" as const,
-    kind: "mcp-tool" as const,
     name,
     ...(title === undefined ? {} : { title }),
-    description: definition.description,
+    description,
     ...(annotations === undefined ? {} : { annotations }),
+    private: entry.private === true,
     mcp,
     accessPolicy,
-    args,
-    inputValidator,
-    inputCodec,
-    inputSchema,
-    outputValidator,
-    outputCodec,
-    outputSchema,
-    access: (ctx: McpToolCtx) => isMcpToolAuthorized(
-      accessPolicy,
-      ctx.auth,
-      mcpLocalGrant(ctx.auth, mcp),
-    ),
-    handler: definition.handler as AnyRegisteredMcpTool["handler"],
+    fn,
+    codec,
+    inputSchema: codec.inputSchema,
+    outputSchema: codec.outputSchema,
   };
   brand(tool, MCP_TOOL_IDENTITY);
-  compileInvocation(tool, inputCodec.decode);
-  return Object.freeze(tool) as AnyRegisteredMcpTool;
+  return Object.freeze(tool) as unknown as AnyRegisteredMcpTool;
 }
 
-export function createMcp<
+export function mcp<
   const Name extends string,
-  const Tools extends McpToolBlueprintRecord<Schema, never>,
->(
-  config: DefaultMcpConfig<Name, Tools>,
-): McpDeclaration<Name, Schema, "/mcp", never, Tools>;
-export function createMcp<
-  const Name extends string,
-  const Path extends string,
-  const Tools extends McpToolBlueprintRecord<Schema, never>,
->(
-  config: CustomMcpConfig<Name, Path, Tools>,
-): McpDeclaration<Name, Schema, Path, never, Tools>;
-export function createMcp<
-  const Name extends string,
-  const Scopes extends McpScopeValues,
-  const Tools extends McpToolBlueprintRecord<Schema, Scopes[number]>,
->(
-  config: ScopedDefaultMcpConfig<Name, Scopes, Tools>,
-): McpDeclaration<Name, Schema, "/mcp", Scopes[number], Tools>;
-export function createMcp<
+  const Auth extends AnyMcpAuthProvider,
+  const Tools extends McpToolEntryRecord<Schema, McpAuthScope<Auth>>,
+>(config: DefaultMcpConfig<Name, Auth, Tools>): McpDeclaration<Name, Schema, "/mcp", McpAuthScope<Auth>, Tools>;
+export function mcp<
   const Name extends string,
   const Path extends string,
-  const Scopes extends McpScopeValues,
-  const Tools extends McpToolBlueprintRecord<Schema, Scopes[number]>,
->(
-  config: ScopedCustomMcpConfig<Name, Path, Scopes, Tools>,
-): McpDeclaration<Name, Schema, Path, Scopes[number], Tools>;
-export function createMcp(
+  const Auth extends AnyMcpAuthProvider,
+  const Tools extends McpToolEntryRecord<Schema, McpAuthScope<Auth>>,
+>(config: CustomMcpConfig<Name, Path, Auth, Tools>): McpDeclaration<Name, Schema, Path, McpAuthScope<Auth>, Tools>;
+export function mcp<
+  const Name extends string,
+  const Auth extends AnyMcpAuthProvider,
+  const Tools extends McpToolEntryRecord<Schema, McpAuthScope<Auth>>,
+>(config: PrivateMcpConfig<Name, Auth, Tools>): McpDeclaration<Name, Schema, null, McpAuthScope<Auth>, Tools>;
+export function mcp(
   config:
-    | DefaultMcpConfig<string, McpToolBlueprintRecord<Schema, never>>
-    | CustomMcpConfig<string, string, McpToolBlueprintRecord<Schema, never>>
-    | ScopedDefaultMcpConfig<string, McpScopeValues, AnyMcpToolBlueprintRecord>
-    | ScopedCustomMcpConfig<string, string, McpScopeValues, AnyMcpToolBlueprintRecord>,
+    | DefaultMcpConfig<string>
+    | CustomMcpConfig<string, string>
+    | PrivateMcpConfig<string>,
 ): AnyMcpDeclaration {
   if (config === null || typeof config !== "object") {
-    throw new TypeError("createMcp config is required");
+    throw new TypeError("mcp config is required");
   }
   for (const key of Object.keys(config).sort()) {
     if (
       key !== "name" &&
+      key !== "auth" &&
       key !== "path" &&
+      key !== "private" &&
       key !== "instructions" &&
       key !== "metadata" &&
-      key !== "scopes" &&
       key !== "tools"
     ) {
       throw new TypeError(`unknown MCP config field "${key}"`);
     }
   }
-  if (typeof config.name !== "string" || !MCP_NAME.test(config.name)) {
-    throw new TypeError("MCP name must start with a letter and contain at most 64 letters, digits, _ or -");
+  const name = mcpName(config.name, "MCP name");
+  if (!isMcpAuthProvider(config.auth)) {
+    throw new TypeError(`MCP "${name}" auth must be an mcpAuth(...) provider`);
   }
-  const path = config.path === undefined ? DEFAULT_MCP_PATH : config.path;
-  if (
-    typeof path !== "string" ||
-    !MCP_PATH.test(path) ||
-    byteLength(path) > MAX_MCP_PATH_BYTES
-  ) {
+  const auth = config.auth;
+  const isPrivate = (config as { readonly private?: unknown }).private === true;
+  if ((config as { readonly private?: unknown }).private !== undefined &&
+    typeof (config as { readonly private?: unknown }).private !== "boolean") {
+    throw new TypeError(`MCP "${name}" private must be a boolean`);
+  }
+  const declaredPath = (config as { readonly path?: unknown }).path;
+  if (isPrivate && declaredPath !== undefined) {
     throw new TypeError(
-      `MCP path must be an absolute static path of at most ${MAX_MCP_PATH_BYTES} UTF-8 bytes`,
+      `MCP "${name}" is private and claims no path; remove \`path\``,
     );
+  }
+  let path: string | null = null;
+  if (!isPrivate) {
+    path = declaredPath === undefined ? DEFAULT_MCP_PATH : (declaredPath as string);
+    if (typeof path !== "string" || !MCP_PATH.test(path) || byteLength(path) > MAX_MCP_PATH_BYTES) {
+      throw new TypeError(
+        `MCP path must be an absolute static path of at most ${MAX_MCP_PATH_BYTES} UTF-8 bytes`,
+      );
+    }
   }
   const instructions = config.instructions === undefined
     ? undefined
@@ -693,21 +512,17 @@ export function createMcp(
     );
   }
   const metadata = endpointMetadata(config.metadata);
-  const scopeDescriptor = createMcpScopeDescriptor(config.name, config.scopes);
-  const tokens = createMcpTokenOperations(config.name, scopeDescriptor);
-  const systemTokens = createSystemMcpTokenOperations(config.name, scopeDescriptor);
 
   let declaration!: AnyMcpDeclaration;
   const value = {
     isAckerDBServerOnly: true as const,
     serverKind: "mcp" as const,
-    name: config.name,
+    name,
     path,
+    private: isPrivate,
+    auth,
     ...(instructions === undefined ? {} : { instructions }),
     metadata,
-    ...(scopeDescriptor === undefined ? {} : { scopes: scopeDescriptor }),
-    tokens,
-    systemTokens,
     aiTools(
       context: McpAiContext,
       options?: McpAiToolsOptions<string>,
@@ -731,12 +546,18 @@ export function createMcp(
     string,
     AnyRegisteredMcpTool
   >;
-  for (const name of Object.keys(config.tools).sort()) {
-    const blueprint = config.tools[name];
-    if (!isMcpToolBlueprint(blueprint)) {
-      throw new TypeError(`MCP tool "${name}" must be created with mcpTool(...)`);
+  const claimed = new Map<AnyRegistered, string>();
+  for (const toolName of Object.keys(config.tools).sort()) {
+    const entry = (config.tools as AnyMcpToolEntryRecord)[toolName]!;
+    const tool = assembleMcpTool(toolName, entry, declaration, auth.scopes);
+    const existing = claimed.get(tool.fn);
+    if (existing !== undefined) {
+      throw new TypeError(
+        `MCP "${name}" publishes one function as both "${existing}" and "${toolName}"`,
+      );
     }
-    tools[name] = assembleMcpTool(name, blueprint, declaration, scopeDescriptor);
+    claimed.set(tool.fn, toolName);
+    tools[toolName] = tool;
   }
   Object.defineProperty(value, "tools", {
     enumerable: true,
@@ -750,15 +571,36 @@ export function isMcpDeclaration(value: unknown): value is AnyMcpDeclaration {
   return hasBrand(value, MCP_IDENTITY);
 }
 
-export function isRegisteredMcpTool(value: unknown): value is RegisteredMcpTool {
+export function isRegisteredMcpTool(value: unknown): value is AnyRegisteredMcpTool {
   return hasBrand(value, MCP_TOOL_IDENTITY);
 }
 
-export type AnyRegisteredMcpTool = RegisteredMcpTool<
-  any,
-  any,
-  any
->;
+/**
+ * One tool result, from the `Result` the function's own invocation produced.
+ *
+ * A declared application error is a normal result carrying `isError`, not a
+ * JSON-RPC error: hosts treat those as a broken tool and usually abort the
+ * turn, which is the wrong outcome for an expected business result. It cannot
+ * ride `structuredContent` either, because an error body does not match the
+ * tool's published `outputSchema`.
+ */
+export function finalizeMcpToolResult(
+  tool: Pick<AnyRegisteredMcpTool, "codec">,
+  result: Result<unknown, never>,
+): McpCallToolResult {
+  if (!result.ok) {
+    const error = tool.codec.encodeError(result.error as never);
+    return {
+      isError: true,
+      content: [{ type: "text", text: JSON.stringify(error) }],
+    };
+  }
+  const structuredContent = tool.codec.encodeOutput(result.data);
+  return {
+    content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+    structuredContent,
+  };
+}
 
 export type {
   CreatedMcpToken,
@@ -767,10 +609,10 @@ export type {
   McpTokenOperations,
   McpTokenUpdateInput,
   SystemMcpTokenOperations,
-};
+} from "./token-context.ts";
 export type {
   McpScopeDescriptor,
   McpScopeValues,
   McpToolAccessPolicy,
   NormalizedMcpToolAccessPolicy,
-};
+} from "./scopes.ts";
