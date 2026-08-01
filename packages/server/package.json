@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/server",
-  "version": "0.13.4",
+  "version": "0.14.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pedrobzz/AckerDB.git",
@@ -20,7 +20,7 @@
     "./realtime-host": "./src/realtime/host.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.13.4",
+    "@ackerdb/core": "workspace:0.14.0",
     "@fastify/proxy-addr": "5.1.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "jose": "6.2.3",
