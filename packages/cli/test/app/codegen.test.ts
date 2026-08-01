@@ -170,6 +170,8 @@ export const tuya = service({
   start: async (ctx) => {
     await persist(ctx);
     ctx.abortSignal.addEventListener("abort", () => {});
+    setTimeout(() => ctx.fail(new Error("broker ended")), 0);
+    // Cleanup still holds authority, which is where a consumer flushes.
     return async () => { await persist(ctx); };
   },
 });

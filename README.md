@@ -103,6 +103,10 @@ client.close();
 - [Plugins](docs/plugins.md) documents private schemas, contracts, flat
   dependency injection, direct context mounts, execution boundaries,
   lifecycle, and alpha storage reset/drop behavior.
+- [Services](docs/services.md) documents application-owned external services —
+  broker consumers, job workers, webhook managers — their typed system
+  authority, sequential startup, readiness reporting, fatal-failure handling,
+  and the shutdown ordering that lets cleanup still write.
 - [Cache](docs/cache.md) documents disposable Cache semantics, namespaces,
   limits, TTL and conditions, and built-in, Redis, Upstash, or custom stores.
 - [Authentication and authorization](docs/authentication.md) documents strict
