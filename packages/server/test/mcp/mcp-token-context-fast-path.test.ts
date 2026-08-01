@@ -13,7 +13,12 @@ import {
   type ProcedureBuilder,
   type QueryBuilder,
 } from "../../src/app/functions.ts";
-import { createMcp, type McpBuilder } from "../../src/mcp/index.ts";
+import {
+  mcp as mcpDeclaration,
+  mcpAuth,
+  type McpAuthBuilder,
+  type McpBuilder,
+} from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
@@ -23,7 +28,9 @@ import { mutationMessage, queryMessage, request } from "../support/mcp-token-fix
 
 const cleanups: Array<() => Promise<void>> = [];
 const schema = defineSchema({});
-const typedMcp = createMcp as McpBuilder<typeof schema>;
+const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+const hiddenAuth = typedMcpAuth({ name: "hidden" });
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
@@ -33,22 +40,23 @@ afterEach(async () => {
 });
 
 function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionRuntimeContext } {
-  const hiddenMcp = typedMcp({ name: "hidden", tools: {} });
+  const hiddenMcp = typedMcp({ name: "hidden", auth: hiddenAuth, tools: {} });
+  void hiddenMcp;
   const list = typedQuery({
     access: "public",
     args: {},
-    handler: (ctx) => hiddenMcp.tokens.list(ctx),
+    handler: (ctx) => hiddenAuth.tokens.list(ctx),
   });
   const create = typedMutation({
     access: "public",
     args: {},
-    handler: (ctx) => hiddenMcp.tokens.create(ctx, { name: "hidden", metadata: {} }),
+    handler: (ctx) => hiddenAuth.tokens.create(ctx, { name: "hidden", metadata: {} }),
   });
   const transact = typedProcedure({
     access: "public",
     http: true,
     args: {},
-    handler: (ctx) => ctx.tx((tx) => hiddenMcp.tokens.list(tx)),
+    handler: (ctx) => ctx.tx((tx) => hiddenAuth.tokens.list(tx)),
   });
   const registry = new Registry({ ordinary: { create, list, transact } });
   expect(registry.mcps.size).toBe(0);
