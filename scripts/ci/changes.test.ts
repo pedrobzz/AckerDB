@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { nativeInputsChanged } from "./changes.ts";
+import { nativeInputsChanged, performanceInputsChanged } from "./changes.ts";
 
 describe("native CI selection", () => {
   test("does not compile Rust for routine release or realtime TypeScript work", () => {
@@ -16,5 +16,43 @@ describe("native CI selection", () => {
     expect(nativeInputsChanged(["packages/realtime/native/webrtc/Cargo.lock"])).toBe(true);
     expect(nativeInputsChanged(["packages/realtime/native/webrtc/evidence.ts"])).toBe(true);
     expect(nativeInputsChanged([".github/workflows/native.yml"])).toBe(true);
+  });
+});
+
+describe("benchmark selection", () => {
+  test("runs only for code and harness inputs exercised by the benchmark", () => {
+    expect(performanceInputsChanged([
+      "packages/core/src/protocol.ts",
+    ])).toBe(true);
+    expect(performanceInputsChanged([
+      "packages/client/src/client.ts",
+    ])).toBe(true);
+    expect(performanceInputsChanged([
+      "packages/server/src/runtime/runtime.ts",
+    ])).toBe(true);
+    expect(performanceInputsChanged([
+      "packages/cli/src/app/manifest.ts",
+    ])).toBe(true);
+    expect(performanceInputsChanged([
+      "bench/workload.ts",
+    ])).toBe(true);
+    expect(performanceInputsChanged([
+      ".github/workflows/benchmark.yml",
+    ])).toBe(true);
+  });
+
+  test("does not spend Hetzner time on non-performance changes", () => {
+    expect(performanceInputsChanged([
+      "README.md",
+      "docs/releases.md",
+      "packages/core/test/protocol.test.ts",
+      "packages/cache/src/storage/store.ts",
+      "packages/client-react/src/provider.tsx",
+      "packages/realtime/src/session.ts",
+      "packages/realtime/native/webrtc/src/peer.rs",
+      "packages/server/package.json",
+      "bun.lock",
+      ".github/workflows/ci.yml",
+    ])).toBe(false);
   });
 });

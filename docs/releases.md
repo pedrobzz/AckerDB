@@ -52,14 +52,29 @@ Native jobs cache Cargo dependencies, compiled targets, and evidence tools.
 
 A `canary` → `main` pull request runs only the release-policy check. The other
 two required check names complete as successful no-ops. The commit was already
-tested and benchmarked before it entered `canary`; repeating that work would
-measure a different time and waste the release path. A merge into `main` runs
-only npm delivery.
+tested before it entered `canary`, and any performance-relevant change was
+benchmarked there; repeating that work would waste the release path. A merge
+into `main` runs only npm delivery.
 
 ## AckerDB benchmark check
 
-The required benchmark compares the pull request's AckerDB with the base
-branch's AckerDB. It does not run Convex, SpacetimeDB, or another vendor.
+The required status runs the benchmark only when the pull request changes an
+input that the measured AckerDB workload can exercise:
+
+- production source under `packages/core/src`, `packages/client/src`, or
+  `packages/server/src`;
+- the CLI codegen, configuration, or manifest code used to launch the benchmark
+  application;
+- executable files under `bench/`, excluding Markdown and historical results;
+  or
+- the benchmark workflow or its path classifier.
+
+All other changes—including docs, tests, release metadata/version bumps,
+`cache`, `client-react`, the WebRTC media package, and native Rust—receive an
+immediate successful no-op. Those paths either cannot affect the measured
+workload or have their own relevant checks. A real run compares the pull
+request's AckerDB with the base branch's AckerDB. It does not run Convex,
+SpacetimeDB, or another vendor.
 
 The same harness and workload measure both commits on the dedicated Hetzner
 runner. Execution order alternates deterministically to reduce systematic
@@ -71,9 +86,9 @@ Telemetry is disabled for both commits unless telemetry-related source changed.
 When it did, both commits run the enabled, in-process-exporter, and disabled
 profiles. Unchanged telemetry is never remeasured.
 
-GitHub stores the base sample, head sample, and rendered comparison as a
-pull-request artifact and step summary. The check proves only that the paired
-measurement completed for the current commit. It contains no regression
+When it runs, GitHub stores the base sample, head sample, and rendered comparison
+as a pull-request artifact and step summary. The check proves only that the
+paired measurement completed for the current commit. It contains no regression
 threshold, score, acceptance status, or automated performance verdict. Pedro
 and an agent review the full vector and recorded anomalies, reason about whether
 the result is good enough for the useful work, and capture that judgment in the
@@ -118,62 +133,13 @@ the `pedrobzz/AckerDB` repository, and the `npm` GitHub environment. The
 workflow requests an OpenID Connect token and receives no npm credential or
 secret. Public CI publication never falls back to token authentication.
 
-## One-time public npm bootstrap
-
-The `ackerdb` npm organization already owns the `@ackerdb` scope. npm still
-requires each package to exist before a trusted publisher can be attached, and
-none of the twelve package records currently exists. The one bootstrap release
-is therefore interactive and local—not CI—and publishes the real
-`0.13.2-canary.0` package set under the `canary` dist-tag.
-
-1. Let the pull request's full native matrix complete, then download its five
-   `webrtc-*` artifacts into
-   `packages/realtime/native/webrtc/binding/`. Keep the topic branch clean.
-2. Start an authenticated, 2FA-protected npm CLI session and publish the package
-   records:
-
-   ```sh
-   bunx npm@11.18.0 login --registry=https://registry.npmjs.org
-   bun run release:bootstrap
-   ```
-
-   The command is deliberately rejected by GitHub Actions and on either release
-   branch. A partial publication is byte-checked and safely resumable.
-3. With the same authenticated session, configure the only publisher allowed
-   for every package:
-
-   ```sh
-   for package in core server realtime-darwin-arm64 realtime-darwin-x64 \
-     realtime-linux-arm64-gnu realtime-linux-x64-gnu realtime-win32-x64-msvc \
-     realtime cache client client-react cli; do
-     bunx npm@11.18.0 trust github "@ackerdb/$package" \
-       --file release.yml \
-       --repo pedrobzz/AckerDB \
-       --env npm \
-       --allow-publish \
-       --yes
-   done
-   ```
-
-4. Disallow token publication for every package while retaining the OIDC
-   publisher:
-
-   ```sh
-   for package in core server realtime-darwin-arm64 realtime-darwin-x64 \
-     realtime-linux-arm64-gnu realtime-linux-x64-gnu realtime-win32-x64-msvc \
-     realtime cache client client-react cli; do
-     bunx npm@11.18.0 access set mfa=publish "@ackerdb/$package"
-   done
-   ```
-
-5. Log out of the local bootstrap session. Subsequent canary and stable releases
-   authenticate only through GitHub OIDC:
-
-   ```sh
-   bunx npm@11.18.0 logout --registry=https://registry.npmjs.org
-   ```
-
-No granular access token is created or stored in GitHub at any point.
+All twelve package records now exist with that same trusted publisher.
+`0.13.2-canary.0` is the historical bootstrap release; there is no supported
+local public-publishing command. The local bootstrap session was removed, CI
+has no npm token or secret, and every future public release comes from the
+protected workflow. npm requires each package record to retain a `latest` tag,
+so it temporarily points at the bootstrap canary until the first protected
+`main` publication moves it to the stable version.
 
 ## Local Verdaccio betas
 

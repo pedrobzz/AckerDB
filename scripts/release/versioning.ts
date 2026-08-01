@@ -22,11 +22,6 @@ export function publicVersion(
   return `${sourceVersion}-canary.${runNumber}`;
 }
 
-export function bootstrapCanaryVersion(sourceVersion: string): string {
-  assertStableVersion(sourceVersion);
-  return `${sourceVersion}-canary.0`;
-}
-
 export function nextBetaVersion(
   sourceVersion: string,
   existingVersions: Iterable<string>,

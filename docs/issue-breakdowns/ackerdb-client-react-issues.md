@@ -68,8 +68,8 @@ Every later hook needs a correct React ownership boundary. This slice proves pac
 - Use React's external-store contract for observable connection state; do not mirror mutable client state through ad hoc effects.
 - Provider options are immutable for one lifetime. Make replacement explicit rather than partially mutating a live client.
 - Target only the current approved React line. Do not add backward-compatibility branches.
-- The structural client change enters the required paired AckerDB GitHub
-  benchmark when its pull request targets `canary`.
+- Changes to measured `core`, `client`, or `server` source enter the paired
+  AckerDB benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -123,8 +123,8 @@ Live queries are the central React value proposition. This slice delivers the en
 - Likely surfaces include the React package query hook/store, generated reference types from `packages/core`, and public client subscription events in `packages/client`.
 - Preserve existing cursor, reset, limit, and error semantics. Do not introduce a second query cache protocol or one-off query API.
 - Keep query snapshots immutable and stable when observable state did not change.
-- Structural subscription changes enter the required paired AckerDB GitHub
-  benchmark when their pull request targets `canary`.
+- Changes to measured `core`, `client`, or `server` source enter the paired
+  AckerDB benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -176,8 +176,8 @@ The single-consumer query path already delivers user value. This slice adds the 
 - The registry belongs to the provider/client lifetime, not a process-global singleton.
 - Derive deterministic keys from generated references and validated arguments; do not rely on caller object identity.
 - Likely surfaces include the query store introduced by `ISSUE-02` and React concurrent-rendering tests.
-- Registry ownership changes enter the required paired AckerDB GitHub
-  benchmark when their pull request targets `canary`.
+- Changes to measured `core`, `client`, or `server` source enter the paired
+  AckerDB benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -228,8 +228,8 @@ Mutations are independent of query caching and can ship as a complete write path
 - Likely surfaces include the React hook and public mutation entry points in `packages/client/src/client.ts`.
 - Do not add optimistic cache behavior or a second retry policy.
 - Avoid wrapping an existing mutation function with another function whose only job is renaming it; expose the correct callable directly through the hook.
-- Structural mutation replay changes enter the required paired AckerDB GitHub
-  benchmark when their pull request targets `canary`.
+- Changes to measured `core`, `client`, or `server` source enter the paired
+  AckerDB benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -331,8 +331,8 @@ This is the smallest complete slice that fixes the root type-model defect. Chang
 - Likely surfaces include `packages/server/src/app/functions.ts`, server invocation/delivery, `packages/core/src/refs.ts`, `packages/cli/src/app/codegen.ts`, `packages/client`, and the new React hook.
 - This is an approved breaking correction; do not retain a compatibility overload for the incorrect completion-type model.
 - Preserve the current acknowledgement protocol and high-water behavior.
-- Server-delivery and client-streaming changes enter the required paired
-  AckerDB GitHub benchmark when their pull request targets `canary`.
+- Measured server or client streaming changes enter the paired AckerDB GitHub
+  benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -538,8 +538,8 @@ This is the decisive packaging tracer bullet: one package, one public API, two r
 - Likely surfaces include `packages/core/src/wire.ts`, runtime capabilities in `packages/client`, conditional exports and peers in the React package, and browser/Expo consumer fixtures.
 - Shared React hooks must not import native modules. The native entry supplies only capabilities and lifecycle integration points.
 - A separate native package is permitted only if a documented Metro failure proves conditional exports impossible; keep it as thin re-exports plus capabilities.
-- Portable wire/client changes enter the required paired AckerDB GitHub
-  benchmark when their pull request targets `canary`.
+- Portable wire/client changes under measured source enter the paired AckerDB
+  GitHub benchmark; React-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -594,8 +594,8 @@ A single mounted query is the narrowest complete proof of durable recovery. It e
 - The lifecycle observer belongs below hooks in the native runtime adapter, while connection generation ownership belongs in the base client state machine.
 - Retain logical work separately from physical transport state. Do not infer liveness from a remembered WebSocket state.
 - No network-reachability dependency or background service is needed; failed immediate attempts enter ordinary reconnect behavior.
-- Structural client changes enter the required paired AckerDB GitHub benchmark
-  when their pull request targets `canary`.
+- Structural changes under measured client source enter the paired AckerDB
+  GitHub benchmark; native-adapter-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -651,8 +651,8 @@ Query recovery proves the lifecycle state machine. This slice adds the two resum
 - Reuse the generation and logical-demand model from `ISSUE-11`; do not create operation-specific sockets or AppState observers.
 - Preserve base mutation UUIDs and event reset semantics exactly.
 - Backgrounding during handshake, authentication, mutation response, or event subscription application must converge deterministically.
-- Structural reconnect/replay changes enter the required paired AckerDB GitHub
-  benchmark when their pull request targets `canary`.
+- Structural changes under measured client source enter the paired AckerDB
+  GitHub benchmark; native-adapter-only work receives its immediate no-op.
 
 ## Blocked by
 
@@ -820,9 +820,9 @@ Individual hooks are not a product until real consumers can install the exact ar
 - [ ] Browser output contains no Expo/React Native code; the Expo fixture uses Expo fetch/crypto and passes Metro resolution.
 - [ ] Root typecheck/test workflows cover all hooks, generated references, runtime conditions, and AI integration.
 - [ ] Packed server/client/React consumers agree on the provider-neutral principal, durable Identity, credential-provenance, and account-linking contracts.
-- [ ] The required GitHub check produced paired base/head AckerDB observations
-      on Hetzner, and Pedro plus an agent interpreted the full vector without an
-      automated benchmark verdict.
+- [ ] When measured runtime source changed, the GitHub check produced paired
+      base/head AckerDB observations on Hetzner and Pedro plus an agent
+      interpreted the full vector; otherwise it completed as an immediate no-op.
 - [ ] User-facing documentation covers durable Identity, provider-account linking boundaries, supported versions, Expo requirements, hooks, query states, SSE/AI usage, mobile recovery guarantees, and explicit out-of-scope behavior.
 - [ ] Wiki index/link/lint checks pass and research decisions remain discoverable.
 
@@ -851,8 +851,9 @@ Individual hooks are not a product until real consumers can install the exact ar
 - Pack and install exact artifacts into clean consumers, then run browser production build and Expo Metro/release builds.
 - Exercise release preparation, protected policy, interrupted publish/resume,
   exact install, beta numbering, and version-drift failure paths.
-- Review the paired Hetzner artifact for the current pull-request commit and do
-  not let benchmark values approve or veto the release automatically.
+- When measured runtime source changed, review the paired Hetzner artifact for
+  the current pull-request commit; otherwise verify the immediate no-op. Never
+  let benchmark values approve or veto the release automatically.
 
 ### Out of scope
 

@@ -100,8 +100,9 @@ exact versions, configuration, assertions, and current host limitations.
 
 ## Pull-request performance
 
-Runtime MCP changes enter GitHub's required paired benchmark when their pull
-request targets `canary` (or uses the urgent `main` path). The Hetzner job
-compares the branch's AckerDB with the base branch's AckerDB. It records the
-full vector without thresholds or an automated verdict; Pedro and an agent
-interpret it before merge. See [the benchmark contract](../bench/README.md).
+Runtime MCP changes under the measured server source enter GitHub's paired
+benchmark. Documentation, conformance fixtures, and other non-runtime MCP work
+receive the benchmark status's immediate successful no-op. A real Hetzner job
+compares the branch's AckerDB with the base branch's AckerDB and records the full
+vector without thresholds or an automated verdict; Pedro and an agent interpret
+it before merge. See [the benchmark contract](../bench/README.md).

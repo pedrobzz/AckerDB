@@ -4,10 +4,12 @@ This harness compares AckerDB with AckerDB: the pull request's head commit
 against its base commit, on the same dedicated Hetzner runner and with the same
 head-defined workload.
 
-GitHub runs it for normal pull requests into `canary` and urgent pull requests
-into `main`. It is a required merge check. A `canary` → `main` promotion reports
-a successful no-op because the exact canary commit was already measured before
-it entered the release branch.
+GitHub's required status runs the Hetzner work only for pull requests that
+change code exercised by this workload, the executable harness, the benchmark
+workflow, or its path classifier. Docs, tests, version bumps, and packages not
+exercised here report an immediate successful no-op. A `canary` → `main`
+promotion also reports a successful no-op because any relevant change was
+already measured before it entered the release branch.
 
 The protected workflow owns execution. Do not run `bench/run.ts` on the
 developer machine and do not commit a new file under `bench/results/`.
@@ -25,12 +27,13 @@ The workflow:
 5. uploads `base.json`, `head.json`, and `comparison.md` for the current head
    commit.
 
-The required status proves that this paired observation completed. It does not
-contain regression thresholds, a score, or a pass/fail interpretation of the
-numbers. Correctness failures and accounting anomalies are retained as data,
-not converted into a performance verdict. Pedro and an agent decide whether
-the movement is acceptable by reasoning about useful work, latency, throughput,
-CPU, RAM, scale shape, tails, startup, and durable correctness together.
+For performance-relevant changes, the required status proves that this paired
+observation completed. It does not contain regression thresholds, a score, or
+a pass/fail interpretation of the numbers. Correctness failures and accounting
+anomalies are retained as data, not converted into a performance verdict. Pedro
+and an agent decide whether the movement is acceptable by reasoning about useful
+work, latency, throughput, CPU, RAM, scale shape, tails, startup, and durable
+correctness together.
 
 ## Telemetry scope
 

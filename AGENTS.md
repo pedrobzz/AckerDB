@@ -53,11 +53,9 @@ across every dimension of the performance vector:
 | Startup and recovery | Recovery, migration, and shutdown are observable and finite; fast startup does not skip integrity or durability work. |
 | Durable correctness | A number is meaningless if the operation loses, corrupts, duplicates, or silently hides data. |
 
-Convex is a useful contrast: measure the CPU/RAM and fan-out cost of equivalent
-work rather than inheriting its architecture by default. SpacetimeDB is a
-useful performance reference, not a claim that every one of its tradeoffs
-belongs in AckerDB. Compare the same workload on the same machine; the repository
-benchmark is the authoritative comparison method (see Benchmarks).
+External systems may inform architecture research, but the repository benchmark
+does not run them. Its only comparison is AckerDB at the pull request's base and
+head commits under the same workload and on the same machine.
 
 ### Judge by net-effect judgment
 
@@ -180,14 +178,17 @@ host-specific native packages stay on that one stable source version with
 `workspace:X.Y.Z` interdependencies. A `canary` promotion may contain
 several accumulated steps and only needs to be newer than `main`.
 
-The GitHub `AckerDB benchmark` check compares the pull request's AckerDB with
-the base branch's AckerDB on Hetzner. It never runs another vendor and never
-runs on the developer machine. Telemetry is disabled unless telemetry-related
-source changed; only then are enabled, exporter, and disabled profiles
-measured. The check has no thresholds, score, or automated performance
-acceptance. Pedro and an agent interpret the complete vector and anomalies by
-reasoning before merge. Historical files in `bench/results/` are not current
-release evidence.
+The required GitHub `AckerDB benchmark` status runs the Hetzner comparison only
+when the pull request changes code exercised by the benchmark, its executable
+harness, its workflow, or its path classifier. Every other pull request gets an
+immediate successful no-op; version bumps, docs, tests, and unrelated packages
+must not spend benchmark time. A real run compares the pull request's AckerDB
+with the base branch's AckerDB. It never runs another vendor and never runs on
+the developer machine. Telemetry is disabled unless telemetry-related source
+changed; only then are enabled, exporter, and disabled profiles measured. The
+check has no thresholds, score, or automated performance acceptance. Pedro and
+an agent interpret the complete vector and anomalies by reasoning before merge.
+Historical files in `bench/results/` are not current release evidence.
 
 Every merge into `canary` publishes `X.Y.Z-canary.N` to public npm under the
 `canary` tag. Every merge into `main` publishes `X.Y.Z` under `latest`.

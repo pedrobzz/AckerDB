@@ -199,10 +199,13 @@ bun run typecheck:bench
 bun run typecheck:tooling
 ```
 
-GitHub's required benchmark check compares the pull request's AckerDB with its
-base branch's AckerDB on the dedicated Hetzner runner. Telemetry stays disabled
-unless telemetry source changed. The check records evidence without thresholds
-or an automated verdict; Pedro and an agent interpret the complete vector.
+GitHub's required benchmark status first classifies the pull request. It returns
+an immediate successful no-op unless code exercised by the benchmark or the
+benchmark contract itself changed. For those performance-relevant changes, it
+compares the pull request's AckerDB with its base branch's AckerDB on the
+dedicated Hetzner runner. Telemetry stays disabled unless telemetry source
+changed. The check records evidence without thresholds or an automated verdict;
+Pedro and an agent interpret the complete vector.
 Do not run the protected benchmark locally. See [the benchmark
 contract](bench/README.md).
 
