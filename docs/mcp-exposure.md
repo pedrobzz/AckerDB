@@ -1,6 +1,6 @@
 # MCP exposure
 
-Status: specified, not implemented. This document is the contract for exposing
+Status: implemented. This document is the contract for exposing
 registered queries, mutations, and procedures as MCP tools, and for the auth
 provider that owns the scope vocabulary and the tokens which carry it.
 Implementation issues reference this document; divergences discovered during
@@ -39,6 +39,14 @@ endpoint's `tools` record. The record key is the tool's protocol name.
 | procedure | no ambient transaction, `ctx.tx(...)` | the shape every tool has today |
 | sse | **not a tool** | compile error; MCP has no streaming tool result |
 
+A function may instead declare `returns: mcpContent()`, which contracts MCP
+content blocks — text, image, audio, resource links, embedded resources —
+rather than a JSON value. Content is wider than any JSON contract, so such a
+function publishes no `outputSchema`, answers no `structuredContent`, and
+`http: true` on it is a registration error: an HTTP caller has nowhere to put an
+image. It is an ordinary function in every other way; only its return contract
+differs.
+
 A mutation's commit receipt has no channel here and is discarded rather than
 smuggled into `_meta`. This is not a loss: an MCP caller holds no
 subscriptions, so it owes no convergence obligation — the same reasoning
@@ -59,6 +67,7 @@ Scopes and tokens live on a standalone declaration, not on the endpoint:
 import { mcpAuth } from "../_generated/server";
 
 export const adminAuth = mcpAuth({
+  name: "admin",
   scopes: ["read", "write"] as const,
 });
 ```
@@ -68,6 +77,10 @@ tool must name a scope; scopes used to live on the endpoint. That is a cycle,
 and a cycle is why scope names could only ever be checked at runtime. A leaf
 module both sides import breaks it, and breaking it is what makes a mis-typed
 scope a compile error.
+
+`name` is the token realm: it is the key stored against every token this
+provider mints, so it is declared rather than derived from an export path that
+the registry only learns later.
 
 The provider owns token issuance and verification — `adminAuth.tokens` and
 `adminAuth.systemTokens`, moved off the endpoint. A token is therefore bound
@@ -222,7 +235,8 @@ Arguments become the tool's `inputSchema` from the function's `args`.
 
 `returns` is **required** for a function used as a tool. A tool with no
 `outputSchema` gives a model nothing to reason about, which is the same class
-of defect as a missing description.
+of defect as a missing description. `mcpContent()` satisfies it by declaring the
+other contract.
 
 | `returns` | `structuredContent` | published `outputSchema` |
 | --- | --- | --- |
@@ -311,16 +325,13 @@ No compatibility shim, in either direction.
 - `McpToolCtx.tx` returning a raw `Awaited<R>` disappears with it; a tool now
   gets its kind's own context, so `ctx.tx` follows `ProcedureCtx`'s
   `FunctionResult<R>` contract like everything else.
-- A tool returning MCP content blocks has no path until the follow-up below.
-  The demo's nine tools all declare `output` today, so nothing in-repo is
-  blocked by this.
+- A tool returning MCP content blocks declares `returns: mcpContent()`; the
+  content shapes themselves are unchanged.
+- The demo pins a published `@ackerdb/server`, so its nine tools convert with
+  whichever change repins it — exactly as #134 left its own demo half.
 
 ## Out of scope
 
-- **Content-block tools** — a function whose declared return is MCP content
-  (image, audio, resource link, embedded resource). Tracked as a follow-up;
-  when it lands it should be a variant of `procedure`, distinguished only by
-  its return contract, not a parallel declaration kind.
 - Streaming tools. MCP progress notifications are not implemented, so
   `sseProcedure` has no analog.
 - Name derivation and bulk exposure forms.
@@ -336,7 +347,10 @@ declarative internal objects, and the invocation path's existing access
 enforcement — a tool runs through `invokeFunction` like every other call, so
 argument validation and policy cannot be skipped.
 
-New work: the `mcpAuth` declaration and its token operations; the tools-record
+New work: the `mcpAuth` declaration and its token operations; `mcpContent()`
+and the codec branch that skips the structured path for it; a tool dispatch that
+runs in its own invocation root, so a canceled transaction inside a tool cannot
+poison the caller; the tools-record
 entry type, including the conditional requirement that makes an undeclared
 scope name a compile error (the technique `McpTokenCreateInput` already uses
 for its own `scopes` field); the output codec's object-passthrough/wrap

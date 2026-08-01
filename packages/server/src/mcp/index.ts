@@ -89,6 +89,7 @@ export {
   type ScopedMcpAuthConfig,
 } from "./auth.ts";
 export { MCP_OUTPUT_WRAP_KEY, type McpToolCodec } from "./tool-codec.ts";
+export { mcpContent, isMcpContentValidator, type McpContentValidator } from "./content.ts";
 
 const MCP_IDENTITY = Symbol.for("@ackerdb/server/Mcp/v1");
 const MCP_TOOL_IDENTITY = Symbol.for("@ackerdb/server/McpTool/v1");
@@ -178,7 +179,7 @@ export interface RegisteredMcpTool<Name extends string = string>
   readonly fn: AnyRegistered;
   readonly codec: McpToolCodec;
   readonly inputSchema: McpInputSchema;
-  readonly outputSchema: McpOutputSchema;
+  readonly outputSchema: McpOutputSchema | undefined;
 }
 
 export type AnyRegisteredMcpTool = RegisteredMcpTool<string>;
@@ -606,6 +607,10 @@ export function finalizeMcpToolResult(
       isError: true,
       content: [{ type: "text", text: JSON.stringify(error) }],
     };
+  }
+  if (tool.codec.returnsContent) {
+    // The handler already produced the blocks; the codec only validated them.
+    return tool.codec.encodeOutput(result.data) as unknown as McpCallToolResult;
   }
   const structuredContent = tool.codec.encodeOutput(result.data);
   return {

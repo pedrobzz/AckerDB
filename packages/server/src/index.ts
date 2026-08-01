@@ -373,6 +373,7 @@ export {
   isMcpAuthProvider,
   isRegisteredMcpTool,
   mcpAuth,
+  mcpContent,
   type AnyMcpDeclaration,
   type AnyMcpAuthProvider,
   type AnyMcpToolEntryRecord,
@@ -425,6 +426,7 @@ export {
   type RegisteredMcpTools,
   type PrivateMcpConfig,
   type McpAuthConfig,
+  type McpContentValidator,
 } from "./mcp/index.ts";
 export {
   type StandardJsonCodec,

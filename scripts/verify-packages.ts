@@ -388,27 +388,31 @@ export default defineApp({ schema });
 `);
     writeFileSync(join(consumerDir, "functions", "orders.ts"), `
 import { v } from "@ackerdb/server";
-import { createMcp, mcpTool, type McpToolCtx } from "../_generated/server.ts";
+import { mcp, mcpAuth, query, type QueryCtx } from "../_generated/server.ts";
 
-export const getOrder = mcpTool({
+export const getOrder = query({
   description: "Get an order by ID.",
+  access: "authenticated",
   args: { id: v.bigint() },
-  output: v.object({ id: v.bigint() }),
-  access: { anyOf: ["orders.all", "orders.get"] },
+  returns: v.object({ id: v.bigint() }),
   handler: (ctx, args) => {
-    const typedContext: McpToolCtx = ctx;
+    const typedContext: QueryCtx = ctx;
     void typedContext;
     return { id: args.id };
   },
 });
 
-export const agentMcp = createMcp({
+export const agentAuth = mcpAuth({
   name: "agent",
   scopes: ["orders.all", "orders.get"] as const,
-  tools: { orders_get: getOrder },
+});
+export const agentMcp = mcp({
+  name: "agent",
+  auth: agentAuth,
+  tools: { orders_get: { fn: getOrder, access: { anyOf: ["orders.all", "orders.get"] } } },
 });
 
-type AgentScope = NonNullable<typeof agentMcp.scopes._type>;
+type AgentScope = NonNullable<typeof agentAuth.scopes._type>;
 const scope: AgentScope = "orders.get";
 void scope;
 // @ts-expect-error generated MCP scopes remain the exact declared union
@@ -429,39 +433,47 @@ void invalidScope;
     }
     writeFileSync(join(consumerDir, "verify-runtime.ts"), `
 import {
-  createMcp as createMcpFromRoot,
   defineSchema,
   defineTable,
   type DbWriter,
   Engine,
   makeDbWriter,
-  mcpTool as mcpToolFromRoot,
+  mcp as mcpFromRoot,
+  mcpAuth as mcpAuthFromRoot,
+  mcpContent as mcpContentFromRoot,
   newWriteCollector,
+  procedure,
   v,
 } from "@ackerdb/server";
 import {
-  createMcp as createMcpFromSubpath,
-  mcpTool as mcpToolFromSubpath,
+  mcp as mcpFromSubpath,
+  mcpAuth as mcpAuthFromSubpath,
+  mcpContent as mcpContentFromSubpath,
 } from "@ackerdb/server/mcp";
 import { cachePlugin, defineCacheStore } from "@ackerdb/cache";
 import { redisCacheStore } from "@ackerdb/cache/redis";
 import { upstashCacheStore } from "@ackerdb/cache/upstash";
 
-if (createMcpFromRoot !== createMcpFromSubpath) {
-  throw new Error("@ackerdb/server/mcp resolves a different createMcp implementation");
+if (mcpFromRoot !== mcpFromSubpath) {
+  throw new Error("@ackerdb/server/mcp resolves a different mcp implementation");
 }
-if (mcpToolFromRoot !== mcpToolFromSubpath) {
-  throw new Error("@ackerdb/server/mcp resolves a different mcpTool implementation");
+if (mcpAuthFromRoot !== mcpAuthFromSubpath) {
+  throw new Error("@ackerdb/server/mcp resolves a different mcpAuth implementation");
 }
-const endpoint = createMcpFromSubpath({
+if (mcpContentFromRoot !== mcpContentFromSubpath) {
+  throw new Error("@ackerdb/server/mcp resolves a different mcpContent implementation");
+}
+const probe = procedure({
+  description: "Verify packed MCP tool assembly.",
+  access: "public",
+  args: {},
+  returns: mcpContentFromSubpath(),
+  handler: () => ({ content: [{ type: "text" as const, text: "ok" }] }),
+});
+const endpoint = mcpFromSubpath({
   name: "package_probe",
-  tools: {
-    package_probe: mcpToolFromSubpath({
-      description: "Verify packed MCP blueprint assembly.",
-      args: {},
-      handler: () => ({ content: [{ type: "text", text: "ok" }] }),
-    }),
-  },
+  auth: mcpAuthFromSubpath({ name: "package_probe" }),
+  tools: { package_probe: { fn: probe, access: "public" } },
 });
 if (endpoint.path !== "/mcp") throw new Error("packed MCP runtime returned the wrong path");
 

@@ -30,7 +30,13 @@ import type { ObjectShape, ObjectValidator } from "../validation/v.ts";
  * Every tool declares `returns`, so every local result is structured JSON.
  * Content blocks have no path here until they return as a function contract.
  */
-export type McpAiModelOutput = { type: "json"; value: McpJsonValue };
+type McpAiContent =
+  | { type: "text"; text: string }
+  | { type: "file"; mediaType: string; data: { type: "data"; data: string } };
+
+export type McpAiModelOutput =
+  | { type: "json"; value: McpJsonValue }
+  | { type: "content"; value: McpAiContent[] };
 
 export interface McpAiTool<Input = unknown, Output = unknown> {
   readonly title?: string;
@@ -251,6 +257,19 @@ function effectiveGrant(
   return Object.freeze(requested.filter((scope) => principal.scopes.includes(scope)));
 }
 
+function richModelOutput(result: McpCallToolResult): McpAiModelOutput {
+  return {
+    type: "content",
+    value: result.content.map((part): McpAiContent => {
+      if (part.type === "text") return { type: "text", text: part.text };
+      if (part.type === "image") {
+        return { type: "file", mediaType: part.mimeType, data: { type: "data", data: part.data } };
+      }
+      return { type: "text", text: JSON.stringify(part) };
+    }),
+  };
+}
+
 /**
  * The thrown face of a declared application error. The text is the same JSON
  * the remote surface puts in its `isError` content block, so a model reading a
@@ -322,7 +341,9 @@ export function createMcpAiTools(
       ...(tool.title === undefined ? {} : { title: tool.title }),
       description: tool.description,
       inputSchema: tool.codec.inputProtocolSchema,
-      outputSchema: tool.codec.outputProtocolSchema,
+      ...(tool.codec.returnsContent
+        ? {}
+        : { outputSchema: tool.codec.outputProtocolSchema }),
       execute(
         input: unknown,
         execution?: { readonly abortSignal?: AbortSignal },
@@ -342,11 +363,14 @@ export function createMcpAiTools(
           // exact structured type instead of a union every caller must narrow.
           // The remote surface answers the same information as `isError`.
           if (result.isError === true) throw localToolError(tool, result);
-          return result.structuredContent!;
+          // A content tool has no structured face; the model reads the blocks.
+          return tool.codec.returnsContent ? result : result.structuredContent!;
         });
       },
       toModelOutput({ output }: { readonly output: unknown }): McpAiModelOutput {
-        return { type: "json", value: output as McpJsonValue };
+        return tool.codec.returnsContent
+          ? richModelOutput(output as McpCallToolResult)
+          : { type: "json", value: output as McpJsonValue };
       },
     });
   }

@@ -11,10 +11,12 @@ import {
   Registry,
   Runtime,
   serve,
+  procedure,
+  type McpAuthBuilder,
   type McpBuilder,
-  type McpToolBuilder,
+  type ProcedureBuilder,
 } from "@ackerdb/server";
-import { createMcp, mcpTool } from "@ackerdb/server/mcp";
+import { mcp, mcpAuth, mcpContent } from "@ackerdb/server/mcp";
 
 const CONFORMANCE_VERSION = "0.1.16";
 const SCENARIOS = [
@@ -42,35 +44,45 @@ const schema = defineSchema({
     value: v.string(),
   }),
 });
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+const typedMcp = mcp as McpBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
+const conformanceAuth = typedMcpAuth({ name: "conformance" });
 
-const simpleText = typedMcpTool({
+const simpleText = typedProcedure({
   description: "Return the official conformance suite's simple text fixture.",
+  access: "public",
+  returns: mcpContent(),
   args: {},
   handler: () => ({
     content: [{ type: "text", text: "This is a simple text response for testing." }],
   }),
 });
 
-const imageContent = typedMcpTool({
+const imageContent = typedProcedure({
   description: "Return a base64 image content block.",
+  access: "public",
+  returns: mcpContent(),
   args: {},
   handler: () => ({
     content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
   }),
 });
 
-const audioContent = typedMcpTool({
+const audioContent = typedProcedure({
   description: "Return a base64 audio content block.",
+  access: "public",
+  returns: mcpContent(),
   args: {},
   handler: () => ({
     content: [{ type: "audio", data: "UklGRg==", mimeType: "audio/wav" }],
   }),
 });
 
-const embeddedResource = typedMcpTool({
+const embeddedResource = typedProcedure({
   description: "Return an embedded text resource content block.",
+  access: "public",
+  returns: mcpContent(),
   args: {},
   handler: () => ({
     content: [{
@@ -84,8 +96,10 @@ const embeddedResource = typedMcpTool({
   }),
 });
 
-const mixedContent = typedMcpTool({
+const mixedContent = typedProcedure({
   description: "Return text, image, and embedded resource content blocks.",
+  access: "public",
+  returns: mcpContent(),
   args: {},
   handler: () => ({
     content: [
@@ -103,8 +117,10 @@ const mixedContent = typedMcpTool({
   }),
 });
 
-const errorHandling = typedMcpTool({
+const errorHandling = typedProcedure({
   description: "Return the framework's intentional safe tool error.",
+  access: "public",
+  returns: mcpContent(),
   args: {},
   handler: () => {
     throw new AckerDBError("conflict", "intentional conformance error");
@@ -113,14 +129,15 @@ const errorHandling = typedMcpTool({
 
 const conformanceMcp = typedMcp({
   name: "conformance",
+  auth: conformanceAuth,
   instructions: "MCP protocol conformance fixtures for AckerDB release verification.",
   tools: {
-    test_audio_content: audioContent,
-    test_embedded_resource: embeddedResource,
-    test_error_handling: errorHandling,
-    test_image_content: imageContent,
-    test_multiple_content_types: mixedContent,
-    test_simple_text: simpleText,
+    test_audio_content: { fn: audioContent, access: "public" },
+    test_embedded_resource: { fn: embeddedResource, access: "public" },
+    test_error_handling: { fn: errorHandling, access: "public" },
+    test_image_content: { fn: imageContent, access: "public" },
+    test_multiple_content_types: { fn: mixedContent, access: "public" },
+    test_simple_text: { fn: simpleText, access: "public" },
   },
 });
 

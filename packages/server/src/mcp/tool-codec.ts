@@ -22,7 +22,8 @@ import {
   validatorJsonSchema,
   type JsonObjectSchema,
 } from "../validation/json-schema.ts";
-import { v, type StandardValidator, type Validator } from "../validation/v.ts";
+import { v, type StandardValidator } from "../validation/v.ts";
+import { isMcpContentValidator } from "./content.ts";
 import { deepFreeze } from "../shared/immutable.ts";
 
 /** The single key a non-object return crosses under. */
@@ -36,7 +37,10 @@ export interface McpToolCodec {
   /** A declared application error, its body converted through its declaration. */
   readonly encodeError: (error: ApplicationError) => unknown;
   readonly inputSchema: JsonObjectSchema;
-  readonly outputSchema: JsonObjectSchema;
+  /** Absent for a content-block return: there is no JSON shape to publish. */
+  readonly outputSchema: JsonObjectSchema | undefined;
+  /** True when the function returns MCP content blocks rather than a value. */
+  readonly returnsContent: boolean;
   /** True when a non-object `returns` is being wrapped under {@link MCP_OUTPUT_WRAP_KEY}. */
   readonly wrapsOutput: boolean;
   /** Standard Schema faces the local AI adapter hands to a model SDK. */
@@ -66,6 +70,21 @@ export function compileMcpToolCodec(where: string, fn: AnyRegistered): McpToolCo
     );
   }
   const returns = fn.returns;
+  // Content blocks are wider than any JSON contract, so they bypass the
+  // structured path entirely: no codec, no schema, no structuredContent.
+  if (isMcpContentValidator(returns)) {
+    return Object.freeze({
+      decodeArgs: (raw: unknown) => args.decode(raw, "args"),
+      encodeOutput: (raw: unknown) => returns.check(raw, "returns") as never,
+      encodeError: contentError(fn, where, codec),
+      inputSchema: deepFreeze(argsJsonSchema(fn.args)),
+      outputSchema: undefined,
+      wrapsOutput: false,
+      returnsContent: true,
+      inputProtocolSchema: args.inputProtocolSchema,
+      outputProtocolSchema: args.outputProtocolSchema,
+    });
+  }
   const output = codec(returns, `${where} returns`);
   const declared = validatorJsonSchema(returns as StandardValidator, { mode: "output" }) as
     Record<string, unknown>;
@@ -104,7 +123,26 @@ export function compileMcpToolCodec(where: string, fn: AnyRegistered): McpToolCo
       wrapsOutput ? wrappedOutputSchema(declared) : (declared as JsonObjectSchema),
     ),
     wrapsOutput,
+    returnsContent: false,
     inputProtocolSchema: args.inputProtocolSchema,
     outputProtocolSchema: output.outputProtocolSchema,
+  });
+}
+
+/** Declared application errors cross the same way whichever return shape a tool has. */
+function contentError(
+  fn: AnyRegistered,
+  where: string,
+  codec: (validator: Parameters<typeof compileContractCodec>[0], at: string) => StandardJsonCodec<unknown>,
+): (error: ApplicationError) => unknown {
+  const errors = new Map<string, (value: unknown, path?: string) => unknown>(
+    Object.entries(fn.errors ?? {}).map(([code, declaration]) => [
+      code,
+      codec(declaration.body, `${where} errors.${code}.body`).encode,
+    ]),
+  );
+  return (error: ApplicationError) => ({
+    ...error,
+    body: (errors.get(error.code) ?? toStandardJson)(error.body, `errors.${error.code}.body`),
   });
 }

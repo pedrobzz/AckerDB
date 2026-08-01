@@ -907,7 +907,7 @@ describe("MCP startup invariants", () => {
     });
     const tool = endpoint.tools.prototype_fields;
     const inputProperties = tool.inputSchema.properties as Record<string, unknown>;
-    const outputProperties = tool.outputSchema.properties as Record<string, unknown>;
+    const outputProperties = tool.outputSchema!.properties as Record<string, unknown>;
 
     expect(Object.getPrototypeOf(inputProperties)).toBeNull();
     expect(Object.hasOwn(inputProperties, "__proto__")).toBe(true);
