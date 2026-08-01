@@ -11,8 +11,8 @@
  * `auth.ts` for why that extraction is structural.
  */
 import type { ApplicationError, RegisteredServerOnly, Result } from "@ackerdb/core";
-import type { ObjectShape } from "../validation/v.ts";
-import type { AnyRegistered, Registered } from "../app/functions.ts";
+import type { ObjectShape, Validator } from "../validation/v.ts";
+import type { AnyRegistered, ErrorDeclarations } from "../app/functions.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import {
   createMcpAiTools,
@@ -116,13 +116,23 @@ export type McpOutputSchema = JsonObjectSchema;
  */
 export type McpToolKind = "query" | "mutation" | "procedure";
 
-export type McpToolFunction<S extends Schema = Schema> = Registered<
-  McpToolKind,
-  ObjectShape,
-  any,
-  any,
-  any
-> & { readonly _schema?: (schema: S) => S };
+/**
+ * What an entry needs to see of the function it names: the kind, and the parts
+ * curation and the codec read. `access` and `handler` are deliberately absent —
+ * both put the args shape in a contravariant position, which would reject every
+ * concrete function. The runtime reads them off the registered value itself.
+ */
+export type McpToolFunction<S extends Schema = Schema> = {
+  readonly isAckerDB: true;
+  readonly kind: McpToolKind;
+  readonly args: ObjectShape;
+  readonly description?: string;
+  readonly title?: string;
+  readonly returns?: Validator<unknown, string>;
+  readonly errors?: ErrorDeclarations;
+  /** Compile-only invariant marker: a tool's function reads this endpoint's schema. */
+  readonly _schema?: (schema: S) => S;
+};
 
 /**
  * One tool: the function, plus everything about publishing it that belongs to

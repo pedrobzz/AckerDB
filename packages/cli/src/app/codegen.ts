@@ -46,10 +46,10 @@ function serverTs(config: AppConfig): string {
   const appImport = relImport(config.generatedDir, config.appPath);
   return `${HEADER}
 import {
-  createMcp as createMcpGeneric,
+  mcp as mcpGeneric,
   channel as channelGeneric,
   realtime as realtimeGeneric,
-  mcpTool as mcpToolGeneric,
+  mcpAuth as mcpAuthGeneric,
   mutation as mutationGeneric,
   procedure as procedureGeneric,
   query as queryGeneric,
@@ -61,8 +61,8 @@ import type {
   ChannelBuilder,
   DbReader,
   DbWriter,
+  McpAuthBuilder,
   McpBuilder,
-  McpToolBuilder,
   McpToolCtx as GenericMcpToolCtx,
   MutationBuilder,
   MutationCtx as GenericMutationCtx,
@@ -88,8 +88,8 @@ export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, Pr
 export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins>;
 export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins>;
-export const createMcp = createMcpGeneric as McpBuilder<Schema>;
-export const mcpTool = mcpToolGeneric as McpToolBuilder<Schema>;
+export const mcp = mcpGeneric as McpBuilder<Schema>;
+export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;
 
 export type QueryCtx = GenericQueryCtx<Schema, QueryPlugins>;
 export type MutationCtx = GenericMutationCtx<Schema, MutationPlugins>;
