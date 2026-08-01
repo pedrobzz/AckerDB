@@ -10,6 +10,7 @@ import {
 interface ChangeSet {
   readonly files: readonly string[];
   readonly testPackages: readonly string[];
+  readonly code: boolean;
   readonly native: boolean;
   readonly performance: boolean;
   readonly telemetry: boolean;
@@ -102,7 +103,14 @@ export function classifyChanges(base: string, head: string): ChangeSet {
   const mcp = testPackages.some((pkg) => pkg === "core" || pkg === "server" || pkg === "cli") ||
     files.some((file) => file.startsWith("scripts/mcp-conformance"));
   const workflows = files.some((file) => file.startsWith(".github/workflows/"));
-  return { files, testPackages, native, performance, telemetry, verifyPackages, mcp, workflows };
+  const code = codeInputsChanged(files);
+  return { files, testPackages, code, native, performance, telemetry, verifyPackages, mcp, workflows };
+}
+
+export function codeInputsChanged(files: readonly string[]): boolean {
+  return files.some((file) =>
+    !file.endsWith(".md") && !file.startsWith("docs/") && !file.startsWith("wiki/")
+  );
 }
 
 export function performanceInputsChanged(files: readonly string[]): boolean {
@@ -114,7 +122,7 @@ export function performanceInputsChanged(files: readonly string[]): boolean {
     file === "packages/cli/src/app/config.ts" ||
     file === "packages/cli/src/app/manifest.ts" ||
     (file.startsWith("bench/") && !file.endsWith(".md") && !file.startsWith("bench/results/")) ||
-    file === ".github/workflows/benchmark.yml" ||
+    file === ".github/workflows/ci.yml" ||
     file === "scripts/ci/changes.ts"
   );
 }
@@ -134,6 +142,7 @@ if (import.meta.main) {
   if (output) {
     appendFileSync(output, [
       `test_packages=${JSON.stringify(changes.testPackages)}`,
+      `code=${changes.code}`,
       `native=${changes.native}`,
       `performance=${changes.performance}`,
       `telemetry=${changes.telemetry}`,

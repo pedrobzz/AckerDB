@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { nativeInputsChanged, performanceInputsChanged } from "./changes.ts";
+import { codeInputsChanged, nativeInputsChanged, performanceInputsChanged } from "./changes.ts";
 
 describe("native CI selection", () => {
   test("does not compile Rust for routine release or realtime TypeScript work", () => {
@@ -37,7 +37,7 @@ describe("benchmark selection", () => {
       "bench/workload.ts",
     ])).toBe(true);
     expect(performanceInputsChanged([
-      ".github/workflows/benchmark.yml",
+      ".github/workflows/ci.yml",
     ])).toBe(true);
   });
 
@@ -52,7 +52,25 @@ describe("benchmark selection", () => {
       "packages/realtime/native/webrtc/src/peer.rs",
       "packages/server/package.json",
       "bun.lock",
-      ".github/workflows/ci.yml",
+      ".github/workflows/native.yml",
     ])).toBe(false);
+  });
+});
+
+describe("repository check selection", () => {
+  test("skips typechecks and boundary checks when only documentation changed", () => {
+    expect(codeInputsChanged([
+      "README.md",
+      "docs/releases.md",
+      "wiki/bun.md",
+      ".github/pull_request_template.md",
+    ])).toBe(false);
+  });
+
+  test("keeps typechecks for any code or configuration change", () => {
+    expect(codeInputsChanged(["packages/core/src/protocol.ts"])).toBe(true);
+    expect(codeInputsChanged(["bun.lock"])).toBe(true);
+    expect(codeInputsChanged([".github/workflows/ci.yml"])).toBe(true);
+    expect(codeInputsChanged(["README.md", "scripts/lib.ts"])).toBe(true);
   });
 });

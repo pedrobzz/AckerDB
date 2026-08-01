@@ -178,11 +178,11 @@ host-specific native packages stay on that one stable source version with
 `workspace:X.Y.Z` interdependencies. A `canary` promotion may contain
 several accumulated steps and only needs to be newer than `main`.
 
-The required GitHub `AckerDB benchmark` status runs the Hetzner comparison only
-when the pull request changes code exercised by the benchmark, its executable
-harness, its workflow, or its path classifier. Every other pull request gets an
-immediate successful no-op; version bumps, docs, tests, and unrelated packages
-must not spend benchmark time. A real run compares the pull request's AckerDB
+The `Fast CI` benchmark job runs the Hetzner comparison only when the pull
+request changes code exercised by the benchmark, its executable harness, the
+pull-request workflow, or its path classifier. Every other pull request skips
+it immediately; version bumps, docs, tests, and unrelated packages must not
+spend benchmark time. A real run compares the pull request's AckerDB
 with the base branch's AckerDB. It never runs another vendor and never runs on
 the developer machine. Telemetry is disabled unless telemetry-related source
 changed; only then are enabled, exporter, and disabled profiles measured. The
