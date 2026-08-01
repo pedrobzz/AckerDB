@@ -797,17 +797,32 @@ export class AckerDBServer {
     this.startTransportSampler();
   }
 
-  drain(): Promise<void> {
+  /**
+   * Leave readiness and close transport admission while the Runtime stays live.
+   * Trusted in-process work keeps its authority across this window: `drain` is
+   * what closes system-run admission (ADR-0015), so an owner that must release
+   * application-owned resources through `system.run` calls this first, releases
+   * them, and only then drains. Idempotent, and a no-op once shutdown began.
+   */
+  beginShutdown(): void {
+    if (this.lifecycle !== "starting" && this.lifecycle !== "ready") return;
+    // Readiness and every admission path observe this before the first await.
+    this.lifecycle = "draining";
+    this.stopTransportSampler();
+  }
+
+  drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
     if (this.drainPromise !== null) return this.drainPromise;
     if (this.lifecycle === "stopped") return Promise.resolve();
     if (this.lifecycle === "failed") {
       return Promise.reject(new AckerDBError("unavailable", "server has failed", { resource: "connection" }));
     }
+    if (!Number.isFinite(deadlineAtMs)) {
+      throw new RangeError("server shutdown deadline must be finite");
+    }
 
-    // Readiness and every admission path observe this before the first await.
-    this.lifecycle = "draining";
-    this.stopTransportSampler();
-    this.drainPromise = this.performDrain();
+    this.beginShutdown();
+    this.drainPromise = this.performDrain(deadlineAtMs);
     return this.drainPromise;
   }
 
@@ -1274,10 +1289,9 @@ export class AckerDBServer {
     return runtime;
   }
 
-  private async performDrain(): Promise<void> {
+  private async performDrain(deadlineAtMs: number): Promise<void> {
     const listener = this.listener!;
     const runtime = this.activeRuntime;
-    const deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs;
     const reason = new AckerDBError("draining", "server is draining", {
       retryable: true,
       retryAfterMs: DRAIN_RETRY_AFTER_MS,
