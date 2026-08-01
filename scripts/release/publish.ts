@@ -1,8 +1,10 @@
-// bun scripts/release/publish.ts <npm|beta> [--demo]
+// bun scripts/release/publish.ts <npm|bootstrap|beta> [--demo]
 //
 // npm: GitHub CD only. canary publishes X.Y.Z-canary.<run-number>; main
-// publishes X.Y.Z. beta: the current working tree goes only to local Verdaccio
-// as X.Y.Z-beta.N and may be published repeatedly for the same target version.
+// publishes X.Y.Z. bootstrap: one interactive X.Y.Z-canary.0 publication that
+// creates the npm package records before OIDC can be attached. beta: the current
+// working tree goes only to local Verdaccio as X.Y.Z-beta.N and may be published
+// repeatedly for the same target version.
 import {
   appendFileSync,
   cpSync,
@@ -38,6 +40,7 @@ import { WEBRTC_TARGETS } from "../../packages/realtime/native/webrtc/provenance
 import { ensureNativeArtifacts } from "./native-artifacts.ts";
 import {
   assertStableVersion,
+  bootstrapCanaryVersion,
   nextBetaVersion,
   publicVersion,
 } from "./versioning.ts";
@@ -48,8 +51,8 @@ const BINDING_DIRECTORY = dirname(WEBRTC_LOADER_PATH);
 const NATIVE_PACKAGES_DIRECTORY = "packages/realtime-native";
 const DISTRIBUTION_DIRECTORY = "packages/realtime/native/webrtc/distribution";
 const mode = process.argv[2];
-if (mode !== "npm" && mode !== "beta") {
-  fail("usage: bun scripts/release/publish.ts <npm|beta> [--demo]");
+if (mode !== "npm" && mode !== "bootstrap" && mode !== "beta") {
+  fail("usage: bun scripts/release/publish.ts <npm|bootstrap|beta> [--demo]");
 }
 const demoMode = process.argv.includes("--demo");
 
@@ -232,6 +235,30 @@ if (mode === "beta") {
   tag = "beta";
   await assertRegistryReachable(registry);
   version = await nextBeta(sourceVersion);
+} else if (mode === "bootstrap") {
+  if (process.env.GITHUB_ACTIONS === "true") {
+    fail("the npm bootstrap is interactive and must never run in CI");
+  }
+  const branch = tryGit("symbolic-ref", "--short", "HEAD");
+  if (branch === null || branch === "main" || branch === "canary") {
+    fail("bootstrap the npm package records from a clean topic branch");
+  }
+  if (git("status", "--porcelain", "--untracked-files=all") !== "") {
+    fail("the npm bootstrap requires a clean working tree");
+  }
+  registry = PUBLIC_REGISTRY;
+  tag = "canary";
+  version = bootstrapCanaryVersion(sourceVersion);
+  for (const pkg of PACKAGES) {
+    const metadata = await packageMetadata(registry, `@ackerdb/${pkg}`);
+    const versions = Object.keys(metadata?.versions ?? {});
+    if (versions.some((published) => published !== version)) {
+      fail(
+        `@ackerdb/${pkg} is already initialized on npm; ` +
+          "configure trusted publishing instead of using the bootstrap",
+      );
+    }
+  }
 } else {
   if (process.env.GITHUB_ACTIONS !== "true") {
     fail("public npm publication runs only in GitHub Actions");
@@ -338,15 +365,20 @@ try {
       { stdout: "inherit", stderr: "inherit" },
     );
     if (result.exitCode !== 0) {
+      const retry = mode === "npm"
+        ? "rerun the same GitHub workflow to resume safely"
+        : mode === "bootstrap"
+          ? "rerun bun run release:bootstrap after completing npm authentication"
+          : "rerun the same beta publication to resume safely";
       throw new Error(
         `publishing @ackerdb/${pkg}@${version} failed after ${published.length} package(s); ` +
-          "rerun the same GitHub workflow to resume safely",
+          retry,
       );
     }
     published.push(`@ackerdb/${pkg}`);
   }
 
-  if (mode === "npm") {
+  if (mode !== "beta") {
     const tagName = `v${version}`;
     const existing = tryGit("rev-parse", "-q", "--verify", `refs/tags/${tagName}^{commit}`);
     const head = git("rev-parse", "HEAD");

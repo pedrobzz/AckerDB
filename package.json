@@ -25,6 +25,7 @@
     "test:webrtc": "bun run build:webrtc && bun test packages/realtime/native/webrtc/test",
     "registry": "bunx verdaccio --config registry/config.yaml",
     "release:prepare": "bun scripts/release/prepare.ts",
+    "release:bootstrap": "bun scripts/release/publish.ts bootstrap",
     "publish:beta": "bun scripts/release/publish.ts beta",
     "publish:beta:demo": "bun scripts/release/publish.ts beta --demo",
     "publish:npm": "bun scripts/release/publish.ts npm",

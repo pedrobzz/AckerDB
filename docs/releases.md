@@ -115,30 +115,38 @@ unverified local or single-host substitute.
 
 Publication uses npm trusted publishing from `.github/workflows/release.yml`,
 the `pedrobzz/AckerDB` repository, and the `npm` GitHub environment. The
-workflow requests an OpenID Connect token; no long-lived npm token remains
-after bootstrap.
+workflow requests an OpenID Connect token and receives no npm credential or
+secret. Public CI publication never falls back to token authentication.
 
 ## One-time public npm bootstrap
 
-The `@ackerdb` npm organization and the first package versions must exist before
-npm can attach trusted-publisher policies. Pedro performs these account-bound
-steps once:
+The `ackerdb` npm organization already owns the `@ackerdb` scope. npm still
+requires each package to exist before a trusted publisher can be attached, and
+none of the twelve package records currently exists. The one bootstrap release
+is therefore interactive and local—not CI—and publishes the real
+`0.13.2-canary.0` package set under the `canary` dist-tag.
 
-1. Sign in to npm, enable two-factor authentication, and create or confirm the
-   `ackerdb` organization. The package scope must be `@ackerdb`.
-2. Create a short-lived granular npm token that can publish public packages in
-   that organization. Store it temporarily as the `NPM_TOKEN` secret in the
-   repository's `npm` environment.
-3. Merge the first ready pull request into `canary`. Its delivery bootstraps all
-   twelve public packages.
-4. With npm CLI 11.15 or newer and an authenticated npm session, configure the
-   trusted publisher for every package:
+1. Let the pull request's full native matrix complete, then download its five
+   `webrtc-*` artifacts into
+   `packages/realtime/native/webrtc/binding/`. Keep the topic branch clean.
+2. Start an authenticated, 2FA-protected npm CLI session and publish the package
+   records:
+
+   ```sh
+   bunx npm@11.18.0 login --registry=https://registry.npmjs.org
+   bun run release:bootstrap
+   ```
+
+   The command is deliberately rejected by GitHub Actions and on either release
+   branch. A partial publication is byte-checked and safely resumable.
+3. With the same authenticated session, configure the only publisher allowed
+   for every package:
 
    ```sh
    for package in core server realtime-darwin-arm64 realtime-darwin-x64 \
      realtime-linux-arm64-gnu realtime-linux-x64-gnu realtime-win32-x64-msvc \
      realtime cache client client-react cli; do
-     npm trust github "@ackerdb/$package" \
+     bunx npm@11.18.0 trust github "@ackerdb/$package" \
        --file release.yml \
        --repo pedrobzz/AckerDB \
        --env npm \
@@ -147,13 +155,25 @@ steps once:
    done
    ```
 
-5. Delete the bootstrap secret:
+4. Disallow token publication for every package while retaining the OIDC
+   publisher:
 
    ```sh
-   gh secret delete NPM_TOKEN --env npm --repo pedrobzz/AckerDB
+   for package in core server realtime-darwin-arm64 realtime-darwin-x64 \
+     realtime-linux-arm64-gnu realtime-linux-x64-gnu realtime-win32-x64-msvc \
+     realtime cache client client-react cli; do
+     bunx npm@11.18.0 access set mfa=publish "@ackerdb/$package"
+   done
    ```
 
-Subsequent canary and stable releases authenticate only through GitHub OIDC.
+5. Log out of the local bootstrap session. Subsequent canary and stable releases
+   authenticate only through GitHub OIDC:
+
+   ```sh
+   bunx npm@11.18.0 logout --registry=https://registry.npmjs.org
+   ```
+
+No granular access token is created or stored in GitHub at any point.
 
 ## Local Verdaccio betas
 

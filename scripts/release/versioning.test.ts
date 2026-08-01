@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  bootstrapCanaryVersion,
   canaryPattern,
   nextBetaVersion,
   publicVersion,
@@ -10,6 +11,11 @@ describe("release versioning", () => {
     expect(publicVersion("main", "1.2.3")).toBe("1.2.3");
     expect(publicVersion("canary", "1.2.3", "47")).toBe("1.2.3-canary.47");
     expect(() => publicVersion("canary", "1.2.3", "rerun")).toThrow("numeric GitHub run");
+  });
+
+  test("reserves canary zero for the one interactive npm bootstrap", () => {
+    expect(bootstrapCanaryVersion("1.2.3")).toBe("1.2.3-canary.0");
+    expect(() => bootstrapCanaryVersion("1.2.3-beta.1")).toThrow("stable x.y.z");
   });
 
   test("allocates repeatable local beta numbers from registry state", () => {
