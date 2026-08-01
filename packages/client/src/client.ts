@@ -10,11 +10,12 @@ import {
   decode,
   encode,
   getRef,
-  parseCallRequest,
   parseClientMessage,
   parseCredential,
+  parseOutcome,
   parseServerMessage,
   parseSseMessage,
+  toStandardJson,
   type AuthenticatedMessage,
   type ApplicationError,
   type ApplicationErrorMessage,
@@ -1044,8 +1045,20 @@ export class AckerDBClient {
     if (this.suspended) {
       throw suspensionError("unavailable", "client is suspended", "sse");
     }
-    const id = this.allocateId();
-    const body = this.encodeCall(id, getRef(ref), args);
+    // The address is the path and the response is the correlation, so the
+    // request carries the args object alone — no envelope, no client id.
+    const url = `${this.httpUrl}/api/${getRef(ref).replaceAll(".", "/")}`;
+    let body: string;
+    try {
+      // The exposed surface speaks the plain JSON its OpenAPI document
+      // publishes — decimal strings for bigints, base64 for bytes — not the
+      // escape form the WebSocket session carries. Absent args are that
+      // surface's empty args object.
+      body = JSON.stringify(toStandardJson(args)) ?? "{}";
+    } catch (error) {
+      if (!(error instanceof WireError)) throw error;
+      throw localError("validation", "SSE arguments cannot be encoded", "sse");
+    }
     const releaseReservation = this.reserveTransient(body, "sse");
     const fetchControl = this.createFetchController(options.signal);
     let responseBody: CancelableResponse | undefined;
@@ -1116,7 +1129,7 @@ export class AckerDBClient {
       }
       let response: Response;
       const pendingResponse = (async () =>
-        this.fetcher(`${this.httpUrl}/api/sse`, {
+        this.fetcher(url, {
           method: "POST",
           headers: this.httpHeaders(),
           body,
@@ -1156,16 +1169,15 @@ export class AckerDBClient {
           if (cleanupStarted || fetchControl.controller.signal.aborted) throw cancellationError;
           throw error;
         }
-        let parsed: ServerMessage;
+        // The exposed surface answers the bare outcome; the response itself is
+        // the correlation, so there is no frame and nothing to match against.
+        let outcome: Outcome;
         try {
-          parsed = parseServerMessage(decode(text));
+          outcome = parseOutcome(JSON.parse(text));
         } catch (error) {
           throw this.protocolError(error, "sse");
         }
-        if (parsed.t !== "err" || (parsed.id !== null && parsed.id !== id)) {
-          throw localError("malformed", "SSE error response does not match its request", "sse");
-        }
-        throw new AckerDBClientError(parsed.outcome);
+        throw new AckerDBClientError(outcome);
       }
       if (response.status !== 200) {
         throw localError("malformed", "SSE endpoint returned an unexpected success status", "sse");
@@ -1281,7 +1293,10 @@ export class AckerDBClient {
 
         let frame: SseChunkMessage | SseDoneMessage | SseErrorMessage;
         try {
-          frame = parseSseMessage(decode(payload));
+          // The envelope is Protocol-2's, but its `value` is the exposed
+          // surface's plain JSON: parsing it as a wire string would reinterpret
+          // an ordinary `"$"` key as an escape.
+          frame = parseSseMessage(JSON.parse(payload));
         } catch (error) {
           throw this.protocolError(error, "sse");
         }
@@ -2373,16 +2388,6 @@ export class AckerDBClient {
     }
   }
 
-  private encodeCall(id: number, ref: string, args: unknown): string {
-    try {
-      return encode(parseCallRequest({ v: PROTOCOL_VERSION, t: "call", id, ref, args }));
-    } catch (error) {
-      if (error instanceof ProtocolError) {
-        throw localError("validation", "procedure request cannot be encoded", "operation");
-      }
-      throw error;
-    }
-  }
 
   // Subscription arguments are caller-supplied values, so unencodable ones
   // (non-finite numbers, functions, ...) surface as the exact validation
@@ -2546,7 +2551,7 @@ export class AckerDBClient {
           const cancellationError = localError("unavailable", "SSE acknowledgment was canceled", "sse");
           const response = await raceWithAbort(
             (async () =>
-              this.fetcher(`${this.httpUrl}/api/sse/ack`, {
+              this.fetcher(`${this.httpUrl}/api/_sse/ack`, {
                 method: "POST",
                 headers: { "content-type": "text/plain;charset=UTF-8" },
                 body,

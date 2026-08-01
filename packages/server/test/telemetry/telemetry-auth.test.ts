@@ -7,7 +7,6 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
-  parseCallResponse,
   parseServerMessage,
   parseSseMessage,
   type ServerMessage,
@@ -66,16 +65,19 @@ const functions = {
   ops: {
     publicEcho: procedure({
       access: "public",
+      http: true,
       args: { secret: v.string() },
       handler: () => "public-ok",
     }),
     echo: procedure({
       access: "authenticated",
+      http: true,
       args: { secret: v.string() },
       handler: () => PRIVATE_RESULT,
     }),
     stream: sseProcedure({
       access: "authenticated",
+      http: true,
       args: { secret: v.string() },
       yields: v.object({ result: v.string() }),
       handler: async function* () {
@@ -256,7 +258,7 @@ function acknowledgeSse(
   message: SseMessage,
   authorization?: string,
 ): Promise<Response> {
-  return fetch(`${base}/api/sse/ack`, {
+  return fetch(`${base}/api/_sse/ack`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
@@ -271,23 +273,18 @@ function acknowledgeSse(
 
 test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pre-Runtime failures", async () => {
   const app = fixture();
-  const receivedBytes = new Map<number, number>();
+  // Path-addressed calls carry no client id: the listener numbers them itself,
+  // in arrival order, and telemetry correlates on that request id.
+  const receivedBytes = new Map<string, number>();
   const call = async (
-    path: "/api/call" | "/api/sse",
-    id: number,
-    ref: string,
+    address: string,
+    requestId: string,
     token: string,
+    padding = 0,
   ): Promise<Response> => {
-    const canonical = encode({
-      v: PROTOCOL_VERSION,
-      t: "call",
-      id,
-      ref,
-      args: { secret: PRIVATE_ARGUMENT },
-    });
-    const body = `${" ".repeat(id === 101 ? 37 : id === 103 ? 53 : 0)}${canonical}`;
-    receivedBytes.set(id, Buffer.byteLength(body));
-    return fetch(`${app.base}${path}`, {
+    const body = `${" ".repeat(padding)}${encode({ secret: PRIVATE_ARGUMENT })}`;
+    receivedBytes.set(requestId, Buffer.byteLength(body));
+    return fetch(`${app.base}/api/${address.replaceAll(".", "/")}`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
       body,
@@ -295,30 +292,17 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
   };
 
   try {
-    const procedure = await call("/api/call", 101, "ops.echo", VALID_PROCEDURE_TOKEN);
+    const procedure = await call("ops.echo", "1", VALID_PROCEDURE_TOKEN, 37);
     expect(procedure.status).toBe(200);
-    expect(parseCallResponse(decode(await procedure.text()))).toMatchObject({
-      t: "ok",
-      id: 101,
-      value: PRIVATE_RESULT,
-    });
+    expect(decode(await procedure.text())).toBe(PRIVATE_RESULT);
     expectTailBaseline(app.runtime);
 
-    const deniedProcedure = await call(
-      "/api/call",
-      102,
-      "ops.echo",
-      INVALID_PROCEDURE_TOKEN,
-    );
+    const deniedProcedure = await call("ops.echo", "2", INVALID_PROCEDURE_TOKEN);
     expect(deniedProcedure.status).toBe(503);
-    expect(parseCallResponse(decode(await deniedProcedure.text()))).toMatchObject({
-      t: "err",
-      id: 102,
-      outcome: { code: "auth_unavailable" },
-    });
+    expect(decode(await deniedProcedure.text())).toMatchObject({ code: "auth_unavailable" });
     expectTailBaseline(app.runtime);
 
-    const stream = await call("/api/sse", 103, "ops.stream", VALID_SSE_TOKEN);
+    const stream = await call("ops.stream", "3", VALID_SSE_TOKEN, 53);
     expect(stream.status).toBe(200);
     const streamId = stream.headers.get("x-ackerdb-sse-stream");
     if (streamId === null || stream.body === null) throw new Error("missing SSE response ownership");
@@ -344,49 +328,29 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
     await eventually(() => app.runtime.status().telemetry.traceRetention.activeTraces === 0);
     expectTailBaseline(app.runtime);
 
-    const deniedStream = await call("/api/sse", 104, "ops.stream", INVALID_SSE_TOKEN);
+    const deniedStream = await call("ops.stream", "4", INVALID_SSE_TOKEN, 53);
     expect(deniedStream.status).toBe(503);
-    expect(parseCallResponse(decode(await deniedStream.text()))).toMatchObject({
-      t: "err",
-      id: 104,
-      outcome: { code: "auth_unavailable" },
-    });
+    expect(decode(await deniedStream.text())).toMatchObject({ code: "auth_unavailable" });
     expectTailBaseline(app.runtime);
 
-    const malformedAuthorization = await fetch(`${app.base}/api/call`, {
+    const malformedAuthorization = await fetch(`${app.base}/api/ops/echo`, {
       method: "POST",
       headers: { authorization: `Basic ${PRIVATE_AUTH_HEADER}` },
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "call",
-        id: 105,
-        ref: "ops.echo",
-        args: { secret: PRIVATE_ARGUMENT },
-      }),
+      body: encode({ secret: PRIVATE_ARGUMENT }),
     });
     expect(malformedAuthorization.status).toBe(401);
     await malformedAuthorization.text();
     expectTailBaseline(app.runtime);
 
-    const anonymous = await fetch(`${app.base}/api/call`, {
+    const anonymous = await fetch(`${app.base}/api/ops/publicEcho`, {
       method: "POST",
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "call",
-        id: 106,
-        ref: "ops.publicEcho",
-        args: { secret: PRIVATE_ARGUMENT },
-      }),
+      body: encode({ secret: PRIVATE_ARGUMENT }),
     });
     expect(anonymous.status).toBe(200);
-    expect(parseCallResponse(decode(await anonymous.text()))).toMatchObject({
-      t: "ok",
-      id: 106,
-      value: "public-ok",
-    });
+    expect(decode(await anonymous.text())).toBe("public-ok");
     expectTailBaseline(app.runtime);
 
-    const malformedBody = await fetch(`${app.base}/api/call`, {
+    const malformedBody = await fetch(`${app.base}/api/ops/echo`, {
       method: "POST",
       headers: { authorization: `Bearer ${VALID_PROCEDURE_TOKEN}` },
       body: "{",
@@ -399,12 +363,12 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
     const retainedSpans = spans(app.exported);
     const retainedEvents = events(app.exported);
     const auth = [
-      oneSpan(retainedSpans, "procedure", "auth", "101", "operation"),
-      oneSpan(retainedSpans, "procedure", "auth", "102", "operation"),
-      oneSpan(retainedSpans, "sse", "auth", "103", "operation"),
-      oneSpan(retainedSpans, "sse", "auth", "104", "operation"),
-      oneSpan(retainedSpans, "procedure", "auth", "105", "operation"),
-      oneSpan(retainedSpans, "procedure", "auth", "106", "operation"),
+      oneSpan(retainedSpans, "procedure", "auth", "1", "operation"),
+      oneSpan(retainedSpans, "procedure", "auth", "2", "operation"),
+      oneSpan(retainedSpans, "sse", "auth", "3", "operation"),
+      oneSpan(retainedSpans, "sse", "auth", "4", "operation"),
+      oneSpan(retainedSpans, "procedure", "auth", "5", "operation"),
+      oneSpan(retainedSpans, "procedure", "auth", "6", "operation"),
     ];
     expect(auth.map(({ function: fn, outcome }) => ({ fn, outcome }))).toEqual([
       { fn: "ops.echo", outcome: "ok" },
@@ -415,26 +379,26 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
       { fn: "ops.publicEcho", outcome: "ok" },
     ]);
 
-    const procedureAdmission = oneSpan(retainedSpans, "procedure", "admission", "101");
-    const procedureDelivery = oneSpan(retainedSpans, "procedure", "delivery", "101");
+    const procedureAdmission = oneSpan(retainedSpans, "procedure", "admission", "1");
+    const procedureDelivery = oneSpan(retainedSpans, "procedure", "delivery", "1");
     expect(auth[0]!.traceId).toBe(procedureAdmission.traceId);
     expect(auth[0]!.traceId).toBe(procedureDelivery.traceId);
     expect(procedureAdmission.function).toBe("ops.echo");
-    expect(procedureAdmission.sizeBytes).toBe(receivedBytes.get(101));
+    expect(procedureAdmission.sizeBytes).toBe(receivedBytes.get("1"));
 
-    const anonymousAdmission = oneSpan(retainedSpans, "procedure", "admission", "106");
-    const anonymousDelivery = oneSpan(retainedSpans, "procedure", "delivery", "106");
+    const anonymousAdmission = oneSpan(retainedSpans, "procedure", "admission", "6");
+    const anonymousDelivery = oneSpan(retainedSpans, "procedure", "delivery", "6");
     expect(auth[5]!.traceId).toBe(anonymousAdmission.traceId);
     expect(auth[5]!.traceId).toBe(anonymousDelivery.traceId);
 
-    const sseAdmission = oneSpan(retainedSpans, "sse", "admission", "103");
+    const sseAdmission = oneSpan(retainedSpans, "sse", "admission", "3");
     expect(auth[2]!.traceId).toBe(sseAdmission.traceId);
-    expect(sseAdmission.sizeBytes).toBe(receivedBytes.get(103));
+    expect(sseAdmission.sizeBytes).toBe(receivedBytes.get("3"));
     expect(retainedSpans.some((record) =>
       record.operation === "sse" &&
       record.stage === "delivery" &&
       record.traceId === auth[2]!.traceId &&
-      record.requestId === "103" &&
+      record.requestId === "3" &&
       record.function === "ops.stream"
     )).toBe(true);
 
@@ -453,12 +417,14 @@ test("HTTP procedure and SSE auth share one sanitized Runtime trace and cover pr
       )).toBe(false);
     }
 
+    // The path names the function before its body is read, so a malformed body
+    // still reports the operation it targeted.
     const malformedSpans = retainedSpans.filter((record) =>
       record.operation === "procedure" &&
       record.stage === "admission" &&
       record.outcome === "malformed" &&
-      record.function === "http.procedure" &&
-      record.requestId === undefined
+      record.function === "ops.echo" &&
+      record.requestId === "7"
     );
     expect(malformedSpans).toHaveLength(1);
     expect(retainedEvents.filter((record) =>
@@ -538,15 +504,9 @@ function rawWebSocket(url: string): Promise<WsClient> {
 test("disabled telemetry adds no HTTP token or WebSocket auth-observer records", async () => {
   const app = fixture(false);
   try {
-    const response = await fetch(`${app.base}/api/call`, {
+    const response = await fetch(`${app.base}/api/ops/publicEcho`, {
       method: "POST",
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "call",
-        id: 201,
-        ref: "ops.publicEcho",
-        args: { secret: PRIVATE_ARGUMENT },
-      }),
+      body: encode({ secret: PRIVATE_ARGUMENT }),
     });
     expect(response.status).toBe(200);
     await response.text();
@@ -601,19 +561,13 @@ test("samples bounded Serve pressure during pre-hello and HTTP auth stalls witho
     });
     await eventually(() => app.verifier.verified.includes(HANGING_WS_TOKEN));
 
-    pendingHttp = fetch(`${app.base}/api/call`, {
+    pendingHttp = fetch(`${app.base}/api/ops/publicEcho`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${HANGING_WS_TOKEN}`,
         "x-forwarded-for": forwardedCanary,
       },
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "call",
-        id: 250,
-        ref: "ops.publicEcho",
-        args: { secret: PRIVATE_ARGUMENT },
-      }),
+      body: encode({ secret: PRIVATE_ARGUMENT }),
       signal: httpCancellation.signal,
     }).catch(() => undefined);
     await eventually(() => {
@@ -621,16 +575,10 @@ test("samples bounded Serve pressure during pre-hello and HTTP auth stalls witho
       return status.preHelloConnections === 1 && status.httpIngress === 1;
     });
 
-    const rejected = await fetch(`${app.base}/api/call`, {
+    const rejected = await fetch(`${app.base}/api/ops/publicEcho`, {
       method: "POST",
       headers: { "x-forwarded-for": "203.0.113.88" },
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "call",
-        id: 251,
-        ref: "ops.publicEcho",
-        args: { secret: PRIVATE_ARGUMENT },
-      }),
+      body: encode({ secret: PRIVATE_ARGUMENT }),
     });
     expect(rejected.status).toBe(503);
     await rejected.text();
@@ -695,15 +643,9 @@ test("HTTP handoff and terminated WebSocket auth each close one retained tail li
   const app = fixture(true, 60_000);
 
   try {
-    const response = await fetch(`${app.base}/api/call`, {
+    const response = await fetch(`${app.base}/api/ops/publicEcho`, {
       method: "POST",
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "call",
-        id: 301,
-        ref: "ops.publicEcho",
-        args: { secret: PRIVATE_ARGUMENT },
-      }),
+      body: encode({ secret: PRIVATE_ARGUMENT }),
     });
     expect(response.status).toBe(200);
     await response.text();
@@ -714,16 +656,10 @@ test("HTTP handoff and terminated WebSocket auth each close one retained tail li
     });
     expect(app.runtime.status().telemetry.traceRetention.stagedRecords).toBeGreaterThan(0);
 
-    const denied = await fetch(`${app.base}/api/call`, {
+    const denied = await fetch(`${app.base}/api/ops/echo`, {
       method: "POST",
       headers: { authorization: `Bearer ${INVALID_PROCEDURE_TOKEN}` },
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "call",
-        id: 302,
-        ref: "ops.echo",
-        args: { secret: PRIVATE_ARGUMENT },
-      }),
+      body: encode({ secret: PRIVATE_ARGUMENT }),
     });
     expect(denied.status).toBe(503);
     await denied.text();
@@ -734,7 +670,7 @@ test("HTTP handoff and terminated WebSocket auth each close one retained tail li
       dropped: { invalid: 0 },
     });
 
-    const malformed = await fetch(`${app.base}/api/call`, {
+    const malformed = await fetch(`${app.base}/api/ops/publicEcho`, {
       method: "POST",
       body: "{",
     });

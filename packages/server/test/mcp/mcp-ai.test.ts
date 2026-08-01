@@ -4,8 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   PROTOCOL_VERSION,
-  decode,
-  parseCallResponse,
   parseSseMessage,
   type SseMessage,
 } from "@ackerdb/core";
@@ -33,7 +31,7 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import {
   Runtime,
-  type RuntimeProcedureResponse,
+  type RuntimeHttpResponse,
   type RuntimeSseResponse,
 } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
@@ -233,6 +231,7 @@ function errorMessage(error: unknown): string {
 
 const runAi = typedProcedure({
   access: "public",
+  http: true,
   args: { mode: v.string() },
   handler: async (ctx, args) => {
     const available = agentMcp.aiTools(ctx);
@@ -265,6 +264,7 @@ const runAi = typedProcedure({
 
 const runAiSse = typedSse({
   access: "public",
+  http: true,
   args: {},
   yields: v.jsonb<unknown>(),
   handler: (ctx) => {
@@ -325,20 +325,21 @@ async function callAi(mode: string): Promise<unknown> {
     address: "app.runAi",
     args: { mode },
     principal: ANONYMOUS_PRINCIPAL,
-    respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+    respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
   });
-  const frame = parseCallResponse(decode(await response.text()));
-  if (frame.t !== "ok") {
-    throw new Error(frame.t === "err" ? frame.outcome.message : frame.error.code);
+  const body = JSON.parse(await response.text());
+  if (response.status !== 200) {
+    const failure = body as { readonly code: string; readonly message?: string };
+    throw new Error(failure.message ?? failure.code);
   }
-  return frame.value;
+  return body;
 }
 
 async function collectSse(response: RuntimeSseResponse): Promise<SseMessage[]> {
   const messages: SseMessage[] = [];
   for await (const bytes of response.stream as unknown as AsyncIterable<Uint8Array>) {
     const text = new TextDecoder().decode(bytes);
-    const message = parseSseMessage(decode(text.slice("data: ".length).trim()));
+    const message = parseSseMessage(JSON.parse(text.slice("data: ".length).trim()));
     messages.push(message);
     expect(runtime.ackSse({
       v: PROTOCOL_VERSION,

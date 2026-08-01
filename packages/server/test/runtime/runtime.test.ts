@@ -6,9 +6,7 @@ import {
   PROTOCOL_VERSION,
   Err,
   Status,
-  decode,
   encode,
-  parseCallResponse,
   parseSseMessage,
   type MutationMessage,
   type ProcedureMessage,
@@ -31,8 +29,8 @@ import { Registry } from "../../src/app/registry.ts";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
 import {
   Runtime,
+  type RuntimeHttpResponse,
   type RuntimeOptions,
-  type RuntimeProcedureResponse,
   type RuntimeSseResponse,
 } from "../../src/runtime/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
@@ -166,6 +164,7 @@ const functions = {
   messages: {
     list: query({
       access: "public",
+      http: true,
       args: { channelId: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.messages.query().where((row: Ctx) => row.channelId.eq(args.channelId)).collect(),
@@ -219,6 +218,7 @@ const functions = {
     }),
     missing: query({
       access: "public",
+      http: true,
       args: { id: v.bigint() },
       handler: (_ctx: Ctx, args: Ctx) =>
         Err("message-not-found", { id: args.id }, Status.NotFound),
@@ -403,6 +403,7 @@ const functions = {
     }),
     schedule: mutation({
       access: "public",
+      http: true,
       args: { message: v.string(), attempt: v.int(), at: v.float() },
       handler: (ctx: Ctx, args: Ctx) => ctx.db.reminders.insert(args),
     }),
@@ -410,17 +411,20 @@ const functions = {
   ops: {
     echo: procedure({
       access: "public",
+      http: true,
       args: { value: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
     reject: procedure({
       access: "public",
+      http: true,
       args: { reason: v.string() },
       handler: (_ctx: Ctx, args: Ctx) =>
         Err("procedure-rejected", { reason: args.reason }, Status.UnprocessableContent),
     }),
     block: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: async () => {
         externalProcedureStarted?.resolve(undefined);
@@ -430,6 +434,7 @@ const functions = {
     }),
     blockRejectingCancellation: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: async (ctx: Ctx) => {
         externalProcedureStarted?.resolve(undefined);
@@ -440,6 +445,7 @@ const functions = {
     }),
     pipeline: procedure({
       access: "public",
+      http: true,
       args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const external = await (await fetch("data:text/plain,external")).text();
@@ -457,11 +463,13 @@ const functions = {
     }),
     nestedTx: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: (ctx: Ctx) => ctx.tx(() => ctx.tx(() => 1)),
     }),
     catchTxThrow: procedure({
       access: "public",
+      http: true,
       args: { channelId: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         try {
@@ -480,6 +488,7 @@ const functions = {
     }),
     failEmoji: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: () => {
         throw new AckerDBError("conflict", "💥".repeat(512));
@@ -487,6 +496,7 @@ const functions = {
     }),
     stream: sseProcedure({
       access: "public",
+      http: true,
       args: { count: v.int() },
       yields: v.jsonb(),
       handler: async function* (ctx: Ctx, args: Ctx) {
@@ -499,6 +509,7 @@ const functions = {
     }),
     streamed: sseProcedure({
       access: "public",
+      http: true,
       args: {},
       yields: v.jsonb(),
       handler: () =>
@@ -511,6 +522,7 @@ const functions = {
     }),
     invalidChunk: sseProcedure({
       access: "public",
+      http: true,
       args: {},
       yields: v.object({ value: v.string() }),
       handler: async function* () {
@@ -520,6 +532,7 @@ const functions = {
     }),
     failingStream: sseProcedure({
       access: "public",
+      http: true,
       args: {},
       yields: v.jsonb(),
       handler: () => {
@@ -528,6 +541,7 @@ const functions = {
     }),
     waitForAbort: sseProcedure({
       access: "public",
+      http: true,
       args: {},
       yields: v.jsonb(),
       handler: async function* (ctx: Ctx) {
@@ -540,6 +554,7 @@ const functions = {
     }),
     holdSse: sseProcedure({
       access: "public",
+      http: true,
       args: {},
       yields: v.jsonb(),
       handler: async function* () {
@@ -676,7 +691,7 @@ async function collectSse(
 function sseMessage(bytes: Uint8Array): SseMessage {
   const text = new TextDecoder().decode(bytes);
   expect(text).toStartWith("data: ");
-  return parseSseMessage(decode(text.slice(6).trim()));
+  return parseSseMessage(JSON.parse(text.slice(6).trim()));
 }
 
 async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -877,6 +892,57 @@ describe("runtime commit and replay ownership", () => {
     ]);
   });
 
+  test("answers one query's declared error identically over the session and HTTP", async () => {
+    await session.open();
+    const framed = await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 20,
+      ref: "messages.missing",
+      args: { id: 7n },
+    }));
+    const response = await runtime.runQuery({
+      id: 21,
+      address: "messages.missing",
+      args: { id: 7n },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+
+    expect(framed).toMatchObject({ ok: false, error: { code: "message-not-found" } });
+    expect(response.status).toBe(404);
+    // The HTTP body is the same ApplicationError the session frame carries,
+    // spelled in the standard JSON this surface publishes: the declared bigint
+    // body crosses as its decimal string, never as a wire escape object.
+    expect(JSON.parse(await response.text())).toEqual({
+      kind: "application",
+      code: "message-not-found",
+      body: { id: "7" },
+      status: 404,
+    });
+
+    const value = await runtime.runQuery({
+      id: 22,
+      address: "messages.list",
+      args: { channelId: 1n },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+    expect(value.status).toBe(200);
+    expect(JSON.parse(await value.text())).toEqual([]);
+
+    // Kind dispatch is the registry's, so a procedure address is never a query.
+    const mismatched = await runtime.runQuery({
+      id: 23,
+      address: "ops.echo",
+      args: { value: "x" },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+    expect(mismatched.status).toBe(400);
+    expect(JSON.parse(await mismatched.text())).toMatchObject({ code: "validation" });
+  });
+
   test("publishes application errors separately and uses a procedure's named HTTP status", async () => {
     await session.open();
     const queryResult = await runtime.query(session.context, request({
@@ -904,14 +970,12 @@ describe("runtime commit and replay ownership", () => {
       respond: ({ body, status }) => new Response(body, { status }),
     });
     expect(response.status).toBe(422);
-    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
-      t: "app_err",
-      kind: "procedure",
-      error: {
-        code: "procedure-rejected",
-        body: { reason: "not now" },
-        status: 422,
-      },
+    // The HTTP body is the plain ApplicationError, never a protocol frame.
+    expect(JSON.parse(await response.text())).toEqual({
+      kind: "application",
+      code: "procedure-rejected",
+      body: { reason: "not now" },
+      status: 422,
     });
   });
 
@@ -1603,14 +1667,10 @@ describe("procedures and bounded SSE", () => {
       }));
       externalProcedureRelease.resolve(undefined);
 
-      expect(decode(await (await response).text())).toMatchObject({
-        t: "err",
-        id: index + 10,
-        outcome: {
-          code: "indeterminate",
-          message: "procedure completion is unknown after cancellation",
-          resource: "operation",
-        },
+      expect(JSON.parse(await (await response).text())).toMatchObject({
+        code: "indeterminate",
+        message: "procedure completion is unknown after cancellation",
+        resource: "operation",
       });
     }
   });
@@ -1624,13 +1684,7 @@ describe("procedures and bounded SSE", () => {
       respond: ({ body, status }) => new Response(body, { status }),
     });
     expect(response.status).toBe(200);
-    expect(decode(await response.text())).toEqual({
-      v: PROTOCOL_VERSION,
-      t: "ok",
-      id: 1,
-      kind: "procedure",
-      value: { external: "external", body: "external" },
-    });
+    expect(JSON.parse(await response.text())).toEqual({ external: "external", body: "external" });
     const failed = await runtime.runProcedure({
       id: 2,
       address: "ops.nestedTx",
@@ -1639,12 +1693,7 @@ describe("procedures and bounded SSE", () => {
       respond: ({ body, status }) => new Response(body, { status }),
     });
     expect(failed.status).toBe(400);
-    expect(decode(await failed.text())).toMatchObject({
-      v: PROTOCOL_VERSION,
-      t: "err",
-      id: 2,
-      outcome: { code: "validation" },
-    });
+    expect(JSON.parse(await failed.text())).toMatchObject({ code: "validation" });
   });
 
   test("a caught ctx.tx throw still poisons the procedure and rolls back", async () => {
@@ -1656,10 +1705,7 @@ describe("procedures and bounded SSE", () => {
       respond: ({ body, status }) => new Response(body, { status }),
     });
     expect(response.status).toBe(500);
-    expect(decode(await response.text())).toMatchObject({
-      t: "err",
-      outcome: { code: "internal" },
-    });
+    expect(JSON.parse(await response.text())).toMatchObject({ code: "internal" });
 
     await session.open();
     expect(await runtime.query(session.context, request({
@@ -1705,18 +1751,16 @@ describe("procedures and bounded SSE", () => {
 
       const rejected = await invoke(11, "ops.echo", { value: "same" }, rotatedHot);
       expect(rejected.status).toBe(429);
-      expect(decode(await rejected.text())).toMatchObject({
-        outcome: {
-          code: "overloaded",
-          retryable: true,
-          retryAfterMs: 0,
-          resource: "operation",
-        },
+      expect(JSON.parse(await rejected.text())).toMatchObject({
+        code: "overloaded",
+        retryable: true,
+        retryAfterMs: 0,
+        resource: "operation",
       });
 
       const admitted = await invoke(12, "ops.echo", { value: "cold" }, cold);
       expect(admitted.status).toBe(200);
-      expect(decode(await admitted.text())).toMatchObject({ value: "cold" });
+      expect(JSON.parse(await admitted.text())).toBe("cold");
     } finally {
       externalProcedureRelease.resolve(undefined);
     }
@@ -1725,18 +1769,12 @@ describe("procedures and bounded SSE", () => {
   });
 
   test("fits a tight all-emoji procedure failure to a parser-valid fallback", async () => {
-    const id = 89;
-    const fallback = {
-      v: PROTOCOL_VERSION,
-      t: "err" as const,
-      id,
-      outcome: { code: "conflict" as const, retryable: false, message: "err" },
-    };
-    const maxFrameBytes = new TextEncoder().encode(encode(fallback)).byteLength;
+    const fallback = { code: "conflict" as const, retryable: false, message: "err" };
+    const maxFrameBytes = new TextEncoder().encode(JSON.stringify(fallback)).byteLength;
     await restart(limits({ maxFrameBytes }));
 
     const response = await runtime.runProcedure({
-      id,
+      id: 89,
       address: "ops.failEmoji",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
@@ -1745,7 +1783,7 @@ describe("procedures and bounded SSE", () => {
     const body = await response.text();
     expect(response.status).toBe(409);
     expect(new TextEncoder().encode(body).byteLength).toBe(maxFrameBytes);
-    expect(parseCallResponse(decode(body))).toEqual(fallback);
+    expect(JSON.parse(body)).toEqual(fallback);
   });
 
   test("streams generator chunks receiver-credited and a terminal marker", async () => {
@@ -1887,7 +1925,7 @@ describe("direct ingress", () => {
       address: oversized,
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
       bytes: 0,
     };
     await expect(runtime.runProcedure(procedure)).rejects.toMatchObject(expected);
@@ -1925,7 +1963,7 @@ describe("direct ingress", () => {
       address: "ops.echo",
       args: { value: "accepted" },
       principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
       bytes: 257,
     };
     const procedure = await runtime.runProcedure(procedureRequest);
@@ -1949,7 +1987,7 @@ describe("direct ingress", () => {
       address: "ops.echo",
       args: { value: "accepted canonically after the claim" },
       principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
     }, 257, undefined);
 
     await expect(runtime.runProcedure({ ...carried })).rejects.toMatchObject({
@@ -1957,6 +1995,47 @@ describe("direct ingress", () => {
       resource: "operation",
     });
     expect((await runtime.runProcedure({ ...carried })).status).toBe(200);
+  });
+
+  test("charges every kind one request shape: the addressed function and its args", async () => {
+    // What a direct caller is charged is the request this surface carries — the
+    // addressed function and its args, no protocol envelope — so the same args
+    // cost the same admission bytes whichever kind answers them.
+    const respond = ({ body, status }: RuntimeHttpResponse) => new Response(body, { status });
+    const run = {
+      query: async (input: Ctx) => (await runtime.runQuery({ ...input, respond })).status,
+      mutation: async (input: Ctx) => (await runtime.runMutation({ ...input, respond })).status,
+      procedure: async (input: Ctx) => (await runtime.runProcedure({ ...input, respond })).status,
+      sse: async (input: Ctx) => {
+        const response = await runtime.runSse(input);
+        expect((await collectSse(response)).at(-1)?.t).toBe("sse_done");
+        return 200;
+      },
+    };
+    const calls = [
+      { kind: "query", address: "messages.list", args: { channelId: 1n } },
+      {
+        kind: "mutation",
+        address: "reminders.schedule",
+        args: { message: "soon", attempt: 1, at: Date.now() + 100_000 },
+      },
+      { kind: "procedure", address: "ops.echo", args: { value: "hello" } },
+      { kind: "sse", address: "ops.stream", args: { count: 0 } },
+    ] as const;
+
+    for (const [index, { kind, address, args }] of calls.entries()) {
+      const bytes = Buffer.byteLength(encode({ ref: address, args }));
+      const input = { address, args, principal: ANONYMOUS_PRINCIPAL };
+
+      await restart(limits({ maxRequestBytes: bytes - 1 }));
+      await expect(run[kind]({ ...input, id: 200 + index })).rejects.toMatchObject({
+        code: "overloaded",
+        message: "request exceeds maxRequestBytes",
+      });
+
+      await restart(limits({ maxRequestBytes: bytes }));
+      expect(await run[kind]({ ...input, id: 300 + index })).toBe(200);
+    }
   });
 });
 
@@ -1986,6 +2065,22 @@ describe("scheduler and lifecycle", () => {
     await expect(runtime.runScheduled(dueAt)).rejects.toThrow("scheduled failure");
     expect(engine.reader.query('SELECT COUNT(*) AS count FROM "log"').get()).toEqual({ count: 0n });
     expect(engine.reader.query('SELECT COUNT(*) AS count FROM "reminders"').get()).toEqual({ count: 1n });
+  });
+
+  test("arms the scheduler for a due row an HTTP mutation committed", async () => {
+    // Arming belongs to the commit, not to the session that asked for it: a due
+    // row written over HTTP must fire without a WebSocket ever opening.
+    const response = await runtime.runMutation({
+      id: 96,
+      address: "reminders.schedule",
+      args: { message: "http", attempt: 1, at: Date.now() - 1 },
+      principal: ANONYMOUS_PRINCIPAL,
+      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
+    });
+
+    expect(response.status).toBe(200);
+    await eventually(() => scheduledAttempts === 1);
+    expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([{ line: "fired:http" }]);
   });
 
   test("backs a failing due job off instead of retrying in a hot loop", async () => {

@@ -1,5 +1,6 @@
 export { loadConfig, type AppConfig, type AuthenticationConfig } from "./app/config.ts";
 export { runCodegen, type CodegenResult } from "./app/codegen.ts";
+export { exportOpenApi, type OpenApiExport } from "./app/openapi.ts";
 export {
   generateMigration,
   GenerateError,

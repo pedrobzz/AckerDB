@@ -80,6 +80,7 @@ function registry(): Registry {
       // UIMessageStream and returned from the handler as-is.
       chat: sseProcedure({
         access: "public",
+        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: (_ctx: SseCtx, args: { chatId: string }) => {
@@ -132,6 +133,7 @@ function registry(): Registry {
       // returned directly as its UI message stream.
       model: sseProcedure({
         access: "public",
+        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: () => {
@@ -166,6 +168,7 @@ function registry(): Registry {
       // Custom argument shape: only reachable through the typed mapper.
       custom: sseProcedure({
         access: "public",
+        http: true,
         args: {
           sessionId: v.string(),
           prompt: v.string(),
@@ -188,6 +191,7 @@ function registry(): Registry {
       // exactly when the runtime releases the handler's iterator.
       holdBeforeFirst: sseProcedure({
         access: "public",
+        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -201,6 +205,7 @@ function registry(): Registry {
       }),
       holdMidStream: sseProcedure({
         access: "public",
+        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -216,6 +221,7 @@ function registry(): Registry {
       }),
       malformed: sseProcedure({
         access: "public",
+        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -225,6 +231,7 @@ function registry(): Registry {
       }),
       failing: sseProcedure({
         access: "public",
+        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: (): never => {
@@ -233,6 +240,7 @@ function registry(): Registry {
       }),
       failingMidStream: sseProcedure({
         access: "public",
+        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -281,12 +289,15 @@ async function until(predicate: () => boolean, description: string): Promise<voi
   throw new Error(`Timed out waiting for ${description}`);
 }
 
+/** The only AckerDB-owned HTTP route the client calls; every other is a stream. */
+const SSE_ACK_PATH = "/api/_sse/ack";
+
 // Counts SSE request traffic so reconnect/cancellation tests can prove no
 // hidden second stream ever starts. Resolves `fetch` at call time: after
 // support/dom.ts registers happy-dom it restores Bun's native fetch.
 function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {
-    if (new URL(url).pathname === "/api/sse") log.push("sse");
+    if (new URL(url).pathname !== SSE_ACK_PATH) log.push("sse");
     return fetch(url, init);
   };
 }

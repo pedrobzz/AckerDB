@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { decode, encode, stableEncode, WireError } from "@ackerdb/core";
+import { decode, encode, stableEncode, toStandardJson, WireError } from "@ackerdb/core";
 
 const roundtrip = (value: unknown) => decode(encode(value));
 
@@ -81,5 +81,34 @@ describe("stableEncode", () => {
   test("stable output still decodes to the same value", () => {
     const value = { z: 1n, a: new Uint8Array([1, 2]), m: { k: null } };
     expect(decode(stableEncode(value))).toEqual(value);
+  });
+});
+
+describe("toStandardJson", () => {
+  test("spells bigints as decimal strings and bytes as base64", () => {
+    expect(toStandardJson({ id: 9007199254740993n, blob: new Uint8Array([1, 2, 3]) }))
+      .toEqual({ id: "9007199254740993", blob: "AQID" });
+    expect(toStandardJson(-1n)).toBe("-1");
+    expect(toStandardJson(new Uint8Array(0))).toBe("");
+  });
+
+  test("escapes nothing: a $ key is an ordinary key on this surface", () => {
+    const value = { $: "b", v: "1", inner: [{ $: "x" }] };
+    expect(toStandardJson(value)).toEqual(value);
+    // The Protocol-2 form of the same value, for contrast.
+    expect(encode(value)).toContain('"$":"o"');
+  });
+
+  test("keeps the wire codec's absent-value rules", () => {
+    expect(toStandardJson({ a: 1, b: undefined })).toEqual({ a: 1 });
+    expect(toStandardJson([1, undefined, 3])).toEqual([1, null, 3]);
+    expect(toStandardJson(undefined)).toBeUndefined();
+  });
+
+  test("rejects everything JSON cannot carry", () => {
+    expect(() => toStandardJson(NaN)).toThrow(WireError);
+    expect(() => toStandardJson({ x: -Infinity })).toThrow(WireError);
+    expect(() => toStandardJson(() => 1)).toThrow(WireError);
+    expect(() => toStandardJson(Symbol("nope"))).toThrow(WireError);
   });
 });

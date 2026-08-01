@@ -3,7 +3,6 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
-  parseCallRequest,
   parseClientMessage,
   parseSseAckRequest,
   type ApplicationError,
@@ -304,6 +303,18 @@ const sseUtf8 = new TextEncoder();
 
 function sseEvent(frame: unknown): string {
   return `data: ${encode(frame)}\n\n`;
+}
+
+/** The only AckerDB-owned HTTP route the client calls; everything else is a stream. */
+const SSE_ACK_PATH = "/api/_sse/ack";
+
+/** Address segments are path segments: "stream.ordered" streams from "/api/stream/ordered". */
+function ssePath(ref: string): string {
+  return `/api/${ref.replaceAll(".", "/")}`;
+}
+
+function isSseCall(url: string): boolean {
+  return !url.endsWith(SSE_ACK_PATH);
 }
 
 function sseResponse(
@@ -1032,15 +1043,19 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const acknowledgmentAuthorizations: Array<string | null> = [];
     const acknowledgmentContentTypes: Array<string | null> = [];
     let streamAuthorization: string | null = null;
+    let streamUrl: string | undefined;
+    let streamBody: unknown;
     const fetcher: AckerDBClientOptions["fetch"] = async (url, init) => {
-      if (url.endsWith("/api/sse")) {
+      if (isSseCall(url)) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
+        streamUrl = url;
+        streamBody = decode(String(init?.body));
         return sseResponse([
           { v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: { delta: "a" } },
           { v: 5, t: "sse_chunk", seq: 2, proof: "proof-2", value: { delta: "b" } },
         ]);
       }
-      expect(url.endsWith("/api/sse/ack")).toBe(true);
+      expect(url.endsWith(SSE_ACK_PATH)).toBe(true);
       const headers = new Headers(init?.headers);
       acknowledgmentAuthorizations.push(headers.get("authorization"));
       acknowledgmentContentTypes.push(headers.get("content-type"));
@@ -1051,9 +1066,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
       credential: { kind: "bearer", token: "receiver-token" },
       fetch: fetcher,
     });
-    const iterator = client.sse<{}, { delta: string }>("stream.ordered", {})[Symbol.asyncIterator]();
+    const iterator = client.sse<{ topic: string }, { delta: string }>("stream.ordered", {
+      topic: "weather",
+    })[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({ value: { delta: "a" }, done: false });
+    // The address is the path and the body is the args object alone.
+    expect(streamUrl).toBe(`http://ackerdb.test${ssePath("stream.ordered")}`);
+    expect(streamBody).toEqual({ topic: "weather" });
     expect(acknowledgments).toEqual([]);
     let secondSettled = false;
     const second = iterator.next().then(
@@ -1091,7 +1111,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     let firstSequenceAttempts = 0;
     const randomValues = [0.5, 0];
     const fetcher: AckerDBClientOptions["fetch"] = async (url, init) => {
-      if (url.endsWith("/api/sse")) {
+      if (isSseCall(url)) {
         streamAuthorization = new Headers(init?.headers).get("authorization");
         return sseResponse([
           { v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" },
@@ -1201,7 +1221,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       const acknowledgments: SseAckRequest[] = [];
       const { client, sockets } = harness({
         fetch: async (url, init) => {
-          if (url.endsWith("/api/sse")) return sseResponse([terminal.frame]);
+          if (isSseCall(url)) return sseResponse([terminal.frame]);
           acknowledgments.push(parseSseAckRequest(decode(String(init?.body))));
           return acknowledgmentGate.promise;
         },
@@ -1321,11 +1341,41 @@ describe("AckerDBClient protocol 2 ownership", () => {
     }
   });
 
+  test("surfaces a refused stream's bare outcome and rejects a body that is not one", async () => {
+    const outcome = {
+      code: "unauthenticated",
+      retryable: false,
+      message: "authentication required",
+      resource: "sse",
+    } as const;
+    const refused = harness({
+      fetch: async () => new Response(encode(outcome), { status: 401 }),
+    });
+    expect(
+      await refused.client.sse("stream.refused", {})[Symbol.asyncIterator]()
+        .next().catch((error) => error),
+    ).toMatchObject(outcome);
+    refused.client.close();
+
+    // The exposed surface never answers a frame, so one is not an outcome.
+    const framed = harness({
+      fetch: async () => new Response(
+        encode({ v: 4, t: "err", id: null, outcome }),
+        { status: 401 },
+      ),
+    });
+    expect(
+      await framed.client.sse("stream.framed", {})[Symbol.asyncIterator]()
+        .next().catch((error) => error),
+    ).toMatchObject({ code: "malformed", resource: "sse" });
+    framed.client.close();
+  });
+
   test("requires an exact 204 acknowledgment response", async () => {
     let cancellations = 0;
     const { client } = harness({
       fetch: async (url) =>
-        url.endsWith("/api/sse")
+        isSseCall(url)
           ? sseResponse(
               [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => cancellations++ },
@@ -1363,17 +1413,14 @@ describe("AckerDBClient protocol 2 ownership", () => {
       const { client, sockets } = harness({
         limits: { maxPendingItems: 1 },
         fetch: async (url, init) => {
-          if (url.endsWith("/api/sse")) {
+          if (isSseCall(url)) {
             return sseResponse(
               [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
-          if (url.endsWith("/api/sse/ack")) return fake204;
-          const request = parseCallRequest(decode(String(init?.body)));
-          return new Response(
-            encode({ v: 5, t: "ok", id: request.id, kind: "procedure", value: "available" }),
-          );
+          if (url.endsWith("/api/_sse/ack")) return fake204;
+          throw new Error(`unexpected HTTP route ${url}`);
         },
       });
       const iterator = client.sse<{}, string>(`stream.body-204.${behavior}`, {})[
@@ -1484,7 +1531,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
       );
       const { client, sockets } = harness({
         fetch: async (url) => {
-          if (url.endsWith("/api/sse")) return response;
+          if (isSseCall(url)) return response;
           acknowledgments++;
           return new Response(null, { status: 204 });
         },
@@ -1527,11 +1574,8 @@ describe("AckerDBClient protocol 2 ownership", () => {
       const { client, sockets } = harness({
         limits: { maxPendingItems: 1 },
         fetch: async (url, init) => {
-          if (url.endsWith("/api/sse")) return response;
-          const request = parseCallRequest(decode(String(init?.body)));
-          return new Response(
-            encode({ v: 5, t: "ok", id: request.id, kind: "procedure", value: "available" }),
-          );
+          if (isSseCall(url)) return response;
+          throw new Error(`unexpected HTTP route ${url}`);
         },
       });
       const completion = client.sse("stream.open-error", {}, { signal: abort.signal })[
@@ -1555,14 +1599,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const { client, clock, sockets } = harness({
       limits: { maxPendingItems: 1, maxQueryAgeMs: 1 },
       fetch: async (url, init) => {
-        if (url.endsWith("/api/sse")) {
+        if (isSseCall(url)) {
           streamFetches++;
           return sseResponse([], { close: false });
         }
-        const request = parseCallRequest(decode(String(init?.body)));
-        return new Response(
-          encode({ v: 5, t: "ok", id: request.id, kind: "procedure", value: "available" }),
-        );
+        throw new Error(`unexpected HTTP route ${url}`);
       },
     });
     const occupied = client.query("query.occupies-capacity", {}).then(mustErr);
@@ -1588,14 +1629,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const { client, sockets } = harness({
       limits: { maxPendingItems: 1 },
       fetch: async (url, init) => {
-        if (url.endsWith("/api/sse")) {
+        if (isSseCall(url)) {
           streamFetches++;
           return hanging.promise;
         }
-        const request = parseCallRequest(decode(String(init?.body)));
-        return new Response(
-          encode({ v: 5, t: "ok", id: request.id, kind: "procedure", value: "available" }),
-        );
+        throw new Error(`unexpected HTTP route ${url}`);
       },
     });
     const completion = client.sse("stream.hanging-abort", {}, { signal: abort.signal })[
@@ -1630,7 +1668,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const { client } = harness({
       limits: { maxPendingItems: 1 },
       fetch: async (url) => {
-        if (url.endsWith("/api/sse")) {
+        if (isSseCall(url)) {
           streamFetches++;
           return hanging.promise;
         }
@@ -1665,7 +1703,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         const { client, sockets } = harness({
           limits: { maxPendingItems: 1 },
           fetch: async (url, init) => {
-            if (url.endsWith("/api/sse")) {
+            if (isSseCall(url)) {
               return sseResponse(
                 [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: mode }],
                 {
@@ -1677,14 +1715,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
                 },
               );
             }
-            if (url.endsWith("/api/sse/ack")) {
+            if (url.endsWith("/api/_sse/ack")) {
               acknowledgments++;
               return new Response(null, { status: 204 });
             }
-            const request = parseCallRequest(decode(String(init?.body)));
-            return new Response(
-              encode({ v: 5, t: "ok", id: request.id, kind: "procedure", value: "available" }),
-            );
+            throw new Error(`unexpected HTTP route ${url}`);
           },
         });
         const iterator = client.sse<{}, string>(`stream.${behavior}.${mode}`, {}, {
@@ -1714,20 +1749,17 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const { client, sockets } = harness({
       limits: { maxPendingItems: 1 },
       fetch: async (url, init) => {
-        if (url.endsWith("/api/sse")) {
+        if (isSseCall(url)) {
           return sseResponse(
             [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false, onCancel: () => cancellations++ },
           );
         }
-        if (url.endsWith("/api/sse/ack")) {
+        if (url.endsWith("/api/_sse/ack")) {
           acknowledgments++;
           return new Response(null, { status: 204 });
         }
-        const request = parseCallRequest(decode(String(init?.body)));
-        return new Response(
-          encode({ v: 5, t: "ok", id: request.id, kind: "procedure", value: "available" }),
-        );
+        throw new Error(`unexpected HTTP route ${url}`);
       },
     });
     const iterator = client.sse<{}, string>("stream.abort-owner", {}, {
@@ -1765,22 +1797,19 @@ describe("AckerDBClient protocol 2 ownership", () => {
       const { client, sockets } = harness({
         limits: { maxFrameBytes: 256, maxPendingItems: 1 },
         fetch: async (url, init) => {
-          if (url.endsWith("/api/sse")) {
+          if (isSseCall(url)) {
             return sseResponse(
               [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
               { close: false, onCancel: () => streamCancellations++ },
             );
           }
-          if (url.endsWith("/api/sse/ack")) {
+          if (url.endsWith("/api/_sse/ack")) {
             return openResponse("x".repeat(257), () => {
               acknowledgmentCancellations++;
               return adversarialCancellation(behavior);
             });
           }
-          const request = parseCallRequest(decode(String(init?.body)));
-          return new Response(
-            encode({ v: 5, t: "ok", id: request.id, kind: "procedure", value: "available" }),
-          );
+          throw new Error(`unexpected HTTP route ${url}`);
         },
       });
       const iterator = client.sse<{}, string>(`stream.oversized-ack.${behavior}`, {})[
@@ -1826,7 +1855,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
         const { client, clock, sockets } = harness({
           limits: { maxPendingItems: 1, maxSseAckAgeMs: 50 },
           fetch: async (url, init) => {
-            if (url.endsWith("/api/sse")) {
+            if (isSseCall(url)) {
               return sseResponse(
                 [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 {
@@ -1836,14 +1865,11 @@ describe("AckerDBClient protocol 2 ownership", () => {
                 },
               );
             }
-            if (url.endsWith("/api/sse/ack")) {
+            if (url.endsWith("/api/_sse/ack")) {
               acknowledgmentAttempts++;
               return open503;
             }
-            const request = parseCallRequest(decode(String(init?.body)));
-            return new Response(
-              encode({ v: 5, t: "ok", id: request.id, kind: "procedure", value: "available" }),
-            );
+            throw new Error(`unexpected HTTP route ${url}`);
           },
         });
         const iterator = client.sse<{}, string>(`stream.open-ack.${behavior}.${mode}`, {}, {
@@ -1879,20 +1905,17 @@ describe("AckerDBClient protocol 2 ownership", () => {
         const { client, clock, sockets } = harness({
           limits: { maxPendingItems: 1, maxSseAckAgeMs: 50 },
           fetch: async (url, init) => {
-            if (url.endsWith("/api/sse")) {
+            if (isSseCall(url)) {
               return sseResponse(
                 [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
                 { stallMs: "100", close: false },
               );
             }
-            if (url.endsWith("/api/sse/ack")) {
+            if (url.endsWith("/api/_sse/ack")) {
               acknowledgmentAttempts++;
               return late.promise;
             }
-            const request = parseCallRequest(decode(String(init?.body)));
-            return new Response(
-              encode({ v: 5, t: "ok", id: request.id, kind: "procedure", value: "available" }),
-            );
+            throw new Error(`unexpected HTTP route ${url}`);
           },
         });
         const iterator = client.sse<{}, string>(`stream.late-ack.${behavior}.${mode}`, {}, {
@@ -1944,7 +1967,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     const hanging = new Promise<Response>(() => {});
     const { client, clock } = harness({
       fetch: async (url, init) => {
-        if (url.endsWith("/api/sse")) {
+        if (isSseCall(url)) {
           return sseResponse(
             [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { stallMs: "100", close: false },
@@ -1987,7 +2010,7 @@ describe("AckerDBClient protocol 2 ownership", () => {
     let attempts = 0;
     const { client } = harness({
       fetch: async (url) => {
-        if (url.endsWith("/api/sse")) {
+        if (isSseCall(url)) {
           return sseResponse(
             [{ v: 5, t: "sse_chunk", seq: 1, proof: "proof-1", value: "chunk" }],
             { close: false },

@@ -1,8 +1,7 @@
 import { Buffer } from "node:buffer";
+import { toStandardJson } from "@ackerdb/core";
 import {
   type ArrayValidator,
-  type EnumValidator,
-  type Descriptor,
   type InferValidator,
   type LiteralValidator,
   type NullableValidator,
@@ -12,17 +11,19 @@ import {
   type OptionalValidator,
   type StandardValidator,
   type UnionValidator,
-  type VectorValidator,
 } from "./v.ts";
-import { deepFreeze } from "../shared/immutable.ts";
+import {
+  BASE64_PATTERN,
+  DECIMAL_PATTERN,
+  rejectUnrepresentable,
+  validatorJsonSchema,
+  type JsonSchemaMode,
+  type JsonSchemaTarget,
+} from "./json-schema.ts";
 import { assertStandardJson } from "./standard-json.ts";
 import { isValidationError, ValidationError } from "./error.ts";
 
-const JSON_SCHEMA_2020_12 = "https://json-schema.org/draft/2020-12/schema";
-const JSON_SCHEMA_DRAFT_07 = "http://json-schema.org/draft-07/schema#";
-const DECIMAL_PATTERN = "^(?:0|-?[1-9][0-9]*)$";
 const DECIMAL = new RegExp(DECIMAL_PATTERN);
-const BASE64_PATTERN = "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$";
 const BASE64 = new RegExp(BASE64_PATTERN);
 
 export interface StandardSchemaIssue {
@@ -39,7 +40,7 @@ export interface StandardSchemaOptions {
 }
 
 export interface StandardJsonSchemaOptions {
-  readonly target: "draft-2020-12" | "draft-07" | (string & {});
+  readonly target: JsonSchemaTarget;
   readonly libraryOptions?: Readonly<Record<string, unknown>>;
 }
 
@@ -57,26 +58,17 @@ export interface StandardSchemaProperties<Input, Output = Input> {
   };
 }
 
-export interface JsonObjectSchema extends Readonly<Record<string, unknown>> {
-  readonly $schema: typeof JSON_SCHEMA_2020_12;
-  readonly type: "object";
-  readonly properties: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
-  readonly required?: readonly string[];
-  readonly additionalProperties: false;
-}
-
 /**
  * One lossless standard-JSON boundary compiled from a AckerDB validator. HTTP and
  * local model adapters consume the same codec; AckerDB's ordinary runtime input
- * type remains unchanged.
+ * type remains unchanged. Schemas are not part of it — every published document
+ * comes from `json-schema.ts`.
  */
 export interface StandardJsonCodec<
   Output,
   ProtocolInput = unknown,
   ProtocolOutput = unknown,
 > {
-  readonly inputSchema: Readonly<Record<string, unknown>>;
-  readonly outputSchema: Readonly<Record<string, unknown>>;
   readonly decode: (value: unknown, path?: string) => Output;
   readonly encode: (value: unknown, path?: string) => unknown;
   /** Validate canonical model input JSON without converting the exposed value. */
@@ -145,103 +137,30 @@ export type StandardJsonOutput<V extends StandardValidator> =
                     : V extends StandardValidator<infer Value, string, unknown> ? Value
                       : never;
 
-type SchemaMode = "input" | "output";
-
 interface ProtocolNode {
-  readonly schema: (mode: SchemaMode) => Readonly<Record<string, unknown>>;
-  readonly decode: (value: unknown, path: string, mode: SchemaMode) => unknown;
+  readonly decode: (value: unknown, path: string, mode: JsonSchemaMode) => unknown;
   readonly preflight?: (value: unknown, path: string) => void;
   readonly encode: (value: unknown, path: string) => unknown;
 }
 
-function described(
-  validator: StandardValidator,
-  schema: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-  const descriptor = validator.kind === "bigint" ? validator.descriptor() : undefined;
-  const bigintBounds = descriptor === undefined
-    ? ""
-    : [
-      descriptor["min"] === undefined
-        ? undefined
-        : `Minimum bigint value (inclusive): ${String(descriptor["min"])}.`,
-      descriptor["max"] === undefined
-        ? undefined
-        : `Maximum bigint value (inclusive): ${String(descriptor["max"])}.`,
-    ].filter((part): part is string => part !== undefined).join(" ");
-  const ownDescription = [validator.description, bigintBounds]
-    .filter((part): part is string => part !== undefined && part !== "")
-    .join(" ");
-  if (ownDescription === "") return schema;
-  const inherited = typeof schema["description"] === "string" ? schema["description"] : "";
-  return {
-    ...schema,
-    description: inherited === "" || inherited === ownDescription
-      ? ownDescription
-      : `${ownDescription} ${inherited}`,
-  };
-}
-
-function constraintSchema(descriptor: Descriptor): Readonly<Record<string, unknown>> {
-  switch (descriptor["k"]) {
-    case "string":
-      return {
-        ...(descriptor["min"] === undefined ? {} : { minLength: descriptor["min"] }),
-        ...(descriptor["max"] === undefined ? {} : { maxLength: descriptor["max"] }),
-        ...(descriptor["regex"] === undefined ? {} : { pattern: descriptor["regex"] }),
-      };
-    case "array":
-      return {
-        ...(descriptor["min"] === undefined ? {} : { minItems: descriptor["min"] }),
-        ...(descriptor["max"] === undefined ? {} : { maxItems: descriptor["max"] }),
-      };
-    case "int": {
-      const min = descriptor["min"] as number | undefined;
-      const max = descriptor["max"] as number | undefined;
-      return {
-        minimum: min === undefined
-          ? Number.MIN_SAFE_INTEGER
-          : Math.max(Number.MIN_SAFE_INTEGER, min),
-        maximum: max === undefined
-          ? Number.MAX_SAFE_INTEGER
-          : Math.min(Number.MAX_SAFE_INTEGER, max),
-      };
-    }
-    case "float":
-      return {
-        ...(descriptor["min"] === undefined ? {} : { minimum: descriptor["min"] }),
-        ...(descriptor["max"] === undefined ? {} : { maximum: descriptor["max"] }),
-      };
-    default:
-      return {};
-  }
-}
-
-const NULLABLE_MERGE_BLOCKERS = ["enum", "const", "anyOf", "oneOf", "allOf", "not", "$ref"] as const;
+/** Every kind whose canonical JSON form is already its runtime value. */
+const PASSTHROUGH: ProtocolNode = Object.freeze({
+  decode: (value: unknown) => value,
+  encode: (value: unknown) => value,
+});
 
 /**
- * A nullable wrapper widens the inner `type` keyword instead of wrapping the
- * schema in an `anyOf` union whenever that is spec-equivalent:
- * `{"type":["boolean","null"]}` accepts exactly the same values as
- * `{"anyOf":[{"type":"boolean"},{"type":"null"}]}`, and function-calling
- * models reliably honor flat `type` keywords where many ignore `anyOf`
- * member types entirely (DeepSeek, for one, stringifies every scalar
- * argument of an `anyOf`-typed parameter). Inners whose constraints would
- * change meaning under a widened type (enum/const/combinators) keep the
- * union form.
+ * A validator AckerDB did not build. Its kind has no AckerDB meaning, so nothing
+ * here interprets its values: they cross structurally, exactly as a value with
+ * no validator at all does, and the validator's own `check` stays the single
+ * word on what is valid. No JSON Schema can describe such a kind, so every
+ * published document still refuses it — `rejectUnrepresentable` is where that
+ * refusal lives, and AckerDB's own JSON-less kinds are refused here too.
  */
-function nullableSchema(
-  inner: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-  const type = inner.type;
-  const mergeable =
-    (typeof type === "string" ||
-      (Array.isArray(type) && type.every((member) => typeof member === "string"))) &&
-    NULLABLE_MERGE_BLOCKERS.every((key) => !(key in inner));
-  if (!mergeable) return { anyOf: [inner, { type: "null" }] };
-  const types = typeof type === "string" ? [type] : (type as readonly string[]);
-  return types.includes("null") ? inner : { ...inner, type: [...types, "null"] };
-}
+const FOREIGN: ProtocolNode = Object.freeze({
+  decode: (value: unknown) => value,
+  encode: (value: unknown) => toStandardJson(value),
+});
 
 function protocolError(path: string, expected: string, value: unknown): never {
   const got = value === null
@@ -297,48 +216,16 @@ function canonicalBytes(value: unknown, path: string): Uint8Array {
   return new Uint8Array(decoded);
 }
 
-function checkedNode(
-  validator: StandardValidator,
-  fragment: Readonly<Record<string, unknown>>,
-): ProtocolNode {
-  return {
-    schema: () => described(validator, fragment),
-    decode: (value) => value,
-    encode: (value) => value,
-  };
-}
-
-function compileObject(
-  validator: ObjectValidator,
-  where: string,
-  protocol: boolean,
-): ProtocolNode {
+function compileObject(validator: ObjectValidator, where: string): ProtocolNode {
   if (validator.shape === null || typeof validator.shape !== "object" || Array.isArray(validator.shape)) {
     throw new TypeError(`${where}: v.object() has an invalid shape`);
   }
   const fields = Object.entries(validator.shape).map(([name, field]) => [
     name,
     field,
-    compileNode(field, `${where}.${name}`, protocol),
+    compileNode(field, `${where}.${name}`),
   ] as const);
   return {
-    schema(mode) {
-      const properties = Object.create(null) as Record<
-        string,
-        Readonly<Record<string, unknown>>
-      >;
-      const required: string[] = [];
-      for (const [name, field, node] of fields) {
-        properties[name] = node.schema(mode);
-        if (field.kind !== "optional" && field.kind !== "nullish") required.push(name);
-      }
-      return described(validator, {
-        type: "object",
-        properties,
-        ...(required.length === 0 ? {} : { required }),
-        additionalProperties: false,
-      });
-    },
     decode(value, path, mode) {
       if (value === null || typeof value !== "object" || Array.isArray(value) || value instanceof Uint8Array) {
         return value;
@@ -386,11 +273,7 @@ function compileObject(
   };
 }
 
-function compileUnion(
-  validator: UnionValidator,
-  where: string,
-  protocol: boolean,
-): ProtocolNode {
+function compileUnion(validator: UnionValidator, where: string): ProtocolNode {
   if (validator.members === null || typeof validator.members !== "object" || Array.isArray(validator.members)) {
     throw new TypeError(`${where}: v.union() has invalid members`);
   }
@@ -400,27 +283,10 @@ function compileUnion(
       validator: member,
       node: member.kind === "tag"
         ? undefined
-        : compileNode(member, `${where}.${tag}.value`, protocol),
+        : compileNode(member, `${where}.${tag}.value`),
     },
   ]));
   return {
-    schema(mode) {
-      return described(validator, {
-        oneOf: [...members].map(([tag, member]) => ({
-          type: "object",
-          properties: {
-            tag: { const: tag },
-            value: member.node === undefined ? { type: "null" } : member.node.schema(mode),
-          },
-          required:
-            member.validator.kind === "optional" || member.validator.kind === "nullish" ||
-              (mode === "input" && member.validator.kind === "tag")
-              ? ["tag"]
-              : ["tag", "value"],
-          additionalProperties: false,
-        })),
-      });
-    },
     decode(value, path, mode) {
       if (value === null || typeof value !== "object" || Array.isArray(value)) {
         return value;
@@ -468,43 +334,18 @@ function compileUnion(
   };
 }
 
-function compileNode(
-  validator: StandardValidator,
-  where: string,
-  protocol: boolean,
-): ProtocolNode {
+function compileNode(validator: StandardValidator, where: string): ProtocolNode {
   switch (validator.kind) {
     case "string":
-      return checkedNode(validator, {
-        type: "string",
-        ...constraintSchema(validator.descriptor()),
-      });
     case "int":
-      return checkedNode(validator, {
-        type: "integer",
-        ...constraintSchema(validator.descriptor()),
-      });
     case "float":
-      return checkedNode(validator, {
-        type: "number",
-        ...constraintSchema(validator.descriptor()),
-      });
     case "boolean":
-      return checkedNode(validator, { type: "boolean" });
+    case "vector":
+    case "enum":
+      return PASSTHROUGH;
     case "bigint":
     case "identity":
-      if (!protocol) {
-        throw new TypeError(
-          `${where}: v.${validator.kind}() requires a standard-JSON protocol codec`,
-        );
-      }
       return {
-        schema: (mode) => described(
-          validator,
-          mode === "input"
-            ? { type: ["integer", "string"], pattern: DECIMAL_PATTERN }
-            : { type: "string", pattern: DECIMAL_PATTERN },
-        ),
         decode(value, path, mode) {
           return mode === "input"
             ? canonicalDecimal(value, path)
@@ -515,15 +356,7 @@ function compileNode(
         },
       };
     case "bytes":
-      if (!protocol) {
-        throw new TypeError(`${where}: v.bytes() requires a standard-JSON protocol codec`);
-      }
       return {
-        schema: () => described(validator, {
-          type: "string",
-          pattern: BASE64_PATTERN,
-          contentEncoding: "base64",
-        }),
         decode(value, path) {
           return canonicalBytes(value, path);
         },
@@ -532,18 +365,8 @@ function compileNode(
           return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
         },
       };
-    case "vector": {
-      const dimensions = (validator as VectorValidator).dimensions;
-      return checkedNode(validator, {
-        type: "array",
-        items: { type: "number" },
-        minItems: dimensions,
-        maxItems: dimensions,
-      });
-    }
     case "jsonb":
       return {
-        schema: () => described(validator, {}),
         decode(value, path) {
           assertStandardJson(value, path);
           return value;
@@ -551,50 +374,25 @@ function compileNode(
         preflight: assertStandardJson,
         encode: (value) => value,
       };
-    case "enum": {
-      const values = (validator as EnumValidator).values;
-      if (!Array.isArray(values) || values.some((value) => typeof value !== "string")) {
-        throw new TypeError(`${where}: v.enum() has invalid string values`);
-      }
-      return checkedNode(validator, { type: "string", enum: [...values] });
-    }
     case "literal": {
       const value = (validator as LiteralValidator).value;
-      if (typeof value === "bigint") {
-        if (!protocol) {
-          throw new TypeError(`${where}: v.literal(bigint) requires a standard-JSON protocol codec`);
-        }
-        const protocolValue = value.toString();
-        return {
-          schema: () => described(validator, { const: protocolValue }),
-          decode(input, path) {
-            if (input !== protocolValue) protocolError(path, JSON.stringify(protocolValue), input);
-            return value;
-          },
-          encode: () => protocolValue,
-        };
-      }
-      if (
-        (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") ||
-        (typeof value === "number" && !Number.isFinite(value))
-      ) {
-        throw new TypeError(`${where}: v.literal() has no standard-JSON protocol value`);
-      }
-      return checkedNode(validator, { const: value });
+      if (typeof value !== "bigint") return PASSTHROUGH;
+      const protocolValue = value.toString();
+      return {
+        decode(input, path) {
+          if (input !== protocolValue) protocolError(path, JSON.stringify(protocolValue), input);
+          return value;
+        },
+        encode: () => protocolValue,
+      };
     }
     case "array": {
       const element = (validator as StandardValidator & {
         readonly element?: StandardValidator;
       }).element;
       if (element === undefined) throw new TypeError(`${where}: v.array() has no element validator`);
-      const node = compileNode(element, `${where}[]`, protocol);
-      const constraints = constraintSchema(validator.descriptor());
+      const node = compileNode(element, `${where}[]`);
       return {
-        schema: (mode) => described(validator, {
-          type: "array",
-          items: node.schema(mode),
-          ...constraints,
-        }),
         decode(value, path, mode) {
           if (!Array.isArray(value)) return value;
           return value.map((item, index) => node.decode(item, `${path}[${index}]`, mode));
@@ -612,9 +410,9 @@ function compileNode(
       };
     }
     case "object":
-      return compileObject(validator as ObjectValidator, where, protocol);
+      return compileObject(validator as ObjectValidator, where);
     case "union":
-      return compileUnion(validator as UnionValidator, where, protocol);
+      return compileUnion(validator as UnionValidator, where);
     case "nullable":
     case "optional":
     case "nullish": {
@@ -622,14 +420,10 @@ function compileNode(
         readonly inner?: StandardValidator;
       }).inner;
       if (inner === undefined) throw new TypeError(`${where}: .${validator.kind}() has no inner validator`);
-      const node = compileNode(inner, where, protocol);
+      const node = compileNode(inner, where);
       const acceptsNull = validator.kind === "nullable" || validator.kind === "nullish";
       const acceptsUndefined = validator.kind === "optional" || validator.kind === "nullish";
       return {
-        schema: (mode) => described(
-          validator,
-          acceptsNull ? nullableSchema(node.schema(mode)) : node.schema(mode),
-        ),
         decode(value, path, mode) {
           if (value === null && acceptsNull) return null;
           if (value === undefined && acceptsUndefined) return undefined;
@@ -647,52 +441,32 @@ function compileNode(
         },
       };
     }
-    case "pk":
-      throw new TypeError(
-        `${where}: v.primaryKey() is not an MCP value; use v.bigint() for a decimal string`,
-      );
-    case "scheduleAt":
-      throw new TypeError(
-        `${where}: v.scheduleAt() is not an MCP value; use v.float() for a timestamp`,
-      );
-    case "tag":
-      throw new TypeError(`${where}: v.tag() is valid only as a direct v.union() member`);
     default:
-      throw new TypeError(
-        `${where}: v.${validator.kind}() has no lossless standard-JSON protocol representation`,
-      );
+      // AckerDB's own kinds without a JSON form are named and refused. A kind
+      // AckerDB never defined belongs to whoever wrote that validator.
+      if (validator.kind === "pk" || validator.kind === "scheduleAt" || validator.kind === "tag") {
+        rejectUnrepresentable(validator, where);
+      }
+      return FOREIGN;
   }
 }
 
-function schemaUri(options: StandardJsonSchemaOptions): string {
-  if (options?.target === "draft-2020-12") return JSON_SCHEMA_2020_12;
-  if (options?.target === "draft-07") return JSON_SCHEMA_DRAFT_07;
-  throw new TypeError("AckerDB validators support JSON Schema draft-2020-12 and draft-07");
-}
-
-/** Standard Schema consumers may normalize in place, so every call owns a fresh graph. */
-function mutableStandardSchemaFor(
-  node: ProtocolNode,
-  mode: SchemaMode,
-  options: StandardJsonSchemaOptions,
-): Readonly<Record<string, unknown>> {
-  return { $schema: schemaUri(options), ...node.schema(mode) };
-}
-
-function schemaFor(
-  node: ProtocolNode,
-  mode: SchemaMode,
-  options: StandardJsonSchemaOptions,
-): Readonly<Record<string, unknown>> {
-  return deepFreeze(mutableStandardSchemaFor(node, mode, options));
-}
-
-function jsonSchema(
+/**
+ * The Standard Schema view over the shared emitter. A plain validator describes
+ * only what its runtime values already are; a compiled codec additionally
+ * carries bigint, Identity, and bytes across the JSON boundary.
+ */
+function standardJsonSchema(
   validator: StandardValidator,
-  mode: SchemaMode,
+  mode: JsonSchemaMode,
   options: StandardJsonSchemaOptions,
+  protocol: boolean,
 ): Readonly<Record<string, unknown>> {
-  return mutableStandardSchemaFor(compileNode(validator, "$", false), mode, options);
+  return validatorJsonSchema<StandardValidator>(validator, {
+    mode,
+    target: options?.target,
+    protocol,
+  });
 }
 
 export function createStandardSchemaProperties<Input, Output>(
@@ -711,8 +485,10 @@ export function createStandardSchemaProperties<Input, Output>(
       }
     },
     jsonSchema: Object.freeze({
-      input: (options: StandardJsonSchemaOptions) => jsonSchema(validator, "input", options),
-      output: (options: StandardJsonSchemaOptions) => jsonSchema(validator, "output", options),
+      input: (options: StandardJsonSchemaOptions) =>
+        standardJsonSchema(validator, "input", options, false),
+      output: (options: StandardJsonSchemaOptions) =>
+        standardJsonSchema(validator, "output", options, false),
     }),
   });
 }
@@ -720,9 +496,7 @@ export function createStandardSchemaProperties<Input, Output>(
 export function compileStandardJsonCodec<V extends StandardValidator>(
   validator: V,
 ): StandardJsonCodec<InferValidator<V>, StandardJsonInput<V>, StandardJsonOutput<V>> {
-  const node = compileNode(validator, "$", true);
-  const inputSchema = schemaFor(node, "input", { target: "draft-2020-12" });
-  const outputSchema = schemaFor(node, "output", { target: "draft-2020-12" });
+  const node = compileNode(validator, "$");
   const decode = (value: unknown, path = "$input") => {
     assertStandardJson(value, path);
     return validator.check(node.decode(value, path, "input"), path) as InferValidator<V>;
@@ -733,7 +507,7 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
     assertStandardJson(encoded, path);
     return encoded;
   };
-  const protocolSchema = <Value>(mode: SchemaMode): StandardJsonProtocolSchema<Value> => Object.freeze({
+  const protocolSchema = <Value>(mode: JsonSchemaMode): StandardJsonProtocolSchema<Value> => Object.freeze({
     "~standard": Object.freeze({
       version: 1 as const,
       vendor: "ackerdb" as const,
@@ -749,8 +523,10 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
         }
       },
       jsonSchema: Object.freeze({
-        input: (options: StandardJsonSchemaOptions) => mutableStandardSchemaFor(node, mode, options),
-        output: (options: StandardJsonSchemaOptions) => mutableStandardSchemaFor(node, mode, options),
+        input: (options: StandardJsonSchemaOptions) =>
+          standardJsonSchema(validator, mode, options, true),
+        output: (options: StandardJsonSchemaOptions) =>
+          standardJsonSchema(validator, mode, options, true),
       }),
     }),
   });
@@ -759,8 +535,6 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
     StandardJsonInput<V>,
     StandardJsonOutput<V>
   > = {
-    inputSchema,
-    outputSchema,
     decode,
     encode,
     inputProtocolSchema: protocolSchema<StandardJsonInput<V>>("input"),
@@ -777,30 +551,12 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
         }
       },
       jsonSchema: Object.freeze({
-        input: (options: StandardJsonSchemaOptions) => mutableStandardSchemaFor(node, "input", options),
-        output: (options: StandardJsonSchemaOptions) => mutableStandardSchemaFor(node, "output", options),
+        input: (options: StandardJsonSchemaOptions) =>
+          standardJsonSchema(validator, "input", options, true),
+        output: (options: StandardJsonSchemaOptions) =>
+          standardJsonSchema(validator, "output", options, true),
       }),
     }),
   };
   return Object.freeze(codec);
-}
-
-export function compileMcpObjectCodec<S extends ObjectShape>(
-  validator: ObjectValidator<S>,
-): StandardJsonCodec<
-  InferValidator<ObjectValidator<S>>,
-  StandardJsonInput<ObjectValidator<S>>,
-  StandardJsonOutput<ObjectValidator<S>>
-> & {
-  readonly inputSchema: JsonObjectSchema;
-  readonly outputSchema: JsonObjectSchema;
-} {
-  return compileStandardJsonCodec(validator) as StandardJsonCodec<
-    InferValidator<ObjectValidator<S>>,
-    StandardJsonInput<ObjectValidator<S>>,
-    StandardJsonOutput<ObjectValidator<S>>
-  > & {
-    readonly inputSchema: JsonObjectSchema;
-    readonly outputSchema: JsonObjectSchema;
-  };
 }

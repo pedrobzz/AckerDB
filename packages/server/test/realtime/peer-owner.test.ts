@@ -105,7 +105,7 @@ async function prepare(
   value: Fixture,
   forwarded: string,
 ): Promise<{ readonly owner: string; readonly ticket: string }> {
-  const response = await fetch(`${value.base}/api/realtime/prepare`, {
+  const response = await fetch(`${value.base}/api/_realtime/prepare`, {
     method: "POST",
     headers: { "x-forwarded-for": forwarded },
     body: encode({
@@ -129,7 +129,7 @@ async function prepare(
 
 async function offer(value: Fixture, forwarded: string): Promise<string> {
   const prepared = await prepare(value, forwarded);
-  const response = await fetch(`${value.base}/api/realtime`, {
+  const response = await fetch(`${value.base}/api/_realtime`, {
     method: "POST",
     headers: { "x-forwarded-for": forwarded },
     body: encode({
@@ -151,7 +151,7 @@ function sessionRequest(
   method: "PATCH" | "DELETE",
   forwarded: string,
 ): Promise<Response> {
-  return fetch(`${value.base}/api/realtime/${sessionId}`, {
+  return fetch(`${value.base}/api/_realtime/${sessionId}`, {
     method,
     headers: { "x-forwarded-for": forwarded },
     ...(method === "PATCH"

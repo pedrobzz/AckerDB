@@ -21,7 +21,7 @@ import { procedure } from "../../src/app/functions.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { carryHttpRequestProvenance } from "../../src/runtime/request-provenance.ts";
-import { Runtime, type RuntimeProcedureResponse } from "../../src/runtime/runtime.ts";
+import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import {
   Session,
@@ -84,12 +84,14 @@ const functions = {
   accounts: {
     link: procedure({
       access: "public",
+      http: true,
       args: { rawBearerToken: v.string() },
       handler: (ctx: Ctx, args: { rawBearerToken: string }) =>
         ctx.linkAccount(args.rawBearerToken),
     }),
     unlink: procedure({
       access: "public",
+      http: true,
       args: { issuer: v.string(), subject: v.string() },
       handler: async (ctx: Ctx, account: ExternalAccount) => {
         await ctx.unlinkAccount(account);
@@ -98,6 +100,7 @@ const functions = {
     }),
     unlinkThenFail: procedure({
       access: "public",
+      http: true,
       args: { issuer: v.string(), subject: v.string() },
       handler: async (ctx: Ctx, account: ExternalAccount) => {
         await ctx.unlinkAccount(account);
@@ -106,6 +109,7 @@ const functions = {
     }),
     unlinkAndWait: procedure({
       access: "public",
+      http: true,
       args: { issuer: v.string(), subject: v.string() },
       handler: async (ctx: Ctx, account: ExternalAccount) => {
         const stall = unlinkStall;
@@ -120,6 +124,7 @@ const functions = {
   owned: {
     create: procedure({
       access: (ctx) => ctx.auth.kind === "user",
+      http: true,
       args: { value: v.string() },
       handler: (ctx: Ctx, args: { value: string }) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -131,6 +136,7 @@ const functions = {
     }),
     current: procedure({
       access: (ctx) => ctx.auth.kind === "user",
+      http: true,
       args: {},
       handler: (ctx: Ctx) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -271,7 +277,7 @@ async function invoke(
     readonly lease?: AuthLease;
     handoff?(): void;
   } = {},
-): Promise<{ readonly status: number; readonly frame: unknown }> {
+): Promise<{ readonly status: number; readonly body: unknown }> {
   const signal = options.lease?.signal ?? options.signal;
   const request = {
     id: ++requestId,
@@ -279,7 +285,7 @@ async function invoke(
     args,
     principal,
     ...(signal === undefined ? {} : { signal }),
-    respond: ({ body, status }: RuntimeProcedureResponse) => {
+    respond: ({ body, status }: RuntimeHttpResponse) => {
       options.handoff?.();
       return new Response(body, { status });
     },
@@ -288,7 +294,7 @@ async function invoke(
     ? request
     : carryHttpRequestProvenance(request, 1, undefined, options.lease.invalidationScope);
   const response = await harness.runtime.runProcedure(carried);
-  return { status: response.status, frame: decode(await response.text()) };
+  return { status: response.status, body: JSON.parse(await response.text()) };
 }
 
 async function link(harness: Harness, principal: UserPrincipal, token: string): Promise<void> {
@@ -361,7 +367,7 @@ describe("transactional external-account unlinking", () => {
     });
     unsubscribe();
 
-    expect(unlinked).toMatchObject({ status: 200, frame: { value: true } });
+    expect(unlinked).toEqual({ status: 200, body: true });
     expect(invalidationOrder).toEqual([false]);
     expect(lease.signal).toMatchObject({ aborted: true });
     expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_A, "alice")).toBeNull();
@@ -375,7 +381,7 @@ describe("transactional external-account unlinking", () => {
     expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_A, "alice")).toBeNull();
     expect(await invoke(harness, aliceB, "owned.current", {})).toMatchObject({
       status: 200,
-      frame: { value: { userId: aliceA.identity, value: "durable owner" } },
+      body: { userId: String(aliceA.identity), value: "durable owner" },
     });
 
     const freshAliceA = await authenticate(harness, "alice-a");
@@ -395,8 +401,7 @@ describe("transactional external-account unlinking", () => {
       invoke(harness, alice, "accounts.unlink", { issuer: ISSUER_C, subject: "missing" }),
     ]);
     expect(denied.map(({ status }) => status)).toEqual([403, 403, 403]);
-    expect(denied.map(({ frame }) =>
-      (frame as { readonly outcome: unknown }).outcome)).toEqual([
+    expect(denied.map(({ body }) => body)).toEqual([
         { code: "unauthorized", retryable: false, message: "account unlinking requires ownership" },
         { code: "unauthorized", retryable: false, message: "account unlinking requires ownership" },
         { code: "unauthorized", retryable: false, message: "account unlinking requires ownership" },
@@ -404,7 +409,7 @@ describe("transactional external-account unlinking", () => {
 
     expect(await invoke(harness, bob, "accounts.unlink", BOB_A)).toMatchObject({
       status: 409,
-      frame: { outcome: { code: "conflict", message: "cannot unlink the final external account" } },
+      body: { code: "conflict", message: "cannot unlink the final external account" },
     });
     expect(harness.engine.identityForAccount(harness.engine.reader, ISSUER_A, "bob"))
       .toBe(bob.identity);
@@ -510,7 +515,7 @@ describe("transactional external-account unlinking", () => {
     expect(sink.closes[0]).toMatchObject({ code: "unauthenticated", message: "credential revoked" });
 
     release.resolve(undefined);
-    expect(await response).toMatchObject({ status: 200, frame: { value: true } });
+    expect(await response).toEqual({ status: 200, body: true });
     expect(handedOff).toBe(true);
     expect(origin.signal).toMatchObject({ aborted: true });
   });

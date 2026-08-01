@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode, parseCallResponse } from "@ackerdb/core";
+import { decode } from "@ackerdb/core";
 import { simulateReadableStream, streamText } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import {
@@ -29,7 +29,7 @@ import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { mcpTokenVaultOwner } from "../../src/mcp/token-vault.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { Runtime, type RuntimeProcedureResponse } from "../../src/runtime/runtime.ts";
+import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
 
@@ -222,6 +222,7 @@ function errorMessage(work: () => unknown): string {
 
 const runLocal = typedProcedure({
   access: "public",
+  http: true,
   args: { mode: v.string() },
   handler: async (ctx, args) => {
     switch (args.mode) {
@@ -488,13 +489,14 @@ async function callProcedure(principal: Principal, mode: string): Promise<unknow
     address: "app.runLocal",
     args: { mode },
     principal,
-    respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+    respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
   });
-  const frame = parseCallResponse(decode(await response.text()));
-  if (frame.t !== "ok") {
-    throw new Error(frame.t === "err" ? frame.outcome.message : frame.error.code);
+  const body = decode(await response.text());
+  if (response.status !== 200) {
+    const failure = body as { readonly code: string; readonly message?: string };
+    throw new Error(failure.message ?? failure.code);
   }
-  return frame.value;
+  return body;
 }
 
 function spans(): TelemetrySpanRecord[] {

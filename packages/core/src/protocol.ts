@@ -350,15 +350,6 @@ export type ServerMessage =
   | ErrorMessage
   | PongMessage;
 
-/** Versioned HTTP body for procedure and SSE procedure calls. */
-export interface CallRequest extends Frame<"call"> {
-  id: number;
-  ref: string;
-  args: unknown;
-}
-
-export type CallResponse = ProcedureOkMessage | ApplicationErrorMessage | ErrorMessage;
-
 interface SseFrame<T extends string> extends Frame<T> {
   seq: number;
   proof: string;
@@ -828,25 +819,6 @@ export function parseServerMessage(value: unknown): ServerMessage {
       return malformed("unknown server frame type");
   }
   return result as unknown as ServerMessage;
-}
-
-export function parseCallRequest(value: unknown): CallRequest {
-  const result = frame(value);
-  if (result.t !== "call") malformed("HTTP request must be a call frame");
-  exact(result, ["v", "t", "id", "ref", "args"]);
-  protocolId(result.id, "request id");
-  string(result.ref, "ref", MAX_REFERENCE_LENGTH);
-  payload(result.args, "args");
-  return result as unknown as CallRequest;
-}
-
-export function parseCallResponse(value: unknown): CallResponse {
-  const result = parseServerMessage(value);
-  if (
-    result.t === "err" ||
-    ((result.t === "ok" || result.t === "app_err") && result.kind === "procedure")
-  ) return result;
-  return malformed("HTTP response must be a procedure result or error");
 }
 
 export function parseSseMessage(value: unknown): SseMessage {

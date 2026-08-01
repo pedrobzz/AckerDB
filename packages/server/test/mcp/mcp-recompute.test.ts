@@ -92,6 +92,7 @@ const listRecords = typedQuery({
 
 const commitRecord = typedProcedure({
   access: (ctx) => ctx.auth.kind === "user",
+  http: true,
   args: { value: v.string() },
   handler: (ctx, args) =>
     ctx.tx(async (tx) => {

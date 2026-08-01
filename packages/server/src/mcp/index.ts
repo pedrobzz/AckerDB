@@ -42,12 +42,17 @@ import {
 import type { Schema } from "../schema/definition.ts";
 import type { ProcedureCtx, TxCtx } from "../app/functions.ts";
 import {
-  compileMcpObjectCodec,
-  type JsonObjectSchema,
+  compileStandardJsonCodec,
   type StandardJsonCodec,
   type StandardJsonInput,
   type StandardJsonOutput,
 } from "../validation/standard-schema.ts";
+import {
+  argsJsonSchema,
+  validatorJsonSchema,
+  type JsonObjectSchema,
+} from "../validation/json-schema.ts";
+import { deepFreeze } from "../shared/immutable.ts";
 import {
   type McpCallToolResult,
   type McpToolResult,
@@ -577,10 +582,16 @@ function assembleMcpTool(
   }
   const outputValidator = definition.output as ObjectValidator | undefined;
   const inputValidator = v.object(args);
-  const inputCodec = compileMcpObjectCodec(inputValidator);
+  const inputCodec = compileStandardJsonCodec(inputValidator);
   const outputCodec = outputValidator === undefined
     ? undefined
-    : compileMcpObjectCodec(outputValidator);
+    : compileStandardJsonCodec(outputValidator);
+  // Wire schemas are published to every client, so they are deep-frozen rather
+  // than handed to the SDK as mutable graphs.
+  const inputSchema = deepFreeze(argsJsonSchema(args));
+  const outputSchema = outputValidator === undefined
+    ? undefined
+    : deepFreeze(validatorJsonSchema(outputValidator, { mode: "output" }));
   const tool = {
     isAckerDBServerOnly: true as const,
     serverKind: "mcp-tool" as const,
@@ -594,10 +605,10 @@ function assembleMcpTool(
     args,
     inputValidator,
     inputCodec,
-    inputSchema: inputCodec.inputSchema,
+    inputSchema,
     outputValidator,
     outputCodec,
-    outputSchema: outputCodec?.outputSchema,
+    outputSchema,
     access: (ctx: McpToolCtx) => isMcpToolAuthorized(
       accessPolicy,
       ctx.auth,

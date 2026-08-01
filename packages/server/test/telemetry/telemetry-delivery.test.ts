@@ -6,7 +6,6 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
-  parseCallResponse,
   type ServerMessage,
 } from "@ackerdb/core";
 import {
@@ -27,8 +26,8 @@ import {
   query,
   reconcile,
   serve,
-  type RuntimeProcedureRequest,
-  type RuntimeProcedureResponse,
+  type RuntimeHttpRequest,
+  type RuntimeHttpResponse,
   type RuntimePublication,
   type RuntimeRequest,
   type SessionRuntimeContext,
@@ -73,11 +72,13 @@ const functions = {
   ops: {
     echo: procedure({
       access: "public",
+      http: true,
       args: { body: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.body,
     }),
     fail: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: () => {
         throw new AckerDBError("conflict", "already exists");
@@ -85,6 +86,7 @@ const functions = {
     }),
     failLarge: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: () => {
         throw new AckerDBError("overloaded", "safe detail ".repeat(100), {
@@ -146,7 +148,7 @@ class BufferedSocket implements WebSocketDeliverySocket {
   close(): void {}
 }
 
-interface CapturedProcedureHandoff extends RuntimeProcedureResponse {
+interface CapturedProcedureHandoff extends RuntimeHttpResponse {
   readonly activeOperations: number;
 }
 
@@ -154,7 +156,7 @@ class ProcedureObservingRuntime extends Runtime {
   readonly procedureHandoffs = new Map<number, CapturedProcedureHandoff>();
   failedResponderId: number | null = null;
 
-  override runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
+  override runProcedure(request: RuntimeHttpRequest): Promise<Response> {
     return super.runProcedure({
       ...request,
       respond: (response) => {
@@ -606,79 +608,54 @@ test("AckerDBServer correlates bounded procedure encoding and Response handoff i
       },
     },
   });
-  runtime.failedResponderId = 54;
+  // Path-addressed calls are numbered by the listener in arrival order.
+  runtime.failedResponderId = 4;
   const server = serve({ runtime, port: 0 });
   const base = `http://127.0.0.1:${server.port}`;
   const receivedBytes = new Map<number, number>();
-  const call = async (id: number, ref: string, args: unknown) => {
-    const requestBody = `${" ".repeat(19)}${encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args })}`;
+  const call = async (id: number, address: string, args: unknown) => {
+    const requestBody = `${" ".repeat(19)}${encode(args)}`;
     receivedBytes.set(id, encoder.encode(requestBody).byteLength);
-    const response = await fetch(`${base}/api/call`, {
+    const response = await fetch(`${base}/api/${address.replaceAll(".", "/")}`, {
       method: "POST",
       body: requestBody,
     });
     const body = await response.text();
-    return { body, frame: parseCallResponse(decode(body)), status: response.status };
+    return { body, value: decode(body), status: response.status };
   };
 
   try {
-    const success = await call(51, "ops.echo", { body: "hello" });
-    const failure = await call(52, "ops.fail", {});
-    const boundedFailure = await call(53, "ops.failLarge", {});
-    const responderFailure = await call(54, "ops.echo", { body: "handoff" });
+    const success = await call(1, "ops.echo", { body: "hello" });
+    const failure = await call(2, "ops.fail", {});
+    const boundedFailure = await call(3, "ops.failLarge", {});
+    const responderFailure = await call(4, "ops.echo", { body: "handoff" });
 
-    expect(success).toMatchObject({
-      status: 200,
-      frame: {
-        v: PROTOCOL_VERSION,
-        t: "ok",
-        id: 51,
-        kind: "procedure",
-        value: "hello",
-      },
-    });
+    expect(success).toMatchObject({ status: 200, value: "hello" });
     expect(failure).toMatchObject({
       status: 409,
-      frame: {
-        v: PROTOCOL_VERSION,
-        t: "err",
-        id: 52,
-        outcome: { code: "conflict", retryable: false, message: "already exists" },
-      },
+      value: { code: "conflict", retryable: false, message: "already exists" },
     });
     expect(boundedFailure.status).toBe(429);
-    expect(boundedFailure.frame).toMatchObject({
-      v: PROTOCOL_VERSION,
-      t: "err",
-      id: 53,
-      outcome: {
-        code: "overloaded",
-        retryable: true,
-        retryAfterMs: 125,
-        resource: "operation",
-      },
+    expect(boundedFailure.value).toMatchObject({
+      code: "overloaded",
+      retryable: true,
+      retryAfterMs: 125,
+      resource: "operation",
     });
-    expect(boundedFailure.frame.t).toBe("err");
-    if (boundedFailure.frame.t !== "err") throw new Error("expected bounded error response");
-    expect(boundedFailure.frame.outcome.message).toEndWith("…");
+    expect((boundedFailure.value as { message: string }).message).toEndWith("…");
     expect(encoder.encode(boundedFailure.body).byteLength).toBeLessThanOrEqual(
       runtime.limits.maxFrameBytes,
     );
     expect(responderFailure).toMatchObject({
       status: 500,
-      frame: {
-        v: PROTOCOL_VERSION,
-        t: "err",
-        id: 54,
-        outcome: { code: "internal", retryable: false, message: "HTTP response handoff failed" },
-      },
+      value: { code: "internal", retryable: false, message: "HTTP response handoff failed" },
     });
     expect(responderFailure.body).not.toContain("private responder failure");
 
     for (const [id, publicResponse] of [
-      [51, success],
-      [52, failure],
-      [53, boundedFailure],
+      [1, success],
+      [2, failure],
+      [3, boundedFailure],
     ] as const) {
       const handoff = runtime.procedureHandoffs.get(id);
       expect(handoff).toBeDefined();
@@ -688,7 +665,7 @@ test("AckerDBServer correlates bounded procedure encoding and Response handoff i
       expect(handoff!.bytes).toBeLessThanOrEqual(runtime.limits.maxFrameBytes);
       expect(handoff!.status).toBe(publicResponse.status);
     }
-    const failedHandoff = runtime.procedureHandoffs.get(54);
+    const failedHandoff = runtime.procedureHandoffs.get(4);
     expect(failedHandoff).toMatchObject({ activeOperations: 1, status: 200 });
     expect(failedHandoff!.bytes).toBe(encoder.encode(failedHandoff!.body).byteLength);
     expect(runtime.status().activeOperations).toBe(0);
@@ -697,9 +674,9 @@ test("AckerDBServer correlates bounded procedure encoding and Response handoff i
     await runtime.telemetry.flush();
     const retained = spans(exported);
     for (const [id, address] of [
-      [51, "ops.echo"],
-      [52, "ops.fail"],
-      [53, "ops.failLarge"],
+      [1, "ops.echo"],
+      [2, "ops.fail"],
+      [3, "ops.failLarge"],
     ] as const) {
       const owner = admission(retained, "procedure", String(id));
       const handoff = runtime.procedureHandoffs.get(id)!;
@@ -719,7 +696,7 @@ test("AckerDBServer correlates bounded procedure encoding and Response handoff i
       expect(responseSpans.every((record) => record.sizeBytes === handoff.bytes)).toBe(true);
     }
 
-    const responderAdmission = admission(retained, "procedure", "54");
+    const responderAdmission = admission(retained, "procedure", "4");
     const responderSpans = retained.filter((record) =>
       record.operation === "procedure" &&
       record.resource === "operation" &&
@@ -731,7 +708,7 @@ test("AckerDBServer correlates bounded procedure encoding and Response handoff i
       { stage: "delivery", outcome: "internal" },
     ]);
     expect(responderSpans.every((record) =>
-      record.requestId === "54" && record.function === "ops.echo"
+      record.requestId === "4" && record.function === "ops.echo"
     )).toBe(true);
     expect(responderSpans.every((record) => record.sizeBytes === failedHandoff!.bytes)).toBe(true);
   } finally {

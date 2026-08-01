@@ -47,6 +47,7 @@ const functions = {
   accounts: {
     link: procedure({
       access: "public",
+      http: true,
       args: { rawBearerToken: v.string() },
       handler: async (ctx: Ctx, args: { rawBearerToken: string }) => {
         await ctx.linkAccount(args.rawBearerToken);
@@ -57,6 +58,7 @@ const functions = {
   owned: {
     create: procedure({
       access: (ctx) => ctx.auth.kind === "user",
+      http: true,
       args: { value: v.string() },
       handler: (ctx: Ctx, args: { value: string }) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -68,6 +70,7 @@ const functions = {
     }),
     current: procedure({
       access: (ctx) => ctx.auth.kind === "user",
+      http: true,
       args: {},
       handler: (ctx: Ctx) => {
         if (ctx.auth.kind !== "user") throw new Error("user required");
@@ -185,7 +188,7 @@ async function invoke(
   id: number,
   address: string,
   args: unknown,
-): Promise<{ readonly status: number; readonly frame: unknown }> {
+): Promise<{ readonly status: number; readonly body: unknown }> {
   const response = await runtime.runProcedure({
     id,
     address,
@@ -193,7 +196,7 @@ async function invoke(
     principal,
     respond: ({ body, status }) => new Response(body, { status }),
   });
-  return { status: response.status, frame: decode(await response.text()) };
+  return { status: response.status, body: JSON.parse(await response.text()) };
 }
 
 function directoryCounts(engine: Engine): { identities: bigint; accounts: bigint } {
@@ -213,7 +216,7 @@ describe("explicit provider-neutral account linking", () => {
     expect(await invoke(runtime, aliceA, 1, "owned.create", { value: "same owner" }))
       .toMatchObject({ status: 200 });
     expect(await invoke(runtime, aliceA, 2, "accounts.link", { rawBearerToken: "alice-b" }))
-      .toMatchObject({ status: 200, frame: { value: true } });
+      .toEqual({ status: 200, body: true });
     expect(directoryCounts(engine)).toEqual({ identities: 1n, accounts: 2n });
 
     const aliceB = await authenticate(runtime, verifier, "alice-b");
@@ -222,15 +225,15 @@ describe("explicit provider-neutral account linking", () => {
     const throughB = await invoke(runtime, aliceB, 4, "owned.current", {});
     expect(throughA).toMatchObject({
       status: 200,
-      frame: { value: { userId: aliceA.identity, value: "same owner" } },
+      body: { userId: String(aliceA.identity), value: "same owner" },
     });
     expect(throughB).toMatchObject({
       status: 200,
-      frame: { value: { userId: aliceA.identity, value: "same owner" } },
+      body: { userId: String(aliceA.identity), value: "same owner" },
     });
 
     expect(await invoke(runtime, aliceA, 5, "accounts.link", { rawBearerToken: "alice-b" }))
-      .toMatchObject({ status: 200, frame: { value: true } });
+      .toEqual({ status: 200, body: true });
     expect(directoryCounts(engine)).toEqual({ identities: 1n, accounts: 2n });
     expect(verifier.verifiedInsideWriter.every((inside) => !inside)).toBe(true);
   });
@@ -248,7 +251,7 @@ describe("explicit provider-neutral account linking", () => {
       10,
       "accounts.link",
       { rawBearerToken: "alice-b" },
-    )).toMatchObject({ status: 403, frame: { outcome: { code: "unauthorized" } } });
+    )).toMatchObject({ status: 403, body: { code: "unauthorized" } });
     expect(verifier.calls).toHaveLength(callsBeforeAnonymous);
     expect(engine.identityForAccount(engine.reader, ISSUER_B, "alice")).toBeNull();
 
@@ -258,7 +261,7 @@ describe("explicit provider-neutral account linking", () => {
       [13, "workload"],
     ] as const) {
       expect(await invoke(runtime, alice, id, "accounts.link", { rawBearerToken }))
-        .toMatchObject({ status: 401, frame: { outcome: { code: "unauthenticated" } } });
+        .toMatchObject({ status: 401, body: { code: "unauthenticated" } });
     }
     expect(engine.identityForAccount(engine.reader, ISSUER_B, "alice")).toBeNull();
 
@@ -270,15 +273,10 @@ describe("explicit provider-neutral account linking", () => {
       { rawBearerToken: "bob-a" },
     );
     expect(conflict.status).toBe(409);
-    expect(conflict.frame).toEqual({
-      v: 5,
-      t: "err",
-      id: 14,
-      outcome: {
-        code: "conflict",
-        retryable: false,
-        message: "external account is already linked",
-      },
+    expect(conflict.body).toEqual({
+      code: "conflict",
+      retryable: false,
+      message: "external account is already linked",
     });
     expect(engine.identityForAccount(engine.reader, ISSUER_A, "bob")).toBe(bob.identity);
     expect(directoryCounts(engine)).toEqual({ identities: 2n, accounts: 2n });
@@ -309,7 +307,7 @@ describe("explicit provider-neutral account linking", () => {
 
     engine.writer.exec("DROP TRIGGER fail_identity_link");
     expect(await invoke(runtime, alice, 21, "accounts.link", { rawBearerToken: "rollback" }))
-      .toMatchObject({ status: 200, frame: { value: true } });
+      .toEqual({ status: 200, body: true });
     expect(engine.identityForAccount(engine.reader, ROLLBACK_ISSUER, "alice"))
       .toBe(alice.identity);
     expect(verifier.verifiedInsideWriter.every((inside) => !inside)).toBe(true);

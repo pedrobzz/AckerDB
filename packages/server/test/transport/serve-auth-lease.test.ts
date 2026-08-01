@@ -6,7 +6,6 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
-  parseCallResponse,
   parseSseMessage,
   type SseMessage,
 } from "@ackerdb/core";
@@ -78,7 +77,7 @@ function acknowledgeSse(
   message: SseMessage,
   authorization?: string,
 ): Promise<Response> {
-  return fetch(`${base}/api/sse/ack`, {
+  return fetch(`${base}/api/_sse/ack`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
@@ -115,11 +114,13 @@ const functions = {
   auth: {
     identity: procedure({
       access: "authenticated",
+      http: true,
       args: {},
       handler: (ctx: Ctx) => ctx.auth.subject,
     }),
     block: procedure({
       access: "authenticated",
+      http: true,
       args: {},
       handler: async (ctx: Ctx) => {
         blockedProcedureStarted.resolve();
@@ -129,6 +130,7 @@ const functions = {
     }),
     once: sseProcedure({
       access: "authenticated",
+      http: true,
       args: {},
       yields: v.object({ phase: v.string() }),
       handler: async function* () {
@@ -137,6 +139,7 @@ const functions = {
     }),
     stream: sseProcedure({
       access: "authenticated",
+      http: true,
       args: {},
       yields: v.object({ phase: v.string() }),
       handler: async function* (ctx: Ctx) {
@@ -191,7 +194,6 @@ describe("HTTP and SSE credential leases", () => {
   let verifier: LeaseVerifier;
   let server: AckerDBServer;
   let base: string;
-  let requestId: number;
 
   beforeEach(() => {
     blockedProcedureStarted = deferred<void>();
@@ -208,7 +210,6 @@ describe("HTTP and SSE credential leases", () => {
     });
     server = serve({ runtime, port: 0 });
     base = `http://127.0.0.1:${server.port}`;
-    requestId = 0;
   });
 
   afterEach(async () => {
@@ -217,23 +218,17 @@ describe("HTTP and SSE credential leases", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  const request = async (
-    path: "call" | "sse",
-    ref: string,
+  /** Procedures and streams are both path-addressed calls with a raw args body. */
+  const call = async (
+    address: string,
     token: string,
     signal?: AbortSignal,
   ): Promise<Response> =>
-    fetch(`${base}/api/${path}`, {
+    fetch(`${base}/api/${address.replaceAll(".", "/")}`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
       ...(signal === undefined ? {} : { signal }),
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "call",
-        id: ++requestId,
-        ref,
-        args: {},
-      }),
+      body: encode({}),
     });
 
   test("validates the Runtime-owned verifier before serving", () => {
@@ -252,20 +247,16 @@ describe("HTTP and SSE credential leases", () => {
   });
 
   test("releases a successful procedure lease immediately after response handoff", async () => {
-    const response = await request("call", "auth.identity", "user-success");
+    const response = await call("auth.identity", "user-success");
     expect(response.status).toBe(200);
-    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
-      t: "ok",
-      kind: "procedure",
-      value: "user-success",
-    });
+    expect(decode(await response.text())).toBe("user-success");
     expect(verifier.activeListeners).toBe(0);
     expect(verifier.subscribeCalls).toBe(1);
     expect(verifier.unsubscribeCalls).toBe(1);
   });
 
   test("ignores unrelated invalidation then fails a live procedure closed on a match", async () => {
-    const pending = request("call", "auth.block", "user-revoked");
+    const pending = call("auth.block", "user-revoked");
     await within(blockedProcedureStarted.promise);
     expect(verifier.activeListeners).toBe(1);
 
@@ -280,29 +271,29 @@ describe("HTTP and SSE credential leases", () => {
     });
     const response = await within(pending);
     expect(response.status).toBe(401);
-    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
-      t: "err",
-      outcome: { code: "unauthenticated", message: "credential revoked" },
+    expect(decode(await response.text())).toMatchObject({
+      code: "unauthenticated",
+      message: "credential revoked",
     });
     expect(verifier.activeListeners).toBe(0);
   });
 
   test("aborts a live procedure at the verified expiration timestamp", async () => {
     verifier.expirations.set("user-expiring", Date.now() + 40);
-    const pending = request("call", "auth.block", "user-expiring");
+    const pending = call("auth.block", "user-expiring");
     await within(blockedProcedureStarted.promise);
 
     const response = await within(pending);
     expect(response.status).toBe(401);
-    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
-      t: "err",
-      outcome: { code: "unauthenticated", message: "credential expired" },
+    expect(decode(await response.text())).toMatchObject({
+      code: "unauthenticated",
+      message: "credential expired",
     });
     expect(verifier.activeListeners).toBe(0);
   });
 
   test("owns an SSE lease through normal body completion", async () => {
-    const complete = await request("sse", "auth.once", "user-complete");
+    const complete = await call("auth.once", "user-complete");
     const streamId = complete.headers.get("x-ackerdb-sse-stream");
     if (streamId === null || complete.body === null) throw new Error("missing SSE response ownership");
     const reader = complete.body.getReader();
@@ -328,7 +319,7 @@ describe("HTTP and SSE credential leases", () => {
 
   test("releases an SSE lease when the response consumer cancels", async () => {
     const cancellation = new AbortController();
-    const canceled = await request("sse", "auth.stream", "user-cancel", cancellation.signal);
+    const canceled = await call("auth.stream", "user-cancel", cancellation.signal);
     await within(blockedSseStarted.promise);
     const canceledReader = canceled.body!.getReader();
     expect(new TextDecoder().decode((await within(canceledReader.read())).value)).toContain(
@@ -342,7 +333,7 @@ describe("HTTP and SSE credential leases", () => {
   });
 
   test("fails a live SSE body closed on matching invalidation", async () => {
-    const revoked = await request("sse", "auth.stream", "user-stream-revoked");
+    const revoked = await call("auth.stream", "user-stream-revoked");
     await within(blockedSseStarted.promise);
     const revokedReader = revoked.body!.getReader();
     expect(new TextDecoder().decode((await within(revokedReader.read())).value)).toContain(

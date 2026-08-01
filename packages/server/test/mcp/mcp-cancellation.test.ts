@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { decode, parseCallResponse } from "@ackerdb/core";
+import { decode } from "@ackerdb/core";
 import { ANONYMOUS_PRINCIPAL } from "../../src/auth/credentials.ts";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
@@ -16,7 +16,7 @@ import {
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { Runtime, type RuntimeProcedureResponse } from "../../src/runtime/runtime.ts";
+import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 
 const schema = defineSchema({
@@ -177,6 +177,7 @@ const agentMcp = typedMcp({
 
 const runLocal = typedProcedure({
   access: "public",
+  http: true,
   args: { mode: v.string() },
   handler: async (ctx, args) => {
     parentSignal = ctx.abortSignal;
@@ -311,16 +312,15 @@ async function callProcedure(mode: string, signal?: AbortSignal): Promise<unknow
     args: { mode },
     principal: ANONYMOUS_PRINCIPAL,
     ...(signal === undefined ? {} : { signal }),
-    respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+    respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
   });
-  const frame = parseCallResponse(decode(await response.text()));
-  if (frame.t !== "ok") {
-    const error = frame.t === "err"
-      ? frame.outcome
-      : { message: frame.error.code, code: frame.error.code };
+  const body = decode(await response.text());
+  if (response.status !== 200) {
+    const failure = body as { readonly code: string; readonly message?: string };
+    const error = { ...failure, message: failure.message ?? failure.code };
     throw Object.assign(new Error(error.message), error);
   }
-  return frame.value;
+  return body;
 }
 
 async function eventually(check: () => boolean): Promise<void> {

@@ -18,7 +18,7 @@ import {
   pluginQuery,
 } from "../../src/plugins/definition.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { Runtime, type RuntimeProcedureResponse } from "../../src/runtime/runtime.ts";
+import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import type {
@@ -122,9 +122,9 @@ async function callProcedure(
     args,
     principal: ANONYMOUS_PRINCIPAL,
     fairnessKey: "test:plugin-invocation",
-    respond: (result: RuntimeProcedureResponse) => new Response(result.body, { status: result.status }),
+    respond: (result: RuntimeHttpResponse) => new Response(result.body, { status: result.status }),
   });
-  return decode(await response.text()) as Record<string, unknown>;
+  return JSON.parse(await response.text()) as Record<string, unknown>;
 }
 
 function storedValues(harness: Harness): string[] {
@@ -392,6 +392,7 @@ async function makeHarness(
       independentFailure: procedure({
         args: {},
         access: "public",
+        http: true,
         handler: async (ctx: AnyContext) => {
           await ctx.facade.put({ key: "independent", value: "independent" });
           throw new Error("procedure failed after Plugin mutation");
@@ -400,11 +401,13 @@ async function makeHarness(
       independentRead: procedure({
         args: { key: v.string() },
         access: "public",
+        http: true,
         handler: (ctx: AnyContext, args: AnyContext) => ctx.facade.read({ key: args.key }),
       }),
       hostTransaction: procedure({
         args: {},
         access: "public",
+        http: true,
         handler: (ctx: AnyContext) => ctx.tx(async (tx: AnyContext) => {
           await tx.db.logs.insert({ label: "host-tx" });
           const plugin = await tx.facade.put({ key: "host-tx", value: "host-tx" });
@@ -421,6 +424,7 @@ async function makeHarness(
       pluginFlow: procedure({
         args: {},
         access: "public",
+        http: true,
         handler: async (ctx: AnyContext) => ({
           hostTimestamp: ctx.timestamp,
           ...await ctx.facade.flow({}),
@@ -429,6 +433,7 @@ async function makeHarness(
       procedureVocabulary: procedure({
         args: {},
         access: "public",
+        http: true,
         handler: async (ctx: AnyContext) => {
           const transaction = await ctx.tx((tx: AnyContext) => ({
             storeOperations: Object.keys(tx.store).sort(),
@@ -533,24 +538,16 @@ describe("Plugin invocation boundaries", () => {
     const harness = await makeHarness();
 
     const failed = await callProcedure(harness, "plugins.independentFailure", {});
-    expect(failed).toMatchObject({
-      t: "err",
-      outcome: expect.objectContaining({ code: "internal" }),
-    });
+    expect(failed).toMatchObject({ code: "internal" });
     expect(storedValues(harness)).toEqual(["independent"]);
     const independentRead = await callProcedure(
       harness,
       "plugins.independentRead",
       { key: "independent" },
     );
-    expect(independentRead).toMatchObject({
-      t: "ok",
-      value: expect.objectContaining({ value: "independent", providerMount: "store" }),
-    });
+    expect(independentRead).toMatchObject({ value: "independent", providerMount: "store" });
 
-    const hostTransaction = await callProcedure(harness, "plugins.hostTransaction", {});
-    expect(hostTransaction.t).toBe("ok");
-    const hostValue = hostTransaction.value as AnyContext;
+    const hostValue = await callProcedure(harness, "plugins.hostTransaction", {}) as AnyContext;
     expect(new Set([
       hostValue.hostTimestamp,
       hostValue.txTimestamp,
@@ -562,9 +559,7 @@ describe("Plugin invocation boundaries", () => {
       dependencyOperations: ["read", "set"],
     });
 
-    const pluginFlow = await callProcedure(harness, "plugins.pluginFlow", {});
-    expect(pluginFlow.t).toBe("ok");
-    const flowValue = pluginFlow.value as AnyContext;
+    const flowValue = await callProcedure(harness, "plugins.pluginFlow", {}) as AnyContext;
     expect(new Set([
       flowValue.hostTimestamp,
       flowValue.procedureTimestamp,
@@ -578,14 +573,11 @@ describe("Plugin invocation boundaries", () => {
     });
     const vocabulary = await callProcedure(harness, "plugins.procedureVocabulary", {});
     expect(vocabulary).toMatchObject({
-      t: "ok",
-      value: {
-        storeOperations: ["external", "fail", "read", "set"],
-        facadeOperations: ["flow", "put", "read"],
-        transaction: {
-          storeOperations: ["fail", "read", "set"],
-          facadeOperations: ["put", "read"],
-        },
+      storeOperations: ["external", "fail", "read", "set"],
+      facadeOperations: ["flow", "put", "read"],
+      transaction: {
+        storeOperations: ["fail", "read", "set"],
+        facadeOperations: ["put", "read"],
       },
     });
     expect(storedValues(harness)).toEqual([

@@ -4,13 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  Err,
   PROTOCOL_VERSION,
+  Status,
   decode,
   encode,
-  parseCallResponse,
   parseServerMessage,
   parseSseMessage,
-  type CallResponse,
   type ServerMessage,
   type SseMessage,
 } from "@ackerdb/core";
@@ -28,6 +28,7 @@ import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
+import { openApiBytes, openApiDocument } from "../../src/transport/openapi.ts";
 import { AckerDBServer, serve } from "../../src/transport/server.ts";
 
 interface Deferred<T> {
@@ -127,12 +128,14 @@ const functions = {
   notes: {
     list: query({
       access: "public",
+      http: true,
       args: { rank: v.bigint() },
       handler: (ctx: Ctx, args: Ctx) =>
         ctx.db.notes.query().where((row: Ctx) => row.rank.eq(args.rank)).collect(),
     }),
     add: mutation({
       access: "public",
+      http: true,
       args: { body: v.string(), rank: v.bigint() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const id = await ctx.db.notes.insert(args);
@@ -140,27 +143,98 @@ const functions = {
         return id;
       },
     }),
+    /** A second writer with the same args, so a key can differ by function alone. */
+    beep: mutation({
+      access: "public",
+      http: true,
+      args: { body: v.string(), rank: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db.beeps.insert({ n: Number(args.rank) });
+        return args.body;
+      },
+    }),
+    rejectMutation: mutation({
+      access: "public",
+      http: true,
+      args: {},
+      errors: {
+        "notes.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
+      },
+      handler: () => Err("notes.gone", { reason: "purged" }, Status.Gone),
+    }),
+    /** Writes, then declares an error: `rollbackWhen` must discard the write. */
+    rejectAfterWrite: mutation({
+      access: "public",
+      http: true,
+      args: { body: v.string(), rank: v.bigint() },
+      errors: {
+        "notes.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
+      },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db.notes.insert(args);
+        return Err("notes.gone", { reason: "purged" }, Status.Gone);
+      },
+    }),
+    /** Writes, then returns a declared value no single frame can carry. */
+    addOversized: mutation({
+      access: "public",
+      http: true,
+      args: { body: v.string(), rank: v.bigint() },
+      returns: v.string(),
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db.notes.insert(args);
+        return "x".repeat(limits.maxFrameBytes * 2);
+      },
+    }),
+    /** Writes, then returns a value no `returns` describes and no JSON carries. */
+    addUnencodable: mutation({
+      access: "public",
+      http: true,
+      args: { body: v.string(), rank: v.bigint() },
+      handler: async (ctx: Ctx, args: Ctx) => {
+        await ctx.db.notes.insert(args);
+        return Number.NaN;
+      },
+    }),
     echo: procedure({
+      access: "public",
+      http: true,
+      args: { value: v.string() },
+      handler: (_ctx: Ctx, args: Ctx) => args.value,
+    }),
+    hidden: procedure({
       access: "public",
       args: { value: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
     numbers: procedure({
       access: "public",
+      http: { openapi: false },
       args: { values: v.array(v.float()) },
       handler: (_ctx: Ctx, args: Ctx) => args.values.length,
     }),
     identity: procedure({
       access: "authenticated",
+      http: true,
       args: {},
       handler: (ctx: Ctx) => ({
         kind: ctx.auth.kind,
         subject: ctx.auth.subject,
         identity: ctx.auth.kind === "user" ? ctx.auth.identity : null,
       }),
+    }),
+    reject: procedure({
+      access: "public",
+      http: true,
+      args: {},
+      errors: {
+        "notes.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
+      },
+      handler: () => Err("notes.gone", { reason: "purged" }, Status.Gone),
     }),
     identityQuery: query({
       access: "authenticated",
+      http: true,
       args: {},
       handler: (ctx: Ctx) => ({
         kind: ctx.auth.kind,
@@ -168,8 +242,18 @@ const functions = {
         identity: ctx.auth.kind === "user" ? ctx.auth.identity : null,
       }),
     }),
+    rejectQuery: query({
+      access: "public",
+      http: true,
+      args: {},
+      errors: {
+        "notes.gone": { body: v.object({ reason: v.string() }), status: Status.Gone },
+      },
+      handler: () => Err("notes.gone", { reason: "purged" }, Status.Gone),
+    }),
     conflict: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: () => {
         throw new AckerDBError("conflict", "already exists");
@@ -177,6 +261,7 @@ const functions = {
     }),
     explode: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: () => {
         throw new Error("secret implementation detail");
@@ -184,6 +269,7 @@ const functions = {
     }),
     chat: sseProcedure({
       access: "authenticated",
+      http: true,
       args: { text: v.string() },
       yields: v.jsonb(),
       handler: async function* (_ctx: Ctx, args: Ctx) {
@@ -191,8 +277,27 @@ const functions = {
         yield { type: "usage", chunks: 1 };
       },
     }),
+    hiddenChat: sseProcedure({
+      access: "public",
+      args: {},
+      yields: v.jsonb(),
+      handler: async function* () {
+        yield { phase: "unreachable" };
+      },
+    }),
+    badChunk: sseProcedure({
+      access: "public",
+      http: true,
+      args: {},
+      yields: v.object({ value: v.string() }),
+      handler: async function* () {
+        yield { value: "first" };
+        yield { value: 2 as unknown as string };
+      },
+    }),
     failLate: sseProcedure({
       access: "public",
+      http: true,
       args: {},
       yields: v.jsonb(),
       handler: async function* () {
@@ -202,6 +307,7 @@ const functions = {
     }),
     stayOpen: sseProcedure({
       access: "public",
+      http: true,
       args: {},
       yields: v.jsonb(),
       handler: async function* (ctx: Ctx) {
@@ -215,6 +321,7 @@ const functions = {
     }),
     block: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: async () => {
         blockedProcedureStarted?.resolve();
@@ -360,7 +467,6 @@ let runtime: Runtime;
 let server: ReturnType<typeof serve>;
 let verifier: TestVerifier;
 let base: string;
-let requestId: number;
 
 beforeEach(() => {
   longSseStarted = null;
@@ -383,7 +489,6 @@ beforeEach(() => {
   });
   server = serve({ runtime, port: 0 });
   base = `http://127.0.0.1:${server.port}`;
-  requestId = 0;
 });
 
 afterEach(async () => {
@@ -393,17 +498,27 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
+/** Address segments are path segments: "notes.echo" is served at "/api/notes/echo". */
+function apiPath(address: string): string {
+  return `/api/${address.replaceAll(".", "/")}`;
+}
+
+/**
+ * The exposed surface speaks the standard JSON its OpenAPI document publishes,
+ * so every call in this file uses `JSON`, never the Protocol-2 wire codec.
+ */
 async function call(
-  ref: string,
+  address: string,
   args: unknown,
   authorization?: string,
-): Promise<{ readonly status: number; readonly frame: CallResponse }> {
-  const response = await fetch(`${base}/api/call`, {
+): Promise<{ readonly status: number; readonly body: unknown }> {
+  const response = await fetch(`${base}${apiPath(address)}`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
-    body: encode({ v: PROTOCOL_VERSION, t: "call", id: ++requestId, ref, args }),
+    body: JSON.stringify(args),
   });
-  return { status: response.status, frame: parseCallResponse(decode(await response.text())) };
+  const text = await response.text();
+  return { status: response.status, body: text === "" ? undefined : JSON.parse(text) };
 }
 
 interface SseResponseReader {
@@ -430,7 +545,7 @@ function readSse(response: Response): SseResponseReader {
           const event = buffer.slice(0, boundary);
           buffer = buffer.slice(boundary + 2);
           if (!event.startsWith("data: ")) throw new Error(`invalid SSE event ${JSON.stringify(event)}`);
-          return parseSseMessage(decode(event.slice(6)));
+          return parseSseMessage(JSON.parse(event.slice(6)));
         }
         if (ended) {
           if (buffer !== "") throw new Error(`truncated SSE event ${JSON.stringify(buffer)}`);
@@ -455,7 +570,7 @@ function acknowledgeSse(
   overrides: { readonly stream?: string; readonly seq?: number; readonly proof?: string } = {},
   authorization?: string,
 ): Promise<Response> {
-  return fetch(`${baseUrl}/api/sse/ack`, {
+  return fetch(`${baseUrl}/api/_sse/ack`, {
     method: "POST",
     headers: authorization === undefined ? {} : { authorization },
     body: encode({
@@ -492,25 +607,32 @@ describe("health and protected status", () => {
         phase: "listening",
       });
 
-      for (const [path, init] of [
-        ["/api/call", { method: "POST", body: "{" }],
-        ["/api/sse", { method: "POST", body: "{" }],
-        ["/status", undefined],
-        ["/ws", undefined],
-      ] as const) {
-        const response = await fetch(`${earlyBase}${path}`, init);
+      const unavailable = {
+        code: "unavailable",
+        retryable: true,
+        resource: "connection",
+        message: "server is not ready",
+      } as const;
+      for (const path of ["/status", "/ws"] as const) {
+        const response = await fetch(`${earlyBase}${path}`);
         expect(response.status).toBe(503);
-        expect(parseCallResponse(decode(await response.text()))).toEqual({
+        expect(parseServerMessage(decode(await response.text()))).toEqual({
           v: PROTOCOL_VERSION,
           t: "err",
           id: null,
-          outcome: {
-            code: "unavailable",
-            retryable: true,
-            resource: "connection",
-            message: "server is not ready",
-          },
+          outcome: unavailable,
         });
+      }
+
+      // The application surface is envelope-free even before a registry
+      // exists, and the deleted `/api/sse` is now one of its ordinary paths.
+      for (const path of ["/api/notes/echo", "/api/sse"] as const) {
+        const early503 = await fetch(`${earlyBase}${path}`, {
+          method: "POST",
+          body: JSON.stringify({ value: "x" }),
+        });
+        expect(early503.status).toBe(503);
+        expect(JSON.parse(await early503.text())).toEqual(unavailable);
       }
 
       const socket = new WebSocket(`ws://127.0.0.1:${early.port}/ws`);
@@ -656,7 +778,7 @@ describe("health and protected status", () => {
     expect(response.status).toBe(500);
     const text = await response.text();
     expect(text).not.toContain("secret stack detail");
-    expect(parseCallResponse(decode(text))).toEqual({
+    expect(parseServerMessage(decode(text))).toEqual({
       v: PROTOCOL_VERSION,
       t: "err",
       id: null,
@@ -665,29 +787,122 @@ describe("health and protected status", () => {
   });
 });
 
-describe("Protocol-2 HTTP procedures", () => {
-  test("returns exact success envelopes and routes credentials through the shared verifier", async () => {
+describe("exposed HTTP procedures", () => {
+  test("serves the plain return value at its per-function path for every admitted principal", async () => {
     expect(await call("notes.echo", { value: "hello" })).toEqual({
       status: 200,
-      frame: { v: PROTOCOL_VERSION, t: "ok", id: 1, kind: "procedure", value: "hello" },
+      body: "hello",
     });
+    // The Identity is a bigint, and this procedure declares no `returns`: an
+    // undeclared value crosses as the same decimal string a declared one would.
     expect(await call("notes.identity", {}, "Bearer user-token")).toEqual({
       status: 200,
-      frame: {
-        v: PROTOCOL_VERSION,
-        t: "ok",
-        id: 2,
-        kind: "procedure",
-        value: { kind: "user", subject: "user-token", identity: 1n },
-      },
+      body: { kind: "user", subject: "user-token", identity: "1" },
     });
     expect(verifier.verified).toEqual(["user-token"]);
+
+    const response = await fetch(`${base}${apiPath("notes.echo")}`, {
+      method: "POST",
+      body: JSON.stringify({ value: "headers" }),
+    });
+    expect(response.headers.get("content-type")).toStartWith("application/json");
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(JSON.parse(await response.text())).toBe("headers");
+  });
+
+  test("treats an absent or empty body as empty args", async () => {
+    const absent = await fetch(`${base}${apiPath("notes.conflict")}`, { method: "POST" });
+    expect(absent.status).toBe(409);
+    expect(JSON.parse(await absent.text())).toMatchObject({ code: "conflict" });
+
+    const empty = await fetch(`${base}${apiPath("notes.identity")}`, {
+      method: "POST",
+      headers: { authorization: "Bearer user-token" },
+      body: "",
+    });
+    expect(empty.status).toBe(200);
+    expect(JSON.parse(await empty.text())).toMatchObject({ kind: "user" });
+  });
+
+  test("hides unexposed functions behind the same 404 as a nonexistent path", async () => {
+    const unexposed = await fetch(`${base}${apiPath("notes.hidden")}`, {
+      method: "POST",
+      body: JSON.stringify({ value: "x" }),
+    });
+    const missing = await fetch(`${base}${apiPath("notes.missing")}`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    const otherModule = await fetch(`${base}/api/ghosts/list`, { method: "POST" });
+
+    expect(unexposed.status).toBe(404);
+    const body = await unexposed.text();
+    // The bare outcome every other failure here answers: a caller that decodes
+    // this surface reads `not_found`, never a plain-text body its decoder
+    // reports as malformed. Forgetting `http` is the likeliest mistake here.
+    expect(JSON.parse(body)).toEqual({
+      code: "not_found",
+      retryable: false,
+      message: "no route at this path",
+    });
+    expect(unexposed.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    for (const response of [missing, otherModule]) {
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe(body);
+    }
+    // The unexposed procedure keeps working over the WebSocket session.
+    const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`);
+    client.send({ v: PROTOCOL_VERSION, t: "p", id: 1, ref: "notes.hidden", args: { value: "ws" } });
+    expect(await within(client.next())).toMatchObject({ t: "ok", id: 1, value: "ws" });
+    client.socket.close();
+    await within(client.closed());
+  });
+
+  test("answers a wrong method on an exposed path with 405 and its Allow header", async () => {
+    for (const method of ["GET", "PUT", "DELETE"]) {
+      const response = await fetch(`${base}${apiPath("notes.echo")}`, { method });
+      expect(response.status).toBe(405);
+      expect(response.headers.get("allow")).toBe("POST");
+      expect(response.headers.get("access-control-allow-origin")).toBe("*");
+      // The same outcome shape as every other failure, at the status and with
+      // the Allow header HTTP mandates.
+      expect(JSON.parse(await response.text())).toEqual({
+        code: "malformed",
+        retryable: false,
+        message: "method not allowed; allow: POST",
+      });
+    }
+    const preflight = await fetch(`${base}${apiPath("notes.echo")}`, { method: "OPTIONS" });
+    expect(preflight.status).toBe(204);
+  });
+
+  test("varies cacheable responses by the credential that changes them", async () => {
+    // A GET query is the cacheable form an operator is invited to front with a
+    // CDN rule; without this it would serve one caller's rows to another.
+    const get = await fetch(
+      `${base}${apiPath("notes.identityQuery")}?args=${encodeURIComponent("{}")}`,
+      { headers: { authorization: "Bearer user-token" } },
+    );
+    expect(get.status).toBe(200);
+    expect(get.headers.get("vary")).toBe("authorization");
+
+    const posted = await fetch(`${base}${apiPath("notes.echo")}`, {
+      method: "POST",
+      body: JSON.stringify({ value: "x" }),
+    });
+    expect(posted.headers.get("vary")).toBe("authorization");
+  });
+
+  test("answers a declared application error with its declared Status and body", async () => {
+    expect(await call("notes.reject", {})).toEqual({
+      status: 410,
+      body: { kind: "application", code: "notes.gone", body: { reason: "purged" }, status: 410 },
+    });
   });
 
   test("resolves one durable Identity for the same user over HTTP and WebSocket", async () => {
     const http = await call("notes.identity", {}, "Bearer user-token");
     expect(http.status).toBe(200);
-    if (http.frame.t !== "ok") throw new Error("expected HTTP procedure success");
 
     const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`, {
       kind: "bearer",
@@ -698,11 +913,17 @@ describe("Protocol-2 HTTP procedures", () => {
     expect(websocket).toMatchObject({ t: "ok", id: 1, kind: "query" });
     if (websocket.t !== "ok") throw new Error("expected WebSocket query success");
 
-    expect(websocket.value).toEqual(http.frame.value);
-    expect(http.frame.value).toEqual({
+    // One durable Identity, spelled by each transport's own wire format: the
+    // session carries the bigint, the exposed surface its decimal string.
+    expect(websocket.value).toEqual({
       kind: "user",
       subject: "user-token",
       identity: 1n,
+    });
+    expect(http.body).toEqual({
+      kind: "user",
+      subject: "user-token",
+      identity: "1",
     });
     expect(engine.writer.query("SELECT COUNT(*) AS count FROM _ackerdb_identities").get())
       .toEqual({ count: 1n });
@@ -713,97 +934,69 @@ describe("Protocol-2 HTTP procedures", () => {
     await within(client.closed());
   });
 
-  test("is procedure-only and maps every outcome through its exact HTTP status", async () => {
-    const wrongKind = await call("notes.list", { rank: 1n });
-    expect(wrongKind.status).toBe(400);
-    expect(wrongKind.frame).toMatchObject({ t: "err", id: 1, outcome: { code: "validation" } });
-
-    const unknown = await call("notes.missing", {});
-    expect(unknown.status).toBe(404);
-    expect(unknown.frame).toMatchObject({ t: "err", id: 2, outcome: { code: "not_found" } });
+  test("maps every outcome through its exact HTTP status as a plain outcome body", async () => {
+    const invalidArgs = await call("notes.echo", { value: 1 });
+    expect(invalidArgs.status).toBe(400);
+    expect(invalidArgs.body).toMatchObject({ code: "validation" });
 
     const unauthenticated = await call("notes.identity", {});
     expect(unauthenticated.status).toBe(401);
-    expect(unauthenticated.frame).toMatchObject({
-      t: "err",
-      id: 3,
-      outcome: { code: "unauthenticated" },
-    });
+    expect(unauthenticated.body).toMatchObject({ code: "unauthenticated" });
 
     const conflict = await call("notes.conflict", {});
     expect(conflict.status).toBe(409);
-    expect(conflict.frame).toMatchObject({ t: "err", id: 4, outcome: { code: "conflict" } });
+    expect(conflict.body).toMatchObject({ code: "conflict" });
 
     const internal = await call("notes.explode", {});
     expect(internal.status).toBe(500);
-    expect(internal.frame).toEqual({
-      v: PROTOCOL_VERSION,
-      t: "err",
-      id: 5,
-      outcome: { code: "internal", retryable: false, message: "internal server error" },
+    expect(internal.body).toEqual({
+      code: "internal",
+      retryable: false,
+      message: "internal server error",
     });
   });
 
   test("admits the received HTTP bytes without rejecting a larger canonical re-encoding", async () => {
     const exponents = Array.from({ length: 60 }, () => "1e9").join(",");
-    const body = `{"v":${PROTOCOL_VERSION},"t":"call","id":9,"ref":"notes.numbers","args":{"values":[${exponents}]}}`;
+    const body = `{"values":[${exponents}]}`;
     expect(Buffer.byteLength(body)).toBeLessThanOrEqual(limits.maxRequestBytes);
-    expect(Buffer.byteLength(encode(decode(body)))).toBeGreaterThan(limits.maxRequestBytes);
+    expect(Buffer.byteLength(JSON.stringify(JSON.parse(body)))).toBeGreaterThan(limits.maxRequestBytes);
 
-    const response = await fetch(`${base}/api/call`, { method: "POST", body });
+    const response = await fetch(`${base}${apiPath("notes.numbers")}`, { method: "POST", body });
     expect(response.status).toBe(200);
-    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
-      t: "ok",
-      id: 9,
-      kind: "procedure",
-      value: 60,
-    });
+    expect(JSON.parse(await response.text())).toBe(60);
   });
 
-  test("strictly parses call envelopes and rejects malformed Authorization", async () => {
-    const extra = await fetch(`${base}/api/call`, {
+  test("rejects malformed args bodies and malformed Authorization", async () => {
+    const malformed = await fetch(`${base}${apiPath("notes.echo")}`, {
       method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 7, ref: "notes.echo", args: {}, extra: true }),
+      body: "{",
     });
-    expect(extra.status).toBe(400);
-    expect(parseCallResponse(decode(await extra.text()))).toMatchObject({
-      t: "err",
-      id: null,
-      outcome: { code: "malformed" },
-    });
+    expect(malformed.status).toBe(400);
+    expect(JSON.parse(await malformed.text())).toMatchObject({ code: "malformed" });
 
-    const old = await fetch(`${base}/api/call`, {
-      method: "POST",
-      body: encode({ v: 1, t: "call", id: 7, ref: "notes.echo", args: {} }),
-    });
-    expect(old.status).toBe(400);
-    expect(parseCallResponse(decode(await old.text()))).toMatchObject({
-      outcome: { code: "unsupported_protocol" },
-    });
+    const unknownArgument = await call("notes.echo", { value: "x", extra: true });
+    expect(unknownArgument.status).toBe(400);
+    expect(unknownArgument.body).toMatchObject({ code: "validation" });
 
-    const basic = await fetch(`${base}/api/call`, {
+    const basic = await fetch(`${base}${apiPath("notes.echo")}`, {
       method: "POST",
       headers: { authorization: "Basic secret" },
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 8, ref: "notes.echo", args: { value: "x" } }),
+      body: JSON.stringify({ value: "x" }),
     });
     expect(basic.status).toBe(401);
-    expect(parseCallResponse(decode(await basic.text()))).toMatchObject({
-      t: "err",
-      id: 8,
-      outcome: { code: "unauthenticated" },
-    });
+    expect(JSON.parse(await basic.text())).toMatchObject({ code: "unauthenticated" });
   });
 
-  test("bounds declared and streaming HTTP bodies before wire decode", async () => {
-    const declared = await fetch(`${base}/api/call`, {
+  test("bounds declared and streaming HTTP bodies before parsing them", async () => {
+    const declared = await fetch(`${base}${apiPath("notes.echo")}`, {
       method: "POST",
       body: "x".repeat(limits.maxRequestBytes + 1),
     });
     expect(declared.status).toBe(429);
-    expect(parseCallResponse(decode(await declared.text()))).toMatchObject({
-      t: "err",
-      id: null,
-      outcome: { code: "overloaded", resource: "operation" },
+    expect(JSON.parse(await declared.text())).toMatchObject({
+      code: "overloaded",
+      resource: "operation",
     });
 
     const chunkedBody = new ReadableStream<Uint8Array>({
@@ -813,13 +1006,17 @@ describe("Protocol-2 HTTP procedures", () => {
         controller.close();
       },
     });
-    const chunked = await fetch(`${base}/api/call`, { method: "POST", body: chunkedBody });
+    const chunked = await fetch(`${base}${apiPath("notes.echo")}`, {
+      method: "POST",
+      body: chunkedBody,
+    });
     expect(chunked.status).toBe(429);
-    expect(parseCallResponse(decode(await chunked.text()))).toMatchObject({
-      outcome: { code: "overloaded", resource: "operation" },
+    expect(JSON.parse(await chunked.text())).toMatchObject({
+      code: "overloaded",
+      resource: "operation",
     });
 
-    const transportRejected = await fetch(`${base}/api/call`, {
+    const transportRejected = await fetch(`${base}${apiPath("notes.echo")}`, {
       method: "POST",
       body: "x".repeat(limits.maxRequestBytes + 2),
     });
@@ -830,7 +1027,7 @@ describe("Protocol-2 HTTP procedures", () => {
   test("globally bounds pre-body HTTP admission and rejects node saturation as 503", async () => {
     const controllers = [new AbortController(), new AbortController()];
     const stalled = controllers.map((controller) =>
-      fetch(`${base}/api/call`, {
+      fetch(`${base}${apiPath("notes.echo")}`, {
         method: "POST",
         body: stalledBody(),
         signal: controller.signal,
@@ -840,15 +1037,12 @@ describe("Protocol-2 HTTP procedures", () => {
       ));
     await eventually(() => server.status().httpIngress === limits.maxOperations);
 
-    const excess = await fetch(`${base}/api/call`, {
-      method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "notes.echo", args: { value: "x" } }),
-    });
+    const excess = await call("notes.echo", { value: "x" });
     expect(excess.status).toBe(503);
-    expect(parseCallResponse(decode(await excess.text()))).toMatchObject({
-      t: "err",
-      id: null,
-      outcome: { code: "overloaded", retryable: true, resource: "connection" },
+    expect(excess.body).toMatchObject({
+      code: "overloaded",
+      retryable: true,
+      resource: "connection",
     });
 
     for (const controller of controllers) controller.abort();
@@ -879,30 +1073,26 @@ describe("Protocol-2 HTTP procedures", () => {
     let heldProcedure: Promise<Response> | undefined;
     let heldSse: Response | undefined;
     let heldSseReader: SseResponseReader | undefined;
-    const body = (id: number, ref: string, args: unknown) =>
-      encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args });
 
     try {
-      const stalled = fetch(`${fairBase}/api/call`, {
+      const stalled = fetch(`${fairBase}${apiPath("notes.echo")}`, {
         method: "POST",
         body: stalledBody(),
         signal: sourceController.signal,
       }).catch(() => undefined);
       await eventually(() => fairServer.status().httpIngress === 1);
 
-      const spoofedSource = await fetch(`${fairBase}/api/call`, {
+      const spoofedSource = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
         method: "POST",
         headers: { "x-forwarded-for": "203.0.113.99" },
-        body: body(1, "notes.echo", { value: "spoofed" }),
+        body: JSON.stringify({ value: "spoofed" }),
       });
       expect(spoofedSource.status).toBe(503);
-      expect(parseCallResponse(decode(await spoofedSource.text()))).toMatchObject({
-        outcome: {
-          code: "overloaded",
-          retryable: true,
-          retryAfterMs: 0,
-          resource: "connection",
-        },
+      expect(JSON.parse(await spoofedSource.text())).toMatchObject({
+        code: "overloaded",
+        retryable: true,
+        retryAfterMs: 0,
+        resource: "connection",
       });
       expect(fairServer.status()).toMatchObject({
         httpIngress: 1,
@@ -915,30 +1105,32 @@ describe("Protocol-2 HTTP procedures", () => {
 
       blockedProcedureStarted = deferred<void>();
       blockedProcedureRelease = deferred<void>();
-      heldProcedure = fetch(`${fairBase}/api/call`, {
+      heldProcedure = fetch(`${fairBase}${apiPath("notes.block")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
-        body: body(2, "notes.block", {}),
+        body: JSON.stringify({}),
       });
       await blockedProcedureStarted.promise;
 
-      const hot = await fetch(`${fairBase}/api/call`, {
+      const hot = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-rotated-token" },
-        body: body(3, "notes.echo", { value: "hot" }),
+        body: JSON.stringify({ value: "hot" }),
       });
       expect(hot.status).toBe(429);
-      expect(parseCallResponse(decode(await hot.text()))).toMatchObject({
-        outcome: { code: "overloaded", retryable: true, resource: "operation" },
+      expect(JSON.parse(await hot.text())).toMatchObject({
+        code: "overloaded",
+        retryable: true,
+        resource: "operation",
       });
 
-      const cold = await fetch(`${fairBase}/api/call`, {
+      const cold = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-two-token" },
-        body: body(4, "notes.echo", { value: "cold" }),
+        body: JSON.stringify({ value: "cold" }),
       });
       expect(cold.status).toBe(200);
-      expect(parseCallResponse(decode(await cold.text()))).toMatchObject({ value: "cold" });
+      expect(JSON.parse(await cold.text())).toBe("cold");
       expect(fairServer.status()).toMatchObject({ httpIngress: 1, httpFairnessKeys: 1 });
 
       blockedProcedureRelease.resolve(undefined);
@@ -947,10 +1139,10 @@ describe("Protocol-2 HTTP procedures", () => {
       await eventually(() => fairServer.status().httpIngress === 0);
 
       longSseStarted = deferred<void>();
-      heldSse = await fetch(`${fairBase}/api/sse`, {
+      heldSse = await fetch(`${fairBase}${apiPath("notes.stayOpen")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
-        body: body(5, "notes.stayOpen", {}),
+        body: JSON.stringify({}),
         signal: sseController.signal,
       });
       await longSseStarted.promise;
@@ -973,14 +1165,15 @@ describe("Protocol-2 HTTP procedures", () => {
       expect(fairVerifier.verified).toEqual(verifiedBeforeAck);
       expect(fairServer.status()).toMatchObject({ httpIngress: 0, httpFairnessKeys: 0 });
 
-      const whileStreaming = await fetch(`${fairBase}/api/call`, {
+      const whileStreaming = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
-        body: body(6, "notes.echo", { value: "streaming" }),
+        body: JSON.stringify({ value: "streaming" }),
       });
       expect(whileStreaming.status).toBe(429);
-      expect(parseCallResponse(decode(await whileStreaming.text()))).toMatchObject({
-        outcome: { code: "overloaded", resource: "operation" },
+      expect(JSON.parse(await whileStreaming.text())).toMatchObject({
+        code: "overloaded",
+        resource: "operation",
       });
 
       sseController.abort("test cancellation");
@@ -991,13 +1184,13 @@ describe("Protocol-2 HTTP procedures", () => {
         fairServer.status().httpIngress === 0 &&
         fairRuntime.status().activeOperationCallers === 0
       );
-      const afterCancel = await fetch(`${fairBase}/api/call`, {
+      const afterCancel = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-token" },
-        body: body(7, "notes.echo", { value: "released" }),
+        body: JSON.stringify({ value: "released" }),
       });
       expect(afterCancel.status).toBe(200);
-      expect(parseCallResponse(decode(await afterCancel.text()))).toMatchObject({ value: "released" });
+      expect(JSON.parse(await afterCancel.text())).toBe("released");
     } finally {
       sourceController.abort();
       sseController.abort("test cleanup");
@@ -1013,17 +1206,16 @@ describe("Protocol-2 HTTP procedures", () => {
 
   test("cancels a slow request body at the finite ingress deadline", async () => {
     const startedAt = performance.now();
-    const response = await fetch(`${base}/api/call`, {
+    const response = await fetch(`${base}${apiPath("notes.echo")}`, {
       method: "POST",
       body: stalledBody(),
     });
     const elapsed = performance.now() - startedAt;
 
     expect(response.status).toBe(504);
-    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
-      t: "err",
-      id: null,
-      outcome: { code: "deadline_exceeded", resource: "operation" },
+    expect(JSON.parse(await response.text())).toMatchObject({
+      code: "deadline_exceeded",
+      resource: "operation",
     });
     expect(elapsed).toBeGreaterThanOrEqual(limits.readQueue.maxAgeMs - 15);
     expect(elapsed).toBeLessThan(limits.readQueue.maxAgeMs + 500);
@@ -1031,37 +1223,335 @@ describe("Protocol-2 HTTP procedures", () => {
   });
 });
 
+describe("exposed HTTP queries", () => {
+  /** A GET query carries its whole args object in one url-encoded parameter. */
+  function queryUrl(address: string, args?: string): string {
+    return `${base}${apiPath(address)}${args === undefined ? "" : `?args=${encodeURIComponent(args)}`}`;
+  }
+
+  test("answers one query identically through GET args and a POST body", async () => {
+    expect((await call("notes.add", { body: "one", rank: "1" })).status).toBe(200);
+    // A bigint crosses this surface as the decimal string the document
+    // publishes, in both directions; a safe integer is accepted on the way in.
+    const args = JSON.stringify({ rank: "1" });
+
+    const get = await fetch(queryUrl("notes.list", args));
+    const post = await fetch(`${base}${apiPath("notes.list")}`, {
+      method: "POST",
+      body: JSON.stringify({ rank: 1 }),
+    });
+
+    expect(get.status).toBe(200);
+    expect(post.status).toBe(200);
+    const value = JSON.parse(await get.text());
+    expect(value).toEqual([{ id: "1", body: "one", rank: "1" }]);
+    expect(JSON.parse(await post.text())).toEqual(value);
+    expect(get.headers.get("content-type")).toStartWith("application/json");
+    expect(get.headers.get("access-control-allow-origin")).toBe("*");
+    // Caching policy belongs to the operator, so no Cache-Control is emitted.
+    expect(get.headers.get("cache-control")).toBeNull();
+  });
+
+  test("treats an omitted args parameter and an empty body as empty args", async () => {
+    const authorization = { authorization: "Bearer user-token" };
+    const identity = { kind: "user", subject: "user-token", identity: "1" };
+
+    const omitted = await fetch(queryUrl("notes.identityQuery"), { headers: authorization });
+    expect(omitted.status).toBe(200);
+    expect(JSON.parse(await omitted.text())).toEqual(identity);
+
+    const emptyParameter = await fetch(queryUrl("notes.identityQuery", ""), {
+      headers: authorization,
+    });
+    expect(emptyParameter.status).toBe(200);
+    expect(JSON.parse(await emptyParameter.text())).toEqual(identity);
+
+    const emptyBody = await fetch(`${base}${apiPath("notes.identityQuery")}`, {
+      method: "POST",
+      headers: authorization,
+      body: "",
+    });
+    expect(emptyBody.status).toBe(200);
+    expect(JSON.parse(await emptyBody.text())).toEqual(identity);
+  });
+
+  test("maps a GET caller error to its exact status and plain outcome body", async () => {
+    const malformed = await fetch(queryUrl("notes.list", "{"));
+    expect(malformed.status).toBe(400);
+    expect(JSON.parse(await malformed.text())).toMatchObject({ code: "malformed" });
+
+    const invalid = await fetch(queryUrl("notes.list", JSON.stringify({ rank: "one" })));
+    expect(invalid.status).toBe(400);
+    expect(JSON.parse(await invalid.text())).toMatchObject({ code: "validation" });
+
+    // Per-field parameters are not a supported spelling: nothing coerces them.
+    const perField = await fetch(`${base}${apiPath("notes.list")}?rank=1`);
+    expect(perField.status).toBe(400);
+    expect(JSON.parse(await perField.text())).toMatchObject({ code: "validation" });
+
+    const oversized = await fetch(queryUrl("notes.list", "x".repeat(limits.maxRequestBytes + 1)));
+    expect(oversized.status).toBe(429);
+    expect(JSON.parse(await oversized.text())).toMatchObject({
+      code: "overloaded",
+      resource: "operation",
+    });
+
+    const unauthenticated = await fetch(queryUrl("notes.identityQuery"));
+    expect(unauthenticated.status).toBe(401);
+    expect(JSON.parse(await unauthenticated.text())).toMatchObject({ code: "unauthenticated" });
+  });
+
+  test("answers a declared application error with its declared Status and body", async () => {
+    const expected = {
+      status: 410,
+      body: { kind: "application", code: "notes.gone", body: { reason: "purged" }, status: 410 },
+    };
+    const get = await fetch(queryUrl("notes.rejectQuery"));
+    expect({ status: get.status, body: JSON.parse(await get.text()) }).toEqual(expected);
+    expect(await call("notes.rejectQuery", {})).toEqual(expected);
+  });
+
+  test("offers GET on query paths alone and names the allowed methods", async () => {
+    const wrongMethod = await fetch(`${base}${apiPath("notes.list")}`, { method: "DELETE" });
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get("allow")).toBe("GET, POST");
+
+    const procedureGet = await fetch(`${base}${apiPath("notes.echo")}`);
+    expect(procedureGet.status).toBe(405);
+    expect(procedureGet.headers.get("allow")).toBe("POST");
+
+    const mutationGet = await fetch(`${base}${apiPath("notes.add")}`);
+    expect(mutationGet.status).toBe(405);
+    expect(mutationGet.headers.get("allow")).toBe("POST");
+  });
+});
+
+describe("exposed HTTP mutations", () => {
+  interface MutationResponse {
+    readonly status: number;
+    readonly body: unknown;
+    readonly receipt: Record<string, string | null>;
+  }
+
+  /** Every call is its own HTTP request: the key is the only replay identity. */
+  async function mutate(
+    address: string,
+    args: unknown,
+    headers: Record<string, string> = {},
+  ): Promise<MutationResponse> {
+    const response = await fetch(`${base}${apiPath(address)}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(args),
+    });
+    const text = await response.text();
+    return {
+      status: response.status,
+      body: text === "" ? undefined : JSON.parse(text),
+      receipt: {
+        commitVersion: response.headers.get("x-ackerdb-commit-version"),
+        durability: response.headers.get("x-ackerdb-durability"),
+        replay: response.headers.get("x-ackerdb-replay"),
+        obligations: response.headers.get("x-ackerdb-obligations"),
+      },
+    };
+  }
+
+  function notes(rank: string): Promise<unknown> {
+    return fetch(`${base}${apiPath("notes.list")}?args=${encodeURIComponent(JSON.stringify({ rank }))}`)
+      .then((response) => response.text())
+      .then((body) => JSON.parse(body));
+  }
+
+  test("executes a keyless mutation every time and answers its receipt on headers", async () => {
+    const first = await mutate("notes.add", { body: "one", rank: "1" });
+    expect(first.status).toBe(200);
+    expect(first.body).toBe("1");
+    expect(first.receipt.durability).toBe(engine.durability);
+    expect(first.receipt.replay).toBe("false");
+    // An HTTP caller holds no subscriptions, so it owes no convergence and its
+    // empty obligation list has no header value to carry.
+    expect(first.receipt.obligations).toBeNull();
+    expect(BigInt(first.receipt.commitVersion!)).toBeGreaterThan(0n);
+
+    // Without a key there is no replay protection: the same request writes again.
+    const second = await mutate("notes.add", { body: "one", rank: "1" });
+    expect(second.body).toBe("2");
+    expect(second.receipt.replay).toBe("false");
+    expect(BigInt(second.receipt.commitVersion!))
+      .toBeGreaterThan(BigInt(first.receipt.commitVersion!));
+    expect(await notes("1")).toHaveLength(2);
+  });
+
+  test("replays one key's stored result across separate HTTP requests", async () => {
+    const key = { "idempotency-key": uuidV7(1) };
+    const executed = await mutate("notes.add", { body: "one", rank: "1" }, key);
+    expect(executed.status).toBe(200);
+    expect(executed.receipt.replay).toBe("false");
+
+    const replayed = await mutate("notes.add", { body: "one", rank: "1" }, key);
+    expect(replayed.status).toBe(200);
+    expect(replayed.body).toBe(executed.body);
+    expect(replayed.receipt.replay).toBe("true");
+    expect(replayed.receipt.commitVersion).toBe(executed.receipt.commitVersion);
+    expect(replayed.receipt.durability).toBe(executed.receipt.durability);
+    expect(await notes("1")).toHaveLength(1);
+  });
+
+  test("scopes a key to the caller that presented it", async () => {
+    const key = { "idempotency-key": uuidV7(2) };
+    const args = { body: "one", rank: "1" };
+    const anonymous = await mutate("notes.add", args, key);
+    expect(anonymous.receipt.replay).toBe("false");
+
+    const authenticated = await mutate("notes.add", args, {
+      ...key,
+      authorization: "Bearer user-token",
+    });
+    expect(authenticated.receipt.replay).toBe("false");
+    expect(authenticated.body).not.toBe(anonymous.body);
+    expect(await notes("1")).toHaveLength(2);
+  });
+
+  test("replays for one identity even when its credential was reissued", async () => {
+    const key = { "idempotency-key": uuidV7(5) };
+    const args = { body: "one", rank: "1" };
+    const executed = await mutate("notes.add", args, {
+      ...key,
+      authorization: "Bearer user-token",
+    });
+    expect(executed.receipt.replay).toBe("false");
+
+    // Same Identity, freshly verified credential: the caller fingerprint is the
+    // durable identity, so the retry replays rather than writing a second note.
+    const replayed = await mutate("notes.add", args, {
+      ...key,
+      authorization: "Bearer user-rotated-token",
+    });
+    expect(replayed.body).toBe(executed.body);
+    expect(replayed.receipt.replay).toBe("true");
+    expect(await notes("1")).toHaveLength(1);
+  });
+
+  test("conflicts when one key is reused for different args or a different function", async () => {
+    const key = { "idempotency-key": uuidV7(3) };
+    expect((await mutate("notes.add", { body: "one", rank: "1" }, key)).status).toBe(200);
+
+    const otherArgs = await mutate("notes.add", { body: "two", rank: "1" }, key);
+    expect(otherArgs.status).toBe(409);
+    expect(otherArgs.body).toMatchObject({ code: "conflict", resource: "idempotency" });
+
+    const otherFunction = await mutate("notes.beep", { body: "one", rank: "1" }, key);
+    expect(otherFunction.status).toBe(409);
+    expect(otherFunction.body).toMatchObject({ code: "conflict", resource: "idempotency" });
+
+    expect(await notes("1")).toHaveLength(1);
+  });
+
+  test("rejects a key that is not a UUIDv7", async () => {
+    for (const candidate of ["not-a-uuid", "00000000-0000-4000-8000-000000000000", ""]) {
+      const rejected = await mutate("notes.add", { body: "one", rank: "1" }, {
+        "idempotency-key": candidate,
+      });
+      expect(rejected.status).toBe(400);
+      expect(rejected.body).toMatchObject({ code: "validation", resource: "idempotency" });
+    }
+    expect(await notes("1")).toHaveLength(0);
+  });
+
+  test("carries the receipt on an idempotent application error", async () => {
+    const key = { "idempotency-key": uuidV7(4) };
+    const expected = {
+      kind: "application",
+      code: "notes.gone",
+      body: { reason: "purged" },
+      status: 410,
+    };
+    const rejected = await mutate("notes.rejectMutation", {}, key);
+    expect(rejected.status).toBe(410);
+    expect(rejected.body).toEqual(expected);
+    expect(rejected.receipt.replay).toBe("false");
+    expect(rejected.receipt.durability).toBe(engine.durability);
+    expect(BigInt(rejected.receipt.commitVersion!)).toBeGreaterThanOrEqual(0n);
+
+    const replayed = await mutate("notes.rejectMutation", {}, key);
+    expect(replayed.status).toBe(410);
+    expect(replayed.body).toEqual(expected);
+    expect(replayed.receipt.replay).toBe("true");
+    expect(replayed.receipt.commitVersion).toBe(rejected.receipt.commitVersion);
+  });
+
+  /**
+   * Encoding the response is the mutation's last fallible step, so it runs
+   * inside the transaction. A body that cannot be produced must roll the write
+   * back: `Idempotency-Key` is opt-in, so a caller retrying the failure it was
+   * answered with would otherwise write a second time.
+   */
+  test("rolls the write back when its success body cannot be produced", async () => {
+    const oversized = await mutate("notes.addOversized", { body: "one", rank: "1" });
+    expect(oversized.status).toBe(429);
+    expect(oversized.body).toMatchObject({ code: "overloaded" });
+    expect(oversized.receipt.commitVersion).toBeNull();
+    expect(await notes("1")).toEqual([]);
+
+    const unencodable = await mutate("notes.addUnencodable", { body: "two", rank: "2" });
+    expect(unencodable.status).toBe(400);
+    expect(unencodable.body).toMatchObject({ code: "validation" });
+    expect(unencodable.receipt.commitVersion).toBeNull();
+    expect(await notes("2")).toEqual([]);
+
+    // The retry the caller is invited to make must not find a first write.
+    expect((await mutate("notes.addOversized", { body: "one", rank: "1" })).status).toBe(429);
+    expect(await notes("1")).toEqual([]);
+  });
+
+  test("commits nothing when the handler declares an application error", async () => {
+    const rejected = await mutate("notes.rejectAfterWrite", { body: "one", rank: "1" });
+    expect(rejected.status).toBe(410);
+    expect(rejected.body).toEqual({
+      kind: "application",
+      code: "notes.gone",
+      body: { reason: "purged" },
+      status: 410,
+    });
+    expect(await notes("1")).toEqual([]);
+  });
+
+  test("names the receipt headers a browser caller may read", async () => {
+    const preflight = await fetch(`${base}${apiPath("notes.add")}`, { method: "OPTIONS" });
+    expect(preflight.status).toBe(204);
+    const exposed = preflight.headers.get("access-control-expose-headers");
+    expect(exposed).toContain("x-ackerdb-commit-version");
+    expect(exposed).toContain("x-ackerdb-durability");
+    expect(exposed).toContain("x-ackerdb-replay");
+    expect(exposed).toContain("x-ackerdb-obligations");
+    expect(preflight.headers.get("access-control-allow-headers")).toContain("idempotency-key");
+  });
+});
+
 describe("SSE", () => {
   test("routes capability ACKs without oracles and keeps the registry through terminal credit", async () => {
-    const denied = await fetch(`${base}/api/sse`, {
+    const denied = await fetch(`${base}${apiPath("notes.chat")}`, {
       method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "notes.chat", args: { text: "no" } }),
+      body: JSON.stringify({ text: "no" }),
     });
     expect(denied.status).toBe(401);
     expect(denied.headers.get("content-type")).toStartWith("application/json");
-    expect(parseCallResponse(decode(await denied.text()))).toMatchObject({
-      t: "err",
-      id: 1,
-      outcome: { code: "unauthenticated" },
-    });
+    expect(JSON.parse(await denied.text())).toMatchObject({ code: "unauthenticated" });
 
-    const success = await fetch(`${base}/api/sse`, {
+    const success = await fetch(`${base}${apiPath("notes.chat")}`, {
       method: "POST",
       headers: { authorization: "Bearer user-token" },
-      body: encode({
-        v: PROTOCOL_VERSION,
-        t: "call",
-        id: 2,
-        ref: "notes.chat",
-        args: { text: "hello" },
-      }),
+      body: JSON.stringify({ text: "hello" }),
     });
     expect(success.status).toBe(200);
     expect(success.headers.get("content-type")).toStartWith("text/event-stream");
     expect(success.headers.get("x-vercel-ai-ui-message-stream")).toBeNull();
     expect(success.headers.get("x-ackerdb-sse-stream")).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(success.headers.get("x-ackerdb-sse-max-stall-ms")).toBe(String(limits.sse.maxStallMs));
-    expect(success.headers.get("access-control-expose-headers")).toBe(
+    expect(success.headers.get("cache-control")).toBe("no-cache, no-transform");
+    expect(success.headers.get("vary")).toBe("authorization");
+    expect(success.headers.get("access-control-expose-headers")).toStartWith(
       "x-ackerdb-sse-stream, x-ackerdb-sse-max-stall-ms",
     );
     expect(server.status()).toMatchObject({ httpIngress: 0, httpFairnessKeys: 0 });
@@ -1105,7 +1595,7 @@ describe("SSE", () => {
     expect(await stale.text()).toBe("");
     expect(server.status()).toMatchObject({ sseAckIngress: 7, sseAckNoops: 4 });
 
-    const malformed = await fetch(`${base}/api/sse/ack`, {
+    const malformed = await fetch(`${base}/api/_sse/ack`, {
       method: "POST",
       body: encode({
         v: PROTOCOL_VERSION,
@@ -1117,7 +1607,7 @@ describe("SSE", () => {
       }),
     });
     expect(malformed.status).toBe(400);
-    expect(parseCallResponse(decode(await malformed.text()))).toMatchObject({
+    expect(parseServerMessage(decode(await malformed.text()))).toMatchObject({
       t: "err",
       id: null,
       outcome: { code: "malformed" },
@@ -1129,17 +1619,15 @@ describe("SSE", () => {
       sseAckNoops: 4,
     });
 
-    const preflight = await fetch(`${base}/api/sse/ack`, { method: "OPTIONS" });
+    const preflight = await fetch(`${base}/api/_sse/ack`, { method: "OPTIONS" });
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-expose-headers")).toContain("x-ackerdb-sse-stream");
-    const wrongMethod = await fetch(`${base}/api/sse/ack`);
+    const wrongMethod = await fetch(`${base}/api/_sse/ack`);
     expect(wrongMethod.status).toBe(405);
     expect(wrongMethod.headers.get("allow")).toBe("POST");
 
-    const late = await fetch(`${base}/api/sse`, {
-      method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 3, ref: "notes.failLate", args: {} }),
-    });
+    // An absent body is empty args here exactly as it is for every other kind.
+    const late = await fetch(`${base}${apiPath("notes.failLate")}`, { method: "POST" });
     expect(late.status).toBe(200);
     const lateReader = readSse(late);
     const lateStarted = await lateReader.next();
@@ -1157,6 +1645,163 @@ describe("SSE", () => {
     expect((await acknowledgeSse(base, lateReader.streamId, failure!)).status).toBe(204);
     expect(await lateReader.next()).toBeNull();
     expect(verifier.verified).toEqual(["user-token"]);
+  });
+
+  test("serves streams only from per-function paths, and only for exposed functions", async () => {
+    // The envelope route is gone; nothing owns `/api/sse` any more.
+    const envelope = await fetch(`${base}/api/sse`, {
+      method: "POST",
+      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "notes.chat", args: { text: "no" } }),
+    });
+    expect(envelope.status).toBe(404);
+
+    // Unexposed is indistinguishable from nonexistent, and there is no GET.
+    const unexposed = await fetch(`${base}${apiPath("notes.hiddenChat")}`, { method: "POST" });
+    expect(unexposed.status).toBe(404);
+
+    // An sseProcedure that was never given `http` is the mistake this feature
+    // makes most likely, so its 404 must decode as `not_found` rather than
+    // reaching the client's frame parser as plain text.
+    expect(JSON.parse(await unexposed.text())).toMatchObject({ code: "not_found" });
+
+    const wrongMethod = await fetch(`${base}${apiPath("notes.chat")}`);
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get("allow")).toBe("POST");
+    expect(runtime.status().activeSse).toBe(0);
+  });
+
+  test("validates chunks against yields and rejects args the validator refuses", async () => {
+    const invalid = await fetch(`${base}${apiPath("notes.chat")}`, {
+      method: "POST",
+      headers: { authorization: "Bearer user-token" },
+      body: JSON.stringify({ text: 7 }),
+    });
+    expect(invalid.status).toBe(400);
+    expect(JSON.parse(await invalid.text())).toMatchObject({ code: "validation" });
+    expect(runtime.status().activeSse).toBe(0);
+
+    // A chunk the yields validator refuses is still a terminal stream failure,
+    // never an unvalidated value on the wire.
+    const invalidChunk = await fetch(`${base}${apiPath("notes.badChunk")}`, { method: "POST" });
+    expect(invalidChunk.status).toBe(200);
+    const reader = readSse(invalidChunk);
+    const first = await reader.next();
+    expect(first).toMatchObject({ t: "sse_chunk", seq: 1, value: { value: "first" } });
+    // Crediting the valid chunk advances the handler into the refused one.
+    expect((await acknowledgeSse(base, reader.streamId, first!)).status).toBe(204);
+    const failure = await reader.next();
+    expect(failure).toMatchObject({ t: "sse_error", seq: 2, outcome: { code: "validation" } });
+    expect((await acknowledgeSse(base, reader.streamId, failure!)).status).toBe(204);
+    expect(await reader.next()).toBeNull();
+  });
+});
+
+describe("the opt-in OpenAPI endpoint", () => {
+  const info = { title: "notes-app", version: "4.2.0" } as const;
+  const OPENAPI = "/api/_openapi.json";
+
+  let owned: {
+    readonly dir: string;
+    readonly engine: Engine;
+    readonly runtime: Runtime;
+    server?: AckerDBServer;
+  } | null = null;
+
+  afterEach(async () => {
+    if (owned === null) return;
+    await owned.server?.drain().catch(() => {});
+    await owned.runtime.drain().catch(() => {});
+    owned.engine.close("clean");
+    rmSync(owned.dir, { recursive: true, force: true });
+    owned = null;
+  });
+
+  /** A second listener that asks for the document; the shared one never does. */
+  function documented(
+    modules: Record<string, Record<string, unknown>> = functions,
+  ): { readonly base: string; readonly registry: Registry } {
+    const dir = mkdtempSync(join(tmpdir(), "ackerdb-openapi-"));
+    const engine = new Engine(schema, join(dir, "data.db"));
+    reconcile(engine);
+    const registry = new Registry(modules);
+    const documentedRuntime = new Runtime({
+      engine,
+      registry,
+      verifier: new TestVerifier(),
+      limits,
+      telemetry: false,
+    });
+    // Recorded before activation so a refused document is still torn down.
+    owned = { dir, engine, runtime: documentedRuntime };
+    const documentedServer = serve({ runtime: documentedRuntime, port: 0, openapiEndpoint: info });
+    owned.server = documentedServer;
+    return { base: `http://127.0.0.1:${documentedServer.port}`, registry };
+  }
+
+  test("is unclaimed by default, on every method", async () => {
+    const absent = await fetch(`${base}${OPENAPI}`);
+    expect(absent.status).toBe(404);
+    expect(JSON.parse(await absent.text())).toMatchObject({ code: "not_found" });
+    // Not a method problem: nothing owns the path, exactly as before it existed.
+    const posted = await fetch(`${base}${OPENAPI}`, { method: "POST", body: encode({}) });
+    expect(posted.status).toBe(404);
+  });
+
+  test("serves the export's bytes, and only for GET", async () => {
+    const { base: documentedBase } = documented();
+    const response = await fetch(`${documentedBase}${OPENAPI}`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+
+    // The endpoint and `acker openapi` publish one encoding of one document.
+    const served = new Uint8Array(await response.arrayBuffer());
+    expect(served).toEqual(
+      Uint8Array.from(openApiBytes(openApiDocument(new Registry(functions), info))),
+    );
+
+    const document = JSON.parse(new TextDecoder().decode(served)) as Ctx;
+    expect(document.info).toEqual({ title: "notes-app", version: "4.2.0" });
+    expect(Object.keys(document.paths)).toContain(apiPath("notes.list"));
+    // The same per-function flags the surface serves: hidden stays callable but
+    // undocumented, and unexposed appears nowhere.
+    expect(document.paths[apiPath("notes.numbers")]).toBeUndefined();
+    expect(document.paths[apiPath("notes.hidden")]).toBeUndefined();
+
+    const wrongMethod = await fetch(`${documentedBase}${OPENAPI}`, {
+      method: "POST",
+      body: encode({}),
+    });
+    expect(wrongMethod.status).toBe(405);
+    expect(wrongMethod.headers.get("allow")).toBe("GET");
+  });
+
+  test("assembles the document at activation, so it never fails a caller", () => {
+    // A non-finite literal crosses the wire as itself, so the codec registers
+    // it; only a JSON Schema cannot express it, and the activation says so
+    // rather than the first caller of a served path.
+    expect(() => documented({
+      notes: {
+        latest: query({
+          access: "public",
+          http: true,
+          args: {},
+          returns: v.literal(Number.NaN),
+          handler: () => Number.NaN,
+        }),
+      },
+    })).toThrow(/function "notes\.latest" returns cannot be documented/);
+  });
+
+  test("serves the bytes it cached, never a fresh walk of the registry", async () => {
+    const { base: documentedBase, registry } = documented();
+    const first = await (await fetch(`${documentedBase}${OPENAPI}`)).text();
+    expect((JSON.parse(first) as Ctx).paths[apiPath("notes.list")]).toBeDefined();
+
+    // The registry is immutable after load; emptying it is only a probe, and a
+    // document assembled per request could not still describe what it lost.
+    registry.exposed.clear();
+    expect(await (await fetch(`${documentedBase}${OPENAPI}`)).text()).toBe(first);
   });
 });
 
@@ -1399,8 +2044,6 @@ describe("WebSocket Session transport", () => {
     const fairBase = `http://127.0.0.1:${fairServer.port}`;
     const wsUrl = `ws://127.0.0.1:${fairServer.port}/ws`;
     const clients: WsClient[] = [];
-    const body = (id: number, ref = "notes.echo", args: unknown = { value: "ok" }) =>
-      encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args });
 
     try {
       const first = await connectWebSocket(wsUrl, { kind: "bearer", token: "user-token" });
@@ -1426,14 +2069,16 @@ describe("WebSocket Session transport", () => {
         outcome: { code: "overloaded", retryable: true, resource: "operation" },
       });
 
-      const samePrincipalHttp = await fetch(`${fairBase}/api/call`, {
+      const samePrincipalHttp = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-rotated-token" },
-        body: body(104),
+        body: JSON.stringify({ value: "ok" }),
       });
       expect(samePrincipalHttp.status).toBe(429);
-      expect(parseCallResponse(decode(await samePrincipalHttp.text()))).toMatchObject({
-        outcome: { code: "overloaded", retryable: true, resource: "operation" },
+      expect(JSON.parse(await samePrincipalHttp.text())).toMatchObject({
+        code: "overloaded",
+        retryable: true,
+        resource: "operation",
       });
 
       cold.send({ v: PROTOCOL_VERSION, t: "q", id: 105, ref: "notes.list", args: { rank: 1n } });
@@ -1467,23 +2112,25 @@ describe("WebSocket Session transport", () => {
       await eventually(() => fairRuntime.status().activeOperations === 2);
       expect(fairRuntime.status().activeOperationCallers).toBe(1);
 
-      const spoofedAnonymous = await fetch(`${fairBase}/api/call`, {
+      const spoofedAnonymous = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
         method: "POST",
         headers: { "x-forwarded-for": "203.0.113.99" },
-        body: body(203),
+        body: JSON.stringify({ value: "ok" }),
       });
       expect(spoofedAnonymous.status).toBe(429);
-      expect(parseCallResponse(decode(await spoofedAnonymous.text()))).toMatchObject({
-        outcome: { code: "overloaded", retryable: true, resource: "operation" },
+      expect(JSON.parse(await spoofedAnonymous.text())).toMatchObject({
+        code: "overloaded",
+        retryable: true,
+        resource: "operation",
       });
 
-      const verifiedCold = await fetch(`${fairBase}/api/call`, {
+      const verifiedCold = await fetch(`${fairBase}${apiPath("notes.echo")}`, {
         method: "POST",
         headers: { authorization: "Bearer user-two-token" },
-        body: body(204, "notes.echo", { value: "cold" }),
+        body: JSON.stringify({ value: "cold" }),
       });
       expect(verifiedCold.status).toBe(200);
-      expect(parseCallResponse(decode(await verifiedCold.text()))).toMatchObject({ value: "cold" });
+      expect(JSON.parse(await verifiedCold.text())).toBe("cold");
 
       blockedMutationRelease.resolve(undefined);
       expect(await within(anonymousFirst.next())).toMatchObject({ t: "ok", id: 201, kind: "mutation" });
@@ -1564,10 +2211,7 @@ describe("lifecycle drain", () => {
   test("stops admission, terminates WS and SSE, drains Runtime, then stops", async () => {
     const client = await connectWebSocket(`ws://127.0.0.1:${server.port}/ws`);
     longSseStarted = deferred<void>();
-    const response = await fetch(`${base}/api/sse`, {
-      method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "notes.stayOpen", args: {} }),
-    });
+    const response = await fetch(`${base}${apiPath("notes.stayOpen")}`, { method: "POST" });
     await within(longSseStarted.promise);
     expect(response.status).toBe(200);
     const sse = readSse(response);
@@ -1629,10 +2273,7 @@ describe("lifecycle drain", () => {
     const stalledCreditController = new AbortController();
     try {
       longSseStarted = deferred<void>();
-      const response = await fetch(`${slowBase}/api/sse`, {
-        method: "POST",
-        body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "notes.stayOpen", args: {} }),
-      });
+      const response = await fetch(`${slowBase}${apiPath("notes.stayOpen")}`, { method: "POST" });
       await within(longSseStarted.promise);
       const sse = readSse(response);
       const started = await within(sse.next());
@@ -1642,7 +2283,7 @@ describe("lifecycle drain", () => {
       const drain = slowServer.drain();
       const terminal = await within(sse.next());
       expect(terminal).toMatchObject({ t: "sse_error", outcome: { code: "draining" } });
-      const stalledCredit = fetch(`${slowBase}/api/sse/ack`, {
+      const stalledCredit = fetch(`${slowBase}/api/_sse/ack`, {
         method: "POST",
         body: stalledBody(),
         signal: stalledCreditController.signal,
@@ -1685,9 +2326,9 @@ describe("lifecycle drain", () => {
   test("force closes and preserves unclean storage when an admitted operation stalls", async () => {
     blockedProcedureStarted = deferred<void>();
     blockedProcedureRelease = deferred<void>();
-    const transport = fetch(`${base}/api/call`, {
+    const transport = fetch(`${base}${apiPath("notes.block")}`, {
       method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 1, ref: "notes.block", args: {} }),
+      body: JSON.stringify({}),
     }).then(
       (response) => ({ kind: "response" as const, response }),
       (error: unknown) => ({ kind: "error" as const, error }),
@@ -1700,14 +2341,15 @@ describe("lifecycle drain", () => {
     const notReady = await fetch(`${base}/ready`);
     expect(notReady.status).toBe(503);
     expect(await notReady.json()).toEqual({ version: 1, ready: false, state: "draining" });
-    const refusedDuringDrain = await fetch(`${base}/api/call`, {
+    const refusedDuringDrain = await fetch(`${base}${apiPath("notes.echo")}`, {
       method: "POST",
-      body: encode({ v: PROTOCOL_VERSION, t: "call", id: 2, ref: "notes.echo", args: { value: "x" } }),
+      body: JSON.stringify({ value: "x" }),
     });
     expect(refusedDuringDrain.status).toBe(503);
-    expect(parseCallResponse(decode(await refusedDuringDrain.text()))).toMatchObject({
-      t: "err",
-      outcome: { code: "draining", retryable: true, retryAfterMs: 1_000 },
+    expect(JSON.parse(await refusedDuringDrain.text())).toMatchObject({
+      code: "draining",
+      retryable: true,
+      retryAfterMs: 1_000,
     });
     let failure: unknown;
     try {
