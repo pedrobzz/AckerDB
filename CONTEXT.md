@@ -163,6 +163,14 @@ top-level function begins execution. Nested application functions, plugin
 functions, and transactions inherit the same value explicitly as
 `ctx.timestamp`.
 
+**System execution root** — Trusted application work initiated directly by an
+in-process host that explicitly holds the running application's system
+capability. Each run begins with only the canonical system principal, may use
+procedure capabilities and external I/O outside a transaction, and may open
+short Result-aware transactions. It never inherits ambient caller authority or
+pretends to be a request, session, or registered outer function.
+_Avoid_: Local procedure call, background job, ambient system context
+
 **Plugin schema reset** — The v0.6.0 alpha recovery for an unsafe private
 schema change. After explicit operator consent, AckerDB deletes only that mounted
 plugin's private data and recreates its current schema. Safe changes

@@ -24,7 +24,11 @@ import { resetDatabase, type Renames } from "@ackerdb/server";
 import { loadConfig, type AppConfig } from "../app/config.ts";
 import { runCodegen } from "../app/codegen.ts";
 import { exportOpenApi } from "../app/openapi.ts";
-import { startApp, StartupInterruptedError } from "../app/start.ts";
+import {
+  startApp,
+  StartupInterruptedError,
+  type StartAppOptions,
+} from "../app/start.ts";
 import { runRenameForm, type Ask, type FormResult } from "../migrations/form.ts";
 import { renderLedger, runDivergenceForm } from "../migrations/consent.ts";
 import { makeDevFlowHandler, type GenerateResult, type PromptOutcome } from "../migrations/dev-flow.ts";
@@ -49,6 +53,28 @@ import {
 } from "../plugins/storage.ts";
 
 const CLI_PATH = fileURLToPath(import.meta.url);
+
+async function runServerCommand(config: AppConfig, options: StartAppOptions = {}): Promise<void> {
+  const startup = new AbortController();
+  let requestShutdown!: () => void;
+  const shutdownRequested = new Promise<void>((resolve) => {
+    requestShutdown = resolve;
+  });
+  const onSignal = () => {
+    startup.abort();
+    requestShutdown();
+  };
+  process.once("SIGINT", onSignal);
+  process.once("SIGTERM", onSignal);
+  try {
+    const running = await startApp(config, { ...options, signal: startup.signal });
+    await shutdownRequested;
+    await running.drain();
+  } finally {
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
+  }
+}
 
 function usage(): never {
   console.log(`usage:
@@ -498,13 +524,16 @@ try {
     case "start": {
       requireArgumentCount(args, 0, 1);
       const config = loadConfig(resolve(args[0] ?? "."));
-      await startApp(config, { prepare: runCodegen });
+      await runServerCommand(config, { prepare: runCodegen });
       break;
     }
     case "__serve": {
       requireArgumentCount(args, 1, 2);
       if (args[1] !== undefined && args[1] !== "--hold-pending") usage();
-      await startApp(loadConfig(resolve(args[0]!)), args[1] === "--hold-pending" ? { holdPendingMigrations: true } : {});
+      await runServerCommand(
+        loadConfig(resolve(args[0]!)),
+        args[1] === "--hold-pending" ? { holdPendingMigrations: true } : {},
+      );
       break;
     }
     case "__verify_backup": {

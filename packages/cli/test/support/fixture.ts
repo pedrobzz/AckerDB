@@ -10,7 +10,7 @@ export function makeFixture(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), "ackerdb-cli-"));
   // bare "@ackerdb/*" specifiers must resolve from the fixture
   mkdirSync(join(dir, "node_modules", "@ackerdb"), { recursive: true });
-  for (const pkg of ["core", "server", "client", "cache"]) {
+  for (const pkg of ["core", "server", "client", "cache", "cli"]) {
     symlinkSync(join(REPO, "packages", pkg), join(dir, "node_modules", "@ackerdb", pkg));
   }
   for (const [path, content] of Object.entries(files)) {

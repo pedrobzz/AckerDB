@@ -11,6 +11,7 @@ export const TELEMETRY_OPERATIONS = [
   "query",
   "mutation",
   "procedure",
+  "system",
   "sse",
   "transaction",
   "scheduled",
@@ -53,6 +54,7 @@ export type TelemetryStage = (typeof TELEMETRY_STAGES)[number];
 
 export const TELEMETRY_OUTCOMES = [
   "ok",
+  "application_error",
   "malformed",
   "validation",
   "unsupported_protocol",
