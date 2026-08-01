@@ -12,7 +12,8 @@ import {
   trackCleanup,
   typedMutation,
   typedMcp,
-  typedMcpTool,
+  typedMcpAuth,
+  typedProcedure,
   user,
 } from "../support/mcp-token-fixture.ts";
 
@@ -96,70 +97,84 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   throw new Error("condition was not reached");
 }
 
-const holdAgent = typedMcpTool({
+const holdAgent = typedProcedure({
   description: "Test live token invalidation.",
   access: "authenticated",
   args: { key: v.string() },
+  returns: v.object({ status: v.string() }),
   handler: async (ctx, args) => {
     await waitForRelease(ctx.abortSignal, args.key);
     ctx.abortSignal.throwIfAborted();
-    return { content: [{ type: "text", text: "released" }] };
+    return { status: "released" };
   },
 });
 
-const holdScoped = typedMcpTool({
+const holdScoped = typedProcedure({
   description: "Test live scoped-token invalidation.",
-  access: { anyOf: ["orders.get"] },
+  access: "authenticated",
   args: { key: v.string() },
+  returns: v.object({ status: v.string() }),
   handler: async (ctx, args) => {
     await waitForRelease(ctx.abortSignal, args.key);
     ctx.abortSignal.throwIfAborted();
-    return { content: [{ type: "text", text: "released" }] };
+    return { status: "released" };
   },
 });
 
-const queueAgentWrite = typedMcpTool({
+const queueAgentWrite = typedProcedure({
   description: "Queue an agent-token writer.",
   access: "authenticated",
   args: { key: v.string() },
+  returns: v.object({ status: v.string() }),
   handler: async (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const identity = ctx.auth.identity;
     requiredGate(args.key).started.resolve();
-    await ctx.tx((tx) => tx.db.records.insert({ owner: identity, value: "queued" }));
-    return { content: [{ type: "text", text: "written" }] };
+    const written = await ctx.tx((tx) =>
+      tx.db.records.insert({ owner: identity, value: "queued" }));
+    if (!written.ok) throw new Error("queued write failed");
+    return { status: "written" };
   },
 });
 
-const queueScopedWrite = typedMcpTool({
+const queueScopedWrite = typedProcedure({
   description: "Queue a scoped-token writer.",
-  access: { anyOf: ["orders.get"] },
+  access: "authenticated",
   args: { key: v.string() },
+  returns: v.object({ status: v.string() }),
   handler: async (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const identity = ctx.auth.identity;
     requiredGate(args.key).started.resolve();
-    await ctx.tx((tx) => tx.db.records.insert({ owner: identity, value: "queued" }));
-    return { content: [{ type: "text", text: "written" }] };
+    const written = await ctx.tx((tx) =>
+      tx.db.records.insert({ owner: identity, value: "queued" }));
+    if (!written.ok) throw new Error("queued write failed");
+    return { status: "written" };
   },
 });
 
+const revocationAgentAuth = typedMcpAuth({ name: "revocation_agent" });
 const revocationAgentMcp = typedMcp({
   name: "revocation_agent",
+  auth: revocationAgentAuth,
   path: "/revocation/agent/mcp",
   tools: {
-    hold_agent: holdAgent,
-    queue_agent_write: queueAgentWrite,
+    hold_agent: { fn: holdAgent },
+    queue_agent_write: { fn: queueAgentWrite },
   },
 });
 
+const revocationScopedAuth = typedMcpAuth({
+  name: "revocation_scoped",
+  scopes: ["orders.get"] as const,
+});
 const revocationScopedMcp = typedMcp({
   name: "revocation_scoped",
+  auth: revocationScopedAuth,
   path: "/revocation/scoped/mcp",
-  scopes: ["orders.get"] as const,
   tools: {
-    hold_scoped: holdScoped,
-    queue_scoped_write: queueScopedWrite,
+    hold_scoped: { fn: holdScoped, access: { anyOf: ["orders.get"] } },
+    queue_scoped_write: { fn: queueScopedWrite, access: { anyOf: ["orders.get"] } },
   },
 });
 
@@ -167,7 +182,7 @@ const rollbackAgentRevoke = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
   handler: (ctx, args) => {
-    revocationAgentMcp.tokens.revoke(ctx, args.id);
+    revocationAgentAuth.tokens.revoke(ctx, args.id);
     throw new Error("roll back agent revoke");
   },
 });
@@ -176,7 +191,7 @@ const rollbackScopeReduction = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
   handler: (ctx, args) => {
-    revocationScopedMcp.tokens.updateScopes(ctx, args.id, []);
+    revocationScopedAuth.tokens.updateScopes(ctx, args.id, []);
     throw new Error("roll back scope reduction");
   },
 });
@@ -188,7 +203,7 @@ const gatedAgentRevoke = typedMutation({
     const gate = requiredGate(args.key);
     gate.started.resolve();
     await gate.release.promise;
-    revocationAgentMcp.tokens.revoke(ctx, args.id);
+    revocationAgentAuth.tokens.revoke(ctx, args.id);
   },
 });
 
@@ -199,14 +214,14 @@ const gatedScopeReduction = typedMutation({
     const gate = requiredGate(args.key);
     gate.started.resolve();
     await gate.release.promise;
-    revocationScopedMcp.tokens.updateScopes(ctx, args.id, []);
+    revocationScopedAuth.tokens.updateScopes(ctx, args.id, []);
   },
 });
 
 const createRevocationAgentToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => revocationAgentMcp.tokens.create(ctx, {
+  handler: (ctx, args) => revocationAgentAuth.tokens.create(ctx, {
     name: args.name,
     metadata: {},
   }),
@@ -215,7 +230,7 @@ const createRevocationAgentToken = typedMutation({
 const createRevocationScopedToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => revocationScopedMcp.tokens.create(ctx, {
+  handler: (ctx, args) => revocationScopedAuth.tokens.create(ctx, {
     name: args.name,
     metadata: {},
     scopes: ["orders.get"],
@@ -225,7 +240,7 @@ const createRevocationScopedToken = typedMutation({
 const updateRevocationAgentMetadata = typedMutation({
   access: "authenticated",
   args: { id: v.string(), metadata: v.jsonb<Readonly<Record<string, unknown>>>() },
-  handler: (ctx, args) => revocationAgentMcp.tokens.update(ctx, args.id, {
+  handler: (ctx, args) => revocationAgentAuth.tokens.update(ctx, args.id, {
     metadata: args.metadata,
   }),
 });
@@ -233,7 +248,7 @@ const updateRevocationAgentMetadata = typedMutation({
 const revokeRevocationAgentToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => revocationAgentMcp.tokens.revoke(ctx, args.id),
+  handler: (ctx, args) => revocationAgentAuth.tokens.revoke(ctx, args.id),
 });
 
 const extraModules = {

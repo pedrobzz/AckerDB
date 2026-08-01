@@ -19,18 +19,19 @@ import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import {
   mutation,
+  procedure,
   query,
   type MutationBuilder,
+  type ProcedureBuilder,
+  type ProcedureCtx,
   type QueryBuilder,
 } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import {
-  createMcp,
-  mcpTool,
+  mcp as mcpDeclaration,
+  mcpAuth,
   type McpBuilder,
-  type McpToolBuilder,
-  type McpToolCtx,
-  type McpToolResult,
+  type McpAuthBuilder,
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
@@ -66,41 +67,53 @@ const schema = defineSchema({
 
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
+const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+const agentAuth = typedMcpAuth({ name: "agent" });
+const operationsAuth = typedMcpAuth({ name: "operations" });
+const scopedAuth = typedMcpAuth({
+  name: "scoped",
+  scopes: ["orders.all", "orders.get", "reports.all"] as const,
+});
 
 let systemResult: unknown = null;
 
 async function attemptSystemAdministration(
-  ctx: McpToolCtx<typeof schema>,
-): Promise<McpToolResult> {
-  return ctx.tx((tx) => {
+  ctx: ProcedureCtx<typeof schema>,
+): Promise<{ readonly status: string }> {
+  const done = await ctx.tx((tx) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
-    agentMcp.systemTokens.list(tx, ctx.auth.identity);
-    return { content: [{ type: "text", text: "unexpected" }] };
+    agentAuth.systemTokens.list(tx, ctx.auth.identity);
+    return { status: "unexpected" };
   });
+  if (!done.ok) throw new Error("system administration unexpectedly failed");
+  return done.data;
 }
 
-const attemptFromMcp = typedMcpTool({
+const attemptFromMcp = typedProcedure({
   description: "Exercise the system token-administration boundary.",
   access: "authenticated",
   args: {},
+  returns: v.object({ status: v.string() }),
   handler: attemptSystemAdministration,
 });
 
 const agentMcp = typedMcp({
   name: "agent",
-  tools: { attempt_system_administration: attemptFromMcp },
+  auth: agentAuth,
+  tools: { attempt_system_administration: { fn: attemptFromMcp } },
 });
 const operationsMcp = typedMcp({
   name: "operations",
+  auth: operationsAuth,
   path: "/operations/mcp",
   tools: {},
 });
 const scopedMcp = typedMcp({
   name: "scoped",
+  auth: scopedAuth,
   path: "/scoped/mcp",
-  scopes: ["orders.all", "orders.get", "reports.all"] as const,
   tools: {},
 });
 
@@ -136,27 +149,27 @@ const run = typedMutation({
   handler: (ctx, args) => {
     switch (args.action) {
       case "create_agent":
-        systemResult = agentMcp.systemTokens.create(ctx, args.identity, {
+        systemResult = agentAuth.systemTokens.create(ctx, args.identity, {
           name: args.name ?? "",
           metadata: args.metadata,
         });
         return;
       case "create_scoped":
-        systemResult = scopedMcp.systemTokens.create(ctx, args.identity, {
+        systemResult = scopedAuth.systemTokens.create(ctx, args.identity, {
           name: args.name ?? "",
           metadata: args.metadata,
-          scopes: args.scopes as readonly NonNullable<typeof scopedMcp.scopes._type>[],
+          scopes: args.scopes as readonly NonNullable<typeof scopedAuth.scopes._type>[],
         });
         return;
       case "list_agent":
-        systemResult = agentMcp.systemTokens.list(ctx, args.identity);
+        systemResult = agentAuth.systemTokens.list(ctx, args.identity);
         return;
       case "revoke_agent":
-        agentMcp.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
+        agentAuth.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
         systemResult = null;
         return;
       case "revoke_operations":
-        operationsMcp.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
+        operationsAuth.systemTokens.revoke(ctx, args.identity, args.tokenId ?? "");
         systemResult = null;
     }
   },
@@ -165,13 +178,13 @@ const run = typedMutation({
 const attempt = typedMutation({
   access: "public",
   args: { identity: v.identity() },
-  handler: (ctx, args) => agentMcp.systemTokens.list(ctx, args.identity),
+  handler: (ctx, args) => agentAuth.systemTokens.list(ctx, args.identity),
 });
 
 const listOwned = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => agentMcp.tokens.list(ctx),
+  handler: (ctx) => agentAuth.tokens.list(ctx),
 });
 
 const modules = {
