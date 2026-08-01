@@ -442,7 +442,7 @@ describe("MCP Runtime ownership", () => {
     const response = await call;
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      result: { content: [{ type: "text", text: "1" }] },
+      result: { structuredContent: { count: "1" } },
     });
     await expectIdle(value);
 

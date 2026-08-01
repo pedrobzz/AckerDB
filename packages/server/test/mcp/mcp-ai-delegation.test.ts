@@ -591,7 +591,7 @@ describe("MCP identity-preserving local delegation", () => {
 
       await runtime.telemetry.flush();
       expect(spans()).toContainEqual(expect.objectContaining({
-        function: "delegated:read_orders",
+        function: "tools.readOrders",
         stage: "policy",
         outcome: "ok",
       }));

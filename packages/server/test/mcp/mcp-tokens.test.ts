@@ -230,7 +230,7 @@ describe("Identity-bound MCP owner tokens", () => {
       args: { value: "still-active" },
       principal: active,
     });
-    expect(activeResult.content[0]).toMatchObject({ text: `mcp:${alice.identity}` });
+    expect(activeResult.structuredContent).toMatchObject({ principal: `mcp:${alice.identity}` });
 
     for (const [id, args, ref] of [
       [104, { id: created.id, metadata: { value: "x".repeat(PRODUCTION_LIMITS.mcp.maxMetadataBytes) } }, "tokens.updateAgentTokenMetadata"],
@@ -793,17 +793,11 @@ describe("Identity-bound MCP owner tokens", () => {
     expect(called.status).toBe(200);
     expect(await called.json()).toMatchObject({
       result: {
-        content: [
-          { type: "text", text: `mcp:${firstAlice.identity}` },
-          {
-            type: "resource_link",
-            uri: "ackerdb://records/1",
-            name: "record-1",
-            annotations: { audience: ["assistant"], priority: 0.8 },
-            _meta: { owner: firstAlice.identity.toString() },
-          },
-        ],
-        _meta: { tokenId: created.id },
+        structuredContent: {
+          principal: `mcp:${firstAlice.identity}`,
+          record: "ackerdb://records/1",
+          tokenId: created.id,
+        },
       },
     });
     const secondCalled = await rpc(base, "/agent/mcp", "tools/call", {
