@@ -10,18 +10,19 @@ import { Engine } from "../../src/database/engine.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import {
   mutation,
+  procedure,
   query,
   type MutationBuilder,
+  type ProcedureBuilder,
   type QueryBuilder,
 } from "../../src/app/functions.ts";
 import { ACKERDB_HTTP_ROUTES } from "../../src/transport/http-surface.ts";
 import {
-  createMcp,
+  mcp as mcpDeclaration,
   finalizeMcpToolResult,
-  mcpTool,
+  mcpAuth,
   type McpBuilder,
-  type McpToolBuilder,
-  type McpToolResult,
+  type McpAuthBuilder,
 } from "../../src/mcp/index.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
@@ -42,8 +43,14 @@ const schema = defineSchema({
 
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedMutation = mutation as MutationBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
+const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+/** Route and naming checks care about paths, not about authority. */
+const rawAuth = mcpAuth({ name: "raw" });
+const agentAuth = typedMcpAuth({ name: "agent" });
+const operationsAuth = typedMcpAuth({ name: "operations" });
+const valuesAuth = typedMcpAuth({ name: "values" });
 
 const listNotes = typedQuery({
   access: "public",
@@ -70,29 +77,35 @@ let lastNativeValues: {
   readonly bytes: readonly number[];
 } | undefined;
 
-const writeNote = typedMcpTool({
+const writeNote = typedProcedure({
   description: "Write one note and report the committed note count.",
+  access: "public",
   args: { body: v.string() },
+  returns: v.object({ status: v.string() }),
   handler: async (ctx, args) => {
     handlerCalls++;
     lastHandlerContext = { auth: ctx.auth.kind, aborted: ctx.abortSignal.aborted };
-    return ctx.tx(async (tx) => {
+    const done = await ctx.tx(async (tx) => {
       await insertNote(tx, { body: args.body });
       if (args.body === "reject") throw new AckerDBError("conflict", "note rejected");
       if (args.body === "secret-crash") throw new Error("sensitive implementation detail");
       const rows = await listNotes(tx, {});
-      return { content: [{ type: "text", text: `${ctx.auth.kind}:${rows.data.length}` }] };
+      return { status: `${ctx.auth.kind}:${rows.data.length}` };
     });
+    if (!done.ok) throw new Error("note write failed");
+    return done.data;
   },
 });
 
-const writeNoteSummary = typedMcpTool({
+const writeNoteSummary = typedQuery({
+  title: "Summarize note",
   description: "Summarize one note as structured data.",
+  access: "public",
   args: {
     body: v.string().describe("The note text to summarize."),
     label: v.string().optional().describe("An optional human label."),
   },
-  output: v.object({
+  returns: v.object({
     body: v.string().describe("The original note text."),
     length: v.int().describe("The number of UTF-16 code units."),
     label: v.string().nullable().describe("The normalized label."),
@@ -106,14 +119,17 @@ const writeNoteSummary = typedMcpTool({
   },
 });
 
-const readStatus = typedMcpTool({
+const readStatus = typedQuery({
   description: "Read the current service status.",
+  access: "public",
   args: {},
-  handler: () => ({ content: [{ type: "text", text: "ready" }] }),
+  returns: v.object({ status: v.string() }),
+  handler: () => ({ status: "ready" }),
 });
 
-const echoValues = typedMcpTool({
+const echoValues = typedQuery({
   description: "Round-trip AckerDB-native values without losing precision or bytes.",
+  access: "public",
   args: {
     minimum: v.bigint(),
     maximum: v.bigint(),
@@ -126,7 +142,7 @@ const echoValues = typedMcpTool({
     opaque: v.jsonb<unknown>(),
     poisonOutput: v.boolean(),
   },
-  output: v.object({
+  returns: v.object({
     minimum: v.bigint(),
     maximum: v.bigint(),
     negative: v.bigint(),
@@ -162,176 +178,9 @@ const echoValues = typedMcpTool({
   },
 });
 
-function richContentResult(kind: string, auth: string): McpToolResult {
-  switch (kind) {
-    case "text":
-      return {
-        content: [{
-          type: "text",
-          text: "hello agent",
-          annotations: {
-            audience: ["assistant"],
-            priority: 0.75,
-            lastModified: "2026-07-17T09:30:00Z",
-          },
-          _meta: { source: "notes" },
-        }],
-      };
-    case "image":
-      return {
-        content: [{
-          type: "image",
-          data: "AQID",
-          mimeType: "image/png",
-          annotations: { audience: ["user"] },
-          _meta: { width: 1, height: 1 },
-        }],
-      };
-    case "audio":
-      return {
-        content: [{
-          type: "audio",
-          data: "BAUG",
-          mimeType: "audio/wav",
-          annotations: { priority: 0.5 },
-          _meta: { seconds: 1 },
-        }],
-      };
-    case "resource_text":
-      return {
-        content: [{
-          type: "resource",
-          resource: {
-            uri: "ackerdb://notes/1",
-            mimeType: "text/plain",
-            text: "embedded note",
-            _meta: { encoding: "utf-8" },
-          },
-          annotations: { audience: ["assistant", "user"] },
-          _meta: { embedded: true },
-        }],
-      };
-    case "resource_blob":
-      return {
-        content: [{
-          type: "resource",
-          resource: {
-            uri: "ackerdb://notes/2",
-            mimeType: "application/octet-stream",
-            blob: "AQID",
-            _meta: { checksum: "010203" },
-          },
-        }],
-      };
-    case "resource_link":
-      return {
-        content: [{
-          type: "resource_link",
-          uri: "https://ackerdb.dev/notes/1",
-          name: "note-one",
-          title: "Note one",
-          description: "The first durable note.",
-          mimeType: "text/plain",
-          size: 13,
-          icons: [{
-            src: "https://ackerdb.dev/note.png",
-            mimeType: "image/png",
-            sizes: ["48x48", "any"],
-            theme: "light",
-          }],
-          annotations: { priority: 1, lastModified: "2026-07-17T09:30:00+00:00" },
-          _meta: { durable: true },
-        }],
-      };
-    case "mixed":
-      return {
-        content: [{ type: "text", text: "mixed" }, {
-          type: "image",
-          data: "AQID",
-          mimeType: "image/png",
-        }, {
-          type: "resource_link",
-          uri: "ackerdb://notes/1",
-          name: "note-one",
-        }],
-        _meta: { auth, nested: { values: [true, 1, null] } },
-      };
-    case "error":
-      return {
-        content: [{ type: "text", text: "The note could not be rendered." }],
-        isError: true,
-        _meta: { reason: "unsupported_note" },
-      };
-    default:
-      throw new Error(`unknown rich content fixture ${kind}`);
-  }
-}
-
-function invalidContentValue(kind: string): unknown {
-  switch (kind) {
-    case "arbitrary":
-      return { value: "not a content result" };
-    case "base64":
-      return { content: [{ type: "image", data: "not base64!", mimeType: "image/png" }] };
-    case "annotations":
-      return { content: [{ type: "text", text: "bad", annotations: { priority: 2 } }] };
-    case "annotations_audience":
-      return { content: [{ type: "text", text: "bad", annotations: { audience: ["model"] } }] };
-    case "annotations_date":
-      return {
-        content: [{
-          type: "text",
-          text: "bad",
-          annotations: { lastModified: "not-a-date" },
-        }],
-      };
-    case "annotations_calendar":
-      return {
-        content: [{
-          type: "text",
-          text: "bad",
-          annotations: { lastModified: "2026-02-31T09:30:00Z" },
-        }],
-      };
-    case "metadata":
-      return { content: [], _meta: { invalid: 1n } };
-    case "resource":
-      return { content: [{ type: "resource_link", uri: "relative", name: "bad" }] };
-    case "resource_shape":
-      return {
-        content: [{
-          type: "resource",
-          resource: { uri: "ackerdb://notes/1", text: "text", blob: "AQID" },
-        }],
-      };
-    case "unknown_field":
-      return { content: [{ type: "text", text: "bad", arbitrary: true }] };
-    default:
-      throw new Error(`unknown invalid content fixture ${kind}`);
-  }
-}
-
-const renderContent = typedMcpTool({
-  title: "Render rich content",
-  description: "Return one stable MCP rich-content fixture.",
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: false,
-  },
-  args: { kind: v.string() },
-  handler: (ctx, args) => richContentResult(args.kind, ctx.auth.kind),
-});
-
-const invalidResult = typedMcpTool({
-  description: "Exercise runtime rejection of arbitrary results.",
-  args: { kind: v.string() },
-  handler: (_ctx, args) => invalidContentValue(args.kind) as never,
-});
-
 const agentMcp = typedMcp({
   name: "agent",
+  auth: agentAuth,
   instructions: "Use the note tools for durable user notes.",
   metadata: {
     title: "Notes Agent",
@@ -339,35 +188,37 @@ const agentMcp = typedMcp({
     websiteUrl: "https://ackerdb.dev/agents/notes",
   },
   tools: {
-    summarize_note: writeNoteSummary,
-    write_note: writeNote,
+    summarize_note: {
+      fn: writeNoteSummary,
+      access: "public",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    write_note: { fn: writeNote, access: "public" },
   },
 });
 const operationsMcp = typedMcp({
   name: "operations",
+  auth: operationsAuth,
   path: "/agents/operations",
   instructions: "Use the operations tools only for service status.",
   metadata: { title: "Operations Agent" },
-  tools: { read_status: readStatus },
+  tools: { read_status: { fn: readStatus, access: "public" } },
 });
 const valuesMcp = typedMcp({
   name: "values",
+  auth: valuesAuth,
   path: "/mcp/values",
-  tools: { echo_values: echoValues },
-});
-const contentMcp = typedMcp({
-  name: "content",
-  path: "/mcp/content",
-  tools: {
-    invalid_result: invalidResult,
-    render_content: renderContent,
-  },
+  tools: { echo_values: { fn: echoValues, access: "public" } },
 });
 const registeredEchoValues = valuesMcp.tools.echo_values;
 
 const modules = {
   agent: { agentMcp },
-  content: { contentMcp, invalidResult, renderContent },
   notes: { insertNote, listNotes, writeNote, writeNoteSummary },
   operations: { readStatus, renamedEndpoint: operationsMcp },
   values: { echoValues, valuesMcp },
@@ -740,18 +591,15 @@ describe("public stateless MCP endpoint", () => {
       pattern: "^(?:0|-?[1-9][0-9]*)$",
     });
 
-    const standardResult = registeredEchoValues.inputCodec["~standard"].validate(protocolValues());
-    expect(standardResult).toMatchObject({
-      value: {
-        minimum: -(2n ** 63n),
-        maximum: 2n ** 63n - 1n,
-        large: 9_007_199_254_740_993n,
-        identity: 9_223_372_036_854_775_806n,
-        literal: 7n,
-      },
+    expect(registeredEchoValues.codec.decodeArgs(protocolValues())).toMatchObject({
+      minimum: -(2n ** 63n),
+      maximum: 2n ** 63n - 1n,
+      large: 9_007_199_254_740_993n,
+      identity: 9_223_372_036_854_775_806n,
+      literal: 7n,
     });
 
-    const minimumValidator = registeredEchoValues.args.minimum;
+    const minimumValidator = registeredEchoValues.fn.args.minimum!;
     const originalCheck = minimumValidator.check;
     let minimumChecks = 0;
     Object.defineProperty(minimumValidator, "check", {
@@ -804,7 +652,7 @@ describe("public stateless MCP endpoint", () => {
 
   test("accepts JSON-number bigints (proto3-style) while forcing unsafe magnitudes to strings", () => {
     const decode = (overrides: Record<string, unknown>) =>
-      registeredEchoValues.inputCodec.decode(protocolValues(overrides), "args") as {
+      registeredEchoValues.codec.decodeArgs(protocolValues(overrides)) as {
         readonly minimum: bigint;
         readonly negative: bigint;
         readonly large: bigint;
@@ -826,28 +674,28 @@ describe("public stateless MCP endpoint", () => {
       ['"9"', "canonical decimal string"],
       ["09", "canonical decimal string"],
     ] as const) {
-      expect(() => registeredEchoValues.inputCodec.decode(protocolValues({ minimum: invalid }), "args"))
+      expect(() => registeredEchoValues.codec.decodeArgs(protocolValues({ minimum: invalid })))
         .toThrow(message);
     }
   });
 
   test("rejects malformed decimal/base64 and non-JSON opaque values", async () => {
     for (const invalid of ["01", "+1", "-0", "9223372036854775808"]) {
-      expect(() => registeredEchoValues.inputCodec.decode(protocolValues({ minimum: invalid }), "args"))
+      expect(() => registeredEchoValues.codec.decodeArgs(protocolValues({ minimum: invalid })))
         .toThrow();
     }
     for (const invalid of ["AQI", "AQI===", "!!=="]) {
-      expect(() => registeredEchoValues.inputCodec.decode(protocolValues({ bytes: invalid }), "args"))
+      expect(() => registeredEchoValues.codec.decodeArgs(protocolValues({ bytes: invalid })))
         .toThrow("canonical base64");
     }
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
-    const nativeValues = registeredEchoValues.inputCodec.decode(protocolValues(), "args");
-    expect(() => registeredEchoValues.outputCodec.encode({
+    const nativeValues = registeredEchoValues.codec.decodeArgs(protocolValues()) as Record<string, unknown>;
+    expect(() => registeredEchoValues.codec.encodeOutput({
       ...nativeValues,
       poisonOutput: undefined,
       opaque: cyclic,
-    }, "output")).toThrow("output.opaque.self: cyclic JSON value");
+    })).toThrow("output.opaque.self: cyclic JSON value");
     expect(valueHandlerCalls).toBe(0);
 
     const malformed = await rpcAt(valuesMcp.path, "tools/call", {
@@ -871,19 +719,15 @@ describe("public stateless MCP endpoint", () => {
   });
 
   test("advertises tool titles and host hints without treating them as authorization", async () => {
-    const listed = await rpcAt(contentMcp.path, "tools/list", {});
+    const listed = await rpcAt(agentMcp.path!, "tools/list", {});
     const body = await listed.json() as {
       readonly result: { readonly tools: readonly Record<string, unknown>[] };
     };
     expect(body.result.tools).toHaveLength(2);
     expect(body.result.tools[0]).toMatchObject({
-      name: "invalid_result",
-      description: "Exercise runtime rejection of arbitrary results.",
-    });
-    expect(body.result.tools[1]).toMatchObject({
-      name: "render_content",
-      title: "Render rich content",
-      description: "Return one stable MCP rich-content fixture.",
+      name: "summarize_note",
+      title: "Summarize note",
+      description: "Summarize one note as structured data.",
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -891,91 +735,9 @@ describe("public stateless MCP endpoint", () => {
         openWorldHint: false,
       },
     });
-
-    const anonymousCall = await rpcAt(contentMcp.path, "tools/call", {
-      name: "render_content",
-      arguments: { kind: "mixed" },
-    }, 2);
-    expect(await anonymousCall.json()).toMatchObject({ result: { _meta: { auth: "anonymous" } } });
-  });
-
-  test("preserves every rich content block, mixed content, metadata, and intentional errors", async () => {
-    const kinds = [
-      "text",
-      "image",
-      "audio",
-      "resource_text",
-      "resource_blob",
-      "resource_link",
-      "mixed",
-      "error",
-    ] as const;
-    for (let index = 0; index < kinds.length; index++) {
-      const kind = kinds[index]!;
-      const response = await rpcAt(contentMcp.path, "tools/call", {
-        name: "render_content",
-        arguments: { kind },
-      }, index + 1);
-      expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({
-        jsonrpc: "2.0",
-        id: index + 1,
-        result: richContentResult(kind, "anonymous"),
-      });
-    }
-
-    const malformed = await fetch(`${harness.base}${contentMcp.path}`, {
-      method: "POST",
-      headers: mcpHeaders(),
-      body: "{",
-    });
-    const malformedBody = await malformed.json();
-    expect(malformedBody).toMatchObject({ jsonrpc: "2.0", error: {}, id: null });
-    expect(malformedBody).not.toHaveProperty("result");
-  });
-
-  test("rejects arbitrary rich results and invalid annotations at compile-independent runtime boundaries", async () => {
-    const invalid = [
-      ["arbitrary", "unknown field"],
-      ["base64", "base64-encoded data"],
-      ["annotations", "priority must be between 0 and 1"],
-      ["annotations_audience", "audience must contain only user or assistant"],
-      ["annotations_date", "lastModified must be an ISO 8601 date-time"],
-      ["annotations_calendar", "lastModified must be an ISO 8601 date-time"],
-      ["metadata", "expected a standard JSON value"],
-      ["resource", "must be an absolute URI"],
-      ["resource_shape", "must contain exactly one of text or blob"],
-      ["unknown_field", "unknown field"],
-    ] as const;
-    for (let index = 0; index < invalid.length; index++) {
-      const [kind, message] = invalid[index]!;
-      expect(() => finalizeMcpToolResult(contentMcp.tools.invalid_result, invalidContentValue(kind)))
-        .toThrow(message);
-
-      const response = await rpcAt(contentMcp.path, "tools/call", {
-        name: "invalid_result",
-        arguments: { kind },
-      }, index + 1);
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ result: { isError: true } });
-    }
-
-    const invalidAnnotations = (name: string, annotations: unknown) => typedMcp({
-      name,
-      path: `/invalid/${name}`,
-      tools: {
-        invalid_hint: typedMcpTool({
-          description: "Invalid runtime fixture.",
-          args: {},
-          annotations: annotations as never,
-          handler: () => ({ content: [] }),
-        }),
-      },
-    });
-    expect(() => invalidAnnotations("invalid_hint", { readOnlyHint: "yes" }))
-      .toThrow("MCP tool annotation readOnlyHint must be a boolean");
-    expect(() => invalidAnnotations("unknown_hint", { authorization: true }))
-      .toThrow('unknown MCP tool annotation "authorization"');
+    // Hints are advice to a model, never authorization: the tool still answers
+    // an anonymous caller because its entry says `public`.
+    expect(body.result.tools[1]).toMatchObject({ name: "write_note" });
   });
 
   test("works through the official SDK client without an HTTP session", async () => {
@@ -1097,16 +859,18 @@ describe("MCP startup invariants", () => {
       ["__proto__"]: v.string(),
       constructor: v.bigint().optional(),
     } as const;
-    const prototypeFields = typedMcpTool({
+    const prototypeFields = typedQuery({
       description: "Preserve legal prototype-named fields.",
+      access: "public",
       args: prototypeShape,
-      output: v.object(prototypeShape),
+      returns: v.object(prototypeShape),
       handler: (_ctx, args) => args,
     });
     const endpoint = typedMcp({
       name: "prototype_fields",
+      auth: typedMcpAuth({ name: "prototype_fields" }),
       path: "/prototype/fields",
-      tools: { prototype_fields: prototypeFields },
+      tools: { prototype_fields: { fn: prototypeFields, access: "public" } },
     });
     const tool = endpoint.tools.prototype_fields;
     const inputProperties = tool.inputSchema.properties as Record<string, unknown>;
@@ -1116,15 +880,14 @@ describe("MCP startup invariants", () => {
     expect(Object.hasOwn(inputProperties, "__proto__")).toBe(true);
     expect(Object.hasOwn(outputProperties, "__proto__")).toBe(true);
 
-    const decoded = tool.inputCodec.decode(
+    const decoded = tool.codec.decodeArgs(
       JSON.parse('{"__proto__":"safe","constructor":7}'),
-      "args",
-    );
+    ) as Record<string, unknown>;
     expect(Object.hasOwn(decoded, "__proto__")).toBe(true);
-    expect(decoded.__proto__).toBe("safe");
-    expect(decoded.constructor).toBe(7n);
+    expect(decoded["__proto__"]).toBe("safe");
+    expect(decoded["constructor"]).toBe(7n);
 
-    const encoded = tool.outputCodec.encode(decoded, "output") as Record<string, unknown>;
+    const encoded = tool.codec.encodeOutput(decoded) as Record<string, unknown>;
     expect(Object.getPrototypeOf(encoded)).toBeNull();
     expect(Object.hasOwn(encoded, "__proto__")).toBe(true);
     expect(JSON.stringify(encoded)).toBe('{"__proto__":"safe","constructor":"7"}');
@@ -1141,103 +904,53 @@ describe("MCP startup invariants", () => {
       [contradictoryArray, "v.array() has no element validator"],
     ] as const;
     for (const [index, [value, message]] of cases.entries()) {
+      const invalidShape = typedQuery({
+        description: "This declaration must fail before registration.",
+        access: "public",
+        args: { value },
+        returns: v.object({}),
+        handler: () => ({}),
+      });
       expect(() => typedMcp({
         name: `invalid_shape_${index}`,
+        auth: typedMcpAuth({ name: `invalid_shape_${index}` }),
         path: `/invalid/shape-${index}`,
-        tools: {
-          invalid_shape: typedMcpTool({
-            description: "This declaration must fail before registration.",
-            args: { value },
-            handler: () => ({ content: [{ type: "text", text: "never" }] }),
-          }),
-        },
+        tools: { invalid_shape: { fn: invalidShape, access: "public" } },
       })).toThrow(message);
     }
 
+    const invalidOutput = typedQuery({
+      description: "Nested return validators compile at declaration time too.",
+      access: "public",
+      args: {},
+      returns: v.object({ value: v.array(v.scheduleAt()) }),
+      handler: () => ({ value: [] }),
+    });
     expect(() => typedMcp({
       name: "invalid_output",
+      auth: typedMcpAuth({ name: "invalid_output" }),
       path: "/invalid/output",
-      tools: {
-        invalid_output: typedMcpTool({
-          description: "Nested output validators compile at declaration time too.",
-          args: {},
-          output: v.object({ value: v.array(v.scheduleAt()) }),
-          handler: () => ({ value: [] }),
-        }),
-      },
+      tools: { invalid_output: { fn: invalidOutput, access: "public" } },
     })).toThrow("$.value[]: v.scheduleAt() is not a standard-JSON value");
   });
 
-  test("snapshots and reuses inert blueprints without giving them registration identity", () => {
-    const args = { value: v.string() };
-    const annotations = { readOnlyHint: true };
-    const access = { anyOf: ["read"] } as { anyOf: ["read"] };
-    const reusable = typedMcpTool({
-      description: "Reusable source definition.",
-      args,
-      annotations,
-      access,
-      handler: (_ctx, input) => ({ content: [{ type: "text", text: input.value }] }),
-    });
-
-    args.value = v.int() as never;
-    annotations.readOnlyHint = false;
-    (access.anyOf as string[])[0] = "admin";
-
-    const first = typedMcp({
-      name: "reuse_first",
-      path: "/reuse/first",
-      scopes: ["read"] as const,
-      tools: { first_name: reusable, second_name: reusable },
-    });
-    const second = typedMcp({
-      name: "reuse_second",
-      path: "/reuse/second",
-      scopes: ["read"] as const,
-      tools: { third_name: reusable },
-    });
-    const registry = new Registry({
-      blueprints: { again: reusable, reusable },
-      endpoints: { first, second },
-    });
-
-    expect(first.tools.first_name).not.toBe(first.tools.second_name);
-    expect(first.tools.first_name).not.toBe(second.tools.third_name);
-    expect(first.tools.first_name.name).toBe("first_name");
-    expect(first.tools.second_name.name).toBe("second_name");
-    expect(second.tools.third_name.name).toBe("third_name");
-    expect(first.tools.first_name.mcp).toBe(first);
-    expect(second.tools.third_name.mcp).toBe(second);
-    expect(first.tools.first_name.annotations).toEqual({ readOnlyHint: true });
-    expect(first.tools.first_name.accessPolicy).toEqual({ kind: "anyOf", scopes: ["read"] });
-    expect(first.tools.first_name.inputCodec.decode({ value: "kept" }, "args"))
-      .toEqual({ value: "kept" });
-    expect(() => first.tools.first_name.inputCodec.decode({ value: 1 }, "args")).toThrow();
-    expect(registry.addressOf(reusable)).toBeUndefined();
-    expect(registry.addressOf(first.tools.first_name)).toBeUndefined();
-    expect(registry.registeredToolsFor(first)).toEqual([
-      first.tools.first_name,
-      first.tools.second_name,
-    ]);
-  });
-
   test("rejects two declarations that claim the default route", () => {
-    const other = createMcp({ name: "other", tools: {} });
+    const other = mcpDeclaration({ auth: rawAuth, name: "other", tools: {} });
     expect(() => new Registry({ agent: { agentMcp }, other: { other } })).toThrow(
       'both use path "/mcp"',
     );
   });
 
   test("rejects duplicate stable names independently of paths and export order", () => {
-    const duplicateName = createMcp({ name: "agent", path: "/other", tools: {} });
+    const duplicateName = mcpDeclaration({ auth: rawAuth, name: "agent", path: "/other", tools: {} });
     expect(() => new Registry({ z: { duplicateName }, agent: { agentMcp } })).toThrow(
       'duplicate MCP name "agent"',
     );
   });
 
   test("rejects duplicate custom paths deterministically", () => {
-    const alpha = createMcp({ name: "alpha", path: "/shared/mcp", tools: {} });
-    const zeta = createMcp({ name: "zeta", path: "/shared/mcp", tools: {} });
+    const alpha = mcpDeclaration({ auth: rawAuth, name: "alpha", path: "/shared/mcp", tools: {} });
+    const zeta = mcpDeclaration({ auth: rawAuth, name: "zeta", path: "/shared/mcp", tools: {} });
     expect(() => new Registry({ z: { zeta }, a: { alpha } })).toThrow(
       'MCP "zeta" and "alpha" both use path "/shared/mcp"',
     );
@@ -1246,7 +959,7 @@ describe("MCP startup invariants", () => {
   test("rejects every path owned by the AckerDB listener", () => {
     for (const path of Object.values(ACKERDB_HTTP_ROUTES)) {
       const declare = () => new Registry({
-        endpoint: { collision: createMcp({ name: "collision", path, tools: {} }) },
+        endpoint: { collision: mcpDeclaration({ auth: rawAuth, name: "collision", path, tools: {} }) },
       });
       // A dotted route — the document endpoint's file extension — is not even a
       // spellable MCP path, so it is refused before a registry compares it.
@@ -1260,39 +973,36 @@ describe("MCP startup invariants", () => {
 
   test("rejects non-canonical paths and bounds declaration guidance", () => {
     for (const path of ["mcp", "/", "//mcp", "/mcp/", "/mcp?mode=1", "/mcp tools", "/a/../mcp"]) {
-      expect(() => createMcp({ name: "invalid", path, tools: {} })).toThrow(
+      expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid", path, tools: {} })).toThrow(
         "MCP path must be an absolute static path",
       );
     }
-    expect(() => createMcp({ name: "invalid", path: `/${"a".repeat(257)}`, tools: {} })).toThrow(
+    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid", path: `/${"a".repeat(257)}`, tools: {} })).toThrow(
       "MCP path must be an absolute static path",
     );
-    expect(() => createMcp({ name: "invalid", path: null, tools: {} } as never)).toThrow(
+    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid", path: null, tools: {} } as never)).toThrow(
       "MCP path must be an absolute static path",
     );
-    expect(() => createMcp({ name: "invalid", pth: "/custom", tools: {} } as never)).toThrow(
+    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid", pth: "/custom", tools: {} } as never)).toThrow(
       'unknown MCP config field "pth"',
     );
-    expect(() => createMcp({
-      name: "invalid",
+    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid",
       instructions: "x".repeat(16 * 1_024 + 1),
       tools: {},
     })).toThrow("MCP instructions must be at most 16384 UTF-8 bytes");
-    expect(() => createMcp({
-      name: "invalid",
+    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid",
       metadata: { description: "x".repeat(4 * 1_024) },
       tools: {},
     })).toThrow("MCP metadata must be at most 4096 UTF-8 bytes");
-    expect(() => createMcp({
-      name: "invalid",
+    expect(() => mcpDeclaration({ auth: rawAuth, name: "invalid",
       metadata: { websiteUrl: "relative/path" },
       tools: {},
     })).toThrow("MCP metadata websiteUrl must be an absolute URL");
   });
 
   test("keeps stable identity independent from path changes", () => {
-    const original = createMcp({ name: "stable", path: "/first", tools: {} });
-    const moved = createMcp({ name: "stable", path: "/second", tools: {} });
+    const original = mcpDeclaration({ auth: rawAuth, name: "stable", path: "/first", tools: {} });
+    const moved = mcpDeclaration({ auth: rawAuth, name: "stable", path: "/second", tools: {} });
     expect(original.name).toBe(moved.name);
     expect(original.path).not.toBe(moved.path);
   });
