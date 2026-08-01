@@ -2034,12 +2034,15 @@ export class Runtime implements RuntimePort {
     try {
       const tool = this.authorizeMcpTool(mcp, name, toolContext.auth);
       throwIfAborted(toolContext.abortSignal);
-      const result = await this.executeMcpTool(
-        tool,
-        tool.codec.decodeArgs(args),
-        toolContext,
-        fairnessKey,
-        requestBytes,
+      const result = await runInInvocationRoot(
+        toolContext.auth,
+        () => this.executeMcpTool(
+          tool,
+          tool.codec.decodeArgs(args),
+          toolContext,
+          fairnessKey,
+          requestBytes,
+        ),
       );
       const finalized = finalizeMcpToolResult(tool, result);
       if (toolContext.abortSignal.aborted) {
