@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/cache",
-  "version": "0.13.2",
+  "version": "0.13.3",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pedrobzz/AckerDB.git",
@@ -20,7 +20,7 @@
     "./upstash": "./src/adapters/upstash.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.13.2",
-    "@ackerdb/server": "workspace:0.13.2"
+    "@ackerdb/core": "workspace:0.13.3",
+    "@ackerdb/server": "workspace:0.13.3"
   }
 }
