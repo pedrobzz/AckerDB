@@ -95,6 +95,24 @@ declaring its root schema and named plugin instances. Operational settings
 remain outside the manifest.
 _Avoid_: Plugin registry, plugins file
 
+**Service** — A long-lived external resource an application owns for one
+process generation: a broker consumer, a job worker, a webhook subscription.
+Unlike a plugin it is not isolated—it holds root application authority and
+executes trusted work through system runs. Unlike a function it has no address
+and no client can call it. The framework starts it, supervises it, and releases
+it; it never restarts it.
+_Avoid_: Background job, daemon, worker plugin
+
+**Service module** — A file in the application's service directory. Its path
+and export name give each service its exact name, exactly as function modules
+are addressed. Only the serving path imports these modules, so code generation
+and schema tooling never open a service's external connection.
+
+**Process generation** — One running application process, from the moment
+services start to the moment their cleanups finish. Every declared service
+starts exactly once per generation, and a development reload fully ends one
+generation before beginning the next.
+
 **Plugin instance** — One configured occurrence of a plugin in an
 application. Each instance has its own identity and isolated state, even when
 several instances come from the same plugin definition. Every instance must

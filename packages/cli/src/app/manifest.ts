@@ -14,11 +14,11 @@ export interface FunctionModuleFile {
   file: string;
 }
 
-/** Deterministically list function module files (sorted by key). */
-export function listFunctionModules(config: AppConfig): FunctionModuleFile[] {
-  if (!existsSync(config.functionsDir)) return [];
+/** Deterministically list one module directory's files (sorted by key). */
+function listModules(dir: string, kind: string): FunctionModuleFile[] {
+  if (!existsSync(dir)) return [];
   const out: FunctionModuleFile[] = [];
-  const entries = readdirSync(config.functionsDir, { recursive: true }) as string[];
+  const entries = readdirSync(dir, { recursive: true }) as string[];
   for (const entry of entries.sort()) {
     if (!entry.endsWith(".ts") || entry.endsWith(".d.ts")) continue;
     const segments = entry.slice(0, -".ts".length).split(sep);
@@ -26,12 +26,22 @@ export function listFunctionModules(config: AppConfig): FunctionModuleFile[] {
       segment.startsWith("_") || segment.startsWith(".") || !IDENTIFIER.test(segment)
     )) {
       throw new Error(
-        `function module "${entry}": path segments become API namespaces and must be identifiers (got "${segments.join("/")}")`,
+        `${kind} module "${entry}": path segments become names and must be identifiers (got "${segments.join("/")}")`,
       );
     }
-    out.push({ key: segments.join("."), segments, file: join(config.functionsDir, entry) });
+    out.push({ key: segments.join("."), segments, file: join(dir, entry) });
   }
   return out;
+}
+
+/** Deterministically list function module files (sorted by key). */
+export function listFunctionModules(config: AppConfig): FunctionModuleFile[] {
+  return listModules(config.functionsDir, "function");
+}
+
+/** Deterministically list application service module files (sorted by key). */
+export function listServiceModules(config: AppConfig): FunctionModuleFile[] {
+  return listModules(config.servicesDir, "service");
 }
 
 export async function importApp(config: AppConfig): Promise<App> {
@@ -45,12 +55,29 @@ export async function importApp(config: AppConfig): Promise<App> {
   return module.default;
 }
 
-export async function importFunctionModules(
-  config: AppConfig,
+async function importModules(
+  files: readonly FunctionModuleFile[],
 ): Promise<Record<string, Record<string, unknown>>> {
   const modules: Record<string, Record<string, unknown>> = {};
-  for (const { key, file } of listFunctionModules(config)) {
+  for (const { key, file } of files) {
     modules[key] = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
   }
   return modules;
+}
+
+export async function importFunctionModules(
+  config: AppConfig,
+): Promise<Record<string, Record<string, unknown>>> {
+  return importModules(listFunctionModules(config));
+}
+
+/**
+ * Import service modules. Only the serving path calls this: manifest
+ * inspection, code generation, and migration tooling never do, which is what
+ * keeps a broker connection out of `acker codegen`.
+ */
+export async function importServiceModules(
+  config: AppConfig,
+): Promise<Record<string, Record<string, unknown>>> {
+  return importModules(listServiceModules(config));
 }
