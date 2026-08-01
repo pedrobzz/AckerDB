@@ -125,8 +125,8 @@ const useTools = typedProcedure({
     await filtered.echo_values.execute({ id: "1", bytes: "AQ==" });
     if (filtered.echo_values !== undefined) {
       const output: {
-        id: bigint;
-        bytes: Uint8Array;
+        id: string;
+        bytes: string;
         label: string | null;
       } = await filtered.echo_values.execute({ id: "1", bytes: "AQ==" });
       void output;
@@ -143,7 +143,7 @@ const useTools = typedProcedure({
     const aiSdkTools: ToolSet = complete;
     // A non-object return is wrapped, and the wrap is visible in the type.
     const wrapped: { readonly value: number } = await complete.counted_value.execute({});
-    const structuredResult: { id: bigint; bytes: Uint8Array; label: string | null } =
+    const structuredResult: { id: string; bytes: string; label: string | null } =
       await complete.echo_values.execute({ id: 1, bytes: "AQ==" });
     void aiSdkTools;
     void wrapped;

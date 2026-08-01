@@ -59,7 +59,24 @@ export interface McpAiTool<Input = unknown, Output = unknown> {
  */
 type McpAiSuccess<R> = R extends { readonly ok: true; readonly data: infer D } ? D : R;
 
-type McpAiStructuredOutput<R> = McpAiSuccess<R> extends infer D
+/**
+ * The standard-JSON face of a value, mirroring `compileStandardJsonCodec` at the
+ * type level: `bigint` (and therefore `Identity`) and `Uint8Array` cross as
+ * strings, everything else structurally.
+ *
+ * This reads the declared *data* type rather than the `returns` validator,
+ * because `Registered` erases the validator to `Validator<unknown, string>`.
+ * The two agree for every shape `v` can build.
+ */
+type McpAiStandardJson<T> = T extends bigint ? string
+  : T extends Uint8Array ? string
+  : T extends string | number | boolean | null | undefined ? T
+  : T extends readonly (infer E)[] ? readonly McpAiStandardJson<E>[]
+  : T extends Readonly<Record<string, unknown>>
+    ? { readonly [K in keyof T]: McpAiStandardJson<T[K]> }
+  : T;
+
+type McpAiStructuredOutput<R> = McpAiStandardJson<McpAiSuccess<R>> extends infer D
   ? D extends Readonly<Record<string, unknown>> ? D : { readonly value: D }
   : never;
 
