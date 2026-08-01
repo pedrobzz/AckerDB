@@ -7,6 +7,7 @@
 /.research/
 /.agents/
 /.claude/
+/.codex/
 /skills-lock.json
 
 # deps / build
