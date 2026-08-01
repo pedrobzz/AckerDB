@@ -2001,11 +2001,16 @@ export class Runtime implements RuntimePort {
     if (principal.kind === "anonymous") {
       throw new AckerDBError("unauthenticated", "authentication required");
     }
-    if (providerMatches && tool !== undefined && !(tool.private && !local)) {
+    // A private tool refused from outside answers exactly as a missing one, so
+    // discovery cannot be used to enumerate what the app keeps to itself. Every
+    // other refusal keeps saying "denied": the endpoint is discoverable anyway,
+    // and hiding it would only make a real misconfiguration harder to read.
+    if (tool !== undefined && tool.private && !local) {
+      throw new AckerDBError("not_found", "MCP tool not found");
+    }
+    if (!providerMatches || tool !== undefined) {
       throw new AckerDBError("unauthorized", "access denied");
     }
-    // A private tool refused from outside answers exactly as a missing one, so
-    // discovery cannot be used to enumerate what the app keeps to itself.
     throw new AckerDBError("not_found", "MCP tool not found");
   }
 
