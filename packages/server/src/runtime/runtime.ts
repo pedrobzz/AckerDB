@@ -135,8 +135,8 @@ import { createMutationInvocationScope } from "./mutation-scope.ts";
 import { inTransaction } from "./transaction-context.ts";
 import {
   finalizeMcpToolResult,
+  type AnyMcpAuthProvider,
   type AnyRegisteredMcpTool,
-  type McpToolCtx,
 } from "../mcp/index.ts";
 import {
   bindMcpAiContext,
@@ -1002,6 +1002,14 @@ export class Runtime implements RuntimePort {
     return this.verifyMcpToken(mcp, parsed, fairnessKey, operationSignal);
   }
 
+  /** The provider behind a token realm, shared by every endpoint that names it. */
+  private mcpProvider(name: string): AnyMcpAuthProvider {
+    for (const endpoint of this.registry.mcps.values()) {
+      if (endpoint.auth.name === name) return endpoint.auth;
+    }
+    throw new AckerDBError("not_found", `unknown MCP auth provider "${name}"`);
+  }
+
   /** Own one exact non-expiring MCP credential from verification through HTTP completion. */
   async acquireMcpTokenLease(
     mcp: string,
@@ -1046,9 +1054,10 @@ export class Runtime implements RuntimePort {
     signal: AbortSignal,
   ): Promise<McpPrincipal> {
     this.assertReady();
-    const declaration = this.registry.mcps.get(mcp);
-    if (declaration === undefined) throw new AckerDBError("not_found", `unknown MCP "${mcp}"`);
-    const scopeDescriptor = "scopes" in declaration ? declaration.scopes : undefined;
+    // `mcp` is the provider name: a token is minted by, and verified against,
+    // the provider that owns the scope vocabulary it carries.
+    const provider = this.mcpProvider(mcp);
+    const scopeDescriptor = provider.scopes;
     const credential = await this.submitRead(
       (connection) => this.engine[mcpTokenVaultOwner].authenticate(
         connection,
@@ -1970,22 +1979,33 @@ export class Runtime implements RuntimePort {
 
   /** Resolve one callable tool without trusting discovery or revealing inaccessible names. */
   authorizeMcpTool(mcp: string, name: string, principal: Principal): AnyRegisteredMcpTool {
-    const endpointMatches = principal.kind !== "mcp" || principal.mcp === mcp;
-    const tool = endpointMatches ? this.registry.mcpTool(mcp, name) : undefined;
+    const endpoint = this.registry.mcps.get(mcp);
+    // A token is bound to the provider, not to one endpoint: two endpoints
+    // sharing a provider accept the same credentials and scopes are the only
+    // thing separating them.
+    const providerMatches = principal.kind !== "mcp" ||
+      (endpoint !== undefined && principal.mcp === endpoint.auth.name);
+    const tool = providerMatches ? this.registry.mcpTool(mcp, name) : undefined;
+    // `mcpLocalGrant` returns undefined only when no local authority is active,
+    // which is exactly "this call came from outside the app". EMPTY_SCOPES means
+    // a local authority exists for a *different* principal or endpoint, and that
+    // must count as remote: otherwise one endpoint's AI context could reach
+    // another's private tool whenever its access is public or authenticated.
+    const grant = tool === undefined ? undefined : mcpLocalGrant(principal, tool.mcp);
+    const local = grant !== undefined && grant.length > 0;
     if (
       tool !== undefined &&
-      isMcpToolAuthorized(
-        tool.accessPolicy,
-        principal,
-        mcpLocalGrant(principal, tool.mcp),
-      )
+      !(tool.private && !local) &&
+      isMcpToolAuthorized(tool.accessPolicy, principal, grant)
     ) return tool;
     if (principal.kind === "anonymous") {
       throw new AckerDBError("unauthenticated", "authentication required");
     }
-    if (!endpointMatches || tool !== undefined) {
+    if (providerMatches && tool !== undefined && !(tool.private && !local)) {
       throw new AckerDBError("unauthorized", "access denied");
     }
+    // A private tool refused from outside answers exactly as a missing one, so
+    // discovery cannot be used to enumerate what the app keeps to itself.
     throw new AckerDBError("not_found", "MCP tool not found");
   }
 
@@ -1993,7 +2013,7 @@ export class Runtime implements RuntimePort {
     mcp: string,
     name: string,
     args: unknown,
-    context: McpToolCtx & Pick<ProcedureCtx, "timestamp">,
+    context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
     fairnessKey: string,
     requestBytes: number,
   ): Promise<McpCallToolResult> {
@@ -2001,7 +2021,6 @@ export class Runtime implements RuntimePort {
       auth: context.auth,
       abortSignal: context.abortSignal,
       timestamp: context.timestamp,
-      tx: context.tx,
     });
     const release = bindMcpAiContext(
       toolContext,
@@ -2010,12 +2029,14 @@ export class Runtime implements RuntimePort {
     try {
       const tool = this.authorizeMcpTool(mcp, name, toolContext.auth);
       throwIfAborted(toolContext.abortSignal);
-      const value = await invokeSideEffectingHandler(
-        toolContext.abortSignal,
-        "MCP tool",
-        (onAuthorized) => invokeFunction(tool, toolContext, args, { onAuthorized }),
+      const result = await this.executeMcpTool(
+        tool,
+        tool.codec.decodeArgs(args),
+        toolContext,
+        fairnessKey,
+        requestBytes,
       );
-      const result = finalizeMcpToolResult(tool, value);
+      const finalized = finalizeMcpToolResult(tool, result);
       if (toolContext.abortSignal.aborted) {
         throw canceledHandlerOutcome(
           toolContext.abortSignal,
@@ -2023,10 +2044,83 @@ export class Runtime implements RuntimePort {
           toolContext.abortSignal.reason,
         );
       }
-      return result;
+      return finalized;
     } finally {
       release();
     }
+  }
+
+  /**
+   * A tool executes as the kind it is. A query gets a read transaction and a
+   * `ctx.db` reader; a mutation goes through the one commit every write goes
+   * through; a procedure gets a procedure context. There is no MCP-specific
+   * execution path, which is the whole point of a tool being a function.
+   *
+   * A mutation's receipt is discarded rather than smuggled into `_meta`: an MCP
+   * caller holds no subscriptions, so it owes no convergence obligation.
+   */
+  private async executeMcpTool(
+    tool: AnyRegisteredMcpTool,
+    args: unknown,
+    context: McpAiContext & Pick<ProcedureCtx, "timestamp">,
+    fairnessKey: string,
+    requestBytes: number,
+  ): Promise<Result<unknown, unknown>> {
+    const fn = tool.fn;
+    const signal = this.operationSignal(context.abortSignal);
+    throwIfAborted(signal);
+    if (fn.kind === "query") {
+      const value = await this.executeRead(
+        "query",
+        fairnessKey,
+        signal,
+        requestBytes,
+        null,
+        (execution) => this.invokeQuery(fn, args, context.auth, execution),
+      );
+      return this.expectMcpResult(tool, value);
+    }
+    if (fn.kind === "mutation") {
+      const committed = await this.commitWrite({
+        operation: "mutation",
+        fairnessKey,
+        requestBytes,
+        admissionSignal: signal,
+        work: this.mutationWork(fn, context.auth, args),
+      });
+      return restoreMutationResult(committed.value);
+    }
+    const procedure = this.procedureContext(
+      context.auth,
+      fairnessKey,
+      signal,
+      requestBytes,
+      context.timestamp,
+      this.immediateProcedureInvalidations.publish,
+    );
+    try {
+      const value = await invokeSideEffectingHandler(
+        signal,
+        "MCP tool",
+        (onAuthorized) => invokeFunction(fn, procedure.value, args, { onAuthorized }),
+      );
+      return this.expectMcpResult(tool, value);
+    } finally {
+      procedure.release();
+    }
+  }
+
+  private expectMcpResult(
+    tool: AnyRegisteredMcpTool,
+    value: unknown,
+  ): Result<unknown, unknown> {
+    if (!isResult(value)) {
+      throw new AckerDBError(
+        "internal",
+        `MCP tool "${tool.name}" boundary returned no Result`,
+      );
+    }
+    return value;
   }
 
   /**
@@ -3663,7 +3757,7 @@ export class Runtime implements RuntimePort {
     signal: AbortSignal,
     requestBytes: number,
     timestamp: number,
-  ): McpToolCtx & Pick<ProcedureCtx, "timestamp"> {
+  ): McpAiContext & Pick<ProcedureCtx, "timestamp"> {
     return Object.freeze({
       auth: principal,
       abortSignal: signal,

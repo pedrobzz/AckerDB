@@ -10,7 +10,7 @@
  * Scopes and tokens live on an `mcpAuth` provider rather than here. See
  * `auth.ts` for why that extraction is structural.
  */
-import type { RegisteredServerOnly, Result } from "@ackerdb/core";
+import type { ApplicationError, RegisteredServerOnly, Result } from "@ackerdb/core";
 import type { ObjectShape } from "../validation/v.ts";
 import type { AnyRegistered, Registered } from "../app/functions.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
@@ -586,10 +586,10 @@ export function isRegisteredMcpTool(value: unknown): value is AnyRegisteredMcpTo
  */
 export function finalizeMcpToolResult(
   tool: Pick<AnyRegisteredMcpTool, "codec">,
-  result: Result<unknown, never>,
+  result: Result<unknown, unknown>,
 ): McpCallToolResult {
   if (!result.ok) {
-    const error = tool.codec.encodeError(result.error as never);
+    const error = tool.codec.encodeError(result.error as ApplicationError);
     return {
       isError: true,
       content: [{ type: "text", text: JSON.stringify(error) }],

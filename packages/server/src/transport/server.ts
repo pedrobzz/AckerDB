@@ -1085,7 +1085,7 @@ export class AckerDBServer {
       const credential = mcpCredentialFromAuthorization(request.headers.get("authorization"));
       if (credential !== null) {
         credentialLease = await runtime.acquireMcpTokenLease(
-          mcp.name,
+          mcp.auth.name,
           credential,
           callerFairnessKey(ANONYMOUS_PRINCIPAL, source),
           request.signal,
