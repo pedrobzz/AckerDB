@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/server",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "type": "module",
   "files": [
     "src"
@@ -11,7 +11,7 @@
     "./realtime-host": "./src/realtime/host.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.13.0",
+    "@ackerdb/core": "workspace:0.13.1",
     "@fastify/proxy-addr": "5.1.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "jose": "6.2.3",
