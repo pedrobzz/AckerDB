@@ -26,17 +26,11 @@ import type {
 } from "../validation/standard-schema.ts";
 import type { ObjectShape, ObjectValidator } from "../validation/v.ts";
 
-type McpAiContent =
-  | { type: "text"; text: string }
-  | {
-      type: "file";
-      mediaType: string;
-      data: { type: "data"; data: string };
-    };
-
-export type McpAiModelOutput =
-  | { type: "json"; value: McpJsonValue }
-  | { type: "content"; value: McpAiContent[] };
+/**
+ * Every tool declares `returns`, so every local result is structured JSON.
+ * Content blocks have no path here until they return as a function contract.
+ */
+export type McpAiModelOutput = { type: "json"; value: McpJsonValue };
 
 export interface McpAiTool<Input = unknown, Output = unknown> {
   readonly title?: string;
@@ -252,23 +246,6 @@ function localToolError(
     "validation",
     `MCP tool "${tool.name}" failed: ${detail === undefined ? "unknown error" : detail.text}`,
   );
-}
-
-function richModelOutput(result: McpCallToolResult): McpAiModelOutput {
-  return {
-    type: "content",
-    value: result.content.map((part): McpAiContent => {
-      if (part.type === "text") return { type: "text", text: part.text };
-      if (part.type === "image") {
-        return {
-          type: "file",
-          mediaType: part.mimeType,
-          data: { type: "data", data: part.data },
-        };
-      }
-      return { type: "text", text: JSON.stringify(part) };
-    }),
-  };
 }
 
 /** Materialize the registry-owned tools available under one explicit local delegation. */

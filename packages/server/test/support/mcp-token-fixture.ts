@@ -49,7 +49,7 @@ const schema = defineSchema({
 
 export const typedMutation = mutation as MutationBuilder<typeof schema>;
 export const typedQuery = query as QueryBuilder<typeof schema>;
-const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
+export const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 export const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
 export const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
 
