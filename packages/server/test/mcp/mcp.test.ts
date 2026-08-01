@@ -98,7 +98,6 @@ const writeNote = typedProcedure({
 });
 
 const writeNoteSummary = typedQuery({
-  title: "Summarize note",
   description: "Summarize one note as structured data.",
   access: "public",
   args: {
@@ -188,16 +187,7 @@ const agentMcp = typedMcp({
     websiteUrl: "https://ackerdb.dev/agents/notes",
   },
   tools: {
-    summarize_note: {
-      fn: writeNoteSummary,
-      access: "public",
-      annotations: {
-        readOnlyHint: true,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: false,
-      },
-    },
+    summarize_note: { fn: writeNoteSummary, access: "public" },
     write_note: { fn: writeNote, access: "public" },
   },
 });
@@ -209,6 +199,31 @@ const operationsMcp = typedMcp({
   metadata: { title: "Operations Agent" },
   tools: { read_status: { fn: readStatus, access: "public" } },
 });
+const titledStatus = typedQuery({
+  title: "Render rich content",
+  description: "Return one stable status fixture.",
+  access: "public",
+  args: {},
+  returns: v.object({ status: v.string() }),
+  handler: () => ({ status: "ok" }),
+});
+const titledMcp = typedMcp({
+  name: "titled",
+  auth: typedMcpAuth({ name: "titled" }),
+  path: "/mcp/titled",
+  tools: {
+    titled_status: {
+      fn: titledStatus,
+      access: "public",
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+  },
+});
 const valuesMcp = typedMcp({
   name: "values",
   auth: valuesAuth,
@@ -219,6 +234,7 @@ const registeredEchoValues = valuesMcp.tools.echo_values;
 
 const modules = {
   agent: { agentMcp },
+  titled: { titledMcp, titledStatus },
   notes: { insertNote, listNotes, writeNote, writeNoteSummary },
   operations: { readStatus, renamedEndpoint: operationsMcp },
   values: { echoValues, valuesMcp },
@@ -326,21 +342,18 @@ afterEach(async () => {
 describe("public stateless MCP endpoint", () => {
   test("discovers explicit server-only declarations at the default route", async () => {
     expect(agentMcp.path).toBe("/mcp");
+    // An endpoint is server-only; the functions it publishes are ordinary
+    // registered functions and keep their addresses.
     expect(harness.registry.functions.has("agent.agentMcp")).toBe(false);
-    expect(harness.registry.functions.has("notes.writeNote")).toBe(false);
+    expect(harness.registry.functions.has("notes.writeNote")).toBe(true);
     expect([...harness.registry.serverOnly.keys()]).toEqual([
       "agent.agentMcp",
-      "content.contentMcp",
       "operations.renamedEndpoint",
+      "titled.titledMcp",
       "values.valuesMcp",
-      "content.invalidResult",
-      "content.renderContent",
-      "notes.writeNote",
-      "notes.writeNoteSummary",
-      "operations.readStatus",
-      "values.echoValues",
     ]);
-    expect(harness.registry.addressOf(writeNote)).toBeUndefined();
+    expect(harness.registry.addressOf(writeNote)).toBe("notes.writeNote");
+    // The tool wrapper itself is never addressed; only the function it names is.
     expect(harness.registry.addressOf(agentMcp.tools.write_note)).toBeUndefined();
 
     const initialize = await rpc("initialize", {
@@ -428,6 +441,13 @@ describe("public stateless MCP endpoint", () => {
             required: ["body"],
             additionalProperties: false,
           },
+          outputSchema: {
+            $schema: "https://json-schema.org/draft/2020-12/schema",
+            type: "object",
+            properties: { status: { type: "string" } },
+            required: ["status"],
+            additionalProperties: false,
+          },
         }],
       },
     });
@@ -490,7 +510,10 @@ describe("public stateless MCP endpoint", () => {
     expect(await committed.json()).toMatchObject({
       jsonrpc: "2.0",
       id: 2,
-      result: { content: [{ type: "text", text: "anonymous:1" }] },
+      result: {
+        content: [{ type: "text", text: '{"status":"anonymous:1"}' }],
+        structuredContent: { status: "anonymous:1" },
+      },
     });
     expect(lastHandlerContext).toEqual({ auth: "anonymous", aborted: false });
     expect(noteCount()).toBe(1n);
@@ -548,7 +571,7 @@ describe("public stateless MCP endpoint", () => {
     }, 3);
     expect(await invalidOutput.json()).toMatchObject({
       result: {
-        content: [{ text: "output.length: expected safe integer, got string" }],
+        content: [{ text: "returns.length: expected safe integer, got string" }],
         isError: true,
       },
     });
@@ -620,7 +643,10 @@ describe("public stateless MCP endpoint", () => {
         value: originalCheck,
       });
     });
-    expect(minimumChecks).toBe(1);
+    // Twice: once decoding standard JSON at the surface boundary, once inside
+    // the invocation path that every caller shares. The HTTP surface validates
+    // the same way, so a tool and an `http: true` route behave identically.
+    expect(minimumChecks).toBe(2);
     const expected = {
       minimum: "-9223372036854775808",
       maximum: "9223372036854775807",
@@ -695,7 +721,7 @@ describe("public stateless MCP endpoint", () => {
       ...nativeValues,
       poisonOutput: undefined,
       opaque: cyclic,
-    })).toThrow("output.opaque.self: cyclic JSON value");
+    })).toThrow("returns.opaque.self: cyclic JSON value");
     expect(valueHandlerCalls).toBe(0);
 
     const malformed = await rpcAt(valuesMcp.path, "tools/call", {
@@ -711,7 +737,7 @@ describe("public stateless MCP endpoint", () => {
     }, 2);
     expect(await poisoned.json()).toMatchObject({
       result: {
-        content: [{ text: "output.opaque: expected a standard JSON value" }],
+        content: [{ text: "returns.opaque: expected a standard JSON value" }],
         isError: true,
       },
     });
@@ -719,15 +745,15 @@ describe("public stateless MCP endpoint", () => {
   });
 
   test("advertises tool titles and host hints without treating them as authorization", async () => {
-    const listed = await rpcAt(agentMcp.path!, "tools/list", {});
+    const listed = await rpcAt(titledMcp.path!, "tools/list", {});
     const body = await listed.json() as {
       readonly result: { readonly tools: readonly Record<string, unknown>[] };
     };
-    expect(body.result.tools).toHaveLength(2);
+    expect(body.result.tools).toHaveLength(1);
     expect(body.result.tools[0]).toMatchObject({
-      name: "summarize_note",
-      title: "Summarize note",
-      description: "Summarize one note as structured data.",
+      name: "titled_status",
+      title: "Render rich content",
+      description: "Return one stable status fixture.",
       annotations: {
         readOnlyHint: true,
         destructiveHint: false,
@@ -737,7 +763,13 @@ describe("public stateless MCP endpoint", () => {
     });
     // Hints are advice to a model, never authorization: the tool still answers
     // an anonymous caller because its entry says `public`.
-    expect(body.result.tools[1]).toMatchObject({ name: "write_note" });
+    const anonymous = await rpcAt(titledMcp.path!, "tools/call", {
+      name: "titled_status",
+      arguments: {},
+    }, 2);
+    expect(await anonymous.json()).toMatchObject({
+      result: { structuredContent: { status: "ok" } },
+    });
   });
 
   test("works through the official SDK client without an HTTP session", async () => {
@@ -755,7 +787,8 @@ describe("public stateless MCP endpoint", () => {
         name: "write_note",
         arguments: { body: "sdk" },
       })).toMatchObject({
-        content: [{ type: "text", text: "anonymous:1" }],
+        content: [{ type: "text", text: '{"status":"anonymous:1"}' }],
+        structuredContent: { status: "anonymous:1" },
       });
       expect(noteCount()).toBe(1n);
     } finally {

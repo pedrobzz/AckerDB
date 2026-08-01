@@ -12,6 +12,7 @@
  */
 import type { ApplicationError, RegisteredServerOnly, Result } from "@ackerdb/core";
 import type { ObjectShape, Validator } from "../validation/v.ts";
+import { isRegisteredFunction } from "../app/functions.ts";
 import type { AnyRegistered, ErrorDeclarations } from "../app/functions.ts";
 import { brand, hasBrand } from "../shared/identity.ts";
 import {
@@ -388,9 +389,10 @@ function assembleMcpTool(
       throw new TypeError(`unknown ${where} entry field "${key}"`);
     }
   }
+  // Registered functions stay directly callable for server-side composition, so
+  // this asks the registry's own predicate rather than guessing at the shape.
   const fn = entry.fn as AnyRegistered | undefined;
-  if (fn === null || typeof fn !== "object" ||
-    (fn as { readonly isAckerDB?: unknown }).isAckerDB !== true) {
+  if (!isRegisteredFunction(fn)) {
     throw new TypeError(`${where} fn must be a registered query, mutation, or procedure`);
   }
   if (!TOOL_KINDS.has(fn.kind)) {
