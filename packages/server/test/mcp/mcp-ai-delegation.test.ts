@@ -17,12 +17,12 @@ import { v, type Identity } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { procedure, type ProcedureBuilder } from "../../src/app/functions.ts";
 import {
-  createMcp,
-  mcpTool,
+  mcp as mcpDeclaration,
+  mcpAuth,
   type McpAiToolSet,
   type McpBuilder,
-  type McpToolCtx,
-  type McpToolBuilder,
+  type McpAiContext,
+  type McpAuthBuilder,
 } from "../../src/mcp/index.ts";
 import { handleMcpPost } from "../../src/mcp/http.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
@@ -41,8 +41,14 @@ const schema = defineSchema({
 });
 
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+const delegatedAuth = typedMcpAuth({
+  name: "delegated",
+  scopes: ["orders.get", "reports.all", "orders.admin"] as const,
+});
+const otherAuth = typedMcpAuth({ name: "other", scopes: ["other.read"] as const });
+const scopeFreeAuth = typedMcpAuth({ name: "scope_free" });
 
 interface ToolObservation {
   readonly name: string;
@@ -85,27 +91,27 @@ const principalOutput = v.object({
   identity: v.identity().nullable(),
 });
 
-const publicStatus = typedMcpTool({
+const publicStatus = typedProcedure({
   description: "Public local delegation fixture.",
   access: "public",
   args: {},
-  output: principalOutput,
+  returns: principalOutput,
   handler: (ctx) => principalResult("public_status", ctx.auth),
 });
 
-const authenticatedStatus = typedMcpTool({
+const authenticatedStatus = typedProcedure({
   description: "Authenticated local delegation fixture.",
   access: "authenticated",
   args: {},
-  output: principalOutput,
+  returns: principalOutput,
   handler: (ctx) => principalResult("authenticated_status", ctx.auth),
 });
 
-const readOrders = typedMcpTool({
+const readOrders = typedProcedure({
   description: "Any-of local scope fixture.",
-  access: { anyOf: ["orders.get", "orders.admin"] },
+  access: "authenticated",
   args: {},
-  output: principalOutput,
+  returns: principalOutput,
   handler: async (ctx) => {
     await parallelPoint();
     await ctx.tx((tx) => tx.db.calls.insert({ tool: "read_orders" }));
@@ -113,52 +119,54 @@ const readOrders = typedMcpTool({
   },
 });
 
-const readReports = typedMcpTool({
+const readReports = typedProcedure({
   description: "All-of local scope fixture.",
-  access: { allOf: ["orders.get", "reports.all"] },
+  access: "authenticated",
   args: {},
-  output: principalOutput,
+  returns: principalOutput,
   handler: async (ctx) => {
     await parallelPoint();
     return principalResult("read_reports", ctx.auth);
   },
 });
 
-const adminOrders = typedMcpTool({
+const adminOrders = typedProcedure({
   description: "Denied exact local scope fixture.",
-  access: { anyOf: ["orders.admin"] },
+  access: "authenticated",
   args: {},
-  output: principalOutput,
+  returns: principalOutput,
   handler: (ctx) => principalResult("admin_orders", ctx.auth),
 });
 
-const otherPublic = typedMcpTool({
+const otherPublic = typedProcedure({
   description: "Cross-endpoint public fixture.",
+  access: "public",
   args: {},
-  output: principalOutput,
+  returns: principalOutput,
   handler: (ctx) => principalResult("other_public", ctx.auth),
 });
 
-const otherProtected = typedMcpTool({
+const otherProtected = typedProcedure({
   description: "Cross-endpoint scoped fixture.",
-  access: { anyOf: ["other.read"] },
+  access: "authenticated",
   args: {},
-  output: principalOutput,
+  returns: principalOutput,
   handler: (ctx) => principalResult("other_protected", ctx.auth),
 });
 
-const freePublic = typedMcpTool({
+const freePublic = typedProcedure({
   description: "Scope-free public fixture.",
+  access: "public",
   args: {},
-  output: principalOutput,
+  returns: principalOutput,
   handler: (ctx) => principalResult("free_public", ctx.auth),
 });
 
-const freeAuthenticated = typedMcpTool({
+const freeAuthenticated = typedProcedure({
   description: "Scope-free authenticated fixture.",
   access: "authenticated",
   args: {},
-  output: principalOutput,
+  returns: principalOutput,
   handler: (ctx) => principalResult("free_authenticated", ctx.auth),
 });
 
@@ -309,7 +317,7 @@ const runLocal = typedProcedure({
 });
 
 async function handleDelegate(
-  ctx: McpToolCtx<typeof schema>,
+  ctx: McpAiContext<typeof schema>,
   args: { readonly mode: string },
 ): Promise<{ readonly names: string[]; readonly events: unknown[] }> {
   switch (args.mode) {
@@ -356,11 +364,11 @@ async function handleDelegate(
   }
 }
 
-const delegate = typedMcpTool({
+const delegate = typedProcedure({
   description: "Exercise local delegation from an existing MCP principal.",
   access: "authenticated",
   args: { mode: v.string() },
-  output: v.object({
+  returns: v.object({
     names: v.array(v.string()),
     events: v.jsonb<readonly unknown[]>(),
   }),
@@ -369,32 +377,33 @@ const delegate = typedMcpTool({
 
 const scopedMcp = typedMcp({
   name: "delegated",
+  auth: delegatedAuth,
   path: "/delegated/mcp",
-  scopes: ["orders.get", "reports.all", "orders.admin"] as const,
   tools: {
-    admin_orders: adminOrders,
-    authenticated_status: authenticatedStatus,
-    delegate,
-    public_status: publicStatus,
-    read_orders: readOrders,
-    read_reports: readReports,
+    admin_orders: { fn: adminOrders, access: { anyOf: ["orders.admin"] } },
+    authenticated_status: { fn: authenticatedStatus, access: "authenticated" },
+    delegate: { fn: delegate, access: "authenticated" },
+    public_status: { fn: publicStatus, access: "public" },
+    read_orders: { fn: readOrders, access: { anyOf: ["orders.get", "orders.admin"] } },
+    read_reports: { fn: readReports, access: { allOf: ["orders.get", "reports.all"] } },
   },
 });
 const otherMcp = typedMcp({
   name: "other",
+  auth: otherAuth,
   path: "/other/mcp",
-  scopes: ["other.read"] as const,
   tools: {
-    other_protected: otherProtected,
-    other_public: otherPublic,
+    other_protected: { fn: otherProtected, access: { anyOf: ["other.read"] } },
+    other_public: { fn: otherPublic, access: "public" },
   },
 });
 const scopeFreeMcp = typedMcp({
   name: "scope_free",
+  auth: scopeFreeAuth,
   path: "/scope-free/mcp",
   tools: {
-    free_authenticated: freeAuthenticated,
-    free_public: freePublic,
+    free_authenticated: { fn: freeAuthenticated, access: "authenticated" },
+    free_public: { fn: freePublic, access: "public" },
   },
 });
 
