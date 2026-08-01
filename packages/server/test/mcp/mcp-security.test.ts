@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
-import { createMcp, mcpTool } from "../../src/mcp/index.ts";
+import { mcp, mcpAuth } from "../../src/mcp/index.ts";
+import { query } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
@@ -21,25 +22,29 @@ const TOKEN_CANARY = `ackerdb_mcp.${"A".repeat(22)}.${"B".repeat(43)}`;
 const PROVIDER_CREDENTIAL_CANARY = "private-provider-credential-canary";
 
 const schema = defineSchema({});
-const echoSecret = mcpTool({
+const echoSecret = query({
   description: "Return one private fixture without observing its contents.",
+  access: "public",
   args: { secret: v.string(), crash: v.boolean() },
+  returns: v.object({ echoed: v.string() }),
   handler: (_ctx, args) => {
     if (args.crash) throw new Error(`${HANDLER_ERROR_CANARY}:${args.secret}`);
-    return { content: [{ type: "text", text: `${RESULT_CANARY}:${args.secret}` }] };
+    return { echoed: `${RESULT_CANARY}:${args.secret}` };
   },
 });
-const protectedTool = mcpTool({
+const protectedTool = query({
   description: "Require an MCP Identity.",
   access: "authenticated",
   args: {},
-  handler: () => ({ content: [{ type: "text", text: "protected" }] }),
+  returns: v.object({ status: v.string() }),
+  handler: () => ({ status: "protected" }),
 });
-const securityMcp = createMcp({
+const securityMcp = mcp({
   name: "security",
+  auth: mcpAuth({ name: "security" }),
   tools: {
-    echo_secret: echoSecret,
-    protected_tool: protectedTool,
+    echo_secret: { fn: echoSecret, access: "public" },
+    protected_tool: { fn: protectedTool, access: "authenticated" },
   },
 });
 const modules = { security: { securityMcp, echoSecret, protectedTool } };
@@ -287,20 +292,26 @@ describe("MCP HTTP security boundary", () => {
   });
 
   test("bounds registered tools and every attacker-controlled telemetry dimension", async () => {
-    const one = mcpTool({
+    const emptyReturns = v.object({});
+    const one = query({
       description: "First.",
+      access: "public",
       args: {},
-      handler: () => ({ content: [] }),
+      returns: emptyReturns,
+      handler: () => ({}),
     });
-    const two = mcpTool({
+    const two = query({
       description: "Second.",
+      access: "public",
       args: {},
-      handler: () => ({ content: [] }),
+      returns: emptyReturns,
+      handler: () => ({}),
     });
-    const limitedMcp = createMcp({
+    const limitedMcp = mcp({
       name: "limited",
+      auth: mcpAuth({ name: "limited" }),
       path: "/limited",
-      tools: { one, two },
+      tools: { one: { fn: one }, two: { fn: two } },
     });
     const directory = mkdtempSync(join(tmpdir(), "ackerdb-mcp-tool-limit-"));
     const engine = new Engine(schema, join(directory, "data.db"));
@@ -317,39 +328,38 @@ describe("MCP HTTP security boundary", () => {
     engine.close("clean");
     rmSync(directory, { recursive: true, force: true });
 
-    expect(() => createMcp({
+    const longTitle = query({
+      title: "x".repeat(257),
+      description: "Too long.",
+      access: "public",
+      args: {},
+      returns: emptyReturns,
+      handler: () => ({}),
+    });
+    const longDescription = query({
+      description: "x".repeat(4 * 1_024 + 1),
+      access: "public",
+      args: {},
+      returns: emptyReturns,
+      handler: () => ({}),
+    });
+    expect(() => mcp({
       name: "invalid_name",
+      auth: mcpAuth({ name: "invalid_name" }),
       path: "/invalid-name",
-      tools: {
-        [`a${"b".repeat(63)}`]: mcpTool({
-          description: "Too long.",
-          args: {},
-          handler: () => ({ content: [] }),
-        }),
-      },
+      tools: { [`a${"b".repeat(63)}`]: { fn: one } },
     })).toThrow("at most 63 UTF-8 bytes");
-    expect(() => createMcp({
+    expect(() => mcp({
       name: "invalid_title",
+      auth: mcpAuth({ name: "invalid_title" }),
       path: "/invalid-title",
-      tools: {
-        long_title: mcpTool({
-          title: "x".repeat(257),
-          description: "Too long.",
-          args: {},
-          handler: () => ({ content: [] }),
-        }),
-      },
+      tools: { long_title: { fn: longTitle } },
     })).toThrow("title exceeds 256 UTF-8 bytes");
-    expect(() => createMcp({
+    expect(() => mcp({
       name: "invalid_description",
+      auth: mcpAuth({ name: "invalid_description" }),
       path: "/invalid-description",
-      tools: {
-        long_description: mcpTool({
-          description: "x".repeat(4 * 1_024 + 1),
-          args: {},
-          handler: () => ({ content: [] }),
-        }),
-      },
+      tools: { long_description: { fn: longDescription } },
     })).toThrow("description exceeds 4096 UTF-8 bytes");
   });
 

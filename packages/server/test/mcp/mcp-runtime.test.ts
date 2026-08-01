@@ -16,8 +16,9 @@ import {
   session,
   trackCleanup,
   typedMcp,
-  typedMcpTool,
+  typedMcpAuth,
   typedMutation,
+  typedProcedure,
   typedQuery,
   user,
 } from "../support/mcp-token-fixture.ts";
@@ -102,26 +103,30 @@ function releaseGates(): void {
 const createOwnershipToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => ownershipMcp.tokens.create(ctx, {
+  handler: (ctx, args) => ownershipAuth.tokens.create(ctx, {
     name: args.name,
     metadata: {},
   }),
 });
 
-const pingOwnership = typedMcpTool({
+const kindReturns = v.object({ kind: v.string() });
+
+const pingOwnership = typedQuery({
   description: "Return the current principal kind without allocating runtime state.",
   access: "public",
   args: {},
-  handler: (ctx) => ({ content: [{ type: "text", text: ctx.auth.kind }] }),
+  returns: kindReturns,
+  handler: (ctx) => ({ kind: ctx.auth.kind }),
 });
 
-const holdOwnership = typedMcpTool({
+const holdOwnership = typedProcedure({
   description: "Hold one runtime-owned operation at a deterministic test gate.",
   access: "public",
   args: { gate: v.string() },
+  returns: kindReturns,
   handler: async (ctx, args) => {
     await waitAtGate(args.gate, ctx.abortSignal);
-    return { content: [{ type: "text", text: ctx.auth.kind }] };
+    return { kind: ctx.auth.kind };
   },
 });
 
@@ -140,7 +145,7 @@ const countOwnershipRecords = typedQuery({
   handler: (ctx) => ctx.db.records.query().count(),
 });
 
-const nestedOwnershipWrite = typedMcpTool({
+const nestedOwnershipWrite = typedProcedure({
   description: "Compose nested AckerDB functions inside one transaction.",
   access: "authenticated",
   args: {
@@ -148,22 +153,29 @@ const nestedOwnershipWrite = typedMcpTool({
     gate: v.string().nullable(),
     commit: v.boolean(),
   },
-  handler: (ctx, args) => ctx.tx(async (tx) => {
-    await insertOwnershipRecord(tx, { value: args.value });
-    if (args.gate !== null) await waitAtGate(args.gate, ctx.abortSignal);
-    if (!args.commit) throw new Error("ownership rollback fixture");
-    const count = (await countOwnershipRecords(tx, {})).data;
-    return { content: [{ type: "text", text: String(count) }] };
-  }),
+  returns: v.object({ count: v.string() }),
+  handler: async (ctx, args) => {
+    const done = await ctx.tx(async (tx) => {
+      await insertOwnershipRecord(tx, { value: args.value });
+      if (args.gate !== null) await waitAtGate(args.gate, ctx.abortSignal);
+      if (!args.commit) throw new Error("ownership rollback fixture");
+      const count = (await countOwnershipRecords(tx, {})).data;
+      return { count: String(count) };
+    });
+    if (!done.ok) throw new Error("nested ownership write failed");
+    return done.data;
+  },
 });
 
+const ownershipAuth = typedMcpAuth({ name: "ownership" });
 const ownershipMcp = typedMcp({
   name: "ownership",
+  auth: ownershipAuth,
   path: "/ownership/mcp",
   tools: {
-    hold_ownership: holdOwnership,
-    nested_ownership_write: nestedOwnershipWrite,
-    ping_ownership: pingOwnership,
+    hold_ownership: { fn: holdOwnership, access: "public" },
+    nested_ownership_write: { fn: nestedOwnershipWrite },
+    ping_ownership: { fn: pingOwnership, access: "public" },
   },
 });
 
@@ -391,7 +403,7 @@ describe("MCP Runtime ownership", () => {
       args: {},
       principal: bobPrincipal,
       fairnessKey: callerFairnessKey(bobPrincipal, { family: "test", address: "bob" }),
-    })).resolves.toMatchObject({ content: [{ text: "mcp" }] });
+    })).resolves.toMatchObject({ structuredContent: { kind: "mcp" } });
     directGate.release();
     await direct;
     await expectIdle(value);
@@ -430,7 +442,7 @@ describe("MCP Runtime ownership", () => {
     const response = await call;
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      result: { content: [{ type: "text", text: "1" }] },
+      result: { structuredContent: { count: "1" } },
     });
     await expectIdle(value);
 
@@ -570,10 +582,10 @@ describe("MCP Runtime ownership", () => {
     expect(publicResponse.status).toBe(200);
     expect(authenticatedResponse.status).toBe(200);
     expect(await publicResponse.json()).toMatchObject({
-      result: { content: [{ text: "anonymous" }] },
+      result: { structuredContent: { kind: "anonymous" } },
     });
     expect(await authenticatedResponse.json()).toMatchObject({
-      result: { content: [{ text: "mcp" }] },
+      result: { structuredContent: { kind: "mcp" } },
     });
     expect(value.server.state).toBe("stopped");
     expect(value.runtime.state).toBe("stopped");

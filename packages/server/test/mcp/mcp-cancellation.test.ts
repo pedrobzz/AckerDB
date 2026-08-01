@@ -8,11 +8,11 @@ import { v } from "../../src/validation/v.ts";
 import { Engine } from "../../src/database/engine.ts";
 import { procedure, type ProcedureBuilder } from "../../src/app/functions.ts";
 import {
-  createMcp,
-  mcpTool,
+  mcp as mcpDeclaration,
+  mcpAuth,
   type McpBuilder,
-  type McpToolBuilder,
-  type McpToolCtx,
+  type McpAuthBuilder,
+  type McpAiContext,
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
@@ -27,8 +27,9 @@ const schema = defineSchema({
 });
 
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+const agentAuth = typedMcpAuth({ name: "agent" });
 
 type Gate = ReturnType<typeof Promise.withResolvers<void>>;
 
@@ -81,78 +82,89 @@ function outcome(result: PromiseSettledResult<unknown>): { status: string; value
     : { status: "rejected" };
 }
 
-const wait = typedMcpTool({
+const wait = typedProcedure({
   description: "Wait for cancellation or an explicit test release.",
+  access: "public",
   args: { key: v.string() },
-  output: v.object({ key: v.string() }),
+  returns: v.object({ key: v.string() }),
   handler: async (ctx, args) => {
     await gate(args.key, ctx.abortSignal);
     return { key: args.key };
   },
 });
 
-async function handleNestedWait(ctx: McpToolCtx<typeof schema>): Promise<{ done: boolean }> {
+async function handleNestedWait(ctx: McpAiContext<typeof schema>): Promise<{ done: boolean }> {
   await agentMcp.aiTools(ctx).wait!.execute({ key: "nested" });
   return { done: true };
 }
 
-const nestedWait = typedMcpTool({
+const nestedWait = typedProcedure({
   description: "Delegate to another local MCP tool.",
+  access: "public",
   args: {},
-  output: v.object({ done: v.boolean() }),
+  returns: v.object({ done: v.boolean() }),
   handler: handleNestedWait,
 });
 
-const activeTransaction = typedMcpTool({
+const activeTransaction = typedProcedure({
   description: "Hold an active writer transaction until cancellation.",
+  access: "public",
   args: {},
-  output: v.object({ done: v.boolean() }),
+  returns: v.object({ done: v.boolean() }),
   handler: async (ctx) => {
-    await ctx.tx(async (tx) => {
+    const done = await ctx.tx(async (tx) => {
       await tx.db.records.insert({ label: "active" });
       await gate("active", ctx.abortSignal);
     });
+    if (!done.ok) throw new Error("active transaction failed");
     return { done: true };
   },
 });
 
-const committedTransaction = typedMcpTool({
+const committedTransaction = typedProcedure({
   description: "Commit before cancellation suppresses the local result.",
+  access: "public",
   args: {},
-  output: v.object({ done: v.boolean() }),
+  returns: v.object({ done: v.boolean() }),
   handler: async (ctx) => {
-    await ctx.tx((tx) => tx.db.records.insert({ label: "committed" }));
+    const committed = await ctx.tx((tx) => tx.db.records.insert({ label: "committed" }));
+    if (!committed.ok) throw new Error("committed transaction failed");
     return { done: true };
   },
 });
 
-const holdWriter = typedMcpTool({
+const holdWriter = typedProcedure({
   description: "Own the writer until explicitly released.",
+  access: "public",
   args: {},
-  output: v.object({ done: v.boolean() }),
+  returns: v.object({ done: v.boolean() }),
   handler: async (ctx) => {
-    await ctx.tx(async (tx) => {
+    const held = await ctx.tx(async (tx) => {
       await tx.db.records.insert({ label: "holder" });
       await gate("holder", ctx.abortSignal);
     });
+    if (!held.ok) throw new Error("holder transaction failed");
     return { done: true };
   },
 });
 
-const queuedTransaction = typedMcpTool({
+const queuedTransaction = typedProcedure({
   description: "Enter the writer queue before inserting.",
+  access: "public",
   args: {},
-  output: v.object({ done: v.boolean() }),
+  returns: v.object({ done: v.boolean() }),
   handler: async (ctx) => {
-    await ctx.tx((tx) => tx.db.records.insert({ label: "queued" }));
+    const queued = await ctx.tx((tx) => tx.db.records.insert({ label: "queued" }));
+    if (!queued.ok) throw new Error("queued transaction failed");
     return { done: true };
   },
 });
 
-const encodingCancellation = typedMcpTool({
+const encodingCancellation = typedProcedure({
   description: "Cancel while the structured result is encoded.",
+  access: "public",
   args: {},
-  output: v.object({ value: v.string() }),
+  returns: v.object({ value: v.string() }),
   handler: () => ({
     get value() {
       executionControllers.encoding.abort(new Error("generation canceled during encoding"));
@@ -163,15 +175,16 @@ const encodingCancellation = typedMcpTool({
 
 const agentMcp = typedMcp({
   name: "agent",
+  auth: agentAuth,
   path: "/mcp",
   tools: {
-    active_transaction: activeTransaction,
-    committed_transaction: committedTransaction,
-    encoding_cancellation: encodingCancellation,
-    hold_writer: holdWriter,
-    nested_wait: nestedWait,
-    queued_transaction: queuedTransaction,
-    wait,
+    active_transaction: { fn: activeTransaction, access: "public" },
+    committed_transaction: { fn: committedTransaction, access: "public" },
+    encoding_cancellation: { fn: encodingCancellation, access: "public" },
+    hold_writer: { fn: holdWriter, access: "public" },
+    nested_wait: { fn: nestedWait, access: "public" },
+    queued_transaction: { fn: queuedTransaction, access: "public" },
+    wait: { fn: wait, access: "public" },
   },
 });
 

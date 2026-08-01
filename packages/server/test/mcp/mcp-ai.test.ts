@@ -19,11 +19,11 @@ import {
   type SseBuilder,
 } from "../../src/app/functions.ts";
 import {
-  createMcp,
-  mcpTool,
+  mcp as mcpDeclaration,
+  mcpAuth,
   type McpAiToolSet,
   type McpBuilder,
-  type McpToolBuilder,
+  type McpAuthBuilder,
 } from "../../src/mcp/index.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
 import { mcpTokenVaultOwner } from "../../src/mcp/token-vault.ts";
@@ -46,8 +46,9 @@ const schema = defineSchema({
 
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedSse = sseProcedure as SseBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+const agentAuth = typedMcpAuth({ name: "agent" });
 const choice = v.union("AiChoice", {
   text: v.string(),
   nothing: v.tag(),
@@ -76,9 +77,10 @@ let parallelEntered = 0;
 let parallelRelease = Promise.withResolvers<void>();
 let operationCounts: number[] = [];
 
-const roundTrip = typedMcpTool({
+const roundTrip = typedProcedure({
   title: "Round trip canonical values",
   description: "Round-trip lossless AckerDB values through one local MCP dispatch.",
+  access: "public",
   args: {
     large: v.bigint(),
     identity: v.identity(),
@@ -86,7 +88,7 @@ const roundTrip = typedMcpTool({
     optional: v.string().optional(),
     choice,
   },
-  output: v.object({
+  returns: v.object({
     large: v.bigint(),
     identity: v.identity(),
     bytes: v.bytes(),
@@ -107,37 +109,21 @@ const roundTrip = typedMcpTool({
   },
 });
 
-const richOutput = typedMcpTool({
-  description: "Return MCP content blocks without a structured output schema.",
-  args: {},
-  handler: () => ({
-    content: [
-      { type: "text" as const, text: "hello" },
-      { type: "image" as const, data: "AQID", mimeType: "image/png" },
-      { type: "audio" as const, data: "BAUG", mimeType: "audio/wav" },
-      {
-        type: "resource_link" as const,
-        uri: "ackerdb://calls/1",
-        name: "call-one",
-      },
-    ],
-    isError: true,
-    _meta: { source: "fixture" },
-  }),
-});
-
-const fail = typedMcpTool({
+const fail = typedProcedure({
   description: "Throw from the handler.",
+  access: "public",
   args: {},
+  returns: v.object({}),
   handler: () => {
     throw new Error("handler exploded");
   },
 });
 
-const parallelEcho = typedMcpTool({
+const parallelEcho = typedProcedure({
   description: "Wait until two local model calls have entered concurrently.",
+  access: "public",
   args: { index: v.int() },
-  output: v.object({ index: v.int() }),
+  returns: v.object({ index: v.int() }),
   handler: async (_ctx, args) => {
     operationCounts.push(runtime.status().activeOperations);
     parallelEntered++;
@@ -147,22 +133,23 @@ const parallelEcho = typedMcpTool({
   },
 });
 
-const hidden = typedMcpTool({
+const hidden = typedProcedure({
   description: "A protected tool must not be materialized locally.",
   access: "authenticated",
   args: {},
-  handler: () => ({ content: [{ type: "text", text: "hidden" }] }),
+  returns: v.object({ status: v.string() }),
+  handler: () => ({ status: "hidden" }),
 });
 
 const agentMcp = typedMcp({
   name: "agent",
+  auth: agentAuth,
   path: "/agent/mcp",
   tools: {
-    fail,
-    hidden,
-    parallel_echo: parallelEcho,
-    rich_output: richOutput,
-    round_trip: roundTrip,
+    fail: { fn: fail, access: "public" },
+    hidden: { fn: hidden, access: "authenticated" },
+    parallel_echo: { fn: parallelEcho, access: "public" },
+    round_trip: { fn: roundTrip, access: "public" },
   },
 });
 
@@ -209,8 +196,6 @@ function callsFor(mode: string): readonly ModelCall[] {
   switch (mode) {
     case "structured":
       return [{ id: "structured", name: "round_trip", input: canonicalInput }];
-    case "rich":
-      return [{ id: "rich", name: "rich_output", input: {} }];
     case "invalid":
       return [{ id: "invalid", name: "round_trip", input: { ...canonicalInput, large: 1.5 } }];
     case "failure":
@@ -235,14 +220,13 @@ const runAi = typedProcedure({
   args: { mode: v.string() },
   handler: async (ctx, args) => {
     const available = agentMcp.aiTools(ctx);
-    const { fail, parallel_echo, rich_output, round_trip } = available;
+    const { fail, parallel_echo, round_trip } = available;
     if (
       fail === undefined ||
       parallel_echo === undefined ||
-      rich_output === undefined ||
       round_trip === undefined
     ) throw new Error("public MCP tools must be available");
-    const tools = { fail, parallel_echo, rich_output, round_trip } as const;
+    const tools = { fail, parallel_echo, round_trip } as const;
     retainedTools = tools;
     const result = streamText({
       model: modelFor(callsFor(args.mode)),
@@ -282,7 +266,7 @@ const runAiSse = typedSse({
 const modules = {
   app: { runAi, runAiSse },
   mcp: { agentMcp },
-  tools: { fail, hidden, parallelEcho, richOutput, roundTrip },
+  tools: { fail, hidden, parallelEcho, roundTrip },
 };
 
 let directory: string;
@@ -396,8 +380,11 @@ describe("MCP zero-hop AI SDK tools", () => {
       const admission = spans().find((span) =>
         span.operation === "procedure" && span.stage === "admission" && span.requestId === "1"
       );
+      // A tool executes as the function it names, so spans carry the function's
+      // address rather than "<endpoint>:<tool>". The local adapter dispatches
+      // straight to the tool, so no operation-level tool name is emitted here.
       const nested = spans().find((span) =>
-        span.stage === "handler" && span.function === "agent:round_trip" && span.requestId === "1"
+        span.stage === "handler" && span.function === "tools.roundTrip" && span.requestId === "1"
       );
       expect(admission).toBeDefined();
       expect(nested).toBeDefined();
@@ -411,7 +398,7 @@ describe("MCP zero-hop AI SDK tools", () => {
   test("exposes public registry tools and separate Draft-07 input/output schema views", async () => {
     await callAi("structured");
     const tools = retainedTools!;
-    expect(Object.keys(tools)).toEqual(["fail", "parallel_echo", "rich_output", "round_trip"]);
+    expect(Object.keys(tools)).toEqual(["fail", "parallel_echo", "round_trip"]);
     expect(tools.hidden).toBeUndefined();
     expect(tools.round_trip?.title).toBe("Round trip canonical values");
 
@@ -465,43 +452,6 @@ describe("MCP zero-hop AI SDK tools", () => {
       input: canonicalInput,
       output: structured,
     })).toEqual({ type: "json", value: structured });
-  });
-
-  test("maps text/image model content and keeps audio/resources as JSON text fallback", async () => {
-    const result = await callAi("rich") as Array<{ readonly output: unknown }>;
-    expect(result[0]?.output).toMatchObject({
-      content: [
-        { type: "text", text: "hello" },
-        { type: "image", data: "AQID", mimeType: "image/png" },
-        { type: "audio", data: "BAUG", mimeType: "audio/wav" },
-        { type: "resource_link", uri: "ackerdb://calls/1", name: "call-one" },
-      ],
-      isError: true,
-      _meta: { source: "fixture" },
-    });
-    expect(retainedTools!.rich_output!.toModelOutput({
-      toolCallId: "rich",
-      input: {},
-      output: result[0]!.output,
-    })).toEqual({
-      type: "content",
-      value: [
-        { type: "text", text: "hello" },
-        {
-          type: "file",
-          mediaType: "image/png",
-          data: { type: "data", data: "AQID" },
-        },
-        {
-          type: "text",
-          text: JSON.stringify({ type: "audio", data: "BAUG", mimeType: "audio/wav" }),
-        },
-        {
-          type: "text",
-          text: JSON.stringify({ type: "resource_link", uri: "ackerdb://calls/1", name: "call-one" }),
-        },
-      ],
-    });
   });
 
   test("reports validation and handler failures through AI SDK without invoking invalid input", async () => {

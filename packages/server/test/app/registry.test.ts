@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Err, Status } from "@ackerdb/core";
 import { v, ValidationError, type Validator } from "../../src/validation/v.ts";
 import { procedure, query } from "../../src/app/functions.ts";
-import { createMcp } from "../../src/mcp/index.ts";
+import { mcp, mcpAuth } from "../../src/mcp/index.ts";
 import { Registry } from "../../src/app/registry.ts";
 
 const exposed = procedure({
@@ -69,7 +69,12 @@ describe("HTTP-exposed function paths", () => {
   });
 
   test("refuses a path claimed by both a function and an MCP endpoint, in either order", () => {
-    const endpoint = createMcp({ name: "agent", path: "/api/notes/echo", tools: {} });
+    const endpoint = mcp({
+      name: "agent",
+      auth: mcpAuth({ name: "agent" }),
+      path: "/api/notes/echo",
+      tools: {},
+    });
     const message = 'HTTP-exposed function "notes.echo" and MCP "agent" both use path "/api/notes/echo"';
 
     expect(() => new Registry({ notes: { echo: exposed }, mcp: { endpoint } })).toThrow(message);

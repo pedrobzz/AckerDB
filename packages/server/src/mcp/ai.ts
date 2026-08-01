@@ -4,12 +4,12 @@ import { AckerDBError, throwIfAborted } from "../shared/errors.ts";
 import type { ProcedureCtx } from "../app/functions.ts";
 import type {
   AnyMcpDeclaration,
-  AnyMcpToolBlueprintRecord,
+  AnyMcpToolEntryRecord,
   AnyRegisteredMcpTool,
   McpDeclaration,
   McpEndpointDeclaration,
-  McpToolBlueprint,
 } from "./index.ts";
+import type { Registered } from "../app/functions.ts";
 import type {
   McpCallToolResult,
   McpJsonValue,
@@ -26,13 +26,13 @@ import type {
 } from "../validation/standard-schema.ts";
 import type { ObjectShape, ObjectValidator } from "../validation/v.ts";
 
+/**
+ * Every tool declares `returns`, so every local result is structured JSON.
+ * Content blocks have no path here until they return as a function contract.
+ */
 type McpAiContent =
   | { type: "text"; text: string }
-  | {
-      type: "file";
-      mediaType: string;
-      data: { type: "data"; data: string };
-    };
+  | { type: "file"; mediaType: string; data: { type: "data"; data: string } };
 
 export type McpAiModelOutput =
   | { type: "json"; value: McpJsonValue }
@@ -54,22 +54,48 @@ export interface McpAiTool<Input = unknown, Output = unknown> {
   }) => McpAiModelOutput;
 }
 
-type McpAiToolFromBlueprint<Blueprint> = Blueprint extends McpToolBlueprint<
-  infer A extends ObjectShape,
-  infer O,
-  infer _S,
-  infer _Scope
-> ? McpAiTool<
-    StandardJsonInput<ObjectValidator<A>>,
-    O extends ObjectValidator ? StandardJsonOutput<O> : McpCallToolResult
-  >
+/**
+ * What one tool answers with: `structuredContent`, which is the function's
+ * return when that already emits a JSON object and `{ value }` otherwise. The
+ * branch mirrors `compileMcpToolCodec`'s, read here off the declared data type
+ * rather than off the emitted schema.
+ *
+ * A declared application error does not appear here. `execute` throws it, so a
+ * success keeps one exact type instead of a union every caller must narrow.
+ */
+type McpAiSuccess<R> = R extends { readonly ok: true; readonly data: infer D } ? D : R;
+
+/**
+ * The standard-JSON face of a value, mirroring `compileStandardJsonCodec` at the
+ * type level: `bigint` (and therefore `Identity`) and `Uint8Array` cross as
+ * strings, everything else structurally.
+ *
+ * This reads the declared *data* type rather than the `returns` validator,
+ * because `Registered` erases the validator to `Validator<unknown, string>`.
+ * The two agree for every shape `v` can build.
+ */
+type McpAiStandardJson<T> = T extends bigint ? string
+  : T extends Uint8Array ? string
+  : T extends string | number | boolean | null | undefined ? T
+  : T extends readonly (infer E)[] ? readonly McpAiStandardJson<E>[]
+  : T extends Readonly<Record<string, unknown>>
+    ? { readonly [K in keyof T]: McpAiStandardJson<T[K]> }
+  : T;
+
+type McpAiStructuredOutput<R> = McpAiStandardJson<McpAiSuccess<R>> extends infer D
+  ? D extends Readonly<Record<string, unknown>> ? D : { readonly value: D }
+  : never;
+
+type McpAiToolFromEntry<Entry> = Entry extends {
+  readonly fn: Registered<any, infer A extends ObjectShape, any, infer R, any>;
+} ? McpAiTool<StandardJsonInput<ObjectValidator<A>>, McpAiStructuredOutput<R>>
   : never;
 
 export type McpAiToolSet<
-  Tools extends AnyMcpToolBlueprintRecord | undefined = undefined,
-> = [Tools] extends [AnyMcpToolBlueprintRecord]
+  Tools extends AnyMcpToolEntryRecord | undefined = undefined,
+> = [Tools] extends [AnyMcpToolEntryRecord]
   ? Readonly<{
-    [Name in keyof Tools]: McpAiToolFromBlueprint<Tools[Name]>;
+    [Name in keyof Tools]: McpAiToolFromEntry<Tools[Name]>;
   }>
   : Readonly<Record<string, McpAiTool<any, any>>>;
 
@@ -196,7 +222,7 @@ function normalizeOptions(
   ) {
     throw new TypeError("MCP AI tools includeUnavailable must be a boolean");
   }
-  if (mcp.scopes === undefined) {
+  if (mcp.auth.scopes === undefined) {
     if ("scopes" in value) {
       throw new TypeError(`MCP "${mcp.name}" declares no scopes`);
     }
@@ -208,7 +234,7 @@ function normalizeOptions(
   let scopes: readonly string[];
   try {
     scopes = normalizeMcpScopeGrant(
-      mcp.scopes,
+      mcp.auth.scopes,
       value.scopes ?? EMPTY_SCOPES,
       `MCP "${mcp.name}" local scopes`,
     );
@@ -237,33 +263,45 @@ function richModelOutput(result: McpCallToolResult): McpAiModelOutput {
     value: result.content.map((part): McpAiContent => {
       if (part.type === "text") return { type: "text", text: part.text };
       if (part.type === "image") {
-        return {
-          type: "file",
-          mediaType: part.mimeType,
-          data: { type: "data", data: part.data },
-        };
+        return { type: "file", mediaType: part.mimeType, data: { type: "data", data: part.data } };
       }
       return { type: "text", text: JSON.stringify(part) };
     }),
   };
 }
 
+/**
+ * The thrown face of a declared application error. The text is the same JSON
+ * the remote surface puts in its `isError` content block, so a model reading a
+ * local tool failure and one reading a remote one see the same words.
+ */
+function localToolError(
+  tool: AnyRegisteredMcpTool,
+  result: McpCallToolResult,
+): AckerDBError {
+  const detail = result.content.find((part) => part.type === "text");
+  return new AckerDBError(
+    "validation",
+    `MCP tool "${tool.name}" failed: ${detail === undefined ? "unknown error" : detail.text}`,
+  );
+}
+
 /** Materialize the registry-owned tools available under one explicit local delegation. */
 export function createMcpAiTools<
   S extends Schema,
   Scope extends string,
-  Tools extends AnyMcpToolBlueprintRecord,
+  Tools extends AnyMcpToolEntryRecord,
 >(
-  mcp: McpDeclaration<string, S, string, Scope, Tools>,
+  mcp: McpDeclaration<string, S, string | null, Scope, Tools>,
   context: McpAiContext<S>,
   options: McpAiToolsCompleteOptions<Scope>,
 ): McpAiToolSet<Tools>;
 export function createMcpAiTools<
   S extends Schema,
   Scope extends string,
-  Tools extends AnyMcpToolBlueprintRecord,
+  Tools extends AnyMcpToolEntryRecord,
 >(
-  mcp: McpDeclaration<string, S, string, Scope, Tools>,
+  mcp: McpDeclaration<string, S, string | null, Scope, Tools>,
   context: McpAiContext<S>,
   options?: McpAiToolsFilteredOptions<Scope>,
 ): Readonly<Partial<McpAiToolSet<Tools>>>;
@@ -299,12 +337,13 @@ export function createMcpAiTools(
       scopes,
     );
     if (!available && !normalized.includeUnavailable) continue;
-    const structured = tool.outputCodec !== undefined;
     tools[tool.name] = Object.freeze({
       ...(tool.title === undefined ? {} : { title: tool.title }),
       description: tool.description,
-      inputSchema: tool.inputCodec.inputProtocolSchema,
-      ...(structured ? { outputSchema: tool.outputCodec!.outputProtocolSchema } : {}),
+      inputSchema: tool.codec.inputProtocolSchema,
+      ...(tool.codec.returnsContent
+        ? {}
+        : { outputSchema: tool.codec.outputProtocolSchema }),
       execute(
         input: unknown,
         execution?: { readonly abortSignal?: AbortSignal },
@@ -318,13 +357,20 @@ export function createMcpAiTools(
           throwIfAborted(signal);
           const result = await capability.execute(mcp, tool, input, scopes, signal);
           throwIfAborted(signal);
-          return structured ? result.structuredContent! : result;
+          // A declared application error is thrown locally rather than
+          // returned: a model SDK renders a thrown tool error as a tool-error
+          // part the model can still recover from, and a success keeps one
+          // exact structured type instead of a union every caller must narrow.
+          // The remote surface answers the same information as `isError`.
+          if (result.isError === true) throw localToolError(tool, result);
+          // A content tool has no structured face; the model reads the blocks.
+          return tool.codec.returnsContent ? result : result.structuredContent!;
         });
       },
       toModelOutput({ output }: { readonly output: unknown }): McpAiModelOutput {
-        return structured
-          ? { type: "json", value: output as McpJsonValue }
-          : richModelOutput(output as McpCallToolResult);
+        return tool.codec.returnsContent
+          ? richModelOutput(output as McpCallToolResult)
+          : { type: "json", value: output as McpJsonValue };
       },
     });
   }
