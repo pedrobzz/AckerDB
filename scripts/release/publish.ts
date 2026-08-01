@@ -362,7 +362,7 @@ try {
         "--access=public",
         `--tag=${tag}`,
       ],
-      { stdout: "inherit", stderr: "inherit" },
+      { stdin: "inherit", stdout: "inherit", stderr: "inherit" },
     );
     if (result.exitCode !== 0) {
       const retry = mode === "npm"
