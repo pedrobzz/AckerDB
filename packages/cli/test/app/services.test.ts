@@ -131,6 +131,73 @@ export const tcl = service({
     ]);
   }, 20_000);
 
+  test("a callback firing after setup persists through system.run", async () => {
+    const port = await freePort();
+    const dir = fixture({
+      "services/providers.ts": `
+import { service } from "@ackerdb/server";
+import { record } from "../lib/record.ts";
+
+// The shape every broker adapter has: setup subscribes, and the work happens
+// later, in a callback nothing awaits.
+export const tuya = service({
+  start: ({ system, abortSignal }) => {
+    const timer = setInterval(() => {
+      void system.run("devices.event", (ctx) =>
+        ctx.tx((tx) => tx.db.deviceEvents.insert({ source: "callback" })))
+        .then(() => record("persisted"))
+        .catch(() => record("rejected"));
+    }, 5);
+    return () => clearInterval(timer);
+  },
+});
+`,
+    }, port);
+
+    const running = await startApp(loadConfig(dir));
+    try {
+      // Wait for the callback to land at least one row after readiness.
+      const deadline = Date.now() + 5_000;
+      while (rows(dir).length === 0 && Date.now() < deadline) await Bun.sleep(10);
+      expect(rows(dir)[0]).toBe("callback");
+      expect(events(dir)).toContain("persisted");
+    } finally {
+      await running.drain();
+    }
+  }, 20_000);
+
+  test("a service that dies during another's setup fails startup", async () => {
+    const port = await freePort();
+    const dir = fixture({
+      "services/providers.ts": `
+import { service } from "@ackerdb/server";
+import { record } from "../lib/record.ts";
+
+export const alpha = service({
+  start: ({ fail }) => {
+    setTimeout(() => fail(new Error("broker dropped immediately")), 1);
+    return () => record("cleanup:alpha");
+  },
+});
+
+export const beta = service({
+  start: async () => {
+    await Bun.sleep(30);
+    record("start:beta");
+    return () => record("cleanup:beta");
+  },
+});
+`,
+    }, port);
+
+    // Readiness is never published for a generation that was not whole.
+    await expect(startApp(loadConfig(dir))).rejects.toThrow(
+      'service "providers.alpha" failed during runtime: broker dropped immediately',
+    );
+    expect(events(dir)).toEqual(["start:beta", "cleanup:beta", "cleanup:alpha"]);
+    await expect(fetch(`http://127.0.0.1:${port}/ready`)).rejects.toThrow();
+  }, 20_000);
+
   test("readiness is not published until every setup resolves", async () => {
     const port = await freePort();
     const dir = fixture({

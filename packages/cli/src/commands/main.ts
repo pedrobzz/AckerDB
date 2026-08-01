@@ -82,6 +82,13 @@ async function runServerCommand(config: AppConfig, options: StartAppOptions = {}
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    // Drain is the whole obligation: storage is committed and the engine is
+    // closed. Anything still holding the event loop past it is a resource a
+    // service cleanup failed to release — a surviving interval or socket — and
+    // waiting on it would keep this child alive forever, wedging the `acker
+    // dev` supervisor that awaits its exit. Exiting is scheduled, not
+    // immediate, so a failure still reaches the reporting boundary first.
+    setTimeout(() => process.exit(process.exitCode ?? 0), 0).unref();
   }
 }
 

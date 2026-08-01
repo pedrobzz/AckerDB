@@ -7,7 +7,7 @@ import type { AppConfig } from "./config.ts";
 
 const IDENTIFIER = /^[a-zA-Z][a-zA-Z0-9_]*$/;
 
-export interface FunctionModuleFile {
+export interface ModuleFile {
   /** Dot-joined module key: functions/admin/users.ts -> "admin.users". */
   key: string;
   segments: string[];
@@ -15,9 +15,9 @@ export interface FunctionModuleFile {
 }
 
 /** Deterministically list one module directory's files (sorted by key). */
-function listModules(dir: string, kind: string): FunctionModuleFile[] {
+function listModules(dir: string, kind: string): ModuleFile[] {
   if (!existsSync(dir)) return [];
-  const out: FunctionModuleFile[] = [];
+  const out: ModuleFile[] = [];
   const entries = readdirSync(dir, { recursive: true }) as string[];
   for (const entry of entries.sort()) {
     if (!entry.endsWith(".ts") || entry.endsWith(".d.ts")) continue;
@@ -35,12 +35,12 @@ function listModules(dir: string, kind: string): FunctionModuleFile[] {
 }
 
 /** Deterministically list function module files (sorted by key). */
-export function listFunctionModules(config: AppConfig): FunctionModuleFile[] {
+export function listFunctionModules(config: AppConfig): ModuleFile[] {
   return listModules(config.functionsDir, "function");
 }
 
 /** Deterministically list application service module files (sorted by key). */
-export function listServiceModules(config: AppConfig): FunctionModuleFile[] {
+export function listServiceModules(config: AppConfig): ModuleFile[] {
   return listModules(config.servicesDir, "service");
 }
 
@@ -56,7 +56,7 @@ export async function importApp(config: AppConfig): Promise<App> {
 }
 
 async function importModules(
-  files: readonly FunctionModuleFile[],
+  files: readonly ModuleFile[],
 ): Promise<Record<string, Record<string, unknown>>> {
   const modules: Record<string, Record<string, unknown>> = {};
   for (const { key, file } of files) {

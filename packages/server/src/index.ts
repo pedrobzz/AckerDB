@@ -99,6 +99,7 @@ export {
 export {
   ServiceError,
   ServiceRuntime,
+  type ServicePhase,
   type ServiceRuntimeOptions,
   type ServiceRuntimeState,
 } from "./services/runtime.ts";

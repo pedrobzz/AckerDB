@@ -212,8 +212,15 @@ export const tuya = service({ start: () => () => record("cleanup") });
     children.delete(started.child);
     expect(events(dir)).toEqual(["imported", "cleanup"]);
 
-    // Database-inspecting commands are equally inert now that one exists.
-    for (const args of [["status", dir], ["backup", join(dir, "backup.ackerdb"), dir]]) {
+    // Database-owning commands are equally inert now that one exists. Restore
+    // needs a fresh target, so the reset between them is part of the path.
+    const artifact = join(dir, "backup.ackerdb");
+    for (const args of [
+      ["status", dir],
+      ["backup", artifact, dir],
+      ["reset", dir],
+      ["restore", artifact, dir],
+    ]) {
       const run = spawnCli(args, dir, false);
       expect(await run.child.exited).toBe(0);
       children.delete(run.child);
@@ -239,6 +246,39 @@ throw new Error("broker client could not initialise");
     expect(started.stderr()).toContain("broker client could not initialise");
   }, TEST_TIMEOUT_MS);
 
+  test("a service that leaks a handle cannot wedge the dev supervisor", async () => {
+    const port = await freePort();
+    const dir = fixture({
+      "services/leaky.ts": `
+import { service } from "@ackerdb/server";
+import { record } from "../lib/record.ts";
+
+export const forgetful = service({
+  start: () => {
+    // The common app bug: a live interval the cleanup forgets to clear. It
+    // keeps the event loop alive long after drain has finished.
+    setInterval(() => {}, 1_000);
+    return () => record("cleanup");
+  },
+});
+`,
+    }, port);
+
+    const started = spawnCli(["start", dir], dir, false);
+    await eventually(async () => {
+      expect((await fetch(`http://127.0.0.1:${port}/ready`)).status).toBe(200);
+    }, "server ready");
+
+    const startedAt = Date.now();
+    started.child.kill("SIGTERM");
+    expect(await started.child.exited).toBe(0);
+    children.delete(started.child);
+
+    // Drain is the whole obligation; the leak must not extend the exit.
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(events(dir)).toEqual(["cleanup"]);
+  }, TEST_TIMEOUT_MS);
+
   test("acker dev starts each service exactly once per generation", async () => {
     const port = await freePort();
     const dir = fixture({
@@ -261,22 +301,33 @@ export const tuya = service({
     }, "first generation ready");
     expect(events(dir)).toEqual(["start"]);
 
-    // Touch a watched file to trigger one reload.
-    writeFileSync(join(dir, "app.ts"), `${APP}\n// reload\n`);
-    await eventually(() => {
-      // The previous generation is fully released before the next one starts.
-      expect(events(dir)).toEqual(["start", "cleanup", "start"]);
-    }, "reloaded generation");
-    await eventually(async () => {
-      expect((await fetch(`http://127.0.0.1:${port}/ready`)).status).toBe(200);
-    }, "second generation ready");
+    // Each save is one generation: released, then started, never overlapping.
+    for (let reload = 1; reload <= 3; reload += 1) {
+      writeFileSync(join(dir, "app.ts"), `${APP}\n// reload ${reload}\n`);
+      const expected = ["start"];
+      for (let generation = 0; generation < reload; generation += 1) {
+        expected.push("cleanup", "start");
+      }
+      await eventually(() => {
+        expect(events(dir)).toEqual(expected);
+      }, `generation ${reload}`);
+      await eventually(async () => {
+        expect((await fetch(`http://127.0.0.1:${port}/ready`)).status).toBe(200);
+      }, `generation ${reload} ready`);
+    }
 
     dev.child.kill("SIGTERM");
     await dev.child.exited;
     children.delete(dev.child);
 
     await eventually(() => {
-      expect(events(dir)).toEqual(["start", "cleanup", "start", "cleanup"]);
+      expect(events(dir)).toEqual([
+        "start",
+        "cleanup", "start",
+        "cleanup", "start",
+        "cleanup", "start",
+        "cleanup",
+      ]);
     }, "final cleanup");
   }, TEST_TIMEOUT_MS);
 });

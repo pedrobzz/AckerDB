@@ -151,6 +151,10 @@ export class ServiceRuntime {
       .then(() => this.startAll())
       .then(() => {
         if (this.controller.signal.aborted) throw abortReason(this.controller.signal);
+        // A service that died while a later one was still starting must fail
+        // the startup that has not published readiness yet, rather than leave
+        // the host to notice a generation that was never whole.
+        if (this.fatal !== null) throw this.fatal;
         this.lifecycle = "ready";
       })
       .catch(async (error: unknown) => {
@@ -237,7 +241,9 @@ export class ServiceRuntime {
   private reportFatal(name: string, error: unknown): void {
     if (this.fatal !== null || this.stopRequested) return;
     this.fatal = new ServiceError(name, "runtime", error);
-    this.onFatal(this.fatal);
+    // During startup the start path owns the failure: it rolls back and
+    // rejects, so reporting here too would drain the same generation twice.
+    if (this.lifecycle !== "starting") this.onFatal(this.fatal);
   }
 
   private async cleanupStarted(): Promise<unknown[]> {

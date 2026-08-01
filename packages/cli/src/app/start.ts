@@ -355,11 +355,7 @@ export async function startApp<const A extends App = App>(
       serviceRuntime = new ServiceRuntime({
         services: declaredServices,
         system: runtime.system,
-        // Readiness only reports a phase it is still in; a service that fails
-        // or is interrupted has already left startup behind.
-        onStarting: (name) => {
-          if (server.state === "starting") server.reportStartingService(name);
-        },
+        onStarting: (name) => server.reportStartingService(name),
         onFatal: reportServiceFailure,
       });
       await awaitStartup(serviceRuntime.start());

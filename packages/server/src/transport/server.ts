@@ -781,9 +781,9 @@ export class AckerDBServer {
    * handshake is an unattributable pause between "loading-runtime" and ready.
    */
   reportStartingService(name: string | null): void {
-    if (this.startup !== "starting-services") {
-      throw new Error("server is not starting application services");
-    }
+    // A report that arrives after the phase moved on is stale, not wrong: a
+    // startup that failed or was interrupted still settles its supervisor.
+    if (this.startup !== "starting-services") return;
     this.startupService = name;
   }
 

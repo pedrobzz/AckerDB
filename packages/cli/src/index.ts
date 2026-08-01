@@ -18,7 +18,7 @@ export {
   importApp,
   importFunctionModules,
   listFunctionModules,
-  type FunctionModuleFile,
+  type ModuleFile,
 } from "./app/manifest.ts";
 export {
   computePlan,
