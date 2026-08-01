@@ -14,7 +14,7 @@
 import { toStandardJson, type ApplicationError } from "@ackerdb/core";
 import type { AnyRegistered } from "../app/functions.ts";
 import {
-  compileStandardJsonCodec,
+  compileContractCodec,
   type StandardJsonCodec,
 } from "../validation/standard-schema.ts";
 import {
@@ -44,25 +44,6 @@ export interface McpToolCodec {
   readonly outputProtocolSchema: StandardJsonCodec<unknown>["outputProtocolSchema"];
 }
 
-/**
- * A contract no standard-JSON boundary can carry is refused where it is
- * declared, naming the tool and the part of its contract that cannot cross.
- */
-function contractCodec(
-  validator: Validator<unknown, string>,
-  where: string,
-): StandardJsonCodec<unknown> {
-  try {
-    return compileStandardJsonCodec(validator as StandardValidator);
-  } catch (cause) {
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    throw new TypeError(
-      `${where} cannot cross the MCP surface's standard-JSON boundary: ${detail}`,
-      { cause },
-    );
-  }
-}
-
 function wrappedOutputSchema(inner: Record<string, unknown>): JsonObjectSchema {
   // The inner document carries its own `$schema`; only the envelope declares one.
   const { $schema, ...schema } = inner;
@@ -76,14 +57,16 @@ function wrappedOutputSchema(inner: Record<string, unknown>): JsonObjectSchema {
 }
 
 export function compileMcpToolCodec(where: string, fn: AnyRegistered): McpToolCodec {
-  const args = contractCodec(v.object(fn.args), `${where} args`);
+  const codec = (validator: Parameters<typeof compileContractCodec>[0], at: string) =>
+    compileContractCodec(validator, at, "MCP surface");
+  const args = codec(v.object(fn.args), `${where} args`);
   if (fn.returns === undefined) {
     throw new TypeError(
       `${where} must declare \`returns\`: a tool with no outputSchema gives a model nothing to reason about`,
     );
   }
   const returns = fn.returns;
-  const output = contractCodec(returns, `${where} returns`);
+  const output = codec(returns, `${where} returns`);
   const declared = validatorJsonSchema(returns as StandardValidator, { mode: "output" }) as
     Record<string, unknown>;
   // The decision is the protocol's own rule, read off the document rather than
@@ -94,7 +77,7 @@ export function compileMcpToolCodec(where: string, fn: AnyRegistered): McpToolCo
   const errors = new Map<string, (value: unknown, path?: string) => unknown>(
     Object.entries(fn.errors ?? {}).map(([code, declaration]) => [
       code,
-      contractCodec(declaration.body, `${where} errors.${code}.body`).encode,
+      codec(declaration.body, `${where} errors.${code}.body`).encode,
     ]),
   );
   return Object.freeze({
