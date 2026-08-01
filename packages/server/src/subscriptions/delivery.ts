@@ -8,6 +8,7 @@ import {
   type SseErrorMessage,
 } from "@ackerdb/core";
 import { AckerDBError, isAckerDBError } from "../shared/errors.ts";
+import { standardJsonText } from "../validation/standard-json.ts";
 import type { ServiceLimits } from "../runtime/limits.ts";
 import {
   PUBLIC_ERROR_FALLBACK,
@@ -1072,6 +1073,12 @@ interface SseSourceReader {
 /**
  * A receiver-credited SSE source. Direct writes are finite; a merge owns at
  * most one unacknowledged frame and never retains a pulled value while waiting.
+ *
+ * Chunk values are standard JSON: this producer serves the exposed HTTP
+ * surface, whose wire format is the one the OpenAPI document publishes, and the
+ * exposed function's codec has already converted every contract-typed value.
+ * The `sse_chunk`/`sse_done`/`sse_error` envelope around them is unchanged
+ * Protocol-2.
  */
 export class BoundedSseProducer {
   readonly stream: ReadableStream<Uint8Array>;
@@ -1269,7 +1276,7 @@ export class BoundedSseProducer {
     const observer = captureDeliveryObserver(this.delivery, "application");
     const encodingStartedAt = observer === undefined ? undefined : observationNow(this.delivery);
     try {
-      const encodedValue = encode(value);
+      const encodedValue = standardJsonText(value);
       return {
         source,
         encodedValue,

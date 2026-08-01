@@ -1,4 +1,4 @@
-export { encode, decode, stableEncode, WireError } from "./wire.ts";
+export { encode, decode, stableEncode, toStandardJson, WireError } from "./wire.ts";
 export {
   Err,
   Failure,

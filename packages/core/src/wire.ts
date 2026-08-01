@@ -242,6 +242,47 @@ export function decode(text: string): unknown {
   return fromWire(JSON.parse(text));
 }
 
+/**
+ * The plain-JSON form of a value: a bigint becomes its canonical decimal
+ * string, bytes become base64, and nothing is escaped — a `"$"` key is an
+ * ordinary key here. This is the wire format of ackerdb's exposed HTTP
+ * surface, the one its OpenAPI document describes, and the only form its
+ * callers speak. `encode` above is Protocol-2's: it carries values JSON cannot
+ * express, at the cost of escape objects no external caller can read.
+ *
+ * `undefined` fields drop and array holes become null, exactly as `toWire`
+ * does, so the two forms differ only where JSON forced them to.
+ */
+export function toStandardJson(value: unknown): unknown {
+  switch (typeof value) {
+    case "bigint":
+      return value.toString();
+    case "number":
+      if (!Number.isFinite(value)) throw new WireError(`cannot encode non-finite number ${value}`);
+      return value;
+    case "string":
+    case "boolean":
+    case "undefined":
+      return value;
+    case "object":
+      break;
+    default:
+      throw new WireError(`cannot encode value of type ${typeof value}`);
+  }
+  if (value === null) return null;
+  if (value instanceof Uint8Array) return bytesToBase64(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => (item === undefined ? null : toStandardJson(item)));
+  }
+  const source = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(source)) {
+    const encoded = toStandardJson(source[key]);
+    if (encoded !== undefined) out[key] = encoded;
+  }
+  return out;
+}
+
 function sortDeep(value: unknown): unknown {
   if (value === null || typeof value !== "object") return value;
   if (Array.isArray(value)) return value.map(sortDeep);

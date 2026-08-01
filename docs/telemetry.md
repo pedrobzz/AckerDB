@@ -314,7 +314,7 @@ When telemetry is enabled, current automatic span coverage is:
 | Boundary | Operations and stages |
 | --- | --- |
 | Runtime operation ownership | A tail-decision lifecycle opens before `admission` for query, mutation, procedure, SSE, scheduled, and subscription work. Ordinary operations finish it after their Runtime finalizer. An SSE handler may settle earlier, but its admission and trace remain owned until the Runtime producer reaches terminal acknowledgement, cancellation, or terminal-grace force close. A fallback outer `handler` span is emitted only when the path performs no registered function invocation. |
-| HTTP credential verification | Procedure and SSE calls emit one `auth` span around credential parsing, verification, and lease acquisition. A successfully parsed call keeps the same trace ID and request/function correlation when Runtime claims the operation. |
+| HTTP credential verification | Query, mutation, procedure, and SSE calls emit one `auth` span around credential parsing, verification, and lease acquisition. A successfully parsed call keeps the same trace ID and request/function correlation when Runtime claims the operation. |
 | WebSocket credential verification | Hello, refresh, and sign-out attempts emit separate `lifecycle`/`auth` traces with `connection` resource, hashed connection correlation, and the hello/attempt identifier. |
 | Function invocation | `auth`, `policy`, and `handler` for top-level and directly nested function calls, with parent/child span relationships. Here the Runtime `auth` span is invocation principal/argument validation, distinct from transport credential verification. |
 | Outbound fetch | `fetch` around `globalThis.fetch` used inside a traced runtime operation. It records duration/outcome only—never URL, headers, or body; a fetch rejected inside a writer transaction is observed too. |
@@ -324,27 +324,28 @@ When telemetry is enabled, current automatic span coverage is:
 | Realtime media setup | Fixed-cardinality `realtime` stage metrics cover authorization, ICE configuration, handler setup, signaling, ICE, DTLS, and the internal data channel independently. Aggregate status and metrics also expose admission, bounded recovery, close reasons, native-resource pressure, selected direct/relay and UDP/TCP paths, media flow, RTT, jitter, loss, bitrate, buffering, and native event-queue drops. No SDP, candidate, address, credential, media payload, or provider data is recorded. |
 | Channel disconnect cleanup | `runtime.channel_disconnect_timeouts` counts optional `onDisconnect` handlers that ignored their cancellation deadline. Membership and connection admission are released before this cleanup finishes. |
 | WebSocket and SSE transport | `encoding`, `queue`, and `delivery` spans with bytes, duration, outcome, and `outbound`/`sse` resource. WebSocket `delivery` observes release from Bun's buffered-byte ownership (including delayed `onDrain`). SSE retains the frame's captured observer until a valid cumulative receiver acknowledgement releases it, or reports cancellation/terminal timeout as the delivery outcome. Terminal failures also emit a `failure` event. Capabilities, proofs, and chunk values are never recorded. |
-| HTTP procedure response | `procedure` `encoding` followed by `delivery`, both with resource `operation`, the original trace/request/function correlation, and exact encoded response bytes. `delivery` ends when the responder returns the constructed Bun `Response`; it is an encoded-response handoff, not proof of socket, kernel, or network completion. |
+| HTTP value response | The call's own operation (`query`, `mutation`, `procedure`) `encoding` followed by `delivery`, both with resource `operation`, the original trace/request/function correlation, and exact encoded response bytes. `delivery` ends when the responder returns the constructed Bun `Response`; it is an encoded-response handoff, not proof of socket, kernel, or network completion. |
 | CLI backup and restore | Standalone `acker backup` and `acker restore` commands emit one `backup`/`restore` `storage` span with duration, sanitized outcome, artifact byte count, and commit correlation when successful; failures also emit one sanitized `failure` event. The command drains this bounded telemetry before printing its final report, and `ACKERDB_TELEMETRY=disabled` removes it exactly. |
 | Telemetry export | `exporter_degraded` events at the `export` stage; exporter attempts and durations are also metrics/status fields. |
 
 ### Credential verification correlation
 
-For `POST /api/call` and `POST /api/sse`, Serve opens one tail-decision trace
-before request parsing. Once Protocol 5 parsing succeeds, the function address
-and request ID identify it. The credential `auth` span then covers
-Authorization parsing, verifier work (including any verifier-owned JWKS work),
-and credential-lease acquisition. On success, Runtime claims that same trace,
-so authentication and the later admission, invocation, encoding, and delivery
-records share request/function correlation.
+For an exposed function's `/api/<module>/<fn>` (a query's `GET` as well as its
+`POST`, and a stream's `POST`), Serve opens one tail-decision trace before
+request parsing. Every call is identified immediately—its path names the
+function and the listener assigns the request ID from its own monotonic
+sequence, since HTTP correlation is the response itself. The credential `auth`
+span then covers Authorization parsing, verifier work (including any
+verifier-owned JWKS work), and credential-lease acquisition. On success, Runtime
+claims that same trace, so authentication and the later admission, invocation,
+encoding, and delivery records share request/function correlation.
 
-An authentication failure after a call was parsed ends with an `auth` failure
-span and one structured `failure` event; Runtime is never entered. A malformed
-body, ingress rejection, or other failure before the call is identified instead
-gets an `admission` failure span/event under `http.procedure` or `http.sse`,
-without a fabricated request ID. Failure events expose the sanitized outcome,
-resource, function/correlation fields, and error class—not the error message or
-cause.
+An authentication failure ends with an `auth` failure span and one structured
+`failure` event; Runtime is never entered. An ingress rejection or malformed
+args gets an `admission` failure span/event under the targeted function—the
+path names it before any body is read. Failure events expose the sanitized
+outcome, resource, function/correlation fields, and error class—not the error
+message or cause.
 
 WebSocket hello, bearer refresh, and anonymous sign-out verification each own a
 separate `lifecycle` trace with function `ws.hello`, `ws.refresh`, or
@@ -355,13 +356,13 @@ supersession, or session close, and non-`ok` completion emits one correlated
 sanitized `failure` event. The digest is operational correlation, not a promise
 of anonymity.
 
-Trace ownership remains singular across the HTTP boundary. A procedure trace
-finishes after the encoded `Response` handoff. An SSE trace and its receiver
-capability remain owned until terminal acknowledgement, cancellation, or
-terminal-grace force close, so delayed delivery observations retain the frame's
-original trace owner. A valid acknowledgement proves participation by the
-capability holder, not durable application processing. HTTP handoff still proves
-neither socket, kernel, network, nor peer receipt.
+Trace ownership remains singular across the HTTP boundary. A query, mutation,
+or procedure trace finishes after the encoded `Response` handoff. An SSE trace
+and its receiver capability remain owned until terminal acknowledgement, cancellation,
+or terminal-grace force close, so delayed delivery observations retain the
+frame's original trace owner. A valid acknowledgement proves participation by
+the capability holder, not durable application processing. HTTP handoff still
+proves neither socket, kernel, network, nor peer receipt.
 
 When telemetry is disabled, HTTP trace creation returns before allocating IDs
 or trace state and `AckerDBServer` does not attach the WebSocket auth observer. The

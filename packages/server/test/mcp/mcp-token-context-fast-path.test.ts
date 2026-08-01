@@ -16,7 +16,7 @@ import {
 import { createMcp, type McpBuilder } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
-import { Runtime, type RuntimeProcedureResponse } from "../../src/runtime/runtime.ts";
+import { Runtime, type RuntimeHttpResponse } from "../../src/runtime/runtime.ts";
 import { defineSchema } from "../../src/schema/definition.ts";
 import type { SessionRuntimeContext } from "../../src/subscriptions/session.ts";
 import { mutationMessage, queryMessage, request } from "../support/mcp-token-fixture.ts";
@@ -46,6 +46,7 @@ function noMcpRuntime(): { readonly runtime: Runtime; readonly session: SessionR
   });
   const transact = typedProcedure({
     access: "public",
+    http: true,
     args: {},
     handler: (ctx) => ctx.tx((tx) => hiddenMcp.tokens.list(tx)),
   });
@@ -97,14 +98,11 @@ describe("zero-MCP Runtime context", () => {
       address: "ordinary.transact",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
-      respond: ({ body, status }: RuntimeProcedureResponse) => new Response(body, { status }),
+      respond: ({ body, status }: RuntimeHttpResponse) => new Response(body, { status }),
     });
     expect(decode(await response.text())).toMatchObject({
-      t: "err",
-      outcome: {
-        code: "unauthorized",
-        message: "MCP token operations require a AckerDB invocation context",
-      },
+      code: "unauthorized",
+      message: "MCP token operations require a AckerDB invocation context",
     });
   });
 });

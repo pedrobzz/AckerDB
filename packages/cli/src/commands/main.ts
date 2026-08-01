@@ -5,6 +5,7 @@
  *   acker dev [dir]      watch + debounced codegen + auto-restarting server
  *   acker start [dir]    codegen once, then serve (production)
  *   acker codegen [dir]  one-shot codegen
+ *   acker openapi <file> [dir]  write the HTTP surface's OpenAPI 3.1 document
  *   acker reset [dir]    delete the local database (dev escape hatch)
  *   acker plugin reset|drop <mount> [dir]  clear one consent-gated Plugin scope
  *   acker status [dir]   inspect a database as JSON
@@ -22,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { resetDatabase, type Renames } from "@ackerdb/server";
 import { loadConfig, type AppConfig } from "../app/config.ts";
 import { runCodegen } from "../app/codegen.ts";
+import { exportOpenApi } from "../app/openapi.ts";
 import { startApp, StartupInterruptedError } from "../app/start.ts";
 import { runRenameForm, type Ask, type FormResult } from "../migrations/form.ts";
 import { renderLedger, runDivergenceForm } from "../migrations/consent.ts";
@@ -53,6 +55,7 @@ function usage(): never {
   acker dev [app-dir]
   acker start [app-dir]
   acker codegen [app-dir]
+  acker openapi <document> [app-dir]
   acker generate [name] [app-dir]
   acker plugin reset <mount> [app-dir]
   acker plugin drop <mount> [app-dir]
@@ -516,6 +519,15 @@ try {
       const { written } = await runCodegen(loadConfig(resolve(args[0] ?? ".")));
       console.log(
         `[ackerdb] codegen ${written.length > 0 ? `wrote ${written.join(", ")}` : "up to date"} (${Math.round(performance.now() - t0)}ms)`,
+      );
+      break;
+    }
+    case "openapi": {
+      requireArgumentCount(args, 1, 2);
+      const config = loadConfig(resolve(args[1] ?? "."));
+      const { file, operations } = await exportOpenApi(config, resolve(args[0]!));
+      console.log(
+        `[ackerdb] wrote ${relative(process.cwd(), file)} — ${operations} operation(s)`,
       );
       break;
     }

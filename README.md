@@ -163,6 +163,7 @@ encrypted hop and TLS termination as described in the
 acker dev [app-dir]
 acker start [app-dir]
 acker codegen [app-dir]
+acker openapi <document> [app-dir]
 acker plugin reset <mount> [app-dir]
 acker plugin drop <mount> [app-dir]
 acker reset [app-dir]

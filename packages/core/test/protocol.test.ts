@@ -6,8 +6,6 @@ import {
   ProtocolError,
   decode,
   encode,
-  parseCallRequest,
-  parseCallResponse,
   parseClientMessage,
   parseCredential,
   parseMutationReceipt,
@@ -173,7 +171,6 @@ describe("protocol 5 envelopes", () => {
         issuedAt: 1_688_000_000_000,
       }).t,
     ).toBe("m");
-    expect(parseCallRequest({ v: PROTOCOL_VERSION, t: "call", id: 5, ref: "reports.create", args: {} }).t).toBe("call");
   });
 });
 
@@ -454,7 +451,7 @@ describe("live events and operation results", () => {
 
   test("validates query and mutation ok variants and the exact receipt", () => {
     expect(parseServerMessage({ v: PROTOCOL_VERSION, t: "ok", id: 1, kind: "query", value: [1, 2] }).t).toBe("ok");
-    const procedure = parseCallResponse({
+    const procedure = parseServerMessage({
       v: PROTOCOL_VERSION,
       t: "ok",
       id: 9,
@@ -483,14 +480,14 @@ describe("live events and operation results", () => {
     ).toEqual({ v: PROTOCOL_VERSION, t: "ok", id: 2, kind: "mutation", value: { created: 1n }, receipt });
   });
 
-  test("validates application-error frames and preserves procedure HTTP metadata", () => {
+  test("validates application-error frames and preserves procedure status metadata", () => {
     const error = {
       kind: "application" as const,
       code: "order-not-found",
       body: { orderId: "order-1" },
       status: Status.NotFound,
     };
-    const procedure = parseCallResponse({
+    const procedure = parseServerMessage({
       v: PROTOCOL_VERSION,
       t: "app_err",
       id: 9,

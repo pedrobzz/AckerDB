@@ -1009,7 +1009,7 @@ export class RealtimeManager {
       ...(group.reconnectAttempt > 0 ? { recovery: true as const } : {}),
     }));
     const response = await this.port.fetch(
-      this.port.url("/api/realtime/prepare"),
+      this.port.url("/api/_realtime/prepare"),
       {
         method: "POST",
         headers: this.port.headers(),
@@ -1040,7 +1040,7 @@ export class RealtimeManager {
       offer,
     }));
     const response = await this.port.fetch(
-      this.port.url("/api/realtime"),
+      this.port.url("/api/_realtime"),
       {
         method: "POST",
         headers: generation.headers,
@@ -1129,7 +1129,7 @@ export class RealtimeManager {
         });
         generation.httpCompleteInFlight = complete;
         const response = await this.port.fetch(
-          this.port.url(`/api/realtime/${generation.sessionId}`),
+          this.port.url(`/api/_realtime/${generation.sessionId}`),
           {
             method: "PATCH",
             headers: generation.headers,
@@ -1418,7 +1418,7 @@ export class RealtimeManager {
     let request: Promise<Response>;
     try {
       request = this.port.fetch(
-        this.port.url(`/api/realtime/${generation.sessionId}`),
+        this.port.url(`/api/_realtime/${generation.sessionId}`),
         {
           method: "DELETE",
           headers: generation.headers,

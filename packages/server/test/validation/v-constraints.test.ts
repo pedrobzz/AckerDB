@@ -7,7 +7,7 @@ import {
   snapshotOf,
   v,
 } from "@ackerdb/server";
-import { compileStandardJsonCodec } from "../../src/validation/standard-schema.ts";
+import { validatorJsonSchema } from "../../src/validation/json-schema.ts";
 import { checkDescriptor } from "../../src/schema/descriptor-kinds.ts";
 import { checkShape, validatorBaseChecksForTest } from "../../src/validation/v.ts";
 
@@ -277,9 +277,7 @@ describe("constraint Standard JSON Schema projection", () => {
   });
 
   test("documents bigint bounds without contradictory numeric keywords", () => {
-    const schema = compileStandardJsonCodec(
-      v.bigint().min(-5n).max(10n).describe("A durable counter."),
-    ).inputSchema;
+    const schema = validatorJsonSchema(v.bigint().min(-5n).max(10n).describe("A durable counter."));
 
     expect(schema).toEqual({
       $schema: "https://json-schema.org/draft/2020-12/schema",

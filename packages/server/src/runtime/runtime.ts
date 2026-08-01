@@ -10,6 +10,8 @@ import {
   isApplicationError,
   isResult,
   stableEncode,
+  uuidV7Timestamp,
+  type ApplicationError,
   type ApplicationErrorMessage,
   type ChannelEventMessage,
   type ChannelJoinMessage,
@@ -22,6 +24,7 @@ import {
   type LiveEvent,
   type MutationMessage,
   type MutationOkMessage,
+  type MutationReceipt,
   type Outcome,
   type ProcedureMessage,
   type ProcedureOkMessage,
@@ -55,12 +58,17 @@ import {
   withFetchObserver,
   type CommitHookContext,
   type CommitHookStage,
+  type CommitRequest,
   type CommitResult,
   type CommitTelemetryEvent,
   type CommitWaitHook,
   type FetchObservation,
+  type IdempotencyIdentity,
 } from "./coordinator.ts";
 import { isValidationError, type Identity } from "../validation/v.ts";
+import { standardJsonText } from "../validation/standard-json.ts";
+import type { ExposedHttpCodec } from "../transport/http-codec.ts";
+import type { ExposedHttpKind } from "../transport/http-surface.ts";
 import {
   makeDbReader,
   type ReadRecorder,
@@ -218,6 +226,11 @@ function applicationError(value: unknown) {
   return value;
 }
 
+/** An Outcome crosses no contract: it is already the standard JSON it publishes. */
+function outcomeJson(outcome: unknown): unknown {
+  return outcome;
+}
+
 function restoreMutationResult(value: unknown): Result<unknown, unknown> {
   if (isResult(value)) return value;
   if (typeof value !== "object" || value === null || !("ok" in value)) {
@@ -294,18 +307,56 @@ export interface McpCredentialLease {
   release(): void;
 }
 
-export interface RuntimeProcedureResponse {
+/**
+ * The commit receipt an HTTP mutation answers with. It carries no
+ * `mutationRequestId`: over HTTP the caller's own `Idempotency-Key` is that id,
+ * and a mutation without one has no replay identity at all.
+ */
+export type HttpMutationReceipt = Omit<MutationReceipt, "mutationRequestId">;
+
+export interface RuntimeHttpResponse {
   readonly body: string;
   readonly bytes: number;
   readonly status: number;
+  /** Present for mutations; the transport spells it as response headers. */
+  readonly receipt?: HttpMutationReceipt;
 }
 
 /** Constructs the HTTP response; return is the measured application handoff, not network delivery. */
-export type RuntimeProcedureResponder = (response: RuntimeProcedureResponse) => Response;
+export type RuntimeHttpResponder = (response: RuntimeHttpResponse) => Response;
 
-export interface RuntimeProcedureRequest extends RuntimeExternalRequest {
-  readonly respond: RuntimeProcedureResponder;
+/** One path-addressed HTTP call; every kind answers through the same responder. */
+export interface RuntimeHttpRequest extends RuntimeExternalRequest {
+  readonly respond: RuntimeHttpResponder;
 }
+
+/** A mutation call; the optional `Idempotency-Key` is its replay identity. */
+export interface RuntimeHttpMutationRequest extends RuntimeHttpRequest {
+  readonly idempotencyKey?: string;
+}
+
+/** A kind that answers one HTTP request with a plain value; also its telemetry operation. */
+type HttpValueOperation = Extract<TelemetryOperation, "query" | "mutation" | "procedure">;
+
+/** What every path-addressed entry point derives from its request before it runs. */
+interface ClaimedHttpRequest {
+  readonly requestBytes: number;
+  readonly codec: ExposedHttpCodec;
+  readonly claimedTrace?: ClaimedHttpTrace;
+  readonly fairnessKey: string;
+  /** The transport's auth-invalidation scope, when it carried one. */
+  readonly invalidationScope?: AuthInvalidationScope;
+}
+
+/** What a settled mutation carries out of the coordinator into its response. */
+interface CommittedHttpMutation {
+  readonly receipt: HttpMutationReceipt;
+  /** The success body, proven encodable before COMMIT so the write could roll back. */
+  readonly encoded?: Pick<RuntimeHttpResponse, "body" | "bytes">;
+}
+
+/** An HTTP caller holds no subscriptions, so it owes no convergence obligation. */
+const NO_OBLIGATIONS: readonly number[] = Object.freeze([]);
 
 export interface RuntimeSseRequest extends RuntimeExternalRequest {}
 
@@ -421,6 +472,22 @@ interface FinishedRuntimeMutation {
   readonly publication: RuntimePublication;
 }
 
+/** What varies between two commits; everything invariant lives in `commitWrite`. */
+interface RuntimeCommitRequest<T> {
+  readonly operation: "mutation" | "transaction";
+  readonly fairnessKey: string;
+  readonly requestBytes: number;
+  /** Cancels this work only while it is waiting for the single writer. */
+  readonly admissionSignal: AbortSignal;
+  /** Cancels a request-owned transaction before BEGIN or COMMIT. */
+  readonly transactionSignal?: AbortSignal;
+  readonly idempotency?: IdempotencyIdentity;
+  /** The caller whose own live queries the publication must name; HTTP callers hold none. */
+  readonly subscriber?: Subscriber;
+  readonly work: (db: MutationCtx["db"], writes: WriteCollector) => T | Promise<T>;
+  readonly validate?: CommitRequest<T, ReactiveCommit>["validate"];
+}
+
 interface SessionOperationOptions<T> {
   readonly identifiers?: TraceIdentifiers;
   readonly synthesizeHandler?: boolean;
@@ -511,13 +578,15 @@ function sseChunkIterator(source: SseSource<unknown>): SseChunkIterator {
  * Adapts the handler's returned source into the producer's merge input.
  * Zero high-water: the source advances only when the receiver-credited merge
  * loop asks for the next chunk, so downstream acknowledgement drives the
- * handler. Every chunk is validated against the declared `yields` validator;
- * a failing chunk releases the source and fails the stream with the exact
- * validation error. `handlerContext` restores the invocation-time async
- * context, so generator bodies keep the handler's trace/invocation ownership.
+ * handler. Every chunk crosses the exposed function's standard-JSON codec,
+ * which validates it against the declared `yields` validator and converts it
+ * to the JSON the document publishes; a failing chunk releases the source and
+ * fails the stream with the exact validation error. `handlerContext` restores
+ * the invocation-time async context, so generator bodies keep the handler's
+ * trace/invocation ownership.
  */
 function validatedSseSource(
-  fn: AnyRegisteredSse,
+  codec: ExposedHttpCodec,
   source: SseSource<unknown>,
   handlerContext: <T>(work: () => T) => T,
 ): ReadableStream<unknown> {
@@ -532,7 +601,7 @@ function validatedSseSource(
         }
         let chunk: unknown;
         try {
-          chunk = fn.yields.check(part.value, "chunk");
+          chunk = codec.encodeValue(part.value);
         } catch (error) {
           // The source's own cleanup failures cannot mask the validation error.
           void Promise.resolve()
@@ -1457,20 +1526,13 @@ export class Runtime implements RuntimePort {
     return this.runSessionOperation(context, request, "mutation", message.ref, async (state, requestBytes) => {
       const fn = this.expect(message.ref, "mutation");
       const signal = this.operationSignal(context.signal);
-      let scheduledTouched = false;
       let executedPublication: RuntimePublication | undefined;
-      const result = await this.coordinator.execute({
+      const result = await this.commitWrite({
         operation: "mutation",
         fairnessKey: context.fairnessKey,
         requestBytes,
         admissionSignal: signal,
-        ...(this.telemetry.enabled
-          ? {
-              telemetry: this.observeCommit,
-              statementTelemetry: this.observeStatement,
-              run: AsyncLocalStorage.snapshot(),
-            }
-          : {}),
+        subscriber: state.subscriber,
         idempotency: {
           sessionId: context.clientSessionId,
           requestId: message.mutationRequestId,
@@ -1479,32 +1541,7 @@ export class Runtime implements RuntimePort {
           functionRef: message.ref,
           argsFingerprint: digest(message.args),
         },
-        work: (db, writes) => {
-          const invocation = this.hostMutationContext(
-            db,
-            context.principal,
-            this.readNow(),
-            writes,
-          );
-          const scope = createMutationInvocationScope(this.engine.writer, writes);
-          return scope.runRoot((mutationAccess) =>
-            this.hasMcpCapabilities
-              ? withMcpTokenCapability(
-                  invocation,
-                  this.mcpTokenCapability(context.principal, this.engine.writer, null, writes),
-                  (ctx) => invokeFunction(fn, ctx, message.args, {
-                    mutationAccess,
-                  }),
-                )
-              : invokeFunction(fn, invocation, message.args, {
-                  mutationAccess,
-                }));
-        },
-        rollbackWhen: (value) => isResult(value) && !value.ok,
-        publication: (_version, writes) => {
-          scheduledTouched = writes.scheduledTouched;
-          return this.publicationFor(writes, state.subscriber);
-        },
+        work: this.mutationWork(fn, context.principal, message.args),
         validate: (value, version, _writes, publication) => {
           executedPublication = this.prepareFrame(
             this.mutationFrame(
@@ -1519,7 +1556,6 @@ export class Runtime implements RuntimePort {
           );
         },
       });
-      if (scheduledTouched) this.armScheduler();
       const finished = await this.finishMutation(state, message, result, executedPublication);
       successPublication = finished.publication;
       return finished.result;
@@ -1580,32 +1616,164 @@ export class Runtime implements RuntimePort {
     drain?.resolve(undefined);
   }
 
-  async runProcedure(request: RuntimeProcedureRequest): Promise<Response> {
+  /**
+   * How every path-addressed call opens: an MCP credential is refused, the
+   * transport's provenance is claimed exactly once, and admission, trace, and
+   * fairness follow from it. The measured request is the surface's own — the
+   * addressed function and its args, no protocol envelope — so the same args
+   * cost the same admission bytes whichever kind serves them.
+   */
+  private claimHttpRequest(
+    request: RuntimeExternalRequest,
+    kind: ExposedHttpKind,
+  ): ClaimedHttpRequest {
     if (request.principal.kind === "mcp") {
-      throw new AckerDBError("unauthorized", "MCP credentials cannot call AckerDB procedures");
+      throw new AckerDBError(
+        "unauthorized",
+        "MCP credentials cannot call AckerDB application functions",
+      );
     }
     const provenance = claimHttpRequestProvenance(request);
-    const requestBytes = this.admittedRequestBytes({
-      v: PROTOCOL_VERSION,
-      t: "call",
-      id: request.id,
-      ref: request.address,
-      args: request.args,
-    }, provenance?.bytes);
-    const claimedTrace = claimHttpTrace(
-      provenance?.trace,
-      "procedure",
-      request.address,
-      String(request.id),
-    );
-    const fairnessKey = request.fairnessKey ?? callerFairnessKey(
-      request.principal,
-      DIRECT_RUNTIME_SOURCE,
-    );
-    const invalidations = this.procedureInvalidations(
-      request.principal,
-      provenance?.invalidationScope,
-    );
+    return {
+      requestBytes: this.admittedRequestBytes(
+        { ref: request.address, args: request.args },
+        provenance?.bytes,
+      ),
+      codec: this.httpCodec(request.address),
+      claimedTrace: claimHttpTrace(provenance?.trace, kind, request.address, String(request.id)),
+      fairnessKey: request.fairnessKey
+        ?? callerFairnessKey(request.principal, DIRECT_RUNTIME_SOURCE),
+      invalidationScope: provenance?.invalidationScope,
+    };
+  }
+
+  /**
+   * The HTTP entry point for a query. It owns transport concerns only: the
+   * evaluation itself is the same transport-free `executeQuery` boundary the
+   * WebSocket session uses, so neither path can drift from the other.
+   */
+  async runQuery(request: RuntimeHttpRequest): Promise<Response> {
+    const { requestBytes, codec, claimedTrace, fairnessKey } =
+      this.claimHttpRequest(request, "query");
+    return this.runOperation(null, "query", request.address, requestBytes, () =>
+      this.executeQuery(
+        request.address,
+        request.args,
+        request.principal,
+        fairnessKey,
+        this.operationSignal(request.signal),
+        requestBytes,
+      ), {
+      identifiers: { requestId: String(request.id) },
+      finalize: (outcome) => this.respondHttp(request, codec, "query", outcome),
+      claimedTrace,
+      fairnessKey,
+    });
+  }
+
+  /**
+   * The HTTP entry point for a mutation. Replay protection is opt-in: given an
+   * `Idempotency-Key` the coordinator owns the same replay store the WebSocket
+   * protocol uses, and without one the mutation simply executes. The receipt is
+   * state at response time — no later durability transition reaches this caller.
+   */
+  async runMutation(request: RuntimeHttpMutationRequest): Promise<Response> {
+    const { requestBytes, codec, claimedTrace, fairnessKey } =
+      this.claimHttpRequest(request, "mutation");
+    let committed: CommittedHttpMutation | undefined;
+    return this.runOperation(null, "mutation", request.address, requestBytes, async () => {
+      const fn = this.expect(request.address, "mutation");
+      const signal = this.operationSignal(request.signal);
+      throwIfAborted(signal);
+      let encoded: Pick<RuntimeHttpResponse, "body" | "bytes"> | undefined;
+      const result = await this.commitWrite({
+        operation: "mutation",
+        fairnessKey,
+        requestBytes,
+        admissionSignal: signal,
+        ...(request.idempotencyKey === undefined
+          ? {}
+          : { idempotency: this.httpIdempotency(request, fairnessKey) }),
+        work: this.mutationWork(fn, request.principal, request.args),
+        // Encoding the body is the mutation's last fallible step, so it happens
+        // inside the transaction exactly as the session path frames its result:
+        // a value that cannot cross this surface, or cannot fit one frame, rolls
+        // the write back rather than committing it and answering a failure.
+        // `Idempotency-Key` is optional here, so that failure's natural retry
+        // would otherwise write twice. `rollbackWhen` has already closed out
+        // application errors, which never reach this.
+        validate: (value) => {
+          if (!isResult(value)) {
+            throw new AckerDBError("internal", "mutation boundary returned no Result");
+          }
+          encoded = this.encodeHttpBody(value.data, codec.encodeValue, "mutation", null);
+        },
+      });
+      committed = Object.freeze({
+        receipt: Object.freeze({
+          commitVersion: result.commitVersion,
+          durability: result.durability,
+          replay: result.replay,
+          obligations: NO_OBLIGATIONS,
+        }),
+        // Absent for a replay, whose stored bytes this caller never proved, and
+        // for an application error, which never reached `validate`.
+        ...(encoded === undefined ? {} : { encoded }),
+      });
+      return restoreMutationResult(result.value);
+    }, {
+      identifiers: {
+        requestId: String(request.id),
+        ...(request.idempotencyKey === undefined
+          ? {}
+          : { mutationId: request.idempotencyKey }),
+      },
+      synthesizeHandler: false,
+      finalize: (outcome) => this.respondHttp(request, codec, "mutation", outcome, committed),
+      claimedTrace,
+      fairnessKey,
+    });
+  }
+
+  /**
+   * The caller's `Idempotency-Key` becomes a coordinator identity, so the same
+   * key replays for that caller alone and conflicts on a different function or
+   * different args. `issuedAt` is the key's own UUIDv7 timestamp, which the
+   * existing retention window bounds.
+   *
+   * HTTP has no session, so the caller fingerprint is the fairness key — the
+   * runtime's existing durable answer to "which caller is this". It names a
+   * user's Identity rather than the credential instance, so a retry carrying a
+   * refreshed token still replays instead of writing twice.
+   */
+  private httpIdempotency(
+    request: RuntimeHttpMutationRequest,
+    fairnessKey: string,
+  ): IdempotencyIdentity {
+    const requestId = request.idempotencyKey!;
+    let issuedAt: number;
+    try {
+      issuedAt = uuidV7Timestamp(requestId);
+    } catch (cause) {
+      throw new AckerDBError("validation", "Idempotency-Key must be a UUIDv7", {
+        cause,
+        resource: "idempotency",
+      });
+    }
+    return {
+      sessionId: fairnessKey,
+      requestId,
+      issuedAt,
+      principalFingerprint: fairnessKey,
+      functionRef: request.address,
+      argsFingerprint: digest(request.args),
+    };
+  }
+
+  async runProcedure(request: RuntimeHttpRequest): Promise<Response> {
+    const { requestBytes, codec, claimedTrace, fairnessKey, invalidationScope } =
+      this.claimHttpRequest(request, "procedure");
+    const invalidations = this.procedureInvalidations(request.principal, invalidationScope);
     return this.runOperation(null, "procedure", request.address, requestBytes, async () => {
       const fn = this.expect(request.address, "procedure");
       const signal = this.operationSignal(request.signal);
@@ -1632,7 +1800,7 @@ export class Runtime implements RuntimePort {
       identifiers: { requestId: String(request.id) },
       finalize: (outcome) => {
         try {
-          return this.respondProcedure(request, outcome);
+          return this.respondHttp(request, codec, "procedure", outcome);
         } finally {
           invalidations.finish();
         }
@@ -1749,72 +1917,87 @@ export class Runtime implements RuntimePort {
     }
   }
 
-  private respondProcedure(
-    request: RuntimeProcedureRequest,
+  /**
+   * The HTTP body is the plain value the caller asked for: the return value,
+   * the declared `ApplicationError`, or the failure outcome — never a protocol
+   * frame. Framing belongs to the WebSocket session alone. Every contract-typed
+   * part crosses through the exposed function's standard-JSON codec, so the
+   * bytes are exactly what the published document describes.
+   */
+  private respondHttp(
+    request: RuntimeHttpRequest,
+    codec: ExposedHttpCodec,
+    operation: HttpValueOperation,
     outcome: RuntimeOperationOutcome<unknown>,
+    committed?: CommittedHttpMutation,
   ): Response {
-    let frame: ProcedureOkMessage | ApplicationErrorMessage | ErrorMessage;
+    let body: unknown;
+    let toJson: (value: unknown) => unknown;
     let status: number;
+    let failure: Outcome | null = null;
+    /** A mutation success body already encoded inside its transaction. */
+    let proven: Pick<RuntimeHttpResponse, "body" | "bytes"> | undefined;
     if (outcome.ok) {
       if (!isResult(outcome.value)) {
-        throw new AckerDBError("internal", "procedure boundary returned no Result");
+        throw new AckerDBError("internal", `${operation} boundary returned no Result`);
       }
       if (outcome.value.ok) {
-        frame = {
-          v: PROTOCOL_VERSION,
-          t: "ok",
-          id: request.id,
-          kind: "procedure",
-          value: outcome.value.data,
-        };
+        body = outcome.value.data;
+        toJson = codec.encodeValue;
         status = 200;
+        proven = committed?.encoded;
       } else {
-        frame = {
-          v: PROTOCOL_VERSION,
-          t: "app_err",
-          id: request.id,
-          kind: "procedure",
-          error: applicationError(outcome.value.error),
-        };
-        status = frame.error.status;
+        const error = applicationError(outcome.value.error);
+        body = error;
+        toJson = (value) => codec.encodeError(value as ApplicationError);
+        status = error.status;
       }
     } else {
-      const safe = outcomeFromError(outcome.error);
-      frame = { v: PROTOCOL_VERSION, t: "err", id: request.id, outcome: safe };
-      status = outcomeHttpStatus(safe);
+      failure = outcomeFromError(outcome.error);
+      body = failure;
+      toJson = outcomeJson;
+      status = outcomeHttpStatus(failure);
     }
 
-    let encoded: Pick<RuntimeProcedureResponse, "body" | "bytes">;
+    let encoded: Pick<RuntimeHttpResponse, "body" | "bytes">;
     try {
-      encoded = this.encodeProcedureFrame(frame);
+      encoded = proven ?? this.encodeHttpBody(body, toJson, operation, failure);
     } catch (error) {
-      if (!outcome.ok) throw error;
-      this.recordProcedureResponseFailure(error, "encoding");
-      const safe = outcomeFromError(error);
-      frame = { v: PROTOCOL_VERSION, t: "err", id: request.id, outcome: safe };
-      status = outcomeHttpStatus(safe);
-      encoded = this.encodeProcedureFrame(frame);
+      if (failure !== null) throw error;
+      this.recordHttpResponseFailure(error, operation, "encoding");
+      failure = outcomeFromError(error);
+      status = outcomeHttpStatus(failure);
+      encoded = this.encodeHttpBody(failure, outcomeJson, operation, failure);
     }
 
-    return this.handoffProcedureResponse(request, Object.freeze({ ...encoded, status }));
+    return this.handoffHttpResponse(request, operation, Object.freeze({
+      ...encoded,
+      status,
+      // A committed mutation answers with its receipt even when the application
+      // rejected the call, exactly as `ApplicationErrorMessage.receipt` does.
+      ...(committed === undefined ? {} : { receipt: committed.receipt }),
+    }));
   }
 
-  private encodeProcedureFrame(
-    frame: ProcedureOkMessage | ApplicationErrorMessage | ErrorMessage,
-  ): Pick<RuntimeProcedureResponse, "body" | "bytes"> {
+  private encodeHttpBody(
+    value: unknown,
+    toJson: (value: unknown) => unknown,
+    operation: HttpValueOperation,
+    failure: Outcome | null,
+  ): Pick<RuntimeHttpResponse, "body" | "bytes"> {
     const startedAt = this.telemetry.enabled ? performance.now() : 0;
     let bytes: number | undefined;
     try {
-      const body = encode(frame);
+      const body = standardJsonText(toJson(value));
       bytes = utf8.encode(body).byteLength;
       let encoded = { body, bytes };
       if (bytes > this.limits.maxFrameBytes) {
-        if (frame.t !== "err") {
-          throw new AckerDBError("overloaded", "procedure result exceeds maxFrameBytes", {
+        if (failure === null) {
+          throw new AckerDBError("overloaded", `${operation} result exceeds maxFrameBytes`, {
             resource: "operation",
           });
         }
-        encoded = this.fitProcedureErrorFrame(frame);
+        encoded = this.fitHttpOutcome(failure, operation);
         bytes = encoded.bytes;
       }
       if (this.telemetry.enabled) {
@@ -1824,13 +2007,13 @@ export class Runtime implements RuntimePort {
           resource: "operation",
           durationMs: Math.max(0, performance.now() - startedAt),
           sizeBytes: bytes,
-        }, "procedure");
+        }, operation);
       }
       return encoded;
     } catch (cause) {
       const error = isAckerDBError(cause)
         ? cause
-        : new AckerDBError("validation", "procedure result is not wire-representable", { cause });
+        : new AckerDBError("validation", `${operation} result is not wire-representable`, { cause });
       if (this.telemetry.enabled) {
         this.traceSpan({
           stage: "encoding",
@@ -1838,39 +2021,38 @@ export class Runtime implements RuntimePort {
           resource: "operation",
           durationMs: Math.max(0, performance.now() - startedAt),
           ...(bytes === undefined ? {} : { sizeBytes: bytes }),
-        }, "procedure");
+        }, operation);
       }
       throw error;
     }
   }
 
-  private fitProcedureErrorFrame(
-    frame: ErrorMessage,
-  ): Pick<RuntimeProcedureResponse, "body" | "bytes"> {
-    const fitted = fitOutcome(frame.outcome, this.limits.maxFrameBytes, (outcome) => {
-      const value = encode({
-        ...frame,
-        outcome,
-      } satisfies ErrorMessage);
+  private fitHttpOutcome(
+    failure: Outcome,
+    operation: HttpValueOperation,
+  ): Pick<RuntimeHttpResponse, "body" | "bytes"> {
+    const fitted = fitOutcome(failure, this.limits.maxFrameBytes, (outcome) => {
+      const value = standardJsonText(outcome);
       return { value, bytes: utf8.encode(value).byteLength };
     });
     if (fitted === null) {
-      throw new AckerDBError("overloaded", "procedure error response exceeds maxFrameBytes", {
+      throw new AckerDBError("overloaded", `${operation} error response exceeds maxFrameBytes`, {
         resource: "operation",
       });
     }
     return { body: fitted.value, bytes: fitted.bytes };
   }
 
-  private handoffProcedureResponse(
-    request: RuntimeProcedureRequest,
-    response: RuntimeProcedureResponse,
+  private handoffHttpResponse(
+    request: RuntimeHttpRequest,
+    operation: HttpValueOperation,
+    response: RuntimeHttpResponse,
   ): Response {
     const startedAt = this.telemetry.enabled ? performance.now() : 0;
     try {
       const delivered = request.respond(response);
       if (!(delivered instanceof Response)) {
-        throw new TypeError("procedure responder must return a Response");
+        throw new TypeError("HTTP responder must return a Response");
       }
       if (this.telemetry.enabled) {
         this.traceSpan({
@@ -1879,7 +2061,7 @@ export class Runtime implements RuntimePort {
           resource: "operation",
           durationMs: Math.max(0, performance.now() - startedAt),
           sizeBytes: response.bytes,
-        }, "procedure");
+        }, operation);
       }
       return delivered;
     } catch (cause) {
@@ -1891,15 +2073,16 @@ export class Runtime implements RuntimePort {
           resource: "operation",
           durationMs: Math.max(0, performance.now() - startedAt),
           sizeBytes: response.bytes,
-        }, "procedure");
+        }, operation);
       }
-      this.recordProcedureResponseFailure(error, "delivery");
+      this.recordHttpResponseFailure(error, operation, "delivery");
       throw error;
     }
   }
 
-  private recordProcedureResponseFailure(
+  private recordHttpResponseFailure(
     error: unknown,
+    operation: HttpValueOperation,
     stage: "encoding" | "delivery",
   ): void {
     if (!this.telemetry.enabled) return;
@@ -1911,7 +2094,7 @@ export class Runtime implements RuntimePort {
     this.traceEvent({
       name: "failure",
       level: "error",
-      operation: "procedure",
+      operation,
       stage,
       outcome: outcomeFromError(error).code,
       ...(functionName === undefined ? {} : { functionName }),
@@ -1921,27 +2104,7 @@ export class Runtime implements RuntimePort {
   }
 
   async runSse(request: RuntimeSseRequest): Promise<RuntimeSseResponse> {
-    if (request.principal.kind === "mcp") {
-      throw new AckerDBError("unauthorized", "MCP credentials cannot call AckerDB SSE procedures");
-    }
-    const provenance = claimHttpRequestProvenance(request);
-    const requestBytes = this.admittedRequestBytes({
-      v: PROTOCOL_VERSION,
-      t: "call",
-      id: request.id,
-      ref: request.address,
-      args: request.args,
-    }, provenance?.bytes);
-    const claimedTrace = claimHttpTrace(
-      provenance?.trace,
-      "sse",
-      request.address,
-      String(request.id),
-    );
-    const fairnessKey = request.fairnessKey ?? callerFairnessKey(
-      request.principal,
-      DIRECT_RUNTIME_SOURCE,
-    );
+    const { requestBytes, codec, claimedTrace, fairnessKey } = this.claimHttpRequest(request, "sse");
     const scope = this.telemetry.enabled
       ? this.operationTrace(
           null,
@@ -2051,7 +2214,7 @@ export class Runtime implements RuntimePort {
         );
         const completion = handler
           .then(async (result: SseSource<unknown>) => {
-            const source = validatedSseSource(fn, result, handlerContext);
+            const source = validatedSseSource(codec, result, handlerContext);
             try {
               await producer!.merge(source);
             } catch (error) {
@@ -2449,6 +2612,19 @@ export class Runtime implements RuntimePort {
       },
     );
     return this.drainPromise;
+  }
+
+  /**
+   * The exposed function's compiled standard-JSON boundary. Every HTTP entry
+   * point serves the exposed surface, so a function without one has no HTTP
+   * form at all — the same answer the listener gives an unexposed path.
+   */
+  private httpCodec(address: string): ExposedHttpCodec {
+    const exposed = this.registry.exposedFunction(address);
+    if (exposed === undefined) {
+      throw new AckerDBError("not_found", `"${address}" is not exposed over HTTP`);
+    }
+    return exposed.codec;
   }
 
   private expect(address: string, kind: "query" | "mutation" | "procedure" | "sse"): AnyRegistered {
@@ -3278,6 +3454,68 @@ export class Runtime implements RuntimePort {
     return Object.freeze({ db, auth: principal, timestamp, ...plugins }) as MutationCtx;
   }
 
+  /**
+   * One registered mutation's invocation inside the writer's transaction. The
+   * WebSocket session and the HTTP path hand the same closure to the
+   * coordinator, so neither transport owns a second execution model.
+   */
+  private mutationWork(
+    fn: AnyRegistered,
+    principal: Principal,
+    args: unknown,
+  ): (db: MutationCtx["db"], writes: WriteCollector) => unknown {
+    return (db, writes) => {
+      const invocation = this.hostMutationContext(db, principal, this.readNow(), writes);
+      const scope = createMutationInvocationScope(this.engine.writer, writes);
+      return scope.runRoot((mutationAccess) =>
+        this.hasMcpCapabilities
+          ? withMcpTokenCapability(
+              invocation,
+              this.mcpTokenCapability(principal, this.engine.writer, null, writes),
+              (ctx) => invokeFunction(fn, ctx, args, { mutationAccess }),
+            )
+          : invokeFunction(fn, invocation, args, { mutationAccess }));
+    };
+  }
+
+  /**
+   * The one commit every write goes through. Two invariants belong to the
+   * commit itself rather than to whoever asked for it: a handled application
+   * failure closes its transaction with a rollback instead of a commit, and a
+   * commit that touched the scheduled table arms the scheduler. Stating them
+   * here once is what keeps the session mutation, the HTTP mutation, and a
+   * framework transaction from drifting apart.
+   */
+  private async commitWrite<T>(
+    request: RuntimeCommitRequest<T>,
+  ): Promise<CommitResult<T, ReactiveCommit>> {
+    let scheduledTouched = false;
+    const result = await this.coordinator.execute({
+      operation: request.operation,
+      fairnessKey: request.fairnessKey,
+      requestBytes: request.requestBytes,
+      admissionSignal: request.admissionSignal,
+      transactionSignal: request.transactionSignal,
+      idempotency: request.idempotency,
+      validate: request.validate,
+      ...(this.telemetry.enabled
+        ? {
+            telemetry: this.observeCommit,
+            statementTelemetry: this.observeStatement,
+            run: AsyncLocalStorage.snapshot(),
+          }
+        : {}),
+      work: request.work,
+      rollbackWhen: (value) => isResult(value) && !value.ok,
+      publication: (_version, writes) => {
+        scheduledTouched = writes.scheduledTouched;
+        return this.publicationFor(writes, request.subscriber);
+      },
+    });
+    if (scheduledTouched) this.armScheduler();
+    return result;
+  }
+
   private async executeWrite<T>(
     operation: "mutation" | "transaction",
     fairnessKey: string,
@@ -3286,28 +3524,14 @@ export class Runtime implements RuntimePort {
     work: (db: MutationCtx["db"], writes: WriteCollector) => T | Promise<T>,
   ): Promise<T> {
     throwIfAborted(signal);
-    let scheduledTouched = false;
-    const result = await this.coordinator.execute({
+    const result = await this.commitWrite({
       operation,
       fairnessKey,
       requestBytes,
-      ...(this.telemetry.enabled
-        ? {
-            telemetry: this.observeCommit,
-            statementTelemetry: this.observeStatement,
-            run: AsyncLocalStorage.snapshot(),
-          }
-        : {}),
       admissionSignal: signal,
       transactionSignal: signal,
       work,
-      rollbackWhen: (value) => isResult(value) && !value.ok,
-      publication: (_version, writes) => {
-        scheduledTouched = writes.scheduledTouched;
-        return this.publicationFor(writes);
-      },
     });
-    if (scheduledTouched) this.armScheduler();
     return result.value;
   }
 

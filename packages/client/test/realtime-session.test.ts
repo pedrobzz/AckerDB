@@ -301,7 +301,7 @@ function fixture(reconnect?: {
     },
     fetch: async (url, init) => {
       const path = new URL(url).pathname;
-      if (path === "/api/realtime/prepare" && init?.method === "POST") {
+      if (path === "/api/_realtime/prepare" && init?.method === "POST") {
         preparations++;
         const request = parseRealtimePrepareRequest(
           decode(String(init.body)),
@@ -330,7 +330,7 @@ function fixture(reconnect?: {
           configuration: { iceServers: [] },
         }));
       }
-      if (path === "/api/realtime" && init?.method === "POST") {
+      if (path === "/api/_realtime" && init?.method === "POST") {
         const request = parseRealtimeOfferRequest(
           decode(String(init.body)),
         );
@@ -352,7 +352,7 @@ function fixture(reconnect?: {
         }));
       }
       if (
-        path === "/api/realtime/abcdefghijklmnopqrstuvwxyzABCDEF" &&
+        path === "/api/_realtime/abcdefghijklmnopqrstuvwxyzABCDEF" &&
         init?.method === "PATCH"
       ) {
         patches++;
@@ -368,7 +368,7 @@ function fixture(reconnect?: {
         }));
       }
       if (
-        path === "/api/realtime/abcdefghijklmnopqrstuvwxyzABCDEF" &&
+        path === "/api/_realtime/abcdefghijklmnopqrstuvwxyzABCDEF" &&
         init?.method === "DELETE"
       ) {
         closes++;
@@ -907,7 +907,7 @@ describe("AckerDB realtime client sessions", () => {
         );
       },
       fetch: async (url, init) => {
-        expect(new URL(url).pathname).toBe("/api/realtime/prepare");
+        expect(new URL(url).pathname).toBe("/api/_realtime/prepare");
         expect(init?.method).toBe("POST");
         return new Response(encode({
           v: PROTOCOL_VERSION,
@@ -946,7 +946,7 @@ describe("AckerDB realtime client sessions", () => {
       createPeerConnection: () => ({}),
       fetch: async (url, init) => {
         requests++;
-        expect(new URL(url).pathname).toBe("/api/realtime/prepare");
+        expect(new URL(url).pathname).toBe("/api/_realtime/prepare");
         expect(init?.method).toBe("POST");
         return new Response(encode({
           v: PROTOCOL_VERSION,

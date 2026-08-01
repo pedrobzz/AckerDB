@@ -147,7 +147,7 @@ afterEach(async () => {
 });
 
 async function prepare(recovery = false) {
-  const response = await fetch(`${base}/api/realtime/prepare`, {
+  const response = await fetch(`${base}/api/_realtime/prepare`, {
     method: "POST",
     body: encode({
       v: PROTOCOL_VERSION,
@@ -165,7 +165,7 @@ async function prepare(recovery = false) {
 }
 
 async function offer(ticket: string) {
-  const response = await fetch(`${base}/api/realtime`, {
+  const response = await fetch(`${base}/api/_realtime`, {
     method: "POST",
     body: encode({
       v: PROTOCOL_VERSION,
@@ -189,7 +189,7 @@ async function establish(recovery = false) {
 describe("realtime HTTP signaling", () => {
   test("cancels timed-out authorization and releases runtime admission", async () => {
     authorizationGate = new Promise(() => {});
-    const response = await fetch(`${base}/api/realtime/prepare`, {
+    const response = await fetch(`${base}/api/_realtime/prepare`, {
       method: "POST",
       body: encode({
         v: PROTOCOL_VERSION,
@@ -253,7 +253,7 @@ describe("realtime HTTP signaling", () => {
       metric.value === 1
     );
 
-    const closed = await fetch(`${base}/api/realtime/${answer.sessionId}`, {
+    const closed = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
       method: "DELETE",
     });
     expect(closed.status).toBe(204);
@@ -277,10 +277,10 @@ describe("realtime HTTP signaling", () => {
   });
 
   test("prepares, creates, trickles, and closes one authenticated generation", async () => {
-    const legacy = await fetch(`${base}/api/realtime/config`);
+    const legacy = await fetch(`${base}/api/_realtime/config`);
     expect(legacy.status).toBe(404);
 
-    const preparedResponse = await fetch(`${base}/api/realtime/prepare`, {
+    const preparedResponse = await fetch(`${base}/api/_realtime/prepare`, {
       method: "POST",
       body: encode({
         v: PROTOCOL_VERSION,
@@ -315,7 +315,7 @@ describe("realtime HTTP signaling", () => {
     expect(handlerRuns).toBe(1);
     expect(runtime.status().realtime?.activeSessions).toBe(1);
 
-    const patched = await fetch(`${base}/api/realtime/${answer.sessionId}`, {
+    const patched = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
       method: "PATCH",
       body: encode({
         v: PROTOCOL_VERSION,
@@ -329,7 +329,7 @@ describe("realtime HTTP signaling", () => {
       t: "realtime_candidates",
     });
 
-    const closed = await fetch(`${base}/api/realtime/${answer.sessionId}`, {
+    const closed = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
       method: "DELETE",
     });
     expect(closed.status).toBe(204);
@@ -340,7 +340,7 @@ describe("realtime HTTP signaling", () => {
   test("returns a typed terminal outcome before a forbidden HTTP trickle reaches native", async () => {
     const answer = await establish();
 
-    const patched = await fetch(`${base}/api/realtime/${answer.sessionId}`, {
+    const patched = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
       method: "PATCH",
       body: encode({
         v: PROTOCOL_VERSION,
@@ -365,7 +365,7 @@ describe("realtime HTTP signaling", () => {
   });
 
   test("reserves malformed session paths without exposing an application route", async () => {
-    const response = await fetch(`${base}/api/realtime/not-a-session`, {
+    const response = await fetch(`${base}/api/_realtime/not-a-session`, {
       method: "PATCH",
       body: encode({
         v: PROTOCOL_VERSION,
@@ -410,7 +410,7 @@ describe("realtime HTTP signaling", () => {
     ).toEqual([{ value: "from realtime" }]);
 
     client.close();
-    const closed = await fetch(`${base}/api/realtime/${answer.sessionId}`, {
+    const closed = await fetch(`${base}/api/_realtime/${answer.sessionId}`, {
       method: "DELETE",
     });
     expect(closed.status).toBe(204);

@@ -1914,9 +1914,10 @@ describe("delivery observers", () => {
       clock,
       observer: (observation) => sseObservations.push(observation),
     });
-    expect(() => producer.write({ unsafe: Number.NaN })).toThrow(
-      "cannot encode non-finite number",
-    );
+    // An SSE chunk is standard JSON — the exposed function's codec converted
+    // it — so a value JSON cannot carry fails here exactly as a non-finite
+    // number fails the Protocol-2 encoder above.
+    expect(() => producer.write({ unsafe: 1n })).toThrow(/BigInt/);
     await flushObservations();
     expect(sseObservations).toEqual([
       {

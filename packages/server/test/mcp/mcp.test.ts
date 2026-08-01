@@ -14,7 +14,7 @@ import {
   type MutationBuilder,
   type QueryBuilder,
 } from "../../src/app/functions.ts";
-import { ACKERDB_HTTP_ROUTES } from "../../src/transport/http-routes.ts";
+import { ACKERDB_HTTP_ROUTES } from "../../src/transport/http-surface.ts";
 import {
   createMcp,
   finalizeMcpToolResult,
@@ -1134,8 +1134,8 @@ describe("MCP startup invariants", () => {
     const unsupported = { ...v.string(), kind: "custom" } as never;
     const contradictoryArray = { ...v.string(), kind: "array" } as never;
     const cases = [
-      [v.array(v.primaryKey()), "v.primaryKey() is not an MCP value"],
-      [v.array(v.scheduleAt()), "v.scheduleAt() is not an MCP value"],
+      [v.array(v.primaryKey()), "v.primaryKey() is not a standard-JSON value"],
+      [v.array(v.scheduleAt()), "v.scheduleAt() is not a standard-JSON value"],
       [v.array(v.tag()), "v.tag() is valid only as a direct v.union() member"],
       [unsupported, "v.custom() has no lossless standard-JSON protocol representation"],
       [contradictoryArray, "v.array() has no element validator"],
@@ -1165,7 +1165,7 @@ describe("MCP startup invariants", () => {
           handler: () => ({ value: [] }),
         }),
       },
-    })).toThrow("$.value[]: v.scheduleAt() is not an MCP value");
+    })).toThrow("$.value[]: v.scheduleAt() is not a standard-JSON value");
   });
 
   test("snapshots and reuses inert blueprints without giving them registration identity", () => {
@@ -1245,9 +1245,15 @@ describe("MCP startup invariants", () => {
 
   test("rejects every path owned by the AckerDB listener", () => {
     for (const path of Object.values(ACKERDB_HTTP_ROUTES)) {
-      const collision = createMcp({ name: "collision", path, tools: {} });
-      expect(() => new Registry({ endpoint: { collision } })).toThrow(
-        `MCP "collision" path "${path}" collides with a AckerDB route`,
+      const declare = () => new Registry({
+        endpoint: { collision: createMcp({ name: "collision", path, tools: {} }) },
+      });
+      // A dotted route — the document endpoint's file extension — is not even a
+      // spellable MCP path, so it is refused before a registry compares it.
+      expect(declare).toThrow(
+        path.includes(".")
+          ? "MCP path must be an absolute static path"
+          : `MCP "collision" path "${path}" collides with a AckerDB route`,
       );
     }
   });

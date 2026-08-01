@@ -7,10 +7,10 @@ import {
   decode,
   encode,
   isRealtimeSessionId,
-  parseCallRequest,
   parseSseAckRequest,
   stableEncode,
   type ErrorMessage,
+  type Outcome,
   type SseAckRequest,
 } from "@ackerdb/core";
 import {
@@ -39,7 +39,18 @@ import {
   recordHttpTraceFailure,
 } from "../telemetry/external-trace.ts";
 import { defineServiceLimits, type ServiceLimits } from "../runtime/limits.ts";
-import { ACKERDB_HTTP_ROUTES } from "./http-routes.ts";
+import {
+  ACKERDB_HTTP_ROUTES,
+  EXPOSED_HTTP_METHODS,
+  IDEMPOTENCY_KEY_HEADER,
+  RECEIPT_HEADERS,
+  SSE_STREAM_HEADERS,
+  isAckerDBHttpRoute,
+} from "./http-surface.ts";
+import type { ExposedHttpCodec } from "./http-codec.ts";
+import { openApiBytes, openApiDocument, type OpenApiInfo } from "./openapi.ts";
+import type { ExposedFunction } from "../app/registry.ts";
+import { standardJsonText } from "../validation/standard-json.ts";
 import type { McpEndpointDeclaration } from "../mcp/index.ts";
 import { mcpCredentialFromAuthorization } from "../mcp/credential.ts";
 import {
@@ -57,8 +68,10 @@ import { outcomeFromError, outcomeHttpStatus } from "../runtime/outcome.ts";
 import { carryHttpRequestProvenance } from "../runtime/request-provenance.ts";
 import {
   CAPTURE_DELIVERY_OBSERVER,
+  type HttpMutationReceipt,
   type McpCredentialLease,
   type Runtime,
+  type RuntimeHttpResponder,
   type RuntimeStatus,
 } from "../runtime/runtime.ts";
 import { Session, withSessionAuthObserver } from "../subscriptions/session.ts";
@@ -83,6 +96,14 @@ export interface AckerDBServerOptions {
   readonly mcpHttp?: McpHttpOptions;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
+  /**
+   * Serve the OpenAPI document at `GET /api/_openapi.json`, published under this
+   * identity — the application's own name and version, which a listener that
+   * never sees an app directory cannot derive. Absent (the default) leaves the
+   * path a 404 like any other unclaimed route: the CLI export is the default way
+   * to consume the schema, and this endpoint is opt-in.
+   */
+  readonly openapiEndpoint?: OpenApiInfo;
 }
 
 export interface ServeOptions {
@@ -94,6 +115,8 @@ export interface ServeOptions {
   readonly mcpHttp?: McpHttpOptions;
   /** Exact workload scope required by GET /status. */
   readonly statusScope?: string;
+  /** Identity of the document served at GET /api/_openapi.json; absent, that path is a 404. */
+  readonly openapiEndpoint?: OpenApiInfo;
 }
 
 export type { McpHttpOptions } from "../mcp/http-boundary.ts";
@@ -124,18 +147,32 @@ interface WsData {
 const DEFAULT_STATUS_SCOPE = "ackerdb:status";
 const STATUS_SCOPE_TOKEN = /^[\x21\x23-\x5b\x5d-\x7e]{1,128}$/;
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+const utf8 = new TextEncoder();
 
 const CORS = Object.freeze({
   "access-control-allow-origin": "*",
+  // PATCH and DELETE are the realtime session routes; the exposed function
+  // surface serves only GET and POST.
   "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
-  "access-control-allow-headers": "content-type, authorization, mcp-protocol-version",
-  "access-control-expose-headers": "x-ackerdb-sse-stream, x-ackerdb-sse-max-stall-ms",
+  "access-control-allow-headers": "content-type, authorization, idempotency-key, mcp-protocol-version",
+  "access-control-expose-headers": [
+    ...Object.values(SSE_STREAM_HEADERS),
+    ...Object.values(RECEIPT_HEADERS),
+  ].join(", "),
 });
+
+/**
+ * One URL answers different bearer credentials with different rows, and the GET
+ * query form is the cacheable one an operator is invited to put a CDN rule in
+ * front of. Without this, such a rule serves one caller's rows to another.
+ */
+const VARY_AUTHORIZATION = "authorization";
 
 const SSE_HEADERS = Object.freeze({
   ...CORS,
   "content-type": "text/event-stream; charset=utf-8",
   "cache-control": "no-cache, no-transform",
+  vary: VARY_AUTHORIZATION,
   "x-accel-buffering": "no",
 });
 
@@ -157,11 +194,80 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-function protocolError(error: unknown, id: number | null = null): Response {
+/**
+ * Protocol-2 routes answer with a frame. Every remaining one is connection
+ * level — health, status, the WebSocket upgrade, SSE receiver credit — so the
+ * frame never names an operation.
+ */
+function protocolError(error: unknown): Response {
   const outcome = outcomeFromError(error);
-  const frame: ErrorMessage = { v: PROTOCOL_VERSION, t: "err", id, outcome };
+  const frame: ErrorMessage = { v: PROTOCOL_VERSION, t: "err", id: null, outcome };
   return json(frame, outcomeHttpStatus(outcome));
 }
+
+function outcomeResponse(
+  outcome: Outcome,
+  status: number,
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(standardJsonText(outcome), {
+    status,
+    headers: { ...CORS, "content-type": "application/json; charset=utf-8", ...headers },
+  });
+}
+
+/**
+ * The exposed surface answers failures with the plain outcome, never a frame —
+ * and in the standard JSON its document publishes, never the wire encoder the
+ * connection-level routes above use.
+ */
+function outcomeError(error: unknown): Response {
+  const outcome = outcomeFromError(error);
+  return outcomeResponse(outcome, outcomeHttpStatus(outcome));
+}
+
+/**
+ * A wrong method answers the same outcome shape, at the status and with the
+ * `Allow` header HTTP mandates. No outcome code names a wrong method — the
+ * status carries that — so this one is built rather than mapped.
+ */
+function methodNotAllowed(allow: string): Response {
+  return outcomeResponse(
+    { code: "malformed", retryable: false, message: `method not allowed; allow: ${allow}` },
+    405,
+    { allow },
+  );
+}
+
+/**
+ * The mutation receipt rides response headers so the body stays the plain
+ * return value. It is state at response time: a pending obligation's later
+ * durability transition belongs to the WebSocket protocol, not to this caller.
+ * An empty obligation list is an empty header value, which HTTP serialization
+ * drops — the absent header is the empty list.
+ */
+function receiptHeaders(receipt: HttpMutationReceipt): Record<string, string> {
+  return {
+    [RECEIPT_HEADERS.commitVersion]: String(receipt.commitVersion),
+    [RECEIPT_HEADERS.durability]: receipt.durability,
+    [RECEIPT_HEADERS.replay]: String(receipt.replay === "replayed"),
+    [RECEIPT_HEADERS.obligations]: receipt.obligations.join(","),
+  };
+}
+
+/**
+ * Every path-addressed call hands its encoded value to the same response shape.
+ * No `Cache-Control` is emitted: caching policy belongs to the operator.
+ */
+const valueResponder: RuntimeHttpResponder = ({ body, status, receipt }) => new Response(body, {
+  status,
+  headers: {
+    ...CORS,
+    "content-type": "application/json; charset=utf-8",
+    vary: VARY_AUTHORIZATION,
+    ...(receipt === undefined ? {} : receiptHeaders(receipt)),
+  },
+});
 
 function unavailableWhile(state: AckerDBServerState): AckerDBError {
   if (state === "draining") {
@@ -417,6 +523,14 @@ async function readBoundedBody(
   }
 }
 
+function decodeHttpBody(text: string): unknown {
+  try {
+    return decode(text);
+  } catch (cause) {
+    throw new AckerDBError("malformed", "malformed request body", { cause });
+  }
+}
+
 async function parseHttpBody<T>(
   request: Request,
   maxBytes: number,
@@ -424,13 +538,51 @@ async function parseHttpBody<T>(
   parse: (value: unknown) => T,
 ): Promise<ParsedHttpBody<T>> {
   const body = await readBoundedBody(request, maxBytes, maxAgeMs);
-  let decoded: unknown;
+  return { value: parse(decodeHttpBody(body.text)), bytes: body.bytes };
+}
+
+/**
+ * An exposed function's args: plain JSON, decoded through the function's own
+ * standard-JSON codec so a caller obeying the published document is understood.
+ * Absent or empty args mean `{}`.
+ */
+function decodeArgs(text: string | null, codec: ExposedHttpCodec): unknown {
+  if (text === null || text === "") return codec.decodeArgs({});
+  let json: unknown;
   try {
-    decoded = decode(body.text);
+    json = JSON.parse(text);
   } catch (cause) {
-    throw new AckerDBError("malformed", "malformed request body", { cause });
+    throw new AckerDBError("malformed", "args are not valid JSON", { cause });
   }
-  return { value: parse(decoded), bytes: body.bytes };
+  return codec.decodeArgs(json);
+}
+
+async function parseArgsHttpBody(
+  request: Request,
+  codec: ExposedHttpCodec,
+  maxBytes: number,
+  maxAgeMs: number,
+): Promise<ParsedHttpBody<unknown>> {
+  if (request.body === null) return { value: decodeArgs(null, codec), bytes: 0 };
+  const body = await readBoundedBody(request, maxBytes, maxAgeMs);
+  return { value: decodeArgs(body.text, codec), bytes: body.bytes };
+}
+
+/**
+ * A GET query carries its entire args object in one url-encoded `args`
+ * parameter. Per-field parameters (`?limit=10`) are deliberately unsupported:
+ * coercing strings into the declared shape would be a second validation system.
+ */
+function parseArgsSearchParameter(
+  url: URL,
+  codec: ExposedHttpCodec,
+  maxBytes: number,
+): ParsedHttpBody<unknown> {
+  const raw = url.searchParams.get("args");
+  if (raw === null) return { value: decodeArgs(null, codec), bytes: 0 };
+  const bytes = utf8.encode(raw).byteLength;
+  if (bytes > maxBytes) throw requestTooLarge();
+  return { value: decodeArgs(raw, codec), bytes };
 }
 
 async function parseJsonHttpBody(
@@ -489,6 +641,9 @@ export class AckerDBServer {
   private readonly outbound: OutboundBudget;
   private readonly httpAdmission: HttpAdmission;
   private readonly mcpHttp: McpHttpBoundary;
+  private readonly openapiInfo: OpenApiInfo | undefined;
+  /** The OpenAPI document assembled at activation, or null while it is not served. */
+  private openapi: Uint8Array<ArrayBuffer> | null = null;
   private readonly realtimeHttp: RealtimeHttpTransport;
   private readonly trustedProxy: ReturnType<typeof proxyaddr.compile> | null;
   private listener: Server<WsData> | null = null;
@@ -496,6 +651,8 @@ export class AckerDBServer {
   private lifecycle: AckerDBServerState = "starting";
   private startup: AckerDBStartupPhase | null = "listening";
   private connectionRejections = 0;
+  /** Server-owned request ids for path-addressed calls; telemetry correlation only. */
+  private httpRequests = 0;
   private sseAckIngress = 0;
   private sseAckNoops = 0;
   private transportSampleTimer: ReturnType<typeof setInterval> | null = null;
@@ -513,6 +670,7 @@ export class AckerDBServer {
           : [...options.trustedProxy],
       );
     this.mcpHttp = new McpHttpBoundary(this.hostname, options.mcpHttp);
+    this.openapiInfo = options.openapiEndpoint;
     this.outbound = new OutboundBudget(
       this.limits.webSocket.maxBytes,
       this.limits.maxFrameBytes,
@@ -621,6 +779,12 @@ export class AckerDBServer {
     }
     try {
       this.mcpHttp.assertCanServe(runtime.registry.mcps.size > 0);
+      // The registry is immutable after load, so the document is too: assemble
+      // it once here and serve those bytes. A document that cannot be built
+      // fails the activation rather than the first caller that asks for it.
+      if (this.openapiInfo !== undefined) {
+        this.openapi = openApiBytes(openApiDocument(runtime.registry, this.openapiInfo));
+      }
     } catch (error) {
       this.startup = null;
       this.lifecycle = "stopped";
@@ -690,17 +854,17 @@ export class AckerDBServer {
     }
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (url.pathname === ACKERDB_HTTP_ROUTES.sseAck) {
-      if (request.method !== "POST") {
-        return new Response("method not allowed", {
-          status: 405,
-          headers: { ...CORS, allow: "POST" },
-        });
-      }
+      if (request.method !== "POST") return methodNotAllowed("POST");
       const source = this.requestSource(request, listener);
       return this.acknowledgeSse(request, callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
     }
     if (this.lifecycle !== "ready" || this.activeRuntime?.state !== "ready") {
-      return protocolError(unavailableWhile(this.lifecycle));
+      // The application owns every `/api/` path AckerDB has not reserved, and it
+      // answers plain JSON even before the registry that would resolve it exists.
+      const unavailable = unavailableWhile(this.lifecycle);
+      return url.pathname.startsWith("/api/") && !isAckerDBHttpRoute(url.pathname)
+        ? outcomeError(unavailable)
+        : protocolError(unavailable);
     }
     if (url.pathname === ACKERDB_HTTP_ROUTES.status && request.method === "GET") {
       let admission: HttpAdmissionLease | undefined;
@@ -719,14 +883,25 @@ export class AckerDBServer {
         admission?.release();
       }
     }
+    // A schema request is a copy of bytes the activation already assembled: it
+    // takes no admission slot, no credential, and no runtime work. Unclaimed —
+    // the default — the path falls through to the same 404 as any other.
+    if (url.pathname === ACKERDB_HTTP_ROUTES.openapi && this.openapi !== null) {
+      if (request.method !== "GET") return methodNotAllowed("GET");
+      return new Response(this.openapi, {
+        headers: { ...CORS, "content-type": "application/json; charset=utf-8" },
+      });
+    }
     if (url.pathname === ACKERDB_HTTP_ROUTES.websocket) {
       return this.upgradeWebSocket(request, listener);
     }
-    if (url.pathname === ACKERDB_HTTP_ROUTES.call && request.method === "POST") {
-      return this.call(request, false, this.requestSource(request, listener));
-    }
-    if (url.pathname === ACKERDB_HTTP_ROUTES.sse && request.method === "POST") {
-      return this.call(request, true, this.requestSource(request, listener));
+    // An unexposed function falls through to the same 404 as a nonexistent
+    // path: exposure is never discoverable by probing.
+    const exposed = this.requireRuntime().registry.exposed.get(url.pathname);
+    if (exposed !== undefined) {
+      const methods = EXPOSED_HTTP_METHODS[exposed.kind];
+      if (!methods.includes(request.method)) return methodNotAllowed(methods.join(", "));
+      return this.call(request, url, exposed, this.requestSource(request, listener));
     }
     if (
       url.pathname === ACKERDB_HTTP_ROUTES.realtimePrepare &&
@@ -760,28 +935,24 @@ export class AckerDBServer {
     if (
       url.pathname === ACKERDB_HTTP_ROUTES.live ||
       url.pathname === ACKERDB_HTTP_ROUTES.ready ||
-      url.pathname === ACKERDB_HTTP_ROUTES.status ||
-      url.pathname === ACKERDB_HTTP_ROUTES.call ||
-      url.pathname === ACKERDB_HTTP_ROUTES.sse ||
-      url.pathname === ACKERDB_HTTP_ROUTES.realtime ||
-      url.pathname === ACKERDB_HTTP_ROUTES.realtimePrepare ||
-      url.pathname.startsWith(`${ACKERDB_HTTP_ROUTES.realtime}/`)
+      url.pathname === ACKERDB_HTTP_ROUTES.status
     ) {
-      const allow = url.pathname === ACKERDB_HTTP_ROUTES.realtimePrepare
-        ? "POST"
-        : realtimeId === null
-        ? "POST"
-        : "PATCH, DELETE";
-      return new Response("method not allowed", {
-        status: realtimeId === null &&
-            url.pathname.startsWith(`${ACKERDB_HTTP_ROUTES.realtime}/`) &&
-            url.pathname !== ACKERDB_HTTP_ROUTES.realtimePrepare
-          ? 404
-          : 405,
-        headers: { ...CORS, allow },
-      });
+      return methodNotAllowed("GET");
     }
-    return new Response("not found", { status: 404, headers: CORS });
+    if (
+      url.pathname === ACKERDB_HTTP_ROUTES.realtime ||
+      url.pathname === ACKERDB_HTTP_ROUTES.realtimePrepare
+    ) {
+      return methodNotAllowed("POST");
+    }
+    if (realtimeId !== null) {
+      return methodNotAllowed("PATCH, DELETE");
+    }
+    // An unclaimed path answers the one shape every other failure here answers:
+    // a caller decoding this surface meets `not_found`, never a plain-text body
+    // its decoder reports as malformed — the mistake this surface makes most
+    // likely is calling a function that was never given `http`.
+    return outcomeError(new AckerDBError("not_found", "no route at this path"));
   }
 
   private async authenticate(
@@ -811,37 +982,47 @@ export class AckerDBServer {
     return transportSource({ family: family === 6 ? "IPv6" : "IPv4", address });
   }
 
-  private async call(request: Request, sse: boolean, source: TransportSource): Promise<Response> {
+  private async call(
+    request: Request,
+    url: URL,
+    exposed: ExposedFunction,
+    source: TransportSource,
+  ): Promise<Response> {
     const runtime = this.requireRuntime();
-    const externalTrace = beginHttpTrace(runtime.telemetry, sse ? "sse" : "procedure");
-    let id: number | null = null;
+    const externalTrace = beginHttpTrace(runtime.telemetry, exposed.kind);
     let admission: HttpAdmissionLease | undefined;
     let lease: AuthLease | undefined;
     try {
       if (this.lifecycle !== "ready") throw unavailableWhile(this.lifecycle);
       admission = this.httpAdmission.admit(callerFairnessKey(ANONYMOUS_PRINCIPAL, source));
-      const { value: call, bytes } = await parseHttpBody(
-        request,
-        runtime.limits.maxRequestBytes,
-        runtime.limits.readQueue.maxAgeMs,
-        parseCallRequest,
-      );
-      id = call.id;
-      identifyHttpTrace(externalTrace, call.ref, String(call.id));
+      // Correlation is the HTTP response itself, so the request id is the
+      // listener's own sequence rather than a client input. The path already
+      // names the function, so even a malformed body reports what it targeted.
+      const id = ++this.httpRequests;
+      const address = exposed.address;
+      identifyHttpTrace(externalTrace, address, String(id));
+      const { value: args, bytes } = request.method === "GET"
+        ? parseArgsSearchParameter(url, exposed.codec, runtime.limits.maxRequestBytes)
+        : await parseArgsHttpBody(
+            request,
+            exposed.codec,
+            runtime.limits.maxRequestBytes,
+            runtime.limits.readQueue.maxAgeMs,
+          );
       lease = externalTrace === undefined
         ? await this.authenticate(request)
         : await observeHttpAuth(externalTrace, () => this.authenticate(request));
       const fairnessKey = callerFairnessKey(lease.principal, source);
       admission.transfer(fairnessKey);
       const input = carryHttpRequestProvenance({
-        id: call.id,
-        address: call.ref,
-        args: call.args,
+        id,
+        address,
+        args,
         principal: lease.principal,
         signal: lease.signal,
         fairnessKey,
       }, bytes, externalTrace, lease.invalidationScope);
-      if (sse) {
+      if (exposed.kind === "sse") {
         const { stream, streamId } = await runtime.runSse(input);
         const streamLease = lease;
         lease = undefined;
@@ -850,8 +1031,8 @@ export class AckerDBServer {
           return new Response(body, {
             headers: {
               ...SSE_HEADERS,
-              "x-ackerdb-sse-stream": streamId,
-              "x-ackerdb-sse-max-stall-ms": String(runtime.limits.sse.maxStallMs),
+              [SSE_STREAM_HEADERS.stream]: streamId,
+              [SSE_STREAM_HEADERS.maxStallMs]: String(runtime.limits.sse.maxStallMs),
             },
           });
         } catch (error) {
@@ -859,16 +1040,21 @@ export class AckerDBServer {
           throw error;
         }
       }
-      return await runtime.runProcedure({
-        ...input,
-        respond: ({ body, status }) => new Response(body, {
-          status,
-          headers: { ...CORS, "content-type": "application/json; charset=utf-8" },
-        }),
-      });
+      const httpRequest = { ...input, respond: valueResponder };
+      if (exposed.kind === "mutation") {
+        // Replay protection is opt-in per request: without the header the
+        // mutation executes like any other REST POST.
+        const idempotencyKey = request.headers.get(IDEMPOTENCY_KEY_HEADER);
+        return await runtime.runMutation(idempotencyKey === null
+          ? httpRequest
+          : { ...httpRequest, idempotencyKey });
+      }
+      return await (exposed.kind === "query"
+        ? runtime.runQuery(httpRequest)
+        : runtime.runProcedure(httpRequest));
     } catch (error) {
       recordHttpTraceFailure(externalTrace, error);
-      return protocolError(error, id);
+      return outcomeError(error);
     } finally {
       finishHttpTrace(externalTrace);
       lease?.release();
@@ -953,9 +1139,7 @@ export class AckerDBServer {
   }
 
   private upgradeWebSocket(request: Request, listener: Server<WsData>): Response | undefined {
-    if (request.method !== "GET") {
-      return new Response("method not allowed", { status: 405, headers: { ...CORS, allow: "GET" } });
-    }
+    if (request.method !== "GET") return methodNotAllowed("GET");
     if (this.lifecycle !== "ready") return protocolError(unavailableWhile(this.lifecycle));
     if (this.connections.size >= this.limits.maxConnections) {
       this.connectionRejections = Math.min(Number.MAX_SAFE_INTEGER, this.connectionRejections + 1);
@@ -1161,6 +1345,7 @@ export function serve(options: ServeOptions): AckerDBServer {
     ...(options.trustedProxy === undefined ? {} : { trustedProxy: options.trustedProxy }),
     ...(options.mcpHttp === undefined ? {} : { mcpHttp: options.mcpHttp }),
     ...(options.statusScope === undefined ? {} : { statusScope: options.statusScope }),
+    ...(options.openapiEndpoint === undefined ? {} : { openapiEndpoint: options.openapiEndpoint }),
   });
   server.activate(options.runtime);
   return server;

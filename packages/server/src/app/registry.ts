@@ -6,6 +6,7 @@
 import { getRef } from "@ackerdb/core";
 import type { Principal } from "../auth/credentials.ts";
 import {
+  httpExposure,
   isRegisteredFunction,
   type AnyRegistered,
 } from "./functions.ts";
@@ -27,7 +28,16 @@ import {
   type McpEndpointDeclaration,
 } from "../mcp/index.ts";
 import { isMcpToolAuthorized } from "../mcp/scopes.ts";
-import { isAckerDBHttpRoute } from "../transport/http-routes.ts";
+import {
+  ACKERDB_RESERVED_API_PREFIX,
+  exposedHttpKind,
+  isAckerDBHttpRoute,
+  type ExposedHttpKind,
+} from "../transport/http-surface.ts";
+import {
+  compileExposedHttpCodec,
+  type ExposedHttpCodec,
+} from "../transport/http-codec.ts";
 import type { Schema, ScheduledHandler } from "../schema/definition.ts";
 
 type ServerOnlyExport = AnyMcpDeclaration | AnyMcpToolBlueprint;
@@ -37,8 +47,29 @@ interface ModuleExport {
   readonly value: unknown;
 }
 
+/** One HTTP-exposed function: the path it owns and whether OpenAPI documents it. */
+export interface ExposedFunction {
+  readonly address: string;
+  readonly path: string;
+  readonly openapi: boolean;
+  /** Narrowed once, here: the served surface and the document both read it. */
+  readonly kind: ExposedHttpKind;
+  readonly fn: AnyRegistered;
+  /** The standard-JSON boundary the served surface and the document share. */
+  readonly codec: ExposedHttpCodec;
+}
+
+/** Address segments become path segments: "messages.list" -> "/api/messages/list". */
+function exposedPath(address: string): string {
+  return `/api/${address.replaceAll(".", "/")}`;
+}
+
 export class Registry {
   readonly functions = new Map<string, AnyRegistered>();
+  /** HTTP-exposed functions keyed by the path they own. */
+  readonly exposed = new Map<string, ExposedFunction>();
+  /** The same functions keyed by address: the served call knows its path, the runtime its address. */
+  private readonly exposedByAddress = new Map<string, ExposedFunction>();
   readonly channels = new Map<string, AnyRegisteredChannel>();
   readonly realtime = new Map<string, AnyRegisteredRealtime>();
   readonly serverOnly = new Map<string, ServerOnlyExport>();
@@ -113,6 +144,46 @@ export class Registry {
       }
     }
 
+    // Exposed paths are claimed after every MCP path, so the single collision
+    // check below covers both declaration orders.
+    for (const [address, fn] of this.functions) {
+      const exposure = httpExposure(fn.http, `function "${address}" http`);
+      if (exposure === null) continue;
+      // The kind is narrowed once, at load: an exposure no method serves is a
+      // registration error like every other malformed one, never a 404 at call
+      // time and a silent omission from the document.
+      const kind = exposedHttpKind(fn.kind);
+      if (kind === undefined) {
+        throw new Error(
+          `HTTP-exposed function "${address}" is a ${fn.kind}, which the HTTP surface does not serve`,
+        );
+      }
+      const path = exposedPath(address);
+      if (isAckerDBHttpRoute(path)) {
+        throw new Error(
+          `HTTP-exposed function "${address}" claims AckerDB-owned path "${path}"; "${ACKERDB_RESERVED_API_PREFIX}" is reserved`,
+        );
+      }
+      const mcp = this.mcpByPath.get(path);
+      if (mcp !== undefined) {
+        throw new Error(
+          `HTTP-exposed function "${address}" and MCP "${mcp.name}" both use path "${path}"`,
+        );
+      }
+      // The codec is compiled here, once: a contract that cannot cross the
+      // surface's standard-JSON boundary fails the load, never a caller.
+      const exposed = Object.freeze({
+        address,
+        path,
+        openapi: exposure.openapi,
+        kind,
+        fn,
+        codec: compileExposedHttpCodec(address, fn),
+      });
+      this.exposed.set(path, exposed);
+      this.exposedByAddress.set(address, exposed);
+    }
+
     for (const { address, value } of moduleExports) {
       if (!isMcpToolBlueprint(value)) continue;
       this.serverOnly.set(address, value);
@@ -159,6 +230,11 @@ export class Registry {
 
   mcpAtPath(path: string): AnyMcpDeclaration | undefined {
     return this.mcpByPath.get(path);
+  }
+
+  /** The HTTP surface of one address, or undefined when the function is not exposed. */
+  exposedFunction(address: string): ExposedFunction | undefined {
+    return this.exposedByAddress.get(address);
   }
 
   toolsFor(

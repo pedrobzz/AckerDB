@@ -39,3 +39,13 @@ function visit(value: unknown, path: string, state: JsonState, depth: number): v
 export function assertStandardJson(value: unknown, path: string): void {
   visit(value, path, { nodes: 0, active: new WeakSet() }, 0);
 }
+
+/**
+ * The JSON text a standard-JSON boundary emits. An absent value is JSON `null`,
+ * the same normalization the AckerDB wire encoder applies, so a body is always a
+ * parseable JSON document. Values that are not standard JSON — a bigint, a
+ * Uint8Array — throw here; every published boundary converts them first.
+ */
+export function standardJsonText(value: unknown): string {
+  return JSON.stringify(value) ?? "null";
+}

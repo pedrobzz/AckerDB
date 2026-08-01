@@ -1,6 +1,5 @@
 import { createConnection, type Socket } from "node:net";
 import {
-  PROTOCOL_VERSION,
   decode,
   encode,
   parseSseMessage,
@@ -95,17 +94,10 @@ function timeout<T>(promise: Promise<T>, label: string, timeoutMs: number): Prom
 
 export async function pausedSse(options: {
   readonly port: number;
-  readonly id: number;
   readonly maxWireBytes: number;
   readonly timeoutMs: number;
 }): Promise<PausedSse> {
-  const body = Buffer.from(encode({
-    v: PROTOCOL_VERSION,
-    t: "call",
-    id: options.id,
-    ref: "pressure.endless",
-    args: {},
-  }));
+  const body = Buffer.from(encode({}));
   let response: Buffer = Buffer.alloc(0);
   let wireBody: Buffer = Buffer.alloc(0);
   let cumulativeWireBytes = 0;
@@ -153,7 +145,7 @@ export async function pausedSse(options: {
     socket.once("connect", () => {
       socket.write(Buffer.concat([
         Buffer.from([
-          "POST /api/sse HTTP/1.1",
+          "POST /api/pressure/endless HTTP/1.1",
           "Host: 127.0.0.1",
           "Accept: text/event-stream",
           "Content-Type: application/json",

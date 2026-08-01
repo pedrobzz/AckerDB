@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   PROTOCOL_VERSION,
-  decode,
   encode,
   parseSseMessage,
   type MutationMessage,
@@ -176,6 +175,7 @@ const functions = {
   ops: {
     pipeline: procedure({
       access: "public",
+      http: true,
       args: { room: v.bigint(), payload: v.string() },
       handler: async (ctx: Ctx, args: Ctx) => {
         const external = await (await fetch(
@@ -193,6 +193,7 @@ const functions = {
     }),
     stream: sseProcedure({
       access: "public",
+      http: true,
       args: { payload: v.string() },
       yields: v.object({ payload: v.string() }),
       handler: async function* (ctx: Ctx, args: Ctx) {
@@ -331,7 +332,7 @@ async function collectSse(
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).replace(/^ /, ""))
         .join("\n");
-      const frame = parseSseMessage(decode(payload));
+      const frame = parseSseMessage(JSON.parse(payload));
       runtime.ackSse({
         v: PROTOCOL_VERSION,
         t: "sse_ack",
@@ -717,11 +718,7 @@ describe("Runtime telemetry acceptance", () => {
       respond: ({ body, status }) => new Response(body, { status }),
     });
     expect(procedureResponse.status).toBe(200);
-    expect(decode(await procedureResponse.text())).toMatchObject({
-      t: "ok",
-      kind: "procedure",
-      value: { body: PRIVATE_FETCH },
-    });
+    expect(JSON.parse(await procedureResponse.text())).toMatchObject({ body: PRIVATE_FETCH });
 
     const stream = await app.runtime.runSse({
       id: 730_000_001,

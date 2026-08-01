@@ -6,9 +6,7 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
-  parseCallResponse,
   parseServerMessage,
-  type CallResponse,
   type ServerMessage,
 } from "@ackerdb/core";
 import type { AckerDBServerStatus, RuntimeStatus } from "@ackerdb/server";
@@ -258,25 +256,21 @@ async function status(base: string): Promise<ResourceStatus> {
 
 async function call(
   base: string,
-  id: number,
-  ref: string,
+  address: string,
   args: unknown,
   token?: string,
   signal?: AbortSignal,
-): Promise<{ readonly status: number; readonly frame: CallResponse }> {
-  const response = await fetch(`${base}/api/call`, {
+): Promise<{ readonly status: number; readonly value: unknown }> {
+  const response = await fetch(`${base}/api/${address.replaceAll(".", "/")}`, {
     method: "POST",
     headers: {
       connection: "close",
       ...(token === undefined ? {} : { authorization: `Bearer ${token}` }),
     },
-    body: encode({ v: PROTOCOL_VERSION, t: "call", id, ref, args }),
+    body: encode(args),
     ...(signal === undefined ? {} : { signal }),
   });
-  return {
-    status: response.status,
-    frame: parseCallResponse(decode(await response.text())),
-  };
+  return { status: response.status, value: decode(await response.text()) };
 }
 
 function rawWebSocket(url: string): Promise<WsClient> {
@@ -897,7 +891,6 @@ test(
       descriptorMonitor?.sampleNow();
       const paused = await pausedSse({
         port,
-        id,
         maxWireBytes: SSE_RESPONSE_WIRE_BYTES,
         timeoutMs: STEP_TIMEOUT_MS,
       });
@@ -982,10 +975,7 @@ test(
       expect(terminalFrameBytes).toBeLessThan(SSE_CONTROL_RESERVE_BYTES);
       expect(decodedBody.payload.byteLength).toBe(applicationFrameBytes + terminalFrameBytes);
 
-      expect(await call(base, 10_000 + id, "pressure.collect", {})).toMatchObject({
-        status: 200,
-        frame: { t: "ok", value: null },
-      });
+      expect(await call(base, "pressure.collect", {})).toEqual({ status: 200, value: null });
       const descriptorRecovered = baselineDescriptors === undefined
         ? undefined
         : await eventually(
@@ -1110,14 +1100,8 @@ processResourceTest(
     id: 1,
     transition: { kind: "reset", value: [] },
   });
-  expect(await call(base, 1, "pressure.echo", { value: 1 })).toMatchObject({
-    status: 200,
-    frame: { t: "ok", value: 1 },
-  });
-  expect(await call(base, 2, "pressure.echo", { value: 2 }, "pressure")).toMatchObject({
-    status: 200,
-    frame: { t: "ok", value: 2 },
-  });
+  expect(await call(base, "pressure.echo", { value: 1 })).toEqual({ status: 200, value: 1 });
+  expect(await call(base, "pressure.echo", { value: 2 }, "pressure")).toEqual({ status: 200, value: 2 });
   warm.socket.close();
   await withTimeout(warm.closed(), "warm WebSocket close");
   const warmReleased = await eventually(
@@ -1126,10 +1110,7 @@ processResourceTest(
     "warm resources to be released",
   );
   assertResourcesReleased(warmReleased);
-  expect(await call(base, 3, "pressure.collect", {})).toMatchObject({
-    status: 200,
-    frame: { t: "ok", value: null },
-  });
+  expect(await call(base, "pressure.collect", {})).toEqual({ status: 200, value: null });
 
   const baselineRss = snapshotProcessTree(processHarness.child.pid);
   const baselineDescriptors = descriptorSnapshot(processHarness.child.pid);
@@ -1188,7 +1169,7 @@ processResourceTest(
 
   const blockControllers = Array.from({ length: 4 }, () => new AbortController());
   const blockers: Promise<unknown>[] = blockControllers.slice(0, 2).map((controller, index) =>
-    call(base, 10 + index, "pressure.block", {}, `block-${index}`, controller.signal).catch(
+    call(base, "pressure.block", {}, `block-${index}`, controller.signal).catch(
       (error: unknown) => error,
     ));
   await processHarness.waitForCount("@@block-start", 2);
@@ -1200,7 +1181,7 @@ processResourceTest(
     headers: { connection: "close" },
   });
   expect(connectionExcess.status).toBe(503);
-  expect(parseCallResponse(decode(await connectionExcess.text()))).toMatchObject({
+  expect(parseServerMessage(decode(await connectionExcess.text()))).toMatchObject({
     t: "err",
     id: null,
     outcome: {
@@ -1271,7 +1252,6 @@ processResourceTest(
   for (let index = 2; index < 4; index++) {
     blockers.push(call(
       base,
-      10 + index,
       "pressure.block",
       {},
       `block-${index}`,
@@ -1292,17 +1272,13 @@ processResourceTest(
     },
   });
 
-  expect(await call(base, 20, "pressure.echo", { value: 20 })).toEqual({
+  expect(await call(base, "pressure.echo", { value: 20 })).toEqual({
     status: 503,
-    frame: expect.objectContaining({
-      t: "err",
-      id: null,
-      outcome: expect.objectContaining({
-        code: "overloaded",
-        retryable: true,
-        retryAfterMs: 0,
-        resource: "connection",
-      }),
+    value: expect.objectContaining({
+      code: "overloaded",
+      retryable: true,
+      retryAfterMs: 0,
+      resource: "connection",
     }),
   });
 
@@ -1339,9 +1315,8 @@ processResourceTest(
     });
 
     for (let batch = 0; batch < 4; batch++) {
-      const ids = Array.from({ length: 8 }, (_, offset) => from + batch * 8 + offset);
-      const requests = ids.map((id, offset) =>
-        call(base, id, "pressure.echo", { value: offset }, "pressure"));
+      const requests = Array.from({ length: 8 }, (_, offset) =>
+        call(base, "pressure.echo", { value: offset }, "pressure"));
 
       // The fixture's pressure verifier holds the one admitted source lease for
       // 50ms. This sample is inside that deterministic in-flight window while
@@ -1354,31 +1329,23 @@ processResourceTest(
       const sourceRejected = results.filter((result) => result.status === 503);
       expect(callerRejected).toHaveLength(1);
       expect(sourceRejected).toHaveLength(7);
-      expect(ids).toContain(callerRejected[0]!.frame.id!);
       expect(callerRejected[0]).toMatchObject({
         status: 429,
-        frame: {
-          t: "err",
-          outcome: {
-            code: "overloaded",
-            retryable: true,
-            retryAfterMs: 0,
-            resource: "operation",
-          },
+        value: {
+          code: "overloaded",
+          retryable: true,
+          retryAfterMs: 0,
+          resource: "operation",
         },
       });
       for (const result of sourceRejected) {
         expect(result).toMatchObject({
           status: 503,
-          frame: {
-            t: "err",
-            id: null,
-            outcome: {
-              code: "overloaded",
-              retryable: true,
-              retryAfterMs: 0,
-              resource: "connection",
-            },
+          value: {
+            code: "overloaded",
+            retryable: true,
+            retryAfterMs: 0,
+            resource: "connection",
           },
         });
       }
@@ -1397,10 +1364,7 @@ processResourceTest(
     const descriptorSamples = descriptorMonitor.samples().slice(descriptorStart);
     // Peak samples above include all request work. The immediate post-GC sample
     // is the independent recovered metric; live ownership survives this collect.
-    expect(await call(base, from + 99, "pressure.collect", {})).toMatchObject({
-      status: 200,
-      frame: { t: "ok", value: null },
-    });
+    expect(await call(base, "pressure.collect", {})).toEqual({ status: 200, value: null });
     const recovered = processMonitor.sampleNow();
     return {
       rssPeak: maximum(processSamples.map((sample) => sample.rssMb)),
@@ -1612,10 +1576,7 @@ processResourceTest(
       value.listeners === baselineDescriptors.listeners,
     "file descriptors to return exactly to baseline",
   );
-  expect(await call(base, 99_999, "pressure.collect", {})).toMatchObject({
-    status: 200,
-    frame: { t: "ok", value: null },
-  });
+  expect(await call(base, "pressure.collect", {})).toEqual({ status: 200, value: null });
   const finalRss = snapshotProcessTree(processHarness.child.pid);
 
   console.log("@@combined-resource-proof", JSON.stringify({

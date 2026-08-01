@@ -17,8 +17,8 @@ modules; do not add new implementation files to this root.
 | `schema/` | Schema definitions, snapshots, planning, reconciliation, and migrations |
 | `shared/` | Small dependency-free primitives used across multiple modules |
 | `telemetry/` | Telemetry records, trace journals, and external trace capture |
-| `transport/` | HTTP/WebSocket server ownership and public routes |
-| `validation/` | Validators, Standard Schema/JSON, constraints, and validation errors |
+| `transport/` | HTTP/WebSocket server ownership, the public route surface, and its OpenAPI document |
+| `validation/` | Validators, JSON Schema emission, Standard Schema/JSON, constraints, and validation errors |
 
 Place a file with the module that owns its invariants. Cross-module imports
 should name that owner directly; internal barrel files are intentionally

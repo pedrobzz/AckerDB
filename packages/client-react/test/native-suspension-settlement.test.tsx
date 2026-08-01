@@ -129,6 +129,7 @@ function registry(): Registry {
     ai: {
       holdBeforeFirst: sseProcedure({
         access: "public",
+        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -145,6 +146,7 @@ function registry(): Registry {
       // family the settlement path must be indifferent to.
       holdMidStream: sseProcedure({
         access: "public",
+        http: true,
         args: standardArgs,
         yields: uiMessageChunk(),
         handler: async function* (ctx: SseCtx): AsyncGenerator<UIMessageChunk, void, undefined> {
@@ -167,6 +169,7 @@ function registry(): Registry {
     stream: {
       holdAfterFirst: sseProcedure({
         access: "public",
+        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
@@ -221,6 +224,9 @@ async function until(predicate: () => boolean, description: string): Promise<voi
   throw new Error(`Timed out waiting for ${description}`);
 }
 
+/** The only AckerDB-owned HTTP route the client calls; every other is a stream. */
+const SSE_ACK_PATH = "/api/_sse/ack";
+
 // Records SSE request and acknowledgement traffic so the tests can prove no
 // hidden replacement stream starts and no acknowledgement leaks after
 // settlement. Resolves `fetch` at call time: after support/dom.ts registers
@@ -228,11 +234,10 @@ async function until(predicate: () => boolean, description: string): Promise<voi
 function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {
     const { pathname } = new URL(url);
-    if (pathname === "/api/sse") log.push("sse");
-    else if (pathname === "/api/sse/ack") {
+    if (pathname === SSE_ACK_PATH) {
       const acknowledgment = decode(String(init?.body)) as { seq: number };
       log.push(`ack:${acknowledgment.seq}`);
-    }
+    } else log.push("sse");
     return fetch(url, init);
   };
 }
@@ -551,7 +556,7 @@ describe("suspension settlement through the native entry against a real server",
     // generation as cancellation, never as an error it reports to the user.
     let rejectedBodyDispatched = false;
     const scriptedFetch: AckerDBFetch = (url, init) => {
-      if (new URL(url).pathname === "/api/sse") {
+      if (new URL(url).pathname !== SSE_ACK_PATH) {
         rejectedBodyDispatched = true;
         return Promise.resolve(
           new Response(new ReadableStream<Uint8Array>({ start: () => {} }), { status: 503 }),

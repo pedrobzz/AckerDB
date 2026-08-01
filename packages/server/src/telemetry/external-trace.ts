@@ -16,7 +16,7 @@ import {
   type TelemetryResource,
 } from "./telemetry.ts";
 
-type HttpOperation = "procedure" | "sse";
+type HttpOperation = "query" | "mutation" | "procedure" | "sse";
 type HttpTracePhase = "external" | "runtime" | "finished";
 
 interface HttpTraceState {

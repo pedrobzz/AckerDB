@@ -104,6 +104,36 @@ export type ArgsInput<A extends ObjectShape> = InferInputShape<A>;
 export type BuiltinAccessPolicy = "public" | "authenticated" | "system";
 
 /**
+ * Per-function opt-in to the plain-HTTP surface. Absent or `false` means the
+ * function is not reachable over HTTP and absent from OpenAPI; `true` is
+ * shorthand for `{ openapi: true }`. `openapi` exists only inside an exposed
+ * function's config, so "documented but not callable" is unrepresentable.
+ */
+export type HttpExposure = boolean | { readonly openapi: boolean };
+
+/**
+ * The one interpreter of `http`: `null` when the function is not exposed,
+ * otherwise its OpenAPI visibility. Untyped callers reach the same validation,
+ * so a malformed field is always a registration error.
+ */
+export function httpExposure(
+  value: unknown,
+  where = "http",
+): { readonly openapi: boolean } | null {
+  if (value === undefined || value === false) return null;
+  if (value === true) return { openapi: true };
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Object.keys(value).length !== 1 ||
+    typeof (value as { openapi?: unknown }).openapi !== "boolean"
+  ) {
+    throw new TypeError(`${where} must be true, false, or { openapi: boolean }`);
+  }
+  return { openapi: (value as { openapi: boolean }).openapi };
+}
+
+/**
  * Every registered function has exactly one policy. A callback must explicitly
  * return `true`; false, exceptions, and every other result fail closed.
  */
@@ -223,10 +253,17 @@ type FunctionHandler<
   args: Expand<InferShape<A>>,
 ) => unknown;
 
+/** Surface metadata every kind shares: HTTP exposure and its documentation. */
+interface ExposureDef {
+  readonly http?: HttpExposure;
+  readonly description?: string;
+  readonly title?: string;
+}
+
 type FunctionDef<
   A extends ObjectShape,
   Ctx extends InvocationContext,
-> = {
+> = ExposureDef & {
   readonly args: A;
   readonly returns?: Validator<unknown, string>;
   readonly errors?: ErrorDeclarations;
@@ -319,7 +356,7 @@ export interface Registered<
   Ctx extends InvocationContext,
   R,
   H = R,
-> extends Invocable<K, A, Ctx, R, H> {
+> extends Invocable<K, A, Ctx, R, H>, ExposureDef {
   readonly isAckerDB: true;
 }
 
@@ -413,6 +450,22 @@ function validateOutputDeclarations(def: Pick<
   }
 }
 
+/** Validated surface metadata, spread onto the registered function as declared. */
+function exposureFields(def: ExposureDef): ExposureDef {
+  httpExposure(def.http);
+  for (const field of ["description", "title"] as const) {
+    const value = def[field];
+    if (value !== undefined && typeof value !== "string") {
+      throw new TypeError(`${field} must be a string`);
+    }
+  }
+  return {
+    ...(def.http === undefined ? {} : { http: def.http }),
+    ...(def.description === undefined ? {} : { description: def.description }),
+    ...(def.title === undefined ? {} : { title: def.title }),
+  };
+}
+
 export function validateYields(yields: unknown): asserts yields is Validator<unknown, string> {
   if (!isValidator(yields)) {
     throw new TypeError("sse yields must be a v validator for the chunks the stream emits");
@@ -443,6 +496,7 @@ function register<K extends string>(kind: K) {
     }
     validateArgsShape(def.args);
     validateOutputDeclarations(def as never);
+    const exposure = exposureFields(def);
 
     const callable =
       kind === "query" || kind === "mutation" || kind === "procedure"
@@ -456,6 +510,7 @@ function register<K extends string>(kind: K) {
       args: def.args,
       ...(def.returns === undefined ? {} : { returns: def.returns }),
       ...(def.errors === undefined ? {} : { errors: def.errors }),
+      ...exposure,
       access: def.access,
       handler: def.handler,
     }) as unknown as Registered<
@@ -501,7 +556,7 @@ interface SseDef<
   A extends ObjectShape,
   Y extends Validator<unknown, string>,
   Ctx extends InvocationContext,
-> {
+> extends ExposureDef {
   readonly args: A;
   readonly yields: Y;
   readonly access: AccessPolicy<Ctx, Expand<InferShape<A>>>;
@@ -526,6 +581,7 @@ export function sseProcedure<
   }
   validateArgsShape(def.args);
   validateYields(def.yields);
+  const exposure = exposureFields(def);
 
   const callable = () => {
     throw new Error("sses cannot be called in-process — they exist at the transport boundary");
@@ -535,6 +591,7 @@ export function sseProcedure<
     kind: "sse" as const,
     args: def.args,
     yields: def.yields,
+    ...exposure,
     access: def.access,
     handler: def.handler,
   }) as unknown as RegisteredSse<A, Expand<InferValidator<Y>>, Schema>;
@@ -613,7 +670,7 @@ export type SseBuilder<
   S extends Schema,
   Capabilities extends object = EmptyContextCapabilities,
   TransactionCapabilities extends object = EmptyContextCapabilities,
-> = <A extends ObjectShape, Y extends Validator<unknown, string>>(def: {
+> = <A extends ObjectShape, Y extends Validator<unknown, string>>(def: ExposureDef & {
   readonly args: A;
   readonly yields: Y;
   readonly access: AccessPolicy<

@@ -270,6 +270,7 @@ export {
   type AnyInvocable,
   type ArgsInput,
   type AuthCtx,
+  type HttpExposure,
   type Invocable,
   type MutationBuilder,
   type MutationCtx,
@@ -429,7 +430,7 @@ export {
   type StandardSchemaProperties,
   type StandardSchemaResult,
 } from "./validation/standard-schema.ts";
-export { Registry } from "./app/registry.ts";
+export { Registry, type ExposedFunction } from "./app/registry.ts";
 export {
   BoundedSseProducer,
   OutboundBudget,
@@ -492,19 +493,27 @@ export {
 } from "./subscriptions/session.ts";
 export {
   Runtime,
+  type HttpMutationReceipt,
   type RuntimeHookContext,
   type RuntimeHooks,
   type RuntimeHookStage,
+  type RuntimeHttpMutationRequest,
+  type RuntimeHttpRequest,
+  type RuntimeHttpResponder,
+  type RuntimeHttpResponse,
   type RuntimeLifecycleState,
   type RuntimeMcpToolRequest,
   type RuntimeOptions,
-  type RuntimeProcedureRequest,
-  type RuntimeProcedureResponder,
-  type RuntimeProcedureResponse,
   type RuntimeSseRequest,
   type RuntimeSseResponse,
   type RuntimeStatus,
 } from "./runtime/runtime.ts";
+export {
+  openApiBytes,
+  openApiDocument,
+  type OpenApiDocument,
+  type OpenApiInfo,
+} from "./transport/openapi.ts";
 export {
   AckerDBServer,
   serve,

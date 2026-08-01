@@ -62,6 +62,7 @@ function registry(): Registry {
     stream: {
       ticks: sseProcedure({
         access: "public",
+        http: true,
         args: { count: v.int() },
         yields: v.object({ tick: v.int() }),
         handler: async function* (_ctx: SseCtx, args: { count: number }) {
@@ -73,6 +74,7 @@ function registry(): Registry {
       }),
       invalid: sseProcedure({
         access: "public",
+        http: true,
         args: {},
         yields: v.object({ value: v.string() }),
         handler: async function* () {
@@ -82,6 +84,7 @@ function registry(): Registry {
       }),
       hold: sseProcedure({
         access: "public",
+        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
@@ -95,6 +98,7 @@ function registry(): Registry {
       }),
       holdAfterFirst: sseProcedure({
         access: "public",
+        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
@@ -108,6 +112,7 @@ function registry(): Registry {
       }),
       unmountHold: sseProcedure({
         access: "public",
+        http: true,
         args: {},
         yields: v.object({ phase: v.string() }),
         handler: async function* (ctx: SseCtx) {
@@ -162,17 +167,19 @@ async function until(predicate: () => boolean, description: string): Promise<voi
   throw new Error(`Timed out waiting for ${description}`);
 }
 
+/** The only AckerDB-owned HTTP route the client calls; every other is a stream. */
+const SSE_ACK_PATH = "/api/_sse/ack";
+
 // Records the exact order of SSE request and acknowledgement traffic; the
 // stream body itself is untouched. Resolves `fetch` at call time: after
 // support/dom.ts registers happy-dom it restores Bun's native fetch.
 function recordingFetch(log: string[]): AckerDBFetch {
   return (url, init) => {
     const { pathname } = new URL(url);
-    if (pathname === "/api/sse") log.push("sse");
-    else if (pathname === "/api/sse/ack") {
+    if (pathname === SSE_ACK_PATH) {
       const acknowledgment = decode(String(init?.body)) as { seq: number };
       log.push(`ack:${acknowledgment.seq}`);
-    }
+    } else log.push("sse");
     return fetch(url, init);
   };
 }

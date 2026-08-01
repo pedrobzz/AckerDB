@@ -15,7 +15,6 @@ import {
   PROTOCOL_VERSION,
   decode,
   encode,
-  parseCallRequest,
   parseClientMessage,
   parseSseAckRequest,
   type ClientMessage,
@@ -150,13 +149,13 @@ function deferred<T>(): Deferred<T> {
 
 /** A scripted SSE exchange journal shared by every fake-fetch harness. */
 interface HttpJournal {
-  /** Chronological `/api/sse` dispatches with their request ids. */
-  readonly dispatches: Array<{ readonly path: string; readonly id: number }>;
-  /** Every `/api/sse/ack` request the client issued, parsed. */
+  /** Chronological per-function stream paths the client dispatched to. */
+  readonly dispatches: string[];
+  /** Every `/api/_sse/ack` request the client issued, parsed. */
   readonly acknowledgments: SseAckRequest[];
 }
 
-type Route = (id: number, init: RequestInit | undefined) => Promise<Response> | Response;
+type Route = (init: RequestInit | undefined) => Promise<Response> | Response;
 
 interface Harness {
   readonly client: AckerDBClient;
@@ -176,16 +175,14 @@ function harness(
   const journal: HttpJournal = { dispatches: [], acknowledgments: [] };
   const fetcher: AckerDBFetch = (url, init) => {
     const path = new URL(url).pathname;
-    if (path === "/api/sse/ack") {
+    if (path === "/api/_sse/ack") {
       journal.acknowledgments.push(parseSseAckRequest(decode(String(init?.body))));
       return Promise.resolve(new Response(null, { status: 204 }));
     }
-    if (path !== "/api/sse") throw new Error(`unexpected HTTP route ${path}`);
-    const request = parseCallRequest(decode(String(init?.body)));
-    journal.dispatches.push({ path, id: request.id });
+    journal.dispatches.push(path);
     const route = routes.sse;
     if (!route) throw new Error(`no scripted route for ${path}`);
-    return Promise.resolve(route(request.id, init));
+    return Promise.resolve(route(init));
   };
   const client = new AckerDBClient({
     url: "http://ackerdb.test",
@@ -403,7 +400,7 @@ describe("non-resumable work started while suspended", () => {
       Symbol.asyncIterator
     ]();
     expect(await fresh.next()).toEqual({ done: false, value: { tick: 0 } });
-    expect(journal.dispatches).toEqual([{ path: "/api/sse", id: expect.any(Number) }]);
+    expect(journal.dispatches).toEqual(["/api/stream/ticks"]);
     await fresh.return(undefined);
     client.close();
   });
@@ -428,7 +425,7 @@ describe("non-resumable work started while suspended", () => {
 
     scripted.chunk(1, { tick: 0 });
     expect(await createdSuspended.next()).toEqual({ done: false, value: { tick: 0 } });
-    expect(journal.dispatches).toEqual([{ path: "/api/sse", id: expect.any(Number) }]);
+    expect(journal.dispatches).toEqual(["/api/stream/hold"]);
     await createdSuspended.return(undefined);
     client.close();
   });
@@ -588,7 +585,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
     const iterator = client.sse("stream.hold", {})[Symbol.asyncIterator]();
     const first = iterator.next().catch((error) => error);
     await Bun.sleep(0);
-    expect(journal.dispatches).toEqual([{ path: "/api/sse", id: expect.any(Number) }]);
+    expect(journal.dispatches).toEqual(["/api/stream/hold"]);
 
     port.suspend();
     expectSuspensionOutcome(await first, {
@@ -692,7 +689,7 @@ describe("suspension settles in-flight SSE streams at every boundary", () => {
         clock,
         fetch: (url, init) => {
           const path = new URL(url).pathname;
-          if (path === "/api/sse/ack") {
+          if (path === "/api/_sse/ack") {
             heldAcks++;
             journalAcks.push(parseSseAckRequest(decode(String(init?.body))));
             return new Promise<Response>(() => {});
@@ -869,7 +866,7 @@ describe("resumable recovery stays independent of terminal settlement", () => {
     expect(resumed.id).toBe(subscription.id);
     expect(resumed.cursor).toEqual(cursor(5n));
     // The settled stream never redialed: one SSE dispatch total.
-    expect(journal.dispatches.filter((dispatch) => dispatch.path === "/api/sse")).toHaveLength(1);
+    expect(journal.dispatches).toHaveLength(1);
     client.close();
   });
 });
@@ -915,6 +912,7 @@ describe("suspension settlement against a real ackerdb server", () => {
       stream: {
         holdAfterFirst: sseProcedure({
           access: "public",
+          http: true,
           args: {},
           yields: v.object({ phase: v.string() }),
           handler: async function* (ctx: SseCtx) {
@@ -928,6 +926,7 @@ describe("suspension settlement against a real ackerdb server", () => {
         }),
         ticks: sseProcedure({
           access: "public",
+          http: true,
           args: {},
           yields: v.object({ tick: v.int() }),
           handler: async function* () {
@@ -960,7 +959,7 @@ describe("suspension settlement against a real ackerdb server", () => {
       clock,
       fetch: (url, init) => {
         const path = new URL(url).pathname;
-        if (path !== "/api/sse/ack") requests.push(path);
+        if (path !== "/api/_sse/ack") requests.push(path);
         return fetch(url, init);
       },
       lifecycle: (livePort) => {

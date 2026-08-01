@@ -54,9 +54,9 @@ describe("withExpoCapabilities", () => {
   test("defaults fetch to the named expo/fetch export and forwards call shape", async () => {
     const composed = withExpoCapabilities(config);
     const init = { method: "POST", headers: { a: "b" }, body: "x" };
-    const response = await composed.fetch!("http://127.0.0.1:9/api/call", init);
+    const response = await composed.fetch!("http://127.0.0.1:9/api/stream/ticks", init);
     expect(response).toBe(expoFetchResponse as unknown as Response);
-    expect(expoFetchCalls.at(-1)).toEqual(["http://127.0.0.1:9/api/call", init]);
+    expect(expoFetchCalls.at(-1)).toEqual(["http://127.0.0.1:9/api/stream/ticks", init]);
   });
 
   test("defaults randomness to Expo Crypto with the client's [0, 1) construction", () => {
