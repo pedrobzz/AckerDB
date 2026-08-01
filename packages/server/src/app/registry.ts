@@ -19,11 +19,11 @@ import {
   type AnyRegisteredRealtime,
 } from "../realtime/definition.ts";
 import {
+  isMcpAuthProvider,
   isMcpDeclaration,
-  isMcpToolBlueprint,
   isRegisteredMcpTool,
+  type AnyMcpAuthProvider,
   type AnyMcpDeclaration,
-  type AnyMcpToolBlueprint,
   type AnyRegisteredMcpTool,
   type McpEndpointDeclaration,
 } from "../mcp/index.ts";
@@ -40,7 +40,7 @@ import {
 } from "../transport/http-codec.ts";
 import type { Schema, ScheduledHandler } from "../schema/definition.ts";
 
-type ServerOnlyExport = AnyMcpDeclaration | AnyMcpToolBlueprint;
+type ServerOnlyExport = AnyMcpDeclaration | AnyMcpAuthProvider;
 
 interface ModuleExport {
   readonly address: string;
@@ -120,17 +120,22 @@ export class Registry {
       if (existing !== undefined) {
         throw new Error(`duplicate MCP name "${value.name}"`);
       }
-      if (isAckerDBHttpRoute(value.path)) {
-        throw new Error(`MCP "${value.name}" path "${value.path}" collides with a AckerDB route`);
-      }
-      const pathOwner = this.mcpByPath.get(value.path);
-      if (pathOwner !== undefined) {
-        throw new Error(
-          `MCP "${value.name}" and "${pathOwner.name}" both use path "${value.path}"`,
-        );
+      // A private endpoint claims no path: it is reachable only through
+      // `aiTools`, so it neither collides with an application module nor
+      // leaves a route advertising a tool list no caller may read.
+      if (value.path !== null) {
+        if (isAckerDBHttpRoute(value.path)) {
+          throw new Error(`MCP "${value.name}" path "${value.path}" collides with a AckerDB route`);
+        }
+        const pathOwner = this.mcpByPath.get(value.path);
+        if (pathOwner !== undefined) {
+          throw new Error(
+            `MCP "${value.name}" and "${pathOwner.name}" both use path "${value.path}"`,
+          );
+        }
+        this.mcpByPath.set(value.path, value);
       }
       this.mcps.set(value.name, value);
-      this.mcpByPath.set(value.path, value);
       this.serverOnly.set(address, value);
       const endpointTools = Object.freeze(Object.values(value.tools));
       this.toolsByMcp.set(value, endpointTools);
@@ -185,7 +190,7 @@ export class Registry {
     }
 
     for (const { address, value } of moduleExports) {
-      if (!isMcpToolBlueprint(value)) continue;
+      if (!isMcpAuthProvider(value)) continue;
       this.serverOnly.set(address, value);
     }
 

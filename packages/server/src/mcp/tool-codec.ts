@@ -39,6 +39,9 @@ export interface McpToolCodec {
   readonly outputSchema: JsonObjectSchema;
   /** True when a non-object `returns` is being wrapped under {@link MCP_OUTPUT_WRAP_KEY}. */
   readonly wrapsOutput: boolean;
+  /** Standard Schema faces the local AI adapter hands to a model SDK. */
+  readonly inputProtocolSchema: StandardJsonCodec<unknown>["inputProtocolSchema"];
+  readonly outputProtocolSchema: StandardJsonCodec<unknown>["outputProtocolSchema"];
 }
 
 /**
@@ -118,5 +121,7 @@ export function compileMcpToolCodec(where: string, fn: AnyRegistered): McpToolCo
       wrapsOutput ? wrappedOutputSchema(declared) : (declared as JsonObjectSchema),
     ),
     wrapsOutput,
+    inputProtocolSchema: args.inputProtocolSchema,
+    outputProtocolSchema: output.outputProtocolSchema,
   });
 }
