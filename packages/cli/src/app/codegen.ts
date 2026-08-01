@@ -53,6 +53,7 @@ import {
   mutation as mutationGeneric,
   procedure as procedureGeneric,
   query as queryGeneric,
+  service as serviceGeneric,
   sseProcedure as sseProcedureGeneric,
 } from "@ackerdb/server";
 import type {
@@ -70,6 +71,8 @@ import type {
   QueryBuilder,
   RealtimeBuilder,
   QueryCtx as GenericQueryCtx,
+  ServiceBuilder,
+  ServiceContext as GenericServiceContext,
   SseBuilder,
   SseCtx as GenericSseCtx,
   SystemCtx as GenericSystemCtx,
@@ -87,6 +90,7 @@ export const realtime = realtimeGeneric as unknown as RealtimeBuilder<Schema, Pr
 export const mutation = mutationGeneric as MutationBuilder<Schema, MutationPlugins>;
 export const procedure = procedureGeneric as ProcedureBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const sseProcedure = sseProcedureGeneric as SseBuilder<Schema, ProcedurePlugins, MutationPlugins>;
+export const service = serviceGeneric as ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins>;
 export const mcp = mcpGeneric as McpBuilder<Schema>;
 export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;
 
@@ -95,6 +99,7 @@ export type MutationCtx = GenericMutationCtx<Schema, MutationPlugins>;
 export type ProcedureCtx = GenericProcedureCtx<Schema, ProcedurePlugins, MutationPlugins>;
 export type SseCtx = GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins>;
 export type SystemCtx = GenericSystemCtx<Schema, ProcedurePlugins, MutationPlugins>;
+export type ServiceCtx = GenericServiceContext<SystemCtx>;
 export type DatabaseReader = DbReader<Schema>;
 export type DatabaseWriter = DbWriter<Schema>;
 `;
