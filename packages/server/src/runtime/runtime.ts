@@ -112,6 +112,12 @@ import type {
   TxCtx,
 } from "../app/functions.ts";
 import {
+  isSystemOperationName,
+  type SystemCtx,
+  type SystemRunner,
+  type SystemRunOptions,
+} from "../app/system.ts";
+import {
   authorizeInvocation,
   currentInvocationTelemetryContext,
   invokeFunction,
@@ -120,8 +126,13 @@ import {
   type InvocationOutcome,
   type InvocationTelemetryContext,
 } from "../app/invocation.ts";
-import { withMutationAccess } from "./invocation-state.ts";
+import {
+  assertWriterAvailable,
+  runInInvocationRoot,
+  withMutationAccess,
+} from "./invocation-state.ts";
 import { createMutationInvocationScope } from "./mutation-scope.ts";
+import { inTransaction } from "./transaction-context.ts";
 import {
   finalizeMcpToolResult,
   type AnyRegisteredMcpTool,
@@ -217,6 +228,7 @@ const utf8 = new TextEncoder();
 const SCHEDULER_RETRY_MS = 1_000;
 const STALE_SCHEDULED_CANDIDATE = Symbol("staleScheduledCandidate");
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
+const SYSTEM_FAIRNESS_KEY = callerFairnessKey(SYSTEM_PRINCIPAL, DIRECT_RUNTIME_SOURCE);
 /** Package-private transport hook; intentionally absent from the public index. */
 export const CAPTURE_DELIVERY_OBSERVER = Symbol("ackerdb.captureDeliveryObserver");
 function applicationError(value: unknown) {
@@ -642,6 +654,7 @@ export class Runtime implements RuntimePort {
   readonly reactive: OrderedReactive<ReactiveContext>;
   readonly channels: ChannelHub;
   readonly realtime: RealtimeRuntime | undefined = undefined;
+  readonly system: SystemRunner;
   readonly deliveryObserver: DeliveryObserver = (observation): void => {
     const ambient = this.trace.getStore();
     if (ambient !== undefined) {
@@ -777,6 +790,7 @@ export class Runtime implements RuntimePort {
   private readonly activeWaiters = new Set<() => void>();
   private readonly deliveryFailureSummaries = new Map<string, DeliveryFailureSummary>();
   private readonly trace = new AsyncLocalStorage<RuntimeTraceScope>();
+  private readonly systemRoot = AsyncLocalStorage.snapshot();
   private readonly ownsTelemetry: boolean;
   private readonly hasMcpCapabilities: boolean;
   private lifecycle: RuntimeLifecycleState = "ready";
@@ -787,6 +801,7 @@ export class Runtime implements RuntimePort {
   private sampleTimer: ReturnType<typeof setInterval> | null = null;
   private drainPromise: Promise<void> | null = null;
   private readonly shutdownController = new AbortController();
+  private readonly systemDrainController = new AbortController();
   private lastCpu = process.cpuUsage();
   private lastCpuAt = performance.now();
   private expectedSampleAt = performance.now();
@@ -844,6 +859,13 @@ export class Runtime implements RuntimePort {
         this.authInvalidation.publishAccount(account);
       },
       finish: (): void => {},
+    });
+    this.system = Object.freeze({
+      run: <R>(
+        name: string,
+        work: (ctx: SystemCtx) => R | PromiseLike<R>,
+        runOptions?: SystemRunOptions,
+      ) => this.runSystem(name, work, runOptions),
     });
     this.credentialVerifier = this.authInvalidation.verifier;
     this.scheduled = options.registry.resolveScheduled(options.engine.schema);
@@ -1810,6 +1832,96 @@ export class Runtime implements RuntimePort {
     });
   }
 
+  private runSystem<R>(
+    name: string,
+    work: (ctx: SystemCtx) => R | PromiseLike<R>,
+    options: SystemRunOptions | undefined,
+  ): Promise<Awaited<R>> {
+    if (!isSystemOperationName(name)) {
+      return Promise.reject(new TypeError(
+        "system operation name must contain at most 128 letters, digits, dots, colons, hyphens, or underscores, with every segment starting with a letter and no UUID segments",
+      ));
+    }
+    const signal = AbortSignal.any([
+      this.shutdownController.signal,
+      this.systemDrainController.signal,
+      ...(options?.signal === undefined ? [] : [options.signal]),
+    ]);
+    const writerOwnedByCaller = inTransaction();
+    try {
+      throwIfAborted(signal);
+    } catch (error) {
+      if (this.telemetry.enabled) {
+        this.telemetry.recordSpan({
+          operation: "system",
+          stage: "admission",
+          outcome: outcomeFromError(error).code,
+          functionName: name,
+          resource: "operation",
+          durationMs: 0,
+          sizeBytes: 1,
+        });
+      }
+      return Promise.reject(error);
+    }
+    return this.systemRoot(() => this.runOperation(
+      null,
+      "system",
+      name,
+      1,
+      async () => {
+        const context = this.procedureContext(
+          SYSTEM_PRINCIPAL,
+          SYSTEM_FAIRNESS_KEY,
+          signal,
+          1,
+          this.readNow(),
+          this.immediateProcedureInvalidations.publish,
+        );
+        const startedAt = this.telemetry.enabled ? performance.now() : 0;
+        try {
+          const value = await invokeSideEffectingHandler(
+            signal,
+            "system callback",
+            (onAuthorized) => runInInvocationRoot(
+              SYSTEM_PRINCIPAL,
+              () => {
+                onAuthorized();
+                return work(context.value as SystemCtx);
+              },
+              writerOwnedByCaller,
+            ),
+          );
+          if (this.telemetry.enabled) {
+            this.traceSpan({
+              stage: "handler",
+              outcome: isResult(value) && !value.ok ? "application_error" : "ok",
+              durationMs: Math.max(0, performance.now() - startedAt),
+              sizeBytes: 1,
+            }, "system");
+          }
+          return value;
+        } catch (error) {
+          if (this.telemetry.enabled) {
+            this.traceSpan({
+              stage: "handler",
+              outcome: outcomeFromError(error).code,
+              durationMs: Math.max(0, performance.now() - startedAt),
+              sizeBytes: 1,
+            }, "system");
+          }
+          throw error;
+        } finally {
+          context.release();
+        }
+      },
+      {
+        fairnessKey: SYSTEM_FAIRNESS_KEY,
+        synthesizeHandler: false,
+      },
+    ));
+  }
+
   /** The single deep MCP execution path used by every present and future adapter. */
   async runMcpTool(request: RuntimeMcpToolRequest): Promise<McpCallToolResult> {
     const provenance = claimHttpRequestProvenance(request);
@@ -2525,6 +2637,7 @@ export class Runtime implements RuntimePort {
       retryAfterMs: DRAIN_RETRY_AFTER_MS,
       resource: "operation",
     });
+    this.systemDrainController.abort(draining);
     const sessionDrains = [...this.sessions.values()].map((state) => this.startSessionClose(state));
     const realtimeDrain = this.realtime?.drain() ?? Promise.resolve();
     for (const producer of this.sseProducers.values()) producer.fail(draining);
@@ -3524,6 +3637,7 @@ export class Runtime implements RuntimePort {
     work: (db: MutationCtx["db"], writes: WriteCollector) => T | Promise<T>,
   ): Promise<T> {
     throwIfAborted(signal);
+    assertWriterAvailable();
     const result = await this.commitWrite({
       operation,
       fairnessKey,

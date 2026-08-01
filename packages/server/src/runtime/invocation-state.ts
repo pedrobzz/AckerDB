@@ -32,6 +32,7 @@ export interface InvocationState {
   readonly principal: Principal;
   readonly root: {
     poison?: unknown;
+    writerOwnedByCaller?: true;
   };
   readonly mutationAccess?: MutationAccess;
 }
@@ -50,6 +51,31 @@ export function withInvocationState<T>(
   return invocation.run(state, work);
 }
 
+/** Own one top-level application invocation without requiring a registered function. */
+export function runInInvocationRoot<T>(
+  principal: Principal,
+  work: () => T | PromiseLike<T>,
+  writerOwnedByCaller = false,
+): Promise<T> {
+  const root: InvocationState["root"] = writerOwnedByCaller
+    ? { writerOwnedByCaller: true }
+    : {};
+  return invocation.run({ principal, root }, async () => {
+    const value = await work();
+    if (Object.hasOwn(root, "poison")) throw root.poison;
+    return value;
+  });
+}
+
+/** Refuse a writer cycle without importing the caller's transaction authority. */
+export function assertWriterAvailable(): void {
+  if (invocation.getStore()?.root.writerOwnedByCaller !== true) return;
+  throw new AckerDBError(
+    "validation",
+    "cannot start database work from a system run created inside an active transaction; finish the caller's ctx.tx first",
+  );
+}
+
 export function withMutationAccess<T>(
   access: MutationAccess,
   work: () => T,
@@ -58,7 +84,7 @@ export function withMutationAccess<T>(
   if (state === undefined) {
     throw new AckerDBError(
       "internal",
-      "mutation access requires an owning registered invocation",
+      "mutation access requires an owning invocation root",
     );
   }
   return invocation.run({ ...state, mutationAccess: access }, work);

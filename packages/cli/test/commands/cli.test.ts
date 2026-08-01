@@ -6,7 +6,7 @@ import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
 import { AckerDBClient } from "@ackerdb/client";
 import type { CredentialVerifier } from "@ackerdb/server";
-import { startApp } from "../../src/app/start.ts";
+import { startApp, StartupInterruptedError } from "../../src/app/start.ts";
 import { runCodegen } from "../../src/app/codegen.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
@@ -254,6 +254,178 @@ describe("ackerdb CLI", () => {
     )).rejects.toThrow(
       "startApp credentialVerifier cannot be combined with configured oidc or credentialVerifier",
     );
+  }, 20_000);
+
+  test("programmatic startApp never owns process signal listeners", async () => {
+    const reservation = await reservePort();
+    const port = reservation.port;
+    await reservation.release();
+    const dir = fixture(port);
+    const before = {
+      sigint: process.listeners("SIGINT"),
+      sigterm: process.listeners("SIGTERM"),
+    };
+
+    const running = await startApp(
+      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      { prepare: runCodegen },
+    );
+    try {
+      expect(process.listeners("SIGINT")).toEqual(before.sigint);
+      expect(process.listeners("SIGTERM")).toEqual(before.sigterm);
+    } finally {
+      await running.drain();
+    }
+    expect(process.listeners("SIGINT")).toEqual(before.sigint);
+    expect(process.listeners("SIGTERM")).toEqual(before.sigterm);
+  }, 20_000);
+
+  test("programmatic startup refuses an already-aborted lifecycle", async () => {
+    const reservation = await reservePort();
+    const port = reservation.port;
+    await reservation.release();
+    const dir = fixture(port);
+    const lifecycle = new AbortController();
+    lifecycle.abort();
+
+    const outcome = await startApp(
+      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      { signal: lifecycle.signal, prepare: runCodegen },
+    ).then(
+      async (running) => {
+        await running.drain();
+        return "started" as const;
+      },
+      (error: unknown) => error,
+    );
+
+    expect(outcome).toBeInstanceOf(StartupInterruptedError);
+  }, 20_000);
+
+  test("programmatic lifecycle interruption owns startup without process listeners", async () => {
+    const reservation = await reservePort();
+    const port = reservation.port;
+    await reservation.release();
+    const dir = fixture(port);
+    const lifecycle = new AbortController();
+    const preparationEntered = Promise.withResolvers<void>();
+    const preparationStopped = Promise.withResolvers<void>();
+    const before = {
+      sigint: process.listeners("SIGINT"),
+      sigterm: process.listeners("SIGTERM"),
+    };
+    const startup = startApp(
+      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      {
+        signal: lifecycle.signal,
+        prepare: async (_config, signal) => {
+          preparationEntered.resolve();
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+          preparationStopped.resolve();
+        },
+      },
+    );
+    await preparationEntered.promise;
+    expect(process.listeners("SIGINT")).toEqual(before.sigint);
+    expect(process.listeners("SIGTERM")).toEqual(before.sigterm);
+
+    lifecycle.abort();
+    await expect(startup).rejects.toBeInstanceOf(StartupInterruptedError);
+    await preparationStopped.promise;
+    expect(process.listeners("SIGINT")).toEqual(before.sigint);
+    expect(process.listeners("SIGTERM")).toEqual(before.sigterm);
+
+    const rebound = Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      fetch: () => new Response("released"),
+    });
+    await rebound.stop(true);
+  }, 20_000);
+
+  test("programmatic hosts run trusted work directly under the system principal", async () => {
+    const reservation = await reservePort();
+    const port = reservation.port;
+    await reservation.release();
+    const dir = fixture(port);
+    const running = await startApp(
+      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      { prepare: runCodegen },
+    );
+    try {
+      const outcome = await running.system.run("fixture.direct", async (ctx) => {
+        const external = await (await fetch("data:text/plain,direct")).text();
+        const transaction = await ctx.tx((tx) => tx.db.messages!.insert({
+          channelId: 9n,
+          body: external,
+          role: "admin",
+          payload: { tag: "nothing", value: null },
+        }));
+        return {
+          principal: ctx.auth.kind,
+          external,
+          committed: transaction.ok,
+        };
+      });
+      expect(outcome).toEqual({
+        principal: "system",
+        external: "direct",
+        committed: true,
+      });
+      expect(running.engine.reader.query(
+        'SELECT body FROM "messages" WHERE channelId = 9',
+      ).all()).toEqual([{ body: "direct" }]);
+    } finally {
+      await running.drain();
+    }
+  }, 20_000);
+
+  test("programmatic drain signals and settles system work before closing storage", async () => {
+    const reservation = await reservePort();
+    const port = reservation.port;
+    await reservation.release();
+    const dir = fixture(port);
+    const running = await startApp(
+      loadConfig(dir, { ACKERDB_TELEMETRY: "disabled" }),
+      { prepare: runCodegen },
+    );
+    const entered = Promise.withResolvers<void>();
+    const signaled = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    let storageClosed = false;
+    const closeEngine = running.engine.close.bind(running.engine);
+    running.engine.close = (shutdown) => {
+      storageClosed = true;
+      closeEngine(shutdown);
+    };
+    const work = running.system.run("fixture.drain", async (ctx) => {
+      entered.resolve();
+      await new Promise<void>((resolve) => {
+        if (ctx.abortSignal.aborted) resolve();
+        else ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      signaled.resolve();
+      await release.promise;
+    });
+    const outcome = work.catch((error: unknown) => error);
+    await entered.promise;
+
+    const drain = running.drain();
+    expect(running.drain()).toBe(drain);
+    await signaled.promise;
+    expect(storageClosed).toBe(false);
+
+    release.resolve();
+    await expect(outcome).resolves.toMatchObject({
+      code: "indeterminate",
+      message: "system callback completion is unknown after cancellation",
+    });
+    await drain;
+    expect(storageClosed).toBe(true);
+    expect(shutdownMarker(dir)).toBe(1n);
   }, 20_000);
 
   test("startApp rejects a malformed verifier default export before activation", async () => {

@@ -480,6 +480,55 @@ async function makeHarness(
 }
 
 describe("Plugin invocation boundaries", () => {
+  test("binds procedure and transaction capabilities to a system execution root", async () => {
+    const harness = await makeHarness();
+
+    const result = await harness.runtime.system.run("test.plugin-system", async (context) => {
+      const ctx = context as AnyContext;
+      const direct = await ctx.store.set({ key: "system-direct", value: "system-direct" });
+      const external = await ctx.store.external({});
+      const transaction = await ctx.tx(async (tx: AnyContext) => {
+        const written = await tx.facade.put({ key: "system-tx", value: "system-tx" });
+        return {
+          auth: tx.auth.kind,
+          timestamp: tx.timestamp,
+          pluginTimestamp: written.providerTimestamp,
+          storeOperations: Object.keys(tx.store).sort(),
+          facadeOperations: Object.keys(tx.facade).sort(),
+        };
+      });
+      return {
+        auth: ctx.auth.kind,
+        timestamp: ctx.timestamp,
+        directTimestamp: direct.timestamp,
+        externalTimestamp: external.timestamp,
+        storeOperations: Object.keys(ctx.store).sort(),
+        facadeOperations: Object.keys(ctx.facade).sort(),
+        transaction: transaction.data,
+      };
+    });
+
+    expect(result).toMatchObject({
+      auth: "system",
+      storeOperations: ["external", "fail", "read", "set"],
+      facadeOperations: ["flow", "put", "read"],
+      transaction: {
+        auth: "system",
+        storeOperations: ["fail", "read", "set"],
+        facadeOperations: ["put", "read"],
+      },
+    });
+    expect(new Set([
+      result.timestamp,
+      result.directTimestamp,
+      result.externalTimestamp,
+      result.transaction.timestamp,
+      result.transaction.pluginTimestamp,
+    ]).size).toBe(1);
+    expect(storedValues(harness)).toEqual(["system-direct", "system-tx"]);
+    expect(harness.plugins.state).toBe("ready");
+  });
+
   test("reuses query and mutation transactions, filters kinds, and inherits one timestamp", async () => {
     const harness = await makeHarness();
 

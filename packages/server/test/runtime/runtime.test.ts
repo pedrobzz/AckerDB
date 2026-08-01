@@ -415,6 +415,23 @@ const functions = {
       args: { value: v.string() },
       handler: (_ctx: Ctx, args: Ctx) => args.value,
     }),
+    enterSystem: procedure({
+      access: "public",
+      args: {},
+      handler: async (ctx: Ctx): Promise<unknown> => {
+        const nested: unknown = await runtime.system.run(
+          "test.from-procedure",
+          async (systemCtx): Promise<unknown> => {
+            const echoed: unknown = await functions.ops.echo(
+              systemCtx,
+              { value: systemCtx.auth.kind },
+            );
+            return { principal: systemCtx.auth.kind, echoed };
+          },
+        );
+        return { caller: ctx.auth.kind, nested };
+      },
+    }),
     reject: procedure({
       access: "public",
       http: true,
@@ -1603,6 +1620,575 @@ describe("ordered convergence", () => {
     expect(runtime.status()).toMatchObject({
       connections: 0,
       reactive: { queryListeners: 0, eventListeners: 0 },
+    });
+  });
+});
+
+describe("system execution root", () => {
+  test("composes external work, procedures, queries, and mutations in one system context", async () => {
+    const result = await runtime.system.run("test.pipeline", async (ctx) => {
+      expect(ctx.auth).toEqual({ kind: "system" });
+      const timestamp = ctx.timestamp;
+      const external = await (await fetch("data:text/plain,external")).text();
+      const echoed = await functions.ops.echo(ctx, { value: external });
+      if (!echoed.ok) return echoed;
+      return ctx.tx(async (tx: Ctx) => {
+        expect(tx.auth).toBe(ctx.auth);
+        expect(tx.timestamp).toBe(timestamp);
+        const sent = await functions.messages.send(tx, {
+          channelId: 7n,
+          body: echoed.data,
+        });
+        if (!sent.ok) return sent;
+        return functions.messages.list(tx, { channelId: 7n });
+      });
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      data: [{ channelId: 7n, body: "external" }],
+    });
+  });
+
+  test("does not inherit authority from the invocation that triggered it", async () => {
+    const response = await runtime.runProcedure({
+      id: 301,
+      address: "ops.enterSystem",
+      args: {},
+      principal: user("system-caller"),
+      respond: ({ body, status }) => new Response(body, { status }),
+    });
+
+    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
+      t: "ok",
+      kind: "procedure",
+      value: {
+        caller: "user",
+        nested: {
+          principal: "system",
+          echoed: { ok: true, data: "system" },
+        },
+      },
+    });
+  });
+
+  test("starts pristine but rejects writer re-entry from a transaction-owned caller", async () => {
+    const cancellation = new AbortController();
+    let nestedPrincipal: string | undefined;
+    const result = await runtime.system.run("test.reentrant.outer", (ctx) =>
+      ctx.tx(async () => {
+        const inner = runtime.system.run(
+          "test.reentrant.inner",
+          async (innerCtx) => {
+            nestedPrincipal = innerCtx.auth.kind;
+            const echoed = await functions.ops.echo(innerCtx, { value: "nested" });
+            if (!echoed.ok) return echoed;
+            return innerCtx.tx(() => "completed");
+          },
+          { signal: cancellation.signal },
+        );
+        const outcome = inner.then(
+          () => "settled",
+          (error: unknown) => error instanceof AckerDBError ? error.code : "unknown",
+        );
+        const first = await Promise.race([
+          outcome,
+          Bun.sleep(25).then(() => "blocked"),
+        ]);
+        if (first === "blocked") {
+          cancellation.abort(new AckerDBError("unavailable", "diagnostic cleanup"));
+          await outcome;
+        }
+        return first;
+      })
+    );
+
+    expect(nestedPrincipal).toBe("system");
+    expect(result).toMatchObject({ ok: true, data: "validation" });
+  });
+
+  test("rejects unsafe operation names before entering application code", async () => {
+    for (const name of [
+      "",
+      "1starts-with-a-number",
+      "contains spaces",
+      "job.123456789",
+      "job.550e8400-e29b-41d4-a716-446655440000",
+      "x".repeat(129),
+    ]) {
+      let entered = false;
+      await expect(runtime.system.run(name, () => {
+        entered = true;
+      })).rejects.toThrow("system operation name");
+      expect(entered).toBe(false);
+    }
+  });
+
+  test("returns values as-is and rejects with the callback's exact thrown failure", async () => {
+    const value = Object.freeze({ direct: true });
+    await expect(runtime.system.run("test.value", () => value)).resolves.toBe(value);
+
+    const failure = new Error("system callback failed");
+    await expect(runtime.system.run("test.failure", () => {
+      throw failure;
+    })).rejects.toBe(failure);
+  });
+
+  test("keeps canceled system work owned until the callback settles", async () => {
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const controller = new AbortController();
+    const completion = runtime.system.run("test.cancel", async (ctx) => {
+      entered.resolve(undefined);
+      await release.promise;
+      expect(ctx.abortSignal.aborted).toBe(true);
+      return "completed after cancellation";
+    }, { signal: controller.signal });
+    const outcome = completion.catch((error: unknown) => error);
+    let delivered = false;
+    void outcome.then(() => {
+      delivered = true;
+    });
+
+    await entered.promise;
+    controller.abort(new AckerDBError("unavailable", "caller canceled", {
+      resource: "operation",
+    }));
+    await settle();
+    expect(delivered).toBe(false);
+    expect(runtime.status().activeOperations).toBe(1);
+
+    release.resolve(undefined);
+    expect(await outcome).toMatchObject({
+      code: "indeterminate",
+      message: "system callback completion is unknown after cancellation",
+      resource: "operation",
+    });
+    expect(runtime.status().activeOperations).toBe(0);
+  });
+
+  test("refuses pre-canceled and excess system work before entering application code", async () => {
+    await restart(limits({
+      maxOperations: 2,
+      maxOperationsPerCaller: 1,
+      maxOperationsPerConnection: 2,
+    }));
+    const controller = new AbortController();
+    const canceled = new AckerDBError("unavailable", "caller canceled", {
+      resource: "operation",
+    });
+    controller.abort(canceled);
+    let canceledEntered = false;
+    await expect(runtime.system.run("test.pre-canceled", () => {
+      canceledEntered = true;
+    }, { signal: controller.signal })).rejects.toBe(canceled);
+    expect(canceledEntered).toBe(false);
+
+    const racing = new AbortController();
+    const beforeEntry = new AckerDBError("unavailable", "canceled before entry", {
+      resource: "operation",
+    });
+    let racingEntered = false;
+    const racingCompletion = runtime.system.run("test.before-entry", () => {
+      racingEntered = true;
+    }, { signal: racing.signal });
+    racing.abort(beforeEntry);
+    await expect(racingCompletion).rejects.toBe(beforeEntry);
+    expect(racingEntered).toBe(false);
+
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const held = runtime.system.run("test.held", async () => {
+      entered.resolve(undefined);
+      await release.promise;
+      return "released";
+    });
+    await entered.promise;
+    const saturatedCanceled = new AbortController();
+    const saturatedReason = new AckerDBError("unavailable", "canceled before admission", {
+      resource: "operation",
+    });
+    saturatedCanceled.abort(saturatedReason);
+    let saturatedCanceledEntered = false;
+    await expect(runtime.system.run("test.saturated-canceled", () => {
+      saturatedCanceledEntered = true;
+    }, { signal: saturatedCanceled.signal })).rejects.toBe(saturatedReason);
+    expect(saturatedCanceledEntered).toBe(false);
+
+    let excessEntered = false;
+    await expect(runtime.system.run("test.excess", () => {
+      excessEntered = true;
+    })).rejects.toMatchObject({
+      code: "overloaded",
+      message: "per-caller operation capacity is full",
+      retryable: true,
+      retryAfterMs: 0,
+      resource: "operation",
+    });
+    expect(excessEntered).toBe(false);
+
+    release.resolve(undefined);
+    await expect(held).resolves.toBe("released");
+    expect(runtime.status()).toMatchObject({
+      activeOperations: 0,
+      activeOperationCallers: 0,
+    });
+  });
+
+  test("cancels work waiting for the writer without entering its transaction", async () => {
+    const writerEntered = deferred<void>();
+    const releaseWriter = deferred<void>();
+    const held = runtime.system.run("test.writer-owner", (ctx) =>
+      ctx.tx(async (tx: Ctx) => {
+        writerEntered.resolve(undefined);
+        await releaseWriter.promise;
+        return tx.db.messages.insert({ channelId: 14n, body: "owner" });
+      })
+    );
+    await writerEntered.promise;
+
+    const controller = new AbortController();
+    let transactionEntered = false;
+    const waiting = runtime.system.run("test.writer-wait", async (ctx) => {
+      return ctx.tx(async (tx: Ctx) => {
+        transactionEntered = true;
+        return tx.db.messages.insert({ channelId: 14n, body: "canceled" });
+      });
+    }, { signal: controller.signal });
+    await eventually(() => runtime.status().writer.queue.queuedItems === 1);
+    controller.abort(new AckerDBError("unavailable", "writer wait canceled", {
+      resource: "operation",
+    }));
+    await expect(waiting).rejects.toMatchObject({
+      code: "indeterminate",
+      message: "system callback completion is unknown after cancellation",
+      resource: "operation",
+    });
+    expect(transactionEntered).toBe(false);
+
+    releaseWriter.resolve(undefined);
+    await expect(held).resolves.toMatchObject({ ok: true });
+    await session.open();
+    expect(await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 305,
+      ref: "messages.list",
+      args: { channelId: 14n },
+    }))).toMatchObject([{ body: "owner" }]);
+  });
+
+  test("preserves a system invocation queued for the writer with telemetry disabled", async () => {
+    const writerEntered = deferred<void>();
+    const releaseWriter = deferred<void>();
+    const held = runtime.system.run("test.queued-owner", (ctx) =>
+      ctx.tx(async () => {
+        writerEntered.resolve(undefined);
+        await releaseWriter.promise;
+      })
+    );
+    await writerEntered.promise;
+
+    const waiting = runtime.system.run("test.queued-writer", (ctx) =>
+      ctx.tx((tx: Ctx) => tx.db.messages.insert({ channelId: 16n, body: "queued" }))
+    );
+    await eventually(() => runtime.status().writer.queue.queuedItems === 1);
+    releaseWriter.resolve(undefined);
+
+    await expect(held).resolves.toMatchObject({ ok: true });
+    await expect(waiting).resolves.toMatchObject({ ok: true });
+  });
+
+  test("reports late cancellation honestly without rolling back a durable commit", async () => {
+    const committed = deferred<void>();
+    const release = deferred<void>();
+    const controller = new AbortController();
+    const completion = runtime.system.run("test.late-cancel", async (ctx) => {
+      const result = await ctx.tx((tx: Ctx) =>
+        tx.db.messages.insert({ channelId: 15n, body: "committed" })
+      );
+      expect(result.ok).toBe(true);
+      committed.resolve(undefined);
+      await release.promise;
+      return "finished";
+    }, { signal: controller.signal });
+    await committed.promise;
+    controller.abort(new AckerDBError("unavailable", "late cancellation", {
+      resource: "operation",
+    }));
+    release.resolve(undefined);
+    await expect(completion).rejects.toMatchObject({
+      code: "indeterminate",
+      message: "system callback completion is unknown after cancellation",
+      resource: "operation",
+    });
+
+    await session.open();
+    expect(await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 306,
+      ref: "messages.list",
+      args: { channelId: 15n },
+    }))).toMatchObject([{ body: "committed" }]);
+  });
+
+  test("enforces registered access policies with the canonical system principal", async () => {
+    const outcome = await runtime.system.run("test.system-access", (ctx) =>
+      ctx.tx((tx: Ctx) => functions.reminders.fire(tx, {
+        id: 1n,
+        message: "direct-system",
+        attempt: 1,
+        at: Date.now() + 60_000,
+      }))
+    );
+    expect(outcome.ok).toBe(true);
+    expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([
+      { line: "fired:direct-system" },
+    ]);
+
+    await session.open(user("not-system"));
+    await expect(session.mutation(307, "reminders.fire", {
+      id: 2n,
+      message: "denied",
+      attempt: 1,
+      at: Date.now() + 60_000,
+    })).rejects.toMatchObject({ code: "unauthorized" });
+    expect(engine.reader.query('SELECT line FROM "log"').all()).toEqual([
+      { line: "fired:direct-system" },
+    ]);
+  });
+
+  test("cannot hide a thrown transaction failure by catching it in the system callback", async () => {
+    await expect(runtime.system.run("test.poison", async (ctx) => {
+      try {
+        await ctx.tx(async (tx: Ctx) => {
+          await tx.db.messages.insert({
+            channelId: 13n,
+            body: "must-roll-back",
+          });
+          throw new Error("system transaction failed");
+        });
+      } catch {
+        return "claimed success";
+      }
+      return "unreachable";
+    })).rejects.toThrow("system transaction failed");
+
+    await session.open();
+    expect(await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 304,
+      ref: "messages.list",
+      args: { channelId: 13n },
+    }))).toEqual([]);
+  });
+
+  test("records the operation name and nested application work under one system trace", async () => {
+    const exported: TelemetryRecord[] = [];
+    await restart(limits(), {
+      localSink: false,
+      limits: { slowOperationMs: 0 },
+      exporter: { export: (records) => void exported.push(...records) },
+    });
+
+    await runtime.system.run("test.observed", async (ctx) => {
+      await fetch("data:text/plain,observed");
+      return functions.ops.echo(ctx, { value: "done" });
+    });
+    await runtime.telemetry.flush();
+
+    const spans = exported.filter((record): record is TelemetrySpanRecord =>
+      record.kind === "span" && record.operation === "system"
+    );
+    const traceIds = new Set(spans.map((span) => span.traceId));
+    expect(traceIds.size).toBe(1);
+    expect(spans).toContainEqual(expect.objectContaining({
+      stage: "admission",
+      outcome: "ok",
+      function: "test.observed",
+    }));
+    expect(spans).toContainEqual(expect.objectContaining({
+      stage: "fetch",
+      outcome: "ok",
+      function: "test.observed",
+    }));
+    expect(spans).toContainEqual(expect.objectContaining({
+      stage: "handler",
+      outcome: "ok",
+      function: "ops.echo",
+    }));
+    expect(runtime.status()).toMatchObject({
+      activeOperations: 0,
+      activeOperationCallers: 0,
+    });
+  });
+
+  test("records every system terminal class without dynamic callback data", async () => {
+    const exported: TelemetryRecord[] = [];
+    await restart(limits(), {
+      localSink: false,
+      limits: { slowOperationMs: 0 },
+      exporter: { export: (records) => void exported.push(...records) },
+    });
+
+    const preCanceled = new AbortController();
+    preCanceled.abort();
+    await expect(runtime.system.run(
+      "test.telemetry.pre-canceled",
+      () => "unreachable",
+      { signal: preCanceled.signal },
+    )).rejects.toMatchObject({ code: "unavailable" });
+
+    const applicationFailure = Err(
+      "stock-unavailable",
+      { sku: "dynamic-value-must-not-be-recorded" },
+      Status.Conflict,
+    );
+    await expect(runtime.system.run(
+      "test.telemetry.application-error",
+      () => applicationFailure,
+    )).resolves.toBe(applicationFailure);
+
+    const unhandled = new Error("dynamic failure details must not be recorded");
+    await expect(runtime.system.run("test.telemetry.unhandled", () => {
+      throw unhandled;
+    })).rejects.toBe(unhandled);
+
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const cancellation = new AbortController();
+    const canceled = runtime.system.run("test.telemetry.canceled", async () => {
+      entered.resolve(undefined);
+      await release.promise;
+    }, { signal: cancellation.signal });
+    const canceledOutcome = canceled.catch((error: unknown) => error);
+    await entered.promise;
+    cancellation.abort();
+    release.resolve(undefined);
+    await expect(canceledOutcome).resolves.toMatchObject({ code: "indeterminate" });
+
+    await expect(runtime.system.run(
+      "test.telemetry.success",
+      () => "dynamic success value must not be recorded",
+    )).resolves.toBe("dynamic success value must not be recorded");
+    await runtime.telemetry.flush();
+
+    const spans = exported.filter((record): record is TelemetrySpanRecord =>
+      record.kind === "span" && record.operation === "system"
+    );
+    const hasSpan = (
+      operationName: string,
+      stage: TelemetrySpanRecord["stage"],
+      outcome: string,
+    ) => spans.some((span) =>
+      span.function === operationName &&
+      span.stage === stage &&
+      span.outcome === outcome
+    );
+    expect(hasSpan("test.telemetry.pre-canceled", "admission", "unavailable")).toBe(true);
+    expect(hasSpan("test.telemetry.application-error", "handler", "application_error")).toBe(true);
+    expect(hasSpan("test.telemetry.unhandled", "handler", "internal")).toBe(true);
+    expect(hasSpan("test.telemetry.canceled", "handler", "indeterminate")).toBe(true);
+    expect(hasSpan("test.telemetry.success", "handler", "ok")).toBe(true);
+    expect(JSON.stringify(spans)).not.toContain("dynamic");
+  });
+
+  test("signals accepted system work, refuses new work, and drains only after settlement", async () => {
+    const entered = deferred<void>();
+    const observedShutdown = deferred<void>();
+    const release = deferred<void>();
+    const completion = runtime.system.run("test.drain", async (ctx) => {
+      entered.resolve(undefined);
+      await new Promise<void>((resolve) => {
+        if (ctx.abortSignal.aborted) resolve();
+        else ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      observedShutdown.resolve(undefined);
+      await release.promise;
+      return "settled";
+    });
+    const outcome = completion.catch((error: unknown) => error);
+    await entered.promise;
+
+    const drain = runtime.drain();
+    let drained = false;
+    void drain.then(() => {
+      drained = true;
+    });
+    await observedShutdown.promise;
+    expect(runtime.status()).toMatchObject({
+      state: "draining",
+      activeOperations: 1,
+    });
+    expect(drained).toBe(false);
+    let rejectedEntered = false;
+    await expect(runtime.system.run("test.after-drain", () => {
+      rejectedEntered = true;
+    })).rejects.toMatchObject({ code: "draining" });
+    expect(rejectedEntered).toBe(false);
+
+    release.resolve(undefined);
+    await expect(outcome).resolves.toMatchObject({
+      code: "indeterminate",
+      message: "system callback completion is unknown after cancellation",
+      resource: "operation",
+    });
+    await drain;
+    expect(runtime.status()).toMatchObject({
+      state: "stopped",
+      activeOperations: 0,
+      activeOperationCallers: 0,
+    });
+  });
+
+  test("rolls back application Err and publishes successful transaction effects", async () => {
+    await session.open();
+    await runtime.subscribe(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "sub",
+      id: 302,
+      ref: "messages.list",
+      args: { channelId: 12n },
+    }));
+    const transitionsBefore = session.publications.filter((frame) =>
+      frame.t === "transition" && frame.id === 302
+    ).length;
+
+    const failed = await runtime.system.run("test.rollback", (ctx) =>
+      ctx.tx((tx: Ctx) => functions.messages.writeThenErr(tx, { channelId: 12n }))
+    );
+    expect(failed).toMatchObject({
+      ok: false,
+      error: { code: "stock-unavailable" },
+    });
+    expect(await runtime.query(session.context, request({
+      v: PROTOCOL_VERSION,
+      t: "q",
+      id: 303,
+      ref: "messages.list",
+      args: { channelId: 12n },
+    }))).toEqual([]);
+    expect(session.publications.filter((frame) =>
+      frame.t === "transition" && frame.id === 302
+    )).toHaveLength(transitionsBefore);
+
+    const committed = await runtime.system.run("test.commit", (ctx) =>
+      ctx.tx((tx: Ctx) => functions.messages.send(tx, {
+        channelId: 12n,
+        body: "published",
+      }))
+    );
+    expect(committed.ok).toBe(true);
+    await eventually(() => session.publications.filter((frame) =>
+      frame.t === "transition" && frame.id === 302
+    ).length > transitionsBefore);
+    expect(session.publications.findLast((frame) =>
+      frame.t === "transition" && frame.id === 302
+    )).toMatchObject({
+      t: "transition",
+      transition: { kind: "update" },
     });
   });
 });

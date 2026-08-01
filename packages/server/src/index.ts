@@ -259,6 +259,13 @@ export {
   type TelemetryTraceContext,
 } from "./telemetry/telemetry.ts";
 export { invokeFunction, type InvocationContext } from "./app/invocation.ts";
+export type {
+  AppSystemCtx,
+  SystemCtx,
+  SystemRunner,
+  SystemRunOptions,
+  SystemTxCtx,
+} from "./app/system.ts";
 export {
   query,
   mutation,

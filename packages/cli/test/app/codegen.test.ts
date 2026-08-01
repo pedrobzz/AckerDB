@@ -112,6 +112,38 @@ describe("codegen", () => {
     ).toEqual(bytes);
   });
 
+  test("binds programmatic system work to the exact generated application context", async () => {
+    const dir = fixture();
+    const config = loadConfig(dir);
+    await runCodegen(config);
+    writeFileSync(join(dir, "host.ts"), `
+import { loadConfig, startApp } from "@ackerdb/cli";
+import app from "./app.ts";
+
+const acker = await startApp(loadConfig("."), { app });
+await acker.system.run("fixture.typed", async (ctx) => {
+  const principal: "system" = ctx.auth.kind;
+  const inserted = await ctx.tx((tx) => {
+    const transactionPrincipal: "system" = tx.auth.kind;
+    return tx.db.messages.insert({
+      channelId: 1n,
+      body: transactionPrincipal,
+      role: "admin",
+      payload: { tag: "nothing", value: null },
+    });
+  });
+  // @ts-expect-error SystemCtx is bound to this application's tables.
+  await ctx.tx((tx) => tx.db.unknown.insert({}));
+  return inserted;
+});
+`);
+
+    expect(readFileSync(join(config.generatedDir, "server.ts"), "utf8")).toContain(
+      "export type SystemCtx",
+    );
+    expect(typecheckFixture(dir)).toBe("");
+  });
+
   test("generated addresses line up with the runtime registry", async () => {
     const dir = fixture();
     const config = loadConfig(dir);
@@ -256,6 +288,7 @@ import {
   type ProcedureCtx,
   type QueryCtx,
   type SseCtx,
+  type SystemCtx,
 } from "../_generated/server.ts";
 
 const checkQuery = (ctx: QueryCtx) => {
@@ -309,6 +342,27 @@ const checkSse = async (ctx: SseCtx) => {
     tx.worker;
   });
 };
+
+const checkSystem = async (ctx: SystemCtx) => {
+  const principal: "system" = ctx.auth.kind;
+  await ctx.cache.get("key");
+  await ctx.cache.set("key", "value");
+  await ctx.cache.flush();
+  await ctx.worker.run();
+  await ctx.writer.bump();
+  await ctx.tx(async (tx) => {
+    const transactionPrincipal: "system" = tx.auth.kind;
+    await tx.cache.get(principal);
+    await tx.cache.set(transactionPrincipal, "value");
+    await tx.writer.bump();
+    // @ts-expect-error procedure operations are absent from explicit tx
+    tx.cache.flush;
+    // @ts-expect-error procedure-only mounts are omitted from explicit tx
+    tx.worker;
+  });
+};
+
+void checkSystem;
 
 export const read = query({
   access: "public",

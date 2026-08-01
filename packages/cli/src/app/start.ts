@@ -8,6 +8,8 @@ import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   AckerDBServer,
+  type App,
+  type AppSystemCtx,
   Engine,
   PluginRuntime,
   PRODUCTION_LIMITS,
@@ -20,6 +22,7 @@ import {
   type CredentialVerifier,
   type EngineCloseDisposition,
   type RealtimeRuntimeModule,
+  type SystemRunner,
   MigrationError,
   PluginStorageRequirementsError,
   reconcilePluginStorage,
@@ -33,17 +36,25 @@ import { loadMigrationChain } from "../migrations/load.ts";
 import { readStoredState } from "../migrations/stored.ts";
 import { pluginStorageRecourse } from "../plugins/storage.ts";
 
-export interface RunningApp {
+export interface RunningApp<A extends App = App> {
   server: AckerDBServer;
   runtime: Runtime;
   engine: Engine;
+  system: SystemRunner<AppSystemCtx<A>>;
   /** Idempotently drain; success marks storage clean, while failure releases it unclean. */
   drain(): Promise<void>;
 }
 
-export type StartupPreparation = (config: AppConfig) => Promise<unknown>;
+export type StartupPreparation = (
+  config: AppConfig,
+  signal: AbortSignal,
+) => Promise<unknown>;
 
-export interface StartAppOptions {
+export interface StartAppOptions<A extends App = App> {
+  /** Exact manifest binding for typed in-process application capabilities. */
+  app?: A;
+  /** Caller-owned startup cancellation. Active applications are stopped with RunningApp.drain(). */
+  signal?: AbortSignal;
   /** Work that must finish before application modules are loaded, normally codegen. */
   prepare?: StartupPreparation;
   /** Programmatic auth authority. Cannot be combined with a configured verifier or OIDC. */
@@ -135,11 +146,12 @@ export class StartupInterruptedError extends Error {
   }
 }
 
-export async function startApp(
+export async function startApp<const A extends App = App>(
   config: AppConfig,
-  options: StartAppOptions = {},
-): Promise<RunningApp> {
+  options: StartAppOptions<A> = {},
+): Promise<RunningApp<A>> {
   const loadCredentialVerifier = credentialVerifierLoader(config, options.credentialVerifier);
+  const startupSignal = options.signal ?? AbortSignal.any([]);
   const server = new AckerDBServer({
     limits: PRODUCTION_LIMITS,
     hostname: config.hostname,
@@ -147,7 +159,7 @@ export async function startApp(
     statusScope: config.statusScope,
   });
 
-  let shutdownRequested = false;
+  let shutdownRequested = options.signal?.aborted ?? false;
   let activated = false;
   let engineClosed = false;
   let runtime: Runtime | undefined;
@@ -159,15 +171,16 @@ export async function startApp(
     interruptStartup = () => reject(new StartupInterruptedError());
   });
   // JavaScript cannot cancel an arbitrary import/preparation Promise. Racing it
-  // releases AckerDB ownership; the CLI treats the typed interruption as a process
-  // boundary so abandoned user work cannot retain handles or write afterward.
+  // releases AckerDB ownership; caller-owned preparation receives the same
+  // signal and owns cooperative cleanup of any resources it creates.
   const awaitStartup = <T>(work: Promise<T>): Promise<T> =>
     Promise.race([work, startupInterrupted]);
 
-  const removeSignalHandlers = () => {
-    process.off("SIGINT", onSignal);
-    process.off("SIGTERM", onSignal);
+  const onStartupAbort = () => {
+    shutdownRequested = true;
+    interruptStartup();
   };
+  const releaseStartupSignal = () => options.signal?.removeEventListener("abort", onStartupAbort);
   const closeEngine = (shutdown: EngineCloseDisposition) => {
     if (engineClosed || ownedEngine === undefined) return;
     engineClosed = true;
@@ -175,7 +188,7 @@ export async function startApp(
   };
   const drain = (): Promise<void> => {
     if (drainPromise !== null) return drainPromise;
-    removeSignalHandlers();
+    releaseStartupSignal();
     drainPromise = (async () => {
       let shutdown: EngineCloseDisposition = "unclean";
       try {
@@ -195,36 +208,24 @@ export async function startApp(
     })();
     return drainPromise;
   };
-  const onSignal = () => {
-    const duringStartup = server.state === "starting";
-    shutdownRequested = true;
-    const draining = drain();
-    interruptStartup();
-    if (!duringStartup) {
-      void draining.catch((error) => {
-        console.error(`[ackerdb] ${error instanceof Error ? error.message : String(error)}`);
-        process.exitCode = 1;
-      });
-    }
-  };
   const requireStartupOwnership = () => {
     if (shutdownRequested || server.state !== "starting") {
       throw new StartupInterruptedError();
     }
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  options.signal?.addEventListener("abort", onStartupAbort, { once: true });
 
   try {
+    requireStartupOwnership();
     if (options.prepare !== undefined) {
       server.advanceStartup("codegen");
-      await awaitStartup(options.prepare(config));
+      await awaitStartup(options.prepare(config, startupSignal));
       requireStartupOwnership();
     }
 
     server.advanceStartup("loading");
     const [app, steps] = await awaitStartup(Promise.all([
-      importApp(config),
+      options.app === undefined ? importApp(config) : Promise.resolve(options.app),
       loadMigrationChain(config),
     ]));
     requireStartupOwnership();
@@ -309,7 +310,14 @@ export async function startApp(
     console.log(
       `[ackerdb] ready on http://${displayHostname}:${server.port} — ${registry.functions.size} function(s), ${Object.keys(app.schema.tables).length} table(s), db at ${relative(process.cwd(), config.dbDir) || "."}`,
     );
-    return { server, runtime, engine: ownedEngine, drain };
+    releaseStartupSignal();
+    return {
+      server,
+      runtime,
+      engine: ownedEngine,
+      system: runtime.system as SystemRunner<AppSystemCtx<A>>,
+      drain,
+    };
   } catch (error) {
     // A cleanup/deadline failure is the owning shutdown outcome; never turn it
     // into a successful typed interruption at the CLI boundary.

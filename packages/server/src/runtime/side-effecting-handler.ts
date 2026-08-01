@@ -7,7 +7,8 @@ import {
 export type SideEffectingHandlerKind =
   | "procedure"
   | "MCP tool"
-  | "realtime handler";
+  | "realtime handler"
+  | "system callback";
 
 export function canceledHandlerOutcome(
   signal: AbortSignal,
