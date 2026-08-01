@@ -157,6 +157,53 @@ export const slow = service({
     }
   }, 20_000);
 
+  test("readiness names the service currently starting", async () => {
+    const port = await freePort();
+    const dir = fixture({
+      "services/providers.ts": `
+import { service } from "@ackerdb/server";
+import { record } from "../lib/record.ts";
+
+async function reportReadiness() {
+  const body = await (await fetch("http://127.0.0.1:${port}/ready")).json();
+  record(body.phase + ":" + (body.service ?? "none"));
+}
+
+export const alpha = service({ start: reportReadiness });
+export const beta = service({ start: reportReadiness });
+`,
+    }, port);
+
+    const running = await startApp(loadConfig(dir));
+    try {
+      expect(events(dir)).toEqual([
+        "starting-services:providers.alpha",
+        "starting-services:providers.beta",
+      ]);
+      // The phase clears once the application is ready.
+      const ready = await (await fetch(`http://127.0.0.1:${port}/ready`)).json();
+      expect(ready.phase).toBeUndefined();
+      expect(ready.service).toBeUndefined();
+      expect(running.server.status()).toMatchObject({
+        startupPhase: null,
+        startupService: null,
+      });
+    } finally {
+      await running.drain();
+    }
+  }, 20_000);
+
+  test("an application with no services never enters the service phase", async () => {
+    const port = await freePort();
+    const dir = fixture({}, port);
+    const running = await startApp(loadConfig(dir));
+    try {
+      expect(running.server.status()).toMatchObject({ startupService: null });
+    } finally {
+      await running.drain();
+    }
+  }, 20_000);
+
   test("a setup failure fails startup, names the service, and rolls earlier ones back", async () => {
     const port = await freePort();
     const dir = fixture({

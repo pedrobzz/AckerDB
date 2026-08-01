@@ -340,9 +340,15 @@ export async function startApp<const A extends App = App>(
     // can serve `system.run`, and finish before the server admits its first
     // request: readiness must never describe a half-started application.
     if (declaredServices.length > 0) {
+      server.advanceStartup("starting-services");
       serviceRuntime = new ServiceRuntime({
         services: declaredServices,
         system: runtime.system,
+        // Readiness only reports a phase it is still in; a service that fails
+        // or is interrupted has already left startup behind.
+        onStarting: (name) => {
+          if (server.state === "starting") server.reportStartingService(name);
+        },
       });
       await awaitStartup(serviceRuntime.start());
       requireStartupOwnership();
