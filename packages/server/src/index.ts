@@ -380,6 +380,7 @@ export {
   type CreatedMcpToken,
   type CustomMcpConfig,
   type DefaultMcpConfig,
+  type McpAuthBuilder,
   type McpBuilder,
   type McpAudioContent,
   type McpAiContext,

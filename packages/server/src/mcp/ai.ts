@@ -57,9 +57,11 @@ export interface McpAiTool<Input = unknown, Output = unknown> {
  * A declared application error does not appear here. `execute` throws it, so a
  * success keeps one exact type instead of a union every caller must narrow.
  */
-type McpAiStructuredOutput<R> = R extends Readonly<Record<string, unknown>>
-  ? R
-  : { readonly value: R };
+type McpAiSuccess<R> = R extends { readonly ok: true; readonly data: infer D } ? D : R;
+
+type McpAiStructuredOutput<R> = McpAiSuccess<R> extends infer D
+  ? D extends Readonly<Record<string, unknown>> ? D : { readonly value: D }
+  : never;
 
 type McpAiToolFromEntry<Entry> = Entry extends {
   readonly fn: Registered<any, infer A extends ObjectShape, any, infer R, any>;
