@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/client-react",
-  "version": "0.13.3",
+  "version": "0.13.4",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pedrobzz/AckerDB.git",
@@ -22,8 +22,8 @@
     "./ai": "./src/ai/index.ts"
   },
   "dependencies": {
-    "@ackerdb/client": "workspace:0.13.3",
-    "@ackerdb/core": "workspace:0.13.3"
+    "@ackerdb/client": "workspace:0.13.4",
+    "@ackerdb/core": "workspace:0.13.4"
   },
   "peerDependencies": {
     "ai": "^7.0.0",
