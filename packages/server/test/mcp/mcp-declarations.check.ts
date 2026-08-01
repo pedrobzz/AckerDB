@@ -85,8 +85,8 @@ typedMcp({
 typedMcp({
   name: "streaming",
   auth,
-  // @ts-expect-error an sseProcedure is not a tool kind
   tools: {
+    // @ts-expect-error an sseProcedure is not a tool kind
     streamed: { fn: streamed },
   },
 });
