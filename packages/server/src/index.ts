@@ -83,6 +83,26 @@ export {
   type PluginStorageRequirement,
 } from "./plugins/storage.ts";
 export { PluginRuntime } from "./plugins/runtime.ts";
+export {
+  declareServices,
+  isService,
+  service,
+  type AnyService,
+  type DeclaredService,
+  type Service,
+  type ServiceBuilder,
+  type ServiceCleanup,
+  type ServiceContext,
+  type ServiceDefinition,
+  type ServiceStart,
+} from "./services/definition.ts";
+export {
+  ServiceError,
+  ServiceRuntime,
+  type ServicePhase,
+  type ServiceRuntimeOptions,
+  type ServiceRuntimeState,
+} from "./services/runtime.ts";
 export type { DurabilityPolicy } from "@ackerdb/core";
 export type { TransportSource } from "./runtime/caller.ts";
 export {

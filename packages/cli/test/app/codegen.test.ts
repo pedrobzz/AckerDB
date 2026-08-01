@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import * as ts from "typescript";
 import { Registry } from "@ackerdb/server";
@@ -139,6 +139,52 @@ await acker.system.run("fixture.typed", async (ctx) => {
     expect(readFileSync(join(config.generatedDir, "server.ts"), "utf8")).toContain(
       "export type SystemCtx",
     );
+    expect(typecheckFixture(dir)).toBe("");
+  });
+
+  test("binds application services to the exact generated application context", async () => {
+    const dir = fixture();
+    const config = loadConfig(dir);
+    await runCodegen(config);
+    mkdirSync(join(dir, "services"), { recursive: true });
+    writeFileSync(join(dir, "services", "providers.ts"), `
+import { service, type ServiceCtx } from "../_generated/server.ts";
+
+async function persist({ system }: ServiceCtx) {
+  await system.run("providers.event", async (ctx) => {
+    const principal: "system" = ctx.auth.kind;
+    await ctx.tx((tx) => tx.db.messages.insert({
+      channelId: 1n,
+      body: principal,
+      role: "member",
+      payload: { tag: "text", value: "device" },
+    }));
+    // @ts-expect-error the service's authority is bound to this schema.
+    await ctx.tx((tx) => tx.db.unknown.insert({}));
+    // @ts-expect-error "role" is an enum of this application, not any string.
+    await ctx.tx((tx) => tx.db.messages.insert({ role: "nobody" }));
+  });
+}
+
+export const tuya = service({
+  start: async (ctx) => {
+    await persist(ctx);
+    ctx.abortSignal.addEventListener("abort", () => {});
+    setTimeout(() => ctx.fail(new Error("broker ended")), 0);
+    // Cleanup still holds authority, which is where a consumer flushes.
+    return async () => { await persist(ctx); };
+  },
+});
+`, { flag: "w" });
+    // The manifest must not import the generated module, or deriving the app's
+    // types from it would be a cycle.
+    expect(readFileSync(join(dir, "app.ts"), "utf8")).not.toContain("_generated");
+
+    const server = readFileSync(join(config.generatedDir, "server.ts"), "utf8");
+    expect(server).toContain(
+      "ServiceBuilder<Schema, ProcedurePlugins, MutationPlugins>",
+    );
+    expect(server).toContain("export type ServiceCtx = GenericServiceContext<SystemCtx>");
     expect(typecheckFixture(dir)).toBe("");
   });
 

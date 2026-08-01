@@ -43,36 +43,36 @@
     },
     "packages/cache": {
       "name": "@ackerdb/cache",
-      "version": "0.13.4",
+      "version": "0.14.0",
       "dependencies": {
-        "@ackerdb/core": "workspace:0.13.4",
-        "@ackerdb/server": "workspace:0.13.4",
+        "@ackerdb/core": "workspace:0.14.0",
+        "@ackerdb/server": "workspace:0.14.0",
       },
     },
     "packages/cli": {
       "name": "@ackerdb/cli",
-      "version": "0.13.4",
+      "version": "0.14.0",
       "bin": {
         "acker": "./src/commands/main.ts",
       },
       "dependencies": {
-        "@ackerdb/core": "workspace:0.13.4",
-        "@ackerdb/server": "workspace:0.13.4",
+        "@ackerdb/core": "workspace:0.14.0",
+        "@ackerdb/server": "workspace:0.14.0",
       },
     },
     "packages/client": {
       "name": "@ackerdb/client",
-      "version": "0.13.4",
+      "version": "0.14.0",
       "dependencies": {
-        "@ackerdb/core": "workspace:0.13.4",
+        "@ackerdb/core": "workspace:0.14.0",
       },
     },
     "packages/client-react": {
       "name": "@ackerdb/client-react",
-      "version": "0.13.4",
+      "version": "0.14.0",
       "dependencies": {
-        "@ackerdb/client": "workspace:0.13.4",
-        "@ackerdb/core": "workspace:0.13.4",
+        "@ackerdb/client": "workspace:0.14.0",
+        "@ackerdb/core": "workspace:0.14.0",
       },
       "devDependencies": {
         "@ai-sdk/react": "4.0.32",
@@ -101,52 +101,52 @@
     },
     "packages/core": {
       "name": "@ackerdb/core",
-      "version": "0.13.4",
+      "version": "0.14.0",
       "dependencies": {
         "msgpackr": "2.0.5",
       },
     },
     "packages/realtime": {
       "name": "@ackerdb/realtime",
-      "version": "0.13.4",
+      "version": "0.14.0",
       "dependencies": {
-        "@ackerdb/core": "workspace:0.13.4",
-        "@ackerdb/server": "workspace:0.13.4",
+        "@ackerdb/core": "workspace:0.14.0",
+        "@ackerdb/server": "workspace:0.14.0",
         "@isaacs/ttlcache": "1.4.1",
       },
       "optionalDependencies": {
-        "@ackerdb/realtime-darwin-arm64": "workspace:0.13.4",
-        "@ackerdb/realtime-darwin-x64": "workspace:0.13.4",
-        "@ackerdb/realtime-linux-arm64-gnu": "workspace:0.13.4",
-        "@ackerdb/realtime-linux-x64-gnu": "workspace:0.13.4",
-        "@ackerdb/realtime-win32-x64-msvc": "workspace:0.13.4",
+        "@ackerdb/realtime-darwin-arm64": "workspace:0.14.0",
+        "@ackerdb/realtime-darwin-x64": "workspace:0.14.0",
+        "@ackerdb/realtime-linux-arm64-gnu": "workspace:0.14.0",
+        "@ackerdb/realtime-linux-x64-gnu": "workspace:0.14.0",
+        "@ackerdb/realtime-win32-x64-msvc": "workspace:0.14.0",
       },
     },
     "packages/realtime-native/darwin-arm64": {
       "name": "@ackerdb/realtime-darwin-arm64",
-      "version": "0.13.4",
+      "version": "0.14.0",
     },
     "packages/realtime-native/darwin-x64": {
       "name": "@ackerdb/realtime-darwin-x64",
-      "version": "0.13.4",
+      "version": "0.14.0",
     },
     "packages/realtime-native/linux-arm64-gnu": {
       "name": "@ackerdb/realtime-linux-arm64-gnu",
-      "version": "0.13.4",
+      "version": "0.14.0",
     },
     "packages/realtime-native/linux-x64-gnu": {
       "name": "@ackerdb/realtime-linux-x64-gnu",
-      "version": "0.13.4",
+      "version": "0.14.0",
     },
     "packages/realtime-native/win32-x64-msvc": {
       "name": "@ackerdb/realtime-win32-x64-msvc",
-      "version": "0.13.4",
+      "version": "0.14.0",
     },
     "packages/server": {
       "name": "@ackerdb/server",
-      "version": "0.13.4",
+      "version": "0.14.0",
       "dependencies": {
-        "@ackerdb/core": "workspace:0.13.4",
+        "@ackerdb/core": "workspace:0.14.0",
         "@fastify/proxy-addr": "5.1.0",
         "@modelcontextprotocol/sdk": "1.30.0",
         "jose": "6.2.3",

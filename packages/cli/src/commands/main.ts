@@ -68,11 +68,27 @@ async function runServerCommand(config: AppConfig, options: StartAppOptions = {}
   process.once("SIGTERM", onSignal);
   try {
     const running = await startApp(config, { ...options, signal: startup.signal });
-    await shutdownRequested;
+    // A service that dies after setup ends the application the same way a
+    // signal does. AckerDB never restarts it; the process supervisor does.
+    const failure = await Promise.race([
+      shutdownRequested.then(() => null),
+      running.serviceFailure,
+    ]);
+    if (failure !== null) {
+      console.error(`[ackerdb] ${failure.message} — shutting down`);
+    }
     await running.drain();
+    if (failure !== null) throw failure;
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    // Drain is the whole obligation: storage is committed and the engine is
+    // closed. Anything still holding the event loop past it is a resource a
+    // service cleanup failed to release — a surviving interval or socket — and
+    // waiting on it would keep this child alive forever, wedging the `acker
+    // dev` supervisor that awaits its exit. Exiting is scheduled, not
+    // immediate, so a failure still reaches the reporting boundary first.
+    setTimeout(() => process.exit(process.exitCode ?? 0), 0).unref();
   }
 }
 

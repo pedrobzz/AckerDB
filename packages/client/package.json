@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/client",
-  "version": "0.13.4",
+  "version": "0.14.0",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pedrobzz/AckerDB.git",
@@ -18,6 +18,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.13.4"
+    "@ackerdb/core": "workspace:0.14.0"
   }
 }
