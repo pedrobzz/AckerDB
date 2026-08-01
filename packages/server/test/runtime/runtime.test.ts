@@ -417,6 +417,7 @@ const functions = {
     }),
     enterSystem: procedure({
       access: "public",
+      http: true,
       args: {},
       handler: async (ctx: Ctx): Promise<unknown> => {
         const nested: unknown = await runtime.system.run(
@@ -1659,15 +1660,11 @@ describe("system execution root", () => {
       respond: ({ body, status }) => new Response(body, { status }),
     });
 
-    expect(parseCallResponse(decode(await response.text()))).toMatchObject({
-      t: "ok",
-      kind: "procedure",
-      value: {
-        caller: "user",
-        nested: {
-          principal: "system",
-          echoed: { ok: true, data: "system" },
-        },
+    expect(JSON.parse(await response.text())).toMatchObject({
+      caller: "user",
+      nested: {
+        principal: "system",
+        echoed: { ok: true, data: "system" },
       },
     });
   });
