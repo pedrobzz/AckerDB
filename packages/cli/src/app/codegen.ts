@@ -63,7 +63,6 @@ import type {
   DbWriter,
   McpAuthBuilder,
   McpBuilder,
-  McpToolCtx as GenericMcpToolCtx,
   MutationBuilder,
   MutationCtx as GenericMutationCtx,
   ProcedureBuilder,
@@ -96,7 +95,6 @@ export type MutationCtx = GenericMutationCtx<Schema, MutationPlugins>;
 export type ProcedureCtx = GenericProcedureCtx<Schema, ProcedurePlugins, MutationPlugins>;
 export type SseCtx = GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins>;
 export type SystemCtx = GenericSystemCtx<Schema, ProcedurePlugins, MutationPlugins>;
-export type McpToolCtx = GenericMcpToolCtx<Schema>;
 export type DatabaseReader = DbReader<Schema>;
 export type DatabaseWriter = DbWriter<Schema>;
 `;

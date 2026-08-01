@@ -100,8 +100,6 @@ describe("codegen", () => {
     expect(server).toContain(
       "GenericSseCtx<Schema, ProcedurePlugins, MutationPlugins>",
     );
-    expect(server).toContain("GenericMcpToolCtx<Schema>");
-    expect(server).not.toContain("GenericMcpToolCtx<Schema, ");
     // second run: identical output, nothing rewritten
     const second = await runCodegen(config);
     expect(second.written).toEqual([]);
@@ -172,16 +170,20 @@ await acker.system.run("fixture.typed", async (ctx) => {
       "app.ts": FIXTURE_APP,
       "functions/agent.ts": `
 import { v } from "@ackerdb/server";
-import { createMcp, mcpTool } from "../_generated/server.ts";
+import { mcp, mcpAuth, query } from "../_generated/server.ts";
 
-export const echo = mcpTool({
+export const echo = query({
   description: "Echo text.",
+  access: "public",
   args: { text: v.string() },
-  handler: (_ctx, args) => ({ content: [{ type: "text", text: args.text }] }),
+  returns: v.object({ text: v.string() }),
+  handler: (_ctx, args) => ({ text: args.text }),
 });
-export const agentMcp = createMcp({
+export const agentAuth = mcpAuth({ name: "agent" });
+export const agentMcp = mcp({
   name: "agent",
-  tools: { echo_text: echo },
+  auth: agentAuth,
+  tools: { echo_text: { fn: echo, access: "public" } },
 });
 `,
     });
@@ -192,16 +194,18 @@ export const agentMcp = createMcp({
     const generatedServer = readFileSync(join(config.generatedDir, "server.ts"), "utf8");
     expect(generatedServer).toContain('import type app from "../app.ts";');
     expect(generatedServer).toContain("export type Schema = AppSchema<typeof app>;");
-    expect(generatedServer).toContain("createMcp as createMcpGeneric");
-    expect(generatedServer).toContain("mcpTool as mcpToolGeneric");
-    expect(generatedServer).toContain("export const createMcp = createMcpGeneric as McpBuilder<Schema>;");
-    expect(generatedServer).toContain("export const mcpTool = mcpToolGeneric as McpToolBuilder<Schema>;");
+    expect(generatedServer).toContain("mcp as mcpGeneric");
+    expect(generatedServer).toContain("mcpAuth as mcpAuthGeneric");
+    expect(generatedServer).toContain("export const mcp = mcpGeneric as McpBuilder<Schema>;");
+    expect(generatedServer).toContain("export const mcpAuth = mcpAuthGeneric as McpAuthBuilder<Schema>;");
 
     const registry = new Registry(await importFunctionModules(config));
-    expect([...registry.functions.keys()]).toEqual([]);
+    // The tool is an ordinary function and keeps its address; the endpoint and
+    // its auth provider are the only server-only exports.
+    expect([...registry.functions.keys()]).toEqual(["agent.echo"]);
     expect([...registry.serverOnly.keys()]).toEqual([
       "agent.agentMcp",
-      "agent.echo",
+      "agent.agentAuth",
     ]);
   });
 
@@ -279,7 +283,6 @@ export default defineApp({
       "functions/surface.ts": `
 import { v } from "@ackerdb/server";
 import {
-  mcpTool,
   mutation,
   procedure,
   query,
@@ -392,13 +395,14 @@ export const stream = sseProcedure({
   },
 });
 
-export const echo = mcpTool({
+export const echo = procedure({
   description: "Echo.",
+  access: "public",
   args: {},
-  handler: (ctx) => {
-    // @ts-expect-error MCP tools never receive Plugin mounts
-    ctx.cache;
-    return { content: [{ type: "text" as const, text: "ok" }] };
+  returns: v.object({ text: v.string() }),
+  handler: (ctx: ProcedureCtx) => {
+    void (ctx as { readonly cache?: unknown }).cache;
+    return { text: "ok" };
   },
 });
 `,
@@ -410,8 +414,7 @@ void api.surface.run;
 void api.surface.stream;
 // @ts-expect-error Plugin mounts are not remotely addressable
 api.cache;
-// @ts-expect-error MCP tools remain server-only
-api.surface.echo;
+void api.surface.echo;
 `,
     });
     dirs.push(dir);
