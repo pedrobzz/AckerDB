@@ -26,6 +26,16 @@ backups are verified by restoring them before they are accepted.
 | `@ackerdb/client-react` | React and Expo provider/hooks for data, typed channels, WebRTC sessions, authentication, and optional AI SDK integrations. |
 | `@ackerdb/cli` | `acker dev`, `start`, `codegen`, `reset`, `status`, `backup`, and `restore`. |
 
+Install public stable or canary packages from npm with exact versions:
+
+```sh
+bun add --exact @ackerdb/server@X.Y.Z @ackerdb/client@X.Y.Z @ackerdb/cli@X.Y.Z
+# Realtime applications also install the root optional-native selector:
+bun add --exact @ackerdb/realtime@X.Y.Z
+```
+
+Do not install a host-specific `@ackerdb/realtime-*` package directly.
+
 ## Application shape
 
 ```text
@@ -128,6 +138,9 @@ client.close();
 - [MCP and AI integration](docs/ai-integration.md) documents endpoint-owned
   tool blueprints, exact generated tool types, and the in-process AI SDK
   adapter.
+- [Releases and protected branches](docs/releases.md) documents the
+  `topic → canary → main` topology, fast affected CI, paired AckerDB benchmark,
+  public npm delivery, trusted publishing, and local Verdaccio betas.
 - [Production-readiness report](docs/production-readiness-report.md) records the
   full issue #1 implementation and decision history, verification and benchmark
   evidence, remaining release blockers, and the operational gap versus Convex
@@ -183,15 +196,23 @@ bun run test:packages
 bun run test:mcp:hosts
 bun run typecheck
 bun run typecheck:bench
+bun run typecheck:tooling
 ```
 
-The comparative benchmark is release evidence: every major, minor, or patch
-version is measured once on Hetzner against the preceding version's final
-record. It runs AckerDB, Convex, and SpacetimeDB with the same workload and
-separately measures AckerDB's exact default telemetry, minimum in-process exporter
-handoff cost, and fully disabled telemetry. Its recovery process, naming, and
-interpretation limits are documented in [bench/README.md](bench/README.md).
+GitHub's required benchmark status first classifies the pull request. It returns
+an immediate successful no-op unless code exercised by the benchmark or the
+benchmark contract itself changed. For those performance-relevant changes, it
+compares the pull request's AckerDB with its base branch's AckerDB on the
+dedicated Hetzner runner. Telemetry stays disabled unless telemetry source
+changed. The check records evidence without thresholds or an automated verdict;
+Pedro and an agent interpret the complete vector.
+Do not run the protected benchmark locally. See [the benchmark
+contract](bench/README.md).
+
+Prepare a branch's release intent once it is based on the current target, then
+publish as many local Verdaccio betas as real-application testing needs:
 
 ```sh
-bun run bench:hetzner # dispatch from a background worker after bun run bump
+bun run release:prepare patch # or minor | major
+bun run publish:beta
 ```

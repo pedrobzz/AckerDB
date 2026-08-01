@@ -1,6 +1,15 @@
 {
   "name": "@ackerdb/realtime-win32-x64-msvc",
-  "version": "0.13.1",
+  "version": "0.13.2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedrobzz/AckerDB.git",
+    "directory": "packages/realtime-native/win32-x64-msvc"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "cpu": [
     "x64"
   ],

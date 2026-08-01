@@ -9,7 +9,7 @@ import {
 
 export type BenchmarkFailureKind = "operation" | "connection" | "subscription" | "subscription-capacity";
 
-export interface BenchmarkValidationTarget {
+export interface BenchmarkObservationTarget {
   readonly label: string;
   readonly system: SystemName;
   readonly workload: DriverResult;
@@ -29,7 +29,7 @@ export interface BenchmarkIntegrityAnomaly {
   readonly message: string;
 }
 
-export interface BenchmarkValidation {
+export interface BenchmarkObservations {
   readonly failures: readonly BenchmarkCorrectnessFailure[];
   readonly integrityAnomalies: readonly BenchmarkIntegrityAnomaly[];
 }
@@ -132,9 +132,11 @@ function addFailure(
  * Records concrete correctness and structural observations. Interpretation is
  * deliberately left to the release reviewer rather than encoded as a verdict.
  */
-export function validateBenchmarkResults(targets: readonly BenchmarkValidationTarget[]): BenchmarkValidation {
+export function collectBenchmarkObservations(
+  targets: readonly BenchmarkObservationTarget[],
+): BenchmarkObservations {
   const reference = targets[0]?.workload;
-  if (reference === undefined) throw new Error("benchmark validation requires at least one result target");
+  if (reference === undefined) throw new Error("benchmark observation collection requires at least one result target");
 
   const integrityAnomalies: BenchmarkIntegrityAnomaly[] = [];
   const failures: BenchmarkCorrectnessFailure[] = [];
@@ -146,7 +148,7 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
 
   for (const target of targets) {
     const integrityErrors: string[] = [];
-    if (labels.has(target.label)) integrityErrors.push(`duplicate validation target ${target.label}`);
+    if (labels.has(target.label)) integrityErrors.push(`duplicate observation target ${target.label}`);
     labels.add(target.label);
 
     const workload = target.workload;
@@ -311,17 +313,17 @@ export function validateBenchmarkResults(targets: readonly BenchmarkValidationTa
   });
 }
 
-export function formatBenchmarkValidation(validation: BenchmarkValidation): string {
-  if (validation.failures.length === 0 && validation.integrityAnomalies.length === 0) {
-    return "Benchmark validation observations: none";
+export function formatBenchmarkObservations(observations: BenchmarkObservations): string {
+  if (observations.failures.length === 0 && observations.integrityAnomalies.length === 0) {
+    return "Benchmark harness observations: none";
   }
   return [
-    `Benchmark validation observations: ${validation.failures.length} correctness, ${validation.integrityAnomalies.length} integrity`,
-    ...validation.failures.map(
+    `Benchmark harness observations: ${observations.failures.length} correctness, ${observations.integrityAnomalies.length} integrity`,
+    ...observations.failures.map(
       (failure) =>
         `  - ${failure.target} ${failure.case} [${failure.kind}]: ${failure.errors.join("; ")}`,
     ),
-    ...validation.integrityAnomalies.map(
+    ...observations.integrityAnomalies.map(
       (anomaly) => `  - ${anomaly.target} [integrity]: ${anomaly.message}`,
     ),
   ].join("\n");

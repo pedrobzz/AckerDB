@@ -1,4 +1,4 @@
-// Shared helpers for the local release scripts (bump, merge-guard, publish-local).
+// Shared package, lockfile, registry, and git invariants for release tooling.
 export const PUBLIC_PACKAGES = [
   "core",
   "server",
@@ -42,17 +42,6 @@ const WORKSPACE_FIELDS = [
   "optionalDependencies",
   "peerDependencies",
 ] as const;
-
-// The repo-root .npmrc is the single source of truth for the registry:
-// `bun publish` resolves the @ackerdb scope from it (a --registry flag would
-// bypass .npmrc auth entirely), so the scripts read the same line.
-export async function registryUrl(): Promise<string> {
-  const npmrc = Bun.file(".npmrc");
-  if (!(await npmrc.exists())) fail('missing repo-root .npmrc with "@ackerdb:registry=<url>"');
-  const m = /^@ackerdb:registry=(.+)$/m.exec(await npmrc.text());
-  if (!m) fail('no "@ackerdb:registry=<url>" line in the repo-root .npmrc');
-  return m[1]!.trim().replace(/\/+$/, "");
-}
 
 /** Fail with a start-the-registry hint unless the registry answers a ping. */
 export async function assertRegistryReachable(registry: string): Promise<void> {
@@ -122,7 +111,7 @@ export function assertWorkspaceLock(lock: BunLock, read: (pkg: string) => string
     if (!Bun.deepEquals(lock.workspaces[packageDirectory(pkg)], expected)) {
       fail(
         `bun.lock workspace snapshot for @ackerdb/${pkg} does not match ${pkgJsonPath(pkg)}\n` +
-          `  Run bun run bump so the release manifests and lock graph move together.`,
+          `  Run bun run release:prepare <patch|minor|major> so manifests and the lock graph move together.`,
       );
     }
   }
@@ -146,8 +135,7 @@ export function fail(message: string): never {
   process.exit(1);
 }
 
-// The supplied release package set moves in lockstep; callers normally use all
-// published packages, while the merge guard may inspect an older pre-addition set.
+// All public and host-specific packages move in lockstep.
 export function syncedVersion(
   read: (pkg: string) => string,
   packages: readonly string[] = PACKAGES,
@@ -162,7 +150,7 @@ export function syncedVersion(
   if (parsed.some((p) => p.version !== version)) {
     fail(
       `package versions are out of sync: ${parsed.map((p) => `${p.pkg}=${p.version}`).join(" ")}\n` +
-        `  Fix them to a single version (bun run bump writes the complete release set together).`,
+        `  Fix them to a single version (bun run release:prepare writes the complete set).`,
     );
   }
   // Inter-deps must stay pinned to the lockstep version: bun publish rewrites
@@ -180,7 +168,7 @@ export function syncedVersion(
         if (name.startsWith("@ackerdb/") && spec !== `workspace:${version}`) {
           fail(
             `${pkgJsonPath(pkg)}: ${name} is "${spec}", expected "workspace:${version}"\n` +
-              `  Inter-deps stay pinned to the lockstep version (bun run bump rewrites them).`,
+              `  Inter-deps stay pinned to the lockstep version (release:prepare rewrites them).`,
           );
         }
       }

@@ -1,17 +1,15 @@
-/** Apples-to-apples release benchmark runner; invoked only by the Hetzner worker. */
+/** AckerDB-only benchmark sampler; invoked by the protected PR workflow on Hetzner. */
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { runCodegen } from "../packages/cli/src/app/codegen.ts";
 import { loadConfig } from "../packages/cli/src/app/config.ts";
-import { benchmarkSourceHashAt } from "../scripts/release-evidence.ts";
 import {
   benchmarkConfigFromEnv,
   OPERATION_NAMES,
   subscriptionCapacitySlots,
   type DriverResult,
-  type SystemName,
 } from "./benchmark.ts";
 import {
   assertAckerDBStartup,
@@ -35,12 +33,6 @@ import {
 } from "./process-tree.ts";
 import { withTimeout } from "./load-engine.ts";
 import {
-  previousFinalBenchmark,
-  releaseBenchmarkContext,
-  retainReleaseBenchmark,
-  type ReleaseBenchmarkContext,
-} from "./release.ts";
-import {
   activePhaseIds,
   BENCHMARK_START_SIGNAL,
   benchmarkFailure,
@@ -49,23 +41,18 @@ import {
   type BenchmarkFailurePart,
 } from "./process-lifecycle.ts";
 import {
-  formatBenchmarkValidation,
-  validateBenchmarkResults,
-  type BenchmarkValidation,
-  type BenchmarkValidationTarget,
-} from "./result-validation.ts";
+  collectBenchmarkObservations,
+  formatBenchmarkObservations,
+  type BenchmarkObservations,
+} from "./result-observations.ts";
 
 const BENCH = import.meta.dir;
 const REPO = join(BENCH, "..");
-const RESULTS_DIR = join(BENCH, "results");
 const ACKERDB_PORT = 3311;
-const CONVEX_PORTS = [3210, 3211];
-const SPACETIME_PORT = 5321;
-const REQUIRED_SPACETIME_VERSION = "2.6.1";
 const RESOURCE_SAMPLE_MS = Number(process.env.BENCH_RESOURCE_SAMPLE_MS ?? 250);
 const COOLDOWN_MS = Number(process.env.BENCH_COOLDOWN_MS ?? 2_000);
 const ACKERDB_SHUTDOWN_SLACK_MS = 2_000;
-const ALL_SYSTEMS: SystemName[] = ["ackerdb", "convex", "spacetimedb"];
+const ALL_SYSTEMS = ["ackerdb"] as const;
 
 interface ResourceCollection {
   snapshots: Record<string, ProcessTreeSnapshot>;
@@ -82,11 +69,8 @@ interface MeasuredDriverResult {
 interface AckerDBMeasuredDriverResult extends MeasuredDriverResult {
   startupMode: AckerDBStartupMode;
   telemetryReport: AckerDBTelemetryReport;
+  observations: readonly string[];
 }
-
-type SystemResults = Partial<Record<SystemName, MeasuredDriverResult>> & {
-  ackerdb?: AckerDBMeasuredDriverResult;
-};
 
 interface MachineRecord {
   platform: string;
@@ -98,44 +82,27 @@ interface MachineRecord {
   fileDescriptorLimit: number;
 }
 
-/**
- * The release evidence: apples-to-apples. The AckerDB leg runs telemetry=false
- * because the comparative targets ship no equivalent always-on telemetry;
- * telemetry cost has its own optional run (`TelemetryRunRecord`).
- */
-interface RunRecord {
-  schemaVersion: 10;
-  release: ReleaseBenchmarkContext & { readonly previousVersion: string | null };
+interface BenchmarkSample {
+  schemaVersion: 1;
+  source: {
+    readonly label: "base" | "head";
+    readonly commit: string;
+    readonly version: string;
+  };
+  harnessCommit: string;
   timestamp: string;
-  git: { commit: string; dirty: boolean; sourceHash: string };
   machine: MachineRecord;
-  versions: Record<string, string>;
   methodology: {
     serverResources: string;
     loadGeneratorResources: string;
     sampleIntervalMs: number;
-    durability: Record<SystemName, string>;
-    ackerDBProfiles: string;
-    ackerDBTelemetryValidation: string;
-    spacetimeQueryTransport: string;
+    durability: string;
+    telemetry: string;
     subscriptionCapacity: string;
   };
   executionOrder: BenchmarkExecutionLeg[];
-  systems: SystemResults;
-  validation: BenchmarkValidation;
-}
-
-/** The optional telemetry-cost run: AckerDB against itself, no comparative legs. */
-interface TelemetryRunRecord {
-  kind: "telemetry";
-  schemaVersion: 1;
-  version: string;
-  timestamp: string;
-  git: { commit: string; dirty: boolean; sourceHash: string };
-  machine: MachineRecord;
-  executionOrder: BenchmarkExecutionLeg[];
   profiles: Partial<Record<AckerDBBenchmarkProfile, AckerDBMeasuredDriverResult>>;
-  validation: BenchmarkValidation;
+  observations: BenchmarkObservations;
 }
 
 function assertPortFree(port: number): void {
@@ -185,14 +152,6 @@ async function waitFor(output: () => string, needle: string, timeoutMs: number):
     await Bun.sleep(50);
   }
   throw new Error(`timed out waiting for ${JSON.stringify(needle)}:\n${output()}`);
-}
-
-function findPidByCommand(...fragments: string[]): number {
-  const output = Bun.spawnSync(["ps", "-ww", "-eo", "pid,command"]).stdout.toString();
-  for (const line of output.split("\n")) {
-    if (fragments.every((fragment) => line.includes(fragment))) return Number(line.trim().split(/\s+/)[0]);
-  }
-  throw new Error(`no process matching ${JSON.stringify(fragments)}`);
 }
 
 function parseClientLine(
@@ -427,9 +386,15 @@ async function benchAckerDB(profile: AckerDBBenchmarkProfile): Promise<AckerDBMe
   let startupIdle: MeasuredDriverResult["startupIdle"] | undefined;
   let measured: Omit<MeasuredDriverResult, "startupIdle" | "implementationVersion"> | undefined;
   const failures: BenchmarkFailurePart[] = [];
+  const observations: string[] = [];
   try {
     await waitFor(() => output.output(), "ready on", 15_000);
-    startupMode = assertAckerDBStartup(output.output(), expectedMode);
+    try {
+      startupMode = assertAckerDBStartup(output.output(), expectedMode);
+    } catch (error) {
+      startupMode = expectedMode;
+      observations.push(error instanceof Error ? error.message : String(error));
+    }
     startupIdle = await measureStartupIdle(server.pid);
     measured = await runMeasuredClient(
       [process.execPath, join(BENCH, "ackerdb-client.ts")],
@@ -488,10 +453,21 @@ async function benchAckerDB(profile: AckerDBBenchmarkProfile): Promise<AckerDBMe
         startupMode,
         output.snapshot(),
       );
-      assertAckerDBTelemetryWorkload(telemetryReport, measured.workload);
-      result = { ...measured, startupIdle, implementationVersion: "workspace", startupMode, telemetryReport };
+      try {
+        assertAckerDBTelemetryWorkload(telemetryReport, measured.workload);
+      } catch (error) {
+        observations.push(error instanceof Error ? error.message : String(error));
+      }
+      result = {
+        ...measured,
+        startupIdle,
+        implementationVersion: "workspace",
+        startupMode,
+        telemetryReport,
+        observations,
+      };
     } catch (error) {
-      failures.push({ stage: "validation", error });
+      failures.push({ stage: "observation collection", error });
     }
   }
   try {
@@ -513,143 +489,12 @@ async function benchAckerDB(profile: AckerDBBenchmarkProfile): Promise<AckerDBMe
   return result;
 }
 
-function convexBackendPid(): number {
-  return findPidByCommand("convex-local-backend", join(BENCH, "convex-app"));
-}
-
-async function benchConvex(): Promise<MeasuredDriverResult> {
-  assertPortsFree(CONVEX_PORTS);
-  console.log("→ convex: fresh local backend");
-  rmSync(join(BENCH, "convex-app", ".convex", "local"), { recursive: true, force: true });
-  const dev = Bun.spawn(
-    ["bunx", "convex", "dev", "--tail-logs", "disable", "--typecheck", "disable"],
-    { cwd: join(BENCH, "convex-app"), stdout: "pipe", stderr: "pipe" },
-  );
-  const stdout = tail(dev as never);
-  const stderr = tail({ stdout: dev.stderr } as never);
-  const output = () => stdout.output() + stderr.output();
-  try {
-    await waitFor(output, "Convex functions ready", 120_000);
-    const pid = convexBackendPid();
-    const startupIdle = await measureStartupIdle(pid);
-    const measured = await runMeasuredClient(
-      [process.execPath, join(BENCH, "convex-app", "client.ts")],
-      { CONVEX_URL: `http://127.0.0.1:${CONVEX_PORTS[0]}` },
-      pid,
-    );
-    const config = JSON.parse(
-      readFileSync(join(BENCH, "convex-app", ".convex", "local", "default", "config.json"), "utf8"),
-    ) as { backendVersion?: string };
-    return { ...measured, startupIdle, implementationVersion: config.backendVersion ?? "unknown" };
-  } finally {
-    try {
-      Bun.spawnSync(["kill", String(convexBackendPid())]);
-    } catch {
-      // The dev process may already have stopped the backend.
-    }
-    dev.kill();
-    await dev.exited;
-    await Promise.all([stdout.done, stderr.done]);
-  }
-}
-
-function spacetimeServerPid(dataDir: string): number {
-  return findPidByCommand("spacetimedb-standalone", dataDir);
-}
-
-async function benchSpacetime(): Promise<MeasuredDriverResult> {
-  const version = assertSpacetimeVersionAlignment();
-  assertPortsFree([SPACETIME_PORT]);
-  console.log(`→ spacetimedb ${version}: fresh standalone server`);
-  const appDir = join(BENCH, "spacetime-app");
-  const moduleDir = join(appDir, "spacetimedb");
-  const bindingsDir = join(appDir, "module_bindings");
-  const dataDir = join(appDir, ".stdb-data");
-  rmSync(dataDir, { recursive: true, force: true });
-  const starter = Bun.spawn(
-    ["spacetime", "start", "--listen-addr", `127.0.0.1:${SPACETIME_PORT}`, "--data-dir", dataDir, "--non-interactive"],
-    { stdout: "pipe", stderr: "pipe" },
-  );
-  const stdout = tail(starter as never);
-  const stderr = tail({ stdout: starter.stderr } as never);
-  const output = () => stdout.output() + stderr.output();
-  try {
-    await waitFor(output, `listening on 127.0.0.1:${SPACETIME_PORT}`, 30_000);
-    const generate = Bun.spawnSync(
-      ["spacetime", "generate", "--lang", "typescript", "--out-dir", bindingsDir, "--module-path", moduleDir, "-y", "--no-config"],
-      { cwd: appDir, stdout: "pipe", stderr: "pipe" },
-    );
-    if (generate.exitCode !== 0) throw new Error(`spacetime generate failed:\n${generate.stderr}`);
-    const publish = Bun.spawnSync(
-      [
-        "spacetime",
-        "publish",
-        "ackerdb-bench",
-        "--module-path",
-        moduleDir,
-        "-s",
-        `http://127.0.0.1:${SPACETIME_PORT}`,
-        "--anonymous",
-        "-y",
-        "--no-config",
-      ],
-      { cwd: appDir, stdout: "pipe", stderr: "pipe" },
-    );
-    if (publish.exitCode !== 0) throw new Error(`spacetime publish failed:\n${publish.stderr}`);
-    const pid = spacetimeServerPid(dataDir);
-    const startupIdle = await measureStartupIdle(pid);
-    const measured = await runMeasuredClient(
-      [process.execPath, join(appDir, "client.ts")],
-      { SPACETIMEDB_URL: `ws://127.0.0.1:${SPACETIME_PORT}`, SPACETIMEDB_DB: "ackerdb-bench" },
-      pid,
-    );
-    return { ...measured, startupIdle, implementationVersion: version };
-  } finally {
-    try {
-      Bun.spawnSync(["kill", String(spacetimeServerPid(dataDir))]);
-    } catch {
-      // Server may already be gone.
-    }
-    starter.kill();
-    await starter.exited;
-    await Promise.all([stdout.done, stderr.done]);
-  }
-}
-
 function packageVersion(path: string): string {
   try {
     return (JSON.parse(readFileSync(path, "utf8")) as { version?: string }).version ?? "unknown";
   } catch {
     return "unknown";
   }
-}
-
-function spacetimeCliVersion(): string {
-  return Bun.spawnSync(["spacetime", "--version"])
-    .stdout.toString()
-    .match(/tool version ([\d.]+)/)?.[1] ?? "unknown";
-}
-
-function assertSpacetimeVersionAlignment(): string {
-  const versions = {
-    cli: spacetimeCliVersion(),
-    client: packageVersion(join(BENCH, "spacetime-app", "node_modules", "spacetimedb", "package.json")),
-    module: packageVersion(
-      join(BENCH, "spacetime-app", "spacetimedb", "node_modules", "spacetimedb", "package.json"),
-    ),
-  };
-  for (const [component, version] of Object.entries(versions)) {
-    if (version !== REQUIRED_SPACETIME_VERSION) {
-      throw new Error(
-        `SpacetimeDB ${component} is ${version}; this benchmark requires every component to be ${REQUIRED_SPACETIME_VERSION}`,
-      );
-    }
-  }
-  return REQUIRED_SPACETIME_VERSION;
-}
-
-function git(args: string[]): string {
-  return Bun.spawnSync(["git", ...args], { cwd: REPO }).stdout.toString().trim();
 }
 
 function fileDescriptorLimit(): number {
@@ -662,7 +507,7 @@ function aggregateCell(cell: { readonly count: number; readonly durationMs: numb
 }
 
 function printAckerDBTelemetryStatus(results: readonly AckerDBMeasuredDriverResult[]): void {
-  console.log("\nACKERDB default-local telemetry validation and bounded retention status");
+  console.log("\nACKERDB telemetry accounting and bounded retention observations");
   console.log(
     "| profile | local records | serialized MB | retained before drain | exported during drain | drain drops | overflow drops | query queue count/mean ms | mutation queue count/mean ms | procedure admission | subscription queue count/mean ms | trace promoted/discarded | exporter records |",
   );
@@ -700,7 +545,7 @@ function resourceWindow(
   return window;
 }
 
-function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>): void {
+function printResults(systems: Partial<Record<"ackerdb", MeasuredDriverResult>>): void {
   const names = ALL_SYSTEMS.filter((name) => systems[name]);
   const first = systems[names[0]!]!.workload;
   console.log("\nOperation throughput and latency (median of steady-state trials)");
@@ -846,14 +691,6 @@ function printResults(systems: Partial<Record<SystemName, MeasuredDriverResult>>
   }
 }
 
-function gitRecord(): RunRecord["git"] {
-  return {
-    commit: process.env.BENCH_RELEASE_SOURCE_COMMIT ?? git(["rev-parse", "HEAD"]),
-    dirty: git(["status", "--porcelain"]).length > 0,
-    sourceHash: benchmarkSourceHashAt("HEAD"),
-  };
-}
-
 function machineRecord(): MachineRecord {
   return {
     platform: platform(),
@@ -866,173 +703,79 @@ function machineRecord(): MachineRecord {
   };
 }
 
-/**
- * The optional AckerDB-only diagnostic. By default it compares all three
- * telemetry profiles; BENCH_TELEMETRY_PROFILES can restrict the run to one or
- * more comma-separated profiles. No comparative release gate; the record
- * lands beside the release evidence as telemetry-v<version>.json and is
- * overwritten freely.
- */
-async function runTelemetryBenchmark(version: string): Promise<void> {
-  const requestedProfiles = process.env.BENCH_TELEMETRY_PROFILES === undefined
-    ? ["enabled", "exporter", "disabled"] satisfies AckerDBBenchmarkProfile[]
-    : process.env.BENCH_TELEMETRY_PROFILES.split(",") as AckerDBBenchmarkProfile[];
-  if (
-    requestedProfiles.length === 0 ||
-    requestedProfiles.some(
-      (profile) => !["enabled", "exporter", "disabled"].includes(profile),
-    ) ||
-    new Set(requestedProfiles).size !== requestedProfiles.length
-  ) {
-    throw new Error(
-      "BENCH_TELEMETRY_PROFILES must contain unique enabled, exporter, or disabled profiles",
-    );
-  }
-  await runCodegen(loadConfig(join(BENCH, "ackerdb-app"), {
-    ACKERDB_DURABILITY: "balanced",
-    ACKERDB_TELEMETRY: requestedProfiles.every((profile) => profile === "disabled")
-      ? "disabled"
-      : "enabled",
-  }));
-  const executionOrder = benchmarkExecutionOrder(["ackerdb"], requestedProfiles, 0);
-  const measured = new Map<BenchmarkExecutionLeg, AckerDBMeasuredDriverResult>();
-  for (let index = 0; index < executionOrder.length; index++) {
-    const leg = executionOrder[index]!;
-    const profile = leg.replace("ackerdb-telemetry-", "") as AckerDBBenchmarkProfile;
-    measured.set(leg, await benchAckerDB(profile));
-    if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
-  }
-  const profiles = Object.fromEntries(
-    requestedProfiles.map((profile) => [
-      profile,
-      measured.get(`ackerdb-telemetry-${profile}`)!,
-    ]),
-  ) as Partial<Record<AckerDBBenchmarkProfile, AckerDBMeasuredDriverResult>>;
-  const validation = validateBenchmarkResults(
-    requestedProfiles.map((profile) => ({
-      label: `ackerdb/${profile}`,
-      system: "ackerdb" as const,
-      workload: profiles[profile]!.workload,
-    })),
-  );
-
-  const record: TelemetryRunRecord = {
-    kind: "telemetry",
-    schemaVersion: 1,
-    version,
-    timestamp: new Date().toISOString(),
-    git: gitRecord(),
-    machine: machineRecord(),
-    executionOrder,
-    profiles,
-    validation,
-  };
-  mkdirSync(RESULTS_DIR, { recursive: true });
-  const savedPath = join(RESULTS_DIR, `telemetry-v${version}.json`);
-  await Bun.write(savedPath, `${JSON.stringify(record, null, 2)}\n`);
-  console.log(`\nsaved ${relative(REPO, savedPath)}`);
-  console.log(`\n${formatBenchmarkValidation(validation)}`);
-  printAckerDBTelemetryStatus(
-    requestedProfiles.map((profile) => profiles[profile]!),
-  );
-}
-
-const requested = process.argv.slice(2) as SystemName[];
-for (const name of requested) {
-  if (!ALL_SYSTEMS.includes(name)) throw new Error(`unknown system ${JSON.stringify(name)}`);
-}
-if (new Set(requested).size !== requested.length) throw new Error("each requested system may appear only once");
-if (requested.length > 0) throw new Error("release benchmarks always run AckerDB, Convex, and SpacetimeDB together");
-
 const benchmarkConfig = benchmarkConfigFromEnv();
 if (benchmarkConfig.profile !== "default") {
-  throw new Error("release benchmarks use the default workload only");
+  throw new Error("protected-branch benchmarks use the default workload only");
 }
-const releaseContext = releaseBenchmarkContext(packageVersion(join(REPO, "packages", "core", "package.json")));
-
-if (process.env.BENCH_RUN_KIND === "telemetry") {
-  await runTelemetryBenchmark(releaseContext.version);
-  process.exit(0);
+const outputPath = process.env.BENCH_OUTPUT;
+const sourceLabel = process.env.BENCH_SOURCE_LABEL;
+const sourceCommit = process.env.BENCH_SOURCE_COMMIT;
+const harnessCommit = process.env.BENCH_HARNESS_COMMIT;
+if (
+  !outputPath ||
+  (sourceLabel !== "base" && sourceLabel !== "head") ||
+  !sourceCommit ||
+  !harnessCommit
+) {
+  throw new Error(
+    "BENCH_OUTPUT, BENCH_SOURCE_LABEL=base|head, BENCH_SOURCE_COMMIT, and BENCH_HARNESS_COMMIT are required",
+  );
+}
+const requestedProfiles = (process.env.BENCH_TELEMETRY_PROFILES ?? "disabled")
+  .split(",") as AckerDBBenchmarkProfile[];
+if (
+  requestedProfiles.length === 0 ||
+  requestedProfiles.some((profile) => !["enabled", "exporter", "disabled"].includes(profile)) ||
+  new Set(requestedProfiles).size !== requestedProfiles.length
+) {
+  throw new Error("BENCH_TELEMETRY_PROFILES must contain unique enabled, exporter, or disabled profiles");
 }
 
-const bootstrap = process.env.BENCH_RELEASE_BOOTSTRAP === "1";
-const previous = bootstrap ? undefined : previousFinalBenchmark(RESULTS_DIR, releaseContext.version);
-
-// Apples-to-apples: the comparative targets ship no equivalent always-on
-// telemetry, so the release leg runs telemetry=false. Telemetry cost is the
-// separate optional run above.
 await runCodegen(loadConfig(join(BENCH, "ackerdb-app"), {
   ACKERDB_DURABILITY: "balanced",
-  ACKERDB_TELEMETRY: "disabled",
+  ACKERDB_TELEMETRY: requestedProfiles.every((profile) => profile === "disabled")
+    ? "disabled"
+    : "enabled",
 }));
-const spacetimeVersion = assertSpacetimeVersionAlignment();
-const executionOrder = benchmarkExecutionOrder(ALL_SYSTEMS, ["disabled"], 0);
-const systems: SystemResults = {};
+const executionOrder = benchmarkExecutionOrder(requestedProfiles, 0);
+const profiles: Partial<Record<AckerDBBenchmarkProfile, AckerDBMeasuredDriverResult>> = {};
 for (let index = 0; index < executionOrder.length; index++) {
   const leg = executionOrder[index]!;
-  switch (leg) {
-    case "ackerdb-telemetry-disabled":
-      systems.ackerdb = await benchAckerDB("disabled");
-      break;
-    case "convex":
-      systems.convex = await benchConvex();
-      break;
-    case "spacetimedb":
-      systems.spacetimedb = await benchSpacetime();
-      break;
-    default:
-      throw new Error(`release benchmark does not run leg ${leg}`);
-  }
+  const profile = leg.replace("ackerdb-telemetry-", "") as AckerDBBenchmarkProfile;
+  profiles[profile] = await benchAckerDB(profile);
   if (index < executionOrder.length - 1 && COOLDOWN_MS > 0) await Bun.sleep(COOLDOWN_MS);
 }
-
-if (systems.ackerdb === undefined) {
-  throw new Error("release benchmark AckerDB measurements are missing");
+const observations = collectBenchmarkObservations(requestedProfiles.map((profile) => ({
+  label: `ackerdb/${profile}`,
+  system: "ackerdb" as const,
+  workload: profiles[profile]!.workload,
+})));
+const version = packageVersion(join(REPO, "packages", "core", "package.json"));
+if (!/^\d+\.\d+\.\d+$/.test(version)) {
+  throw new Error(`benchmark source version ${version} is not x.y.z`);
 }
-const validationTargets: BenchmarkValidationTarget[] = [
-  { label: "ackerdb", system: "ackerdb", workload: systems.ackerdb.workload },
-  { label: "convex", system: "convex", workload: systems.convex!.workload },
-  { label: "spacetimedb", system: "spacetimedb", workload: systems.spacetimedb!.workload },
-];
-const validation = validateBenchmarkResults(validationTargets);
-
-const record: RunRecord = {
-  schemaVersion: 10,
-  release: { ...releaseContext, previousVersion: previous?.version ?? null },
+const record: BenchmarkSample = {
+  schemaVersion: 1,
+  source: { label: sourceLabel, commit: sourceCommit, version },
+  harnessCommit,
   timestamp: new Date().toISOString(),
-  git: gitRecord(),
   machine: machineRecord(),
-  versions: {
-    bun: Bun.version,
-    bunRevision: Bun.spawnSync([process.execPath, "--revision"]).stdout.toString().trim(),
-    convexClient: packageVersion(join(BENCH, "convex-app", "node_modules", "convex", "package.json")),
-    convexBackend: systems.convex?.implementationVersion ?? "unknown",
-    spacetimedbCli: spacetimeVersion,
-    spacetimedbClient: packageVersion(join(BENCH, "spacetime-app", "node_modules", "spacetimedb", "package.json")),
-    spacetimedbModule: packageVersion(join(BENCH, "spacetime-app", "spacetimedb", "node_modules", "spacetimedb", "package.json")),
-  },
   methodology: {
     serverResources: `${RESOURCE_SAMPLE_MS}ms shared ps process-tree sampling; RSS is sampled summed per-process RSS (shared pages may be counted more than once) and CPU is cumulative user+system time`,
     loadGeneratorResources: "same shared process-table samples, reported separately from server resources to expose client-side saturation",
     sampleIntervalMs: RESOURCE_SAMPLE_MS,
-    durability: {
-      ackerdb: "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
-      convex: "current local backend native default",
-      spacetimedb: "confirmed reads explicitly enabled; standalone native durable commit log",
-    },
-    ackerDBProfiles: "apples-to-apples: systems.ackerdb runs telemetry=false because the comparative targets ship no equivalent always-on telemetry; telemetry cost is measured by the separate optional telemetry run (telemetry-v<version>.json), not re-proven on every release",
-    ackerDBTelemetryValidation: "the parent streams AckerDB stdout/stderr into fixed counters plus a 64 KiB diagnostic tail; the release leg runs telemetry=false and must prove it stays entirely inactive; enabled-profile accounting is validated by the telemetry run",
-    spacetimeQueryTransport: "read-only procedure with explicit transaction because the 2.6 TypeScript SDK has no public one-off query API",
+    durability: "server-confirmed balanced profile: SQLite WAL, synchronous=NORMAL, mutation acknowledgement after COMMIT; process-crash consistent, not a power-loss durability claim",
+    telemetry: requestedProfiles.length === 1 && requestedProfiles[0] === "disabled"
+      ? "telemetry disabled; no telemetry work changed in this pull request"
+      : "paired enabled, exporter, and disabled profiles because telemetry work changed",
     subscriptionCapacity: "closed-loop end-to-end saturation at increasing independent-writer concurrency; an update completes only after every intended client validates delivery",
   },
   executionOrder,
-  systems,
-  validation,
+  profiles,
+  observations,
 };
-mkdirSync(RESULTS_DIR, { recursive: true });
-const savedPath = await retainReleaseBenchmark(RESULTS_DIR, releaseContext, record);
-console.log(`\nsaved ${relative(REPO, savedPath)}`);
-printResults(systems);
-console.log(`\n${formatBenchmarkValidation(validation)}`);
-printAckerDBTelemetryStatus([systems.ackerdb]);
-console.log(`\nrelease benchmark evidence recorded for human interpretation.`);
+await Bun.write(outputPath, `${JSON.stringify(record, null, 2)}\n`);
+if (profiles.disabled) printResults({ ackerdb: profiles.disabled });
+console.log(`\n${formatBenchmarkObservations(observations)}`);
+printAckerDBTelemetryStatus(requestedProfiles.map((profile) => profiles[profile]!));
+console.log(`\nsaved ${sourceLabel} AckerDB sample to ${outputPath} for human interpretation`);

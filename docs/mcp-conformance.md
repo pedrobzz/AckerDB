@@ -74,10 +74,11 @@ temporary consumer. It verifies:
   verifies that the server has no production dependency on `ai` or
   `@ai-sdk/*`.
 
-The temporary consumer uses package-manager overrides only to point
-transitive `@ackerdb/*` versions at the seven local tarballs because this project
-does not publish them to npm. The packed manifests themselves remain unchanged
-and are asserted after installation.
+The temporary consumer uses package-manager overrides to point transitive
+`@ackerdb/*` versions at the seven tarballs under test. This isolates package
+verification from whichever stable, canary, or local beta is currently
+published. The packed manifests themselves remain unchanged and are asserted
+after installation.
 
 ## Real host acceptance
 
@@ -97,17 +98,11 @@ authenticated/structured/rich calls, a live scope reduction, and live
 revocation. See [the reproducible host record](mcp-host-acceptance.md) for the
 exact versions, configuration, assertions, and current host limitations.
 
-## Comparative performance
+## Pull-request performance
 
-Runtime MCP changes are benchmarked only when they enter a release version:
-
-```sh
-# Dispatch from a background worker after bun run bump.
-bun run bench:hetzner
-```
-
-AckerDB, Convex, and SpacetimeDB run on the Hetzner host with the same workload.
-The single version-bound release record compares AckerDB with the preceding
-version. It is evidence for human or agent interpretation of the full
-performance vector, never an automated approval or release veto. See [the
-benchmark contract](../bench/README.md) for the complete procedure.
+Runtime MCP changes under the measured server source enter GitHub's paired
+benchmark. Documentation, conformance fixtures, and other non-runtime MCP work
+receive the benchmark status's immediate successful no-op. A real Hetzner job
+compares the branch's AckerDB with the base branch's AckerDB and records the full
+vector without thresholds or an automated verdict; Pedro and an agent interpret
+it before merge. See [the benchmark contract](../bench/README.md).

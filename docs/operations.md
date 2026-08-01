@@ -141,22 +141,23 @@ current contract.
 Published `@ackerdb/realtime` releases must have verified optional native
 packages for Darwin arm64/x64, Linux GNU arm64/x64, and Windows x64, plus the
 aggregate manifest, SHA-256 digests, third-party notices, and Cargo CycloneDX
-SBOM. The
-root package contains no native binary; a consumer installs only its matching
-optional target package. CI packs one release candidate containing all twelve
-lockstep AckerDB tarballs. Its manifest binds clean HEAD, source and packed
-package manifests, the native ABI, every target’s evidence, and every tarball
-digest. Stable publication accepts only that downloaded artifact via
-`ACKERDB_RELEASE_CANDIDATE`, verifies it before its first Verdaccio request,
-and uploads those exact tarballs without rebuilding or repacking. Prereleases
-remain a separate working-tree path under their `alpha`/`beta` dist-tags. They
-still require the matching verified five-target CI artifacts staged under
-`packages/realtime/native/webrtc/binding/`; the script does not build or
-download them. CI
-builds every claimed target and executes the native and exact-packed-package
-suites on Darwin arm64; physical-device, provider, network-change, TURN-only,
-churn, and soak exercises are release/operator validation rather than hidden
-package claims.
+SBOM. The root package contains no native binary; a consumer installs only its
+matching optional target package.
+
+GitHub builds all five targets only when actual WebRTC native inputs change.
+The pull-request artifacts are used by the following canary delivery. When the
+native source digest is unchanged, canary, stable, and local beta publication
+reuse an already verified five-target public or local artifact set instead of
+recompiling Rust. Every reused target manifest must match the exact current
+native-source digest, binary digest, loader digest, and package version after
+retargeting.
+
+Merges into `canary` publish `X.Y.Z-canary.N` to public npm; merges into `main`
+publish `X.Y.Z`. Verdaccio receives repeatable `X.Y.Z-beta.N` local test builds
+only. CI executes native and exact-packed-package suites on Darwin arm64;
+physical-device, provider, network-change, TURN-only, churn, and soak exercises
+remain release/operator validation rather than hidden package claims. See
+[Releases and protected branches](releases.md).
 
 The complete API and recovery semantics are in
 [Realtime media](realtime-media.md); build provenance is in

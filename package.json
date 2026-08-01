@@ -14,7 +14,8 @@
     "test:packages": "bun scripts/verify-packages.ts",
     "test:packages:webrtc": "bun scripts/verify-packages.ts --require-webrtc",
     "typecheck": "bunx tsc -p tsconfig.json --noEmit && bunx tsc -p packages/client-react/tsconfig.json --noEmit && bunx tsc -p fixtures/expo-app/tsconfig.json --noEmit",
-    "typecheck:bench": "bunx tsc -p bench/tsconfig.json --noEmit",
+    "typecheck:bench": "bun packages/cli/src/commands/main.ts codegen bench/ackerdb-app && bunx tsc -p bench/tsconfig.json --noEmit",
+    "typecheck:tooling": "bunx tsc -p scripts/tsconfig.json --noEmit",
     "diagnostic:validator": "bun scripts/validator-diagnostic.ts",
     "build:webrtc": "bun packages/realtime/native/webrtc/build.ts",
     "assemble:webrtc": "bun packages/realtime/native/webrtc/package.ts",
@@ -22,13 +23,12 @@
     "verify:webrtc-candidate": "bun packages/realtime/native/webrtc/candidate.ts verify",
     "audit:prod": "bun audit --prod",
     "test:webrtc": "bun run build:webrtc && bun test packages/realtime/native/webrtc/test",
-    "bench:hetzner": "bun scripts/bench-hetzner.ts",
     "registry": "bunx verdaccio --config registry/config.yaml",
-    "bump": "bun scripts/bump.ts",
-    "publish:local": "bun scripts/publish-local.ts",
-    "publish:beta": "bun scripts/publish-prerelease.ts beta next-minor",
-    "publish:alpha": "bun scripts/publish-prerelease.ts alpha next-minor",
-    "prepare": "git config core.hooksPath .githooks && git config branch.main.mergeoptions --no-ff"
+    "release:prepare": "bun scripts/release/prepare.ts",
+    "publish:beta": "bun scripts/release/publish.ts beta",
+    "publish:beta:demo": "bun scripts/release/publish.ts beta --demo",
+    "publish:npm": "bun scripts/release/publish.ts npm",
+    "prepare": "git config core.hooksPath .githooks && git config branch.main.mergeoptions --no-ff && git config branch.canary.mergeoptions --no-ff"
   },
   "devDependencies": {
     "@modelcontextprotocol/conformance": "0.1.16",
