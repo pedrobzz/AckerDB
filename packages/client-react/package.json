@@ -1,6 +1,15 @@
 {
   "name": "@ackerdb/client-react",
   "version": "0.13.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedrobzz/AckerDB.git",
+    "directory": "packages/client-react"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "type": "module",
   "files": [
     "src"

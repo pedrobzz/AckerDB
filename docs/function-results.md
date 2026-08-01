@@ -675,11 +675,11 @@ fixture. A cold 5,000-endpoint build should complete within a few seconds on the
 documented reference machine. CPU and memory must remain bounded and scale with
 the affected graph, not the whole application, after startup.
 
-A reproducible query-path regression of 5% or more under the same useful
-workload rejects the implementation design. Smaller movements still require
-whole-vector judgment across latency, throughput, memory, tails, and
-correctness. The repository release benchmark remains evidence rather than an
-automatic pass/fail script.
+Any reproducible query-path regression under the same useful workload requires
+whole-vector judgment across latency, throughput, memory, tails, useful work,
+and correctness. No percentage decides acceptance. The paired pull-request
+benchmark remains evidence for Pedro and an agent rather than an automatic
+performance verdict.
 
 Automatic mutation scopes have real cost, so their measurements are reported
 separately from query performance. That cost is paid only at registered nested

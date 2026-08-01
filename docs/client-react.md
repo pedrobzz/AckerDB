@@ -581,5 +581,6 @@ Recovery guarantees are operation-specific:
 - The package does not implement provider login UI, OAuth redirects, bearer
   issuance/renewal, or secure token storage. Those remain the authentication
   provider and application's responsibility.
-- AckerDB packages are currently released to the repository's configured local
-  Verdaccio registry, not the public npm registry.
+- Stable and canary AckerDB packages are published to public npm. Repeatable
+  `beta` builds are local-only in Verdaccio; see [the release
+  contract](releases.md).

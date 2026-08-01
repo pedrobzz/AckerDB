@@ -58,7 +58,8 @@ Every later token, scope, output, and AI adapter needs one real protocol path. T
 - Extend the existing registry with a distinct server-only export kind instead of disguising tools as procedures.
 - Mount into the existing Bun listener and reuse bounded body parsing; do not use AckerDB's private tagged wire codec.
 - Build the shared dispatcher as the only handler execution path from the first slice.
-- If this work changes the release version, run one Hetzner release benchmark against the preceding version; do not create a pre-change baseline.
+- This work enters GitHub's required paired AckerDB benchmark when its pull
+  request targets `canary`; do not create a local baseline.
 
 ## Blocked by
 
@@ -868,8 +869,8 @@ AFK
 Turn the complete implementation into reproducible conformance checks and
 performance evidence: run official MCP server conformance plus retained raw
 JSON cases, pack/install the real lockstep artifacts in clean Bun fixtures,
-validate server exports/dependencies, and compare full AckerDB, Convex, and
-SpacetimeDB on Hetzner against the preceding release version.
+validate server exports/dependencies, and compare the branch's AckerDB with its
+base branch's AckerDB on the protected Hetzner check.
 
 ### Why this slice exists
 
@@ -881,10 +882,9 @@ Protocol and performance claims must survive outside unit mocks and source-works
 - [ ] Raw fixtures cover initialize, notification, ping, list, call, malformed JSON-RPC, unsupported methods, auth failures, JSON POST responses, and stateless GET/DELETE.
 - [ ] Clean packed consumers resolve the server MCP subpath, generated server types, stable SDK dependency, and Bun runtime.
 - [ ] Packed `@ackerdb/server` contains no AI SDK production dependency.
-- [ ] The completed benchmark produced its single version-, host-, source-, and
-      predecessor-bound Hetzner record, and its full performance vector and
-      anomaly observations are interpreted with explicit reasoning; benchmark
-      values do not approve or veto the release.
+- [ ] The current pull-request commit has paired base/head Hetzner observations,
+      and Pedro plus an agent interpret the full vector explicitly; benchmark
+      values do not approve or veto the release automatically.
 - [ ] All compile, unit, integration, security, cancellation, leak, and package tests run in the normal repository gate.
 
 ### Implementation notes
@@ -922,7 +922,8 @@ Protocol and performance claims must survive outside unit mocks and source-works
 
 - Run the official suite and raw fixtures from a clean checkout.
 - Pack and install exact lockstep artifacts in an isolated consumer.
-- At the version bump, run the full three-system Hetzner benchmark and inspect deltas from the preceding final version.
+- Review the required base/head AckerDB Hetzner artifact for the current pull
+  request and record the human reasoning.
 
 ### Out of scope
 

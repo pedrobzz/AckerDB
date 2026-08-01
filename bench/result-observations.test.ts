@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { BenchmarkConfig, DriverResult, SystemName } from "./benchmark.ts";
 import {
-  formatBenchmarkValidation,
-  validateBenchmarkResults,
-  type BenchmarkValidationTarget,
-} from "./result-validation.ts";
+  collectBenchmarkObservations,
+  formatBenchmarkObservations,
+  type BenchmarkObservationTarget,
+} from "./result-observations.ts";
 
 const config: BenchmarkConfig = {
   profile: "default",
@@ -107,16 +107,20 @@ function workload(system: SystemName): DriverResult {
   };
 }
 
-function targets(): BenchmarkValidationTarget[] {
-  return (["ackerdb", "convex", "spacetimedb"] as const).map((system) => ({ label: system, system, workload: workload(system) }));
+function targets(): BenchmarkObservationTarget[] {
+  return ["base", "head"].map((label) => ({
+    label,
+    system: "ackerdb",
+    workload: workload("ackerdb"),
+  }));
 }
 
-describe("benchmark result validation", () => {
+describe("benchmark result observations", () => {
   test("returns immutable empty observations for comparable correct results", () => {
-    const validation = validateBenchmarkResults(targets());
-    expect(validation).toEqual({ failures: [], integrityAnomalies: [] });
-    expect(formatBenchmarkValidation(validation)).toBe("Benchmark validation observations: none");
-    expect(Object.isFrozen(validation)).toBe(true);
+    const observations = collectBenchmarkObservations(targets());
+    expect(observations).toEqual({ failures: [], integrityAnomalies: [] });
+    expect(formatBenchmarkObservations(observations)).toBe("Benchmark harness observations: none");
+    expect(Object.isFrozen(observations)).toBe(true);
   });
 
   test("reports measured correctness failures with their system identity", () => {
@@ -125,36 +129,36 @@ describe("benchmark result validation", () => {
     trial.completedInWindow = 0;
     trial.failed = 1;
     trial.correctness = { ok: false, errors: ["query checksum mismatch"] };
-    const validation = validateBenchmarkResults(results);
-    expect(validation).toMatchObject({
-      failures: [{ target: "ackerdb", system: "ackerdb", kind: "operation", case: "query/latency/trial-0", errors: ["query checksum mismatch", "1 request failed"] }],
+    const observations = collectBenchmarkObservations(results);
+    expect(observations).toMatchObject({
+      failures: [{ target: "base", system: "ackerdb", kind: "operation", case: "query/latency/trial-0", errors: ["query checksum mismatch", "1 request failed"] }],
       integrityAnomalies: [],
     });
   });
 
-  test("records comparative-target failures without deriving a verdict", () => {
+  test("records another AckerDB sample's failures without deriving a verdict", () => {
     const results = targets();
-    const trial = results[1]!.workload.operations[0]!.trials[0]!; // convex
+    const trial = results[1]!.workload.operations[0]!.trials[0]!;
     trial.completedInWindow = 0;
     trial.failed = 1;
     trial.correctness = { ok: false, errors: ["duplicate deliveries"] };
-    const validation = validateBenchmarkResults(results);
-    expect(validation.failures).toEqual([
-      expect.objectContaining({ target: "convex", system: "convex", errors: ["duplicate deliveries", "1 request failed"] }),
+    const observations = collectBenchmarkObservations(results);
+    expect(observations.failures).toEqual([
+      expect.objectContaining({ target: "head", system: "ackerdb", errors: ["duplicate deliveries", "1 request failed"] }),
     ]);
   });
 
   test("records changed workloads and broken accounting as integrity observations", () => {
     const configMismatch = targets();
     configMismatch[1]!.workload.config.seed = 2;
-    expect(validateBenchmarkResults(configMismatch).integrityAnomalies).toContainEqual(
-      expect.objectContaining({ target: "convex", system: "convex", message: expect.stringContaining("workload config differs") }),
+    expect(collectBenchmarkObservations(configMismatch).integrityAnomalies).toContainEqual(
+      expect.objectContaining({ target: "head", system: "ackerdb", message: expect.stringContaining("workload config differs") }),
     );
 
     const accountingMismatch = targets();
     accountingMismatch[0]!.workload.connections[0]!.work.attempted = 2;
-    expect(validateBenchmarkResults(accountingMismatch).integrityAnomalies).toContainEqual(
-      expect.objectContaining({ target: "ackerdb", system: "ackerdb", message: expect.stringContaining("request accounting mismatch") }),
+    expect(collectBenchmarkObservations(accountingMismatch).integrityAnomalies).toContainEqual(
+      expect.objectContaining({ target: "base", system: "ackerdb", message: expect.stringContaining("request accounting mismatch") }),
     );
   });
 });

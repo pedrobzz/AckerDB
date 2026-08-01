@@ -75,29 +75,21 @@ describe("ackerdb benchmark startup confirmation", () => {
 });
 
 describe("ackerdb benchmark profile order", () => {
-  test("expands the requested AckerDB profiles in place and rotates their order across reruns", () => {
-    expect(benchmarkExecutionOrder(["convex", "ackerdb", "spacetimedb"], ["enabled", "exporter", "disabled"], 0)).toEqual([
-      "convex",
+  test("rotates requested telemetry profiles across reruns", () => {
+    expect(benchmarkExecutionOrder(["enabled", "exporter", "disabled"], 0)).toEqual([
       "ackerdb-telemetry-enabled",
       "ackerdb-telemetry-exporter",
       "ackerdb-telemetry-disabled",
-      "spacetimedb",
     ]);
-    expect(benchmarkExecutionOrder(["ackerdb", "convex", "spacetimedb"], ["enabled", "exporter", "disabled"], 1)).toEqual([
+    expect(benchmarkExecutionOrder(["enabled", "exporter", "disabled"], 1)).toEqual([
       "ackerdb-telemetry-exporter",
       "ackerdb-telemetry-disabled",
       "ackerdb-telemetry-enabled",
-      "convex",
-      "spacetimedb",
     ]);
-    // The release run's single profile: rotation is a no-op, so every saved-run
-    // count measures the same apples-to-apples leg.
-    expect(benchmarkExecutionOrder(["ackerdb", "convex", "spacetimedb"], ["disabled"], 2)).toEqual([
+    expect(benchmarkExecutionOrder(["disabled"], 2)).toEqual([
       "ackerdb-telemetry-disabled",
-      "convex",
-      "spacetimedb",
     ]);
-    expect(() => benchmarkExecutionOrder(["ackerdb"], [], 0)).toThrow("at least one AckerDB profile");
+    expect(() => benchmarkExecutionOrder([], 0)).toThrow("at least one AckerDB profile");
   });
 
   test("selects the explicit exporter profile only with enabled telemetry", () => {

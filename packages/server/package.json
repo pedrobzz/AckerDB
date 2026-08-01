@@ -1,6 +1,15 @@
 {
   "name": "@ackerdb/server",
   "version": "0.13.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedrobzz/AckerDB.git",
+    "directory": "packages/server"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "type": "module",
   "files": [
     "src"

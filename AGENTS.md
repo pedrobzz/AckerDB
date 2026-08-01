@@ -162,199 +162,49 @@ Before accepting a performance/correctness change, answer:
 6. Which OpenSRC/primary-source decision or AckerDB ledger entry supports it?
 7. What boundary test and, when relevant, benchmark prove the claim?
 
+# Release branches, benchmarks, and publishing
 
-# Benchmarks
+[Releases and protected branches](docs/releases.md) is the authoritative
+procedure. Do not recreate an alternate release path in another document or
+script.
 
-Benchmarks are a release-only last resort. Run them only for a major, minor,
-or patch version change—never before or after ordinary implementation work.
-The final benchmark from the preceding version is the before-state.
+GitHub protects both `canary` and `main`. Normal pull requests target
+`canary`; only `canary` targets `main`. The sole exception is a
+Pedro-authored `hotfix/*` pull request to `main` carrying
+`release:urgent`. There are no direct-push, force-push, local-merge, or
+administrator-bypass release paths.
 
-Every release benchmark runs all of AckerDB, Convex, and SpacetimeDB on Hetzner
-only, with the same workload, **apples-to-apples**: the AckerDB leg runs
-`telemetry=false` because the comparative targets ship no equivalent always-on
-telemetry. The whole run is budgeted at five minutes on Hetzner (eight is the
-ceiling); the default workload measures the decision points only — single-user
-latency and saturation, the connection floor and ceiling, and a three-rung
-subscription-capacity ladder. After `bun run bump <patch|minor|major>`,
-dispatch `bun run bench:hetzner` in a background subagent or worker. Do not
-run `bench/run.ts` on the developer machine. The merge guard may require the
-version-, host-, and source-bound result to exist, but it must never interpret
-benchmark values or use them to approve or block a release.
+Every topic or hotfix branch declares exactly one major, minor, or patch step
+with `bun run release:prepare <level>`. All seven public packages and five
+host-specific native packages stay on that one stable source version with
+`workspace:X.Y.Z` interdependencies. A `canary` promotion may contain
+several accumulated steps and only needs to be newer than `main`.
 
-Telemetry cost is *not* re-proven on every release: `bun run bench:hetzner
---telemetry` is the optional AckerDB-only run (enabled vs exporter vs disabled)
-whenever telemetry code actually changed. Its record —
-`bench/results/telemetry-v<version>.json` — is diagnostic, freely rerun, and
-never release evidence.
+The GitHub `AckerDB benchmark` check compares the pull request's AckerDB with
+the base branch's AckerDB on Hetzner. It never runs another vendor and never
+runs on the developer machine. Telemetry is disabled unless telemetry-related
+source changed; only then are enabled, exporter, and disabled profiles
+measured. The check has no thresholds, score, or automated performance
+acceptance. Pedro and an agent interpret the complete vector and anomalies by
+reasoning before merge. Historical files in `bench/results/` are not current
+release evidence.
 
-Records are version-bound:
+Every merge into `canary` publishes `X.Y.Z-canary.N` to public npm under the
+`canary` tag. Every merge into `main` publishes `X.Y.Z` under `latest`.
+Public delivery is GitHub-only and uses the `npm` environment's trusted
+publisher; never run it manually. A normal stable promotion requires the same
+source version to exist publicly as a canary first.
 
-- release evidence: `bench/results/v<version>.json`;
-- telemetry (optional, diagnostic): `bench/results/telemetry-v<version>.json`.
+Verdaccio at `http://127.0.0.1:4874` is exclusively for repeatable local
+`X.Y.Z-beta.N` builds. Publish one whenever a prepared branch is testable with
+`bun run publish:beta` or `bun run publish:beta:demo`. Never publish stable,
+canary, or alpha versions to Verdaccio, and never publish beta or alpha
+versions to public npm.
 
-Retain exactly one release record per version. Do not retain recovery
-iterations, timestamp results, ad-hoc benchmark logs, or a separate
-before-change record. Existing releases get one Hetzner bootstrap at their
-release tag, not a renamed legacy record.
-
-The benchmark is evidence, never a verdict. A human or agent must interpret the
-complete performance vector and correctness observations in the context of the
-workload and the change. There are no universal regression thresholds and no
-benchmark-derived pass/fail status. More useful work can legitimately consume
-more CPU or RAM; less work can make a lower resource total misleading. Explain
-material movements, distinguish measurement noise from changed load or useful
-work, and record the reasoning in the release handoff. If the evidence reveals
-a design problem, redesign the hot path rather than patching around it, but the
-script itself must not make that judgment or veto the release.
-
-SpacetimeDB remains an excellent reference, not a product AckerDB must beat on
-every metric. Convex remains the main comparative target. Their same-run
-measurements make the AckerDB result interpretable; the version-to-version
-comparison is evidence about AckerDB itself.
-
-# Local Publishing
-
-We do not publish to npm. Releases go to a local Verdaccio registry at `http://127.0.0.1:4874`, so real projects on this machine can install `@ackerdb/*` like normal npm packages — pinned, with every old version still installable. (4874, not Verdaccio's default 4873: this machine's own Homebrew Verdaccio launchd agent owns 4873.)
-
-The seven public packages (`@ackerdb/core`, `@ackerdb/server`, `@ackerdb/realtime`, `@ackerdb/cache`, `@ackerdb/client`, `@ackerdb/client-react`, `@ackerdb/cli`) and five host-filtered `@ackerdb/realtime-*` native packages share **one version, always in lockstep**. Bumping one bumps all twelve publish units (`bun run bump` writes all of them; the merge guard rejects drift). Each published version is also a git tag (`v0.2.0`), so old published code is always recoverable with `git checkout v0.2.0`.
-
-## One-time setup (per clone / machine)
-
-```bash
-bun install                                  # "prepare" installs the git hooks + no-ff merges on main
-bun run registry                             # starts Verdaccio (keep it running in its own terminal)
-bunx npm adduser --registry http://127.0.0.1:4874   # any username/password; token lands in ~/.npmrc
-```
-
-The committed repo-root `.npmrc` routes the `@ackerdb` scope to the local registry — that line is what `bun publish` uses to pick the target registry (and to find the adduser token in `~/.npmrc`). The release scripts read the same line, so `.npmrc` is the single place the registry URL lives.
-
-## Workflow: every change goes through a branch
-
-Main is protected by git hooks (`.githooks/`): direct commits to main are rejected, and merges into main are guarded.
-
-1. **Branch**: `git checkout -b feat/<name>` (or `fix/`, `chore/`, ...).
-2. **Commit with conventional commit messages** — the guard reads them. `feat:` and `fix:` (and any breaking `type!:`) require a version bump; `chore:`, `docs:`, `test:`, `refactor:` etc. merge freely.
-3. **Bump on the branch** before merging (pick the semver level yourself):
-   ```bash
-   bun run bump patch   # or: minor | major
-   ```
-   This rewrites the version in all 12 publish units **and** their inter-deps (pinned as `workspace:X.Y.Z` — never hand-edit these back to `workspace:*`; bun packs `workspace:*` from a bun.lock snapshot that goes stale on version-only edits), regenerates the version-bound N-API loader, then commits everything as `chore(release): vX.Y.Z`.
-4. **Benchmark the release version**: dispatch this in a background worker or
-   subagent; it runs only on Hetzner and compares the pending version with the
-   preceding version's final record:
-   ```bash
-   bun run bench:hetzner
-   ```
-   Commit the single `bench/results/vX.Y.Z.json`, inspect the full performance
-   vector, and document the reasoning for material movements. The command does
-   not approve or reject the release. During this policy migration, establish
-   the latest already-published predecessor once with
-   `bun run bench:hetzner --bootstrap X.Y.Z` at its tag.
-5. **Merge into main** (a merge commit by default — no-ff is configured):
-   ```bash
-   git checkout main && git merge feat/<name>
-   ```
-   The `pre-merge-commit` hook (`scripts/merge-guard.ts`) blocks the merge if:
-   - the branch has `feat`/`fix`/breaking commits but the version didn't change;
-   - the 12 package versions are not identical;
-   - the new version is not greater than main's, or is already tagged.
-   - a completed benchmark did not produce a Hetzner evidence record bound to
-     the release version, source, and main's preceding version. Observations,
-     anomaly fields, benchmark values, and status fields are not merge criteria.
-
-   If it blocks you: `git merge --abort`, bump on the branch, merge again.
-6. **Download the exact-HEAD CI candidate, then publish it** (manual, from
-   main, clean tree):
-   ```bash
-   # Native CI is deliberately not triggered by ordinary main pushes.
-   gh workflow run webrtc-prebuilds.yml --ref main
-   # Wait for the successful run whose head SHA is the current main HEAD.
-   gh run download <run-id> --name ackerdb-release-candidate --dir /tmp/ackerdb-release-candidate
-   ACKERDB_RELEASE_CANDIDATE=/tmp/ackerdb-release-candidate/webrtc-candidate-manifest.json \
-     bun run publish:local
-   ```
-   CI creates one candidate with the exact twelve packed tarballs, their
-   package-manifest and file digests, all five native evidence sets, the native
-   ABI, and clean HEAD. `publish:local` verifies that artifact against the
-   current HEAD before contacting Verdaccio, then invokes `bun publish
-   <candidate-tarball>` in dependency order (core, server, the five native
-   packages, realtime, cache, client, client-react, cli). It never rebuilds,
-   installs, packs, or substitutes a local tarball. The candidate pack rewrites
-   `workspace:X.Y.Z` inter-deps to exact `X.Y.Z` dependencies. `@ackerdb/realtime`
-   contains the generated loader but no `.node` file; its optional dependencies
-   let the package manager install only the native package matching the consumer
-   host.
-
-## Prerelease publishing: test a branch without merging
-
-`bun run publish:beta` publishes the **working tree** — any branch, dirty is
-fine — as `@ackerdb/*@<base>-beta.N` under the `beta` dist-tag. `bun run
-publish:alpha` publishes it as the next minor's
-`@ackerdb/*@<next-minor>.0-alpha.N` under the `alpha` dist-tag. None of the
-release gates apply (no main-only, no clean tree, no bench evidence, no git
-tag); `latest` never moves, so real consumers are untouched. The registry's
-version list is the beta counter: every run takes a fresh `N`, and a failed
-run is just re-run. Package manifests are rewritten only for the pack and
-restored byte-for-byte.
-
-```bash
-bun run publish:beta          # publish only; prints the version
-bun run publish:beta --demo   # also repin the demo to it and reinstall
-bun run publish:alpha         # publish the next minor alpha
-```
-
-`--demo` rewrites every demo workspace's `@ackerdb/*` pins **that sit at the
-current base version** to the fresh beta (deliberate divergences are reported,
-not overwritten) and runs `bun install` in `demo/`. The pin edits are ordinary
-tracked changes — restore them when done testing. Betas accumulate in
-`registry/storage/` like any published version; they are throwaway by
-convention, unpublishable with the usual `npm unpublish` line below.
-
-The source tree may be dirty, but prerelease publication still needs the
-matching verified `webrtc-*` CI artifact set for all five native targets staged
-under `packages/realtime/native/webrtc/binding/`. The script neither downloads
-nor builds missing cross-platform binaries; it retargets their package evidence
-to the prerelease version, publishes under only the `alpha`/`beta` dist-tag,
-then restores the working-tree version and generated evidence.
-
-## Using AckerDB in a real project
-
-In the consumer project, scope `@ackerdb` to the local registry — `.npmrc` in the project root:
-
-```ini
-@ackerdb:registry=http://127.0.0.1:4874
-```
-
-Then install exact (pinned) versions:
-
-```bash
-bun add --exact @ackerdb/server@0.2.0 @ackerdb/cache@0.2.0 @ackerdb/client@0.2.0 @ackerdb/client-react@0.2.0 @ackerdb/cli@0.2.0
-```
-
-Apps that declare realtime routes additionally install the optional backend:
-
-```bash
-bun add --exact @ackerdb/realtime@0.2.0
-```
-
-Do not install a `@ackerdb/realtime-*` package directly. It is selected by the
-`os`, `cpu`, and (on Linux) `libc` metadata on `@ackerdb/realtime`'s optional
-dependencies. Production installs must preserve optional dependencies.
-
-**Going back to an old version works**: Verdaccio keeps every published version in `registry/storage/` (gitignored, survives restarts), so `bun add --exact @ackerdb/server@0.1.0` keeps working after 0.2.0+ exist. To see the matching source, `git checkout v0.1.0`.
-
-Consumers must run Bun — packages ship raw TypeScript from `src/`.
-
-## Escape hatches & caveats
-
-- The guard runs at two layers: the merge hooks (nice errors, right timing), plus a `reference-transaction` backstop that checks **every** update to `refs/heads/main` — so fast-forward merges (`--ff`/`--ff-only` override the no-ff config), cherry-picks onto main, rebases, and even `--no-verify` merges (which skip commit hooks but not this) are blocked mechanically if they'd land feat/fix commits without a bump. When the backstop aborts one of these, git may leave staged changes behind — `git reset --hard` restores main.
-- `ACKERDB_ALLOW_MAIN=1` is the deliberate escape: it bypasses both the direct-commit block and the backstop (use sparingly; this is how repo-meta changes like this tooling land).
-- Prefer plain `git merge` (merge commits) — the merge hooks give clearer errors than the backstop, and history stays legible.
-- Never `npm publish` here and never pass `--registry` to `bun publish` (it bypasses `.npmrc` and loses the auth token). Stable `bun run publish:local` requires `ACKERDB_RELEASE_CANDIDATE` from the successful CI artifact for the exact current HEAD; it has no local-build fallback.
-- If a publish is interrupted midway, just re-run `bun run publish:local` — it skips packages already in the registry at the current version and finishes the rest (then tags).
-- To unpublish a broken version: `bunx npm unpublish --force @ackerdb/<pkg>@X.Y.Z --registry http://127.0.0.1:4874` (do it for all 12 publish units, then delete the tag).
-
-Release plumbing lives in `scripts/` (`bump.ts`, `merge-guard.ts`, `publish-local.ts`, shared `lib.ts`), hooks in `.githooks/`, registry config in `registry/config.yaml`, scope routing in the repo-root `.npmrc`.
+Fast CI runs affected package tests and their dependents in parallel, keeps
+repository typechecks fast, and builds the five Rust targets only when actual
+WebRTC native inputs changed. A `canary` → `main` promotion repeats none of
+that work; it runs branch policy before merge and npm delivery after merge.
 
 ## Agent skills
 

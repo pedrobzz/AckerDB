@@ -1,7 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import {
   channelChecksum,
   channelPayload,
@@ -14,8 +11,7 @@ import {
   type DriverResult,
   type SearchRow,
 } from "./benchmark.ts";
-import { validateBenchmarkResults } from "./result-validation.ts";
-import { retainReleaseBenchmark } from "./release.ts";
+import { collectBenchmarkObservations } from "./result-observations.ts";
 import { runConnectionScale, runSubscriptionCase } from "./workload.ts";
 
 function config(): BenchmarkConfig {
@@ -160,7 +156,7 @@ describe("measured workload failures", () => {
       subscriptions: [],
       failures: outcome.failures,
     };
-    const validation = validateBenchmarkResults([{ label: "ackerdb", system: "ackerdb", workload }]);
+    const observations = collectBenchmarkObservations([{ label: "ackerdb", system: "ackerdb", workload }]);
 
     expect(connections.map((result) => result.targetConnections)).toEqual([3]);
     expect(connections[0]).toMatchObject({ connected: 3, errors: [] });
@@ -171,7 +167,7 @@ describe("measured workload failures", () => {
       terminal: false,
       message: "connected 0/1; connection refused",
     });
-    expect(validation.failures[0]).toMatchObject({
+    expect(observations.failures[0]).toMatchObject({
       kind: "connection",
       case: "connections/1",
       errors: ["connected 0/1; connection refused"],
@@ -280,7 +276,7 @@ describe("measured workload failures", () => {
     expect(unsubscribed).toBeGreaterThanOrEqual(1);
   });
 
-  test("persists corrupt fixed-rate delivery before returning a failing outcome", async () => {
+  test("records corrupt fixed-rate delivery before returning a failing outcome", async () => {
     const benchmarkConfig = config();
     benchmarkConfig.subscriptions.patterns = ["shared"];
     let nonce = 1;
@@ -292,36 +288,17 @@ describe("measured workload failures", () => {
       () => nonce++,
     );
     const subscription = outcome.measurement!;
-    const validation = validateBenchmarkResults([{
+    const observations = collectBenchmarkObservations([{
       label: "ackerdb",
       system: "ackerdb",
       workload: subscriptionWorkload(benchmarkConfig, subscription, outcome.failures),
     }]);
 
     expect(subscription).toMatchObject({ corruptDeliveries: 1, missingDeliveries: 1 });
-    expect(validation.failures[0]).toMatchObject({ kind: "subscription", case: "subscriptions/shared" });
-
-    const directory = mkdtempSync(join(tmpdir(), "ackerdb-workload-failure-"));
-    try {
-      const path = await retainReleaseBenchmark(directory, {
-        version: "0.3.3",
-        host: "hetzner",
-      }, {
-        schemaVersion: 10,
-        validation,
-      });
-      const saved = JSON.parse(readFileSync(path, "utf8")) as {
-        schemaVersion: number;
-        validation: { status: string; failures: Array<{ kind: string }> };
-      };
-
-      expect(saved).toMatchObject({
-        schemaVersion: 10,
-        validation: { failures: [{ kind: "subscription" }] },
-      });
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
+    expect(observations.failures[0]).toMatchObject({
+      kind: "subscription",
+      case: "subscriptions/shared",
+    });
   });
 
   test("records a capacity-writer setup failure and measures the next slot level", async () => {
@@ -348,7 +325,7 @@ describe("measured workload failures", () => {
       () => nonce++,
     );
     const subscription = outcome.measurement!;
-    const validation = validateBenchmarkResults([{
+    const observations = collectBenchmarkObservations([{
       label: "ackerdb",
       system: "ackerdb",
       workload: subscriptionWorkload(benchmarkConfig, subscription, outcome.failures),
@@ -365,7 +342,7 @@ describe("measured workload failures", () => {
         terminal: false,
       }),
     ]);
-    expect(validation.failures[0]).toMatchObject({
+    expect(observations.failures[0]).toMatchObject({
       kind: "subscription-capacity",
       case: "subscriptions/partitioned/capacity-2",
     });
@@ -385,7 +362,7 @@ describe("measured workload failures", () => {
       () => nonce++,
     );
     const subscription = outcome.measurement!;
-    const validation = validateBenchmarkResults([{
+    const observations = collectBenchmarkObservations([{
       label: "ackerdb",
       system: "ackerdb",
       workload: subscriptionWorkload(benchmarkConfig, subscription, outcome.failures),
@@ -397,7 +374,7 @@ describe("measured workload failures", () => {
       capacity.completedInWindow + capacity.completedAfterWindow + capacity.failed,
     );
     expect(capacity.failed).toBeGreaterThan(0);
-    expect(validation.failures[0]).toMatchObject({
+    expect(observations.failures[0]).toMatchObject({
       kind: "subscription-capacity",
       case: "subscriptions/shared/capacity-1",
     });

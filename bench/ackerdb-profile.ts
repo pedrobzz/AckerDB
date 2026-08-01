@@ -1,5 +1,4 @@
 import { PRODUCTION_LIMITS, type TelemetryLimits } from "@ackerdb/server";
-import type { SystemName } from "./benchmark.ts";
 
 export type AckerDBTelemetryMode = "enabled" | "disabled";
 export type AckerDBDurabilityMode = "production" | "balanced";
@@ -9,9 +8,7 @@ export type AckerDBTelemetryProfile = "runtime-default" | "benchmark-exporter" |
 export type BenchmarkExecutionLeg =
   | "ackerdb-telemetry-enabled"
   | "ackerdb-telemetry-exporter"
-  | "ackerdb-telemetry-disabled"
-  | "convex"
-  | "spacetimedb";
+  | "ackerdb-telemetry-disabled";
 
 export interface AckerDBStartupMode {
   readonly telemetry: AckerDBTelemetryMode;
@@ -61,7 +58,6 @@ export function expectedAckerDBStartupMode(
 }
 
 export function benchmarkExecutionOrder(
-  systemOrder: readonly SystemName[],
   ackerDBProfiles: readonly AckerDBBenchmarkProfile[],
   savedRuns: number,
 ): BenchmarkExecutionLeg[] {
@@ -73,11 +69,7 @@ export function benchmarkExecutionOrder(
   // cold-cache first slot.
   const rotation = savedRuns % ackerDBProfiles.length;
   const rotated = [...ackerDBProfiles.slice(rotation), ...ackerDBProfiles.slice(0, rotation)];
-  return systemOrder.flatMap((system) =>
-    system === "ackerdb"
-      ? rotated.map((profile) => `ackerdb-telemetry-${profile}` as const)
-      : [system],
-  );
+  return rotated.map((profile) => `ackerdb-telemetry-${profile}` as const);
 }
 
 /** Parse the one server-confirmed mode marker that must precede readiness. */

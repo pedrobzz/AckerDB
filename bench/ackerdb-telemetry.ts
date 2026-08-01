@@ -616,7 +616,7 @@ export function parseAckerDBTelemetryReport(
       localOutput.controlOverflow !== 0 ||
       afterDrain.localSink.deliveredRecords !== localOutput.records
     ) {
-      throw new Error("default telemetry local output failed validation or delivery accounting");
+      throw new Error("default telemetry local output has invalid delivery accounting");
     }
     if (
       beforeDrain.queuedRecords < 0 ||

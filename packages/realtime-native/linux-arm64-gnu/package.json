@@ -1,6 +1,15 @@
 {
   "name": "@ackerdb/realtime-linux-arm64-gnu",
   "version": "0.13.1",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedrobzz/AckerDB.git",
+    "directory": "packages/realtime-native/linux-arm64-gnu"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "cpu": [
     "arm64"
   ],
