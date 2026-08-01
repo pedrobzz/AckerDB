@@ -151,6 +151,52 @@ describe("service startup", () => {
   });
 });
 
+describe("fatal failure after setup", () => {
+  function failing(): {
+    runtime: ServiceRuntime;
+    reported: ServiceError[];
+    fail: (error: unknown) => void;
+  } {
+    const reported: ServiceError[] = [];
+    let capture!: (error: unknown) => void;
+    const runtime = new ServiceRuntime({
+      services: [
+        { name: "worker", service: service({ start: (ctx) => { capture = ctx.fail; } }) },
+      ],
+      system,
+      onFatal: (error) => reported.push(error),
+    });
+    return { runtime, reported, fail: (error) => capture(error) };
+  }
+
+  test("reports the failure named, with its cause, exactly once", async () => {
+    const { runtime, reported, fail } = failing();
+    await runtime.start();
+
+    const cause = new Error("broker connection ended");
+    fail(cause);
+    fail(new Error("and again"));
+
+    expect(reported).toHaveLength(1);
+    expect(reported[0]!.service).toBe("worker");
+    expect(reported[0]!.phase).toBe("runtime");
+    expect(reported[0]!.cause).toBe(cause);
+    expect(reported[0]!.message).toBe(
+      'service "worker" failed during runtime: broker connection ended',
+    );
+  });
+
+  test("is ignored once shutdown has begun", async () => {
+    const { runtime, reported, fail } = failing();
+    await runtime.start();
+    await runtime.stop();
+
+    fail(new Error("noticed while closing"));
+
+    expect(reported).toEqual([]);
+  });
+});
+
 describe("service shutdown", () => {
   test("aborts, then cleans up in reverse start order", async () => {
     const events: string[] = [];

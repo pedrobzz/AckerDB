@@ -25,6 +25,14 @@ export interface ServiceContext<Ctx = SystemCtx> {
   readonly system: SystemRunner<Ctx>;
   /** Aborts the moment shutdown or a dev reload begins, before cleanup runs. */
   readonly abortSignal: AbortSignal;
+  /**
+   * Report a failure this service cannot recover from — a broker that ended
+   * permanently, a worker that threw where nothing awaited it. The application
+   * shuts down exactly as a termination signal would, naming this service.
+   * AckerDB never restarts a service; the process supervisor owns that.
+   * Idempotent, and ignored once shutdown has begun.
+   */
+  readonly fail: (error: unknown) => void;
 }
 
 export type ServiceStart<Ctx = SystemCtx> = (

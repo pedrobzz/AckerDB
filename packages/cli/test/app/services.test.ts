@@ -294,6 +294,37 @@ export const polite = service({
     await expect(fetch(`http://127.0.0.1:${port}/ready`)).rejects.toThrow();
   }, 20_000);
 
+  test("a fatal post-setup failure surfaces to the host with its owner named", async () => {
+    const port = await freePort();
+    const dir = fixture({
+      "services/worker.ts": `
+import { service } from "@ackerdb/server";
+import { record } from "../lib/record.ts";
+
+export const queue = service({
+  start: ({ fail }) => {
+    // The shape a real worker has: nothing awaits this callback.
+    setTimeout(() => fail(new Error("queue connection ended")), 5);
+    return () => record("cleanup:queue");
+  },
+});
+`,
+    }, port);
+
+    const running = await startApp(loadConfig(dir));
+    const failure = await running.serviceFailure;
+
+    expect(failure.service).toBe("worker.queue");
+    expect(failure.message).toBe(
+      'service "worker.queue" failed during runtime: queue connection ended',
+    );
+    // The host stays in control: nothing shut down until it says so.
+    expect(running.server.state).toBe("ready");
+
+    await running.drain();
+    expect(events(dir)).toEqual(["cleanup:queue"]);
+  }, 20_000);
+
   test("an unbranded service shape fails startup instead of silently doing nothing", async () => {
     const port = await freePort();
     const dir = fixture({

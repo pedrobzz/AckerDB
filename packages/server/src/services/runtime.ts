@@ -26,6 +26,8 @@ export interface ServiceRuntimeOptions {
   readonly system: SystemRunner<any>;
   /** Reports the service currently in setup, for readiness. */
   readonly onStarting?: (name: string | null) => void;
+  /** Reports the first unrecoverable post-setup failure. Called at most once. */
+  readonly onFatal?: (error: ServiceError) => void;
 }
 
 interface StartedService {
@@ -33,14 +35,24 @@ interface StartedService {
   readonly cleanup: ServiceCleanup;
 }
 
+export type ServicePhase = "setup" | "runtime" | "cleanup";
+
 /** A service failure always names its owner; an anonymous one is unactionable. */
 export class ServiceError extends Error {
   override readonly name = "ServiceError";
   readonly service: string;
+  readonly phase: ServicePhase;
 
-  constructor(service: string, phase: "setup" | "cleanup", cause: unknown) {
-    super(`service "${service}" failed during ${phase}`, { cause });
+  constructor(service: string, phase: ServicePhase, cause: unknown) {
+    const detail = cause instanceof Error
+      ? cause.message
+      : typeof cause === "string" ? cause : undefined;
+    super(
+      `service "${service}" failed during ${phase}${detail === undefined ? "" : `: ${detail}`}`,
+      { cause },
+    );
     this.service = service;
+    this.phase = phase;
   }
 }
 
@@ -92,6 +104,8 @@ export class ServiceRuntime {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private readonly system: SystemRunner<any>;
   private readonly onStarting: (name: string | null) => void;
+  private readonly onFatal: (error: ServiceError) => void;
+  private fatal: ServiceError | null = null;
   private readonly controller = new AbortController();
   private readonly started: StartedService[] = [];
   private lifecycle: ServiceRuntimeState = "created";
@@ -113,6 +127,7 @@ export class ServiceRuntime {
     this.services = Object.freeze([...options.services]);
     this.system = options.system;
     this.onStarting = options.onStarting ?? (() => {});
+    this.onFatal = options.onFatal ?? (() => {});
   }
 
   get state(): ServiceRuntimeState {
@@ -192,9 +207,11 @@ export class ServiceRuntime {
       this.onStarting(name);
       let cleanup: void | ServiceCleanup;
       try {
-        cleanup = await service.start(
-          Object.freeze({ system: this.system, abortSignal: this.controller.signal }),
-        );
+        cleanup = await service.start(Object.freeze({
+          system: this.system,
+          abortSignal: this.controller.signal,
+          fail: (error: unknown) => this.reportFatal(name, error),
+        }));
       } catch (error) {
         throw new ServiceError(name, "setup", error);
       }
@@ -210,6 +227,17 @@ export class ServiceRuntime {
       // cleanup; never publish readiness for that resource.
       if (this.controller.signal.aborted) throw abortReason(this.controller.signal);
     }
+  }
+
+  /**
+   * First failure wins. A shutdown already under way is not made worse by a
+   * consumer noticing its socket died, so a late report is dropped rather than
+   * starting a second teardown.
+   */
+  private reportFatal(name: string, error: unknown): void {
+    if (this.fatal !== null || this.stopRequested) return;
+    this.fatal = new ServiceError(name, "runtime", error);
+    this.onFatal(this.fatal);
   }
 
   private async cleanupStarted(): Promise<unknown[]> {

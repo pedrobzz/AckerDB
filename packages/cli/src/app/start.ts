@@ -28,6 +28,7 @@ import {
   reconcilePluginStorage,
   reconcile,
   declareServices,
+  ServiceError,
   ServiceRuntime,
   UnsafeSchemaChange,
   validateHistoryPrefix,
@@ -45,6 +46,12 @@ export interface RunningApp<A extends App = App> {
   system: SystemRunner<AppSystemCtx<A>>;
   /** Declared application service names, in start order. */
   services: readonly string[];
+  /**
+   * Resolves when a service reports an unrecoverable failure after setup, and
+   * otherwise never settles. Programmatic hosts own what happens next: ADR-0015
+   * keeps signal and exit ownership at the CLI adapter.
+   */
+  serviceFailure: Promise<ServiceError>;
   /** Idempotently drain; success marks storage clean, while failure releases it unclean. */
   drain(): Promise<void>;
 }
@@ -178,6 +185,10 @@ export async function startApp<const A extends App = App>(
   let serviceRuntime: ServiceRuntime | undefined;
   let ownedEngine: Engine | undefined;
   let drainPromise: Promise<void> | null = null;
+  let reportServiceFailure!: (error: ServiceError) => void;
+  const serviceFailure = new Promise<ServiceError>((resolve) => {
+    reportServiceFailure = resolve;
+  });
   let interruptStartup!: () => void;
   const startupInterrupted = new Promise<never>((_resolve, reject) => {
     interruptStartup = () => reject(new StartupInterruptedError());
@@ -349,6 +360,7 @@ export async function startApp<const A extends App = App>(
         onStarting: (name) => {
           if (server.state === "starting") server.reportStartingService(name);
         },
+        onFatal: reportServiceFailure,
       });
       await awaitStartup(serviceRuntime.start());
       requireStartupOwnership();
@@ -377,6 +389,7 @@ export async function startApp<const A extends App = App>(
       engine: ownedEngine,
       system: runtime.system as SystemRunner<AppSystemCtx<A>>,
       services: declaredServices.map((declared) => declared.name),
+      serviceFailure,
       drain,
     };
   } catch (error) {

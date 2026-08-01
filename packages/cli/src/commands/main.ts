@@ -68,8 +68,17 @@ async function runServerCommand(config: AppConfig, options: StartAppOptions = {}
   process.once("SIGTERM", onSignal);
   try {
     const running = await startApp(config, { ...options, signal: startup.signal });
-    await shutdownRequested;
+    // A service that dies after setup ends the application the same way a
+    // signal does. AckerDB never restarts it; the process supervisor does.
+    const failure = await Promise.race([
+      shutdownRequested.then(() => null),
+      running.serviceFailure,
+    ]);
+    if (failure !== null) {
+      console.error(`[ackerdb] ${failure.message} — shutting down`);
+    }
     await running.drain();
+    if (failure !== null) throw failure;
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
