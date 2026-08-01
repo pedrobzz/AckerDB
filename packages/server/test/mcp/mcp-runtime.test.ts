@@ -403,7 +403,7 @@ describe("MCP Runtime ownership", () => {
       args: {},
       principal: bobPrincipal,
       fairnessKey: callerFairnessKey(bobPrincipal, { family: "test", address: "bob" }),
-    })).resolves.toMatchObject({ content: [{ text: "mcp" }] });
+    })).resolves.toMatchObject({ structuredContent: { kind: "mcp" } });
     directGate.release();
     await direct;
     await expectIdle(value);
@@ -582,10 +582,10 @@ describe("MCP Runtime ownership", () => {
     expect(publicResponse.status).toBe(200);
     expect(authenticatedResponse.status).toBe(200);
     expect(await publicResponse.json()).toMatchObject({
-      result: { content: [{ text: "anonymous" }] },
+      result: { structuredContent: { kind: "anonymous" } },
     });
     expect(await authenticatedResponse.json()).toMatchObject({
-      result: { content: [{ text: "mcp" }] },
+      result: { structuredContent: { kind: "mcp" } },
     });
     expect(value.server.state).toBe("stopped");
     expect(value.runtime.state).toBe("stopped");

@@ -380,8 +380,11 @@ describe("MCP zero-hop AI SDK tools", () => {
       const admission = spans().find((span) =>
         span.operation === "procedure" && span.stage === "admission" && span.requestId === "1"
       );
+      // A tool executes as the function it names, so spans carry the function's
+      // address rather than "<endpoint>:<tool>". The local adapter dispatches
+      // straight to the tool, so no operation-level tool name is emitted here.
       const nested = spans().find((span) =>
-        span.stage === "handler" && span.function === "agent:round_trip" && span.requestId === "1"
+        span.stage === "handler" && span.function === "tools.roundTrip" && span.requestId === "1"
       );
       expect(admission).toBeDefined();
       expect(nested).toBeDefined();

@@ -396,7 +396,7 @@ describe("Identity-bound MCP owner tokens", () => {
       tool: "public_status",
       args: {},
       principal: ANONYMOUS_PRINCIPAL,
-    })).toMatchObject({ content: [{ text: "public" }] });
+    })).toMatchObject({ structuredContent: { status: "public" } });
     await expect(runtime.runMcpTool({
       id: "scope-authenticated-anonymous",
       mcp: "scoped",
@@ -415,9 +415,9 @@ describe("Identity-bound MCP owner tokens", () => {
       message: "authentication required",
     });
     expect(await invoke("authenticated_status")).toMatchObject({
-      content: [{ text: "authenticated" }],
+      structuredContent: { status: "authenticated" },
     });
-    expect(await invoke("read_orders")).toMatchObject({ content: [{ text: "orders" }] });
+    expect(await invoke("read_orders")).toMatchObject({ structuredContent: { status: "orders" } });
     await expect(invoke("read_reports")).rejects.toMatchObject({ code: "unauthorized" });
     await expect(invoke("admin_orders")).rejects.toMatchObject({ code: "unauthorized" });
 
@@ -438,7 +438,7 @@ describe("Identity-bound MCP owner tokens", () => {
       "scope-auth-expanded",
     );
     expect(await invoke("read_reports", expanded)).toMatchObject({
-      content: [{ text: "reports" }],
+      structuredContent: { status: "reports" },
     });
     await expect(invoke("admin_orders", expanded)).rejects.toMatchObject({
       code: "unauthorized",
@@ -477,7 +477,7 @@ describe("Identity-bound MCP owner tokens", () => {
     );
     expect(emptyPrincipal.scopes).toEqual([]);
     expect(await invoke("authenticated_status", emptyPrincipal)).toMatchObject({
-      content: [{ text: "authenticated" }],
+      structuredContent: { status: "authenticated" },
     });
     await expect(invoke("read_orders", emptyPrincipal)).rejects.toMatchObject({
       code: "unauthorized",
