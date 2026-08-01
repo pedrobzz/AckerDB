@@ -8,10 +8,13 @@ import {
   type PrincipalInvalidation,
 } from "../../src/auth/credentials.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { createMcp, mcpTool } from "../../src/mcp/index.ts";
+import { mcp as mcpDeclaration, mcpAuth } from "../../src/mcp/index.ts";
+import { query } from "../../src/app/functions.ts";
+import { v } from "../../src/validation/v.ts";
 import { serve } from "../../src/transport/server.ts";
 import type { SessionApplicationMessage } from "../../src/subscriptions/session.ts";
 import {
+  agentAuth,
   agentMcp,
   cleanupMcpTokenFixtures,
   databasePath,
@@ -20,6 +23,7 @@ import {
   queryMessage,
   request,
   retainedOwnerContext,
+  scopedAuth,
   scopedMcp,
   session,
   subscribeMessage,
@@ -114,7 +118,7 @@ describe("Identity-bound MCP owner tokens", () => {
     expect(
       engine.writer.query("SELECT result_disposition, result, result_bytes FROM _ackerdb_mutations").get(),
     ).toEqual({ result_disposition: "one-time", result: null, result_bytes: 0n });
-    expect(() => agentMcp.tokens.create(retainedOwnerContext()!, {
+    expect(() => agentAuth.tokens.create(retainedOwnerContext()!, {
       name: "Escaped context",
       metadata: {},
     })).toThrow("MCP token operations require a AckerDB invocation context");
@@ -298,36 +302,36 @@ describe("Identity-bound MCP owner tokens", () => {
     const aliceSession = session(alice, "scoped-alice-session");
     await runtime.openSession(aliceSession);
 
-    expect(scopedMcp.scopes.values).toEqual(["orders.all", "orders.get", "reports.all"]);
-    expect(Object.isFrozen(scopedMcp.scopes.values)).toBe(true);
-    expect(scopedMcp.scopes.check("orders.get", "scope")).toBe("orders.get");
-    expect(() => scopedMcp.scopes.check("orders.create", "scope")).toThrow(
+    expect(scopedAuth.scopes.values).toEqual(["orders.all", "orders.get", "reports.all"]);
+    expect(Object.isFrozen(scopedAuth.scopes.values)).toBe(true);
+    expect(scopedAuth.scopes.check("orders.get", "scope")).toBe("orders.get");
+    expect(() => scopedAuth.scopes.check("orders.create", "scope")).toThrow(
       "expected one of",
     );
-    expect(() => createMcp({ name: "empty_scopes", scopes: [], tools: {} } as never)).toThrow(
+    // Scope vocabulary validation belongs to the provider now, not the endpoint.
+    expect(() => mcpAuth({ name: "empty_scopes", scopes: [] } as never)).toThrow(
       "non-empty array",
     );
-    expect(() => createMcp({
-      name: "duplicate_scopes",
-      scopes: ["read", "read"],
-      tools: {},
-    } as never))
+    expect(() => mcpAuth({ name: "duplicate_scopes", scopes: ["read", "read"] } as never))
       .toThrow("duplicate");
-    expect(() => createMcp({ name: "null_scopes", scopes: null, tools: {} } as never)).toThrow(
+    expect(() => mcpAuth({ name: "null_scopes", scopes: null } as never)).toThrow(
       "non-empty array",
     );
-    const invalidEndpoint = (name: string, scopes: unknown, access: unknown) => createMcp({
+    const policyProbe = query({
+      description: "Runtime validation cannot be bypassed by a cast.",
+      access: "public",
+      args: {},
+      returns: v.object({}),
+      handler: () => ({}),
+    });
+    const invalidEndpoint = (name: string, scopes: unknown, access: unknown) => mcpDeclaration({
       name,
+      auth: mcpAuth({
+        name,
+        ...(scopes === undefined ? {} : { scopes }),
+      } as never),
       path: `/${name}`,
-      ...(scopes === undefined ? {} : { scopes }),
-      tools: {
-        runtime_policy: mcpTool({
-          description: "Runtime validation cannot be bypassed by a cast.",
-          access,
-          args: {},
-          handler: () => ({ content: [] }),
-        } as never),
-      },
+      tools: { runtime_policy: { fn: policyProbe, access } },
     } as never);
     expect(() => invalidEndpoint(
       "runtime_invalid_scope",
