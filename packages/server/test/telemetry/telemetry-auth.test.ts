@@ -34,6 +34,7 @@ import {
   type ServiceLimits,
   type VerifiedCredential,
 } from "@ackerdb/server";
+import { within } from "ackerdb-test-support/async";
 
 const VALID_PROCEDURE_TOKEN = "valid-procedure-token-canary";
 const INVALID_PROCEDURE_TOKEN = "invalid-procedure-token-canary";
@@ -221,15 +222,6 @@ async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void
     if (Date.now() >= deadline) throw new Error("condition did not become true");
     await Bun.sleep(5);
   }
-}
-
-async function within<T>(promise: Promise<T>, timeoutMs = 2_000): Promise<T> {
-  return Promise.race([
-    promise,
-    Bun.sleep(timeoutMs).then(() => {
-      throw new Error("operation timed out");
-    }),
-  ]);
 }
 
 async function readSseMessage(

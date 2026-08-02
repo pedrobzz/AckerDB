@@ -22,23 +22,3 @@ export async function expectErrorCode<
   }
   return result.error;
 }
-
-export async function expectRejectedCode(
-  work: Promise<unknown>,
-  code: string,
-): Promise<unknown> {
-  try {
-    await work;
-  } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === code
-    ) {
-      return error;
-    }
-    throw error;
-  }
-  throw new Error(`Expected rejected AckerDB error code ${code}`);
-}

@@ -16,6 +16,7 @@ import {
   type ReactiveObservation,
   type Subscriber,
 } from "../../src/subscriptions/reactive.ts";
+import { deferred } from "ackerdb-test-support/async";
 
 class RecordingSubscriber implements Subscriber {
   readonly transitions: Array<{ id: number; transition: SubscriptionTransition }> = [];
@@ -119,14 +120,6 @@ function testLimits(overrides: LimitOverrides = {}): ServiceLimits {
 function generationSequence(): () => string {
   let generation = 0;
   return () => `generation-${++generation}`;
-}
-
-function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
 }
 
 async function publish<C>(

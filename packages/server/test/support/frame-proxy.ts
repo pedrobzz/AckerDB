@@ -11,20 +11,9 @@ import {
   type Server,
   type Socket,
 } from "node:net";
+import { within } from "ackerdb-test-support/async";
 
 const HEADER_END = Buffer.from("\r\n\r\n");
-const WAIT_DEADLINE_MS = 5_000;
-
-function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), WAIT_DEADLINE_MS);
-    timer.unref?.();
-  });
-  return Promise.race([promise, deadline]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 interface WebSocketFrame {
   readonly bytes: Buffer;
@@ -182,7 +171,7 @@ export class FrameProxy {
     const onError = (error: Error): void => listening.reject(error);
     proxy.listener.once("error", onError);
     proxy.listener.listen(0, proxy.hostname, () => listening.resolve(undefined));
-    await withDeadline(listening.promise, "fault proxy listener");
+    await within(listening.promise, "fault proxy listener");
     proxy.listener.off("error", onError);
     const address = proxy.listener.address();
     if (address === null || typeof address === "string") throw new Error("fault proxy has no TCP port");
@@ -211,7 +200,7 @@ export class FrameProxy {
     }
     const matched = Promise.withResolvers<ProxiedClientFrame>();
     this.clientCut = { predicate, phase, matched };
-    return withDeadline(matched.promise, "client-frame cut");
+    return within(matched.promise, "client-frame cut");
   }
 
   holdNextClientFrame(
@@ -222,7 +211,7 @@ export class FrameProxy {
     }
     const matched = Promise.withResolvers<HeldClientFrame>();
     this.clientHold = { predicate, matched };
-    return withDeadline(matched.promise, "held client frame");
+    return within(matched.promise, "held client frame");
   }
 
   cutNextServerFrame(
@@ -234,7 +223,7 @@ export class FrameProxy {
     }
     const matched = Promise.withResolvers<ProxiedServerFrame>();
     this.serverCut = { predicate, phase, matched };
-    return withDeadline(matched.promise, "server-frame cut");
+    return within(matched.promise, "server-frame cut");
   }
 
   holdNextServerFrame(
@@ -245,7 +234,7 @@ export class FrameProxy {
     }
     const matched = Promise.withResolvers<HeldServerFrame>();
     this.serverHold = { predicate, matched };
-    return withDeadline(matched.promise, "held server frame");
+    return within(matched.promise, "held server frame");
   }
 
   waitForConnection(id: number): Promise<number> {
@@ -280,7 +269,7 @@ export class FrameProxy {
     const active = [...this.pairs.values()];
     if (active.length === 0) throw new Error("fault proxy has no active connection");
     for (const pair of active) this.drop(pair);
-    await withDeadline(Promise.all(active.map(({ closed }) => closed.promise)).then(() => {}), "proxy drop");
+    await within(Promise.all(active.map(({ closed }) => closed.promise)).then(() => {}), "proxy drop");
   }
 
   assertBytePreserving(): void {
@@ -596,7 +585,7 @@ export class FrameProxy {
       waiting.resolve(value);
     };
     this.changes.add(check);
-    return withDeadline(waiting.promise, description).finally(() => this.changes.delete(check));
+    return within(waiting.promise, description).finally(() => this.changes.delete(check));
   }
 
   private changed(): void {
@@ -611,7 +600,7 @@ export async function assertTcpPortReleased(port: number): Promise<void> {
   const onError = (error: Error): void => listening.reject(error);
   listener.once("error", onError);
   listener.listen(port, "127.0.0.1", () => listening.resolve(undefined));
-  await withDeadline(listening.promise, `released TCP port ${port}`);
+  await within(listening.promise, `released TCP port ${port}`);
   listener.off("error", onError);
   await new Promise<void>((resolve, reject) => {
     listener.close((error) => error === undefined ? resolve() : reject(error));

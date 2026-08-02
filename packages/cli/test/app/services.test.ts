@@ -11,19 +11,13 @@ import { join } from "node:path";
 import { loadConfig } from "../../src/app/config.ts";
 import { startApp } from "../../src/app/start.ts";
 import { makeFixture } from "../support/fixture.ts";
+import { freePort } from "../support/port.ts";
 
 const dirs: string[] = [];
 
 afterEach(() => {
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
-
-async function freePort(): Promise<number> {
-  const probe = Bun.serve({ port: 0, fetch: () => new Response("") });
-  const port = probe.port!;
-  await probe.stop(true);
-  return port;
-}
 
 const APP = `
 import { defineApp, defineSchema, defineTable, v } from "@ackerdb/server";

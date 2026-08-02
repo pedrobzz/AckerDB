@@ -30,19 +30,7 @@ import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineEventTable, defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { openApiBytes, openApiDocument } from "../../src/transport/openapi.ts";
 import { AckerDBServer, serve } from "../../src/transport/server.ts";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
+import { deferred, within, type Deferred } from "ackerdb-test-support/async";
 
 function uuidV7(sequence: number): string {
   const timestamp = Date.now().toString(16).padStart(12, "0");
@@ -63,15 +51,6 @@ async function eventually(check: () => boolean, timeoutMs = 2_000): Promise<void
     if (Date.now() >= deadline) throw new Error("condition did not become true");
     await Bun.sleep(5);
   }
-}
-
-async function within<T>(promise: Promise<T>, timeoutMs = 2_000): Promise<T> {
-  return Promise.race([
-    promise,
-    Bun.sleep(timeoutMs).then(() => {
-      throw new Error("operation timed out");
-    }),
-  ]);
 }
 
 const limits = defineServiceLimits({

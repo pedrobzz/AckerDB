@@ -33,6 +33,7 @@ import {
   type AckerDBAuthenticationState,
   type UseAuthenticationResult,
 } from "@ackerdb/client-react";
+import { until } from "ackerdb-test-support/async";
 
 const WAIT_DEADLINE_MS = 5_000;
 
@@ -115,17 +116,6 @@ function createApp(): App {
       rmSync(directory, { recursive: true, force: true });
     },
   };
-}
-
-async function until(predicate: () => boolean, description: string): Promise<void> {
-  const deadline = Date.now() + WAIT_DEADLINE_MS;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(10);
-  }
-  throw new Error(
-    `Timed out waiting for ${description} (auth=${captured.text} query=${captured.query})`,
-  );
 }
 
 function describeAuthentication(state: AckerDBAuthenticationState): string {

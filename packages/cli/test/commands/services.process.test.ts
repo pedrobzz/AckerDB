@@ -5,10 +5,10 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { makeFixture } from "../support/fixture.ts";
+import { freePort } from "../support/port.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 90_000;
@@ -52,23 +52,6 @@ export function record(event) {
   appendFileSync(log, event + "\\n");
 }
 `;
-
-async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
-  });
-  const address = server.address();
-  if (typeof address !== "object" || address === null) {
-    server.close();
-    throw new Error("port reservation has no address");
-  }
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error === undefined ? resolve() : reject(error)));
-  });
-  return address.port;
-}
 
 function events(dir: string): string[] {
   const log = join(dir, "events.log");

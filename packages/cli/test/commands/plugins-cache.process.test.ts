@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { AckerDBClient } from "@ackerdb/client";
 import * as ts from "typescript";
 import { makeFixture } from "../support/fixture.ts";
+import { freePort } from "../support/port.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const REPO = new URL("../../../..", import.meta.url).pathname;
@@ -252,23 +252,6 @@ async function eventually(assertion: () => void | Promise<void>, label: string):
     }
   }
   throw new Error(`timed out waiting for ${label}`, { cause: lastError });
-}
-
-async function freePort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
-  });
-  const address = server.address();
-  if (typeof address !== "object" || address === null) {
-    server.close();
-    throw new Error("port reservation has no address");
-  }
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => error === undefined ? resolve() : reject(error));
-  });
-  return address.port;
 }
 
 function spawnServer(dir: string, port: number) {

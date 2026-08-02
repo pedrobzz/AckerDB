@@ -33,6 +33,7 @@ import {
   reconcile,
   serve,
 } from "@ackerdb/server";
+import { until, within } from "ackerdb-test-support/async";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -960,19 +961,6 @@ describe("AckerDBClient activation", () => {
   });
 });
 
-const WAIT_DEADLINE_MS = 5_000;
-
-function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), WAIT_DEADLINE_MS);
-    timer.unref?.();
-  });
-  return Promise.race([promise, deadline]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
-
 function waitForPhase(client: AckerDBClient, phase: string): Promise<void> {
   if (client.currentConnectionState.phase === phase) return Promise.resolve();
   const waiting = Promise.withResolvers<void>();
@@ -981,16 +969,7 @@ function waitForPhase(client: AckerDBClient, phase: string): Promise<void> {
     stop();
     waiting.resolve(undefined);
   });
-  return withDeadline(waiting.promise, `the ${phase} phase`);
-}
-
-async function until(predicate: () => boolean, description: string): Promise<void> {
-  const deadline = Date.now() + WAIT_DEADLINE_MS;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(5);
-  }
-  throw new Error(`Timed out waiting for ${description}`);
+  return within(waiting.promise, `the ${phase} phase`);
 }
 
 const realSchema = defineSchema({

@@ -16,6 +16,7 @@ import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { AckerDBServer } from "../../src/transport/server.ts";
+import { deferred } from "ackerdb-test-support/async";
 
 const limits = defineServiceLimits({ ...PRODUCTION_LIMITS, gracefulShutdownMs: 500 });
 
@@ -29,14 +30,6 @@ type Ctx = any;
 
 let blockedStarted: { promise: Promise<void>; resolve: () => void } | null = null;
 let blockedRelease: { promise: Promise<void>; resolve: () => void } | null = null;
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((accept) => {
-    resolve = () => accept();
-  });
-  return { promise, resolve };
-}
 
 const modules = {
   notes: {

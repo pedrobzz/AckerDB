@@ -10,6 +10,7 @@ import { startApp, StartupInterruptedError } from "../../src/app/start.ts";
 import { runCodegen } from "../../src/app/codegen.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { FIXTURE_ADMIN_USERS, FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
+import { within } from "ackerdb-test-support/async";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 
@@ -164,15 +165,6 @@ function shutdownMarker(dir: string): bigint {
   } finally {
     db.close();
   }
-}
-
-function within<T>(work: Promise<T>, label: string): Promise<T> {
-  return Promise.race([
-    work,
-    Bun.sleep(2_000).then(() => {
-      throw new Error(`${label} did not release its resources`);
-    }),
-  ]);
 }
 
 describe("ackerdb CLI", () => {

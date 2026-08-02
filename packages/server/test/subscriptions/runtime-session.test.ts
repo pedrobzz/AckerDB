@@ -41,6 +41,7 @@ import {
   type SessionSink,
 } from "../../src/subscriptions/session.ts";
 import type { TelemetryRecord, TelemetrySpanRecord } from "../../src/telemetry/telemetry.ts";
+import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const ALICE_AUTHENTICATION = {
   principal: "user",
@@ -55,19 +56,6 @@ const BOB_AUTHENTICATION = {
 
 const NOW = 1_720_000_000_000;
 const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime-session" });
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
 
 function uuidV7(now: number, sequence: number): string {
   const timestamp = now.toString(16).padStart(12, "0");

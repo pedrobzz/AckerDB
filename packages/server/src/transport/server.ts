@@ -247,15 +247,18 @@ function methodNotAllowed(allow: string): Response {
  * The mutation receipt rides response headers so the body stays the plain
  * return value. It is state at response time: a pending obligation's later
  * durability transition belongs to the WebSocket protocol, not to this caller.
- * An empty obligation list is an empty header value, which HTTP serialization
- * drops — the absent header is the empty list.
+ * The empty obligation list omits its header outright: RFC 9110 permits an
+ * empty field value, so serializers may carry one, and a caller reading `""`
+ * cannot tell it from a malformed list.
  */
 function receiptHeaders(receipt: HttpMutationReceipt): Record<string, string> {
   return {
     [RECEIPT_HEADERS.commitVersion]: String(receipt.commitVersion),
     [RECEIPT_HEADERS.durability]: receipt.durability,
     [RECEIPT_HEADERS.replay]: String(receipt.replay === "replayed"),
-    [RECEIPT_HEADERS.obligations]: receipt.obligations.join(","),
+    ...(receipt.obligations.length === 0
+      ? {}
+      : { [RECEIPT_HEADERS.obligations]: receipt.obligations.join(",") }),
   };
 }
 

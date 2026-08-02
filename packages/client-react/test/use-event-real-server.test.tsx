@@ -25,6 +25,7 @@ import {
 import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { AckerDBProvider, useConnectionState, useEvent } from "@ackerdb/client-react";
+import { until } from "ackerdb-test-support/async";
 
 const schema = defineSchema({
   pings: defineEventTable({
@@ -77,15 +78,6 @@ function createApp(): App {
       rmSync(directory, { recursive: true, force: true });
     },
   };
-}
-
-async function until(predicate: () => boolean, description: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(10);
-  }
-  throw new Error(`Timed out waiting for ${description}`);
 }
 
 type PingRow = { readonly id: bigint; readonly n: number };

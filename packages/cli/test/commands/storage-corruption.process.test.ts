@@ -11,6 +11,7 @@ import type { Subprocess } from "bun";
 import { Database } from "bun:sqlite";
 import { v, defineSchema, defineTable, Engine, reconcile } from "@ackerdb/server";
 import { makeFixture } from "../support/fixture.ts";
+import { freePort } from "../support/port.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const REPO = new URL("../../../..", import.meta.url).pathname;
@@ -50,13 +51,6 @@ function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
     handle = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), STEP_TIMEOUT_MS);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
-}
-
-async function freePort(): Promise<number> {
-  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("") });
-  const port = probe.port!;
-  await probe.stop(true);
-  return port;
 }
 
 function fixture(port: number): string {

@@ -45,6 +45,7 @@ import type { ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import type { AckerDBQueryState, SseProcedureCall } from "@ackerdb/client-react";
 import { uiMessageChunk } from "./ai/ui-message-chunk.ts";
+import { deferred, type Deferred, until, waitForAbort } from "ackerdb-test-support/async";
 
 // The native entry composes the Expo/React Native platform modules, which
 // only exist inside a React Native app; mocks stand in for all three. The
@@ -77,26 +78,6 @@ const schema = defineSchema({
 // Public integration fixtures intentionally exercise inferred application handlers.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ctx = any;
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((promiseResolve) => {
-    resolve = promiseResolve;
-  });
-  return { promise, resolve };
-}
-
-function waitForAbort(signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) resolve();
-    else signal.addEventListener("abort", () => resolve(), { once: true });
-  });
-}
 
 // Server-side journals: per-procedure release markers proving the runtime
 // returned each handler's iterator when suspension canceled its stream.
@@ -213,15 +194,6 @@ function createApp(): App {
       rmSync(directory, { recursive: true, force: true });
     },
   };
-}
-
-async function until(predicate: () => boolean, description: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(5);
-  }
-  throw new Error(`Timed out waiting for ${description}`);
 }
 
 /** The only AckerDB-owned HTTP route the client calls; every other is a stream. */

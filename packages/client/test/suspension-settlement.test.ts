@@ -44,6 +44,7 @@ import {
   sseProcedure,
   type SseCtx,
 } from "@ackerdb/server";
+import { deferred, until, waitForAbort, within } from "ackerdb-test-support/async";
 
 interface ClockTask {
   at: number;
@@ -133,19 +134,6 @@ class FakeSocket implements AckerDBWebSocket {
 }
 
 const encoder = new TextEncoder();
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((promiseResolve) => {
-    resolve = promiseResolve;
-  });
-  return { promise, resolve };
-}
 
 /** A scripted SSE exchange journal shared by every fake-fetch harness. */
 interface HttpJournal {
@@ -871,35 +859,6 @@ describe("resumable recovery stays independent of terminal settlement", () => {
   });
 });
 
-const WAIT_DEADLINE_MS = 5_000;
-
-function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), WAIT_DEADLINE_MS);
-    timer.unref?.();
-  });
-  return Promise.race([promise, deadline]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
-
-async function until(predicate: () => boolean, description: string): Promise<void> {
-  const deadline = Date.now() + WAIT_DEADLINE_MS;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(5);
-  }
-  throw new Error(`Timed out waiting for ${description}`);
-}
-
-function waitForAbort(signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) resolve();
-    else signal.addEventListener("abort", () => resolve(), { once: true });
-  });
-}
-
 describe("suspension settlement against a real ackerdb server", () => {
   test("mid-stream suspension releases the server iterator and settles the client stream once", async () => {
     const directory = mkdtempSync(join(tmpdir(), "ackerdb-settlement-real-"));
@@ -972,7 +931,7 @@ describe("suspension settlement against a real ackerdb server", () => {
         "stream.holdAfterFirst",
         {},
       )[Symbol.asyncIterator]();
-      expect(await withDeadline(iterator.next(), "the first chunk")).toEqual({
+      expect(await within(iterator.next(), "the first chunk")).toEqual({
         done: false,
         value: { phase: "one" },
       });
@@ -981,22 +940,22 @@ describe("suspension settlement against a real ackerdb server", () => {
 
       // A real procedure held open on the server at the same moment.
       const held = client.procedure("tools.hold", {}).then(mustErr);
-      await withDeadline(procedureStarted.promise, "the held procedure to start");
+      await within(procedureStarted.promise, "the held procedure to start");
 
       port!.suspend();
-      expectSuspensionOutcome(await withDeadline(pull, "the marked stream settlement"), {
+      expectSuspensionOutcome(await within(pull, "the marked stream settlement"), {
         code: "unavailable",
         message: "SSE stream was interrupted by suspension",
         resource: "sse",
       });
-      expectSuspensionOutcome(await withDeadline(held, "the marked procedure settlement"), {
+      expectSuspensionOutcome(await within(held, "the marked procedure settlement"), {
         code: "indeterminate",
         message: "procedure completion is unknown",
         resource: "operation",
       });
       // Cancellation reached the source iterator on the server, and the
       // server released the stream's acknowledgement state.
-      await withDeadline(holdReleased.promise, "the handler finally block");
+      await within(holdReleased.promise, "the handler finally block");
       await until(() => runtime.status().activeSse === 0, "the server stream to settle");
       expect(await iterator.next()).toEqual({ done: true, value: undefined });
 
@@ -1012,7 +971,7 @@ describe("suspension settlement against a real ackerdb server", () => {
       const fresh = client.sse<Record<never, never>, { tick: number }>("stream.ticks", {})[
         Symbol.asyncIterator
       ]();
-      expect(await withDeadline(fresh.next(), "the fresh stream's chunk")).toEqual({
+      expect(await within(fresh.next(), "the fresh stream's chunk")).toEqual({
         done: false,
         value: { tick: 0 },
       });
