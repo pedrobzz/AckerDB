@@ -221,3 +221,11 @@ publish as many local Verdaccio betas as real-application testing needs:
 bun run release:prepare patch # or minor | major
 bun run publish:beta
 ```
+
+## License
+
+AckerDB's main packages are source-available under the
+[Functional Source License 1.1 with an Apache 2.0 future license](LICENSE.md).
+Each released version becomes available under Apache-2.0 two years after that
+version is first made available. The separately distributed WebRTC native
+packages remain Apache-2.0 licensed.
