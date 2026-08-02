@@ -34,11 +34,11 @@ jobs:
           node-version: 24.18.0
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - name: Require staged-publishing support
+      - name: Require trusted-publishing support
         run: >-
           node -e 'const version = require("node:child_process").execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
           const [major, minor] = version.split(".").map(Number);
-          if (major < 11 || (major === 11 && minor < 15)) throw new Error(`npm ${version} cannot stage packages`)'
+          if (major < 11 || (major === 11 && minor < 5)) throw new Error(`npm ${version} cannot use trusted publishing`)'
       - name: Find native artifacts from the merged PR
         id: native
         env:
@@ -63,6 +63,6 @@ jobs:
           pattern: webrtc-*
           path: packages/realtime/native/webrtc/binding
           merge-multiple: true
-      - id: stage
+      - id: publish
         run: bun scripts/release/publish.ts npm
-      - run: echo "Staged @ackerdb/*@${{ steps.stage.outputs.version }} for Pedro's 2FA approval" >> "$GITHUB_STEP_SUMMARY"
+      - run: echo "Published @ackerdb/*@${{ steps.publish.outputs.version }} after environment approval" >> "$GITHUB_STEP_SUMMARY"

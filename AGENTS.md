@@ -190,10 +190,10 @@ check has no thresholds, score, or automated performance acceptance. Pedro and
 an agent interpret the complete vector and anomalies by reasoning before merge.
 Historical files in `bench/results/` are not current release evidence.
 
-Every merge into `canary` stages `X.Y.Z-canary.N` for npm's `canary` tag. Every
-merge into `main` stages `X.Y.Z` for `latest`. Public delivery is GitHub-only
-and uses the `npm` environment's stage-only trusted publisher; Pedro must
-approve the staged tarballs with npm 2FA. CI cannot publish directly. A normal
+Every merge into `canary` prepares `X.Y.Z-canary.N` for npm's `canary` tag.
+Every merge into `main` prepares `X.Y.Z` for `latest`. Public delivery is
+GitHub-only and uses the reviewer-gated `npm` environment's trusted publisher;
+Pedro approves the environment once before its single job starts. A normal
 stable promotion requires the same source version to exist publicly as a
 canary first.
 

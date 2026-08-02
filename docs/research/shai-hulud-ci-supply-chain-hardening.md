@@ -26,6 +26,24 @@ traditional tokens as its maximum-security configuration.
 [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/),
 [npm staged publishing](https://docs.npmjs.com/staged-publishing/)
 
+## Adopted lockstep-release tradeoff
+
+npm's staged-publishing interface approves exactly one stage ID at a time and
+requires 2FA for every approval. It has no atomic multi-package approval. A
+lockstep AckerDB release would therefore require twelve proof-of-presence
+actions. Pedro rejected that recurring operational cost.
+
+AckerDB adopts one reviewer gate on the GitHub `npm` environment followed by
+direct OIDC publication in a single billed job. The compensating boundaries
+are: external contributions are Issue-only; pull-request code runs only on
+credential-free GitHub-hosted runners; the release restores no dependency
+cache; all installs disable lifecycle scripts; the lockfile is frozen; Action
+dependencies are full-SHA pinned and repository-allowlisted; fresh dependency
+resolution is delayed seven days; and the npm account has no access tokens.
+This is deliberately weaker than npm's maximum-security
+stage-only posture: compromise of Pedro's GitHub approval session or approval
+of a malicious protected commit can still authorize direct publication.
+
 ## Threat evidence
 
 GitHub describes Shai-Hulud as a multi-wave JavaScript supply-chain campaign.
@@ -145,4 +163,3 @@ or developer machine as compromised. This response matches the campaign's
 observed credential harvesting and delayed reuse: GitHub notes that attackers
 may retain stolen tokens for later waves rather than use them immediately.
 [GitHub Security Lab campaign summary](https://github.blog/security/supply-chain-security/strengthening-supply-chain-security-preparing-for-the-next-malware-campaign/)
-

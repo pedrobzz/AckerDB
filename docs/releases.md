@@ -113,22 +113,21 @@ All twelve packages move in lockstep:
   `client`, `client-react`, and `cli`;
 - five host-filtered `@ackerdb/realtime-*` native packages.
 
-Every merge into `canary` stages the current source version as
+Every merge into `canary` prepares the current source version as
 `X.Y.Z-canary.N` for npm's `canary` dist-tag. `N` is the immutable GitHub
-workflow run number.
+workflow run number. The npm environment waits for Pedro's approval before the
+single delivery job starts, so waiting costs no runner minutes.
 
-Every merge into `main` stages `X.Y.Z` for npm's `latest` dist-tag. Before a
+Every merge into `main` prepares `X.Y.Z` for npm's `latest` dist-tag. Before a
 normal promotion can merge, GitHub verifies that every package already has a
 public canary for that source version. An urgent `hotfix/*` pull request is the
 only stable-first path.
 
-The delivery workflow packs and stages in dependency order. CI cannot make a
-stage public: Pedro reviews the exact staged tarballs and approves them with
-npm 2FA. An existing public package version is skipped only when its tarball is
-byte-identical; a different existing tarball is a hard collision. If staging
-stops part-way through, approve or reject the completed stages before rerunning
-the same workflow. Public delivery never reads from Verdaccio. Release tags are
-optional manual bookkeeping and are not created by a write-capable CI job.
+After one environment approval, the delivery workflow packs and publishes in
+dependency order. An existing public package version is skipped only when its
+tarball is byte-identical; a different existing tarball is a hard collision.
+Public delivery never reads from Verdaccio. Release tags are optional manual
+bookkeeping and are not created by a write-capable CI job.
 
 Native Rust builds remain conditional. When native source changed, delivery
 downloads the five artifacts produced by that pull request. When native source
@@ -136,12 +135,12 @@ did not change, it reuses a previously published five-target artifact set only
 when every manifest has the exact current native-source digest. There is no
 unverified local or single-host substitute.
 
-Staging uses npm trusted publishing from `.github/workflows/release.yml`, the
-`pedrobzz/AckerDB` repository, and the `npm` GitHub environment. Every package
-permits `npm stage publish` but not `npm publish`, and requires 2FA while
-disallowing traditional publish tokens. The workflow requests an OpenID
-Connect token and receives no npm credential or secret. It restores no release
-cache, installs with lifecycle scripts disabled, and cannot publish directly.
+Publication uses npm trusted publishing from `.github/workflows/release.yml`,
+the `pedrobzz/AckerDB` repository, and the reviewer-gated `npm` GitHub
+environment. The workflow requests an OpenID Connect token and receives no npm
+credential or secret. It restores no release cache and installs with lifecycle
+scripts disabled. The npm account has no access tokens, while trusted
+publishing can deliver all twelve lockstep packages after one GitHub approval.
 
 All twelve package records now exist with that same trusted publisher.
 `0.13.2-canary.0` is the historical bootstrap release; there is no supported

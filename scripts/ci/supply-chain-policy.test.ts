@@ -20,11 +20,10 @@ describe("public repository CI boundaries", () => {
     expect(releaseWorkflow).toContain("node-version: 24.18.0");
   });
 
-  test("allows CI to stage public packages but not publish them", () => {
-    expect(publisher).toContain('mode === "npm" ? "staging" : "publishing"');
-    expect(publisher).toMatch(/mode === "npm"\s*\? \[\s*"npm",\s*"stage",\s*"publish"/);
-    expect(releaseWorkflow).toContain("Staged @ackerdb/*@");
-    expect(releaseWorkflow).not.toContain("Published @ackerdb/*@");
+  test("publishes only from the human-approved npm environment", () => {
+    expect(releaseWorkflow).toContain("environment: npm");
+    expect(publisher).toMatch(/"npm",\s*"publish",\s*tarball/);
+    expect(releaseWorkflow).toContain("after environment approval");
   });
 
   test("disables install scripts and quarantines fresh dependency releases", () => {

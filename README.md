@@ -144,7 +144,7 @@ client.close();
   adapter.
 - [Releases and protected branches](docs/releases.md) documents the
   `topic → canary → main` topology, fast affected CI, paired AckerDB benchmark,
-  staged public npm delivery with 2FA approval, trusted publishing, and local
+  reviewer-gated public npm delivery, trusted publishing, and local
   Verdaccio betas.
 - [Production-readiness report](docs/production-readiness-report.md) records the
   full issue #1 implementation and decision history, verification and benchmark

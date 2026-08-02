@@ -1,7 +1,7 @@
 // bun scripts/release/publish.ts <npm|beta> [--demo]
 //
-// npm: GitHub CD only. canary stages X.Y.Z-canary.<run-number>; main stages
-// X.Y.Z for Pedro's 2FA approval. beta goes only to local Verdaccio
+// npm: GitHub CD only. canary publishes X.Y.Z-canary.<run-number>; main
+// publishes X.Y.Z after GitHub environment approval. beta goes only to local Verdaccio
 // as X.Y.Z-beta.N and may be published repeatedly for the same target version.
 import {
   appendFileSync,
@@ -324,35 +324,24 @@ try {
       completed.push(`@ackerdb/${pkg}`);
       continue;
     }
-    const operation = mode === "npm" ? "staging" : "publishing";
-    console.log(`${operation} @ackerdb/${pkg}@${version} with dist-tag ${tag}`);
+    console.log(`publishing @ackerdb/${pkg}@${version} with dist-tag ${tag}`);
     const result = Bun.spawnSync(
-      mode === "npm"
-        ? [
-          "npm",
-          "stage",
-          "publish",
-          tarball,
-          `--registry=${registry}`,
-          "--access=public",
-          `--tag=${tag}`,
-        ]
-        : [
-          "npm",
-          "publish",
-          tarball,
-          `--registry=${registry}`,
-          "--access=public",
-          `--tag=${tag}`,
-        ],
+      [
+        "npm",
+        "publish",
+        tarball,
+        `--registry=${registry}`,
+        "--access=public",
+        `--tag=${tag}`,
+      ],
       { stdin: "inherit", stdout: "inherit", stderr: "inherit" },
     );
     if (result.exitCode !== 0) {
       const retry = mode === "npm"
-        ? "approve or reject the packages already staged, then rerun the same workflow"
+        ? "rerun the same approved GitHub workflow to resume safely"
         : "rerun the same beta publication to resume safely";
       throw new Error(
-        `${operation} @ackerdb/${pkg}@${version} failed after ${completed.length} package(s); ` +
+        `publishing @ackerdb/${pkg}@${version} failed after ${completed.length} package(s); ` +
           retry,
       );
     }
@@ -362,11 +351,7 @@ try {
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
   }
-  console.log(
-    mode === "npm"
-      ? `staged all @ackerdb packages at ${version}; Pedro must approve them with 2FA`
-      : `published all @ackerdb packages at ${version}`,
-  );
+  console.log(`published all @ackerdb packages at ${version}`);
 } catch (error) {
   publicationError = error;
 } finally {
