@@ -30,36 +30,43 @@ hotfix/*     ──urgent pull request──────────────
   `canary` → `main` pull request therefore requires a newer version, not an
   artificial one-step bump from `main`.
 
-The protected checks are `Release policy`, `Fast CI`, and `AckerDB benchmark`.
-They are bound to the pull request's current commit, so an old result cannot
-authorize a changed branch.
+The protected checks are `Release policy` and `Fast CI`. They are bound to the
+pull request's current commit, so an old result cannot authorize a changed
+branch. `Release policy` runs in its own workflow so that label changes
+re-evaluate the policy alone instead of restarting the whole pipeline.
 
 ## Fast CI
 
 Pull requests into `canary`, and urgent pull requests into `main`, run:
 
 - the release and branch-policy check;
-- package tests for directly affected packages and their AckerDB dependents,
-  in parallel;
-- the repository TypeScript checks;
+- package tests for directly affected packages and their AckerDB dependents;
+- the repository TypeScript checks, skipped when only documentation changed;
 - package, MCP, and workflow boundary checks only when their inputs changed;
-  and
 - the native matrix only when the WebRTC Rust source, native build/evidence
-  contract, native tests, or native workflow changed.
+  contract, native tests, or native workflow changed; and
+- the paired benchmark only when a benchmark-exercised input changed.
+
+Ordinary work is consolidated into `Select affected work` and one `Fast CI`
+job. This avoids paying a full runner minute for each short package or boundary
+check. The native multi-platform matrix remains separate because the five host
+targets require different operating systems, and it stays path-gated.
 
 Lockstep version-only edits to native `package.json` files do not compile Rust.
 Native jobs cache Cargo dependencies, compiled targets, and evidence tools.
+Every job carries a hard timeout so a hung process can never hold a runner for
+hours.
 
-A `canary` → `main` pull request runs only the release-policy check. The other
-two required check names complete as successful no-ops. The commit was already
-tested before it entered `canary`, and any performance-relevant change was
-benchmarked there; repeating that work would waste the release path. A merge
-into `main` runs only npm delivery.
+A `canary` → `main` pull request runs only the release-policy check; `Fast CI`
+completes as a successful no-op. The commit was already tested before it
+entered `canary`, and any performance-relevant change was benchmarked there;
+repeating that work would waste the release path. A merge into `main` runs
+only npm delivery.
 
-## AckerDB benchmark check
+## Benchmark job
 
-The required status runs the benchmark only when the pull request changes an
-input that the measured AckerDB workload can exercise:
+`Fast CI` runs its benchmark job only when the pull request changes an input
+that the measured AckerDB workload can exercise:
 
 - production source under `packages/core/src`, `packages/client/src`, or
   `packages/server/src`;
@@ -67,28 +74,28 @@ input that the measured AckerDB workload can exercise:
   application;
 - executable files under `bench/`, excluding Markdown and historical results;
   or
-- the benchmark workflow or its path classifier.
+- the pull-request workflow or its path classifier.
 
 All other changes—including docs, tests, release metadata/version bumps,
-`cache`, `client-react`, the WebRTC media package, and native Rust—receive an
-immediate successful no-op. Those paths either cannot affect the measured
+`cache`, `client-react`, the WebRTC media package, and native Rust—skip the
+benchmark immediately. Those paths either cannot affect the measured
 workload or have their own relevant checks. A real run compares the pull
 request's AckerDB with the base branch's AckerDB. It does not run Convex,
 SpacetimeDB, or another vendor.
 
-The same harness and workload measure both commits on the dedicated Hetzner
-runner. Execution order alternates deterministically to reduce systematic
-cold-host bias. The eight-minute job records latency, throughput, connection
-scale, subscription capacity, CPU, RAM, startup, and harness correctness or
-accounting observations.
+The same harness and workload measure both commits on the same credential-free
+GitHub-hosted runner. It has no route into Pedro's Hetzner server. Execution
+order alternates deterministically to reduce systematic cold-host bias. The
+job records latency, throughput, connection scale, subscription capacity, CPU,
+RAM, startup, and harness correctness or accounting observations.
 
 Telemetry is disabled for both commits unless telemetry-related source changed.
 When it did, both commits run the enabled, in-process-exporter, and disabled
 profiles. Unchanged telemetry is never remeasured.
 
 When it runs, GitHub stores the base sample, head sample, and rendered comparison
-as a pull-request artifact and step summary. The check proves only that the
-paired measurement completed for the current commit. It contains no regression
+as a pull-request artifact and step summary. A green benchmark job proves only
+that the paired measurement completed for the current commit. It contains no regression
 threshold, score, acceptance status, or automated performance verdict. Pedro
 and an agent review the full vector and recorded anomalies, reason about whether
 the result is good enough for the useful work, and capture that judgment in the
@@ -106,21 +113,21 @@ All twelve packages move in lockstep:
   `client`, `client-react`, and `cli`;
 - five host-filtered `@ackerdb/realtime-*` native packages.
 
-Every merge into `canary` publishes the current source version as
-`X.Y.Z-canary.N` under npm's `canary` dist-tag. `N` is the immutable GitHub
-workflow run number, so rerunning an interrupted delivery resumes the exact
-same version.
+Every merge into `canary` prepares the current source version as
+`X.Y.Z-canary.N` for npm's `canary` dist-tag. `N` is the immutable GitHub
+workflow run number. The npm environment waits for Pedro's approval before the
+single delivery job starts, so waiting costs no runner minutes.
 
-Every merge into `main` publishes `X.Y.Z` under npm's `latest` dist-tag. Before
-a normal promotion can merge, GitHub verifies that every package already has a
+Every merge into `main` prepares `X.Y.Z` for npm's `latest` dist-tag. Before a
+normal promotion can merge, GitHub verifies that every package already has a
 public canary for that source version. An urgent `hotfix/*` pull request is the
 only stable-first path.
 
-The delivery workflow packs and publishes in dependency order. An existing
-package version is skipped only when its public tarball is byte-identical; a
-different existing tarball is a hard collision. Successful releases receive a
-matching git tag (`vX.Y.Z-canary.N` or `vX.Y.Z`). Public delivery never reads
-from Verdaccio.
+After one environment approval, the delivery workflow packs and publishes in
+dependency order. An existing public package version is skipped only when its
+tarball is byte-identical; a different existing tarball is a hard collision.
+Public delivery never reads from Verdaccio. Release tags are optional manual
+bookkeeping and are not created by a write-capable CI job.
 
 Native Rust builds remain conditional. When native source changed, delivery
 downloads the five artifacts produced by that pull request. When native source
@@ -129,9 +136,11 @@ when every manifest has the exact current native-source digest. There is no
 unverified local or single-host substitute.
 
 Publication uses npm trusted publishing from `.github/workflows/release.yml`,
-the `pedrobzz/AckerDB` repository, and the `npm` GitHub environment. The
-workflow requests an OpenID Connect token and receives no npm credential or
-secret. Public CI publication never falls back to token authentication.
+the `pedrobzz/AckerDB` repository, and the reviewer-gated `npm` GitHub
+environment. The workflow requests an OpenID Connect token and receives no npm
+credential or secret. It restores no release cache and installs with lifecycle
+scripts disabled. The npm account has no access tokens, while trusted
+publishing can deliver all twelve lockstep packages after one GitHub approval.
 
 All twelve package records now exist with that same trusted publisher.
 `0.13.2-canary.0` is the historical bootstrap release; there is no supported

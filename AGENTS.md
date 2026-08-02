@@ -178,11 +178,11 @@ host-specific native packages stay on that one stable source version with
 `workspace:X.Y.Z` interdependencies. A `canary` promotion may contain
 several accumulated steps and only needs to be newer than `main`.
 
-The required GitHub `AckerDB benchmark` status runs the Hetzner comparison only
-when the pull request changes code exercised by the benchmark, its executable
-harness, its workflow, or its path classifier. Every other pull request gets an
-immediate successful no-op; version bumps, docs, tests, and unrelated packages
-must not spend benchmark time. A real run compares the pull request's AckerDB
+The `Fast CI` benchmark runs a same-job GitHub-hosted comparison only when the
+pull request changes code exercised by the benchmark, its executable harness,
+the pull-request workflow, or its path classifier. Every other pull request skips
+it immediately; version bumps, docs, tests, and unrelated packages must not
+spend benchmark time. A real run compares the pull request's AckerDB
 with the base branch's AckerDB. It never runs another vendor and never runs on
 the developer machine. Telemetry is disabled unless telemetry-related source
 changed; only then are enabled, exporter, and disabled profiles measured. The
@@ -190,11 +190,12 @@ check has no thresholds, score, or automated performance acceptance. Pedro and
 an agent interpret the complete vector and anomalies by reasoning before merge.
 Historical files in `bench/results/` are not current release evidence.
 
-Every merge into `canary` publishes `X.Y.Z-canary.N` to public npm under the
-`canary` tag. Every merge into `main` publishes `X.Y.Z` under `latest`.
-Public delivery is GitHub-only and uses the `npm` environment's trusted
-publisher; never run it manually. A normal stable promotion requires the same
-source version to exist publicly as a canary first.
+Every merge into `canary` prepares `X.Y.Z-canary.N` for npm's `canary` tag.
+Every merge into `main` prepares `X.Y.Z` for `latest`. Public delivery is
+GitHub-only and uses the reviewer-gated `npm` environment's trusted publisher;
+Pedro approves the environment once before its single job starts. A normal
+stable promotion requires the same source version to exist publicly as a
+canary first.
 
 Verdaccio at `http://127.0.0.1:4874` is exclusively for repeatable local
 `X.Y.Z-beta.N` builds. Publish one whenever a prepared branch is testable with
@@ -202,9 +203,9 @@ Verdaccio at `http://127.0.0.1:4874` is exclusively for repeatable local
 canary, or alpha versions to Verdaccio, and never publish beta or alpha
 versions to public npm.
 
-Fast CI runs affected package tests and their dependents in parallel, keeps
-repository typechecks fast, and builds the five Rust targets only when actual
-WebRTC native inputs changed. A `canary` → `main` promotion repeats none of
+Fast CI runs affected package tests and their dependents in one consolidated
+billed job, keeps repository typechecks fast, and builds the five Rust targets
+only when actual WebRTC native inputs changed. A `canary` → `main` promotion repeats none of
 that work; it runs branch policy before merge and npm delivery after merge.
 
 ## Agent skills

@@ -1,6 +1,6 @@
 {
   "name": "@ackerdb/realtime",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pedrobzz/AckerDB.git",
@@ -22,16 +22,16 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.14.0",
-    "@ackerdb/server": "workspace:0.14.0",
+    "@ackerdb/core": "workspace:0.14.1",
+    "@ackerdb/server": "workspace:0.14.1",
     "@isaacs/ttlcache": "1.4.1"
   },
   "optionalDependencies": {
-    "@ackerdb/realtime-darwin-arm64": "workspace:0.14.0",
-    "@ackerdb/realtime-darwin-x64": "workspace:0.14.0",
-    "@ackerdb/realtime-linux-arm64-gnu": "workspace:0.14.0",
-    "@ackerdb/realtime-linux-x64-gnu": "workspace:0.14.0",
-    "@ackerdb/realtime-win32-x64-msvc": "workspace:0.14.0"
+    "@ackerdb/realtime-darwin-arm64": "workspace:0.14.1",
+    "@ackerdb/realtime-darwin-x64": "workspace:0.14.1",
+    "@ackerdb/realtime-linux-arm64-gnu": "workspace:0.14.1",
+    "@ackerdb/realtime-linux-x64-gnu": "workspace:0.14.1",
+    "@ackerdb/realtime-win32-x64-msvc": "workspace:0.14.1"
   },
   "napi": {
     "binaryName": "ackerdb_webrtc",

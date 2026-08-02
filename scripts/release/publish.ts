@@ -1,7 +1,7 @@
 // bun scripts/release/publish.ts <npm|beta> [--demo]
 //
 // npm: GitHub CD only. canary publishes X.Y.Z-canary.<run-number>; main
-// publishes X.Y.Z. beta: the current working tree goes only to local Verdaccio
+// publishes X.Y.Z after GitHub environment approval. beta goes only to local Verdaccio
 // as X.Y.Z-beta.N and may be published repeatedly for the same target version.
 import {
   appendFileSync,
@@ -22,7 +22,6 @@ import {
   packageDirectory,
   pkgJsonPath,
   syncedVersion,
-  tryGit,
 } from "../lib.ts";
 import {
   WEBRTC_LOADER_DECLARATION_PATH,
@@ -317,12 +316,12 @@ try {
   const tarballs = new Map(
     PACKAGES.map((pkg) => [pkg, packPackage(pkg, temporary)] as const),
   );
-  const published: string[] = [];
+  const completed: string[] = [];
   for (const pkg of PACKAGES) {
     const tarball = tarballs.get(pkg)!;
     if (await identicalPublishedTarball(registry, pkg, version, tarball)) {
       console.log(`skipping @ackerdb/${pkg}@${version}; identical bytes are already published`);
-      published.push(`@ackerdb/${pkg}`);
+      completed.push(`@ackerdb/${pkg}`);
       continue;
     }
     console.log(`publishing @ackerdb/${pkg}@${version} with dist-tag ${tag}`);
@@ -339,27 +338,14 @@ try {
     );
     if (result.exitCode !== 0) {
       const retry = mode === "npm"
-        ? "rerun the same GitHub workflow to resume safely"
+        ? "rerun the same approved GitHub workflow to resume safely"
         : "rerun the same beta publication to resume safely";
       throw new Error(
-        `publishing @ackerdb/${pkg}@${version} failed after ${published.length} package(s); ` +
+        `publishing @ackerdb/${pkg}@${version} failed after ${completed.length} package(s); ` +
           retry,
       );
     }
-    published.push(`@ackerdb/${pkg}`);
-  }
-
-  if (mode !== "beta") {
-    const tagName = `v${version}`;
-    const existing = tryGit("rev-parse", "-q", "--verify", `refs/tags/${tagName}^{commit}`);
-    const head = git("rev-parse", "HEAD");
-    if (existing !== null && existing !== head) {
-      throw new Error(`${tagName} already points at ${existing}, not ${head}`);
-    }
-    if (existing === null) {
-      git("tag", tagName);
-      git("push", "origin", `refs/tags/${tagName}`);
-    }
+    completed.push(`@ackerdb/${pkg}`);
   }
 
   if (process.env.GITHUB_OUTPUT) {

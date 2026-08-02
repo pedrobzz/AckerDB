@@ -1,4 +1,4 @@
-/** AckerDB-only benchmark sampler; invoked by the protected PR workflow on Hetzner. */
+/** AckerDB-only benchmark sampler; invoked by the protected PR workflow. */
 import { randomUUID } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { arch, cpus, platform, release, tmpdir, totalmem } from "node:os";
