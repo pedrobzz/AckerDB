@@ -9,6 +9,7 @@
         "@napi-rs/cli": "3.8.2",
         "@types/bun": "^1.2.0",
         "@types/node": "22.15.3",
+        "ackerdb-test-support": "workspace:*",
         "typescript": "^5.9.0",
       },
     },
@@ -40,6 +41,10 @@
         "@types/react": "^19.2.17",
         "@types/react-dom": "^19.2.3",
       },
+    },
+    "fixtures/test-support": {
+      "name": "ackerdb-test-support",
+      "version": "0.0.0",
     },
     "packages/cache": {
       "name": "@ackerdb/cache",
@@ -675,6 +680,8 @@
     "ackerdb-fixture-expo-app": ["ackerdb-fixture-expo-app@workspace:fixtures/expo-app"],
 
     "ackerdb-fixture-react-web": ["ackerdb-fixture-react-web@workspace:fixtures/react-web"],
+
+    "ackerdb-test-support": ["ackerdb-test-support@workspace:fixtures/test-support"],
 
     "acorn": ["acorn@8.17.0", "", { "bin": { "acorn": "bin/acorn" } }, "sha512-xRQbDb9BnwDafYNn6Vwl839DYVjqXYb1XVGtWAZ1kcDc6iwAL4hg3B1dZlRiuENFeO2H53gFG3in621AdERVAg=="],
 

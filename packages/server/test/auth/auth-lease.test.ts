@@ -17,22 +17,10 @@ import {
   type VerifiedCredential,
 } from "../../src/auth/credentials.ts";
 import { AckerDBError } from "../../src/shared/errors.ts";
+import { deferred } from "ackerdb-test-support/async";
 
 const BEARER: Credential = Object.freeze({ kind: "bearer", token: "credential" });
 const MAX_TIMER_DELAY_MS = 0x7fff_ffff;
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
 
 function user(expiresAt: number): VerifiedCredential {
   return {

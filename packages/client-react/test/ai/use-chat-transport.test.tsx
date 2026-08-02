@@ -35,28 +35,9 @@ import {
   type AckerDBChatRequest,
 } from "@ackerdb/client-react/ai";
 import { uiMessageChunk } from "./ui-message-chunk.ts";
+import { deferred, until, waitForAbort } from "ackerdb-test-support/async";
 
 const schema = defineSchema({});
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((promiseResolve) => {
-    resolve = promiseResolve;
-  });
-  return { promise, resolve };
-}
-
-function waitForAbort(signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) resolve();
-    else signal.addEventListener("abort", () => resolve(), { once: true });
-  });
-}
 
 // Server-side journal: every argument object the chat procedures received,
 // plus per-procedure release markers proving the runtime returned the
@@ -278,15 +259,6 @@ function createApp(): App {
       rmSync(directory, { recursive: true, force: true });
     },
   };
-}
-
-async function until(predicate: () => boolean, description: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(5);
-  }
-  throw new Error(`Timed out waiting for ${description}`);
 }
 
 /** The only AckerDB-owned HTTP route the client calls; every other is a stream. */

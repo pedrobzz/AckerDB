@@ -1,0 +1,9 @@
+{
+  "name": "ackerdb-test-support",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    "./async": "./src/async.ts"
+  }
+}

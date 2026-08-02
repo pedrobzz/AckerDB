@@ -17,6 +17,7 @@ import {
 } from "../../../../bench/process-tree.ts";
 import { makeFixture } from "../support/fixture.ts";
 import { decodeChunkedBody, parseSseBody, pausedSse } from "./paused-sse.ts";
+import { freePort } from "../support/port.ts";
 
 const STEP_TIMEOUT_MS = 8_000;
 const STATUS_TOKEN = "resource-status";
@@ -184,13 +185,6 @@ async function eventually<T>(
     value = await read();
   }
   return value;
-}
-
-async function freePort(): Promise<number> {
-  const probe = Bun.serve({ port: 0, fetch: () => new Response("") });
-  const port = probe.port!;
-  await probe.stop(true);
-  return port;
 }
 
 function spawnFixture(dir: string, port: number): ProcessHarness {

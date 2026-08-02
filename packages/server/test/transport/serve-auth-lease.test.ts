@@ -22,28 +22,7 @@ import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
 import { serve, type AckerDBServer } from "../../src/transport/server.ts";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
-
-async function within<T>(promise: Promise<T>, timeoutMs = 2_000): Promise<T> {
-  return Promise.race([
-    promise,
-    Bun.sleep(timeoutMs).then(() => {
-      throw new Error("operation timed out");
-    }),
-  ]);
-}
+import { deferred, waitForAbort, within } from "ackerdb-test-support/async";
 
 async function eventually(check: () => boolean): Promise<void> {
   await within((async () => {
@@ -88,13 +67,6 @@ function acknowledgeSse(
       proof: message.proof,
     }),
   });
-}
-
-async function waitForAbort(signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return;
-  await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), {
-    once: true,
-  }));
 }
 
 const schema = defineSchema({
@@ -344,6 +316,11 @@ describe("HTTP and SSE credential leases", () => {
       subject: "user-stream-revoked",
     });
     await eventually(() => verifier.activeListeners === 0);
+    // The lease is released and the body ends. Note this is the same terminal
+    // signal "owns an SSE lease through normal body completion" observes: at
+    // the transport level a revoked stream is not distinguishable from a
+    // finished one, so a consumer that must tell them apart has to read the
+    // frames, not the body's end.
     expect(await within(revokedReader.read())).toMatchObject({ done: true });
   });
 });

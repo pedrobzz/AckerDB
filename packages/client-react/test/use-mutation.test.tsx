@@ -29,6 +29,7 @@ import {
 } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AckerDBProvider, useConnectionState, useMutation, type AckerDBProviderConfig } from "@ackerdb/client-react";
+import { createBoundary } from "./support/boundary.tsx";
 
 interface ClockTask {
   at: number;
@@ -766,20 +767,7 @@ describe("useMutation", () => {
   test("useMutation outside a provider fails loudly", async () => {
     const container = mountPoint();
     const root = createRoot(container);
-    let caught: unknown;
-
-    class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-      override state = { failed: false };
-      static getDerivedStateFromError(): { failed: boolean } {
-        return { failed: true };
-      }
-      override componentDidCatch(error: unknown): void {
-        caught = error;
-      }
-      override render(): ReactNode {
-        return this.state.failed ? "failed" : this.props.children;
-      }
-    }
+    const { Boundary, caught } = createBoundary();
 
     function Naked(): ReactNode {
       useMutation(todosAdd());
@@ -793,7 +781,7 @@ describe("useMutation", () => {
       </Boundary>,
     );
     expect(container.textContent).toBe("failed");
-    expect(String(caught)).toContain("useMutation requires a <AckerDBProvider> ancestor");
+    expect(String(caught())).toContain("useMutation requires a <AckerDBProvider> ancestor");
     await act(async () => {
       root.unmount();
     });

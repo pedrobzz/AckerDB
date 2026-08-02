@@ -29,6 +29,7 @@ import {
   type SessionControlMessage,
   type SessionSink,
 } from "../../src/subscriptions/session.ts";
+import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const NOW = 2_000_000;
 const ISSUER_A = "https://issuer-a.identity.test/";
@@ -59,19 +60,6 @@ const schema = defineSchema({
 // Runtime behavior is under test; generated application types are irrelevant here.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Ctx = any;
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
 
 interface UnlinkStall {
   readonly committed: Deferred<void>;

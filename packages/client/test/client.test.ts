@@ -25,6 +25,7 @@ import {
   type AckerDBConnectionState,
   type AckerDBWebSocket,
 } from "@ackerdb/client";
+import { deferred } from "ackerdb-test-support/async";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -254,22 +255,6 @@ async function completeProcedure<Value>(
     value,
   });
   return mustOk(await dispatched.completion);
-}
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (error: unknown) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((promiseResolve, promiseReject) => {
-    resolve = promiseResolve;
-    reject = promiseReject;
-  });
-  return { promise, resolve, reject };
 }
 
 async function eventually(predicate: () => boolean, description: string): Promise<void> {

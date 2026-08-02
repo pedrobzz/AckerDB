@@ -2,14 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { AckerDBError } from "../../src/shared/errors.ts";
 import { OrderedPublication } from "../../src/subscriptions/publication.ts";
 import { PublicationHandoff } from "../../src/subscriptions/publication.ts";
-
-function deferred(): { promise: Promise<void>; resolve: () => void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((done) => {
-    resolve = done;
-  });
-  return { promise, resolve };
-}
+import { deferred } from "ackerdb-test-support/async";
 
 describe("ordered publication", () => {
   test("reserves item and byte capacity before commit", async () => {

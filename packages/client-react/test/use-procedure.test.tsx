@@ -24,7 +24,6 @@ import {
   serve,
 } from "@ackerdb/server";
 import {
-  Component,
   StrictMode,
   useCallback,
   useEffect,
@@ -41,6 +40,8 @@ import {
   type AckerDBProviderConfig,
   type AckerDBQueryProcedureState,
 } from "@ackerdb/client-react";
+import { createBoundary } from "./support/boundary.tsx";
+import { deferred, until, type Deferred } from "ackerdb-test-support/async";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -74,19 +75,6 @@ function mustOk<Data>(result: ClientResult<Data>): Data {
 function mustErr<Data>(result: ClientResult<Data>): AckerDBClientError {
   if (result.ok) throw new Error("expected a failed Result");
   return result.error;
-}
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((promiseResolve) => {
-    resolve = promiseResolve;
-  });
-  return { promise, resolve };
 }
 
 // Per-call gates for tools.block so tests can hold a real request in flight.
@@ -192,15 +180,6 @@ function observingSocket(url: string, onProcedure: () => void): AckerDBWebSocket
   native.onclose = () => socket.onclose?.();
   native.onerror = () => socket.onerror?.();
   return socket;
-}
-
-async function until(predicate: () => boolean, description: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(10);
-  }
-  throw new Error(`Timed out waiting for ${description}`);
 }
 
 async function settlesWithin(
@@ -730,19 +709,7 @@ describe("useProcedure against a real ackerdb server", () => {
   });
 
   test("useProcedure outside a provider fails loudly", async () => {
-    let caught: unknown;
-    class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-      override state = { failed: false };
-      static getDerivedStateFromError(): { failed: boolean } {
-        return { failed: true };
-      }
-      override componentDidCatch(error: unknown): void {
-        caught = error;
-      }
-      override render(): ReactNode {
-        return this.state.failed ? "failed" : this.props.children;
-      }
-    }
+    const { Boundary, caught } = createBoundary();
     function Naked(): ReactNode {
       useProcedure(api.tools.echo);
       return null;
@@ -756,7 +723,7 @@ describe("useProcedure against a real ackerdb server", () => {
       </Boundary>,
     );
     await until(() => container.textContent === "failed", "the error boundary");
-    expect(String(caught)).toContain("useProcedure requires a <AckerDBProvider> ancestor");
+    expect(String(caught())).toContain("useProcedure requires a <AckerDBProvider> ancestor");
     await unmount(root);
   });
 });

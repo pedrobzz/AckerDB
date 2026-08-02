@@ -22,21 +22,9 @@ import {
   typedQuery,
   user,
 } from "../support/mcp-token-fixture.ts";
+import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const MCP_PROTOCOL_VERSION = "2025-11-25";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
 
 interface GateState {
   readonly started: Deferred<void>;

@@ -16,26 +16,12 @@ import {
   typedProcedure,
   user,
 } from "../support/mcp-token-fixture.ts";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
+import { deferred, within, type Deferred } from "ackerdb-test-support/async";
 
 interface ToolGate {
   readonly started: Deferred<void>;
   readonly release: Deferred<void>;
   aborted: boolean;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  return {
-    promise: new Promise<T>((accept) => {
-      resolve = accept;
-    }),
-    resolve,
-  };
 }
 
 const gates = new Map<string, ToolGate>();
@@ -75,18 +61,6 @@ function waitForRelease(signal: AbortSignal, key: string): Promise<void> {
       resolve();
     });
   });
-}
-
-async function within<T>(promise: Promise<T>, timeoutMs = 2_000): Promise<T> {
-  let timer!: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error("test timed out")), timeoutMs);
-  });
-  try {
-    return await Promise.race([promise, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function waitUntil(predicate: () => boolean): Promise<void> {

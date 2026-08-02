@@ -30,6 +30,7 @@ import type {
   SessionApplicationMessage,
   SessionRuntimeContext,
 } from "../../src/subscriptions/session.ts";
+import { until } from "ackerdb-test-support/async";
 
 // A live subscription must survive a commit made by a DIFFERENT principal
 // through any dispatch path that commits INSIDE its handler (an MCP tool or a
@@ -185,14 +186,6 @@ function session(
 
 function request<Message>(message: Message): RuntimeRequest<Message> {
   return Object.freeze({ message, bytes: Buffer.byteLength(encode(message)) });
-}
-
-async function until(check: () => boolean, label: string): Promise<void> {
-  const start = Date.now();
-  while (!check()) {
-    if (Date.now() - start > 5_000) throw new Error(`${label} timed out`);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
 }
 
 test("a subscription recomputes cleanly after another principal's MCP tool commit", async () => {
