@@ -96,7 +96,7 @@ export async function assertReleasePolicy(input: {
   readonly author: string;
   readonly urgent: boolean;
   readonly requirePublishedCanary?: boolean;
-}): Promise<{ readonly version: string; readonly level: ReleaseLevel }> {
+}): Promise<{ readonly version: string; readonly level: ReleaseLevel | null }> {
   if (input.baseBranch !== "canary" && input.baseBranch !== "main") {
     throw new Error("release pull requests may target only canary or main");
   }
@@ -114,6 +114,9 @@ export async function assertReleasePolicy(input: {
 
   const baseVersion = releaseVersionAt(input.baseSha);
   const version = releaseVersionAt(input.headSha);
+  if (input.baseBranch === "canary" && version === baseVersion) {
+    return { version, level: null };
+  }
   const promotesCanary = input.baseBranch === "main" && input.headBranch === "canary";
   const level = promotesCanary
     ? accumulatedLevel(baseVersion, version)
@@ -122,8 +125,11 @@ export async function assertReleasePolicy(input: {
     throw new Error(
       promotesCanary
         ? `canary v${version} must be newer than main v${baseVersion}`
-        : `v${version} is not exactly one major, minor, or patch step after base v${baseVersion}; ` +
-          "rebase and run bun run release:prepare <level> again",
+        : input.baseBranch === "canary"
+          ? `v${version} must equal canary v${baseVersion} for a canary.N iteration, ` +
+            "or declare exactly one step with bun run release:prepare <level>"
+          : `v${version} is not exactly one major, minor, or patch step after base v${baseVersion}; ` +
+            "rebase and run bun run release:prepare <level> again",
     );
   }
   if (
@@ -152,7 +158,11 @@ if (import.meta.main) {
       author,
       urgent: urgentValue === "true",
     });
-    console.log(`release policy: ${result.level} → v${result.version}`);
+    console.log(
+      result.level === null
+        ? `release policy: canary iteration → v${result.version}-canary.N`
+        : `release policy: ${result.level} → v${result.version}`,
+    );
   } catch (error) {
     fail(error instanceof Error ? error.message : String(error));
   }
