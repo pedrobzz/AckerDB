@@ -38,7 +38,7 @@ jobs:
         run: >-
           node -e 'const version = require("node:child_process").execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
           const [major, minor] = version.split(".").map(Number);
-          if (major < 11 || (major === 11 && minor < 5)) throw new Error(`npm ${version} cannot use trusted publishing`)'
+          if (major < 11 || (major === 11 && minor < 5)) throw new Error("npm " + version + " cannot use trusted publishing")'
       - name: Find native artifacts from the merged PR
         id: native
         env:
