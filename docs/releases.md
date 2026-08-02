@@ -21,11 +21,15 @@ hotfix/*     ──urgent pull request──────────────
 - An urgent exception must still be a pull request. Its branch must be named
   `hotfix/*`, Pedro must be the pull-request author, and the pull request must
   carry the `release:urgent` label.
-- A topic or hotfix branch declares exactly one `major`, `minor`, or `patch`
-  step from its target branch. Run `bun run release:prepare <level>` after the
-  branch is based on the current target. The command updates all twelve package
-  manifests, their exact workspace interdependencies, the generated native
-  loader, and `bun.lock`, then creates the release-intent commit.
+- A pull request into `canary` may keep the target's current source version;
+  every merge still publishes a distinct `X.Y.Z-canary.N`. Declare a version
+  step only when the work releases a new source version: run
+  `bun run release:prepare <level>` after the branch is based on the current
+  target. The command updates all twelve package manifests, their exact
+  workspace interdependencies, the generated native loader, and `bun.lock`,
+  then creates the release-intent commit.
+- A `hotfix/*` pull request into `main` always declares exactly one `major`,
+  `minor`, or `patch` step.
 - `canary` may accumulate several declared releases before promotion. A
   `canary` → `main` pull request therefore requires a newer version, not an
   artificial one-step bump from `main`.
