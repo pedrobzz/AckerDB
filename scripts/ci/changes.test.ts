@@ -41,7 +41,7 @@ describe("benchmark selection", () => {
     ])).toBe(true);
   });
 
-  test("does not spend Hetzner time on non-performance changes", () => {
+  test("does not spend benchmark time on non-performance changes", () => {
     expect(performanceInputsChanged([
       "README.md",
       "docs/releases.md",

@@ -40,13 +40,17 @@ re-evaluate the policy alone instead of restarting the whole pipeline.
 Pull requests into `canary`, and urgent pull requests into `main`, run:
 
 - the release and branch-policy check;
-- package tests for directly affected packages and their AckerDB dependents,
-  in parallel;
+- package tests for directly affected packages and their AckerDB dependents;
 - the repository TypeScript checks, skipped when only documentation changed;
 - package, MCP, and workflow boundary checks only when their inputs changed;
 - the native matrix only when the WebRTC Rust source, native build/evidence
   contract, native tests, or native workflow changed; and
-- the paired Hetzner benchmark only when a benchmark-exercised input changed.
+- the paired benchmark only when a benchmark-exercised input changed.
+
+Ordinary work is consolidated into `Select affected work` and one `Fast CI`
+job. This avoids paying a full runner minute for each short package or boundary
+check. The native multi-platform matrix remains separate because the five host
+targets require different operating systems, and it stays path-gated.
 
 Lockstep version-only edits to native `package.json` files do not compile Rust.
 Native jobs cache Cargo dependencies, compiled targets, and evidence tools.
@@ -79,11 +83,11 @@ workload or have their own relevant checks. A real run compares the pull
 request's AckerDB with the base branch's AckerDB. It does not run Convex,
 SpacetimeDB, or another vendor.
 
-The same harness and workload measure both commits on the dedicated Hetzner
-runner. Execution order alternates deterministically to reduce systematic
-cold-host bias. The eight-minute job records latency, throughput, connection
-scale, subscription capacity, CPU, RAM, startup, and harness correctness or
-accounting observations.
+The same harness and workload measure both commits on the same credential-free
+GitHub-hosted runner. It has no route into Pedro's Hetzner server. Execution
+order alternates deterministically to reduce systematic cold-host bias. The
+job records latency, throughput, connection scale, subscription capacity, CPU,
+RAM, startup, and harness correctness or accounting observations.
 
 Telemetry is disabled for both commits unless telemetry-related source changed.
 When it did, both commits run the enabled, in-process-exporter, and disabled
@@ -109,21 +113,22 @@ All twelve packages move in lockstep:
   `client`, `client-react`, and `cli`;
 - five host-filtered `@ackerdb/realtime-*` native packages.
 
-Every merge into `canary` publishes the current source version as
-`X.Y.Z-canary.N` under npm's `canary` dist-tag. `N` is the immutable GitHub
-workflow run number, so rerunning an interrupted delivery resumes the exact
-same version.
+Every merge into `canary` stages the current source version as
+`X.Y.Z-canary.N` for npm's `canary` dist-tag. `N` is the immutable GitHub
+workflow run number.
 
-Every merge into `main` publishes `X.Y.Z` under npm's `latest` dist-tag. Before
-a normal promotion can merge, GitHub verifies that every package already has a
+Every merge into `main` stages `X.Y.Z` for npm's `latest` dist-tag. Before a
+normal promotion can merge, GitHub verifies that every package already has a
 public canary for that source version. An urgent `hotfix/*` pull request is the
 only stable-first path.
 
-The delivery workflow packs and publishes in dependency order. An existing
-package version is skipped only when its public tarball is byte-identical; a
-different existing tarball is a hard collision. Successful releases receive a
-matching git tag (`vX.Y.Z-canary.N` or `vX.Y.Z`). Public delivery never reads
-from Verdaccio.
+The delivery workflow packs and stages in dependency order. CI cannot make a
+stage public: Pedro reviews the exact staged tarballs and approves them with
+npm 2FA. An existing public package version is skipped only when its tarball is
+byte-identical; a different existing tarball is a hard collision. If staging
+stops part-way through, approve or reject the completed stages before rerunning
+the same workflow. Public delivery never reads from Verdaccio. Release tags are
+optional manual bookkeeping and are not created by a write-capable CI job.
 
 Native Rust builds remain conditional. When native source changed, delivery
 downloads the five artifacts produced by that pull request. When native source
@@ -131,10 +136,12 @@ did not change, it reuses a previously published five-target artifact set only
 when every manifest has the exact current native-source digest. There is no
 unverified local or single-host substitute.
 
-Publication uses npm trusted publishing from `.github/workflows/release.yml`,
-the `pedrobzz/AckerDB` repository, and the `npm` GitHub environment. The
-workflow requests an OpenID Connect token and receives no npm credential or
-secret. Public CI publication never falls back to token authentication.
+Staging uses npm trusted publishing from `.github/workflows/release.yml`, the
+`pedrobzz/AckerDB` repository, and the `npm` GitHub environment. Every package
+permits `npm stage publish` but not `npm publish`, and requires 2FA while
+disallowing traditional publish tokens. The workflow requests an OpenID
+Connect token and receives no npm credential or secret. It restores no release
+cache, installs with lifecycle scripts disabled, and cannot publish directly.
 
 All twelve package records now exist with that same trusted publisher.
 `0.13.2-canary.0` is the historical bootstrap release; there is no supported

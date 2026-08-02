@@ -6,7 +6,7 @@ on:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
   id-token: write
   pull-requests: read
 
@@ -25,12 +25,20 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           fetch-depth: 0
-      - uses: ./.github/actions/bun-workspace
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile --ignore-scripts
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
-          node-version: 24
+          node-version: 24.18.0
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
+      - name: Require staged-publishing support
+        run: >-
+          node -e 'const version = require("node:child_process").execFileSync("npm", ["--version"], { encoding: "utf8" }).trim();
+          const [major, minor] = version.split(".").map(Number);
+          if (major < 11 || (major === 11 && minor < 15)) throw new Error(`npm ${version} cannot stage packages`)'
       - name: Find native artifacts from the merged PR
         id: native
         env:
@@ -55,6 +63,6 @@ jobs:
           pattern: webrtc-*
           path: packages/realtime/native/webrtc/binding
           merge-multiple: true
-      - id: publish
+      - id: stage
         run: bun scripts/release/publish.ts npm
-      - run: echo "Published @ackerdb/*@${{ steps.publish.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+      - run: echo "Staged @ackerdb/*@${{ steps.stage.outputs.version }} for Pedro's 2FA approval" >> "$GITHUB_STEP_SUMMARY"

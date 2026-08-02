@@ -1,7 +1,7 @@
 // bun scripts/release/publish.ts <npm|beta> [--demo]
 //
-// npm: GitHub CD only. canary publishes X.Y.Z-canary.<run-number>; main
-// publishes X.Y.Z. beta: the current working tree goes only to local Verdaccio
+// npm: GitHub CD only. canary stages X.Y.Z-canary.<run-number>; main stages
+// X.Y.Z for Pedro's 2FA approval. beta goes only to local Verdaccio
 // as X.Y.Z-beta.N and may be published repeatedly for the same target version.
 import {
   appendFileSync,
@@ -22,7 +22,6 @@ import {
   packageDirectory,
   pkgJsonPath,
   syncedVersion,
-  tryGit,
 } from "../lib.ts";
 import {
   WEBRTC_LOADER_DECLARATION_PATH,
@@ -317,55 +316,57 @@ try {
   const tarballs = new Map(
     PACKAGES.map((pkg) => [pkg, packPackage(pkg, temporary)] as const),
   );
-  const published: string[] = [];
+  const completed: string[] = [];
   for (const pkg of PACKAGES) {
     const tarball = tarballs.get(pkg)!;
     if (await identicalPublishedTarball(registry, pkg, version, tarball)) {
       console.log(`skipping @ackerdb/${pkg}@${version}; identical bytes are already published`);
-      published.push(`@ackerdb/${pkg}`);
+      completed.push(`@ackerdb/${pkg}`);
       continue;
     }
-    console.log(`publishing @ackerdb/${pkg}@${version} with dist-tag ${tag}`);
+    const operation = mode === "npm" ? "staging" : "publishing";
+    console.log(`${operation} @ackerdb/${pkg}@${version} with dist-tag ${tag}`);
     const result = Bun.spawnSync(
-      [
-        "npm",
-        "publish",
-        tarball,
-        `--registry=${registry}`,
-        "--access=public",
-        `--tag=${tag}`,
-      ],
+      mode === "npm"
+        ? [
+          "npm",
+          "stage",
+          "publish",
+          tarball,
+          `--registry=${registry}`,
+          "--access=public",
+          `--tag=${tag}`,
+        ]
+        : [
+          "npm",
+          "publish",
+          tarball,
+          `--registry=${registry}`,
+          "--access=public",
+          `--tag=${tag}`,
+        ],
       { stdin: "inherit", stdout: "inherit", stderr: "inherit" },
     );
     if (result.exitCode !== 0) {
       const retry = mode === "npm"
-        ? "rerun the same GitHub workflow to resume safely"
+        ? "approve or reject the packages already staged, then rerun the same workflow"
         : "rerun the same beta publication to resume safely";
       throw new Error(
-        `publishing @ackerdb/${pkg}@${version} failed after ${published.length} package(s); ` +
+        `${operation} @ackerdb/${pkg}@${version} failed after ${completed.length} package(s); ` +
           retry,
       );
     }
-    published.push(`@ackerdb/${pkg}`);
-  }
-
-  if (mode !== "beta") {
-    const tagName = `v${version}`;
-    const existing = tryGit("rev-parse", "-q", "--verify", `refs/tags/${tagName}^{commit}`);
-    const head = git("rev-parse", "HEAD");
-    if (existing !== null && existing !== head) {
-      throw new Error(`${tagName} already points at ${existing}, not ${head}`);
-    }
-    if (existing === null) {
-      git("tag", tagName);
-      git("push", "origin", `refs/tags/${tagName}`);
-    }
+    completed.push(`@ackerdb/${pkg}`);
   }
 
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
   }
-  console.log(`published all @ackerdb packages at ${version}`);
+  console.log(
+    mode === "npm"
+      ? `staged all @ackerdb packages at ${version}; Pedro must approve them with 2FA`
+      : `published all @ackerdb packages at ${version}`,
+  );
 } catch (error) {
   publicationError = error;
 } finally {

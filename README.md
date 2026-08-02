@@ -144,7 +144,8 @@ client.close();
   adapter.
 - [Releases and protected branches](docs/releases.md) documents the
   `topic → canary → main` topology, fast affected CI, paired AckerDB benchmark,
-  public npm delivery, trusted publishing, and local Verdaccio betas.
+  staged public npm delivery with 2FA approval, trusted publishing, and local
+  Verdaccio betas.
 - [Production-readiness report](docs/production-readiness-report.md) records the
   full issue #1 implementation and decision history, verification and benchmark
   evidence, remaining release blockers, and the operational gap versus Convex
@@ -207,7 +208,7 @@ GitHub's required benchmark status first classifies the pull request. It returns
 an immediate successful no-op unless code exercised by the benchmark or the
 benchmark contract itself changed. For those performance-relevant changes, it
 compares the pull request's AckerDB with its base branch's AckerDB on the
-dedicated Hetzner runner. Telemetry stays disabled unless telemetry source
+credential-free GitHub-hosted runner. Telemetry stays disabled unless telemetry source
 changed. The check records evidence without thresholds or an automated verdict;
 Pedro and an agent interpret the complete vector.
 Do not run the protected benchmark locally. See [the benchmark

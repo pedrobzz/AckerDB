@@ -10,9 +10,9 @@ if (!baseCommit || !headCommit || !outputDirectoryArgument) {
 }
 if (
   process.env.GITHUB_ACTIONS !== "true" ||
-  process.env.BENCH_EXECUTION_HOST !== "hetzner"
+  process.env.BENCH_EXECUTION_HOST !== "github-hosted"
 ) {
-  throw new Error("paired benchmarks run only in the GitHub Hetzner job");
+  throw new Error("paired benchmarks run only on the credential-free GitHub-hosted runner");
 }
 
 const repository = resolve(import.meta.dir, "..");

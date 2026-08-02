@@ -1,10 +1,10 @@
 # AckerDB pull-request benchmark
 
 This harness compares AckerDB with AckerDB: the pull request's head commit
-against its base commit, on the same dedicated Hetzner runner and with the same
-head-defined workload.
+against its base commit, on the same credential-free GitHub-hosted runner and
+with the same head-defined workload.
 
-GitHub's required status runs the Hetzner work only for pull requests that
+GitHub's required status runs the benchmark only for pull requests that
 change code exercised by this workload, the executable harness, the benchmark
 workflow, or its path classifier. Docs, tests, version bumps, and packages not
 exercised here report an immediate successful no-op. A `canary` → `main`
