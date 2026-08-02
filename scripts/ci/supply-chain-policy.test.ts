@@ -22,6 +22,7 @@ describe("public repository CI boundaries", () => {
 
   test("publishes only from the human-approved npm environment", () => {
     expect(releaseWorkflow).toContain("environment: npm");
+    expect(releaseWorkflow).toContain("workflow_dispatch:");
     expect(publisher).toMatch(/"npm",\s*"publish",\s*tarball/);
     expect(releaseWorkflow).toContain("after environment approval");
   });

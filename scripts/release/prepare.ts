@@ -77,6 +77,7 @@ const refresh = Bun.spawnSync(
     "@ackerdb/core",
     "--no-save",
     "--lockfile-only",
+    "--minimum-release-age=0",
     "--registry=https://registry.npmjs.org",
   ],
   { stdout: "pipe", stderr: "pipe" },

@@ -7,7 +7,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { NATIVE_PACKAGES, PUBLIC_PACKAGES } from "./lib.ts";
+import { NATIVE_PACKAGES, PACKAGES, PUBLIC_PACKAGES } from "./lib.ts";
+import { FSL_LICENSE, NATIVE_LICENSE } from "./release/package-license.ts";
 import {
   DISTRIBUTION_MANIFEST_SCHEMA_VERSION,
   TARGET_EVIDENCE_FILES,
@@ -250,12 +251,39 @@ function assertServerExcludesRealtimeRuntime(serverDirectory: string): void {
   }
 }
 
+function assertPackagedLicenses(consumerDirectory: string): void {
+  const nativePackages = new Set<string>(NATIVE_PACKAGES);
+  for (const pkg of PACKAGES) {
+    const packageDirectory = join(
+      consumerDirectory,
+      "node_modules",
+      "@ackerdb",
+      pkg,
+    );
+    const manifest = readManifest(join(packageDirectory, "package.json"));
+    const expected = nativePackages.has(pkg) ? NATIVE_LICENSE : FSL_LICENSE;
+    if (manifest.license !== expected) {
+      throw new Error(
+        `packed @ackerdb/${pkg} license is ${String(manifest.license)}, expected ${expected}`,
+      );
+    }
+    const license = readFileSync(join(packageDirectory, "LICENSE.md"), "utf8");
+    const marker = nativePackages.has(pkg)
+      ? "Apache License\n                           Version 2.0"
+      : "Functional Source License, Version 1.1, Apache 2.0 Future License";
+    if (!license.includes(marker)) {
+      throw new Error(`packed @ackerdb/${pkg} does not contain its declared license`);
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const packed = await createPackedConsumer("ackerdb-packed-consumer");
   const { consumerDir, root, version } = packed;
   mkdirSync(join(consumerDir, "functions"), { recursive: true });
 
   try {
+    assertPackagedLicenses(consumerDir);
     for (const pkg of PUBLIC_PACKAGES) {
       const manifest = readManifest(
         join(consumerDir, "node_modules", "@ackerdb", pkg, "package.json"),

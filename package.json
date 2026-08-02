@@ -2,6 +2,7 @@
   "name": "ackerdb",
   "description": "AckerDB - The All-in-One Back-End Framework",
   "private": true,
+  "license": "FSL-1.1-ALv2",
   "workspaces": [
     "packages/*",
     "packages/realtime-native/*",

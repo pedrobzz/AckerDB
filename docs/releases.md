@@ -129,6 +129,12 @@ tarball is byte-identical; a different existing tarball is a hard collision.
 Public delivery never reads from Verdaccio. Release tags are optional manual
 bookkeeping and are not created by a write-capable CI job.
 
+The workflow's manual dispatch exists only to bootstrap or resume delivery from
+the current protected `canary` or `main` commit. It crosses the same `npm`
+environment approval, OIDC, clean-merge, branch, and byte-identity checks as a
+push-triggered delivery. It is not a separate release path and cannot publish a
+topic branch.
+
 Native Rust builds remain conditional. When native source changed, delivery
 downloads the five artifacts produced by that pull request. When native source
 did not change, it reuses a previously published five-target artifact set only

@@ -19,10 +19,10 @@ import {
   assertWebRtcDistribution,
   fail,
   git,
-  packageDirectory,
   pkgJsonPath,
   syncedVersion,
 } from "../lib.ts";
+import { withPackageLicense } from "./package-license.ts";
 import {
   WEBRTC_LOADER_DECLARATION_PATH,
   WEBRTC_LOADER_PATH,
@@ -105,16 +105,12 @@ function files(directory: string): string[] {
     .map((entry) => entry.name);
 }
 
-function packPackage(pkg: string, destination: string): string {
+async function packPackage(pkg: string, destination: string): Promise<string> {
   const before = new Set(files(destination));
-  const result = Bun.spawnSync(
+  const result = await withPackageLicense(pkg, (directory) => Bun.spawnSync(
     ["bun", "pm", "pack", "--destination", destination, "--ignore-scripts", "--quiet"],
-    {
-      cwd: packageDirectory(pkg),
-      stdout: "pipe",
-      stderr: "pipe",
-    },
-  );
+    { cwd: directory, stdout: "pipe", stderr: "pipe" },
+  ));
   if (result.exitCode !== 0) {
     throw new Error(`packing @ackerdb/${pkg} failed:\n${result.stderr.toString().trim()}`);
   }
@@ -313,9 +309,10 @@ try {
   }
   assertWebRtcDistribution();
 
-  const tarballs = new Map(
-    PACKAGES.map((pkg) => [pkg, packPackage(pkg, temporary)] as const),
-  );
+  const tarballs = new Map<string, string>();
+  for (const pkg of PACKAGES) {
+    tarballs.set(pkg, await packPackage(pkg, temporary));
+  }
   const completed: string[] = [];
   for (const pkg of PACKAGES) {
     const tarball = tarballs.get(pkg)!;

@@ -1,6 +1,7 @@
 {
   "name": "@ackerdb/core",
-  "version": "0.14.1",
+  "version": "0.14.2",
+  "license": "FSL-1.1-ALv2",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/pedrobzz/AckerDB.git",

@@ -11,15 +11,16 @@ import {
   NATIVE_PACKAGES,
   PACKAGES,
   PUBLIC_PACKAGES,
-  packageDirectory,
   pkgJsonPath,
   syncedVersion,
 } from "./lib.ts";
 import { verifyCandidate } from "../packages/realtime/native/webrtc/candidate.ts";
+import { withPackageLicense } from "./release/package-license.ts";
 
 export interface PackageManifest {
   readonly name?: string;
   readonly version?: string;
+  readonly license?: string;
   readonly main?: string;
   readonly files?: readonly string[];
   readonly cpu?: readonly string[];
@@ -94,7 +95,7 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
         tarballs[packageName] = `file:${tarball}`;
         continue;
       }
-      const output = await runCommand([
+      const output = await withPackageLicense(pkg, (packageRoot) => runCommand([
         process.execPath,
         "pm",
         "pack",
@@ -102,7 +103,7 @@ export async function createPackedConsumer(name: string): Promise<PackedConsumer
         packDir,
         "--ignore-scripts",
         "--quiet",
-      ], join(root, packageDirectory(pkg)));
+      ], packageRoot));
       const packedTarball = output.split("\n").at(-1)?.trim();
       if (packedTarball === undefined || packedTarball === "") {
         throw new Error(`bun pm pack did not report a tarball for ${packageName}`);
