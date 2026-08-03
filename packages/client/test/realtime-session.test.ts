@@ -20,6 +20,7 @@ import {
   RealtimeHandlerKeyConflictError,
   type AckerDBClientClock,
 } from "../src/index.ts";
+import { ManualClock } from "ackerdb-test-support/client-transport";
 
 class FakeDataChannel extends EventTarget {
   binaryType: BinaryType = "blob";
@@ -157,64 +158,6 @@ class FakePeerConnection extends EventTarget {
     this.closed = true;
     this.connectionState = "closed";
     this.dispatchEvent(new Event("connectionstatechange"));
-  }
-}
-
-interface ClockTask {
-  readonly at: number;
-  readonly callback: () => void;
-  readonly intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private readonly tasks = new Map<number, ClockTask>();
-  private nextId = 0;
-  private time = 0;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(milliseconds: number): void {
-    const deadline = this.time + milliseconds;
-    for (;;) {
-      const due = [...this.tasks.entries()]
-        .filter(([, task]) => task.at <= deadline)
-        .sort(([, left], [, right]) => left.at - right.at)[0];
-      if (due === undefined) break;
-      const [id, task] = due;
-      this.tasks.delete(id);
-      this.time = task.at;
-      if (task.intervalMs !== undefined) {
-        this.tasks.set(id, {
-          at: task.at + task.intervalMs,
-          callback: task.callback,
-          intervalMs: task.intervalMs,
-        });
-      }
-      task.callback();
-    }
-    this.time = deadline;
   }
 }
 

@@ -9,12 +9,6 @@ import {
 } from "@ackerdb/core";
 import type { AckerDBClientClock, AckerDBWebSocket } from "@ackerdb/client";
 
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
 /**
  * The two doubles `AckerDBClient` accepts through its config — `clock` and the
  * socket returned by `createWebSocket` — are the whole injected environment a
@@ -22,6 +16,12 @@ interface ClockTask {
  * without a real server needs the same pair, and a per-suite copy of either one
  * silently drifts from the protocol the client actually speaks.
  */
+
+interface ClockTask {
+  at: number;
+  callback: () => void;
+  intervalMs?: number;
+}
 
 /**
  * Drives every client timer from the test instead of the event loop, so a
@@ -111,14 +111,20 @@ export class FakeSocket implements AckerDBWebSocket {
   readonly sent: string[] = [];
   /** Close codes and reasons the client asked for, in order. */
   readonly closes: Array<{ code?: number; reason?: string }> = [];
-  private isClosed = false;
+  /**
+   * A real socket reports its close asynchronously. Set this to hold the close
+   * event back, so a test can observe what the client does in the window where
+   * it has asked to close but has not been told the socket is gone.
+   */
+  deferClose = false;
+  #closed = false;
 
   get closed(): boolean {
-    return this.isClosed;
+    return this.#closed;
   }
 
   send(data: string): void {
-    if (this.isClosed) throw new Error("socket is closed");
+    if (this.#closed) throw new Error("socket is closed");
     parseClientMessage(decode(data));
     this.sent.push(data);
   }
@@ -131,10 +137,10 @@ export class FakeSocket implements AckerDBWebSocket {
     if (code !== undefined && code !== 1000 && (code < 3000 || code > 4999)) {
       throw new DOMException("Invalid WebSocket close code", "InvalidAccessError");
     }
-    if (this.isClosed) return;
-    this.isClosed = true;
+    if (this.#closed) return;
+    this.#closed = true;
     this.closes.push({ code, reason });
-    this.onclose?.();
+    if (!this.deferClose) this.onclose?.();
   }
 
   /** Completes the transport handshake without granting a session. */
@@ -180,5 +186,12 @@ export class FakeSocket implements AckerDBWebSocket {
       ClientMessage,
       { t: T }
     >[];
+  }
+
+  /** The most recent frame of one type; throws when the client sent none. */
+  lastFrame<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }> {
+    const frame = this.framesOf(type).at(-1);
+    if (!frame) throw new Error(`No ${type} frame`);
+    return frame;
   }
 }
