@@ -33,14 +33,16 @@ import type { Database } from "bun:sqlite";
 import { decode, encode } from "@ackerdb/core";
 import { ValidationError, type Descriptor } from "../../validation/v.ts";
 import { compareCodeUnits } from "../../shared/ordering.ts";
-import { checkDescriptor, scalarDecoder, scalarEncoder } from "../descriptor-kinds.ts";
+import { checkDescriptor } from "../descriptor-kinds.ts";
 import {
+  columnPlan,
   compileReadProjection,
   physicalColumnDdl,
   type ColumnPlan,
   type Engine,
   type PhysicalTablePlan,
   type TagMap,
+  type TagsOf,
 } from "../../database/engine.ts";
 import { fullTextTargetPlan } from "../../database/full-text.ts";
 import { classifySchemaDiff, type SchemaRefusal } from "../classify.ts";
@@ -291,24 +293,27 @@ function validateEntries(
 
 /**
  * Build every real table's NEW-target plan from descriptors + this step's tag
- * maps. Structurally identical to the engine's live plans, so the engine's DDL
- * builders and `physicalInsert` operate on them unchanged.
+ * maps, through the same `columnPlan` codec the live Engine uses — only the tag
+ * resolution differs, so a migration can never encode a column differently from
+ * the running server. The engine's DDL builders and `physicalInsert` therefore
+ * operate on these plans unchanged.
  */
 function buildTargetPlans(target: SchemaSnapshot, tags: Map<string, TagMap>): Map<string, PhysicalTablePlan> {
+  const tagsOf: TagsOf = (typeName) => tags.get(typeName)!;
   const plans = new Map<string, PhysicalTablePlan>();
   for (const [name, snap] of Object.entries(target.tables)) {
-    if (snap.kind === "table") plans.set(name, snapshotPlan(name, snap, tags));
+    if (snap.kind === "table") plans.set(name, snapshotPlan(name, snap, tagsOf));
   }
   return plans;
 }
 
-function snapshotPlan(name: string, snap: TableSnapshot, tags: Map<string, TagMap>): PhysicalTablePlan {
+function snapshotPlan(name: string, snap: TableSnapshot, tagsOf: TagsOf): PhysicalTablePlan {
   const columns = new Map<string, ColumnPlan>();
   const physOrder: string[] = [];
   let pk = "";
   let scheduleAt: string | null = null;
   for (const [col, desc] of Object.entries(snap.columns)) {
-    const plan = snapshotColumnPlan(col, desc, tags);
+    const plan = columnPlan(col, desc, tagsOf, `${name}.${col}`);
     columns.set(col, plan);
     for (const p of plan.phys) physOrder.push(p.name);
     if (plan.kind === "pk") pk = col;
@@ -326,54 +331,6 @@ function snapshotPlan(name: string, snap: TableSnapshot, tags: Map<string, TagMa
     readProjection: compileReadProjection(columns.values()),
     indexes: snap.indexes,
     fullText: snap.fullText.map((column) => fullTextTargetPlan(name, column)),
-  };
-}
-
-/** The descriptor-driven encode mirror of `oldColumn`, closing over this step's tags. */
-function snapshotColumnPlan(jsName: string, desc: Descriptor, tags: Map<string, TagMap>): ColumnPlan {
-  const { base, nullable } = unwrapDesc(desc);
-  const kind = base["k"] as string;
-  const ddls = physicalColumnDdl(jsName, desc, jsName);
-  const physNames = ddls.length === 2 ? [jsName, `${jsName}__p`] : [jsName];
-  const phys = physNames.map((n, i) => ({ name: n, ddl: ddls[i]! }));
-  const shared = { jsName, kind, nullable, phys };
-
-  if (kind === "union") {
-    const typeName = base["name"] as string;
-    return {
-      ...shared,
-      typeName,
-      toSql: (value) => {
-        if (value === null) return [null, null];
-        const { tag, value: payload } = value as { tag: string; value: unknown };
-        const tagInt = tags.get(typeName)!.toTag.get(tag);
-        if (tagInt === undefined) throw new Error(`unknown ${typeName} variant "${tag}"`);
-        return [tagInt, encode(payload)];
-      },
-      fromSql: (values) =>
-        values[0] === null ? null : { tag: tags.get(typeName)!.toName.get(Number(values[0]))!, value: decode(values[1] as string) },
-    };
-  }
-  if (kind === "enum") {
-    const typeName = base["name"] as string;
-    return {
-      ...shared,
-      typeName,
-      toSql: (value) => {
-        if (value === null) return [null];
-        const tagInt = tags.get(typeName)!.toTag.get(value as string);
-        if (tagInt === undefined) throw new Error(`unknown ${typeName} variant "${String(value)}"`);
-        return [tagInt];
-      },
-      fromSql: (values) => (values[0] === null ? null : tags.get(typeName)!.toName.get(Number(values[0]))!),
-    };
-  }
-  const enc = scalarEncoder(base);
-  const dec = scalarDecoder(base, jsName);
-  return {
-    ...shared,
-    toSql: (value) => [value === null ? null : enc(value)],
-    fromSql: (values) => (values[0] === null ? null : dec(values[0])),
   };
 }
 

@@ -22,6 +22,15 @@ describe("defineTable", () => {
     expect(() => defineTable({ id: v.primaryKey(), "1bad": v.string() })).toThrow(ValidationError);
   });
 
+  test("rejects column kinds that have no physical storage", () => {
+    expect(() => defineTable({ id: v.primaryKey(), x: v.literal(1) as never }))
+      .toThrow('column "x": v.literal() has no column storage');
+    expect(() => defineTable({ id: v.primaryKey(), x: v.literal(1).nullable() as never }))
+      .toThrow('column "x": v.literal() has no column storage');
+    expect(() => defineTable({ id: v.primaryKey(), x: v.tag() as never }))
+      .toThrow('column "x": v.tag() is only valid inside a union');
+  });
+
   test("index rules: existence, order, kinds, pk, duplicates", () => {
     const table = () =>
       defineTable({

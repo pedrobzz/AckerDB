@@ -49,12 +49,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@ackerdb/core";
-import {
-  baseValidator,
-  type Descriptor,
-  type Identity,
-  type Validator,
-} from "../validation/v.ts";
+import { type Descriptor, type Identity } from "../validation/v.ts";
 import { scalarDecoder, scalarEncoder, sqlTypeOf } from "../schema/descriptor-kinds.ts";
 import { validateStoredDescriptor } from "../schema/stored-descriptor.ts";
 import {
@@ -450,6 +445,119 @@ export function physicalColumnDdl(name: string, descriptor: Descriptor, path: st
   const sqlType = sqlTypeOf(base["k"] as string);
   if (sqlType === undefined) corruptSnapshot(`${path} cannot be stored as a table column`);
   return [`${quote(name)} ${sqlType}${notNull}`];
+}
+
+/** Resolve one named enum/union type to the tag map owning its stable storage tags. */
+export type TagsOf = (typeName: string) => TagMap;
+
+/**
+ * The one descriptor-to-physical-column codec: DDL, physical column names, and
+ * the encode/decode pair, for every site that has to put a column on disk.
+ *
+ * Only the tag maps differ between those sites, so they are the only thing
+ * passed in: a live plan resolves them through the Engine's scope-interned tags,
+ * a migration step through the maps it interned for its own target. Resolution
+ * stays lazy because both sides can rebuild a map underneath a long-lived plan —
+ * a migration relabels variants, and `reinternTags` then re-derives them.
+ * `stored-rows.ts` deliberately stays separate: historical reads decode only,
+ * and must tolerate a column the database does not physically have.
+ */
+export function columnPlan(
+  jsName: string,
+  descriptor: Descriptor,
+  tagsOf: TagsOf,
+  path: string,
+): ColumnPlan {
+  const ddls = physicalColumnDdl(jsName, descriptor, path);
+  const nullable = descriptor["k"] === "nullable";
+  const base = (nullable ? descriptor["inner"] : descriptor) as Descriptor;
+  const kind = base["k"] as string;
+  const phys = ddls.length === 2
+    ? [{ name: jsName, ddl: ddls[0]! }, { name: `${jsName}__p`, ddl: ddls[1]! }]
+    : [{ name: jsName, ddl: ddls[0]! }];
+
+  if (kind === "pk") {
+    return { jsName, kind, nullable: false, phys, toSql: (value) => [value], fromSql: (values) => values[0] };
+  }
+
+  const shared = { jsName, kind, nullable, phys };
+  if (kind === "union") {
+    const typeName = base["name"] as string;
+    return {
+      ...shared,
+      typeName,
+      variantTag: (variant) => tagsOf(typeName).toTag.get(variant),
+      toSql: (value) => {
+        if (value === null) return [null, null];
+        const { tag, value: payload } = value as { tag: string; value: unknown };
+        const tagInt = tagsOf(typeName).toTag.get(tag);
+        if (tagInt === undefined) throw new Error(`${path}: unknown ${typeName} variant "${tag}"`);
+        return [tagInt, encode(payload)];
+      },
+      fromSql: (values) =>
+        values[0] === null
+          ? null
+          : { tag: tagsOf(typeName).toName.get(Number(values[0]))!, value: decode(values[1] as string) },
+    };
+  }
+  if (kind === "enum") {
+    const typeName = base["name"] as string;
+    return {
+      ...shared,
+      typeName,
+      variantTag: (variant) => tagsOf(typeName).toTag.get(variant),
+      toSql: (value) => {
+        if (value === null) return [null];
+        const tagInt = tagsOf(typeName).toTag.get(value as string);
+        if (tagInt === undefined) throw new Error(`${path}: unknown ${typeName} variant "${String(value)}"`);
+        return [tagInt];
+      },
+      fromSql: (values) => (values[0] === null ? null : tagsOf(typeName).toName.get(Number(values[0]))!),
+    };
+  }
+  const encodeScalar = scalarEncoder(base);
+  const decodeScalar = scalarDecoder(base, path);
+  return {
+    ...shared,
+    toSql: (value) => [value === null ? null : encodeScalar(value)],
+    fromSql: (values) => (values[0] === null ? null : decodeScalar(values[0])),
+  };
+}
+
+/** Build one live table plan: every column's codec plus the validation environment. */
+function planTable(
+  table: TableDef,
+  logicalName: string,
+  name: string,
+  displayName: string,
+  tagIdentity: StorageScope["tagIdentity"],
+  tagsOf: TagsOf,
+): TablePlan {
+  const columns = new Map<string, ColumnPlan>();
+  const physOrder: string[] = [];
+  let hasVectorColumns = false;
+  for (const [jsName, validator] of Object.entries(table.columns)) {
+    const plan = columnPlan(jsName, validator.descriptor(), tagsOf, `${displayName}.${jsName}`);
+    columns.set(jsName, plan);
+    if (plan.kind === "vector") hasVectorColumns = true;
+    for (const phys of plan.phys) physOrder.push(phys.name);
+  }
+  return Object.freeze({
+    table,
+    logicalName,
+    name,
+    displayName,
+    tagIdentity,
+    pk: table.primaryKey,
+    scheduleAt: table.scheduleAtColumn,
+    columns,
+    environment: createPredicateEnvironment({ columns, table, displayName }),
+    hasVectorColumns,
+    physOrder: Object.freeze(physOrder),
+    readProjection: compileReadProjection(columns.values()),
+    indexes: Object.freeze([...table.indexes]),
+    fullText: Object.freeze(table.fullTextColumns.map((column) => fullTextTargetPlan(name, column))),
+  });
 }
 
 function parseStoredSnapshot(value: string): SchemaSnapshot {
@@ -1665,6 +1773,9 @@ export class Engine {
       }
     }
     this.internTags(schema, tagIdentity);
+    // Lazy by construction: a migration relabels variants and `reinternTags`
+    // then replaces the map this scope's plans encode through.
+    const tagsOf: TagsOf = (typeName) => this.tags.get(tagIdentity(typeName))!;
     const plans = new Map<string, TablePlan>();
     for (const [logicalName, table] of Object.entries(schema.tables)) {
       if (table.kind === "event") continue;
@@ -1674,7 +1785,7 @@ export class Engine {
       const displayName = mount === null ? logicalName : `${mount}.${logicalName}`;
       plans.set(
         logicalName,
-        this.planTable(table, logicalName, physicalName, displayName, tagIdentity),
+        planTable(table, logicalName, physicalName, displayName, tagIdentity, tagsOf),
       );
     }
     const scope: StorageScope = {
@@ -1692,135 +1803,6 @@ export class Engine {
       },
     };
     return Object.freeze(scope);
-  }
-
-  private planTable(
-    table: TableDef,
-    logicalName: string,
-    name: string,
-    displayName: string,
-    tagIdentity: StorageScope["tagIdentity"],
-  ): TablePlan {
-    const columns = new Map<string, ColumnPlan>();
-    const physOrder: string[] = [];
-    let hasVectorColumns = false;
-    for (const [jsName, validator] of Object.entries(table.columns)) {
-      const plan = this.planColumn(jsName, validator, displayName, tagIdentity);
-      columns.set(jsName, plan);
-      if (plan.kind === "vector") hasVectorColumns = true;
-      for (const phys of plan.phys) physOrder.push(phys.name);
-    }
-    return Object.freeze({
-      table,
-      logicalName,
-      name,
-      displayName,
-      tagIdentity,
-      pk: table.primaryKey,
-      scheduleAt: table.scheduleAtColumn,
-      columns,
-      environment: createPredicateEnvironment({ columns, table, displayName }),
-      hasVectorColumns,
-      physOrder: Object.freeze(physOrder),
-      readProjection: compileReadProjection(columns.values()),
-      indexes: Object.freeze([...table.indexes]),
-      fullText: Object.freeze(
-        table.fullTextColumns.map((column) =>
-          fullTextTargetPlan(name, column)
-        ),
-      ),
-    });
-  }
-
-  private planColumn(
-    jsName: string,
-    validator: Validator<unknown, string>,
-    displayName: string,
-    tagIdentity: StorageScope["tagIdentity"],
-  ): ColumnPlan {
-    const nullable = validator.kind === "nullable";
-    const base = baseValidator(validator);
-    const notNull = nullable ? "" : " NOT NULL";
-
-    if (base.kind === "pk") {
-      return {
-        jsName,
-        kind: "pk",
-        nullable: false,
-        phys: [{ name: jsName, ddl: `${quote(jsName)} INTEGER PRIMARY KEY AUTOINCREMENT` }],
-        toSql: (value) => [value],
-        fromSql: (values) => values[0],
-      };
-    }
-
-    if (base.kind === "union") {
-      const typeName = (base as unknown as { name: string }).name;
-      const payloadCol = `${jsName}__p`;
-      const tagMap = () => this.tags.get(tagIdentity(typeName))!;
-      return {
-        jsName,
-        kind: "union",
-        nullable,
-        typeName,
-        variantTag: (variant) => tagMap().toTag.get(variant),
-        phys: [
-          { name: jsName, ddl: `${quote(jsName)} INTEGER${notNull}` },
-          { name: payloadCol, ddl: `${quote(payloadCol)} TEXT${notNull}` },
-        ],
-        toSql: (value) => {
-          if (value === null) return [null, null];
-          const { tag, value: payload } = value as { tag: string; value: unknown };
-          const tagInt = tagMap().toTag.get(tag);
-          if (tagInt === undefined) {
-            throw new Error(`${displayName}.${jsName}: unknown ${typeName} variant "${tag}"`);
-          }
-          return [tagInt, encode(payload)];
-        },
-        fromSql: (values) => {
-          if (values[0] === null) return null;
-          return {
-            tag: tagMap().toName.get(Number(values[0]))!,
-            value: decode(values[1] as string),
-          };
-        },
-      };
-    }
-
-    if (base.kind === "enum") {
-      const typeName = (base as unknown as { name: string }).name;
-      const tagMap = () => this.tags.get(tagIdentity(typeName))!;
-      return {
-        jsName,
-        kind: "enum",
-        nullable,
-        typeName,
-        variantTag: (variant) => tagMap().toTag.get(variant),
-        phys: [{ name: jsName, ddl: `${quote(jsName)} INTEGER${notNull}` }],
-        toSql: (value) => {
-          if (value === null) return [null];
-          const tagInt = tagMap().toTag.get(value as string);
-          if (tagInt === undefined) {
-            throw new Error(`${displayName}.${jsName}: unknown ${typeName} variant "${String(value)}"`);
-          }
-          return [tagInt];
-        },
-        fromSql: (values) => (values[0] === null ? null : tagMap().toName.get(Number(values[0]))!),
-      };
-    }
-
-    const sqlType = sqlTypeOf(base.kind);
-    if (sqlType === undefined) throw new Error(`unsupported column kind "${base.kind}"`);
-    const descriptor = base.descriptor();
-    const encodeScalar = scalarEncoder(descriptor);
-    const decodeScalar = scalarDecoder(descriptor, `${displayName}.${jsName}`);
-    return {
-      jsName,
-      kind: base.kind,
-      nullable,
-      phys: [{ name: jsName, ddl: `${quote(jsName)} ${sqlType}${notNull}` }],
-      toSql: (value) => [value === null ? null : encodeScalar(value)],
-      fromSql: (values) => (values[0] === null ? null : decodeScalar(values[0])),
-    };
   }
 
   // -- DDL -------------------------------------------------------------------
