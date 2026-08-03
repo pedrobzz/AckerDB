@@ -1,16 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import {
-  PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
-  type ChannelRef,
-  type ClientMessage,
-  type ServerMessage,
-} from "@ackerdb/core";
-import {
-  type AckerDBWebSocket,
-} from "@ackerdb/client";
+import { PROTOCOL_VERSION, type ChannelRef } from "@ackerdb/core";
 import {
   AckerDBProvider,
   useChannel,
@@ -20,79 +9,11 @@ import {
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { createHarness } from "./support/harness.ts";
 
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  welcome(): void {
-    this.onopen?.();
-    this.receive({
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId: "react-channel-session",
-      authEpoch: 0,
-      principal: "anonymous",
-    });
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  frames<T extends ClientMessage["t"]>(
-    type: T,
-  ): Extract<ClientMessage, { readonly t: T }>[] {
-    return this.sent
-      .map((text) => parseClientMessage(decode(text)))
-      .filter((frame): frame is Extract<ClientMessage, { readonly t: T }> =>
-        frame.t === type
-      );
-  }
-}
-
-interface Harness {
-  readonly config: AckerDBProviderConfig;
-  live(): FakeSocket;
-}
-
-function harness(): Harness {
-  const sockets: FakeSocket[] = [];
-  return {
-    config: {
-      url: "http://react-channel.test",
-      credential: { kind: "anonymous" },
-      clientSessionId: "react-channel-session",
-      random: () => 0,
-      createWebSocket: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    },
-    live() {
-      const socket = sockets.findLast((candidate) => !candidate.closed);
-      if (socket === undefined) throw new Error("no live socket");
-      return socket;
-    },
-  };
-}
+const SESSION = "react-channel-session";
+// No injected clock: channel lifetimes here are driven by renders, not timers.
+const APP = { url: "http://react-channel.test", clientSessionId: SESSION, clock: undefined };
 
 type Chat = ChannelRef<
   { readonly threadId: bigint },
@@ -149,19 +70,19 @@ afterAll(() => actEnvironment(false));
 
 describe("useChannel", () => {
   test("shares membership, keeps ordinary handlers independent, and coalesces equal handlerKey bundles", async () => {
-    const testHarness = harness();
+    const testHarness = createHarness(APP);
     const root = createRoot(mountPoint());
     const calls: string[] = [];
     const first = (body: string) => calls.push(`first:${body}`);
     const second = (body: string) => calls.push(`second:${body}`);
 
-    await render(root, app(testHarness.config, [
+    await render(root, app(testHarness.config(), [
       { id: "messages", onMessage: first },
       { id: "composer", onMessage: second },
     ]));
     const socket = testHarness.live();
-    await act(async () => socket.welcome());
-    const joins = socket.frames("channel_join");
+    await act(async () => socket.welcome(SESSION));
+    const joins = socket.framesOf("channel_join");
     expect(joins).toHaveLength(1);
     expect(joins[0]).toMatchObject({
       ref: "chat.room",
@@ -192,13 +113,13 @@ describe("useChannel", () => {
     });
     expect(calls).toEqual(["first:one", "second:one"]);
 
-    await render(root, app(testHarness.config, [
+    await render(root, app(testHarness.config(), [
       { id: "messages", handlerKey: "useChatRoom", onMessage: first },
       { id: "composer", handlerKey: "useChatRoom", onMessage: second },
     ]));
     await act(async () => {});
-    expect(socket.frames("channel_join")).toHaveLength(1);
-    expect(socket.frames("channel_leave")).toHaveLength(0);
+    expect(socket.framesOf("channel_join")).toHaveLength(1);
+    expect(socket.framesOf("channel_leave")).toHaveLength(0);
 
     await act(async () => {
       socket.receive({
@@ -214,44 +135,44 @@ describe("useChannel", () => {
     expect(results.get("messages")?.send("message", { body: "outbound" })).toBe(
       true,
     );
-    expect(socket.frames("channel_send").at(-1)).toMatchObject({
+    expect(socket.framesOf("channel_send").at(-1)).toMatchObject({
       id,
       event: "message",
       payload: { body: "outbound" },
     });
 
-    await render(root, app(testHarness.config, [
+    await render(root, app(testHarness.config(), [
       { id: "composer", handlerKey: "useChatRoom", onMessage: second },
     ]));
     await act(async () => {});
-    expect(socket.frames("channel_leave")).toHaveLength(0);
+    expect(socket.framesOf("channel_leave")).toHaveLength(0);
 
-    await render(root, app(testHarness.config, []));
+    await render(root, app(testHarness.config(), []));
     await act(async () => {});
-    expect(socket.frames("channel_leave")).toEqual([
+    expect(socket.framesOf("channel_leave")).toEqual([
       { v: PROTOCOL_VERSION, t: "channel_leave", id },
     ]);
     await act(async () => root.unmount());
   });
 
   test("uses the latest committed callback without rejoining", async () => {
-    const testHarness = harness();
+    const testHarness = createHarness(APP);
     const root = createRoot(mountPoint());
     const calls: string[] = [];
 
-    await render(root, app(testHarness.config, [{
+    await render(root, app(testHarness.config(), [{
       id: "chat",
       onMessage: (body) => calls.push(`old:${body}`),
     }]));
     const socket = testHarness.live();
-    await act(async () => socket.welcome());
-    const join = socket.frames("channel_join")[0]!;
+    await act(async () => socket.welcome(SESSION));
+    const join = socket.framesOf("channel_join")[0]!;
 
-    await render(root, app(testHarness.config, [{
+    await render(root, app(testHarness.config(), [{
       id: "chat",
       onMessage: (body) => calls.push(`new:${body}`),
     }]));
-    expect(socket.frames("channel_join")).toHaveLength(1);
+    expect(socket.framesOf("channel_join")).toHaveLength(1);
 
     await act(async () => {
       socket.receive({

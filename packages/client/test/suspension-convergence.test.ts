@@ -14,7 +14,6 @@ import { join } from "node:path";
 import {
   PROTOCOL_VERSION,
   decode,
-  encode,
   parseClientMessage,
   type AuthenticationDescriptor,
   type ClientMessage,
@@ -26,12 +25,13 @@ import {
 import {
   AckerDBClient,
   AckerDBClientError,
-  type AckerDBClientClock,
   type AckerDBClientOptions,
   type AckerDBLifecyclePort,
   type AckerDBLiveEvent,
   type AckerDBWebSocket,
 } from "@ackerdb/client";
+import { FakeSocket, ManualClock } from "ackerdb-test-support/client-transport";
+import { createHarness, cursor, mustOk } from "./support/harness.ts";
 
 import {
   Engine,
@@ -59,194 +59,12 @@ const USER_AUTHENTICATION = {
   provenance: { issuer: "https://issuer.example", subject: "user-1" },
 } satisfies AuthenticationDescriptor;
 
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-
-  constructor(private time = 0) {}
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(ms: number): void {
-    const target = this.time + ms;
-    for (;;) {
-      let next: [number, ClockTask] | undefined;
-      for (const entry of this.tasks) {
-        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
-      }
-      if (!next) break;
-      const [id, task] = next;
-      this.time = task.at;
-      if (task.intervalMs === undefined) this.tasks.delete(id);
-      else task.at += task.intervalMs;
-      task.callback();
-    }
-    this.time = target;
-  }
-
-  nextDueIn(): number | undefined {
-    let due: number | undefined;
-    for (const task of this.tasks.values()) {
-      const delay = task.at - this.time;
-      if (due === undefined || delay < due) due = delay;
-    }
-    return due;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  readonly closes: Array<{ code?: number; reason?: string }> = [];
-  private closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(code?: number, reason?: string): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.closes.push({ code, reason });
-    this.onclose?.();
-  }
-
-  open(): void {
-    this.onopen?.();
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  drop(): void {
-    this.close();
-  }
-
-  isClosed(): boolean {
-    return this.closed;
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-
-  framesOf<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[] {
-    return this.frames().filter((frame) => frame.t === type) as Extract<ClientMessage, { t: T }>[];
-  }
-}
-
-interface Harness {
-  readonly client: AckerDBClient;
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  readonly port: AckerDBLifecyclePort;
-  readonly phases: string[];
-}
-
-function harness(overrides: Partial<AckerDBClientOptions> = {}): Harness {
-  const clock = overrides.clock instanceof ManualClock ? overrides.clock : new ManualClock();
-  const sockets: FakeSocket[] = [];
-  let port: AckerDBLifecyclePort | undefined;
-  const client = new AckerDBClient({
-    url: "http://ackerdb.test",
-    credential: { kind: "anonymous" },
-    clientSessionId: "convergence-session",
-    clock,
-    random: () => 0,
-    createWebSocket: () => {
-      const socket = new FakeSocket();
-      sockets.push(socket);
-      return socket;
-    },
-    lifecycle: (livePort) => {
-      port = livePort;
-      return () => {};
-    },
-    ...overrides,
-  });
-  const phases: string[] = [];
-  client.subscribeConnectionState((state) => phases.push(state.phase));
-  return {
-    client,
-    clock,
-    sockets,
-    get port(): AckerDBLifecyclePort {
-      if (!port) throw new Error("the harness lifecycle source was overridden");
-      return port;
-    },
-    phases,
-  };
-}
-
-function welcome(client: AckerDBClient, socket: FakeSocket, authEpoch = 0): void {
-  socket.open();
-  socket.receive({
-    v: PROTOCOL_VERSION,
-    t: "welcome",
-    clientSessionId: client.clientSessionId,
-    authEpoch,
-    principal: "anonymous",
-  });
-}
-
-function cursor(commitVersion: bigint): SubscriptionCursor {
-  return {
-    generation: "generation-1",
-    commitVersion,
-    authEpoch: 0,
-    identity: "todos.list:{list:1}",
-  };
-}
-
 function eventCursor(
   sequence: bigint,
   generation = "events-1",
   commitVersion = 1n,
 ): LiveEventCursor {
   return { generation, commitVersion, sequence };
-}
-
-function lastFrame<T extends ClientMessage["t"]>(
-  socket: FakeSocket,
-  type: T,
-): Extract<ClientMessage, { t: T }> {
-  const frame = socket.frames().findLast((candidate) => candidate.t === type);
-  if (!frame) throw new Error(`No ${type} frame`);
-  return frame as Extract<ClientMessage, { t: T }>;
 }
 
 function transition(
@@ -312,18 +130,11 @@ async function settled(): Promise<void> {
   await Promise.resolve();
 }
 
-function mustOk<Data>(
-  result: { readonly ok: true; readonly data: Data } | { readonly ok: false; readonly error: unknown },
-): Data {
-  if (!result.ok) throw result.error;
-  return result.data;
-}
-
 describe("mutation convergence across suspension", () => {
   test("boundary before send: a mutation issued while backgrounded is sent exactly once, on the recovery connection", async () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     client.connect();
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     port.suspend();
 
     let settlements = 0;
@@ -340,8 +151,8 @@ describe("mutation convergence across suspension", () => {
 
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
-    const issued = lastFrame(second, "m");
+    second.welcome(client.clientSessionId);
+    const issued = second.lastFrame("m");
     expect(mutationSends(sockets, issued.mutationRequestId)).toBe(1);
     second.receive(mutationOk(issued, 7n));
     expect(await result).toBe(7n);
@@ -350,10 +161,10 @@ describe("mutation convergence across suspension", () => {
   });
 
   test("boundary after send: the recovery connection replays the original identity once and stale receipts stay inert", async () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     client.connect();
     const first = sockets[0]!;
-    welcome(client, first);
+    first.welcome(client.clientSessionId);
 
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
@@ -361,7 +172,7 @@ describe("mutation convergence across suspension", () => {
       if (!value.ok) throw value.error;
       return value.data;
     });
-    const issued = lastFrame(first, "m");
+    const issued = first.lastFrame("m");
 
     port.suspend();
     // A receipt queued on the retired generation arrives late: it must not
@@ -373,8 +184,8 @@ describe("mutation convergence across suspension", () => {
 
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
-    const replayed = lastFrame(second, "m");
+    second.welcome(client.clientSessionId);
+    const replayed = second.lastFrame("m");
     expect(replayed.id).toBe(issued.id);
     expect(replayed.mutationRequestId).toBe(issued.mutationRequestId);
     expect(replayed.issuedAt).toBe(issued.issuedAt);
@@ -387,12 +198,12 @@ describe("mutation convergence across suspension", () => {
   });
 
   test("boundary mid-response: a receipt held for convergence survives suspension and settles once with its original result", async () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     const updates: unknown[] = [];
     client.subscribe("todos.list", { list: 1n }, (value) => updates.push(value));
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     const c1 = cursor(1n);
     const c2 = cursor(2n);
     first.receive(transition(subscription.id, c1, ["one"]));
@@ -403,7 +214,7 @@ describe("mutation convergence across suspension", () => {
       if (!value.ok) throw value.error;
       return value.data;
     });
-    const issued = lastFrame(first, "m");
+    const issued = first.lastFrame("m");
     // The server committed and receipted; the subscription has not yet
     // converged to the commit, so the mutation is holding for convergence.
     first.receive(
@@ -415,13 +226,13 @@ describe("mutation convergence across suspension", () => {
     port.suspend();
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
+    second.welcome(client.clientSessionId);
     // Recovery order: the query subscription resumes from its exact cursor
     // before the mutation replays, so convergence has its reference point.
     const types = second.frames().map((frame) => frame.t);
     expect(types).toEqual(["hello", "sub", "m"]);
-    expect(lastFrame(second, "sub").cursor).toEqual(c1);
-    const replayed = lastFrame(second, "m");
+    expect(second.lastFrame("sub").cursor).toEqual(c1);
+    const replayed = second.lastFrame("m");
     expect(replayed.mutationRequestId).toBe(issued.mutationRequestId);
 
     // The subscription converges to the receipt's commit: the mutation
@@ -442,11 +253,11 @@ describe("mutation convergence across suspension", () => {
   });
 
   test("boundary mid-response: a replayed receipt may settle before subscription convergence, and the late transition cannot double-settle", async () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     client.subscribe("todos.list", { list: 1n }, () => {});
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     const c1 = cursor(1n);
     first.receive(transition(subscription.id, c1, ["one"]));
 
@@ -456,7 +267,7 @@ describe("mutation convergence across suspension", () => {
       if (!value.ok) throw value.error;
       return value.data;
     });
-    const issued = lastFrame(first, "m");
+    const issued = first.lastFrame("m");
     first.receive(
       mutationOk(issued, 41n, { commitVersion: 2n, obligations: [subscription.id] }),
     );
@@ -464,8 +275,8 @@ describe("mutation convergence across suspension", () => {
     port.suspend();
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
-    const replayed = lastFrame(second, "m");
+    second.welcome(client.clientSessionId);
+    const replayed = second.lastFrame("m");
     // The replayed receipt names no unconverged obligations: it settles now.
     second.receive(mutationOk(replayed, 41n, { replay: "replayed", commitVersion: 2n }));
     expect(await result).toBe(41n);
@@ -480,27 +291,27 @@ describe("mutation convergence across suspension", () => {
   });
 
   test("boundary after settlement: recovery does not replay a settled mutation", async () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     client.connect();
     const first = sockets[0]!;
-    welcome(client, first);
+    first.welcome(client.clientSessionId);
 
     const result = client.mutation("todos.add", { text: "milk" }).then(mustOk);
-    const issued = lastFrame(first, "m");
+    const issued = first.lastFrame("m");
     first.receive(mutationOk(issued, 7n));
     expect(await result).toBe(7n);
 
     port.suspend();
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
+    second.welcome(client.clientSessionId);
     expect(second.framesOf("m")).toHaveLength(0);
     expect(mutationSends(sockets, issued.mutationRequestId)).toBe(1);
     client.close();
   });
 
   test("foreground authentication precedes mutation replay and event reapplication", async () => {
-    const { client, sockets, port } = harness({
+    const { client, sockets, port } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
@@ -508,8 +319,8 @@ describe("mutation convergence across suspension", () => {
       events.push(event),
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    first.receive(liveEvent(lastFrame(first, "sub").id, { kind: "reset", cursor: eventCursor(0n) }));
+    first.welcome(client.clientSessionId);
+    first.receive(liveEvent(first.lastFrame("sub").id, { kind: "reset", cursor: eventCursor(0n) }));
 
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
@@ -517,13 +328,13 @@ describe("mutation convergence across suspension", () => {
       if (!value.ok) throw value.error;
       return value.data;
     });
-    const issued = lastFrame(first, "m");
+    const issued = first.lastFrame("m");
 
     port.suspend();
     port.resume();
     const second = sockets[1]!;
     second.open();
-    expect(lastFrame(second, "hello").credential).toEqual({ kind: "bearer", token: "token-a" });
+    expect(second.lastFrame("hello").credential).toEqual({ kind: "bearer", token: "token-a" });
     // The credential rotates between the resumed hello and its welcome: the
     // fresh connection must verify it before any retained work is sent.
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" });
@@ -537,7 +348,7 @@ describe("mutation convergence across suspension", () => {
     // Welcome verified token-a while token-b is pending: only the credential
     // presentation may be on the wire — no subscription, no mutation.
     expect(second.frames().map((frame) => frame.t)).toEqual(["hello", "auth"]);
-    const attempt = lastFrame(second, "auth");
+    const attempt = second.lastFrame("auth");
     expect(attempt.credential).toEqual({ kind: "bearer", token: "token-b" });
 
     second.receive({
@@ -551,11 +362,11 @@ describe("mutation convergence across suspension", () => {
     // Confirmed authentication released the retained families, subscriptions
     // first, and the mutation kept its original identity.
     expect(second.frames().map((frame) => frame.t)).toEqual(["hello", "auth", "sub", "m"]);
-    const replayed = lastFrame(second, "m");
+    const replayed = second.lastFrame("m");
     expect(replayed.mutationRequestId).toBe(issued.mutationRequestId);
-    expect(lastFrame(second, "sub").cursor).toBeUndefined();
+    expect(second.lastFrame("sub").cursor).toBeUndefined();
 
-    second.receive(liveEvent(lastFrame(second, "sub").id, {
+    second.receive(liveEvent(second.lastFrame("sub").id, {
       kind: "reset",
       cursor: eventCursor(0n, "events-2"),
     }));
@@ -567,12 +378,12 @@ describe("mutation convergence across suspension", () => {
   });
 
   test("an authentication deadline elapsing during suspension retains the pending mutation until a new credential converges it", async () => {
-    const { client, clock, sockets, port } = harness({
+    const { client, clock, sockets, port } = createHarness({
       credential: { kind: "bearer", token: "token-a" },
     });
     client.connect();
     const first = sockets[0]!;
-    welcome(client, first);
+    first.welcome(client.clientSessionId);
 
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
@@ -580,7 +391,7 @@ describe("mutation convergence across suspension", () => {
       if (!value.ok) throw value.error;
       return value.data;
     });
-    const issued = lastFrame(first, "m");
+    const issued = first.lastFrame("m");
     const refresh = client.refreshCredential({ kind: "bearer", token: "token-b" }).catch((error) => error);
 
     port.suspend();
@@ -597,9 +408,9 @@ describe("mutation convergence across suspension", () => {
 
     const recovered = client.refreshCredential({ kind: "bearer", token: "token-c" });
     const second = sockets[1]!;
-    welcome(client, second, 2);
+    second.welcome(client.clientSessionId, { principal: "anonymous" }, 2);
     expect(await recovered).toEqual({ authEpoch: 2, principal: "anonymous" });
-    const replayed = lastFrame(second, "m");
+    const replayed = second.lastFrame("m");
     expect(replayed.mutationRequestId).toBe(issued.mutationRequestId);
     second.receive(mutationOk(replayed, 7n, { replay: "replayed" }));
     expect(await result).toBe(7n);
@@ -608,14 +419,14 @@ describe("mutation convergence across suspension", () => {
   });
 
   test("a sent mutation's absolute deadline elapsing during suspension settles indeterminate and recovery does not resurrect it", async () => {
-    const { client, clock, sockets, port } = harness({
+    const { client, clock, sockets, port } = createHarness({
       limits: { maxMutationAgeMs: 10_000 },
     });
     client.connect();
     const first = sockets[0]!;
-    welcome(client, first);
+    first.welcome(client.clientSessionId);
     const result = client.mutation("todos.add", { text: "milk" });
-    const issued = lastFrame(first, "m");
+    const issued = first.lastFrame("m");
 
     port.suspend();
     clock.advance(10_000);
@@ -629,16 +440,16 @@ describe("mutation convergence across suspension", () => {
 
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
+    second.welcome(client.clientSessionId);
     expect(second.framesOf("m")).toHaveLength(0);
     expect(mutationSends(sockets, issued.mutationRequestId)).toBe(1);
     client.close();
   });
 
   test("close during suspension settles sent mutations as indeterminate and unsent ones as unavailable", async () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     client.connect();
-    welcome(client, sockets[0]!);
+    sockets[0]!.welcome(client.clientSessionId);
     const sent = client.mutation("todos.add", { text: "milk" });
     port.suspend();
     const unsent = client.mutation("todos.add", { text: "bread" });
@@ -651,14 +462,14 @@ describe("mutation convergence across suspension", () => {
   });
 
   test("a server Retry-After deadline holds recovery for both families, then one replay and one fresh reset land", async () => {
-    const { client, clock, sockets, port } = harness();
+    const { client, clock, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    first.receive(liveEvent(lastFrame(first, "sub").id, { kind: "reset", cursor: eventCursor(0n) }));
+    first.welcome(client.clientSessionId);
+    first.receive(liveEvent(first.lastFrame("sub").id, { kind: "reset", cursor: eventCursor(0n) }));
 
     let settlements = 0;
     const result = client.mutation("todos.add", { text: "milk" }).then((value) => {
@@ -666,7 +477,7 @@ describe("mutation convergence across suspension", () => {
       if (!value.ok) throw value.error;
       return value.data;
     });
-    const issued = lastFrame(first, "m");
+    const issued = first.lastFrame("m");
     first.receive({
       v: PROTOCOL_VERSION,
       t: "err",
@@ -691,10 +502,10 @@ describe("mutation convergence across suspension", () => {
     clock.advance(3_000);
 
     const second = sockets[1]!;
-    welcome(client, second);
-    const replayed = lastFrame(second, "m");
+    second.welcome(client.clientSessionId);
+    const replayed = second.lastFrame("m");
     expect(replayed.mutationRequestId).toBe(issued.mutationRequestId);
-    const resub = lastFrame(second, "sub");
+    const resub = second.lastFrame("sub");
     expect(resub.cursor).toBeUndefined();
     second.receive(liveEvent(resub.id, { kind: "reset", cursor: eventCursor(0n, "events-2") }));
     second.receive(mutationOk(replayed, 7n, { replay: "replayed" }));
@@ -707,14 +518,14 @@ describe("mutation convergence across suspension", () => {
 
 describe("event convergence across suspension", () => {
   test("backgrounding during subscription application delivers exactly one reset on recovery", () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
 
     // The subscription was applied on the wire but its reset boundary never
     // arrived: backgrounding here must not fabricate one.
@@ -723,8 +534,8 @@ describe("event convergence across suspension", () => {
 
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
-    const resent = lastFrame(second, "sub");
+    second.welcome(client.clientSessionId);
+    const resent = second.lastFrame("sub");
     expect(resent.id).toBe(subscription.id);
     expect(resent.cursor).toBeUndefined();
     second.receive(liveEvent(subscription.id, { kind: "reset", cursor: eventCursor(0n) }));
@@ -736,14 +547,14 @@ describe("event convergence across suspension", () => {
   });
 
   test("a byte-identical reset cursor after recovery is still one fresh boundary, and a duplicate within a connection is not", () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     // The attach cursor for an idle event table: no commit moves it, so the
     // recovery attach can produce the exact same cursor value.
     const attach = eventCursor(0n, "events-1", 5n);
@@ -753,7 +564,7 @@ describe("event convergence across suspension", () => {
     port.suspend();
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
+    second.welcome(client.clientSessionId);
     // The same cursor value is a NEW boundary on the fresh connection: the
     // consumer must observe it or it would never learn the stream restarted.
     second.receive(liveEvent(subscription.id, { kind: "reset", cursor: attach }));
@@ -765,14 +576,14 @@ describe("event convergence across suspension", () => {
   });
 
   test("backgrounding during live delivery: missed events are never replayed and one reset precedes new rows", () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     first.receive(liveEvent(subscription.id, { kind: "reset", cursor: eventCursor(0n) }));
     first.receive(
       liveEvent(subscription.id, { kind: "row", cursor: eventCursor(1n), row: { n: 1 } }),
@@ -791,7 +602,7 @@ describe("event convergence across suspension", () => {
 
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
+    second.welcome(client.clientSessionId);
     second.receive(
       liveEvent(subscription.id, { kind: "reset", cursor: eventCursor(0n, "events-2") }),
     );
@@ -808,7 +619,7 @@ describe("event convergence across suspension", () => {
   });
 
   test("a consumer that backgrounds synchronously inside delivery converges deterministically", () => {
-    const h = harness();
+    const h = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     h.client.subscribeEvent<Record<never, never>, { n: number }>(
       "events.pings",
@@ -823,8 +634,8 @@ describe("event convergence across suspension", () => {
       },
     );
     const first = h.sockets[0]!;
-    welcome(h.client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(h.client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     first.receive(liveEvent(subscription.id, { kind: "reset", cursor: eventCursor(0n) }));
     first.receive(
       liveEvent(subscription.id, { kind: "row", cursor: eventCursor(1n), row: { n: 1 } }),
@@ -839,7 +650,7 @@ describe("event convergence across suspension", () => {
 
     h.port.resume();
     const second = h.sockets[1]!;
-    welcome(h.client, second);
+    second.welcome(h.client.clientSessionId);
     second.receive(
       liveEvent(subscription.id, { kind: "reset", cursor: eventCursor(0n, "events-2") }),
     );
@@ -855,7 +666,7 @@ describe("event convergence across suspension", () => {
   });
 
   test("demand released while suspended stays released: recovery re-attaches nothing", () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.connect();
     const unsubscribe = client.subscribeEvent<Record<never, never>, { n: number }>(
@@ -864,14 +675,14 @@ describe("event convergence across suspension", () => {
       (event) => events.push(event),
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    first.receive(liveEvent(lastFrame(first, "sub").id, { kind: "reset", cursor: eventCursor(0n) }));
+    first.welcome(client.clientSessionId);
+    first.receive(liveEvent(first.lastFrame("sub").id, { kind: "reset", cursor: eventCursor(0n) }));
 
     port.suspend();
     unsubscribe();
     port.resume();
     const second = sockets[1]!;
-    welcome(client, second);
+    second.welcome(client.clientSessionId);
     expect(second.framesOf("sub")).toHaveLength(0);
     expect(second.framesOf("unsub")).toHaveLength(0);
     expect(events.map((event) => event.kind)).toEqual(["reset"]);
@@ -879,14 +690,14 @@ describe("event convergence across suspension", () => {
   });
 
   test("repeated lifecycle cycles with stale-generation injection cannot duplicate identities, resets, or delivery", async () => {
-    const { client, sockets, port } = harness();
+    const { client, sockets, port } = createHarness();
     const events: AckerDBLiveEvent<{ n: number }>[] = [];
     client.subscribeEvent<Record<never, never>, { n: number }>("events.pings", {}, (event) =>
       events.push(event),
     );
     const first = sockets[0]!;
-    welcome(client, first);
-    const subscription = lastFrame(first, "sub");
+    first.welcome(client.clientSessionId);
+    const subscription = first.lastFrame("sub");
     first.receive(liveEvent(subscription.id, { kind: "reset", cursor: eventCursor(0n) }));
 
     let settlements = 0;
@@ -895,7 +706,7 @@ describe("event convergence across suspension", () => {
       if (!value.ok) throw value.error;
       return value.data;
     });
-    const issued = lastFrame(first, "m");
+    const issued = first.lastFrame("m");
 
     for (let cycle = 1; cycle <= 3; cycle++) {
       port.suspend();
@@ -941,7 +752,7 @@ describe("event convergence across suspension", () => {
       port.resume();
       port.resume();
       const socket = sockets.at(-1)!;
-      welcome(client, socket);
+      socket.welcome(client.clientSessionId);
       // Exactly one subscription application and one identity replay per
       // recovery connection.
       expect(socket.framesOf("sub")).toHaveLength(1);
@@ -958,12 +769,12 @@ describe("event convergence across suspension", () => {
 
     // One socket per cycle plus the original; one live at the end.
     expect(sockets).toHaveLength(4);
-    expect(sockets.filter((socket) => !socket.isClosed())).toHaveLength(1);
+    expect(sockets.filter((socket) => !socket.closed)).toHaveLength(1);
     // One reset per completed recovery, no rows fabricated anywhere.
     expect(events.map((event) => event.kind)).toEqual(["reset", "reset", "reset", "reset"]);
 
     const live = sockets.at(-1)!;
-    live.receive(mutationOk(lastFrame(live, "m"), 7n, { replay: "replayed" }));
+    live.receive(mutationOk(live.lastFrame("m"), 7n, { replay: "replayed" }));
     expect(await result).toBe(7n);
     expect(settlements).toBe(1);
 
@@ -971,7 +782,7 @@ describe("event convergence across suspension", () => {
     port.suspend();
     port.resume();
     const final = sockets.at(-1)!;
-    welcome(client, final);
+    final.welcome(client.clientSessionId);
     expect(final.framesOf("m")).toHaveLength(0);
     expect(mutationSends(sockets, issued.mutationRequestId)).toBe(4);
     client.close();

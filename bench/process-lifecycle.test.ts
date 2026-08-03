@@ -114,21 +114,33 @@ describe("bounded process diagnostics", () => {
     children.delete(child);
   });
 
-  test("reaps a subprocess through graceful termination when it cooperates", async () => {
-    const child = Bun.spawn([
-      process.execPath,
-      "-e",
-      "console.log('ready');setInterval(()=>{},1000)",
-    ], { stdout: "pipe", stderr: "pipe" });
-    children.add(child);
-    const reader = child.stdout.getReader();
-    const first = await reader.read();
-    expect(new TextDecoder().decode(first.value)).toContain("ready");
-    reader.releaseLock();
+  // stopSubprocess takes any process exposing exitCode/exited/kill, so the
+  // branches that do not depend on real signal delivery are proven against a
+  // scripted one: no spawn, no timing, and the escalation test above stays the
+  // single place a real operating-system process is required.
+  test("terminates cooperatively without escalating, and refuses an unusable budget", async () => {
+    const signals: string[] = [];
+    const child = {
+      exitCode: null as number | null,
+      exited: Promise.resolve(3),
+      kill(signal?: number | NodeJS.Signals) {
+        signals.push(String(signal));
+        return true;
+      },
+    };
 
-    const stopped = await stopSubprocess(child, 1_000);
-    expect(stopped.timedOut).toBe(false);
-    expect(() => process.kill(child.pid, 0)).toThrow();
-    children.delete(child);
+    expect(await stopSubprocess(child, 1_000)).toEqual({ exitCode: 3, timedOut: false });
+    // One SIGTERM and no SIGKILL: a child that exits in budget is never forced.
+    expect(signals).toEqual(["SIGTERM"]);
+
+    // An already-exited child is not signalled again.
+    child.exitCode = 3;
+    expect(await stopSubprocess(child, 1_000)).toEqual({ exitCode: 3, timedOut: false });
+    expect(signals).toEqual(["SIGTERM"]);
+
+    // A budget that cannot bound anything is a programmer error, not a stop.
+    for (const budget of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(stopSubprocess(child, budget)).rejects.toBeInstanceOf(RangeError);
+    }
   });
 });

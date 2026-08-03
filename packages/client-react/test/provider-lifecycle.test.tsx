@@ -1,125 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
-import {
-  PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
-  type ServerMessage,
-} from "@ackerdb/core";
-import type {
-  AckerDBClientClock,
-  AckerDBConnectionState,
-  AckerDBWebSocket,
-} from "@ackerdb/client";
+import { createHarness } from "./support/harness.ts";
+import type { AckerDBConnectionState } from "@ackerdb/client";
 import { StrictMode, act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { AckerDBProvider, useConnectionState, type AckerDBProviderConfig } from "@ackerdb/client-react";
+import { AckerDBProvider, useConnectionState } from "@ackerdb/client-react";
 import { createBoundary } from "./support/boundary.tsx";
-
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-  private time = 0;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  get taskCount(): number {
-    return this.tasks.size;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  welcome(clientSessionId: string): void {
-    this.onopen?.();
-    const frame: ServerMessage = {
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId,
-      authEpoch: 0,
-      principal: "anonymous",
-    };
-    this.onmessage?.({ data: encode(frame) });
-  }
-}
-
-interface Harness {
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  config(url: string): AckerDBProviderConfig;
-  live(): FakeSocket[];
-}
-
-function createHarness(): Harness {
-  const clock = new ManualClock();
-  const sockets: FakeSocket[] = [];
-  return {
-    clock,
-    sockets,
-    config(url) {
-      return {
-        url,
-        credential: { kind: "anonymous" },
-        clientSessionId: "react-lifecycle-session",
-        clock,
-        random: () => 0,
-        createWebSocket: () => {
-          const socket = new FakeSocket();
-          sockets.push(socket);
-          return socket;
-        },
-      };
-    },
-    live() {
-      return sockets.filter((socket) => !socket.closed);
-    },
-  };
-}
 
 const phaseLog: string[] = [];
 
@@ -140,18 +26,20 @@ async function render(root: Root, element: ReactNode): Promise<void> {
   });
 }
 
+const APP = { clientSessionId: "react-lifecycle-session" };
+
 beforeAll(() => actEnvironment(true));
 afterAll(() => actEnvironment(false));
 
 describe("AckerDBProvider lifecycle", () => {
   test("Strict Mode mount and unmount leave one live client and no timers or sockets", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     await render(
       root,
       <StrictMode>
-        <AckerDBProvider config={harness.config("http://one.test")}>
+        <AckerDBProvider config={harness.config({ url: "http://one.test" })}>
           <ConnectionPhase />
         </AckerDBProvider>
       </StrictMode>,
@@ -160,11 +48,11 @@ describe("AckerDBProvider lifecycle", () => {
     // Strict Mode runs effect setup, cleanup, setup: two clients constructed,
     // the first fully closed, exactly one live connection remains.
     expect(harness.sockets).toHaveLength(2);
-    expect(harness.live()).toHaveLength(1);
+    expect(harness.open()).toHaveLength(1);
     expect(harness.clock.taskCount).toBe(0);
     expect(container.textContent).toBe("connecting");
 
-    const live = harness.live()[0]!;
+    const live = harness.open()[0]!;
     await act(async () => {
       live.welcome("react-lifecycle-session");
     });
@@ -174,17 +62,17 @@ describe("AckerDBProvider lifecycle", () => {
     await act(async () => {
       root.unmount();
     });
-    expect(harness.live()).toHaveLength(0);
+    expect(harness.open()).toHaveLength(0);
     expect(harness.clock.taskCount).toBe(0);
   });
 
   test("equal-valued reconfiguration keeps the lifetime; changed values replace the client", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const app = (url: string): ReactNode => (
       <StrictMode>
-        <AckerDBProvider config={harness.config(url)}>
+        <AckerDBProvider config={harness.config({ url })}>
           <ConnectionPhase />
         </AckerDBProvider>
       </StrictMode>
@@ -192,7 +80,7 @@ describe("AckerDBProvider lifecycle", () => {
 
     await render(root, app("http://one.test"));
     expect(harness.sockets).toHaveLength(2);
-    const first = harness.live()[0]!;
+    const first = harness.open()[0]!;
     await act(async () => {
       first.welcome("react-lifecycle-session");
     });
@@ -201,31 +89,31 @@ describe("AckerDBProvider lifecycle", () => {
     // A new config object with equal values continues the current lifetime.
     await render(root, app("http://one.test"));
     expect(harness.sockets).toHaveLength(2);
-    expect(harness.live()).toEqual([first]);
+    expect(harness.open()).toEqual([first]);
     expect(container.textContent).toBe("ready");
 
     // A changed value closes the old client and starts exactly one new one.
     await render(root, app("http://two.test"));
     expect(harness.sockets).toHaveLength(3);
     expect(first.closed).toBe(true);
-    expect(harness.live()).toHaveLength(1);
+    expect(harness.open()).toHaveLength(1);
     expect(harness.clock.taskCount).toBe(0);
     expect(container.textContent).toBe("connecting");
 
     await act(async () => {
-      harness.live()[0]!.welcome("react-lifecycle-session");
+      harness.open()[0]!.welcome("react-lifecycle-session");
     });
     expect(container.textContent).toBe("ready");
 
     await act(async () => {
       root.unmount();
     });
-    expect(harness.live()).toHaveLength(0);
+    expect(harness.open()).toHaveLength(0);
     expect(harness.clock.taskCount).toBe(0);
   });
 
   test("every reconnect option is part of the provider lifetime identity", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const base = {
       baseDelayMs: 10,
@@ -236,7 +124,7 @@ describe("AckerDBProvider lifecycle", () => {
       realtimeSetupTimeoutMs: 60,
     };
     const app = (reconnect: typeof base): ReactNode => (
-      <AckerDBProvider config={{ ...harness.config("http://one.test"), reconnect }}>
+      <AckerDBProvider config={{ ...harness.config({ url: "http://one.test" }), reconnect }}>
         <ConnectionPhase />
       </AckerDBProvider>
     );
@@ -251,10 +139,10 @@ describe("AckerDBProvider lifecycle", () => {
 
     await render(root, app(base));
     for (const change of changes) {
-      const previous = harness.live()[0]!;
+      const previous = harness.open()[0]!;
       await render(root, app({ ...base, ...change }));
       expect(previous.closed).toBe(true);
-      expect(harness.live()).toHaveLength(1);
+      expect(harness.open()).toHaveLength(1);
       await render(root, app(base));
     }
 
@@ -262,7 +150,7 @@ describe("AckerDBProvider lifecycle", () => {
   });
 
   test("a committed reconfiguration never exposes the previous lifetime", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     const renderLog: string[] = [];
@@ -278,14 +166,14 @@ describe("AckerDBProvider lifecycle", () => {
     }
 
     const app = (url: string): ReactNode => (
-      <AckerDBProvider config={harness.config(url)}>
+      <AckerDBProvider config={harness.config({ url })}>
         <LifetimeProbe url={url} />
       </AckerDBProvider>
     );
 
     await render(root, app("http://one.test"));
     await act(async () => {
-      harness.live()[0]!.welcome("react-lifecycle-session");
+      harness.open()[0]!.welcome("react-lifecycle-session");
     });
     expect(container.textContent).toBe("http://one.test:ready");
 
@@ -297,7 +185,7 @@ describe("AckerDBProvider lifecycle", () => {
     expect(container.textContent).toBe("http://two.test:connecting");
 
     await act(async () => {
-      harness.live()[0]!.welcome("react-lifecycle-session");
+      harness.open()[0]!.welcome("react-lifecycle-session");
     });
     expect(container.textContent).toBe("http://two.test:ready");
     await act(async () => {
@@ -306,18 +194,18 @@ describe("AckerDBProvider lifecycle", () => {
   });
 
   test("consumers observe transitions through the external store without extra renders when idle", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     await render(
       root,
-      <AckerDBProvider config={harness.config("http://one.test")}>
+      <AckerDBProvider config={harness.config({ url: "http://one.test" })}>
         <ConnectionPhase />
         <AuthenticationBadge />
       </AckerDBProvider>,
     );
     expect(container.textContent).toBe("connecting-");
-    const live = harness.live()[0]!;
+    const live = harness.open()[0]!;
     await act(async () => {
       live.welcome("react-lifecycle-session");
     });

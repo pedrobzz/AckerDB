@@ -1,148 +1,20 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
+import { createHarness, type ProviderHarness } from "./support/harness.ts";
 import {
   PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
   stableEncode,
-  type ClientMessage,
   type ServerMessage,
   type SubscriptionCursor,
 } from "@ackerdb/core";
-import { AckerDBClient, type AckerDBClientClock, type AckerDBWebSocket, type QueryRef } from "@ackerdb/client";
+import { AckerDBClient, type QueryRef } from "@ackerdb/client";
 import { StrictMode, act, startTransition, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import {
-  AckerDBProvider,
-  skip,
-  useQuery,
-  type AckerDBProviderConfig,
-  type AckerDBQueryState,
-} from "@ackerdb/client-react";
+import { AckerDBProvider, skip, useQuery, type AckerDBQueryState } from "@ackerdb/client-react";
 import { queryRegistryFor } from "../src/query-store.ts";
 
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-  private time = 0;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: string[] = [];
-  closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    parseClientMessage(decode(data));
-    this.sent.push(data);
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  welcome(clientSessionId: string): void {
-    this.onopen?.();
-    this.receive({
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId,
-      authEpoch: 0,
-      principal: "anonymous",
-    });
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  frames(): ClientMessage[] {
-    return this.sent.map((text) => parseClientMessage(decode(text)));
-  }
-
-  framesOf<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[] {
-    return this.frames().filter((frame) => frame.t === type) as Extract<
-      ClientMessage,
-      { t: T }
-    >[];
-  }
-}
-
 const SESSION = "use-query-shared-session";
-
-interface Harness {
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  readonly config: AckerDBProviderConfig;
-  live(): FakeSocket;
-  subFrames<T extends ClientMessage["t"]>(type: T): Extract<ClientMessage, { t: T }>[];
-}
-
-function createHarness(url = "http://use-query-shared.test"): Harness {
-  const clock = new ManualClock();
-  const sockets: FakeSocket[] = [];
-  return {
-    clock,
-    sockets,
-    config: {
-      url,
-      credential: { kind: "anonymous" },
-      clientSessionId: SESSION,
-      clock,
-      random: () => 0,
-      createWebSocket: () => {
-        const socket = new FakeSocket();
-        sockets.push(socket);
-        return socket;
-      },
-    },
-    live() {
-      const socket = sockets.findLast((candidate) => !candidate.closed);
-      if (!socket) throw new Error("no live socket");
-      return socket;
-    },
-    subFrames(type) {
-      return sockets.flatMap((socket) => socket.framesOf(type));
-    },
-  };
-}
+const APP = { url: "http://use-query-shared.test", clientSessionId: SESSION };
 
 type TodoArgs = { readonly list: bigint };
 const todos = { $ref: "todos.list" } as QueryRef<TodoArgs, string[]>;
@@ -196,9 +68,9 @@ interface ProbeSpec {
   readonly args: TodoArgs | typeof skip;
 }
 
-function app(harness: Harness, probes: ProbeSpec[], strict = false): ReactNode {
+function app(harness: ProviderHarness, probes: ProbeSpec[], strict = false): ReactNode {
   const tree = (
-    <AckerDBProvider config={harness.config}>
+    <AckerDBProvider config={harness.config()}>
       {probes.map((probe) => (
         <Probe key={probe.id} id={probe.id} args={probe.args} />
       ))}
@@ -207,13 +79,13 @@ function app(harness: Harness, probes: ProbeSpec[], strict = false): ReactNode {
   return strict ? <StrictMode>{tree}</StrictMode> : tree;
 }
 
-async function receive(harness: Harness, frame: ServerMessage): Promise<void> {
+async function receive(harness: ProviderHarness, frame: ServerMessage): Promise<void> {
   await act(async () => {
     harness.live().receive(frame);
   });
 }
 
-async function ready(harness: Harness): Promise<void> {
+async function ready(harness: ProviderHarness): Promise<void> {
   await act(async () => {
     harness.live().welcome(SESSION);
   });
@@ -236,7 +108,7 @@ beforeEach(() => observed.clear());
 
 describe("shared query registry", () => {
   test("two consumers with identical inputs share one subscription and one snapshot object", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
@@ -249,7 +121,7 @@ describe("shared query registry", () => {
       ]),
     );
     await ready(harness);
-    const subs = harness.subFrames("sub");
+    const subs = harness.frames("sub");
     expect(subs).toHaveLength(1);
 
     await receive(harness, {
@@ -275,7 +147,7 @@ describe("shared query registry", () => {
   });
 
   test("canonical keys ignore property order but structurally similar values never collide", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
     type PairArgs = { readonly a: bigint; readonly b: string };
@@ -293,7 +165,7 @@ describe("shared query registry", () => {
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         {/* Same values, opposite key insertion order: one shared key. */}
         <Pairs args={{ a: 1n, b: "x" }} />
         <Pairs args={{ b: "x", a: 1n }} />
@@ -305,7 +177,7 @@ describe("shared query registry", () => {
       </AckerDBProvider>,
     );
     await ready(harness);
-    const subs = harness.subFrames("sub");
+    const subs = harness.frames("sub");
     expect(subs.filter((frame) => frame.ref === "todos.pairs")).toHaveLength(1);
     const similarSubs = subs.filter((frame) => frame.ref === "todos.similar");
     expect(similarSubs).toHaveLength(4);
@@ -314,7 +186,7 @@ describe("shared query registry", () => {
   });
 
   test("different addresses with identical arguments never collide", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const first = { $ref: "todos.list" } as QueryRef<TodoArgs, string[]>;
     const second = { $ref: "todos.listArchived" } as QueryRef<TodoArgs, string[]>;
@@ -327,18 +199,18 @@ describe("shared query registry", () => {
 
     await render(
       root,
-      <AckerDBProvider config={harness.config}>
+      <AckerDBProvider config={harness.config()}>
         <Pair />
       </AckerDBProvider>,
     );
     await ready(harness);
-    const subs = harness.subFrames("sub");
+    const subs = harness.frames("sub");
     expect(subs.map((frame) => frame.ref).sort()).toEqual(["todos.list", "todos.listArchived"]);
     await render(root, <></>);
   });
 
   test("changing one consumer's arguments splits the entry with exact release counts", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
@@ -350,7 +222,7 @@ describe("shared query registry", () => {
       ]),
     );
     await ready(harness);
-    const firstId = harness.subFrames("sub")[0]!.id;
+    const firstId = harness.frames("sub")[0]!.id;
 
     // b moves to its own arguments: a second subscription starts and the
     // first stays alive for a — nothing is released.
@@ -361,23 +233,23 @@ describe("shared query registry", () => {
         { id: "b", args: { list: 2n } },
       ]),
     );
-    const subs = harness.subFrames("sub");
+    const subs = harness.frames("sub");
     expect(subs).toHaveLength(2);
     expect(subs[1]!.args).toEqual({ list: 2n });
-    expect(harness.subFrames("unsub")).toHaveLength(0);
+    expect(harness.frames("unsub")).toHaveLength(0);
     const secondId = subs[1]!.id;
 
     // Each entry now has exactly one listener; unmounting releases exactly
     // its own subscription.
     await render(root, app(harness, [{ id: "b", args: { list: 2n } }]));
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([firstId]);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([firstId]);
     await render(root, app(harness, []));
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([firstId, secondId]);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([firstId, secondId]);
     await render(root, <></>);
   });
 
   test("release counts stay exact when listeners leave in the opposite order", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
 
     await render(
@@ -388,7 +260,7 @@ describe("shared query registry", () => {
       ]),
     );
     await ready(harness);
-    const firstId = harness.subFrames("sub")[0]!.id;
+    const firstId = harness.frames("sub")[0]!.id;
     await render(
       root,
       app(harness, [
@@ -396,18 +268,18 @@ describe("shared query registry", () => {
         { id: "b", args: { list: 2n } },
       ]),
     );
-    const secondId = harness.subFrames("sub")[1]!.id;
+    const secondId = harness.frames("sub")[1]!.id;
 
     // Opposite order to the sibling test: the changed consumer leaves first.
     await render(root, app(harness, [{ id: "a", args: { list: 1n } }]));
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([secondId]);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([secondId]);
     await render(root, app(harness, []));
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([secondId, firstId]);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([secondId, firstId]);
     await render(root, <></>);
   });
 
   test("losing one of several listeners keeps the query alive; the last release evicts, and a re-subscribe starts clean", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
@@ -419,7 +291,7 @@ describe("shared query registry", () => {
       ]),
     );
     await ready(harness);
-    const firstId = harness.subFrames("sub")[0]!.id;
+    const firstId = harness.frames("sub")[0]!.id;
     await receive(harness, {
       v: PROTOCOL_VERSION,
       t: "transition",
@@ -436,7 +308,7 @@ describe("shared query registry", () => {
         { id: "b", args: { list: 1n } },
       ]),
     );
-    expect(harness.subFrames("unsub")).toHaveLength(0);
+    expect(harness.frames("unsub")).toHaveLength(0);
     await receive(harness, {
       v: PROTOCOL_VERSION,
       t: "transition",
@@ -447,13 +319,13 @@ describe("shared query registry", () => {
 
     // The last listener leaving releases the subscription and the entry.
     await render(root, app(harness, [{ id: "a", args: skip }]));
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([firstId]);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([firstId]);
 
     // Re-subscribing starts one clean lifetime: a new id, no resume cursor,
     // and pending state rather than adopted rows from the released entry.
     await render(root, app(harness, [{ id: "c", args: { list: 1n } }]));
     expect(container.textContent).toBe("c=pending;");
-    const subs = harness.subFrames("sub");
+    const subs = harness.frames("sub");
     expect(subs).toHaveLength(2);
     expect(subs[1]!.id).not.toBe(firstId);
     expect(subs[1]!.cursor).toBeUndefined();
@@ -468,7 +340,7 @@ describe("shared query registry", () => {
   });
 
   test("Strict Mode mounting of shared consumers leaves one live subscription and one release", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
@@ -506,7 +378,7 @@ describe("shared query registry", () => {
   });
 
   test("Strict Mode mounting a sole consumer on a ready client never releases the query", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
@@ -519,9 +391,9 @@ describe("shared query registry", () => {
     // against the ready client; the deferred release bridges the replay, so
     // the wire sees one subscription and no churn.
     await render(root, app(harness, [{ id: "a", args: { list: 1n } }], true));
-    const subs = harness.subFrames("sub");
+    const subs = harness.frames("sub");
     expect(subs).toHaveLength(1);
-    expect(harness.subFrames("unsub")).toHaveLength(0);
+    expect(harness.frames("unsub")).toHaveLength(0);
 
     await receive(harness, {
       v: PROTOCOL_VERSION,
@@ -534,13 +406,13 @@ describe("shared query registry", () => {
   });
 
   test("replacing the sole consumer in one commit hands the live entry over without regression", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(root, app(harness, [{ id: "a", args: { list: 1n } }]));
     await ready(harness);
-    const id = harness.subFrames("sub")[0]!.id;
+    const id = harness.frames("sub")[0]!.id;
     await receive(harness, {
       v: PROTOCOL_VERSION,
       t: "transition",
@@ -556,8 +428,8 @@ describe("shared query registry", () => {
     await render(root, app(harness, [{ id: "b", args: { list: 1n } }]));
     expect(container.textContent).toBe("b=fresh:one;");
     expect(observed.get("b")!).toBe(before);
-    expect(harness.subFrames("sub")).toHaveLength(1);
-    expect(harness.subFrames("unsub")).toHaveLength(0);
+    expect(harness.frames("sub")).toHaveLength(1);
+    expect(harness.frames("unsub")).toHaveLength(0);
 
     // Updates keep flowing to the adopting consumer.
     await receive(harness, {
@@ -571,13 +443,13 @@ describe("shared query registry", () => {
   });
 
   test("Strict Mode mounting a consumer into a live shared entry neither closes nor duplicates it", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
     await render(root, app(harness, [{ id: "a", args: { list: 1n } }], true));
     await ready(harness);
-    const id = harness.subFrames("sub")[0]!.id;
+    const id = harness.frames("sub")[0]!.id;
     await receive(harness, {
       v: PROTOCOL_VERSION,
       t: "transition",
@@ -601,13 +473,13 @@ describe("shared query registry", () => {
     );
     expect(container.textContent).toBe("a=fresh:one;b=fresh:one;");
     sharedSnapshot(["a", "b"]);
-    expect(harness.subFrames("sub")).toHaveLength(1);
-    expect(harness.subFrames("unsub")).toHaveLength(0);
+    expect(harness.frames("sub")).toHaveLength(1);
+    expect(harness.frames("unsub")).toHaveLength(0);
     await render(root, <></>);
   });
 
   test("transition-driven argument churn tears nothing and settles with exact live entries", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
@@ -619,7 +491,7 @@ describe("shared query registry", () => {
       ]),
     );
     await ready(harness);
-    const firstId = harness.subFrames("sub")[0]!.id;
+    const firstId = harness.frames("sub")[0]!.id;
     await receive(harness, {
       v: PROTOCOL_VERSION,
       t: "transition",
@@ -669,21 +541,21 @@ describe("shared query registry", () => {
 
     // Every list:2 excursion released its entry on return; the shared entry
     // never dropped below one listener, so it was never released.
-    const unsubs = harness.subFrames("unsub");
+    const unsubs = harness.frames("unsub");
     expect(unsubs).toHaveLength(3);
     expect(unsubs.map((frame) => frame.id)).not.toContain(firstId);
-    expect(harness.subFrames("sub")).toHaveLength(4);
+    expect(harness.frames("sub")).toHaveLength(4);
 
     // Unmounting the consumers (provider still up) finally releases the
     // shared entry, exactly once.
     await render(root, app(harness, []));
-    expect(harness.subFrames("unsub")).toHaveLength(4);
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toContain(firstId);
+    expect(harness.frames("unsub")).toHaveLength(4);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toContain(firstId);
     await render(root, <></>);
   });
 
   test("provider reconfiguration gives the new client a fresh registry", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const container = mountPoint();
     const root = createRoot(container);
 
@@ -692,7 +564,7 @@ describe("shared query registry", () => {
     await receive(harness, {
       v: PROTOCOL_VERSION,
       t: "transition",
-      id: harness.subFrames("sub")[0]!.id,
+      id: harness.frames("sub")[0]!.id,
       transition: { kind: "reset", from: null, to: cursor(1n), value: ["one"] },
     });
     expect(container.textContent).toBe("a=fresh:one;");
@@ -701,7 +573,10 @@ describe("shared query registry", () => {
     // A different configuration replaces the client; the consumer re-enters
     // pending against a brand-new registry entry instead of adopting the
     // previous lifetime's rows.
-    const reconfigured: Harness = { ...harness, config: { ...harness.config, url: "http://use-query-shared-b.test" } };
+    const reconfigured: ProviderHarness = {
+      ...harness,
+      config: () => ({ ...harness.config(), url: "http://use-query-shared-b.test" }),
+    };
     await render(root, app(reconfigured, [{ id: "a", args: { list: 1n } }]));
     expect(firstSocket.closed).toBe(true);
     expect(container.textContent).toBe("a=pending;");
@@ -723,8 +598,8 @@ describe("shared query registry", () => {
   // Registry-level contracts that need no rendered tree: render-only reads
   // must be inert, and clients must never share entries.
   test("reading a source snapshot registers nothing; only a committed listener subscribes", async () => {
-    const harness = createHarness();
-    const client = new AckerDBClient(harness.config);
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config());
     client.connect();
     harness.live().welcome(SESSION);
     const registry = queryRegistryFor(client);
@@ -735,14 +610,14 @@ describe("shared query registry", () => {
     // subscription may start and no entry may be registered.
     expect(source.snapshot()).toMatchObject({ status: "pending" });
     expect(source.snapshot()).toBe(source.snapshot());
-    expect(harness.subFrames("sub")).toHaveLength(0);
+    expect(harness.frames("sub")).toHaveLength(0);
 
     // Two independently created sources for the same key share one entry.
     const sibling = registry.source<string[]>("todos.list", argsKey, { list: 1n });
     const stopSource = source.listen(() => {});
     const stopSibling = sibling.listen(() => {});
-    expect(harness.subFrames("sub")).toHaveLength(1);
-    const id = harness.subFrames("sub")[0]!.id;
+    expect(harness.frames("sub")).toHaveLength(1);
+    const id = harness.frames("sub")[0]!.id;
     harness.live().receive({
       v: PROTOCOL_VERSION,
       t: "transition",
@@ -752,24 +627,24 @@ describe("shared query registry", () => {
     expect(source.snapshot()).toBe(sibling.snapshot());
 
     stopSource();
-    expect(harness.subFrames("unsub")).toHaveLength(0);
+    expect(harness.frames("unsub")).toHaveLength(0);
     stopSibling();
     // The last release is deferred one microtask to bridge same-pass
     // listener handoffs; once it runs the subscription and entry are gone.
     await Bun.sleep(0);
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([id]);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([id]);
     expect(source.snapshot()).toMatchObject({ status: "pending" });
     // A new listener after the release starts a clean subscription.
     const stopAgain = source.listen(() => {});
-    expect(harness.subFrames("sub")).toHaveLength(2);
-    expect(harness.subFrames("sub")[1]!.cursor).toBeUndefined();
+    expect(harness.frames("sub")).toHaveLength(2);
+    expect(harness.frames("sub")[1]!.cursor).toBeUndefined();
     stopAgain();
     client.close();
   });
 
   test("a listener returning within the release window continues the live subscription", async () => {
-    const harness = createHarness();
-    const client = new AckerDBClient(harness.config);
+    const harness = createHarness(APP);
+    const client = new AckerDBClient(harness.config());
     client.connect();
     harness.live().welcome(SESSION);
     const registry = queryRegistryFor(client);
@@ -777,7 +652,7 @@ describe("shared query registry", () => {
     const source = registry.source<string[]>("todos.list", argsKey, { list: 1n });
 
     const stopFirst = source.listen(() => {});
-    const id = harness.subFrames("sub")[0]!.id;
+    const id = harness.frames("sub")[0]!.id;
     harness.live().receive({
       v: PROTOCOL_VERSION,
       t: "transition",
@@ -792,21 +667,21 @@ describe("shared query registry", () => {
     stopFirst();
     const stopSecond = source.listen(() => {});
     await Bun.sleep(0);
-    expect(harness.subFrames("sub")).toHaveLength(1);
-    expect(harness.subFrames("unsub")).toHaveLength(0);
+    expect(harness.frames("sub")).toHaveLength(1);
+    expect(harness.frames("unsub")).toHaveLength(0);
     expect(source.snapshot()).toBe(delivered);
 
     stopSecond();
     await Bun.sleep(0);
-    expect(harness.subFrames("unsub").map((frame) => frame.id)).toEqual([id]);
+    expect(harness.frames("unsub").map((frame) => frame.id)).toEqual([id]);
     client.close();
   });
 
   test("identical keys on different clients stay in different registries", async () => {
-    const first = createHarness();
-    const second = createHarness();
-    const clientA = new AckerDBClient(first.config);
-    const clientB = new AckerDBClient(second.config);
+    const first = createHarness(APP);
+    const second = createHarness(APP);
+    const clientA = new AckerDBClient(first.config());
+    const clientB = new AckerDBClient(second.config());
     clientA.connect();
     clientB.connect();
     first.live().welcome(SESSION);
@@ -820,8 +695,8 @@ describe("shared query registry", () => {
       .source<string[]>("todos.list", argsKey, { list: 1n })
       .listen(() => {});
     // One subscription per client: sharing never crosses a client lifetime.
-    expect(first.subFrames("sub")).toHaveLength(1);
-    expect(second.subFrames("sub")).toHaveLength(1);
+    expect(first.frames("sub")).toHaveLength(1);
+    expect(second.frames("sub")).toHaveLength(1);
 
     stopA();
     stopB();

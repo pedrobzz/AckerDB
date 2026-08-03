@@ -7,10 +7,13 @@ import * as ts from "typescript";
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
+import { steps } from "../support/process.ts";
+
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const REPO = new URL("../../../..", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 90_000;
 const STEP_TIMEOUT_MS = 15_000;
+const { withTimeout, eventually } = steps(STEP_TIMEOUT_MS);
 const STATE_A_SHAPE = "marker: v.string().nullable(), // STATE_A_SHAPE";
 const UNSAFE_STATE_A_SHAPE = "marker: v.bigint().nullable(), // STATE_A_SHAPE";
 
@@ -211,48 +214,6 @@ afterEach(async () => {
   children.clear();
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
-
-type UnwrappedResult<T> =
-  T extends { readonly ok: true; readonly data: infer Data }
-    ? Data
-    : T extends { readonly ok: false }
-      ? never
-      : T;
-
-async function withTimeout<T>(promise: Promise<T>, label: string): Promise<UnwrappedResult<T>> {
-  let handle: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    handle = setTimeout(
-      () => reject(new Error(`timed out waiting for ${label}`)),
-      STEP_TIMEOUT_MS,
-    );
-  });
-  const value = await Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
-  if (
-    typeof value === "object" &&
-    value !== null &&
-    "ok" in value
-  ) {
-    if (value.ok === true && "data" in value) return value.data as UnwrappedResult<T>;
-    if (value.ok === false && "error" in value) throw value.error;
-  }
-  return value as UnwrappedResult<T>;
-}
-
-async function eventually(assertion: () => void | Promise<void>, label: string): Promise<void> {
-  const deadline = Date.now() + STEP_TIMEOUT_MS;
-  let lastError: unknown;
-  while (Date.now() < deadline) {
-    try {
-      await assertion();
-      return;
-    } catch (error) {
-      lastError = error;
-      await Bun.sleep(25);
-    }
-  }
-  throw new Error(`timed out waiting for ${label}`, { cause: lastError });
-}
 
 function spawnServer(dir: string, port: number) {
   const child = Bun.spawn([process.execPath, CLI, "start", dir], {

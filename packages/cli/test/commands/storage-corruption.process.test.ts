@@ -13,9 +13,12 @@ import { v, defineSchema, defineTable, Engine, reconcile } from "@ackerdb/server
 import { makeFixture } from "../support/fixture.ts";
 import { freePort } from "../support/port.ts";
 
+import { steps } from "../support/process.ts";
+
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const REPO = new URL("../../../..", import.meta.url).pathname;
 const STEP_TIMEOUT_MS = 10_000;
+const { withTimeout } = steps(STEP_TIMEOUT_MS);
 const APP_SOURCE = `
 import { v, defineApp, defineSchema, defineTable } from "@ackerdb/server";
 const schema = defineSchema({
@@ -44,14 +47,6 @@ afterEach(async () => {
   children.clear();
   while (dirs.length > 0) rmSync(dirs.pop()!, { recursive: true, force: true });
 });
-
-function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
-  let handle: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_resolve, reject) => {
-    handle = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), STEP_TIMEOUT_MS);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(handle));
-}
 
 function fixture(port: number): string {
   const dir = makeFixture({

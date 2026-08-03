@@ -1,154 +1,16 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { actEnvironment, mountPoint } from "./support/dom.ts";
-import {
-  PROTOCOL_VERSION,
-  decode,
-  encode,
-  parseClientMessage,
-  type ClientMessage,
-  type ServerMessage,
-} from "@ackerdb/core";
+import { createHarness } from "./support/harness.ts";
+import { PROTOCOL_VERSION, type ServerMessage } from "@ackerdb/core";
 import type {
-  AckerDBClientClock,
   AckerDBClientError,
   AckerDBLiveEvent,
-  AckerDBWebSocket,
   EventRef,
 } from "@ackerdb/client";
 import { StrictMode, act, useLayoutEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AckerDBProvider, useEvent, type AckerDBProviderConfig } from "@ackerdb/client-react";
 import { createBoundary } from "./support/boundary.tsx";
-
-interface ClockTask {
-  at: number;
-  callback: () => void;
-  intervalMs?: number;
-}
-
-class ManualClock implements AckerDBClientClock {
-  private nextId = 0;
-  private readonly tasks = new Map<number, ClockTask>();
-  private time = 0;
-
-  now(): number {
-    return this.time;
-  }
-
-  setTimeout(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback });
-    return id;
-  }
-
-  clearTimeout(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  setInterval(callback: () => void, delayMs: number): number {
-    const id = ++this.nextId;
-    this.tasks.set(id, { at: this.time + delayMs, callback, intervalMs: delayMs });
-    return id;
-  }
-
-  clearInterval(handle: unknown): void {
-    this.tasks.delete(handle as number);
-  }
-
-  advance(ms: number): void {
-    const target = this.time + ms;
-    for (;;) {
-      let next: [number, ClockTask] | undefined;
-      for (const entry of this.tasks) {
-        if (entry[1].at <= target && (!next || entry[1].at < next[1].at)) next = entry;
-      }
-      if (!next) break;
-      const [id, task] = next;
-      this.time = task.at;
-      if (task.intervalMs === undefined) this.tasks.delete(id);
-      else task.at += task.intervalMs;
-      task.callback();
-    }
-    this.time = target;
-  }
-
-  get taskCount(): number {
-    return this.tasks.size;
-  }
-}
-
-class FakeSocket implements AckerDBWebSocket {
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { readonly data: unknown }) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: (() => void) | null = null;
-  readonly sent: ClientMessage[] = [];
-  closed = false;
-
-  send(data: string): void {
-    if (this.closed) throw new Error("socket is closed");
-    this.sent.push(parseClientMessage(decode(data)));
-  }
-
-  close(): void {
-    if (this.closed) return;
-    this.closed = true;
-    this.onclose?.();
-  }
-
-  welcome(clientSessionId: string): void {
-    this.onopen?.();
-    this.receive({
-      v: PROTOCOL_VERSION,
-      t: "welcome",
-      clientSessionId,
-      authEpoch: 0,
-      principal: "anonymous",
-    });
-  }
-
-  receive(frame: ServerMessage): void {
-    this.onmessage?.({ data: encode(frame) });
-  }
-
-  framesOf<T extends ClientMessage["t"]>(t: T): Extract<ClientMessage, { t: T }>[] {
-    return this.sent.filter((frame) => frame.t === t) as Extract<ClientMessage, { t: T }>[];
-  }
-}
-
-interface Harness {
-  readonly clock: ManualClock;
-  readonly sockets: FakeSocket[];
-  config(overrides?: Partial<AckerDBProviderConfig>): AckerDBProviderConfig;
-  live(): FakeSocket[];
-}
-
-function createHarness(): Harness {
-  const clock = new ManualClock();
-  const sockets: FakeSocket[] = [];
-  return {
-    clock,
-    sockets,
-    config(overrides = {}) {
-      return {
-        url: "http://events.test",
-        credential: { kind: "anonymous" },
-        clientSessionId: "react-event-session",
-        clock,
-        random: () => 0,
-        createWebSocket: () => {
-          const socket = new FakeSocket();
-          sockets.push(socket);
-          return socket;
-        },
-        ...overrides,
-      };
-    },
-    live() {
-      return sockets.filter((socket) => !socket.closed);
-    },
-  };
-}
 
 type PingRow = { readonly id: bigint; readonly n: number };
 const pings = { $ref: "events.pings" } as EventRef<{ min: bigint }, PingRow>;
@@ -200,12 +62,14 @@ function cursor(sequence: bigint, generation = "g1"): {
   return { generation, commitVersion: sequence, sequence };
 }
 
+const APP = { url: "http://events.test", clientSessionId: "react-event-session" };
+
 beforeAll(() => actEnvironment(true));
 afterAll(() => actEnvironment(false));
 
 describe("useEvent lifecycle", () => {
   test("delivers the live union to the latest callback without churning the subscription", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const config = harness.config();
     const first: AckerDBLiveEvent<PingRow>[] = [];
@@ -214,7 +78,7 @@ describe("useEvent lifecycle", () => {
     await render(root, app({ config, min: 1n, onEvent: (event) => first.push(event) }));
     // Strict Mode: two provider clients, one live; its single event
     // subscription is flushed once on welcome.
-    const socket = harness.live()[0]!;
+    const socket = harness.open()[0]!;
     await act(async () => {
       socket.welcome("react-event-session");
     });
@@ -259,7 +123,7 @@ describe("useEvent lifecycle", () => {
       root.unmount();
     });
     expect(socket.framesOf("unsub")).toHaveLength(0);
-    expect(harness.live()).toHaveLength(0);
+    expect(harness.open()).toHaveLength(0);
     expect(harness.clock.taskCount).toBe(0);
 
     // Late frames after shutdown reach nobody.
@@ -273,13 +137,13 @@ describe("useEvent lifecycle", () => {
   });
 
   test("equal-valued arguments keep the subscription; changed values replace it", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const config = harness.config();
     const onEvent = (): void => {};
 
     await render(root, app({ config, min: 1n, onEvent }));
-    const socket = harness.live()[0]!;
+    const socket = harness.open()[0]!;
     await act(async () => {
       socket.welcome("react-event-session");
     });
@@ -303,16 +167,16 @@ describe("useEvent lifecycle", () => {
     });
     // Shutdown released the second subscription through close(), not a frame.
     expect(socket.framesOf("unsub")).toHaveLength(1);
-    expect(harness.live()).toHaveLength(0);
+    expect(harness.open()).toHaveLength(0);
   });
 
   test("reconnect re-establishes the subscription and delivers one fresh reset boundary", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const events: AckerDBLiveEvent<PingRow>[] = [];
 
     await render(root, app({ config: harness.config(), min: 1n, onEvent: (event) => events.push(event) }));
-    const socket = harness.live()[0]!;
+    const socket = harness.open()[0]!;
     await act(async () => {
       socket.welcome("react-event-session");
     });
@@ -336,7 +200,7 @@ describe("useEvent lifecycle", () => {
     await act(async () => {
       harness.clock.advance(100);
     });
-    const next = harness.live()[0]!;
+    const next = harness.open()[0]!;
     expect(next).not.toBe(socket);
     await act(async () => {
       next.welcome("react-event-session");
@@ -365,12 +229,12 @@ describe("useEvent lifecycle", () => {
   });
 
   test("provider reconfiguration releases the old subscription exactly once", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const onEvent = (): void => {};
 
     await render(root, app({ config: harness.config(), min: 1n, onEvent }));
-    const socket = harness.live()[0]!;
+    const socket = harness.open()[0]!;
     await act(async () => {
       socket.welcome("react-event-session");
     });
@@ -382,7 +246,7 @@ describe("useEvent lifecycle", () => {
     expect(socket.closed).toBe(true);
     expect(socket.framesOf("unsub")).toHaveLength(1);
 
-    const next = harness.live()[0]!;
+    const next = harness.open()[0]!;
     await act(async () => {
       next.welcome("react-event-session");
     });
@@ -392,12 +256,12 @@ describe("useEvent lifecycle", () => {
       root.unmount();
     });
     expect(next.framesOf("unsub")).toHaveLength(0);
-    expect(harness.live()).toHaveLength(0);
+    expect(harness.open()).toHaveLength(0);
     expect(harness.clock.taskCount).toBe(0);
   });
 
   test("a client that cannot accept subscriptions reports the exact error as a value", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const events: AckerDBLiveEvent<PingRow>[] = [];
     const errors: AckerDBClientError[] = [];
@@ -426,7 +290,7 @@ describe("useEvent lifecycle", () => {
       useEvent(scoped, args, () => {});
       return null;
     }
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const view = (args: { a: bigint; b: string }): ReactNode => (
       <StrictMode>
@@ -437,7 +301,7 @@ describe("useEvent lifecycle", () => {
     );
 
     await render(root, view({ a: 1n, b: "x" }));
-    const socket = harness.live()[0]!;
+    const socket = harness.open()[0]!;
     await act(async () => {
       socket.welcome("react-event-session");
     });
@@ -454,7 +318,7 @@ describe("useEvent lifecycle", () => {
   });
 
   test("an argument change fences in-flight deliveries from the superseded subscription", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const first: AckerDBLiveEvent<PingRow>[] = [];
     const second: AckerDBLiveEvent<PingRow>[] = [];
@@ -472,7 +336,7 @@ describe("useEvent lifecycle", () => {
     );
 
     await render(root, tree(1n, first, null));
-    const socket = harness.live()[0]!;
+    const socket = harness.open()[0]!;
     await act(async () => {
       socket.welcome("react-event-session");
     });
@@ -529,7 +393,7 @@ describe("useEvent lifecycle", () => {
   });
 
   test("deletion fences deliveries that beat the passive cleanup", async () => {
-    const harness = createHarness();
+    const harness = createHarness(APP);
     const root = createRoot(mountPoint());
     const events: AckerDBLiveEvent<PingRow>[] = [];
     const view = (mounted: boolean, fire: (() => void) | null): ReactNode => (
@@ -544,7 +408,7 @@ describe("useEvent lifecycle", () => {
     );
 
     await render(root, view(true, null));
-    const socket = harness.live()[0]!;
+    const socket = harness.open()[0]!;
     await act(async () => {
       socket.welcome("react-event-session");
     });
@@ -567,7 +431,7 @@ describe("useEvent lifecycle", () => {
     await render(
       root,
       view(false, () => {
-        liveAtFire = harness.live().length;
+        liveAtFire = harness.open().length;
         socket.receive({
           v: PROTOCOL_VERSION,
           t: "event",
@@ -580,7 +444,7 @@ describe("useEvent lifecycle", () => {
     expect(liveAtFire).toBe(1);
     expect(eventsAtFire).toBe(1);
     expect(events.map((event) => event.kind)).toEqual(["reset"]);
-    expect(harness.live()).toHaveLength(0);
+    expect(harness.open()).toHaveLength(0);
 
     await act(async () => {
       root.unmount();
