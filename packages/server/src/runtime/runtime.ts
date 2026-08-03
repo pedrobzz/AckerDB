@@ -83,10 +83,6 @@ import {
   finishClaimedHttpTrace,
   type ClaimedHttpTrace,
 } from "../telemetry/external-trace.ts";
-import {
-  BoundedExecutor,
-  type ExecutorTaskOptions,
-} from "./executor.ts";
 import type {
   AnyRegistered,
   AnyRegisteredSse,
@@ -228,6 +224,7 @@ import {
   type RuntimeOperationOutcome,
   type SessionOperationOrder,
 } from "./execution/operation-runner.ts";
+import { RuntimeReadExecutor } from "./execution/read.ts";
 import {
   authorizedMcpTool,
   mcpToolAuthorization,
@@ -549,8 +546,7 @@ export class Runtime implements RuntimePort {
   private readonly authInvalidation: AuthInvalidationBoundary;
   private readonly immediateProcedureInvalidations: ProcedureInvalidations;
   private readonly mcpTokenInvalidation = new McpTokenInvalidationBoundary();
-  private readonly reader: BoundedExecutor;
-  private readonly availableReaders: Database[];
+  private readonly reads: RuntimeReadExecutor;
   private readonly coordinator: CommitCoordinator<ReactiveCommit>;
   private readonly scheduled: Map<string, string>;
   private readonly sessions = new Map<string, RuntimeSession>();
@@ -716,14 +712,12 @@ export class Runtime implements RuntimePort {
           journal: this.telemetryJournal,
           ...options.telemetryExporters,
         });
-    this.availableReaders = [this.engine.reader];
-    this.reader = new BoundedExecutor({
-      concurrency: this.limits.revalidationConcurrency,
-      discipline: "round-robin",
-      limits: this.limits.readQueue,
-      resource: "reader",
-      retryAfterMs: 0,
+    this.reads = new RuntimeReadExecutor({
+      engine: this.engine,
+      limits: this.limits,
       now: this.now,
+      telemetryEnabled: this.telemetry.enabled,
+      tracing: this.tracing,
     });
     this.reactive = new OrderedReactive<ReactiveContext>({
       limits: this.limits,
@@ -800,7 +794,7 @@ export class Runtime implements RuntimePort {
       undefined,
       requestBytes,
       async () => {
-        const existing = await this.submitRead(
+        const existing = await this.reads.submit(
           (connection) => this.engine.identityForAccount(
             connection,
             account.issuer,
@@ -896,7 +890,7 @@ export class Runtime implements RuntimePort {
     // the provider that owns the scope vocabulary it carries.
     const provider = this.mcpProvider(mcp);
     const scopeDescriptor = provider.scopes;
-    const credential = await this.submitRead(
+    const credential = await this.reads.submit(
       (connection) => this.engine[mcpTokenVaultOwner].authenticate(
         connection,
         mcp,
@@ -1923,7 +1917,7 @@ export class Runtime implements RuntimePort {
     const signal = this.operationSignal(context.abortSignal);
     throwIfAborted(signal);
     if (fn.kind === "query") {
-      const value = await this.executeRead(
+      const value = await this.reads.execute(
         "query",
         fairnessKey,
         signal,
@@ -2376,7 +2370,7 @@ export class Runtime implements RuntimePort {
       realtime: this.realtime?.snapshot() ?? null,
       scheduledHandlers: this.scheduled.size,
       schedulerArmed: this.schedulerTimer !== null,
-      reader: this.reader.snapshot(),
+      reader: this.reads.snapshot(),
       writer: this.coordinator.snapshot(),
       reactive: this.reactive.snapshot(),
       publication: this.reactive.publication.snapshot(),
@@ -2433,7 +2427,7 @@ export class Runtime implements RuntimePort {
     // Close every internal admission boundary before the first await. Existing
     // handlers get one finite grace period; queued and future work cannot grow.
     this.coordinator.close();
-    this.reader.close();
+    this.reads.close();
     if (this.ownsTelemetry) this.telemetry.stop();
     const reactiveDrain = this.reactive.close();
     let deadlineReached = false;
@@ -2442,7 +2436,7 @@ export class Runtime implements RuntimePort {
         this.waitForActiveOperations(),
         this.coordinator.drain(),
         reactiveDrain,
-        this.reader.drain(),
+        this.reads.drain(),
         realtimeDrain,
         ...sessionDrains,
       ]);
@@ -3089,7 +3083,7 @@ export class Runtime implements RuntimePort {
     requestBytes: number,
   ): Promise<unknown> {
     const fn = this.expect(address, "query");
-    return this.executeRead(
+    return this.reads.execute(
       "query",
       fairnessKey,
       signal,
@@ -3122,164 +3116,12 @@ export class Runtime implements RuntimePort {
       : invokeFunction(fn, context, args);
   }
 
-  private executeRead<T>(
-    operation: "query" | "subscription",
-    fairnessKey: string,
-    signal: AbortSignal | undefined,
-    requestBytes: number,
-    reads: ReadRecorder | null,
-    work: (
-      execution: Readonly<PluginReadExecution>,
-      commitVersion: bigint,
-    ) => T | Promise<T>,
-  ): Promise<T> {
-    return this.submitRead(async (connection) => {
-      throwIfAborted(signal);
-      let transactionOpen = false;
-      const beginAt = this.telemetry.enabled ? performance.now() : 0;
-      try {
-        connection.exec("BEGIN DEFERRED");
-        transactionOpen = true;
-        if (this.telemetry.enabled) {
-          this.tracing.span({
-            stage: "storage",
-            outcome: "ok",
-            resource: "reader",
-            durationMs: Math.max(0, performance.now() - beginAt),
-          }, "query");
-        }
-        // A deferred reader pins its snapshot on this first SELECT.
-        const commitVersion = this.engine.commitVersion(connection);
-        const value = await work(Object.freeze({
-          connection,
-          reads,
-          ...(this.telemetry.enabled ? { statementObserver: this.tracing.observeStatement } : {}),
-        }), commitVersion);
-        throwIfAborted(signal);
-        const commitAt = this.telemetry.enabled ? performance.now() : 0;
-        try {
-          connection.exec("COMMIT");
-          transactionOpen = false;
-          if (this.telemetry.enabled) {
-            this.tracing.span({
-              stage: "commit",
-              outcome: "ok",
-              resource: "reader",
-              durationMs: Math.max(0, performance.now() - commitAt),
-            }, "query");
-          }
-        } catch (error) {
-          if (this.telemetry.enabled) {
-            this.tracing.span({
-              stage: "commit",
-              outcome: outcomeFromError(transportError(error)).code,
-              resource: "reader",
-              durationMs: Math.max(0, performance.now() - commitAt),
-            }, "query");
-          }
-          throw error;
-        }
-        return value;
-      } catch (error) {
-        if (transactionOpen) {
-          const rollbackAt = this.telemetry.enabled ? performance.now() : 0;
-          try {
-            connection.exec("ROLLBACK");
-            if (this.telemetry.enabled) {
-              this.tracing.span({
-                stage: "rollback",
-                outcome: "ok",
-                resource: "reader",
-                durationMs: Math.max(0, performance.now() - rollbackAt),
-              }, "query");
-            }
-          } catch (rollbackError) {
-            if (this.telemetry.enabled) {
-              this.tracing.span({
-                stage: "rollback",
-                outcome: "unavailable",
-                resource: "reader",
-                durationMs: Math.max(0, performance.now() - rollbackAt),
-              }, "query");
-            }
-            throw new AckerDBError("unavailable", "reader snapshot could not be closed", {
-              resource: "reader",
-              cause: rollbackError,
-            });
-          }
-        } else if (this.telemetry.enabled && beginAt > 0) {
-          this.tracing.span({
-            stage: "storage",
-            outcome: outcomeFromError(transportError(error)).code,
-            resource: "reader",
-            durationMs: Math.max(0, performance.now() - beginAt),
-          }, "query");
-        }
-        throw error;
-      }
-    }, {
-      operation,
-      bytes: requestBytes,
-      fairnessKey,
-      ...(signal === undefined ? {} : { signal }),
-    });
-  }
-
-  private submitRead<T>(
-    work: (connection: Database) => T | Promise<T>,
-    options: ExecutorTaskOptions,
-    observed = this.telemetry.enabled,
-  ): Promise<T> {
-    const run = async () => {
-      const connection = this.availableReaders.pop() ?? this.engine.createReader();
-      try {
-        return await work(connection);
-      } finally {
-        this.availableReaders.push(connection);
-      }
-    };
-    const restore = AsyncLocalStorage.snapshot();
-    if (!observed) return this.reader.submit(() => restore(run), options);
-    const scope = this.tracing.currentScope();
-    const queuedAt = performance.now();
-    let started = false;
-    return this.reader.submit(() => restore(() => {
-      started = true;
-      const admitted = () => {
-        this.tracing.span({
-          operation: options.operation,
-          stage: "queue",
-          outcome: "ok",
-          resource: "reader",
-          durationMs: Math.max(0, performance.now() - queuedAt),
-          sizeBytes: options.bytes,
-        }, options.operation);
-        return run();
-      };
-      return scope === undefined ? admitted() : this.tracing.runScope(scope, admitted);
-    }), options).catch((error) => {
-      if (!started) {
-        const rejected = () => this.tracing.span({
-          operation: options.operation,
-          stage: "queue",
-          outcome: outcomeFromError(transportError(error)).code,
-          resource: "reader",
-          durationMs: Math.max(0, performance.now() - queuedAt),
-          sizeBytes: options.bytes,
-        }, options.operation);
-        if (scope === undefined) rejected();
-        else this.tracing.runScope(scope, rejected);
-      }
-      throw error;
-    });
-  }
-
   private evaluateSubscription(input: QueryEvaluationInput<ReactiveContext>): Promise<QueryEvaluation> {
     const execute = () => {
       const fn = this.expect(input.address, "query");
       const readSet = new Set<string>();
       const reads: ReadRecorder = { add: (key) => readSet.add(key) };
-      return this.executeRead(
+      return this.reads.execute(
         "subscription",
         input.fairnessKey,
         this.shutdownController.signal,
@@ -3554,7 +3396,7 @@ export class Runtime implements RuntimePort {
     requestBytes: number,
     work: (execution: Readonly<PluginReadExecution>) => T | Promise<T>,
   ): Promise<T> {
-    return this.executeRead("query", fairnessKey, signal, requestBytes, null, work);
+    return this.reads.execute("query", fairnessKey, signal, requestBytes, null, work);
   }
 
   private executePluginWrite<T>(
@@ -3948,7 +3790,7 @@ export class Runtime implements RuntimePort {
   }
 
   private nextScheduledAt(): Promise<number | null> {
-    return this.submitRead((connection) => {
+    return this.reads.submit((connection) => {
       let earliest: number | null = null;
       for (const table of this.scheduled.keys()) {
         const plan = this.engine.plan(table);
@@ -3968,7 +3810,7 @@ export class Runtime implements RuntimePort {
   }
 
   private nextScheduledCandidate(now: number): Promise<ScheduledCandidate | null> {
-    return this.submitRead((connection) => {
+    return this.reads.submit((connection) => {
       let candidate: (ScheduledCandidate & { readonly at: number }) | null = null;
       for (const [table, address] of this.scheduled) {
         const plan = this.engine.plan(table);
@@ -4204,7 +4046,7 @@ export class Runtime implements RuntimePort {
     const storage = this.engine.status();
     const checkpoint = storage.lastCheckpoint;
     const reactive = this.reactive.snapshot();
-    const reader = this.reader.snapshot();
+    const reader = this.reads.snapshot();
     const writer = this.coordinator.snapshot();
     const publication = this.reactive.publication.snapshot();
     const authCapture = this.authCaptureBudget.snapshot();

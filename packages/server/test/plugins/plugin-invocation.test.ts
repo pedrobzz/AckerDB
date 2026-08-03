@@ -726,10 +726,10 @@ describe("Plugin invocation boundaries", () => {
       settleCore = resolve;
     });
     const internals = harness.runtime as unknown as {
-      reader: { drain: () => Promise<void> };
+      reads: { drain: () => Promise<void> };
       coordinator: { drain: () => Promise<void> };
     };
-    internals.reader.drain = () => Promise.reject(coreError);
+    internals.reads.drain = () => Promise.reject(coreError);
     internals.coordinator.drain = () => coreGate;
 
     const draining = harness.runtime.drain();
