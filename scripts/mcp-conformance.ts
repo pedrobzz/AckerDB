@@ -16,7 +16,7 @@ import {
   type McpBuilder,
   type ProcedureBuilder,
 } from "@ackerdb/server";
-import { mcp, mcpAuth, mcpContent } from "@ackerdb/server/mcp";
+import { mcp, mcpAuth, mcpContent, type McpToolResult } from "@ackerdb/server/mcp";
 
 const CONFORMANCE_VERSION = "0.1.16";
 const SCENARIOS = [
@@ -54,7 +54,7 @@ const simpleText = typedProcedure({
   access: "public",
   returns: mcpContent(),
   args: {},
-  handler: () => ({
+  handler: (): McpToolResult => ({
     content: [{ type: "text", text: "This is a simple text response for testing." }],
   }),
 });
@@ -64,7 +64,7 @@ const imageContent = typedProcedure({
   access: "public",
   returns: mcpContent(),
   args: {},
-  handler: () => ({
+  handler: (): McpToolResult => ({
     content: [{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" }],
   }),
 });
@@ -74,7 +74,7 @@ const audioContent = typedProcedure({
   access: "public",
   returns: mcpContent(),
   args: {},
-  handler: () => ({
+  handler: (): McpToolResult => ({
     content: [{ type: "audio", data: "UklGRg==", mimeType: "audio/wav" }],
   }),
 });
@@ -84,7 +84,7 @@ const embeddedResource = typedProcedure({
   access: "public",
   returns: mcpContent(),
   args: {},
-  handler: () => ({
+  handler: (): McpToolResult => ({
     content: [{
       type: "resource",
       resource: {
@@ -101,7 +101,7 @@ const mixedContent = typedProcedure({
   access: "public",
   returns: mcpContent(),
   args: {},
-  handler: () => ({
+  handler: (): McpToolResult => ({
     content: [
       { type: "text", text: "Multiple content types test:" },
       { type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },

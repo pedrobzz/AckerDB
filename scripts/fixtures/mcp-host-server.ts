@@ -9,25 +9,38 @@ import {
   defineSchema,
   Engine,
   mutation,
+  procedure,
   reconcile,
   Registry,
   Runtime,
   serve,
+  type McpAuthBuilder,
   type McpBuilder,
-  type McpToolBuilder,
   type MutationBuilder,
+  type ProcedureBuilder,
   type SessionRuntimeContext,
   type UserPrincipal,
 } from "@ackerdb/server";
-import { createMcp, mcpTool } from "@ackerdb/server/mcp";
+import { mcp, mcpAuth, mcpContent, type McpToolResult } from "@ackerdb/server/mcp";
 
 const INSTRUCTION_MARKER = "ackerdb-host-instructions-v1";
 const READ_SCOPE = "acceptance.read";
 const ADMIN_SCOPE = "acceptance.admin";
 const schema = defineSchema({});
 const typedMutation = mutation as MutationBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
+const typedMcp = mcp as McpBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+
+/**
+ * Scopes and tokens belong to the provider, not the endpoint: the acceptance
+ * controller reduces and revokes credentials through it while the endpoint
+ * below only decides which scope each published tool demands.
+ */
+const acceptanceAuth = typedMcpAuth({
+  name: "acceptance",
+  scopes: [READ_SCOPE, ADMIN_SCOPE] as const,
+});
 
 function emit(value: Readonly<Record<string, unknown>>): void {
   process.stdout.write(`${JSON.stringify(value)}\n`);
@@ -37,32 +50,41 @@ function called(name: string): void {
   emit({ type: "tool", name });
 }
 
-const publicText = typedMcpTool({
+/**
+ * Every tool function declares `access: "public"`: none of them is exported as
+ * an application function, so none has a callable address, and the endpoint's
+ * per-entry `access` below is the single authority deciding what a credential
+ * may reach. Duplicating the policy on the function too would create a second
+ * place to keep in sync with no caller that reads it.
+ */
+const publicText = typedProcedure({
   description: "Return the stable public host-acceptance marker.",
   access: "public",
   args: {},
-  handler: () => {
+  returns: mcpContent(),
+  handler: (): McpToolResult => {
     called("public_text");
     return { content: [{ type: "text", text: "public:ok" }] };
   },
 });
 
-const authenticatedStatus = typedMcpTool({
+const authenticatedStatus = typedProcedure({
   description: "Return the delegated AckerDB Identity for an authenticated MCP token.",
-  access: "authenticated",
+  access: "public",
   args: {},
-  handler: (ctx) => {
+  returns: mcpContent(),
+  handler: (ctx): McpToolResult => {
     called("authenticated_status");
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     return { content: [{ type: "text", text: `authenticated:${ctx.auth.identity}` }] };
   },
 });
 
-const structuredStatus = typedMcpTool({
+const structuredStatus = typedProcedure({
   description: "Return one validated structured result and its canonical text fallback.",
-  access: "authenticated",
+  access: "public",
   args: { value: v.string().describe("The exact value to round-trip.") },
-  output: v.object({
+  returns: v.object({
     kind: v.literal("structured"),
     value: v.string(),
     identity: v.identity(),
@@ -74,11 +96,12 @@ const structuredStatus = typedMcpTool({
   },
 });
 
-const richContent = typedMcpTool({
+const richContent = typedProcedure({
   description: "Return mixed text, embedded-resource, and resource-link MCP content.",
-  access: { anyOf: [READ_SCOPE] },
+  access: "public",
   args: {},
-  handler: () => {
+  returns: mcpContent(),
+  handler: (): McpToolResult => {
     called("rich_content");
     return {
       content: [
@@ -104,31 +127,34 @@ const richContent = typedMcpTool({
   },
 });
 
-const adminOnly = typedMcpTool({
+const adminOnly = typedProcedure({
   description: "Return an admin marker only when the exact admin scope is granted.",
-  access: { anyOf: [ADMIN_SCOPE] },
+  access: "public",
   args: {},
-  handler: () => {
+  returns: mcpContent(),
+  handler: (): McpToolResult => {
     called("admin_only");
     return { content: [{ type: "text", text: "admin:ok" }] };
   },
 });
 
-const scopeCheckpoint = typedMcpTool({
+const scopeCheckpoint = typedProcedure({
   description: "Mark the point after which the acceptance controller reduces this token's scopes.",
-  access: "authenticated",
+  access: "public",
   args: {},
-  handler: () => {
+  returns: mcpContent(),
+  handler: (): McpToolResult => {
     called("scope_checkpoint");
     return { content: [{ type: "text", text: "scope-checkpoint:ok" }] };
   },
 });
 
-const revocationCheckpoint = typedMcpTool({
+const revocationCheckpoint = typedProcedure({
   description: "Mark the point after which the acceptance controller revokes this token.",
-  access: "authenticated",
+  access: "public",
   args: {},
-  handler: () => {
+  returns: mcpContent(),
+  handler: (): McpToolResult => {
     called("revocation_checkpoint");
     return { content: [{ type: "text", text: "revocation-checkpoint:ok" }] };
   },
@@ -144,15 +170,15 @@ const READ_TOOLS = [
   "structured_status",
 ] as const;
 
-const recordDiscovery = typedMcpTool({
+const recordDiscovery = typedProcedure({
   description:
     "Validate the initialization instruction marker and exact currently visible MCP tool names.",
-  access: "authenticated",
+  access: "public",
   args: {
     marker: v.string(),
     tools: v.array(v.string()),
   },
-  output: v.object({ accepted: v.boolean(), count: v.int() }),
+  returns: v.object({ accepted: v.boolean(), count: v.int() }),
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const expected = ctx.auth.scopes.includes(ADMIN_SCOPE)
@@ -169,27 +195,27 @@ const recordDiscovery = typedMcpTool({
 
 const acceptanceMcp = typedMcp({
   name: "acceptance",
+  auth: acceptanceAuth,
   instructions:
     `AckerDB host acceptance endpoint. When record_discovery is requested, pass marker ` +
     `${INSTRUCTION_MARKER} and the exact lower-snake-case names of the currently available ` +
     `tools. Follow the caller's requested tool order and continue after expected authorization errors.`,
-  scopes: [READ_SCOPE, ADMIN_SCOPE] as const,
   tools: {
-    admin_only: adminOnly,
-    authenticated_status: authenticatedStatus,
-    public_text: publicText,
-    record_discovery: recordDiscovery,
-    revocation_checkpoint: revocationCheckpoint,
-    rich_content: richContent,
-    scope_checkpoint: scopeCheckpoint,
-    structured_status: structuredStatus,
+    admin_only: { fn: adminOnly, access: { anyOf: [ADMIN_SCOPE] } },
+    authenticated_status: { fn: authenticatedStatus, access: "authenticated" },
+    public_text: { fn: publicText, access: "public" },
+    record_discovery: { fn: recordDiscovery, access: "authenticated" },
+    revocation_checkpoint: { fn: revocationCheckpoint, access: "authenticated" },
+    rich_content: { fn: richContent, access: { anyOf: [READ_SCOPE] } },
+    scope_checkpoint: { fn: scopeCheckpoint, access: "authenticated" },
+    structured_status: { fn: structuredStatus, access: "authenticated" },
   },
 });
 
 const createToken = typedMutation({
   access: "authenticated",
-  args: { name: v.string(), scopes: v.array(acceptanceMcp.scopes) },
-  handler: (ctx, args) => acceptanceMcp.tokens.create(ctx, {
+  args: { name: v.string(), scopes: v.array(acceptanceAuth.scopes) },
+  handler: (ctx, args) => acceptanceAuth.tokens.create(ctx, {
     name: args.name,
     metadata: { fixture: "host-acceptance" },
     scopes: args.scopes,
@@ -198,18 +224,19 @@ const createToken = typedMutation({
 
 const updateTokenScopes = typedMutation({
   access: "authenticated",
-  args: { id: v.string(), scopes: v.array(acceptanceMcp.scopes) },
-  handler: (ctx, args) => acceptanceMcp.tokens.updateScopes(ctx, args.id, args.scopes),
+  args: { id: v.string(), scopes: v.array(acceptanceAuth.scopes) },
+  handler: (ctx, args) => acceptanceAuth.tokens.updateScopes(ctx, args.id, args.scopes),
 });
 
 const revokeToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => acceptanceMcp.tokens.revoke(ctx, args.id),
+  handler: (ctx, args) => acceptanceAuth.tokens.revoke(ctx, args.id),
 });
 
 const modules = {
   acceptance: {
+    acceptanceAuth,
     acceptanceMcp,
   },
   tokens: { createToken, revokeToken, updateTokenScopes },
