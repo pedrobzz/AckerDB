@@ -388,6 +388,37 @@ describe("Plugin storage inventory", () => {
     engine.close("clean");
   });
 
+  test("a refused reconciliation leaves no scope state on the Engine", () => {
+    const engine = open(freshPath());
+    const tagged = defineSchema({
+      entries: defineTable({
+        id: v.primaryKey(),
+        value: v.string(),
+        kind: v.enum("RefusedKind", ["a", "b"]),
+      }),
+    });
+    reconcilePluginStorage(engine, desired({ alpha: { definitionId: "cache", schema: entriesV1 } }));
+    const persistedTypes = () =>
+      (engine.writer.query("SELECT type FROM _ackerdb_tags ORDER BY type").all() as { type: string }[])
+        .map((row) => row.type);
+    const before = persistedTypes();
+
+    // `alpha` is shape-unsafe, so the whole call refuses for consent. `beta` is
+    // a brand-new mount planned in the same pass: nothing about it may survive.
+    const refused = {
+      alpha: { definitionId: "cache", schema: entriesUnsafe },
+      beta: { definitionId: "tagger", schema: tagged },
+    } satisfies DesiredPluginMounts;
+    requirementsOf(() => reconcilePluginStorage(engine, refused));
+
+    expect(persistedTypes()).toEqual(before);
+    // Planning must not have interned beta's tags into the Engine either: the
+    // in-memory tag identities still match exactly what is on disk.
+    const inMemory = [...(engine as unknown as { tags: Map<string, unknown> }).tags.keys()].sort();
+    expect(inMemory).toEqual([...before].sort());
+    engine.close("clean");
+  });
+
   test("reset preserves its primary failure when rollback also fails", () => {
     const engine = open(freshPath());
     const initial = desired({ alpha: { definitionId: "cache", schema: entriesV1 } });

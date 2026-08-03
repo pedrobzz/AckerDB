@@ -49,12 +49,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { Database, type Statement } from "bun:sqlite";
 import { decode, encode, type DurabilityPolicy } from "@ackerdb/core";
-import {
-  baseValidator,
-  type Descriptor,
-  type Identity,
-  type Validator,
-} from "../validation/v.ts";
+import { type Descriptor, type Identity } from "../validation/v.ts";
 import { scalarDecoder, scalarEncoder, sqlTypeOf } from "../schema/descriptor-kinds.ts";
 import { validateStoredDescriptor } from "../schema/stored-descriptor.ts";
 import {
@@ -168,6 +163,13 @@ export interface StorageScope {
   readonly mount: string | null;
   readonly schema: Schema;
   readonly plans: ReadonlyMap<string, TablePlan>;
+  /**
+   * This scope's tag plan, keyed by storage identity. A planned scope owns it
+   * privately; activation publishes it to the Engine, and `persistTags` writes
+   * it to `_ackerdb_tags`. The root scope's map IS the Engine's, so
+   * `reinternTags` can rebuild it underneath the root's live plans.
+   */
+  readonly tags: ReadonlyMap<string, TagMap>;
   tagIdentity(typeName: string): string;
   plan(logicalName: string): TablePlan;
 }
@@ -450,6 +452,119 @@ export function physicalColumnDdl(name: string, descriptor: Descriptor, path: st
   const sqlType = sqlTypeOf(base["k"] as string);
   if (sqlType === undefined) corruptSnapshot(`${path} cannot be stored as a table column`);
   return [`${quote(name)} ${sqlType}${notNull}`];
+}
+
+/** Resolve one named enum/union type to the tag map owning its stable storage tags. */
+export type TagsOf = (typeName: string) => TagMap;
+
+/**
+ * The one descriptor-to-physical-column codec: DDL, physical column names, and
+ * the encode/decode pair, for every site that has to put a column on disk.
+ *
+ * Only the tag maps differ between those sites, so they are the only thing
+ * passed in: a live plan resolves them through the Engine's scope-interned tags,
+ * a migration step through the maps it interned for its own target. Resolution
+ * stays lazy because both sides can rebuild a map underneath a long-lived plan —
+ * a migration relabels variants, and `reinternTags` then re-derives them.
+ * `stored-rows.ts` deliberately stays separate: historical reads decode only,
+ * and must tolerate a column the database does not physically have.
+ */
+export function columnPlan(
+  jsName: string,
+  descriptor: Descriptor,
+  tagsOf: TagsOf,
+  path: string,
+): ColumnPlan {
+  const ddls = physicalColumnDdl(jsName, descriptor, path);
+  const nullable = descriptor["k"] === "nullable";
+  const base = (nullable ? descriptor["inner"] : descriptor) as Descriptor;
+  const kind = base["k"] as string;
+  const phys = ddls.length === 2
+    ? [{ name: jsName, ddl: ddls[0]! }, { name: `${jsName}__p`, ddl: ddls[1]! }]
+    : [{ name: jsName, ddl: ddls[0]! }];
+
+  if (kind === "pk") {
+    return { jsName, kind, nullable: false, phys, toSql: (value) => [value], fromSql: (values) => values[0] };
+  }
+
+  const shared = { jsName, kind, nullable, phys };
+  if (kind === "union") {
+    const typeName = base["name"] as string;
+    return {
+      ...shared,
+      typeName,
+      variantTag: (variant) => tagsOf(typeName).toTag.get(variant),
+      toSql: (value) => {
+        if (value === null) return [null, null];
+        const { tag, value: payload } = value as { tag: string; value: unknown };
+        const tagInt = tagsOf(typeName).toTag.get(tag);
+        if (tagInt === undefined) throw new Error(`${path}: unknown ${typeName} variant "${tag}"`);
+        return [tagInt, encode(payload)];
+      },
+      fromSql: (values) =>
+        values[0] === null
+          ? null
+          : { tag: tagsOf(typeName).toName.get(Number(values[0]))!, value: decode(values[1] as string) },
+    };
+  }
+  if (kind === "enum") {
+    const typeName = base["name"] as string;
+    return {
+      ...shared,
+      typeName,
+      variantTag: (variant) => tagsOf(typeName).toTag.get(variant),
+      toSql: (value) => {
+        if (value === null) return [null];
+        const tagInt = tagsOf(typeName).toTag.get(value as string);
+        if (tagInt === undefined) throw new Error(`${path}: unknown ${typeName} variant "${String(value)}"`);
+        return [tagInt];
+      },
+      fromSql: (values) => (values[0] === null ? null : tagsOf(typeName).toName.get(Number(values[0]))!),
+    };
+  }
+  const encodeScalar = scalarEncoder(base);
+  const decodeScalar = scalarDecoder(base, path);
+  return {
+    ...shared,
+    toSql: (value) => [value === null ? null : encodeScalar(value)],
+    fromSql: (values) => (values[0] === null ? null : decodeScalar(values[0])),
+  };
+}
+
+/** Build one live table plan: every column's codec plus the validation environment. */
+function planTable(
+  table: TableDef,
+  logicalName: string,
+  name: string,
+  displayName: string,
+  tagIdentity: StorageScope["tagIdentity"],
+  tagsOf: TagsOf,
+): TablePlan {
+  const columns = new Map<string, ColumnPlan>();
+  const physOrder: string[] = [];
+  let hasVectorColumns = false;
+  for (const [jsName, validator] of Object.entries(table.columns)) {
+    const plan = columnPlan(jsName, validator.descriptor(), tagsOf, `${displayName}.${jsName}`);
+    columns.set(jsName, plan);
+    if (plan.kind === "vector") hasVectorColumns = true;
+    for (const phys of plan.phys) physOrder.push(phys.name);
+  }
+  return Object.freeze({
+    table,
+    logicalName,
+    name,
+    displayName,
+    tagIdentity,
+    pk: table.primaryKey,
+    scheduleAt: table.scheduleAtColumn,
+    columns,
+    environment: createPredicateEnvironment({ columns, table, displayName }),
+    hasVectorColumns,
+    physOrder: Object.freeze(physOrder),
+    readProjection: compileReadProjection(columns.values()),
+    indexes: Object.freeze([...table.indexes]),
+    fullText: Object.freeze(table.fullTextColumns.map((column) => fullTextTargetPlan(name, column))),
+  });
 }
 
 function parseStoredSnapshot(value: string): SchemaSnapshot {
@@ -1193,7 +1308,9 @@ export class Engine {
       if (mutationReplay === null) throw new Error("mutation replay ledger was not loaded");
       this[mutationReplayOwner] = new MutationReplayLedger(writer, mutationReplay);
       this[mcpTokenVaultOwner] = new McpTokenVault(writer);
-      this.rootScope = this.buildStorageScope(null, schema);
+      // The root scope plans straight into the Engine's own tag store: it is
+      // the application's own schema, so there is no consent step to wait for.
+      this.rootScope = this.buildStorageScope(null, schema, this.tags);
       this.plans = this.rootScope.plans;
       if ([...this.plans.values()].some((plan) => plan.fullText.length > 0)) {
         this.enableFullTextSupport();
@@ -1359,6 +1476,11 @@ export class Engine {
     if (!integrity.ok) throw new CorruptDatabaseError(integrity.errors.join("; "));
     this.verifyInternalState(connection);
     const mutationReplay = scanMutationReplay(connection);
+    // Called for its verification, not its value: the stored snapshot must parse
+    // and must agree with `sqlite_master`, the Plugin inventory and the interned
+    // tags before this database is opened for writing. The value is deliberately
+    // NOT handed onward to reconciliation — `reconcile` repeats the pass because
+    // physical drift can appear after the Engine is open (see its comment).
     this.loadSnapshot(connection);
     return mutationReplay;
   }
@@ -1535,8 +1657,17 @@ export class Engine {
     return persistedLayoutFingerprint(this.writer);
   }
 
-  /** Assign stable tags to every named enum/union variant in one storage scope. */
-  private internTags(schema: Schema, tagIdentity: StorageScope["tagIdentity"]): void {
+  /**
+   * Assign stable tags to every named enum/union variant in one storage scope,
+   * into `tags`. Reads `_ackerdb_tags` but never writes it — the assignment is a
+   * plan until `persistTags` commits it, so planning a scope the caller may yet
+   * refuse costs nothing durable.
+   */
+  private internTags(
+    schema: Schema,
+    tagIdentity: StorageScope["tagIdentity"],
+    tags: Map<string, TagMap>,
+  ): void {
     const select = this.writer.query("SELECT variant, tag FROM _ackerdb_tags WHERE type = ?");
     for (const [typeName, validator] of schema.namedTypes) {
       const identity = tagIdentity(typeName);
@@ -1559,7 +1690,7 @@ export class Engine {
           map.toName.set(tag, variant);
         }
       }
-      this.tags.set(identity, map);
+      tags.set(identity, map);
     }
   }
 
@@ -1574,18 +1705,17 @@ export class Engine {
     for (const typeName of scope.schema.namedTypes.keys()) {
       this.tags.delete(scope.tagIdentity(typeName));
     }
-    this.internTags(scope.schema, scope.tagIdentity);
+    this.internTags(scope.schema, scope.tagIdentity, this.tags);
   }
 
-  /** Persist the in-memory tag plan. The caller owns the schema transaction. */
+  /** Persist one scope's tag plan. The caller owns the schema transaction. */
   persistTags(scope: StorageScope = this.rootScope): void {
     const insert = this.writer.query(
       "INSERT INTO _ackerdb_tags (type, variant, tag) VALUES (?, ?, ?) ON CONFLICT(type, variant) DO NOTHING",
     );
     for (const typeName of scope.schema.namedTypes.keys()) {
       const identity = scope.tagIdentity(typeName);
-      const map = this.tags.get(identity)!;
-      for (const [variant, tag] of map.toTag) insert.run(identity, variant, tag);
+      for (const [variant, tag] of scope.tags.get(identity)!.toTag) insert.run(identity, variant, tag);
     }
   }
 
@@ -1633,14 +1763,35 @@ export class Engine {
     return prepareLiteralFullTextQuery(this.fullTextTokenizer!, input, path);
   }
 
-  /** Bind one mounted Plugin schema to deterministic private SQLite storage. */
-  createPluginScope(mount: string, schema: Schema): StorageScope {
+  /**
+   * Plan one mounted Plugin schema's private SQLite storage. Pure with respect
+   * to the Engine: it reads `_ackerdb_tags` and builds plans, but publishes no
+   * tags and initializes no capabilities, so a mount that reconciliation ends up
+   * refusing for want of consent leaves nothing behind. `activateScope` is the
+   * commit-time other half.
+   */
+  planPluginScope(mount: string, schema: Schema): StorageScope {
     if (typeof mount !== "string" || !isPluginIdentifier(mount)) {
       throw new ValidationError("Plugin storage mount must be an identifier");
     }
-    loadVectorRuntimeForSchema(schema);
-    const scope = this.buildStorageScope(mount, schema);
+    return this.buildStorageScope(mount, schema, new Map());
+  }
+
+  /**
+   * Publish a planned scope's tags to the Engine and initialize the capabilities
+   * its tables need. Call once the scope is accepted — after consent and inside
+   * (or immediately before) the transaction that commits it.
+   */
+  activateScope(scope: StorageScope): void {
+    loadVectorRuntimeForSchema(scope.schema);
+    for (const [identity, map] of scope.tags) this.tags.set(identity, map);
     this.enableFullTextForScope(scope);
+  }
+
+  /** Plan and immediately activate one mounted Plugin schema. */
+  createPluginScope(mount: string, schema: Schema): StorageScope {
+    const scope = this.planPluginScope(mount, schema);
+    this.activateScope(scope);
     return scope;
   }
 
@@ -1649,7 +1800,11 @@ export class Engine {
     return this.tags.get(plan.tagIdentity(typeName))!;
   }
 
-  private buildStorageScope(mount: string | null, schema: Schema): StorageScope {
+  private buildStorageScope(
+    mount: string | null,
+    schema: Schema,
+    tags: Map<string, TagMap>,
+  ): StorageScope {
     const tagIdentity: StorageScope["tagIdentity"] = mount === null
       ? (typeName) => typeName
       : (typeName) => pluginTagIdentity(mount, typeName);
@@ -1664,7 +1819,12 @@ export class Engine {
         }
       }
     }
-    this.internTags(schema, tagIdentity);
+    this.internTags(schema, tagIdentity, tags);
+    // Lazy by construction: the root scope's store IS `this.tags`, so when a
+    // migration relabels variants `reinternTags` replaces the map these plans
+    // encode through. A planned Plugin scope reads its own store, which
+    // activation then publishes.
+    const tagsOf: TagsOf = (typeName) => tags.get(tagIdentity(typeName))!;
     const plans = new Map<string, TablePlan>();
     for (const [logicalName, table] of Object.entries(schema.tables)) {
       if (table.kind === "event") continue;
@@ -1674,13 +1834,14 @@ export class Engine {
       const displayName = mount === null ? logicalName : `${mount}.${logicalName}`;
       plans.set(
         logicalName,
-        this.planTable(table, logicalName, physicalName, displayName, tagIdentity),
+        planTable(table, logicalName, physicalName, displayName, tagIdentity, tagsOf),
       );
     }
     const scope: StorageScope = {
       mount,
       schema,
       plans,
+      tags,
       tagIdentity,
       plan(logicalName) {
         const plan = plans.get(logicalName);
@@ -1692,135 +1853,6 @@ export class Engine {
       },
     };
     return Object.freeze(scope);
-  }
-
-  private planTable(
-    table: TableDef,
-    logicalName: string,
-    name: string,
-    displayName: string,
-    tagIdentity: StorageScope["tagIdentity"],
-  ): TablePlan {
-    const columns = new Map<string, ColumnPlan>();
-    const physOrder: string[] = [];
-    let hasVectorColumns = false;
-    for (const [jsName, validator] of Object.entries(table.columns)) {
-      const plan = this.planColumn(jsName, validator, displayName, tagIdentity);
-      columns.set(jsName, plan);
-      if (plan.kind === "vector") hasVectorColumns = true;
-      for (const phys of plan.phys) physOrder.push(phys.name);
-    }
-    return Object.freeze({
-      table,
-      logicalName,
-      name,
-      displayName,
-      tagIdentity,
-      pk: table.primaryKey,
-      scheduleAt: table.scheduleAtColumn,
-      columns,
-      environment: createPredicateEnvironment({ columns, table, displayName }),
-      hasVectorColumns,
-      physOrder: Object.freeze(physOrder),
-      readProjection: compileReadProjection(columns.values()),
-      indexes: Object.freeze([...table.indexes]),
-      fullText: Object.freeze(
-        table.fullTextColumns.map((column) =>
-          fullTextTargetPlan(name, column)
-        ),
-      ),
-    });
-  }
-
-  private planColumn(
-    jsName: string,
-    validator: Validator<unknown, string>,
-    displayName: string,
-    tagIdentity: StorageScope["tagIdentity"],
-  ): ColumnPlan {
-    const nullable = validator.kind === "nullable";
-    const base = baseValidator(validator);
-    const notNull = nullable ? "" : " NOT NULL";
-
-    if (base.kind === "pk") {
-      return {
-        jsName,
-        kind: "pk",
-        nullable: false,
-        phys: [{ name: jsName, ddl: `${quote(jsName)} INTEGER PRIMARY KEY AUTOINCREMENT` }],
-        toSql: (value) => [value],
-        fromSql: (values) => values[0],
-      };
-    }
-
-    if (base.kind === "union") {
-      const typeName = (base as unknown as { name: string }).name;
-      const payloadCol = `${jsName}__p`;
-      const tagMap = () => this.tags.get(tagIdentity(typeName))!;
-      return {
-        jsName,
-        kind: "union",
-        nullable,
-        typeName,
-        variantTag: (variant) => tagMap().toTag.get(variant),
-        phys: [
-          { name: jsName, ddl: `${quote(jsName)} INTEGER${notNull}` },
-          { name: payloadCol, ddl: `${quote(payloadCol)} TEXT${notNull}` },
-        ],
-        toSql: (value) => {
-          if (value === null) return [null, null];
-          const { tag, value: payload } = value as { tag: string; value: unknown };
-          const tagInt = tagMap().toTag.get(tag);
-          if (tagInt === undefined) {
-            throw new Error(`${displayName}.${jsName}: unknown ${typeName} variant "${tag}"`);
-          }
-          return [tagInt, encode(payload)];
-        },
-        fromSql: (values) => {
-          if (values[0] === null) return null;
-          return {
-            tag: tagMap().toName.get(Number(values[0]))!,
-            value: decode(values[1] as string),
-          };
-        },
-      };
-    }
-
-    if (base.kind === "enum") {
-      const typeName = (base as unknown as { name: string }).name;
-      const tagMap = () => this.tags.get(tagIdentity(typeName))!;
-      return {
-        jsName,
-        kind: "enum",
-        nullable,
-        typeName,
-        variantTag: (variant) => tagMap().toTag.get(variant),
-        phys: [{ name: jsName, ddl: `${quote(jsName)} INTEGER${notNull}` }],
-        toSql: (value) => {
-          if (value === null) return [null];
-          const tagInt = tagMap().toTag.get(value as string);
-          if (tagInt === undefined) {
-            throw new Error(`${displayName}.${jsName}: unknown ${typeName} variant "${String(value)}"`);
-          }
-          return [tagInt];
-        },
-        fromSql: (values) => (values[0] === null ? null : tagMap().toName.get(Number(values[0]))!),
-      };
-    }
-
-    const sqlType = sqlTypeOf(base.kind);
-    if (sqlType === undefined) throw new Error(`unsupported column kind "${base.kind}"`);
-    const descriptor = base.descriptor();
-    const encodeScalar = scalarEncoder(descriptor);
-    const decodeScalar = scalarDecoder(descriptor, `${displayName}.${jsName}`);
-    return {
-      jsName,
-      kind: base.kind,
-      nullable,
-      phys: [{ name: jsName, ddl: `${quote(jsName)} ${sqlType}${notNull}` }],
-      toSql: (value) => [value === null ? null : encodeScalar(value)],
-      fromSql: (values) => (values[0] === null ? null : decodeScalar(values[0])),
-    };
   }
 
   // -- DDL -------------------------------------------------------------------
