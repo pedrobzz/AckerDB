@@ -208,7 +208,7 @@ export interface CommitCoordinatorOptions<Publication> {
   readonly limits: ServiceLimits;
   readonly reservePublication: (bytes: number) => PublicationReservation<Publication>;
   /** Synchronous Runtime-owned state handoff after COMMIT and before the writer turn releases. */
-  readonly afterCommit?: (writes: WriteCollector) => void;
+  readonly afterCommit?: (writes: WriteCollector, commitVersion: bigint) => void;
   readonly now?: () => number;
   readonly wait?: CommitWaitHook;
 }
@@ -781,7 +781,7 @@ export class CommitCoordinator<Publication> {
       }
       transactionOpen = false;
       committed = true;
-      this.afterCommit?.(writes);
+      this.afterCommit?.(writes, commitVersion);
       if (stagedMutation !== undefined) {
         this.engine[mutationReplayOwner].committed(stagedMutation);
       }

@@ -1,6 +1,16 @@
 {
   "name": "@ackerdb/client-react",
-  "version": "0.13.1",
+  "version": "0.14.2",
+  "license": "FSL-1.1-ALv2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedrobzz/AckerDB.git",
+    "directory": "packages/client-react"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "type": "module",
   "files": [
     "src"
@@ -13,8 +23,8 @@
     "./ai": "./src/ai/index.ts"
   },
   "dependencies": {
-    "@ackerdb/client": "workspace:0.13.1",
-    "@ackerdb/core": "workspace:0.13.1"
+    "@ackerdb/client": "workspace:0.14.2",
+    "@ackerdb/core": "workspace:0.14.2"
   },
   "peerDependencies": {
     "ai": "^7.0.0",

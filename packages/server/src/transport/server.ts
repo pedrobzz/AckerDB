@@ -85,7 +85,8 @@ export type AckerDBStartupPhase =
   | "opening-storage"
   | "migrating"
   | "reconciling"
-  | "loading-runtime";
+  | "loading-runtime"
+  | "starting-services";
 
 export interface AckerDBServerOptions {
   readonly limits: ServiceLimits;
@@ -124,6 +125,8 @@ export type { McpHttpOptions } from "../mcp/http-boundary.ts";
 export interface AckerDBServerStatus {
   readonly state: AckerDBServerState;
   readonly startupPhase: AckerDBStartupPhase | null;
+  /** The application service currently in setup, while that phase is active. */
+  readonly startupService: string | null;
   readonly connections: number;
   readonly preHelloConnections: number;
   readonly connectionRejections: number;
@@ -185,6 +188,7 @@ const STARTUP_PHASE_ORDER: Readonly<Record<AckerDBStartupPhase, number>> = Objec
   migrating: 4,
   reconciling: 5,
   "loading-runtime": 6,
+  "starting-services": 7,
 });
 
 function json(value: unknown, status = 200): Response {
@@ -243,15 +247,18 @@ function methodNotAllowed(allow: string): Response {
  * The mutation receipt rides response headers so the body stays the plain
  * return value. It is state at response time: a pending obligation's later
  * durability transition belongs to the WebSocket protocol, not to this caller.
- * An empty obligation list is an empty header value, which HTTP serialization
- * drops — the absent header is the empty list.
+ * The empty obligation list omits its header outright: RFC 9110 permits an
+ * empty field value, so serializers may carry one, and a caller reading `""`
+ * cannot tell it from a malformed list.
  */
 function receiptHeaders(receipt: HttpMutationReceipt): Record<string, string> {
   return {
     [RECEIPT_HEADERS.commitVersion]: String(receipt.commitVersion),
     [RECEIPT_HEADERS.durability]: receipt.durability,
     [RECEIPT_HEADERS.replay]: String(receipt.replay === "replayed"),
-    [RECEIPT_HEADERS.obligations]: receipt.obligations.join(","),
+    ...(receipt.obligations.length === 0
+      ? {}
+      : { [RECEIPT_HEADERS.obligations]: receipt.obligations.join(",") }),
   };
 }
 
@@ -650,6 +657,7 @@ export class AckerDBServer {
   private activeRuntime: Runtime | null = null;
   private lifecycle: AckerDBServerState = "starting";
   private startup: AckerDBStartupPhase | null = "listening";
+  private startupService: string | null = null;
   private connectionRejections = 0;
   /** Server-owned request ids for path-addressed calls; telemetry correlation only. */
   private httpRequests = 0;
@@ -743,6 +751,7 @@ export class AckerDBServer {
     return Object.freeze({
       state: this.lifecycle,
       startupPhase: this.startup,
+      startupService: this.startupService,
       connections: this.connections.size,
       preHelloConnections: this.preHelloConnections(),
       connectionRejections: this.connectionRejections,
@@ -766,6 +775,19 @@ export class AckerDBServer {
       throw new Error("startup phases must advance monotonically");
     }
     this.startup = phase;
+    this.startupService = null;
+  }
+
+  /**
+   * Name the application service currently in setup. Services start one at a
+   * time and each may open a network connection, so without this a stalled
+   * handshake is an unattributable pause between "loading-runtime" and ready.
+   */
+  reportStartingService(name: string | null): void {
+    // A report that arrives after the phase moved on is stale, not wrong: a
+    // startup that failed or was interrupted still settles its supervisor.
+    if (this.startup !== "starting-services") return;
+    this.startupService = name;
   }
 
   /** Atomically attach the fully constructed Runtime and admit application traffic. */
@@ -793,21 +815,37 @@ export class AckerDBServer {
     }
     this.activeRuntime = runtime;
     this.startup = null;
+    this.startupService = null;
     this.lifecycle = "ready";
     this.startTransportSampler();
   }
 
-  drain(): Promise<void> {
+  /**
+   * Leave readiness and close transport admission while the Runtime stays live.
+   * Trusted in-process work keeps its authority across this window: `drain` is
+   * what closes system-run admission (ADR-0015), so an owner that must release
+   * application-owned resources through `system.run` calls this first, releases
+   * them, and only then drains. Idempotent, and a no-op once shutdown began.
+   */
+  beginShutdown(): void {
+    if (this.lifecycle !== "starting" && this.lifecycle !== "ready") return;
+    // Readiness and every admission path observe this before the first await.
+    this.lifecycle = "draining";
+    this.stopTransportSampler();
+  }
+
+  drain(deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs): Promise<void> {
     if (this.drainPromise !== null) return this.drainPromise;
     if (this.lifecycle === "stopped") return Promise.resolve();
     if (this.lifecycle === "failed") {
       return Promise.reject(new AckerDBError("unavailable", "server has failed", { resource: "connection" }));
     }
+    if (!Number.isFinite(deadlineAtMs)) {
+      throw new RangeError("server shutdown deadline must be finite");
+    }
 
-    // Readiness and every admission path observe this before the first await.
-    this.lifecycle = "draining";
-    this.stopTransportSampler();
-    this.drainPromise = this.performDrain();
+    this.beginShutdown();
+    this.drainPromise = this.performDrain(deadlineAtMs);
     return this.drainPromise;
   }
 
@@ -829,6 +867,7 @@ export class AckerDBServer {
         ready,
         state,
         ...(this.startup === null ? {} : { phase: this.startup }),
+        ...(this.startupService === null ? {} : { service: this.startupService }),
       }, ready ? 200 : 503);
     }
     const mcp = this.activeRuntime?.registry.mcpAtPath(url.pathname);
@@ -1085,7 +1124,7 @@ export class AckerDBServer {
       const credential = mcpCredentialFromAuthorization(request.headers.get("authorization"));
       if (credential !== null) {
         credentialLease = await runtime.acquireMcpTokenLease(
-          mcp.name,
+          mcp.auth.name,
           credential,
           callerFairnessKey(ANONYMOUS_PRINCIPAL, source),
           request.signal,
@@ -1274,10 +1313,9 @@ export class AckerDBServer {
     return runtime;
   }
 
-  private async performDrain(): Promise<void> {
+  private async performDrain(deadlineAtMs: number): Promise<void> {
     const listener = this.listener!;
     const runtime = this.activeRuntime;
-    const deadlineAtMs = Date.now() + this.limits.gracefulShutdownMs;
     const reason = new AckerDBError("draining", "server is draining", {
       retryable: true,
       retryAfterMs: DRAIN_RETRY_AFTER_MS,

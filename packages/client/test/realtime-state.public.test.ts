@@ -40,20 +40,10 @@ import {
   assertTcpPortReleased,
   type ProxiedServerFrame,
 } from "../../server/test/support/frame-proxy.ts";
+import { within } from "ackerdb-test-support/async";
 
 const WAIT_DEADLINE_MS = 5_000;
 const RECONNECT_DELAY_MS = 1;
-
-function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), WAIT_DEADLINE_MS);
-    timer.unref?.();
-  });
-  return Promise.race([promise, deadline]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 interface ClockTask {
   at: number;
@@ -106,7 +96,7 @@ class ReconnectClock implements AckerDBClientClock {
       waiting.resolve(undefined);
     };
     this.changes.add(check);
-    return withDeadline(waiting.promise, `${delayMs}ms reconnect schedule`).finally(() => {
+    return within(waiting.promise, `${delayMs}ms reconnect schedule`).finally(() => {
       this.changes.delete(check);
     });
   }
@@ -154,7 +144,7 @@ class OneShotGate {
   }
 
   waitEntered(): Promise<void> {
-    return withDeadline(this.entered.promise, "semantic gate entry");
+    return within(this.entered.promise, "semantic gate entry");
   }
 
   release(): void {
@@ -188,7 +178,7 @@ class ObservationLog<T> {
       waiting.resolve(value);
     };
     this.changes.add(check);
-    return withDeadline(waiting.promise, description).finally(() => this.changes.delete(check));
+    return within(waiting.promise, description).finally(() => this.changes.delete(check));
   }
 
   private changed(): void {
@@ -245,7 +235,7 @@ class BeforeWriteController {
     if (this.cut !== undefined) throw new Error("a before-write cut is already armed");
     const matched = Promise.withResolvers<InterceptedWrite>();
     this.cut = { predicate, matched };
-    return withDeadline(matched.promise, "client write interception");
+    return within(matched.promise, "client write interception");
   }
 
   assertHealthy(): void {
@@ -664,7 +654,7 @@ async function assertMutation(
   expectedReplay?: "executed" | "replayed",
   subscription?: ObservationLog<readonly MessageRow[]>,
 ): Promise<bigint> {
-  const result = await withDeadline(mutationEvidence.promise, `${mutationEvidence.body} mutation settlement`);
+  const result = await within(mutationEvidence.promise, `${mutationEvidence.body} mutation settlement`);
   const requests = mutationRequests(app, mutationEvidence.body);
   expect(requests.length).toBeGreaterThanOrEqual(expectedRequestMinimum);
   expect(new Set(requests.map(({ mutationRequestId }) => mutationRequestId)).size).toBe(1);

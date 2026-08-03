@@ -16,26 +16,15 @@ import {
   session,
   trackCleanup,
   typedMcp,
-  typedMcpTool,
+  typedMcpAuth,
   typedMutation,
+  typedProcedure,
   typedQuery,
   user,
 } from "../support/mcp-token-fixture.ts";
+import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const MCP_PROTOCOL_VERSION = "2025-11-25";
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
 
 interface GateState {
   readonly started: Deferred<void>;
@@ -102,26 +91,30 @@ function releaseGates(): void {
 const createOwnershipToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => ownershipMcp.tokens.create(ctx, {
+  handler: (ctx, args) => ownershipAuth.tokens.create(ctx, {
     name: args.name,
     metadata: {},
   }),
 });
 
-const pingOwnership = typedMcpTool({
+const kindReturns = v.object({ kind: v.string() });
+
+const pingOwnership = typedQuery({
   description: "Return the current principal kind without allocating runtime state.",
   access: "public",
   args: {},
-  handler: (ctx) => ({ content: [{ type: "text", text: ctx.auth.kind }] }),
+  returns: kindReturns,
+  handler: (ctx) => ({ kind: ctx.auth.kind }),
 });
 
-const holdOwnership = typedMcpTool({
+const holdOwnership = typedProcedure({
   description: "Hold one runtime-owned operation at a deterministic test gate.",
   access: "public",
   args: { gate: v.string() },
+  returns: kindReturns,
   handler: async (ctx, args) => {
     await waitAtGate(args.gate, ctx.abortSignal);
-    return { content: [{ type: "text", text: ctx.auth.kind }] };
+    return { kind: ctx.auth.kind };
   },
 });
 
@@ -130,6 +123,7 @@ const insertOwnershipRecord = typedMutation({
   args: { value: v.string() },
   handler: (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
+    ctx.analytics.track("ownership record inserted");
     return ctx.db.records.insert({ owner: ctx.auth.identity, value: args.value });
   },
 });
@@ -140,7 +134,7 @@ const countOwnershipRecords = typedQuery({
   handler: (ctx) => ctx.db.records.query().count(),
 });
 
-const nestedOwnershipWrite = typedMcpTool({
+const nestedOwnershipWrite = typedProcedure({
   description: "Compose nested AckerDB functions inside one transaction.",
   access: "authenticated",
   args: {
@@ -148,22 +142,29 @@ const nestedOwnershipWrite = typedMcpTool({
     gate: v.string().nullable(),
     commit: v.boolean(),
   },
-  handler: (ctx, args) => ctx.tx(async (tx) => {
-    await insertOwnershipRecord(tx, { value: args.value });
-    if (args.gate !== null) await waitAtGate(args.gate, ctx.abortSignal);
-    if (!args.commit) throw new Error("ownership rollback fixture");
-    const count = (await countOwnershipRecords(tx, {})).data;
-    return { content: [{ type: "text", text: String(count) }] };
-  }),
+  returns: v.object({ count: v.string() }),
+  handler: async (ctx, args) => {
+    const done = await ctx.tx(async (tx) => {
+      await insertOwnershipRecord(tx, { value: args.value });
+      if (args.gate !== null) await waitAtGate(args.gate, ctx.abortSignal);
+      if (!args.commit) throw new Error("ownership rollback fixture");
+      const count = (await countOwnershipRecords(tx, {})).data;
+      return { count: String(count) };
+    });
+    if (!done.ok) throw new Error("nested ownership write failed");
+    return done.data;
+  },
 });
 
+const ownershipAuth = typedMcpAuth({ name: "ownership" });
 const ownershipMcp = typedMcp({
   name: "ownership",
+  auth: ownershipAuth,
   path: "/ownership/mcp",
   tools: {
-    hold_ownership: holdOwnership,
-    nested_ownership_write: nestedOwnershipWrite,
-    ping_ownership: pingOwnership,
+    hold_ownership: { fn: holdOwnership, access: "public" },
+    nested_ownership_write: { fn: nestedOwnershipWrite },
+    ping_ownership: { fn: pingOwnership, access: "public" },
   },
 });
 
@@ -391,7 +392,7 @@ describe("MCP Runtime ownership", () => {
       args: {},
       principal: bobPrincipal,
       fairnessKey: callerFairnessKey(bobPrincipal, { family: "test", address: "bob" }),
-    })).resolves.toMatchObject({ content: [{ text: "mcp" }] });
+    })).resolves.toMatchObject({ structuredContent: { kind: "mcp" } });
     directGate.release();
     await direct;
     await expectIdle(value);
@@ -412,6 +413,11 @@ describe("MCP Runtime ownership", () => {
       },
     });
     const [token] = await tokens(value, "nested", ["Nested"]);
+    const principal = await value.runtime.authenticateMcpToken(
+      ownershipMcp.name,
+      token!,
+      "nested-analytics",
+    );
     const transactionGate = gate("nested-transaction");
     const call = rpc(value, "nested_ownership_write", {
       value: "private-nested-value",
@@ -430,7 +436,7 @@ describe("MCP Runtime ownership", () => {
     const response = await call;
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({
-      result: { content: [{ type: "text", text: "1" }] },
+      result: { structuredContent: { count: "1" } },
     });
     await expectIdle(value);
 
@@ -453,6 +459,15 @@ describe("MCP Runtime ownership", () => {
     expect(observed).not.toContain(token!);
     expect(observed).not.toContain("private-nested-value");
     expect(value.runtime.status().telemetryAggregates.series.length).toBeLessThanOrEqual(32);
+    await value.runtime.telemetryJournal.flush();
+    const analytics = value.runtime.telemetryJournal.readBatch(0n, 16)
+      .filter((record) => record.kind === "analytics");
+    expect(analytics).toHaveLength(1);
+    expect(analytics[0]).toMatchObject({
+      event: "ownership record inserted",
+      functionAddress: "ownership.insertOwnershipRecord",
+      identity: principal.identity,
+    });
   });
 
   test("cancels queued contention and preserves commit/rollback ownership", async () => {
@@ -570,10 +585,10 @@ describe("MCP Runtime ownership", () => {
     expect(publicResponse.status).toBe(200);
     expect(authenticatedResponse.status).toBe(200);
     expect(await publicResponse.json()).toMatchObject({
-      result: { content: [{ text: "anonymous" }] },
+      result: { structuredContent: { kind: "anonymous" } },
     });
     expect(await authenticatedResponse.json()).toMatchObject({
-      result: { content: [{ text: "mcp" }] },
+      result: { structuredContent: { kind: "mcp" } },
     });
     expect(value.server.state).toBe("stopped");
     expect(value.runtime.state).toBe("stopped");

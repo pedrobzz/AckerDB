@@ -51,6 +51,7 @@ import {
   FrameProxy,
   assertTcpPortReleased,
 } from "../../server/test/support/frame-proxy.ts";
+import { until, within } from "ackerdb-test-support/async";
 
 const USER_AUTHENTICATION = {
   principal: "user",
@@ -977,19 +978,6 @@ describe("event convergence across suspension", () => {
   });
 });
 
-const WAIT_DEADLINE_MS = 5_000;
-
-function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), WAIT_DEADLINE_MS);
-    timer.unref?.();
-  });
-  return Promise.race([promise, deadline]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
-
 function waitForPhase(client: AckerDBClient, phase: string): Promise<void> {
   if (client.currentConnectionState.phase === phase) return Promise.resolve();
   const waiting = Promise.withResolvers<void>();
@@ -998,20 +986,7 @@ function waitForPhase(client: AckerDBClient, phase: string): Promise<void> {
     stop();
     waiting.resolve(undefined);
   });
-  return withDeadline(waiting.promise, `the ${phase} phase`);
-}
-
-async function until(
-  predicate: () => boolean,
-  description: string,
-  deadlineMs = WAIT_DEADLINE_MS,
-): Promise<void> {
-  const deadline = Date.now() + deadlineMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(5);
-  }
-  throw new Error(`Timed out waiting for ${description}`);
+  return within(waiting.promise, `the ${phase} phase`);
 }
 
 const realSchema = defineSchema({
@@ -1239,7 +1214,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     expect(proxiedMutations(app.proxy, "before-send")).toHaveLength(0);
 
     port.resume();
-    const id = await withDeadline(result, "the before-send settlement");
+    const id = await within(result, "the before-send settlement");
     const requests = proxiedMutations(app.proxy, "before-send");
     expect(requests).toHaveLength(1);
     expect(await committedRows(app, 10n, "before-send")).toEqual([
@@ -1271,7 +1246,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     port.suspend();
     captured.drop();
     port.resume();
-    const id = await withDeadline(result, "the held-send settlement");
+    const id = await within(result, "the held-send settlement");
 
     const requests = proxiedMutations(app.proxy, "held-send");
     expect(requests).toHaveLength(2);
@@ -1327,7 +1302,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
             return value.data;
           });
         // The server admitted the mutation and its handler is executing.
-        await withDeadline(gate.entered, "the gated handler entry");
+        await within(gate.entered, "the gated handler entry");
 
         const framesBeforeResume = app.proxy.serverFrames.length;
         port.suspend();
@@ -1366,7 +1341,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
         // the next reconnect attempt is admitted, and the replay settles from
         // the durable record.
         gate.release();
-        const id = await withDeadline(result, "the in-flight settlement");
+        const id = await within(result, "the in-flight settlement");
 
         const requests = proxiedMutations(app.proxy, "in-flight");
         expect(requests).toHaveLength(2);
@@ -1428,7 +1403,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     expect(settlements).toBe(0);
 
     port.resume();
-    const id = await withDeadline(result, "the held-receipt settlement");
+    const id = await within(result, "the held-receipt settlement");
 
     const requests = proxiedMutations(app.proxy, "held-receipt");
     expect(requests).toHaveLength(2);
@@ -1483,7 +1458,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     port.suspend();
     captured.drop();
     port.resume();
-    const id = await withDeadline(result, "the mid-convergence settlement");
+    const id = await within(result, "the mid-convergence settlement");
 
     const requests = proxiedMutations(app.proxy, "converge");
     expect(requests).toHaveLength(2);
@@ -1514,7 +1489,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
         if (!value.ok) throw value.error;
         return value.data;
       });
-    const id = await withDeadline(result, "the settled mutation");
+    const id = await within(result, "the settled mutation");
     expect(proxiedMutations(app.proxy, "settled")).toHaveLength(1);
 
     port.suspend();
@@ -1522,7 +1497,7 @@ describe("mutation boundaries against a real ackerdb server", () => {
     await waitForPhase(client, "ready");
     // A round-trip through the recovered connection is the barrier proving
     // the recovery flush finished without replaying the settled identity.
-    await withDeadline(client.query("messages.list", { channelId: 13n }), "the barrier query");
+    await within(client.query("messages.list", { channelId: 13n }), "the barrier query");
     expect(proxiedMutations(app.proxy, "settled")).toHaveLength(1);
     expect(await committedRows(app, 13n, "settled")).toEqual([
       { id: id as bigint, channelId: 13n, body: "settled" },
@@ -1688,7 +1663,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         });
         restarted = { server: serve({ runtime: runtime2, port: serverPort }), engine: engine2 };
 
-        const id = await withDeadline(result, "the post-restart settlement");
+        const id = await within(result, "the post-restart settlement");
         expect(settlements).toBe(1);
         // One replay identity across however many dials it took.
         const sends = clientFrames.filter(
@@ -1812,7 +1787,7 @@ describe("server unavailable at activation against a real ackerdb server", () =>
         restarted = { server: serve({ runtime: runtime2, port: upstreamPort }), engine: engine2 };
 
         port.resume();
-        const id = await withDeadline(result, "the durable replay settlement");
+        const id = await within(result, "the durable replay settlement");
         // The replay settled from the durable record: the recorded result of
         // the pre-restart commit, not a fresh execution's.
         expect(id).toBe(committedId);

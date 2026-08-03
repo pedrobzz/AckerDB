@@ -15,9 +15,10 @@ import type {
   AckerDBWebSocket,
   EventRef,
 } from "@ackerdb/client";
-import { Component, StrictMode, act, useLayoutEffect, type ReactNode } from "react";
+import { StrictMode, act, useLayoutEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AckerDBProvider, useEvent, type AckerDBProviderConfig } from "@ackerdb/client-react";
+import { createBoundary } from "./support/boundary.tsx";
 
 interface ClockTask {
   at: number;
@@ -588,20 +589,7 @@ describe("useEvent lifecycle", () => {
 
   test("useEvent outside a provider fails loudly", async () => {
     const root = createRoot(mountPoint());
-    let caught: unknown;
-
-    class Boundary extends Component<{ children: ReactNode }, { failed: boolean }> {
-      override state = { failed: false };
-      static getDerivedStateFromError(): { failed: boolean } {
-        return { failed: true };
-      }
-      override componentDidCatch(error: unknown): void {
-        caught = error;
-      }
-      override render(): ReactNode {
-        return this.state.failed ? "failed" : this.props.children;
-      }
-    }
+    const { Boundary, caught } = createBoundary();
 
     await render(
       root,
@@ -609,7 +597,7 @@ describe("useEvent lifecycle", () => {
         <Probe min={1n} onEvent={() => {}} />
       </Boundary>,
     );
-    expect(String(caught)).toContain("useEvent requires a <AckerDBProvider> ancestor");
+    expect(String(caught())).toContain("useEvent requires a <AckerDBProvider> ancestor");
     await act(async () => {
       root.unmount();
     });

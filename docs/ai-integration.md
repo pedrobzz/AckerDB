@@ -37,72 +37,87 @@ Pre-1.0, an AckerDB upgrade that bumps the storage engine's internal schema
 refuses to open older `.ackerdb` files (the error names both versions). The dev
 workflow is wipe + reseed; there is no migration story before 1.0 by design.
 
-## Declare MCP tools at the endpoint
+## An MCP tool is a registered function
 
-`acker codegen` emits schema-bound `mcpTool` and `createMcp` builders. A tool
-module exports an inert blueprint with no wire name and no endpoint import:
+`acker codegen` emits schema-bound `mcp` and `mcpAuth` builders. A tool is an
+ordinary `query`, `mutation`, or `procedure` — it knows nothing about MCP:
 
 ```ts
 import { v } from "@ackerdb/server";
-import { mcpTool } from "../_generated/server";
+import { query } from "../_generated/server";
 
-export const getOrder = mcpTool({
-  description: "Return one order by id.",
-  access: { anyOf: ["read"] },
+export const getOrder = query({
+  description: "Return one order by id.",   // required to be a tool
+  access: "authenticated",
   args: {
     orderId: v.bigint().describe("The order id."),
   },
-  output: v.object({
+  returns: v.object({
     order: v.object({
       id: v.bigint(),
       status: v.string(),
     }).nullable(),
   }),
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
-      const order = await tx.db.orders.get(args.orderId);
-      return {
-        order: order === null ? null : { id: order.id, status: order.status },
-      };
-    }),
-});
-```
-
-The endpoint owns registration and assigns each protocol name through its
-`tools` record:
-
-```ts
-import { createMcp } from "../_generated/server";
-import { getOrder } from "./tools/getOrder.ts";
-
-export const admin = createMcp({
-  name: "admin",
-  scopes: ["read"] as const,
-  tools: {
-    get_order: getOrder,
+  handler: async (ctx, args) => {
+    const order = await ctx.db.orders.get(args.orderId);
+    return { order: order === null ? null : { id: order.id, status: order.status } };
   },
 });
 ```
 
-The record key is the MCP wire name. `mcpTool` has no `name` field, and an MCP
-declaration has no `.tool(...)` registration method. Exporting a blueprint by
-itself does not register it; the runtime registry walks the exported endpoint
-declaration and its assembled `tools`. The same inert blueprint may be reused
-by another endpoint, while the generated types verify its database schema and
-required access scopes against every endpoint that includes it.
+Scopes and tokens live on a provider, in a leaf module both the functions and
+the endpoint can import:
+
+```ts
+// mcp/auth.ts
+import { mcpAuth } from "../_generated/server";
+
+export const adminAuth = mcpAuth({ name: "admin", scopes: ["read"] as const });
+```
+
+The endpoint is the curation surface: it assigns each wire name, the scopes
+that gate it, and the hints a model reads.
+
+```ts
+import { mcp } from "../_generated/server";
+import { api } from "../_generated/api";
+import { adminAuth } from "./auth.ts";
+
+export const admin = mcp({
+  name: "admin",
+  auth: adminAuth,
+  tools: {
+    get_order: {
+      fn: api.orders.getOrder,
+      access: { anyOf: ["read"] },
+      annotations: { readOnlyHint: true },
+    },
+  },
+});
+```
+
+The record key is the MCP wire name and is always written by hand — a tool list
+is a prompt, so its names and granularity are authored rather than derived. A
+scope the provider never declared is a compile error, as is an `sseProcedure`
+entry or a `private` endpoint that also claims a `path`.
 
 The assembled `admin.tools` value is a readonly exact record with the same
-declared keys and registered handler types; it has no catch-all string index.
+declared keys; it has no catch-all string index.
 
-Descriptions on a tool and its `v.*.describe(...)` validators become MCP tool
-and field documentation. Validator input and structured output types also
-drive the protocol JSON schemas, so handlers, MCP clients, and local AI tools
-share one contract.
+Descriptions on the function and its `v.*.describe(...)` validators become MCP
+tool and field documentation. `returns` drives the published `outputSchema`: an
+object return crosses as `structuredContent` directly, and anything else is
+wrapped under `value`, because the protocol requires an object there.
 
-This is a deliberate pre-1.0 source break. Convert old endpoint `.tool(...)`
-calls into `mcpTool(...)` blueprints, remove each definition's `name`, assemble
-them under `createMcp({ tools: { wire_name: blueprint } })`, and run
-`acker codegen`. There is no legacy registration shim.
+A tool that must answer content blocks rather than a value declares
+`returns: mcpContent()`. It publishes no `outputSchema`, and `http: true` on it
+is a registration error — an HTTP response has nowhere to put an image.
+
+This is a deliberate pre-1.0 source break with no shim. Convert each `mcpTool`
+blueprint into a `query`, `mutation`, or `procedure` declaring `description` and
+`returns`, move `scopes` from the endpoint to `mcpAuth`, move `endpoint.tokens`
+to `provider.tokens`, assemble entries as `{ fn, access }`, and run
+`acker codegen`.
 
 ## Exact local AI tools
 
@@ -124,10 +139,16 @@ Pass `includeUnavailable: true` when a consumer such as AI SDK requires the
 complete readonly tool record; every declared key is then required in the
 type, but execution still enforces endpoint, principal, and scope authority.
 
-Tool inputs and structured outputs retain their exact Standard JSON types.
-Tools without a declared output keep the raw MCP content-result type. The
-adapter runs through the active AckerDB procedure context and shared dispatcher;
-it does not open an HTTP connection or weaken the caller's authority.
+Tool inputs and structured outputs retain their exact Standard JSON types — a
+`v.bigint()` field is typed as its canonical decimal string, matching what
+crosses. A tool declaring `mcpContent()` keeps the raw MCP content-result type.
+The adapter runs through the active AckerDB procedure context and shared
+dispatcher; it does not open an HTTP connection or weaken the caller's
+authority.
+
+A declared application error is **thrown** here rather than returned, so a
+success keeps one exact structured type. Remote callers see the same
+information as an `isError` result.
 
 ## Model compatibility: optional and nullable tool arguments
 

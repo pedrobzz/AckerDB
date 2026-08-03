@@ -14,6 +14,7 @@ import { AckerDBClient, type AckerDBWebSocket } from "@ackerdb/client";
 import { runCodegen } from "../../src/app/codegen.ts";
 import { loadConfig } from "../../src/app/config.ts";
 import { FIXTURE_APP, FIXTURE_MESSAGES, makeFixture } from "../support/fixture.ts";
+import { freePort } from "../support/port.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const TEST_TIMEOUT_MS = 30_000;
@@ -186,13 +187,6 @@ async function eventually(assertion: () => void | Promise<void>, label: string):
     }
   }
   throw new Error(`timed out waiting for ${label}`, { cause: lastError });
-}
-
-async function freePort(): Promise<number> {
-  const probe = Bun.serve({ port: 0, fetch: () => new Response("") });
-  const port = probe.port!;
-  await probe.stop(true);
-  return port;
 }
 
 async function portResponds(port: number): Promise<boolean> {

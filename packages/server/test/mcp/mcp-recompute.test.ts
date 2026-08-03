@@ -14,7 +14,12 @@ import {
   type QueryBuilder,
 } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS } from "../../src/runtime/limits.ts";
-import { createMcp, mcpTool, type McpBuilder, type McpToolBuilder } from "../../src/mcp/index.ts";
+import {
+  mcp as mcpDeclaration,
+  mcpAuth,
+  type McpAuthBuilder,
+  type McpBuilder,
+} from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
 import { Runtime } from "../../src/runtime/runtime.ts";
@@ -25,6 +30,7 @@ import type {
   SessionApplicationMessage,
   SessionRuntimeContext,
 } from "../../src/subscriptions/session.ts";
+import { until } from "ackerdb-test-support/async";
 
 // A live subscription must survive a commit made by a DIFFERENT principal
 // through any dispatch path that commits INSIDE its handler (an MCP tool or a
@@ -50,37 +56,49 @@ const schema = defineSchema({
 
 const typedQuery = query as QueryBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
 
-const addRecord = typedMcpTool({
+const statusReturns = v.object({ status: v.string() });
+
+const addRecord = typedProcedure({
   description: "Insert one record transactionally.",
   access: "authenticated",
   args: { value: v.string() },
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
+  returns: statusReturns,
+  handler: async (ctx, args) => {
+    const done = await ctx.tx(async (tx) => {
       await tx.db.records.insert({ value: args.value });
-      return { content: [{ type: "text", text: "inserted" }] };
-    }),
+      return { status: "inserted" };
+    });
+    if (!done.ok) throw new Error("insert failed");
+    return done.data;
+  },
 });
 
-const emitSignal = typedMcpTool({
+const emitSignal = typedProcedure({
   description: "Emit one live event transactionally.",
   access: "authenticated",
   args: { label: v.string() },
-  handler: (ctx, args) =>
-    ctx.tx(async (tx) => {
+  returns: statusReturns,
+  handler: async (ctx, args) => {
+    const done = await ctx.tx(async (tx) => {
       await tx.db.signals.insert({ label: args.label });
-      return { content: [{ type: "text", text: "emitted" }] };
-  }),
+      return { status: "emitted" };
+    });
+    if (!done.ok) throw new Error("emit failed");
+    return done.data;
+  },
 });
 
+const actionsAuth = typedMcpAuth({ name: "actions" });
 const actionsMcp = typedMcp({
   name: "actions",
+  auth: actionsAuth,
   path: "/actions/mcp",
   tools: {
-    add_record: addRecord,
-    emit_signal: emitSignal,
+    add_record: { fn: addRecord },
+    emit_signal: { fn: emitSignal },
   },
 });
 
@@ -168,14 +186,6 @@ function session(
 
 function request<Message>(message: Message): RuntimeRequest<Message> {
   return Object.freeze({ message, bytes: Buffer.byteLength(encode(message)) });
-}
-
-async function until(check: () => boolean, label: string): Promise<void> {
-  const start = Date.now();
-  while (!check()) {
-    if (Date.now() - start > 5_000) throw new Error(`${label} timed out`);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
 }
 
 test("a subscription recomputes cleanly after another principal's MCP tool commit", async () => {

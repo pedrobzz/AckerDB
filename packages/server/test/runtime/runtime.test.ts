@@ -46,21 +46,9 @@ import {
   type TelemetryRecord,
   type TelemetrySpanRecord,
 } from "../../src/telemetry/telemetry.ts";
+import { deferred, type Deferred } from "ackerdb-test-support/async";
 
 const TEST_SOURCE = Object.freeze({ family: "test", address: "runtime" });
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
 
 async function settle(): Promise<void> {
   for (let turn = 0; turn < 24; turn++) await Promise.resolve();

@@ -95,6 +95,12 @@ export interface InvocationTelemetryContext {
   readonly phase: InvocationPhase;
 }
 
+export interface InvocationFunctionContext {
+  readonly invocationId: number;
+  readonly parent?: InvocationFunctionContext;
+  readonly fn: AnyInvocable;
+}
+
 export type InvocationTelemetryObserver = (
   context: InvocationTelemetryContext,
   durationMs: number,
@@ -144,6 +150,22 @@ export function withInvocationTelemetry<T>(
     invocationId: null,
     depth: -1,
   }, work);
+}
+
+/** Install only ambient function ownership, without timing or observations. */
+export function withInvocationContext<T>(work: () => T): T {
+  return invocationInstrumentation.run({
+    scope: { nextInvocationId: 0 },
+    invocationId: null,
+    depth: -1,
+  }, work);
+}
+
+export function currentInvocationFunctionContext(): InvocationFunctionContext | undefined {
+  const state = invocationInstrumentation.getStore();
+  return state?.invocationId !== null && state?.fn !== undefined
+    ? state as InvocationFunctionContext
+    : undefined;
 }
 
 /** Returns the existing ambient invocation frame without allocating a public observation. */
@@ -352,6 +374,11 @@ function observePhase<T>(
   phase: InvocationPhase,
   work: () => T | Promise<T>,
 ): T | Promise<T> {
+  if (
+    state.scope.observer === undefined &&
+    state.scope.telemetryObserver === undefined &&
+    state.scope.runPhase === undefined
+  ) return work();
   const phaseState: InvocationInstrumentationState =
     state.scope.telemetryObserver === undefined
       ? state
@@ -401,13 +428,10 @@ function runHandler<Ctx extends InvocationContext, Args, R>(
   fn: { readonly handler: (ctx: Ctx, args: Args) => R | Promise<R> },
   ctx: Ctx,
   args: Args,
-  state: InvocationState,
   options: InvocationOptions<Ctx, Args> | undefined,
 ): R | Promise<R> {
-  return withInvocationState(state, () => {
-    options?.onAuthorized?.(ctx, args);
-    return fn.handler(ctx, args);
-  });
+  options?.onAuthorized?.(ctx, args);
+  return fn.handler(ctx, args);
 }
 
 function normalizeFunctionResult<K extends string, T>(kind: K, value: T): T | OkResult<T> {
@@ -509,7 +533,7 @@ function runInvocation<
     activeState: InvocationState,
   ): Promise<T | OkResult<T>> => {
     try {
-      const result = work(activeState);
+      const result = withInvocationState(activeState, () => work(activeState));
       if (isPromiseLike(result)) {
         return Promise.resolve(result).then(
           (value) => finishInvocation(fn, value, activeState),
@@ -562,9 +586,9 @@ function invokeUnobserved<
       const access = compiled.enforceAccess(safeCtx, args);
       if (isPromiseLike(access)) {
         return Promise.resolve(access).then(() =>
-          runHandler(fn, safeCtx, args, activeState, options));
+          runHandler(fn, safeCtx, args, options));
       }
-      return runHandler(fn, safeCtx, args, activeState, options);
+      return runHandler(fn, safeCtx, args, options);
     };
     return runInvocation(
       fn,
@@ -633,7 +657,7 @@ export function invokeFunction<
       });
       const handle = (activeState: InvocationState): H | Promise<H> =>
         observePhase(state, observedFn, "handler", () =>
-          runHandler(fn, safeCtx, args, activeState, options));
+          runHandler(fn, safeCtx, args, options));
       const authorize = (activeState: InvocationState): H | Promise<H> => {
         const access = observePhase(state, observedFn, "policy", () =>
           compiled.enforceAccess(safeCtx, args));

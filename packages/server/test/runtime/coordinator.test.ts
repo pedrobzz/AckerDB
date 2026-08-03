@@ -17,6 +17,7 @@ import { mutationReplayOwner } from "../../src/database/mutation-replay.ts";
 import { OrderedPublication } from "../../src/subscriptions/publication.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { defineSchema, defineTable } from "../../src/schema/definition.ts";
+import { deferred } from "ackerdb-test-support/async";
 
 const schema = defineSchema({
   notes: defineTable({ id: v.primaryKey(), body: v.string() }),
@@ -61,14 +62,6 @@ const identity = {
   functionRef: "notes.add",
   argsFingerprint: stableEncode({ body: "hello" }),
 };
-
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((accept) => {
-    resolve = accept;
-  });
-  return { promise, resolve };
-}
 
 describe("CommitCoordinator", () => {
   test("persists one monotonic version and hands publication off before resolving", async () => {

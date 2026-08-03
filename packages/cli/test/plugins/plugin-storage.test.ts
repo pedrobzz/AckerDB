@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { createServer } from "node:net";
 import { Database } from "bun:sqlite";
 import {
   Engine,
@@ -25,6 +24,7 @@ import {
 } from "../../src/plugins/storage.ts";
 import { desiredPluginMounts } from "@ackerdb/server";
 import { makeFixture } from "../support/fixture.ts";
+import { freePort } from "../support/port.ts";
 
 const CLI = new URL("../../src/commands/main.ts", import.meta.url).pathname;
 const dirs: string[] = [];
@@ -88,18 +88,6 @@ function runCli(args: string[]): number {
     env: { ...process.env, ACKERDB_TELEMETRY: "disabled" },
   });
   return child.exitCode;
-}
-
-async function freePort(): Promise<number> {
-  const probe = createServer();
-  await new Promise<void>((resolve, reject) => {
-    probe.once("error", reject);
-    probe.listen({ host: "127.0.0.1", port: 0, exclusive: true }, resolve);
-  });
-  const address = probe.address();
-  if (typeof address !== "object" || address === null) throw new Error("port probe has no address");
-  await new Promise<void>((resolve, reject) => probe.close((error) => error === undefined ? resolve() : reject(error)));
-  return address.port;
 }
 
 function rowCounts(config: ReturnType<typeof loadConfig>): { root: number; plugin: number | null } {

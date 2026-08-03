@@ -23,10 +23,10 @@ import {
 } from "../../src/app/functions.ts";
 import { PRODUCTION_LIMITS, type ServiceLimits } from "../../src/runtime/limits.ts";
 import {
-  createMcp,
-  mcpTool,
+  mcp as mcpDeclaration,
+  mcpAuth,
+  type McpAuthBuilder,
   type McpBuilder,
-  type McpToolBuilder,
 } from "../../src/mcp/index.ts";
 import { reconcile } from "../../src/schema/reconcile.ts";
 import { Registry } from "../../src/app/registry.ts";
@@ -49,104 +49,120 @@ const schema = defineSchema({
 
 export const typedMutation = mutation as MutationBuilder<typeof schema>;
 export const typedQuery = query as QueryBuilder<typeof schema>;
-const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
-export const typedMcp = createMcp as McpBuilder<typeof schema>;
-export const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+export const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
+export const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
+export const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
+
+export const agentAuth = typedMcpAuth({ name: "agent" });
+export const operationsAuth = typedMcpAuth({ name: "operations" });
+export const scopedAuth = typedMcpAuth({
+  name: "scoped",
+  scopes: ["orders.all", "orders.get", "reports.all"] as const,
+});
 const invalidUpdateKind = v.enum("InvalidMcpTokenUpdateKind", ["empty", "undefined"]);
 
-const writeOwnedRecord = typedMcpTool({
+const writeOwnedRecord = typedProcedure({
   description: "Write a row owned by the delegated Identity.",
   access: "authenticated",
   args: { value: v.string() },
+  returns: v.object({ principal: v.string(), record: v.string(), tokenId: v.string() }),
   handler: async (ctx, args) => {
     if (ctx.auth.kind !== "mcp") throw new Error("expected MCP principal");
     const identity = ctx.auth.identity;
-    const id = await ctx.tx((tx) => tx.db.records.insert({ owner: identity, value: args.value }));
+    const inserted = await ctx.tx((tx) =>
+      tx.db.records.insert({ owner: identity, value: args.value }));
+    if (!inserted.ok) throw new Error("insert failed");
     return {
-      content: [
-        { type: "text" as const, text: `${ctx.auth.kind}:${identity}` },
-        {
-          type: "resource_link" as const,
-          uri: `ackerdb://records/${id}`,
-          name: `record-${id}`,
-          annotations: { audience: ["assistant" as const], priority: 0.8 },
-          _meta: { owner: identity.toString() },
-        },
-      ],
-      _meta: { tokenId: ctx.auth.tokenId },
+      principal: `${ctx.auth.kind}:${identity}`,
+      record: `ackerdb://records/${inserted.data}`,
+      tokenId: ctx.auth.tokenId,
     };
   },
 });
 
-const attemptSelfAdministration = typedMcpTool({
+const attemptSelfAdministration = typedProcedure({
   description: "Exercise the delegated-credential administration boundary.",
   access: "authenticated",
   args: {},
-  handler: async (ctx) => ctx.tx((tx) => {
-    agentMcp.tokens.list(tx);
-    agentMcp.tokens.create(tx, { name: "escalated", metadata: {} });
-    return { content: [{ type: "text", text: "unexpected" }] };
-  }),
+  returns: v.object({ status: v.string() }),
+  handler: async (ctx) => {
+    const done = await ctx.tx((tx) => {
+      agentAuth.tokens.list(tx);
+      agentAuth.tokens.create(tx, { name: "escalated", metadata: {} });
+      return { status: "unexpected" };
+    });
+    if (!done.ok) throw new Error("administration unexpectedly failed");
+    return done.data;
+  },
 });
 
-const publicScopedTool = typedMcpTool({
+const statusReturns = v.object({ status: v.string() });
+
+const publicScopedTool = typedQuery({
   description: "Public scope fixture.",
   access: "public",
   args: {},
-  handler: () => ({ content: [{ type: "text", text: "public" }] }),
+  returns: statusReturns,
+  handler: () => ({ status: "public" }),
 });
 
-const authenticatedScopedTool = typedMcpTool({
+const authenticatedScopedTool = typedQuery({
   description: "Authenticated scope fixture.",
   access: "authenticated",
   args: {},
-  handler: () => ({ content: [{ type: "text", text: "authenticated" }] }),
+  returns: statusReturns,
+  handler: () => ({ status: "authenticated" }),
 });
 
-const anyScopedTool = typedMcpTool({
+const anyScopedTool = typedQuery({
   description: "Any-of scope fixture.",
-  access: { anyOf: ["orders.all", "orders.get"] },
+  access: "authenticated",
   args: {},
-  handler: () => ({ content: [{ type: "text", text: "orders" }] }),
+  returns: statusReturns,
+  handler: () => ({ status: "orders" }),
 });
 
-const allScopedTool = typedMcpTool({
+const allScopedTool = typedQuery({
   description: "All-of scope fixture.",
-  access: { allOf: ["orders.get", "reports.all"] },
+  access: "authenticated",
   args: {},
-  handler: () => ({ content: [{ type: "text", text: "reports" }] }),
+  returns: statusReturns,
+  handler: () => ({ status: "reports" }),
 });
 
-const exactAllTool = typedMcpTool({
+const exactAllTool = typedQuery({
   description: "Prove .all is an opaque exact value.",
-  access: { anyOf: ["orders.all"] },
+  access: "authenticated",
   args: {},
-  handler: () => ({ content: [{ type: "text", text: "admin" }] }),
+  returns: statusReturns,
+  handler: () => ({ status: "admin" }),
 });
 
 export const agentMcp = typedMcp({
   name: "agent",
+  auth: agentAuth,
   path: "/agent/mcp",
   tools: {
-    attempt_self_administration: attemptSelfAdministration,
-    write_owned_record: writeOwnedRecord,
+    attempt_self_administration: { fn: attemptSelfAdministration },
+    write_owned_record: { fn: writeOwnedRecord },
   },
 });
 const operationsMcp = typedMcp({
   name: "operations",
+  auth: operationsAuth,
   path: "/operations/mcp",
   tools: {},
 });
 export const scopedMcp = typedMcp({
   name: "scoped",
+  auth: scopedAuth,
   path: "/scoped/mcp",
-  scopes: ["orders.all", "orders.get", "reports.all"] as const,
   tools: {
-    admin_orders: exactAllTool,
-    authenticated_status: authenticatedScopedTool,
-    public_status: publicScopedTool,
-    read_orders: anyScopedTool,
-    read_reports: allScopedTool,
+    admin_orders: { fn: exactAllTool, access: { anyOf: ["orders.all"] } },
+    authenticated_status: { fn: authenticatedScopedTool, access: "authenticated" },
+    public_status: { fn: publicScopedTool, access: "public" },
+    read_orders: { fn: anyScopedTool, access: { anyOf: ["orders.all", "orders.get"] } },
+    read_reports: { fn: allScopedTool, access: { allOf: ["orders.get", "reports.all"] } },
   },
 });
 let escapedOwnerContext: MutationCtx<typeof schema> | null = null;
@@ -159,20 +175,20 @@ const createAgentToken = typedMutation({
   },
   handler: (ctx, args) => {
     escapedOwnerContext = ctx;
-    return agentMcp.tokens.create(ctx, args);
+    return agentAuth.tokens.create(ctx, args);
   },
 });
 
 const listAgentTokens = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => agentMcp.tokens.list(ctx),
+  handler: (ctx) => agentAuth.tokens.list(ctx),
 });
 
 const renameAgentToken = typedMutation({
   access: "authenticated",
   args: { id: v.string(), name: v.string() },
-  handler: (ctx, args) => agentMcp.tokens.update(ctx, args.id, { name: args.name }),
+  handler: (ctx, args) => agentAuth.tokens.update(ctx, args.id, { name: args.name }),
 });
 
 const updateAgentTokenMetadata = typedMutation({
@@ -181,13 +197,13 @@ const updateAgentTokenMetadata = typedMutation({
     id: v.string(),
     metadata: v.jsonb<Readonly<Record<string, unknown>>>(),
   },
-  handler: (ctx, args) => agentMcp.tokens.update(ctx, args.id, { metadata: args.metadata }),
+  handler: (ctx, args) => agentAuth.tokens.update(ctx, args.id, { metadata: args.metadata }),
 });
 
 const invalidAgentTokenUpdate = typedMutation({
   access: "authenticated",
   args: { id: v.string(), kind: invalidUpdateKind },
-  handler: (ctx, args) => agentMcp.tokens.update(
+  handler: (ctx, args) => agentAuth.tokens.update(
     ctx,
     args.id,
     (args.kind === "empty" ? {} : { name: undefined }) as never,
@@ -197,49 +213,49 @@ const invalidAgentTokenUpdate = typedMutation({
 const revokeAgentToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => agentMcp.tokens.revoke(ctx, args.id),
+  handler: (ctx, args) => agentAuth.tokens.revoke(ctx, args.id),
 });
 
 const renameOperationsToken = typedMutation({
   access: "authenticated",
   args: { id: v.string(), name: v.string() },
-  handler: (ctx, args) => operationsMcp.tokens.update(ctx, args.id, { name: args.name }),
+  handler: (ctx, args) => operationsAuth.tokens.update(ctx, args.id, { name: args.name }),
 });
 
 const revokeOperationsToken = typedMutation({
   access: "authenticated",
   args: { id: v.string() },
-  handler: (ctx, args) => operationsMcp.tokens.revoke(ctx, args.id),
+  handler: (ctx, args) => operationsAuth.tokens.revoke(ctx, args.id),
 });
 
 const listOperationsTokens = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => operationsMcp.tokens.list(ctx),
+  handler: (ctx) => operationsAuth.tokens.list(ctx),
 });
 
 const createScopedToken = typedMutation({
   access: "authenticated",
   args: {
     name: v.string(),
-    scopes: v.array(scopedMcp.scopes),
+    scopes: v.array(scopedAuth.scopes),
   },
-  handler: (ctx, args) => scopedMcp.tokens.create(ctx, args),
+  handler: (ctx, args) => scopedAuth.tokens.create(ctx, args),
 });
 
 const updateScopedToken = typedMutation({
   access: "authenticated",
   args: {
     id: v.string(),
-    scopes: v.array(scopedMcp.scopes),
+    scopes: v.array(scopedAuth.scopes),
   },
-  handler: (ctx, args) => scopedMcp.tokens.updateScopes(ctx, args.id, args.scopes),
+  handler: (ctx, args) => scopedAuth.tokens.updateScopes(ctx, args.id, args.scopes),
 });
 
 const listScopedTokens = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => scopedMcp.tokens.list(ctx),
+  handler: (ctx) => scopedAuth.tokens.list(ctx),
 });
 
 const normalProcedure = typedProcedure({

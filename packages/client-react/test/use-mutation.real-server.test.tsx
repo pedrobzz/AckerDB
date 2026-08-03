@@ -29,19 +29,9 @@ import { StrictMode, useEffect, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { AckerDBProvider, useConnectionState, useMutation } from "@ackerdb/client-react";
 import { FrameProxy, assertTcpPortReleased } from "../../server/test/support/frame-proxy.ts";
+import { within } from "ackerdb-test-support/async";
 
 const WAIT_DEADLINE_MS = 5_000;
-
-function withDeadline<T>(promise: Promise<T>, description: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`Timed out waiting for ${description}`)), WAIT_DEADLINE_MS);
-    timer.unref?.();
-  });
-  return Promise.race([promise, deadline]).finally(() => {
-    if (timer !== undefined) clearTimeout(timer);
-  });
-}
 
 const schema = defineSchema({
   messages: defineTable({
@@ -202,7 +192,7 @@ afterAll(async () => {
 describe("useMutation against a real ackerdb server", () => {
   test("runs a real mutation through the rendered hook", async () => {
     const mounted = await mount(app);
-    const id = mustOk(await withDeadline(
+    const id = mustOk(await within(
       mounted.send()({ channelId: 1n, body: "first" }),
       "first mutation settlement",
     ));
@@ -231,7 +221,7 @@ describe("useMutation against a real ackerdb server", () => {
       // The server commits and acknowledges, but the acknowledgment dies with
       // the connection; the client must replay under the original identity.
       await cut;
-      const id = mustOk(await withDeadline(result, "severed mutation settlement"));
+      const id = mustOk(await within(result, "severed mutation settlement"));
 
       const requests = mutationRequests(app, "replayed");
       expect(requests.length).toBeGreaterThanOrEqual(2);

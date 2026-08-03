@@ -1,17 +1,16 @@
 /** Compile-time contract for schema-bound MCP tools and client API erasure. */
 import type { ApiFromModules, Identity } from "@ackerdb/core";
 import {
-  createMcp,
+  mcp as mcpDeclaration,
   v,
   defineSchema,
   defineTable,
-  mcpTool,
+  mcpAuth,
   mutation,
   procedure,
   query,
   type McpBuilder,
-  type McpToolBuilder,
-  type McpToolResult,
+  type McpAuthBuilder,
   type MutationBuilder,
   type ProcedureBuilder,
   type QueryBuilder,
@@ -28,8 +27,8 @@ const schema = defineSchema({
 const typedMutation = mutation as MutationBuilder<typeof schema>;
 const typedProcedure = procedure as ProcedureBuilder<typeof schema>;
 const typedQuery = query as QueryBuilder<typeof schema>;
-const typedMcp = createMcp as McpBuilder<typeof schema>;
-const typedMcpTool = mcpTool as McpToolBuilder<typeof schema>;
+const typedMcp = mcpDeclaration as McpBuilder<typeof schema>;
+const typedMcpAuth = mcpAuth as McpAuthBuilder<typeof schema>;
 
 const addNote = typedMutation({
   access: "public",
@@ -37,63 +36,69 @@ const addNote = typedMutation({
   handler: (ctx, args) => ctx.db.notes.insert(args),
 });
 
-const agentMcp = typedMcp({ name: "agent", tools: {} });
+const agentAuth = typedMcpAuth({ name: "agent" });
+const scopedAuth = typedMcpAuth({
+  name: "scoped_agent",
+  scopes: ["orders.all", "orders.get", "reports.all"] as const,
+});
+const agentMcp = typedMcp({ name: "agent", auth: agentAuth, tools: {} });
 const scopedMcp = typedMcp({
   name: "scoped_agent",
+  auth: scopedAuth,
   path: "/scoped/mcp",
-  scopes: ["orders.all", "orders.get", "reports.all"] as const,
   tools: {},
 });
-type AgentScope = NonNullable<typeof scopedMcp.scopes._type>;
+void scopedMcp;
+type AgentScope = NonNullable<typeof scopedAuth.scopes._type>;
 const exactScope: AgentScope = "orders.get";
-const scopeValidator: Validator<AgentScope> = scopedMcp.scopes;
+const scopeValidator: Validator<AgentScope> = scopedAuth.scopes;
 void exactScope;
 void scopeValidator;
 // @ts-expect-error the descriptor exposes only the declaration's literal union
 const unknownScope: AgentScope = "orders.create";
 void unknownScope;
-// @ts-expect-error a scope-free declaration has no scope descriptor
-void agentMcp.scopes;
+// @ts-expect-error a scope-free provider has no scope descriptor
+void agentAuth.scopes;
 const createAgentToken = typedMutation({
   access: "authenticated",
   args: { name: v.string() },
-  handler: (ctx, args) => agentMcp.tokens.create(ctx, { name: args.name }),
+  handler: (ctx, args) => agentAuth.tokens.create(ctx, { name: args.name }),
 });
 const createScopedToken = typedMutation({
   access: "authenticated",
   args: {
     name: v.string(),
-    scopes: v.array(scopedMcp.scopes),
+    scopes: v.array(scopedAuth.scopes),
   },
-  handler: (ctx, args) => scopedMcp.tokens.create(ctx, args),
+  handler: (ctx, args) => scopedAuth.tokens.create(ctx, args),
 });
 const updateScopedToken = typedMutation({
   access: "authenticated",
   args: {
     tokenId: v.string(),
-    scopes: v.array(scopedMcp.scopes),
+    scopes: v.array(scopedAuth.scopes),
   },
-  handler: (ctx, args) => scopedMcp.tokens.updateScopes(ctx, args.tokenId, args.scopes),
+  handler: (ctx, args) => scopedAuth.tokens.updateScopes(ctx, args.tokenId, args.scopes),
 });
 const listAgentTokens = typedQuery({
   access: "authenticated",
   args: {},
-  handler: (ctx) => agentMcp.tokens.list(ctx),
+  handler: (ctx) => agentAuth.tokens.list(ctx),
 });
 const updateAgentToken = typedMutation({
   access: "authenticated",
   args: { tokenId: v.string(), name: v.string() },
-  handler: (ctx, args) => agentMcp.tokens.update(ctx, args.tokenId, { name: args.name }),
+  handler: (ctx, args) => agentAuth.tokens.update(ctx, args.tokenId, { name: args.name }),
 });
 const revokeAgentToken = typedMutation({
   access: "authenticated",
   args: { tokenId: v.string() },
-  handler: (ctx, args) => agentMcp.tokens.revoke(ctx, args.tokenId),
+  handler: (ctx, args) => agentAuth.tokens.revoke(ctx, args.tokenId),
 });
 const createSystemAgentToken = typedMutation({
   access: "system",
   args: { identity: v.identity(), name: v.string() },
-  handler: (ctx, args) => agentMcp.systemTokens.create(
+  handler: (ctx, args) => agentAuth.systemTokens.create(
     ctx,
     args.identity,
     { name: args.name },
@@ -104,9 +109,9 @@ const createSystemScopedToken = typedMutation({
   args: {
     identity: v.identity(),
     name: v.string(),
-    scopes: v.array(scopedMcp.scopes),
+    scopes: v.array(scopedAuth.scopes),
   },
-  handler: (ctx, args) => scopedMcp.systemTokens.create(
+  handler: (ctx, args) => scopedAuth.systemTokens.create(
     ctx,
     args.identity,
     { name: args.name, scopes: args.scopes },
@@ -115,12 +120,12 @@ const createSystemScopedToken = typedMutation({
 const listSystemAgentTokens = typedQuery({
   access: "system",
   args: { identity: v.identity() },
-  handler: (ctx, args) => agentMcp.systemTokens.list(ctx, args.identity),
+  handler: (ctx, args) => agentAuth.systemTokens.list(ctx, args.identity),
 });
 const revokeSystemAgentToken = typedMutation({
   access: "system",
   args: { identity: v.identity(), tokenId: v.string() },
-  handler: (ctx, args) => agentMcp.systemTokens.revoke(ctx, args.identity, args.tokenId),
+  handler: (ctx, args) => agentAuth.systemTokens.revoke(ctx, args.identity, args.tokenId),
 });
 const localAiTools = typedProcedure({
   access: "authenticated",
@@ -165,6 +170,7 @@ void revokeSystemAgentToken;
 void localAiTools;
 const renamedEndpoint = typedMcp({
   name: "stable_name",
+  auth: agentAuth,
   path: "/renamed/export",
   instructions: "Stable declaration identity is explicit.",
   tools: {},
@@ -173,80 +179,75 @@ const stableName: "stable_name" = renamedEndpoint.name;
 const stablePath: "/renamed/export" = renamedEndpoint.path;
 void stableName;
 void stablePath;
-const writeNote = typedMcpTool({
+const writeNote = typedProcedure({
   description: "Write a note.",
+  access: "authenticated",
   args: { body: v.string() },
+  returns: v.object({ status: v.string() }),
   handler: async (ctx, args) => {
     const authKind: "anonymous" | "user" | "mcp" | "workload" | "system" = ctx.auth.kind;
     const signal: AbortSignal = ctx.abortSignal;
-    // Tools need an explicit transaction before they can reach the database.
-    // @ts-expect-error MCP tool contexts do not expose a database directly
+    // A procedure needs an explicit transaction before it can reach the database.
+    // @ts-expect-error procedure contexts do not expose a database directly
     void ctx.db;
     // @ts-expect-error delegated MCP principals cannot administer owner tokens
-    agentMcp.tokens.list(ctx);
+    agentAuth.tokens.list(ctx);
     // @ts-expect-error token minting requires an application mutation or transaction context
-    agentMcp.tokens.create(ctx, { name: "forbidden" });
-    // @ts-expect-error MCP tools cannot invoke the system-administration facade
-    agentMcp.systemTokens.list(ctx, 1n as Identity);
+    agentAuth.tokens.create(ctx, { name: "forbidden" });
+    // @ts-expect-error tools cannot invoke the system-administration facade
+    agentAuth.systemTokens.list(ctx, 1n as Identity);
     const nestedTools = agentMcp.aiTools(ctx);
     void nestedTools;
     await ctx.tx((tx) => addNote(tx, { body: args.body }));
-    return { content: [{ type: "text", text: `${authKind}:${signal.aborted}` }] };
+    return { status: `${authKind}:${signal.aborted}` };
   },
 });
 
-typedMcpTool({
-  description: "Read orders with either exact capability.",
-  access: { anyOf: ["orders.all", "orders.get"] },
+const orderProbe = typedQuery({
+  description: "Scope-policy probe.",
+  access: "authenticated",
   args: {},
-  handler: () => ({ content: [] }),
+  returns: v.object({}),
+  handler: () => ({}),
 });
 
-typedMcpTool({
-  description: "Require both exact capabilities.",
-  access: { allOf: ["orders.get", "reports.all"] },
-  args: {},
-  handler: () => ({ content: [] }),
-});
-
-const invalidScopePolicy = typedMcpTool({
-  description: "Reject undeclared policy values.",
-  access: { anyOf: ["orders.create"] },
-  args: {},
-  handler: () => ({ content: [] }),
-});
-
-typedMcpTool({
-  description: "Reject ambiguous bare arrays.",
-  // @ts-expect-error scope policies must explicitly choose anyOf or allOf
-  access: ["orders.get"],
-  args: {},
-  handler: () => ({ content: [] }),
-});
-
-const scopeFreePolicy = typedMcpTool({
-  description: "Reject scope policies when the declaration has no scopes.",
-  access: { anyOf: ["orders.get"] },
-  args: {},
-  handler: () => ({ content: [] }),
+typedMcp({
+  name: "valid_scoped_tools",
+  auth: scopedAuth,
+  path: "/valid/scoped-tools",
+  tools: {
+    any_of_policy: { fn: orderProbe, access: { anyOf: ["orders.all", "orders.get"] } },
+    all_of_policy: { fn: orderProbe, access: { allOf: ["orders.get", "reports.all"] } },
+  },
 });
 
 typedMcp({
   name: "invalid_scoped_tools",
+  auth: scopedAuth,
   path: "/invalid/scoped-tools",
-  scopes: ["orders.get"] as const,
   tools: {
-    // @ts-expect-error tool policies accept only the declaration's exact scope union
-    invalid_scope_policy: invalidScopePolicy,
+    // @ts-expect-error entry policies accept only the provider's exact scope union
+    invalid_scope_policy: { fn: orderProbe, access: { anyOf: ["orders.create"] } },
   },
 });
 
-// @ts-expect-error scope-free declarations cannot assemble scope-requiring blueprints
+typedMcp({
+  name: "ambiguous_policy",
+  auth: scopedAuth,
+  path: "/invalid/ambiguous",
+  tools: {
+    // @ts-expect-error scope policies must explicitly choose anyOf or allOf
+    ambiguous: { fn: orderProbe, access: ["orders.get"] },
+  },
+});
+
 typedMcp({
   name: "invalid_scope_free_tools",
+  auth: agentAuth,
   path: "/invalid/scope-free-tools",
   tools: {
-    scope_free_policy: scopeFreePolicy,
+    // @ts-expect-error a scope-free provider cannot carry a scoped entry policy
+    scope_free_policy: { fn: orderProbe, access: { anyOf: ["orders.get"] } },
   },
 });
 
@@ -255,30 +256,30 @@ typedMutation({
   args: {},
   handler: (ctx) => {
     // @ts-expect-error scope-free token creation cannot accept a scope value
-    agentMcp.tokens.create(ctx, { name: "invalid", scopes: [] });
+    agentAuth.tokens.create(ctx, { name: "invalid", scopes: [] });
     // @ts-expect-error scope-free token operations omit the scope update method
-    agentMcp.tokens.updateScopes(ctx, "token", []);
+    agentAuth.tokens.updateScopes(ctx, "token", []);
     // @ts-expect-error scope-enabled token creation requires an explicit grant
-    scopedMcp.tokens.create(ctx, { name: "invalid" });
+    scopedAuth.tokens.create(ctx, { name: "invalid" });
     // @ts-expect-error token grants accept only exact declared values
-    scopedMcp.tokens.create(ctx, { name: "invalid", scopes: ["orders.create"] });
+    scopedAuth.tokens.create(ctx, { name: "invalid", scopes: ["orders.create"] });
     // @ts-expect-error owner token operations never accept a selected Identity
-    agentMcp.tokens.create(ctx, 1n as Identity, { name: "escalation" });
+    agentAuth.tokens.create(ctx, 1n as Identity, { name: "escalation" });
     // @ts-expect-error descriptor edits cannot change authorization grants
-    scopedMcp.tokens.update(ctx, "token", { scopes: ["orders.get"] });
+    scopedAuth.tokens.update(ctx, "token", { scopes: ["orders.get"] });
     // @ts-expect-error descriptor edits expose only bounded name and metadata
-    agentMcp.tokens.update(ctx, "token", { expiresAt: Date.now() });
+    agentAuth.tokens.update(ctx, "token", { expiresAt: Date.now() });
     // @ts-expect-error descriptor edits require at least one replacement field
-    agentMcp.tokens.update(ctx, "token", {});
+    agentAuth.tokens.update(ctx, "token", {});
     // @ts-expect-error plaintext secrets cannot be recovered
-    agentMcp.tokens.recover(ctx, "token");
+    agentAuth.tokens.recover(ctx, "token");
     // @ts-expect-error owner lifecycle has no built-in expiration
-    agentMcp.tokens.expire(ctx, "token");
+    agentAuth.tokens.expire(ctx, "token");
     // @ts-expect-error scope-free system token creation cannot accept a scope value
-    agentMcp.systemTokens.create(ctx, 1n as Identity, { name: "invalid", scopes: [] });
+    agentAuth.systemTokens.create(ctx, 1n as Identity, { name: "invalid", scopes: [] });
     // @ts-expect-error scoped system token creation requires an explicit grant
-    scopedMcp.systemTokens.create(ctx, 1n as Identity, { name: "invalid" });
-    scopedMcp.systemTokens.create(ctx, 1n as Identity, {
+    scopedAuth.systemTokens.create(ctx, 1n as Identity, { name: "invalid" });
+    scopedAuth.systemTokens.create(ctx, 1n as Identity, {
       name: "invalid",
       // @ts-expect-error system grants accept only exact declared values
       scopes: ["orders.create"],
@@ -286,61 +287,14 @@ typedMutation({
   },
 });
 
-const richResult = {
-  content: [{
-    type: "text",
-    text: "hello",
-    annotations: { audience: ["assistant"], priority: 0.8 },
-    _meta: { source: "compile-fixture" },
-  }, {
-    type: "image",
-    data: "AQID",
-    mimeType: "image/png",
-  }, {
-    type: "audio",
-    data: "BAUG",
-    mimeType: "audio/wav",
-  }, {
-    type: "resource",
-    resource: { uri: "ackerdb://notes/1", mimeType: "text/plain", text: "note" },
-  }, {
-    type: "resource",
-    resource: {
-      uri: "ackerdb://notes/2",
-      mimeType: "application/octet-stream",
-      blob: "AQID",
-    },
-  }, {
-    type: "resource_link",
-    uri: "https://ackerdb.dev/notes/1",
-    name: "note-one",
-    title: "Note one",
-    size: 3,
-    icons: [{ src: "https://ackerdb.dev/note.png", sizes: ["48x48"], theme: "light" }],
-  }],
-  _meta: { request: { id: 1 } },
-} satisfies McpToolResult;
-
-typedMcpTool({
-  title: "Render note",
-  description: "Prove every rich result block is typed.",
-  annotations: {
-    readOnlyHint: true,
-    destructiveHint: false,
-    idempotentHint: true,
-    openWorldHint: false,
-  },
-  args: {},
-  handler: () => richResult,
-});
-
-const summarizeNote = typedMcpTool({
+const summarizeNote = typedQuery({
   description: "Return a typed summary.",
+  access: "authenticated",
   args: {
     body: v.string().describe("The note body."),
     label: v.string().optional(),
   },
-  output: v.object({
+  returns: v.object({
     length: v.int(),
     label: v.string().nullable(),
   }),
@@ -352,14 +306,15 @@ const summarizeNote = typedMcpTool({
 });
 void summarizeNote;
 
-const echoNativeValues = typedMcpTool({
+const echoNativeValues = typedQuery({
   description: "Keep protocol strings out of the typed handler contract.",
+  access: "authenticated",
   args: {
     count: v.bigint(),
     identity: v.identity(),
     bytes: v.bytes(),
   },
-  output: v.object({
+  returns: v.object({
     count: v.bigint(),
     identity: v.identity(),
     bytes: v.bytes(),
@@ -429,109 +384,37 @@ const runtimeOnlyValidator: Validator<string, "runtime-only"> = {
   descriptor: () => ({ k: "runtime-only" }),
 };
 
-typedMcpTool({
-  description: "Prove MCP fields have an honest schema.",
-  args: {
-    // @ts-expect-error runtime-only validators cannot be advertised as MCP schemas
-    value: runtimeOnlyValidator,
-  },
-  handler: () => ({ content: [{ type: "text", text: "never" }] }),
-});
-
 // @ts-expect-error declarations require an explicit stable name
 typedMcp();
 
-typedMcpTool({
-  description: "Prove result typing.",
-  args: {},
-  // @ts-expect-error tool results are explicit MCP content results
-  handler: () => "not MCP content",
-});
-
-typedMcpTool({
-  description: "Prove tool hints are booleans.",
-  annotations: {
-    // @ts-expect-error tool annotation hints are booleans
-    readOnlyHint: "yes",
-  },
-  args: {},
-  handler: () => ({ content: [] }),
-});
-
-typedMcpTool({
-  description: "Prove content blocks are a closed union.",
-  args: {},
-  handler: () => ({
-    content: [{
-      // @ts-expect-error video is not a supported MCP content block
-      type: "video",
-      data: "AQID",
-      mimeType: "video/mp4",
-    }],
-  }),
-});
-
-typedMcpTool({
-  description: "Prove metadata is standard JSON.",
-  args: {},
-  handler: () => ({
-    content: [],
-    _meta: {
-      // @ts-expect-error metadata cannot contain runtime objects
-      createdAt: new Date(),
-    },
-  }),
-});
-
-const invalidRichMode = {
-  content: [],
-  // @ts-expect-error unstructured handlers cannot smuggle structured content
-  structuredContent: { value: "undeclared" },
-} satisfies McpToolResult;
-void invalidRichMode;
-
-const invalidAudience = {
-  content: [{
-    type: "text",
-    text: "bad",
-    annotations: {
-      // @ts-expect-error content audiences are user or assistant
-      audience: ["model"],
-    },
-  }],
-} satisfies McpToolResult;
-void invalidAudience;
-
-typedMcpTool({
+typedQuery({
   description: "Prove input roots are objects.",
-  // @ts-expect-error MCP inputs are argument shapes, never scalar roots
+  access: "public",
+  // @ts-expect-error arguments are shapes, never scalar roots
   args: v.string(),
-  handler: () => ({ content: [{ type: "text", text: "never" }] }),
+  returns: v.object({}),
+  handler: () => ({}),
 });
 
-typedMcpTool({
-  description: "Prove output roots are objects.",
-  args: {},
-  // @ts-expect-error advertised structured outputs require v.object(...)
-  output: v.string(),
-  handler: () => ({ content: [{ type: "text", text: "never" }] }),
+typedMcp({
+  name: "annotation_hints",
+  auth: agentAuth,
+  path: "/annotations",
+  tools: {
+    hinted: {
+      fn: summarizeNote,
+      annotations: {
+        // @ts-expect-error tool annotation hints are booleans
+        readOnlyHint: "yes",
+      },
+    },
+  },
 });
 
-typedMcpTool({
-  description: "Prove nullable results use a named property.",
-  args: {},
-  // @ts-expect-error a nullable object is not an object-root output schema
-  output: v.object({ value: v.string() }).nullable(),
-  handler: () => ({ content: [{ type: "text", text: "never" }] }),
-});
-
-typedMcpTool({
-  description: "Prove structured result inference.",
-  args: {},
-  output: v.object({ value: v.string() }),
-  // @ts-expect-error handlers must return the declared structured object
-  handler: () => ({ value: 1 }),
-});
+// A runtime-only validator has no JSON Schema, so it cannot cross either
+// published surface. That is a registration error naming the tool, not a
+// compile error, exactly as it is for `http: true`.
+void runtimeOnlyValidator;
 
 type GeneratedApi = ApiFromModules<{
   notes: {
@@ -545,5 +428,5 @@ declare const api: GeneratedApi;
 void api.notes.addNote;
 // @ts-expect-error MCP declarations are server-only, never generated client refs
 void api.notes.agentMcp;
-// @ts-expect-error MCP tools are server-only, never generated client refs
+// A tool is an ordinary function, so it keeps its place on the client api.
 void api.notes.writeNote;

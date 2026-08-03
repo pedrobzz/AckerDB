@@ -1,4 +1,5 @@
 import { assertStandardJson } from "../validation/standard-json.ts";
+import type { Validator } from "../validation/v.ts";
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/;
 const ISO_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/;
@@ -322,4 +323,40 @@ export function validateMcpContentResult(value: unknown): McpToolResult {
   }
   if (result._meta !== undefined) metadata(result._meta, "MCP tool result._meta");
   return value as McpToolResult;
+}
+
+/** The kind marking a return contract of MCP content blocks rather than a value. */
+export const MCP_CONTENT_KIND = "mcpContent";
+
+export type McpContentValidator = Validator<McpToolResult, typeof MCP_CONTENT_KIND>;
+
+/**
+ * Declare that a function returns MCP content blocks instead of a JSON value.
+ *
+ * Content is strictly wider than anything a JSON contract can describe, so such
+ * a function publishes no `outputSchema`, answers no `structuredContent`, and
+ * cannot be `http: true` — an HTTP caller has nowhere to put an image. It is an
+ * ordinary function in every other way; only its return contract differs.
+ */
+export function mcpContent(): McpContentValidator {
+  return Object.freeze({
+    kind: MCP_CONTENT_KIND,
+    check: (value: unknown, path: string): McpToolResult => {
+      try {
+        return validateMcpContentResult(value);
+      } catch (cause) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        throw new TypeError(`${path}: ${detail}`, { cause });
+      }
+    },
+    tsType: () => "McpToolResult",
+    descriptor: () => ({ kind: MCP_CONTENT_KIND }) as never,
+  });
+}
+
+export function isMcpContentValidator(value: unknown): value is McpContentValidator {
+  return (
+    typeof value === "object" && value !== null &&
+    (value as { readonly kind?: unknown }).kind === MCP_CONTENT_KIND
+  );
 }

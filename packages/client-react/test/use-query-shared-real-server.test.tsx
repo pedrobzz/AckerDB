@@ -21,6 +21,7 @@ import {
 import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { AckerDBProvider, useQuery, type AckerDBQueryState } from "@ackerdb/client-react";
+import { until } from "ackerdb-test-support/async";
 
 const schema = defineSchema({
   messages: defineTable({
@@ -66,15 +67,6 @@ function createApp(): App {
       rmSync(directory, { recursive: true, force: true });
     },
   };
-}
-
-async function until(predicate: () => boolean, description: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await Bun.sleep(10);
-  }
-  throw new Error(`Timed out waiting for ${description} (last render: ${document.body.textContent})`);
 }
 
 type Message = { readonly id: bigint; readonly body: string };

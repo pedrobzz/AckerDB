@@ -1,6 +1,16 @@
 {
   "name": "@ackerdb/cache",
-  "version": "0.13.1",
+  "version": "0.14.2",
+  "license": "FSL-1.1-ALv2",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pedrobzz/AckerDB.git",
+    "directory": "packages/cache"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
   "type": "module",
   "files": [
     "src"
@@ -11,7 +21,7 @@
     "./upstash": "./src/adapters/upstash.ts"
   },
   "dependencies": {
-    "@ackerdb/core": "workspace:0.13.1",
-    "@ackerdb/server": "workspace:0.13.1"
+    "@ackerdb/core": "workspace:0.14.2",
+    "@ackerdb/server": "workspace:0.14.2"
   }
 }

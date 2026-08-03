@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { noopLogger } from "ackerdb-test-support/telemetry";
 import {
   ANONYMOUS_PRINCIPAL,
   realtime,
@@ -41,6 +42,7 @@ function procedure(signal: AbortSignal): ProcedureCtx {
   return Object.freeze({
     auth: ANONYMOUS_PRINCIPAL,
     abortSignal: signal,
+    log: noopLogger,
     timestamp: 1,
     tx: async () => Ok(undefined),
     linkAccount: async () => {},

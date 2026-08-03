@@ -83,6 +83,26 @@ export {
   type PluginStorageRequirement,
 } from "./plugins/storage.ts";
 export { PluginRuntime } from "./plugins/runtime.ts";
+export {
+  declareServices,
+  isService,
+  service,
+  type AnyService,
+  type DeclaredService,
+  type Service,
+  type ServiceBuilder,
+  type ServiceCleanup,
+  type ServiceContext,
+  type ServiceDefinition,
+  type ServiceStart,
+} from "./services/definition.ts";
+export {
+  ServiceError,
+  ServiceRuntime,
+  type ServicePhase,
+  type ServiceRuntimeOptions,
+  type ServiceRuntimeState,
+} from "./services/runtime.ts";
 export type { DurabilityPolicy } from "@ackerdb/core";
 export type { TransportSource } from "./runtime/caller.ts";
 export {
@@ -258,6 +278,35 @@ export {
   type TelemetryStage,
   type TelemetryTraceContext,
 } from "./telemetry/telemetry.ts";
+export {
+  TelemetryJournal,
+  type TelemetryJournalLimits,
+  type TelemetryJournalOptions,
+  type TelemetryJournalSnapshot,
+} from "./telemetry/application-signals/journal.ts";
+export {
+  TelemetryJournalExporters,
+  type TelemetryExporterSnapshot,
+  type TelemetryExportersSnapshot,
+  type TelemetryJournalExporterLimits,
+  type TelemetryJournalExportersOptions,
+  type TelemetrySignalExportContext,
+  type TelemetrySignalExporter,
+  type TelemetrySignalKind,
+} from "./telemetry/application-signals/exporters.ts";
+export type {
+  ApplicationLogger,
+  AnalyticsTracker,
+  AnalyticsEventRecord,
+  ApplicationLogLevel,
+  ApplicationLogRecord,
+  TelemetryJournalEntry,
+  TelemetryJournalRecord,
+} from "./telemetry/application-signals/types.ts";
+export type {
+  TelemetryMetadata,
+  TelemetryValue,
+} from "./telemetry/application-signals/value.ts";
 export { invokeFunction, type InvocationContext } from "./app/invocation.ts";
 export type {
   AppSystemCtx,
@@ -368,18 +417,20 @@ export type {
   RealtimeVideoStreamOptions,
 } from "./realtime/media.ts";
 export {
-  createMcp,
+  mcp,
   isMcpDeclaration,
-  isMcpToolBlueprint,
+  isMcpAuthProvider,
   isRegisteredMcpTool,
-  mcpTool,
+  mcpAuth,
+  mcpContent,
   type AnyMcpDeclaration,
-  type AnyMcpToolBlueprint,
-  type AnyMcpToolBlueprintRecord,
+  type AnyMcpAuthProvider,
+  type AnyMcpToolEntryRecord,
   type AnyRegisteredMcpTool,
   type CreatedMcpToken,
   type CustomMcpConfig,
   type DefaultMcpConfig,
+  type McpAuthBuilder,
   type McpBuilder,
   type McpAudioContent,
   type McpAiContext,
@@ -416,15 +467,15 @@ export {
   type McpTextResourceContents,
   type McpToolAnnotations,
   type McpToolAccessPolicy,
-  type McpToolBlueprint,
-  type McpToolBlueprintRecord,
-  type McpToolBuilder,
-  type McpToolCtx,
+  type McpAuthProvider,
+  type McpToolEntryRecord,
+  type McpToolEntry,
   type McpToolResult,
   type RegisteredMcpTool,
   type RegisteredMcpTools,
-  type ScopedCustomMcpConfig,
-  type ScopedDefaultMcpConfig,
+  type PrivateMcpConfig,
+  type McpAuthConfig,
+  type McpContentValidator,
 } from "./mcp/index.ts";
 export {
   type StandardJsonCodec,

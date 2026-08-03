@@ -1,0 +1,22 @@
+## Release intent
+
+- Target branch: `canary` / `main`
+- Declared change: `patch` / `minor` / `major` / `canary promotion`
+- Prepared source version:
+- Urgent stable exception: `no` / `hotfix/* + release:urgent`
+
+## Change
+
+Describe the useful work, the invariant it changes, and any ownership or
+resource cost added or removed.
+
+## Verification
+
+List the affected boundary tests and relevant failure-path checks.
+
+## Benchmark reasoning
+
+After the `AckerDB benchmark` check completes, compare base and head across
+latency, throughput, CPU, RAM, scale shape, tails, startup, and correctness or
+accounting observations. Explain material movements and why the complete vector
+is or is not good enough. Do not treat the green check itself as approval.

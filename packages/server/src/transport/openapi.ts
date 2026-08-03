@@ -112,7 +112,7 @@ const RECEIPT_RESPONSE_HEADERS: JsonObject = Object.freeze({
   },
   [RECEIPT_HEADERS.obligations]: {
     description:
-      "Comma-joined convergence obligations. Always empty on this surface — an HTTP caller holds no subscriptions — and an empty header value is dropped, so the absent header is the empty list.",
+      "Comma-joined convergence obligations. Always empty on this surface — an HTTP caller holds no subscriptions — and the empty list omits the header, so the absent header is the empty list.",
     schema: { type: "string" },
   },
 });

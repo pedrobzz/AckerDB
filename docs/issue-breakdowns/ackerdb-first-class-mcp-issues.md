@@ -58,7 +58,9 @@ Every later token, scope, output, and AI adapter needs one real protocol path. T
 - Extend the existing registry with a distinct server-only export kind instead of disguising tools as procedures.
 - Mount into the existing Bun listener and reuse bounded body parsing; do not use AckerDB's private tagged wire codec.
 - Build the shared dispatcher as the only handler execution path from the first slice.
-- If this work changes the release version, run one Hetzner release benchmark against the preceding version; do not create a pre-change baseline.
+- Runtime work under the measured server source enters GitHub's paired AckerDB
+  benchmark; docs and fixtures receive its immediate no-op. Do not create a
+  local baseline.
 
 ## Blocked by
 
@@ -329,8 +331,8 @@ This proves the central product promise—external agents act as the same applic
 - Create two tokens, restart, authenticate each to the correct endpoint, and assert shared row ownership.
 - Inspect storage to prove the secret is absent and list output never reveals it.
 - Reject wrong endpoint, malformed/unknown tokens, cross-owner listing, and MCP self-administration.
-- Include authentication lookup changes in the release's one Hetzner benchmark;
-  do not create an ad hoc microbenchmark record.
+- Authentication lookup source is measured by the conditional paired Hetzner
+  benchmark; do not create an ad hoc microbenchmark record.
 
 ### Out of scope
 
@@ -868,8 +870,8 @@ AFK
 Turn the complete implementation into reproducible conformance checks and
 performance evidence: run official MCP server conformance plus retained raw
 JSON cases, pack/install the real lockstep artifacts in clean Bun fixtures,
-validate server exports/dependencies, and compare full AckerDB, Convex, and
-SpacetimeDB on Hetzner against the preceding release version.
+validate server exports/dependencies, and compare the branch's AckerDB with its
+base branch's AckerDB on the protected Hetzner check.
 
 ### Why this slice exists
 
@@ -881,10 +883,10 @@ Protocol and performance claims must survive outside unit mocks and source-works
 - [ ] Raw fixtures cover initialize, notification, ping, list, call, malformed JSON-RPC, unsupported methods, auth failures, JSON POST responses, and stateless GET/DELETE.
 - [ ] Clean packed consumers resolve the server MCP subpath, generated server types, stable SDK dependency, and Bun runtime.
 - [ ] Packed `@ackerdb/server` contains no AI SDK production dependency.
-- [ ] The completed benchmark produced its single version-, host-, source-, and
-      predecessor-bound Hetzner record, and its full performance vector and
-      anomaly observations are interpreted with explicit reasoning; benchmark
-      values do not approve or veto the release.
+- [ ] When measured runtime source changed, the current pull-request commit has
+      paired base/head Hetzner observations and Pedro plus an agent interpret
+      the full vector explicitly; otherwise the benchmark status is an
+      immediate no-op. Values never approve or veto the release automatically.
 - [ ] All compile, unit, integration, security, cancellation, leak, and package tests run in the normal repository gate.
 
 ### Implementation notes
@@ -922,7 +924,8 @@ Protocol and performance claims must survive outside unit mocks and source-works
 
 - Run the official suite and raw fixtures from a clean checkout.
 - Pack and install exact lockstep artifacts in an isolated consumer.
-- At the version bump, run the full three-system Hetzner benchmark and inspect deltas from the preceding final version.
+- Review the required base/head AckerDB Hetzner artifact for the current pull
+  request and record the human reasoning.
 
 ### Out of scope
 

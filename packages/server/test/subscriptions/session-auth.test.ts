@@ -45,24 +45,9 @@ import {
   type SessionRuntimeContext,
   type SessionSink,
 } from "../../src/subscriptions/session.ts";
+import { deferred } from "ackerdb-test-support/async";
 
 const TEST_SOURCE = Object.freeze({ family: "test", address: "session-auth" });
-
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: unknown): void;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((promiseResolve, promiseReject) => {
-    resolve = promiseResolve;
-    reject = promiseReject;
-  });
-  return { promise, resolve, reject };
-}
 
 async function settle(): Promise<void> {
   for (let turn = 0; turn < 24; turn++) await Promise.resolve();

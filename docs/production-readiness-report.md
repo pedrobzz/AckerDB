@@ -1,10 +1,11 @@
 # Production Safety Milestone and Production-Readiness Report
 
-> Historical report (2026-07-14). Its frozen-baseline and local/current-host
-> benchmark procedure is superseded. Current release evidence is version-bound,
-> runs on Hetzner only, compares with the preceding final version, and retains
-> no timestamp records. Imperative benchmark instructions or blockers below
-> describe the old state and must not be followed; see [the benchmark contract](../bench/README.md).
+> Historical report (2026-07-14). Its benchmark and local-only publishing
+> procedures are superseded. Current merge evidence is an AckerDB base/head
+> comparison on GitHub's Hetzner runner, and current delivery publishes canary
+> and stable versions to public npm while reserving Verdaccio for local betas.
+> Imperative release instructions or blockers below describe the old state and
+> must not be followed; see [the current release contract](releases.md).
 
 - Date: 2026-07-14
 - PRD: [GitHub issue #1 — Production safety and full operational visibility](https://github.com/pedrobzz/ackerdb/issues/1)
@@ -467,10 +468,10 @@ exact configuration parity; the historical selector still requires the same
 dataset, seed, operation/profile shapes, connection levels, subscription
 population/patterns/rates/slots, durability, and setup semantics.
 
-The new `BENCH_COMPARISON=current` mode asks a different question: how do AckerDB,
-Convex, and SpacetimeDB compare on the same host now? It runs only those three
-legs, preserves correctness/telemetry/workload checks, prints the comparison,
-and explicitly skips historical-machine acceptance and result persistence.
+The now-removed `BENCH_COMPARISON=current` mode asked a different historical
+question: how did AckerDB, Convex, and SpacetimeDB compare on the same host at
+the time? It ran only those three legs, preserved the then-current checks, and
+skipped historical-machine acceptance and result persistence.
 
 ### Remote execution problems and decisions
 
@@ -621,13 +622,14 @@ independent failure domain.
 
 ## Rough edges and technical debt
 
-### Branch/release blockers
+### Historical branch/release blockers (resolved or superseded)
 
-1. **The frozen benchmark baseline is untracked.** This is the immediate
-   clean-clone/CI blocker described above.
-2. **A version bump is required before merge.** The branch contains `feat:` and
-   `fix:` commits, so the repository merge guard will reject it until all four
-   packages are bumped in lockstep. Merge, publish, and tag remain unperformed.
+1. **The frozen benchmark baseline was untracked.** This was the immediate
+   clean-clone/CI blocker described above; the current paired check does not use
+   that baseline.
+2. **A version bump was required before merge.** The old local merge guard and
+   four-package publication path have been replaced by the protected-branch,
+   twelve-package contract in [Releases](releases.md).
 
 ### Acceptance gaps and evidence debt
 
@@ -715,17 +717,17 @@ The priority order follows the alpha rule used during this milestone: address
 likely routine liabilities first; do not build distributed/platform machinery
 for zero users.
 
-### P0 — finish the branch honestly
+### Historical P0 — what this report required at the time
 
-1. **Commit the frozen baseline alone.** Verify its recorded digest and
-   provenance, then add only
-   `bench/results/2026-07-13T15-34-33Z-74d8554.json` in an atomic benchmark
-   evidence commit. Rerun benchmark tests from a clean checkout.
+1. **Commit the frozen baseline alone.** This recommendation is obsolete; the
+   current check measures the pull request and base directly without committed
+   baseline evidence.
 2. **Run one clean-clone verification.** Install from the tracked lockfile, run
    root tests/typecheck and benchmark contract tests, and prove no ignored local
    generated/result file is required.
-3. **Bump the four packages in lockstep before merge.** Follow the existing
-   release workflow; do not merge/publish/tag until the branch is clean.
+3. **Four-package release preparation.** This was the old release path and is
+   superseded by the twelve-package protected workflow in
+   [Releases](releases.md).
 
 Keep schema-v6/Apple M2 acceptance and raw-log preservation explicitly deferred
 unless Pedro chooses literal PRD closure; neither is required to make the
@@ -747,9 +749,9 @@ zero-user alpha usable without becoming a liability.
 4. **Publish the alpha operating contract.** State single-node topology,
    maintenance downtime, no SLA, backup-defined RPO, restore-defined RTO,
    supported Bun/OS versions, and one support/incident channel.
-5. **Give testers a reproducible install and starter application.** The current
-   local Verdaccio workflow is useful for the author but is not a normal invited
-   alpha distribution path.
+5. **Give testers a reproducible install and starter application.** Public npm
+   canary and stable delivery now provide the normal distribution path;
+   Verdaccio remains intentionally limited to local beta testing.
 6. **Document and exercise host security.** TLS/proxy config, filesystem
    permissions, secret storage, disk encryption, firewall, dependency updates,
    and log/backup access need one reference baseline.

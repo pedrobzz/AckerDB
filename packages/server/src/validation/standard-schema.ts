@@ -560,3 +560,27 @@ export function compileStandardJsonCodec<V extends StandardValidator>(
   };
   return Object.freeze(codec);
 }
+
+/**
+ * Compile one contract validator into a standard-JSON codec, refusing a
+ * contract no JSON boundary can carry where it is declared rather than at the
+ * first call. `surface` names the boundary in the error, so the same rule reads
+ * correctly whether it is the HTTP surface or the MCP one refusing it.
+ */
+export function compileContractCodec(
+  validator: StandardValidator | { readonly kind: string },
+  where: string,
+  surface: string,
+): StandardJsonCodec<unknown> {
+  try {
+    // Declarations type their validators as the erased `Validator` face;
+    // registration already refuses anything `v` did not build.
+    return compileStandardJsonCodec(validator as StandardValidator);
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    throw new TypeError(
+      `${where} cannot cross the ${surface}'s standard-JSON boundary: ${detail}`,
+      { cause },
+    );
+  }
+}
