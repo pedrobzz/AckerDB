@@ -177,9 +177,9 @@ import {
 import { RuntimeSampler } from "./telemetry/sampler.ts";
 import { RuntimeDeliveryTelemetry } from "./telemetry/delivery-observer.ts";
 import { RuntimeScheduledCandidates } from "./scheduler/candidate.ts";
+import { RuntimeScheduler } from "./scheduler/runtime.ts";
 
 const utf8 = new TextEncoder();
-const SCHEDULER_RETRY_MS = 1_000;
 const DIRECT_RUNTIME_SOURCE = transportSource({ family: "runtime", address: "local" });
 const SYSTEM_FAIRNESS_KEY = callerFairnessKey(SYSTEM_PRINCIPAL, DIRECT_RUNTIME_SOURCE);
 /** Package-private transport hook; intentionally absent from the public index. */
@@ -274,8 +274,7 @@ export class Runtime implements RuntimePort {
   private readonly reads: RuntimeReadExecutor;
   private readonly functions: RuntimeFunctionExecutor<RuntimeReactiveContext>;
   private readonly mcp: RuntimeMcp;
-  private readonly schedulerCandidates: RuntimeScheduledCandidates;
-  private readonly scheduled: Map<string, string>;
+  private readonly scheduler: RuntimeScheduler;
   private readonly sessionStore: RuntimeSessionStore;
   private readonly authCaptureBudget: OutboundBudget;
   private readonly sseBudget: OutboundBudget;
@@ -294,9 +293,6 @@ export class Runtime implements RuntimePort {
   private readonly releaseTelemetryJournalFailure: () => void;
   private lifecycle: RuntimeLifecycleState = "ready";
   private activeOperations = 0;
-  private schedulerGeneration = 0;
-  private schedulerTimer: ReturnType<typeof setTimeout> | null = null;
-  private scheduledRun: Promise<number> | null = null;
   private drainPromise: Promise<void> | null = null;
   private readonly shutdownController = new AbortController();
   private readonly systemDrainController = new AbortController();
@@ -367,7 +363,7 @@ export class Runtime implements RuntimePort {
       ) => this.runSystem(name, work, runOptions),
     });
     this.credentialVerifier = this.authInvalidation.verifier;
-    this.scheduled = options.registry.resolveScheduled(options.engine.schema);
+    const scheduled = options.registry.resolveScheduled(options.engine.schema);
     this.ownsTelemetry = !(options.telemetry instanceof Telemetry);
     this.telemetry = options.telemetry instanceof Telemetry
       ? options.telemetry
@@ -446,8 +442,8 @@ export class Runtime implements RuntimePort {
       telemetryEnabled: this.telemetry.enabled,
       tracing: this.tracing,
     });
-    this.schedulerCandidates = new RuntimeScheduledCandidates({
-      scheduled: this.scheduled,
+    const schedulerCandidates = new RuntimeScheduledCandidates({
+      scheduled,
       engine: this.engine,
       reads: this.reads,
       tracing: this.tracing,
@@ -490,7 +486,7 @@ export class Runtime implements RuntimePort {
             },
           }
         : {}),
-      armScheduler: () => this.armScheduler(),
+      armScheduler: () => this.scheduler.arm(),
       hooks: options.hooks,
       now: this.now,
     });
@@ -507,6 +503,19 @@ export class Runtime implements RuntimePort {
       admittedRequestBytes: (request, receivedBytes) =>
         this.admittedRequestBytes(request, receivedBytes),
       publishAccountInvalidation: this.immediateProcedureInvalidations.publish,
+    });
+    this.scheduler = new RuntimeScheduler({
+      candidates: schedulerCandidates,
+      scheduled,
+      batchSize: this.limits.schedulerBatchSize,
+      operations: this.operations,
+      telemetry: this.telemetry,
+      signal: this.shutdownController.signal,
+      now: this.now,
+      isReady: () => this.lifecycle === "ready",
+      assertReady: () => this.assertReady(),
+      executeMutation: (candidate, now, signal) =>
+        this.functions.executeScheduledMutation(candidate, now, signal),
     });
     const globalControlReserve = Math.min(
       this.limits.maxFrameBytes,
@@ -573,7 +582,7 @@ export class Runtime implements RuntimePort {
       lifecycleState: "ready",
     });
     this.sampler.start();
-    this.armScheduler();
+    this.scheduler.arm();
   }
 
   get state(): RuntimeLifecycleState {
@@ -1472,77 +1481,7 @@ export class Runtime implements RuntimePort {
   }
 
   runScheduled(now = this.readNow()): Promise<number> {
-    if (this.scheduledRun !== null) return this.scheduledRun;
-    this.assertReady();
-    const execution = this.operations.run(null, "scheduled", undefined, 1, async () => {
-      let handled = 0;
-      for (let attempts = 0; attempts < this.limits.schedulerBatchSize; attempts++) {
-        const candidate = await this.schedulerCandidates.next(now);
-        if (candidate === null) break;
-        if (await this.functions.executeScheduledMutation(
-          candidate,
-          now,
-          this.shutdownController.signal,
-        )) handled++;
-      }
-      return handled;
-    });
-    let run!: Promise<number>;
-    run = execution.then(
-      (handled) => {
-        if (this.lifecycle === "ready") this.armScheduler();
-        return handled;
-      },
-      (error) => {
-        this.retryScheduler(error);
-        throw error;
-      },
-    ).finally(() => {
-      if (this.scheduledRun === run) this.scheduledRun = null;
-    });
-    this.scheduledRun = run;
-    return run;
-  }
-
-  armScheduler(): void {
-    const generation = ++this.schedulerGeneration;
-    if (this.schedulerTimer !== null) clearTimeout(this.schedulerTimer);
-    this.schedulerTimer = null;
-    if (this.lifecycle !== "ready" || this.scheduled.size === 0) return;
-    void this.schedulerCandidates.nextAt().then(
-      (at) => {
-        if (this.lifecycle !== "ready" || generation !== this.schedulerGeneration || at === null) return;
-        const delay = Math.min(Math.max(0, at - this.readNow()), 0x7fff_ffff);
-        this.schedulerTimer = setTimeout(() => {
-          this.schedulerTimer = null;
-          void this.runScheduled().catch(() => {});
-        }, delay);
-        this.schedulerTimer.unref?.();
-      },
-      (error) => {
-        if (this.lifecycle === "ready" && generation === this.schedulerGeneration) {
-          this.retryScheduler(error);
-        }
-      },
-    );
-  }
-
-  private retryScheduler(error: unknown): void {
-    this.telemetry.recordEvent({
-      name: "failure",
-      level: "error",
-      operation: "scheduled",
-      outcome: outcomeFromError(transportError(error)).code,
-      errorClass: error instanceof Error ? error.name : "UnknownError",
-    });
-    const generation = ++this.schedulerGeneration;
-    if (this.schedulerTimer !== null) clearTimeout(this.schedulerTimer);
-    this.schedulerTimer = null;
-    if (this.lifecycle !== "ready") return;
-    this.schedulerTimer = setTimeout(() => {
-      if (this.lifecycle === "ready" && generation === this.schedulerGeneration) this.armScheduler();
-    }, SCHEDULER_RETRY_MS);
-    this.schedulerTimer.unref?.();
+    return this.scheduler.run(now);
   }
 
   status(): RuntimeStatus {
@@ -1553,8 +1492,8 @@ export class Runtime implements RuntimePort {
       activeOperationCallers: this.externalOperations.size,
       activeSse: this.sseProducers.size,
       realtime: this.realtime?.snapshot() ?? null,
-      scheduledHandlers: this.scheduled.size,
-      schedulerArmed: this.schedulerTimer !== null,
+      scheduledHandlers: this.scheduler.handlerCount,
+      schedulerArmed: this.scheduler.armed,
       reader: this.reads.snapshot(),
       writer: this.functions.snapshot(),
       reactive: this.reactive.snapshot(),
@@ -1589,9 +1528,7 @@ export class Runtime implements RuntimePort {
     }
     this.lifecycle = "draining";
     this.releaseTelemetryJournalFailure();
-    this.schedulerGeneration++;
-    if (this.schedulerTimer !== null) clearTimeout(this.schedulerTimer);
-    this.schedulerTimer = null;
+    this.scheduler.stop();
     this.sampler.stop();
     this.telemetry.recordEvent({
       name: "lifecycle",
